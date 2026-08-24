@@ -46,6 +46,8 @@ use tempo_validator_config::ValidatorConfig;
 
 use crate::{init_state, p2p_proxy::P2pProxyArgs, regenesis};
 
+mod coinbase_prime;
+
 fn get_env(key: &str) -> eyre::Result<String> {
     std::env::var(key).wrap_err_with(|| format!("failed reading environment variable `{key}`"))
 }
@@ -375,6 +377,11 @@ pub struct WalletArgs {
     /// GCP_KEY_VERSION env vars
     #[arg(long, help_heading = "Wallet options - remote")]
     gcp: bool,
+
+    /// Use Coinbase Prime. Requires COINBASE_PRIME_ACCESS_KEY, COINBASE_PRIME_PASSPHRASE,
+    /// COINBASE_PRIME_SIGNING_KEY, COINBASE_PRIME_PORTFOLIO_ID, and COINBASE_PRIME_WALLET_ID env vars
+    #[arg(long, help_heading = "Wallet options - remote")]
+    coinbase_prime: bool,
 }
 
 impl WalletArgs {
@@ -491,6 +498,19 @@ impl ValidatorTransactionArgs {
             if !matches!(input.trim(), "y" | "Y" | "yes" | "YES") {
                 bail!("transaction cancelled by user");
             }
+        }
+
+        if self.wallet.coinbase_prime {
+            let transaction_id = coinbase_prime::submit_transaction(
+                &self.rpc_url,
+                address,
+                call.abi_encode().into(),
+            )
+            .await
+            .wrap_err("failed to submit transaction through Coinbase Prime")?;
+
+            writeln!(output, "Transaction ID: {transaction_id}")?;
+            return Ok(());
         }
 
         let wallet = self
@@ -1659,6 +1679,27 @@ mod tests {
             other => panic!("expected SetValidatorToken, got `{other:?}`"),
         };
         assert!(no_fetch_verified_tokens);
+    }
+
+    #[test]
+    fn parse_coinbase_prime_wallet() {
+        let cli = TempoCli::try_parse_from([
+            "tempo",
+            "consensus",
+            "set-validator-token",
+            TEST_VALIDATOR_TOKEN,
+            "--no-fetch-verified-tokens",
+            "--coinbase-prime",
+        ])
+        .unwrap();
+
+        let SetValidatorToken { submit, .. } = match cli.command {
+            reth_ethereum::cli::Commands::Ext(TempoSubcommand::Consensus(
+                ConsensusSubcommand::SetValidatorToken(cmd),
+            )) => cmd,
+            other => panic!("expected SetValidatorToken, got `{other:?}`"),
+        };
+        assert!(submit.wallet.coinbase_prime);
     }
 
     #[test]

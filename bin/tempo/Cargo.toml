@@ -68,11 +68,13 @@ commonware-math.workspace = true
 commonware-runtime = { workspace = true, features = ["external"] }
 commonware-utils.workspace = true
 futures = { workspace = true, features = ["executor"] }
+hmac.workspace = true
 rand.workspace = true
 reth-chainspec.workspace = true
 reth-cli.workspace = true
 serde.workspace = true
 serde_json.workspace = true
+sha2.workspace = true
 tempo-alloy = { workspace = true, features = ["reth"] }
 tempo-contracts.workspace = true
 tempo-primitives = { workspace = true, features = ["reth"] }
