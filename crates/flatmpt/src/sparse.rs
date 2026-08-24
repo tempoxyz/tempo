@@ -1660,10 +1660,23 @@ impl Worker {
             let mut direct: Option<DecodedMultiProofV2> = None;
             if fast_reveal() {
                 self.refresh_snap(false);
-                let mut sound = self.snap_at_parent || (self.stats.pool_hit && self.anchor_ok());
+                // Bug #8 final hardening: every reveal source must serve
+                // parent state. The anchor gate (pool_hit && anchor_ok) only
+                // proves the POOLED TRIE's blind-region lineage — under fork
+                // churn a warm trie can pass it while the snapshot still lags
+                // the parent, and a direct reveal then serves a stale node
+                // for a path the pending blocks changed (cycle-8 feature-2
+                // divergence: pool_hit=true snap_at_parent=false, one
+                // subtree wrong). Require snap-at-parent outright; the old
+                // gate stays behind TEMPO_FLATMPT_ANCHOR_REVEAL=1.
+                let anchor_reveal = std::env::var("TEMPO_FLATMPT_ANCHOR_REVEAL").as_deref()
+                    == Ok("1");
+                let mut sound = self.snap_at_parent
+                    || (anchor_reveal && self.stats.pool_hit && self.anchor_ok());
                 if self.snap.is_none() || !sound {
                     self.refresh_snap(true);
-                    sound = self.snap_at_parent || (self.stats.pool_hit && self.anchor_ok());
+                    sound = self.snap_at_parent
+                        || (anchor_reveal && self.stats.pool_hit && self.anchor_ok());
                 }
                 if let Some(snap) = &self.snap
                     && sound
