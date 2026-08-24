@@ -189,7 +189,7 @@ mod tests {
         assert_eq!(TempoHardfork::T10.expiring_nonce_max_expiry_secs(), 30);
         assert_eq!(TempoHardfork::T10.expiring_nonce_set_capacity(), 300_000);
         assert_eq!(TempoHardfork::T11.expiring_nonce_max_expiry_secs(), 300);
-        assert_eq!(TempoHardfork::T11.expiring_nonce_set_capacity(), 3_000_000);
+        assert_eq!(TempoHardfork::T11.expiring_nonce_set_capacity(), 300_000);
     }
 
     #[test]

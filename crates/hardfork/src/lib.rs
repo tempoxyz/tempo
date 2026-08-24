@@ -297,7 +297,7 @@ impl TempoHardfork {
     /// Returns the expiring nonce replay-protection capacity.
     pub const fn expiring_nonce_set_capacity(&self) -> u32 {
         const PRE_T11_CAPACITY: u32 = 300_000;
-        const POST_T11_CAPACITY: u32 = 3_000_000;
+        const POST_T11_CAPACITY: u32 = 300_000;
 
         if self.is_t11() {
             POST_T11_CAPACITY
