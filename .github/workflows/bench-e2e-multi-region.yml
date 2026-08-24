@@ -23,10 +23,6 @@ on:
         type: string
         required: false
         default: ""
-      benchmark-ref:
-        type: string
-        required: false
-        default: "main"
       duration:
         type: string
         required: false
@@ -116,11 +112,6 @@ on:
         type: string
         required: false
         default: ""
-      benchmark-ref:
-        description: Git ref in tempoxyz/tempo-multi-region-benchmark.
-        type: string
-        required: false
-        default: "main"
       baseline-hardfork:
         description: Latest active hardfork for the baseline run. Empty = latest Tempo hardfork.
         type: string
@@ -271,7 +262,6 @@ jobs:
       TF_IN_AUTOMATION: "1"
       TF_INPUT: "0"
       BENCH_REPO_DIR: tempo-multi-region-benchmark
-      BENCH_REPO_REF: ${{ inputs['benchmark-ref'] || 'main' }}
       TERRAFORM_DIR: ${{ (inputs.cloud || 'aws') == 'gcp' && 'tempo-multi-region-benchmark/terraform/gcp' || 'tempo-multi-region-benchmark/terraform' }}
       BENCHMARK_ID: bench-e2e-multi-region-${{ github.run_id }}-${{ github.run_attempt }}
       BENCH_RESULTS_DIR: tempo-bench-e2e-multi-region-results
@@ -385,7 +375,7 @@ jobs:
         uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
         with:
           repository: tempoxyz/tempo-multi-region-benchmark
-          ref: ${{ env.BENCH_REPO_REF }}
+          ref: ${{ github.repository == 'tempoxyz/tempo-multi-region-benchmark' && github.sha || 'main' }}
           path: ${{ env.BENCH_REPO_DIR }}
           token: ${{ steps.github-sts.outputs.token }}
           persist-credentials: false
