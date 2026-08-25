@@ -17,12 +17,22 @@ use tempo_precompiles::storage::{StorageCtx, hashmap::HashMapStorageProvider};
 use tempo_primitives::{
     TempoPrimitives, TempoTxEnvelope,
     transaction::{
-        SignedKeyAuthorization, TempoSignedAuthorization, TempoTransaction,
+        MultisigConfig, MultisigOwner, MultisigSignature, SignedKeyAuthorization,
+        TempoSignedAuthorization, TempoTransaction,
         tempo_transaction::Call,
         tt_signature::{KeychainVersion, PrimitiveSignature, TempoSignature},
         tt_signed::AASigned,
     },
 };
+
+fn test_multisig_config(owner: Address) -> MultisigConfig {
+    MultisigConfig {
+        salt: B256::ZERO,
+        version: 1,
+        threshold: 1,
+        owners: vec![MultisigOwner { owner, weight: 1 }],
+    }
+}
 
 /// Builder for creating test transactions.
 ///
@@ -238,12 +248,18 @@ impl TxBuilder {
     ///
     /// The sender equals `account`, matching how native multisig transactions execute.
     pub(crate) fn build_multisig(self, account: Address) -> TempoPooledTransaction {
-        use tempo_primitives::transaction::MultisigSignature;
-
         let tx = self.into_aa_transaction();
-        let owner_signature = PrimitiveSignature::Secp256k1(Signature::test_signature()).to_bytes();
-        let signature =
-            TempoSignature::Multisig(MultisigSignature::new(account, vec![owner_signature], None));
+        let owner = Address::repeat_byte(0x11);
+        let signature = TempoSignature::Multisig(
+            MultisigSignature::from_decoded(
+                account,
+                test_multisig_config(owner),
+                vec![TempoSignature::Primitive(PrimitiveSignature::Secp256k1(
+                    Signature::test_signature(),
+                ))],
+            )
+            .unwrap(),
+        );
         Self::build_aa_with_signature(tx, signature, account)
     }
 
@@ -254,17 +270,22 @@ impl TxBuilder {
         parent: Address,
         child: Address,
     ) -> TempoPooledTransaction {
-        use tempo_primitives::transaction::MultisigSignature;
-
         let tx = self.into_aa_transaction();
-        let child_owner = PrimitiveSignature::Secp256k1(Signature::test_signature()).to_bytes();
-        let child_sig =
-            TempoSignature::Multisig(MultisigSignature::new(child, vec![child_owner], None));
-        let parent_sig = TempoSignature::Multisig(MultisigSignature::new(
-            parent,
-            vec![child_sig.to_bytes()],
-            None,
-        ));
+        let child_owner = Address::repeat_byte(0x11);
+        let child_sig = TempoSignature::Multisig(
+            MultisigSignature::from_decoded(
+                child,
+                test_multisig_config(child_owner),
+                vec![TempoSignature::Primitive(PrimitiveSignature::Secp256k1(
+                    Signature::test_signature(),
+                ))],
+            )
+            .unwrap(),
+        );
+        let parent_sig = TempoSignature::Multisig(
+            MultisigSignature::from_decoded(parent, test_multisig_config(child), vec![child_sig])
+                .unwrap(),
+        );
         Self::build_aa_with_signature(tx, parent_sig, parent)
     }
 

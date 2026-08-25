@@ -233,25 +233,18 @@ impl TempoPooledTransaction {
         }
 
         self.inner().as_aa().is_some_and(|aa_tx| {
+            let key_authorization = aa_tx.tx().key_authorization.as_ref();
             aa_tx
                 .signature()
                 .as_multisig()
                 .is_some_and(|signature| contains_changed_account(signature, changed_accounts))
-                || aa_tx
-                    .tx()
-                    .key_authorization
-                    .as_ref()
+                || key_authorization
                     .and_then(|authorization| authorization.signature.as_multisig())
                     .is_some_and(|signature| contains_changed_account(signature, changed_accounts))
+                || key_authorization.is_some_and(|authorization| {
+                    changed_accounts.contains(&authorization.authorization.key_id)
+                })
         })
-    }
-
-    /// Returns whether this transaction newly authorizes one of `accounts` as an access key.
-    pub(crate) fn authorizes_multisig_access_key(&self, accounts: &AddressSet) -> bool {
-        self.inner()
-            .as_aa()
-            .and_then(|tx| tx.tx().key_authorization.as_ref())
-            .is_some_and(|authorization| accounts.contains(&authorization.authorization.key_id))
     }
 
     /// Extracts the keychain subject for the signer of an inline `KeyAuthorization`.
@@ -994,8 +987,8 @@ mod tests {
     use tempo_contracts::precompiles::ITIP20;
     use tempo_precompiles::{PATH_USD_ADDRESS, nonce::NonceManager};
     use tempo_primitives::transaction::{
-        KeyAuthorization, MultisigSignature, SignatureType, TEMPO_EXPIRING_NONCE_KEY,
-        TempoSignedAuthorization, TempoTransaction,
+        KeyAuthorization, MultisigConfig, MultisigOwner, MultisigSignature, SignatureType,
+        TEMPO_EXPIRING_NONCE_KEY, TempoSignedAuthorization, TempoTransaction,
         tempo_transaction::Call,
         tt_signature::{KeychainSignature, PrimitiveSignature, TempoSignature},
         tt_signed::AASigned,
@@ -1158,24 +1151,40 @@ mod tests {
         let nested_account = Address::random();
         let access_key = PrivateKeySigner::random();
         let key_authorization = |nested: Option<Address>| {
-            let owner_approval = PrimitiveSignature::Secp256k1(Signature::test_signature());
-            let owner_approval = nested.map_or_else(
-                || owner_approval.to_bytes(),
-                |nested_account| {
-                    TempoSignature::Multisig(MultisigSignature::new(
-                        nested_account,
-                        vec![owner_approval.to_bytes()],
-                        None,
-                    ))
-                    .to_bytes()
-                },
-            );
+            let primitive_owner = Address::repeat_byte(0x11);
+            let owner_approval = TempoSignature::Primitive(PrimitiveSignature::Secp256k1(
+                Signature::test_signature(),
+            ));
+            let owner_approval = match nested {
+                None => owner_approval,
+                Some(nested_account) => TempoSignature::Multisig(MultisigSignature::new(
+                    nested_account,
+                    MultisigConfig {
+                        salt: B256::ZERO,
+                        version: 1,
+                        threshold: 1,
+                        owners: vec![MultisigOwner {
+                            owner: primitive_owner,
+                            weight: 1,
+                        }],
+                    },
+                    vec![owner_approval.to_bytes()],
+                )),
+            };
             KeyAuthorization::unrestricted(42431, SignatureType::Secp256k1, access_key.address())
                 .with_account(account)
                 .into_signed(TempoSignature::Multisig(MultisigSignature::new(
                     account,
-                    vec![owner_approval],
-                    None,
+                    MultisigConfig {
+                        salt: B256::ZERO,
+                        version: 1,
+                        threshold: 1,
+                        owners: vec![MultisigOwner {
+                            owner: nested.unwrap_or(primitive_owner),
+                            weight: 1,
+                        }],
+                    },
+                    vec![owner_approval.to_bytes()],
                 )))
         };
 
@@ -1193,7 +1202,7 @@ mod tests {
     }
 
     #[test]
-    fn multisig_initialization_tracks_only_access_key_targets() {
+    fn multisig_config_dependencies_include_access_key_targets() {
         let account = Address::random();
         let key_id = Address::random();
         let key_authorization =
@@ -1203,7 +1212,7 @@ mod tests {
         let key_transaction = TxBuilder::aa(account)
             .key_authorization(key_authorization)
             .build();
-        assert!(key_transaction.authorizes_multisig_access_key(&AddressSet::from_iter([key_id])));
+        assert!(key_transaction.depends_on_multisig_config(&AddressSet::from_iter([key_id])));
 
         let authority = Address::random();
         let authorization = TempoSignedAuthorization::new_unchecked(
@@ -1222,7 +1231,7 @@ mod tests {
             .build();
         assert!(
             !authorization_transaction
-                .authorizes_multisig_access_key(&AddressSet::from_iter([authority]))
+                .depends_on_multisig_config(&AddressSet::from_iter([authority]))
         );
     }
 

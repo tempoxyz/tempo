@@ -94,18 +94,11 @@ pub struct TempoPoolUpdates {
     /// Pending AA transactions carrying the same `(account, witness)` key authorization are no
     /// longer executable once the account explicitly burns that witness.
     pub key_authorization_witness_burns: AddressMap<B256Set>,
-    /// Native multisig accounts whose owner set or threshold changed.
+    /// Native multisig accounts whose configuration commitment changed.
     ///
-    /// A native-multisig-signed transaction is validated against the account's current stored
-    /// config, so once the config is rotated (or the account is initialized) any pooled multisig
-    /// transaction admitted under the previous owner set may no longer meet quorum and should be
-    /// re-validated. Indexed by account.
+    /// Transactions carrying the account's configuration or newly authorizing it as an access key
+    /// must be revalidated against the new commitment. Indexed by account.
     pub multisig_config_changes: AddressSet,
-    /// Accounts newly registered as native multisigs by the committed chain segment.
-    ///
-    /// Pending key authorizations that name one of these accounts as `key_id` must be
-    /// revalidated. Multisig signature dependencies are covered by `multisig_config_changes`.
-    pub multisig_initializations: AddressSet,
 }
 
 impl TempoPoolUpdates {
@@ -130,7 +123,6 @@ impl TempoPoolUpdates {
             && self.spending_limit_spends.is_empty()
             && self.key_authorization_witness_burns.is_empty()
             && self.multisig_config_changes.is_empty()
-            && self.multisig_initializations.is_empty()
     }
 
     /// Extracts pool updates from a committed chain segment.
@@ -250,27 +242,19 @@ impl TempoPoolUpdates {
                     Some(_) | None => {}
                 }
             }
-            // Native multisig owner-set / threshold rotations and initializations.
+            // Native multisig configuration updates.
             else if log.address == NATIVE_MULTISIG_ADDRESS {
-                updates.record_native_multisig_config_change(log, false);
+                updates.record_native_multisig_config_change(log);
             }
         }
 
         updates
     }
 
-    fn record_native_multisig_config_change(&mut self, log: &Log, reverted: bool) {
-        let account = match NativeMultisigPoolEvent::decode(log) {
-            Some(NativeMultisigPoolEvent::ConfigUpdated(event)) => event.account,
-            Some(NativeMultisigPoolEvent::Initialized(event)) => {
-                if !reverted {
-                    self.multisig_initializations.insert(event.account);
-                }
-                event.account
-            }
-            None => return,
-        };
-        self.multisig_config_changes.insert(account);
+    fn record_native_multisig_config_change(&mut self, log: &Log) {
+        if let Some(event) = decode_native_multisig_event(log) {
+            self.multisig_config_changes.insert(event.account);
+        }
     }
 
     /// Adds multisig configurations changed by a reverted chain segment.
@@ -283,7 +267,7 @@ impl TempoPoolUpdates {
             .flat_map(|receipt| &receipt.logs)
             .filter(|log| log.address == NATIVE_MULTISIG_ADDRESS)
         {
-            self.record_native_multisig_config_change(log, true);
+            self.record_native_multisig_config_change(log);
         }
     }
 
@@ -304,14 +288,11 @@ impl TempoPoolUpdates {
         &self,
         transaction: &TempoPooledTransaction,
     ) -> bool {
-        (!self.multisig_config_changes.is_empty()
-            && transaction.depends_on_multisig_config(&self.multisig_config_changes))
-            || (!self.multisig_initializations.is_empty()
-                && transaction.authorizes_multisig_access_key(&self.multisig_initializations))
+        transaction.depends_on_multisig_config(&self.multisig_config_changes)
     }
 
     pub(crate) fn has_multisig_updates(&self) -> bool {
-        !self.multisig_config_changes.is_empty() || !self.multisig_initializations.is_empty()
+        !self.multisig_config_changes.is_empty()
     }
 
     /// Returns true if updates may invalidate keychain-signature transactions.
@@ -363,26 +344,11 @@ impl AccountKeychainPoolEvent {
     }
 }
 
-/// Transaction-pool relevant subset of `INativeMultisig` events.
-enum NativeMultisigPoolEvent {
-    /// [`INativeMultisig::MultisigConfigUpdated`] log.
-    ConfigUpdated(INativeMultisig::MultisigConfigUpdated),
-    /// [`INativeMultisig::MultisigInitialized`] log.
-    Initialized(INativeMultisig::MultisigInitialized),
-}
-
-impl NativeMultisigPoolEvent {
-    /// Decodes only native-multisig events used by transaction-pool maintenance.
-    fn decode(log: &Log) -> Option<Self> {
-        match first_topic(log)? {
-            INativeMultisig::MultisigConfigUpdated::SIGNATURE_HASH => {
-                decode_event(log).map(Self::ConfigUpdated)
-            }
-            INativeMultisig::MultisigInitialized::SIGNATURE_HASH => {
-                decode_event(log).map(Self::Initialized)
-            }
-            _ => None,
-        }
+/// Decodes the native-multisig event used by transaction-pool maintenance.
+fn decode_native_multisig_event(log: &Log) -> Option<INativeMultisig::MultisigConfigUpdated> {
+    match first_topic(log)? {
+        INativeMultisig::MultisigConfigUpdated::SIGNATURE_HASH => decode_event(log),
+        _ => None,
     }
 }
 
@@ -713,7 +679,6 @@ where
             blacklist_additions = updates.blacklist_additions.len(),
             whitelist_removals = updates.whitelist_removals.len(),
             multisig_config_changes = updates.multisig_config_changes.len(),
-            multisig_initializations = updates.multisig_initializations.len(),
             "Processing transaction invalidation events"
         );
         let mut multisig_revalidated = Vec::new();
@@ -839,13 +804,8 @@ mod tests {
         let key_transaction = TxBuilder::aa(parent)
             .key_authorization(key_authorization)
             .build();
-        updates.multisig_initializations.insert(key_id);
-        assert!(updates.affects_multisig_transaction(&key_transaction));
-
-        updates.multisig_initializations.clear();
-        updates.multisig_config_changes.clear();
         updates.multisig_config_changes.insert(key_id);
-        assert!(!updates.affects_multisig_transaction(&key_transaction));
+        assert!(updates.affects_multisig_transaction(&key_transaction));
     }
 
     mod pending_staleness_tracker_tests {
@@ -1060,6 +1020,8 @@ mod tests {
                 NATIVE_MULTISIG_ADDRESS,
                 INativeMultisig::MultisigConfigUpdated {
                     account: Address::random(),
+                    salt: B256::random(),
+                    version: 1,
                     threshold: 2,
                     owners: vec![INativeMultisig::MultisigOwner {
                         owner: Address::random(),
@@ -1067,24 +1029,11 @@ mod tests {
                     }],
                 },
             );
-            assert_decodes_like_generated!(
-                NativeMultisigPoolEvent,
-                ConfigUpdated,
-                INativeMultisig::MultisigConfigUpdated,
-                log
-            );
-
-            let log = event_log(
-                NATIVE_MULTISIG_ADDRESS,
-                INativeMultisig::MultisigInitialized {
-                    account: Address::random(),
-                },
-            );
-            assert_decodes_like_generated!(
-                NativeMultisigPoolEvent,
-                Initialized,
-                INativeMultisig::MultisigInitialized,
-                log
+            assert_eq!(
+                decode_native_multisig_event(&log),
+                Some(generated_decode::<INativeMultisig::MultisigConfigUpdated>(
+                    &log
+                ))
             );
         }
 
@@ -1267,6 +1216,8 @@ mod tests {
             NATIVE_MULTISIG_ADDRESS,
             INativeMultisig::MultisigConfigUpdated {
                 account,
+                salt: B256::random(),
+                version: 1,
                 threshold: 1,
                 owners: vec![INativeMultisig::MultisigOwner {
                     owner: Address::random(),
@@ -1275,16 +1226,11 @@ mod tests {
             },
         )
         .reserialize();
-        let initialized_log = Log::new_from_event_unchecked(
-            NATIVE_MULTISIG_ADDRESS,
-            INativeMultisig::MultisigInitialized { account },
-        )
-        .reserialize();
         let receipt = tempo_primitives::TempoReceipt {
             tx_type: tempo_primitives::TempoTxType::AA,
             success: true,
             cumulative_gas_used: 1,
-            logs: vec![log, initialized_log],
+            logs: vec![log],
         };
         let reverted = create_test_chain_with_receipts(
             vec![create_block_with_txs(1, vec![], vec![])],
@@ -1301,15 +1247,23 @@ mod tests {
             updates.multisig_config_changes,
             AddressSet::from_iter([account])
         );
-        assert!(updates.multisig_initializations.is_empty());
     }
 
     #[test]
-    fn committed_multisig_initialization_tracks_registry_restrictions() {
+    fn committed_multisig_update_tracks_config_changes() {
         let account = Address::random();
         let log = Log::new_from_event_unchecked(
             NATIVE_MULTISIG_ADDRESS,
-            INativeMultisig::MultisigInitialized { account },
+            INativeMultisig::MultisigConfigUpdated {
+                account,
+                salt: B256::random(),
+                version: 1,
+                threshold: 1,
+                owners: vec![INativeMultisig::MultisigOwner {
+                    owner: Address::random(),
+                    weight: 1,
+                }],
+            },
         )
         .reserialize();
         let receipt = tempo_primitives::TempoReceipt {
@@ -1326,10 +1280,6 @@ mod tests {
         let updates = TempoPoolUpdates::from_chain(&chain);
         assert_eq!(
             updates.multisig_config_changes,
-            AddressSet::from_iter([account])
-        );
-        assert_eq!(
-            updates.multisig_initializations,
             AddressSet::from_iter([account])
         );
     }
