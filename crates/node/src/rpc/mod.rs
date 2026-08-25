@@ -71,7 +71,7 @@ use tempo_primitives::{
 use tempo_revm::TempoTxEnv;
 use tokio::sync::{Mutex, broadcast};
 
-use self::native_multisig::populate_native_multisig_simulation_hints;
+use self::native_multisig::prepare_native_multisig_simulation;
 
 /// Placeholder constant for `eth_getBalance` calls because the native token balance is N/A on
 /// Tempo.
@@ -453,7 +453,7 @@ where
         mut request: TempoTransactionRequest,
         mut db: impl Database<Error: Into<EthApiError>>,
     ) -> Result<TxEnvFor<Self::Evm>, Self::Error> {
-        populate_native_multisig_simulation_hints(&mut request, evm_env.cfg_env.spec, &mut db)
+        prepare_native_multisig_simulation(&mut request, evm_env.cfg_env.spec, &mut db)
             .map_err(Self::Error::from_eth_err)?;
 
         if let Some(nonce_key) = request.nonce_key

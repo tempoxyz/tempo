@@ -4,45 +4,127 @@ use alloy_eips::Typed2718;
 use alloy_primitives::{Address, Bytes, U256};
 use alloy_provider::Provider;
 use alloy_rpc_types_eth::{Transaction, TransactionRequest, TransactionTrait};
-use core::num::NonZeroU64;
-use serde::{Deserialize, Serialize};
+use core::{fmt, marker::PhantomData, num::NonZeroU64};
+use serde::{
+    Deserialize, Deserializer, Serialize,
+    de::{Error as _, SeqAccess, Visitor},
+};
 use tempo_primitives::{
     AASigned, SignatureType, TempoTransaction, TempoTxEnvelope,
     transaction::{
-        Call, InitMultisig, SignedKeyAuthorization, TempoSignedAuthorization,
-        TempoTypedTransaction, key_authorization::serde_nonzero_quantity_opt,
+        Call, MAX_MULTISIG_SIGNATURES, MultisigConfig, MultisigSignature, SignedKeyAuthorization,
+        TempoSignedAuthorization, TempoTypedTransaction,
+        key_authorization::serde_nonzero_quantity_opt,
     },
 };
 
 use crate::TempoNetwork;
 
-/// Native multisig approval shape inferred from state for RPC simulation.
-#[doc(hidden)]
-#[derive(Clone, Debug, PartialEq, Eq, Hash)]
-pub struct MultisigSimulationHint {
-    /// Account authorized by this signature node.
+/// Native multisig witness used only to construct an RPC simulation signature.
+#[derive(Clone, Debug, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct MultisigSimulationWitness {
+    /// Account authorized by this witness.
     pub account: Address,
-    /// Number of owners in the account's complete stored configuration.
-    pub owner_count: usize,
-    /// Owner approvals required to reach this account's threshold.
+    /// Complete applicable configuration.
+    pub config: MultisigConfig,
+    /// Owner approvals to model.
+    #[serde(deserialize_with = "deserialize_multisig_simulation_approvals")]
     pub approvals: Vec<MultisigSimulationApproval>,
 }
 
-/// Native multisig owner approval inferred from state for RPC simulation.
-#[doc(hidden)]
-#[derive(Clone, Debug, PartialEq, Eq, Hash)]
+/// Native multisig owner approval used for RPC simulation.
+#[derive(Clone, Debug, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[serde(tag = "type", rename_all = "camelCase")]
 pub enum MultisigSimulationApproval {
-    /// Primitive owner signature with an exact per-approval simulation hint.
+    /// Primitive owner approval.
     Primitive {
-        /// Signature verification algorithm used by this owner approval.
-        key_type: SignatureType,
+        /// Configured owner address.
+        owner: Address,
+        /// Signature type to model. Omission uses a maximum-size WebAuthn signature.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        key_type: Option<SignatureType>,
         /// Optional signature-specific gas-estimation data.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
         key_data: Option<Bytes>,
     },
-    /// Primitive owner whose signature scheme is unavailable from stored configuration.
-    UnknownPrimitive,
     /// Nested native multisig owner signature.
-    Multisig(Box<MultisigSimulationHint>),
+    Multisig {
+        /// Depth-2 multisig witness. Its approvals must all be primitive.
+        witness: MultisigSimulationNestedWitness,
+    },
+}
+
+/// Depth-2 native multisig witness used for RPC simulation.
+#[derive(Clone, Debug, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct MultisigSimulationNestedWitness {
+    /// Nested multisig account.
+    pub account: Address,
+    /// Complete applicable configuration.
+    pub config: MultisigConfig,
+    /// Primitive owner approvals to model.
+    #[serde(deserialize_with = "deserialize_multisig_simulation_approvals")]
+    pub approvals: Vec<MultisigSimulationPrimitiveApproval>,
+}
+
+/// Primitive approval in a depth-2 multisig simulation witness.
+#[derive(Clone, Debug, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct MultisigSimulationPrimitiveApproval {
+    /// Configured owner address.
+    pub owner: Address,
+    /// Signature type to model. Omission uses a maximum-size WebAuthn signature.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub key_type: Option<SignatureType>,
+    /// Optional signature-specific gas-estimation data.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub key_data: Option<Bytes>,
+}
+
+fn deserialize_multisig_simulation_approvals<'de, D, T>(deserializer: D) -> Result<Vec<T>, D::Error>
+where
+    D: Deserializer<'de>,
+    T: Deserialize<'de>,
+{
+    struct ApprovalsVisitor<T>(PhantomData<T>);
+
+    impl<'de, T: Deserialize<'de>> Visitor<'de> for ApprovalsVisitor<T> {
+        type Value = Vec<T>;
+
+        fn expecting(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+            write!(
+                formatter,
+                "at most {MAX_MULTISIG_SIGNATURES} multisig simulation approvals"
+            )
+        }
+
+        fn visit_seq<A>(self, mut seq: A) -> Result<Self::Value, A::Error>
+        where
+            A: SeqAccess<'de>,
+        {
+            if seq
+                .size_hint()
+                .is_some_and(|size| size > MAX_MULTISIG_SIGNATURES)
+            {
+                return Err(A::Error::custom("too many multisig simulation approvals"));
+            }
+
+            let mut approvals = Vec::new();
+            while approvals.len() < MAX_MULTISIG_SIGNATURES {
+                let Some(approval) = seq.next_element()? else {
+                    return Ok(approvals);
+                };
+                approvals.push(approval);
+            }
+            if seq.next_element::<serde::de::IgnoredAny>()?.is_some() {
+                return Err(A::Error::custom("too many multisig simulation approvals"));
+            }
+            Ok(approvals)
+        }
+    }
+
+    deserializer.deserialize_seq(ApprovalsVisitor(PhantomData))
 }
 
 /// An Ethereum [`TransactionRequest`] extended with Tempo-specific fields.
@@ -109,18 +191,14 @@ pub struct TempoTransactionRequest {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub key_authorization: Option<SignedKeyAuthorization>,
 
-    /// Initial native multisig config for bootstrapping a derived account.
+    /// Native multisig witness for state-aware gas estimation and calls.
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub multisig_init: Option<InitMultisig>,
+    pub multisig_witness: Option<MultisigSimulationWitness>,
 
-    /// Number of native multisig owner signatures to model during RPC simulation.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub multisig_signature_count: Option<usize>,
-
-    /// Native multisig approval tree inferred from state for RPC simulation.
+    /// Validated mock signature populated by the state-aware RPC path.
     #[doc(hidden)]
     #[serde(skip)]
-    pub multisig_simulation_hint: Option<MultisigSimulationHint>,
+    pub multisig_simulation_signature: Option<MultisigSignature>,
 
     /// Transaction valid before timestamp in seconds (for expiring nonces, [TIP-1009]).
     /// Transaction can only be included in a block before this timestamp.
@@ -161,9 +239,7 @@ impl TempoTransactionRequest {
             || self.key_id.is_some()
             || self.key_type.is_some()
             || self.key_data.is_some()
-            || self.multisig_init.is_some()
-            || self.multisig_signature_count.is_some()
-            || self.multisig_simulation_hint.is_some()
+            || self.multisig_witness.is_some()
             || self.valid_before.is_some()
             || self.valid_after.is_some()
             || self.fee_payer_signature.is_some()
@@ -506,9 +582,8 @@ impl From<TempoTransaction> for TempoTransactionRequest {
             key_id: None,
             nonce_key: Some(tx.nonce_key),
             key_authorization: tx.key_authorization,
-            multisig_init: None,
-            multisig_signature_count: None,
-            multisig_simulation_hint: None,
+            multisig_witness: None,
+            multisig_simulation_signature: None,
             valid_before: tx.valid_before,
             valid_after: tx.valid_after,
             fee_payer_signature: tx.fee_payer_signature,
@@ -518,15 +593,7 @@ impl From<TempoTransaction> for TempoTransactionRequest {
 
 impl From<AASigned> for TempoTransactionRequest {
     fn from(value: AASigned) -> Self {
-        let (tx, signature, _) = value.into_parts();
-        let multisig = signature.as_multisig();
-        let multisig_init = multisig.and_then(|multisig| multisig.init().cloned());
-        let multisig_signature_count = multisig.map(|multisig| multisig.signature_count());
-        Self {
-            multisig_init,
-            multisig_signature_count,
-            ..tx.into()
-        }
+        value.into_parts().0.into()
     }
 }
 
@@ -624,9 +691,9 @@ impl<P: Provider<TempoNetwork>, D: CallDecoder> TempoCallBuilderExt
 #[cfg(test)]
 mod tests {
     use super::*;
-    use alloy_primitives::{Bytes, Signature, address};
+    use alloy_primitives::{B256, Bytes, Signature, address};
     use tempo_primitives::transaction::{
-        Call, KeyAuthorization, PrimitiveSignature, TEMPO_EXPIRING_NONCE_KEY,
+        Call, KeyAuthorization, MultisigOwner, PrimitiveSignature, TEMPO_EXPIRING_NONCE_KEY,
     };
 
     fn nz(value: u64) -> NonZeroU64 {
@@ -694,6 +761,37 @@ mod tests {
         let err = serde_json::from_str::<TempoTransactionRequest>(r#"{"validAfter":"0x0"}"#)
             .expect_err("zero valid_after must be rejected during deserialization");
         assert!(err.to_string().contains("expected non-zero quantity"));
+    }
+
+    #[test]
+    fn test_deserialize_rejects_too_many_multisig_approvals() {
+        let owner = address!("0x1111111111111111111111111111111111111111");
+        let approval = MultisigSimulationApproval::Primitive {
+            owner,
+            key_type: Some(SignatureType::Secp256k1),
+            key_data: None,
+        };
+        let request = TempoTransactionRequest {
+            multisig_witness: Some(MultisigSimulationWitness {
+                account: address!("0x2222222222222222222222222222222222222222"),
+                config: MultisigConfig {
+                    salt: B256::ZERO,
+                    version: 1,
+                    threshold: 1,
+                    owners: vec![MultisigOwner { owner, weight: 1 }],
+                },
+                approvals: vec![approval; MAX_MULTISIG_SIGNATURES + 1],
+            }),
+            ..Default::default()
+        };
+        let encoded = serde_json::to_value(request).unwrap();
+
+        let error = serde_json::from_value::<TempoTransactionRequest>(encoded).unwrap_err();
+        assert!(
+            error
+                .to_string()
+                .contains("too many multisig simulation approvals")
+        );
     }
 
     #[test]

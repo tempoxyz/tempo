@@ -310,13 +310,14 @@ impl IntoWallet<TempoNetwork> for PrivateKeySigner {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::rpc::{MultisigSimulationApproval, MultisigSimulationWitness};
     use alloy_consensus::{TxEip1559, TxEip2930, TxEip7702, TxLegacy};
     use alloy_primitives::{B256, Signature};
     use alloy_rpc_types_eth::{AccessListItem, Authorization, TransactionRequest};
     use tempo_primitives::{
         SignatureType, TempoSignature,
         transaction::{
-            FEE_PAYER_SIGNATURE_MARKER, InitMultisig, KeyAuthorization, MultisigOwner,
+            FEE_PAYER_SIGNATURE_MARKER, KeyAuthorization, MultisigConfig, MultisigOwner,
             PrimitiveSignature, TempoSignedAuthorization,
         },
     };
@@ -531,25 +532,23 @@ mod tests {
     }
 
     #[test]
-    fn output_tx_type_multisig_init_is_aa() {
+    fn output_tx_type_multisig_witness_is_aa() {
+        let owner = Address::repeat_byte(0x11);
         let req = TempoTransactionRequest {
-            multisig_init: Some(InitMultisig {
-                salt: B256::ZERO,
-                threshold: 1,
-                owners: vec![MultisigOwner {
-                    owner: Address::repeat_byte(0x11),
-                    weight: 1,
+            multisig_witness: Some(MultisigSimulationWitness {
+                account: Address::repeat_byte(0x22),
+                config: MultisigConfig {
+                    salt: B256::ZERO,
+                    version: 1,
+                    threshold: 1,
+                    owners: vec![MultisigOwner { owner, weight: 1 }],
+                },
+                approvals: vec![MultisigSimulationApproval::Primitive {
+                    owner,
+                    key_type: None,
+                    key_data: None,
                 }],
             }),
-            ..Default::default()
-        };
-        assert_eq!(req.output_tx_type(), TempoTxType::AA);
-    }
-
-    #[test]
-    fn output_tx_type_multisig_signature_count_is_aa() {
-        let req = TempoTransactionRequest {
-            multisig_signature_count: Some(1),
             ..Default::default()
         };
         assert_eq!(req.output_tx_type(), TempoTxType::AA);
