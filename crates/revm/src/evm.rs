@@ -369,7 +369,7 @@ mod tests {
     use tempo_primitives::{
         TempoTransaction,
         transaction::{
-            InitMultisig, KeyAuthorization, KeychainSignature, MultisigOwner, MultisigSignature,
+            KeyAuthorization, KeychainSignature, MultisigConfig, MultisigOwner, MultisigSignature,
             SignatureType, TempoSignedAuthorization, multisig_digest,
             tempo_transaction::Call,
             tt_signature::{
@@ -895,36 +895,29 @@ mod tests {
     // ==================== End Test Utility Functions ====================
 
     #[test]
-    fn test_t11_bootstrap_multisig_persists_after_transaction_commit() -> eyre::Result<()> {
-        let mut signers = [
-            PrivateKeySigner::from_bytes(&B256::from([0x11; 32]))?,
-            PrivateKeySigner::from_bytes(&B256::from([0x22; 32]))?,
-        ];
-        signers.sort_by_key(|signer| signer.address());
-
-        let config = InitMultisig {
+    fn test_t11_initial_multisig_does_not_persist_config() -> eyre::Result<()> {
+        let signer = PrivateKeySigner::from_bytes(&B256::from([0x11; 32]))?;
+        let config = MultisigConfig {
             salt: B256::repeat_byte(0x44),
+            version: 0,
             threshold: 1,
-            owners: signers
-                .iter()
-                .map(|signer| MultisigOwner {
-                    owner: signer.address(),
-                    weight: 1,
-                })
-                .collect(),
+            owners: vec![MultisigOwner {
+                owner: signer.address(),
+                weight: 1,
+            }],
         };
-        let account = config.account().map_err(eyre::Report::msg)?;
+        let account = config.derive_account().map_err(eyre::Report::msg)?;
         let tx = TxBuilder::new()
             .call_identity(&[])
             .gas_limit(2_000_000)
             .build();
         let digest = multisig_digest(tx.signature_hash(), account, 0);
         let owner_signature =
-            PrimitiveSignature::Secp256k1(signers[0].sign_hash_sync(&digest)?).to_bytes();
+            PrimitiveSignature::Secp256k1(signer.sign_hash_sync(&digest)?).to_bytes();
         let signed_tx = tx.into_signed(TempoSignature::Multisig(MultisigSignature::new(
             account,
+            config,
             vec![owner_signature],
-            Some(config.clone()),
         )));
 
         let mut evm = create_funded_evm_t11(account);
@@ -934,63 +927,50 @@ mod tests {
 
         let result = evm.transact_commit(TempoTxEnv::from_recovered_tx(&signed_tx, account))?;
         assert!(result.is_success());
-
-        let nonce = evm
-            .ctx
-            .db()
-            .basic_ref(account)?
-            .map(|info| info.nonce)
-            .unwrap_or_default();
-        assert_eq!(nonce, 1);
-
-        StorageCtx::enter_ctx(
-            &mut evm.ctx,
-            StorageActions::disabled(),
-            || -> eyre::Result<()> {
-                let multisig = NativeMultisig::new();
-                assert!(multisig.is_multisig_account(account)?);
-                assert_eq!(
-                    multisig.get_multisig_config(account)?.threshold,
-                    config.threshold
-                );
-                Ok(())
-            },
-        )?;
+        assert_eq!(
+            evm.ctx
+                .db()
+                .basic_ref(account)?
+                .map(|info| info.nonce)
+                .unwrap_or_default(),
+            1
+        );
+        StorageCtx::enter_ctx(&mut evm.ctx, StorageActions::disabled(), || {
+            assert!(
+                NativeMultisig::new()
+                    .get_config_commitment(account)?
+                    .is_zero()
+            );
+            Ok::<_, tempo_precompiles::error::TempoPrecompileError>(())
+        })?;
 
         Ok(())
     }
 
     #[test]
-    fn test_t11_rpc_simulation_bootstrap_transacts_repeatedly_on_one_evm() -> eyre::Result<()> {
-        let mut signers = [
-            PrivateKeySigner::from_bytes(&B256::from([0x11; 32]))?,
-            PrivateKeySigner::from_bytes(&B256::from([0x22; 32]))?,
-        ];
-        signers.sort_by_key(|signer| signer.address());
-
-        let config = InitMultisig {
+    fn test_t11_initial_multisig_simulates_repeatedly() -> eyre::Result<()> {
+        let signer = PrivateKeySigner::from_bytes(&B256::from([0x11; 32]))?;
+        let config = MultisigConfig {
             salt: B256::repeat_byte(0x55),
+            version: 0,
             threshold: 1,
-            owners: signers
-                .iter()
-                .map(|signer| MultisigOwner {
-                    owner: signer.address(),
-                    weight: 1,
-                })
-                .collect(),
+            owners: vec![MultisigOwner {
+                owner: signer.address(),
+                weight: 1,
+            }],
         };
-        let account = config.account().map_err(eyre::Report::msg)?;
+        let account = config.derive_account().map_err(eyre::Report::msg)?;
         let tx = TxBuilder::new()
             .call_identity(&[])
             .gas_limit(2_000_000)
             .build();
         let digest = multisig_digest(tx.signature_hash(), account, 0);
         let owner_signature =
-            PrimitiveSignature::Secp256k1(signers[0].sign_hash_sync(&digest)?).to_bytes();
+            PrimitiveSignature::Secp256k1(signer.sign_hash_sync(&digest)?).to_bytes();
         let signed_tx = tx.into_signed(TempoSignature::Multisig(MultisigSignature::new(
             account,
+            config,
             vec![owner_signature],
-            Some(config),
         )));
 
         let mut evm = create_funded_evm_t11(account);
@@ -1000,28 +980,8 @@ mod tests {
 
         let mut tx_env = TempoTxEnv::from_recovered_tx(&signed_tx, account);
         tx_env.execution_context = crate::ExecutionContext::Simulation;
-
-        // Gas estimation transacts repeatedly on one EVM, discarding each
-        // result. The discarded bootstrap must not poison later iterations.
-        let first = evm.transact(tx_env.clone())?;
-        assert!(first.result.is_success(), "first simulation should succeed");
-
-        let second = evm.transact(tx_env)?;
-        assert!(
-            second.result.is_success(),
-            "repeat simulation should succeed: {:?}",
-            second.result
-        );
-
-        // Discarded simulations leave no registered account behind.
-        StorageCtx::enter_ctx(
-            &mut evm.ctx,
-            StorageActions::disabled(),
-            || -> eyre::Result<()> {
-                assert!(!NativeMultisig::new().is_multisig_account(account)?);
-                Ok(())
-            },
-        )?;
+        assert!(evm.transact(tx_env.clone())?.result.is_success());
+        assert!(evm.transact(tx_env)?.result.is_success());
 
         Ok(())
     }

@@ -2,10 +2,7 @@ use super::{tempo_transaction::MAX_WEBAUTHN_SIGNATURE_LENGTH, tt_signature::Temp
 use alloc::vec::Vec;
 use alloy_primitives::{Address, B256, Bytes, keccak256};
 use alloy_rlp::Encodable as _;
-use core::{
-    hash::{Hash, Hasher},
-    mem::size_of,
-};
+use core::mem::size_of;
 use tempo_contracts::precompiles::INativeMultisig;
 
 #[cfg(feature = "serde")]
@@ -349,8 +346,8 @@ impl InitMultisig {
 
     /// Encodes the canonical account-derivation preimage.
     ///
-    /// This checks that the owner count is encodable; callers must separately validate the config
-    /// before relying on the resulting hash.
+    /// This checks the owner-count bound; callers must separately validate the init config before
+    /// relying on the resulting hash.
     pub fn account_derivation_preimage(&self) -> Result<Vec<u8>, MultisigConfigError> {
         let owner_count = self.encoded_owner_count()?;
         let mut input = Vec::with_capacity(self.account_derivation_preimage_len());
@@ -375,7 +372,6 @@ impl InitMultisig {
             input.push(owner.weight);
         }
     }
-
     /// Validates owner count, ordering, addresses, weights, and threshold reachability, returning
     /// the total owner weight.
     pub fn validate(&self) -> Result<u8, MultisigConfigError> {
@@ -513,7 +509,7 @@ impl MultisigAddress {
 }
 
 /// Native multisig transaction signature.
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, PartialEq, Eq, Hash)]
 #[cfg_attr(test, reth_codecs::add_arbitrary_tests(rlp))]
 pub struct MultisigSignature {
     /// Native multisig account source.
@@ -522,8 +518,6 @@ pub struct MultisigSignature {
     ///
     /// Each approval is either a primitive signature or a nested native multisig signature.
     signatures: Vec<TempoSignature>,
-    /// Stored config size inferred by RPC simulation. This is never serialized or signed.
-    simulation_config_owner_count: Option<usize>,
 }
 
 impl MultisigSignature {
@@ -568,7 +562,6 @@ impl MultisigSignature {
         let signature = Self {
             address,
             signatures,
-            simulation_config_owner_count: None,
         };
         signature.validate_shape()?;
         Ok(signature)
@@ -592,28 +585,6 @@ impl MultisigSignature {
     /// Returns the optional bootstrap config.
     pub fn init(&self) -> Option<&InitMultisig> {
         self.address.init()
-    }
-
-    /// Attaches the registered config size inferred for RPC gas simulation.
-    #[doc(hidden)]
-    pub fn with_simulation_config_owner_count(
-        mut self,
-        owner_count: usize,
-    ) -> Result<Self, &'static str> {
-        if owner_count == 0 || owner_count > MAX_MULTISIG_OWNERS {
-            return Err("invalid multisig simulation owner count");
-        }
-        if self.init().is_some() {
-            return Err("bootstrap multisig signatures cannot have a stored config owner count");
-        }
-        self.simulation_config_owner_count = Some(owner_count);
-        Ok(self)
-    }
-
-    /// Returns the registered config size inferred for RPC gas simulation.
-    #[doc(hidden)]
-    pub const fn simulation_config_owner_count(&self) -> Option<usize> {
-        self.simulation_config_owner_count
     }
 
     /// Performs stateless sender-recovery checks and returns the attempted multisig account.
@@ -701,20 +672,6 @@ impl MultisigSignature {
     }
 }
 
-impl PartialEq for MultisigSignature {
-    fn eq(&self, other: &Self) -> bool {
-        self.address == other.address && self.signatures == other.signatures
-    }
-}
-
-impl Eq for MultisigSignature {}
-
-impl Hash for MultisigSignature {
-    fn hash<H: Hasher>(&self, state: &mut H) {
-        self.address.hash(state);
-        self.signatures.hash(state);
-    }
-}
 #[cfg(feature = "serde")]
 impl Serialize for MultisigSignature {
     fn serialize<S>(&self, serializer: S) -> Result<S::Ok, S::Error>

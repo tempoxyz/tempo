@@ -268,7 +268,11 @@ impl AccountKeychain {
         if key_id == Address::ZERO {
             return Err(AccountKeychainError::zero_public_key().into());
         }
-        if self.storage.spec().is_t11() && NativeMultisig::new().is_multisig_account(key_id)? {
+        if self.storage.spec().is_t11()
+            && !NativeMultisig::new()
+                .get_config_commitment(key_id)?
+                .is_zero()
+        {
             return Err(AccountKeychainError::invalid_key_id().into());
         }
         // Admin keys are explicit access-key rows; the root key remains implicit.
@@ -1577,7 +1581,7 @@ mod tests {
     use revm::state::Bytecode;
     use tempo_chainspec::hardfork::TempoHardfork;
     use tempo_contracts::precompiles::{DEFAULT_FEE_TOKEN, IAccountKeychain::SignatureType};
-    use tempo_primitives::transaction::{InitMultisig, MultisigOwner};
+    use tempo_primitives::transaction::{MultisigConfig, MultisigOwner};
 
     fn authorize_key(
         keychain: &mut AccountKeychain,
@@ -1674,9 +1678,10 @@ mod tests {
         tempo_alloy::provider::keychain::KeyRestrictions::default().into()
     }
 
-    fn native_multisig_config() -> InitMultisig {
-        InitMultisig {
+    fn native_multisig_config() -> MultisigConfig {
+        MultisigConfig {
             salt: B256::ZERO,
+            version: 0,
             threshold: 1,
             owners: vec![
                 MultisigOwner {
@@ -1689,6 +1694,24 @@ mod tests {
                 },
             ],
         }
+    }
+
+    fn store_native_multisig_commitment(config: &MultisigConfig) -> Result<Address> {
+        let account = config.derive_account().map_err(|error| {
+            TempoPrecompileError::Fatal(format!("invalid test multisig config: {error}"))
+        })?;
+        let mut current = config.clone();
+        current.version = 1;
+        let commitment = current.commitment().map_err(|error| {
+            TempoPrecompileError::Fatal(format!("invalid test multisig config: {error}"))
+        })?;
+        let mut storage = StorageCtx;
+        storage.sstore(
+            tempo_contracts::precompiles::NATIVE_MULTISIG_ADDRESS,
+            NativeMultisig::config_commitment_storage_slot(account),
+            U256::from_be_slice(commitment.as_slice()),
+        )?;
+        Ok(account)
     }
 
     #[test]
@@ -1721,13 +1744,12 @@ mod tests {
     fn test_t11_native_multisig_accounts_can_authorize_and_use_access_keys() -> eyre::Result<()> {
         let mut storage = HashMapStorageProvider::new_with_spec(1, TempoHardfork::T11);
         let config = native_multisig_config();
-        let account = config.account().unwrap();
         let key_id = Address::from([0x33; 20]);
 
         StorageCtx::enter(&mut storage, || {
             let mut multisig = NativeMultisig::new();
             multisig.initialize()?;
-            multisig.store_initial_config(account, &config)?;
+            let account = store_native_multisig_commitment(&config)?;
 
             let mut keychain = AccountKeychain::new();
             keychain.initialize()?;
@@ -1799,13 +1821,12 @@ mod tests {
     fn test_t11_native_multisig_account_cannot_be_authorized_as_access_key() -> eyre::Result<()> {
         let mut storage = HashMapStorageProvider::new_with_spec(1, TempoHardfork::T11);
         let config = native_multisig_config();
-        let multisig_account = config.account().unwrap();
         let account = Address::from([0x44; 20]);
 
         StorageCtx::enter(&mut storage, || {
             let mut multisig = NativeMultisig::new();
             multisig.initialize()?;
-            multisig.store_initial_config(multisig_account, &config)?;
+            let multisig_account = store_native_multisig_commitment(&config)?;
 
             let mut keychain = AccountKeychain::new();
             keychain.initialize()?;

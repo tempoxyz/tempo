@@ -3,9 +3,7 @@
 use alloy_evm::error::InvalidTxError;
 use alloy_primitives::{Address, U256};
 use revm::context::result::{EVMError, ExecutionResult, HaltReason, InvalidTransaction};
-use tempo_primitives::transaction::{
-    KeyAuthorizationChainIdError, KeychainVersionError, MultisigConfigError, MultisigQuorumError,
-};
+use tempo_primitives::transaction::{KeyAuthorizationChainIdError, KeychainVersionError};
 
 /// Tempo-specific invalid transaction errors.
 ///
@@ -389,22 +387,6 @@ impl From<&'static str> for TempoInvalidTransaction {
     }
 }
 
-impl From<MultisigConfigError> for TempoInvalidTransaction {
-    fn from(err: MultisigConfigError) -> Self {
-        Self::NativeMultisigValidationFailed {
-            reason: err.as_str().to_string(),
-        }
-    }
-}
-
-impl From<MultisigQuorumError> for TempoInvalidTransaction {
-    fn from(err: MultisigQuorumError) -> Self {
-        Self::NativeMultisigValidationFailed {
-            reason: String::from(err),
-        }
-    }
-}
-
 impl From<KeychainVersionError> for TempoInvalidTransaction {
     fn from(err: KeychainVersionError) -> Self {
         match err {
@@ -589,14 +571,6 @@ mod tests {
             !TempoInvalidTransaction::NativeMultisigNotActive.is_bad_transaction(),
             "native multisig transactions can become valid after fork activation"
         );
-
-        let config_error = TempoInvalidTransaction::from(MultisigConfigError::ZeroThreshold);
-        assert!(!config_error.is_bad_transaction());
-        assert!(config_error.to_string().contains("threshold"));
-
-        let quorum_error = TempoInvalidTransaction::from(MultisigQuorumError::WeightBelowThreshold);
-        assert!(!quorum_error.is_bad_transaction());
-        assert!(quorum_error.to_string().contains("below threshold"));
     }
 
     #[test]
