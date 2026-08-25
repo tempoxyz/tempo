@@ -1,7 +1,7 @@
 # This workflow is only intended to be used in forks/copies of tempoxyz/tempo.
-# It syncs the main branch with the upstream repository hourly.
+# It syncs the main and release branches with the upstream repository hourly.
 
-name: Sync main branch with upstream
+name: Sync main and release branches with upstream
 
 on:
   schedule:
@@ -28,12 +28,16 @@ jobs:
           token: ${{ steps.github-sts.outputs.token }}
           fetch-depth: 0
 
-      - name: Sync main with upstream
+      - name: Sync main and release branches with upstream
         run: |
           git remote add upstream https://github.com/tempoxyz/tempo.git
-          git fetch upstream main
+          git fetch upstream \
+            '+refs/heads/main:refs/remotes/upstream/main' \
+            '+refs/heads/release/*:refs/remotes/upstream/release/*'
           git checkout main
           git reset --hard upstream/main
-          git push origin main --force
+          git push origin \
+            '+refs/heads/main:refs/heads/main' \
+            '+refs/remotes/upstream/release/*:refs/heads/release/*'
         env:
           GH_TOKEN: ${{ steps.github-sts.outputs.token }}

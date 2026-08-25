@@ -1,7 +1,7 @@
 # Allow the sync-from-upstream workflow in copies of this repo (scheduled and
 # manually dispatched runs on main) to mint a short-lived token to push the
-# synced main. `workflows: write` is required because the synced commits can
-# touch .github/workflows files.
+# synced main and `release/*` branches. `workflows: write` is required because
+# the synced commits can touch .github/workflows files.
 #
 # This file is mirrored into the copies by the sync itself, where it
 # authorizes tokens scoped to the copy: tempo-private-fork mirrors main
