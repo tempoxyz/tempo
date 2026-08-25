@@ -111,10 +111,11 @@ impl TempoPooledTransaction {
         let fee_token_cost = cost - value;
         Self {
             inner: EthPooledTransaction {
+                transaction,
                 cost,
                 encoded_length,
                 blob_sidecar: EthBlobTransactionSidecar::None,
-                transaction,
+                blob_cell_availability: None,
             },
             fee_token_cost,
             is_payment,
