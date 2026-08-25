@@ -4,7 +4,7 @@ mod attestation;
 pub mod dispatch;
 
 use alloy::{
-    primitives::{Address, B256, U256, keccak256},
+    primitives::{Address, B256, Bytes, U256, keccak256},
     sol_types::SolValue,
 };
 use tempo_contracts::precompiles::{IZoneVerifier, ZONE_VERIFIER_ADDRESS};
@@ -33,12 +33,58 @@ const APPROVED_PCRS: Option<[[u8; 48]; 3]> = Some([
 
 const BATCH_ATTESTATION_TYPE: &str = "NitroBatchAttestation(uint256 parentChainId,address verifier,address portal,uint32 zoneId,uint64 tempoBlockNumber,uint64 anchorBlockNumber,bytes32 anchorBlockHash,uint64 expectedWithdrawalBatchIndex,bytes32 prevBlockHash,bytes32 nextBlockHash,bytes32 prevProcessedHash,bytes32 nextProcessedHash,uint64 prevDepositNumber,uint64 nextDepositNumber,bytes32 withdrawalQueueHash,bytes32 verifierConfigHash)";
 
+/// Detailed result of evaluating a Zone verifier call.
+///
+/// The ABI deliberately collapses every policy rejection to `false`. This type is for offline
+/// diagnostics and is not returned by the consensus precompile.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum ZoneVerifierDiagnostic {
+    Valid,
+    InvalidConfiguration {
+        actual: Bytes,
+    },
+    EmptyProof,
+    InvalidAttestation(tempo_nitro_attestation::Error),
+    MissingApprovedPcrs,
+    PcrMismatch {
+        index: usize,
+        expected: [u8; 48],
+        actual: Option<Vec<u8>>,
+    },
+    FutureAttestation {
+        timestamp: u64,
+        maximum_timestamp: u64,
+    },
+    InvalidUserDataLength {
+        actual: usize,
+    },
+    CommitmentMismatch {
+        expected: B256,
+        actual: Bytes,
+    },
+}
+
+impl ZoneVerifierDiagnostic {
+    pub const fn is_valid(&self) -> bool {
+        matches!(self, Self::Valid)
+    }
+}
+
 #[contract(addr = ZONE_VERIFIER_ADDRESS)]
 pub struct ZoneVerifier {}
 
 impl ZoneVerifier {
     pub fn verify(&mut self, portal: Address, call: IZoneVerifier::verifyCall) -> Result<bool> {
         self.verify_with_policy(portal, call, AWS_NITRO_ROOT_DER, APPROVED_PCRS)
+    }
+
+    /// Runs the production verifier policy while retaining its rejection reason.
+    pub fn diagnose(
+        &mut self,
+        portal: Address,
+        call: IZoneVerifier::verifyCall,
+    ) -> Result<ZoneVerifierDiagnostic> {
+        self.diagnose_with_policy(portal, call, AWS_NITRO_ROOT_DER, APPROVED_PCRS)
     }
 
     fn verify_with_policy(
@@ -55,7 +101,7 @@ impl ZoneVerifier {
         let block_timestamp = self.storage.timestamp().saturating_to::<u64>();
         let attestation = match verify_attestation_with_root(
             &mut self.storage,
-            call.proof.as_ref(),
+            &call.proof,
             block_timestamp,
             root_der,
         ) {
@@ -91,6 +137,85 @@ impl ZoneVerifier {
 
         let commitment = batch_commitment(self.storage.chain_id(), portal, &call);
         Ok(attestation.user_data.as_slice() == commitment.as_slice())
+    }
+
+    fn diagnose_with_policy(
+        &mut self,
+        portal: Address,
+        call: IZoneVerifier::verifyCall,
+        root_der: &[u8],
+        approved_pcrs: Option<[[u8; 48]; 3]>,
+    ) -> Result<ZoneVerifierDiagnostic> {
+        if call.verifierConfig.as_ref() != CONFIG_V1 {
+            return Ok(ZoneVerifierDiagnostic::InvalidConfiguration {
+                actual: call.verifierConfig,
+            });
+        }
+        if call.proof.is_empty() {
+            return Ok(ZoneVerifierDiagnostic::EmptyProof);
+        }
+
+        let block_timestamp = self.storage.timestamp().saturating_to::<u64>();
+        let attestation = match verify_attestation_with_root(
+            &mut self.storage,
+            call.proof.as_ref(),
+            block_timestamp,
+            root_der,
+        ) {
+            Ok(attestation) => attestation,
+            Err(AttestationError::OutOfGas) => {
+                return Err(crate::error::TempoPrecompileError::OutOfGas);
+            }
+            Err(AttestationError::Validation(error)) => {
+                return Ok(ZoneVerifierDiagnostic::InvalidAttestation(error));
+            }
+        };
+
+        let Some(approved_pcrs) = approved_pcrs else {
+            return Ok(ZoneVerifierDiagnostic::MissingApprovedPcrs);
+        };
+        for (index, expected) in approved_pcrs.iter().enumerate() {
+            let actual = attestation
+                .pcrs
+                .iter()
+                .find(|pcr| usize::from(pcr.index) == index)
+                .map(|pcr| pcr.value.clone());
+            if actual.as_deref() != Some(expected.as_slice()) {
+                return Ok(ZoneVerifierDiagnostic::PcrMismatch {
+                    index,
+                    expected: *expected,
+                    actual,
+                });
+            }
+        }
+
+        let max_timestamp = self
+            .storage
+            .timestamp()
+            .saturating_to::<u64>()
+            .saturating_mul(1_000)
+            .saturating_add(MAX_FUTURE_SKEW_MILLIS);
+        if attestation.timestamp > max_timestamp {
+            return Ok(ZoneVerifierDiagnostic::FutureAttestation {
+                timestamp: attestation.timestamp,
+                maximum_timestamp: max_timestamp,
+            });
+        }
+        if attestation.user_data.len() != 32 {
+            return Ok(ZoneVerifierDiagnostic::InvalidUserDataLength {
+                actual: attestation.user_data.len(),
+            });
+        }
+
+        let commitment = batch_commitment(self.storage.chain_id(), portal, &call);
+        if attestation.user_data.as_slice() != commitment.as_slice() {
+            return Ok(ZoneVerifierDiagnostic::CommitmentMismatch {
+                expected: commitment,
+                actual: attestation.user_data.into(),
+            });
+        }
+
+        Ok(ZoneVerifierDiagnostic::Valid)
     }
 }
 
@@ -219,18 +344,36 @@ mod tests {
                     .verify_with_policy(portal, call.clone(), &root, Some(pcrs))
                     .unwrap()
             );
+            assert_eq!(
+                verifier
+                    .diagnose_with_policy(portal, call.clone(), &root, Some(pcrs))
+                    .unwrap(),
+                ZoneVerifierDiagnostic::Valid
+            );
 
             let mut altered = call.clone();
             altered.anchorBlockNumber += 1;
             assert!(
                 !verifier
-                    .verify_with_policy(portal, altered, &root, Some(pcrs))
+                    .verify_with_policy(portal, altered.clone(), &root, Some(pcrs))
                     .unwrap()
             );
+            assert!(matches!(
+                verifier
+                    .diagnose_with_policy(portal, altered, &root, Some(pcrs))
+                    .unwrap(),
+                ZoneVerifierDiagnostic::CommitmentMismatch { .. }
+            ));
             assert!(
                 !verifier
-                    .verify_with_policy(portal, call, &root, None)
+                    .verify_with_policy(portal, call.clone(), &root, None)
                     .unwrap()
+            );
+            assert_eq!(
+                verifier
+                    .diagnose_with_policy(portal, call, &root, None)
+                    .unwrap(),
+                ZoneVerifierDiagnostic::MissingApprovedPcrs
             );
         });
     }
@@ -255,10 +398,20 @@ mod tests {
                 candidate.proof = proof.into();
                 assert_eq!(
                     ZoneVerifier::new()
-                        .verify_with_policy(portal, candidate, &root, Some(pcrs))
+                        .verify_with_policy(portal, candidate.clone(), &root, Some(pcrs))
                         .unwrap(),
                     expected
                 );
+                let diagnostic = ZoneVerifier::new()
+                    .diagnose_with_policy(portal, candidate, &root, Some(pcrs))
+                    .unwrap();
+                assert_eq!(diagnostic.is_valid(), expected);
+                if !expected {
+                    assert!(matches!(
+                        diagnostic,
+                        ZoneVerifierDiagnostic::FutureAttestation { .. }
+                    ));
+                }
             }
         });
     }

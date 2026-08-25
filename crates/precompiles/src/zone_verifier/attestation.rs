@@ -7,8 +7,9 @@ use aws_lc_rs::{
     },
 };
 use tempo_nitro_attestation::{
-    MAX_DOCUMENT_SIZE, NitroAttestation, P384_FIXED_SIGNATURE_SIZE, P384_PUBLIC_KEY_SIZE,
-    P384Verifier, SHA384_SIZE, Sha384Hasher, parse_attestation, verify_parsed,
+    Error as NitroAttestationError, FormatError, MAX_DOCUMENT_SIZE, NitroAttestation,
+    P384_FIXED_SIGNATURE_SIZE, P384_PUBLIC_KEY_SIZE, P384Verifier, SHA384_SIZE, Sha384Hasher,
+    parse_attestation, verify_parsed,
 };
 
 use crate::storage::StorageCtx;
@@ -26,7 +27,7 @@ pub(super) const AWS_NITRO_ROOT_DER: &[u8; 533] = &alloy::primitives::hex!(
 
 #[derive(Debug, PartialEq, Eq)]
 pub(super) enum AttestationError {
-    Validation,
+    Validation(NitroAttestationError),
     OutOfGas,
 }
 
@@ -37,13 +38,15 @@ pub(super) fn verify_attestation_with_root(
     root_der: &[u8],
 ) -> Result<NitroAttestation, AttestationError> {
     if document.len() > MAX_DOCUMENT_SIZE {
-        return Err(AttestationError::Validation);
+        return Err(AttestationError::Validation(
+            FormatError::DocumentTooLarge.into(),
+        ));
     }
     storage
         .deduct_gas(BASE_GAS)
         .map_err(|_| AttestationError::OutOfGas)?;
 
-    let parsed = parse_attestation(document).map_err(|_| AttestationError::Validation)?;
+    let parsed = parse_attestation(document).map_err(AttestationError::Validation)?;
     let verification_gas = u64::try_from(parsed.signature_count())
         .unwrap_or(u64::MAX)
         .saturating_mul(SIGNATURE_GAS);
@@ -52,7 +55,7 @@ pub(super) fn verify_attestation_with_root(
         .map_err(|_| AttestationError::OutOfGas)?;
 
     verify_parsed(parsed, block_timestamp, root_der, &AwsLcP384)
-        .map_err(|_| AttestationError::Validation)
+        .map_err(AttestationError::Validation)
 }
 
 struct AwsLcP384;
@@ -156,6 +159,10 @@ pub(super) mod tests {
                 AWS_NITRO_ROOT_DER,
             )
         })
+    }
+
+    fn assert_validation_error(result: Result<NitroAttestation, AttestationError>) {
+        assert!(matches!(result, Err(AttestationError::Validation(_))));
     }
 
     fn replace_unique(haystack: &mut [u8], needle: &[u8], replacement: &[u8]) {
@@ -359,10 +366,7 @@ pub(super) mod tests {
             verify_production_document_at(&document, timestamp).unwrap();
         }
         for timestamp in [not_before - 1, not_after + 1] {
-            assert_eq!(
-                verify_production_document_at(&document, timestamp).unwrap_err(),
-                AttestationError::Validation
-            );
+            assert_validation_error(verify_production_document_at(&document, timestamp));
         }
     }
 
@@ -384,10 +388,10 @@ pub(super) mod tests {
             mutate_leaf_certificate(&mut document, |leaf| {
                 replace_unique(leaf, needle, replacement);
             });
-            assert_eq!(
-                verify_production_document_at(&document, PRODUCTION_FIXTURE_TIME).unwrap_err(),
-                AttestationError::Validation
-            );
+            assert_validation_error(verify_production_document_at(
+                &document,
+                PRODUCTION_FIXTURE_TIME,
+            ));
         }
     }
 
@@ -412,10 +416,10 @@ pub(super) mod tests {
             };
             replace_unique(leaf, &issuer, &changed);
         });
-        assert_eq!(
-            verify_production_document_at(&broken_issuer, PRODUCTION_FIXTURE_TIME).unwrap_err(),
-            AttestationError::Validation
-        );
+        assert_validation_error(verify_production_document_at(
+            &broken_issuer,
+            PRODUCTION_FIXTURE_TIME,
+        ));
 
         let mut unknown_critical = production_fixture();
         mutate_leaf_certificate(&mut unknown_critical, |leaf| {
@@ -425,10 +429,10 @@ pub(super) mod tests {
                 &CRITICAL_UNKNOWN_EXTENSION,
             );
         });
-        assert_eq!(
-            verify_production_document_at(&unknown_critical, PRODUCTION_FIXTURE_TIME).unwrap_err(),
-            AttestationError::Validation
-        );
+        assert_validation_error(verify_production_document_at(
+            &unknown_critical,
+            PRODUCTION_FIXTURE_TIME,
+        ));
     }
 
     #[test]
@@ -438,25 +442,25 @@ pub(super) mod tests {
         let mut replacement = root.clone();
         *replacement.last_mut().unwrap() ^= 1;
         replace_unique(&mut wrong_root, &root, &replacement);
-        assert_eq!(
-            verify_production_document_at(&wrong_root, PRODUCTION_FIXTURE_TIME).unwrap_err(),
-            AttestationError::Validation
-        );
+        assert_validation_error(verify_production_document_at(
+            &wrong_root,
+            PRODUCTION_FIXTURE_TIME,
+        ));
 
         let mut corrupt_document = production_fixture();
         *corrupt_document.last_mut().unwrap() ^= 1;
-        assert_eq!(
-            verify_production_document_at(&corrupt_document, PRODUCTION_FIXTURE_TIME).unwrap_err(),
-            AttestationError::Validation
-        );
+        assert_validation_error(verify_production_document_at(
+            &corrupt_document,
+            PRODUCTION_FIXTURE_TIME,
+        ));
 
         let mut corrupt_leaf = production_fixture();
         mutate_leaf_certificate(&mut corrupt_leaf, |leaf| {
             *leaf.last_mut().unwrap() ^= 1;
         });
-        assert_eq!(
-            verify_production_document_at(&corrupt_leaf, PRODUCTION_FIXTURE_TIME).unwrap_err(),
-            AttestationError::Validation
-        );
+        assert_validation_error(verify_production_document_at(
+            &corrupt_leaf,
+            PRODUCTION_FIXTURE_TIME,
+        ));
     }
 }

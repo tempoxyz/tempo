@@ -78,6 +78,11 @@ rpc = ["tempo-contracts/rpc"]
 name = "storage"
 required-features = ["test-utils"]
 
+[[bin]]
+name = "tempo-zone-verifier-debug"
+path = "src/bin/zone_verifier_debug.rs"
+required-features = ["test-utils"]
+
 [[bench]]
 name = "tempo_precompiles"
 harness = false
