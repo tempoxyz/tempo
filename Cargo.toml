@@ -266,6 +266,7 @@ axum = "0.8.8"
 base64 = { version = "0.22", features = ["alloc"], default-features = false }
 blake3 = "1.8.5"
 bytes = "1.11.1"
+c-kzg = { version = "2.1.8", default-features = false, features = ["ethereum_kzg_settings"] }
 clap = { version = "4.5.57", features = ["derive", "env"] }
 coins-bip32 = "0.12"
 const-hex = { version = "1.17.0" }

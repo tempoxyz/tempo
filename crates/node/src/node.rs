@@ -255,6 +255,9 @@ impl TempoNode {
     where
         Node: FullNodeTypes<Types = Self>,
     {
+        let _ = std::thread::Builder::new()
+            .name("kzg-warmup".to_string())
+            .spawn(tempo_precompiles::warmup_kzg_settings);
         ComponentsBuilder::default()
             .node_types::<Node>()
             .pool(pool_builder)

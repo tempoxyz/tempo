@@ -162,6 +162,15 @@ pub fn tempo_precompiles(
     precompiles
 }
 
+/// Initializes the KZG trusted setup used by the EIP-4844 point-evaluation precompile.
+///
+/// Revm calls `c_kzg::ethereum_kzg_settings(8)` when the point-evaluation precompile is first
+/// executed. Calling the same initializer from node startup warmup keeps that one-time cost out
+/// of transaction execution when the warmup finishes first.
+pub fn warmup_kzg_settings() {
+    let _ = c_kzg::ethereum_kzg_settings(8);
+}
+
 /// Registers Tempo-specific precompiles into an existing [`PrecompilesMap`] by installing a
 /// lookup function that matches addresses to their precompile: TIP-20 tokens (by prefix),
 /// TIP20Factory, TIP403Registry, TipFeeManager, StablecoinDEX, NonceManager, ValidatorConfig,
