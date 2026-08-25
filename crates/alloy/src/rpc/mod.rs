@@ -3,21 +3,23 @@
 mod header;
 pub use header::TempoHeaderResponse;
 
-mod request;
-pub use request::{
-    FeeToken, MultisigSimulationApproval, MultisigSimulationNestedWitness,
-    MultisigSimulationPrimitiveApproval, MultisigSimulationWitness, TempoCallBuilderExt,
-    TempoTransactionRequest,
+mod native_multisig;
+#[cfg(feature = "revm")]
+#[doc(hidden)]
+pub use native_multisig::create_mock_native_multisig_signature;
+pub use native_multisig::{
+    MultisigSimulationApproval, MultisigSimulationNestedWitness,
+    MultisigSimulationPrimitiveApproval, MultisigSimulationWitness,
 };
+
+mod request;
+pub use request::{FeeToken, TempoCallBuilderExt, TempoTransactionRequest};
 
 mod receipt;
 pub use receipt::TempoTransactionReceipt;
 
 #[cfg(feature = "revm")]
 mod revm_compat;
-#[cfg(feature = "revm")]
-#[doc(hidden)]
-pub use revm_compat::create_mock_native_multisig_signature;
 
 #[cfg(feature = "reth")]
 mod reth_compat;

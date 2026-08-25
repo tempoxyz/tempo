@@ -1,13 +1,10 @@
-use super::{
-    MultisigSimulationApproval, MultisigSimulationNestedWitness, MultisigSimulationWitness,
-    TempoTransactionRequest,
-};
+use super::TempoTransactionRequest;
 use alloy_consensus::error::ValueError;
 use alloy_primitives::{Address, B256, Bytes, Signature};
 use core::num::NonZeroU64;
 use tempo_primitives::{
     SignatureType, TempoSignature,
-    transaction::{Call, PrimitiveSignature, RecoveredTempoAuthorization},
+    transaction::{Call, RecoveredTempoAuthorization},
 };
 use tempo_revm::{ExecutionContext, TempoBatchCallEnv, TempoTxEnv};
 
@@ -125,130 +122,6 @@ impl TempoTransactionRequest {
     }
 }
 
-#[doc(hidden)]
-pub fn create_mock_native_multisig_signature(
-    witness: &MultisigSimulationWitness,
-) -> Result<tempo_primitives::transaction::MultisigSignature, &'static str> {
-    let approvals = witness
-        .approvals
-        .iter()
-        .map(|approval| -> Result<_, &'static str> {
-            match approval {
-                MultisigSimulationApproval::Primitive {
-                    owner,
-                    key_type,
-                    key_data,
-                } => Ok((
-                    *owner,
-                    TempoSignature::Primitive(create_multisig_simulation_primitive(
-                        *key_type,
-                        key_data.clone(),
-                    )),
-                )),
-                MultisigSimulationApproval::Multisig { witness } => {
-                    let nested = create_mock_nested_multisig_signature(witness)?;
-                    Ok((nested.account(), TempoSignature::Multisig(nested)))
-                }
-            }
-        })
-        .collect::<Result<Vec<_>, _>>()?;
-    assemble_mock_multisig_signature(witness.account, &witness.config, approvals)
-}
-
-fn create_mock_nested_multisig_signature(
-    witness: &MultisigSimulationNestedWitness,
-) -> Result<tempo_primitives::transaction::MultisigSignature, &'static str> {
-    let approvals = witness
-        .approvals
-        .iter()
-        .map(|approval| {
-            (
-                approval.owner,
-                TempoSignature::Primitive(create_multisig_simulation_primitive(
-                    approval.key_type,
-                    approval.key_data.clone(),
-                )),
-            )
-        })
-        .collect();
-    assemble_mock_multisig_signature(witness.account, &witness.config, approvals)
-}
-
-fn assemble_mock_multisig_signature(
-    account: Address,
-    config: &tempo_primitives::transaction::MultisigConfig,
-    approvals: Vec<(Address, TempoSignature)>,
-) -> Result<tempo_primitives::transaction::MultisigSignature, &'static str> {
-    use tempo_primitives::transaction::{
-        MultisigQuorumError, MultisigSignature, MultisigWeightAccumulator,
-    };
-
-    config
-        .validate_for_account(account)
-        .map_err(|error| error.as_str())?;
-    let mut weight =
-        MultisigWeightAccumulator::new(config.threshold).map_err(|error| error.as_str())?;
-    let approval_count = approvals.len();
-    let mut signatures = Vec::new();
-    for (index, (owner, signature)) in approvals.into_iter().enumerate() {
-        record_simulation_owner(config, &mut weight, owner, index + 1 == approval_count)?;
-        signatures.push(signature);
-    }
-    weight.finish().map_err(MultisigQuorumError::as_str)?;
-    MultisigSignature::from_decoded(account, config.clone(), signatures)
-        .map_err(|error| error.as_str())
-}
-
-fn record_simulation_owner(
-    config: &tempo_primitives::transaction::MultisigConfig,
-    weight: &mut tempo_primitives::transaction::MultisigWeightAccumulator,
-    owner: Address,
-    is_last: bool,
-) -> Result<(), &'static str> {
-    use tempo_primitives::transaction::MultisigQuorumError;
-
-    let owner_weight = config
-        .owner_weight(owner)
-        .ok_or(MultisigQuorumError::SignerNotOwner)
-        .map_err(MultisigQuorumError::as_str)?;
-    weight
-        .record_owner(owner, owner_weight)
-        .map_err(MultisigQuorumError::as_str)?;
-    if weight.has_quorum() && !is_last {
-        return Err(MultisigQuorumError::ExcessSignatures.as_str());
-    }
-    Ok(())
-}
-
-fn create_multisig_simulation_primitive(
-    key_type: Option<SignatureType>,
-    key_data: Option<Bytes>,
-) -> PrimitiveSignature {
-    key_type.map_or_else(
-        create_conservative_native_multisig_primitive_signature,
-        |key_type| create_mock_primitive_signature(&key_type, key_data),
-    )
-}
-
-fn create_conservative_native_multisig_primitive_signature() -> PrimitiveSignature {
-    use tempo_primitives::transaction::{
-        MAX_WEBAUTHN_SIGNATURE_LENGTH, tt_signature::WebAuthnSignature,
-    };
-
-    const WEBAUTHN_FIXED_SIGNATURE_BYTES: usize = 128;
-    PrimitiveSignature::WebAuthn(WebAuthnSignature {
-        webauthn_data: Bytes::from(vec![
-            0xff;
-            MAX_WEBAUTHN_SIGNATURE_LENGTH
-                - WEBAUTHN_FIXED_SIGNATURE_BYTES
-        ]),
-        r: B256::ZERO,
-        s: B256::ZERO,
-        pub_key_x: B256::ZERO,
-        pub_key_y: B256::ZERO,
-    })
-}
-
 /// Creates a mock AA signature for gas estimation based on key type hints.
 pub(super) fn create_mock_tempo_sig(
     key_type: &SignatureType,
@@ -341,8 +214,13 @@ pub(super) fn create_mock_primitive_signature(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::rpc::{
+        MultisigSimulationApproval, MultisigSimulationWitness,
+        create_mock_native_multisig_signature,
+    };
     use alloy_primitives::{TxKind, address};
     use alloy_rpc_types_eth::TransactionRequest;
+    use tempo_primitives::transaction::PrimitiveSignature;
 
     #[test]
     fn access_key_request_populates_typed_simulation_env() {
