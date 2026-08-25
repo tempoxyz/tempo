@@ -737,6 +737,15 @@ where
                 .no_eip4844()
                 .build_with_tasks(ctx.task_executor().clone(), blob_store.clone());
 
+        // EIP-4844 remains disabled in the pool, but KZG settings are also used by the
+        // point-evaluation precompile. Initialize them in the background so the one-time setup
+        // cost does not affect block execution.
+        let kzg_settings = ctx.kzg_settings()?;
+        ctx.task_executor().spawn_blocking_task(async move {
+            let _ = kzg_settings.get();
+            debug!(target: "reth::cli", "Initialized KZG settings");
+        });
+
         let aa_2d_config = AA2dPoolConfig {
             price_bump_config: pool_config.price_bumps,
             pending_limit: pool_config.pending_limit,
