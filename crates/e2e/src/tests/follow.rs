@@ -98,7 +98,7 @@ trait FeedStateProvider {
 
 impl<TContext: Clock> FeedStateProvider for TestingNode<TContext> {
     fn feed_state(&self) -> FeedStateHandle {
-        self.consensus_config.feed_state.clone()
+        self.feed_state.clone()
     }
 
     fn execution_node(&self) -> Arc<tempo_node::TempoFullNode> {
