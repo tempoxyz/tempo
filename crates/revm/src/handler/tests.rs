@@ -3564,7 +3564,7 @@ mod keychain {
     }
 
     #[test]
-    fn test_t11_registered_multisig_can_use_keychain_signature() {
+    fn test_t11_multisig_with_committed_config_can_use_keychain_signature() {
         let config = native_multisig_config();
         let account = config.derive_account().unwrap();
         let access_key = Address::repeat_byte(0x44);
@@ -3604,7 +3604,7 @@ mod keychain {
         let result = h.validate_against_state_and_deduct_caller(&mut evm, &mut Default::default());
         assert!(
             result.is_ok(),
-            "registered multisig keychain transaction should pass, got: {result:?}"
+            "multisig keychain transaction with a committed config should pass, got: {result:?}"
         );
 
         StorageCtx::enter_ctx(&mut evm.inner.ctx, StorageActions::disabled(), || {
@@ -3619,7 +3619,7 @@ mod keychain {
     }
 
     #[test]
-    fn test_t11_registered_multisig_with_code_rejects_keychain_signature() {
+    fn test_t11_multisig_with_committed_config_and_code_rejects_keychain_signature() {
         let config = native_multisig_config();
         let account = config.derive_account().unwrap();
         let access_key = Address::repeat_byte(0x44);
