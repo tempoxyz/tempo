@@ -240,6 +240,7 @@ impl TempoTransactionRequest {
             || self.key_type.is_some()
             || self.key_data.is_some()
             || self.multisig_witness.is_some()
+            || self.multisig_simulation_signature.is_some()
             || self.valid_before.is_some()
             || self.valid_after.is_some()
             || self.fee_payer_signature.is_some()
