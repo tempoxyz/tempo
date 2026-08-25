@@ -290,7 +290,7 @@ fn start_with(context: &mut deterministic::Context, verify_rate: NonZeroU32) -> 
     let (mailbox, receiver) = super::channel();
     let actor = super::init(
         context.child("gossip"),
-        super::ActorConfig {
+        super::actor::Config {
             verify_rate,
             transport,
             mailbox: receiver,
