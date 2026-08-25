@@ -48,7 +48,7 @@ fn validator_heals_dkg_state_behind_consensus_snapshot() {
         let execution_provider = donor.execution_provider();
         donor.stop().await;
 
-        let target_prefix = stale.consensus_config().partition_prefix.clone();
+        let target_prefix = stale.partition_prefix.clone();
         for suffix in SNAPSHOT_PARTITION_SUFFIXES {
             context
                 .remove(&format!("{target_prefix}-{suffix}"), None)

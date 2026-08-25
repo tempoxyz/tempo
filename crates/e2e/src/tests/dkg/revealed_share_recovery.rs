@@ -28,7 +28,6 @@ fn validator_recovers_revealed_share_without_consensus_state() {
         let mut recovering = validators.pop().expect("at least one validator");
 
         recovering
-            .consensus_config_mut()
             .share
             .take()
             .expect("validator starts with a genesis share");
@@ -48,7 +47,7 @@ fn validator_recovers_revealed_share_without_consensus_state() {
             &context,
             &donor,
             execution_provider,
-            &recovering.consensus_config.partition_prefix,
+            &recovering.partition_prefix,
         )
         .await;
 
