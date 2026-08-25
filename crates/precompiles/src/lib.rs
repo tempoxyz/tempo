@@ -85,7 +85,7 @@ pub use account_keychain::AuthorizedKey;
 const PRE_T11_INPUT_PER_WORD_COST: u64 = 6;
 
 /// Input per word cost starting at T11.
-const T11_INPUT_PER_WORD_COST: u64 = 30;
+const POST_T11_INPUT_PER_WORD_COST: u64 = 30;
 
 /// Gas cost for `ecrecover` signature verification (used by KeyAuthorization and Permit).
 pub const ECRECOVER_GAS: u64 = 3_000;
@@ -95,7 +95,7 @@ pub const ECRECOVER_GAS: u64 = 3_000;
 #[inline]
 pub fn input_cost(spec: TempoHardfork, calldata_len: usize) -> u64 {
     let per_word_cost = if spec.is_t11() {
-        T11_INPUT_PER_WORD_COST
+        POST_T11_INPUT_PER_WORD_COST
     } else {
         PRE_T11_INPUT_PER_WORD_COST
     };
