@@ -112,6 +112,10 @@ pub async fn run_consensus_stack(
 
     let consensus_engine = crate::consensus::engine::Builder {
         execution_node: Some(execution_node),
+        gossip: gossip_transport.map(|transport| gossip::Config {
+            transport,
+            verify_rate: config.gossip_verify_rate,
+        }),
         blocker: oracle.clone(),
         peer_manager: oracle.clone(),
 
@@ -140,13 +144,7 @@ pub async fn run_consensus_stack(
 
         finalized_blocks_retention: config.finalized_blocks_retention,
     }
-    .try_init(
-        context.child("engine"),
-        gossip_transport.map(|transport| gossip::Config {
-            transport,
-            verify_rate: config.gossip_verify_rate,
-        }),
-    )
+    .try_init(context.child("engine"))
     .await
     .wrap_err("failed initializing consensus engine")?;
 
@@ -215,6 +213,10 @@ pub async fn run_follow_stack(
 
     let follow_engine = follow::Config {
         execution_node,
+        gossip: gossip_transport.map(|transport| gossip::Config {
+            transport,
+            verify_rate: config.gossip_verify_rate,
+        }),
         feed_state,
         upstream,
         upstream_mailbox,
@@ -228,13 +230,7 @@ pub async fn run_follow_stack(
     };
 
     let ret = follow_engine
-        .try_init(
-            context.child("engine"),
-            gossip_transport.map(|transport| gossip::Config {
-                transport,
-                verify_rate: config.gossip_verify_rate,
-            }),
-        )
+        .try_init(context.child("engine"))
         .await
         .wrap_err("failed initializing follow engine")?
         .start()

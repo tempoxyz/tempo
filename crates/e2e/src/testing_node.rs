@@ -300,6 +300,7 @@ where
             .into();
         let config = consensus::Builder {
             execution_node: Some(execution_node),
+            gossip: None,
             blocker: self.oracle.control(self.public_key()),
             peer_manager: self.oracle.socket_manager(),
             partition_prefix: self.partition_prefix.clone(),
@@ -325,7 +326,7 @@ where
             finalized_blocks_retention: 1024,
         };
         let engine = config
-            .try_init(engine_context, None)
+            .try_init(engine_context)
             .await
             .expect("must be able to start the engine");
 

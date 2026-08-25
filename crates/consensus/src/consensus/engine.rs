@@ -49,7 +49,6 @@ const MAX_PENDING_ACKS: NonZeroUsize = NZUsize!(1);
 ///
 // XXX: Mostly a one-to-one copy of alto for now. We also put the context in here
 // because there doesn't really seem to be a point putting it into an extra initializer.
-#[derive(Clone)]
 pub struct Builder<TBlocker, TPeerManager> {
     pub execution_node: Option<Arc<TempoFullNode>>,
 
@@ -84,6 +83,7 @@ pub struct Builder<TBlocker, TPeerManager> {
     pub with_subblocks: bool,
 
     pub feed_state: crate::feed::FeedStateHandle,
+    pub gossip: Option<crate::gossip::Config>,
 
     /// Number of recently finalized blocks retained in the prunable archive
     /// passed to the marshal actor. Older blocks are served from reth.
@@ -101,13 +101,9 @@ where
     }
 
     /// Initializes the engine.
-    ///
-    /// Gossip is separate from the cloneable builder because its transport
-    /// receiver can be moved only once.
     pub async fn try_init<TContext>(
         self,
         context: TContext,
-        gossip_config: Option<crate::gossip::Config>,
     ) -> eyre::Result<Engine<TContext, TBlocker, TPeerManager>>
     where
         TContext: Clock
@@ -241,7 +237,8 @@ where
 
         // Validator gossip is publish-only. Marshal sends stored tips to the
         // actor, and the transport discards inbound frames.
-        let (gossip_mailbox, gossip_receiver) = gossip_config
+        let (gossip_mailbox, gossip_receiver) = self
+            .gossip
             .as_ref()
             .map(|_| crate::gossip::channel())
             .unzip();
@@ -252,7 +249,8 @@ where
             self.feed_state,
         );
 
-        let gossip_actor = gossip_config
+        let gossip_actor = self
+            .gossip
             .zip(gossip_receiver)
             .map(|(gossip_config, receiver)| {
                 crate::gossip::init(
