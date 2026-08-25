@@ -250,6 +250,7 @@ impl FollowerBuilder {
             upstream,
             upstream_mailbox,
             execution_node: node.node.clone().into(),
+            gossip: None,
             feed_state: feed_state.clone(),
             partition_prefix,
             epoch_strategy: FixedEpocher::new(commonware_utils::NZU64!(EPOCH_LENGTH)),
@@ -262,10 +263,7 @@ impl FollowerBuilder {
         };
 
         let handle = config
-            .try_init(
-                context.child(Box::leak(name.clone().into_boxed_str())),
-                None,
-            )
+            .try_init(context.child(Box::leak(name.clone().into_boxed_str())))
             .await
             .expect("failed to initialize follow engine")
             .start();

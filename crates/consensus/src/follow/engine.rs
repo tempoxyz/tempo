@@ -41,10 +41,12 @@ use crate::{
 };
 
 /// Builder for the follow engine.
-#[derive(Clone)]
 pub struct Config<TUpstream> {
     /// The execution node to drive.
     pub execution_node: Arc<TempoFullNode>,
+
+    /// Optional `tempo/1` transport. Its receivers make this configuration single-use.
+    pub gossip: Option<crate::gossip::Config>,
 
     /// Feed state handle for RPC serving.
     pub feed_state: FeedStateHandle,
@@ -80,13 +82,9 @@ pub struct Config<TUpstream> {
 
 impl<TUpstream> Config<TUpstream> {
     /// Initialize all components and return an [`Engine`] ready to start.
-    ///
-    /// Gossip is separate from follower settings because it owns a transport
-    /// receiver that was registered before the node launched.
     pub async fn try_init<TContext>(
         self,
         context: TContext,
-        gossip_config: Option<crate::gossip::Config>,
     ) -> eyre::Result<Engine<TContext, TUpstream>>
     where
         TContext: Clock
@@ -151,7 +149,8 @@ impl<TUpstream> Config<TUpstream> {
 
         // Create the channel first. The driver needs its sender, while the
         // gossip actor cannot be built until the driver provides its capability.
-        let (gossip_mailbox, gossip_receiver) = gossip_config
+        let (gossip_mailbox, gossip_receiver) = self
+            .gossip
             .as_ref()
             .map(|_| crate::gossip::channel())
             .unzip();
@@ -196,7 +195,8 @@ impl<TUpstream> Config<TUpstream> {
         )
         .wrap_err("failed initializing driver actor")?;
 
-        let gossip_actor = gossip_config
+        let gossip_actor = self
+            .gossip
             .zip(gossip_receiver)
             .map(|(gossip_config, receiver)| {
                 crate::gossip::init(
