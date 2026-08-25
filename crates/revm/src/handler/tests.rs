@@ -1,7 +1,7 @@
 use super::*;
 use crate::{
-    FeeTokenResolver, ProtocolFeeManager, TempoBlockEnv, TempoFeeManager, TempoTxEnv,
-    evm::TempoEvm, gas_params::tempo_gas_params, signature_gas::P256_VERIFY_GAS,
+    ExecutionContext, FeeTokenResolver, ProtocolFeeManager, TempoBlockEnv, TempoFeeManager,
+    TempoTxEnv, evm::TempoEvm, gas_params::tempo_gas_params, signature_gas::P256_VERIFY_GAS,
     tx::TempoBatchCallEnv,
 };
 use alloy_eips::eip7702::{Authorization, RecoveredAuthority};
