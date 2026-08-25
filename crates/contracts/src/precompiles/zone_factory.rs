@@ -39,7 +39,8 @@ pub struct InitialZoneFactoryAccount {
     pub storage: Option<(U256, U256)>,
 }
 
-fn initial_zone_factory_config(owner: Address) -> U256 {
+/// Returns the initial packed ZoneFactory configuration for the given owner.
+pub fn initial_zone_factory_config(owner: Address) -> U256 {
     U256::from(1) | (U256::from_be_slice(owner.as_slice()) << u32::BITS)
 }
 
