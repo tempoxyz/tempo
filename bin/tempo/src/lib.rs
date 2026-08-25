@@ -852,13 +852,18 @@ mod tests {
                 "node",
                 "--consensus.signing-key",
                 "unused-signing-key",
-                "--consensus.gossip.enabled",
+                "--consensus.devp2p.finalizations",
             ])
             .has_gossip(false)
         );
         assert!(
-            parse_node_args(&["tempo", "node", "--follow", "--consensus.gossip.enabled",])
-                .has_gossip(false)
+            parse_node_args(&[
+                "tempo",
+                "node",
+                "--follow",
+                "--consensus.devp2p.finalizations",
+            ])
+            .has_gossip(false)
         );
         assert!(
             !parse_node_args(&[
@@ -866,12 +871,12 @@ mod tests {
                 "node",
                 "--follow",
                 "--follow.nocertify",
-                "--consensus.gossip.enabled",
+                "--consensus.devp2p.finalizations",
             ])
             .has_gossip(false)
         );
         assert!(
-            !parse_node_args(&["tempo", "node", "--dev", "--consensus.gossip.enabled",])
+            !parse_node_args(&["tempo", "node", "--dev", "--consensus.devp2p.finalizations",])
                 .has_gossip(true)
         );
         assert!(
@@ -880,7 +885,7 @@ mod tests {
                 "node",
                 "--consensus.signing-key",
                 "unused-signing-key",
-                "--consensus.gossip.enabled=false",
+                "--consensus.devp2p.finalizations=false",
             ])
             .has_gossip(false)
         );
@@ -895,13 +900,17 @@ mod tests {
             "node",
             "--consensus.signing-key",
             "unused-signing-key",
-            "--consensus.gossip.enabled",
+            "--consensus.devp2p.finalizations",
         ]);
         assert!(validator.has_gossip(false));
         assert!(!validator.consensus.gossip_transport(false).ingest);
 
-        let follower =
-            parse_node_args(&["tempo", "node", "--follow", "--consensus.gossip.enabled"]);
+        let follower = parse_node_args(&[
+            "tempo",
+            "node",
+            "--follow",
+            "--consensus.devp2p.finalizations",
+        ]);
         assert!(follower.has_gossip(false));
         assert!(follower.consensus.gossip_transport(true).ingest);
     }
