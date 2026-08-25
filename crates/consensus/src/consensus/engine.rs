@@ -257,7 +257,7 @@ where
             .map(|(gossip_config, receiver)| {
                 crate::gossip::init(
                     context.child("gossip"),
-                    crate::gossip::ActorConfig {
+                    crate::gossip::actor::Config {
                         verify_rate: gossip_config.verify_rate,
                         transport: gossip_config.transport,
                         mailbox: receiver,

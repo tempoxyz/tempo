@@ -8,13 +8,13 @@
 
 use std::{future::Future, num::NonZeroU32};
 
-mod actor;
+pub(crate) mod actor;
 mod ingress;
 mod metrics;
 #[cfg(test)]
 mod test;
 
-pub(crate) use actor::{Actor, Config as ActorConfig, init};
+pub(crate) use actor::{Actor, init};
 #[cfg(test)]
 pub(crate) use ingress::Message;
 pub(crate) use ingress::{Mailbox, channel};
