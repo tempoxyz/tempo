@@ -153,6 +153,12 @@ pub struct FlatShadow {
     blocks_since_persist: u64,
     /// Engine phase nanos accumulated since the last commit_entry (profiling builds).
     prof_acc: [u64; 8],
+    /// Recently applied candidates' ops, keyed by their post-root: a reorg
+    /// can revisit a sibling branch the FIFO already applied and unwound, and
+    /// `unwind_to` only reaches ancestors — re-entering a sibling tip needs
+    /// its ops re-applied (bug #9: "unknown parent ... not in retained
+    /// window" abort after a candidate interleave at one height).
+    recent_candidates: std::collections::VecDeque<(u64, [u8; 32], [u8; 32], Vec<(Key, StateOp)>)>,
 }
 
 /// Retained rollback window (candidate rebuilds and reorgs deeper than this
@@ -210,6 +216,7 @@ impl FlatShadow {
         Ok(Self {
             db,
             entries: Vec::new(),
+            recent_candidates: Default::default(),
             checkpoint_parent: None,
             timings,
             blocks_since_persist: 0,
@@ -249,6 +256,7 @@ impl FlatShadow {
         Ok(Self {
             db,
             entries: Vec::new(),
+            recent_candidates: Default::default(),
             checkpoint_parent: None,
             timings,
             blocks_since_persist: 0,
@@ -293,6 +301,7 @@ impl FlatShadow {
         Ok(Self {
             db,
             entries: Vec::new(),
+            recent_candidates: Default::default(),
             checkpoint_parent: None,
             timings,
             blocks_since_persist: 0,
@@ -433,6 +442,7 @@ impl FlatShadow {
         Ok(Self {
             db,
             entries: Vec::new(),
+            recent_candidates: Default::default(),
             checkpoint_parent: None,
             timings,
             blocks_since_persist: 0,
@@ -502,7 +512,40 @@ impl FlatShadow {
         // Same parent, different payload: a rebuilt candidate. Fall through —
         // the rollback loop below unwinds to the shared parent state.
 
-        self.unwind_to(parent_root)?;
+        if let Err(primary) = self.unwind_to(parent_root) {
+            // Sibling-branch revisit: the requested parent is an unwound
+            // candidate's tip, not an ancestor. Walk the candidate ring from
+            // that tip back to a reachable root, then re-apply the chain.
+            let mut chain: Vec<(u64, B256, Vec<(Key, StateOp)>)> = Vec::new();
+            let mut target = parent_root.0;
+            loop {
+                if self.db.root() == target
+                    || self.entries.iter().any(|e| e.parent_root == target)
+                {
+                    break;
+                }
+                let Some((pn, pr, _, cand_ops)) = self
+                    .recent_candidates
+                    .iter()
+                    .rev()
+                    .find(|(_, _, r, _)| *r == target)
+                else {
+                    return Err(primary);
+                };
+                chain.push((*pn, B256::from(*pr), cand_ops.clone()));
+                target = *pr;
+            }
+            tracing::warn!(
+                target: "flatmpt",
+                depth = chain.len(),
+                parent = %parent_root,
+                "sibling-branch revisit: re-applying retained candidate ops"
+            );
+            for (pn, pr, cand_ops) in chain.into_iter().rev() {
+                self.root_for(pn, pr, cand_ops)?;
+            }
+            self.unwind_to(parent_root)?;
+        }
 
         let n_ops = ops.len();
         let t = Instant::now();
@@ -517,6 +560,12 @@ impl FlatShadow {
         let apply_us = t.elapsed().as_micros() as u64;
         self.db.prefetch_clear();
         debug_assert_eq!(root, self.db.root());
+
+        self.recent_candidates
+            .push_back((parent_number, parent_root.0, root, ops));
+        while self.recent_candidates.len() > 8 {
+            self.recent_candidates.pop_front();
+        }
 
         self.commit_entry(
             parent_number,
@@ -796,6 +845,7 @@ pub fn shadow_from_checkpoint(
                 let shadow = FlatShadow {
                     db,
                     entries: Vec::new(),
+            recent_candidates: Default::default(),
                     checkpoint_parent: (checkpoint_parent != checkpoint_root)
                         .then_some(checkpoint_parent),
                     timings,
