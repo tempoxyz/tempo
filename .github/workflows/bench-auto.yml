@@ -20,7 +20,6 @@ jobs:
       (github.event.action != 'labeled' || github.event.label.name == 'benchmark')
     permissions:
       contents: read
-      id-token: write
       pull-requests: read
     uses: ./.github/workflows/bench-e2e.yml
     with:
