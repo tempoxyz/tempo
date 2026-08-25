@@ -42,21 +42,15 @@ impl NativeMultisig {
     pub fn validate_authorization_state(
         &self,
         signature: &MultisigSignature,
-        mut validate_nested_account: impl FnMut(Address) -> Result<(), NativeMultisigAuthError>,
     ) -> Result<(), NativeMultisigAuthError> {
         let mut account_path = vec![signature.account()];
-        self.validate_authorization_state_inner(
-            signature,
-            &mut account_path,
-            &mut validate_nested_account,
-        )
+        self.validate_authorization_state_inner(signature, &mut account_path)
     }
 
     fn validate_authorization_state_inner(
         &self,
         signature: &MultisigSignature,
         account_path: &mut Vec<Address>,
-        validate_nested_account: &mut impl FnMut(Address) -> Result<(), NativeMultisigAuthError>,
     ) -> Result<(), NativeMultisigAuthError> {
         signature
             .validate_shape()
@@ -98,9 +92,8 @@ impl NativeMultisig {
                     "native multisig owner cycle detected",
                 ));
             }
-            validate_nested_account(account)?;
             account_path.push(account);
-            self.validate_authorization_state_inner(nested, account_path, validate_nested_account)?;
+            self.validate_authorization_state_inner(nested, account_path)?;
             account_path.pop();
         }
         Ok(())
@@ -113,7 +106,7 @@ impl NativeMultisig {
     ) -> Result<(), NativeMultisigAuthError> {
         let digest = signature.digest(inner_digest);
         let config = signature.config();
-        let mut weight = MultisigWeightAccumulator::new(config.threshold);
+        let mut weight = MultisigWeightAccumulator::new(config.threshold).map_err(quorum_error)?;
 
         for (index, approval) in signature.signatures().iter().enumerate() {
             let owner = match approval {
@@ -194,7 +187,7 @@ mod tests {
     fn initial_witness_requires_zero_commitment() -> eyre::Result<()> {
         let mut storage = HashMapStorageProvider::new_with_spec(1, TempoHardfork::T11);
         StorageCtx::enter(&mut storage, || {
-            NativeMultisig::new().validate_authorization_state(&signature(0), |_| Ok(()))
+            NativeMultisig::new().validate_authorization_state(&signature(0))
         })?;
         Ok(())
     }
@@ -207,7 +200,7 @@ mod tests {
             let mut multisig = NativeMultisig::new();
             multisig.config_commitments[signature.account()]
                 .write(signature.config().commitment().unwrap())?;
-            multisig.validate_authorization_state(&signature, |_| Ok(()))
+            multisig.validate_authorization_state(&signature)
         })?;
         Ok(())
     }

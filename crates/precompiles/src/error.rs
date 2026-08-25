@@ -303,18 +303,17 @@ pub fn add_errors_to_registry<T: SolInterface>(
     let converter = Arc::new(converter);
     for selector in T::selectors() {
         let converter = Arc::clone(&converter);
-        let decoder: TempoPrecompileErrorDecoder = Box::new(move |data: &[u8]| {
-            T::abi_decode(data)
-                .ok()
-                .map(|error| DecodedTempoPrecompileError {
-                    error: converter(error),
-                    revert_bytes: data,
-                })
-        });
-        registry
-            .entry(selector.into())
-            .and_modify(|registered| *registered = None)
-            .or_insert(Some(decoder));
+        registry.insert(
+            selector.into(),
+            Box::new(move |data: &[u8]| {
+                T::abi_decode(data)
+                    .ok()
+                    .map(|error| DecodedTempoPrecompileError {
+                        error: converter(error),
+                        revert_bytes: data,
+                    })
+            }),
+        );
     }
 }
 
@@ -324,12 +323,11 @@ pub struct DecodedTempoPrecompileError<'a> {
     pub revert_bytes: &'a [u8],
 }
 
-/// Decoder for one unambiguous ABI error selector.
-pub type TempoPrecompileErrorDecoder =
-    Box<dyn for<'a> Fn(&'a [u8]) -> Option<DecodedTempoPrecompileError<'a>> + Send + Sync>;
-
-/// Maps ABI error selectors to unique decoder functions. Colliding selectors map to `None`.
-pub type TempoPrecompileErrorRegistry = HashMap<Selector, Option<TempoPrecompileErrorDecoder>>;
+/// Maps ABI error selectors to their decoder functions.
+pub type TempoPrecompileErrorRegistry = HashMap<
+    Selector,
+    Box<dyn for<'a> Fn(&'a [u8]) -> Option<DecodedTempoPrecompileError<'a>> + Send + Sync>,
+>;
 
 /// Builds a [`TempoPrecompileErrorRegistry`] mapping every known error selector to its decoder.
 pub fn error_decoder_registry() -> TempoPrecompileErrorRegistry {
@@ -376,7 +374,6 @@ pub fn decode_error<'a>(data: &'a [u8]) -> Option<DecodedTempoPrecompileError<'a
     let selector: [u8; 4] = data[0..4].try_into().ok()?;
     ERROR_REGISTRY
         .get(&selector)
-        .and_then(Option::as_ref)
         .and_then(|decoder| decoder(data))
 }
 
@@ -557,9 +554,13 @@ mod tests {
     }
 
     #[test]
-    fn test_decode_error_rejects_ambiguous_selector() {
-        let encoded = NativeMultisigError::invalid_owner().abi_encode();
-
-        assert!(decode_error(&encoded).is_none());
+    fn test_decode_native_multisig_error() {
+        let encoded = NativeMultisigError::invalid_multisig_owner().abi_encode();
+        assert!(matches!(
+            decode_error(&encoded).map(|decoded| decoded.error),
+            Some(TempoPrecompileError::NativeMultisigError(
+                NativeMultisigError::InvalidMultisigOwner(_)
+            ))
+        ));
     }
 }

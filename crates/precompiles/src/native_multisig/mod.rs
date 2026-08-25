@@ -130,13 +130,13 @@ impl NativeMultisig {
             || self.tx_origin.t_read()? != msg_sender
             || self.directly_authorized_account.t_read()? != msg_sender
         {
-            return Err(NativeMultisigError::unauthorized_caller().into());
+            return Err(NativeMultisigError::unauthorized_multisig_caller().into());
         }
 
         let transaction_key =
             AccountKeychain::new().get_transaction_key(getTransactionKeyCall {}, msg_sender)?;
         if !transaction_key.is_zero() {
-            return Err(NativeMultisigError::unauthorized_caller().into());
+            return Err(NativeMultisigError::unauthorized_multisig_caller().into());
         }
         Ok(())
     }
@@ -148,7 +148,7 @@ impl NativeMultisig {
             .keccak256(&account_derivation_preimage(config))?;
         let account = Address::from_slice(&hash[12..]);
         if config.owner_weight(account).is_some() {
-            return Err(NativeMultisigError::invalid_owner().into());
+            return Err(NativeMultisigError::invalid_multisig_owner().into());
         }
         if !is_valid_multisig_account(account, self.storage.spec()) {
             return Err(NativeMultisigError::invalid_account().into());
@@ -162,7 +162,7 @@ impl NativeMultisig {
 }
 
 fn account_derivation_preimage(config: &MultisigConfig) -> Vec<u8> {
-    let mut input = Vec::with_capacity(config.account_derivation_preimage_len());
+    let mut input = Vec::new();
     input.extend_from_slice(MULTISIG_ACCOUNT_DOMAIN);
     input.extend_from_slice(config.salt.as_slice());
     input.push(config.threshold);
@@ -172,7 +172,7 @@ fn account_derivation_preimage(config: &MultisigConfig) -> Vec<u8> {
 }
 
 fn config_commitment_preimage(config: &MultisigConfig) -> Vec<u8> {
-    let mut input = Vec::with_capacity(config.commitment_preimage_len());
+    let mut input = Vec::new();
     input.extend_from_slice(MULTISIG_CONFIG_DOMAIN);
     input.extend_from_slice(config.salt.as_slice());
     input.extend_from_slice(&config.version.to_be_bytes());
@@ -193,7 +193,9 @@ fn map_multisig_config_error(err: MultisigConfigError) -> TempoPrecompileError {
     match err {
         MultisigConfigError::EmptyOwners
         | MultisigConfigError::ZeroOwner
-        | MultisigConfigError::AccountIsOwner => NativeMultisigError::invalid_owner().into(),
+        | MultisigConfigError::AccountIsOwner => {
+            NativeMultisigError::invalid_multisig_owner().into()
+        }
         MultisigConfigError::TooManyOwners => NativeMultisigError::too_many_owners().into(),
         MultisigConfigError::ZeroThreshold | MultisigConfigError::ThresholdExceedsWeight => {
             NativeMultisigError::invalid_threshold().into()
@@ -354,7 +356,7 @@ mod tests {
                     abi_owners(Address::repeat_byte(0x22)),
                 ),
                 Err(TempoPrecompileError::NativeMultisigError(
-                    NativeMultisigError::UnauthorizedCaller(_)
+                    NativeMultisigError::UnauthorizedMultisigCaller(_)
                 ))
             ));
             Ok::<_, TempoPrecompileError>(())
