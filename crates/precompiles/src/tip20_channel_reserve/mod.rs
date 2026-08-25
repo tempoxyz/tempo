@@ -245,11 +245,12 @@ impl TIP20ChannelReserve {
         if self.storage.spec().is_t11() {
             let payee = Recipient::resolve(call.descriptor.payee)?;
             token.ensure_transfer_authorized(call.descriptor.payer, payee.target)?;
-            token.channel_reserve_transfer(
+            token.channel_reserve_transfer_with_receive_policy_fallback(
                 self.address,
                 payee,
                 U256::from(delta),
                 call.descriptor.payer,
+                self.legacy_capture_receive_policy_sender(),
             )?;
 
             state.settled = cumulative;
@@ -446,11 +447,12 @@ impl TIP20ChannelReserve {
             if !delta.is_zero() {
                 let payee = Recipient::resolve(call.descriptor.payee)?;
                 token.ensure_transfer_authorized(call.descriptor.payer, payee.target)?;
-                token.channel_reserve_transfer(
+                token.channel_reserve_transfer_with_receive_policy_fallback(
                     self.address,
                     payee,
                     U256::from(delta),
                     call.descriptor.payer,
+                    self.legacy_capture_receive_policy_sender(),
                 )?;
             }
             if !refund.is_zero() {
@@ -713,6 +715,18 @@ impl TIP20ChannelReserve {
     /// Returns the current block timestamp as `u64`.
     fn now(&self) -> u64 {
         self.storage.timestamp().saturating_to::<u64>()
+    }
+
+    /// Returns the TIP-1095 legacy receive-policy sender retained during T11-T12 backwards compatibility.
+    ///
+    /// If this returns `None`, capture checks only the payer against the payee's TIP-1028 policy.
+    /// If this returns `Some`, capture checks the payer first and then the returned sender if the
+    /// payer is rejected.
+    fn legacy_capture_receive_policy_sender(&self) -> Option<Address> {
+        let spec = self.storage.spec();
+        // TODO(T12): return `None` here to disable the legacy fallback. `is_t11()` is cumulative,
+        // so it remains true for later hardforks unless the compatibility window is gated off.
+        spec.is_t11().then_some(TIP20_CHANNEL_RESERVE_ADDRESS)
     }
 
     /// Returns the current block timestamp as the packed close-request representation.
@@ -1363,6 +1377,10 @@ mod tests {
                 },
             )?;
 
+            // During T11, captures retain the legacy reserve sender as a compatibility fallback.
+            // The payer is blocked after funding, while the reserve remains accepted.
+            install_receive_sender_blacklist(payee, payer)?;
+
             let digest =
                 reserve.get_voucher_digest(ITIP20ChannelReserve::getVoucherDigestCall {
                     channelId: channel_id,
@@ -1559,9 +1577,16 @@ mod tests {
                 expiring_nonce_hash,
             );
 
-            // Receive policies remain mutable after funding. The payee now rejects only the
-            // logical payer, while the physical reserve sender remains authorized.
+            // Receive policies remain mutable after funding. The payee now rejects both the
+            // logical payer and the legacy reserve sender.
             let (mut registry, sender_policy) = install_receive_sender_blacklist(payee, payer)?;
+            set_blacklisted(
+                &mut registry,
+                payee,
+                sender_policy,
+                TIP20_CHANNEL_RESERVE_ADDRESS,
+                true,
+            )?;
 
             let cumulative = U96::from(40);
             let digest =

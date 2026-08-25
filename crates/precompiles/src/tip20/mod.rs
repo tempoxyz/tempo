@@ -931,6 +931,28 @@ impl TIP20Token {
         amount: U256,
         receive_policy_sender: Address,
     ) -> Result<()> {
+        self.channel_reserve_transfer_with_receive_policy_fallback(
+            from,
+            to,
+            amount,
+            receive_policy_sender,
+            None,
+        )
+    }
+
+    /// Moves channel-reserve custody while allowing a temporary legacy sender for TIP-1028.
+    ///
+    /// The fallback is evaluated only when the primary sender is rejected by the receive policy;
+    /// all other errors are returned immediately. The physical transfer is performed once after
+    /// the policy check succeeds.
+    pub(crate) fn channel_reserve_transfer_with_receive_policy_fallback(
+        &mut self,
+        from: Address,
+        to: Recipient,
+        amount: U256,
+        receive_policy_sender: Address,
+        fallback_receive_policy_sender: Option<Address>,
+    ) -> Result<()> {
         if from != TIP20_CHANNEL_RESERVE_ADDRESS
             && to.original_address() != TIP20_CHANNEL_RESERVE_ADDRESS
         {
@@ -944,7 +966,11 @@ impl TIP20Token {
         if to.target == RECEIVE_POLICY_GUARD_ADDRESS {
             return Err(ReceivePolicyGuardError::address_reserved().into());
         }
-        self.ensure_receive_policy_authorized(receive_policy_sender, to.target)?;
+        self.ensure_receive_policy_authorized_with_fallback(
+            receive_policy_sender,
+            fallback_receive_policy_sender,
+            to.target,
+        )?;
 
         self._transfer(from, &to, amount)?;
         if let Some(hop) = to.build_virtual_transfer_event(amount) {
@@ -1221,6 +1247,28 @@ impl TIP20Token {
         }
 
         Ok(())
+    }
+
+    /// Ensures that at least one sender is accepted by the receiver's TIP-1028 policy.
+    fn ensure_receive_policy_authorized_with_fallback(
+        &self,
+        sender: Address,
+        fallback_sender: Option<Address>,
+        receiver: Address,
+    ) -> Result<()> {
+        if TIP403Registry::new()
+            .validate_receive_policy(self.address, sender, receiver)?
+            .is_none()
+        {
+            return Ok(());
+        }
+
+        match fallback_sender {
+            Some(fallback_sender) => {
+                self.ensure_receive_policy_authorized(fallback_sender, receiver)
+            }
+            None => Err(TIP20Error::policy_forbids().into()),
+        }
     }
 
     /// Check whether users are authorized by the token's [`TIP403Registry`] policy for the given
