@@ -1,5 +1,5 @@
 use std::{
-    fs::OpenOptions,
+    fs::{File, OpenOptions},
     io::Write as _,
     net::{IpAddr, SocketAddr},
     path::{Path, PathBuf},
@@ -1024,12 +1024,7 @@ impl GenerateSigningKey {
             warn_unencrypted_signing_key_deprecation();
         }
 
-        OpenOptions::new()
-            .write(true)
-            .create_new(!force)
-            .create(force)
-            .truncate(force)
-            .open(&output)
+        open_signing_key_file(&output, force)
             .map_err(Report::new)
             .and_then(|f| match passphrase {
                 Some(passphrase) => signing_key
@@ -1045,6 +1040,43 @@ impl GenerateSigningKey {
 
         Ok(())
     }
+}
+
+/// Opens `path` for writing a signing key file, creating it (or truncating an existing file when
+/// `force` is set), restricted to owner read/write on Unix.
+///
+/// Mirrors the permissioning in [`tempo_consensus_config::SigningKey::write_to_file_encrypted`],
+/// which sets `0600` for the same reason: these files hold consensus signing key material (raw
+/// or passphrase-encrypted), and the default `open()` mode of `0666` masked by umask is typically
+/// `0644` -- readable by any local user on the host.
+fn open_signing_key_file(path: &Path, force: bool) -> std::io::Result<File> {
+    let mut options = OpenOptions::new();
+    options
+        .write(true)
+        .create_new(!force)
+        .create(force)
+        .truncate(force);
+
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::OpenOptionsExt as _;
+        options.mode(0o600);
+    }
+
+    let file = options.open(path)?;
+
+    // `mode(0o600)` above only takes effect when `open()` actually creates the file: with
+    // `--force`, reusing a file that already exists (possibly created with looser permissions
+    // by an older binary, or by hand) leaves its existing mode untouched. Set it explicitly so
+    // the result is always restricted to the owner, regardless of whether the file was just
+    // created or reused.
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt as _;
+        file.set_permissions(std::fs::Permissions::from_mode(0o600))?;
+    }
+
+    Ok(file)
 }
 
 fn warn_unencrypted_signing_key_deprecation() {
@@ -1138,12 +1170,7 @@ impl EncryptSigningKey {
             )
         })?;
 
-        OpenOptions::new()
-            .write(true)
-            .create_new(!force)
-            .create(force)
-            .truncate(force)
-            .open(&output)
+        open_signing_key_file(&output, force)
             .map_err(Report::new)
             .and_then(|f| {
                 signing_key
@@ -1828,6 +1855,42 @@ mod tests {
         assert!(!force);
         assert_eq!(&output, "/tmp/signing.key");
         assert_eq!(&secret.unwrap(), "/dev/fd/11");
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn open_signing_key_file_restricts_permissions_to_owner() {
+        use std::os::unix::fs::PermissionsExt as _;
+
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("signing.key");
+
+        let file = open_signing_key_file(&path, false).unwrap();
+        let mode = file.metadata().unwrap().permissions().mode() & 0o777;
+        assert_eq!(
+            mode, 0o600,
+            "signing key file must not be group/world readable"
+        );
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn open_signing_key_file_keeps_restricted_permissions_when_forced() {
+        use std::os::unix::fs::PermissionsExt as _;
+
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("signing.key");
+        // Pre-create the file with permissive permissions, to make sure `force` re-opening
+        // doesn't just inherit whatever mode the existing file happened to have.
+        std::fs::write(&path, b"placeholder").unwrap();
+        std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o644)).unwrap();
+
+        let file = open_signing_key_file(&path, true).unwrap();
+        let mode = file.metadata().unwrap().permissions().mode() & 0o777;
+        assert_eq!(
+            mode, 0o600,
+            "signing key file must not be group/world readable"
+        );
     }
 
     #[track_caller]
