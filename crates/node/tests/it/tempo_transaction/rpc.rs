@@ -19,6 +19,7 @@ use alloy::{
 };
 use alloy_eips::Encodable2718;
 use reth_primitives_traits::transaction::TxHashRef;
+use tempo_alloy::rpc::{MultisigSimulationApproval, MultisigSimulationWitness};
 use tempo_chainspec::{
     hardfork::{TempoHardfork, TempoHardforks},
     spec::{DEV, MODERATO, PRESTO},
@@ -26,15 +27,16 @@ use tempo_chainspec::{
 use tempo_contracts::precompiles::DEFAULT_FEE_TOKEN;
 use tempo_node::rpc::TempoTransactionRequest;
 use tempo_primitives::{
-    TempoTransaction, TempoTxEnvelope,
-    transaction::{InitMultisig, tempo_transaction::Call, tt_signature::TempoSignature},
+    SignatureType, TempoTransaction, TempoTxEnvelope,
+    transaction::{MultisigConfig, tempo_transaction::Call, tt_signature::TempoSignature},
 };
 
 use super::{
     helpers::*,
     local::Localnet,
     multisig::{
-        derived_account, multisig_config, no_op_call, sign_multisig, sorted_signers, stored_config,
+        derived_account, multisig_config, no_op_call, sign_multisig, sorted_signers,
+        stored_config_commitment,
     },
     types::TestEnv,
 };
@@ -319,7 +321,8 @@ async fn fill_multisig_transaction(
     env: &Localnet,
     account: Address,
     calls: Vec<Call>,
-    init: Option<InitMultisig>,
+    config: MultisigConfig,
+    owners: &[Address],
     expected_nonce: u64,
 ) -> eyre::Result<TempoTransaction> {
     let expected_calls = calls.clone();
@@ -329,7 +332,18 @@ async fn fill_multisig_transaction(
             ..Default::default()
         },
         calls,
-        multisig_init: init,
+        multisig_witness: Some(MultisigSimulationWitness {
+            account,
+            config,
+            approvals: owners
+                .iter()
+                .map(|owner| MultisigSimulationApproval::Primitive {
+                    owner: *owner,
+                    key_type: Some(SignatureType::Secp256k1),
+                    key_data: None,
+                })
+                .collect(),
+        }),
         ..Default::default()
     };
     let request = serde_json::to_value(request)?;
@@ -391,39 +405,34 @@ async fn test_tip_1061_fill_sign_send() -> eyre::Result<()> {
     let account = derived_account(&config)?;
     env.fund_account(account).await?;
 
-    let mut bootstrap = fill_multisig_transaction(
+    let owners = [alice.address(), bob.address()];
+    let mut initial = fill_multisig_transaction(
         &env,
         account,
         vec![no_op_call(0x81)],
-        Some(config.clone()),
+        config.clone(),
+        &owners,
         0,
     )
     .await?;
-    bootstrap.fee_token = Some(DEFAULT_FEE_TOKEN);
-    let signature = sign_multisig(
-        account,
-        bootstrap.signature_hash(),
-        0,
-        &[alice, bob],
-        Some(config),
-    )?;
-    submit_local_raw_transaction(&mut env, bootstrap, signature).await?;
+    initial.fee_token = Some(DEFAULT_FEE_TOKEN);
+    let signature = sign_multisig(account, initial.signature_hash(), &config, &[alice, bob])?;
+    submit_local_raw_transaction(&mut env, initial, signature).await?;
 
-    let stored = stored_config(&env, account).await?;
-    assert_eq!(stored.version, 1);
-    assert_eq!(stored.threshold, 2);
+    assert_eq!(stored_config_commitment(&env, account).await?, B256::ZERO);
 
-    let mut initialized =
-        fill_multisig_transaction(&env, account, vec![no_op_call(0x82)], None, 1).await?;
-    initialized.fee_token = Some(DEFAULT_FEE_TOKEN);
-    let signature = sign_multisig(
+    let mut repeated = fill_multisig_transaction(
+        &env,
         account,
-        initialized.signature_hash(),
-        stored.version,
-        &[alice, bob],
-        None,
-    )?;
-    submit_local_raw_transaction(&mut env, initialized, signature).await?;
+        vec![no_op_call(0x82)],
+        config.clone(),
+        &owners,
+        1,
+    )
+    .await?;
+    repeated.fee_token = Some(DEFAULT_FEE_TOKEN);
+    let signature = sign_multisig(account, repeated.signature_hash(), &config, &[alice, bob])?;
+    submit_local_raw_transaction(&mut env, repeated, signature).await?;
 
     assert_eq!(env.provider().get_transaction_count(account).await?, 2);
     Ok(())

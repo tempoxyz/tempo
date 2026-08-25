@@ -24,7 +24,7 @@ use tempo_precompiles::{ACCOUNT_KEYCHAIN_ADDRESS, tip20::ITIP20};
 use tempo_primitives::{
     SignatureType, TempoTransaction, TempoTxEnvelope,
     transaction::{
-        FEE_PAYER_SIGNATURE_MARKER, InitMultisig, KeyAuthorization, MultisigOwner,
+        FEE_PAYER_SIGNATURE_MARKER, KeyAuthorization, MultisigConfig, MultisigOwner,
         MultisigSignature, multisig_digest,
         tempo_transaction::Call,
         tt_signature::{PrimitiveSignature, TempoSignature},
@@ -49,7 +49,7 @@ pub(super) fn multisig_config(
     salt: u8,
     threshold: u8,
     owners: &[(&PrivateKeySigner, u8)],
-) -> InitMultisig {
+) -> MultisigConfig {
     let owners = owners
         .iter()
         .map(|(signer, weight)| MultisigOwner {
@@ -59,15 +59,18 @@ pub(super) fn multisig_config(
         .collect::<Vec<_>>();
     assert!(owners.windows(2).all(|pair| pair[0].owner < pair[1].owner));
 
-    InitMultisig {
+    MultisigConfig {
         salt: B256::repeat_byte(salt),
+        version: 0,
         threshold,
         owners,
     }
 }
 
-pub(super) fn derived_account(config: &InitMultisig) -> eyre::Result<Address> {
-    config.account().map_err(|err| eyre::eyre!(err.as_str()))
+pub(super) fn derived_account(config: &MultisigConfig) -> eyre::Result<Address> {
+    config
+        .derive_account()
+        .map_err(|err| eyre::eyre!(err.as_str()))
 }
 
 pub(super) fn no_op_call(byte: u8) -> Call {
@@ -81,16 +84,15 @@ pub(super) fn no_op_call(byte: u8) -> Call {
 pub(super) fn sign_multisig(
     account: Address,
     inner_digest: B256,
-    version: u64,
+    config: &MultisigConfig,
     signers: &[&PrivateKeySigner],
-    init: Option<InitMultisig>,
 ) -> eyre::Result<TempoSignature> {
     assert!(
         signers
             .windows(2)
             .all(|pair| pair[0].address() < pair[1].address())
     );
-    let digest = multisig_digest(inner_digest, account, version);
+    let digest = multisig_digest(inner_digest, account, config.version);
     let approvals = signers
         .iter()
         .map(|signer| {
@@ -101,16 +103,17 @@ pub(super) fn sign_multisig(
         })
         .collect::<Result<Vec<_>, _>>()?;
 
-    multisig_from_approvals(account, approvals, init)
+    multisig_from_approvals(account, config, approvals)
 }
 
 fn multisig_from_approvals(
     account: Address,
+    config: &MultisigConfig,
     approvals: Vec<TempoSignature>,
-    init: Option<InitMultisig>,
 ) -> eyre::Result<TempoSignature> {
     Ok(TempoSignature::Multisig(
-        MultisigSignature::from_decoded(account, approvals, init).map_err(eyre::Report::msg)?,
+        MultisigSignature::from_decoded(account, config.clone(), approvals)
+            .map_err(eyre::Report::msg)?,
     ))
 }
 
@@ -134,13 +137,13 @@ async fn reject<E: TestEnv>(
         .await
 }
 
-pub(super) async fn stored_config<E: TestEnv>(
+pub(super) async fn stored_config_commitment<E: TestEnv>(
     env: &E,
     account: Address,
-) -> eyre::Result<INativeMultisig::MultisigConfig> {
+) -> eyre::Result<B256> {
     Ok(
         INativeMultisigInstance::new(NATIVE_MULTISIG_ADDRESS, env.provider())
-            .getConfig(account)
+            .getConfigCommitment(account)
             .call()
             .await?,
     )
@@ -165,8 +168,7 @@ enum SponsorshipOrder {
 
 struct MultisigAuthorization {
     account: Address,
-    version: u64,
-    init: Option<InitMultisig>,
+    config: MultisigConfig,
 }
 
 async fn submit_sponsored<E: TestEnv>(
@@ -188,9 +190,8 @@ async fn submit_sponsored<E: TestEnv>(
             let signature = sign_multisig(
                 authorization.account,
                 tx.signature_hash(),
-                authorization.version,
+                &authorization.config,
                 owners,
-                authorization.init,
             )?;
             tx.fee_token = Some(DEFAULT_FEE_TOKEN);
             sign_fee_payer(&mut tx, authorization.account, fee_payer)?;
@@ -201,9 +202,8 @@ async fn submit_sponsored<E: TestEnv>(
             sign_multisig(
                 authorization.account,
                 tx.signature_hash(),
-                authorization.version,
+                &authorization.config,
                 owners,
-                authorization.init,
             )?
         }
     };
@@ -220,7 +220,7 @@ async fn submit_sponsored<E: TestEnv>(
     .await
 }
 
-async fn bootstrap_weighted_quorum<E: TestEnv>(
+async fn initial_weighted_quorum<E: TestEnv>(
     env: &mut E,
     salt: u8,
     alice: &PrivateKeySigner,
@@ -234,7 +234,7 @@ async fn bootstrap_weighted_quorum<E: TestEnv>(
     env.fund_account(account).await?;
 
     let tx = create_basic_aa_tx(env.chain_id(), 0, vec![no_op_call(salt)], EXAMPLE_GAS_LIMIT);
-    let signature = sign_multisig(account, tx.signature_hash(), 0, approvals, Some(config))?;
+    let signature = sign_multisig(account, tx.signature_hash(), &config, approvals)?;
     match expected {
         ExpectedOutcome::Success => {
             submit(env, tx, signature).await?;
@@ -245,7 +245,7 @@ async fn bootstrap_weighted_quorum<E: TestEnv>(
     Ok(())
 }
 
-async fn bootstrap_and_initialized<E: TestEnv>(
+async fn repeated_initial_authorization<E: TestEnv>(
     env: &mut E,
     alice: &PrivateKeySigner,
     bob: &PrivateKeySigner,
@@ -254,31 +254,16 @@ async fn bootstrap_and_initialized<E: TestEnv>(
     let account = derived_account(&config)?;
     env.fund_account(account).await?;
 
-    let bootstrap =
-        create_basic_aa_tx(env.chain_id(), 0, vec![no_op_call(0x11)], EXAMPLE_GAS_LIMIT);
-    let signature = sign_multisig(
-        account,
-        bootstrap.signature_hash(),
-        0,
-        &[alice, bob],
-        Some(config),
-    )?;
-    submit(env, bootstrap, signature).await?;
+    let initial = create_basic_aa_tx(env.chain_id(), 0, vec![no_op_call(0x11)], EXAMPLE_GAS_LIMIT);
+    let signature = sign_multisig(account, initial.signature_hash(), &config, &[alice, bob])?;
+    submit(env, initial, signature).await?;
 
-    let stored = stored_config(env, account).await?;
-    assert_eq!(stored.version, 1);
-    assert_eq!(stored.threshold, 2);
+    assert_eq!(stored_config_commitment(env, account).await?, B256::ZERO);
 
-    let initialized =
-        create_basic_aa_tx(env.chain_id(), 1, vec![no_op_call(0x12)], EXAMPLE_GAS_LIMIT);
-    let signature = sign_multisig(
-        account,
-        initialized.signature_hash(),
-        stored.version,
-        &[alice, bob],
-        None,
-    )?;
-    submit(env, initialized, signature).await?;
+    let repeated = create_basic_aa_tx(env.chain_id(), 1, vec![no_op_call(0x12)], EXAMPLE_GAS_LIMIT);
+    let signature = sign_multisig(account, repeated.signature_hash(), &config, &[alice, bob])?;
+    submit(env, repeated, signature).await?;
+    assert_eq!(stored_config_commitment(env, account).await?, B256::ZERO);
     Ok(())
 }
 
@@ -291,20 +276,19 @@ async fn nested_ownership<E: TestEnv>(
     let child = derived_account(&child_config)?;
     env.fund_account(child).await?;
 
-    let child_bootstrap =
+    let child_initial =
         create_basic_aa_tx(env.chain_id(), 0, vec![no_op_call(0x21)], EXAMPLE_GAS_LIMIT);
     let signature = sign_multisig(
         child,
-        child_bootstrap.signature_hash(),
-        0,
+        child_initial.signature_hash(),
+        &child_config,
         &[alice, bob],
-        Some(child_config),
     )?;
-    submit(env, child_bootstrap, signature).await?;
-    let child_version = stored_config(env, child).await?.version;
+    submit(env, child_initial, signature).await?;
 
-    let parent_config = InitMultisig {
+    let parent_config = MultisigConfig {
         salt: B256::repeat_byte(0x22),
+        version: 0,
         threshold: 1,
         owners: vec![MultisigOwner {
             owner: child,
@@ -314,20 +298,22 @@ async fn nested_ownership<E: TestEnv>(
     let parent = derived_account(&parent_config)?;
     env.fund_account(parent).await?;
 
-    let parent_bootstrap =
+    let parent_initial =
         create_basic_aa_tx(env.chain_id(), 0, vec![no_op_call(0x22)], EXAMPLE_GAS_LIMIT);
-    let parent_digest = multisig_digest(parent_bootstrap.signature_hash(), parent, 0);
-    let child_signature = sign_multisig(child, parent_digest, child_version, &[alice, bob], None)?;
-    let signature = multisig_from_approvals(parent, vec![child_signature], Some(parent_config))?;
-    submit(env, parent_bootstrap, signature).await?;
-    let parent_version = stored_config(env, parent).await?.version;
+    let parent_digest = multisig_digest(
+        parent_initial.signature_hash(),
+        parent,
+        parent_config.version,
+    );
+    let child_signature = sign_multisig(child, parent_digest, &child_config, &[alice, bob])?;
+    let signature = multisig_from_approvals(parent, &parent_config, vec![child_signature])?;
+    submit(env, parent_initial, signature).await?;
 
-    let initialized =
-        create_basic_aa_tx(env.chain_id(), 1, vec![no_op_call(0x23)], EXAMPLE_GAS_LIMIT);
-    let parent_digest = multisig_digest(initialized.signature_hash(), parent, parent_version);
-    let child_signature = sign_multisig(child, parent_digest, child_version, &[alice, bob], None)?;
-    let signature = multisig_from_approvals(parent, vec![child_signature], None)?;
-    submit(env, initialized, signature).await?;
+    let repeated = create_basic_aa_tx(env.chain_id(), 1, vec![no_op_call(0x23)], EXAMPLE_GAS_LIMIT);
+    let parent_digest = multisig_digest(repeated.signature_hash(), parent, parent_config.version);
+    let child_signature = sign_multisig(child, parent_digest, &child_config, &[alice, bob])?;
+    let signature = multisig_from_approvals(parent, &parent_config, vec![child_signature])?;
+    submit(env, repeated, signature).await?;
     Ok(())
 }
 
@@ -346,11 +332,7 @@ async fn fee_sponsorship<E: TestEnv>(
     submit_sponsored(
         env,
         create_basic_aa_tx(chain_id, 0, vec![no_op_call(0x31)], EXAMPLE_GAS_LIMIT),
-        MultisigAuthorization {
-            account,
-            version: 0,
-            init: Some(config),
-        },
+        MultisigAuthorization { account, config },
         &[alice, bob],
         &fee_payer,
         SponsorshipOrder::OwnersFirst,
@@ -363,11 +345,7 @@ async fn fee_sponsorship<E: TestEnv>(
     submit_sponsored(
         env,
         create_basic_aa_tx(chain_id, 0, vec![no_op_call(0x32)], EXAMPLE_GAS_LIMIT),
-        MultisigAuthorization {
-            account,
-            version: 0,
-            init: Some(config),
-        },
+        MultisigAuthorization { account, config },
         &[alice, bob],
         &fee_payer,
         SponsorshipOrder::FeePayerFirst,
@@ -377,24 +355,16 @@ async fn fee_sponsorship<E: TestEnv>(
     let config = multisig_config(0x33, 2, &[(alice, 1), (bob, 1)]);
     let account = derived_account(&config)?;
     env.fund_account(account).await?;
-    let bootstrap = create_basic_aa_tx(chain_id, 0, vec![no_op_call(0x33)], EXAMPLE_GAS_LIMIT);
-    let signature = sign_multisig(
-        account,
-        bootstrap.signature_hash(),
-        0,
-        &[alice, bob],
-        Some(config),
-    )?;
-    submit(env, bootstrap, signature).await?;
-    let version = stored_config(env, account).await?.version;
+    let initial = create_basic_aa_tx(chain_id, 0, vec![no_op_call(0x33)], EXAMPLE_GAS_LIMIT);
+    let signature = sign_multisig(account, initial.signature_hash(), &config, &[alice, bob])?;
+    submit(env, initial, signature).await?;
 
     submit_sponsored(
         env,
         create_basic_aa_tx(chain_id, 1, vec![no_op_call(0x34)], EXAMPLE_GAS_LIMIT),
         MultisigAuthorization {
             account,
-            version,
-            init: None,
+            config: config.clone(),
         },
         &[alice, bob],
         &fee_payer,
@@ -404,11 +374,7 @@ async fn fee_sponsorship<E: TestEnv>(
     submit_sponsored(
         env,
         create_basic_aa_tx(chain_id, 2, vec![no_op_call(0x35)], EXAMPLE_GAS_LIMIT),
-        MultisigAuthorization {
-            account,
-            version,
-            init: None,
-        },
+        MultisigAuthorization { account, config },
         &[alice, bob],
         &fee_payer,
         SponsorshipOrder::FeePayerFirst,
@@ -423,7 +389,7 @@ async fn weighted_quorum<E: TestEnv>(
     bob: &PrivateKeySigner,
     carol: &PrivateKeySigner,
 ) -> eyre::Result<()> {
-    bootstrap_weighted_quorum(
+    initial_weighted_quorum(
         env,
         0x41,
         alice,
@@ -433,7 +399,7 @@ async fn weighted_quorum<E: TestEnv>(
         ExpectedOutcome::Success,
     )
     .await?;
-    bootstrap_weighted_quorum(
+    initial_weighted_quorum(
         env,
         0x42,
         alice,
@@ -443,7 +409,7 @@ async fn weighted_quorum<E: TestEnv>(
         ExpectedOutcome::Success,
     )
     .await?;
-    bootstrap_weighted_quorum(
+    initial_weighted_quorum(
         env,
         0x43,
         alice,
@@ -453,7 +419,7 @@ async fn weighted_quorum<E: TestEnv>(
         ExpectedOutcome::Rejection,
     )
     .await?;
-    bootstrap_weighted_quorum(
+    initial_weighted_quorum(
         env,
         0x44,
         alice,
@@ -468,27 +434,13 @@ async fn weighted_quorum<E: TestEnv>(
     let account = derived_account(&config)?;
     env.fund_account(account).await?;
 
-    let bootstrap =
-        create_basic_aa_tx(env.chain_id(), 0, vec![no_op_call(0x45)], EXAMPLE_GAS_LIMIT);
-    let signature = sign_multisig(
-        account,
-        bootstrap.signature_hash(),
-        0,
-        &[alice, bob],
-        Some(config),
-    )?;
-    submit(env, bootstrap, signature).await?;
-    let version = stored_config(env, account).await?.version;
+    let initial = create_basic_aa_tx(env.chain_id(), 0, vec![no_op_call(0x45)], EXAMPLE_GAS_LIMIT);
+    let signature = sign_multisig(account, initial.signature_hash(), &config, &[alice, bob])?;
+    submit(env, initial, signature).await?;
 
     let alice_bob =
         create_basic_aa_tx(env.chain_id(), 1, vec![no_op_call(0x46)], EXAMPLE_GAS_LIMIT);
-    let signature = sign_multisig(
-        account,
-        alice_bob.signature_hash(),
-        version,
-        &[alice, bob],
-        None,
-    )?;
+    let signature = sign_multisig(account, alice_bob.signature_hash(), &config, &[alice, bob])?;
     submit(env, alice_bob, signature).await?;
 
     let alice_carol =
@@ -496,9 +448,8 @@ async fn weighted_quorum<E: TestEnv>(
     let signature = sign_multisig(
         account,
         alice_carol.signature_hash(),
-        version,
+        &config,
         &[alice, carol],
-        None,
     )?;
     submit(env, alice_carol, signature).await?;
 
@@ -507,9 +458,8 @@ async fn weighted_quorum<E: TestEnv>(
     let signature = sign_multisig(
         account,
         below_threshold.signature_hash(),
-        version,
+        &config,
         &[bob, carol],
-        None,
     )?;
     reject(env, below_threshold, signature).await?;
 
@@ -518,15 +468,14 @@ async fn weighted_quorum<E: TestEnv>(
     let signature = sign_multisig(
         account,
         excess_signature.signature_hash(),
-        version,
+        &config,
         &[alice, bob, carol],
-        None,
     )?;
     reject(env, excess_signature, signature).await?;
     Ok(())
 }
 
-async fn bootstrap_and_immediate_access_key_use<E: TestEnv>(
+async fn initial_and_immediate_access_key_use<E: TestEnv>(
     env: &mut E,
     alice: &PrivateKeySigner,
     bob: &PrivateKeySigner,
@@ -545,9 +494,8 @@ async fn bootstrap_and_immediate_access_key_use<E: TestEnv>(
     let authorization_signature = sign_multisig(
         account,
         authorization.signature_hash(),
-        0,
+        &config,
         &[alice, bob],
-        Some(config),
     )?;
 
     let mut tx = create_basic_aa_tx(env.chain_id(), 0, vec![no_op_call(0x51)], EXAMPLE_GAS_LIMIT);
@@ -555,12 +503,12 @@ async fn bootstrap_and_immediate_access_key_use<E: TestEnv>(
     let signature = sign_aa_tx_with_secp256k1_access_key(&tx, &access_key, account)?;
     submit(env, tx, signature).await?;
 
-    assert_eq!(stored_config(env, account).await?.version, 1);
+    assert_eq!(stored_config_commitment(env, account).await?, B256::ZERO);
     assert_active_key(env, account, access_key.address()).await?;
     Ok(())
 }
 
-async fn bootstrap_and_subsequent_access_key_use<E: TestEnv>(
+async fn initial_and_subsequent_access_key_use<E: TestEnv>(
     env: &mut E,
     alice: &PrivateKeySigner,
     bob: &PrivateKeySigner,
@@ -579,22 +527,15 @@ async fn bootstrap_and_subsequent_access_key_use<E: TestEnv>(
     let authorization_signature = sign_multisig(
         account,
         authorization.signature_hash(),
-        0,
+        &config,
         &[alice, bob],
-        None,
     )?;
 
-    let mut bootstrap =
+    let mut initial =
         create_basic_aa_tx(env.chain_id(), 0, vec![no_op_call(0x61)], EXAMPLE_GAS_LIMIT);
-    bootstrap.key_authorization = Some(authorization.into_signed(authorization_signature));
-    let signature = sign_multisig(
-        account,
-        bootstrap.signature_hash(),
-        0,
-        &[alice, bob],
-        Some(config),
-    )?;
-    submit(env, bootstrap, signature).await?;
+    initial.key_authorization = Some(authorization.into_signed(authorization_signature));
+    let signature = sign_multisig(account, initial.signature_hash(), &config, &[alice, bob])?;
+    submit(env, initial, signature).await?;
     assert_active_key(env, account, access_key.address()).await?;
 
     let access_key_tx =
@@ -614,19 +555,17 @@ async fn configuration_rotation<E: TestEnv>(
     let account = derived_account(&config)?;
     env.fund_account(account).await?;
 
-    let bootstrap =
-        create_basic_aa_tx(env.chain_id(), 0, vec![no_op_call(0x71)], EXAMPLE_GAS_LIMIT);
-    let signature = sign_multisig(
-        account,
-        bootstrap.signature_hash(),
-        0,
-        &[alice, bob],
-        Some(config),
-    )?;
-    submit(env, bootstrap, signature).await?;
-    let current_version = stored_config(env, account).await?.version;
-
+    let next_config = MultisigConfig {
+        salt: config.salt,
+        version: 1,
+        threshold: 1,
+        owners: vec![MultisigOwner {
+            owner: carol.address(),
+            weight: 1,
+        }],
+    };
     let update_call = INativeMultisig::updateConfigCall {
+        current: config.clone().into(),
         threshold: 1,
         owners: vec![INativeMultisig::MultisigOwner {
             owner: carol.address(),
@@ -635,7 +574,7 @@ async fn configuration_rotation<E: TestEnv>(
     };
     let rotation = create_basic_aa_tx(
         env.chain_id(),
-        1,
+        0,
         vec![Call {
             to: NATIVE_MULTISIG_ADDRESS.into(),
             value: Default::default(),
@@ -643,39 +582,23 @@ async fn configuration_rotation<E: TestEnv>(
         }],
         EXAMPLE_GAS_LIMIT,
     );
-    let signature = sign_multisig(
-        account,
-        rotation.signature_hash(),
-        current_version,
-        &[alice, bob],
-        None,
-    )?;
+    let signature = sign_multisig(account, rotation.signature_hash(), &config, &[alice, bob])?;
     submit(env, rotation, signature).await?;
 
-    let next_config = stored_config(env, account).await?;
-    assert_eq!(next_config.version, current_version + 1);
-    assert_eq!(next_config.threshold, 1);
-    assert_eq!(next_config.owners.len(), 1);
-    assert_eq!(next_config.owners[0].owner, carol.address());
+    assert_eq!(
+        stored_config_commitment(env, account).await?,
+        next_config
+            .commitment()
+            .map_err(|error| eyre::eyre!(error.as_str()))?
+    );
 
-    let stale_tx = create_basic_aa_tx(env.chain_id(), 2, vec![no_op_call(0x72)], EXAMPLE_GAS_LIMIT);
-    let stale_signature = sign_multisig(
-        account,
-        stale_tx.signature_hash(),
-        current_version,
-        &[alice, bob],
-        None,
-    )?;
+    let stale_tx = create_basic_aa_tx(env.chain_id(), 1, vec![no_op_call(0x72)], EXAMPLE_GAS_LIMIT);
+    let stale_signature =
+        sign_multisig(account, stale_tx.signature_hash(), &config, &[alice, bob])?;
     reject(env, stale_tx, stale_signature).await?;
 
-    let next_tx = create_basic_aa_tx(env.chain_id(), 2, vec![no_op_call(0x72)], EXAMPLE_GAS_LIMIT);
-    let signature = sign_multisig(
-        account,
-        next_tx.signature_hash(),
-        next_config.version,
-        &[carol],
-        None,
-    )?;
+    let next_tx = create_basic_aa_tx(env.chain_id(), 1, vec![no_op_call(0x72)], EXAMPLE_GAS_LIMIT);
+    let signature = sign_multisig(account, next_tx.signature_hash(), &next_config, &[carol])?;
     submit(env, next_tx, signature).await?;
     Ok(())
 }
@@ -684,12 +607,12 @@ pub(super) async fn run_tip_1061_examples<E: TestEnv>(env: &mut E) -> eyre::Resu
     let signers = sorted_signers();
     let (alice, bob, carol) = (&signers[0], &signers[1], &signers[2]);
 
-    bootstrap_and_initialized(env, alice, bob).await?;
+    repeated_initial_authorization(env, alice, bob).await?;
     nested_ownership(env, alice, bob).await?;
     fee_sponsorship(env, alice, bob).await?;
     weighted_quorum(env, alice, bob, carol).await?;
-    bootstrap_and_immediate_access_key_use(env, alice, bob).await?;
-    bootstrap_and_subsequent_access_key_use(env, alice, bob).await?;
+    initial_and_immediate_access_key_use(env, alice, bob).await?;
+    initial_and_subsequent_access_key_use(env, alice, bob).await?;
     configuration_rotation(env, alice, bob, carol).await?;
     Ok(())
 }
