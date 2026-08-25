@@ -302,7 +302,7 @@ pub struct Args {
     /// Offer the `tempo/1` subprotocol, which gossips finalization
     /// certificates between nodes. Off by default.
     #[arg(
-        long = "consensus.gossip.enabled",
+        long = "consensus.devp2p.finalizations",
         default_value_t = false,
         default_missing_value = "true",
         num_args = 0..=1,
@@ -315,11 +315,17 @@ pub struct Args {
     /// This bounds work on the follower driver. The same task acknowledges
     /// blocks to marshal, so the limit also bounds how much a certificate flood
     /// can delay block import.
-    #[arg(long = "consensus.gossip.verify-rate", default_value = "32")]
+    #[arg(
+        long = "consensus.devp2p.finalizations.verify-rate",
+        default_value = "32"
+    )]
     pub gossip_verify_rate: NonZeroU32,
 
     /// Frames accepted per second from a single connection.
-    #[arg(long = "consensus.gossip.peer-frame-rate", default_value = "8")]
+    #[arg(
+        long = "consensus.devp2p.finalizations.peer-frame-rate",
+        default_value = "8"
+    )]
     pub gossip_peer_frame_rate: NonZeroU32,
 
     /// Cache for the signing key loaded from CLI-provided file.
