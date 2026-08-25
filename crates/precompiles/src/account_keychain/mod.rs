@@ -1061,14 +1061,14 @@ impl AccountKeychain {
             }
         };
 
-        let use_sorted_duplicates = self.storage.spec().is_t11();
-        if use_sorted_duplicates && has_duplicates_sorted(rules.iter().map(|rule| rule.selector)) {
+        let sort_selectors = self.storage.spec().is_t11();
+        if sort_selectors && has_duplicates_sorted(rules.iter().map(|rule| rule.selector)) {
             return Err(AccountKeychainError::invalid_call_scope().into());
         }
 
         let mut selectors = HashSet::new();
         for rule in rules {
-            if !use_sorted_duplicates && !selectors.insert(rule.selector) {
+            if !sort_selectors && !selectors.insert(rule.selector) {
                 return Err(AccountKeychainError::invalid_call_scope().into());
             }
 
@@ -1080,19 +1080,10 @@ impl AccountKeychain {
                 return Err(AccountKeychainError::invalid_call_scope().into());
             }
 
-            if use_sorted_duplicates {
-                if rule.recipients.iter().any(|recipient| recipient.is_zero())
-                    || has_duplicates_sorted(rule.recipients.iter().copied())
-                {
-                    return Err(AccountKeychainError::invalid_call_scope().into());
-                }
-            } else {
-                let mut unique_recipients = HashSet::new();
-                for recipient in &rule.recipients {
-                    if recipient.is_zero() || !unique_recipients.insert(*recipient) {
-                        return Err(AccountKeychainError::invalid_call_scope().into());
-                    }
-                }
+            if rule.recipients.iter().any(|recipient| recipient.is_zero())
+                || has_duplicates_sorted(rule.recipients.iter().copied())
+            {
+                return Err(AccountKeychainError::invalid_call_scope().into());
             }
         }
 
