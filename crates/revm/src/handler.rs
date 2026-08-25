@@ -1209,7 +1209,7 @@ where
                     .flatten()
                     {
                         multisig
-                            .validate_authorization_state(signature, |_| Ok(()))
+                            .validate_authorization_state(signature)
                             .map_err(map_native_multisig_error::<DB>)?;
                     }
                     Ok(())

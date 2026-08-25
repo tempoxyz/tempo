@@ -27,7 +27,8 @@ use tempo_precompiles::{
 };
 use tempo_primitives::transaction::{
     Call, KeyAuthorization, KeychainSignature, MultisigConfig, MultisigOwner, MultisigSignature,
-    PrimitiveSignature, RecoveredTempoAuthorization, TempoSignature, TempoSignedAuthorization,
+    PrimitiveSignature, RecoveredTempoAuthorization, SignatureType, TempoSignature,
+    TempoSignedAuthorization,
     tt_signature::{P256SignatureWithPreHash, WebAuthnSignature},
 };
 

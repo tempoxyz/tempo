@@ -250,7 +250,7 @@ pub enum TempoInvalidTransaction {
         reason: String,
     },
 
-    /// Native multisig state, config, quorum, or authorization validation failed.
+    /// Native multisig state or configuration validation failed.
     ///
     /// This can depend on the account's current native multisig storage and is not treated as a
     /// bad transaction.
