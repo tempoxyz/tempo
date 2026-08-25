@@ -305,7 +305,7 @@ where
             ..
         } = self;
 
-        let actors = vec![
+        let mut actors = vec![
             driver.start(),
             executor.start(),
             feed.start(),
@@ -325,10 +325,10 @@ where
             ),
             upstream.start(driver_mailbox.to_event_reporter()),
         ];
-        let actors = actors
-            .into_iter()
-            .chain(gossip_actor.map(crate::gossip::Actor::start))
-            .collect::<Vec<_>>();
+
+        if let Some(gossip_actor) = gossip_actor {
+            actors.push(gossip_actor.start());
+        }
 
         // TODO: report which actor failed and why.
         if FuturesUnordered::from_iter(actors).next().await.is_some() {
