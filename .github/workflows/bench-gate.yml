@@ -28,7 +28,9 @@ jobs:
             const pull = context.payload.pull_request;
             const fork = pull.head.repo?.full_name !== `${context.repo.owner}/${context.repo.repo}`;
             const dependabot = pull.user.login === 'dependabot[bot]';
-            const exempt = fork || dependabot;
+            const trustedAuthor = ['OWNER', 'MEMBER', 'COLLABORATOR'].includes(pull.author_association);
+            const unsupportedAuthor = !trustedAuthor;
+            const exempt = fork || dependabot || unsupportedAuthor;
             if (!exempt) {
               await github.rest.issues.addLabels({
                 owner: context.repo.owner,
@@ -41,6 +43,8 @@ jobs:
               ? 'External fork PR is exempt from benchmarks'
               : dependabot
                 ? 'Dependabot PR is exempt from benchmarks'
+                : unsupportedAuthor
+                  ? `${pull.author_association} PR author is exempt from benchmarks`
                 : 'Waiting for the automatic benchmark';
 
             await github.rest.repos.createCommitStatus({

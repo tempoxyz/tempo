@@ -326,6 +326,11 @@ on:
         type: string
         required: false
         default: ""
+      trusted-harness-ref:
+        description: Trusted ref containing the benchmark harness. Empty uses the feature checkout.
+        type: string
+        required: false
+        default: ""
     secrets:
       TEMPO_TELEMETRY_URL:
         required: false
@@ -405,6 +410,7 @@ jobs:
       BENCH_COMMENT_ID: ${{ inputs.comment-id }}
       BENCH_PR_HEAD_SHA: ${{ inputs.pr-head-sha }}
       BENCH_PR_HEAD_REF: ${{ inputs.pr-head-ref }}
+      BENCH_TRUSTED_HARNESS_REF: ${{ inputs.trusted-harness-ref }}
       CLICKHOUSE_URL: ${{ secrets.CLICKHOUSE_URL }}
       CLICKHOUSE_USER: ${{ secrets.CLICKHOUSE_USER }}
       CLICKHOUSE_PASSWORD: ${{ secrets.CLICKHOUSE_PASSWORD }}
@@ -460,6 +466,7 @@ jobs:
 
       - name: Fetch GitHub token via STS
         id: github-sts
+        if: env.BENCH_TRUSTED_HARNESS_REF == ''
         uses: tempoxyz/gh-actions/actions/github-sts@183a02178c660ce295e9a262edc5857cb7135f06
         with:
           policy: bench-e2e
@@ -479,6 +486,16 @@ jobs:
           INPUT_GITHUB_REF: ${{ github.ref }}
         with:
           script: |
+            const trustedHarnessRef = process.env.BENCH_TRUSTED_HARNESS_REF;
+            if (trustedHarnessRef) {
+              if (!process.env.BENCH_PR_HEAD_SHA) {
+                core.setFailed('A trusted harness run requires a pinned PR head SHA');
+                return;
+              }
+              core.info(`Using trusted benchmark harness from ${trustedHarnessRef}`);
+              core.setOutput('ref', trustedHarnessRef);
+              return;
+            }
             // workflow_dispatch: always use the branch ref directly
             if (context.eventName === 'workflow_dispatch') {
               core.setOutput('ref', process.env.INPUT_GITHUB_REF);
@@ -502,6 +519,10 @@ jobs:
           persist-credentials: false
           fetch-depth: 0
           ref: ${{ steps.checkout-ref.outputs.ref }}
+
+      - name: Fetch pinned feature revision
+        if: env.BENCH_TRUSTED_HARNESS_REF
+        run: git fetch --no-tags origin "$BENCH_PR_HEAD_SHA"
 
       - name: Checkout ValScope report builder
         if: env.BENCH_VALSCOPE == 'true'
@@ -866,6 +887,13 @@ jobs:
           BASELINE_NAME: ${{ steps.refs.outputs.baseline-name }}
           FEATURE_NAME: ${{ steps.refs.outputs.feature-name }}
         run: |
+          if [ -n "$BENCH_TRUSTED_HARNESS_REF" ]; then
+            unset ACTIONS_ID_TOKEN_REQUEST_TOKEN ACTIONS_ID_TOKEN_REQUEST_URL
+            unset CLICKHOUSE_URL CLICKHOUSE_USER CLICKHOUSE_PASSWORD
+            unset TEMPO_TELEMETRY_URL BENCH_VICTORIAMETRICS_URL
+            unset VICTORIAMETRICS_URL VICTORIALOGS_URL
+            unset SLACK_BENCH_BOT_TOKEN SLACK_BENCH_CHANNEL
+          fi
           if [ "$BENCH_OTLP" != "true" ]; then
             unset TEMPO_TELEMETRY_URL
             unset GRAFANA_TEMPO

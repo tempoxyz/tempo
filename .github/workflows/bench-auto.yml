@@ -15,31 +15,25 @@ jobs:
     if: >-
       github.event.pull_request.head.repo.full_name == github.repository &&
       github.event.pull_request.user.login != 'dependabot[bot]' &&
-      contains(fromJSON('["OWNER", "MEMBER"]'), github.event.pull_request.author_association) &&
+      contains(fromJSON('["OWNER", "MEMBER", "COLLABORATOR"]'), github.event.pull_request.author_association) &&
       contains(github.event.pull_request.labels.*.name, 'benchmark') &&
       (github.event.action != 'labeled' || github.event.label.name == 'benchmark')
     permissions:
       contents: read
       id-token: write
-      issues: write
-      pull-requests: write
+      pull-requests: read
     uses: ./.github/workflows/bench-e2e.yml
     with:
       pr: ${{ github.event.pull_request.number }}
       actor: ${{ github.actor }}
+      baseline: ${{ github.event.pull_request.base.sha }}
+      baseline-name: ${{ github.event.pull_request.base.ref }}
+      no-slack: ${{ 'true' }} # zizmor: ignore[obfuscation] -- reusable input is a string
+      otlp: ${{ 'false' }} # zizmor: ignore[obfuscation] -- reusable input is a string
       pr-head-sha: ${{ github.event.pull_request.head.sha }}
       pr-head-ref: ${{ github.event.pull_request.head.ref }}
-    secrets:
-      TEMPO_TELEMETRY_URL: ${{ secrets.TEMPO_TELEMETRY_URL }}
-      GRAFANA_TEMPO: ${{ secrets.GRAFANA_TEMPO }}
-      CLICKHOUSE_URL: ${{ secrets.CLICKHOUSE_URL }}
-      CLICKHOUSE_USER: ${{ secrets.CLICKHOUSE_USER }}
-      CLICKHOUSE_PASSWORD: ${{ secrets.CLICKHOUSE_PASSWORD }}
-      BENCH_VICTORIAMETRICS_URL: ${{ secrets.BENCH_VICTORIAMETRICS_URL }}
-      VICTORIAMETRICS_URL: ${{ secrets.VICTORIAMETRICS_URL }}
-      VICTORIALOGS_URL: ${{ secrets.VICTORIALOGS_URL }}
-      SLACK_BENCH_BOT_TOKEN: ${{ secrets.SLACK_BENCH_BOT_TOKEN }}
-      SLACK_BENCH_CHANNEL: ${{ secrets.SLACK_BENCH_CHANNEL }}
+      run-type: gate
+      trusted-harness-ref: ${{ github.event.pull_request.base.sha }}
 
   complete-benchmark-gate:
     needs: benchmark
