@@ -360,13 +360,14 @@ impl StablecoinDEX {
         // Find and validate the trade route (book keys + direction for each hop)
         let route = self.find_trade_path(token_in, token_out)?;
         let simulate_fills = self.storage.spec().is_t9();
+        let mut storage_credits = StorageCreditDeltas::new();
 
-        self.with_quote_execution(|dex, storage_credits| {
+        let result = self.with_quote_execution(|dex| {
             let mut current_amount = amount_out;
             for (book_key, base_for_quote) in route.into_iter().rev() {
                 current_amount = if simulate_fills {
                     dex.fill_orders_exact_out(
-                        storage_credits,
+                        &mut storage_credits,
                         book_key,
                         base_for_quote,
                         current_amount,
@@ -377,7 +378,11 @@ impl StablecoinDEX {
                 };
             }
             Ok(current_amount)
-        })
+        });
+
+        // Quotes never flush maker storage credits; discard the simulated deltas with the fill.
+        drop(storage_credits);
+        result
     }
 
     /// Quotes the output amount received for exactly `amount_in` input tokens, routing through
@@ -400,13 +405,14 @@ impl StablecoinDEX {
         // Find and validate the trade route (book keys + direction for each hop)
         let route = self.find_trade_path(token_in, token_out)?;
         let simulate_fills = self.storage.spec().is_t9();
+        let mut storage_credits = StorageCreditDeltas::new();
 
-        self.with_quote_execution(|dex, storage_credits| {
+        let result = self.with_quote_execution(|dex| {
             let mut current_amount = amount_in;
             for (book_key, base_for_quote) in route {
                 current_amount = if simulate_fills {
                     dex.fill_orders_exact_in(
-                        storage_credits,
+                        &mut storage_credits,
                         book_key,
                         base_for_quote,
                         current_amount,
@@ -417,7 +423,11 @@ impl StablecoinDEX {
                 };
             }
             Ok(current_amount)
-        })
+        });
+
+        // Quotes never flush maker storage credits; discard the simulated deltas with the fill.
+        drop(storage_credits);
+        result
     }
 
     /// Executes the real swap fill path against a temporary state checkpoint.
@@ -425,20 +435,16 @@ impl StablecoinDEX {
     /// State, logs, transient storage, and speculative SSTORE refunds are discarded. Storage
     /// actions remain recorded, and a checkpoint-revert action invalidates precomputed replay for
     /// the enclosing transaction. Gas consumed by the simulation remains charged.
-    fn with_quote_execution<R>(
-        &mut self,
-        f: impl FnOnce(&mut Self, &mut StorageCreditDeltas) -> Result<R>,
-    ) -> Result<R> {
-        let mut storage_credits = StorageCreditDeltas::new();
+    fn with_quote_execution<R>(&mut self, f: impl FnOnce(&mut Self) -> Result<R>) -> Result<R> {
         if !self.storage.spec().is_t9() {
-            return f(self, &mut storage_credits);
+            return f(self);
         }
 
         let actions = self.storage.actions();
         actions.reverted(|| {
             let _checkpoint = self.storage.checkpoint();
             let refunds_before = self.storage.gas_refunded();
-            let result = f(self, &mut storage_credits);
+            let result = f(self);
 
             // Journal checkpoints do not include the precompile gas tracker. Retain gas charges,
             // but remove refunds earned by storage clears that are about to be reverted.
