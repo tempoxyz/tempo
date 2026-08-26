@@ -57,8 +57,6 @@ pub(super) struct Config<P, M, E = crate::follow::executor::Mailbox> {
 
     pub(super) marshal: M,
     pub(super) executor: E,
-    /// Gossip actor notified after authenticated boundary schemes are installed.
-    pub(super) gossip: Option<crate::gossip::Mailbox>,
 
     pub(super) epoch_strategy: FixedEpocher,
 }

@@ -3,8 +3,8 @@
 //! The transport in `tempo-node` treats frame payloads as opaque and presents a
 //! logical peer lifecycle. Consensus decides what each frame means. This module
 //! defines the types shared by the transport-facing actor and follower driver.
-//! The driver owns the epoch schemes, so only the driver can verify a
-//! certificate.
+//! In follow mode, the actor delegates inbound certificate verification to the
+//! driver. Validator instances are publish-only.
 
 use std::{future::Future, num::NonZeroU32};
 
@@ -14,16 +14,15 @@ mod metrics;
 #[cfg(test)]
 mod test;
 
-pub(crate) use actor::{Actor, init};
-#[cfg(test)]
-pub(crate) use ingress::Message;
-pub(crate) use ingress::{Mailbox, channel};
+pub(crate) use actor::Actor;
+pub(crate) use ingress::Mailbox;
 
 use commonware_consensus::{
     simplex::{scheme::bls12381_threshold::vrf::Scheme, types::Finalization},
     types::{Epoch, Height},
 };
 use commonware_cryptography::{bls12381::primitives::variant::MinSig, ed25519::PublicKey};
+use commonware_runtime::{Clock, Metrics as RuntimeMetrics, Spawner};
 use tokio::sync::oneshot;
 
 use crate::consensus::Digest;
@@ -32,8 +31,20 @@ use crate::consensus::Digest;
 pub struct Config {
     /// The consensus layer's end of the `tempo/1` transport.
     pub transport: tempo_node::gossip::TransportHandle,
-    /// Maximum driver judgements per second across all peers.
+    /// Maximum inbound certificate judgements per second across all peers.
     pub verify_rate: NonZeroU32,
+}
+
+pub(crate) fn init<TContext, K, P, M>(
+    context: TContext,
+    config: actor::Config<K, P, M>,
+) -> (Actor<TContext, K, P, M>, Mailbox)
+where
+    TContext: Clock + RuntimeMetrics + Spawner,
+{
+    let (mailbox, receiver) = ingress::channel();
+    let actor = actor::init(context, config, receiver);
+    (actor, mailbox)
 }
 
 pub(crate) type NetworkPeerControl = reth_ethereum::network::NetworkHandle<
@@ -72,7 +83,7 @@ pub(crate) enum CertificateError {
     /// the new key from an authenticated boundary.
     #[error("certificate requires a scheme for epoch {epoch}")]
     NeedsScheme {
-        /// Certificate epoch, used to retry after a boundary installs its scheme or a later one.
+        /// Certificate epoch, used to retry after its scheme is registered.
         epoch: Epoch,
     },
 }
