@@ -1029,7 +1029,11 @@ where
         {
             hashed_state
         } else {
-            Arc::new(finish_provider.hashed_post_state(&db.bundle_state))
+            Arc::new(
+                finish_provider
+                    .hashed_post_state(&db.bundle_state)
+                    .map_err(PayloadBuilderError::other)?,
+            )
         };
 
         let (state_root_outcome, sparse_trie_state_root_wait_elapsed) =

@@ -49,7 +49,6 @@ use alloy_hardforks::hardfork;
 ///   - `tempo_fork_activation()` (required — the only method implementors provide)
 ///   - `tempo_hardfork_at()` — walks `VARIANTS` in reverse to find the latest active fork
 ///   - `is_<fork>_active_at_timestamp()` — per-fork convenience helpers
-///   - `shared_gas_limit_at()` — shared gas limit lookup by timestamp
 /// * Generates a `#[cfg(test)] mod tests` with activation, naming, trait, and serde tests
 ///
 /// `Genesis` (first variant) is treated as the baseline and does not get `is_*()` methods.
@@ -211,6 +210,18 @@ tempo_hardfork! (
         ///
         /// See <https://docs.tempo.xyz/docs/protocol/upgrades/t9>.
         T9,
+        /// T10 hardfork.
+        ///
+        /// See <https://docs.tempo.xyz/docs/protocol/upgrades/t10>.
+        T10,
+        /// T11 hardfork.
+        ///
+        /// See <https://docs.tempo.xyz/docs/protocol/upgrades/t11>.
+        T11,
+        /// T12 hardfork.
+        ///
+        /// See <https://docs.tempo.xyz/docs/protocol/upgrades/t12>.
+        T12,
     }
 );
 
@@ -283,6 +294,30 @@ impl TempoHardfork {
         gas::TEMPO_T1_NEW_NONCE_KEY_GAS
     }
 
+    /// Returns the expiring nonce replay-protection capacity.
+    pub const fn expiring_nonce_set_capacity(&self) -> u32 {
+        const PRE_T11_CAPACITY: u32 = 300_000;
+        const POST_T11_CAPACITY: u32 = 3_000_000;
+
+        if self.is_t11() {
+            POST_T11_CAPACITY
+        } else {
+            PRE_T11_CAPACITY
+        }
+    }
+
+    /// Returns the maximum expiring nonce validity window in seconds.
+    pub const fn expiring_nonce_max_expiry_secs(&self) -> u64 {
+        const PRE_T11_MAX_EXPIRY_SECS: u64 = 30;
+        const POST_T11_MAX_EXPIRY_SECS: u64 = 300;
+
+        if self.is_t11() {
+            POST_T11_MAX_EXPIRY_SECS
+        } else {
+            PRE_T11_MAX_EXPIRY_SECS
+        }
+    }
+
     /// Returns the active hardfork at the given timestamp for the specified chain.
     ///
     /// Returns `None` if the chain ID is not a known Tempo chain.
@@ -325,6 +360,9 @@ impl TempoHardfork {
             Self::T7 => None,
             Self::T8 => None,
             Self::T9 => None,
+            Self::T10 => None,
+            Self::T11 => None,
+            Self::T12 => None,
         }
     }
 
@@ -345,7 +383,10 @@ impl TempoHardfork {
             Self::T6 => Some(MAINNET_T6_TIMESTAMP),
             Self::T7 => Some(MAINNET_T7_TIMESTAMP),
             Self::T8 => Some(MAINNET_T8_TIMESTAMP),
-            Self::T9 => None,
+            Self::T9 => Some(MAINNET_T9_TIMESTAMP),
+            Self::T10 => Some(MAINNET_T10_TIMESTAMP),
+            Self::T11 => None,
+            Self::T12 => None,
         }
     }
 
@@ -367,6 +408,9 @@ impl TempoHardfork {
             Self::T7 => None,
             Self::T8 => None,
             Self::T9 => None,
+            Self::T10 => None,
+            Self::T11 => None,
+            Self::T12 => None,
         }
     }
 
@@ -387,7 +431,10 @@ impl TempoHardfork {
             Self::T6 => Some(MODERATO_T6_TIMESTAMP),
             Self::T7 => Some(MODERATO_T7_TIMESTAMP),
             Self::T8 => Some(MODERATO_T8_TIMESTAMP),
-            Self::T9 => None,
+            Self::T9 => Some(MODERATO_T9_TIMESTAMP),
+            Self::T10 => Some(MODERATO_T10_TIMESTAMP),
+            Self::T11 => None,
+            Self::T12 => None,
         }
     }
 }

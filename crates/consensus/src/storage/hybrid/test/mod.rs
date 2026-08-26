@@ -50,8 +50,7 @@ impl SetupHybrid {
         context: &TContext,
     ) -> (Hybrid<TContext, StubProvider>, StubProvider)
     where
-        TContext:
-            BufferPooler + Storage + Metrics + Clock + Spawner + Clone + Send + Sync + 'static,
+        TContext: BufferPooler + Storage + Metrics + Clock + Spawner + Send + Sync + 'static,
     {
         let prunable = fresh_prunable_with_section_size(context, self.section_size).await;
         let provider = StubProvider::new();

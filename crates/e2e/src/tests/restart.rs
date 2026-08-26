@@ -13,7 +13,7 @@ use commonware_runtime::{
 };
 use commonware_utils::NZU64;
 use futures::future::join_all;
-use rand_08::Rng;
+use rand::RngExt as _;
 use reth_ethereum::storage::BlockNumReader;
 use reth_node_metrics::recorder::install_prometheus_recorder;
 use tracing::debug;
@@ -269,7 +269,7 @@ impl RestartSetup {
             wait_for_height(&context, setup.how_many_signers, shutdown_height).await;
 
             // Randomly select a validator to kill
-            let idx = context.gen_range(0..validators.len());
+            let idx = context.random_range(0..validators.len());
             validators[idx].stop().await;
 
             debug!(public_key = %validators[idx].public_key(), "stopped a random validator");
@@ -318,17 +318,14 @@ async fn ensure_no_progress(context: &Context, tries: u32) {
         if height != baseline {
             panic!(
                 "height has changed, progress was made while the network was \
-                stopped: baseline = `{baseline}`, progressed_to = `{height}`"
+                stopped: baseline = `{baseline:?}`, progressed_to = `{height:?}`"
             );
         }
     }
 }
 
-fn max_consensus_height(metrics: &Metrics) -> u64 {
-    metrics
-        .values::<u64>("_marshal_processed_height")
-        .max()
-        .expect("processed height is a metric")
+fn max_consensus_height(metrics: &Metrics) -> Option<u64> {
+    metrics.values::<u64>("_marshal_processed_height").max()
 }
 
 enum ShutdownAfterFinalizing {
@@ -495,11 +492,19 @@ fn backfill_on_start_after_crash() {
         // Wait for the node to recover and produce past the pre-unwind height
         wait_for_height(&context, 1, el_before + 5).await;
 
-        // Verify EL actually persisted the recovered blocks
-        let el_recovered = validators[0]
-            .execution_provider()
-            .last_block_number()
-            .unwrap();
+        // Verify EL actually persisted the recovered blocks. Reth keeps recent
+        // canonical blocks in memory, so consensus progress can precede the DB.
+        let mut el_recovered = 0;
+        for _ in 0..10 {
+            el_recovered = validators[0]
+                .execution_provider()
+                .last_block_number()
+                .unwrap();
+            if el_recovered >= el_before {
+                break;
+            }
+            context.sleep(Duration::from_secs(1)).await;
+        }
         assert!(
             el_recovered >= el_before,
             "EL should have recovered to at least {el_before} after backfill, \

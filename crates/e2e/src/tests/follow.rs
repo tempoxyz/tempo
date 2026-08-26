@@ -22,7 +22,7 @@ use commonware_runtime::{
 };
 use futures::{channel::oneshot, future::join_all};
 use jsonrpsee::{core::client::ClientT as _, http_client::HttpClientBuilder, rpc_params};
-use rand_core::CryptoRngCore;
+use rand_core::CryptoRng;
 use reth_ethereum::provider::BlockIdReader as _;
 use tempo_consensus::{feed::FeedStateHandle, follow};
 use tempo_node::rpc::consensus::{ConsensusFeed as _, Query, types::Response};
@@ -179,7 +179,7 @@ impl FollowerBuilder {
         upstream: impl FeedStateProvider,
     ) -> Follower
     where
-        TContext: BufferPooler + Clock + CryptoRngCore + RuntimeMetrics + Pacer + Spawner + Storage,
+        TContext: BufferPooler + Clock + CryptoRng + RuntimeMetrics + Pacer + Spawner + Storage,
     {
         use tempo_consensus::follow::upstream::in_process;
         let Self {
@@ -231,7 +231,7 @@ impl FollowerBuilder {
             .expect("must be able to spawn follower execution node");
 
         let (upstream, upstream_mailbox) = in_process::init(
-            context.with_label("upstream"),
+            context.child("upstream"),
             in_process::Config {
                 execution_node: upstream_execution_node,
                 feed: upstream_feed_state,
@@ -253,16 +253,16 @@ impl FollowerBuilder {
             feed_state: feed_state.clone(),
             partition_prefix,
             epoch_strategy: FixedEpocher::new(commonware_utils::NZU64!(EPOCH_LENGTH)),
-            mailbox_size: 16_384,
+            mailbox_size: commonware_utils::NZUsize!(16_384),
+            upstream_request_timeout: Duration::from_secs(2),
             fcu_heartbeat_interval: Duration::from_secs(300),
             // Plenty of headroom for any test; the marshal will fall back to
             // reth past this depth via the hybrid finalized blocks store.
             finalized_blocks_retention: 1024,
-            strict_startup: true,
         };
 
         let handle = config
-            .try_init(context.with_label(&name))
+            .try_init(context.child(Box::leak(name.clone().into_boxed_str())))
             .await
             .expect("failed to initialize follow engine")
             .start();
@@ -303,23 +303,6 @@ impl MetricScope for Follower {
     }
 }
 
-/// Polls the feed until `query` resolves successfully.
-///
-/// Height queries resolve once marshal has stored both the certificate and
-/// block for that height.
-async fn wait_for_finalization<TContext: Clock>(
-    context: &TContext,
-    feed: &FeedStateHandle,
-    query: Query,
-) {
-    while !matches!(
-        feed.get_finalization(query.clone()).await,
-        Response::Success(..)
-    ) {
-        context.sleep(Duration::from_millis(100)).await;
-    }
-}
-
 #[test_traced]
 fn follower_bootstraps_from_validator() {
     let _ = tempo_eyre::install();
@@ -344,13 +327,16 @@ fn follower_bootstraps_from_validator() {
         follower.connect_peers(&validators).await;
 
         wait_for_height(&context, &follower, target_height).await;
-
         follower.feed.get_finalization(Query::Latest).await.unwrap();
 
         // The marshal floor only advances with actually processed blocks, so
         // the follower backfills the gap between its startup floor (genesis
         // for a fresh node) and the join point via gap repair.
-        wait_for_finalization(&context, &follower.feed, Query::Height(1)).await;
+        follower
+            .feed
+            .get_finalization(Query::Height(1))
+            .await
+            .unwrap();
     });
 }
 
@@ -379,20 +365,20 @@ fn follower_syncs_historical_state() {
         follower.connect_peers(&validators).await;
 
         wait_for_height(&context, &follower, follower_target_height).await;
-        wait_for_finalization(&context, &follower.feed, Query::Latest).await;
 
         // The follower syncs directly to the observed finalization rather than
-        // targeting an epoch boundary. Marshal may still backfill historical
-        // boundary certificates as part of its normal gap repair.
-        // The feed and Reth finalized tip show that the follower caught up
-        // independently of those certificates.
-        let reported_finalized_height = follower
-            .feed
-            .get_finalization(Query::Latest)
-            .await
-            .unwrap()
-            .block
-            .number();
+        // targeting an epoch boundary. The feed follows marshal's ordered block
+        // delivery, so wait for gap repair to advance it to the target.
+        let reported_finalized_height = loop {
+            if let Response::Success(block) = follower.feed.get_finalization(Query::Latest).await {
+                let height = block.block.number();
+                if height >= follower_target_height {
+                    break height;
+                }
+            }
+
+            context.sleep(Duration::from_millis(100)).await;
+        };
 
         let provider = &follower.execution_node.node.provider;
         let synced_height = loop {
@@ -497,12 +483,12 @@ fn follower_bootstraps_from_follower() {
             .await;
         follower_follower.connect_peers(&validators).await;
 
-        // Wait on the *primary*, but query the *secondary* follower. This
-        // should address all race conditions between a) the secondary follower
-        // starting, b) receving the finalized block, and c) propagating it to its
-        // consensus feed so that it can d) be queried successfully.
+        // Wait for the primary to progress far enough that the secondary has
+        // finalizations available to fetch.
         wait_for_height(&context, &validator_follower, target_height * 2).await;
 
+        // Height progress can precede ordered delivery into the secondary's
+        // consensus feed, so wait for the state this test actually asserts.
         follower_follower
             .feed
             .get_finalization(Query::Latest)

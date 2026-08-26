@@ -18,7 +18,6 @@ profile.json.gz
 .vscode
 **/.env
 **/.envrc
-!.envrc
 localnet/**
 
 .claude/

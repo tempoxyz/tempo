@@ -21,6 +21,7 @@ use commonware_cryptography::{
 use reth_primitives_traits::{SealedBlock, SealedOrRecoveredBlock};
 use std::fmt::Display;
 use tempo_payload_types::EncodedBlock;
+use tempo_primitives::TempoConsensusContext;
 use tracing::warn;
 
 use crate::consensus::Digest;
@@ -204,19 +205,9 @@ impl Block {
         Digest(self.execution_block.parent_hash())
     }
 
-    /// Returns the timestamp of the wrapped block.
-    pub(crate) fn timestamp(&self) -> u64 {
-        self.execution_block.timestamp()
-    }
-
     /// Returns the wrapped block.
     pub(crate) fn block(&self) -> &SealedBlock<tempo_primitives::Block> {
         self.execution_block.sealed_block()
-    }
-
-    /// Returns the wrapped execution block handle.
-    pub(crate) fn execution_block(&self) -> &SealedOrRecoveredBlock<tempo_primitives::Block> {
-        &self.execution_block
     }
 
     /// Returns the block access list of the wrapped block.
@@ -385,8 +376,8 @@ impl commonware_consensus::CertifiableBlock for Block {
     fn context(&self) -> Self::Context {
         match self.consensus_context {
             Some(ctx) => Context {
-                leader: ctx.proposer.get().into(),
-                round: Round::new(Epoch::new(ctx.epoch), View::new(ctx.view)),
+                leader: ctx.proposer.to_inner(),
+                round: round_from_context(ctx),
                 parent: (View::new(ctx.parent_view), self.parent_digest()),
             },
             None => {
@@ -410,6 +401,10 @@ impl commonware_consensus::CertifiableBlock for Block {
             }
         }
     }
+}
+
+pub(crate) fn round_from_context(context: TempoConsensusContext) -> Round {
+    Round::new(Epoch::new(context.epoch), View::new(context.view))
 }
 
 fn validate_block_access_list_hash(
