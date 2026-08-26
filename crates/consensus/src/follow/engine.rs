@@ -147,14 +147,6 @@ impl<TUpstream> Config<TUpstream> {
             },
         );
 
-        // Create the channel first. The driver needs its sender, while the
-        // gossip actor cannot be built until the driver provides its capability.
-        let (gossip_mailbox, gossip_receiver) = self
-            .gossip
-            .as_ref()
-            .map(|_| crate::gossip::channel())
-            .unzip();
-
         let (feed_actor, feed_mailbox) = feed::init(
             context.child("feed"),
             marshal_mailbox.clone(),
@@ -189,28 +181,27 @@ impl<TUpstream> Config<TUpstream> {
                 last_finalized_height,
                 marshal: marshal_mailbox.clone(),
                 executor: executor_mailbox.clone(),
-                gossip: gossip_mailbox.clone(),
                 epoch_strategy: epoch_strategy.clone(),
             },
         )
         .wrap_err("failed initializing driver actor")?;
 
-        let gossip_actor = self
+        let (gossip_actor, gossip_mailbox) = self
             .gossip
-            .zip(gossip_receiver)
-            .map(|(gossip_config, receiver)| {
+            .map(|gossip_config| {
                 crate::gossip::init(
                     context.child("gossip"),
                     crate::gossip::actor::Config {
                         verify_rate: gossip_config.verify_rate,
                         transport: gossip_config.transport,
-                        mailbox: receiver,
+                        scheme_provider: scheme_provider.clone(),
                         peer_control: self.execution_node.network.clone(),
                         driver: driver_mailbox.clone(),
                         marshal: marshal_mailbox,
                     },
                 )
-            });
+            })
+            .unzip();
 
         Ok(Engine {
             context: ContextCell::new(context),

@@ -365,10 +365,6 @@ where
             }
 
             self.current_epoch = self.current_epoch.max(onchain_outcome.epoch);
-
-            if let Some(gossip) = &self.config.gossip {
-                gossip.boundary_scheme_installed(onchain_outcome.epoch);
-            }
         }
 
         // Always acknowledge last. Marshal waits for every consumer before it

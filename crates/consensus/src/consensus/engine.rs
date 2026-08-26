@@ -235,36 +235,30 @@ where
             })
         });
 
-        // Validator gossip is publish-only. Marshal sends stored tips to the
-        // actor, and the transport discards inbound frames.
-        let (gossip_mailbox, gossip_receiver) = self
-            .gossip
-            .as_ref()
-            .map(|_| crate::gossip::channel())
-            .unzip();
-
         let (feed, feed_mailbox) = crate::feed::init(
             context.child("feed"),
             marshal_mailbox.clone(),
             self.feed_state,
         );
 
-        let gossip_actor = self
+        // Validator gossip is publish-only. Marshal sends durable tips to the
+        // actor, and the transport discards inbound frames.
+        let (gossip_actor, gossip_mailbox) = self
             .gossip
-            .zip(gossip_receiver)
-            .map(|(gossip_config, receiver)| {
+            .map(|gossip_config| {
                 crate::gossip::init(
                     context.child("gossip"),
                     crate::gossip::actor::Config {
                         verify_rate: gossip_config.verify_rate,
                         transport: gossip_config.transport,
-                        mailbox: receiver,
+                        scheme_provider: scheme_provider.clone(),
                         peer_control: execution_node.network.clone(),
                         driver: crate::gossip::PublishOnlySink,
                         marshal: marshal_mailbox.clone(),
                     },
                 )
-            });
+            })
+            .unzip();
 
         let (application, application_mailbox) = application::init(super::application::Config {
             context: context.child("application"),

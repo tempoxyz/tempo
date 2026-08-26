@@ -64,7 +64,6 @@ fn startup_uses_previous_execution_boundary() {
                 last_finalized_height: finalized_height,
                 marshal: StubMarshal::default(),
                 executor: StubExecutor::default(),
-                gossip: None,
                 epoch_strategy: strategy,
             },
         );
@@ -94,7 +93,6 @@ fn startup_propagates_finalized_block_read_failure() {
                 last_finalized_height: Height::zero(),
                 marshal: StubMarshal::default(),
                 executor: StubExecutor::default(),
-                gossip: None,
                 epoch_strategy: FixedEpocher::new(EPOCH_LENGTH),
             },
         );
@@ -122,7 +120,6 @@ fn startup_requires_execution_boundary_header() {
                 last_finalized_height: Height::zero(),
                 marshal: StubMarshal::default(),
                 executor: StubExecutor::default(),
-                gossip: None,
                 epoch_strategy: FixedEpocher::new(EPOCH_LENGTH),
             },
         );
@@ -156,7 +153,6 @@ fn valid_finalization_is_certified_and_reported() {
                 last_finalized_height: Height::zero(),
                 marshal: marshal.clone(),
                 executor: executor.clone(),
-                gossip: None,
                 epoch_strategy: FixedEpocher::new(EPOCH_LENGTH),
             },
         )
@@ -218,7 +214,6 @@ fn network_identity_verifies_finalization_when_epoch_scheme_is_missing() {
                 last_finalized_height: Height::zero(),
                 marshal: marshal.clone(),
                 executor: executor.clone(),
-                gossip: None,
                 epoch_strategy: FixedEpocher::new(EPOCH_LENGTH),
             },
         )
@@ -264,7 +259,6 @@ fn gossiped_certificate_is_admitted_and_nudges_the_execution_layer() {
         let marshal = StubMarshal::default();
         let executor = StubExecutor::default();
         let schemes = SchemeProvider::new();
-        let (gossip, mut gossip_messages) = crate::gossip::channel();
 
         let (actor, mailbox) = try_init(
             context.child("driver"),
@@ -278,12 +272,12 @@ fn gossiped_certificate_is_admitted_and_nudges_the_execution_layer() {
                 last_finalized_height: Height::zero(),
                 marshal: marshal.clone(),
                 executor: executor.clone(),
-                gossip: Some(gossip),
                 epoch_strategy: FixedEpocher::new(EPOCH_LENGTH),
             },
         )
         .expect("driver should initialize");
 
+        let mut scheme_registrations = schemes.subscribe_registrations();
         actor.start();
 
         let block = make_block(EPOCH_LENGTH.get() * 2 + 1, None);
@@ -309,9 +303,12 @@ fn gossiped_certificate_is_admitted_and_nudges_the_execution_layer() {
             schemes.scoped(network_fixture.outcome.epoch).is_some(),
             "marshal needs the successful fallback to re-verify the resolved block",
         );
-        assert!(
-            gossip_messages.try_recv().is_err(),
-            "caching a successful fallback is not authenticated boundary progress",
+        assert_eq!(
+            scheme_registrations
+                .recv()
+                .await
+                .expect("successful fallback should register its scheme"),
+            network_fixture.outcome.epoch,
         );
         // The driver reports only the certificate to marshal.
         assert_eq!(marshal.report_count(), 1);
@@ -339,7 +336,7 @@ fn gossiped_certificate_is_admitted_and_nudges_the_execution_layer() {
 struct Rig {
     mailbox: super::Mailbox,
     marshal: StubMarshal,
-    gossip_messages: tokio::sync::mpsc::UnboundedReceiver<crate::gossip::Message>,
+    scheme_registrations: tokio::sync::broadcast::Receiver<Epoch>,
     fixture: DkgFixture,
 }
 
@@ -350,13 +347,13 @@ fn start_rig(context: &mut deterministic::Context) -> Rig {
     provider.add_header(&startup_block);
 
     let marshal = StubMarshal::default();
-    let (gossip, gossip_messages) = crate::gossip::channel();
+    let schemes = SchemeProvider::new();
 
     let (actor, mailbox) = try_init(
         context.child("driver"),
         Config {
             execution_provider: provider,
-            scheme_provider: SchemeProvider::new(),
+            scheme_provider: schemes.clone(),
             network_identity: NetworkIdentity {
                 from_epoch: 0,
                 identity: *fixture.outcome.network_identity(),
@@ -364,17 +361,17 @@ fn start_rig(context: &mut deterministic::Context) -> Rig {
             last_finalized_height: Height::zero(),
             marshal: marshal.clone(),
             executor: StubExecutor::default(),
-            gossip: Some(gossip),
             epoch_strategy: FixedEpocher::new(EPOCH_LENGTH),
         },
     )
     .expect("driver should initialize");
+    let scheme_registrations = schemes.subscribe_registrations();
     actor.start();
 
     Rig {
         mailbox,
         marshal,
-        gossip_messages,
+        scheme_registrations,
         fixture,
     }
 }
@@ -494,11 +491,9 @@ fn gossiped_certificate_failing_registered_scheme_is_invalid() {
     });
 }
 
-/// A boundary block provides the scheme for the next epoch. Certificates that
-/// need this scheme cannot be retried until the driver announces it. Polling
-/// cannot discover the new scheme.
+/// A boundary block provides the scheme for the next epoch.
 #[test_traced]
-fn installing_a_boundary_scheme_is_announced() {
+fn installing_a_boundary_scheme_is_observable() {
     deterministic::Runner::default().start(|mut context| async move {
         let mut rig = start_rig(&mut context);
         let next = dkg_fixture(&mut context, Epoch::new(1));
@@ -514,11 +509,13 @@ fn installing_a_boundary_scheme_is_announced() {
             .report(Update::Block(block.into(), ack));
         waiter.await.expect("the update should be acknowledged");
 
-        assert!(matches!(
-            rig.gossip_messages.recv().await,
-            Some(crate::gossip::Message::BoundarySchemeInstalled { epoch })
-                if epoch == Epoch::new(1)
-        ));
+        assert_eq!(
+            rig.scheme_registrations
+                .recv()
+                .await
+                .expect("boundary scheme should be observed"),
+            Epoch::new(1),
+        );
     });
 }
 
@@ -552,7 +549,6 @@ fn unverifiable_gossiped_certificate_is_not_blamed_on_the_sender() {
                 last_finalized_height: Height::zero(),
                 marshal: marshal.clone(),
                 executor: executor.clone(),
-                gossip: None,
                 epoch_strategy: strategy,
             },
         )
@@ -615,7 +611,6 @@ fn upstream_finalization_failing_registered_scheme_is_dropped_without_hint() {
                 last_finalized_height: Height::zero(),
                 marshal: marshal.clone(),
                 executor: executor.clone(),
-                gossip: None,
                 epoch_strategy: strategy,
             },
         )
@@ -683,7 +678,6 @@ fn finalization_failing_the_identity_fallback_hints_current_epoch_boundary() {
                 last_finalized_height: Height::zero(),
                 marshal: marshal.clone(),
                 executor: executor.clone(),
-                gossip: None,
                 epoch_strategy: strategy,
             },
         )
@@ -734,7 +728,6 @@ fn mismatched_finalization_digest_is_dropped_without_stopping_driver() {
                 last_finalized_height: Height::zero(),
                 marshal: marshal.clone(),
                 executor: executor.clone(),
-                gossip: None,
                 epoch_strategy: FixedEpocher::new(EPOCH_LENGTH),
             },
         )
@@ -801,7 +794,6 @@ fn scheme_before_network_identity_epoch_is_required() {
                 last_finalized_height: Height::zero(),
                 marshal: marshal.clone(),
                 executor: executor.clone(),
-                gossip: None,
                 epoch_strategy: FixedEpocher::new(EPOCH_LENGTH),
             },
         )
@@ -856,7 +848,6 @@ fn gossiped_certificate_without_a_usable_identity_needs_scheme() {
                 last_finalized_height: Height::zero(),
                 marshal: marshal.clone(),
                 executor: executor.clone(),
-                gossip: None,
                 epoch_strategy: FixedEpocher::new(EPOCH_LENGTH),
             },
         )
@@ -922,7 +913,6 @@ fn boundary_update_registers_scheme_before_acknowledging() {
                 last_finalized_height: Height::zero(),
                 marshal: StubMarshal::default(),
                 executor: StubExecutor::default(),
-                gossip: None,
                 epoch_strategy: strategy,
             },
         )
@@ -963,7 +953,6 @@ fn non_boundary_update_is_acknowledged_without_registering_a_scheme() {
                 last_finalized_height: Height::zero(),
                 marshal: StubMarshal::default(),
                 executor: StubExecutor::default(),
-                gossip: None,
                 epoch_strategy: FixedEpocher::new(EPOCH_LENGTH),
             },
         )
@@ -1021,7 +1010,6 @@ fn startup_installs_missing_consensus_epoch_scheme_from_marshal() {
                 last_finalized_height,
                 marshal: marshal.clone(),
                 executor: executor.clone(),
-                gossip: None,
                 epoch_strategy: strategy,
             },
         )
@@ -1058,7 +1046,6 @@ fn non_finalized_events_are_ignored() {
                 last_finalized_height: Height::zero(),
                 marshal: marshal.clone(),
                 executor: executor.clone(),
-                gossip: None,
                 epoch_strategy: FixedEpocher::new(EPOCH_LENGTH),
             },
         )

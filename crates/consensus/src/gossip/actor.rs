@@ -1,8 +1,9 @@
 //! The `tempo/1` actor.
 //!
-//! The actor admits and schedules peer certificates for driver judgment, then
-//! publishes certificates after marshal confirms they are durable. It uses the
-//! runtime clock so scheduling and rate limits work in deterministic tests.
+//! The actor publishes certificates after marshal confirms they are durable. In
+//! follow mode, it also admits and schedules peer certificates for verification.
+//! It uses the runtime clock so scheduling and rate limits work in deterministic
+//! tests.
 
 use std::{collections::HashMap, num::NonZeroU32};
 
@@ -16,13 +17,17 @@ use commonware_runtime::{
 };
 use futures::{FutureExt as _, future::BoxFuture};
 use tempo_node::gossip::{Frame, PeerControl, PeerEvent, TransportHandle, TransportSender, wire};
-use tokio::{select, sync::mpsc};
+use tokio::{
+    select,
+    sync::{broadcast, mpsc},
+};
 use tracing::debug;
 
 use super::{
-    Certificate, CertificateError, CertificateMailbox, Marshal, ingress::Message, metrics::Metrics,
+    Certificate, CertificateError, CertificateMailbox, Marshal, ingress::FinalizedTip,
+    metrics::Metrics,
 };
-use crate::utils::OptionFuture;
+use crate::{epoch::SchemeProvider, utils::OptionFuture};
 
 /// Hash of the exact frame bytes used to match duplicate peer slots.
 ///
@@ -112,26 +117,28 @@ type PeerKey = alloy_primitives::B512;
 
 /// Inputs and limits for the `tempo/1` actor.
 pub(crate) struct Config<K, P, M = crate::alias::marshal::Mailbox> {
-    /// Maximum driver judgements per second across all peers.
+    /// Maximum inbound certificate judgements per second across all peers.
     ///
-    /// Each signature check runs on the driver task, which also acknowledges
-    /// blocks to marshal. This limit bounds how much a flood can delay block import.
+    /// In follow mode, each signature check runs on the driver task, which also
+    /// acknowledges blocks to marshal. This limit bounds how much a flood can
+    /// delay block import.
     pub(crate) verify_rate: NonZeroU32,
     /// The consensus layer's end of the `tempo/1` transport.
     pub(crate) transport: TransportHandle,
-    /// Marshal notifications that trigger durable publication and scheme retries.
-    pub(crate) mailbox: mpsc::UnboundedReceiver<Message>,
+    /// Scheme availability used to retry quarantined inbound certificates.
+    pub(crate) scheme_provider: SchemeProvider,
     /// Reputation control for peers that misbehave.
     pub(crate) peer_control: P,
-    /// Driver capability that verifies and processes peer certificates.
+    /// Capability used to verify and process inbound peer certificates.
     pub(crate) driver: K,
     /// Retrieves certificates after marshal announces their persisted tips.
     pub(crate) marshal: M,
 }
 
-pub(crate) fn init<TContext, K, P, M>(
+pub(super) fn init<TContext, K, P, M>(
     context: TContext,
     config: Config<K, P, M>,
+    mailbox: mpsc::UnboundedReceiver<FinalizedTip>,
 ) -> Actor<TContext, K, P, M>
 where
     TContext: Clock + RuntimeMetrics + Spawner,
@@ -139,11 +146,14 @@ where
     let metrics = Metrics::init(&context);
     let quota = Quota::per_second(config.verify_rate);
     let limiter_context = context.child("verify_limiter");
+    let scheme_registrations = config.scheme_provider.subscribe_registrations();
 
     Actor {
         verify_limiter: RateLimiter::direct_with_clock(quota, limiter_context),
         context: ContextCell::new(context),
         config,
+        mailbox,
+        scheme_registrations,
         peers: HashMap::new(),
         latest: None,
         pending: OptionFuture::none(),
@@ -157,6 +167,8 @@ where
 pub(crate) struct Actor<TContext: Clock, K, P, M = crate::alias::marshal::Mailbox> {
     context: ContextCell<TContext>,
     config: Config<K, P, M>,
+    mailbox: mpsc::UnboundedReceiver<FinalizedTip>,
+    scheme_registrations: broadcast::Receiver<Epoch>,
 
     /// Active logical `tempo/1` peers and their certificate slots.
     ///
@@ -210,7 +222,23 @@ where
 
                 Some(event) = self.config.transport.control.recv() => self.on_peer(event),
 
-                Some(message) = self.config.mailbox.recv() => self.on_message(message).await,
+                Some(tip) = self.mailbox.recv() => self.on_finalized_tip(tip).await,
+
+                registration = self.scheme_registrations.recv() => {
+                    match registration {
+                        Ok(epoch) => {
+                            debug!(%epoch, "registered certificate verification scheme");
+                            self.metrics.scheme_registration_events.inc();
+                            self.release_quarantines();
+                        }
+                        Err(broadcast::error::RecvError::Lagged(skipped)) => {
+                            debug!(skipped, "scheme registration receiver lagged");
+                            self.metrics.scheme_registration_events.inc_by(skipped);
+                            self.release_quarantines();
+                        }
+                        Err(broadcast::error::RecvError::Closed) => return,
+                    }
+                }
 
                 Some(frame) = self.config.transport.frames.recv() => self.on_frame(frame),
             }
@@ -323,19 +351,16 @@ where
         self.try_dispatch();
     }
 
-    async fn on_message(&mut self, message: Message) {
-        match message {
-            Message::BoundarySchemeInstalled { epoch } => self.release_quarantines(epoch),
-            Message::FinalizedTip { round, height } => {
-                let Some(certificate) = self.config.marshal.get_finalization(height).await else {
-                    debug!(%height, "finalized tip is missing its persisted certificate");
-                    return;
-                };
-                self.advance_latest_verified_round(round);
-                let frame = wire::encode(&certificate).freeze().into();
-                self.publish(round, frame);
-            }
-        }
+    async fn on_finalized_tip(&mut self, tip: FinalizedTip) {
+        let FinalizedTip { round, height } = tip;
+        let Some(certificate) = self.config.marshal.get_finalization(height).await else {
+            debug!(%height, "finalized tip is missing its persisted certificate");
+            return;
+        };
+        debug_assert_eq!(round, certificate.proposal.round);
+        self.advance_latest_verified_round(round);
+        let frame = wire::encode(&certificate).freeze().into();
+        self.publish(round, frame);
     }
 
     fn publish(&mut self, round: Round, frame: Bytes) {
@@ -361,15 +386,17 @@ where
         self.relay(round, &frame);
     }
 
-    /// Releases live quarantines covered by an authenticated boundary scheme.
-    fn release_quarantines(&mut self, installed: Epoch) {
+    /// Releases live quarantines whose required schemes are now registered.
+    fn release_quarantines(&mut self) {
         let mut releasable: Vec<(ReadyTicket, PeerKey, Epoch)> = self
             .peers
             .iter()
             .filter_map(|(peer, state)| {
                 let slot = state.slot.as_ref()?;
                 match slot.state {
-                    SlotState::NeedsScheme(epoch) if epoch <= installed => {
+                    SlotState::NeedsScheme(epoch)
+                        if self.config.scheme_provider.contains(epoch) =>
+                    {
                         Some((slot.ready_ticket, *peer, epoch))
                     }
                     _ => None,
@@ -390,15 +417,13 @@ where
             debug!(
                 %peer,
                 %epoch,
-                %installed,
                 round = %slot.certificate.round(),
                 digest = %slot.certificate.proposal.payload,
-                "releasing quarantined certificate after boundary scheme installation",
+                "releasing quarantined certificate after scheme registration",
             );
             slot.state = SlotState::Ready;
             slot.ready_ticket = ready_ticket;
         }
-        self.metrics.boundary_scheme_events.inc();
         self.update_slot_metrics();
         if released {
             self.try_dispatch();
@@ -525,19 +550,16 @@ where
                 }
             }
             Err(CertificateError::NeedsScheme { epoch }) => {
-                // `NeedsScheme` is provisional.
+                // A missing scheme is provisional because the sender may be
+                // honest after an identity rotation. Keep the certificate until
+                // the provider can support a definitive judgement.
                 //
-                // This means that we cannot get a definitive judgement for the pending certificate.
-                // We might be lacking the scheme for the epoch the certificate requires or perhaps
-                // the certificate is forged.
-                //
-                // Because of that, we do not forget it nor settle it, we are going to quarantine it
-                // until the scheme for the epoch is installed.
-                //
-                // Once the scheme is installed, the pending certificate will be released and can be
-                // settled, potentially punishing the peer if forgery is detected.
+                // Registration can race with this judgement, so check the
+                // provider immediately after quarantining instead of relying
+                // only on the notification.
                 self.metrics.needs_scheme.inc();
                 self.quarantine(&pending, epoch);
+                self.release_quarantines();
             }
         }
     }
@@ -591,7 +613,7 @@ where
             certificate_epoch = %slot.certificate.epoch(),
             round = %pending.round,
             digest = %slot.certificate.proposal.payload,
-            "quarantining certificate until an authenticated boundary installs its scheme",
+            "quarantining certificate until its required scheme is registered",
         );
         slot.state = SlotState::NeedsScheme(required);
         self.update_slot_metrics();
