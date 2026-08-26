@@ -435,7 +435,7 @@ impl StablecoinDEX {
         }
 
         let actions = self.storage.actions();
-        actions.reverted(self.address, || {
+        actions.reverted(|| {
             let _checkpoint = self.storage.checkpoint();
             let refunds_before = self.storage.gas_refunded();
             let result = f(self, &mut storage_credits);

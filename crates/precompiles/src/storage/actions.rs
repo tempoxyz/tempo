@@ -9,7 +9,7 @@ pub enum StorageAction {
     ///
     /// Traces containing this action cannot be applied to a precomputed replay target and must be
     /// executed normally instead.
-    CheckpointRevert(Address),
+    CheckpointRevert,
     /// Records an SLOAD opcode.
     Sload(Address, U256, U256),
     /// Records an SSTORE opcode.
@@ -57,15 +57,15 @@ pub enum StorageAction {
 }
 
 impl StorageAction {
-    /// Returns the address of the storage action.
-    pub fn address(&self) -> Address {
+    /// Returns the address targeted by the storage action, or `None` for a replay marker.
+    pub fn address(&self) -> Option<Address> {
         match self {
-            Self::CheckpointRevert(address)
-            | Self::Sload(address, ..)
+            Self::CheckpointRevert => None,
+            Self::Sload(address, ..)
             | Self::Sstore(address, ..)
             | Self::Sinc(address, ..)
-            | Self::Sdec(address, ..) => *address,
-            Self::FeeAmmSwap(..) | Self::FeeAmmLiquidityCheck(..) => TIP_FEE_MANAGER_ADDRESS,
+            | Self::Sdec(address, ..) => Some(*address),
+            Self::FeeAmmSwap(..) | Self::FeeAmmLiquidityCheck(..) => Some(TIP_FEE_MANAGER_ADDRESS),
         }
     }
 }
@@ -156,10 +156,9 @@ impl StorageActions {
     ///
     /// All actions remain in the trace, followed by a [`StorageAction::CheckpointRevert`] marker
     /// that invalidates precomputed action replay for the enclosing transaction.
-    pub fn reverted<R>(&self, owner: Address, f: impl FnOnce() -> R) -> R {
+    pub fn reverted<R>(&self, f: impl FnOnce() -> R) -> R {
         let _guard = RevertedStorageActionsGuard {
             actions: self.clone(),
-            owner,
         };
         f()
     }
@@ -234,13 +233,11 @@ struct RecordedStorageActionsGuard {
 #[derive(Debug)]
 struct RevertedStorageActionsGuard {
     actions: StorageActions,
-    owner: Address,
 }
 
 impl Drop for RevertedStorageActionsGuard {
     fn drop(&mut self) {
-        self.actions
-            .record_always(StorageAction::CheckpointRevert(self.owner));
+        self.actions.record_always(StorageAction::CheckpointRevert);
     }
 }
 
@@ -369,7 +366,7 @@ mod tests {
         let before = StorageAction::Sload(address, key, U256::from(1));
 
         actions.record(before);
-        actions.reverted(address, || {
+        actions.reverted(|| {
             actions.record(StorageAction::Sstore(
                 address,
                 key,
@@ -378,7 +375,7 @@ mod tests {
             ));
             actions.record_always(StorageAction::FeeAmmSwap(key, U256::from(3), U256::from(4)));
 
-            actions.reverted(address, || {
+            actions.reverted(|| {
                 actions.record_always(StorageAction::FeeAmmLiquidityCheck(
                     key,
                     U256::from(5),
@@ -395,8 +392,8 @@ mod tests {
                 StorageAction::Sstore(address, key, U256::from(1), U256::from(2)),
                 StorageAction::FeeAmmSwap(key, U256::from(3), U256::from(4)),
                 StorageAction::FeeAmmLiquidityCheck(key, U256::from(5), U256::from(6), true,),
-                StorageAction::CheckpointRevert(address),
-                StorageAction::CheckpointRevert(address),
+                StorageAction::CheckpointRevert,
+                StorageAction::CheckpointRevert,
             ])
         );
     }

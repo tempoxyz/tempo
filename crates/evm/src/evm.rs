@@ -1203,7 +1203,7 @@ mod tests {
 
         for action in actions {
             match *action {
-                StorageAction::CheckpointRevert(_) => {
+                StorageAction::CheckpointRevert => {
                     panic!("checkpoint-reverted action traces are not replayable")
                 }
                 StorageAction::Sload(address, slot, value) => {
@@ -1234,7 +1234,8 @@ mod tests {
                     storage_state.reconstructed.insert(key, value);
                 }
                 StorageAction::FeeAmmSwap(slot, sload_value, amount_in) => {
-                    let key = (action.address(), slot);
+                    let action_address = action.address().expect("FeeAMM action has an address");
+                    let key = (action_address, slot);
                     let current =
                         storage_state.apply_sload_value(key, sload_value, "FeeAmmSwap", hardfork);
                     let mut pool = Pool::decode_from_slot(current);
@@ -1244,8 +1245,7 @@ mod tests {
                     )
                     .unwrap_or_else(|err| {
                         panic!(
-                            "FeeAmmSwap invalid for {:?}:{slot:?} on {hardfork:?}: {err}",
-                            action.address()
+                            "FeeAmmSwap invalid for {action_address:?}:{slot:?} on {hardfork:?}: {err}"
                         )
                     });
                     storage_state
@@ -1258,7 +1258,8 @@ mod tests {
                     amount_out,
                     has_enough_liquidity,
                 ) => {
-                    let key = (action.address(), slot);
+                    let action_address = action.address().expect("FeeAMM action has an address");
+                    let key = (action_address, slot);
                     let current = storage_state.apply_sload_value(
                         key,
                         sload_value,
@@ -1269,8 +1270,7 @@ mod tests {
                     assert_eq!(
                         pool.has_enough_reserve_validator_token(amount_out),
                         has_enough_liquidity,
-                        "FeeAmmLiquidityCheck mismatch for {:?}:{slot:?} on {hardfork:?}",
-                        action.address(),
+                        "FeeAmmLiquidityCheck mismatch for {action_address:?}:{slot:?} on {hardfork:?}",
                     );
                 }
             }
@@ -1316,9 +1316,7 @@ mod tests {
         actions
             .iter()
             .map(|action| match *action {
-                StorageAction::CheckpointRevert(address) => {
-                    format!("CheckpointRevert({})", labels.address(address))
-                }
+                StorageAction::CheckpointRevert => "CheckpointRevert".to_string(),
                 StorageAction::Sload(address, slot, value) => {
                     format!(
                         "Sload({}, {}, {value})",
@@ -1348,10 +1346,11 @@ mod tests {
                     )
                 }
                 StorageAction::FeeAmmSwap(slot, sload_value, amount_in) => {
+                    let address = action.address().expect("FeeAMM action has an address");
                     format!(
                         "FeeAmmSwap({}, {}, {sload_value}, {amount_in})",
-                        labels.address(action.address()),
-                        labels.slot(action.address(), slot),
+                        labels.address(address),
+                        labels.slot(address, slot),
                     )
                 }
                 StorageAction::FeeAmmLiquidityCheck(
@@ -1360,10 +1359,11 @@ mod tests {
                     amount_out,
                     has_enough_liquidity,
                 ) => {
+                    let address = action.address().expect("FeeAMM action has an address");
                     format!(
                         "FeeAmmLiquidityCheck({}, {}, {slot_value}, {amount_out}, {has_enough_liquidity})",
-                        labels.address(action.address()),
-                        labels.slot(action.address(), slot),
+                        labels.address(address),
+                        labels.slot(address, slot),
                     )
                 }
             })

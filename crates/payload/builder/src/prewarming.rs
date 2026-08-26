@@ -257,7 +257,7 @@ impl BestTransactionsPrewarming {
 fn action_replay_invalidated(actions: &[StorageAction]) -> bool {
     actions
         .iter()
-        .any(|action| matches!(action, StorageAction::CheckpointRevert(_)))
+        .any(|action| matches!(action, StorageAction::CheckpointRevert))
 }
 
 impl Drop for BestTransactionsPrewarming {
@@ -530,7 +530,7 @@ mod tests {
     fn checkpoint_revert_invalidates_action_replay() {
         assert!(!action_replay_invalidated(&[]));
         assert!(action_replay_invalidated(&[
-            StorageAction::CheckpointRevert(Address::ZERO),
+            StorageAction::CheckpointRevert,
         ]));
     }
 
