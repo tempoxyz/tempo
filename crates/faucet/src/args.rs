@@ -135,7 +135,7 @@ mod tests {
     #[test]
     fn rejects_node_address_that_is_not_a_url() {
         // `provider()` parses this value again and panics on failure, so an
-        // unparseable address must be refused while it is still a CLI error.
+        // unparsable address must be refused while it is still a CLI error.
         // Note that a scheme-less authority such as "localhost:8545" does
         // parse — "localhost" is read as the scheme — so it is not covered
         // here.
