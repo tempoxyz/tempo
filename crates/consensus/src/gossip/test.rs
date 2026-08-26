@@ -305,7 +305,7 @@ fn start_with(context: &mut deterministic::Context, verify_rate: NonZeroU32) -> 
             verify_rate,
             transport,
             epoch_strategy: FixedEpocher::new(EPOCH_LENGTH),
-            last_finalized_height: Height::zero(),
+            finalized_floor: Height::zero(),
             peer_control: peer_control.clone(),
             driver: sink.clone(),
             marshal: marshal.clone(),

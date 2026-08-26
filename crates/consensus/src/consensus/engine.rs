@@ -252,7 +252,7 @@ where
                         verify_rate: gossip_config.verify_rate,
                         transport: gossip_config.transport,
                         epoch_strategy: epoch_strategy.clone(),
-                        last_finalized_height: finalized_floor,
+                        finalized_floor,
                         peer_control: execution_node.network.clone(),
                         driver: crate::gossip::PublishOnlySink,
                         marshal: marshal_mailbox.clone(),

@@ -123,8 +123,8 @@ pub(crate) struct Config<K, P, M = crate::alias::marshal::Mailbox> {
     pub(crate) transport: TransportHandle,
     /// Epoch layout used to interpret gap-free marshal block updates.
     pub(crate) epoch_strategy: FixedEpocher,
-    /// Last finalized height processed before marshal starts reporting updates.
-    pub(crate) last_finalized_height: Height,
+    /// Finalized height processed before marshal starts reporting updates.
+    pub(crate) finalized_floor: Height,
     /// Reputation control for peers that misbehave.
     pub(crate) peer_control: P,
     /// Capability used to verify and process inbound peer certificates.
@@ -146,9 +146,9 @@ where
     let limiter_context = context.child("verify_limiter");
     let info = config
         .epoch_strategy
-        .containing(config.last_finalized_height)
+        .containing(config.finalized_floor)
         .expect("fixed epoch strategy supports every height");
-    let latest_processed_epoch = if info.last() == config.last_finalized_height {
+    let latest_processed_epoch = if info.last() == config.finalized_floor {
         info.epoch().next()
     } else {
         info.epoch()

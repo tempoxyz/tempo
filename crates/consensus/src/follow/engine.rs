@@ -195,7 +195,7 @@ impl<TUpstream> Config<TUpstream> {
                         verify_rate: gossip_config.verify_rate,
                         transport: gossip_config.transport,
                         epoch_strategy: epoch_strategy.clone(),
-                        last_finalized_height,
+                        finalized_floor: last_finalized_height,
                         peer_control: self.execution_node.network.clone(),
                         driver: driver_mailbox.clone(),
                         marshal: marshal_mailbox,
