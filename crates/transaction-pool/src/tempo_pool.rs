@@ -569,11 +569,21 @@ where
                     let hardfork = self.protocol_pool.validator().validator().active_hardfork();
 
                     let tx = Arc::new(tx);
-                    let added =
-                        self.aa_2d_pool
-                            .write()
-                            .add_transaction(tx, state_nonce, hardfork)?;
+                    let (added, queued_discarded) = self
+                        .aa_2d_pool
+                        .write()
+                        .add_transaction_with_queued_discarded(tx, state_nonce, hardfork)?;
                     let hash = *added.hash();
+                    if !queued_discarded.is_empty() {
+                        let discarded_on_insert =
+                            queued_discarded.iter().any(|tx| *tx.hash() == hash);
+                        self.protocol_pool
+                            .inner()
+                            .notify_on_transaction_updates(Vec::new(), queued_discarded);
+                        if discarded_on_insert {
+                            return Err(PoolError::new(hash, PoolErrorKind::DiscardedOnInsert));
+                        }
+                    }
                     if let Some(pending) = added.as_pending() {
                         if pending.discarded.iter().any(|tx| *tx.hash() == hash) {
                             return Err(PoolError::new(hash, PoolErrorKind::DiscardedOnInsert));
@@ -1417,7 +1427,7 @@ mod tests {
         txs.iter().map(|tx| *tx.hash()).collect()
     }
 
-    use crate::{test_utils::MockProviderStorageExt, transaction::KeychainSubject};
+    use crate::{AA2dPoolConfig, test_utils::MockProviderStorageExt, transaction::KeychainSubject};
     use alloy_consensus::Header;
     use alloy_primitives::{Signature, U256, address, uint};
     use alloy_signer::SignerSync;
@@ -1426,7 +1436,8 @@ mod tests {
     use reth_provider::test_utils::{ExtendedAccount, MockEthProvider};
     use reth_storage_api::StateProviderFactory;
     use reth_transaction_pool::{
-        PoolConfig, TransactionOrigin, TransactionPool, TransactionValidationTaskExecutor,
+        PoolConfig, SubPoolLimit, TransactionOrigin, TransactionPool,
+        TransactionValidationTaskExecutor,
         blobstore::InMemoryBlobStore,
         validate::{EthTransactionValidatorBuilder, ValidTransaction},
     };
@@ -1574,6 +1585,13 @@ mod tests {
     fn create_test_pool(
         provider: MockEthProvider<TempoPrimitives, TempoChainSpec>,
     ) -> TempoTransactionPool<MockEthProvider<TempoPrimitives, TempoChainSpec>> {
+        create_test_pool_with_aa_config(provider, AA2dPoolConfig::default())
+    }
+
+    fn create_test_pool_with_aa_config(
+        provider: MockEthProvider<TempoPrimitives, TempoChainSpec>,
+        aa_config: AA2dPoolConfig,
+    ) -> TempoTransactionPool<MockEthProvider<TempoPrimitives, TempoChainSpec>> {
         let inner =
             EthTransactionValidatorBuilder::new(provider.clone(), TempoEvmConfig::mainnet())
                 .disable_balance_check()
@@ -1594,7 +1612,7 @@ mod tests {
             InMemoryBlobStore::default(),
             PoolConfig::default(),
         );
-        TempoTransactionPool::new(protocol_pool, AA2dPool::new(Default::default()))
+        TempoTransactionPool::new(protocol_pool, AA2dPool::new(aa_config))
     }
 
     fn add_validated(
@@ -1648,6 +1666,64 @@ mod tests {
         assert_eq!(size.queued, 0);
         assert_eq!(size.queued_size, 0);
         assert_eq!(size.total, 1);
+    }
+
+    #[test]
+    fn queued_self_eviction_is_reported_for_count_and_size_limits() {
+        let first = crate::test_utils::TxBuilder::aa(Address::random())
+            .nonce_key(U256::from(1))
+            .nonce(1000)
+            .build();
+        let second = crate::test_utils::TxBuilder::aa(Address::random())
+            .nonce_key(U256::from(2))
+            .nonce(1000)
+            .build();
+
+        let limits = [
+            SubPoolLimit {
+                max_txs: 1,
+                max_size: usize::MAX,
+            },
+            SubPoolLimit {
+                max_txs: usize::MAX,
+                max_size: reth_primitives_traits::InMemorySize::size(&first)
+                    .max(reth_primitives_traits::InMemorySize::size(&second)),
+            },
+        ];
+
+        for queued_limit in limits {
+            let config = AA2dPoolConfig {
+                queued_limit,
+                ..Default::default()
+            };
+            let pool = create_test_pool_with_aa_config(create_provider_with_tip(), config);
+
+            for (tx, should_succeed) in [(first.clone(), true), (second.clone(), false)] {
+                let hash = *tx.hash();
+                let validated = TransactionValidationOutcome::Valid {
+                    balance: *tx.cost(),
+                    state_nonce: 0,
+                    bytecode_hash: None,
+                    transaction: ValidTransaction::new(tx, None),
+                    propagate: true,
+                    authorities: None,
+                };
+                let result = pool.add_validated_transaction(TransactionOrigin::External, validated);
+
+                if should_succeed {
+                    assert!(result.is_ok());
+                } else {
+                    assert!(matches!(
+                        result,
+                        Err(PoolError {
+                            kind: PoolErrorKind::DiscardedOnInsert,
+                            ..
+                        })
+                    ));
+                    assert!(pool.get(&hash).is_none());
+                }
+            }
+        }
     }
 
     fn sponsored_keychain_transaction(
