@@ -66,7 +66,7 @@ impl Precompile for StablecoinDEX {
                         self.swap_exact_amount_out(s, c.tokenIn, c.tokenOut, c.amountOut, c.maxAmountIn)
                     }),
                     quoteSwapExactAmountIn(call) => {
-                        if self.storage.spec().is_t9() {
+                        if self.storage.spec().is_t11() {
                             mutate(call, msg_sender, |_, c| {
                                 self.quote_swap_exact_amount_in(c.tokenIn, c.tokenOut, c.amountIn)
                             })
@@ -77,7 +77,7 @@ impl Precompile for StablecoinDEX {
                         }
                     },
                     quoteSwapExactAmountOut(call) => {
-                        if self.storage.spec().is_t9() {
+                        if self.storage.spec().is_t11() {
                             mutate(call, msg_sender, |_, c| {
                                 self.quote_swap_exact_amount_out(c.tokenIn, c.tokenOut, c.amountOut)
                             })
@@ -482,9 +482,9 @@ mod tests {
     }
 
     #[test]
-    fn test_t9_quote_rejects_static_call() -> eyre::Result<()> {
+    fn test_t11_quote_rejects_static_call() -> eyre::Result<()> {
         let mut storage =
-            HashMapStorageProvider::new_with_spec(1, TempoHardfork::T9).with_static(true);
+            HashMapStorageProvider::new_with_spec(1, TempoHardfork::T11).with_static(true);
         StorageCtx::enter(&mut storage, || {
             let mut exchange = StablecoinDEX::new();
             let calldata = IStablecoinDEX::quoteSwapExactAmountInCall {

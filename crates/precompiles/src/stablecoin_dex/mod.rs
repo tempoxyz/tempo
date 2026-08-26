@@ -343,7 +343,7 @@ impl StablecoinDEX {
     /// Quotes the input amount required to receive exactly `amount_out` tokens, routing through
     /// one or more orderbooks without executing trades.
     ///
-    /// At T9+, this simulates the swap fill path under a state checkpoint. It is intended for
+    /// At T11+, this simulates the swap fill path under a state checkpoint. It is intended for
     /// offchain calls and consumes gas even though all simulated state changes are reverted.
     ///
     /// # Errors
@@ -359,32 +359,32 @@ impl StablecoinDEX {
     ) -> Result<u128> {
         // Find and validate the trade route (book keys + direction for each hop)
         let route = self.find_trade_path(token_in, token_out)?;
-        let simulate_fills = self.storage.spec().is_t9();
+        let simulate_fills = self.storage.spec().is_t11();
         let mut storage_credits = StorageCreditDeltas::new();
 
-        self.with_quote_execution(|dex| {
-            let mut current_amount = amount_out;
-            for (book_key, base_for_quote) in route.into_iter().rev() {
-                current_amount = if simulate_fills {
+        let mut current_amount = amount_out;
+        for (book_key, base_for_quote) in route.into_iter().rev() {
+            current_amount = if simulate_fills {
+                self.with_quote_execution(|dex| {
                     dex.fill_orders_exact_out(
                         &mut storage_credits,
                         book_key,
                         base_for_quote,
                         current_amount,
                         Address::ZERO,
-                    )?
-                } else {
-                    dex.quote_exact_out(book_key, current_amount, base_for_quote)?
-                };
-            }
-            Ok(current_amount)
-        })
+                    )
+                })?
+            } else {
+                self.quote_exact_out(book_key, current_amount, base_for_quote)?
+            };
+        }
+        Ok(current_amount)
     }
 
     /// Quotes the output amount received for exactly `amount_in` input tokens, routing through
     /// one or more orderbooks without executing trades.
     ///
-    /// At T9+, this simulates the swap fill path under a state checkpoint. It is intended for
+    /// At T11+, this simulates the swap fill path under a state checkpoint. It is intended for
     /// offchain calls and consumes gas even though all simulated state changes are reverted.
     ///
     /// # Errors
@@ -400,26 +400,26 @@ impl StablecoinDEX {
     ) -> Result<u128> {
         // Find and validate the trade route (book keys + direction for each hop)
         let route = self.find_trade_path(token_in, token_out)?;
-        let simulate_fills = self.storage.spec().is_t9();
+        let simulate_fills = self.storage.spec().is_t11();
         let mut storage_credits = StorageCreditDeltas::new();
 
-        self.with_quote_execution(|dex| {
-            let mut current_amount = amount_in;
-            for (book_key, base_for_quote) in route {
-                current_amount = if simulate_fills {
+        let mut current_amount = amount_in;
+        for (book_key, base_for_quote) in route {
+            current_amount = if simulate_fills {
+                self.with_quote_execution(|dex| {
                     dex.fill_orders_exact_in(
                         &mut storage_credits,
                         book_key,
                         base_for_quote,
                         current_amount,
                         Address::ZERO,
-                    )?
-                } else {
-                    dex.quote_exact_in(book_key, current_amount, base_for_quote)?
-                };
-            }
-            Ok(current_amount)
-        })
+                    )
+                })?
+            } else {
+                self.quote_exact_in(book_key, current_amount, base_for_quote)?
+            };
+        }
+        Ok(current_amount)
     }
 
     /// Executes the real swap fill path against a temporary state checkpoint.
@@ -428,10 +428,6 @@ impl StablecoinDEX {
     /// actions remain recorded, and a checkpoint-revert action invalidates precomputed replay for
     /// the enclosing transaction. Gas consumed by the simulation remains charged.
     fn with_quote_execution<R>(&mut self, f: impl FnOnce(&mut Self) -> Result<R>) -> Result<R> {
-        if !self.storage.spec().is_t9() {
-            return f(self);
-        }
-
         let actions = self.storage.actions();
         actions.reverted(|| {
             let _checkpoint = self.storage.checkpoint();
@@ -6531,13 +6527,13 @@ mod tests {
     }
 
     #[test]
-    fn test_t9_quote_executes_fill_path_and_reverts_state() -> eyre::Result<()> {
+    fn test_t11_quote_executes_fill_path_and_reverts_state() -> eyre::Result<()> {
         let orders = [(100_006_000, 10), (100_006_000, 10)];
         let amount_in = 200_012_000;
 
-        // Before T9, the aggregate tick quote rounds once and differs from the two fills.
+        // Before T11, the aggregate tick quote rounds once and differs from the two fills.
         with_fragmented_book(
-            TempoHardfork::T8,
+            TempoHardfork::T10,
             &orders,
             true,
             |exchange, base, quote, taker| {
@@ -6550,7 +6546,7 @@ mod tests {
         )?;
 
         with_fragmented_book(
-            TempoHardfork::T9,
+            TempoHardfork::T11,
             &orders,
             true,
             |exchange, base, quote, taker| {
@@ -6599,10 +6595,10 @@ mod tests {
     }
 
     #[test]
-    fn test_t9_quote_error_reverts_partial_simulation() -> eyre::Result<()> {
+    fn test_t11_quote_error_reverts_partial_simulation() -> eyre::Result<()> {
         let orders = [(100_000_005, 10), (100_000_007, 10)];
         with_fragmented_book(
-            TempoHardfork::T9,
+            TempoHardfork::T11,
             &orders,
             true,
             |exchange, base, quote, _| {
@@ -6641,9 +6637,9 @@ mod tests {
     }
 
     #[test]
-    fn test_t9_multi_hop_quote_matches_swap() -> eyre::Result<()> {
+    fn test_t11_multi_hop_quote_matches_swap() -> eyre::Result<()> {
         fn run(exact_in: bool) -> eyre::Result<()> {
-            let mut storage = HashMapStorageProvider::new_with_spec(1, TempoHardfork::T9);
+            let mut storage = HashMapStorageProvider::new_with_spec(1, TempoHardfork::T11);
             StorageCtx::enter(&mut storage, || {
                 let mut exchange = StablecoinDEX::new();
                 exchange.initialize()?;
