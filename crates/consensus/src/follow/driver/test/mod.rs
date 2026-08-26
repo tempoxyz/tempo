@@ -277,7 +277,6 @@ fn gossiped_certificate_is_admitted_and_nudges_the_execution_layer() {
         )
         .expect("driver should initialize");
 
-        let mut scheme_registrations = schemes.subscribe_registrations();
         actor.start();
 
         let block = make_block(EPOCH_LENGTH.get() * 2 + 1, None);
@@ -302,13 +301,6 @@ fn gossiped_certificate_is_admitted_and_nudges_the_execution_layer() {
         assert!(
             schemes.scoped(network_fixture.outcome.epoch).is_some(),
             "marshal needs the successful fallback to re-verify the resolved block",
-        );
-        assert_eq!(
-            scheme_registrations
-                .recv()
-                .await
-                .expect("successful fallback should register its scheme"),
-            network_fixture.outcome.epoch,
         );
         // The driver reports only the certificate to marshal.
         assert_eq!(marshal.report_count(), 1);
@@ -336,7 +328,7 @@ fn gossiped_certificate_is_admitted_and_nudges_the_execution_layer() {
 struct Rig {
     mailbox: super::Mailbox,
     marshal: StubMarshal,
-    scheme_registrations: tokio::sync::broadcast::Receiver<Epoch>,
+    schemes: SchemeProvider,
     fixture: DkgFixture,
 }
 
@@ -365,13 +357,12 @@ fn start_rig(context: &mut deterministic::Context) -> Rig {
         },
     )
     .expect("driver should initialize");
-    let scheme_registrations = schemes.subscribe_registrations();
     actor.start();
 
     Rig {
         mailbox,
         marshal,
-        scheme_registrations,
+        schemes,
         fixture,
     }
 }
@@ -493,9 +484,9 @@ fn gossiped_certificate_failing_registered_scheme_is_invalid() {
 
 /// A boundary block provides the scheme for the next epoch.
 #[test_traced]
-fn installing_a_boundary_scheme_is_observable() {
+fn boundary_update_registers_its_scheme() {
     deterministic::Runner::default().start(|mut context| async move {
-        let mut rig = start_rig(&mut context);
+        let rig = start_rig(&mut context);
         let next = dkg_fixture(&mut context, Epoch::new(1));
         let boundary = FixedEpocher::new(EPOCH_LENGTH)
             .last(Epoch::zero())
@@ -509,13 +500,7 @@ fn installing_a_boundary_scheme_is_observable() {
             .report(Update::Block(block.into(), ack));
         waiter.await.expect("the update should be acknowledged");
 
-        assert_eq!(
-            rig.scheme_registrations
-                .recv()
-                .await
-                .expect("boundary scheme should be observed"),
-            Epoch::new(1),
-        );
+        assert!(rig.schemes.scoped(Epoch::new(1)).is_some());
     });
 }
 

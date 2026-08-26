@@ -10,24 +10,20 @@ use std::{collections::HashMap, num::NonZeroU32};
 use alloy_primitives::{B256, Bytes, keccak256};
 use commonware_consensus::{
     Epochable as _,
-    types::{Epoch, Round},
+    types::{Epoch, Epocher as _, FixedEpocher, Height, Round},
 };
 use commonware_runtime::{
     Clock, ContextCell, Handle, Metrics as RuntimeMetrics, Quota, RateLimiter, Spawner, spawn_cell,
 };
 use futures::{FutureExt as _, future::BoxFuture};
 use tempo_node::gossip::{Frame, PeerControl, PeerEvent, TransportHandle, TransportSender, wire};
-use tokio::{
-    select,
-    sync::{broadcast, mpsc},
-};
+use tokio::{select, sync::mpsc};
 use tracing::debug;
 
 use super::{
-    Certificate, CertificateError, CertificateMailbox, Marshal, ingress::FinalizedTip,
-    metrics::Metrics,
+    Certificate, CertificateError, CertificateMailbox, Marshal, ingress::Message, metrics::Metrics,
 };
-use crate::{epoch::SchemeProvider, utils::OptionFuture};
+use crate::utils::OptionFuture;
 
 /// Hash of the exact frame bytes used to match duplicate peer slots.
 ///
@@ -125,8 +121,10 @@ pub(crate) struct Config<K, P, M = crate::alias::marshal::Mailbox> {
     pub(crate) verify_rate: NonZeroU32,
     /// The consensus layer's end of the `tempo/1` transport.
     pub(crate) transport: TransportHandle,
-    /// Scheme availability used to retry quarantined inbound certificates.
-    pub(crate) scheme_provider: SchemeProvider,
+    /// Epoch layout used to interpret gap-free marshal block updates.
+    pub(crate) epoch_strategy: FixedEpocher,
+    /// Last finalized height processed before marshal starts reporting updates.
+    pub(crate) last_finalized_height: Height,
     /// Reputation control for peers that misbehave.
     pub(crate) peer_control: P,
     /// Capability used to verify and process inbound peer certificates.
@@ -138,7 +136,7 @@ pub(crate) struct Config<K, P, M = crate::alias::marshal::Mailbox> {
 pub(super) fn init<TContext, K, P, M>(
     context: TContext,
     config: Config<K, P, M>,
-    mailbox: mpsc::UnboundedReceiver<FinalizedTip>,
+    mailbox: mpsc::UnboundedReceiver<Message>,
 ) -> Actor<TContext, K, P, M>
 where
     TContext: Clock + RuntimeMetrics + Spawner,
@@ -146,14 +144,18 @@ where
     let metrics = Metrics::init(&context);
     let quota = Quota::per_second(config.verify_rate);
     let limiter_context = context.child("verify_limiter");
-    let scheme_registrations = config.scheme_provider.subscribe_registrations();
+    let latest_processed_epoch = config
+        .epoch_strategy
+        .containing(config.last_finalized_height)
+        .expect("fixed epoch strategy supports every height")
+        .epoch();
 
     Actor {
         verify_limiter: RateLimiter::direct_with_clock(quota, limiter_context),
         context: ContextCell::new(context),
         config,
         mailbox,
-        scheme_registrations,
+        latest_processed_epoch,
         peers: HashMap::new(),
         latest: None,
         pending: OptionFuture::none(),
@@ -167,8 +169,7 @@ where
 pub(crate) struct Actor<TContext: Clock, K, P, M = crate::alias::marshal::Mailbox> {
     context: ContextCell<TContext>,
     config: Config<K, P, M>,
-    mailbox: mpsc::UnboundedReceiver<FinalizedTip>,
-    scheme_registrations: broadcast::Receiver<Epoch>,
+    mailbox: mpsc::UnboundedReceiver<Message>,
 
     /// Active logical `tempo/1` peers and their certificate slots.
     ///
@@ -182,7 +183,8 @@ pub(crate) struct Actor<TContext: Clock, K, P, M = crate::alias::marshal::Mailbo
 
     /// Highest verified round learned from driver judgment or a durable marshal tip.
     latest_verified_round: Round,
-
+    /// Highest epoch in which marshal has processed a gap-free block.
+    latest_processed_epoch: Epoch,
     /// Next available ticket to assign to a slot.
     next_ready_ticket: ReadyTicket,
 
@@ -205,7 +207,7 @@ where
         loop {
             // Biased order keeps incoming peer frames last. A flood cannot delay
             // driver results, budget wakeups, control changes, publications, or
-            // scheme updates.
+            // marshal progress updates.
             select! {
                 biased;
 
@@ -222,23 +224,7 @@ where
 
                 Some(event) = self.config.transport.control.recv() => self.on_peer(event),
 
-                Some(tip) = self.mailbox.recv() => self.on_finalized_tip(tip).await,
-
-                registration = self.scheme_registrations.recv() => {
-                    match registration {
-                        Ok(epoch) => {
-                            debug!(%epoch, "registered certificate verification scheme");
-                            self.metrics.scheme_registration_events.inc();
-                            self.release_quarantines();
-                        }
-                        Err(broadcast::error::RecvError::Lagged(skipped)) => {
-                            debug!(skipped, "scheme registration receiver lagged");
-                            self.metrics.scheme_registration_events.inc_by(skipped);
-                            self.release_quarantines();
-                        }
-                        Err(broadcast::error::RecvError::Closed) => return,
-                    }
-                }
+                Some(message) = self.mailbox.recv() => self.on_message(message).await,
 
                 Some(frame) = self.config.transport.frames.recv() => self.on_frame(frame),
             }
@@ -351,16 +337,33 @@ where
         self.try_dispatch();
     }
 
-    async fn on_finalized_tip(&mut self, tip: FinalizedTip) {
-        let FinalizedTip { round, height } = tip;
-        let Some(certificate) = self.config.marshal.get_finalization(height).await else {
-            debug!(%height, "finalized tip is missing its persisted certificate");
-            return;
-        };
-        debug_assert_eq!(round, certificate.proposal.round);
-        self.advance_latest_verified_round(round);
-        let frame = wire::encode(&certificate).freeze().into();
-        self.publish(round, frame);
+    async fn on_message(&mut self, message: Message) {
+        match message {
+            Message::FinalizedTip { round, height } => {
+                let Some(certificate) = self.config.marshal.get_finalization(height).await else {
+                    debug!(%height, "finalized tip is missing its persisted certificate");
+                    return;
+                };
+                debug_assert_eq!(round, certificate.proposal.round);
+                self.advance_latest_verified_round(round);
+                let frame = wire::encode(&certificate).freeze().into();
+                self.publish(round, frame);
+            }
+            Message::FinalizedBlock { height } => {
+                let info = self
+                    .config
+                    .epoch_strategy
+                    .containing(height)
+                    .expect("fixed epoch strategy supports every height");
+                if info.first() == height {
+                    let epoch = info.epoch();
+                    if epoch > self.latest_processed_epoch {
+                        self.latest_processed_epoch = epoch;
+                        self.release_quarantines(epoch);
+                    }
+                }
+            }
+        }
     }
 
     fn publish(&mut self, round: Round, frame: Bytes) {
@@ -386,17 +389,15 @@ where
         self.relay(round, &frame);
     }
 
-    /// Releases live quarantines whose required schemes are now registered.
-    fn release_quarantines(&mut self) {
+    /// Releases live quarantines covered by gap-free progress into an epoch.
+    fn release_quarantines(&mut self, available: Epoch) {
         let mut releasable: Vec<(ReadyTicket, PeerKey, Epoch)> = self
             .peers
             .iter()
             .filter_map(|(peer, state)| {
                 let slot = state.slot.as_ref()?;
                 match slot.state {
-                    SlotState::NeedsScheme(epoch)
-                        if self.config.scheme_provider.contains(epoch) =>
-                    {
+                    SlotState::NeedsScheme(epoch) if epoch <= available => {
                         Some((slot.ready_ticket, *peer, epoch))
                     }
                     _ => None,
@@ -417,9 +418,10 @@ where
             debug!(
                 %peer,
                 %epoch,
+                %available,
                 round = %slot.certificate.round(),
                 digest = %slot.certificate.proposal.payload,
-                "releasing quarantined certificate after scheme registration",
+                "releasing quarantined certificate after processing the first block of its epoch",
             );
             slot.state = SlotState::Ready;
             slot.ready_ticket = ready_ticket;
@@ -551,15 +553,12 @@ where
             }
             Err(CertificateError::NeedsScheme { epoch }) => {
                 // A missing scheme is provisional because the sender may be
-                // honest after an identity rotation. Keep the certificate until
-                // the provider can support a definitive judgement.
-                //
-                // Registration can race with this judgement, so check the
-                // provider immediately after quarantining instead of relying
-                // only on the notification.
+                // honest after an identity rotation. An epoch-start update can
+                // race with this judgement, so check the retained watermark after
+                // quarantining instead of relying only on the update.
                 self.metrics.needs_scheme.inc();
                 self.quarantine(&pending, epoch);
-                self.release_quarantines();
+                self.release_quarantines(self.latest_processed_epoch);
             }
         }
     }
@@ -613,7 +612,7 @@ where
             certificate_epoch = %slot.certificate.epoch(),
             round = %pending.round,
             digest = %slot.certificate.proposal.payload,
-            "quarantining certificate until its required scheme is registered",
+            "quarantining certificate until marshal processes a block in its epoch",
         );
         slot.state = SlotState::NeedsScheme(required);
         self.update_slot_metrics();
