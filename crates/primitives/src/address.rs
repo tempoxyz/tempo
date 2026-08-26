@@ -8,12 +8,6 @@ pub const TIP20_TOKEN_PREFIX: [u8; 12] = hex!("20C000000000000000000000");
 /// RIP-7212 P-256 signature verification precompile address.
 pub const P256VERIFY_ADDRESS: Address = address!("0x0000000000000000000000000000000000000100");
 
-/// Returns `true` if `addr` is reserved for an EVM precompile at `spec`.
-pub fn is_evm_precompile(addr: Address, spec: TempoHardfork) -> bool {
-    (addr.as_slice()[..19] == [0; 19] && (1..=0x11).contains(&addr.as_slice()[19]))
-        || (spec.is_t1c() && addr == P256VERIFY_ADDRESS)
-}
-
 /// Returns `true` if `addr` has the TIP-20 token prefix.
 ///
 /// NOTE: This only checks the prefix, not whether the token was actually created.

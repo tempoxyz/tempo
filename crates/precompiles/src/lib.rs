@@ -157,14 +157,28 @@ pub fn tempo_precompiles(
     actions: StorageActions,
     non_creditable_slots: Rc<RefCell<NonCreditableSlots>>,
 ) -> PrecompilesMap {
-    let spec = if cfg.spec.is_t1c() {
-        cfg.spec.into()
-    } else {
-        SpecId::PRAGUE
-    };
-    let mut precompiles = PrecompilesMap::from_static(EthPrecompiles::new(spec).precompiles);
+    let mut precompiles = PrecompilesMap::from_static(
+        EthPrecompiles::new(ethereum_precompile_spec(cfg.spec)).precompiles,
+    );
     extend_tempo_precompiles(&mut precompiles, cfg, actions, non_creditable_slots);
     precompiles
+}
+
+fn ethereum_precompile_spec(spec: TempoHardfork) -> SpecId {
+    if spec.is_t1c() {
+        spec.into()
+    } else {
+        SpecId::PRAGUE
+    }
+}
+
+/// Returns whether an address can represent a native multisig account at `spec`.
+pub fn is_valid_multisig_account(account: Address, spec: TempoHardfork) -> bool {
+    !account.is_zero()
+        && !account.is_virtual()
+        && !account.as_slice().starts_with(&Address::ZONE_PORTAL_PREFIX)
+        && !account.is_precompile(spec)
+        && !EthPrecompiles::new(ethereum_precompile_spec(spec)).contains(&account)
 }
 
 /// Registers Tempo-specific precompiles into an existing [`PrecompilesMap`] by installing a
@@ -1190,5 +1204,32 @@ mod tests {
                 "P256VERIFY should be available at {spec:?} (T1C+)"
             );
         }
+    }
+
+    #[test]
+    fn multisig_account_eligibility_uses_registered_precompiles() {
+        let spec = TempoHardfork::T11;
+        for address in EthPrecompiles::new(ethereum_precompile_spec(spec)).warm_addresses() {
+            assert!(!is_valid_multisig_account(*address, spec));
+        }
+        for &(address, activated) in SYSTEM_PRECOMPILES {
+            if activated <= spec {
+                assert!(!is_valid_multisig_account(address, spec));
+            }
+        }
+
+        assert!(is_valid_multisig_account(
+            P256VERIFY_ADDRESS,
+            TempoHardfork::T1B
+        ));
+        assert!(!is_valid_multisig_account(
+            P256VERIFY_ADDRESS,
+            TempoHardfork::T1C
+        ));
+
+        let mut zone_portal = [0u8; 20];
+        zone_portal[..12].copy_from_slice(&Address::ZONE_PORTAL_PREFIX);
+        zone_portal[19] = 1;
+        assert!(!is_valid_multisig_account(Address::from(zone_portal), spec));
     }
 }

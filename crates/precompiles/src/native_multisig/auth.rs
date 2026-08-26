@@ -1,11 +1,11 @@
 use alloy::primitives::{Address, B256};
 use tempo_primitives::transaction::{
     MAX_MULTISIG_NESTING_DEPTH, MultisigQuorumError, MultisigSignature, MultisigWeightAccumulator,
-    TempoSignature, is_valid_multisig_account,
+    TempoSignature,
 };
 
 use super::NativeMultisig;
-use crate::error::TempoPrecompileError;
+use crate::{error::TempoPrecompileError, is_valid_multisig_account};
 
 #[derive(Debug, Clone, PartialEq, Eq, thiserror::Error)]
 pub enum NativeMultisigAuthError {

@@ -18,8 +18,10 @@ use tempo_contracts::precompiles::{
 use tempo_precompiles_macros::contract;
 use tempo_primitives::transaction::{
     MULTISIG_ACCOUNT_DOMAIN, MULTISIG_CONFIG_DOMAIN, MultisigConfig, MultisigConfigError,
-    MultisigOwner, is_valid_multisig_account,
+    MultisigOwner,
 };
+
+use crate::is_valid_multisig_account;
 
 /// Native multisig account storage.
 #[contract(addr = NATIVE_MULTISIG_ADDRESS)]
