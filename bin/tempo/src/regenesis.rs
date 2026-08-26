@@ -375,9 +375,8 @@ fn replacement_hashed_post_state(replacements: &[GenesisAccountReplacement]) -> 
                 replacement
                     .hashed_storage
                     .iter()
-                    .map(|entry| (entry.key, entry.value))
-                    .collect(),
-            };
+                    .map(|entry| (entry.key, entry.value)),
+            );
             (replacement.hashed_address, storage)
         }))
 }

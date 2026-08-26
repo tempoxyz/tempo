@@ -57,7 +57,7 @@ target "tempo-partial-persistence" {
   inherits = ["_common", "docker-metadata"]
   target = "tempo"
   args = {
-    RUST_FEATURES = "asm-keccak,jemalloc,otlp,partial-persistence"
+    RUST_FEATURES = "asm-keccak,jemalloc,otlp"
   }
 }
 
