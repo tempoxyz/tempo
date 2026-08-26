@@ -22,7 +22,6 @@ pub use tempo_contracts::precompiles::{IStablecoinDEX, StablecoinDEXError, Stabl
 
 use crate::{
     STABLECOIN_DEX_ADDRESS,
-    dispatch::preserve_storage_credits,
     error::{Result, TempoPrecompileError},
     stablecoin_dex::orderbook::{MAX_PRICE, MIN_PRICE, compute_book_key},
     storage::{Handler, Mapping},
@@ -438,8 +437,6 @@ impl StablecoinDEX {
         let actions = self.storage.actions();
         actions.reverted(self.address, || {
             let _checkpoint = self.storage.checkpoint();
-            preserve_storage_credits(self.address)?;
-
             let refunds_before = self.storage.gas_refunded();
             let result = f(self, &mut storage_credits);
 
