@@ -484,3 +484,31 @@ async fn test_tip_1061_fill_with_supplied_gas_skips_estimation() -> eyre::Result
     assert_eq!(parse_filled_tx(&filled)?.gas_limit, gas_limit);
     Ok(())
 }
+
+#[tokio::test(flavor = "multi_thread")]
+async fn test_fill_transaction_rejects_mismatched_chain_id() -> eyre::Result<()> {
+    let env = Localnet::new().await?;
+    let request = TempoTransactionRequest {
+        inner: TransactionRequest {
+            from: Some(Address::random()),
+            chain_id: Some(env.chain_id() + 1),
+            gas: Some(21_000),
+            ..Default::default()
+        },
+        ..Default::default()
+    };
+
+    let result = env
+        .provider()
+        .raw_request::<_, serde_json::Value>(
+            "eth_fillTransaction".into(),
+            [serde_json::to_value(request)?],
+        )
+        .await;
+    let error = result.expect_err("mismatched explicit chain ID must be rejected");
+    assert!(
+        error.to_string().contains("chainId does not match node's"),
+        "unexpected error: {error}"
+    );
+    Ok(())
+}
