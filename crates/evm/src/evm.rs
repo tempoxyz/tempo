@@ -1234,8 +1234,7 @@ mod tests {
                     storage_state.reconstructed.insert(key, value);
                 }
                 StorageAction::FeeAmmSwap(slot, sload_value, amount_in) => {
-                    let action_address = action.address().expect("FeeAMM action has an address");
-                    let key = (action_address, slot);
+                    let key = (TIP_FEE_MANAGER_ADDRESS, slot);
                     let current =
                         storage_state.apply_sload_value(key, sload_value, "FeeAmmSwap", hardfork);
                     let mut pool = Pool::decode_from_slot(current);
@@ -1245,7 +1244,7 @@ mod tests {
                     )
                     .unwrap_or_else(|err| {
                         panic!(
-                            "FeeAmmSwap invalid for {action_address:?}:{slot:?} on {hardfork:?}: {err}"
+                            "FeeAmmSwap invalid for {TIP_FEE_MANAGER_ADDRESS:?}:{slot:?} on {hardfork:?}: {err}"
                         )
                     });
                     storage_state
@@ -1258,8 +1257,7 @@ mod tests {
                     amount_out,
                     has_enough_liquidity,
                 ) => {
-                    let action_address = action.address().expect("FeeAMM action has an address");
-                    let key = (action_address, slot);
+                    let key = (TIP_FEE_MANAGER_ADDRESS, slot);
                     let current = storage_state.apply_sload_value(
                         key,
                         sload_value,
@@ -1270,7 +1268,7 @@ mod tests {
                     assert_eq!(
                         pool.has_enough_reserve_validator_token(amount_out),
                         has_enough_liquidity,
-                        "FeeAmmLiquidityCheck mismatch for {action_address:?}:{slot:?} on {hardfork:?}",
+                        "FeeAmmLiquidityCheck mismatch for {TIP_FEE_MANAGER_ADDRESS:?}:{slot:?} on {hardfork:?}",
                     );
                 }
             }
@@ -1346,11 +1344,10 @@ mod tests {
                     )
                 }
                 StorageAction::FeeAmmSwap(slot, sload_value, amount_in) => {
-                    let address = action.address().expect("FeeAMM action has an address");
                     format!(
                         "FeeAmmSwap({}, {}, {sload_value}, {amount_in})",
-                        labels.address(address),
-                        labels.slot(address, slot),
+                        labels.address(TIP_FEE_MANAGER_ADDRESS),
+                        labels.slot(TIP_FEE_MANAGER_ADDRESS, slot),
                     )
                 }
                 StorageAction::FeeAmmLiquidityCheck(
@@ -1359,11 +1356,10 @@ mod tests {
                     amount_out,
                     has_enough_liquidity,
                 ) => {
-                    let address = action.address().expect("FeeAMM action has an address");
                     format!(
                         "FeeAmmLiquidityCheck({}, {}, {slot_value}, {amount_out}, {has_enough_liquidity})",
-                        labels.address(address),
-                        labels.slot(address, slot),
+                        labels.address(TIP_FEE_MANAGER_ADDRESS),
+                        labels.slot(TIP_FEE_MANAGER_ADDRESS, slot),
                     )
                 }
             })

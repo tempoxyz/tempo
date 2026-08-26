@@ -1,7 +1,6 @@
 use std::{cell::RefCell, rc::Rc};
 
 use alloy_primitives::{Address, U256};
-use tempo_contracts::precompiles::TIP_FEE_MANAGER_ADDRESS;
 
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub enum StorageAction {
@@ -54,20 +53,6 @@ pub enum StorageAction {
     /// `amount_out` - Amount of tokens to swap out.
     /// `has_enough_liquidity` - Whether the pool has enough liquidity.
     FeeAmmLiquidityCheck(U256, U256, U256, bool),
-}
-
-impl StorageAction {
-    /// Returns the address targeted by the storage action, or `None` for a replay marker.
-    pub fn address(&self) -> Option<Address> {
-        match self {
-            Self::CheckpointRevert => None,
-            Self::Sload(address, ..)
-            | Self::Sstore(address, ..)
-            | Self::Sinc(address, ..)
-            | Self::Sdec(address, ..) => Some(*address),
-            Self::FeeAmmSwap(..) | Self::FeeAmmLiquidityCheck(..) => Some(TIP_FEE_MANAGER_ADDRESS),
-        }
-    }
 }
 
 /// Buffer for recording EVM [storage actions](StorageAction).

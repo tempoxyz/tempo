@@ -16,7 +16,7 @@ use reth_revm::{
     state::{Account, EvmState, EvmStorageSlot, TransactionId},
 };
 use tempo_precompiles::{
-    NONCE_PRECOMPILE_ADDRESS,
+    NONCE_PRECOMPILE_ADDRESS, TIP_FEE_MANAGER_ADDRESS,
     nonce::NonceManager,
     storage::StorageAction,
     tip_fee_manager::amm::{Pool, compute_amount_out},
@@ -111,12 +111,16 @@ where
                 return Err(StorageActionReplayError::ActionConflict.into());
             }
 
-            let action_address = action
-                .address()
-                .expect("checkpoint revert handled before storage action replay");
-
             // Expiring nonces are handled above
-            if is_expiring_nonce && action_address == NONCE_PRECOMPILE_ADDRESS {
+            if is_expiring_nonce
+                && match action {
+                    StorageAction::Sload(address, ..)
+                    | StorageAction::Sstore(address, ..)
+                    | StorageAction::Sinc(address, ..)
+                    | StorageAction::Sdec(address, ..) => address == NONCE_PRECOMPILE_ADDRESS,
+                    _ => false,
+                }
+            {
                 continue;
             }
 
@@ -148,9 +152,12 @@ where
                     self.replay_state.sstore(address, key, value)?;
                 }
                 StorageAction::FeeAmmSwap(key, sload_value, amount_in) => {
-                    let pool_slot =
-                        self.replay_state
-                            .sload_current_or(db, action_address, key, sload_value)?;
+                    let pool_slot = self.replay_state.sload_current_or(
+                        db,
+                        TIP_FEE_MANAGER_ADDRESS,
+                        key,
+                        sload_value,
+                    )?;
                     let mut pool = Pool::decode_from_slot(pool_slot);
                     pool.apply_swap(
                         amount_in,
@@ -161,7 +168,8 @@ where
                     let value = pool
                         .encode_to_slot()
                         .map_err(|_| StorageActionReplayError::ActionConflict)?;
-                    self.replay_state.sstore(action_address, key, value)?;
+                    self.replay_state
+                        .sstore(TIP_FEE_MANAGER_ADDRESS, key, value)?;
                 }
                 StorageAction::FeeAmmLiquidityCheck(
                     key,
@@ -169,9 +177,12 @@ where
                     amount_out,
                     has_enough_liquidity,
                 ) => {
-                    let pool_slot =
-                        self.replay_state
-                            .sload_current_or(db, action_address, key, sload_value)?;
+                    let pool_slot = self.replay_state.sload_current_or(
+                        db,
+                        TIP_FEE_MANAGER_ADDRESS,
+                        key,
+                        sload_value,
+                    )?;
                     let pool = Pool::decode_from_slot(pool_slot);
                     if pool.has_enough_reserve_validator_token(amount_out) != has_enough_liquidity {
                         return Err(StorageActionReplayError::ActionConflict.into());
