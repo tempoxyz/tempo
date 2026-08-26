@@ -116,6 +116,7 @@ impl TempoPooledTransaction {
                 encoded_length,
                 blob_sidecar: EthBlobTransactionSidecar::None,
                 blob_cell_availability: None,
+                transaction,
             },
             fee_token_cost,
             is_payment,

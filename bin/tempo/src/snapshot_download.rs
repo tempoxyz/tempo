@@ -56,7 +56,7 @@ pub(crate) fn run_with_runner(matches: &ArgMatches, runner: CliRunner) -> eyre::
 
     runner.block_on(async move {
         if args.inner.prints_plan_json() {
-            let (mut plan, prepared) = args
+            let (mut plan, _) = args
                 .inner
                 .plan()
                 .await
