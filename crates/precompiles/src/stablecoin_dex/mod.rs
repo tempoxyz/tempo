@@ -360,27 +360,22 @@ impl StablecoinDEX {
     ) -> Result<u128> {
         // Find and validate the trade route (book keys + direction for each hop)
         let route = self.find_trade_path(token_in, token_out)?;
+        let simulate_fills = self.storage.spec().is_t9();
 
-        if !self.storage.spec().is_t9() {
-            // Execute quotes backwards from output to input
+        self.with_quote_execution(|dex, storage_credits| {
             let mut current_amount = amount_out;
-            for (book_key, base_for_quote) in route.iter().rev() {
-                current_amount =
-                    self.quote_exact_out(*book_key, current_amount, *base_for_quote)?;
-            }
-            return Ok(current_amount);
-        }
-
-        self.simulate_swap(|dex, storage_credits| {
-            let mut current_amount = amount_out;
-            for (book_key, base_for_quote) in route.iter().rev() {
-                current_amount = dex.fill_orders_exact_out(
-                    storage_credits,
-                    *book_key,
-                    *base_for_quote,
-                    current_amount,
-                    Address::ZERO,
-                )?;
+            for (book_key, base_for_quote) in route.into_iter().rev() {
+                current_amount = if simulate_fills {
+                    dex.fill_orders_exact_out(
+                        storage_credits,
+                        book_key,
+                        base_for_quote,
+                        current_amount,
+                        Address::ZERO,
+                    )?
+                } else {
+                    dex.quote_exact_out(book_key, current_amount, base_for_quote)?
+                };
             }
             Ok(current_amount)
         })
@@ -405,26 +400,22 @@ impl StablecoinDEX {
     ) -> Result<u128> {
         // Find and validate the trade route (book keys + direction for each hop)
         let route = self.find_trade_path(token_in, token_out)?;
+        let simulate_fills = self.storage.spec().is_t9();
 
-        if !self.storage.spec().is_t9() {
-            // Execute quotes for each hop using precomputed book keys and directions
+        self.with_quote_execution(|dex, storage_credits| {
             let mut current_amount = amount_in;
             for (book_key, base_for_quote) in route {
-                current_amount = self.quote_exact_in(book_key, current_amount, base_for_quote)?;
-            }
-            return Ok(current_amount);
-        }
-
-        self.simulate_swap(|dex, storage_credits| {
-            let mut current_amount = amount_in;
-            for (book_key, base_for_quote) in route {
-                current_amount = dex.fill_orders_exact_in(
-                    storage_credits,
-                    book_key,
-                    base_for_quote,
-                    current_amount,
-                    Address::ZERO,
-                )?;
+                current_amount = if simulate_fills {
+                    dex.fill_orders_exact_in(
+                        storage_credits,
+                        book_key,
+                        base_for_quote,
+                        current_amount,
+                        Address::ZERO,
+                    )?
+                } else {
+                    dex.quote_exact_in(book_key, current_amount, base_for_quote)?
+                };
             }
             Ok(current_amount)
         })
@@ -432,19 +423,24 @@ impl StablecoinDEX {
 
     /// Executes the real swap fill path against a temporary state checkpoint.
     ///
-    /// State, logs, transient storage, storage actions, and speculative SSTORE refunds are
-    /// discarded. Gas consumed while executing the simulation remains charged.
-    fn simulate_swap<R>(
+    /// State, logs, transient storage, and speculative SSTORE refunds are discarded. Storage
+    /// actions remain recorded inside matching checkpoint markers so replay validates every
+    /// access without committing simulated writes. Gas consumed by the simulation remains charged.
+    fn with_quote_execution<R>(
         &mut self,
         f: impl FnOnce(&mut Self, &mut StorageCreditDeltas) -> Result<R>,
     ) -> Result<R> {
+        let mut storage_credits = StorageCreditDeltas::new();
+        if !self.storage.spec().is_t9() {
+            return f(self, &mut storage_credits);
+        }
+
         let actions = self.storage.actions();
-        actions.discarded(|| {
+        actions.reverted(self.address, || {
             let _checkpoint = self.storage.checkpoint();
             preserve_storage_credits(self.address)?;
 
             let refunds_before = self.storage.gas_refunded();
-            let mut storage_credits = StorageCreditDeltas::new();
             let result = f(self, &mut storage_credits);
 
             // Journal checkpoints do not include the precompile gas tracker. Retain gas charges,

@@ -5,6 +5,11 @@ use tempo_contracts::precompiles::TIP_FEE_MANAGER_ADDRESS;
 
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub enum StorageAction {
+    /// Begins a temporary storage-action scope whose effects are reverted by
+    /// [`Self::CheckpointRevert`].
+    Checkpoint(Address),
+    /// Reverts storage actions to the matching [`Self::Checkpoint`].
+    CheckpointRevert(Address),
     /// Records an SLOAD opcode.
     Sload(Address, U256, U256),
     /// Records an SSTORE opcode.
@@ -55,7 +60,9 @@ impl StorageAction {
     /// Returns the address of the storage action.
     pub fn address(&self) -> Address {
         match self {
-            Self::Sload(address, ..)
+            Self::Checkpoint(address)
+            | Self::CheckpointRevert(address)
+            | Self::Sload(address, ..)
             | Self::Sstore(address, ..)
             | Self::Sinc(address, ..)
             | Self::Sdec(address, ..) => *address,
@@ -146,15 +153,16 @@ impl StorageActions {
         f()
     }
 
-    /// Runs a closure with an isolated actions buffer and discards actions recorded within it.
+    /// Runs a closure in a recorded action checkpoint that is reverted on exit.
     ///
-    /// Unlike [`Self::unrecorded`], this also discards [`Self::record_always`] calls. Actions
-    /// recorded before entering the scope are restored on exit, including when the closure
-    /// returns early or panics.
-    pub fn discarded<R>(&self, f: impl FnOnce() -> R) -> R {
-        let _guard = DiscardedStorageActionsGuard {
+    /// All actions remain in the trace so replay can validate the storage accesses that affected
+    /// execution, while the checkpoint markers prevent speculative writes from becoming part of
+    /// the replayed final state.
+    pub fn reverted<R>(&self, owner: Address, f: impl FnOnce() -> R) -> R {
+        self.record_always(StorageAction::Checkpoint(owner));
+        let _guard = RevertedStorageActionsGuard {
             actions: self.clone(),
-            previous_actions: self.take(),
+            owner,
         };
         f()
     }
@@ -225,18 +233,17 @@ struct RecordedStorageActionsGuard {
     previous_unrecorded_depth: usize,
 }
 
-/// Isolated storage-actions scope guard that restores the previous buffer on drop.
+/// Recorded storage-actions checkpoint guard that appends a revert marker on drop.
 #[derive(Debug)]
-struct DiscardedStorageActionsGuard {
+struct RevertedStorageActionsGuard {
     actions: StorageActions,
-    previous_actions: Option<Vec<StorageAction>>,
+    owner: Address,
 }
 
-impl Drop for DiscardedStorageActionsGuard {
+impl Drop for RevertedStorageActionsGuard {
     fn drop(&mut self) {
-        if let Some(previous_actions) = self.previous_actions.take() {
-            self.actions.replace(previous_actions);
-        }
+        self.actions
+            .record_always(StorageAction::CheckpointRevert(self.owner));
     }
 }
 
@@ -358,14 +365,14 @@ mod tests {
     }
 
     #[test]
-    fn test_discarded_scope_restores_previous_actions() {
+    fn test_reverted_scope_preserves_checkpointed_actions() {
         let actions = StorageActions::enabled();
         let address = Address::repeat_byte(0x42);
         let key = U256::from(7);
         let before = StorageAction::Sload(address, key, U256::from(1));
 
         actions.record(before);
-        actions.discarded(|| {
+        actions.reverted(address, || {
             actions.record(StorageAction::Sstore(
                 address,
                 key,
@@ -374,7 +381,7 @@ mod tests {
             ));
             actions.record_always(StorageAction::FeeAmmSwap(key, U256::from(3), U256::from(4)));
 
-            actions.discarded(|| {
+            actions.reverted(address, || {
                 actions.record_always(StorageAction::FeeAmmLiquidityCheck(
                     key,
                     U256::from(5),
@@ -384,6 +391,18 @@ mod tests {
             });
         });
 
-        assert_eq!(actions.take(), Some(vec![before]));
+        assert_eq!(
+            actions.take(),
+            Some(vec![
+                before,
+                StorageAction::Checkpoint(address),
+                StorageAction::Sstore(address, key, U256::from(1), U256::from(2)),
+                StorageAction::FeeAmmSwap(key, U256::from(3), U256::from(4)),
+                StorageAction::Checkpoint(address),
+                StorageAction::FeeAmmLiquidityCheck(key, U256::from(5), U256::from(6), true,),
+                StorageAction::CheckpointRevert(address),
+                StorageAction::CheckpointRevert(address),
+            ])
+        );
     }
 }

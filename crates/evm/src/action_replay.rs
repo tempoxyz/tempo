@@ -106,6 +106,7 @@ where
         }
 
         let db = self.inner.evm.db_mut();
+        let mut checkpoints = Vec::new();
         for action in actions {
             // Expiring nonces are handled above
             if is_expiring_nonce && action.address() == NONCE_PRECOMPILE_ADDRESS {
@@ -113,6 +114,18 @@ where
             }
 
             match action {
+                StorageAction::Checkpoint(owner) => {
+                    checkpoints.push((owner, self.replay_state.checkpoint()));
+                }
+                StorageAction::CheckpointRevert(owner) => {
+                    let Some((checkpoint_owner, checkpoint)) = checkpoints.pop() else {
+                        return Err(StorageActionReplayError::ActionConflict.into());
+                    };
+                    if checkpoint_owner != owner {
+                        return Err(StorageActionReplayError::ActionConflict.into());
+                    }
+                    self.replay_state.checkpoint_revert(checkpoint);
+                }
                 StorageAction::Sload(address, key, value) => {
                     let _ = self.replay_state.sload_exact(db, address, key, value)?;
                 }
@@ -175,6 +188,10 @@ where
                     }
                 }
             }
+        }
+
+        if !checkpoints.is_empty() {
+            return Err(StorageActionReplayError::ActionConflict.into());
         }
 
         let mut state = EvmState::default();
@@ -373,7 +390,7 @@ impl From<StorageActionReplayError> for BlockExecutionError {
     }
 }
 
-#[derive(Debug, Default)]
+#[derive(Debug, Default, Clone)]
 pub struct StorageActionReplayState {
     /// Changes for the current transaction.
     tx_changes: AddressMap<U256Map<SlotChange>>,
@@ -382,6 +399,16 @@ pub struct StorageActionReplayState {
 }
 
 impl StorageActionReplayState {
+    /// Snapshots transaction-local replay state for a recorded action checkpoint.
+    fn checkpoint(&self) -> Self {
+        self.clone()
+    }
+
+    /// Restores transaction-local replay state at a recorded action checkpoint.
+    fn checkpoint_revert(&mut self, checkpoint: Self) {
+        *self = checkpoint;
+    }
+
     /// Clears cached expiring-nonce state after execution that did not go through action replay.
     pub fn invalidate_expiring_nonce_cache(&mut self) {
         self.expiring_nonce.invalidate_cache();
@@ -546,14 +573,14 @@ impl StorageActionReplayState {
     }
 }
 
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 struct SlotChange {
     original: U256,
     current: U256,
     written: bool,
 }
 
-#[derive(Debug, Default)]
+#[derive(Debug, Default, Clone)]
 struct ExpiringNonceReplayState {
     /// Current cached ring pointer.
     ring_ptr: Option<U256>,
@@ -800,5 +827,31 @@ mod tests {
         assert_eq!(change.original, U256::from(11));
         assert_eq!(change.current, U256::from(14));
         assert!(change.written);
+    }
+
+    #[test]
+    fn checkpoint_revert_restores_transaction_view() {
+        let address = Address::repeat_byte(0x42);
+        let slot = U256::from(7);
+        let mut db = state_with_storage(address, slot, U256::from(10));
+        let mut replay_state = StorageActionReplayState::default();
+
+        replay_state
+            .sload_exact(&mut db, address, slot, U256::from(10))
+            .expect("load slot before checkpoint");
+        let checkpoint = replay_state.checkpoint();
+        replay_state
+            .sstore(address, slot, U256::from(11))
+            .expect("apply speculative store");
+        replay_state.checkpoint_revert(checkpoint);
+
+        let change = replay_state
+            .tx_changes
+            .get(&address)
+            .and_then(|slots| slots.get(&slot))
+            .expect("pre-checkpoint slot view restored");
+        assert_eq!(change.original, U256::from(10));
+        assert_eq!(change.current, U256::from(10));
+        assert!(!change.written);
     }
 }
