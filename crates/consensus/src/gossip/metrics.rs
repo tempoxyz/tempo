@@ -18,7 +18,6 @@ pub(super) struct Metrics {
     pub(super) relayed: Counter,
     pub(super) relay_dropped: Counter,
     pub(super) penalties: Counter,
-    pub(super) scheme_registration_events: Counter,
     pub(super) dropped_disconnected_peer: Counter,
     pub(super) dropped_replay: Counter,
     pub(super) dropped_malformed: Counter,
@@ -33,7 +32,7 @@ impl Metrics {
             slots: context.gauge("slots", "peers with a candidate or quarantined certificate"),
             quarantined: context.gauge(
                 "quarantined",
-                "peer certificates waiting for a verification scheme",
+                "peer certificates waiting for marshal to process their epoch",
             ),
             // A round is (epoch, view). View resets each epoch, so it is only
             // meaningful next to the epoch; exposing both keeps the pair
@@ -69,10 +68,6 @@ impl Metrics {
                 "durable publications rejected because a peer's queue was full or closed",
             ),
             penalties: context.counter("penalties", "peer reputation penalties applied"),
-            scheme_registration_events: context.counter(
-                "scheme_registration_events",
-                "scheme registrations that triggered quarantine scans",
-            ),
             dropped_disconnected_peer: context.counter(
                 "dropped_disconnected_peer",
                 "frames received after their logical peer disconnected",

@@ -251,7 +251,8 @@ where
                     crate::gossip::actor::Config {
                         verify_rate: gossip_config.verify_rate,
                         transport: gossip_config.transport,
-                        scheme_provider: scheme_provider.clone(),
+                        epoch_strategy: epoch_strategy.clone(),
+                        finalized_floor,
                         peer_control: execution_node.network.clone(),
                         driver: crate::gossip::PublishOnlySink,
                         marshal: marshal_mailbox.clone(),

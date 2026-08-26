@@ -14,10 +14,11 @@ use alloy_primitives::{B256, B512, Bytes};
 use commonware_consensus::{
     Reporter as _,
     marshal::Update,
-    types::{Epoch, Height, Round, View},
+    types::{Epoch, Epocher as _, FixedEpocher, Height, Round, View},
 };
 use commonware_macros::test_traced;
 use commonware_runtime::{Clock as _, Runner as _, Supervisor as _, deterministic};
+use commonware_utils::{Acknowledgement as _, acknowledgement::Exact};
 use parking_lot::Mutex;
 use tempo_node::gossip::{self, Frame, PeerControl, PeerEvent, TransportSender};
 use tokio::sync::{mpsc, oneshot};
@@ -25,7 +26,7 @@ use tokio::sync::{mpsc, oneshot};
 use super::{Certificate, CertificateError, CertificateMailbox, Marshal};
 use crate::{
     consensus::Digest,
-    epoch::SchemeProvider,
+    follow::test_utils::{EPOCH_LENGTH, make_block},
     test_utils::{DkgFixture, dkg_fixture, make_certificate},
 };
 
@@ -173,7 +174,6 @@ struct Rig {
     frames: mpsc::Sender<Frame>,
     mailbox: super::Mailbox,
     marshal: StubMarshal,
-    schemes: SchemeProvider,
     sink: StubSink,
     peer_control: StubPeerControl,
     routes: Arc<Mutex<HashMap<B512, mpsc::Sender<Bytes>>>>,
@@ -199,12 +199,15 @@ impl Rig {
             .expect("actor is running");
     }
 
-    fn install_scheme(&self, epoch: Epoch) {
-        assert!(
-            self.schemes
-                .register(epoch, self.fixture.schemes[0].clone()),
-            "scheme should not already be registered",
-        );
+    fn exit_epoch(&mut self, epoch: Epoch) {
+        let boundary = FixedEpocher::new(EPOCH_LENGTH)
+            .last(epoch)
+            .expect("fixed epoch strategy supports every epoch");
+        let (acknowledgement, _acknowledged) = Exact::handle();
+        let _ = self.mailbox.report(Update::Block(
+            make_block(boundary.get(), None).into(),
+            acknowledgement,
+        ));
     }
 
     /// Builds a frame carrying a real certificate over a synthetic block.
@@ -296,13 +299,13 @@ fn start_with(context: &mut deterministic::Context, verify_rate: NonZeroU32) -> 
     let sink = StubSink::new();
     let marshal = StubMarshal::default();
     let peer_control = StubPeerControl::default();
-    let schemes = SchemeProvider::new();
     let (actor, mailbox) = super::init(
         context.child("gossip"),
         super::actor::Config {
             verify_rate,
             transport,
-            scheme_provider: schemes.clone(),
+            epoch_strategy: FixedEpocher::new(EPOCH_LENGTH),
+            finalized_floor: Height::zero(),
             peer_control: peer_control.clone(),
             driver: sink.clone(),
             marshal: marshal.clone(),
@@ -315,7 +318,6 @@ fn start_with(context: &mut deterministic::Context, verify_rate: NonZeroU32) -> 
         frames: frames_tx,
         mailbox,
         marshal,
-        schemes,
         sink,
         peer_control,
         routes,
@@ -516,7 +518,7 @@ fn disconnected_peer_is_ignored() {
     });
 }
 
-/// Quarantine is sticky until the required scheme is registered. Time
+/// Quarantine is sticky until marshal processes the required boundary. Time
 /// and replacement offers cannot cause another verification or peer penalty.
 #[test_traced]
 fn certificate_awaiting_scheme_is_held_without_retrying() {
@@ -548,13 +550,13 @@ fn certificate_awaiting_scheme_is_held_without_retrying() {
         );
 
         // A scheme for an earlier epoch cannot verify it, so it stays held.
-        rig.install_scheme(Epoch::new(3));
+        rig.exit_epoch(Epoch::new(2));
         context.sleep(Duration::from_millis(50)).await;
         assert_eq!(rig.sink.requests().len(), 1, "still held");
         assert_eq!(metric(&context, "gossip_quarantined"), 1);
 
         // The scheme it was waiting for releases it.
-        rig.install_scheme(Epoch::new(4));
+        rig.exit_epoch(Epoch::new(3));
         wait_until(&context, || rig.sink.requests().len() == 2).await;
         wait_until(&context, || !rig.peer_control.penalized().is_empty()).await;
         assert_eq!(rig.peer_control.penalized(), vec![peer(1)]);
@@ -562,10 +564,10 @@ fn certificate_awaiting_scheme_is_held_without_retrying() {
     });
 }
 
-/// Registration may race with an in-flight driver judgement. The provider is
-/// the source of truth, so a notification handled before quarantine is not lost.
+/// A boundary block may race with an in-flight driver judgement. Retaining the
+/// processed epoch ensures an earlier update is not lost.
 #[test_traced]
-fn scheme_registered_during_judgement_is_not_missed() {
+fn boundary_processed_during_judgement_is_not_missed() {
     deterministic::Runner::default().start(|mut context| async move {
         let mut rig = start(&mut context);
         rig.connect(peer(1));
@@ -573,7 +575,7 @@ fn scheme_registered_during_judgement_is_not_missed() {
         rig.send(peer(1), rig.frame(11)).await;
         wait_until(&context, || rig.sink.requests().len() == 1).await;
 
-        rig.install_scheme(Epoch::new(4));
+        rig.exit_epoch(Epoch::new(3));
         rig.sink.answer(Err(CertificateError::Invalid));
         rig.sink.release(Err(CertificateError::NeedsScheme {
             epoch: Epoch::new(4),
@@ -693,8 +695,8 @@ fn higher_round_replaces_a_ready_slot() {
     });
 }
 
-/// Once the latest verified round passes a quarantined certificate, a scheme
-/// registration only removes it. The actor does not spend another verification
+/// Once the latest verified round passes a quarantined certificate, processing
+/// its boundary only removes it. The actor does not spend another verification
 /// to rediscover that it is stale.
 #[test_traced]
 fn stale_quarantine_is_pruned_without_reverification() {
@@ -709,7 +711,7 @@ fn stale_quarantine_is_pruned_without_reverification() {
         wait_until(&context, || metric(&context, "gossip_quarantined") == 1).await;
 
         rig.tip(11);
-        rig.install_scheme(Epoch::new(4));
+        rig.exit_epoch(Epoch::new(3));
         wait_until(&context, || metric(&context, "gossip_quarantined") == 0).await;
 
         assert_eq!(rig.sink.requests(), vec![round(11)]);
@@ -717,7 +719,7 @@ fn stale_quarantine_is_pruned_without_reverification() {
     });
 }
 
-/// A relevant scheme registration releases a live certificate through the
+/// A relevant boundary releases a live certificate through the
 /// normal admission path. A durable marshal tip can publish and prune it while
 /// its judgment is pending.
 #[test_traced]
@@ -734,7 +736,7 @@ fn durable_tip_supersedes_pending_quarantine_retry() {
         rig.send(peer(1), frame.clone()).await;
         wait_until(&context, || metric(&context, "gossip_quarantined") == 1).await;
 
-        rig.install_scheme(Epoch::new(4));
+        rig.exit_epoch(Epoch::new(3));
         wait_until(&context, || rig.sink.requests().len() == 2).await;
         rig.tip(11);
         rig.sink.release(Ok(()));
@@ -749,7 +751,7 @@ fn durable_tip_supersedes_pending_quarantine_retry() {
 }
 
 /// Progress from the first useful retry settles lower quarantines before their
-/// schemes arrive, avoiding retrospective verification work.
+/// boundaries are processed, avoiding retrospective verification work.
 #[test_traced]
 fn successful_retry_prunes_lower_quarantines() {
     deterministic::Runner::default().start(|mut context| async move {
@@ -769,12 +771,12 @@ fn successful_retry_prunes_lower_quarantines() {
         rig.send(peer(2), rig.frame(10)).await;
         wait_until(&context, || metric(&context, "gossip_quarantined") == 2).await;
 
-        rig.install_scheme(Epoch::new(4));
+        rig.exit_epoch(Epoch::new(3));
         wait_until(&context, || rig.sink.requests().len() == 3).await;
         rig.sink.release(Ok(()));
         wait_until(&context, || metric(&context, "gossip_quarantined") == 0).await;
 
-        rig.install_scheme(Epoch::new(5));
+        rig.exit_epoch(Epoch::new(4));
         context.sleep(Duration::from_millis(50)).await;
         assert_eq!(rig.sink.requests(), vec![round(9), round(10), round(10)],);
     });
@@ -801,7 +803,7 @@ fn failed_retry_penalizes_only_its_source() {
         rig.send(peer(2), rig.frame(20)).await;
         wait_until(&context, || metric(&context, "gossip_quarantined") == 2).await;
 
-        rig.install_scheme(Epoch::new(4));
+        rig.exit_epoch(Epoch::new(3));
         wait_until(&context, || rig.sink.requests().len() == 3).await;
         rig.sink.release(Err(CertificateError::Invalid));
         wait_until(&context, || !rig.peer_control.penalized().is_empty()).await;
@@ -829,7 +831,7 @@ fn disconnect_discards_quarantine() {
 
         rig.disconnect(peer(1));
         wait_until(&context, || metric(&context, "gossip_quarantined") == 0).await;
-        rig.install_scheme(Epoch::new(4));
+        rig.exit_epoch(Epoch::new(3));
         context.sleep(Duration::from_millis(50)).await;
         assert_eq!(rig.sink.requests().len(), 1);
 
@@ -841,7 +843,7 @@ fn disconnect_discards_quarantine() {
 }
 
 /// Released quarantines re-enter the same global rate limiter as fresh
-/// candidates; a scheme registration cannot trigger a verification burst.
+/// candidates; processing a boundary cannot trigger a verification burst.
 #[test_traced]
 fn released_quarantines_share_the_global_verify_limit() {
     deterministic::Runner::default().start(|mut context| async move {
@@ -862,7 +864,7 @@ fn released_quarantines_share_the_global_verify_limit() {
         assert_eq!(rig.sink.requests().len(), 2);
 
         rig.sink.always(Err(CertificateError::Invalid));
-        rig.install_scheme(Epoch::new(4));
+        rig.exit_epoch(Epoch::new(3));
         wait_until(&context, || rig.sink.requests().len() == 3).await;
         context.sleep(Duration::from_millis(100)).await;
         assert_eq!(
@@ -894,7 +896,7 @@ fn released_quarantine_rejoins_behind_ready_slot() {
 
         rig.send(peer(2), rig.frame(20)).await;
         wait_until(&context, || metric(&context, "gossip_slots") == 2).await;
-        rig.install_scheme(Epoch::new(4));
+        rig.exit_epoch(Epoch::new(3));
         wait_until(&context, || metric(&context, "gossip_quarantined") == 0).await;
 
         assert_eq!(rig.sink.requests(), vec![round(10)]);

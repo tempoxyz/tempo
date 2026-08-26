@@ -2,7 +2,7 @@
 
 use commonware_actor::Feedback;
 use commonware_consensus::{
-    Reporter,
+    Heightable as _, Reporter,
     marshal::Update,
     types::{Height, Round},
 };
@@ -12,26 +12,26 @@ use tracing::debug;
 
 use crate::consensus::Block;
 
-#[derive(Debug)]
-pub(super) struct FinalizedTip {
-    pub(super) round: Round,
-    pub(super) height: Height,
+#[derive(Clone, Debug)]
+pub(super) enum Message {
+    FinalizedTip { round: Round, height: Height },
+    FinalizedBlock { height: Height },
 }
 
 /// Reports durable marshal tips to the `tempo/1` actor.
 #[derive(Clone, Debug)]
 pub(crate) struct Mailbox {
-    sender: mpsc::UnboundedSender<FinalizedTip>,
+    sender: mpsc::UnboundedSender<Message>,
 }
 
-pub(super) fn channel() -> (Mailbox, mpsc::UnboundedReceiver<FinalizedTip>) {
+pub(super) fn channel() -> (Mailbox, mpsc::UnboundedReceiver<Message>) {
     let (sender, receiver) = mpsc::unbounded_channel();
     (Mailbox { sender }, receiver)
 }
 
 impl Mailbox {
-    fn send(&self, tip: FinalizedTip) -> Feedback {
-        if self.sender.send(tip).is_err() {
+    fn send(&self, message: Message) -> Feedback {
+        if self.sender.send(message).is_err() {
             debug!("dropping gossip message because the actor is no longer running");
             Feedback::Closed
         } else {
@@ -40,18 +40,21 @@ impl Mailbox {
     }
 }
 
-/// Validators and followers publish only after marshal reports a durable tip.
-/// Block updates are irrelevant to gossip, but must be acknowledged so marshal
-/// can continue.
+/// Marshal tips trigger durable publication. Gap-free block updates expose
+/// authenticated epoch boundaries that can release quarantined certificates.
 impl Reporter for Mailbox {
     type Activity = Update<Block>;
 
     fn report(&mut self, update: Self::Activity) -> Feedback {
         match update {
-            Update::Tip(round, height, _) => self.send(FinalizedTip { round, height }),
-            Update::Block(_, ack) => {
-                ack.acknowledge();
-                Feedback::Ok
+            Update::Tip(round, height, _) => self.send(Message::FinalizedTip { round, height }),
+            Update::Block(block, acknowledgement) => {
+                let height = block.height();
+                // Gossip only uses the height as an epoch-progress signal. It
+                // performs no durability-critical block processing, so do not
+                // make marshal wait for the gossip actor to drain its mailbox.
+                acknowledgement.acknowledge();
+                self.send(Message::FinalizedBlock { height })
             }
         }
     }
@@ -68,7 +71,7 @@ mod tests {
     use commonware_utils::{Acknowledgement as _, acknowledgement::Exact};
     use futures::{FutureExt as _, executor::block_on};
 
-    use super::{FinalizedTip, channel};
+    use super::{Message, channel};
     use crate::{consensus::Digest, follow::test_utils::make_block};
 
     #[test]
@@ -84,7 +87,7 @@ mod tests {
             ));
             assert!(matches!(
                 receiver.recv().await,
-                Some(FinalizedTip {
+                Some(Message::FinalizedTip {
                     round: received,
                     height: received_height,
                 }) if received == round && received_height == Height::new(7)
@@ -94,7 +97,12 @@ mod tests {
             let _ = mailbox.report(Update::Block(make_block(1, None).into(), ack));
             acknowledged
                 .await
-                .expect("gossip should immediately acknowledge marshal blocks");
+                .expect("gossip should acknowledge blocks eagerly");
+            let message = receiver.recv().await.expect("block should be forwarded");
+            let Message::FinalizedBlock { height } = message else {
+                panic!("expected a finalized block");
+            };
+            assert_eq!(height, Height::new(1));
             assert!(receiver.recv().now_or_never().is_none());
         });
     }

@@ -194,7 +194,8 @@ impl<TUpstream> Config<TUpstream> {
                     crate::gossip::actor::Config {
                         verify_rate: gossip_config.verify_rate,
                         transport: gossip_config.transport,
-                        scheme_provider: scheme_provider.clone(),
+                        epoch_strategy: epoch_strategy.clone(),
+                        finalized_floor: last_finalized_height,
                         peer_control: self.execution_node.network.clone(),
                         driver: driver_mailbox.clone(),
                         marshal: marshal_mailbox,
@@ -304,6 +305,9 @@ where
                 Reporters::from((
                     executor_mailbox.clone(),
                     Reporters::from((
+                        // Keep the driver ahead of gossip. When gossip observes a
+                        // boundary block, any certificate retry it submits must be
+                        // queued after the driver update that installs its scheme.
                         driver_mailbox.to_marshal_reporter(),
                         Reporters::<_, feed::Mailbox, crate::gossip::Mailbox>::from((
                             feed_mailbox,
