@@ -610,6 +610,7 @@ def txgen-run-preset-pipeline [
     --duration: int
     --accounts: int
     --max-concurrent-requests: int
+    --txgen-cpus: string = ""
     --bench-args: string = ""
     --bench-env: string = ""
     --git-ref: string = ""
@@ -738,7 +739,12 @@ def txgen-run-preset-pipeline [
         let setup_pipeline = $"set -euo pipefail; ($bench_env_export)ulimit -Sn unlimited && ($txgen_setup_cmd_str) | ($bench_setup_cmd_str)"
 
         print "  Streaming keychain setup transactions into bench send..."
-        let setup_result = (bash -lc $setup_pipeline | complete)
+        let setup_command = if $txgen_cpus != "" {
+            ["taskset" "-c" $txgen_cpus "bash" "-lc" $setup_pipeline]
+        } else {
+            ["bash" "-lc" $setup_pipeline]
+        }
+        let setup_result = (run-external ($setup_command | first) ...($setup_command | skip 1) | complete)
         if $setup_result.stdout != "" { print $setup_result.stdout }
         if $setup_result.stderr != "" { print $setup_result.stderr }
 
@@ -748,7 +754,12 @@ def txgen-run-preset-pipeline [
     }
 
     print $"  Streaming up to ($tx_count) txgen transaction\(s\) over ($txgen_duration) into bench send..."
-    let result = (bash -lc $pipeline | complete)
+    let command = if $txgen_cpus != "" {
+        ["taskset" "-c" $txgen_cpus "bash" "-lc" $pipeline]
+    } else {
+        ["bash" "-lc" $pipeline]
+    }
+    let result = (run-external ($command | first) ...($command | skip 1) | complete)
     if $result.stdout != "" { print $result.stdout }
     if $result.stderr != "" { print $result.stderr }
 

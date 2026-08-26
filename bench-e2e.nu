@@ -12,8 +12,11 @@ const E2E_B_MOUNT = "/reth-bench-b"
 const BENCH_SCHELK_SCRIPT = "bench-schelk.nu"
 const E2E_VALIDATORS = "127.0.0.2:8000,127.0.0.3:8100"
 const E2E_SEED = 42
-const E2E_A_CPUS = "0-7,16-23"
-const E2E_B_CPUS = "8-15,24-31"
+# Keep each validator on seven complete physical cores within one CCD and
+# reserve one physical core per CCD (including its SMT sibling) for txgen.
+const E2E_A_CPUS = "0-6,16-22"
+const E2E_B_CPUS = "8-14,24-30"
+const E2E_TXGEN_CPUS = "7,15,23,31"
 const E2E_A_MEMORY = "60G"
 const E2E_B_MEMORY = "60G"
 const E2E_GAS_LIMIT = "1000000000000"
@@ -1154,6 +1157,7 @@ def run-local-e2e-phase [run: record, ctx: record] {
                 --duration $ctx.duration
                 --accounts $ctx.accounts
                 --max-concurrent-requests $ctx.max_concurrent_requests
+                --txgen-cpus $E2E_TXGEN_CPUS
                 --bench-args $ctx.bench_args
                 --bench-env $ctx.bench_env
                 --git-ref $run.ref
