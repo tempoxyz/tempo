@@ -146,6 +146,19 @@ impl StorageActions {
         f()
     }
 
+    /// Runs a closure with an isolated actions buffer and discards actions recorded within it.
+    ///
+    /// Unlike [`Self::unrecorded`], this also discards [`Self::record_always`] calls. Actions
+    /// recorded before entering the scope are restored on exit, including when the closure
+    /// returns early or panics.
+    pub fn discarded<R>(&self, f: impl FnOnce() -> R) -> R {
+        let _guard = DiscardedStorageActionsGuard {
+            actions: self.clone(),
+            previous_actions: self.take(),
+        };
+        f()
+    }
+
     /// Enters a scope where [`Self::record`] calls are suppressed.
     fn unrecorded_guard(&self) -> Option<UnrecordedStorageActionsGuard> {
         if let Self::Enabled(state) = self {
@@ -210,6 +223,21 @@ impl Drop for UnrecordedStorageActionsGuard {
 struct RecordedStorageActionsGuard {
     actions: StorageActions,
     previous_unrecorded_depth: usize,
+}
+
+/// Isolated storage-actions scope guard that restores the previous buffer on drop.
+#[derive(Debug)]
+struct DiscardedStorageActionsGuard {
+    actions: StorageActions,
+    previous_actions: Option<Vec<StorageAction>>,
+}
+
+impl Drop for DiscardedStorageActionsGuard {
+    fn drop(&mut self) {
+        if let Some(previous_actions) = self.previous_actions.take() {
+            self.actions.replace(previous_actions);
+        }
+    }
 }
 
 impl Drop for RecordedStorageActionsGuard {
@@ -327,5 +355,35 @@ mod tests {
                 StorageAction::Sstore(address, key, U256::from(1), U256::from(8)),
             ])
         );
+    }
+
+    #[test]
+    fn test_discarded_scope_restores_previous_actions() {
+        let actions = StorageActions::enabled();
+        let address = Address::repeat_byte(0x42);
+        let key = U256::from(7);
+        let before = StorageAction::Sload(address, key, U256::from(1));
+
+        actions.record(before);
+        actions.discarded(|| {
+            actions.record(StorageAction::Sstore(
+                address,
+                key,
+                U256::from(1),
+                U256::from(2),
+            ));
+            actions.record_always(StorageAction::FeeAmmSwap(key, U256::from(3), U256::from(4)));
+
+            actions.discarded(|| {
+                actions.record_always(StorageAction::FeeAmmLiquidityCheck(
+                    key,
+                    U256::from(5),
+                    U256::from(6),
+                    true,
+                ));
+            });
+        });
+
+        assert_eq!(actions.take(), Some(vec![before]));
     }
 }

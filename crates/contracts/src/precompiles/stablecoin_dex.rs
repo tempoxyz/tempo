@@ -61,8 +61,8 @@ crate::sol! {
         // Swap Functions
         function swapExactAmountIn(address tokenIn, address tokenOut, uint128 amountIn, uint128 minAmountOut) external returns (uint128 amountOut);
         function swapExactAmountOut(address tokenIn, address tokenOut, uint128 amountOut, uint128 maxAmountIn) external returns (uint128 amountIn);
-        function quoteSwapExactAmountIn(address tokenIn, address tokenOut, uint128 amountIn) external view returns (uint128 amountOut);
-        function quoteSwapExactAmountOut(address tokenIn, address tokenOut, uint128 amountOut) external view returns (uint128 amountIn);
+        function quoteSwapExactAmountIn(address tokenIn, address tokenOut, uint128 amountIn) external returns (uint128 amountOut);
+        function quoteSwapExactAmountOut(address tokenIn, address tokenOut, uint128 amountOut) external returns (uint128 amountIn);
 
         // Balance Management
         function balanceOf(address user, address token) external view returns (uint128);

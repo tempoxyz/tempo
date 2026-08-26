@@ -22,6 +22,7 @@ pub use tempo_contracts::precompiles::{IStablecoinDEX, StablecoinDEXError, Stabl
 
 use crate::{
     STABLECOIN_DEX_ADDRESS,
+    dispatch::preserve_storage_credits,
     error::{Result, TempoPrecompileError},
     stablecoin_dex::orderbook::{MAX_PRICE, MIN_PRICE, compute_book_key},
     storage::{Handler, Mapping},
@@ -343,13 +344,16 @@ impl StablecoinDEX {
     /// Quotes the input amount required to receive exactly `amount_out` tokens, routing through
     /// one or more orderbooks without executing trades.
     ///
+    /// At T9+, this simulates the swap fill path under a state checkpoint. It is intended for
+    /// offchain calls and consumes gas even though all simulated state changes are reverted.
+    ///
     /// # Errors
     /// - `IdenticalTokens` — `token_in` and `token_out` are the same address
     /// - `InvalidToken` — a token address does not have a valid TIP-20 prefix
     /// - `PairDoesNotExist` — no orderbook exists for one of the hops in the route
     /// - `InsufficientLiquidity` — not enough resting orders to fill `amount_out`
     pub fn quote_swap_exact_amount_out(
-        &self,
+        &mut self,
         token_in: Address,
         token_out: Address,
         amount_out: u128,
@@ -357,17 +361,36 @@ impl StablecoinDEX {
         // Find and validate the trade route (book keys + direction for each hop)
         let route = self.find_trade_path(token_in, token_out)?;
 
-        // Execute quotes backwards from output to input
-        let mut current_amount = amount_out;
-        for (book_key, base_for_quote) in route.iter().rev() {
-            current_amount = self.quote_exact_out(*book_key, current_amount, *base_for_quote)?;
+        if !self.storage.spec().is_t9() {
+            // Execute quotes backwards from output to input
+            let mut current_amount = amount_out;
+            for (book_key, base_for_quote) in route.iter().rev() {
+                current_amount =
+                    self.quote_exact_out(*book_key, current_amount, *base_for_quote)?;
+            }
+            return Ok(current_amount);
         }
 
-        Ok(current_amount)
+        self.simulate_swap(|dex, storage_credits| {
+            let mut current_amount = amount_out;
+            for (book_key, base_for_quote) in route.iter().rev() {
+                current_amount = dex.fill_orders_exact_out(
+                    storage_credits,
+                    *book_key,
+                    *base_for_quote,
+                    current_amount,
+                    Address::ZERO,
+                )?;
+            }
+            Ok(current_amount)
+        })
     }
 
     /// Quotes the output amount received for exactly `amount_in` input tokens, routing through
     /// one or more orderbooks without executing trades.
+    ///
+    /// At T9+, this simulates the swap fill path under a state checkpoint. It is intended for
+    /// offchain calls and consumes gas even though all simulated state changes are reverted.
     ///
     /// # Errors
     /// - `IdenticalTokens` — `token_in` and `token_out` are the same address
@@ -375,7 +398,7 @@ impl StablecoinDEX {
     /// - `PairDoesNotExist` — no orderbook exists for one of the hops in the route
     /// - `InsufficientLiquidity` — not enough resting orders to fill `amount_in`
     pub fn quote_swap_exact_amount_in(
-        &self,
+        &mut self,
         token_in: Address,
         token_out: Address,
         amount_in: u128,
@@ -383,13 +406,53 @@ impl StablecoinDEX {
         // Find and validate the trade route (book keys + direction for each hop)
         let route = self.find_trade_path(token_in, token_out)?;
 
-        // Execute quotes for each hop using precomputed book keys and directions
-        let mut current_amount = amount_in;
-        for (book_key, base_for_quote) in route {
-            current_amount = self.quote_exact_in(book_key, current_amount, base_for_quote)?;
+        if !self.storage.spec().is_t9() {
+            // Execute quotes for each hop using precomputed book keys and directions
+            let mut current_amount = amount_in;
+            for (book_key, base_for_quote) in route {
+                current_amount = self.quote_exact_in(book_key, current_amount, base_for_quote)?;
+            }
+            return Ok(current_amount);
         }
 
-        Ok(current_amount)
+        self.simulate_swap(|dex, storage_credits| {
+            let mut current_amount = amount_in;
+            for (book_key, base_for_quote) in route {
+                current_amount = dex.fill_orders_exact_in(
+                    storage_credits,
+                    book_key,
+                    base_for_quote,
+                    current_amount,
+                    Address::ZERO,
+                )?;
+            }
+            Ok(current_amount)
+        })
+    }
+
+    /// Executes the real swap fill path against a temporary state checkpoint.
+    ///
+    /// State, logs, transient storage, storage actions, and speculative SSTORE refunds are
+    /// discarded. Gas consumed while executing the simulation remains charged.
+    fn simulate_swap<R>(
+        &mut self,
+        f: impl FnOnce(&mut Self, &mut StorageCreditDeltas) -> Result<R>,
+    ) -> Result<R> {
+        let actions = self.storage.actions();
+        actions.discarded(|| {
+            let _checkpoint = self.storage.checkpoint();
+            preserve_storage_credits(self.address)?;
+
+            let refunds_before = self.storage.gas_refunded();
+            let mut storage_credits = StorageCreditDeltas::new();
+            let result = f(self, &mut storage_credits);
+
+            // Journal checkpoints do not include the precompile gas tracker. Retain gas charges,
+            // but remove refunds earned by storage clears that are about to be reverted.
+            let simulated_refunds = self.storage.gas_refunded().saturating_sub(refunds_before);
+            self.storage.refund_gas(simulated_refunds.saturating_neg());
+            result
+        })
     }
 
     /// Swaps `amount_in` of `token_in` for `token_out`, routing through
@@ -1899,6 +1962,50 @@ mod tests {
             .apply()?;
 
         Ok((base.address(), quote.address()))
+    }
+
+    fn with_fragmented_book<R>(
+        spec: TempoHardfork,
+        orders: &[(u128, i16)],
+        maker_is_bid: bool,
+        f: impl FnOnce(&mut StablecoinDEX, Address, Address, Address) -> eyre::Result<R>,
+    ) -> eyre::Result<R> {
+        let mut storage = HashMapStorageProvider::new_with_spec(1, spec);
+        StorageCtx::enter(&mut storage, || {
+            let mut exchange = StablecoinDEX::new();
+            exchange.initialize()?;
+
+            let admin = Address::random();
+            let taker = Address::random();
+            let makers: Vec<_> = orders.iter().map(|_| Address::random()).collect();
+            let actors: Vec<_> = makers.iter().copied().chain([taker]).collect();
+            let fund = U256::from(1_000_000_000_000_000_000u128);
+
+            let mut base_setup = TIP20Setup::create("BASE", "BASE", admin).with_issuer(admin);
+            let mut quote_setup = TIP20Setup::path_usd(admin).with_issuer(admin);
+            for actor in actors {
+                base_setup = base_setup.with_mint(actor, fund).with_approval(
+                    actor,
+                    exchange.address,
+                    U256::MAX,
+                );
+                quote_setup = quote_setup.with_mint(actor, fund).with_approval(
+                    actor,
+                    exchange.address,
+                    U256::MAX,
+                );
+            }
+
+            let base = base_setup.apply()?;
+            let quote = quote_setup.apply()?;
+            let book_key = exchange.create_pair(base.address())?;
+            for ((amount, tick), maker) in orders.iter().zip(makers) {
+                exchange.place(maker, base.address(), *amount, maker_is_bid, *tick)?;
+            }
+
+            assert_eq!(book_key, compute_book_key(base.address(), quote.address()));
+            f(&mut exchange, base.address(), quote.address(), taker)
+        })
     }
 
     #[test]
@@ -6430,5 +6537,208 @@ mod tests {
             })?;
         }
         Ok(())
+    }
+
+    #[test]
+    fn test_t9_quote_executes_fill_path_and_reverts_state() -> eyre::Result<()> {
+        let orders = [(100_006_000, 10), (100_006_000, 10)];
+        let amount_in = 200_012_000;
+
+        // Before T9, the aggregate tick quote rounds once and differs from the two fills.
+        with_fragmented_book(
+            TempoHardfork::T8,
+            &orders,
+            true,
+            |exchange, base, quote, taker| {
+                let quoted = exchange.quote_swap_exact_amount_in(base, quote, amount_in)?;
+                let executed = exchange.swap_exact_amount_in(taker, base, quote, amount_in, 0)?;
+                assert_eq!(quoted, 200_032_001);
+                assert_eq!(executed, 200_032_000);
+                Ok(())
+            },
+        )?;
+
+        with_fragmented_book(
+            TempoHardfork::T9,
+            &orders,
+            true,
+            |exchange, base, quote, taker| {
+                let book_key = compute_book_key(base, quote);
+                let best_bid_before = exchange.books[book_key].read()?.best_bid_tick;
+                let level_before = exchange.books[book_key]
+                    .tick_level_handler(10, true)
+                    .read()?;
+                let first_before = exchange.get_order(level_before.head)?;
+                let second_before = exchange.get_order(first_before.next())?;
+                let maker_base_before = exchange.balance_of(first_before.maker(), base)?;
+                let maker_credits_before = exchange.storage_credits(first_before.maker())?;
+                let events_before = exchange.emitted_events().len();
+
+                let quoted = exchange.quote_swap_exact_amount_in(base, quote, amount_in)?;
+                assert_eq!(quoted, 200_032_000);
+
+                assert_eq!(
+                    exchange.books[book_key].read()?.best_bid_tick,
+                    best_bid_before
+                );
+                assert_eq!(
+                    exchange.books[book_key]
+                        .tick_level_handler(10, true)
+                        .read()?,
+                    level_before
+                );
+                assert_eq!(exchange.get_order(first_before.order_id())?, first_before);
+                assert_eq!(exchange.get_order(second_before.order_id())?, second_before);
+                assert_eq!(
+                    exchange.balance_of(first_before.maker(), base)?,
+                    maker_base_before
+                );
+                assert_eq!(
+                    exchange.storage_credits(first_before.maker())?,
+                    maker_credits_before
+                );
+                assert_eq!(exchange.emitted_events().len(), events_before);
+
+                let executed =
+                    exchange.swap_exact_amount_in(taker, base, quote, amount_in, quoted)?;
+                assert_eq!(quoted, executed);
+                Ok(())
+            },
+        )
+    }
+
+    #[test]
+    fn test_t9_quote_error_reverts_partial_simulation() -> eyre::Result<()> {
+        let orders = [(100_000_005, 10), (100_000_007, 10)];
+        with_fragmented_book(
+            TempoHardfork::T9,
+            &orders,
+            true,
+            |exchange, base, quote, _| {
+                let book_key = compute_book_key(base, quote);
+                let level_before = exchange.books[book_key]
+                    .tick_level_handler(10, true)
+                    .read()?;
+                let first_before = exchange.get_order(level_before.head)?;
+                let second_before = exchange.get_order(first_before.next())?;
+                let events_before = exchange.emitted_events().len();
+
+                let error = exchange
+                    .quote_swap_exact_amount_in(
+                        base,
+                        quote,
+                        orders.iter().map(|(amount, _)| amount).sum::<u128>() + 1,
+                    )
+                    .unwrap_err();
+                assert_eq!(
+                    error,
+                    TempoPrecompileError::from(StablecoinDEXError::insufficient_liquidity())
+                );
+
+                assert_eq!(
+                    exchange.books[book_key]
+                        .tick_level_handler(10, true)
+                        .read()?,
+                    level_before
+                );
+                assert_eq!(exchange.get_order(first_before.order_id())?, first_before);
+                assert_eq!(exchange.get_order(second_before.order_id())?, second_before);
+                assert_eq!(exchange.emitted_events().len(), events_before);
+                Ok(())
+            },
+        )
+    }
+
+    #[test]
+    fn test_t9_multi_hop_quote_matches_swap() -> eyre::Result<()> {
+        fn run(exact_in: bool) -> eyre::Result<()> {
+            let mut storage = HashMapStorageProvider::new_with_spec(1, TempoHardfork::T9);
+            StorageCtx::enter(&mut storage, || {
+                let mut exchange = StablecoinDEX::new();
+                exchange.initialize()?;
+
+                let admin = Address::random();
+                let taker = Address::random();
+                let makers = [
+                    Address::random(),
+                    Address::random(),
+                    Address::random(),
+                    Address::random(),
+                ];
+                let actors: Vec<_> = makers.iter().copied().chain([taker]).collect();
+                let fund = U256::from(1_000_000_000_000_000_000u128);
+
+                let mut path_setup = TIP20Setup::path_usd(admin).with_issuer(admin);
+                let mut token_a_setup =
+                    TIP20Setup::create("TOKEN_A", "TOKEN_A", admin).with_issuer(admin);
+                let mut token_b_setup =
+                    TIP20Setup::create("TOKEN_B", "TOKEN_B", admin).with_issuer(admin);
+                for actor in actors {
+                    path_setup = path_setup.with_mint(actor, fund).with_approval(
+                        actor,
+                        exchange.address,
+                        U256::MAX,
+                    );
+                    token_a_setup = token_a_setup.with_mint(actor, fund).with_approval(
+                        actor,
+                        exchange.address,
+                        U256::MAX,
+                    );
+                    token_b_setup = token_b_setup.with_mint(actor, fund).with_approval(
+                        actor,
+                        exchange.address,
+                        U256::MAX,
+                    );
+                }
+
+                path_setup.apply()?;
+                let token_a = token_a_setup.apply()?;
+                let token_b = token_b_setup.apply()?;
+                exchange.create_pair(token_a.address())?;
+                exchange.create_pair(token_b.address())?;
+
+                exchange.place(makers[0], token_a.address(), 100_006_000, true, 10)?;
+                exchange.place(makers[1], token_a.address(), 100_006_000, true, 10)?;
+                exchange.place(makers[2], token_b.address(), 100_000_003, false, 20)?;
+                exchange.place(makers[3], token_b.address(), 150_000_009, false, 20)?;
+
+                if exact_in {
+                    let amount_in = 200_012_000;
+                    let quoted = exchange.quote_swap_exact_amount_in(
+                        token_a.address(),
+                        token_b.address(),
+                        amount_in,
+                    )?;
+                    let executed = exchange.swap_exact_amount_in(
+                        taker,
+                        token_a.address(),
+                        token_b.address(),
+                        amount_in,
+                        quoted,
+                    )?;
+                    assert_eq!(quoted, executed);
+                } else {
+                    let amount_out = 150_000_000;
+                    let quoted = exchange.quote_swap_exact_amount_out(
+                        token_a.address(),
+                        token_b.address(),
+                        amount_out,
+                    )?;
+                    let executed = exchange.swap_exact_amount_out(
+                        taker,
+                        token_a.address(),
+                        token_b.address(),
+                        amount_out,
+                        quoted,
+                    )?;
+                    assert_eq!(quoted, executed);
+                }
+
+                Ok(())
+            })
+        }
+
+        run(true)?;
+        run(false)
     }
 }

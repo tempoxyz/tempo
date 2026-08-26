@@ -65,12 +65,28 @@ impl Precompile for StablecoinDEX {
                         preserve_storage_credits(self.address)?;
                         self.swap_exact_amount_out(s, c.tokenIn, c.tokenOut, c.amountOut, c.maxAmountIn)
                     }),
-                    quoteSwapExactAmountIn(call) => view(call, |c| {
-                        self.quote_swap_exact_amount_in(c.tokenIn, c.tokenOut, c.amountIn)
-                    }),
-                    quoteSwapExactAmountOut(call) => view(call, |c| {
-                        self.quote_swap_exact_amount_out(c.tokenIn, c.tokenOut, c.amountOut)
-                    }),
+                    quoteSwapExactAmountIn(call) => {
+                        if self.storage.spec().is_t9() {
+                            mutate(call, msg_sender, |_, c| {
+                                self.quote_swap_exact_amount_in(c.tokenIn, c.tokenOut, c.amountIn)
+                            })
+                        } else {
+                            view(call, |c| {
+                                self.quote_swap_exact_amount_in(c.tokenIn, c.tokenOut, c.amountIn)
+                            })
+                        }
+                    },
+                    quoteSwapExactAmountOut(call) => {
+                        if self.storage.spec().is_t9() {
+                            mutate(call, msg_sender, |_, c| {
+                                self.quote_swap_exact_amount_out(c.tokenIn, c.tokenOut, c.amountOut)
+                            })
+                        } else {
+                            view(call, |c| {
+                                self.quote_swap_exact_amount_out(c.tokenIn, c.tokenOut, c.amountOut)
+                            })
+                        }
+                    },
                     MIN_TICK(call) => view(call, |_| Ok(crate::stablecoin_dex::MIN_TICK)),
                     MAX_TICK(call) => view(call, |_| Ok(crate::stablecoin_dex::MAX_TICK)),
                     TICK_SPACING(call) => view(call, |_| Ok(crate::stablecoin_dex::TICK_SPACING)),
@@ -107,13 +123,14 @@ mod tests {
 
     use crate::{
         Precompile,
+        dispatch::StaticCallNotAllowed,
         stablecoin_dex::{IStablecoinDEX, MIN_ORDER_AMOUNT, StablecoinDEX},
         storage::{ContractStorage, StorageCtx, hashmap::HashMapStorageProvider},
         test_util::{TIP20Setup, assert_full_coverage, check_selector_coverage},
     };
     use alloy::{
         primitives::{Address, U256},
-        sol_types::{SolCall, SolValue},
+        sol_types::{SolCall, SolError, SolValue},
     };
     use tempo_chainspec::hardfork::TempoHardfork;
     use tempo_contracts::precompiles::IStablecoinDEX::IStablecoinDEXCalls;
@@ -460,6 +477,26 @@ mod tests {
             let result = exchange.call(&calldata, sender);
             assert!(result.is_ok());
 
+            Ok(())
+        })
+    }
+
+    #[test]
+    fn test_t9_quote_rejects_static_call() -> eyre::Result<()> {
+        let mut storage =
+            HashMapStorageProvider::new_with_spec(1, TempoHardfork::T9).with_static(true);
+        StorageCtx::enter(&mut storage, || {
+            let mut exchange = StablecoinDEX::new();
+            let calldata = IStablecoinDEX::quoteSwapExactAmountInCall {
+                tokenIn: Address::random(),
+                tokenOut: Address::random(),
+                amountIn: 1,
+            }
+            .abi_encode();
+
+            let output = exchange.call(&calldata, Address::random())?;
+            assert!(output.is_revert());
+            assert!(StaticCallNotAllowed::abi_decode(&output.bytes).is_ok());
             Ok(())
         })
     }

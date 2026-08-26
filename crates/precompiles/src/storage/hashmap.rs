@@ -104,6 +104,12 @@ impl HashMapStorageProvider {
         self.gas_params = GasParams::new_spec(self.spec.into());
         self
     }
+
+    /// Returns self with the static-call flag overridden (builder pattern).
+    pub fn with_static(mut self, is_static: bool) -> Self {
+        self.is_static = is_static;
+        self
+    }
 }
 
 impl PrecompileStorageProvider for HashMapStorageProvider {

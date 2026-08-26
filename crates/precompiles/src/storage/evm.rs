@@ -898,6 +898,49 @@ mod tests {
     }
 
     #[test]
+    fn test_checkpoint_revert_preserves_gas_charges() -> eyre::Result<()> {
+        // T4 has both journal checkpoints and the opt-in state-gas split, without the
+        // currently unsupported TIP-1060 + EIP-8037 combination used by later forks.
+        let mut evm = TestEvm::new_with_tip1016(TempoHardfork::T4);
+        let mut provider = evm.provider_with_reservoir(460_000);
+        let address = Address::random();
+        let existing_key = U256::from(1);
+        let new_key = U256::from(2);
+
+        provider.sstore(address, existing_key, U256::from(7))?;
+        let gas_before_simulation = provider.gas_used();
+        let state_gas_before_simulation = provider.state_gas_used();
+        let refunds_before_simulation = provider.gas_refunded();
+
+        let checkpoint = provider.checkpoint();
+        provider.sstore(address, new_key, U256::from(42))?;
+        provider.sstore(address, existing_key, U256::ZERO)?;
+        let gas_after_simulation = provider.gas_used();
+        let state_gas_after_simulation = provider.state_gas_used();
+        let reservoir_after_simulation = provider.reservoir();
+        let refunds_after_simulation = provider.gas_refunded();
+        provider.checkpoint_revert(checkpoint);
+
+        let simulated_refunds = refunds_after_simulation - refunds_before_simulation;
+        provider.refund_gas(-simulated_refunds);
+
+        assert!(gas_after_simulation > gas_before_simulation);
+        assert_eq!(
+            state_gas_after_simulation - state_gas_before_simulation,
+            230_000
+        );
+        assert_eq!(reservoir_after_simulation, 0);
+        assert!(simulated_refunds > 0);
+        assert_eq!(provider.gas_used(), gas_after_simulation);
+        assert_eq!(provider.state_gas_used(), state_gas_after_simulation);
+        assert_eq!(provider.reservoir(), reservoir_after_simulation);
+        assert_eq!(provider.gas_refunded(), refunds_before_simulation);
+        assert_eq!(provider.sload(address, existing_key)?, U256::from(7));
+        assert_eq!(provider.sload(address, new_key)?, U256::ZERO);
+        Ok(())
+    }
+
+    #[test]
     fn test_set_code() -> eyre::Result<()> {
         let mut evm = TestEvm::default();
         let mut provider = evm.provider_max_gas();
