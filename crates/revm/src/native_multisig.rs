@@ -12,12 +12,13 @@ use revm::{
 use std::fmt::Debug;
 use tempo_chainspec::hardfork::TempoHardfork;
 use tempo_precompiles::{
+    is_valid_multisig_account,
     native_multisig::{NativeMultisig, auth::NativeMultisigAuthError},
     storage::{
         PrecompileStorageProvider, StorageActions, StorageCtx, evm::EvmPrecompileStorageProvider,
     },
 };
-use tempo_primitives::transaction::{MultisigSignature, TempoSignature, is_valid_multisig_account};
+use tempo_primitives::transaction::{MultisigSignature, TempoSignature};
 
 use crate::{ExecutionContext, TempoBlockEnv, TempoInvalidTransaction, TempoTxEnv};
 
