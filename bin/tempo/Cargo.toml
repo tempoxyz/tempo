@@ -157,7 +157,6 @@ otlp = [
 ]
 
 pyroscope = ["dep:pyroscope", "dep:pyroscope_pprofrs"]
-partial-persistence = ["tempo-node/partial-persistence"]
 js-tracer = [
 	"reth-node-builder/js-tracer",
 	"reth-ethereum/js-tracer",
