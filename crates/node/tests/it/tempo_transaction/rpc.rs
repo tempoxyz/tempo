@@ -8,7 +8,7 @@
 //! level, so individual call sites don't need manual retry logic.
 use alloy::{
     consensus::BlockHeader,
-    primitives::{Address, B256, Bytes, U256},
+    primitives::{Address, B256, Bytes, TxKind, U256},
     providers::Provider,
     rpc::types::TransactionRequest,
     signers::local::PrivateKeySigner,
@@ -435,5 +435,52 @@ async fn test_tip_1061_fill_sign_send() -> eyre::Result<()> {
     submit_local_raw_transaction(&mut env, repeated, signature).await?;
 
     assert_eq!(env.provider().get_transaction_count(account).await?, 2);
+    Ok(())
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn test_tip_1061_fill_with_supplied_gas_skips_estimation() -> eyre::Result<()> {
+    let env =
+        Localnet::with_schedule(crate::utils::ForkSchedule::DevnetAt(TempoHardfork::T11)).await?;
+    let signers = sorted_signers();
+    let (alice, bob) = (&signers[0], &signers[1]);
+    let config = multisig_config(0x83, 2, &[(alice, 1), (bob, 1)]);
+    let account = derived_account(&config)?;
+    let gas_limit = 123_456;
+    let request = TempoTransactionRequest {
+        inner: TransactionRequest {
+            from: Some(account),
+            gas: Some(gas_limit),
+            ..Default::default()
+        },
+        calls: vec![Call {
+            to: TxKind::Call(DEFAULT_FEE_TOKEN),
+            value: U256::ZERO,
+            input: Bytes::new(),
+        }],
+        multisig_witness: Some(MultisigSimulationWitness {
+            account,
+            config,
+            approvals: [alice.address(), bob.address()]
+                .into_iter()
+                .map(|owner| MultisigSimulationApproval::Primitive {
+                    owner,
+                    key_type: Some(SignatureType::Secp256k1),
+                    key_data: None,
+                })
+                .collect(),
+        }),
+        ..Default::default()
+    };
+
+    let filled: serde_json::Value = env
+        .provider()
+        .raw_request(
+            "eth_fillTransaction".into(),
+            [serde_json::to_value(request)?],
+        )
+        .await?;
+
+    assert_eq!(parse_filled_tx(&filled)?.gas_limit, gas_limit);
     Ok(())
 }
