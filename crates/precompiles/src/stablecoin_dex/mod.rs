@@ -362,7 +362,7 @@ impl StablecoinDEX {
         let simulate_fills = self.storage.spec().is_t9();
         let mut storage_credits = StorageCreditDeltas::new();
 
-        let result = self.with_quote_execution(|dex| {
+        self.with_quote_execution(|dex| {
             let mut current_amount = amount_out;
             for (book_key, base_for_quote) in route.into_iter().rev() {
                 current_amount = if simulate_fills {
@@ -378,11 +378,7 @@ impl StablecoinDEX {
                 };
             }
             Ok(current_amount)
-        });
-
-        // Quotes never flush maker storage credits; discard the simulated deltas with the fill.
-        drop(storage_credits);
-        result
+        })
     }
 
     /// Quotes the output amount received for exactly `amount_in` input tokens, routing through
@@ -407,7 +403,7 @@ impl StablecoinDEX {
         let simulate_fills = self.storage.spec().is_t9();
         let mut storage_credits = StorageCreditDeltas::new();
 
-        let result = self.with_quote_execution(|dex| {
+        self.with_quote_execution(|dex| {
             let mut current_amount = amount_in;
             for (book_key, base_for_quote) in route {
                 current_amount = if simulate_fills {
@@ -423,11 +419,7 @@ impl StablecoinDEX {
                 };
             }
             Ok(current_amount)
-        });
-
-        // Quotes never flush maker storage credits; discard the simulated deltas with the fill.
-        drop(storage_credits);
-        result
+        })
     }
 
     /// Executes the real swap fill path against a temporary state checkpoint.
