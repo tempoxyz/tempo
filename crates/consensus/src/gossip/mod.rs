@@ -83,7 +83,7 @@ pub(crate) enum CertificateError {
     /// the new key from an authenticated boundary.
     #[error("certificate requires a scheme for epoch {epoch}")]
     NeedsScheme {
-        /// Certificate epoch, used to retry after marshal processes that epoch.
+        /// Certificate epoch, used to retry after its boundary is processed.
         epoch: Epoch,
     },
 }

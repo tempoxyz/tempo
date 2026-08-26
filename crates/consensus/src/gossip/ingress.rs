@@ -41,7 +41,7 @@ impl Mailbox {
 }
 
 /// Marshal tips trigger durable publication. Gap-free block updates expose
-/// processed epoch progress that can release quarantined certificates.
+/// authenticated epoch boundaries that can release quarantined certificates.
 impl Reporter for Mailbox {
     type Activity = Update<Block>;
 

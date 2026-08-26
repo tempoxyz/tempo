@@ -305,6 +305,9 @@ where
                 Reporters::from((
                     executor_mailbox.clone(),
                     Reporters::from((
+                        // Keep the driver ahead of gossip. When gossip observes a
+                        // boundary block, any certificate retry it submits must be
+                        // queued after the driver update that installs its scheme.
                         driver_mailbox.to_marshal_reporter(),
                         Reporters::<_, feed::Mailbox, crate::gossip::Mailbox>::from((
                             feed_mailbox,

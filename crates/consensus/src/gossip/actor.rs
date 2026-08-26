@@ -144,11 +144,15 @@ where
     let metrics = Metrics::init(&context);
     let quota = Quota::per_second(config.verify_rate);
     let limiter_context = context.child("verify_limiter");
-    let latest_processed_epoch = config
+    let info = config
         .epoch_strategy
         .containing(config.last_finalized_height)
-        .expect("fixed epoch strategy supports every height")
-        .epoch();
+        .expect("fixed epoch strategy supports every height");
+    let latest_processed_epoch = if info.last() == config.last_finalized_height {
+        info.epoch().next()
+    } else {
+        info.epoch()
+    };
 
     Actor {
         verify_limiter: RateLimiter::direct_with_clock(quota, limiter_context),
@@ -183,7 +187,7 @@ pub(crate) struct Actor<TContext: Clock, K, P, M = crate::alias::marshal::Mailbo
 
     /// Highest verified round learned from driver judgment or a durable marshal tip.
     latest_verified_round: Round,
-    /// Highest epoch in which marshal has processed a gap-free block.
+    /// Highest epoch whose scheme is available from processed boundary blocks.
     latest_processed_epoch: Epoch,
     /// Next available ticket to assign to a slot.
     next_ready_ticket: ReadyTicket,
@@ -355,11 +359,11 @@ where
                     .epoch_strategy
                     .containing(height)
                     .expect("fixed epoch strategy supports every height");
-                if info.first() == height {
-                    let epoch = info.epoch();
-                    if epoch > self.latest_processed_epoch {
-                        self.latest_processed_epoch = epoch;
-                        self.release_quarantines(epoch);
+                if info.last() == height {
+                    let installed = info.epoch().next();
+                    if installed > self.latest_processed_epoch {
+                        self.latest_processed_epoch = installed;
+                        self.release_quarantines(installed);
                     }
                 }
             }
@@ -389,7 +393,7 @@ where
         self.relay(round, &frame);
     }
 
-    /// Releases live quarantines covered by gap-free progress into an epoch.
+    /// Releases live quarantines covered by a processed epoch boundary.
     fn release_quarantines(&mut self, available: Epoch) {
         let mut releasable: Vec<(ReadyTicket, PeerKey, Epoch)> = self
             .peers
@@ -421,7 +425,7 @@ where
                 %available,
                 round = %slot.certificate.round(),
                 digest = %slot.certificate.proposal.payload,
-                "releasing quarantined certificate after processing the first block of its epoch",
+                "releasing quarantined certificate after processing its epoch boundary",
             );
             slot.state = SlotState::Ready;
             slot.ready_ticket = ready_ticket;
@@ -553,8 +557,8 @@ where
             }
             Err(CertificateError::NeedsScheme { epoch }) => {
                 // A missing scheme is provisional because the sender may be
-                // honest after an identity rotation. An epoch-start update can
-                // race with this judgement, so check the retained watermark after
+                // honest after an identity rotation. A boundary update can race
+                // with this judgement, so check the retained watermark after
                 // quarantining instead of relying only on the update.
                 self.metrics.needs_scheme.inc();
                 self.quarantine(&pending, epoch);
@@ -612,7 +616,7 @@ where
             certificate_epoch = %slot.certificate.epoch(),
             round = %pending.round,
             digest = %slot.certificate.proposal.payload,
-            "quarantining certificate until marshal processes a block in its epoch",
+            "quarantining certificate until marshal processes its epoch boundary",
         );
         slot.state = SlotState::NeedsScheme(required);
         self.update_slot_metrics();
