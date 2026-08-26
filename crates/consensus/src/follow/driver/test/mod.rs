@@ -569,6 +569,93 @@ fn unverifiable_gossiped_certificate_is_not_blamed_on_the_sender() {
     });
 }
 
+/// Catch-up walks authenticated boundaries one at a time until the scheme for
+/// the quarantined certificate's epoch has been installed.
+#[test_traced]
+fn missing_scheme_catches_up_through_each_boundary() {
+    deterministic::Runner::default().start(|mut context| async move {
+        let fixture = dkg_fixture(&mut context, Epoch::zero());
+        let epoch_one = dkg_fixture(&mut context, Epoch::new(1));
+        let epoch_two = dkg_fixture(&mut context, Epoch::new(2));
+        let startup_block = make_block(0, Some(&fixture.outcome));
+        let provider = StubExecutionProvider::default();
+        provider.add_header(&startup_block);
+
+        let marshal = StubMarshal::default();
+        let schemes = SchemeProvider::new();
+        let strategy = FixedEpocher::new(EPOCH_LENGTH);
+        let boundary_zero = strategy
+            .last(Epoch::zero())
+            .expect("epoch zero has a boundary");
+        let boundary_one = strategy
+            .last(Epoch::new(1))
+            .expect("epoch one has a boundary");
+
+        let (actor, mailbox) = try_init(
+            context.child("driver"),
+            Config {
+                execution_provider: provider,
+                scheme_provider: schemes.clone(),
+                network_identity: NetworkIdentity {
+                    from_epoch: 0,
+                    identity: *fixture.outcome.network_identity(),
+                },
+                last_finalized_height: Height::zero(),
+                marshal: marshal.clone(),
+                executor: StubExecutor::default(),
+                epoch_strategy: strategy,
+            },
+        )
+        .expect("driver should initialize");
+        actor.start();
+
+        let block = make_block(EPOCH_LENGTH.get() * 2 + 1, None);
+        let certificate = make_finalization(&block, Epoch::new(2), &epoch_two.schemes);
+        let result = mailbox
+            .process_certificate(certificate)
+            .await
+            .expect("driver should answer");
+        assert_eq!(
+            result,
+            Err(CertificateError::NeedsScheme {
+                epoch: Epoch::new(2),
+            })
+        );
+        assert_eq!(marshal.hints(), vec![boundary_zero]);
+
+        let mut reporter = mailbox.to_marshal_reporter();
+        let (ack, processed) = Exact::handle();
+        assert!(
+            reporter
+                .report(Update::Block(
+                    make_block(boundary_zero.get(), Some(&epoch_one.outcome)).into(),
+                    ack,
+                ))
+                .accepted()
+        );
+        processed
+            .await
+            .expect("the first boundary should be acknowledged");
+        assert_eq!(marshal.hints(), vec![boundary_zero, boundary_one]);
+
+        let (ack, processed) = Exact::handle();
+        assert!(
+            reporter
+                .report(Update::Block(
+                    make_block(boundary_one.get(), Some(&epoch_two.outcome)).into(),
+                    ack,
+                ))
+                .accepted()
+        );
+        processed
+            .await
+            .expect("the target boundary should be acknowledged");
+
+        assert_eq!(marshal.hints(), vec![boundary_zero, boundary_one]);
+        assert!(schemes.scoped(Epoch::new(2)).is_some());
+    });
+}
+
 /// An upstream finalization that fails an installed scheme is dropped. It must
 /// not hint for another scheme or update marshal or execution.
 #[test_traced]
