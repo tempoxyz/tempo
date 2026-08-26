@@ -215,9 +215,9 @@ reth-revm = { git = "https://github.com/paradigmxyz/reth", rev = "00ff650", feat
 revm = { version = "42.0.1", features = ["optional_fee_charge"], default-features = false }
 revm-inspectors = "0.42.2"
 
-alloy-json-abi = { version = "1.6.1", default-features = false }
-alloy-primitives = { version = "1.6.1", default-features = false }
-alloy-sol-types = { version = "1.6.1", default-features = false }
+alloy-json-abi = { version = "1.7.1", default-features = false }
+alloy-primitives = { version = "1.7.1", default-features = false }
+alloy-sol-types = { version = "1.7.1", default-features = false }
 
 alloy = { version = "2.4.1", default-features = false }
 alloy-consensus = { version = "2.4.1", default-features = false }
@@ -410,10 +410,6 @@ vergen-git2 = "10.0.1"
 # reth-trie-sparse = { path = "../reth/crates/trie/sparse" }
 
 [patch.crates-io]
-
-# FIXME: Remove after alloy-rs/core#1162 is released.
-alloy-sol-macro = { git = "https://github.com/alloy-rs/core", rev = "d55b8516928bf9806243a5a07d39b4061a8eafa0" }
-alloy-sol-macro-expander = { git = "https://github.com/alloy-rs/core", rev = "d55b8516928bf9806243a5a07d39b4061a8eafa0" }
 
 # Commonware v2026.7.0
 # commonware-actor = { git = "https://github.com/commonwarexyz/monorepo", rev = "5950bf7179bb0650a57ed58b9e0478822944b335" }
