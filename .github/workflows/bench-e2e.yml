@@ -1084,6 +1084,15 @@ jobs:
           name: tempo-bench-results
           path: bench-results/
 
+      # The job-start STS token expires long before a multi-hour bench run
+      # reaches the post step ("Bad credentials") — fetch a fresh one.
+      - name: Refresh GitHub token via STS
+        id: github-sts-post
+        if: success()
+        uses: tempoxyz/gh-actions/actions/github-sts@183a02178c660ce295e9a262edc5857cb7135f06
+        with:
+          policy: bench-e2e
+
       - name: Post results to PR
         if: success()
         uses: actions/github-script@3a2844b7e9c422d3c10d287c895573f7108da1b3 # v9.0.0
@@ -1091,7 +1100,7 @@ jobs:
           BENCH_RESULTS_DIR: ${{ steps.results-dir.outputs.path }}
           BENCH_VALSCOPE_PUBLISHED_URL: ${{ steps.publish-valscope-static.outputs.url }}
         with:
-          github-token: ${{ steps.github-sts.outputs.token }}
+          github-token: ${{ steps.github-sts-post.outputs.token }}
           script: |
             const fs = require('fs');
             const resultsDir = process.env.BENCH_RESULTS_DIR;
