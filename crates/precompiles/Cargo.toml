@@ -21,7 +21,7 @@ tempo-contracts.workspace = true
 tempo-chainspec = { workspace = true, features = ["evm"] }
 tempo-primitives = { workspace = true, features = ["evm"] }
 tempo-precompiles-macros.workspace = true
-alloy = { workspace = true, features = ["sol-types", "consensus"] }
+alloy = { workspace = true, features = ["sol-types", "consensus", "dyn-abi"] }
 alloy-json-abi = { workspace = true, optional = true }
 alloy-evm = { workspace = true, features = ["std"] }
 alloy-primitives = { workspace = true, features = ["map-foldhash"] }

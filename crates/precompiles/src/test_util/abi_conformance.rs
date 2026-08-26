@@ -2,7 +2,8 @@
 
 use std::{collections::BTreeSet, fs, path::Path};
 
-use alloy_json_abi::{ContractObject, Error, Event, Function, JsonAbi, Param};
+use alloy::dyn_abi::{DynSolType, Specifier};
+use alloy_json_abi::{ContractObject, Error, Event, Function, JsonAbi};
 
 /// List of `(kind, signature)` pairs.
 pub type DiffEntries = Vec<(String, String)>;
@@ -71,19 +72,13 @@ fn function_signature(function: &Function) -> String {
     let mut function = function.clone();
     if let [output] = function.outputs.as_slice()
         && output.ty == "tuple"
-        && !is_dynamic(output)
+        && output
+            .resolve()
+            .is_ok_and(|ty: DynSolType| !ty.is_dynamic())
     {
         function.outputs = output.components.clone();
     }
     function.full_signature()
-}
-
-/// Returns whether a parameter uses ABI dynamic encoding.
-fn is_dynamic(param: &Param) -> bool {
-    let (base, array_suffix) = param.ty.split_once('[').unwrap_or((&param.ty, ""));
-    array_suffix.contains("[]")
-        || matches!(base, "bytes" | "string")
-        || (base == "tuple" && param.components.iter().any(is_dynamic))
 }
 
 /// Reads the ABI from a Foundry JSON artifact.
