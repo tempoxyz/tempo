@@ -1243,6 +1243,15 @@ jobs:
                 comment_id: parseInt(ackCommentId),
                 body,
               });
+            } else if (process.env.BENCH_PR) {
+              // Push-triggered runs (e.g. the flatmpt trigger branch) have no
+              // dispatch comment to update — create the results comment fresh.
+              await github.rest.issues.createComment({
+                owner: context.repo.owner,
+                repo: context.repo.repo,
+                issue_number: parseInt(process.env.BENCH_PR),
+                body,
+              });
             }
 
             await core.summary.addRaw(body).write();
