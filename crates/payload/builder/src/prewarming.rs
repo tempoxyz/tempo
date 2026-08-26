@@ -470,13 +470,19 @@ fn is_parallel_candidate(tx: &BestTransaction) -> bool {
             .transaction
             .nonce_key()
             .is_some_and(|nonce_key| !nonce_key.is_zero())
+        // Keychain validation depends on the caller's code hash, which action replay does not bind.
+        && !tx
+            .transaction
+            .inner()
+            .as_aa()
+            .is_some_and(|tx| tx.signature().is_keychain())
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
     use alloy_consensus::{BlockHeader, Header, Signed, TxLegacy};
-    use alloy_primitives::{Address, Bytes, Signature, TxKind, U256};
+    use alloy_primitives::{Address, Bytes, Signature, TxKind, U256, keccak256};
     use reth_evm::{ConfigureEvm, NextBlockEnvAttributes};
     use reth_primitives_traits::{
         Recovered, SealedHeader, transaction::error::InvalidTransactionError,
@@ -493,7 +499,11 @@ mod tests {
     };
     use tempo_chainspec::TempoChainSpec;
     use tempo_evm::{TempoEvmConfig, TempoNextBlockEnvAttributes};
-    use tempo_primitives::{TempoHeader, TempoPrimitives, TempoTxEnvelope};
+    use tempo_precompiles::PATH_USD_ADDRESS;
+    use tempo_primitives::{
+        AASigned, TempoHeader, TempoPrimitives, TempoTransaction, TempoTxEnvelope,
+        transaction::{Call, KeychainSignature, PrimitiveSignature, TempoSignature},
+    };
     use tempo_transaction_pool::transaction::TempoPooledTransaction;
 
     #[derive(Debug, Default)]
@@ -580,6 +590,64 @@ mod tests {
             origin: TransactionOrigin::External,
             authority_ids: None,
         })
+    }
+
+    fn test_aa_payment(sender: Address, signature: TempoSignature) -> BestTransaction {
+        let mut calldata = vec![0u8; 68];
+        calldata[..4].copy_from_slice(&keccak256("transfer(address,uint256)")[..4]);
+        calldata[16..36].copy_from_slice(Address::random().as_slice());
+        calldata[67] = 1;
+
+        let tx = TempoTransaction {
+            chain_id: 42431,
+            max_priority_fee_per_gas: 1_000_000_000,
+            max_fee_per_gas: 20_000_000_000,
+            gas_limit: 1_000_000,
+            calls: vec![Call {
+                to: TxKind::Call(PATH_USD_ADDRESS),
+                value: U256::ZERO,
+                input: calldata.into(),
+            }],
+            nonce_key: U256::ONE,
+            nonce: 0,
+            fee_token: None,
+            fee_payer_signature: None,
+            valid_after: None,
+            valid_before: None,
+            access_list: Default::default(),
+            tempo_authorization_list: Vec::new(),
+            key_authorization: None,
+        };
+        let envelope: TempoTxEnvelope = AASigned::new_unhashed(tx, signature).into();
+        let pooled = TempoPooledTransaction::new(Recovered::new_unchecked(envelope, sender));
+        assert!(pooled.is_payment());
+        Arc::new(ValidPoolTransaction {
+            transaction_id: TransactionId::new(0u64.into(), 0),
+            transaction: pooled,
+            propagate: true,
+            timestamp: Instant::now(),
+            origin: TransactionOrigin::External,
+            authority_ids: None,
+        })
+    }
+
+    #[test]
+    fn keychain_payments_are_not_parallel_candidates() {
+        let account = Address::random();
+        let primitive = test_aa_payment(
+            account,
+            TempoSignature::Primitive(PrimitiveSignature::default()),
+        );
+        assert!(is_parallel_candidate(&primitive));
+
+        let keychain = test_aa_payment(
+            account,
+            TempoSignature::Keychain(KeychainSignature::new(
+                account,
+                PrimitiveSignature::default(),
+            )),
+        );
+        assert!(!is_parallel_candidate(&keychain));
     }
 
     struct TestPrewarming {
