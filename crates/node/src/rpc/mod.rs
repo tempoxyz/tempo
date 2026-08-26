@@ -514,7 +514,18 @@ where
             if request.inner.nonce.is_none() {
                 request.inner.nonce = Some(this.next_available_nonce_for(&request).await?);
             }
-            request.inner.chain_id = Some(this.chain_id().to());
+            let chain_id = this.chain_id();
+            if let Some(request_chain_id) = request.inner.chain_id
+                && request_chain_id != chain_id.to::<u64>()
+            {
+                return Err(Self::Error::from_eth_err(EthApiError::InvalidParams(
+                    format!(
+                        "chainId does not match node's (have={request_chain_id}, want={})",
+                        chain_id.to::<u64>()
+                    ),
+                )));
+            }
+            request.inner.chain_id = Some(chain_id.to());
 
             if request.inner.gas.is_none() {
                 let estimated_gas = EstimateCall::estimate_gas_at(
