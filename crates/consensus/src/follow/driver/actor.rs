@@ -89,6 +89,7 @@ where
         mailbox: rx,
         startup_execution_boundary,
         current_epoch,
+        epoch_sync_target: None,
         verifier,
         latest_verified_round: Round::zero(),
     };
@@ -101,6 +102,7 @@ pub(crate) struct Driver<TContext, P, M, E = crate::follow::executor::Mailbox> {
     mailbox: mpsc::UnboundedReceiver<Message>,
     startup_execution_boundary: Height,
     current_epoch: Epoch,
+    epoch_sync_target: Option<Epoch>,
     verifier: FinalizationVerifier,
     latest_verified_round: Round,
 }
@@ -229,7 +231,20 @@ where
                 ),
             ) => {
                 debug!(%error, "failed to verify finalization certificate");
-                self.hint_current_epoch_boundary().await;
+                let target_epoch = self
+                    .config
+                    .epoch_strategy
+                    .containing(Height::new(certified.block.number()))
+                    .expect("strategy valid for all heights and epochs")
+                    .epoch();
+
+                if target_epoch > self.current_epoch {
+                    self.epoch_sync_target = Some(
+                        self.epoch_sync_target
+                            .map_or(target_epoch, |pending| pending.max(target_epoch)),
+                    );
+                    self.hint_current_epoch_boundary().await;
+                }
                 return Ok(());
             }
             Err(VerificationError::CertificateVerification(
@@ -286,7 +301,17 @@ where
                     digest = %certificate.proposal.payload,
                     "certificate failed verification against the network identity fallback",
                 );
-                self.hint_current_epoch_boundary().await;
+
+                let target_epoch = certificate.epoch();
+                if target_epoch > self.current_epoch {
+                    self.epoch_sync_target = Some(
+                        self.epoch_sync_target
+                            .map_or(target_epoch, |pending| pending.max(target_epoch)),
+                    );
+
+                    self.hint_current_epoch_boundary().await;
+                }
+
                 return Err(CertificateError::NeedsScheme {
                     epoch: certificate.epoch(),
                 });
@@ -365,6 +390,17 @@ where
             }
 
             self.current_epoch = self.current_epoch.max(onchain_outcome.epoch);
+
+            if self
+                .epoch_sync_target
+                .is_some_and(|target| self.current_epoch >= target)
+            {
+                self.epoch_sync_target = None;
+            } else if self.epoch_sync_target.is_some() {
+                // Advance one boundary at a time. Each processed boundary
+                // authenticates the scheme needed to verify the next one.
+                self.hint_current_epoch_boundary().await;
+            }
         }
 
         // Always acknowledge last. Marshal waits for every consumer before it
