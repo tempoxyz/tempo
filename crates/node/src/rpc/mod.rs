@@ -510,7 +510,13 @@ where
     {
         let this = self.clone();
         async move {
-            if let Some(witness) = request.multisig_witness.as_ref() {
+            request.inner.value.get_or_insert_default();
+            if request.inner.nonce.is_none() {
+                request.inner.nonce = Some(this.next_available_nonce_for(&request).await?);
+            }
+            request.inner.chain_id = Some(this.chain_id().to());
+
+            if request.inner.gas.is_none() {
                 let estimated_gas = EstimateCall::estimate_gas_at(
                     &this,
                     request.clone(),
@@ -518,7 +524,10 @@ where
                     EvmOverrides::default(),
                 )
                 .await?;
-                request.inner.gas.get_or_insert(estimated_gas.to());
+                request.inner.gas = Some(estimated_gas.to());
+            }
+
+            if let Some(witness) = request.multisig_witness.as_ref() {
                 request.multisig_simulation_signature = Some(
                     tempo_alloy::rpc::create_mock_native_multisig_signature(witness).map_err(
                         |error| {

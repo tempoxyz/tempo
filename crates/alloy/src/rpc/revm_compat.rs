@@ -30,6 +30,9 @@ impl TempoTransactionRequest {
         let caller_addr = self.inner.from.unwrap_or_default();
         let is_aa = self.has_aa_fields();
 
+        if is_aa && self.calls.is_empty() && self.inner.to.is_none() {
+            return Err(ValueError::new(self, "empty calls list"));
+        }
         if self.key_id.is_some() && self.multisig_witness.is_some() {
             return Err(ValueError::new(
                 self,
@@ -86,10 +89,7 @@ impl TempoTransactionRequest {
                 TempoSignature::Multisig,
             );
             let mut calls = calls;
-            if let Some(to) = inner
-                .to
-                .or_else(|| calls.is_empty().then_some(alloy_primitives::TxKind::Create))
-            {
+            if let Some(to) = inner.to {
                 calls.push(Call {
                     to,
                     value: inner.value.unwrap_or_default(),
@@ -297,7 +297,7 @@ mod tests {
     }
 
     #[test]
-    fn multisig_simulation_preserves_contract_creation() {
+    fn multisig_simulation_rejects_implicit_contract_creation() {
         let witness = one_of_one_witness();
         let signature = create_mock_native_multisig_signature(&witness).unwrap();
         let initcode = Bytes::from_static(&[0x60, 0x00]);
@@ -312,13 +312,10 @@ mod tests {
             ..Default::default()
         };
 
-        let env = request
+        let error = request
             .try_into_tempo_tx_env(TempoTxEnv::default(), true)
-            .expect("valid multisig creation simulation");
-        let calls = &env.tempo_tx_env.expect("AA simulation env").aa_calls;
-        assert_eq!(calls.len(), 1);
-        assert_eq!(calls[0].to, TxKind::Create);
-        assert_eq!(calls[0].input, initcode);
+            .expect_err("AA creation requires an explicit create call");
+        assert_eq!(error.to_string(), "empty calls list");
     }
 
     #[test]
