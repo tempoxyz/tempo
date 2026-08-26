@@ -423,8 +423,8 @@ impl StablecoinDEX {
     /// Executes the real swap fill path against a temporary state checkpoint.
     ///
     /// State, logs, transient storage, and speculative SSTORE refunds are discarded. Storage
-    /// actions remain recorded inside matching checkpoint markers so replay validates every
-    /// access without committing simulated writes. Gas consumed by the simulation remains charged.
+    /// actions remain recorded, and a checkpoint-revert action invalidates precomputed replay for
+    /// the enclosing transaction. Gas consumed by the simulation remains charged.
     fn with_quote_execution<R>(
         &mut self,
         f: impl FnOnce(&mut Self, &mut StorageCreditDeltas) -> Result<R>,

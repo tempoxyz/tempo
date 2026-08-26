@@ -5,10 +5,10 @@ use tempo_contracts::precompiles::TIP_FEE_MANAGER_ADDRESS;
 
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub enum StorageAction {
-    /// Begins a temporary storage-action scope whose effects are reverted by
-    /// [`Self::CheckpointRevert`].
-    Checkpoint(Address),
-    /// Reverts storage actions to the matching [`Self::Checkpoint`].
+    /// Marks that execution reverted a storage checkpoint.
+    ///
+    /// Traces containing this action cannot be applied to a precomputed replay target and must be
+    /// executed normally instead.
     CheckpointRevert(Address),
     /// Records an SLOAD opcode.
     Sload(Address, U256, U256),
@@ -60,8 +60,7 @@ impl StorageAction {
     /// Returns the address of the storage action.
     pub fn address(&self) -> Address {
         match self {
-            Self::Checkpoint(address)
-            | Self::CheckpointRevert(address)
+            Self::CheckpointRevert(address)
             | Self::Sload(address, ..)
             | Self::Sstore(address, ..)
             | Self::Sinc(address, ..)
@@ -153,13 +152,11 @@ impl StorageActions {
         f()
     }
 
-    /// Runs a closure in a recorded action checkpoint that is reverted on exit.
+    /// Runs a closure whose underlying storage checkpoint is reverted on exit.
     ///
-    /// All actions remain in the trace so replay can validate the storage accesses that affected
-    /// execution, while the checkpoint markers prevent speculative writes from becoming part of
-    /// the replayed final state.
+    /// All actions remain in the trace, followed by a [`StorageAction::CheckpointRevert`] marker
+    /// that invalidates precomputed action replay for the enclosing transaction.
     pub fn reverted<R>(&self, owner: Address, f: impl FnOnce() -> R) -> R {
-        self.record_always(StorageAction::Checkpoint(owner));
         let _guard = RevertedStorageActionsGuard {
             actions: self.clone(),
             owner,
@@ -365,7 +362,7 @@ mod tests {
     }
 
     #[test]
-    fn test_reverted_scope_preserves_checkpointed_actions() {
+    fn test_reverted_scope_preserves_actions_and_marks_revert() {
         let actions = StorageActions::enabled();
         let address = Address::repeat_byte(0x42);
         let key = U256::from(7);
@@ -395,10 +392,8 @@ mod tests {
             actions.take(),
             Some(vec![
                 before,
-                StorageAction::Checkpoint(address),
                 StorageAction::Sstore(address, key, U256::from(1), U256::from(2)),
                 StorageAction::FeeAmmSwap(key, U256::from(3), U256::from(4)),
-                StorageAction::Checkpoint(address),
                 StorageAction::FeeAmmLiquidityCheck(key, U256::from(5), U256::from(6), true,),
                 StorageAction::CheckpointRevert(address),
                 StorageAction::CheckpointRevert(address),

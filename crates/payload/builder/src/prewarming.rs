@@ -14,6 +14,7 @@ use reth_transaction_pool::{
     BestTransactions, PoolTransaction, error::InvalidPoolTransactionError,
 };
 use tempo_evm::{ExpiringNonceReplay, StorageActionReplay, TempoEvmConfig, evm::TempoEvm};
+use tempo_precompiles::storage::StorageAction;
 use tempo_transaction_pool::{StateAwarePoolTransaction, best::BestTransaction};
 use tracing::{instrument, trace};
 
@@ -213,6 +214,13 @@ impl BestTransactionsPrewarming {
             }
 
             let actions = evm.take_actions()?;
+            if action_replay_invalidated(&actions) {
+                trace!(
+                    target: "payload_builder",
+                    "Storage checkpoint revert invalidated transaction replay"
+                );
+                return None;
+            }
             let expiring_nonce = tx
                 .transaction
                 .is_expiring_nonce()
@@ -242,6 +250,14 @@ impl BestTransactionsPrewarming {
 
         PrewarmedTransaction { tx, replay }
     }
+}
+
+/// Returns whether an execution trace contains a state rollback that cannot be represented by
+/// storage-action replay.
+fn action_replay_invalidated(actions: &[StorageAction]) -> bool {
+    actions
+        .iter()
+        .any(|action| matches!(action, StorageAction::CheckpointRevert(_)))
 }
 
 impl Drop for BestTransactionsPrewarming {
@@ -508,6 +524,14 @@ mod tests {
     struct TestBestTransactions {
         txs: VecDeque<BestTransaction>,
         log: Arc<Mutex<TestLog>>,
+    }
+
+    #[test]
+    fn checkpoint_revert_invalidates_action_replay() {
+        assert!(!action_replay_invalidated(&[]));
+        assert!(action_replay_invalidated(&[
+            StorageAction::CheckpointRevert(Address::ZERO),
+        ]));
     }
 
     impl TestBestTransactions {

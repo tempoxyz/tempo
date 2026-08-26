@@ -1162,7 +1162,7 @@ mod tests {
         .unwrap();
     }
 
-    #[derive(Clone, Default)]
+    #[derive(Default)]
     struct StorageState {
         reconstructed: BTreeMap<(Address, U256), U256>,
         first_loads: BTreeMap<(Address, U256), U256>,
@@ -1200,18 +1200,11 @@ mod tests {
         hardfork: TempoHardfork,
     ) {
         let mut storage_state = StorageState::default();
-        let mut checkpoints = Vec::new();
 
         for action in actions {
             match *action {
-                StorageAction::Checkpoint(owner) => {
-                    checkpoints.push((owner, storage_state.clone()));
-                }
-                StorageAction::CheckpointRevert(owner) => {
-                    let (checkpoint_owner, checkpoint) =
-                        checkpoints.pop().expect("storage action checkpoint exists");
-                    assert_eq!(checkpoint_owner, owner, "storage action checkpoint owner");
-                    storage_state = checkpoint;
+                StorageAction::CheckpointRevert(_) => {
+                    panic!("checkpoint-reverted action traces are not replayable")
                 }
                 StorageAction::Sload(address, slot, value) => {
                     let key = (address, slot);
@@ -1282,11 +1275,6 @@ mod tests {
                 }
             }
         }
-        assert!(
-            checkpoints.is_empty(),
-            "storage action checkpoints are balanced"
-        );
-
         for (address, account) in state {
             for (slot, storage_slot) in &account.storage {
                 let key = (*address, *slot);
@@ -1328,9 +1316,6 @@ mod tests {
         actions
             .iter()
             .map(|action| match *action {
-                StorageAction::Checkpoint(address) => {
-                    format!("Checkpoint({})", labels.address(address))
-                }
                 StorageAction::CheckpointRevert(address) => {
                     format!("CheckpointRevert({})", labels.address(address))
                 }
