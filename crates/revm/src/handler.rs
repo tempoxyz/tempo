@@ -1278,6 +1278,9 @@ where
         let mut loaded_tx_access_key = None;
         // Access key whose fee-token spending limit was debited during fee collection, if any.
         let mut keychain_fee_key = None;
+        // Access key selected for execution. Root-authorized sidecars temporarily clear this
+        // while mutating the keychain, then restore it before user calls execute.
+        let mut keychain_transaction_key = Address::ZERO;
         let mut same_tx_key_authorization_use = false;
         if let Some(tempo_tx_env) = tx.tempo_tx_env.as_ref()
             && let Some(keychain_sig) = tempo_tx_env.signature.as_keychain()
@@ -1303,6 +1306,7 @@ where
                     .key_id(&tempo_tx_env.signature_hash)
                     .map_err(|_| TempoInvalidTransaction::AccessKeyRecoveryFailed)?
             };
+            keychain_transaction_key = access_key_addr;
 
             let key_auth = tempo_tx_env.key_authorization.as_ref();
             // Classify whether this keychain-signed tx is using the same access key that the
@@ -1368,7 +1372,10 @@ where
 
                         // T6 adds admin delegation: a keychain signer may authorize a different
                         // child key only if the acting transaction key is itself an active admin key.
-                        if key_auth.is_some() && !key.is_admin {
+                        // A multisig sidecar is independently authorized by the root quorum.
+                        if key_auth.is_some_and(|key_auth| !key_auth.signature.is_multisig())
+                            && !key.is_admin
+                        {
                             return Err(
                                 TempoInvalidTransaction::AccessKeyCannotAuthorizeOtherKeys.into()
                             );
@@ -1628,6 +1635,13 @@ where
                     allowedCalls: precompile_allowed_calls,
                 };
 
+                let quorum_authorized = key_auth.signature.is_multisig();
+                if quorum_authorized {
+                    keychain
+                        .set_transaction_key(Address::ZERO)
+                        .map_err(|e| EVMError::Custom(e.to_string()))?;
+                }
+
                 // Call precompile to authorize the key (same phase as nonce increment).
                 let result = if key_auth.is_admin() {
                     keychain.authorize_admin_key(
@@ -1645,6 +1659,11 @@ where
                         key_auth.witness(),
                     )
                 };
+                if quorum_authorized {
+                    keychain
+                        .set_transaction_key(keychain_transaction_key)
+                        .map_err(|e| EVMError::Custom(e.to_string()))?;
+                }
 
                 match result {
                     // all is good, we can do execution.
@@ -2071,6 +2090,7 @@ where
                     if auth_signer == tx.caller
                         && aa_env.signature.is_keychain()
                         && !same_tx_auth_use
+                        && !key_auth.signature.is_multisig()
                     {
                         return Err(TempoInvalidTransaction::KeychainValidationFailed {
                             reason:

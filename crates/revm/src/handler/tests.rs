@@ -28,7 +28,7 @@ use tempo_precompiles::{
 use tempo_primitives::transaction::{
     Call, KeyAuthorization, KeychainSignature, MultisigConfig, MultisigOwner, MultisigSignature,
     PrimitiveSignature, RecoveredTempoAuthorization, SignatureType, TempoSignature,
-    TempoSignedAuthorization,
+    TempoSignedAuthorization, multisig_digest,
     tt_signature::{P256SignatureWithPreHash, WebAuthnSignature},
 };
 
@@ -3616,6 +3616,64 @@ mod keychain {
             Ok::<_, TempoPrecompileError>(())
         })
         .expect("transaction key read succeeds");
+    }
+
+    #[test]
+    fn test_t11_non_admin_key_relays_multisig_key_authorization() {
+        let (owner, owner_address) = generate_keypair();
+        let config = single_owner_native_multisig_config(0x44, owner_address);
+        let account = config.derive_account().unwrap();
+        let access_key = Address::repeat_byte(0x45);
+        let child_key = Address::repeat_byte(0x46);
+        let key_authorization =
+            KeyAuthorization::unrestricted(1, SignatureType::Secp256k1, child_key)
+                .with_account(account);
+        let approval = owner
+            .sign_hash_sync(&multisig_digest(
+                key_authorization.signature_hash(),
+                account,
+                config.version,
+            ))
+            .expect("owner signs key authorization");
+        let key_authorization =
+            key_authorization.into_signed(TempoSignature::Multisig(MultisigSignature::new(
+                account,
+                config,
+                vec![PrimitiveSignature::Secp256k1(approval).to_bytes()],
+            )));
+        let (mut evm, h) = make_evm(
+            account,
+            access_key,
+            Some(key_authorization),
+            TempoHardfork::T11,
+            None,
+            true,
+        );
+        evm.tx.execution_context = ExecutionContext::Transaction {
+            tx_hash: B256::ZERO,
+        };
+
+        h.validate_env(&mut evm)
+            .expect("multisig key authorization should pass stateless validation");
+        h.validate_against_state_and_deduct_caller(&mut evm, &mut Default::default())
+            .expect("root quorum should authorize the child key");
+
+        StorageCtx::enter_ctx(&mut evm.inner.ctx, StorageActions::disabled(), || {
+            use tempo_precompiles::account_keychain::getKeyCall;
+
+            let keychain = AccountKeychain::new();
+            assert_eq!(
+                keychain
+                    .get_key(getKeyCall {
+                        account,
+                        keyId: child_key,
+                    })
+                    .expect("child key read succeeds")
+                    .keyId,
+                child_key,
+                "quorum-authorized child key should be registered",
+            );
+        });
     }
 
     #[test]
