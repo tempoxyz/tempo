@@ -3,7 +3,7 @@
 use crate::{
     error::Result,
     stablecoin_dex::{IStablecoinDEX, TICK_SPACING},
-    storage::{Handler, Mapping},
+    storage::{Handler, Mapping, StorageCtx},
 };
 use alloy::primitives::{Address, B256, U256, keccak256};
 use std::ops::Deref;
@@ -91,15 +91,22 @@ pub(crate) const MIN_PRICE: u32 = 98_000;
 /// Highest representable scaled price (`PRICE_SCALE + MAX_TICK`).
 pub(crate) const MAX_PRICE: u32 = 102_000;
 
-/// Represents a price level in the orderbook with a doubly-linked list of orders
-/// Orders are maintained in FIFO order at each tick level
+/// The packed linked-list fields in the first storage slot of [`TickLevel`].
+#[derive(Debug, Storable, Default, Clone, Copy, PartialEq, Eq)]
+pub struct TickLevelLinks {
+    /// Order ID of the first order at this tick (0 if empty).
+    pub head: u128,
+    /// Order ID of the last order at this tick (0 if empty).
+    pub tail: u128,
+}
+
+/// Represents a price level in the orderbook with a doubly-linked list of orders.
+/// Orders are maintained in FIFO order at each tick level.
 #[derive(Debug, Storable, Default, Clone, Copy, PartialEq, Eq)]
 pub struct TickLevel {
-    /// Order ID of the first order at this tick (0 if empty)
-    pub head: u128,
-    /// Order ID of the last order at this tick (0 if empty)
-    pub tail: u128,
-    /// Total liquidity available at this tick level
+    /// Live order links packed into the first storage slot.
+    pub links: TickLevelLinks,
+    /// Legacy aggregate, maintained only before T11 and derived on demand at T11.
     pub total_liquidity: u128,
 }
 
@@ -138,8 +145,7 @@ impl TickLevel {
     /// Creates a new empty tick level
     pub fn new() -> Self {
         Self {
-            head: 0,
-            tail: 0,
+            links: TickLevelLinks::default(),
             total_liquidity: 0,
         }
     }
@@ -147,15 +153,14 @@ impl TickLevel {
     /// Creates a tick level with specific values
     pub fn with_values(head: u128, tail: u128, total_liquidity: u128) -> Self {
         Self {
-            head,
-            tail,
+            links: TickLevelLinks { head, tail },
             total_liquidity,
         }
     }
 
     /// Returns true if this tick level has no orders
     pub fn is_empty(&self) -> bool {
-        self.head == 0 && self.tail == 0
+        self.links.head == 0 && self.links.tail == 0
     }
 
     /// Returns true if this tick level has orders
@@ -164,11 +169,49 @@ impl TickLevel {
     }
 }
 
+// `Storable` also generates `Handler<TickLevel>` for raw two-slot access. These
+// inherent methods intentionally take precedence so normal T11 access touches
+// only the live links; tests can use UFCS to inspect the stale aggregate slot.
+impl TickLevelHandler {
+    /// Reads only the live linked-list slot at T11, preserving legacy behavior before T11.
+    #[inline]
+    pub(crate) fn read(&self) -> Result<TickLevel> {
+        if StorageCtx.spec().is_t11() {
+            Ok(TickLevel {
+                links: self.links.read()?,
+                total_liquidity: 0,
+            })
+        } else {
+            <Self as Handler<TickLevel>>::read(self)
+        }
+    }
+
+    /// Writes only the live linked-list slot at T11, preserving legacy behavior before T11.
+    #[inline]
+    pub(crate) fn write(&mut self, level: TickLevel) -> Result<()> {
+        if StorageCtx.spec().is_t11() {
+            self.links.write(level.links)
+        } else {
+            <Self as Handler<TickLevel>>::write(self, level)
+        }
+    }
+
+    /// Deletes only the live linked-list slot at T11, leaving the legacy aggregate stale.
+    #[inline]
+    pub(crate) fn delete(&mut self) -> Result<()> {
+        if StorageCtx.spec().is_t11() {
+            self.links.delete()
+        } else {
+            <Self as Handler<TickLevel>>::delete(self)
+        }
+    }
+}
+
 impl From<TickLevel> for IStablecoinDEX::PriceLevel {
     fn from(value: TickLevel) -> Self {
         Self {
-            head: value.head,
-            tail: value.tail,
+            head: value.links.head,
+            tail: value.links.tail,
             totalLiquidity: value.total_liquidity,
         }
     }
@@ -519,19 +562,74 @@ pub fn validate_tick_spacing(tick: i16) -> Result<()> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::error::TempoPrecompileError;
+    use crate::{
+        error::TempoPrecompileError,
+        storage::{StorageCtx, hashmap::HashMapStorageProvider},
+    };
     use rand_08::Rng;
+    use tempo_chainspec::hardfork::TempoHardfork;
 
     use alloy::primitives::address;
 
     #[test]
     fn test_tick_level_creation() {
         let level = TickLevel::new();
-        assert_eq!(level.head, 0);
-        assert_eq!(level.tail, 0);
+        assert_eq!(level.links.head, 0);
+        assert_eq!(level.links.tail, 0);
         assert_eq!(level.total_liquidity, 0);
         assert!(level.is_empty());
         assert!(!level.has_liquidity());
+    }
+
+    #[test]
+    fn test_tick_level_handler_io() -> eyre::Result<()> {
+        let slot = U256::from(7);
+        let address = Address::random();
+        let legacy = TickLevel::with_values(11, 22, 33);
+        let updated = TickLevel::with_values(44, 55, 0);
+
+        for spec in [
+            TempoHardfork::T0,
+            TempoHardfork::T3,
+            TempoHardfork::T10,
+            TempoHardfork::T11,
+        ] {
+            let is_t11 = spec.is_t11();
+            let mut storage = HashMapStorageProvider::new_with_spec(1, spec);
+            StorageCtx::enter(&mut storage, || {
+                Handler::<TickLevel>::write(&mut TickLevelHandler::new(slot, address), legacy)
+            })?;
+
+            storage.reset_counters();
+            let level =
+                StorageCtx::enter(&mut storage, || TickLevelHandler::new(slot, address).read())?;
+            assert_eq!(level.links, legacy.links);
+            assert_eq!(level.total_liquidity, if is_t11 { 0 } else { 33 });
+            assert_eq!(storage.counter_sload(), if is_t11 { 1 } else { 2 });
+            assert_eq!(storage.counter_sstore(), 0);
+
+            storage.reset_counters();
+            StorageCtx::enter(&mut storage, || {
+                TickLevelHandler::new(slot, address).write(updated)
+            })?;
+            assert_eq!(storage.counter_sload(), if spec.is_t4() { 0 } else { 2 });
+            assert_eq!(storage.counter_sstore(), if is_t11 { 1 } else { 2 });
+
+            storage.reset_counters();
+            StorageCtx::enter(&mut storage, || {
+                TickLevelHandler::new(slot, address).delete()
+            })?;
+            assert_eq!(storage.counter_sload(), 0);
+            assert_eq!(storage.counter_sstore(), if is_t11 { 1 } else { 2 });
+
+            let stored = StorageCtx::enter(&mut storage, || {
+                Handler::<TickLevel>::read(&TickLevelHandler::new(slot, address))
+            })?;
+            assert_eq!(stored.links, TickLevelLinks::default());
+            assert_eq!(stored.total_liquidity, if is_t11 { 33 } else { 0 });
+        }
+
+        Ok(())
     }
 
     #[test]
