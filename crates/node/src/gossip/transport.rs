@@ -45,7 +45,9 @@ use reth_ethereum::{
     network::{
         api::{Direction, PeerId},
         eth_wire::{
-            capability::SharedCapabilities, multiplex::ProtocolConnection, protocol::Protocol,
+            capability::SharedCapabilities,
+            multiplex::ProtocolConnection,
+            protocol::{Protocol, ProtocolIngressLimits},
         },
         protocol::{
             ConnectionHandler, IntoRlpxSubProtocol as _, OnNotSupported, ProtocolHandler,
@@ -71,6 +73,12 @@ use super::wire;
 const MAX_CONNECTIONS_PER_PEER: usize = 2;
 
 const INBOUND_DRAIN_BUDGET: usize = 16;
+
+/// Bound the `tempo/1` queue before frames reach our rate limiter.
+///
+/// Reth allows up to 64 frames and 64 KiB of frame buffer capacity per
+/// connection. These buffers also count toward the shared RLPx byte limit.
+const RLPX_INBOUND_FRAME_BUFFER: usize = 64;
 
 /// Events for the consensus-facing logical peer.
 ///
@@ -462,6 +470,12 @@ impl ConnectionHandler for GossipProtocolHandler {
 
     fn protocol(&self) -> Protocol {
         wire::protocol()
+    }
+
+    fn inbound_limits(&self) -> ProtocolIngressLimits {
+        ProtocolIngressLimits::new(wire::MAX_FRAME_BYTES)
+            .with_max_buffered_bytes(wire::MAX_FRAME_BYTES * RLPX_INBOUND_FRAME_BUFFER)
+            .with_max_buffered_messages(RLPX_INBOUND_FRAME_BUFFER)
     }
 
     fn on_unsupported_by_peer(
