@@ -152,15 +152,14 @@ impl StorageActions {
         f()
     }
 
-    /// Runs a closure whose underlying storage checkpoint is reverted on exit.
+    /// Runs a closure and marks its underlying storage checkpoint as reverted after it returns.
     ///
     /// All actions remain in the trace, followed by a [`StorageAction::CheckpointRevert`] marker
     /// that invalidates precomputed action replay for the enclosing transaction.
     pub fn reverted<R>(&self, f: impl FnOnce() -> R) -> R {
-        let _guard = RevertedStorageActionsGuard {
-            actions: self.clone(),
-        };
-        f()
+        let result = f();
+        self.record_always(StorageAction::CheckpointRevert);
+        result
     }
 
     /// Enters a scope where [`Self::record`] calls are suppressed.
@@ -227,18 +226,6 @@ impl Drop for UnrecordedStorageActionsGuard {
 struct RecordedStorageActionsGuard {
     actions: StorageActions,
     previous_unrecorded_depth: usize,
-}
-
-/// Recorded storage-actions checkpoint guard that appends a revert marker on drop.
-#[derive(Debug)]
-struct RevertedStorageActionsGuard {
-    actions: StorageActions,
-}
-
-impl Drop for RevertedStorageActionsGuard {
-    fn drop(&mut self) {
-        self.actions.record_always(StorageAction::CheckpointRevert);
-    }
 }
 
 impl Drop for RecordedStorageActionsGuard {
