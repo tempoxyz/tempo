@@ -2,7 +2,7 @@
 
 use std::{collections::BTreeSet, fs, path::Path};
 
-use alloy_json_abi::{ContractObject, Error, Event, Function, JsonAbi};
+use alloy_json_abi::{ContractObject, Error, Event, Function, JsonAbi, Param};
 
 /// List of `(kind, signature)` pairs.
 pub type DiffEntries = Vec<(String, String)>;
@@ -71,10 +71,19 @@ fn function_signature(function: &Function) -> String {
     let mut function = function.clone();
     if let [output] = function.outputs.as_slice()
         && output.ty == "tuple"
+        && !is_dynamic(output)
     {
         function.outputs = output.components.clone();
     }
     function.full_signature()
+}
+
+/// Returns whether a parameter uses ABI dynamic encoding.
+fn is_dynamic(param: &Param) -> bool {
+    let (base, array_suffix) = param.ty.split_once('[').unwrap_or((&param.ty, ""));
+    array_suffix.contains("[]")
+        || matches!(base, "bytes" | "string")
+        || (base == "tuple" && param.components.iter().any(is_dynamic))
 }
 
 /// Reads the ABI from a Foundry JSON artifact.
@@ -156,6 +165,29 @@ mod tests {
                 .contains("event Bar(address indexed from, uint256 amount) anonymous")
         );
         assert!(surface.errors.contains("BadPerson((string,uint16))"));
+    }
+
+    #[test]
+    fn preserves_dynamic_tuple_return_shape() {
+        let structured = JsonAbi::parse([
+            "function validator() external view returns ((bytes32,bool,uint64,address,string,string) info)",
+        ])
+        .unwrap();
+        let flattened = JsonAbi::parse([
+            "function validator() external view returns (bytes32,bool,uint64,address,string,string)",
+        ])
+        .unwrap();
+
+        let structured = AbiSurface::from_abi(&structured);
+        let flattened = AbiSurface::from_abi(&flattened);
+
+        assert_ne!(structured, flattened);
+        assert!(
+            structured
+                .functions
+                .iter()
+                .any(|signature| signature.contains("tuple("))
+        );
     }
 
     #[test]
