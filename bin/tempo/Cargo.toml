@@ -103,6 +103,7 @@ reth-storage-api.workspace = true
 reth-static-file-types.workspace = true
 reth-trie.workspace = true
 reth-trie-db.workspace = true
+revm.workspace = true
 clap.workspace = true
 eyre.workspace = true
 reqwest = { workspace = true, features = ["stream"] }
