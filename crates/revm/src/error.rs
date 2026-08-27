@@ -236,6 +236,10 @@ pub enum TempoInvalidTransaction {
     #[error("keychain operations are not supported in subblock transactions")]
     KeychainOpInSubblockTransaction,
 
+    /// Native multisig transactions are not active.
+    #[error("native multisig transactions are not active")]
+    NativeMultisigNotActive,
+
     /// Fee payment error.
     #[error(transparent)]
     CollectFeePreTx(#[from] FeePaymentError),
@@ -325,6 +329,7 @@ impl TempoInvalidTransaction {
             | Self::AccessKeyExpiryInPast { .. }
             | Self::KeychainPrecompileError { .. }
             | Self::KeychainValidationFailed { .. }
+            | Self::NativeMultisigNotActive
             | Self::CollectFeePreTx(_)
             | Self::NonceManagerError(_)
             | Self::V2KeychainBeforeActivation => false,

@@ -1,5 +1,6 @@
 pub mod envelope;
 pub mod key_authorization;
+pub mod multisig;
 pub mod tempo_transaction;
 pub mod tt_authorization;
 pub mod tt_signature;
@@ -18,6 +19,13 @@ pub use envelope::{TempoTxEnvelope, TempoTxType, TempoTypedTransaction};
 pub use key_authorization::{
     CallScope, KeyAuthorization, KeyAuthorizationChainIdError, SelectorRule,
     SignedKeyAuthorization, TokenLimit,
+};
+pub use multisig::{
+    MAX_MULTISIG_NESTING_DEPTH, MAX_MULTISIG_OWNER_SIGNATURE_BYTES, MAX_MULTISIG_OWNERS,
+    MAX_MULTISIG_SIGNATURES, MAX_MULTISIG_THRESHOLD, MULTISIG_ACCOUNT_DOMAIN,
+    MULTISIG_CONFIG_DOMAIN, MULTISIG_SIGNATURE_DOMAIN, MultisigConfig, MultisigConfigError,
+    MultisigOwner, MultisigQuorumError, MultisigSignature, MultisigSignatureError,
+    MultisigWeightAccumulator, SIGNATURE_TYPE_MULTISIG, multisig_digest,
 };
 pub use tempo_transaction::{
     Call, FEE_PAYER_SIGNATURE_MARKER, InvalidValidAfter, InvalidValidBefore,
