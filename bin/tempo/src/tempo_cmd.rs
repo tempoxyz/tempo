@@ -271,9 +271,10 @@ pub struct ValidatorIdentityArgs {
     /// The validator's signing key address (0x-prefixed hex).
     #[arg(
         long = "consensus.public-key",
-        value_name = "IDENTITY_PUBLIC_KEY_ADDRESS"
+        value_name = "IDENTITY_PUBLIC_KEY_ADDRESS",
+        required_unless_present = "signing_key"
     )]
-    public_key: B256,
+    public_key: Option<B256>,
     /// The inbound address for the validator.
     #[arg(long, value_name = "IP:PORT")]
     ingress: SocketAddr,
@@ -283,11 +284,11 @@ pub struct ValidatorIdentityArgs {
 }
 
 impl ValidatorIdentityArgs {
-    fn to_config(&self, chain_id: u64) -> ValidatorConfig {
+    fn to_config(&self, chain_id: u64, public_key: B256) -> ValidatorConfig {
         ValidatorConfig {
             chain_id,
             validator_address: self.validator_address,
-            public_key: self.public_key,
+            public_key,
             ingress: self.ingress,
             egress: self.egress,
         }
@@ -307,21 +308,45 @@ pub struct ValidatorSignatureArgs {
 }
 
 impl ValidatorSignatureArgs {
-    fn resolve(self, namespace: &[u8], message: &B256) -> eyre::Result<Bytes> {
+    fn resolve(self, public_key: Option<B256>) -> eyre::Result<(B256, ResolvedValidatorSignature)> {
         let Self {
             signature,
             signing_key,
         } = self;
 
         match (signature, signing_key) {
-            (Some(sig), _) => Ok(sig),
+            (Some(signature), _) => Ok((
+                public_key.ok_or_eyre("--consensus.public-key is required with --signature")?,
+                ResolvedValidatorSignature::Precomputed(signature),
+            )),
             (None, Some(signing_key)) => {
                 let key = signing_key.read()?;
                 let private_key = key.into_inner();
-                let sig = private_key.sign(namespace, message.as_slice());
-                Ok(sig.encode().into())
+                let public_key = public_key
+                    .unwrap_or_else(|| B256::from_slice(private_key.public_key().as_ref()));
+                Ok((
+                    public_key,
+                    ResolvedValidatorSignature::SigningKey(Box::new(private_key)),
+                ))
             }
             (None, None) => unreachable!("clap requires either --signature or --signing-key"),
+        }
+    }
+}
+
+enum ResolvedValidatorSignature {
+    Precomputed(Bytes),
+    SigningKey(Box<PrivateKey>),
+}
+
+impl ResolvedValidatorSignature {
+    fn sign(self, namespace: &[u8], message: &B256) -> Bytes {
+        match self {
+            Self::Precomputed(signature) => signature,
+            Self::SigningKey(private_key) => private_key
+                .sign(namespace, message.as_slice())
+                .encode()
+                .into(),
         }
     }
 }
@@ -552,11 +577,12 @@ impl AddValidator {
             .await
             .wrap_err("failed to get chain id")?;
 
-        let config = self.identity.to_config(chain_id);
-        let signature = self.sig.resolve(
+        let (public_key, signer) = self.sig.resolve(self.identity.public_key)?;
+        let config = self.identity.to_config(chain_id, public_key);
+        let signature = signer.sign(
             VALIDATOR_NS_ADD,
             &config.add_validator_message_hash(self.fee_recipient),
-        )?;
+        );
 
         config
             .check_add_validator_signature(self.fee_recipient, signature.as_ref())
@@ -564,7 +590,7 @@ impl AddValidator {
 
         let call = IValidatorConfigV2::addValidatorCall {
             validatorAddress: self.identity.validator_address,
-            publicKey: self.identity.public_key,
+            publicKey: public_key,
             ingress: self.identity.ingress.to_string(),
             egress: self.identity.egress.to_string(),
             signature,
@@ -633,11 +659,9 @@ impl RotateValidator {
             .await
             .wrap_err("failed to get chain id")?;
 
-        let config = self.identity.to_config(chain_id);
-
-        let signature = self
-            .sig
-            .resolve(VALIDATOR_NS_ROTATE, &config.rotate_validator_message_hash())?;
+        let (public_key, signer) = self.sig.resolve(self.identity.public_key)?;
+        let config = self.identity.to_config(chain_id, public_key);
+        let signature = signer.sign(VALIDATOR_NS_ROTATE, &config.rotate_validator_message_hash());
 
         config
             .check_rotate_validator_signature(signature.as_ref())
@@ -648,7 +672,7 @@ impl RotateValidator {
 
         let call = IValidatorConfigV2::rotateValidatorCall {
             idx: validator.index,
-            publicKey: self.identity.public_key,
+            publicKey: public_key,
             ingress: self.identity.ingress.to_string(),
             egress: self.identity.egress.to_string(),
             signature,
@@ -692,10 +716,14 @@ impl CreateAddValidatorSignatureArgs {
             .await
             .wrap_err("failed to get chain id")?;
 
-        let config = self.identity.to_config(chain_id);
+        let private_key = signing_key.into_inner();
+        let public_key = self
+            .identity
+            .public_key
+            .unwrap_or_else(|| B256::from_slice(private_key.public_key().as_ref()));
+        let config = self.identity.to_config(chain_id, public_key);
         let message = config.add_validator_message_hash(self.fee_recipient);
 
-        let private_key = signing_key.into_inner();
         let signature = private_key.sign(VALIDATOR_NS_ADD, message.as_slice());
         let encoded = signature.encode();
         println!("{}", alloy_primitives::hex::encode_prefixed(encoded));
@@ -733,10 +761,14 @@ impl CreateRotateValidatorSignatureArgs {
             .await
             .wrap_err("failed to get chain id")?;
 
-        let config = self.identity.to_config(chain_id);
+        let private_key = signing_key.into_inner();
+        let public_key = self
+            .identity
+            .public_key
+            .unwrap_or_else(|| B256::from_slice(private_key.public_key().as_ref()));
+        let config = self.identity.to_config(chain_id, public_key);
         let message = config.rotate_validator_message_hash();
 
-        let private_key = signing_key.into_inner();
         let signature = private_key.sign(VALIDATOR_NS_ROTATE, message.as_slice());
         let encoded = signature.encode();
         println!("{}", alloy_primitives::hex::encode_prefixed(encoded));
@@ -1971,15 +2003,13 @@ mod tests {
     }
 
     #[test]
-    fn parse_add_validator_with_consensus_signing_key_secret() {
+    fn parse_add_validator_with_signing_key_does_not_require_public_key() {
         let cli = TempoCli::try_parse_from([
             "tempo",
             "consensus",
             "add-validator",
             "--validator-address",
             TEST_VALIDATOR_ADDRESS,
-            "--consensus.public-key",
-            TEST_PUBLIC_KEY,
             "--ingress",
             TEST_INGRESS,
             "--egress",
@@ -1993,27 +2023,26 @@ mod tests {
         ])
         .unwrap();
 
-        let AddValidator { sig, .. } = match cli.command {
+        let AddValidator { identity, sig, .. } = match cli.command {
             reth_ethereum::cli::Commands::Ext(TempoSubcommand::Consensus(
                 ConsensusSubcommand::AddValidator(cmd),
             )) => cmd,
             other => panic!("expected AddValidator, got `{other:?}`"),
         };
+        assert!(identity.public_key.is_none());
         let signing_key = sig.signing_key.unwrap();
         assert_eq!(&signing_key.signing_key, "/tmp/signing.key.age");
         assert_eq!(&signing_key.secret.unwrap(), "/dev/fd/11");
     }
 
     #[test]
-    fn parse_rotate_validator_with_consensus_signing_key_secret() {
+    fn parse_rotate_validator_with_signing_key_does_not_require_public_key() {
         let cli = TempoCli::try_parse_from([
             "tempo",
             "consensus",
             "rotate-validator",
             "--validator-address",
             TEST_VALIDATOR_ADDRESS,
-            "--consensus.public-key",
-            TEST_PUBLIC_KEY,
             "--ingress",
             TEST_INGRESS,
             "--egress",
@@ -2025,15 +2054,38 @@ mod tests {
         ])
         .unwrap();
 
-        let RotateValidator { sig, .. } = match cli.command {
+        let RotateValidator { identity, sig, .. } = match cli.command {
             reth_ethereum::cli::Commands::Ext(TempoSubcommand::Consensus(
                 ConsensusSubcommand::RotateValidator(cmd),
             )) => cmd,
             other => panic!("expected RotateValidator, got `{other:?}`"),
         };
+        assert!(identity.public_key.is_none());
         let signing_key = sig.signing_key.unwrap();
         assert_eq!(&signing_key.signing_key, "/tmp/signing.key.age");
         assert_eq!(&signing_key.secret.unwrap(), "/dev/fd/11");
+    }
+
+    #[test]
+    fn parse_add_validator_with_signature_requires_public_key() {
+        let err = TempoCli::try_parse_from([
+            "tempo",
+            "consensus",
+            "add-validator",
+            "--validator-address",
+            TEST_VALIDATOR_ADDRESS,
+            "--ingress",
+            TEST_INGRESS,
+            "--egress",
+            TEST_EGRESS,
+            "--fee-recipient",
+            TEST_FEE_RECIPIENT,
+            "--signature",
+            TEST_SIGNATURE,
+        ])
+        .unwrap_err();
+
+        assert_eq!(err.kind(), clap::error::ErrorKind::MissingRequiredArgument);
     }
 
     #[test]
