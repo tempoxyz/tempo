@@ -67,7 +67,7 @@ jobs:
         with:
           images: |
             ${{ env.REGISTRY }}/tempo
-            docker.io/tempoxyz/tempo
+            ${{ github.repository == 'tempoxyz/tempo' && 'docker.io/tempoxyz/tempo' || '' }}
           bake-target: tempo
           labels: ${{ steps.docker-labels.outputs.value }}
           tags: |
@@ -88,7 +88,7 @@ jobs:
         with:
           images: |
             ${{ env.REGISTRY }}/tempo-localnet
-            docker.io/tempoxyz/tempo-localnet
+            ${{ github.repository == 'tempoxyz/tempo' && 'docker.io/tempoxyz/tempo-localnet' || '' }}
           bake-target: tempo-localnet
           labels: ${{ steps.docker-labels.outputs.value }}
           tags: |
@@ -109,7 +109,7 @@ jobs:
         with:
           images: |
             ${{ env.REGISTRY }}/tempo-sidecar
-            docker.io/tempoxyz/tempo-sidecar
+            ${{ github.repository == 'tempoxyz/tempo' && 'docker.io/tempoxyz/tempo-sidecar' || '' }}
           bake-target: tempo-sidecar
           labels: ${{ steps.docker-labels.outputs.value }}
           tags: |
@@ -130,7 +130,7 @@ jobs:
         with:
           images: |
             ${{ env.REGISTRY }}/tempo-xtask
-            docker.io/tempoxyz/tempo-xtask
+            ${{ github.repository == 'tempoxyz/tempo' && 'docker.io/tempoxyz/tempo-xtask' || '' }}
           bake-target: tempo-xtask
           labels: ${{ steps.docker-labels.outputs.value }}
           tags: |
@@ -152,11 +152,35 @@ jobs:
           username: ${{ github.actor }}
           password: ${{ secrets.GITHUB_TOKEN }}
 
-      - name: Log in to Docker Hub
-        uses: docker/login-action@4907a6ddec9925e35a0a9e82d7399ccc52663121 # v4.1.0
+      - name: Require Docker Hub write OIDC configuration
+        if: github.repository == 'tempoxyz/tempo' && vars.DOCKERHUB_OIDC_CONNECTIONID_WRITE == ''
+        run: |
+          echo "::error::The DOCKERHUB_OIDC_CONNECTIONID_WRITE repository variable is not set."
+          exit 1
+
+      - name: Log in to Docker Hub via OIDC (read/write)
+        if: github.repository == 'tempoxyz/tempo'
+        uses: docker/login-action@dbcb813823bdd20940b903addbd779551569679f # v4.6.0
+        env:
+          DOCKERHUB_OIDC_CONNECTIONID: ${{ vars.DOCKERHUB_OIDC_CONNECTIONID_WRITE }}
         with:
-          username: ${{ vars.DOCKER_HUB_USER }}
-          password: ${{ secrets.DOCKER_HUB_TOKEN }}
+          username: tempoxyz
+
+      - name: Require Docker Hub read OIDC configuration
+        if: github.repository == 'tempoxyz/tempo-private-fork' && vars.DOCKERHUB_OIDC_CONNECTIONID_READ == ''
+        run: |
+          echo "::error::The DOCKERHUB_OIDC_CONNECTIONID_READ repository variable is not set."
+          exit 1
+
+      # Private-fork builds publish only to GHCR. Docker Hub authentication is
+      # read-only and used for authenticated base-image pulls.
+      - name: Log in to Docker Hub via OIDC (read-only)
+        if: github.repository == 'tempoxyz/tempo-private-fork'
+        uses: docker/login-action@dbcb813823bdd20940b903addbd779551569679f # v4.6.0
+        env:
+          DOCKERHUB_OIDC_CONNECTIONID: ${{ vars.DOCKERHUB_OIDC_CONNECTIONID_READ }}
+        with:
+          username: tempoxyz
 
       - id: shortsha
         run: echo "shortsha=$(echo ${{ github.sha }} | cut -c1-7)" >> "$GITHUB_OUTPUT"
