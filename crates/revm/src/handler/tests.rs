@@ -5182,6 +5182,7 @@ fn test_aa_gas_native_multisig_charges_commitment_and_witness() {
     let expected = NATIVE_MULTISIG_COMMITMENT_READ_GAS
         + get_tokens_in_calldata_istanbul(&witness) * STANDARD_TOKEN_COST
         + keccak(config.account_derivation_preimage_len())
+        + keccak(tempo_primitives::transaction::MULTISIG_ACCOUNT_CREATE2_PREIMAGE_LEN)
         + keccak(tempo_primitives::transaction::MULTISIG_SIGNATURE_DOMAIN.len() + 32 + 20 + 8);
 
     assert_eq!(

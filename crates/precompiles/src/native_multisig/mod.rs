@@ -16,7 +16,9 @@ use tempo_contracts::precompiles::{
     NATIVE_MULTISIG_ADDRESS, NativeMultisigError, NativeMultisigEvent,
 };
 use tempo_precompiles_macros::contract;
-use tempo_primitives::transaction::{MultisigConfig, MultisigConfigError};
+use tempo_primitives::transaction::{
+    MultisigConfig, MultisigConfigError, multisig_account_create2_preimage,
+};
 
 use crate::is_valid_multisig_account;
 
@@ -145,7 +147,9 @@ impl NativeMultisig {
         let preimage = config
             .account_derivation_preimage()
             .map_err(map_multisig_config_error)?;
-        let hash = self.storage.keccak256(&preimage)?;
+        let account_salt = self.storage.keccak256(&preimage)?;
+        let create2_preimage = multisig_account_create2_preimage(account_salt);
+        let hash = self.storage.keccak256(&create2_preimage)?;
         let account = Address::from_slice(&hash[12..]);
         if config.owner_weight(account).is_some() {
             return Err(NativeMultisigError::invalid_multisig_owner().into());

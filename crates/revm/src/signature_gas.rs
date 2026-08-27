@@ -5,8 +5,8 @@ use revm::interpreter::gas::{
 };
 use tempo_precompiles::ECRECOVER_GAS;
 use tempo_primitives::transaction::{
-    MAX_MULTISIG_NESTING_DEPTH, MULTISIG_SIGNATURE_DOMAIN, MultisigSignature, PrimitiveSignature,
-    TempoSignature,
+    MAX_MULTISIG_NESTING_DEPTH, MULTISIG_ACCOUNT_CREATE2_PREIMAGE_LEN, MULTISIG_SIGNATURE_DOMAIN,
+    MultisigSignature, PrimitiveSignature, TempoSignature,
 };
 
 /// Additional gas for P256 signature verification.
@@ -79,6 +79,7 @@ fn native_multisig_node_gas(signature: &MultisigSignature, depth: usize) -> u64 
     let config = signature.config();
     let config_proof_gas = if config.version == 0 {
         keccak_gas(config.account_derivation_preimage_len())
+            .saturating_add(keccak_gas(MULTISIG_ACCOUNT_CREATE2_PREIMAGE_LEN))
     } else {
         keccak_gas(config.commitment_preimage_len())
     };

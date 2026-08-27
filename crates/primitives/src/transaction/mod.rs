@@ -22,10 +22,12 @@ pub use key_authorization::{
 };
 pub use multisig::{
     MAX_MULTISIG_NESTING_DEPTH, MAX_MULTISIG_OWNER_SIGNATURE_BYTES, MAX_MULTISIG_OWNERS,
-    MAX_MULTISIG_SIGNATURES, MAX_MULTISIG_THRESHOLD, MULTISIG_ACCOUNT_DOMAIN,
-    MULTISIG_CONFIG_DOMAIN, MULTISIG_SIGNATURE_DOMAIN, MultisigConfig, MultisigConfigError,
-    MultisigOwner, MultisigQuorumError, MultisigSignature, MultisigSignatureError,
-    MultisigWeightAccumulator, SIGNATURE_TYPE_MULTISIG, multisig_digest,
+    MAX_MULTISIG_SIGNATURES, MAX_MULTISIG_THRESHOLD, MULTISIG_ACCOUNT_CREATE2_PREIMAGE_LEN,
+    MULTISIG_ACCOUNT_DOMAIN, MULTISIG_CONFIG_DOMAIN, MULTISIG_RECOVERY_FACTORY,
+    MULTISIG_RECOVERY_WALLET_INIT_CODE_HASH, MULTISIG_SIGNATURE_DOMAIN, MultisigConfig,
+    MultisigConfigError, MultisigOwner, MultisigQuorumError, MultisigSignature,
+    MultisigSignatureError, MultisigWeightAccumulator, SIGNATURE_TYPE_MULTISIG,
+    multisig_account_create2_preimage, multisig_digest,
 };
 pub use tempo_transaction::{
     Call, FEE_PAYER_SIGNATURE_MARKER, InvalidValidAfter, InvalidValidBefore,
