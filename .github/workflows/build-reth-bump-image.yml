@@ -22,7 +22,6 @@ jobs:
     permissions:
       actions: read
       contents: read
-      packages: write
       id-token: write
     uses: ./.github/workflows/docker.yml
     # docker.yml does not declare a workflow_call secret interface.
@@ -131,7 +130,7 @@ jobs:
     runs-on: ubuntu-latest
     permissions:
       contents: read
-      packages: write
+      id-token: write
     steps:
       - name: Check current branch head
         id: branch-head
@@ -151,13 +150,20 @@ jobs:
 
           echo "current=true" >> "$GITHUB_OUTPUT"
 
+      - name: Fetch GHCR token via GitHub STS
+        if: steps.branch-head.outputs.current == 'true'
+        id: ghcr-token
+        uses: tempoxyz/gh-actions/actions/github-sts@183a02178c660ce295e9a262edc5857cb7135f06
+        with:
+          policy: ghcr-publish
+
       - name: Log in to GitHub Container Registry
         if: steps.branch-head.outputs.current == 'true'
         uses: docker/login-action@dbcb813823bdd20940b903addbd779551569679f # v4.6.0
         with:
           registry: ghcr.io
           username: ${{ github.actor }}
-          password: ${{ secrets.GITHUB_TOKEN }}
+          password: ${{ steps.ghcr-token.outputs.token }}
 
       - name: Set up Docker Buildx
         if: steps.branch-head.outputs.current == 'true'

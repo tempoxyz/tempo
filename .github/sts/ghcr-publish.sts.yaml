@@ -1,0 +1,11 @@
+# Allow the container publishing workflows in Tempo and its private copy to
+# mint short-lived GitHub App tokens for GHCR. Workflow and event claims keep
+# package writes limited to the four workflows that publish or promote images.
+subject_pattern:
+  - repo:tempoxyz@211589300/tempo@994992847:ref:refs/(heads|tags)/.+
+  - repo:tempoxyz@211589300/tempo-private-fork@1160043351:ref:refs/(heads|tags)/.+
+claim_pattern:
+  event_name: (merge_group|push|schedule|workflow_call|workflow_dispatch)
+  workflow_ref: tempoxyz/(tempo|tempo-private-fork)/\.github/workflows/(build-reth-bump-image|docker|docker-profiling|promote-canary)\.yml@refs/(heads|tags)/.+
+permissions:
+  packages: write

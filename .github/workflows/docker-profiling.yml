@@ -19,7 +19,6 @@ jobs:
     runs-on: depot-ubuntu-latest-16
     permissions:
       contents: read
-      packages: write
       id-token: write
     steps:
       - name: Checkout repository
@@ -39,12 +38,18 @@ jobs:
             type=raw,value=${{ github.event.inputs.tag }}
             type=sha,prefix=${{ github.event.inputs.tag }}-sha-
 
+      - name: Fetch GHCR token via GitHub STS
+        id: ghcr-token
+        uses: tempoxyz/gh-actions/actions/github-sts@183a02178c660ce295e9a262edc5857cb7135f06
+        with:
+          policy: ghcr-publish
+
       - name: Log in to Container Registry
         uses: docker/login-action@dbcb813823bdd20940b903addbd779551569679f # v4.6.0
         with:
           registry: ${{ env.REGISTRY }}
           username: ${{ github.actor }}
-          password: ${{ secrets.GITHUB_TOKEN }}
+          password: ${{ steps.ghcr-token.outputs.token }}
 
       - id: shortsha
         run: echo "shortsha=$(echo ${{ github.sha }} | cut -c1-7)" >> "$GITHUB_OUTPUT"
