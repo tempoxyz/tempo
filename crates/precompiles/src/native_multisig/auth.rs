@@ -54,7 +54,7 @@ impl NativeMultisig {
     ) -> Result<(), NativeMultisigAuthError> {
         signature
             .validate_shape()
-            .map_err(NativeMultisigAuthError::invalid_transaction)?;
+            .map_err(|error| NativeMultisigAuthError::invalid_transaction(error.as_str()))?;
         if !is_valid_multisig_account(signature.account(), self.storage.spec()) {
             return Err(NativeMultisigAuthError::invalid_transaction(
                 "invalid multisig account",
