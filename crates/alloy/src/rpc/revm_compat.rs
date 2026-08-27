@@ -281,6 +281,7 @@ mod tests {
         let request = TempoTransactionRequest {
             inner: TransactionRequest {
                 from: Some(witness.account),
+                to: Some(TxKind::Call(Address::ZERO)),
                 ..Default::default()
             },
             multisig_witness: Some(witness),
@@ -304,7 +305,7 @@ mod tests {
         let request = TempoTransactionRequest {
             inner: TransactionRequest {
                 from: Some(witness.account),
-                input: initcode.clone().into(),
+                input: initcode.into(),
                 ..Default::default()
             },
             multisig_witness: Some(witness),
