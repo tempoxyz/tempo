@@ -8,7 +8,7 @@ use commonware_consensus::{
     types::{Height, Round},
 };
 use commonware_cryptography::ed25519::PublicKey;
-use commonware_runtime::{Clock, Metrics, Pacer, Spawner};
+use commonware_runtime::{Clock, Metrics, Spawner};
 use reth_ethereum::{chainspec::EthChainSpec as _, rpc::eth::primitives::BlockNumHash};
 use reth_node_builder::PayloadKind;
 use reth_provider::{BlockHashReader as _, BlockReader as _, BlockSource};
@@ -188,7 +188,7 @@ pub(crate) fn init<TContext, TExecutionLayer, TMarshal>(
     config: Config<TExecutionLayer, TMarshal>,
 ) -> eyre::Result<(Actor<TContext, TExecutionLayer, TMarshal>, Mailbox)>
 where
-    TContext: Clock + Metrics + Pacer + Spawner,
+    TContext: Clock + Metrics + Spawner,
     TExecutionLayer: ExecutionLayer,
     TMarshal: Marshal,
 {

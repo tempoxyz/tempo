@@ -5,7 +5,7 @@
 //! update hashed state, trie, and block-0 history without rebuilding unrelated bloat state.
 
 use std::{
-    collections::BTreeSet,
+    collections::{BTreeSet, HashMap},
     fs::{self, OpenOptions},
     io::Write,
     path::{Path, PathBuf},
@@ -43,7 +43,9 @@ use reth_provider::{
 };
 use reth_static_file_types::{ChangesetOffset, SegmentHeader};
 use reth_storage_api::{DBProvider, StateRootProvider};
-use reth_trie::{HashedPostState, HashedStorage};
+use reth_trie::{HashedPostState, HashedStorage, hashed_cursor::zero_destroyed_account_storage};
+use reth_trie_db::DatabaseHashedCursorFactory;
+use revm::database::{AccountStatus, BundleAccount};
 use tempo_chainspec::spec::TempoChainSpecParser;
 use tempo_contracts::precompiles::VALIDATOR_CONFIG_V2_ADDRESS;
 use tracing::{info, warn};
@@ -234,7 +236,7 @@ where
         .map(|replacement| replacement.address)
         .collect::<BTreeSet<_>>();
 
-    let hashed_state = replacement_hashed_post_state(&replacements);
+    let hashed_state = replacement_hashed_post_state(provider_rw, &replacements)?;
     let (state_root, trie_updates) = {
         let latest = LatestStateProviderRef::new(provider_rw);
         latest.state_root_with_updates(hashed_state)?
@@ -363,8 +365,14 @@ fn genesis_account_replacement(
     })
 }
 
-fn replacement_hashed_post_state(replacements: &[GenesisAccountReplacement]) -> HashedPostState {
-    HashedPostState::default()
+fn replacement_hashed_post_state<P>(
+    provider_rw: &P,
+    replacements: &[GenesisAccountReplacement],
+) -> eyre::Result<HashedPostState>
+where
+    P: DBProvider,
+{
+    let mut hashed_state = HashedPostState::default()
         .with_accounts(
             replacements
                 .iter()
@@ -372,7 +380,6 @@ fn replacement_hashed_post_state(replacements: &[GenesisAccountReplacement]) -> 
         )
         .with_storages(replacements.iter().map(|replacement| {
             let storage = HashedStorage {
-                wiped: true,
                 storage: replacement
                     .hashed_storage
                     .iter()
@@ -380,7 +387,32 @@ fn replacement_hashed_post_state(replacements: &[GenesisAccountReplacement]) -> 
                     .collect(),
             };
             (replacement.hashed_address, storage)
-        }))
+        }));
+
+    // A regenesis replacement has the same storage semantics as a destroyed and recreated
+    // account. Mark each account as previously existing so reth expands all old slots to zero;
+    // replacement values already in `hashed_state` take precedence over those zeroes.
+    let destroyed_accounts = replacements
+        .iter()
+        .map(|replacement| {
+            (
+                replacement.address,
+                BundleAccount::new(
+                    Some(Default::default()),
+                    None,
+                    Default::default(),
+                    AccountStatus::Destroyed,
+                ),
+            )
+        })
+        .collect::<HashMap<_, _>>();
+    zero_destroyed_account_storage(
+        &DatabaseHashedCursorFactory::new(provider_rw.tx_ref()),
+        &destroyed_accounts,
+        &mut hashed_state,
+    )?;
+
+    Ok(hashed_state)
 }
 
 fn replacement_account_changeset_entries(
