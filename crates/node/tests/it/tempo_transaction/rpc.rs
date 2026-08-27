@@ -19,7 +19,7 @@ use alloy::{
 };
 use alloy_eips::Encodable2718;
 use reth_primitives_traits::transaction::TxHashRef;
-use tempo_alloy::rpc::{MultisigSimulationApproval, MultisigSimulationWitness};
+use tempo_alloy::rpc::{MultisigSimulationApproval, MultisigSimulationSpec};
 use tempo_chainspec::{
     hardfork::{TempoHardfork, TempoHardforks},
     spec::{DEV, MODERATO, PRESTO},
@@ -332,7 +332,7 @@ async fn fill_multisig_transaction(
             ..Default::default()
         },
         calls,
-        multisig_witness: Some(MultisigSimulationWitness {
+        multisig_simulation: Some(MultisigSimulationSpec {
             account,
             config,
             approvals: owners
@@ -458,7 +458,7 @@ async fn test_tip_1061_fill_with_supplied_gas_skips_estimation() -> eyre::Result
             value: U256::ZERO,
             input: Bytes::new(),
         }],
-        multisig_witness: Some(MultisigSimulationWitness {
+        multisig_simulation: Some(MultisigSimulationSpec {
             account,
             config,
             approvals: [alice.address(), bob.address()]
