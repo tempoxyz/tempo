@@ -320,6 +320,7 @@ where
             subblock_broadcast_interval: Duration::from_millis(50),
             fcu_heartbeat_interval: Duration::from_secs(3),
             with_subblocks: self.with_subblocks,
+            forwarding: commonware_consensus::simplex::config::ForwardingPolicy::SilentLeader,
             feed_state: self.feed_state.clone(),
             // Plenty of headroom for any test; the marshal will fall back to
             // reth past this depth via the hybrid finalized blocks store.

@@ -375,7 +375,11 @@ where
 
                 mailbox_size: self.config.mailbox_size,
                 fetch_concurrent: crate::config::NUMBER_CONCURRENT_FETCHES,
-                forwarding: commonware_consensus::simplex::config::ForwardingPolicy::Disabled,
+                // Best-effort liveness aid: after certifying a proposal, forward
+                // the block to the next view's leader if they did not vote
+                // (SilentLeader). Application relay already honors Plan::Forward
+                // via marshal.forward; see tempoxyz/tempo#3568.
+                forwarding: self.config.forwarding,
             },
         );
 

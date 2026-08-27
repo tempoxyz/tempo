@@ -7,6 +7,7 @@ use std::{num::NonZeroUsize, sync::Arc, time::Duration};
 use commonware_broadcast::buffered;
 use commonware_consensus::{
     Reporters, marshal,
+    simplex::config::ForwardingPolicy,
     types::{FixedEpocher, ViewDelta},
 };
 use commonware_cryptography::{
@@ -81,6 +82,12 @@ pub struct Builder<TBlocker, TPeerManager> {
     pub subblock_broadcast_interval: Duration,
     pub fcu_heartbeat_interval: Duration,
     pub with_subblocks: bool,
+
+    /// How simplex forwards certified blocks after entering the next view.
+    ///
+    /// See [`ForwardingPolicy`] and `--consensus.forwarding-policy`. Default
+    /// production choice is [`ForwardingPolicy::SilentLeader`].
+    pub forwarding: ForwardingPolicy,
 
     pub feed_state: crate::feed::FeedStateHandle,
     pub gossip: Option<crate::gossip::Config>,
@@ -295,6 +302,7 @@ where
                 partition_prefix: format!("{}_epoch_manager", self.partition_prefix),
                 views_to_track: ViewDelta::new(self.views_to_track),
                 views_until_leader_skip: ViewDelta::new(self.views_until_leader_skip),
+                forwarding: self.forwarding,
             },
         );
 
