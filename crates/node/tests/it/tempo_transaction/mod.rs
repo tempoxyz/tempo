@@ -85,7 +85,7 @@ async fn test_matrices_local(schedule: ForkSchedule) -> eyre::Result<()> {
 #[tokio::test(flavor = "multi_thread")]
 async fn test_tip_1061_examples() -> eyre::Result<()> {
     let mut env =
-        local::Localnet::with_schedule(ForkSchedule::DevnetAt(TempoHardfork::T11)).await?;
+        local::Localnet::with_schedule(ForkSchedule::DevnetAt(TempoHardfork::T12)).await?;
     env.run_tip_1061_examples().await
 }
 

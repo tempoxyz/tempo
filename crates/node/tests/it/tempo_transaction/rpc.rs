@@ -398,7 +398,7 @@ async fn submit_local_raw_transaction(
 #[tokio::test(flavor = "multi_thread")]
 async fn test_tip_1061_fill_sign_send() -> eyre::Result<()> {
     let mut env =
-        Localnet::with_schedule(crate::utils::ForkSchedule::DevnetAt(TempoHardfork::T11)).await?;
+        Localnet::with_schedule(crate::utils::ForkSchedule::DevnetAt(TempoHardfork::T12)).await?;
     let signers = sorted_signers();
     let (alice, bob) = (&signers[0], &signers[1]);
     let config = multisig_config(0x81, 2, &[(alice, 1), (bob, 1)]);
@@ -441,7 +441,7 @@ async fn test_tip_1061_fill_sign_send() -> eyre::Result<()> {
 #[tokio::test(flavor = "multi_thread")]
 async fn test_tip_1061_fill_with_supplied_gas_skips_estimation() -> eyre::Result<()> {
     let env =
-        Localnet::with_schedule(crate::utils::ForkSchedule::DevnetAt(TempoHardfork::T11)).await?;
+        Localnet::with_schedule(crate::utils::ForkSchedule::DevnetAt(TempoHardfork::T12)).await?;
     let signers = sorted_signers();
     let (alice, bob) = (&signers[0], &signers[1]);
     let config = multisig_config(0x83, 2, &[(alice, 1), (bob, 1)]);
