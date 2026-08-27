@@ -5,7 +5,9 @@
 
 set -e
 
-ETH_RPC_URL="https://eng:zealous-mayer@rpc-adagietto.tempoxyz.dev"
+if [ -z "$ETH_RPC_URL" ]; then
+  export ETH_RPC_URL="http://localhost:8545"
+fi
 
 echo "Testing fee-amm with predeployed tokens..."
 
