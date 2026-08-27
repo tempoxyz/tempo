@@ -132,7 +132,7 @@ mod tests {
         let mut request = request(witness(0));
         prepare_native_multisig_simulation(
             &mut request,
-            TempoHardfork::T11,
+            TempoHardfork::T12,
             &mut SlotDb::default(),
         )
         .unwrap();
@@ -146,7 +146,7 @@ mod tests {
         db.insert_commitment(witness.account, witness.config.commitment().unwrap());
         let mut request = request(witness);
 
-        prepare_native_multisig_simulation(&mut request, TempoHardfork::T11, &mut db).unwrap();
+        prepare_native_multisig_simulation(&mut request, TempoHardfork::T12, &mut db).unwrap();
         assert!(request.multisig_simulation_signature.is_some());
     }
 
@@ -191,7 +191,7 @@ mod tests {
         db.insert_commitment(nested.account, nested.config.commitment().unwrap());
         let mut request = request(witness);
 
-        prepare_native_multisig_simulation(&mut request, TempoHardfork::T11, &mut db).unwrap();
+        prepare_native_multisig_simulation(&mut request, TempoHardfork::T12, &mut db).unwrap();
         assert!(request.multisig_simulation_signature.is_some());
     }
 
@@ -204,7 +204,7 @@ mod tests {
         assert!(matches!(
             prepare_native_multisig_simulation(
                 &mut request,
-                TempoHardfork::T11,
+                TempoHardfork::T12,
                 &mut SlotDb::default(),
             ),
             Err(EthApiError::InvalidParams(_))
