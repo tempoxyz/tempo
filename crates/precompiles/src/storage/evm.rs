@@ -775,10 +775,10 @@ mod tests {
             let mut cfg = revm::context::CfgEnv::<TempoHardfork>::default();
             cfg.spec = spec;
             cfg.enable_amsterdam_eip8037 = amsterdam_eip8037_enabled;
-            // TIP-1016 activates with T11: when a test forces the flag on an earlier
-            // spec, give it the T11 gas table so the state-gas split is in effect.
+            // TIP-1016 activates with T12: when a test forces the flag on an earlier
+            // spec, give it the T12 gas table so the state-gas split is in effect.
             cfg.gas_params = tempo_gas_params(if amsterdam_eip8037_enabled {
-                TempoHardfork::T11
+                TempoHardfork::T12
             } else {
                 spec
             });
@@ -1185,7 +1185,7 @@ mod tests {
 
     #[test]
     fn test_state_gas_used_only_counts_state_creating_ops() -> eyre::Result<()> {
-        let mut evm = TestEvm::new_with_tip1016(TempoHardfork::T11);
+        let mut evm = TestEvm::new_with_tip1016(TempoHardfork::T12);
         let gas_params = evm.ctx().cfg.gas_params.clone();
         let mut provider = evm.provider_with_reservoir(0);
 
@@ -1242,7 +1242,7 @@ mod tests {
     /// spills into regular gas once the reservoir is exhausted.
     #[test]
     fn test_state_gas_spills_from_reservoir_to_regular_gas() -> eyre::Result<()> {
-        let mut evm = TestEvm::new_with_tip1016(TempoHardfork::T11);
+        let mut evm = TestEvm::new_with_tip1016(TempoHardfork::T12);
 
         // Reservoir = 500k: enough for 2 full SSTOREs (2 × 245k = 490k)
         // but the 3rd SSTORE (245k) must spill 235k into regular gas.
@@ -1314,8 +1314,8 @@ mod tests {
     }
 
     #[test]
-    fn test_t11_cold_sstore_matches_tip1016_spec() -> eyre::Result<()> {
-        let mut evm = TestEvm::new_with_tip1016(TempoHardfork::T11);
+    fn test_t12_cold_sstore_matches_tip1016_spec() -> eyre::Result<()> {
+        let mut evm = TestEvm::new_with_tip1016(TempoHardfork::T12);
         let mut provider = evm.provider_with_reservoir(490_000);
 
         let (address, cold_slot, warm_slot) = (Address::random(), U256::ONE, U256::from(2));
@@ -1352,8 +1352,8 @@ mod tests {
     }
 
     #[test]
-    fn test_t11_set_code_new_account_matches_tip1016_success_path() -> eyre::Result<()> {
-        let mut evm = TestEvm::new_with_tip1016(TempoHardfork::T11);
+    fn test_t12_set_code_new_account_matches_tip1016_success_path() -> eyre::Result<()> {
+        let mut evm = TestEvm::new_with_tip1016(TempoHardfork::T12);
         let gas_params = evm.ctx().cfg.gas_params.clone();
 
         let code = Bytecode::new_raw(vec![0xef].into());
@@ -1383,8 +1383,8 @@ mod tests {
     /// longer than one word so a bytes/words mix-up in the keccak charge cannot
     /// cancel out (for 1-byte code both formulas yield 6).
     #[test]
-    fn test_t11_set_code_charges_hash_cost_per_word_of_code_bytes() -> eyre::Result<()> {
-        let mut evm = TestEvm::new_with_tip1016(TempoHardfork::T11);
+    fn test_t12_set_code_charges_hash_cost_per_word_of_code_bytes() -> eyre::Result<()> {
+        let mut evm = TestEvm::new_with_tip1016(TempoHardfork::T12);
         let gas_params = evm.ctx().cfg.gas_params.clone();
 
         let code_len = 45usize; // 2 words, e.g. the zone portal proxy runtime
@@ -1412,8 +1412,8 @@ mod tests {
     /// code deposit and the hash cost — every deposit hashes the deployed code.
     /// Re-deploying over existing code likewise never re-charges CREATE.
     #[test]
-    fn test_t11_set_code_pre_touched_destination_skips_create() -> eyre::Result<()> {
-        let mut evm = TestEvm::new_with_tip1016(TempoHardfork::T11);
+    fn test_t12_set_code_pre_touched_destination_skips_create() -> eyre::Result<()> {
+        let mut evm = TestEvm::new_with_tip1016(TempoHardfork::T12);
         let gas_params = evm.ctx().cfg.gas_params.clone();
 
         let address = Address::random();
@@ -1655,8 +1655,8 @@ mod tests {
     }
 
     #[test]
-    fn test_t11_sstore_restore_refund_matches_tip1016_spec() -> eyre::Result<()> {
-        let mut evm = TestEvm::new_with_tip1016(TempoHardfork::T11);
+    fn test_t12_sstore_restore_refund_matches_tip1016_spec() -> eyre::Result<()> {
+        let mut evm = TestEvm::new_with_tip1016(TempoHardfork::T12);
         let reservoir = 245_000;
         let mut provider = evm.provider_with_reservoir(reservoir);
 

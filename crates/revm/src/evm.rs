@@ -507,7 +507,7 @@ mod tests {
         let db = CacheDB::new(EmptyDB::new());
         let mut cfg = CfgEnv::<TempoHardfork>::default();
         cfg.spec = TempoHardfork::T4;
-        cfg.gas_params = tempo_gas_params(TempoHardfork::T11);
+        cfg.gas_params = tempo_gas_params(TempoHardfork::T12);
         cfg.enable_amsterdam_eip8037 = true;
 
         let ctx = Context::mainnet()
@@ -3931,7 +3931,7 @@ mod tests {
         let inner_create_code = bytes!("6460006000fd6000526005601b6000f05000");
 
         assert!(
-            tempo_gas_params(TempoHardfork::T11).create_state_gas() > 0,
+            tempo_gas_params(TempoHardfork::T12).create_state_gas() > 0,
             "T4 must price CREATE state gas for this test to be meaningful"
         );
 
@@ -4045,7 +4045,7 @@ mod tests {
     /// was rolled back by the atomic batch revert — the transaction leaves no
     /// contract behind, so it must not pay for one.
     #[test]
-    fn test_t11_aa_failed_batch_refunds_rolled_back_create_state_gas() -> eyre::Result<()> {
+    fn test_t12_aa_failed_batch_refunds_rolled_back_create_state_gas() -> eyre::Result<()> {
         let key_pair = P256KeyPair::random();
         let caller = key_pair.address;
 

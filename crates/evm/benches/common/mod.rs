@@ -243,7 +243,7 @@ pub(crate) fn bench_env(
     cfg_env.spec = spec;
     cfg_env.gas_params = tempo_gas_params(spec);
     cfg_env.tx_gas_limit_cap = spec.tx_gas_limit_cap();
-    cfg_env.enable_amsterdam_eip8037 = spec.is_t11();
+    cfg_env.enable_amsterdam_eip8037 = spec.is_t12();
 
     EvmEnv {
         cfg_env,

@@ -456,7 +456,7 @@ async fn test_block_building_more_txs_than_fit() -> eyre::Result<()> {
 
     // Use a gas limit high enough for token setup (the setup txs request 5M gas)
     // but low enough to cause overflow when many transactions are injected.
-    // Since T11 (TIP-1016) storage creation is charged as state gas, exempt from
+    // Since T12 (TIP-1016) storage creation is charged as state gas, exempt from
     // the block gas limit: the 330 txs consume ~11M execution gas, so 8M forces
     // overflow while every 5M-gas setup tx still fits in a block.
     let mut setup = crate::utils::TestNodeBuilder::new()

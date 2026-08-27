@@ -1731,12 +1731,12 @@ mod tests {
     /// Helper to create EvmEnv with a specific hardfork spec.
     ///
     /// Mirrors production cfg wiring (`evm_env_for_block`): Tempo gas tables per
-    /// spec, with TIP-1016 (EIP-8037) activating on T11.
+    /// spec, with TIP-1016 (EIP-8037) activating on T12.
     fn evm_env_with_spec(
         spec: tempo_chainspec::hardfork::TempoHardfork,
     ) -> EvmEnv<tempo_chainspec::hardfork::TempoHardfork, TempoBlockEnv> {
         let mut cfg = CfgEnv::new_with_spec_and_gas_params(spec, tempo_gas_params(spec));
-        cfg.enable_amsterdam_eip8037 = spec.is_t11();
+        cfg.enable_amsterdam_eip8037 = spec.is_t12();
         EvmEnv::<tempo_chainspec::hardfork::TempoHardfork, TempoBlockEnv>::new(
             cfg,
             TempoBlockEnv::default(),

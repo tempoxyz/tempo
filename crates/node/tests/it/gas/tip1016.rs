@@ -55,7 +55,7 @@ const TX_GAS_LIMIT: u64 = 5_000_000;
 /// SSTORE zero->non-zero state gas (STORAGE_CREDIT_VALUE / sstore_set_state_gas).
 const SSTORE_SET_STATE_GAS: u64 = 245_000;
 
-/// Per-tx regular gas limit cap at T11+ (EIP-7825 Osaka). The portion of a tx's
+/// Per-tx regular gas limit cap at T12+ (EIP-7825 Osaka). The portion of a tx's
 /// gas_limit above this cap becomes the TIP-1016 state-gas reservoir.
 const TX_GAS_LIMIT_CAP: u64 = 16_777_216;
 
@@ -1196,7 +1196,7 @@ async fn test_tip1016_batch_refunds_accumulate_across_successful_calls() -> eyre
             call(slotval, words(&[12, 0])),
         ],
     )?;
-    // 39,160 regular gas spent, with no clearing refund: T11 keeps TIP-1060's
+    // 39,160 regular gas spent, with no clearing refund: T12 keeps TIP-1060's
     // removal of the legacy EIP-3529 clearing refund (SSTORE_CLEARS_SCHEDULE
     // = 0). Clearing a slot that was NOT created in this tx mints a 245k
     // storage credit for the contract instead of refunding the sender.
@@ -1339,7 +1339,7 @@ async fn test_tip1016_batch_expiring_nonce_no_state_gas() -> eyre::Result<()> {
     Ok(())
 }
 
-/// Batch intrinsic gas: an inline KeyAuthorization on T11 charges
+/// Batch intrinsic gas: an inline KeyAuthorization on T12 charges
 /// `sstore_set_state_gas` per intended keychain write (one slot for an
 /// unrestricted key = 245k state gas), while the actual precompile writes run
 /// unmetered. Re-authorizing the SAME key writes only already-nonzero slots,
@@ -1535,7 +1535,7 @@ async fn test_tip1016_batch_receipt_gas_equals_batch_tracker() -> eyre::Result<(
     Ok(())
 }
 
-/// Receipt/block accounting: gas_limit above the T11 cap (legal -- the excess
+/// Receipt/block accounting: gas_limit above the T12 cap (legal -- the excess
 /// is the state-gas reservoir). The batch spends state gas across calls from
 /// the reservoir; the unused reservoir is not billed.
 #[tokio::test(flavor = "multi_thread")]

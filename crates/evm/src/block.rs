@@ -52,7 +52,7 @@ use tracing::trace;
 /// exemption.
 ///
 /// Subtracting the uncapped refund is safe — it cannot report less block gas
-/// than the computational work actually performed — because on the T11 table
+/// than the computational work actually performed — because on the T12 table
 /// the refund counter can only hold the two restore-to-original SSTORE
 /// refunds. The clearing, selfdestruct, and EIP-7702 auth refunds are all
 /// zero, and the storage-credit settlement is settled in the state-gas
@@ -64,7 +64,7 @@ use tracing::trace;
 /// 5,100 + 100 − 5,000; `x→y→x`: 2,900 + 100 − 2,800; both 200, upstream's
 /// EIP-3529 calibration). Repeated restoration cycles therefore cannot erase
 /// performed work from section admission or the header; the table invariants
-/// are locked by `test_t11_restore_refunds_net_warm_access_costs` in
+/// are locked by `test_t12_restore_refunds_net_warm_access_costs` in
 /// `tempo_revm::gas_params`.
 pub(crate) fn tempo_block_regular_gas_used(gas: &ResultGas) -> u64 {
     core::cmp::max(
@@ -1494,7 +1494,7 @@ mod tests {
         let chainspec = DEV.clone();
         let mut db = State::builder().with_bundle_update().build();
         let mut executor = TestExecutorBuilder::default()
-            .with_spec(TempoHardfork::T11)
+            .with_spec(TempoHardfork::T12)
             .build(&mut db, &chainspec);
 
         let proposer = PartialValidatorKey::from_slice(&[0xff; 15]);

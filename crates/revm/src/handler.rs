@@ -284,8 +284,8 @@ fn translate_allowed_calls_for_precompile(
 ///
 /// The 245k creditable portion of each storage-creating SSTORE lives in
 /// `sstore_set_state_gas` on the T7+ tables and must be charged exactly once:
-/// on T7..T10 (TIP-1060, no EIP-8037 reservoir) it is added to regular gas, on
-/// T11+ (TIP-1016) it is reported as state gas.
+/// on T7..T11 (TIP-1060, no EIP-8037 reservoir) it is added to regular gas, on
+/// T12+ (TIP-1016) it is reported as state gas.
 #[inline]
 fn calculate_key_authorization_gas(
     key_auth: &tempo_primitives::transaction::SignedKeyAuthorization,
@@ -329,9 +329,9 @@ fn calculate_key_authorization_gas(
         }
 
         let mut sstore_cost = gas_params.get(GasId::sstore_set_without_load_cost());
-        if spec.is_t7() && !spec.is_t11() {
-            // T7..T10 expose only the SSTORE residual in the gas table. Since key-auth storage
-            // is intrinsic-only, we must also add the creditable portion here. On T11+ the
+        if spec.is_t7() && !spec.is_t12() {
+            // T7..T11 expose only the SSTORE residual in the gas table. Since key-auth storage
+            // is intrinsic-only, we must also add the creditable portion here. On T12+ the
             // creditable portion is charged as TIP-1016 state gas below instead.
             sstore_cost = sstore_cost.saturating_add(STORAGE_CREDIT_VALUE);
         }
@@ -350,11 +350,11 @@ fn calculate_key_authorization_gas(
             regular_gas += call_scope_extra_gas(&key_auth.authorization);
         }
 
-        // TIP-1016 (T11+): each storage-creating SSTORE incurs the creditable portion as
-        // state gas. Before T11 `sstore_set_state_gas` is charged as execution gas (above
-        // on T7..T10, via the full `sstore_set_without_load_cost` on T1B..T6), so reading
+        // TIP-1016 (T12+): each storage-creating SSTORE incurs the creditable portion as
+        // state gas. Before T12 `sstore_set_state_gas` is charged as execution gas (above
+        // on T7..T11, via the full `sstore_set_without_load_cost` on T1B..T6), so reading
         // it into state gas here would double-count it.
-        let state_gas = if spec.is_t11() {
+        let state_gas = if spec.is_t12() {
             gas_params
                 .get(GasId::sstore_set_state_gas())
                 .saturating_mul(num_sstores)
