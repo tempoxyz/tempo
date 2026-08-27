@@ -24,7 +24,7 @@ use reth_db::{
     static_file::{AccountChangesetMask, StaticFileCursor, StorageChangesetMask},
 };
 use reth_db_api::{
-    cursor::{DbCursorRO, DbCursorRW, DbDupCursorRO, DbDupCursorRW},
+    cursor::{DbCursorRO, DbCursorRW, DbDupCursorRW},
     models::{
         AccountBeforeTx, ShardedKey, StorageBeforeTx, storage_sharded_key::StorageShardedKey,
     },
@@ -234,7 +234,7 @@ where
         .map(|replacement| replacement.address)
         .collect::<BTreeSet<_>>();
 
-    let hashed_state = replacement_hashed_post_state(provider_rw, &replacements)?;
+    let hashed_state = replacement_hashed_post_state(&replacements);
     let (state_root, trie_updates) = {
         let latest = LatestStateProviderRef::new(provider_rw);
         latest.state_root_with_updates(hashed_state)?
@@ -363,39 +363,24 @@ fn genesis_account_replacement(
     })
 }
 
-fn replacement_hashed_post_state<P>(
-    provider_rw: &P,
-    replacements: &[GenesisAccountReplacement],
-) -> eyre::Result<HashedPostState>
-where
-    P: DBProvider,
-{
-    let tx = provider_rw.tx_ref();
-    let mut cursor = tx.cursor_dup_read::<tables::HashedStorages>()?;
-    let mut storages = Vec::with_capacity(replacements.len());
-
-    for replacement in replacements {
-        let mut storage = HashedStorage::default();
-        for entry in cursor.walk_dup(Some(replacement.hashed_address), None)? {
-            let (_, entry) = entry?;
-            storage.storage.insert(entry.key, U256::ZERO);
-        }
-        storage.storage.extend(
-            replacement
-                .hashed_storage
-                .iter()
-                .map(|entry| (entry.key, entry.value)),
-        );
-        storages.push((replacement.hashed_address, storage));
-    }
-
-    Ok(HashedPostState::default()
+fn replacement_hashed_post_state(replacements: &[GenesisAccountReplacement]) -> HashedPostState {
+    HashedPostState::default()
         .with_accounts(
             replacements
                 .iter()
                 .map(|replacement| (replacement.hashed_address, Some(replacement.account))),
         )
-        .with_storages(storages))
+        .with_storages(replacements.iter().map(|replacement| {
+            let storage = HashedStorage {
+                wiped: true,
+                storage: replacement
+                    .hashed_storage
+                    .iter()
+                    .map(|entry| (entry.key, entry.value))
+                    .collect(),
+            };
+            (replacement.hashed_address, storage)
+        }))
 }
 
 fn replacement_account_changeset_entries(

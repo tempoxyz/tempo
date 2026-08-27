@@ -107,17 +107,6 @@ jobs:
                 | "\(.name)=\(.state)"
               ] | join(", ")
             ' <<< "$CHECKS")"
-            FAILED="$(jq -r '
-              [ .[]
-                | select(.bucket == "fail" or .bucket == "cancel")
-                | "\(.name)=\(.state)"
-              ] | join(", ")
-            ' <<< "$CHECKS")"
-
-            if [ -n "$FAILED" ]; then
-              echo "::error::Required CI failed for ${EXPECTED_SHA}: ${FAILED}"
-              exit 1
-            fi
 
             if [ -z "$MISSING" ] && [ -z "$NOT_GREEN" ]; then
               echo "Required CI is green for ${EXPECTED_SHA}"
