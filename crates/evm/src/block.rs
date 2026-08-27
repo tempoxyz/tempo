@@ -763,27 +763,13 @@ where
             validator_fee: _,
         } = output;
 
-        // The inner executor accumulates upstream's pre-refund
-        // `block_regular_gas_used` (EIP-7778 semantics); correct the
-        // accumulator down to Tempo's refund-aware value (`block_gas_used`,
-        // computed via `tempo_block_regular_gas_used` at execute time) so the
-        // block header and the available-gas checks reflect the full refund.
-        let refund_adjustment = if self.evm().cfg.enable_amsterdam_eip8037 {
-            inner
-                .result
-                .result
-                .gas()
-                .block_regular_gas_used()
-                .saturating_sub(block_gas_used)
-        } else {
-            0
-        };
-
+        let eip8037_enabled = self.evm().cfg.enable_amsterdam_eip8037;
+        let previous_regular_gas = self.inner.block_regular_gas_used;
         let gas_output = self.inner.commit_transaction(inner);
-        self.inner.block_regular_gas_used = self
-            .inner
-            .block_regular_gas_used
-            .saturating_sub(refund_adjustment);
+        if eip8037_enabled {
+            // Replace upstream's EIP-7778 pre-refund addition with Tempo's refund-aware gas.
+            self.inner.block_regular_gas_used = previous_regular_gas.saturating_add(block_gas_used);
+        }
 
         self.section = next_section;
 
@@ -1967,6 +1953,63 @@ mod tests {
             executor.non_payment_gas_left,
             initial_non_payment - 200_000,
             "T4: non_payment_gas_left should exclude state gas"
+        );
+    }
+
+    #[test]
+    fn test_commit_accumulates_refund_aware_block_gas() {
+        let chainspec = Arc::new(TempoChainSpec::from_genesis(DEV.genesis().clone()));
+        let mut db = State::builder().with_bundle_update().build();
+        let mut executor = TestExecutorBuilder::default()
+            .with_general_gas_limit(30_000_000)
+            .with_parent_beacon_block_root(B256::ZERO)
+            .with_amsterdam_eip8037_enabled(true)
+            .build(&mut db, &chainspec);
+
+        executor.apply_pre_execution_changes().unwrap();
+
+        let previous_regular_gas = 123_000;
+        executor.inner.block_regular_gas_used = previous_regular_gas;
+
+        // total=300k, state=40k, refund=30k:
+        // - receipt gas = 270k
+        // - upstream EIP-7778 block gas = 260k
+        // - Tempo refund-aware block gas = 230k
+        let tx = create_legacy_tx();
+        let block_gas_used = 230_000;
+        let output = TempoTxResult {
+            inner: EthTxResult {
+                result: ResultAndState {
+                    result: revm::context::result::ExecutionResult::Success {
+                        reason: revm::context::result::SuccessReason::Return,
+                        gas: ResultGas::new_with_state_gas(300_000, 30_000, 0, 40_000),
+                        logs: vec![],
+                        output: revm::context::result::Output::Call(Bytes::new()),
+                    },
+                    state: Default::default(),
+                },
+                blob_gas_used: 0,
+                tx_type: tx.tx_type(),
+            },
+            next_section: BlockSection::NonShared,
+            is_payment: false,
+            tx: None,
+            block_gas_used,
+            validator_fee: U256::ZERO,
+        };
+
+        let gas_output = executor.commit_transaction(output);
+
+        assert_eq!(gas_output.tx_gas_used(), 270_000);
+        assert_eq!(
+            executor.inner.receipts.last().unwrap().cumulative_gas_used,
+            270_000,
+            "receipt gas must continue to use post-refund transaction gas"
+        );
+        assert_eq!(
+            executor.inner.block_regular_gas_used,
+            previous_regular_gas + block_gas_used,
+            "block gas must preserve the previous accumulator and add Tempo's refund-aware gas"
         );
     }
 
