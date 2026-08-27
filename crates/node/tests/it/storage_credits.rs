@@ -1357,6 +1357,10 @@ async fn test_tip1060_tip20_clear_mints_and_later_creation_redeems_credit() -> e
     let provider = ProviderBuilder::new()
         .wallet(root.clone())
         .connect_http(setup.http_url);
+    // Keep Alloy's pending-transaction heartbeat ahead of the 100ms dev block interval.
+    provider
+        .client()
+        .set_poll_interval(std::time::Duration::from_millis(10));
 
     let token = setup_test_token(provider.clone(), root_addr).await?;
     let recipient = Address::repeat_byte(0xcc);
