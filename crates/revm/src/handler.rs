@@ -1904,7 +1904,7 @@ where
                     .as_ref()
                     .is_some_and(|key_auth| key_auth.signature.is_multisig());
 
-            if has_native_multisig_authorization && !cfg.spec.is_t11() {
+            if has_native_multisig_authorization && !cfg.spec.is_t12() {
                 return Err(TempoInvalidTransaction::NativeMultisigNotActive.into());
             }
 

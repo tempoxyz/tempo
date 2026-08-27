@@ -647,7 +647,7 @@ where
         if self.inner.spec.is_t8_active_at_timestamp(timestamp) {
             self.deploy_precompile_at_boundary(CURRENT_COMMITTEE_ADDRESS, &[])?;
         }
-        if self.inner.spec.is_t11_active_at_timestamp(timestamp) {
+        if self.inner.spec.is_t12_active_at_timestamp(timestamp) {
             self.deploy_precompile_at_boundary(NATIVE_MULTISIG_ADDRESS, &[])?;
         }
         if self.inner.spec.is_t10_active_at_timestamp(timestamp) {
@@ -1992,7 +1992,7 @@ mod tests {
     }
 
     #[test]
-    fn test_apply_pre_execution_pre_t11_does_not_deploy_native_multisig_code() {
+    fn test_apply_pre_execution_pre_t12_does_not_deploy_native_multisig_code() {
         let chainspec = test_chainspec();
         let mut db = State::builder().with_bundle_update().build();
         let mut executor = TestExecutorBuilder::default()
@@ -2007,7 +2007,7 @@ mod tests {
         let info = acc.account_info();
         assert!(
             info.is_none() || info.unwrap().is_empty_code_hash(),
-            "NativeMultisig code should not be deployed before T11"
+            "NativeMultisig code should not be deployed before T12"
         );
 
         let acc = db.load_cache_account(RECEIVE_POLICY_GUARD_ADDRESS).unwrap();
@@ -2016,7 +2016,7 @@ mod tests {
     }
 
     #[test]
-    fn test_apply_pre_execution_deploys_t11_native_multisig_code() {
+    fn test_apply_pre_execution_deploys_t12_native_multisig_code() {
         let chainspec = Arc::new(TempoChainSpec::from_genesis(DEV.genesis().clone()));
         let mut db = State::builder().with_bundle_update().build();
         let mut executor = TestExecutorBuilder::default()

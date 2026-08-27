@@ -219,7 +219,7 @@ mod tests {
 
     #[test]
     fn derive_account_is_stateless_and_meters_hashing() -> eyre::Result<()> {
-        let mut storage = HashMapStorageProvider::new_with_spec(1, TempoHardfork::T11);
+        let mut storage = HashMapStorageProvider::new_with_spec(1, TempoHardfork::T12);
         let config = initial_config();
         let expected = config.derive_account().unwrap();
 
@@ -244,7 +244,7 @@ mod tests {
     fn initial_and_current_updates_replace_one_commitment() -> eyre::Result<()> {
         let config = initial_config();
         let account = config.derive_account().unwrap();
-        let mut storage = HashMapStorageProvider::new_with_spec(1, TempoHardfork::T11)
+        let mut storage = HashMapStorageProvider::new_with_spec(1, TempoHardfork::T12)
             .with_tx_kind(TxKind::Call(NATIVE_MULTISIG_ADDRESS));
 
         StorageCtx::enter(&mut storage, || NativeMultisig::new().initialize())?;
@@ -318,7 +318,7 @@ mod tests {
     fn update_requires_direct_outer_authorization() -> eyre::Result<()> {
         let config = initial_config();
         let account = config.derive_account().unwrap();
-        let mut storage = HashMapStorageProvider::new_with_spec(1, TempoHardfork::T11)
+        let mut storage = HashMapStorageProvider::new_with_spec(1, TempoHardfork::T12)
             .with_tx_kind(TxKind::Call(NATIVE_MULTISIG_ADDRESS));
 
         StorageCtx::enter(&mut storage, || {

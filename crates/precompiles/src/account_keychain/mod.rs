@@ -268,7 +268,7 @@ impl AccountKeychain {
         if key_id == Address::ZERO {
             return Err(AccountKeychainError::zero_public_key().into());
         }
-        if self.storage.spec().is_t11()
+        if self.storage.spec().is_t12()
             && !NativeMultisig::new()
                 .get_config_commitment(key_id)?
                 .is_zero()
@@ -1741,8 +1741,8 @@ mod tests {
     }
 
     #[test]
-    fn test_t11_native_multisig_accounts_can_authorize_and_use_access_keys() -> eyre::Result<()> {
-        let mut storage = HashMapStorageProvider::new_with_spec(1, TempoHardfork::T11);
+    fn test_t12_native_multisig_accounts_can_authorize_and_use_access_keys() -> eyre::Result<()> {
+        let mut storage = HashMapStorageProvider::new_with_spec(1, TempoHardfork::T12);
         let config = native_multisig_config();
         let key_id = Address::from([0x33; 20]);
 
@@ -1818,8 +1818,8 @@ mod tests {
     }
 
     #[test]
-    fn test_t11_native_multisig_account_cannot_be_authorized_as_access_key() -> eyre::Result<()> {
-        let mut storage = HashMapStorageProvider::new_with_spec(1, TempoHardfork::T11);
+    fn test_t12_native_multisig_account_cannot_be_authorized_as_access_key() -> eyre::Result<()> {
+        let mut storage = HashMapStorageProvider::new_with_spec(1, TempoHardfork::T12);
         let config = native_multisig_config();
         let account = Address::from([0x44; 20]);
 

@@ -3564,11 +3564,11 @@ mod keychain {
     }
 
     #[test]
-    fn test_t11_multisig_with_committed_config_can_use_keychain_signature() {
+    fn test_t12_multisig_with_committed_config_can_use_keychain_signature() {
         let config = native_multisig_config();
         let account = config.derive_account().unwrap();
         let access_key = Address::repeat_byte(0x44);
-        let (mut evm, h) = make_evm(account, access_key, None, TempoHardfork::T11, None, false);
+        let (mut evm, h) = make_evm(account, access_key, None, TempoHardfork::T12, None, false);
 
         StorageCtx::enter_ctx(&mut evm.inner.ctx, StorageActions::disabled(), || {
             let mut multisig = NativeMultisig::new();
@@ -3619,7 +3619,7 @@ mod keychain {
     }
 
     #[test]
-    fn test_t11_non_admin_key_relays_multisig_key_authorization() {
+    fn test_t12_non_admin_key_relays_multisig_key_authorization() {
         let (owner, owner_address) = generate_keypair();
         let config = single_owner_native_multisig_config(0x44, owner_address);
         let account = config.derive_account().unwrap();
@@ -3645,7 +3645,7 @@ mod keychain {
             account,
             access_key,
             Some(key_authorization),
-            TempoHardfork::T11,
+            TempoHardfork::T12,
             None,
             true,
         );
@@ -3677,11 +3677,11 @@ mod keychain {
     }
 
     #[test]
-    fn test_t11_multisig_with_committed_config_and_code_rejects_keychain_signature() {
+    fn test_t12_multisig_with_committed_config_and_code_rejects_keychain_signature() {
         let config = native_multisig_config();
         let account = config.derive_account().unwrap();
         let access_key = Address::repeat_byte(0x44);
-        let (mut evm, h) = make_evm(account, access_key, None, TempoHardfork::T11, None, false);
+        let (mut evm, h) = make_evm(account, access_key, None, TempoHardfork::T12, None, false);
 
         StorageCtx::enter_ctx(&mut evm.inner.ctx, StorageActions::disabled(), || {
             let mut multisig = NativeMultisig::new();
@@ -3737,7 +3737,7 @@ mod keychain {
     }
 
     #[test]
-    fn test_t11_key_authorization_rejects_multisig_access_key() {
+    fn test_t12_key_authorization_rejects_multisig_access_key() {
         let (signer, user) = generate_keypair();
         let config = native_multisig_config();
         let multisig_account = config.derive_account().unwrap();
@@ -3749,7 +3749,7 @@ mod keychain {
             user,
             multisig_account,
             Some(signed),
-            TempoHardfork::T11,
+            TempoHardfork::T12,
             None,
             false,
         );
@@ -3774,7 +3774,7 @@ mod keychain {
     }
 
     #[test]
-    fn test_t11_ordinary_key_authorization_charges_one_commitment_read() {
+    fn test_t12_ordinary_key_authorization_charges_one_commitment_read() {
         let (signer, user) = generate_keypair();
         let access_key = Address::random();
         let signed = sign_key_auth(
@@ -3785,11 +3785,11 @@ mod keychain {
             user,
             access_key,
             Some(signed),
-            TempoHardfork::T11,
+            TempoHardfork::T12,
             None,
             false,
         );
-        let gas_params = tempo_gas_params(TempoHardfork::T11);
+        let gas_params = tempo_gas_params(TempoHardfork::T12);
         let expected =
             gas_params.warm_storage_read_cost() + gas_params.cold_storage_additional_cost();
         let mut init_gas = InitialAndFloorGas::default();
@@ -4807,7 +4807,7 @@ fn test_state_gas_failed_batch_preserves_upfront_create_intrinsic_gas() {
 }
 
 #[test]
-fn test_t10_rejects_native_multisig_signature() {
+fn test_t11_rejects_native_multisig_signature() {
     let config = native_multisig_config();
     let account = config.derive_account().unwrap();
     let aa_env = TempoBatchCallEnv {
@@ -4822,7 +4822,7 @@ fn test_t10_rejects_native_multisig_signature() {
         }],
         ..Default::default()
     };
-    let mut test = TestHandlerEvm::aa(TempoHardfork::T10, aa_env, |tx_env| {
+    let mut test = TestHandlerEvm::aa(TempoHardfork::T11, aa_env, |tx_env| {
         tx_env.inner.caller = account;
     });
 
@@ -4834,12 +4834,12 @@ fn test_t10_rejects_native_multisig_signature() {
                 TempoInvalidTransaction::NativeMultisigNotActive
             ))
         ),
-        "native multisig signatures should be rejected before T11"
+        "native multisig signatures should be rejected before T12"
     );
 }
 
 #[test]
-fn test_t10_rejects_native_multisig_key_authorization_signature() {
+fn test_t11_rejects_native_multisig_key_authorization_signature() {
     let config = native_multisig_config();
     let account = config.derive_account().unwrap();
     let key_authorization =
@@ -4863,7 +4863,7 @@ fn test_t10_rejects_native_multisig_key_authorization_signature() {
         }],
         ..Default::default()
     };
-    let mut test = TestHandlerEvm::aa(TempoHardfork::T10, aa_env, |tx_env| {
+    let mut test = TestHandlerEvm::aa(TempoHardfork::T11, aa_env, |tx_env| {
         tx_env.inner.caller = account;
     });
 
@@ -4876,7 +4876,7 @@ fn test_t10_rejects_native_multisig_key_authorization_signature() {
 }
 
 #[test]
-fn test_t11_unfunded_multisig_rejects_before_owner_verification() {
+fn test_t12_unfunded_multisig_rejects_before_owner_verification() {
     let config = native_multisig_config();
     let account = config.derive_account().unwrap();
     let aa_env = TempoBatchCallEnv {
@@ -4891,7 +4891,7 @@ fn test_t11_unfunded_multisig_rejects_before_owner_verification() {
         }],
         ..Default::default()
     };
-    let mut test = TestHandlerEvm::aa(TempoHardfork::T11, aa_env, |tx_env| {
+    let mut test = TestHandlerEvm::aa(TempoHardfork::T12, aa_env, |tx_env| {
         tx_env.inner.caller = account;
         tx_env.inner.gas_limit = 100_000;
         tx_env.inner.gas_price = 1;
@@ -4916,7 +4916,7 @@ fn test_t11_unfunded_multisig_rejects_before_owner_verification() {
 }
 
 #[test]
-fn keychain_key_authorization_is_rejected() {
+fn test_t12_rejects_keychain_key_authorization_signature() {
     let caller = Address::repeat_byte(0x11);
     let key_authorization =
         KeyAuthorization::unrestricted(1, SignatureType::Secp256k1, Address::repeat_byte(0x33))
@@ -4934,7 +4934,7 @@ fn keychain_key_authorization_is_rejected() {
         }],
         ..Default::default()
     };
-    let mut test = TestHandlerEvm::aa(TempoHardfork::T11, aa_env, |tx_env| {
+    let mut test = TestHandlerEvm::aa(TempoHardfork::T12, aa_env, |tx_env| {
         tx_env.inner.caller = caller;
     });
 
@@ -4947,7 +4947,7 @@ fn keychain_key_authorization_is_rejected() {
 }
 
 #[test]
-fn test_t11_primitive_roles_skip_multisig_storage() {
+fn test_t12_primitive_roles_skip_multisig_storage() {
     let authority = native_multisig_config().derive_account().unwrap();
     let aa_env = TempoBatchCallEnv {
         signature: TempoSignature::Primitive(PrimitiveSignature::default()),
@@ -4959,7 +4959,7 @@ fn test_t11_primitive_roles_skip_multisig_storage() {
         }],
         ..Default::default()
     };
-    let mut test = TestHandlerEvm::aa(TempoHardfork::T11, aa_env, |tx_env| {
+    let mut test = TestHandlerEvm::aa(TempoHardfork::T12, aa_env, |tx_env| {
         tx_env.inner.caller = Address::repeat_byte(0x11);
         tx_env.fee_payer = Some(Some(authority));
     });
@@ -4979,7 +4979,7 @@ fn test_t11_primitive_roles_skip_multisig_storage() {
 }
 
 #[test]
-fn test_t11_keychain_authorization_list_skips_multisig_storage() {
+fn test_t12_keychain_authorization_list_skips_multisig_storage() {
     let authority = native_multisig_config().derive_account().unwrap();
     let aa_env = TempoBatchCallEnv {
         signature: TempoSignature::Primitive(PrimitiveSignature::default()),
@@ -4991,7 +4991,7 @@ fn test_t11_keychain_authorization_list_skips_multisig_storage() {
         }],
         ..Default::default()
     };
-    let mut test = TestHandlerEvm::aa(TempoHardfork::T11, aa_env, |tx_env| {
+    let mut test = TestHandlerEvm::aa(TempoHardfork::T12, aa_env, |tx_env| {
         tx_env.inner.caller = Address::repeat_byte(0x11);
     });
     let actions = StorageActions::enabled();
@@ -5009,7 +5009,7 @@ fn test_t11_keychain_authorization_list_skips_multisig_storage() {
 }
 
 #[test]
-fn test_t11_rejects_multisig_authorization_list_signature() {
+fn test_t12_rejects_multisig_authorization_list_signature() {
     let config = native_multisig_config();
     let account = config.derive_account().unwrap();
     let authorization = RecoveredTempoAuthorization::new_unchecked(
@@ -5033,7 +5033,7 @@ fn test_t11_rejects_multisig_authorization_list_signature() {
         }],
         ..Default::default()
     };
-    let mut test = TestHandlerEvm::aa(TempoHardfork::T11, aa_env, |tx_env| {
+    let mut test = TestHandlerEvm::aa(TempoHardfork::T12, aa_env, |tx_env| {
         tx_env.inner.caller = Address::repeat_byte(0x11);
     });
 
@@ -5046,7 +5046,7 @@ fn test_t11_rejects_multisig_authorization_list_signature() {
 }
 
 #[test]
-fn test_t11_current_multisig_requires_matching_commitment() {
+fn test_t12_current_multisig_requires_matching_commitment() {
     let config = native_multisig_config();
     let account = config.derive_account().unwrap();
     let mut current = config.clone();
@@ -5064,7 +5064,7 @@ fn test_t11_current_multisig_requires_matching_commitment() {
         }],
         ..Default::default()
     };
-    let mut test = TestHandlerEvm::aa(TempoHardfork::T11, aa_env, |tx_env| {
+    let mut test = TestHandlerEvm::aa(TempoHardfork::T12, aa_env, |tx_env| {
         tx_env.inner.caller = account;
         tx_env.execution_context = ExecutionContext::Simulation;
     });
@@ -5082,7 +5082,7 @@ fn test_t11_current_multisig_requires_matching_commitment() {
 }
 
 #[test]
-fn test_t11_rejects_code_bearing_nested_multisig_owner() {
+fn test_t12_rejects_code_bearing_nested_multisig_owner() {
     let owner = Address::repeat_byte(0x11);
     let child_config = single_owner_native_multisig_config(0x42, owner);
     let child_account = child_config.derive_account().unwrap();
@@ -5109,7 +5109,7 @@ fn test_t11_rejects_code_bearing_nested_multisig_owner() {
         }],
         ..Default::default()
     };
-    let mut test = TestHandlerEvm::aa(TempoHardfork::T11, aa_env, |tx_env| {
+    let mut test = TestHandlerEvm::aa(TempoHardfork::T12, aa_env, |tx_env| {
         tx_env.inner.caller = parent_account;
         tx_env.execution_context = ExecutionContext::Simulation;
     });
@@ -5149,19 +5149,19 @@ fn test_aa_gas_native_multisig_charges_commitment_and_witness() {
     let mut multisig_env = base_env.clone();
     multisig_env.signature = TempoSignature::Multisig(signature);
 
-    let gas_params = tempo_gas_params(TempoHardfork::T11);
+    let gas_params = tempo_gas_params(TempoHardfork::T12);
     let base_gas = calculate_aa_batch_intrinsic_gas(
         &base_env,
         &gas_params,
         None::<std::iter::Empty<&AccessListItem>>,
-        TempoHardfork::T11,
+        TempoHardfork::T12,
     )
     .unwrap();
     let multisig_gas = calculate_aa_batch_intrinsic_gas(
         &multisig_env,
         &gas_params,
         None::<std::iter::Empty<&AccessListItem>>,
-        TempoHardfork::T11,
+        TempoHardfork::T12,
     )
     .unwrap();
 

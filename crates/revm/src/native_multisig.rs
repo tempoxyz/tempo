@@ -31,7 +31,7 @@ pub(super) fn validate_state<DB: Database + Debug>(
     init_gas: &mut InitialAndFloorGas,
     account_balance: U256,
 ) -> Result<Option<U256>, EVMError<DB::Error, TempoInvalidTransaction>> {
-    if !cfg.spec().is_t11() {
+    if !cfg.spec().is_t12() {
         return Ok(None);
     }
 

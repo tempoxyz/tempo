@@ -505,12 +505,12 @@ mod tests {
         evm
     }
 
-    /// Create an EVM with T11 hardfork enabled and a funded account.
-    fn create_funded_evm_t11(address: Address) -> TempoEvm<CacheDB<EmptyDB>, ()> {
+    /// Create an EVM with T12 hardfork enabled and a funded account.
+    fn create_funded_evm_t12(address: Address) -> TempoEvm<CacheDB<EmptyDB>, ()> {
         let db = CacheDB::new(EmptyDB::new());
         let mut cfg = CfgEnv::<TempoHardfork>::default();
-        cfg.spec = TempoHardfork::T11;
-        cfg.gas_params = tempo_gas_params(TempoHardfork::T11);
+        cfg.spec = TempoHardfork::T12;
+        cfg.gas_params = tempo_gas_params(TempoHardfork::T12);
 
         let ctx = Context::mainnet()
             .with_db(db)
@@ -895,7 +895,7 @@ mod tests {
     // ==================== End Test Utility Functions ====================
 
     #[test]
-    fn test_t11_initial_multisig_does_not_persist_config() -> eyre::Result<()> {
+    fn test_t12_initial_multisig_does_not_persist_config() -> eyre::Result<()> {
         let signer = PrivateKeySigner::from_bytes(&B256::from([0x11; 32]))?;
         let config = MultisigConfig {
             salt: B256::repeat_byte(0x44),
@@ -920,7 +920,7 @@ mod tests {
             vec![owner_signature],
         )));
 
-        let mut evm = create_funded_evm_t11(account);
+        let mut evm = create_funded_evm_t12(account);
         StorageCtx::enter_ctx(&mut evm.ctx, StorageActions::disabled(), || {
             NativeMultisig::new().initialize()
         })?;
@@ -948,7 +948,7 @@ mod tests {
     }
 
     #[test]
-    fn test_t11_initial_multisig_simulates_repeatedly() -> eyre::Result<()> {
+    fn test_t12_initial_multisig_simulates_repeatedly() -> eyre::Result<()> {
         let signer = PrivateKeySigner::from_bytes(&B256::from([0x11; 32]))?;
         let config = MultisigConfig {
             salt: B256::repeat_byte(0x55),
@@ -973,7 +973,7 @@ mod tests {
             vec![owner_signature],
         )));
 
-        let mut evm = create_funded_evm_t11(account);
+        let mut evm = create_funded_evm_t12(account);
         StorageCtx::enter_ctx(&mut evm.ctx, StorageActions::disabled(), || {
             NativeMultisig::new().initialize()
         })?;
