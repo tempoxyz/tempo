@@ -8,8 +8,8 @@ mod native_multisig;
 #[doc(hidden)]
 pub use native_multisig::create_mock_native_multisig_signature;
 pub use native_multisig::{
-    MultisigSimulationApproval, MultisigSimulationNestedWitness,
-    MultisigSimulationPrimitiveApproval, MultisigSimulationWitness,
+    MultisigSimulationApproval, MultisigSimulationNestedSpec, MultisigSimulationPrimitiveApproval,
+    MultisigSimulationSpec,
 };
 
 mod request;

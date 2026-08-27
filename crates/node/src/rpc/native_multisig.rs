@@ -11,26 +11,26 @@ use tempo_precompiles::{
 
 pub(super) fn prepare_native_multisig_simulation(
     request: &mut TempoTransactionRequest,
-    spec: TempoHardfork,
+    hardfork: TempoHardfork,
     db: &mut impl Database,
 ) -> Result<(), EthApiError> {
-    let Some(witness) = request.multisig_witness.as_ref() else {
+    let Some(spec) = request.multisig_simulation.as_ref() else {
         return Ok(());
     };
     if request.key_id.is_some() {
         return Err(EthApiError::InvalidParams(
-            "keyId cannot be combined with a native multisig witness".to_string(),
+            "keyId cannot be combined with a native multisig spec".to_string(),
         ));
     }
-    if request.inner.from != Some(witness.account) {
+    if request.inner.from != Some(spec.account) {
         return Err(EthApiError::InvalidParams(
-            "native multisig witness account must match from".to_string(),
+            "native multisig spec account must match from".to_string(),
         ));
     }
 
-    let signature = create_mock_native_multisig_signature(witness)
+    let signature = create_mock_native_multisig_signature(spec)
         .map_err(|error| EthApiError::InvalidParams(error.to_string()))?;
-    db.with_read_only_storage_ctx(spec, StorageActions::disabled(), || {
+    db.with_read_only_storage_ctx(hardfork, StorageActions::disabled(), || {
         NativeMultisig::new().validate_authorization_state(&signature)
     })
     .map_err(map_validation_error)?;
@@ -53,8 +53,8 @@ mod tests {
     use reth_evm::revm::{bytecode::Bytecode, state::AccountInfo};
     use std::collections::HashMap;
     use tempo_alloy::rpc::{
-        MultisigSimulationApproval, MultisigSimulationNestedWitness,
-        MultisigSimulationPrimitiveApproval, MultisigSimulationWitness,
+        MultisigSimulationApproval, MultisigSimulationNestedSpec,
+        MultisigSimulationPrimitiveApproval, MultisigSimulationSpec,
     };
     use tempo_precompiles::NATIVE_MULTISIG_ADDRESS;
     use tempo_primitives::transaction::{MultisigConfig, MultisigOwner, SignatureType};
@@ -92,7 +92,7 @@ mod tests {
         }
     }
 
-    fn witness(version: u64) -> MultisigSimulationWitness {
+    fn spec(version: u64) -> MultisigSimulationSpec {
         let owner = Address::repeat_byte(0x11);
         let config = MultisigConfig {
             salt: B256::repeat_byte(0x55),
@@ -105,7 +105,7 @@ mod tests {
         } else {
             Address::repeat_byte(0x22)
         };
-        MultisigSimulationWitness {
+        MultisigSimulationSpec {
             account,
             config,
             approvals: vec![MultisigSimulationApproval::Primitive {
@@ -116,20 +116,20 @@ mod tests {
         }
     }
 
-    fn request(witness: MultisigSimulationWitness) -> TempoTransactionRequest {
+    fn request(spec: MultisigSimulationSpec) -> TempoTransactionRequest {
         TempoTransactionRequest {
             inner: alloy_rpc_types_eth::TransactionRequest {
-                from: Some(witness.account),
+                from: Some(spec.account),
                 ..Default::default()
             },
-            multisig_witness: Some(witness),
+            multisig_simulation: Some(spec),
             ..Default::default()
         }
     }
 
     #[test]
-    fn prepares_initial_witness_against_zero_commitment() {
-        let mut request = request(witness(0));
+    fn prepares_initial_spec_against_zero_commitment() {
+        let mut request = request(spec(0));
         prepare_native_multisig_simulation(
             &mut request,
             TempoHardfork::T12,
@@ -140,20 +140,20 @@ mod tests {
     }
 
     #[test]
-    fn current_witness_requires_matching_commitment() {
-        let witness = witness(1);
+    fn current_spec_requires_matching_commitment() {
+        let spec = spec(1);
         let mut db = SlotDb::default();
-        db.insert_commitment(witness.account, witness.config.commitment().unwrap());
-        let mut request = request(witness);
+        db.insert_commitment(spec.account, spec.config.commitment().unwrap());
+        let mut request = request(spec);
 
         prepare_native_multisig_simulation(&mut request, TempoHardfork::T12, &mut db).unwrap();
         assert!(request.multisig_simulation_signature.is_some());
     }
 
     #[test]
-    fn validates_nested_witness_commitments() {
+    fn validates_nested_spec_commitments() {
         let nested_owner = Address::repeat_byte(0x11);
-        let nested = MultisigSimulationNestedWitness {
+        let nested = MultisigSimulationNestedSpec {
             account: Address::repeat_byte(0x22),
             config: MultisigConfig {
                 salt: B256::repeat_byte(0x44),
@@ -171,7 +171,7 @@ mod tests {
             }],
         };
         let account = Address::repeat_byte(0x33);
-        let witness = MultisigSimulationWitness {
+        let spec = MultisigSimulationSpec {
             account,
             config: MultisigConfig {
                 salt: B256::repeat_byte(0x55),
@@ -183,22 +183,22 @@ mod tests {
                 }],
             },
             approvals: vec![MultisigSimulationApproval::Multisig {
-                witness: nested.clone(),
+                spec: nested.clone(),
             }],
         };
         let mut db = SlotDb::default();
-        db.insert_commitment(account, witness.config.commitment().unwrap());
+        db.insert_commitment(account, spec.config.commitment().unwrap());
         db.insert_commitment(nested.account, nested.config.commitment().unwrap());
-        let mut request = request(witness);
+        let mut request = request(spec);
 
         prepare_native_multisig_simulation(&mut request, TempoHardfork::T12, &mut db).unwrap();
         assert!(request.multisig_simulation_signature.is_some());
     }
 
     #[test]
-    fn rejects_witness_for_another_sender() {
-        let witness = witness(0);
-        let mut request = request(witness);
+    fn rejects_spec_for_another_sender() {
+        let spec = spec(0);
+        let mut request = request(spec);
         request.inner.from = Some(Address::repeat_byte(0x33));
 
         assert!(matches!(

@@ -14,7 +14,7 @@ use tempo_primitives::{
     },
 };
 
-use super::native_multisig::MultisigSimulationWitness;
+use super::native_multisig::MultisigSimulationSpec;
 use crate::TempoNetwork;
 
 /// An Ethereum [`TransactionRequest`] extended with Tempo-specific fields.
@@ -81,9 +81,9 @@ pub struct TempoTransactionRequest {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub key_authorization: Option<SignedKeyAuthorization>,
 
-    /// Native multisig witness for state-aware gas estimation and calls.
+    /// Native multisig spec for state-aware gas estimation and calls.
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub multisig_witness: Option<MultisigSimulationWitness>,
+    pub multisig_simulation: Option<MultisigSimulationSpec>,
 
     /// Validated mock signature populated by the state-aware RPC path.
     #[doc(hidden)]
@@ -129,7 +129,7 @@ impl TempoTransactionRequest {
             || self.key_id.is_some()
             || self.key_type.is_some()
             || self.key_data.is_some()
-            || self.multisig_witness.is_some()
+            || self.multisig_simulation.is_some()
             || self.multisig_simulation_signature.is_some()
             || self.valid_before.is_some()
             || self.valid_after.is_some()
@@ -473,7 +473,7 @@ impl From<TempoTransaction> for TempoTransactionRequest {
             key_id: None,
             nonce_key: Some(tx.nonce_key),
             key_authorization: tx.key_authorization,
-            multisig_witness: None,
+            multisig_simulation: None,
             multisig_simulation_signature: None,
             valid_before: tx.valid_before,
             valid_after: tx.valid_after,

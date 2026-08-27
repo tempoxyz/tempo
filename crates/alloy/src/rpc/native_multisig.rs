@@ -19,11 +19,11 @@ use {
     },
 };
 
-/// Native multisig witness used only to construct an RPC simulation signature.
+/// Native multisig spec used only to construct an RPC simulation signature.
 #[derive(Clone, Debug, PartialEq, Eq, Hash, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
-pub struct MultisigSimulationWitness {
-    /// Account authorized by this witness.
+pub struct MultisigSimulationSpec {
+    /// Account authorized by this spec.
     pub account: Address,
     /// Complete applicable configuration, encoded as canonical RLP in JSON.
     #[serde(with = "serde_multisig_config")]
@@ -50,15 +50,15 @@ pub enum MultisigSimulationApproval {
     },
     /// Nested native multisig owner signature.
     Multisig {
-        /// Depth-2 multisig witness. Its approvals must all be primitive.
-        witness: MultisigSimulationNestedWitness,
+        /// Depth-2 multisig spec. Its approvals must all be primitive.
+        spec: MultisigSimulationNestedSpec,
     },
 }
 
-/// Depth-2 native multisig witness used for RPC simulation.
+/// Depth-2 native multisig spec used for RPC simulation.
 #[derive(Clone, Debug, PartialEq, Eq, Hash, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
-pub struct MultisigSimulationNestedWitness {
+pub struct MultisigSimulationNestedSpec {
     /// Nested multisig account.
     pub account: Address,
     /// Complete applicable configuration, encoded as canonical RLP in JSON.
@@ -69,7 +69,7 @@ pub struct MultisigSimulationNestedWitness {
     pub approvals: Vec<MultisigSimulationPrimitiveApproval>,
 }
 
-/// Primitive approval in a depth-2 multisig simulation witness.
+/// Primitive approval in a depth-2 multisig simulation spec.
 #[derive(Clone, Debug, PartialEq, Eq, Hash, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct MultisigSimulationPrimitiveApproval {
@@ -157,9 +157,9 @@ where
 #[cfg(feature = "revm")]
 #[doc(hidden)]
 pub fn create_mock_native_multisig_signature(
-    witness: &MultisigSimulationWitness,
+    spec: &MultisigSimulationSpec,
 ) -> Result<MultisigSignature, &'static str> {
-    let approvals = witness
+    let approvals = spec
         .approvals
         .iter()
         .map(|approval| -> Result<_, &'static str> {
@@ -175,21 +175,21 @@ pub fn create_mock_native_multisig_signature(
                         key_data.clone(),
                     )),
                 )),
-                MultisigSimulationApproval::Multisig { witness } => {
-                    let nested = create_mock_nested_multisig_signature(witness)?;
+                MultisigSimulationApproval::Multisig { spec } => {
+                    let nested = create_mock_nested_multisig_signature(spec)?;
                     Ok((nested.account(), TempoSignature::Multisig(nested)))
                 }
             }
         })
         .collect::<Result<Vec<_>, _>>()?;
-    assemble_mock_multisig_signature(witness.account, &witness.config, approvals)
+    assemble_mock_multisig_signature(spec.account, &spec.config, approvals)
 }
 
 #[cfg(feature = "revm")]
 fn create_mock_nested_multisig_signature(
-    witness: &MultisigSimulationNestedWitness,
+    spec: &MultisigSimulationNestedSpec,
 ) -> Result<MultisigSignature, &'static str> {
-    let approvals = witness
+    let approvals = spec
         .approvals
         .iter()
         .map(|approval| {
@@ -202,7 +202,7 @@ fn create_mock_nested_multisig_signature(
             )
         })
         .collect();
-    assemble_mock_multisig_signature(witness.account, &witness.config, approvals)
+    assemble_mock_multisig_signature(spec.account, &spec.config, approvals)
 }
 
 #[cfg(feature = "revm")]
@@ -289,9 +289,9 @@ mod tests {
     use tempo_primitives::transaction::MultisigOwner;
 
     #[test]
-    fn simulation_witness_roundtrips_config_as_rlp_bytes() {
+    fn simulation_spec_roundtrips_config_as_rlp_bytes() {
         let owner = address!("0x1111111111111111111111111111111111111111");
-        let witness = MultisigSimulationWitness {
+        let spec = MultisigSimulationSpec {
             account: address!("0x2222222222222222222222222222222222222222"),
             config: MultisigConfig {
                 salt: B256::ZERO,
@@ -306,15 +306,15 @@ mod tests {
             }],
         };
 
-        let json = serde_json::to_value(&witness).unwrap();
+        let json = serde_json::to_value(&spec).unwrap();
         assert!(
             json["config"]
                 .as_str()
                 .is_some_and(|value| value.starts_with("0x"))
         );
         assert_eq!(
-            serde_json::from_value::<MultisigSimulationWitness>(json).unwrap(),
-            witness
+            serde_json::from_value::<MultisigSimulationSpec>(json).unwrap(),
+            spec
         );
     }
 
@@ -326,7 +326,7 @@ mod tests {
             key_type: Some(SignatureType::Secp256k1),
             key_data: None,
         };
-        let witness = MultisigSimulationWitness {
+        let spec = MultisigSimulationSpec {
             account: address!("0x2222222222222222222222222222222222222222"),
             config: MultisigConfig {
                 salt: B256::ZERO,
@@ -337,8 +337,8 @@ mod tests {
             approvals: vec![approval; MAX_MULTISIG_SIGNATURES + 1],
         };
 
-        let encoded = serde_json::to_value(witness).unwrap();
-        let error = serde_json::from_value::<MultisigSimulationWitness>(encoded).unwrap_err();
+        let encoded = serde_json::to_value(spec).unwrap();
+        let error = serde_json::from_value::<MultisigSimulationSpec>(encoded).unwrap_err();
         assert!(
             error
                 .to_string()

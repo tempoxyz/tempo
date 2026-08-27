@@ -538,15 +538,15 @@ where
                 request.inner.gas = Some(estimated_gas.to());
             }
 
-            if let Some(witness) = request.multisig_witness.as_ref() {
+            if let Some(spec) = request.multisig_simulation.as_ref() {
                 request.multisig_simulation_signature = Some(
-                    tempo_alloy::rpc::create_mock_native_multisig_signature(witness).map_err(
+                    tempo_alloy::rpc::create_mock_native_multisig_signature(spec).map_err(
                         |error| {
                             Self::Error::from_eth_err(EthApiError::InvalidParams(error.to_string()))
                         },
                     )?,
                 );
-                request.multisig_witness = None;
+                request.multisig_simulation = None;
             }
 
             let filled = EthTransactions::fill_transaction(&this.inner, request)

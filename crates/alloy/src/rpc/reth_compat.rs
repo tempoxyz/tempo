@@ -18,7 +18,7 @@ use tempo_primitives::TempoSignature;
 
 impl TryIntoSimTx<TempoTxEnvelope> for TempoTransactionRequest {
     fn try_into_sim_tx(self) -> Result<TempoTxEnvelope, ValueError<Self>> {
-        if self.multisig_witness.is_some() {
+        if self.multisig_simulation.is_some() {
             return Err(ValueError::new(
                 self,
                 "native multisig simulation requires state-aware preprocessing",
@@ -43,7 +43,7 @@ impl TryIntoSimTx<TempoTxEnvelope> for TempoTransactionRequest {
                     key_id,
                     tempo_authorization_list,
                     key_authorization,
-                    multisig_witness,
+                    multisig_simulation,
                     multisig_simulation_signature,
                     valid_before,
                     valid_after,
@@ -64,7 +64,7 @@ impl TryIntoSimTx<TempoTxEnvelope> for TempoTransactionRequest {
                             key_id,
                             tempo_authorization_list,
                             key_authorization,
-                            multisig_witness,
+                            multisig_simulation,
                             multisig_simulation_signature,
                             valid_before,
                             valid_after,
@@ -85,7 +85,7 @@ impl TryIntoSimTx<TempoTxEnvelope> for TempoTransactionRequest {
                             key_id,
                             tempo_authorization_list,
                             key_authorization,
-                            multisig_witness,
+                            multisig_simulation,
                             multisig_simulation_signature,
                             valid_before,
                             valid_after,
@@ -116,7 +116,7 @@ impl SignableTxRequest<TempoTxEnvelope> for TempoTransactionRequest {
         self,
         signer: impl TxSigner<Signature> + Send,
     ) -> Result<TempoTxEnvelope, SignTxRequestError> {
-        if self.multisig_witness.is_some() || self.multisig_simulation_signature.is_some() {
+        if self.multisig_simulation.is_some() || self.multisig_simulation_signature.is_some() {
             return Err(SignTxRequestError::InvalidTransactionRequest);
         }
         if self.output_tx_type() == TempoTxType::AA {
@@ -144,7 +144,7 @@ impl FromConsensusHeader<TempoHeader> for TempoHeaderResponse {
 mod tests {
     use super::*;
     use crate::rpc::{
-        MultisigSimulationApproval, MultisigSimulationWitness,
+        MultisigSimulationApproval, MultisigSimulationSpec,
         revm_compat::{RPC_SIMULATION_UNIQUE_TX_IDENTIFIER, create_mock_primitive_signature},
     };
     use alloy_primitives::{Address, B256, Bytes, TxKind, address};
@@ -209,12 +209,12 @@ mod tests {
     }
 
     #[test]
-    fn test_block_simulation_rejects_multisig_witness() {
+    fn test_block_simulation_rejects_multisig_spec() {
         let account = address!("0xaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa");
         let owner = address!("0x1111111111111111111111111111111111111111");
         let req = TempoTransactionRequest {
             inner: call_request(address!("0x2222222222222222222222222222222222222222")),
-            multisig_witness: Some(MultisigSimulationWitness {
+            multisig_simulation: Some(MultisigSimulationSpec {
                 account,
                 config: MultisigConfig {
                     salt: B256::ZERO,

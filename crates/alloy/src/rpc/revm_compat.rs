@@ -33,13 +33,13 @@ impl TempoTransactionRequest {
         if is_aa && self.calls.is_empty() && self.inner.to.is_none() {
             return Err(ValueError::new(self, "empty calls list"));
         }
-        if self.key_id.is_some() && self.multisig_witness.is_some() {
+        if self.key_id.is_some() && self.multisig_simulation.is_some() {
             return Err(ValueError::new(
                 self,
-                "keyId cannot be combined with a native multisig witness",
+                "keyId cannot be combined with a native multisig spec",
             ));
         }
-        if self.multisig_witness.is_some() && self.multisig_simulation_signature.is_none() {
+        if self.multisig_simulation.is_some() && self.multisig_simulation_signature.is_none() {
             return Err(ValueError::new(
                 self,
                 "native multisig simulation requires state-aware preprocessing",
@@ -71,7 +71,7 @@ impl TempoTransactionRequest {
             tempo_authorization_list,
             nonce_key,
             key_authorization,
-            multisig_witness: _,
+            multisig_simulation: _,
             multisig_simulation_signature,
             valid_before,
             valid_after,
@@ -215,8 +215,7 @@ pub(super) fn create_mock_primitive_signature(
 mod tests {
     use super::*;
     use crate::rpc::{
-        MultisigSimulationApproval, MultisigSimulationWitness,
-        create_mock_native_multisig_signature,
+        MultisigSimulationApproval, MultisigSimulationSpec, create_mock_native_multisig_signature,
     };
     use alloy_primitives::{TxKind, address};
     use alloy_rpc_types_eth::TransactionRequest;
@@ -254,7 +253,7 @@ mod tests {
         );
     }
 
-    fn one_of_one_witness() -> MultisigSimulationWitness {
+    fn one_of_one_spec() -> MultisigSimulationSpec {
         use tempo_primitives::transaction::{MultisigConfig, MultisigOwner};
 
         let owner = address!("0x1111111111111111111111111111111111111111");
@@ -264,7 +263,7 @@ mod tests {
             threshold: 1,
             owners: vec![MultisigOwner { owner, weight: 1 }],
         };
-        MultisigSimulationWitness {
+        MultisigSimulationSpec {
             account: config.derive_account().unwrap(),
             config,
             approvals: vec![MultisigSimulationApproval::Primitive {
@@ -276,21 +275,21 @@ mod tests {
     }
 
     #[test]
-    fn multisig_witness_requires_state_aware_preprocessing() {
-        let witness = one_of_one_witness();
+    fn multisig_spec_requires_state_aware_preprocessing() {
+        let spec = one_of_one_spec();
         let request = TempoTransactionRequest {
             inner: TransactionRequest {
-                from: Some(witness.account),
+                from: Some(spec.account),
                 to: Some(TxKind::Call(Address::ZERO)),
                 ..Default::default()
             },
-            multisig_witness: Some(witness),
+            multisig_simulation: Some(spec),
             ..Default::default()
         };
 
         let err = request
             .try_into_tempo_tx_env(TempoTxEnv::default(), true)
-            .expect_err("unvalidated witness must be rejected");
+            .expect_err("unvalidated spec must be rejected");
         assert_eq!(
             err.to_string(),
             "native multisig simulation requires state-aware preprocessing"
@@ -299,16 +298,16 @@ mod tests {
 
     #[test]
     fn multisig_simulation_rejects_implicit_contract_creation() {
-        let witness = one_of_one_witness();
-        let signature = create_mock_native_multisig_signature(&witness).unwrap();
+        let spec = one_of_one_spec();
+        let signature = create_mock_native_multisig_signature(&spec).unwrap();
         let initcode = Bytes::from_static(&[0x60, 0x00]);
         let request = TempoTransactionRequest {
             inner: TransactionRequest {
-                from: Some(witness.account),
+                from: Some(spec.account),
                 input: initcode.into(),
                 ..Default::default()
             },
-            multisig_witness: Some(witness),
+            multisig_simulation: Some(spec),
             multisig_simulation_signature: Some(signature),
             ..Default::default()
         };
@@ -325,13 +324,12 @@ mod tests {
             MAX_MULTISIG_OWNER_SIGNATURE_BYTES, MAX_WEBAUTHN_SIGNATURE_LENGTH,
         };
 
-        let mut witness = one_of_one_witness();
-        let MultisigSimulationApproval::Primitive { key_type, .. } = &mut witness.approvals[0]
-        else {
+        let mut spec = one_of_one_spec();
+        let MultisigSimulationApproval::Primitive { key_type, .. } = &mut spec.approvals[0] else {
             unreachable!()
         };
         *key_type = None;
-        let signature = create_mock_native_multisig_signature(&witness).unwrap();
+        let signature = create_mock_native_multisig_signature(&spec).unwrap();
         let approval = &signature.signatures()[0];
         assert_eq!(
             approval.encoded_length(),

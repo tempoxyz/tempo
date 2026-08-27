@@ -310,7 +310,7 @@ impl IntoWallet<TempoNetwork> for PrivateKeySigner {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::rpc::{MultisigSimulationApproval, MultisigSimulationWitness};
+    use crate::rpc::{MultisigSimulationApproval, MultisigSimulationSpec};
     use alloy_consensus::{TxEip1559, TxEip2930, TxEip7702, TxLegacy};
     use alloy_primitives::{B256, Signature};
     use alloy_rpc_types_eth::{AccessListItem, Authorization, TransactionRequest};
@@ -532,10 +532,10 @@ mod tests {
     }
 
     #[test]
-    fn output_tx_type_multisig_witness_is_aa() {
+    fn output_tx_type_multisig_spec_is_aa() {
         let owner = Address::repeat_byte(0x11);
         let req = TempoTransactionRequest {
-            multisig_witness: Some(MultisigSimulationWitness {
+            multisig_simulation: Some(MultisigSimulationSpec {
                 account: Address::repeat_byte(0x22),
                 config: MultisigConfig {
                     salt: B256::ZERO,
