@@ -15,6 +15,7 @@ use alloy::{
 use alloy_eips::Encodable2718;
 use alloy_primitives::TxKind;
 use reth_primitives_traits::transaction::TxHashRef;
+use tempo_alloy::provider::keychain::{KeyRestrictions, authorize_key};
 use tempo_contracts::precompiles::{
     DEFAULT_FEE_TOKEN, NATIVE_MULTISIG_ADDRESS,
     account_keychain::IAccountKeychain::IAccountKeychainInstance,
@@ -115,6 +116,20 @@ fn multisig_from_approvals(
         MultisigSignature::from_decoded(account, config.clone(), approvals)
             .map_err(eyre::Report::msg)?,
     ))
+}
+
+fn sign_nested_multisig(
+    account: Address,
+    inner_digest: B256,
+    config: &MultisigConfig,
+    nested_account: Address,
+    nested_config: &MultisigConfig,
+    nested_signers: &[&PrivateKeySigner],
+) -> eyre::Result<TempoSignature> {
+    let nested_digest = multisig_digest(inner_digest, account, config.version);
+    let nested_signature =
+        sign_multisig(nested_account, nested_digest, nested_config, nested_signers)?;
+    multisig_from_approvals(account, config, vec![nested_signature])
 }
 
 async fn submit<E: TestEnv>(
@@ -378,20 +393,60 @@ async fn nested_ownership<E: TestEnv>(
 
     let parent_initial =
         create_basic_aa_tx(env.chain_id(), 0, vec![no_op_call(0x22)], EXAMPLE_GAS_LIMIT);
-    let parent_digest = multisig_digest(
-        parent_initial.signature_hash(),
+    let signature = sign_nested_multisig(
         parent,
-        parent_config.version,
-    );
-    let child_signature = sign_multisig(child, parent_digest, &child_config, &[alice, bob])?;
-    let signature = multisig_from_approvals(parent, &parent_config, vec![child_signature])?;
+        parent_initial.signature_hash(),
+        &parent_config,
+        child,
+        &child_config,
+        &[alice, bob],
+    )?;
     submit(env, parent_initial, signature).await?;
 
     let repeated = create_basic_aa_tx(env.chain_id(), 1, vec![no_op_call(0x23)], EXAMPLE_GAS_LIMIT);
-    let parent_digest = multisig_digest(repeated.signature_hash(), parent, parent_config.version);
-    let child_signature = sign_multisig(child, parent_digest, &child_config, &[alice, bob])?;
-    let signature = multisig_from_approvals(parent, &parent_config, vec![child_signature])?;
+    let signature = sign_nested_multisig(
+        parent,
+        repeated.signature_hash(),
+        &parent_config,
+        child,
+        &child_config,
+        &[alice, bob],
+    )?;
     submit(env, repeated, signature).await?;
+
+    let access_key = signer(0x24);
+    let authorization = KeyAuthorization::unrestricted(
+        env.chain_id(),
+        SignatureType::Secp256k1,
+        access_key.address(),
+    )
+    .with_account(parent);
+    let authorization_signature = sign_nested_multisig(
+        parent,
+        authorization.signature_hash(),
+        &parent_config,
+        child,
+        &child_config,
+        &[alice, bob],
+    )?;
+    let mut authorize =
+        create_basic_aa_tx(env.chain_id(), 2, vec![no_op_call(0x24)], EXAMPLE_GAS_LIMIT);
+    authorize.key_authorization = Some(authorization.into_signed(authorization_signature));
+    let signature = sign_nested_multisig(
+        parent,
+        authorize.signature_hash(),
+        &parent_config,
+        child,
+        &child_config,
+        &[alice, bob],
+    )?;
+    submit(env, authorize, signature).await?;
+    assert_active_key(env, parent, access_key.address()).await?;
+
+    let access_key_tx =
+        create_basic_aa_tx(env.chain_id(), 3, vec![no_op_call(0x25)], EXAMPLE_GAS_LIMIT);
+    let signature = sign_aa_tx_with_secp256k1_access_key(&access_key_tx, &access_key, parent)?;
+    submit(env, access_key_tx, signature).await?;
     Ok(())
 }
 
@@ -687,6 +742,37 @@ async fn access_key_authorization_matrix<E: TestEnv>(
             ExpectedOutcome::Revert => unreachable!("key authorization is validated pre-call"),
         }
     }
+
+    let direct_key = signer(0x64);
+    let direct_authorization = create_basic_aa_tx(
+        env.chain_id(),
+        nonce,
+        vec![authorize_key(
+            direct_key.address(),
+            SignatureType::Secp256k1,
+            KeyRestrictions::default(),
+        )],
+        EXAMPLE_GAS_LIMIT,
+    );
+    let signature = sign_multisig(
+        account,
+        direct_authorization.signature_hash(),
+        &config,
+        &[alice, bob],
+    )?;
+    submit(env, direct_authorization, signature).await?;
+    assert_active_key(env, account, direct_key.address()).await?;
+    nonce += 1;
+
+    let direct_key_tx = create_basic_aa_tx(
+        env.chain_id(),
+        nonce,
+        vec![no_op_call(0x66)],
+        EXAMPLE_GAS_LIMIT,
+    );
+    let signature = sign_aa_tx_with_secp256k1_access_key(&direct_key_tx, &direct_key, account)?;
+    submit(env, direct_key_tx, signature).await?;
+    nonce += 1;
 
     let mut next_config = config.clone();
     next_config.version = 1;
