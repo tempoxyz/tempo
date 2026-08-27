@@ -1,7 +1,8 @@
 use alloy_primitives::{Address, Bytes};
+use alloy_rlp::{Decodable, Encodable};
 use core::{fmt, marker::PhantomData};
 use serde::{
-    Deserialize, Deserializer, Serialize,
+    Deserialize, Deserializer, Serialize, Serializer,
     de::{Error as _, SeqAccess, Visitor},
 };
 use tempo_primitives::{
@@ -24,7 +25,8 @@ use {
 pub struct MultisigSimulationWitness {
     /// Account authorized by this witness.
     pub account: Address,
-    /// Complete applicable configuration.
+    /// Complete applicable configuration, encoded as canonical RLP in JSON.
+    #[serde(with = "serde_multisig_config")]
     pub config: MultisigConfig,
     /// Owner approvals to model.
     #[serde(deserialize_with = "deserialize_multisig_simulation_approvals")]
@@ -59,7 +61,8 @@ pub enum MultisigSimulationApproval {
 pub struct MultisigSimulationNestedWitness {
     /// Nested multisig account.
     pub account: Address,
-    /// Complete applicable configuration.
+    /// Complete applicable configuration, encoded as canonical RLP in JSON.
+    #[serde(with = "serde_multisig_config")]
     pub config: MultisigConfig,
     /// Primitive owner approvals to model.
     #[serde(deserialize_with = "deserialize_multisig_simulation_approvals")]
@@ -78,6 +81,32 @@ pub struct MultisigSimulationPrimitiveApproval {
     /// Optional signature-specific gas-estimation data.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub key_data: Option<Bytes>,
+}
+
+mod serde_multisig_config {
+    use super::*;
+
+    pub(super) fn serialize<S>(config: &MultisigConfig, serializer: S) -> Result<S::Ok, S::Error>
+    where
+        S: Serializer,
+    {
+        let mut encoded = Vec::with_capacity(config.length());
+        config.encode(&mut encoded);
+        Bytes::from(encoded).serialize(serializer)
+    }
+
+    pub(super) fn deserialize<'de, D>(deserializer: D) -> Result<MultisigConfig, D::Error>
+    where
+        D: Deserializer<'de>,
+    {
+        let encoded = Bytes::deserialize(deserializer)?;
+        let mut input = encoded.as_ref();
+        let config = MultisigConfig::decode(&mut input).map_err(D::Error::custom)?;
+        if !input.is_empty() {
+            return Err(D::Error::custom("trailing native multisig config bytes"));
+        }
+        Ok(config)
+    }
 }
 
 fn deserialize_multisig_simulation_approvals<'de, D, T>(deserializer: D) -> Result<Vec<T>, D::Error>
@@ -258,6 +287,36 @@ mod tests {
     use super::*;
     use alloy_primitives::{B256, address};
     use tempo_primitives::transaction::MultisigOwner;
+
+    #[test]
+    fn simulation_witness_roundtrips_config_as_rlp_bytes() {
+        let owner = address!("0x1111111111111111111111111111111111111111");
+        let witness = MultisigSimulationWitness {
+            account: address!("0x2222222222222222222222222222222222222222"),
+            config: MultisigConfig {
+                salt: B256::ZERO,
+                version: 1,
+                threshold: 1,
+                owners: vec![MultisigOwner { owner, weight: 1 }],
+            },
+            approvals: vec![MultisigSimulationApproval::Primitive {
+                owner,
+                key_type: Some(SignatureType::Secp256k1),
+                key_data: None,
+            }],
+        };
+
+        let json = serde_json::to_value(&witness).unwrap();
+        assert!(
+            json["config"]
+                .as_str()
+                .is_some_and(|value| value.starts_with("0x"))
+        );
+        assert_eq!(
+            serde_json::from_value::<MultisigSimulationWitness>(json).unwrap(),
+            witness
+        );
+    }
 
     #[test]
     fn rejects_too_many_approvals_during_deserialization() {
