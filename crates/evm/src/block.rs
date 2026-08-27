@@ -2251,13 +2251,13 @@ mod tests {
         }
     }
 
-    /// TIP-1016 (T4+): block header `gas_used` = `block_regular_gas_used`.
+    /// TIP-1016 (T11+): block header `gas_used` = `block_regular_gas_used`.
     /// Receipts track `tx_gas_used` (what the user pays, including state gas).
     /// The difference between receipts total and header gas_used is the state gas
     /// exempted from block capacity.
     #[test]
-    fn test_t4_finish_exempts_state_gas_from_header() {
-        // DEV chainspec has T4 active at timestamp 0.
+    fn test_t11_finish_exempts_state_gas_from_header() {
+        // DEV chainspec has T11 active at timestamp 0.
         let chainspec = Arc::new(TempoChainSpec::from_genesis(DEV.genesis().clone()));
         let mut db = State::builder().with_bundle_update().build();
         let mut executor = TestExecutorBuilder::default()
@@ -2288,10 +2288,10 @@ mod tests {
 
         let (_evm, result) = executor.finish().expect("finish should succeed");
 
-        // T4: Block header gas_used must equal block_regular_gas_used
+        // T11: Block header gas_used must equal block_regular_gas_used
         assert_eq!(
             result.gas_used, regular_gas,
-            "T4 header gas_used ({}) must equal block_regular_gas_used ({})",
+            "T11 header gas_used ({}) must equal block_regular_gas_used ({})",
             result.gas_used, regular_gas
         );
 
