@@ -5,7 +5,7 @@
 //! update hashed state, trie, and block-0 history without rebuilding unrelated bloat state.
 
 use std::{
-    collections::{BTreeMap, BTreeSet},
+    collections::{BTreeSet, HashMap},
     fs::{self, OpenOptions},
     io::Write,
     path::{Path, PathBuf},
@@ -405,7 +405,7 @@ where
                 ),
             )
         })
-        .collect::<BTreeMap<_, _>>();
+        .collect::<HashMap<_, _>>();
     zero_destroyed_account_storage(
         &DatabaseHashedCursorFactory::new(provider_rw.tx_ref()),
         &destroyed_accounts,
