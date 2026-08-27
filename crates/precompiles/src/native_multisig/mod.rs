@@ -16,10 +16,7 @@ use tempo_contracts::precompiles::{
     NATIVE_MULTISIG_ADDRESS, NativeMultisigError, NativeMultisigEvent,
 };
 use tempo_precompiles_macros::contract;
-use tempo_primitives::transaction::{
-    MULTISIG_ACCOUNT_DOMAIN, MULTISIG_CONFIG_DOMAIN, MultisigConfig, MultisigConfigError,
-    MultisigOwner,
-};
+use tempo_primitives::transaction::{MultisigConfig, MultisigConfigError};
 
 use crate::is_valid_multisig_account;
 
@@ -145,9 +142,10 @@ impl NativeMultisig {
 
     fn derive_account_from_config(&self, config: &MultisigConfig) -> Result<Address> {
         config.validate().map_err(map_multisig_config_error)?;
-        let hash = self
-            .storage
-            .keccak256(&account_derivation_preimage(config))?;
+        let preimage = config
+            .account_derivation_preimage()
+            .map_err(map_multisig_config_error)?;
+        let hash = self.storage.keccak256(&preimage)?;
         let account = Address::from_slice(&hash[12..]);
         if config.owner_weight(account).is_some() {
             return Err(NativeMultisigError::invalid_multisig_owner().into());
@@ -159,35 +157,10 @@ impl NativeMultisig {
     }
 
     fn hash_config_commitment(&self, config: &MultisigConfig) -> Result<B256> {
-        self.storage.keccak256(&config_commitment_preimage(config))
-    }
-}
-
-fn account_derivation_preimage(config: &MultisigConfig) -> Vec<u8> {
-    let mut input = Vec::new();
-    input.extend_from_slice(MULTISIG_ACCOUNT_DOMAIN);
-    input.extend_from_slice(config.salt.as_slice());
-    input.push(config.threshold);
-    input.push(config.owners.len() as u8);
-    append_owners(&mut input, &config.owners);
-    input
-}
-
-fn config_commitment_preimage(config: &MultisigConfig) -> Vec<u8> {
-    let mut input = Vec::new();
-    input.extend_from_slice(MULTISIG_CONFIG_DOMAIN);
-    input.extend_from_slice(config.salt.as_slice());
-    input.extend_from_slice(&config.version.to_be_bytes());
-    input.push(config.threshold);
-    input.push(config.owners.len() as u8);
-    append_owners(&mut input, &config.owners);
-    input
-}
-
-fn append_owners(input: &mut Vec<u8>, owners: &[MultisigOwner]) {
-    for owner in owners {
-        input.extend_from_slice(owner.owner.as_slice());
-        input.push(owner.weight);
+        let preimage = config
+            .commitment_preimage()
+            .map_err(map_multisig_config_error)?;
+        self.storage.keccak256(&preimage)
     }
 }
 
@@ -222,6 +195,7 @@ mod tests {
     };
     use alloy::primitives::address;
     use tempo_chainspec::hardfork::TempoHardfork;
+    use tempo_primitives::transaction::MultisigOwner;
 
     fn initial_config() -> MultisigConfig {
         MultisigConfig {
