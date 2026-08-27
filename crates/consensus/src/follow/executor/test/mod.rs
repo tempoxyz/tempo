@@ -374,14 +374,13 @@ fn tips_are_monotonic_and_coalesced_while_forkchoice_is_in_flight() {
         let forkchoices = provider.forkchoices();
         assert_eq!(forkchoices[0].head_block_hash, first_digest.0);
         assert_eq!(forkchoices[1].head_block_hash, highest_digest.0);
-        assert_eq!(forkchoices[1].safe_block_hash, highest_digest.0);
-        assert_eq!(forkchoices[1].finalized_block_hash, highest_digest.0);
+        assert_eq!(forkchoices[1].safe_block_hash, B256::ZERO);
+        assert_eq!(forkchoices[1].finalized_block_hash, B256::ZERO);
     });
 }
 
-// A finalization can advance forkchoice before execution receives its block.
 #[test_traced]
-fn finalization_drives_forkchoice_by_round() {
+fn finalization_waits_for_durable_block_before_advancing_finalized() {
     deterministic::Runner::default().start(|context| async move {
         let provider = StubExecutionProvider::default();
 
@@ -398,23 +397,23 @@ fn finalization_drives_forkchoice_by_round() {
         );
         actor.start();
 
-        let first = Digest(B256::with_last_byte(1));
-        let _ = mailbox.report(Update::Tip(round(1), Height::new(1), first));
+        let block = make_block_at_round(1, B256::ZERO, round(2));
+        let finalized = Digest(block.block_hash());
+        mailbox.finalization(round(2), finalized);
         wait_until(&context, || provider.forkchoices().len() == 1).await;
 
-        let finalized = Digest(B256::with_last_byte(9));
-        mailbox.finalization(round(2), finalized);
+        let forkchoices = provider.forkchoices();
+        assert_eq!(forkchoices.len(), 1);
+        assert_eq!(forkchoices[0].head_block_hash, finalized.0);
+        assert_eq!(forkchoices[0].safe_block_hash, B256::ZERO);
+        assert_eq!(forkchoices[0].finalized_block_hash, B256::ZERO);
+
+        let (ack, waiter) = Exact::handle();
+        assert!(mailbox.report(Update::Block(block.into(), ack)).accepted());
+        waiter.await.expect("durable block should be acknowledged");
         wait_until(&context, || provider.forkchoices().len() == 2).await;
 
-        let _ = mailbox.report(Update::Tip(
-            round(1),
-            Height::new(2),
-            Digest(B256::with_last_byte(2)),
-        ));
-        context.sleep(Duration::from_millis(5)).await;
-
         let forkchoices = provider.forkchoices();
-        assert_eq!(forkchoices.len(), 2);
         assert_eq!(forkchoices[1].head_block_hash, finalized.0);
         assert_eq!(forkchoices[1].safe_block_hash, finalized.0);
         assert_eq!(forkchoices[1].finalized_block_hash, finalized.0);
