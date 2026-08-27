@@ -914,11 +914,9 @@ mod tests {
         let digest = multisig_digest(tx.signature_hash(), account, 0);
         let owner_signature =
             PrimitiveSignature::Secp256k1(signer.sign_hash_sync(&digest)?).to_bytes();
-        let signed_tx = tx.into_signed(TempoSignature::Multisig(MultisigSignature::new(
-            account,
-            config,
-            vec![owner_signature],
-        )));
+        let signed_tx = tx.into_signed(TempoSignature::Multisig(
+            MultisigSignature::try_new(account, config, vec![owner_signature]).unwrap(),
+        ));
 
         let mut evm = create_funded_evm_t12(account);
         StorageCtx::enter_ctx(&mut evm.ctx, StorageActions::disabled(), || {
@@ -967,11 +965,9 @@ mod tests {
         let digest = multisig_digest(tx.signature_hash(), account, 0);
         let owner_signature =
             PrimitiveSignature::Secp256k1(signer.sign_hash_sync(&digest)?).to_bytes();
-        let signed_tx = tx.into_signed(TempoSignature::Multisig(MultisigSignature::new(
-            account,
-            config,
-            vec![owner_signature],
-        )));
+        let signed_tx = tx.into_signed(TempoSignature::Multisig(
+            MultisigSignature::try_new(account, config, vec![owner_signature]).unwrap(),
+        ));
 
         let mut evm = create_funded_evm_t12(account);
         StorageCtx::enter_ctx(&mut evm.ctx, StorageActions::disabled(), || {

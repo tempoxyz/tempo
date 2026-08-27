@@ -3635,12 +3635,14 @@ mod keychain {
                 config.version,
             ))
             .expect("owner signs key authorization");
-        let key_authorization =
-            key_authorization.into_signed(TempoSignature::Multisig(MultisigSignature::new(
+        let key_authorization = key_authorization.into_signed(TempoSignature::Multisig(
+            MultisigSignature::try_new(
                 account,
                 config,
                 vec![PrimitiveSignature::Secp256k1(approval).to_bytes()],
-            )));
+            )
+            .unwrap(),
+        ));
         let (mut evm, h) = make_evm(
             account,
             access_key,
@@ -4882,7 +4884,7 @@ fn test_t12_unfunded_multisig_rejects_before_owner_verification() {
     let aa_env = TempoBatchCallEnv {
         signature: TempoSignature::Multisig(
             MultisigSignature::try_new(account, config, vec![Bytes::from_static(&[0xaa; 65])])
-                .expect("valid multisig test fixture"),
+                .unwrap(),
         ),
         aa_calls: vec![Call {
             to: TxKind::Call(Address::random()),
@@ -5015,11 +5017,14 @@ fn test_t12_rejects_multisig_authorization_list_signature() {
     let authorization = RecoveredTempoAuthorization::new_unchecked(
         TempoSignedAuthorization::new_unchecked(
             authorization(account),
-            TempoSignature::Multisig(MultisigSignature::new(
-                account,
-                config,
-                vec![PrimitiveSignature::default().to_bytes()],
-            )),
+            TempoSignature::Multisig(
+                MultisigSignature::try_new(
+                    account,
+                    config,
+                    vec![PrimitiveSignature::default().to_bytes()],
+                )
+                .unwrap(),
+            ),
         ),
         RecoveredAuthority::Valid(account),
     );
@@ -5052,11 +5057,14 @@ fn test_t12_current_multisig_requires_matching_commitment() {
     let mut current = config.clone();
     current.version = 1;
     let aa_env = TempoBatchCallEnv {
-        signature: TempoSignature::Multisig(MultisigSignature::new(
-            account,
-            current,
-            vec![PrimitiveSignature::default().to_bytes()],
-        )),
+        signature: TempoSignature::Multisig(
+            MultisigSignature::try_new(
+                account,
+                current,
+                vec![PrimitiveSignature::default().to_bytes()],
+            )
+            .unwrap(),
+        ),
         aa_calls: vec![Call {
             to: TxKind::Call(Address::random()),
             value: U256::ZERO,
@@ -5088,11 +5096,12 @@ fn test_t12_rejects_code_bearing_nested_multisig_owner() {
     let child_account = child_config.derive_account().unwrap();
     let parent_config = single_owner_native_multisig_config(0x43, child_account);
     let parent_account = parent_config.derive_account().unwrap();
-    let nested = MultisigSignature::new(
+    let nested = MultisigSignature::try_new(
         child_account,
         child_config,
         vec![PrimitiveSignature::default().to_bytes()],
-    );
+    )
+    .unwrap();
     let aa_env = TempoBatchCallEnv {
         signature: TempoSignature::Multisig(
             MultisigSignature::from_decoded(
@@ -5140,11 +5149,12 @@ fn test_aa_gas_native_multisig_charges_commitment_and_witness() {
 
     let config = native_multisig_config();
     let account = config.derive_account().unwrap();
-    let signature = MultisigSignature::new(
+    let signature = MultisigSignature::try_new(
         account,
         config.clone(),
         vec![PrimitiveSignature::default().to_bytes()],
-    );
+    )
+    .unwrap();
     let base_env = make_single_call_env(Bytes::from(vec![1, 2]));
     let mut multisig_env = base_env.clone();
     multisig_env.signature = TempoSignature::Multisig(signature);
