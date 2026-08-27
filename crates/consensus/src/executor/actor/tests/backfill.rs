@@ -349,9 +349,9 @@ fn invalid_payload_fails_startup_backfill() {
         let execution = FakeExecution::new();
         execution.script_new_payload(
             d1,
-            [Ok(PayloadStatusEnum::Invalid {
+            Ok(PayloadStatusEnum::Invalid {
                 validation_error: "bad backfill block".into(),
-            })],
+            }),
         );
 
         let h = Harness::builder()
@@ -419,10 +419,8 @@ fn syncing_execution_layer_stalls_the_backfill_until_it_recovers() {
         let execution = FakeExecution::new();
         // The execution layer is not ready once (e.g. rebuilding indices),
         // then accepts the explicit retry.
-        execution.script_new_payload(
-            d1,
-            [Ok(PayloadStatusEnum::Syncing), Ok(PayloadStatusEnum::Valid)],
-        );
+        execution.script_new_payload(d1, Ok(PayloadStatusEnum::Syncing));
+        execution.script_new_payload(d1, Ok(PayloadStatusEnum::Valid));
 
         let h = Harness::builder()
             .execution(execution)
@@ -453,7 +451,7 @@ fn new_payload_transport_error_fails_startup() {
         let marshal = FakeMarshal::new();
         marshal.add_block(b1);
         let execution = FakeExecution::new();
-        execution.script_new_payload(d1, [Err("connection closed")]);
+        execution.script_new_payload(d1, Err("connection closed"));
 
         let h = Harness::builder()
             .execution(execution)

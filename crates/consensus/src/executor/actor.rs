@@ -44,7 +44,7 @@ use commonware_consensus::{
 };
 use commonware_cryptography::ed25519::PublicKey;
 use commonware_runtime::{
-    Clock, ContextCell, FutureExt, Handle, Metrics as RuntimeMetrics, Pacer, Spawner, spawn_cell,
+    Clock, ContextCell, Handle, Metrics as RuntimeMetrics, Spawner, spawn_cell,
 };
 use commonware_utils::{Acknowledgement, acknowledgement::Exact};
 use eyre::{OptionExt as _, Report, WrapErr as _, bail, ensure, eyre};
@@ -218,7 +218,7 @@ impl Metrics {
 
 impl<TContext, TExecutionLayer, TMarshal> Actor<TContext, TExecutionLayer, TMarshal>
 where
-    TContext: Clock + RuntimeMetrics + Pacer + Spawner,
+    TContext: Clock + RuntimeMetrics + Spawner,
     TExecutionLayer: ExecutionLayer,
     TMarshal: Marshal,
 {
@@ -444,14 +444,8 @@ where
                     self.notarized_tree.set_local_state(canonicalized);
                 }
                 if let Some(job) = payload_job {
-                    self.payload_jobs.push(
-                        run_payload_job(
-                            self.context.child("payload_job"),
-                            self.execution_node.clone(),
-                            job,
-                        )
-                        .boxed(),
-                    );
+                    self.payload_jobs
+                        .push(run_payload_job(self.execution_node.clone(), job).boxed());
                 }
             }
             ExecutionTaskOutcome::NotarizedBlockRejected { digest, .. } => {
@@ -572,12 +566,7 @@ where
         }
 
         let on_top_of = self.notarized_tree.local_state();
-        let fut = execute_heartbeat(
-            self.context.child("heartbeat"),
-            self.execution_node.clone(),
-            on_top_of,
-            Span::current(),
-        );
+        let fut = execute_heartbeat(self.execution_node.clone(), on_top_of, Span::current());
         self.set_execution_task(ExecutionTask::new(
             ExecutionTaskType::Heartbeat,
             on_top_of,
@@ -766,11 +755,7 @@ where
                     || !self.is_convergence_target(request.block.parent_digest())
                 {
                     let on_top_of = self.notarized_tree.local_state();
-                    let fut = execute_validation(
-                        self.context.child("validate"),
-                        self.execution_node.clone(),
-                        request,
-                    );
+                    let fut = execute_validation(self.execution_node.clone(), request);
                     self.set_execution_task(ExecutionTask::new(
                         ExecutionTaskType::Verify,
                         on_top_of,
@@ -792,13 +777,7 @@ where
                 // notarized-chain convergence.
                 if self.notarized_tree.is_local_head(build.digest) {
                     let on_top_of = self.notarized_tree.local_state();
-                    let fut = execute_build(
-                        self.context.child("build"),
-                        self.execution_node.clone(),
-                        on_top_of,
-                        cause,
-                        build,
-                    );
+                    let fut = execute_build(self.execution_node.clone(), on_top_of, cause, build);
                     self.set_execution_task(ExecutionTask::new(
                         ExecutionTaskType::Build,
                         on_top_of,
@@ -827,13 +806,7 @@ where
 
         if let Some(step) = self.notarized_tree.next_to_forward(self.context.current()) {
             let on_top_of = self.notarized_tree.local_state();
-            let fut = execute_notarization(
-                self.context.child("notarize"),
-                self.execution_node.clone(),
-                on_top_of,
-                step,
-                None,
-            );
+            let fut = execute_notarization(self.execution_node.clone(), on_top_of, step, None);
             self.set_execution_task(ExecutionTask::new(
                 ExecutionTaskType::Notarize,
                 on_top_of,
@@ -1133,18 +1106,13 @@ struct StartPayloadJob {
         finalized_block_height = %canonicalized.finalized.0,
     ),
 )]
-async fn execute_heartbeat<TContext>(
-    context: TContext,
+async fn execute_heartbeat(
     execution_node: impl ExecutionLayer,
     canonicalized: LocalState,
     cause: Span,
-) -> ExecutionTaskOutcome
-where
-    TContext: Pacer,
-{
+) -> ExecutionTaskOutcome {
     if let Err(error) = submit_forkchoice_update(
         &execution_node,
-        &context,
         cause,
         canonicalized,
         None,
@@ -1175,8 +1143,7 @@ where
     parent = &cause,
     fields(%digest),
 )]
-async fn execute_build<TContext>(
-    context: TContext,
+async fn execute_build(
     execution_node: impl ExecutionLayer,
     canonicalized: LocalState,
     cause: Span,
@@ -1186,10 +1153,7 @@ async fn execute_build<TContext>(
         attributes,
         response,
     }: Build,
-) -> ExecutionTaskOutcome
-where
-    TContext: Pacer,
-{
+) -> ExecutionTaskOutcome {
     let mut build_attributes = Some((*attributes, response));
     if build_attributes
         .as_ref()
@@ -1206,7 +1170,6 @@ where
     // heartbeat relies on this).
     match submit_forkchoice_update(
         &execution_node,
-        &context,
         cause.clone(),
         canonicalized,
         attributes,
@@ -1263,7 +1226,7 @@ async fn execute_finalization<TContext>(
     request: FinalizedBlockRequest,
 ) -> ExecutionTaskOutcome
 where
-    TContext: Pacer + Clock,
+    TContext: Clock,
 {
     let target = match finalization_target(&execution_node, canonicalized, request.block.as_ref()) {
         Ok(target) => target,
@@ -1297,29 +1260,16 @@ where
         block.height = %step.height(),
     ),
 )]
-async fn execute_notarization<TContext>(
-    context: TContext,
+async fn execute_notarization(
     execution_node: impl ExecutionLayer,
     on_top_of: LocalState,
     step: NextToForward,
     validator_set: Option<Vec<B256>>,
-) -> ExecutionTaskOutcome
-where
-    TContext: Pacer,
-{
+) -> ExecutionTaskOutcome {
     let digest = step.digest();
     let is_repoint = matches!(step, NextToForward::Repoint(..));
     let target = on_top_of.update_head(step.height(), digest);
-    match forward_notarized(
-        &context,
-        execution_node,
-        on_top_of,
-        target,
-        step,
-        validator_set,
-    )
-    .await
-    {
+    match forward_notarized(execution_node, on_top_of, target, step, validator_set).await {
         Ok(canonicalized) => ExecutionTaskOutcome::Completed {
             canonicalized: Some(canonicalized),
             payload_job: None,
@@ -1359,14 +1309,10 @@ where
         block.parent_digest = %request.block.parent_digest(),
     ),
 )]
-async fn execute_validation<TContext>(
-    context: TContext,
+async fn execute_validation(
     execution_node: impl ExecutionLayer,
     request: VerifyBlockRequest,
-) -> ExecutionTaskOutcome
-where
-    TContext: Pacer,
-{
+) -> ExecutionTaskOutcome {
     let VerifyBlockRequest {
         cause: _,
         block,
@@ -1374,7 +1320,7 @@ where
         mut response,
     } = request;
 
-    let work = validate_block(&context, &execution_node, block, validator_set);
+    let work = validate_block(&execution_node, block, validator_set);
     futures::pin_mut!(work);
 
     let result = select! {
@@ -1424,15 +1370,11 @@ where
 /// Returns the validation duration when the block is valid, `None` when the
 /// execution layer rejected it, and an error when validation was not
 /// possible.
-async fn validate_block<TContext>(
-    context: &TContext,
+async fn validate_block(
     execution_node: &impl ExecutionLayer,
     block: Arc<Block>,
     validator_set: Option<Vec<B256>>,
-) -> eyre::Result<Option<Duration>>
-where
-    TContext: Pacer,
-{
+) -> eyre::Result<Option<Duration>> {
     use alloy_rpc_types_engine::PayloadStatusEnum;
 
     let (block, block_access_list) = Arc::unwrap_or_clone(block).into_parts();
@@ -1443,7 +1385,6 @@ where
             block_access_list,
             validator_set,
         })
-        .pace(context, Duration::from_millis(20))
         .await
         .wrap_err("failed sending new-payload request to execution layer to validate block")?;
     match payload_status.status {
@@ -1485,8 +1426,7 @@ where
     parent = &cause,
     fields(%payload_id),
 )]
-async fn run_payload_job<TContext: Pacer>(
-    context: TContext,
+async fn run_payload_job(
     execution_node: impl ExecutionLayer,
     StartPayloadJob {
         cause,
@@ -1497,7 +1437,6 @@ async fn run_payload_job<TContext: Pacer>(
     let payload = select! {
         payload = execution_node
             .resolve_payload(payload_id)
-            .pace(&context, Duration::from_millis(20))
         => payload,
 
         // Drops the in-flight payload-resolution, killing payload build.
@@ -1552,9 +1491,8 @@ async fn run_payload_job<TContext: Pacer>(
         ?kind,
     ),
 )]
-async fn submit_forkchoice_update<TContext: Pacer>(
+async fn submit_forkchoice_update(
     execution_node: &impl ExecutionLayer,
-    context: &TContext,
     cause: Span,
     canonicalized: LocalState,
     attrs: Option<TempoPayloadAttributes>,
@@ -1617,7 +1555,6 @@ async fn submit_forkchoice_update<TContext: Pacer>(
 
     let fcu_response = execution_node
         .fork_choice_updated(canonicalized.to_forkchoice_state(), attrs)
-        .pace(context, Duration::from_millis(20))
         .await
         .wrap_err("failed requesting execution layer to update forkchoice state")?;
 
@@ -1710,7 +1647,7 @@ fn finalization_target(
     err(level = Level::WARN),
     ret,
 )]
-async fn forward_finalized<TContext: Pacer + Clock>(
+async fn forward_finalized<TContext: Clock>(
     context: &TContext,
     execution_node: impl ExecutionLayer,
     public_key: Option<PublicKey>,
@@ -1734,7 +1671,6 @@ async fn forward_finalized<TContext: Pacer + Clock>(
             // can be omitted for finalized blocks
             validator_set: None,
         })
-        .pace(context, Duration::from_millis(20))
         .await
         .wrap_err(
             "failed sending new-payload request to execution engine to \
@@ -1776,7 +1712,6 @@ async fn forward_finalized<TContext: Pacer + Clock>(
 
     submit_forkchoice_update(
         &execution_node,
-        context,
         cause.clone(),
         target,
         None,
@@ -1832,8 +1767,7 @@ impl std::fmt::Debug for ForwardFinalized {
     ),
     err(level = Level::WARN),
 )]
-async fn forward_notarized<TContext: Pacer>(
-    context: &TContext,
+async fn forward_notarized(
     execution_node: impl ExecutionLayer,
     on_top_of: LocalState,
     target: LocalState,
@@ -1848,7 +1782,6 @@ async fn forward_notarized<TContext: Pacer>(
                 block_access_list,
                 validator_set,
             })
-            .pace(context, Duration::from_millis(20))
             .await
             .wrap_err(
                 "failed sending new-payload request to execution engine to \
@@ -1869,7 +1802,6 @@ async fn forward_notarized<TContext: Pacer>(
     }
     submit_forkchoice_update(
         &execution_node,
-        context,
         Span::current(),
         target,
         None,

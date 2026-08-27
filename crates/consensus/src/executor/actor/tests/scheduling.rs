@@ -6,9 +6,7 @@ use std::time::Duration;
 
 use alloy_rpc_types_engine::{ForkchoiceState, PayloadStatusEnum};
 use commonware_macros::test_traced;
-use commonware_runtime::{
-    Runner as _, Spawner as _, Supervisor as _, deterministic, tokio as commonware_tokio,
-};
+use commonware_runtime::{Runner as _, Spawner as _, Supervisor as _, deterministic};
 use futures::future::Either;
 
 use super::harness::{
@@ -134,7 +132,7 @@ fn payload_resolution_does_not_occupy_the_execution_task_slot() {
         assert_eq!(h.execution.pending_payload_jobs(), vec![payload_id]);
 
         // Release the fake payload builder so both in-flight operations can
-        // pass their deterministic pacing boundaries and finish normally.
+        // finish normally.
         h.execution
             .deliver_payload(payload_id, built_payload(&proposal));
         let verdict = verify
@@ -150,10 +148,7 @@ fn payload_resolution_does_not_occupy_the_execution_task_slot() {
 
 #[test_traced]
 fn multiple_payload_jobs_can_complete_out_of_order() {
-    // Payload resolutions are externally driven futures. The Tokio runtime
-    // lets both remain pending concurrently; deterministic pacing would
-    // intentionally block at the first unresolved external-call boundary.
-    commonware_tokio::Runner::default().start(|context| async move {
+    deterministic::Runner::default().start(|context| async move {
         let h = Harness::start_at_genesis(&context);
 
         let first_proposal = make_block(1, 1, GENESIS);
@@ -245,10 +240,10 @@ fn one_execution_task_at_a_time_and_consensus_requests_win_the_next_slot() {
         // A SYNCING status parks the finalization of b1 in its postpone
         // pause (1s), keeping the single execution-task slot occupied over
         // a long stretch of virtual time.
-        h.execution.script_new_payload(
-            d1,
-            [Ok(PayloadStatusEnum::Syncing), Ok(PayloadStatusEnum::Valid)],
-        );
+        h.execution
+            .script_new_payload(d1, Ok(PayloadStatusEnum::Syncing));
+        h.execution
+            .script_new_payload(d1, Ok(PayloadStatusEnum::Valid));
         h.deliver_tip(round(1), 1, d1);
         let w1 = h.deliver_finalized(b1);
         h.wait_until(|| h.execution.new_payloads() == vec![d1])
@@ -316,10 +311,10 @@ fn consensus_work_takes_priority_over_ready_convergence() {
         // execution-task slot with a postponed finalization of b1.
         let b1 = make_block(1, 1, GENESIS);
         let d1 = b1.digest();
-        h.execution.script_new_payload(
-            d1,
-            [Ok(PayloadStatusEnum::Syncing), Ok(PayloadStatusEnum::Valid)],
-        );
+        h.execution
+            .script_new_payload(d1, Ok(PayloadStatusEnum::Syncing));
+        h.execution
+            .script_new_payload(d1, Ok(PayloadStatusEnum::Valid));
         h.deliver_tip(round(1), 1, d1);
         let finalized = h.deliver_finalized(b1);
         h.wait_until(|| h.execution.new_payloads() == vec![d1])
@@ -393,14 +388,12 @@ fn convergence_takes_priority_over_queued_finalization() {
         // returns its postponed outcome, retaining the execution-task slot
         // while both kinds of work are queued. Replace this setup once that
         // retry relinquishes the slot before waiting.
-        h.execution.script_new_payload(
-            d1,
-            [
-                Ok(PayloadStatusEnum::Syncing),
-                Ok(PayloadStatusEnum::Valid),
-                Ok(PayloadStatusEnum::Valid),
-            ],
-        );
+        h.execution
+            .script_new_payload(d1, Ok(PayloadStatusEnum::Syncing));
+        h.execution
+            .script_new_payload(d1, Ok(PayloadStatusEnum::Valid));
+        h.execution
+            .script_new_payload(d1, Ok(PayloadStatusEnum::Valid));
         h.deliver_tip(round(1), 1, d1);
         let first_finalization = h.deliver_finalized(b1.clone());
         h.wait_until(|| h.execution.new_payloads() == vec![d1])
@@ -467,10 +460,10 @@ fn heartbeats_are_disarmed_while_work_is_active_or_queued() {
         let d1 = b1.digest();
         // Temporarily exploit finalization retaining the execution slot while
         // it stalls internally before returning its postponed SYNCING outcome.
-        h.execution.script_new_payload(
-            d1,
-            [Ok(PayloadStatusEnum::Syncing), Ok(PayloadStatusEnum::Valid)],
-        );
+        h.execution
+            .script_new_payload(d1, Ok(PayloadStatusEnum::Syncing));
+        h.execution
+            .script_new_payload(d1, Ok(PayloadStatusEnum::Valid));
         h.deliver_tip(round(1), 1, d1);
         let finalized = h.deliver_finalized(b1);
         h.wait_until(|| h.execution.new_payloads() == vec![d1])
@@ -620,7 +613,7 @@ fn actor_exits_when_its_mailbox_closes_during_an_execution_task() {
         let b1 = make_block(1, 1, GENESIS);
         let d1 = b1.digest();
         h.execution
-            .script_new_payload(d1, [Ok(PayloadStatusEnum::Syncing)]);
+            .script_new_payload(d1, Ok(PayloadStatusEnum::Syncing));
         h.deliver_tip(round(1), 1, d1);
         let acknowledgement = h.deliver_finalized(b1);
         h.wait_until(|| h.execution.new_payloads() == vec![d1])
