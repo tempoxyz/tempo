@@ -25,7 +25,7 @@ use tempo_primitives::{
     SignatureType, TempoTransaction, TempoTxEnvelope,
     transaction::{
         FEE_PAYER_SIGNATURE_MARKER, KeyAuthorization, MultisigConfig, MultisigOwner,
-        MultisigSignature, multisig_digest,
+        MultisigSignature, SignedKeyAuthorization, multisig_digest,
         tempo_transaction::Call,
         tt_signature::{PrimitiveSignature, TempoSignature},
     },
@@ -137,6 +137,20 @@ async fn reject<E: TestEnv>(
         .await
 }
 
+async fn revert<E: TestEnv>(
+    env: &mut E,
+    tx: TempoTransaction,
+    signature: TempoSignature,
+) -> eyre::Result<()> {
+    let envelope: TempoTxEnvelope = tx.into_signed(signature).into();
+    let tx_hash = *envelope.tx_hash();
+    let receipt = env
+        .submit_tx_unchecked(envelope.encoded_2718(), tx_hash)
+        .await?;
+    assert_eq!(receipt["status"].as_str(), Some("0x0"));
+    Ok(())
+}
+
 pub(super) async fn stored_config_commitment<E: TestEnv>(
     env: &E,
     account: Address,
@@ -159,6 +173,70 @@ async fn assert_active_key<E: TestEnv>(
     assert_eq!(key.keyId, key_id);
     assert!(!key.isRevoked);
     Ok(())
+}
+
+async fn assert_admin_key<E: TestEnv>(
+    env: &E,
+    account: Address,
+    key_id: Address,
+) -> eyre::Result<()> {
+    let keychain = IAccountKeychainInstance::new(ACCOUNT_KEYCHAIN_ADDRESS, env.provider());
+    assert!(keychain.isAdminKey(account, key_id).call().await?);
+    Ok(())
+}
+
+#[derive(Clone, Copy)]
+enum KeyAuthorizationSigner<'a> {
+    Quorum(&'a [&'a PrivateKeySigner]),
+    Primitive(&'a PrivateKeySigner),
+}
+
+fn signed_key_authorization(
+    chain_id: u64,
+    account: Address,
+    config: &MultisigConfig,
+    key_id: Address,
+    is_admin: bool,
+    signer: KeyAuthorizationSigner<'_>,
+) -> eyre::Result<SignedKeyAuthorization> {
+    let authorization = KeyAuthorization::unrestricted(chain_id, SignatureType::Secp256k1, key_id);
+    let authorization = if is_admin {
+        authorization.into_admin(account)
+    } else {
+        authorization.with_account(account)
+    };
+    let signature = match signer {
+        KeyAuthorizationSigner::Quorum(owners) => {
+            sign_multisig(account, authorization.signature_hash(), config, owners)?
+        }
+        KeyAuthorizationSigner::Primitive(signer) => TempoSignature::Primitive(
+            PrimitiveSignature::Secp256k1(signer.sign_hash_sync(&authorization.signature_hash())?),
+        ),
+    };
+    Ok(authorization.into_signed(signature))
+}
+
+fn update_config_call(current: &MultisigConfig, next: &MultisigConfig) -> Call {
+    assert_eq!(next.salt, current.salt);
+    assert_eq!(next.version, current.version + 1);
+    Call {
+        to: NATIVE_MULTISIG_ADDRESS.into(),
+        value: Default::default(),
+        input: INativeMultisig::updateConfigCall {
+            current: current.clone().into(),
+            threshold: next.threshold,
+            owners: next
+                .owners
+                .iter()
+                .map(|owner| INativeMultisig::MultisigOwner {
+                    owner: owner.owner,
+                    weight: owner.weight,
+                })
+                .collect(),
+        }
+        .abi_encode()
+        .into(),
+    }
 }
 
 enum SponsorshipOrder {
@@ -508,7 +586,7 @@ async fn initial_and_immediate_access_key_use<E: TestEnv>(
     Ok(())
 }
 
-async fn initial_and_subsequent_access_key_use<E: TestEnv>(
+async fn access_key_authorization_matrix<E: TestEnv>(
     env: &mut E,
     alice: &PrivateKeySigner,
     bob: &PrivateKeySigner,
@@ -542,10 +620,88 @@ async fn initial_and_subsequent_access_key_use<E: TestEnv>(
         create_basic_aa_tx(env.chain_id(), 1, vec![no_op_call(0x62)], EXAMPLE_GAS_LIMIT);
     let signature = sign_aa_tx_with_secp256k1_access_key(&access_key_tx, &access_key, account)?;
     submit(env, access_key_tx, signature).await?;
+
+    struct Case<'a> {
+        outer: &'a PrivateKeySigner,
+        authorizer: KeyAuthorizationSigner<'a>,
+        target: &'a PrivateKeySigner,
+        is_admin: bool,
+        expected: ExpectedOutcome,
+    }
+
+    let admin_key = signer(0x62);
+    let child_key = signer(0x63);
+    let quorum = [alice, bob];
+    let cases = [
+        Case {
+            outer: &access_key,
+            authorizer: KeyAuthorizationSigner::Primitive(&access_key),
+            target: &child_key,
+            is_admin: false,
+            expected: ExpectedOutcome::Rejection,
+        },
+        Case {
+            outer: &access_key,
+            authorizer: KeyAuthorizationSigner::Quorum(&quorum),
+            target: &admin_key,
+            is_admin: true,
+            expected: ExpectedOutcome::Success,
+        },
+        Case {
+            outer: &admin_key,
+            authorizer: KeyAuthorizationSigner::Primitive(&admin_key),
+            target: &child_key,
+            is_admin: false,
+            expected: ExpectedOutcome::Success,
+        },
+    ];
+    let mut nonce = 2;
+    for (index, case) in cases.into_iter().enumerate() {
+        let key_authorization = signed_key_authorization(
+            env.chain_id(),
+            account,
+            &config,
+            case.target.address(),
+            case.is_admin,
+            case.authorizer,
+        )?;
+        let mut tx = create_basic_aa_tx(
+            env.chain_id(),
+            nonce,
+            vec![no_op_call(0x63 + index as u8)],
+            EXAMPLE_GAS_LIMIT,
+        );
+        tx.key_authorization = Some(key_authorization);
+        let signature = sign_aa_tx_with_secp256k1_access_key(&tx, case.outer, account)?;
+
+        match case.expected {
+            ExpectedOutcome::Success => {
+                submit(env, tx, signature).await?;
+                assert_active_key(env, account, case.target.address()).await?;
+                if case.is_admin {
+                    assert_admin_key(env, account, case.target.address()).await?;
+                }
+                nonce += 1;
+            }
+            ExpectedOutcome::Rejection => reject(env, tx, signature).await?,
+            ExpectedOutcome::Revert => unreachable!("key authorization is validated pre-call"),
+        }
+    }
+
+    let mut next_config = config.clone();
+    next_config.version = 1;
+    let update = create_basic_aa_tx(
+        env.chain_id(),
+        nonce,
+        vec![update_config_call(&config, &next_config)],
+        EXAMPLE_GAS_LIMIT,
+    );
+    let signature = sign_aa_tx_with_secp256k1_access_key(&update, &admin_key, account)?;
+    revert(env, update, signature).await?;
     Ok(())
 }
 
-async fn configuration_rotation<E: TestEnv>(
+async fn configuration_rotation_and_access_keys<E: TestEnv>(
     env: &mut E,
     alice: &PrivateKeySigner,
     bob: &PrivateKeySigner,
@@ -564,22 +720,10 @@ async fn configuration_rotation<E: TestEnv>(
             weight: 1,
         }],
     };
-    let update_call = INativeMultisig::updateConfigCall {
-        current: config.clone().into(),
-        threshold: 1,
-        owners: vec![INativeMultisig::MultisigOwner {
-            owner: carol.address(),
-            weight: 1,
-        }],
-    };
     let rotation = create_basic_aa_tx(
         env.chain_id(),
         0,
-        vec![Call {
-            to: NATIVE_MULTISIG_ADDRESS.into(),
-            value: Default::default(),
-            input: update_call.abi_encode().into(),
-        }],
+        vec![update_config_call(&config, &next_config)],
         EXAMPLE_GAS_LIMIT,
     );
     let signature = sign_multisig(account, rotation.signature_hash(), &config, &[alice, bob])?;
@@ -597,9 +741,67 @@ async fn configuration_rotation<E: TestEnv>(
         sign_multisig(account, stale_tx.signature_hash(), &config, &[alice, bob])?;
     reject(env, stale_tx, stale_signature).await?;
 
-    let next_tx = create_basic_aa_tx(env.chain_id(), 1, vec![no_op_call(0x72)], EXAMPLE_GAS_LIMIT);
-    let signature = sign_multisig(account, next_tx.signature_hash(), &next_config, &[carol])?;
-    submit(env, next_tx, signature).await?;
+    let access_key = signer(0x72);
+    let stale_authorization = signed_key_authorization(
+        env.chain_id(),
+        account,
+        &config,
+        access_key.address(),
+        false,
+        KeyAuthorizationSigner::Quorum(&[alice, bob]),
+    )?;
+    let mut stale_sidecar =
+        create_basic_aa_tx(env.chain_id(), 1, vec![no_op_call(0x73)], EXAMPLE_GAS_LIMIT);
+    stale_sidecar.key_authorization = Some(stale_authorization);
+    let signature = sign_multisig(
+        account,
+        stale_sidecar.signature_hash(),
+        &next_config,
+        &[carol],
+    )?;
+    reject(env, stale_sidecar, signature).await?;
+
+    let current_authorization = signed_key_authorization(
+        env.chain_id(),
+        account,
+        &next_config,
+        access_key.address(),
+        false,
+        KeyAuthorizationSigner::Quorum(&[carol]),
+    )?;
+    let mut current =
+        create_basic_aa_tx(env.chain_id(), 1, vec![no_op_call(0x74)], EXAMPLE_GAS_LIMIT);
+    current.key_authorization = Some(current_authorization);
+    let signature = sign_multisig(account, current.signature_hash(), &next_config, &[carol])?;
+    submit(env, current, signature).await?;
+    assert_active_key(env, account, access_key.address()).await?;
+
+    let access_key_tx =
+        create_basic_aa_tx(env.chain_id(), 2, vec![no_op_call(0x75)], EXAMPLE_GAS_LIMIT);
+    let signature = sign_aa_tx_with_secp256k1_access_key(&access_key_tx, &access_key, account)?;
+    submit(env, access_key_tx, signature).await?;
+
+    let source_config = multisig_config(0x73, 2, &[(alice, 1), (bob, 1)]);
+    let source = derived_account(&source_config)?;
+    env.fund_account(source).await?;
+    let forbidden_authorization = signed_key_authorization(
+        env.chain_id(),
+        source,
+        &source_config,
+        account,
+        false,
+        KeyAuthorizationSigner::Quorum(&[alice, bob]),
+    )?;
+    let mut forbidden =
+        create_basic_aa_tx(env.chain_id(), 0, vec![no_op_call(0x76)], EXAMPLE_GAS_LIMIT);
+    forbidden.key_authorization = Some(forbidden_authorization);
+    let signature = sign_multisig(
+        source,
+        forbidden.signature_hash(),
+        &source_config,
+        &[alice, bob],
+    )?;
+    reject(env, forbidden, signature).await?;
     Ok(())
 }
 
@@ -612,7 +814,7 @@ pub(super) async fn run_tip_1061_examples<E: TestEnv>(env: &mut E) -> eyre::Resu
     fee_sponsorship(env, alice, bob).await?;
     weighted_quorum(env, alice, bob, carol).await?;
     initial_and_immediate_access_key_use(env, alice, bob).await?;
-    initial_and_subsequent_access_key_use(env, alice, bob).await?;
-    configuration_rotation(env, alice, bob, carol).await?;
+    access_key_authorization_matrix(env, alice, bob).await?;
+    configuration_rotation_and_access_keys(env, alice, bob, carol).await?;
     Ok(())
 }
