@@ -33,6 +33,22 @@ pub const MAX_MULTISIG_OWNER_SIGNATURE_BYTES: usize = 1 + MAX_WEBAUTHN_SIGNATURE
 /// Domain prefix for native multisig account derivation.
 pub const MULTISIG_ACCOUNT_DOMAIN: &[u8] = b"tempo:multisig:account";
 
+/// Canonical CREATE2 factory for cross-chain recovery wallets.
+pub const MULTISIG_RECOVERY_FACTORY: Address = Address::new([
+    0x00, 0x00, 0x00, 0x00, 0x00, 0xff, 0xe8, 0xb4, 0x7b, 0x3e, 0x21, 0x30, 0x21, 0x3b, 0x80, 0x22,
+    0x12, 0x43, 0x94, 0x97,
+]);
+
+/// Keccak256 hash of the canonical `TempoMultisigRecoveryWallet` creation code.
+///
+/// Regenerate this value with `tips/verify/gen_recovery_init_code_hash.sh` whenever the canonical
+/// recovery wallet changes. A mismatch makes the native account address impossible to deploy
+/// through the recovery factory.
+pub const MULTISIG_RECOVERY_WALLET_INIT_CODE_HASH: B256 = B256::new([
+    0x65, 0x6f, 0xd0, 0x41, 0x81, 0x4a, 0xe9, 0x7b, 0xa0, 0x32, 0x88, 0x72, 0xd1, 0x7e, 0x7b, 0xde,
+    0x9b, 0x65, 0xe4, 0x1e, 0xc6, 0x3e, 0x6d, 0x88, 0xd6, 0x6a, 0xe5, 0xaf, 0x9b, 0x41, 0xdb, 0xb0,
+]);
+
 /// Domain prefix for native multisig configuration commitments.
 pub const MULTISIG_CONFIG_DOMAIN: &[u8] = b"tempo:multisig:config";
 
@@ -485,10 +501,22 @@ impl MultisigConfig {
         Ok(total_weight as u8)
     }
 
-    /// Derives the native multisig account address from this configuration's identity fields.
-    pub fn derive_account(&self) -> Result<Address, MultisigConfigError> {
+    /// Derives the CREATE2 salt used by the canonical cross-chain recovery wallet.
+    pub fn account_salt(&self) -> Result<B256, MultisigConfigError> {
         self.validate()?;
-        let account = Address::from_slice(&keccak256(self.account_derivation_preimage()?)[12..]);
+        Ok(keccak256(self.account_derivation_preimage()?))
+    }
+
+    /// Derives the native multisig account using the canonical recovery wallet's CREATE2 address.
+    pub fn derive_account(&self) -> Result<Address, MultisigConfigError> {
+        let account_salt = self.account_salt()?;
+        let mut input = [0u8; 85];
+        input[0] = 0xff;
+        input[1..21].copy_from_slice(MULTISIG_RECOVERY_FACTORY.as_slice());
+        input[21..53].copy_from_slice(account_salt.as_slice());
+        input[53..].copy_from_slice(MULTISIG_RECOVERY_WALLET_INIT_CODE_HASH.as_slice());
+
+        let account = Address::from_slice(&keccak256(input)[12..]);
         if account.is_zero() {
             return Err(MultisigConfigError::DerivedAccountZero);
         }
@@ -1006,18 +1034,45 @@ mod tests {
     }
 
     #[test]
+    fn account_derivation_matches_create2_recovery_wallet() {
+        let config = sorted_secp_config(&[(Address::repeat_byte(0x11), 1)], 1);
+        let account_salt = config.account_salt().unwrap();
+        assert_eq!(
+            account_salt,
+            alloy_primitives::b256!(
+                "7162e370e58784e6b33d61878820d1497eeaf4f68e00b2cfc00a2f3b1dbb00da"
+            )
+        );
+        let mut input = [0u8; 85];
+        input[0] = 0xff;
+        input[1..21].copy_from_slice(MULTISIG_RECOVERY_FACTORY.as_slice());
+        input[21..53].copy_from_slice(account_salt.as_slice());
+        input[53..].copy_from_slice(MULTISIG_RECOVERY_WALLET_INIT_CODE_HASH.as_slice());
+
+        assert_eq!(
+            config.derive_account().unwrap(),
+            Address::from_slice(&keccak256(input)[12..])
+        );
+        assert_ne!(
+            config.derive_account().unwrap(),
+            Address::from_slice(&account_salt[12..]),
+            "the account must be anchored to the canonical recovery factory"
+        );
+    }
+
+    #[test]
     fn multisig_domains_match_spec_vectors() {
         let mut config = sorted_secp_config(&[(Address::repeat_byte(0x11), 1)], 1);
         let account = config.derive_account().unwrap();
 
         assert_eq!(
             account,
-            alloy_primitives::address!("8820d1497eeaf4f68e00b2cfc00a2f3b1dbb00da")
+            alloy_primitives::address!("dc2696260ddbb0f01368ab22aeb600eff0d97b77")
         );
         assert_eq!(
             multisig_digest(B256::repeat_byte(0x42), account, 0),
             alloy_primitives::b256!(
-                "bf944a7a752b2cfab0418d5fb4591c5a7ff62976488edce11794d7f35fb34f41"
+                "26c1a2d776901b27ae8f2ff3170d51c678b724b48d7fd86b943e07ae65f9b117"
             )
         );
 
