@@ -6,9 +6,10 @@ use crate::execution_runtime::{
 use alloy_primitives::{Address, B256};
 use commonware_cryptography::{
     Signer as _,
+    bls12381::primitives::group::Share,
     ed25519::{PrivateKey, PublicKey},
 };
-use commonware_p2p::simulated::{Control, Oracle, SocketManager};
+use commonware_p2p::simulated::Oracle;
 use commonware_runtime::{Handle, Supervisor as _, deterministic::Context};
 use reth_config::config::StageConfig;
 use reth_db::{Database, DatabaseEnv, open_db_read_only};
@@ -29,12 +30,13 @@ use std::{
     net::{IpAddr, SocketAddr},
     path::PathBuf,
     sync::Arc,
+    time::Duration,
 };
 use tempo_consensus::{
     BROADCASTER_CHANNEL_IDENT, BROADCASTER_LIMIT, CERTIFICATES_CHANNEL_IDENT, CERTIFICATES_LIMIT,
     DKG_CHANNEL_IDENT, DKG_LIMIT, MARSHAL_CHANNEL_IDENT, MARSHAL_LIMIT, RESOLVER_CHANNEL_IDENT,
     RESOLVER_LIMIT, SUBBLOCKS_CHANNEL_IDENT, SUBBLOCKS_LIMIT, VOTES_CHANNEL_IDENT, VOTES_LIMIT,
-    consensus,
+    consensus, feed::FeedStateHandle,
 };
 use tempo_evm::TempoEvmConfig;
 use tempo_node::node::TempoNode;
@@ -51,9 +53,6 @@ where
     pub private_key: PrivateKey,
     /// Simulated network oracle for test environments
     pub oracle: Oracle<PublicKey, TClock>,
-    /// Consensus configuration used to start the consensus engine
-    pub consensus_config:
-        consensus::Builder<Control<PublicKey, TClock>, SocketManager<PublicKey, TClock>>,
     /// Running consensus handle (None if consensus is stopped)
     pub consensus_handle: Option<Handle<eyre::Result<()>>>,
     /// Path to the execution node's data directory
@@ -80,6 +79,17 @@ where
     /// contract calls.
     pub chain_address: Address,
 
+    /// Partition prefix used for consensus storage.
+    pub partition_prefix: String,
+    /// Initial share used whenever the consensus engine starts.
+    pub share: Option<Share>,
+    /// Feed state shared by the consensus and execution layers.
+    pub feed_state: FeedStateHandle,
+    /// Local proposal work budget used whenever the consensus engine starts.
+    pub proposal_return_budget: Duration,
+    /// Whether the consensus engine starts with subblock production enabled.
+    pub with_subblocks: bool,
+
     n_starts: u32,
 }
 
@@ -96,16 +106,17 @@ where
         uid: String,
         private_key: PrivateKey,
         oracle: Oracle<PublicKey, TClock>,
-        consensus_config: consensus::Builder<
-            Control<PublicKey, TClock>,
-            SocketManager<PublicKey, TClock>,
-        >,
+        share: Option<Share>,
+        feed_state: FeedStateHandle,
+        proposal_return_budget: Duration,
+        with_subblocks: bool,
         execution_runtime: ExecutionRuntimeHandle,
         execution_config: ExecutionNodeConfig,
         network_address: SocketAddr,
         chain_address: Address,
     ) -> Self {
         let public_key = private_key.public_key();
+        let partition_prefix = uid.clone();
         let execution_node_datadir = execution_runtime
             .nodes_dir()
             .join(execution_runtime::execution_node_name(&public_key));
@@ -115,7 +126,10 @@ where
             uid,
             private_key,
             oracle,
-            consensus_config,
+            share,
+            feed_state,
+            proposal_return_budget,
+            with_subblocks,
             consensus_handle: None,
             execution_node: None,
             execution_node_datadir,
@@ -127,6 +141,7 @@ where
             last_db_block_on_stop: None,
             network_address,
             chain_address,
+            partition_prefix,
 
             n_starts: 0,
         }
@@ -159,27 +174,14 @@ where
         format!("{}_{}", self.uid, self.n_starts - 1)
     }
 
-    /// Get a reference to the consensus config.
-    pub fn consensus_config(
-        &self,
-    ) -> &consensus::Builder<Control<PublicKey, TClock>, SocketManager<PublicKey, TClock>> {
-        &self.consensus_config
-    }
-
-    /// Get a mutable reference to the consensus config.
-    pub fn consensus_config_mut(
-        &mut self,
-    ) -> &mut consensus::Builder<Control<PublicKey, TClock>, SocketManager<PublicKey, TClock>> {
-        &mut self.consensus_config
-    }
-
     pub fn adopt_identity_from(&mut self, identity_source: Self) {
-        let peer_manager = self.consensus_config.peer_manager.clone();
-
         self.uid = identity_source.uid;
         self.private_key = identity_source.private_key;
-        self.consensus_config = identity_source.consensus_config;
-        self.consensus_config.peer_manager = peer_manager;
+        self.partition_prefix = identity_source.partition_prefix;
+        self.share = identity_source.share;
+        self.feed_state = identity_source.feed_state;
+        self.proposal_return_budget = identity_source.proposal_return_budget;
+        self.with_subblocks = identity_source.with_subblocks;
         self.network_address = identity_source.network_address;
         self.chain_address = identity_source.chain_address;
     }
@@ -199,12 +201,12 @@ where
 
     /// A verifier is a node that has a share.
     pub fn is_signer(&self) -> bool {
-        self.consensus_config.share.is_some()
+        self.share.is_some()
     }
 
     /// A verifier is a node that has no share.
     pub fn is_verifier(&self) -> bool {
-        self.consensus_config.share.is_none()
+        self.share.is_none()
     }
 
     /// Start both consensus and execution layers.
@@ -272,11 +274,6 @@ where
             assert!(current_db_block >= expected_block,);
         }
 
-        // Update consensus config to point to the new execution node
-        self.consensus_config = self
-            .consensus_config
-            .clone()
-            .with_execution_node(execution_node.node.clone().into());
         self.execution_node = Some(execution_node);
         debug!(%self.uid, "started execution node for testing node");
     }
@@ -291,12 +288,45 @@ where
             "consensus is already running for {}",
             self.uid
         );
-        let engine = self
-            .consensus_config
+        let engine_context = context.child(Box::leak(
+            format!("{}_{}", self.uid, self.n_starts).into_boxed_str(),
+        ));
+        let execution_node = self
+            .execution_node
+            .as_ref()
+            .expect("execution node must be running before consensus")
+            .node
             .clone()
-            .try_init(context.child(Box::leak(
-                format!("{}_{}", self.uid, self.n_starts).into_boxed_str(),
-            )))
+            .into();
+        let config = consensus::Builder {
+            execution_node: Some(execution_node),
+            gossip: None,
+            blocker: self.oracle.control(self.public_key()),
+            peer_manager: self.oracle.socket_manager(),
+            partition_prefix: self.partition_prefix.clone(),
+            signer: self.private_key.clone(),
+            share: self.share.clone(),
+            mailbox_size: commonware_utils::NZUsize!(1024),
+            deque_size: 10,
+            max_message_size: crate::MAX_MESSAGE_SIZE,
+            time_to_propose: Duration::from_secs(2),
+            time_to_collect_notarizations: Duration::from_secs(3),
+            time_to_retry_nullify_broadcast: Duration::from_secs(10),
+            time_for_peer_response: Duration::from_secs(2),
+            views_to_track: 10,
+            views_until_leader_skip: 5,
+            proposal_return_budget: self.proposal_return_budget,
+            time_to_build_subblock: Duration::from_millis(100),
+            subblock_broadcast_interval: Duration::from_millis(50),
+            fcu_heartbeat_interval: Duration::from_secs(3),
+            with_subblocks: self.with_subblocks,
+            feed_state: self.feed_state.clone(),
+            // Plenty of headroom for any test; the marshal will fall back to
+            // reth past this depth via the hybrid finalized blocks store.
+            finalized_blocks_retention: 1024,
+        };
+        let engine = config
+            .try_init(engine_context)
             .await
             .expect("must be able to start the engine");
 

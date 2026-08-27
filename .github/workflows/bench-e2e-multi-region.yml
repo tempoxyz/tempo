@@ -67,6 +67,10 @@ on:
         type: boolean
         required: false
         default: true
+      valscope:
+        type: boolean
+        required: false
+        default: true
     secrets:
       BENCH_LOGS_PUSH_URL:
         required: false
@@ -83,6 +87,10 @@ on:
       VICTORIALOGS_URL:
         required: false
       VICTORIAMETRICS_URL:
+        required: false
+      VALSCOPE_CONTROL_URL:
+        required: false
+      VALSCOPE_INTERNAL_TOKEN:
         required: false
   workflow_dispatch:
     inputs:
@@ -198,10 +206,10 @@ on:
         required: true
         default: true
       valscope:
-        description: Generate and publish ValScope static reports.
+        description: Register live ValScope targets for each benchmark phase.
         type: boolean
         required: true
-        default: false
+        default: true
       baseline-args:
         description: Extra args passed only to the baseline node.
         type: string
@@ -281,7 +289,7 @@ jobs:
       BENCH_INPUT_TOKEN_COUNT: ${{ inputs['token-count'] || '4' }}
       BENCH_INPUT_PROFILING: ${{ inputs.profiling || 'off' }}
       BENCH_INPUT_OTLP: ${{ format('{0}', github.event_name != 'workflow_dispatch' || inputs.otlp) }}
-      BENCH_INPUT_VALSCOPE: ${{ github.event_name == 'workflow_dispatch' && (inputs.valscope == true || inputs.valscope == 'true') && 'true' || 'false' }}
+      BENCH_INPUT_VALSCOPE: ${{ (inputs.valscope == true || inputs.valscope == 'true') && 'true' || 'false' }}
       BENCH_INPUT_BASELINE_ARGS: ${{ inputs['baseline-args'] || '' }}
       BENCH_INPUT_FEATURE_ARGS: ${{ inputs['feature-args'] || '' }}
       BENCH_INPUT_GAS_LIMIT: ${{ inputs['gas-limit'] || '5000000000' }}
@@ -293,6 +301,8 @@ jobs:
       CLICKHOUSE_URL: ${{ secrets.CLICKHOUSE_URL }}
       CLICKHOUSE_USER: ${{ secrets.CLICKHOUSE_USER }}
       CLICKHOUSE_PASSWORD: ${{ secrets.CLICKHOUSE_PASSWORD }}
+      VALSCOPE_CONTROL_URL: ${{ secrets.VALSCOPE_CONTROL_URL }}
+      VALSCOPE_INTERNAL_TOKEN: ${{ secrets.VALSCOPE_INTERNAL_TOKEN }}
 
     steps:
       - name: Fetch GitHub token via STS
@@ -319,6 +329,25 @@ jobs:
             } catch {}
 
             core.setFailed(`@${username} is not a member of ${org}`);
+
+      - name: Validate ValScope configuration
+        if: env.BENCH_INPUT_VALSCOPE == 'true'
+        env:
+          BENCH_LOGS_URL: ${{ secrets.TEMPO_TELEMETRY_URL || secrets.BENCH_LOGS_PUSH_URL }}
+          BENCH_METRICS_URL: ${{ secrets.BENCH_VICTORIAMETRICS_URL }}
+        run: |
+          required=(
+            VALSCOPE_CONTROL_URL
+            VALSCOPE_INTERNAL_TOKEN
+            BENCH_LOGS_URL
+            BENCH_METRICS_URL
+          )
+          for name in "${required[@]}"; do
+            if [[ -z "${!name:-}" ]]; then
+              echo "::error::$name is required when ValScope is enabled"
+              exit 1
+            fi
+          done
 
       - name: Fetch ClickHouse metric allowlist
         uses: actions/github-script@3a2844b7e9c422d3c10d287c895573f7108da1b3 # v9.0.0

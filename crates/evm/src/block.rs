@@ -29,8 +29,9 @@ use std::collections::{HashMap, HashSet};
 use tempo_chainspec::{TempoChainSpec, hardfork::TempoHardforks};
 use tempo_contracts::precompiles::{
     ADDRESS_REGISTRY_ADDRESS, CURRENT_COMMITTEE_ADDRESS, ICurrentCommittee, INITIAL_FACTORY_OWNER,
-    RECEIVE_POLICY_GUARD_ADDRESS, SIGNATURE_VERIFIER_ADDRESS, STORAGE_CREDITS_ADDRESS,
-    TIP20_CHANNEL_RESERVE_ADDRESS, VALIDATOR_CONFIG_V2_ADDRESS, initial_zone_factory_state,
+    InitialZoneFactoryAccount, RECEIVE_POLICY_GUARD_ADDRESS, SIGNATURE_VERIFIER_ADDRESS,
+    STORAGE_CREDITS_ADDRESS, TIP20_CHANNEL_RESERVE_ADDRESS, VALIDATOR_CONFIG_V2_ADDRESS,
+    initial_zone_factory_state, t12_zone_factory_state,
 };
 use tempo_primitives::{
     SubBlock, SubBlockMetadata, TempoReceipt, TempoTxEnvelope, TempoTxType,
@@ -288,37 +289,55 @@ where
         let [factory, portal, verifier, messenger] =
             initial_zone_factory_state(INITIAL_FACTORY_OWNER);
 
-        let runtime_state = {
-            let db = self.inner.evm.db_mut();
-            let factory_info = db
-                .basic(factory.address)
-                .map_err(BlockExecutionError::other)?
-                .unwrap_or_default();
-            // Genesis allocations are authoritative, and the marker also records a completed
-            // post-genesis installation.
-            if !factory_info.is_empty_code_hash() {
-                return Ok(());
-            }
-
-            let mut state = EvmState::default();
-            for account in [portal, verifier, messenger] {
-                let destination = account.address;
-                let code = Bytecode::new_legacy(account.code);
-                let info = db
-                    .basic(destination)
-                    .map_err(BlockExecutionError::other)?
-                    .unwrap_or_default();
-                let mut account = Account::from(info);
-                account.info.code_hash = code.hash_slow();
-                account.info.code = Some(code);
-                account.mark_touch();
-                state.insert(destination, account);
-            }
-            state
-        };
+        let db = self.inner.evm.db_mut();
+        let factory_info = db
+            .basic(factory.address)
+            .map_err(BlockExecutionError::other)?
+            .unwrap_or_default();
+        // Genesis allocations are authoritative, and the marker also records a completed
+        // post-genesis installation.
+        if !factory_info.is_empty_code_hash() {
+            return Ok(());
+        }
 
         self.deploy_precompile_at_boundary(factory.address, factory.storage.as_slice())?;
-        self.inner.evm.db_mut().commit(runtime_state);
+        self.install_zone_runtimes_at_boundary([portal, verifier, messenger])?;
+        Ok(())
+    }
+
+    /// Exercises the shared runtime upgrade path at T12.
+    fn upgrade_zone_runtimes_at_boundary(&mut self) -> Result<(), BlockExecutionError> {
+        let [_, portal, verifier, messenger] = t12_zone_factory_state(INITIAL_FACTORY_OWNER);
+        self.install_zone_runtimes_at_boundary([portal, verifier, messenger])
+    }
+
+    /// Installs shared Zone runtimes without modifying their existing storage.
+    fn install_zone_runtimes_at_boundary(
+        &mut self,
+        runtimes: [InitialZoneFactoryAccount; 3],
+    ) -> Result<(), BlockExecutionError> {
+        let db = self.inner.evm.db_mut();
+        let mut state = EvmState::default();
+        for runtime in runtimes {
+            let destination = runtime.address;
+            let code = Bytecode::new_legacy(runtime.code);
+            let code_hash = code.hash_slow();
+            let info = db
+                .basic(destination)
+                .map_err(BlockExecutionError::other)?
+                .unwrap_or_default();
+            if info.code_hash == code_hash {
+                continue;
+            }
+            let mut account = Account::from(info);
+            account.info.code_hash = code_hash;
+            account.info.code = Some(code);
+            account.mark_touch();
+            state.insert(destination, account);
+        }
+        if !state.is_empty() {
+            db.commit(state);
+        }
         Ok(())
     }
 
@@ -666,6 +685,9 @@ where
         if self.inner.spec.is_t10_active_at_timestamp(timestamp) {
             self.deploy_zone_factory_at_boundary()?;
         }
+        if self.inner.spec.is_t12_active_at_timestamp(timestamp) {
+            self.upgrade_zone_runtimes_at_boundary()?;
+        }
 
         Ok(())
     }
@@ -691,7 +713,7 @@ where
             let fee_recipient = *self
                 .subblock_fee_recipients
                 .get(&validator)
-                .ok_or(BlockExecutionError::msg("invalid subblock transaction"))?;
+                .ok_or_else(|| BlockValidationError::msg("invalid subblock transaction"))?;
 
             self.evm_mut().ctx_mut().block.beneficiary = fee_recipient;
         }
@@ -888,7 +910,7 @@ where
 mod tests {
     use super::*;
     use crate::test_utils::{TestExecutorBuilder, test_chainspec, test_evm};
-    use alloy_consensus::{Signed, TxLegacy};
+    use alloy_consensus::{Signed, TxLegacy, transaction::Recovered};
     use alloy_evm::{block::BlockExecutor, eth::receipt_builder::ReceiptBuilder};
     use alloy_primitives::{Bytes, Log, Signature, TxKind, address, bytes::BytesMut};
     use alloy_rlp::Encodable;
@@ -916,7 +938,7 @@ mod tests {
             CURRENT_COMMITTEE_ADDRESS, ICurrentCommittee, PATH_USD_ADDRESS, ZONE_FACTORY_ADDRESS,
             ZONE_MESSENGER_ADDRESS, ZONE_PORTAL_IMPL_ADDRESS, ZONE_VERIFIER_ADDRESS,
         },
-        zones::{ZONE_MESSENGER_RUNTIME, ZONE_PORTAL_RUNTIME, ZONE_VERIFIER_RUNTIME},
+        zones::{T12_ZONE_MESSENGER_RUNTIME, T12_ZONE_PORTAL_RUNTIME, T12_ZONE_VERIFIER_RUNTIME},
     };
     use tempo_dkg_onchain_artifacts::OnchainDkgOutcome;
     use tempo_primitives::{
@@ -1465,6 +1487,26 @@ mod tests {
 
         let signature = TempoSignature::from(Signature::test_signature());
         TempoTxEnvelope::AA(tx.into_signed(signature))
+    }
+
+    #[test]
+    fn test_execute_transaction_t4_subblock_nonce_returns_validation_error() {
+        let chainspec = DEV.clone();
+        let mut db = State::builder().with_bundle_update().build();
+        let mut executor = TestExecutorBuilder::default()
+            .with_spec(TempoHardfork::T11)
+            .build(&mut db, &chainspec);
+
+        let proposer = PartialValidatorKey::from_slice(&[0xff; 15]);
+        let subblock_tx = create_subblock_tx(&proposer);
+        let recovered = Recovered::new_unchecked(subblock_tx, Address::ZERO);
+
+        let err = executor.execute_transaction(&recovered).unwrap_err();
+        assert!(
+            matches!(&err, BlockExecutionError::Validation(_)),
+            "unexpected error: {err:?}"
+        );
+        assert_eq!(err.to_string(), "invalid subblock transaction");
     }
 
     #[test]
@@ -2120,16 +2162,13 @@ mod tests {
     }
 
     #[test]
-    fn test_deploy_zone_factory_at_boundary_installs_t10_state() {
+    fn test_zone_runtime_hardfork_installation() {
         assert_eq!(
             INITIAL_FACTORY_OWNER,
             address!("0xaF571FD4B3AD43a5807A5E58bFb25ea1aB327A14")
         );
         let chainspec = Arc::new(TempoChainSpec::from_genesis(DEV.genesis().clone()));
         let mut db = State::builder().with_bundle_update().build();
-        let portal_runtime = Bytecode::new_legacy(ZONE_PORTAL_RUNTIME);
-        let verifier_runtime = Bytecode::new_legacy(ZONE_VERIFIER_RUNTIME);
-        let messenger_runtime = Bytecode::new_legacy(ZONE_MESSENGER_RUNTIME);
         let mut executor = TestExecutorBuilder::default()
             .with_parent_beacon_block_root(B256::ZERO)
             .build(&mut db, &chainspec);
@@ -2145,6 +2184,8 @@ mod tests {
 
         executor.deploy_zone_factory_at_boundary().unwrap();
         executor.deploy_zone_factory_at_boundary().unwrap();
+        executor.upgrade_zone_runtimes_at_boundary().unwrap();
+        executor.upgrade_zone_runtimes_at_boundary().unwrap();
         drop(executor);
 
         let factory = db.load_cache_account(ZONE_FACTORY_ADDRESS).unwrap();
@@ -2164,9 +2205,18 @@ mod tests {
             Some(expected_factory_config)
         );
         for (destination, expected) in [
-            (ZONE_PORTAL_IMPL_ADDRESS, portal_runtime),
-            (ZONE_VERIFIER_ADDRESS, verifier_runtime),
-            (ZONE_MESSENGER_ADDRESS, messenger_runtime),
+            (
+                ZONE_PORTAL_IMPL_ADDRESS,
+                Bytecode::new_legacy(T12_ZONE_PORTAL_RUNTIME),
+            ),
+            (
+                ZONE_VERIFIER_ADDRESS,
+                Bytecode::new_legacy(T12_ZONE_VERIFIER_RUNTIME),
+            ),
+            (
+                ZONE_MESSENGER_ADDRESS,
+                Bytecode::new_legacy(T12_ZONE_MESSENGER_RUNTIME),
+            ),
         ] {
             let installed = db
                 .load_cache_account(destination)
@@ -2181,8 +2231,8 @@ mod tests {
         let calls = hook_calls.lock().unwrap();
         assert_eq!(
             calls.len(),
-            2,
-            "T10 installation must dispatch both updates"
+            3,
+            "T10 installation and T12 replacement must each dispatch an update"
         );
         assert!(calls[0].contains_key(&ZONE_FACTORY_ADDRESS));
         for address in [
@@ -2193,6 +2243,10 @@ mod tests {
             assert!(
                 calls[1].contains_key(&address),
                 "shared runtime must be installed in the runtime state hook"
+            );
+            assert!(
+                calls[2].contains_key(&address),
+                "T12 runtime must be installed in the runtime state hook"
             );
         }
     }

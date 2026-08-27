@@ -46,6 +46,7 @@ use tempo_contracts::{
     contracts::{ARACHNID_CREATE2_FACTORY_BYTECODE, CreateX, Multicall3, SafeDeployer},
     precompiles::{
         INITIAL_FACTORY_OWNER, IValidatorConfigV2, createTokenCall, initial_zone_factory_state,
+        t12_zone_factory_state,
     },
 };
 use tempo_dkg_onchain_artifacts::OnchainDkgOutcome;
@@ -213,6 +214,10 @@ pub(crate) struct GenesisArgs {
     /// T11 hardfork activation time.
     #[arg(long, default_value = "0")]
     t11_time: u64,
+
+    /// T12 hardfork activation time.
+    #[arg(long, default_value = "0")]
+    t12_time: u64,
 }
 
 #[derive(Clone, Debug)]
@@ -563,7 +568,7 @@ impl GenesisArgs {
             },
         );
 
-        insert_zone_state_at_genesis(self.t10_time, &mut genesis_alloc);
+        insert_zone_state_at_genesis(self.t10_time, self.t12_time, &mut genesis_alloc);
 
         genesis_alloc.insert(
             HISTORY_STORAGE_ADDRESS,
@@ -650,6 +655,9 @@ impl GenesisArgs {
         chain_config
             .extra_fields
             .insert_value("t11Time".to_string(), self.t11_time)?;
+        chain_config
+            .extra_fields
+            .insert_value("t12Time".to_string(), self.t12_time)?;
         let mut extra_data = Bytes::from_static(b"tempo-genesis");
 
         if let Some(consensus_config) = &consensus_config {
@@ -687,11 +695,17 @@ impl GenesisArgs {
 
 fn insert_zone_state_at_genesis(
     t10_time: u64,
+    t12_time: u64,
     genesis_alloc: &mut BTreeMap<Address, GenesisAccount>,
 ) {
     if t10_time == 0 {
-        println!("Initializing ZoneFactory and shared runtimes (T10 active at genesis)");
-        for account in initial_zone_factory_state(INITIAL_FACTORY_OWNER) {
+        println!("Initializing ZoneFactory and shared runtimes");
+        let accounts = if t12_time == 0 {
+            t12_zone_factory_state(INITIAL_FACTORY_OWNER)
+        } else {
+            initial_zone_factory_state(INITIAL_FACTORY_OWNER)
+        };
+        for account in accounts {
             genesis_alloc.insert(
                 account.address,
                 GenesisAccount {
@@ -1247,13 +1261,16 @@ mod tests {
             ZONE_FACTORY_ADDRESS, ZONE_MESSENGER_ADDRESS, ZONE_PORTAL_IMPL_ADDRESS,
             ZONE_VERIFIER_ADDRESS,
         },
-        zones::{ZONE_MESSENGER_RUNTIME, ZONE_PORTAL_RUNTIME, ZONE_VERIFIER_RUNTIME},
+        zones::{
+            T12_ZONE_MESSENGER_RUNTIME, T12_ZONE_PORTAL_RUNTIME, T12_ZONE_VERIFIER_RUNTIME,
+            ZONE_MESSENGER_RUNTIME, ZONE_PORTAL_RUNTIME, ZONE_VERIFIER_RUNTIME,
+        },
     };
 
     #[test]
     fn t10_genesis_installs_factory_and_canonical_shared_runtimes() {
         let mut alloc = BTreeMap::new();
-        insert_zone_state_at_genesis(0, &mut alloc);
+        insert_zone_state_at_genesis(0, 1, &mut alloc);
         let account = alloc.remove(&ZONE_FACTORY_ADDRESS).unwrap();
         let expected_config =
             U256::from(1) | (U256::from_be_slice(INITIAL_FACTORY_OWNER.as_slice()) << u32::BITS);
@@ -1275,8 +1292,22 @@ mod tests {
     #[test]
     fn future_t10_does_not_install_zone_factory_at_genesis() {
         let mut alloc = BTreeMap::new();
-        insert_zone_state_at_genesis(1, &mut alloc);
+        insert_zone_state_at_genesis(1, 1, &mut alloc);
 
         assert!(!alloc.contains_key(&ZONE_FACTORY_ADDRESS));
+    }
+
+    #[test]
+    fn t12_genesis_installs_t12_shared_runtimes() {
+        let mut alloc = BTreeMap::new();
+        insert_zone_state_at_genesis(0, 0, &mut alloc);
+
+        for (destination, expected) in [
+            (ZONE_PORTAL_IMPL_ADDRESS, T12_ZONE_PORTAL_RUNTIME),
+            (ZONE_VERIFIER_ADDRESS, T12_ZONE_VERIFIER_RUNTIME),
+            (ZONE_MESSENGER_ADDRESS, T12_ZONE_MESSENGER_RUNTIME),
+        ] {
+            assert_eq!(alloc[&destination].code.as_ref(), Some(&expected));
+        }
     }
 }

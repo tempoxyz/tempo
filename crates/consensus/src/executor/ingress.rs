@@ -1,11 +1,6 @@
 use alloy_primitives::B256;
 use commonware_actor::Feedback;
-use commonware_consensus::{
-    Reporter,
-    marshal::Update,
-    simplex::types::Context,
-    types::{Height, Round},
-};
+use commonware_consensus::{Reporter, marshal::Update, simplex::types::Context, types::Round};
 use commonware_cryptography::ed25519::PublicKey;
 use eyre::WrapErr as _;
 use futures::channel::{mpsc, oneshot};
@@ -72,8 +67,8 @@ impl Mailbox {
         )
     }
 
-    /// Requests the executor to build a proposal on top of `digest` found at
-    /// `round` and with `height`.
+    /// Requests the executor to build a proposal on top of `digest` in
+    /// `round`.
     ///
     /// The built payload is delivered on the returned channel once the
     /// execution layer finishes constructing it. The receiver may be dropped
@@ -91,7 +86,6 @@ impl Mailbox {
     pub(crate) fn build_proposal(
         &self,
         round: Round,
-        height: Height,
         digest: Digest,
         attributes: TempoPayloadAttributes,
     ) -> eyre::Result<oneshot::Receiver<TempoBuiltPayload>> {
@@ -99,7 +93,6 @@ impl Mailbox {
         self.inner
             .unbounded_send(Message::in_current_span(Build {
                 round,
-                height,
                 digest,
                 attributes: Box::new(attributes),
                 response,
@@ -153,7 +146,6 @@ impl From<PendingHeadReport> for Command {
 #[derive(Debug)]
 pub(super) struct Build {
     pub(super) round: Round,
-    pub(super) height: Height,
     pub(super) digest: Digest,
     pub(super) attributes: Box<TempoPayloadAttributes>,
     pub(super) response: oneshot::Sender<TempoBuiltPayload>,

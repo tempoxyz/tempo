@@ -51,15 +51,13 @@ fn joins_from_snapshot() {
         let donor = {
             let idx = validators
                 .iter()
-                .position(|node| node.consensus_config().share.is_none())
+                .position(|node| node.is_verifier())
                 .expect("at least one node must be a verifier, i.e. not have a share");
             validators.remove(idx)
         };
 
         assert!(
-            validators
-                .iter()
-                .all(|node| node.consensus_config().share.is_some()),
+            validators.iter().all(|node| node.is_signer()),
             "must have removed the one non-signer node; must be left with only signers",
         );
         join_all(validators.iter_mut().map(|v| v.start(&context))).await;
@@ -120,7 +118,7 @@ fn joins_from_snapshot() {
 
         // Now turn the receiver into the donor - except for the database dir and
         // env. This simulates a start from a snapshot.
-        let target_partition_prefix = donor.consensus_config.partition_prefix.clone();
+        let target_partition_prefix = donor.partition_prefix.clone();
         write_consensus_snapshot(
             &context,
             &receiver,
@@ -179,15 +177,13 @@ fn can_restart_after_joining_from_snapshot() {
         let donor = {
             let idx = validators
                 .iter()
-                .position(|node| node.consensus_config().share.is_none())
+                .position(|node| node.is_verifier())
                 .expect("at least one node must be a verifier, i.e. not have a share");
             validators.remove(idx)
         };
 
         assert!(
-            validators
-                .iter()
-                .all(|node| node.consensus_config().share.is_some()),
+            validators.iter().all(|node| node.is_signer()),
             "must have removed the one non-signer node; must be left with only signers",
         );
         join_all(validators.iter_mut().map(|v| v.start(&context))).await;
@@ -253,7 +249,7 @@ fn can_restart_after_joining_from_snapshot() {
 
         // Now turn the receiver into the donor - except for the database dir and
         // env. This simulates a start from a snapshot.
-        let target_partition_prefix = donor.consensus_config.partition_prefix.clone();
+        let target_partition_prefix = donor.partition_prefix.clone();
         write_consensus_snapshot(
             &context,
             &receiver,

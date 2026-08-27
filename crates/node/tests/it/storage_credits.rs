@@ -112,6 +112,10 @@ async fn test_tip1060_keychain_fee_refund_does_not_retain_storage_credit() -> ey
     let provider = ProviderBuilder::new()
         .wallet(root.clone())
         .connect_http(setup.http_url);
+    // Keep Alloy's pending-transaction heartbeat ahead of the 100ms dev block interval.
+    provider
+        .client()
+        .set_poll_interval(std::time::Duration::from_millis(10));
     let access_key = PrivateKeySigner::random();
 
     let gas_limit = 500_000u64;
@@ -1115,6 +1119,10 @@ async fn test_tip1060_successful_keychain_spend_fee_refund_cancels_restored_limi
     let provider = ProviderBuilder::new()
         .wallet(root.clone())
         .connect_http(setup.http_url);
+    // Keep Alloy's pending-transaction heartbeat ahead of the 100ms dev block interval.
+    provider
+        .client()
+        .set_poll_interval(std::time::Duration::from_millis(10));
     let access_key = PrivateKeySigner::random();
 
     let gas_limit = 500_000u64;

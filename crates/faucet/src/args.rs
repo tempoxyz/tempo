@@ -5,7 +5,8 @@ use alloy::{
     signers::local::PrivateKeySigner,
 };
 use clap::Args;
-use tempo_alloy::{TempoNetwork, provider::ext::TempoProviderBuilderExt};
+use tempo_alloy::{TempoNetwork, fillers::FeeTokenFiller, provider::ext::TempoProviderBuilderExt};
+use tempo_precompiles::DEFAULT_FEE_TOKEN;
 
 /// Faucet-specific CLI arguments
 #[derive(Debug, Clone, Default, Args, PartialEq, Eq)]
@@ -74,6 +75,7 @@ impl FaucetArgs {
     pub fn provider(&self) -> DynProvider<TempoNetwork> {
         ProviderBuilder::new_with_network::<TempoNetwork>()
             .with_expiring_nonces()
+            .filler(FeeTokenFiller::new(DEFAULT_FEE_TOKEN))
             .wallet(self.wallet())
             .connect_http(
                 self.node_address
