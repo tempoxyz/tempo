@@ -11,7 +11,6 @@ pub mod dispatch;
 use std::collections::HashSet;
 
 use alloy::sol_types::SolCall;
-use alloy_rlp::Decodable;
 use tempo_contracts::precompiles::{AccountKeychainError, AccountKeychainEvent, ITIP20};
 pub use tempo_contracts::precompiles::{
     IAccountKeychain,
@@ -587,12 +586,8 @@ impl AccountKeychain {
     ) -> Result<()> {
         self.storage.deduct_gas(rlp_input_cost(call.scopes.len()))?;
 
-        let mut encoded_scopes = call.scopes.as_ref();
-        let scopes = Vec::<RlpCallScope>::decode(&mut encoded_scopes)
+        let scopes: Vec<RlpCallScope> = alloy_rlp::decode_exact(call.scopes.as_ref())
             .map_err(|_| AccountKeychainError::invalid_call_scope())?;
-        if !encoded_scopes.is_empty() {
-            return Err(AccountKeychainError::invalid_call_scope().into());
-        }
         let scopes: Vec<CallScope> = scopes.into_iter().map(Into::into).collect();
         if scopes.is_empty() {
             return Err(AccountKeychainError::invalid_call_scope().into());
