@@ -472,7 +472,7 @@ where
         Ok(())
     }
 
-    /// Waits for reth's startup index rebuild to catch the Finish stage up to Headers.
+    /// Waits for reth's startup index rebuild to catch every index stage up to Headers.
     async fn wait_for_index_rebuild(&mut self) -> eyre::Result<()> {
         for attempts in 1_u64.. {
             if check_stagepoint_progress(&self.execution_node, attempts)? {

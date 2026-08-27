@@ -25,11 +25,17 @@ mod verify;
 use harness::{make_block, round};
 
 #[test]
-fn indices_are_only_rebuilt_when_finish_reaches_headers() {
-    assert!(StageCheckpoints::new(StageCheckpoint::new(10), StageCheckpoint::new(10)).is_rebuilt());
-    assert!(
-        !StageCheckpoints::new(StageCheckpoint::new(11), StageCheckpoint::new(10)).is_rebuilt()
-    );
+fn indices_are_only_rebuilt_when_every_index_reaches_headers() {
+    let checkpoint = StageCheckpoint::new(10);
+    assert!(StageCheckpoints::new(checkpoint, checkpoint, checkpoint, checkpoint).is_rebuilt());
+
+    for lagging_index in 0..3 {
+        let mut indices = [checkpoint; 3];
+        indices[lagging_index] = StageCheckpoint::new(9);
+        assert!(
+            !StageCheckpoints::new(checkpoint, indices[0], indices[1], indices[2]).is_rebuilt()
+        );
+    }
 }
 
 #[test]

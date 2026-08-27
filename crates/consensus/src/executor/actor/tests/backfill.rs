@@ -422,8 +422,12 @@ fn index_rebuild_stalls_backfill_until_stage_checkpoints_match() {
         execution.script_stage_checkpoints(Ok(Some(StageCheckpoints::new(
             StageCheckpoint::new(1),
             StageCheckpoint::new(0),
+            StageCheckpoint::new(1),
+            StageCheckpoint::new(1),
         ))));
         execution.script_stage_checkpoints(Ok(Some(StageCheckpoints::new(
+            StageCheckpoint::new(1),
+            StageCheckpoint::new(1),
             StageCheckpoint::new(1),
             StageCheckpoint::new(1),
         ))));

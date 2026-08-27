@@ -34,16 +34,30 @@ use crate::consensus::{Digest, block::Block};
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(crate) struct StageCheckpoints {
     headers: StageCheckpoint,
-    finish: StageCheckpoint,
+    transaction_lookup: StageCheckpoint,
+    account_history: StageCheckpoint,
+    storage_history: StageCheckpoint,
 }
 
 impl StageCheckpoints {
-    const fn new(headers: StageCheckpoint, finish: StageCheckpoint) -> Self {
-        Self { headers, finish }
+    const fn new(
+        headers: StageCheckpoint,
+        transaction_lookup: StageCheckpoint,
+        account_history: StageCheckpoint,
+        storage_history: StageCheckpoint,
+    ) -> Self {
+        Self {
+            headers,
+            transaction_lookup,
+            account_history,
+            storage_history,
+        }
     }
 
     const fn is_rebuilt(&self) -> bool {
-        self.headers.block_number == self.finish.block_number
+        self.headers.block_number == self.transaction_lookup.block_number
+            && self.headers.block_number == self.account_history.block_number
+            && self.headers.block_number == self.storage_history.block_number
     }
 }
 
@@ -58,7 +72,7 @@ impl StageCheckpoints {
 /// Implementations are cheap-clone handles: clones are moved into the
 /// actor's spawned execution tasks.
 pub(crate) trait ExecutionLayer: Clone + Send + Sync + 'static {
-    /// Returns the persisted Headers and Finish stage checkpoints once both exist.
+    /// Returns the persisted Headers and index-stage checkpoints once all exist.
     fn stage_checkpoints(&self) -> eyre::Result<Option<StageCheckpoints>>;
 
     /// The execution layer's finalized block, falling back to genesis if no
@@ -126,15 +140,36 @@ impl ExecutionLayer for Arc<TempoFullNode> {
     fn stage_checkpoints(&self) -> eyre::Result<Option<StageCheckpoints>> {
         let provider = self.provider.consistent_provider()?;
         let headers = provider.get_stage_checkpoint(StageId::Headers)?;
-        let finish = provider.get_stage_checkpoint(StageId::Finish)?;
+        let transaction_lookup = provider.get_stage_checkpoint(StageId::TransactionLookup)?;
+        let account_history = provider.get_stage_checkpoint(StageId::IndexAccountHistory)?;
+        let storage_history = provider.get_stage_checkpoint(StageId::IndexStorageHistory)?;
         tracing::info!(
             headers = %display_option(&headers.as_ref().map(|checkpoint| checkpoint.block_number)),
-            finish = %display_option(&finish.as_ref().map(|checkpoint| checkpoint.block_number)),
+            transaction_lookup = %display_option(
+                &transaction_lookup.as_ref().map(|checkpoint| checkpoint.block_number)
+            ),
+            account_history = %display_option(
+                &account_history.as_ref().map(|checkpoint| checkpoint.block_number)
+            ),
+            storage_history = %display_option(
+                &storage_history.as_ref().map(|checkpoint| checkpoint.block_number)
+            ),
             "read stage checkpoints from execution layer"
         );
         Ok(headers
-            .zip(finish)
-            .map(|(headers, finish)| StageCheckpoints::new(headers, finish)))
+            .zip(transaction_lookup)
+            .zip(account_history)
+            .zip(storage_history)
+            .map(
+                |(((headers, transaction_lookup), account_history), storage_history)| {
+                    StageCheckpoints::new(
+                        headers,
+                        transaction_lookup,
+                        account_history,
+                        storage_history,
+                    )
+                },
+            ))
     }
 
     fn finalized_num_hash(&self) -> BlockNumHash {

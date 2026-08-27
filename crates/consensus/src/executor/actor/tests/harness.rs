@@ -600,6 +600,8 @@ impl ExecutionLayer for FakeExecution {
             NextScriptedResult::Unscripted => Ok(Some(StageCheckpoints::new(
                 StageCheckpoint::new(0),
                 StageCheckpoint::new(0),
+                StageCheckpoint::new(0),
+                StageCheckpoint::new(0),
             ))),
             NextScriptedResult::Exhausted => {
                 panic!("stage checkpoint lookup exceeded its scripted outcome sequence")
