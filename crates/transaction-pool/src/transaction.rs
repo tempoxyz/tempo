@@ -1157,35 +1157,41 @@ mod tests {
             ));
             let owner_approval = match nested {
                 None => owner_approval,
-                Some(nested_account) => TempoSignature::Multisig(MultisigSignature::new(
-                    nested_account,
-                    MultisigConfig {
-                        salt: B256::ZERO,
-                        version: 1,
-                        threshold: 1,
-                        owners: vec![MultisigOwner {
-                            owner: primitive_owner,
-                            weight: 1,
-                        }],
-                    },
-                    vec![owner_approval.to_bytes()],
-                )),
+                Some(nested_account) => TempoSignature::Multisig(
+                    MultisigSignature::try_new(
+                        nested_account,
+                        MultisigConfig {
+                            salt: B256::ZERO,
+                            version: 1,
+                            threshold: 1,
+                            owners: vec![MultisigOwner {
+                                owner: primitive_owner,
+                                weight: 1,
+                            }],
+                        },
+                        vec![owner_approval.to_bytes()],
+                    )
+                    .unwrap(),
+                ),
             };
             KeyAuthorization::unrestricted(42431, SignatureType::Secp256k1, access_key.address())
                 .with_account(account)
-                .into_signed(TempoSignature::Multisig(MultisigSignature::new(
-                    account,
-                    MultisigConfig {
-                        salt: B256::ZERO,
-                        version: 1,
-                        threshold: 1,
-                        owners: vec![MultisigOwner {
-                            owner: nested.unwrap_or(primitive_owner),
-                            weight: 1,
-                        }],
-                    },
-                    vec![owner_approval.to_bytes()],
-                )))
+                .into_signed(TempoSignature::Multisig(
+                    MultisigSignature::try_new(
+                        account,
+                        MultisigConfig {
+                            salt: B256::ZERO,
+                            version: 1,
+                            threshold: 1,
+                            owners: vec![MultisigOwner {
+                                owner: nested.unwrap_or(primitive_owner),
+                                weight: 1,
+                            }],
+                        },
+                        vec![owner_approval.to_bytes()],
+                    )
+                    .unwrap(),
+                ))
         };
 
         let direct = TxBuilder::aa(account)
