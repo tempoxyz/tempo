@@ -421,7 +421,7 @@ fn finalization_waits_for_durable_block_before_advancing_finalized() {
 }
 
 #[test_traced]
-fn syncing_block_forkchoice_retries_before_acknowledging() {
+fn syncing_certificate_head_falls_back_to_block_anchor_before_acknowledging() {
     deterministic::Runner::default().start(|context| async move {
         let provider = StubExecutionProvider::default();
         let release_head_forkchoice = provider.pause_next_forkchoice();
@@ -443,6 +443,7 @@ fn syncing_block_forkchoice_retries_before_acknowledging() {
         mailbox.finalization(round(2), future_head);
         wait_until(&context, || provider.forkchoices().len() == 1).await;
 
+        provider.set_syncing_forkchoice_head(future_head.0);
         provider.set_forkchoices_syncing(true);
         let block = make_block_at_round(1, B256::ZERO, round(1));
         let finalized = block.block_hash();
@@ -452,25 +453,70 @@ fn syncing_block_forkchoice_retries_before_acknowledging() {
         release_head_forkchoice
             .send(())
             .expect("the head FCU should still be waiting");
-        wait_until(&context, || provider.forkchoices().len() == 2).await;
+        wait_until(&context, || provider.forkchoices().len() == 3).await;
 
         let mut waiter = Box::pin(waiter);
         tokio::select! {
-            result = &mut waiter => panic!("syncing FCU acknowledged the block: {result:?}"),
+            result = &mut waiter => panic!("syncing block anchor acknowledged the block: {result:?}"),
             _ = context.sleep(Duration::from_millis(100)) => {}
         }
 
         provider.set_forkchoices_syncing(false);
         waiter
             .await
-            .expect("valid retry should acknowledge the durable block");
+            .expect("valid block anchor should acknowledge the durable block");
+
+        wait_until(&context, || provider.forkchoices().len() == 5).await;
 
         let forkchoices = provider.forkchoices();
-        assert_eq!(forkchoices.len(), 3);
-        assert_eq!(forkchoices[1], forkchoices[2]);
-        assert_eq!(forkchoices[2].head_block_hash, future_head.0);
-        assert_eq!(forkchoices[2].safe_block_hash, finalized);
-        assert_eq!(forkchoices[2].finalized_block_hash, finalized);
+        assert_eq!(forkchoices[1].head_block_hash, future_head.0);
+        assert_eq!(forkchoices[1].safe_block_hash, finalized);
+        assert_eq!(forkchoices[1].finalized_block_hash, finalized);
+
+        assert_eq!(forkchoices[2], forkchoices[3]);
+        assert_eq!(forkchoices[3].head_block_hash, finalized);
+        assert_eq!(forkchoices[3].safe_block_hash, finalized);
+        assert_eq!(forkchoices[3].finalized_block_hash, finalized);
+
+        assert_eq!(forkchoices[4], forkchoices[1]);
+    });
+}
+
+#[test_traced]
+fn known_certificate_head_finalizes_delivered_block_without_anchor() {
+    deterministic::Runner::default().start(|context| async move {
+        let provider = StubExecutionProvider::default();
+
+        let (actor, mut mailbox) = init(
+            context.child("follower_executor"),
+            Config {
+                execution_provider: provider.clone(),
+                execution_engine: provider.clone(),
+                marshal: StubMarshal::default(),
+                epoch_strategy: FixedEpocher::new(EPOCH_LENGTH),
+                floor: Height::zero(),
+                fcu_heartbeat_interval: Duration::from_secs(60),
+            },
+        );
+        actor.start();
+
+        let future_head = digest(9);
+        mailbox.finalization(round(2), future_head);
+        wait_until(&context, || provider.forkchoices().len() == 1).await;
+
+        let block = make_block_at_round(1, B256::ZERO, round(1));
+        let finalized = block.block_hash();
+        let (ack, waiter) = Exact::handle();
+        assert!(mailbox.report(Update::Block(block.into(), ack)).accepted());
+        waiter
+            .await
+            .expect("known certificate head should finalize the delivered block");
+
+        let forkchoices = provider.forkchoices();
+        assert_eq!(forkchoices.len(), 2);
+        assert_eq!(forkchoices[1].head_block_hash, future_head.0);
+        assert_eq!(forkchoices[1].safe_block_hash, finalized);
+        assert_eq!(forkchoices[1].finalized_block_hash, finalized);
     });
 }
 

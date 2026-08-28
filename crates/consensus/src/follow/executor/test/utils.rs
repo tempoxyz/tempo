@@ -71,6 +71,7 @@ struct StubExecutionProviderInner {
     reject_payloads: AtomicBool,
     reject_forkchoices: AtomicBool,
     sync_forkchoices: AtomicBool,
+    syncing_forkchoice_head: Mutex<Option<B256>>,
     forkchoice_gate: Mutex<Option<oneshot::Receiver<()>>>,
 }
 
@@ -105,6 +106,10 @@ impl StubExecutionProvider {
 
     pub(super) fn set_forkchoices_syncing(&self, syncing: bool) {
         self.inner.sync_forkchoices.store(syncing, Ordering::SeqCst);
+    }
+
+    pub(super) fn set_syncing_forkchoice_head(&self, head: B256) {
+        *self.inner.syncing_forkchoice_head.lock() = Some(head);
     }
 
     pub(super) fn pause_next_forkchoice(&self) -> oneshot::Sender<()> {
@@ -183,7 +188,8 @@ impl ExecutionEngine for StubExecutionProvider {
         self.inner.forkchoices.lock().push(state);
         let gate = self.inner.forkchoice_gate.lock().take();
         let rejected = self.inner.reject_forkchoices.load(Ordering::SeqCst);
-        let syncing = self.inner.sync_forkchoices.load(Ordering::SeqCst);
+        let syncing = self.inner.sync_forkchoices.load(Ordering::SeqCst)
+            || *self.inner.syncing_forkchoice_head.lock() == Some(state.head_block_hash);
         async move {
             if let Some(gate) = gate {
                 let _ = gate.await;

@@ -183,15 +183,20 @@ where
         }
 
         let request = if let Some((block, ack)) = self.block_queue.pop_front() {
-            let finalized_advanced = self
-                .forkchoice
-                .advance_finalized(Target::from_block(&block));
-            let forkchoice = (self.forkchoice.requires_update() || heartbeat)
+            let block_target = Target::from_block(&block);
+            let finality_anchor =
+                self.forkchoice
+                    .advance_finalized(block_target)
+                    .then_some(ForkchoiceTargets {
+                        head: block_target,
+                        finalized: block_target,
+                    });
+            let latest_forkchoice = (self.forkchoice.requires_update() || heartbeat)
                 .then_some(self.forkchoice.latest());
             ExecutionRequest::Block {
                 block,
-                forkchoice,
-                finalized_advanced,
+                latest_forkchoice,
+                finality_anchor,
                 ack,
             }
         } else if self.forkchoice.requires_update() || heartbeat {
@@ -258,12 +263,14 @@ where
 enum ExecutionRequest {
     Forkchoice(ForkchoiceTargets),
     Block {
+        /// A finalized block delivered by marshal for execution.
         block: Block,
-        forkchoice: Option<ForkchoiceTargets>,
+        /// The latest combined head and finalized targets, if an update is due.
+        latest_forkchoice: Option<ForkchoiceTargets>,
+        /// The delivered block as both head and finalized when it advances finality.
+        finality_anchor: Option<ForkchoiceTargets>,
+        /// Signals marshal after the payload and required forkchoice update complete.
         ack: Exact,
-        /// Whether the block advances finality and must wait for a `VALID` FCU before
-        /// acknowledgement.
-        finalized_advanced: bool,
     },
 }
 
@@ -294,34 +301,64 @@ async fn execute_request<TContext: Pacer, E: ExecutionEngine + 'static>(
         }
         ExecutionRequest::Block {
             block,
-            forkchoice,
-            finalized_advanced,
+            latest_forkchoice,
+            finality_anchor,
             ack,
         } => {
             if let Err(error) = submit_new_payload(&context, &execution_engine, block).await {
                 return ExecutionTaskResult::Fatal(error);
             }
 
-            if let Some(forkchoice) = forkchoice {
-                loop {
+            let submitted_fcu = match latest_forkchoice {
+                Some(latest_forkchoice) => {
                     let result =
-                        submit_forkchoice_update(&context, &execution_engine, &forkchoice).await;
+                        submit_forkchoice_update(&context, &execution_engine, &latest_forkchoice)
+                            .await;
                     match result {
-                        Ok(ForkchoiceOutcome::Valid) => break,
-                        Ok(ForkchoiceOutcome::Syncing) if finalized_advanced => {
-                            debug!(
-                                "execution layer is syncing before applying finalized FCU; retrying"
-                            );
-                            context.sleep(FINALIZED_FCU_RETRY_INTERVAL).await;
-                        }
-                        Ok(ForkchoiceOutcome::Syncing) => break,
+                        Ok(ForkchoiceOutcome::Valid) => Some(latest_forkchoice),
+                        Ok(ForkchoiceOutcome::Syncing) => match finality_anchor {
+                            Some(finality_anchor) => {
+                                if let Err(error) = submit_finality_anchor(
+                                    &context,
+                                    &execution_engine,
+                                    &finality_anchor,
+                                )
+                                .await
+                                {
+                                    return ExecutionTaskResult::Fatal(error);
+                                }
+                                Some(finality_anchor)
+                            }
+                            None => Some(latest_forkchoice),
+                        },
                         Err(error) => return ExecutionTaskResult::Fatal(error),
                     }
                 }
-            }
+                None => None,
+            };
 
             ack.acknowledge();
-            ExecutionTaskResult::Completed(forkchoice)
+            ExecutionTaskResult::Completed(submitted_fcu)
+        }
+    }
+}
+
+async fn submit_finality_anchor<TContext: Pacer, E: ExecutionEngine + ?Sized>(
+    context: &TContext,
+    execution_engine: &E,
+    finality_anchor: &ForkchoiceTargets,
+) -> eyre::Result<()> {
+    loop {
+        let outcome = submit_forkchoice_update(context, execution_engine, finality_anchor).await?;
+        match outcome {
+            ForkchoiceOutcome::Valid => return Ok(()),
+            ForkchoiceOutcome::Syncing => {
+                debug!(
+                    "execution layer is syncing before applying finalized block; retrying block \
+                     anchor FCU"
+                );
+                context.sleep(FINALIZED_FCU_RETRY_INTERVAL).await;
+            }
         }
     }
 }
