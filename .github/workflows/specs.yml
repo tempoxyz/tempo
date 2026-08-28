@@ -112,7 +112,9 @@ jobs:
         uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
         with:
           repository: foundry-rs/foundry
-          ref: master
+          # Foundry's revm 43 migration (https://github.com/foundry-rs/foundry/pull/16409).
+          # Keep this pinned until the migration lands on master.
+          ref: 1e46c603f85368b82ed78bc2e90969b60bda8f17
           path: foundry
           persist-credentials: false
 
@@ -260,7 +262,9 @@ jobs:
         uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
         with:
           repository: foundry-rs/foundry
-          ref: master
+          # Foundry's revm 43 migration (https://github.com/foundry-rs/foundry/pull/16409).
+          # Keep this pinned until the migration lands on master.
+          ref: 1e46c603f85368b82ed78bc2e90969b60bda8f17
           path: foundry
           persist-credentials: false
 
