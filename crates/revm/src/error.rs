@@ -9,6 +9,7 @@ use tempo_primitives::transaction::{KeyAuthorizationChainIdError, KeychainVersio
 ///
 /// This enum extends the standard Ethereum [`InvalidTransaction`] with Tempo-specific
 /// validation errors that occur during transaction processing.
+#[non_exhaustive]
 #[derive(Debug, Clone, PartialEq, Eq, Hash, thiserror::Error)]
 pub enum TempoInvalidTransaction {
     /// Standard Ethereum transaction validation error.
