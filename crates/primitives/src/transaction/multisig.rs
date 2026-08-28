@@ -3,7 +3,7 @@ use alloc::vec::Vec;
 use alloy_primitives::{Address, B256, Bytes, keccak256};
 use alloy_rlp::Encodable as _;
 use core::mem::size_of;
-use tempo_contracts::precompiles::INativeMultisig;
+use tempo_contracts::{SAFE_DEPLOYER_ADDRESS, precompiles::INativeMultisig};
 
 #[cfg(feature = "serde")]
 use serde::{Deserialize, Deserializer, Serialize, Serializer, de::Error as _};
@@ -33,20 +33,43 @@ pub const MAX_MULTISIG_OWNER_SIGNATURE_BYTES: usize = 1 + MAX_WEBAUTHN_SIGNATURE
 /// Domain prefix for native multisig account derivation.
 pub const MULTISIG_ACCOUNT_DOMAIN: &[u8] = b"tempo:multisig:account";
 
-/// Canonical CREATE2 factory for cross-chain recovery wallets.
+/// Safe Singleton Factory used to deploy the dedicated recovery factory.
+pub const MULTISIG_RECOVERY_SINGLETON_FACTORY: Address = SAFE_DEPLOYER_ADDRESS;
+
+/// Expected runtime-code hash of [`MULTISIG_RECOVERY_SINGLETON_FACTORY`].
+pub const MULTISIG_RECOVERY_SINGLETON_FACTORY_RUNTIME_HASH: B256 = B256::new([
+    0x2f, 0xa8, 0x6a, 0xdd, 0x0a, 0xed, 0x31, 0xf3, 0x3a, 0x76, 0x2c, 0x9d, 0x88, 0xe8, 0x07, 0xc4,
+    0x75, 0xbd, 0x51, 0xd0, 0xf5, 0x2b, 0xd0, 0x95, 0x57, 0x54, 0xb2, 0x60, 0x8f, 0x7e, 0x49, 0x89,
+]);
+
+/// Salt used to deploy the dedicated recovery factory through the bootstrap factory.
+pub const MULTISIG_RECOVERY_FACTORY_DEPLOYMENT_SALT: B256 = B256::ZERO;
+
+/// Dedicated CREATE2 factory for cross-chain recovery wallets.
 pub const MULTISIG_RECOVERY_FACTORY: Address = Address::new([
-    0x00, 0x00, 0x00, 0x00, 0x00, 0xff, 0xe8, 0xb4, 0x7b, 0x3e, 0x21, 0x30, 0x21, 0x3b, 0x80, 0x22,
-    0x12, 0x43, 0x94, 0x97,
+    0x08, 0x91, 0x98, 0x82, 0x76, 0x8f, 0x95, 0x9f, 0xcf, 0xd6, 0x4a, 0xd8, 0x60, 0x97, 0x36, 0x8f,
+    0x76, 0xbc, 0x98, 0x08,
+]);
+
+/// Keccak256 hash of the canonical recovery factory creation code.
+pub const MULTISIG_RECOVERY_FACTORY_INIT_CODE_HASH: B256 = B256::new([
+    0x59, 0x5a, 0x7e, 0xe1, 0x0f, 0xa3, 0xbf, 0x56, 0x21, 0x4e, 0xdc, 0xd9, 0x47, 0xfd, 0x96, 0x35,
+    0x71, 0xfc, 0xcb, 0xfe, 0x80, 0xf0, 0x13, 0xd4, 0x73, 0x9c, 0x93, 0xb2, 0xc9, 0xea, 0x28, 0x7c,
+]);
+
+/// Keccak256 hash of the canonical recovery factory runtime code.
+pub const MULTISIG_RECOVERY_FACTORY_RUNTIME_HASH: B256 = B256::new([
+    0xa4, 0x4e, 0xd7, 0x00, 0x46, 0x78, 0xd0, 0x1a, 0x23, 0xf6, 0xa0, 0x4f, 0x77, 0xd4, 0x53, 0xf0,
+    0xfc, 0x6e, 0x2e, 0x8b, 0xc5, 0x1a, 0xf7, 0x9f, 0x7d, 0x32, 0x19, 0x3f, 0x30, 0x21, 0x5f, 0x46,
 ]);
 
 /// Keccak256 hash of the canonical `TempoMultisigRecoveryWallet` creation code.
 ///
-/// Regenerate this value with `tips/verify/gen_recovery_init_code_hash.sh` whenever the canonical
-/// recovery wallet changes. A mismatch makes the native account address impossible to deploy
-/// through the recovery factory.
+/// This must match the pinned artifact in TIP-1061. A mismatch makes the native account address
+/// impossible to deploy through the recovery factory.
 pub const MULTISIG_RECOVERY_WALLET_INIT_CODE_HASH: B256 = B256::new([
-    0x65, 0x6f, 0xd0, 0x41, 0x81, 0x4a, 0xe9, 0x7b, 0xa0, 0x32, 0x88, 0x72, 0xd1, 0x7e, 0x7b, 0xde,
-    0x9b, 0x65, 0xe4, 0x1e, 0xc6, 0x3e, 0x6d, 0x88, 0xd6, 0x6a, 0xe5, 0xaf, 0x9b, 0x41, 0xdb, 0xb0,
+    0x5b, 0xda, 0x20, 0x30, 0x56, 0xc9, 0x73, 0x54, 0x95, 0xbe, 0x33, 0x5d, 0xa9, 0x7e, 0x26, 0x66,
+    0x7b, 0xa1, 0x19, 0x89, 0x4d, 0xd0, 0xd4, 0x47, 0x58, 0x7c, 0x13, 0x78, 0xed, 0x89, 0x7c, 0x4c,
 ]);
 
 /// Byte length of the EIP-1014 preimage used for native multisig account derivation.
@@ -1071,18 +1094,32 @@ mod tests {
     }
 
     #[test]
+    fn recovery_factory_matches_singleton_create2_vector() {
+        let mut input = [0u8; MULTISIG_ACCOUNT_CREATE2_PREIMAGE_LEN];
+        input[0] = 0xff;
+        input[1..21].copy_from_slice(MULTISIG_RECOVERY_SINGLETON_FACTORY.as_slice());
+        input[21..53].copy_from_slice(MULTISIG_RECOVERY_FACTORY_DEPLOYMENT_SALT.as_slice());
+        input[53..].copy_from_slice(MULTISIG_RECOVERY_FACTORY_INIT_CODE_HASH.as_slice());
+
+        assert_eq!(
+            Address::from_slice(&keccak256(input)[12..]),
+            MULTISIG_RECOVERY_FACTORY
+        );
+    }
+
+    #[test]
     fn multisig_domains_match_spec_vectors() {
         let mut config = sorted_secp_config(&[(Address::repeat_byte(0x11), 1)], 1);
         let account = config.derive_account().unwrap();
 
         assert_eq!(
             account,
-            alloy_primitives::address!("dc2696260ddbb0f01368ab22aeb600eff0d97b77")
+            alloy_primitives::address!("a4e1866c3252527d36d43a3a98122eb0017a85e5")
         );
         assert_eq!(
             multisig_digest(B256::repeat_byte(0x42), account, 0),
             alloy_primitives::b256!(
-                "26c1a2d776901b27ae8f2ff3170d51c678b724b48d7fd86b943e07ae65f9b117"
+                "9aad77147b627d4c58165c22dcfafad33260bb863385fc4f8843d22bd59fd428"
             )
         );
 

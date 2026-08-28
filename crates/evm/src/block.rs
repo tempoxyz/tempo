@@ -35,7 +35,7 @@ use tempo_contracts::precompiles::{
 };
 use tempo_primitives::{
     SubBlock, SubBlockMetadata, TempoReceipt, TempoTxEnvelope, TempoTxType,
-    subblock::PartialValidatorKey,
+    subblock::PartialValidatorKey, transaction::MULTISIG_RECOVERY_FACTORY,
 };
 use tempo_revm::{TempoHaltReason, evm::TempoContext};
 use tracing::trace;
@@ -246,6 +246,32 @@ where
             let state = EvmState::from_iter([(address, account)]);
             db.commit(state);
         }
+        Ok(())
+    }
+
+    /// Reserves the cross-chain recovery factory address on Tempo.
+    ///
+    /// The canonical factory is intentionally deployable only on non-Tempo EVM chains. T12
+    /// replaces any code at its deterministic address with the standard `0xEF` system marker so
+    /// an observed initial multisig configuration cannot be front-run into a contract collision.
+    fn reserve_recovery_factory_at_boundary(&mut self) -> Result<(), BlockExecutionError> {
+        let db = self.inner.evm.db_mut();
+        let info = db
+            .basic(MULTISIG_RECOVERY_FACTORY)
+            .map_err(BlockExecutionError::other)?
+            .unwrap_or_default();
+        let marker = Bytecode::new_legacy([0xef].into());
+        let marker_hash = marker.hash_slow();
+        if info.code_hash == marker_hash && info.nonce != 0 {
+            return Ok(());
+        }
+
+        let mut account = Account::from(info);
+        account.info.nonce = account.info.nonce.max(1);
+        account.info.code_hash = marker_hash;
+        account.info.code = Some(marker);
+        account.mark_touch();
+        db.commit(EvmState::from_iter([(MULTISIG_RECOVERY_FACTORY, account)]));
         Ok(())
     }
 
@@ -648,6 +674,7 @@ where
             self.deploy_precompile_at_boundary(CURRENT_COMMITTEE_ADDRESS, &[])?;
         }
         if self.inner.spec.is_t12_active_at_timestamp(timestamp) {
+            self.reserve_recovery_factory_at_boundary()?;
             self.deploy_precompile_at_boundary(NATIVE_MULTISIG_ADDRESS, &[])?;
         }
         if self.inner.spec.is_t10_active_at_timestamp(timestamp) {
@@ -2010,6 +2037,13 @@ mod tests {
             "NativeMultisig code should not be deployed before T12"
         );
 
+        let acc = db.load_cache_account(MULTISIG_RECOVERY_FACTORY).unwrap();
+        let info = acc.account_info();
+        assert!(
+            info.is_none() || info.unwrap().is_empty_code_hash(),
+            "recovery factory should not be reserved before T12"
+        );
+
         let acc = db.load_cache_account(RECEIVE_POLICY_GUARD_ADDRESS).unwrap();
         let info = acc.account_info().unwrap();
         assert!(!info.is_empty_code_hash());
@@ -2029,6 +2063,48 @@ mod tests {
         let acc = db.load_cache_account(NATIVE_MULTISIG_ADDRESS).unwrap();
         let info = acc.account_info().unwrap();
         assert!(!info.is_empty_code_hash());
+
+        let acc = db.load_cache_account(MULTISIG_RECOVERY_FACTORY).unwrap();
+        let info = acc.account_info().unwrap();
+        assert_eq!(info.nonce, 1);
+        assert_eq!(
+            info.code.as_ref().unwrap().original_bytes(),
+            Bytes::from_static(&[0xef])
+        );
+    }
+
+    #[test]
+    fn test_t12_recovery_factory_reservation_replaces_code_and_preserves_account() {
+        let chainspec = Arc::new(TempoChainSpec::from_genesis(DEV.genesis().clone()));
+        let mut db = State::builder().with_bundle_update().build();
+        let old_code = Bytecode::new_legacy([0x00].into());
+        db.insert_account_with_storage(
+            MULTISIG_RECOVERY_FACTORY,
+            AccountInfo {
+                balance: U256::from(42),
+                nonce: 7,
+                code_hash: old_code.hash_slow(),
+                code: Some(old_code),
+                ..Default::default()
+            },
+            [(U256::ZERO, U256::from(9))].into_iter().collect(),
+        );
+        let mut executor = TestExecutorBuilder::default()
+            .with_parent_beacon_block_root(B256::ZERO)
+            .build(&mut db, &chainspec);
+
+        executor.apply_pre_execution_changes().unwrap();
+        drop(executor);
+
+        let acc = db.load_cache_account(MULTISIG_RECOVERY_FACTORY).unwrap();
+        let info = acc.account_info().unwrap();
+        assert_eq!(info.balance, U256::from(42));
+        assert_eq!(info.nonce, 7);
+        assert_eq!(acc.storage_slot(U256::ZERO), Some(U256::from(9)));
+        assert_eq!(
+            info.code.as_ref().unwrap().original_bytes(),
+            Bytes::from_static(&[0xef])
+        );
     }
 
     #[test]
