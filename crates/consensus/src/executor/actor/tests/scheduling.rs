@@ -10,8 +10,8 @@ use commonware_runtime::{Runner as _, Spawner as _, Supervisor as _, determinist
 use futures::future::Either;
 
 use super::harness::{
-    ElCall, ForkchoiceStateExt as _, GENESIS, Harness, HarnessOptions, built_payload, make_block,
-    round,
+    ElCall, ForkchoiceStateExt as _, GENESIS, Harness, HarnessOptions, STARTUP_FCU,
+    STARTUP_FCU_CALL, built_payload, make_block, round,
 };
 
 #[test_traced]
@@ -261,7 +261,7 @@ fn one_execution_task_at_a_time_and_consensus_requests_win_the_next_slot() {
         h.run_for(Duration::from_millis(500)).await;
         assert_eq!(
             h.execution.calls(),
-            vec![ElCall::NewPayload(d1)],
+            vec![STARTUP_FCU_CALL, ElCall::NewPayload(d1)],
             "the in-flight task must be the only execution-layer activity",
         );
 
@@ -278,6 +278,7 @@ fn one_execution_task_at_a_time_and_consensus_requests_win_the_next_slot() {
         assert_eq!(
             h.execution.calls(),
             vec![
+                STARTUP_FCU_CALL,
                 ElCall::NewPayload(d1),
                 ElCall::Fcu {
                     head: d1,
@@ -351,6 +352,7 @@ fn consensus_work_takes_priority_over_ready_convergence() {
         assert_eq!(
             h.execution.calls(),
             vec![
+                STARTUP_FCU_CALL,
                 ElCall::NewPayload(d1),
                 ElCall::Fcu {
                     head: d1,
@@ -412,6 +414,7 @@ fn convergence_takes_priority_over_queued_finalization() {
         assert_eq!(
             h.execution.calls(),
             vec![
+                STARTUP_FCU_CALL,
                 ElCall::NewPayload(d1),
                 ElCall::Fcu {
                     head: d1,
@@ -471,8 +474,9 @@ fn heartbeats_are_disarmed_while_work_is_active_or_queued() {
         // More than two heartbeat intervals pass while one request is active
         // and another is queued. No heartbeat may contend for the slot.
         h.run_for(Duration::from_millis(800)).await;
-        assert!(
-            h.execution.fcus().is_empty(),
+        assert_eq!(
+            h.execution.fcus(),
+            vec![STARTUP_FCU],
             "heartbeats must remain disarmed while execution work is active or queued",
         );
 
@@ -511,19 +515,23 @@ fn heartbeat_timer_is_rearmed_after_work_finishes() {
                 .expect("verification should complete")
                 .is_some(),
         );
-        assert!(h.execution.fcus().is_empty());
+        assert_eq!(h.execution.fcus(), vec![STARTUP_FCU]);
 
         // A stale timer would fire during this window. A correctly rearmed
         // timer instead grants a fresh 300ms interval after work finishes.
         h.run_for(Duration::from_millis(100)).await;
-        assert!(
-            h.execution.fcus().is_empty(),
+        assert_eq!(
+            h.execution.fcus(),
+            vec![STARTUP_FCU],
             "the pre-work heartbeat deadline must not survive",
         );
 
         h.run_for(Duration::from_millis(250)).await;
-        h.wait_until(|| h.execution.fcus().len() == 1).await;
-        assert_eq!(h.execution.fcus(), vec![(GENESIS, GENESIS, false)]);
+        h.wait_until(|| h.execution.fcus().len() == 2).await;
+        assert_eq!(
+            h.execution.fcus(),
+            vec![STARTUP_FCU, (GENESIS, GENESIS, false)]
+        );
     });
 }
 
@@ -538,7 +546,9 @@ fn idle_actor_sends_forkchoice_heartbeats_and_survives_their_failure() {
             .start(&context);
 
         h.run_for(Duration::from_secs(1)).await;
-        let heartbeats = h.execution.fcus();
+        let fcus = h.execution.fcus();
+        let (startup, heartbeats) = fcus.split_first().expect("startup must send an FCU");
+        assert_eq!(*startup, STARTUP_FCU);
         assert!(
             heartbeats.len() >= 2,
             "an idle actor must re-affirm the forkchoice state periodically, got {heartbeats:?}",
@@ -573,15 +583,18 @@ fn idle_actor_survives_heartbeat_transport_error() {
                 ..Default::default()
             })
             .start(&context);
-        h.execution.script_fcu(
-            ForkchoiceState::from_finalized_head(GENESIS, GENESIS),
-            [Err("connection closed"), Ok(PayloadStatusEnum::Valid)],
-        );
+        let state = ForkchoiceState::from_finalized_head(GENESIS, GENESIS);
+        h.execution.script_fcu(state, Err("connection closed"));
+        h.execution.script_fcu(state, Ok(PayloadStatusEnum::Valid));
 
-        h.wait_until(|| h.execution.fcus().len() == 2).await;
+        h.wait_until(|| h.execution.fcus().len() == 3).await;
         assert_eq!(
             h.execution.fcus(),
-            vec![(GENESIS, GENESIS, false), (GENESIS, GENESIS, false)],
+            vec![
+                STARTUP_FCU,
+                (GENESIS, GENESIS, false),
+                (GENESIS, GENESIS, false),
+            ],
             "a failed heartbeat must not stop the explicitly accepted next heartbeat",
         );
 
@@ -618,8 +631,9 @@ fn actor_exits_when_its_mailbox_closes_during_an_execution_task() {
         acknowledgement
             .await
             .expect_err("shutdown must cancel the in-flight finalization");
-        assert!(
-            execution.fcus().is_empty(),
+        assert_eq!(
+            execution.fcus(),
+            vec![STARTUP_FCU],
             "the canceled finalization must not reach its forkchoice update",
         );
     });

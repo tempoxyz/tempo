@@ -129,6 +129,16 @@ pub(super) enum ElCall {
     Resolve(PayloadId),
 }
 
+/// The ordinary FCU sent when a genesis-only fake has no finalized marker.
+/// Zero is the Engine API's "unset" sentinel for safe/finalized, not the head.
+pub(super) const STARTUP_FCU: (Digest, Digest, bool) = (GENESIS, Digest(B256::ZERO), false);
+
+pub(super) const STARTUP_FCU_CALL: ElCall = ElCall::Fcu {
+    head: GENESIS,
+    finalized: Digest(B256::ZERO),
+    with_attrs: false,
+};
+
 /// Test constructor for the executor's forkchoice-state convention.
 pub(super) trait ForkchoiceStateExt {
     /// Constructs a state from its `(finalized, head)` pair, setting safe to
@@ -201,17 +211,6 @@ where
         }
     }
 
-    fn script(&self, key: K, results: impl IntoIterator<Item = T>) {
-        let results = results.into_iter().collect::<VecDeque<_>>();
-        assert!(!results.is_empty(), "a scripted sequence must not be empty");
-        let mut scripts = self.0.lock();
-        assert!(
-            !scripts.iter().any(|(existing, _)| existing == &key),
-            "a script must provide the complete sequence in one call",
-        );
-        scripts.push((key, results));
-    }
-
     fn pop(&self, key: &K) -> Option<T> {
         self.0
             .lock()
@@ -253,10 +252,6 @@ struct FakeExecutionInner {
     canonical_hash_overrides: ScriptedResults<u64, Result<Option<B256>, &'static str>>,
     /// Scripted block lookup outcomes keyed by digest.
     block_overrides: ScriptedResults<B256, Result<Option<Block>, &'static str>>,
-    /// Complete readiness-FCU outcome sequence.
-    readiness_fcu_overrides: ScriptedResults<(), Result<PayloadStatusEnum, &'static str>>,
-    /// Forkchoice states sent by execution-layer readiness probes.
-    readiness_fcus: Mutex<Vec<ForkchoiceState>>,
     /// Rejects every FCU while set.
     reject_all_fcus: AtomicBool,
     /// Accepts attribute-carrying FCUs without registering a payload build.
@@ -324,8 +319,6 @@ impl FakeExecution {
                 fcu_overrides: ScriptedResults::new(),
                 canonical_hash_overrides: ScriptedResults::new(),
                 block_overrides: ScriptedResults::new(),
-                readiness_fcu_overrides: ScriptedResults::new(),
-                readiness_fcus: Mutex::new(Vec::new()),
                 reject_all_fcus: AtomicBool::new(false),
                 suppress_payload_ids: AtomicBool::new(false),
                 omit_payload_job: AtomicBool::new(false),
@@ -398,11 +391,11 @@ impl FakeExecution {
         sender
     }
 
-    /// Scripts the complete sequence of outcomes for `state`.
-    /// Each matching request consumes one outcome in FIFO order; a matching
-    /// request beyond the supplied sequence fails the test instead of falling
-    /// back to default behavior. Payload attributes do not participate in
-    /// matching; another forkchoice state uses the stateful default.
+    /// Appends an FCU response for `state` to its scripted sequence.
+    /// Matching requests consume responses in FIFO order; a request beyond
+    /// the supplied responses fails the test instead of falling back to
+    /// default behavior. Payload attributes do not participate in matching;
+    /// another forkchoice state uses the stateful default.
     ///
     /// The default applies the requested forkchoice state, returning `Valid`
     /// when the head is known and `Syncing` otherwise. A scripted `Ok(Valid)`
@@ -412,9 +405,9 @@ impl FakeExecution {
     pub(super) fn script_fcu(
         &self,
         state: ForkchoiceState,
-        outcomes: impl IntoIterator<Item = Result<PayloadStatusEnum, &'static str>>,
+        response: Result<PayloadStatusEnum, &'static str>,
     ) {
-        self.inner.fcu_overrides.script(state, outcomes);
+        self.inner.fcu_overrides.push(state, response);
     }
 
     /// Scripts the outcome of the next canonical block lookup at `height`.
@@ -433,14 +426,6 @@ impl FakeExecution {
         outcome: Result<Option<Block>, &'static str>,
     ) {
         self.inner.block_overrides.push(digest.0, outcome);
-    }
-
-    /// Scripts the complete outcome sequence for execution-layer readiness FCUs.
-    pub(super) fn script_readiness_fcus(
-        &self,
-        outcomes: impl IntoIterator<Item = Result<PayloadStatusEnum, &'static str>>,
-    ) {
-        self.inner.readiness_fcu_overrides.script((), outcomes);
     }
 
     /// Rejects all forkchoice updates until re-enabled.
@@ -520,10 +505,6 @@ impl FakeExecution {
         self.inner.payload_attributes.lock().clone()
     }
 
-    pub(super) fn readiness_fcus(&self) -> Vec<ForkchoiceState> {
-        self.inner.readiness_fcus.lock().clone()
-    }
-
     pub(super) fn fcus(&self) -> Vec<(Digest, Digest, bool)> {
         self.calls()
             .into_iter()
@@ -598,38 +579,17 @@ impl FakeExecution {
 }
 
 impl ExecutionLayer for FakeExecution {
-    fn is_ready(&self) -> impl Future<Output = eyre::Result<bool>> + Send + 'static {
+    fn current_forkchoice_state(&self) -> eyre::Result<ForkchoiceState> {
         let state = self.inner.state.lock();
+        eyre::ensure!(state.head != B256::ZERO, "fake has a zero canonical head");
         let finalized_block_hash = state
             .finalized
             .map_or(B256::ZERO, |finalized| finalized.hash);
-        let forkchoice_state = ForkchoiceState {
+        Ok(ForkchoiceState {
             head_block_hash: state.head,
             safe_block_hash: finalized_block_hash,
             finalized_block_hash,
-        };
-        drop(state);
-        self.inner.readiness_fcus.lock().push(forkchoice_state);
-        let outcome = match self.inner.readiness_fcu_overrides.next_scripted(&()) {
-            NextScriptedResult::Scripted(outcome) => outcome,
-            NextScriptedResult::Unscripted => Ok(PayloadStatusEnum::Valid),
-            NextScriptedResult::Exhausted => {
-                panic!("readiness FCU exceeded its scripted outcome sequence")
-            }
-        };
-        async move {
-            let status = outcome
-                .map_err(Report::msg)
-                .wrap_err("scripted readiness forkchoice update failed")?;
-            if status == PayloadStatusEnum::Valid {
-                return Ok(true);
-            }
-            if status == PayloadStatusEnum::Syncing {
-                return Ok(false);
-            }
-            Err(Report::msg(PayloadStatus::from_status(status)))
-                .wrap_err("scripted readiness forkchoice update was not valid")
-        }
+        })
     }
 
     fn finalized_num_hash(&self) -> BlockNumHash {
@@ -1212,7 +1172,7 @@ mod scripted_results_tests {
             NextScriptedResult::Unscripted
         ));
 
-        results.script(1, [Ok(7)]);
+        results.push(1, Ok(7));
         assert!(matches!(
             results.next_scripted(&1),
             NextScriptedResult::Scripted(Ok(7))

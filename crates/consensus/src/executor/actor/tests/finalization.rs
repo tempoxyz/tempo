@@ -9,8 +9,8 @@ use commonware_runtime::{Runner as _, deterministic};
 use tempo_primitives::ed25519::PublicKey;
 
 use super::harness::{
-    ElCall, ForkchoiceStateExt as _, GENESIS, Harness, HarnessOptions, make_block,
-    make_block_with_proposer, round,
+    ElCall, ForkchoiceStateExt as _, GENESIS, Harness, HarnessOptions, STARTUP_FCU,
+    STARTUP_FCU_CALL, make_block, make_block_with_proposer, round,
 };
 
 fn finalized_blocks_proposed_by_self(h: &Harness) -> u64 {
@@ -37,7 +37,10 @@ fn finalized_block_without_local_public_key_is_forwarded_and_acknowledged() {
             .expect("valid finalized block should be acknowledged");
 
         assert_eq!(h.execution.new_payloads(), vec![digest]);
-        assert_eq!(h.execution.fcus(), vec![(digest, digest, false)]);
+        assert_eq!(
+            h.execution.fcus(),
+            vec![STARTUP_FCU, (digest, digest, false)]
+        );
         assert_eq!(h.execution.head(), digest);
         assert_eq!(h.execution.finalized(), Some((1, digest)));
         assert_eq!(finalized_blocks_proposed_by_self(&h), 0);
@@ -63,11 +66,10 @@ fn finalized_blocks_are_forwarded_in_order() {
         w3.await.expect("third block should be acknowledged");
 
         assert_eq!(h.execution.new_payloads(), digests);
-        assert_eq!(
-            h.execution.fcus(),
-            digests.map(|d| (d, d, false)).to_vec(),
-            "every finalized block must advance head and finalized together",
-        );
+        let expected_fcus = std::iter::once(STARTUP_FCU)
+            .chain(digests.map(|digest| (digest, digest, false)))
+            .collect::<Vec<_>>();
+        assert_eq!(h.execution.fcus(), expected_fcus);
         assert_eq!(h.execution.finalized(), Some((3, digests[2])));
     });
 }
@@ -96,7 +98,7 @@ fn syncing_finalized_block_is_fatal() {
             .expect("actor should shut down cleanly on a fatal error");
 
         assert_eq!(h.execution.new_payloads(), vec![d1]);
-        assert!(h.execution.fcus().is_empty());
+        assert_eq!(h.execution.fcus(), vec![STARTUP_FCU]);
         assert_eq!(h.execution.finalized(), None);
         assert!(!h.execution.knows_block(d2));
     });
@@ -125,7 +127,7 @@ fn invalid_finalized_block_is_fatal() {
             .expect("actor should shut down cleanly on a fatal error");
         assert_eq!(
             h.execution.fcus(),
-            vec![],
+            vec![STARTUP_FCU],
             "no forkchoice update may follow"
         );
     });
@@ -150,8 +152,9 @@ fn accepted_finalized_block_is_fatal() {
             .await
             .expect("actor should shut down cleanly on a fatal error");
         assert_eq!(h.execution.new_payloads(), vec![d1]);
-        assert!(
-            h.execution.fcus().is_empty(),
+        assert_eq!(
+            h.execution.fcus(),
+            vec![STARTUP_FCU],
             "ACCEPTED does not prove execution, so no forkchoice update may follow",
         );
     });
@@ -174,7 +177,7 @@ fn new_payload_transport_error_is_fatal() {
         h.actor
             .await
             .expect("actor should shut down cleanly on a finalization transport error");
-        assert!(h.execution.fcus().is_empty());
+        assert_eq!(h.execution.fcus(), vec![STARTUP_FCU]);
     });
 }
 
@@ -196,7 +199,7 @@ fn canonical_block_lookup_error_is_fatal() {
             .await
             .expect("actor should shut down cleanly on a canonical lookup error");
         assert!(h.execution.new_payloads().is_empty());
-        assert!(h.execution.fcus().is_empty());
+        assert_eq!(h.execution.fcus(), vec![STARTUP_FCU]);
     });
 }
 
@@ -209,9 +212,9 @@ fn rejected_finalization_forkchoice_update_is_fatal() {
         let d1 = b1.digest();
         h.execution.script_fcu(
             ForkchoiceState::from_finalized_head(d1, d1),
-            [Ok(PayloadStatusEnum::Invalid {
+            Ok(PayloadStatusEnum::Invalid {
                 validation_error: "rejected".into(),
-            })],
+            }),
         );
 
         // newPayload succeeds by default. Rejecting the following FCU must
@@ -227,7 +230,7 @@ fn rejected_finalization_forkchoice_update_is_fatal() {
         assert_eq!(h.execution.new_payloads(), vec![d1]);
         assert_eq!(
             h.execution.fcus(),
-            vec![(d1, d1, false)],
+            vec![STARTUP_FCU, (d1, d1, false)],
             "the rejected FCU must have followed a successful new-payload request",
         );
     });
@@ -242,7 +245,7 @@ fn forkchoice_update_transport_error_is_fatal() {
         let d1 = b1.digest();
         h.execution.script_fcu(
             ForkchoiceState::from_finalized_head(d1, d1),
-            [Err("connection closed")],
+            Err("connection closed"),
         );
 
         h.deliver_tip(round(1), 1, d1);
@@ -254,7 +257,7 @@ fn forkchoice_update_transport_error_is_fatal() {
             .await
             .expect("actor should shut down cleanly on a finalization FCU transport error");
         assert_eq!(h.execution.new_payloads(), vec![d1]);
-        assert_eq!(h.execution.fcus(), vec![(d1, d1, false)]);
+        assert_eq!(h.execution.fcus(), vec![STARTUP_FCU, (d1, d1, false)]);
         assert_eq!(h.execution.finalized(), None);
     });
 }
@@ -331,6 +334,7 @@ fn redelivered_finalized_block_at_the_tracked_state_is_acknowledged() {
         assert_eq!(
             h.execution.calls(),
             vec![
+                STARTUP_FCU_CALL,
                 ElCall::NewPayload(d1),
                 ElCall::Fcu {
                     head: d1,
