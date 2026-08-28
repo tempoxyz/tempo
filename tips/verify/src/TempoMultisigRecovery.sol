@@ -73,6 +73,7 @@ contract TempoMultisigRecoveryWallet {
     // so a compromised or malicious initial owner set cannot use the cross-chain address for
     // governance, bridging, approvals, or any other arbitrary call — only asset recovery.
     bytes4 internal constant ERC20_TRANSFER = 0xa9059cbb; // transfer(address,uint256)
+    bytes4 internal constant ERC721_TRANSFER_FROM = 0x23b872dd; // transferFrom(a,a,u256)
     bytes4 internal constant ERC721_SAFE_TRANSFER_FROM = 0x42842e0e; // safeTransferFrom(a,a,u256)
     bytes4 internal constant ERC721_SAFE_TRANSFER_FROM_DATA = 0xb88d4fde; // safeTransferFrom(a,a,u,b)
     bytes4 internal constant ERC1155_SAFE_TRANSFER_FROM = 0xf242432a; // safeTransferFrom(a,a,u,u,b)
@@ -96,6 +97,57 @@ contract TempoMultisigRecoveryWallet {
         0x7fffffffffffffffffffffffffffffff5d576e7357a4501ddfe92f46681b20a0;
 
     receive() external payable { }
+
+    /// @notice Accepts safe ERC-721 transfers and mints before and after recovery deployment.
+    function onERC721Received(
+        address,
+        address,
+        uint256,
+        bytes calldata
+    )
+        external
+        pure
+        returns (bytes4)
+    {
+        return this.onERC721Received.selector;
+    }
+
+    /// @notice Accepts safe ERC-1155 single-token transfers and mints.
+    function onERC1155Received(
+        address,
+        address,
+        uint256,
+        uint256,
+        bytes calldata
+    )
+        external
+        pure
+        returns (bytes4)
+    {
+        return this.onERC1155Received.selector;
+    }
+
+    /// @notice Accepts safe ERC-1155 batch transfers and mints.
+    function onERC1155BatchReceived(
+        address,
+        address,
+        uint256[] calldata,
+        uint256[] calldata,
+        bytes calldata
+    )
+        external
+        pure
+        returns (bytes4)
+    {
+        return this.onERC1155BatchReceived.selector;
+    }
+
+    /// @notice Reports the receiver interfaces implemented by the recovery wallet.
+    function supportsInterface(bytes4 interfaceId) external pure returns (bool) {
+        return interfaceId == 0x01ffc9a7 // ERC-165
+            || interfaceId == 0x150b7a02 // ERC-721 receiver
+            || interfaceId == 0x4e2312e0; // ERC-1155 receiver
+    }
 
     /// @notice Binds this wallet to the config committed to by `salt`. Callable once.
     /// @dev Permissionless but safe: only the factory can CREATE2 a wallet at this address, and it
@@ -143,11 +195,15 @@ contract TempoMultisigRecoveryWallet {
             if (!ok) {
                 revert CallFailed(i, returndata);
             }
-            if (
-                calls[i].data.length >= 4 && bytes4(calls[i].data[:4]) == ERC20_TRANSFER
-                    && (returndata.length != 32 || !abi.decode(returndata, (bool)))
-            ) {
-                revert CallFailed(i, returndata);
+            if (calls[i].data.length >= 4 && bytes4(calls[i].data[:4]) == ERC20_TRANSFER) {
+                // Match SafeERC20's optional-return convention: deployed token contracts may
+                // return no data, but an explicit result must be exactly ABI-encoded `true`.
+                if (
+                    returndata.length != 0
+                        && (returndata.length != 32 || !abi.decode(returndata, (bool)))
+                ) {
+                    revert CallFailed(i, returndata);
+                }
             }
         }
     }
@@ -156,17 +212,51 @@ contract TempoMultisigRecoveryWallet {
     /// @dev A data-carrying call must target a standard transfer selector and send no value; an
     /// empty-calldata call is a native-value sweep. Everything else (approvals, governance,
     /// bridging, arbitrary calls) is rejected.
-    function _isAllowedRecoveryCall(Call calldata call_) internal pure returns (bool) {
+    function _isAllowedRecoveryCall(Call calldata call_) internal view returns (bool) {
         if (call_.data.length == 0) {
             return call_.value != 0;
         }
-        if (call_.value != 0 || call_.data.length < 4) {
+        if (call_.value != 0 || call_.data.length < 4 || call_.target.code.length == 0) {
             return false;
         }
         bytes4 selector = bytes4(call_.data[:4]);
-        return selector == ERC20_TRANSFER || selector == ERC721_SAFE_TRANSFER_FROM
-            || selector == ERC721_SAFE_TRANSFER_FROM_DATA || selector == ERC1155_SAFE_TRANSFER_FROM
-            || selector == ERC1155_SAFE_BATCH_TRANSFER_FROM;
+        if (selector == ERC20_TRANSFER) {
+            return call_.data.length == 4 + 32 * 2;
+        }
+        if (selector == ERC721_TRANSFER_FROM || selector == ERC721_SAFE_TRANSFER_FROM) {
+            (address from, address to, uint256 tokenId) =
+                abi.decode(call_.data[4:], (address, address, uint256));
+            return from == address(this)
+                && keccak256(call_.data)
+                    == keccak256(abi.encodeWithSelector(selector, from, to, tokenId));
+        }
+        if (selector == ERC721_SAFE_TRANSFER_FROM_DATA) {
+            (address from, address to, uint256 tokenId, bytes memory data) =
+                abi.decode(call_.data[4:], (address, address, uint256, bytes));
+            return from == address(this)
+                && keccak256(call_.data)
+                    == keccak256(abi.encodeWithSelector(selector, from, to, tokenId, data));
+        }
+        if (selector == ERC1155_SAFE_TRANSFER_FROM) {
+            (address from, address to, uint256 id, uint256 amount, bytes memory data) =
+                abi.decode(call_.data[4:], (address, address, uint256, uint256, bytes));
+            return from == address(this)
+                && keccak256(call_.data)
+                    == keccak256(abi.encodeWithSelector(selector, from, to, id, amount, data));
+        }
+        if (selector == ERC1155_SAFE_BATCH_TRANSFER_FROM) {
+            (
+                address from,
+                address to,
+                uint256[] memory ids,
+                uint256[] memory amounts,
+                bytes memory data
+            ) = abi.decode(call_.data[4:], (address, address, uint256[], uint256[], bytes));
+            return from == address(this) && ids.length == amounts.length
+                && keccak256(call_.data)
+                    == keccak256(abi.encodeWithSelector(selector, from, to, ids, amounts, data));
+        }
+        return false;
     }
 
     function deriveAccountSalt(InitMultisig calldata init) public pure returns (bytes32) {
