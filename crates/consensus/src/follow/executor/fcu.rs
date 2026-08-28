@@ -80,8 +80,8 @@ impl ForkchoiceTargets {
     }
 }
 
-/// Preferred targets keep the certified head. If Reth reports `SYNCING`, the executor retries the
-/// block anchor until `VALID` before it acknowledges the block.
+/// Preferred targets keep the certified head. The block anchor provides a fallback when Reth is
+/// still syncing the certified head.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(super) struct FinalityPlan {
     pub(super) preferred: ForkchoiceTargets,

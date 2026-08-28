@@ -25,8 +25,6 @@ use super::{
 };
 use crate::{consensus::block::Block, utils::OptionFuture};
 
-const FINALITY_FCU_RETRY_INTERVAL: Duration = Duration::from_secs(1);
-
 pub(crate) struct Actor<TContext, P, E, M = crate::alias::marshal::Mailbox> {
     context: ContextCell<TContext>,
     mailbox: mpsc::UnboundedReceiver<Message>,
@@ -276,28 +274,8 @@ async fn apply_finality<TContext: Pacer, E: ExecutionEngine + ?Sized>(
     match submit_forkchoice_update(context, execution_engine, &plan.preferred).await? {
         ForkchoiceOutcome::Valid => Ok(plan.preferred),
         ForkchoiceOutcome::Syncing => {
-            submit_until_valid(context, execution_engine, &plan.block_anchor).await?;
+            submit_forkchoice_update(context, execution_engine, &plan.block_anchor).await?;
             Ok(plan.block_anchor)
-        }
-    }
-}
-
-async fn submit_until_valid<TContext: Pacer, E: ExecutionEngine + ?Sized>(
-    context: &TContext,
-    execution_engine: &E,
-    forkchoice: &ForkchoiceTargets,
-) -> eyre::Result<()> {
-    loop {
-        let outcome = submit_forkchoice_update(context, execution_engine, forkchoice).await?;
-        match outcome {
-            ForkchoiceOutcome::Valid => return Ok(()),
-            ForkchoiceOutcome::Syncing => {
-                debug!(
-                    "execution layer is syncing before applying finality; retrying block anchor \
-                     FCU"
-                );
-                context.sleep(FINALITY_FCU_RETRY_INTERVAL).await;
-            }
         }
     }
 }

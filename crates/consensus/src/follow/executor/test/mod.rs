@@ -449,7 +449,7 @@ fn certificate_advances_head_before_block_advances_finality() {
 }
 
 #[test_traced]
-fn syncing_certificate_head_falls_back_to_block_anchor_before_acknowledging() {
+fn syncing_certificate_head_submits_block_anchor_once() {
     deterministic::Runner::default().start(|context| async move {
         let provider = StubExecutionProvider::default();
         let release_head_forkchoice = provider.pause_next_forkchoice();
@@ -479,20 +479,11 @@ fn syncing_certificate_head_falls_back_to_block_anchor_before_acknowledging() {
         release_head_forkchoice
             .send(())
             .expect("the head FCU should still be waiting");
-        wait_until(&context, || provider.forkchoices().len() == 3).await;
-
-        let mut waiter = Box::pin(waiter);
-        assert!(
-            waiter.as_mut().now_or_never().is_none(),
-            "syncing block anchor must hold the acknowledgement"
-        );
-
-        provider.set_forkchoices_syncing(false);
         waiter
             .await
-            .expect("valid block anchor should acknowledge the durable block");
+            .expect("submitted block anchor should acknowledge the durable block");
 
-        wait_until(&context, || provider.forkchoices().len() == 5).await;
+        wait_until(&context, || provider.forkchoices().len() == 4).await;
 
         assert_eq!(provider.payload_count(), 1);
         assert_eq!(
@@ -500,7 +491,6 @@ fn syncing_certificate_head_falls_back_to_block_anchor_before_acknowledging() {
             vec![
                 forkchoice(future_head.0, B256::ZERO),
                 forkchoice(future_head.0, finalized),
-                forkchoice(finalized, finalized),
                 forkchoice(finalized, finalized),
                 forkchoice(future_head.0, finalized),
             ]
