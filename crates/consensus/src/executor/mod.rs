@@ -47,7 +47,7 @@ pub(crate) trait ExecutionLayer: Clone + Send + Sync + 'static {
     /// forkchoice update without changing its canonical state, returning whether it was accepted.
     fn is_ready(&self) -> impl Future<Output = eyre::Result<bool>> + Send + 'static {
         // Carries the actual implementation so that we can instrument it.
-        #[tracing::instrument(skip_all, ret, err)]
+        #[tracing::instrument(name = "is_ready", skip_all, ret, err)]
         async fn _impl<E: ExecutionLayer>(execution_node: E) -> eyre::Result<bool> {
             let forkchoice_state = execution_node
                 .current_forkchoice_state()
