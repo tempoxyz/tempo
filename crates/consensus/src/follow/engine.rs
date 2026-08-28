@@ -164,7 +164,6 @@ impl<TUpstream> Config<TUpstream> {
                     .clone(),
                 marshal: marshal_mailbox.clone(),
                 epoch_strategy: epoch_strategy.clone(),
-                floor: last_finalized_height,
                 fcu_heartbeat_interval: self.fcu_heartbeat_interval,
             },
         );

@@ -32,14 +32,22 @@ pub(super) fn make_block(height: u64, parent_hash: B256) -> Block {
     make_block_at_round(height, parent_hash, Round::zero())
 }
 
+pub(super) fn make_prefork_block(height: u64, parent_hash: B256) -> Block {
+    make_block_with_round(height, parent_hash, None)
+}
+
 pub(super) fn make_block_at_round(height: u64, parent_hash: B256, round: Round) -> Block {
+    make_block_with_round(height, parent_hash, Some(round))
+}
+
+fn make_block_with_round(height: u64, parent_hash: B256, round: Option<Round>) -> Block {
     let header = TempoHeader {
         inner: Header {
             parent_hash,
             number: height,
             ..Default::default()
         },
-        consensus_context: Some(TempoConsensusContext {
+        consensus_context: round.map(|round| TempoConsensusContext {
             epoch: round.epoch().get(),
             view: round.view().get(),
             parent_view: 0,

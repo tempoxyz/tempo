@@ -25,7 +25,7 @@ use tracing::{Level, debug, error, instrument};
 
 use super::{
     Config, ExecutionEngine, FinalizedBlockProvider, Marshal,
-    fcu::{ForkchoiceTargets, ForkchoiceTracker, Target},
+    fcu::{BlockForkchoice, FinalityPlan, ForkchoiceTargets, ForkchoiceTracker},
     ingress::Message,
 };
 use crate::{consensus::block::Block, utils::OptionFuture};
@@ -41,7 +41,6 @@ pub(crate) struct Actor<TContext, P, E, M = crate::alias::marshal::Mailbox> {
     marshal: M,
 
     epoch_strategy: FixedEpocher,
-    floor: Height,
 
     forkchoice: ForkchoiceTracker,
 
@@ -71,14 +70,13 @@ where
             execution_engine,
             marshal,
             epoch_strategy,
-            floor,
             fcu_heartbeat_interval,
         } = config;
 
         let finalized_header = execution_provider
             .finalized_header()
             .expect("failed reading finalized execution header");
-        let forkchoice = ForkchoiceTracker::new(Target::from_header(&finalized_header));
+        let forkchoice = ForkchoiceTracker::new(&finalized_header);
 
         Self {
             context: ContextCell::new(context),
@@ -86,7 +84,6 @@ where
             mailbox,
             marshal,
             epoch_strategy,
-            floor,
             execution_provider,
             execution_engine,
 
@@ -118,7 +115,7 @@ where
                 result = &mut self.execution_task => {
                     self.execution_task = OptionFuture::none();
                     match result {
-                        ExecutionTaskResult::Completed(submitted_fcu) => {
+                        Ok(submitted_fcu) => {
                             if let Some(submitted_fcu) = submitted_fcu {
                                 self.forkchoice.note_submitted(submitted_fcu);
                             }
@@ -126,7 +123,7 @@ where
                             // Emits an event on error.
                             let _: Result<_, _> = self.try_advance_floor().await;
                         }
-                        ExecutionTaskResult::Fatal(error) => {
+                        Err(error) => {
                             error!(%error, "execution task failed");
                             break;
                         }
@@ -149,12 +146,10 @@ where
                             if self.floor_candidate.is_none() {
                                 self.floor_candidate = Some(height);
                             }
-                            self.forkchoice
-                                .advance_head(Target::from_finalization(round, digest));
+                            self.forkchoice.observe_certificate(round, digest);
                         }
                         Message::Finalization { round, digest } => {
-                            let candidate = Target::from_finalization(round, digest);
-                            self.forkchoice.advance_head(candidate);
+                            self.forkchoice.observe_certificate(round, digest);
                         }
                     }
                 }
@@ -182,33 +177,19 @@ where
             return;
         }
 
-        let request = if let Some((block, ack)) = self.block_queue.pop_front() {
-            let block_target = Target::from_block(&block);
-            let finality_anchor =
-                self.forkchoice
-                    .advance_finalized(block_target)
-                    .then_some(ForkchoiceTargets {
-                        head: block_target,
-                        finalized: block_target,
-                    });
-            let latest_forkchoice = (self.forkchoice.requires_update() || heartbeat)
-                .then_some(self.forkchoice.latest());
-            ExecutionRequest::Block {
-                block,
-                latest_forkchoice,
-                finality_anchor,
-                ack,
-            }
-        } else if self.forkchoice.requires_update() || heartbeat {
-            ExecutionRequest::Forkchoice(self.forkchoice.latest())
+        let execution_engine = self.execution_engine.clone();
+        let task = if let Some((block, ack)) = self.block_queue.pop_front() {
+            let forkchoice = self.forkchoice.plan_block(&block, heartbeat);
+            let context = self.context.child("execute_block");
+            execute_block(context, execution_engine, block, forkchoice, ack).boxed()
+        } else if let Some(forkchoice) = self.forkchoice.plan_update(heartbeat) {
+            let context = self.context.child("execute_head_update");
+            execute_head_update(context, execution_engine, forkchoice).boxed()
         } else {
             return;
         };
 
-        let context = self.context.child("execute_request");
-        let execution_engine = self.execution_engine.clone();
-        self.execution_task
-            .replace(execute_request(context, execution_engine, request).boxed());
+        self.execution_task.replace(task);
     }
 
     #[instrument(skip_all, err(level = Level::WARN))]
@@ -253,103 +234,73 @@ where
 
         self.marshal.set_floor(finalization);
 
-        self.floor = floor_height;
         self.floor_candidate = None;
 
         Ok(())
     }
 }
 
-enum ExecutionRequest {
-    Forkchoice(ForkchoiceTargets),
-    Block {
-        /// A finalized block delivered by marshal for execution.
-        block: Block,
-        /// The latest combined head and finalized targets, if an update is due.
-        latest_forkchoice: Option<ForkchoiceTargets>,
-        /// The delivered block as both head and finalized when it advances finality.
-        finality_anchor: Option<ForkchoiceTargets>,
-        /// Signals marshal after the payload and required forkchoice update complete.
-        ack: Exact,
-    },
-}
-
-enum ExecutionTaskResult {
-    Completed(Option<ForkchoiceTargets>),
-    Fatal(Report),
-}
+type ExecutionTaskResult = eyre::Result<Option<ForkchoiceTargets>>;
 
 enum ForkchoiceOutcome {
     Valid,
     Syncing,
 }
 
-async fn execute_request<TContext: Pacer, E: ExecutionEngine + 'static>(
+async fn execute_head_update<TContext: Pacer, E: ExecutionEngine + 'static>(
     context: TContext,
     execution_engine: E,
-    request: ExecutionRequest,
+    forkchoice: ForkchoiceTargets,
 ) -> ExecutionTaskResult {
-    match request {
-        ExecutionRequest::Forkchoice(forkchoice) => {
-            let result = submit_forkchoice_update(&context, &execution_engine, &forkchoice).await;
-            match result {
-                Ok(ForkchoiceOutcome::Valid | ForkchoiceOutcome::Syncing) => {
-                    ExecutionTaskResult::Completed(Some(forkchoice))
-                }
-                Err(error) => ExecutionTaskResult::Fatal(error),
-            }
+    submit_forkchoice_update(&context, &execution_engine, &forkchoice).await?;
+    Ok(Some(forkchoice))
+}
+
+async fn execute_block<TContext: Pacer, E: ExecutionEngine + 'static>(
+    context: TContext,
+    execution_engine: E,
+    block: Block,
+    forkchoice: BlockForkchoice,
+    ack: Exact,
+) -> ExecutionTaskResult {
+    submit_new_payload(&context, &execution_engine, block).await?;
+
+    let submitted = match forkchoice {
+        BlockForkchoice::Guide(targets) => {
+            submit_forkchoice_update(&context, &execution_engine, &targets).await?;
+            Some(targets)
         }
-        ExecutionRequest::Block {
-            block,
-            latest_forkchoice,
-            finality_anchor,
-            ack,
-        } => {
-            if let Err(error) = submit_new_payload(&context, &execution_engine, block).await {
-                return ExecutionTaskResult::Fatal(error);
-            }
+        BlockForkchoice::Finalize(plan) => {
+            Some(apply_finality(&context, &execution_engine, plan).await?)
+        }
+        BlockForkchoice::None => None,
+    };
 
-            let submitted_fcu = match latest_forkchoice {
-                Some(latest_forkchoice) => {
-                    let result =
-                        submit_forkchoice_update(&context, &execution_engine, &latest_forkchoice)
-                            .await;
-                    match result {
-                        Ok(ForkchoiceOutcome::Valid) => Some(latest_forkchoice),
-                        Ok(ForkchoiceOutcome::Syncing) => match finality_anchor {
-                            Some(finality_anchor) => {
-                                if let Err(error) = submit_finality_anchor(
-                                    &context,
-                                    &execution_engine,
-                                    &finality_anchor,
-                                )
-                                .await
-                                {
-                                    return ExecutionTaskResult::Fatal(error);
-                                }
-                                Some(finality_anchor)
-                            }
-                            None => Some(latest_forkchoice),
-                        },
-                        Err(error) => return ExecutionTaskResult::Fatal(error),
-                    }
-                }
-                None => None,
-            };
+    ack.acknowledge();
+    Ok(submitted)
+}
 
-            ack.acknowledge();
-            ExecutionTaskResult::Completed(submitted_fcu)
+async fn apply_finality<TContext: Pacer, E: ExecutionEngine + ?Sized>(
+    context: &TContext,
+    execution_engine: &E,
+    plan: FinalityPlan,
+) -> eyre::Result<ForkchoiceTargets> {
+    match submit_forkchoice_update(context, execution_engine, &plan.preferred).await? {
+        ForkchoiceOutcome::Valid => Ok(plan.preferred),
+        ForkchoiceOutcome::Syncing => {
+            submit_until_valid(context, execution_engine, &plan.anchor).await?;
+            Ok(plan.anchor)
         }
     }
 }
 
-async fn submit_finality_anchor<TContext: Pacer, E: ExecutionEngine + ?Sized>(
+async fn submit_until_valid<TContext: Pacer, E: ExecutionEngine + ?Sized>(
     context: &TContext,
     execution_engine: &E,
-    finality_anchor: &ForkchoiceTargets,
+    forkchoice: &ForkchoiceTargets,
 ) -> eyre::Result<()> {
     loop {
-        let outcome = submit_forkchoice_update(context, execution_engine, finality_anchor).await?;
+        let outcome = submit_forkchoice_update(context, execution_engine, forkchoice).await?;
         match outcome {
             ForkchoiceOutcome::Valid => return Ok(()),
             ForkchoiceOutcome::Syncing => {
@@ -397,10 +348,8 @@ async fn submit_new_payload<TContext: Pacer, E: ExecutionEngine + ?Sized>(
 #[instrument(
     skip_all,
     fields(
-        head.round = ?forkchoice.head.round,
-        head.digest = %forkchoice.head.digest,
-        finalized.round = ?forkchoice.finalized.round,
-        finalized.digest = %forkchoice.finalized.digest,
+        head.digest = %forkchoice.head,
+        finalized.digest = %forkchoice.finalized,
     )
 )]
 async fn submit_forkchoice_update<TContext: Pacer, E: ExecutionEngine + ?Sized>(
