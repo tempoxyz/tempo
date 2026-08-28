@@ -27,13 +27,27 @@ use harness::{make_block, round};
 #[test]
 fn indices_are_only_rebuilt_when_every_index_reaches_headers() {
     let checkpoint = StageCheckpoint::new(10);
-    assert!(StageCheckpoints::new(checkpoint, checkpoint, checkpoint, checkpoint).is_rebuilt());
+    assert!(
+        StageCheckpoints {
+            headers: checkpoint,
+            transaction_lookup: checkpoint,
+            account_history: checkpoint,
+            storage_history: checkpoint,
+        }
+        .is_rebuilt()
+    );
 
     for lagging_index in 0..3 {
         let mut indices = [checkpoint; 3];
         indices[lagging_index] = StageCheckpoint::new(9);
         assert!(
-            !StageCheckpoints::new(checkpoint, indices[0], indices[1], indices[2]).is_rebuilt()
+            !StageCheckpoints {
+                headers: checkpoint,
+                transaction_lookup: indices[0],
+                account_history: indices[1],
+                storage_history: indices[2],
+            }
+            .is_rebuilt()
         );
     }
 }

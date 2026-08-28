@@ -419,18 +419,18 @@ fn index_rebuild_stalls_backfill_until_stage_checkpoints_match() {
         let marshal = FakeMarshal::new();
         marshal.add_block(b1);
         let execution = FakeExecution::new();
-        execution.script_stage_checkpoints(Ok(Some(StageCheckpoints::new(
-            StageCheckpoint::new(1),
-            StageCheckpoint::new(0),
-            StageCheckpoint::new(1),
-            StageCheckpoint::new(1),
-        ))));
-        execution.script_stage_checkpoints(Ok(Some(StageCheckpoints::new(
-            StageCheckpoint::new(1),
-            StageCheckpoint::new(1),
-            StageCheckpoint::new(1),
-            StageCheckpoint::new(1),
-        ))));
+        execution.script_stage_checkpoints(Ok(Some(StageCheckpoints {
+            headers: StageCheckpoint::new(1),
+            transaction_lookup: StageCheckpoint::new(0),
+            account_history: StageCheckpoint::new(1),
+            storage_history: StageCheckpoint::new(1),
+        })));
+        execution.script_stage_checkpoints(Ok(Some(StageCheckpoints {
+            headers: StageCheckpoint::new(1),
+            transaction_lookup: StageCheckpoint::new(1),
+            account_history: StageCheckpoint::new(1),
+            storage_history: StageCheckpoint::new(1),
+        })));
 
         let h = Harness::builder()
             .execution(execution)

@@ -30,7 +30,12 @@ pub(crate) use ingress::Mailbox;
 
 use crate::consensus::{Digest, block::Block};
 
-/// Persisted checkpoints that determine whether reth's indices are rebuilt.
+/// The commonly rebuilt reth stage checkpoints used to determine whether index rebuilding is
+/// complete.
+///
+/// The index is considered rebuilt when the Headers, TransactionLookup, IndexAccountHistory, and
+/// IndexStorageHistory checkpoints all match. These are not all reth stage checkpoints, only the
+/// ones commonly rebuilt at startup.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(crate) struct StageCheckpoints {
     headers: StageCheckpoint,
@@ -40,20 +45,6 @@ pub(crate) struct StageCheckpoints {
 }
 
 impl StageCheckpoints {
-    const fn new(
-        headers: StageCheckpoint,
-        transaction_lookup: StageCheckpoint,
-        account_history: StageCheckpoint,
-        storage_history: StageCheckpoint,
-    ) -> Self {
-        Self {
-            headers,
-            transaction_lookup,
-            account_history,
-            storage_history,
-        }
-    }
-
     const fn is_rebuilt(&self) -> bool {
         self.headers.block_number == self.transaction_lookup.block_number
             && self.headers.block_number == self.account_history.block_number
@@ -162,12 +153,12 @@ impl ExecutionLayer for Arc<TempoFullNode> {
             .zip(storage_history)
             .map(
                 |(((headers, transaction_lookup), account_history), storage_history)| {
-                    StageCheckpoints::new(
+                    StageCheckpoints {
                         headers,
                         transaction_lookup,
                         account_history,
                         storage_history,
-                    )
+                    }
                 },
             ))
     }

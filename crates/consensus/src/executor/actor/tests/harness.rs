@@ -597,12 +597,12 @@ impl ExecutionLayer for FakeExecution {
             NextScriptedResult::Scripted(outcome) => outcome
                 .map_err(Report::msg)
                 .wrap_err("scripted stage checkpoint lookup failed"),
-            NextScriptedResult::Unscripted => Ok(Some(StageCheckpoints::new(
-                StageCheckpoint::new(0),
-                StageCheckpoint::new(0),
-                StageCheckpoint::new(0),
-                StageCheckpoint::new(0),
-            ))),
+            NextScriptedResult::Unscripted => Ok(Some(StageCheckpoints {
+                headers: StageCheckpoint::new(0),
+                transaction_lookup: StageCheckpoint::new(0),
+                account_history: StageCheckpoint::new(0),
+                storage_history: StageCheckpoint::new(0),
+            })),
             NextScriptedResult::Exhausted => {
                 panic!("stage checkpoint lookup exceeded its scripted outcome sequence")
             }
