@@ -473,6 +473,12 @@ where
     }
 
     /// Waits for reth's startup index rebuild to catch every index stage up to Headers.
+    ///
+    /// Reth returns the same `SYNCING` status while rebuilding snapshot indices and for a
+    /// disconnected payload, without reporting the reason. This one-shot startup gate opens only
+    /// after the commonly rebuilt indices reach the Headers checkpoint and remains open
+    /// permanently. Once open, snapshot index rebuilding can no longer explain `SYNCING`, allowing
+    /// us to consider it an invalid state when forwarding finalized blocks.
     async fn wait_for_index_rebuild(&mut self) -> eyre::Result<()> {
         for attempts in 1_u64.. {
             if check_stagepoint_progress(&self.execution_node, attempts)? {
