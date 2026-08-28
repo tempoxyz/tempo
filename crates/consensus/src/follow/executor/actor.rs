@@ -40,7 +40,7 @@ pub(crate) struct Actor<TContext, P, E, M = crate::alias::marshal::Mailbox> {
     floor: Height,
 
     last_fcu: Forkchoice,
-    latest_fcu: Forkchoice,
+    pending_fcu: Forkchoice,
 
     block_queue: VecDeque<(Block, Exact)>,
     floor_candidate: Option<Height>,
@@ -88,7 +88,7 @@ where
             execution_engine,
 
             last_fcu: forkchoice,
-            latest_fcu: forkchoice,
+            pending_fcu: forkchoice,
             block_queue: VecDeque::new(),
             floor_candidate: None,
             execution_task: OptionFuture::none(),
@@ -141,10 +141,10 @@ where
                             if self.floor_candidate.is_none() {
                                 self.floor_candidate = Some(height);
                             }
-                            self.latest_fcu.update_head(round, digest);
+                            self.pending_fcu.update_head(round, digest);
                         }
                         Message::Finalization { round, digest } => {
-                            self.latest_fcu.update_head(round, digest);
+                            self.pending_fcu.update_head(round, digest);
                         }
                     }
                 }
@@ -157,8 +157,8 @@ where
     }
 
     fn should_send_forkchoice(&self) -> bool {
-        self.latest_fcu.head_digest() != self.last_fcu.head_digest()
-            || self.latest_fcu.finalized_digest() != self.last_fcu.finalized_digest()
+        self.pending_fcu.head_digest() != self.last_fcu.head_digest()
+            || self.pending_fcu.finalized_digest() != self.last_fcu.finalized_digest()
     }
 
     fn update_fcu_heartbeat_timer(&mut self) {
@@ -179,12 +179,12 @@ where
 
         let request = if let Some((block, ack)) = self.block_queue.pop_front() {
             let forkchoice = self
-                .latest_fcu
+                .pending_fcu
                 .update_finalized(&block)
-                .then_some(self.latest_fcu);
+                .then_some(self.pending_fcu);
             ExecutionRequest::Block(block, forkchoice, ack)
         } else if self.should_send_forkchoice() || heartbeat {
-            ExecutionRequest::Forkchoice(self.latest_fcu)
+            ExecutionRequest::Forkchoice(self.pending_fcu)
         } else {
             return;
         };
