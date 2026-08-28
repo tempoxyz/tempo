@@ -1,7 +1,8 @@
 //! Execution-layer synchronization for follow mode.
 //!
-//! Verified certificates guide the execution head by round. Marshal's gap-free block stream
-//! advances safe and finalized by height. Durable execution progress moves marshal's floor.
+//! This is intentionally smaller than the validator executor: it receives
+//! already-verified finalized tips, drives forkchoice updates, and advances
+//! marshal's floor after execution-layer progress is durable.
 
 use std::future::Future;
 
@@ -46,6 +47,7 @@ pub(crate) struct Config<P, E, M = crate::alias::marshal::Mailbox> {
     pub(crate) execution_engine: E,
     pub(crate) marshal: M,
     pub(crate) epoch_strategy: FixedEpocher,
+    pub(crate) floor: Height,
     pub(crate) fcu_heartbeat_interval: std::time::Duration,
 }
 
@@ -75,7 +77,7 @@ pub(crate) trait FinalizedBlockProvider: Send + Sync {
 
 /// Engine commands issued by the follower executor.
 pub(crate) trait ExecutionEngine: Send + Sync {
-    /// Submit a payload for a block delivered after consensus finality.
+    /// Submit a finalized execution payload.
     fn new_payload(
         &self,
         payload: TempoExecutionData,

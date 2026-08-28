@@ -4,8 +4,6 @@ mod utils;
 
 use std::{num::NonZeroU64, time::Duration};
 
-use super::{Config, init};
-use crate::consensus::Digest;
 use alloy_primitives::B256;
 use alloy_rpc_types_engine::ForkchoiceState;
 use commonware_consensus::{
@@ -16,6 +14,9 @@ use commonware_consensus::{
 use commonware_macros::test_traced;
 use commonware_runtime::{Clock as _, Runner as _, Supervisor as _, deterministic};
 use commonware_utils::{Acknowledgement as _, acknowledgement::Exact};
+
+use super::{Config, init};
+use crate::consensus::Digest;
 use utils::{
     StubExecutionProvider, StubMarshal, make_block, make_block_at_round, make_roundless_block,
 };
@@ -53,7 +54,7 @@ fn forkchoice(head: B256, finalized: B256) -> ForkchoiceState {
 }
 
 #[test_traced]
-fn delivered_block_advances_execution_finality_and_marshal_floor() {
+fn block_is_executed_canonicalized_acknowledged_and_advances_floor_to_deep_candidate() {
     deterministic::Runner::default().start(|context| async move {
         let finalized_height = EPOCH_LENGTH.get() * 2;
         let expected_floor = finalized_height - EPOCH_LENGTH.get() - 1;
@@ -71,6 +72,7 @@ fn delivered_block_advances_execution_finality_and_marshal_floor() {
                 execution_engine: provider.clone(),
                 marshal: marshal.clone(),
                 epoch_strategy: FixedEpocher::new(EPOCH_LENGTH),
+                floor: Height::zero(),
                 fcu_heartbeat_interval: Duration::from_secs(60),
             },
         );
@@ -101,7 +103,11 @@ fn delivered_block_advances_execution_finality_and_marshal_floor() {
         assert_eq!(provider.payload_count(), 1);
         assert_eq!(
             provider.forkchoices(),
-            vec![forkchoice(block_hash, block_hash)]
+            vec![alloy_rpc_types_engine::ForkchoiceState {
+                head_block_hash: block_hash,
+                safe_block_hash: block_hash,
+                finalized_block_hash: block_hash,
+            }]
         );
     });
 }
@@ -121,6 +127,7 @@ fn floor_candidate_uses_execution_depth_and_next_tip_starts_new_cycle() {
                 execution_engine: provider.clone(),
                 marshal: marshal.clone(),
                 epoch_strategy: FixedEpocher::new(EPOCH_LENGTH),
+                floor: Height::zero(),
                 fcu_heartbeat_interval: Duration::from_secs(60),
             },
         );
@@ -181,7 +188,7 @@ fn floor_candidate_uses_execution_depth_and_next_tip_starts_new_cycle() {
 }
 
 #[test_traced]
-fn stale_block_with_higher_round_does_not_regress_forkchoice() {
+fn block_at_or_below_finalized_tip_does_not_regress_forkchoice() {
     deterministic::Runner::default().start(|context| async move {
         let finalized_height = EPOCH_LENGTH.get();
         let provider = StubExecutionProvider::default();
@@ -194,6 +201,7 @@ fn stale_block_with_higher_round_does_not_regress_forkchoice() {
                 execution_engine: provider.clone(),
                 marshal: StubMarshal::default(),
                 epoch_strategy: FixedEpocher::new(EPOCH_LENGTH),
+                floor: Height::zero(),
                 fcu_heartbeat_interval: Duration::from_secs(60),
             },
         );
@@ -215,7 +223,7 @@ fn roundless_block_advances_finality_by_height() {
     deterministic::Runner::default().start(|context| async move {
         let current = B256::with_last_byte(100);
         let provider = StubExecutionProvider::default();
-        provider.set_finalized_without_round(100, current);
+        provider.set_prefork_finalized(100, current);
 
         let (actor, mut mailbox) = init(
             context.child("follower_executor"),
@@ -224,6 +232,7 @@ fn roundless_block_advances_finality_by_height() {
                 execution_engine: provider.clone(),
                 marshal: StubMarshal::default(),
                 epoch_strategy: FixedEpocher::new(EPOCH_LENGTH),
+                floor: Height::zero(),
                 fcu_heartbeat_interval: Duration::from_secs(60),
             },
         );
@@ -261,6 +270,7 @@ fn floor_does_not_advance_until_its_execution_block_is_durable() {
                 execution_engine: provider,
                 marshal: marshal.clone(),
                 epoch_strategy: FixedEpocher::new(EPOCH_LENGTH),
+                floor: Height::zero(),
                 fcu_heartbeat_interval: Duration::from_secs(60),
             },
         );
@@ -298,7 +308,7 @@ fn floor_does_not_advance_until_its_execution_block_is_durable() {
 }
 
 #[test_traced]
-fn invalid_payload_exits_before_fcu_or_ack() {
+fn invalid_payload_exits_without_acknowledging_or_canonicalizing() {
     deterministic::Runner::default().start(|context| async move {
         let provider = StubExecutionProvider::default();
         provider.reject_payloads();
@@ -310,6 +320,7 @@ fn invalid_payload_exits_before_fcu_or_ack() {
                 execution_engine: provider.clone(),
                 marshal: StubMarshal::default(),
                 epoch_strategy: FixedEpocher::new(EPOCH_LENGTH),
+                floor: Height::zero(),
                 fcu_heartbeat_interval: Duration::from_secs(60),
             },
         );
@@ -343,6 +354,7 @@ fn forkchoice_failure_exits_without_acknowledging_block() {
                 execution_engine: provider.clone(),
                 marshal: StubMarshal::default(),
                 epoch_strategy: FixedEpocher::new(EPOCH_LENGTH),
+                floor: Height::zero(),
                 fcu_heartbeat_interval: Duration::from_secs(60),
             },
         );
@@ -375,6 +387,7 @@ fn tips_are_monotonic_and_coalesced_while_forkchoice_is_in_flight() {
                 execution_engine: provider.clone(),
                 marshal: StubMarshal::default(),
                 epoch_strategy: FixedEpocher::new(EPOCH_LENGTH),
+                floor: Height::zero(),
                 fcu_heartbeat_interval: Duration::from_secs(60),
             },
         );
@@ -411,8 +424,9 @@ fn tips_are_monotonic_and_coalesced_while_forkchoice_is_in_flight() {
     });
 }
 
+// A finalization can advance forkchoice before execution receives its block.
 #[test_traced]
-fn certificate_advances_head_before_block_advances_finality() {
+fn finalization_drives_forkchoice_by_round() {
     deterministic::Runner::default().start(|context| async move {
         let provider = StubExecutionProvider::default();
 
@@ -423,6 +437,7 @@ fn certificate_advances_head_before_block_advances_finality() {
                 execution_engine: provider.clone(),
                 marshal: StubMarshal::default(),
                 epoch_strategy: FixedEpocher::new(EPOCH_LENGTH),
+                floor: Height::zero(),
                 fcu_heartbeat_interval: Duration::from_secs(60),
             },
         );
@@ -458,6 +473,7 @@ fn certificate_head_is_preserved_when_block_advances_finality() {
                 execution_engine: provider.clone(),
                 marshal: StubMarshal::default(),
                 epoch_strategy: FixedEpocher::new(EPOCH_LENGTH),
+                floor: Height::zero(),
                 fcu_heartbeat_interval: Duration::from_secs(60),
             },
         );
@@ -485,8 +501,10 @@ fn certificate_head_is_preserved_when_block_advances_finality() {
     });
 }
 
+/// An older finalization received while a block FCU is in flight must not
+/// become the next forkchoice target.
 #[test_traced]
-fn delayed_certificate_does_not_regress_newer_block_forkchoice() {
+fn delayed_finalization_does_not_regress_newer_block_forkchoice() {
     deterministic::Runner::default().start(|context| async move {
         let current = Digest(B256::with_last_byte(10));
         let provider = StubExecutionProvider::default();
@@ -500,6 +518,7 @@ fn delayed_certificate_does_not_regress_newer_block_forkchoice() {
                 execution_engine: provider.clone(),
                 marshal: StubMarshal::default(),
                 epoch_strategy: FixedEpocher::new(EPOCH_LENGTH),
+                floor: Height::zero(),
                 fcu_heartbeat_interval: HEARTBEAT_INTERVAL,
             },
         );
@@ -514,8 +533,8 @@ fn delayed_certificate_does_not_regress_newer_block_forkchoice() {
         })
         .await;
 
-        let older_certificate = Digest(B256::with_last_byte(12));
-        mailbox.finalization(round(12), older_certificate);
+        let delayed = Digest(B256::with_last_byte(12));
+        mailbox.finalization(round(12), delayed);
         context.sleep(Duration::from_millis(1)).await;
 
         release_block_forkchoice
@@ -533,7 +552,7 @@ fn delayed_certificate_does_not_regress_newer_block_forkchoice() {
 }
 
 #[test_traced]
-fn startup_header_round_orders_certificate_heads() {
+fn execution_tip_round_orders_finalizations_after_restart() {
     deterministic::Runner::default().start(|context| async move {
         let provider = StubExecutionProvider::default();
         let current = digest(100);
@@ -546,6 +565,7 @@ fn startup_header_round_orders_certificate_heads() {
                 execution_engine: provider.clone(),
                 marshal: StubMarshal::default(),
                 epoch_strategy: FixedEpocher::new(EPOCH_LENGTH),
+                floor: Height::zero(),
                 fcu_heartbeat_interval: Duration::from_secs(60),
             },
         );
@@ -563,11 +583,11 @@ fn startup_header_round_orders_certificate_heads() {
 }
 
 #[test_traced]
-fn certificate_supersedes_roundless_startup_head() {
+fn finalization_supersedes_roundless_prefork_execution_tip() {
     deterministic::Runner::default().start(|context| async move {
         let provider = StubExecutionProvider::default();
         let current = digest(100);
-        provider.set_finalized_without_round(100, current.0);
+        provider.set_prefork_finalized(100, current.0);
 
         let (actor, mailbox) = init(
             context.child("follower_executor"),
@@ -576,6 +596,7 @@ fn certificate_supersedes_roundless_startup_head() {
                 execution_engine: provider.clone(),
                 marshal: StubMarshal::default(),
                 epoch_strategy: FixedEpocher::new(EPOCH_LENGTH),
+                floor: Height::zero(),
                 fcu_heartbeat_interval: Duration::from_secs(60),
             },
         );
@@ -595,7 +616,36 @@ fn certificate_supersedes_roundless_startup_head() {
 }
 
 #[test_traced]
-fn heartbeat_resubmits_current_forkchoice_after_interval() {
+fn finalization_is_driven_to_from_genesis() {
+    deterministic::Runner::default().start(|context| async move {
+        let provider = StubExecutionProvider::default();
+
+        let (actor, mailbox) = init(
+            context.child("follower_executor"),
+            Config {
+                execution_provider: provider.clone(),
+                execution_engine: provider.clone(),
+                marshal: StubMarshal::default(),
+                epoch_strategy: FixedEpocher::new(EPOCH_LENGTH),
+                floor: Height::zero(),
+                fcu_heartbeat_interval: Duration::from_secs(60),
+            },
+        );
+        actor.start();
+
+        let finalized = Digest(B256::with_last_byte(9));
+        mailbox.finalization(round(5), finalized);
+
+        wait_until(&context, || !provider.forkchoices().is_empty()).await;
+        assert_eq!(
+            provider.forkchoices(),
+            vec![forkchoice(finalized.0, B256::ZERO)]
+        );
+    });
+}
+
+#[test_traced]
+fn heartbeat_resubmits_latest_tip_after_interval() {
     deterministic::Runner::default().start(|context| async move {
         let provider = StubExecutionProvider::default();
 
@@ -606,6 +656,7 @@ fn heartbeat_resubmits_current_forkchoice_after_interval() {
                 execution_engine: provider.clone(),
                 marshal: StubMarshal::default(),
                 epoch_strategy: FixedEpocher::new(EPOCH_LENGTH),
+                floor: Height::zero(),
                 fcu_heartbeat_interval: HEARTBEAT_INTERVAL,
             },
         );
@@ -621,8 +672,9 @@ fn heartbeat_resubmits_current_forkchoice_after_interval() {
         assert_eq!(provider.forkchoices().len(), 1);
         wait_until(&context, || provider.forkchoices().len() == 2).await;
 
-        let expected = forkchoice(digest.0, B256::ZERO);
-        assert_eq!(provider.forkchoices(), vec![expected, expected]);
+        let forkchoices = provider.forkchoices();
+        assert_eq!(forkchoices[0], forkchoices[1]);
+        assert_eq!(forkchoices[1].head_block_hash, digest.0);
     });
 }
 
@@ -639,6 +691,7 @@ fn heartbeat_waits_for_in_flight_execution() {
                 execution_engine: provider.clone(),
                 marshal: StubMarshal::default(),
                 epoch_strategy: FixedEpocher::new(EPOCH_LENGTH),
+                floor: Height::zero(),
                 fcu_heartbeat_interval: HEARTBEAT_INTERVAL,
             },
         );
@@ -680,6 +733,7 @@ fn durable_block_read_failure_does_not_exit_actor() {
                 execution_engine: provider.clone(),
                 marshal: marshal.clone(),
                 epoch_strategy: FixedEpocher::new(EPOCH_LENGTH),
+                floor: Height::zero(),
                 fcu_heartbeat_interval: Duration::from_secs(60),
             },
         );
@@ -721,6 +775,7 @@ fn startup_uses_execution_finalized_tip_without_immediate_forkchoice() {
                 execution_engine: provider.clone(),
                 marshal: StubMarshal::default(),
                 epoch_strategy: FixedEpocher::new(EPOCH_LENGTH),
+                floor: Height::zero(),
                 fcu_heartbeat_interval: HEARTBEAT_INTERVAL,
             },
         );
@@ -731,9 +786,9 @@ fn startup_uses_execution_finalized_tip_without_immediate_forkchoice() {
         assert!(provider.forkchoices().is_empty());
         wait_until(&context, || !provider.forkchoices().is_empty()).await;
 
-        assert_eq!(
-            provider.forkchoices(),
-            vec![forkchoice(finalized_hash, finalized_hash)]
-        );
+        let forkchoice = provider.forkchoices()[0];
+        assert_eq!(forkchoice.head_block_hash, finalized_hash);
+        assert_eq!(forkchoice.safe_block_hash, finalized_hash);
+        assert_eq!(forkchoice.finalized_block_hash, finalized_hash);
     });
 }

@@ -1,8 +1,13 @@
 //! Execution-layer driver for follower nodes.
 //!
-//! This actor imports marshal-delivered blocks, applies finality for advancing heights, and
-//! refreshes forkchoice on a timer. It moves marshal's floor behind Reth's finalized state. Reth
-//! sync and marshal gap repair fill missing history.
+//! This actor sends verified finalized tips to Reth as head and marshal-delivered blocks as safe
+//! and finalized forkchoice updates, periodically refreshes that forkchoice with a heartbeat, and
+//! advances marshal's floor to one epoch behind Reth's finalized state.
+//!
+//! Unlike the executor used by validator nodes, it does not build payloads, canonicalize proposal
+//! heads, or track blocks proposed by this node. Followers receive complete blocks from their
+//! upstream, submit them to Reth as finalized payloads, and rely on Reth's sync machinery plus
+//! marshal gap repair to fill history.
 
 use std::{collections::VecDeque, time::Duration};
 
@@ -32,6 +37,7 @@ pub(crate) struct Actor<TContext, P, E, M = crate::alias::marshal::Mailbox> {
     marshal: M,
 
     epoch_strategy: FixedEpocher,
+    floor: Height,
 
     last_fcu: Forkchoice,
     latest_fcu: Forkchoice,
@@ -62,6 +68,7 @@ where
             execution_engine,
             marshal,
             epoch_strategy,
+            floor,
             fcu_heartbeat_interval,
         } = config;
 
@@ -76,6 +83,7 @@ where
             mailbox,
             marshal,
             epoch_strategy,
+            floor,
             execution_provider,
             execution_engine,
 
@@ -108,15 +116,13 @@ where
                 result = &mut self.execution_task => {
                     self.execution_task = OptionFuture::none();
                     match result {
-                        Ok(submitted_fcu) => {
-                            if let Some(submitted_fcu) = submitted_fcu {
-                                self.last_fcu = submitted_fcu;
-                            }
+                        ExecutionTaskResult::Completed(last_fcu) => {
+                            self.last_fcu = last_fcu;
 
-                            // Floor advancement retries after the next completed execution task.
+                            // Emits an event on error.
                             let _: Result<_, _> = self.try_advance_floor().await;
                         }
-                        Err(error) => {
+                        ExecutionTaskResult::Fatal(error) => {
                             error!(%error, "execution task failed");
                             break;
                         }
@@ -129,10 +135,9 @@ where
                             self.block_queue.push_back(((*block).clone(), ack));
                         }
 
+                        // A Tip update has a persisted finalization, so it can
+                        // start a new floor cycle.
                         Message::Update(Update::Tip(round, height, digest)) => {
-                            // Marshal reports known finalized tips before it completes gap-free
-                            // block delivery. The certificate can guide the head while finalized
-                            // follows delivered blocks.
                             if self.floor_candidate.is_none() {
                                 self.floor_candidate = Some(height);
                             }
@@ -151,6 +156,11 @@ where
         }
     }
 
+    fn should_send_forkchoice(&self) -> bool {
+        self.latest_fcu.head_digest() != self.last_fcu.head_digest()
+            || self.latest_fcu.finalized_digest() != self.last_fcu.finalized_digest()
+    }
+
     fn update_fcu_heartbeat_timer(&mut self) {
         if self.execution_task.is_none() && self.block_queue.is_empty() {
             if self.fcu_heartbeat_timer.is_none() {
@@ -167,26 +177,23 @@ where
             return;
         }
 
-        let execution_engine = self.execution_engine.clone();
-        let task = if let Some((block, ack)) = self.block_queue.pop_front() {
+        let request = if let Some((block, ack)) = self.block_queue.pop_front() {
             let forkchoice = self
                 .latest_fcu
                 .update_finalized(&block)
                 .then_some(self.latest_fcu);
-            let context = self.context.child("execute_block");
-            execute_block(context, execution_engine, block, forkchoice, ack).boxed()
-        } else if self.latest_fcu.head_digest() != self.last_fcu.head_digest()
-            || self.latest_fcu.finalized_digest() != self.last_fcu.finalized_digest()
-            || heartbeat
-        {
-            let forkchoice = self.latest_fcu;
-            let context = self.context.child("execute_head_update");
-            execute_head_update(context, execution_engine, forkchoice).boxed()
+            ExecutionRequest::Block(block, forkchoice, ack)
+        } else if self.should_send_forkchoice() || heartbeat {
+            ExecutionRequest::Forkchoice(self.latest_fcu)
         } else {
             return;
         };
 
-        self.execution_task.replace(task);
+        let last_fcu = self.last_fcu;
+        let context = self.context.child("execute_request");
+        let execution_engine = self.execution_engine.clone();
+        self.execution_task
+            .replace(execute_request(context, execution_engine, last_fcu, request).boxed());
     }
 
     #[instrument(skip_all, err(level = Level::WARN))]
@@ -231,38 +238,56 @@ where
 
         self.marshal.set_floor(finalization);
 
+        self.floor = floor_height;
         self.floor_candidate = None;
 
         Ok(())
     }
 }
 
-type ExecutionTaskResult = eyre::Result<Option<Forkchoice>>;
-
-async fn execute_head_update<TContext: Pacer, E: ExecutionEngine + 'static>(
-    context: TContext,
-    execution_engine: E,
-    forkchoice: Forkchoice,
-) -> ExecutionTaskResult {
-    submit_forkchoice_update(&context, &execution_engine, &forkchoice).await?;
-    Ok(Some(forkchoice))
+enum ExecutionRequest {
+    Forkchoice(Forkchoice),
+    Block(Block, Option<Forkchoice>, Exact),
 }
 
-async fn execute_block<TContext: Pacer, E: ExecutionEngine + 'static>(
+enum ExecutionTaskResult {
+    Completed(Forkchoice),
+    Fatal(Report),
+}
+
+async fn execute_request<TContext: Pacer, E: ExecutionEngine + 'static>(
     context: TContext,
     execution_engine: E,
-    block: Block,
-    forkchoice: Option<Forkchoice>,
-    ack: Exact,
+    last_fcu: Forkchoice,
+    request: ExecutionRequest,
 ) -> ExecutionTaskResult {
-    submit_new_payload(&context, &execution_engine, block).await?;
+    match request {
+        ExecutionRequest::Forkchoice(forkchoice) => {
+            match submit_forkchoice_update(&context, &execution_engine, &forkchoice).await {
+                Ok(()) => ExecutionTaskResult::Completed(forkchoice),
+                Err(error) => ExecutionTaskResult::Fatal(error),
+            }
+        }
+        ExecutionRequest::Block(block, forkchoice, ack) => {
+            if let Err(error) = submit_new_payload(&context, &execution_engine, block).await {
+                return ExecutionTaskResult::Fatal(error);
+            }
 
-    if let Some(forkchoice) = &forkchoice {
-        submit_forkchoice_update(&context, &execution_engine, forkchoice).await?;
+            let last_fcu = if let Some(forkchoice) = forkchoice {
+                if let Err(error) =
+                    submit_forkchoice_update(&context, &execution_engine, &forkchoice).await
+                {
+                    return ExecutionTaskResult::Fatal(error);
+                }
+                forkchoice
+            } else {
+                last_fcu
+            };
+
+            ack.acknowledge();
+            ExecutionTaskResult::Completed(last_fcu)
+        }
     }
-
-    ack.acknowledge();
-    Ok(forkchoice)
 }
 
 #[instrument(
@@ -280,17 +305,16 @@ async fn submit_new_payload<TContext: Pacer, E: ExecutionEngine + ?Sized>(
         .new_payload(TempoExecutionData {
             block,
             block_access_list,
-            // Marshal delivers blocks after consensus finality checks, so this payload needs no
-            // validator set.
+            // can be omitted for finalized blocks
             validator_set: None,
         })
         .pace(context, Duration::from_millis(20))
         .await
-        .wrap_err("failed sending delivered payload")?;
+        .wrap_err("failed sending finalized payload")?;
 
     ensure!(
         payload_status.is_valid() || payload_status.is_syncing(),
-        "payload status of delivered block was neither valid nor syncing: \
+        "payload status of finalized block was neither valid nor syncing: \
          `{payload_status}`"
     );
 

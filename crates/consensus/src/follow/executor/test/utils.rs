@@ -89,7 +89,7 @@ impl StubExecutionProvider {
 
     /// Models a finalized execution header from before TIP-1031, when headers
     /// had no consensus context and therefore no round.
-    pub(super) fn set_finalized_without_round(&self, number: u64, hash: B256) {
+    pub(super) fn set_prefork_finalized(&self, number: u64, hash: B256) {
         *self.inner.finalized.lock() = BlockNumHash::new(number, hash);
         *self.inner.finalized_round.lock() = None;
     }
