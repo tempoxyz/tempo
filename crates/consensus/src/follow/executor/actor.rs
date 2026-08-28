@@ -20,7 +20,7 @@ use tracing::{Level, debug, error, instrument};
 
 use super::{
     Config, ExecutionEngine, FinalizedBlockProvider, Marshal,
-    fcu::{ForkchoiceTargets, ForkchoiceTracker},
+    fcu::{Forkchoice, ForkchoiceTracker},
     ingress::Message,
 };
 use crate::{consensus::block::Block, utils::OptionFuture};
@@ -230,12 +230,12 @@ where
     }
 }
 
-type ExecutionTaskResult = eyre::Result<Option<ForkchoiceTargets>>;
+type ExecutionTaskResult = eyre::Result<Option<Forkchoice>>;
 
 async fn execute_head_update<TContext: Pacer, E: ExecutionEngine + 'static>(
     context: TContext,
     execution_engine: E,
-    forkchoice: ForkchoiceTargets,
+    forkchoice: Forkchoice,
 ) -> ExecutionTaskResult {
     submit_forkchoice_update(&context, &execution_engine, &forkchoice).await?;
     Ok(Some(forkchoice))
@@ -245,7 +245,7 @@ async fn execute_block<TContext: Pacer, E: ExecutionEngine + 'static>(
     context: TContext,
     execution_engine: E,
     block: Block,
-    forkchoice: Option<ForkchoiceTargets>,
+    forkchoice: Option<Forkchoice>,
     ack: Exact,
 ) -> ExecutionTaskResult {
     submit_new_payload(&context, &execution_engine, block).await?;
@@ -300,9 +300,9 @@ async fn submit_new_payload<TContext: Pacer, E: ExecutionEngine + ?Sized>(
 async fn submit_forkchoice_update<TContext: Pacer, E: ExecutionEngine + ?Sized>(
     context: &TContext,
     execution_engine: &E,
-    forkchoice: &ForkchoiceTargets,
+    forkchoice: &Forkchoice,
 ) -> eyre::Result<()> {
-    let forkchoice = forkchoice.rpc_state();
+    let forkchoice = (*forkchoice).into();
 
     let response = execution_engine
         .fork_choice_updated(forkchoice, None)

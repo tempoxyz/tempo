@@ -58,23 +58,23 @@ impl FinalityTarget {
 
 /// Engine API targets. Safe always follows finalized.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub(super) struct ForkchoiceTargets {
+pub(super) struct Forkchoice {
     pub(super) head: Digest,
     pub(super) finalized: Digest,
 }
 
-impl ForkchoiceTargets {
-    pub(super) fn rpc_state(self) -> ForkchoiceState {
-        ForkchoiceState {
-            head_block_hash: self.head.0,
-            safe_block_hash: self.finalized.0,
-            finalized_block_hash: self.finalized.0,
+impl From<Forkchoice> for ForkchoiceState {
+    fn from(forkchoice: Forkchoice) -> Self {
+        Self {
+            head_block_hash: forkchoice.head.0,
+            safe_block_hash: forkchoice.finalized.0,
+            finalized_block_hash: forkchoice.finalized.0,
         }
     }
 }
 
 pub(super) struct ForkchoiceTracker {
-    submitted: ForkchoiceTargets,
+    submitted: Forkchoice,
     certified_head: Option<CertifiedHead>,
     finalized: FinalityTarget,
 }
@@ -101,7 +101,7 @@ impl ForkchoiceTracker {
         }
     }
 
-    pub(super) fn observe_block(&mut self, block: &Block) -> Option<ForkchoiceTargets> {
+    pub(super) fn observe_block(&mut self, block: &Block) -> Option<Forkchoice> {
         let header = block.block().sealed_header();
         let candidate = FinalityTarget::from_header(header);
         if !candidate.supersedes(self.finalized) {
@@ -118,21 +118,21 @@ impl ForkchoiceTracker {
         Some(self.desired())
     }
 
-    pub(super) fn next_head_update(&self, heartbeat_due: bool) -> Option<ForkchoiceTargets> {
+    pub(super) fn next_head_update(&self, heartbeat_due: bool) -> Option<Forkchoice> {
         let desired = self.desired();
         (desired != self.submitted || heartbeat_due).then_some(desired)
     }
 
-    pub(super) fn note_submitted(&mut self, submitted: ForkchoiceTargets) {
+    pub(super) fn note_submitted(&mut self, submitted: Forkchoice) {
         self.submitted = submitted;
     }
 
-    fn desired(&self) -> ForkchoiceTargets {
+    fn desired(&self) -> Forkchoice {
         Self::targets(self.certified_head, self.finalized)
     }
 
-    fn targets(head: Option<CertifiedHead>, finalized: FinalityTarget) -> ForkchoiceTargets {
-        ForkchoiceTargets {
+    fn targets(head: Option<CertifiedHead>, finalized: FinalityTarget) -> Forkchoice {
+        Forkchoice {
             head: head.map_or(finalized.digest, |target| target.digest),
             finalized: finalized.digest,
         }
@@ -239,7 +239,7 @@ mod tests {
 
         assert_eq!(
             tracker.next_head_update(false),
-            Some(ForkchoiceTargets {
+            Some(Forkchoice {
                 head: digest(2),
                 finalized: digest(1),
             })
@@ -261,7 +261,7 @@ mod tests {
 
         assert_eq!(
             forkchoice,
-            ForkchoiceTargets {
+            Forkchoice {
                 head: certified,
                 finalized: block_digest,
             }
