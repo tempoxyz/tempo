@@ -20,7 +20,7 @@ use tracing::{Level, debug, error, instrument};
 
 use super::{
     Config, ExecutionEngine, FinalizedBlockProvider, Marshal,
-    fcu::{FinalityPlan, ForkchoiceTargets, ForkchoiceTracker},
+    fcu::{ForkchoiceTargets, ForkchoiceTracker},
     ingress::Message,
 };
 use crate::{consensus::block::Block, utils::OptionFuture};
@@ -169,9 +169,9 @@ where
 
         let execution_engine = self.execution_engine.clone();
         let task = if let Some((block, ack)) = self.block_queue.pop_front() {
-            let finality = self.forkchoice.observe_block(&block);
+            let forkchoice = self.forkchoice.observe_block(&block);
             let context = self.context.child("execute_block");
-            execute_block(context, execution_engine, block, finality, ack).boxed()
+            execute_block(context, execution_engine, block, forkchoice, ack).boxed()
         } else if let Some(forkchoice) = self.forkchoice.next_head_update(heartbeat) {
             let context = self.context.child("execute_head_update");
             execute_head_update(context, execution_engine, forkchoice).boxed()
@@ -232,18 +232,11 @@ where
 
 type ExecutionTaskResult = eyre::Result<Option<ForkchoiceTargets>>;
 
-enum ForkchoiceOutcome {
-    Valid,
-    Syncing,
-}
-
 async fn execute_head_update<TContext: Pacer, E: ExecutionEngine + 'static>(
     context: TContext,
     execution_engine: E,
     forkchoice: ForkchoiceTargets,
 ) -> ExecutionTaskResult {
-    // `SYNCING` is safe because no block acknowledgement depends on head guidance. The heartbeat
-    // resubmits the targets.
     submit_forkchoice_update(&context, &execution_engine, &forkchoice).await?;
     Ok(Some(forkchoice))
 }
@@ -252,32 +245,17 @@ async fn execute_block<TContext: Pacer, E: ExecutionEngine + 'static>(
     context: TContext,
     execution_engine: E,
     block: Block,
-    finality: Option<FinalityPlan>,
+    forkchoice: Option<ForkchoiceTargets>,
     ack: Exact,
 ) -> ExecutionTaskResult {
     submit_new_payload(&context, &execution_engine, block).await?;
 
-    let submitted = match finality {
-        Some(plan) => Some(apply_finality(&context, &execution_engine, plan).await?),
-        None => None,
-    };
+    if let Some(forkchoice) = &forkchoice {
+        submit_forkchoice_update(&context, &execution_engine, forkchoice).await?;
+    }
 
     ack.acknowledge();
-    Ok(submitted)
-}
-
-async fn apply_finality<TContext: Pacer, E: ExecutionEngine + ?Sized>(
-    context: &TContext,
-    execution_engine: &E,
-    plan: FinalityPlan,
-) -> eyre::Result<ForkchoiceTargets> {
-    match submit_forkchoice_update(context, execution_engine, &plan.preferred).await? {
-        ForkchoiceOutcome::Valid => Ok(plan.preferred),
-        ForkchoiceOutcome::Syncing => {
-            submit_forkchoice_update(context, execution_engine, &plan.block_anchor).await?;
-            Ok(plan.block_anchor)
-        }
-    }
+    Ok(forkchoice)
 }
 
 #[instrument(
@@ -323,7 +301,7 @@ async fn submit_forkchoice_update<TContext: Pacer, E: ExecutionEngine + ?Sized>(
     context: &TContext,
     execution_engine: &E,
     forkchoice: &ForkchoiceTargets,
-) -> eyre::Result<ForkchoiceOutcome> {
+) -> eyre::Result<()> {
     let forkchoice = forkchoice.rpc_state();
 
     let response = execution_engine
@@ -334,13 +312,10 @@ async fn submit_forkchoice_update<TContext: Pacer, E: ExecutionEngine + ?Sized>(
 
     debug!(payload_status = %response.payload_status, "execution layer reported FCU status");
 
-    if response.payload_status.is_valid() {
-        return Ok(ForkchoiceOutcome::Valid);
-    }
+    ensure!(
+        !response.is_invalid(),
+        Report::msg(response.payload_status).wrap_err("execution layer rejected fcu")
+    );
 
-    if response.payload_status.is_syncing() {
-        return Ok(ForkchoiceOutcome::Syncing);
-    }
-
-    Err(Report::msg(response.payload_status).wrap_err("execution layer rejected fcu"))
+    Ok(())
 }

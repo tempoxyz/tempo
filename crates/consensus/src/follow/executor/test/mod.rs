@@ -4,6 +4,8 @@ mod utils;
 
 use std::{num::NonZeroU64, time::Duration};
 
+use super::{Config, init};
+use crate::consensus::Digest;
 use alloy_primitives::B256;
 use alloy_rpc_types_engine::ForkchoiceState;
 use commonware_consensus::{
@@ -14,10 +16,6 @@ use commonware_consensus::{
 use commonware_macros::test_traced;
 use commonware_runtime::{Clock as _, Runner as _, Supervisor as _, deterministic};
 use commonware_utils::{Acknowledgement as _, acknowledgement::Exact};
-use futures::FutureExt as _;
-
-use super::{Config, init};
-use crate::consensus::Digest;
 use utils::{
     StubExecutionProvider, StubMarshal, make_block, make_block_at_round, make_roundless_block,
 };
@@ -449,57 +447,7 @@ fn certificate_advances_head_before_block_advances_finality() {
 }
 
 #[test_traced]
-fn syncing_certificate_head_submits_block_anchor_once() {
-    deterministic::Runner::default().start(|context| async move {
-        let provider = StubExecutionProvider::default();
-        let release_head_forkchoice = provider.pause_next_forkchoice();
-
-        let (actor, mut mailbox) = init(
-            context.child("follower_executor"),
-            Config {
-                execution_provider: provider.clone(),
-                execution_engine: provider.clone(),
-                marshal: StubMarshal::default(),
-                epoch_strategy: FixedEpocher::new(EPOCH_LENGTH),
-                fcu_heartbeat_interval: Duration::from_secs(60),
-            },
-        );
-        actor.start();
-
-        let future_head = digest(9);
-        mailbox.finalization(round(2), future_head);
-        wait_until(&context, || provider.forkchoices().len() == 1).await;
-
-        provider.set_forkchoices_syncing(true);
-        let block = make_block_at_round(1, B256::ZERO, round(1));
-        let finalized = block.block_hash();
-        let (ack, waiter) = Exact::handle();
-        assert!(mailbox.report(Update::Block(block.into(), ack)).accepted());
-
-        release_head_forkchoice
-            .send(())
-            .expect("the head FCU should still be waiting");
-        waiter
-            .await
-            .expect("submitted block anchor should acknowledge the durable block");
-
-        wait_until(&context, || provider.forkchoices().len() == 4).await;
-
-        assert_eq!(provider.payload_count(), 1);
-        assert_eq!(
-            provider.forkchoices(),
-            vec![
-                forkchoice(future_head.0, B256::ZERO),
-                forkchoice(future_head.0, finalized),
-                forkchoice(finalized, finalized),
-                forkchoice(future_head.0, finalized),
-            ]
-        );
-    });
-}
-
-#[test_traced]
-fn valid_preferred_fcu_skips_block_anchor() {
+fn certificate_head_is_preserved_when_block_advances_finality() {
     deterministic::Runner::default().start(|context| async move {
         let provider = StubExecutionProvider::default();
 
@@ -532,62 +480,6 @@ fn valid_preferred_fcu_skips_block_anchor() {
             vec![
                 forkchoice(future_head.0, B256::ZERO),
                 forkchoice(future_head.0, finalized),
-            ]
-        );
-    });
-}
-
-#[test_traced]
-fn stale_block_ack_precedes_syncing_head_guidance() {
-    deterministic::Runner::default().start(|context| async move {
-        let current = digest(10);
-        let provider = StubExecutionProvider::default();
-        provider.set_finalized(100, current.0, round(10));
-        provider.set_forkchoices_syncing(true);
-        let release_head_forkchoice = provider.pause_next_forkchoice();
-
-        let (actor, mut mailbox) = init(
-            context.child("follower_executor"),
-            Config {
-                execution_provider: provider.clone(),
-                execution_engine: provider.clone(),
-                marshal: StubMarshal::default(),
-                epoch_strategy: FixedEpocher::new(EPOCH_LENGTH),
-                fcu_heartbeat_interval: Duration::from_secs(60),
-            },
-        );
-        actor.start();
-
-        let latest_head = digest(12);
-        let stale_block = make_block_at_round(99, digest(98).0, round(9));
-        let (ack, waiter) = Exact::handle();
-        assert!(
-            mailbox
-                .report(Update::Block(stale_block.into(), ack))
-                .accepted()
-        );
-        mailbox.finalization(round(12), latest_head);
-        wait_until(&context, || provider.forkchoices().len() == 1).await;
-
-        waiter
-            .now_or_never()
-            .expect("stale block acknowledgement should precede head guidance")
-            .expect("stale block should be acknowledged");
-
-        provider.set_forkchoices_syncing(false);
-        release_head_forkchoice
-            .send(())
-            .expect("the head FCU should still be waiting");
-
-        let newer_head = digest(13);
-        mailbox.finalization(round(13), newer_head);
-        wait_until(&context, || provider.forkchoices().len() == 2).await;
-
-        assert_eq!(
-            provider.forkchoices(),
-            vec![
-                forkchoice(latest_head.0, current.0),
-                forkchoice(newer_head.0, current.0),
             ]
         );
     });

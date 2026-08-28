@@ -64,13 +64,6 @@ pub(super) struct ForkchoiceTargets {
 }
 
 impl ForkchoiceTargets {
-    fn anchored(target: FinalityTarget) -> Self {
-        Self {
-            head: target.digest,
-            finalized: target.digest,
-        }
-    }
-
     pub(super) fn rpc_state(self) -> ForkchoiceState {
         ForkchoiceState {
             head_block_hash: self.head.0,
@@ -78,14 +71,6 @@ impl ForkchoiceTargets {
             finalized_block_hash: self.finalized.0,
         }
     }
-}
-
-/// Preferred targets keep the certified head. The block anchor provides a fallback when Reth is
-/// still syncing the certified head.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub(super) struct FinalityPlan {
-    pub(super) preferred: ForkchoiceTargets,
-    pub(super) block_anchor: ForkchoiceTargets,
 }
 
 pub(super) struct ForkchoiceTracker {
@@ -116,7 +101,7 @@ impl ForkchoiceTracker {
         }
     }
 
-    pub(super) fn observe_block(&mut self, block: &Block) -> Option<FinalityPlan> {
+    pub(super) fn observe_block(&mut self, block: &Block) -> Option<ForkchoiceTargets> {
         let header = block.block().sealed_header();
         let candidate = FinalityTarget::from_header(header);
         if !candidate.supersedes(self.finalized) {
@@ -130,10 +115,7 @@ impl ForkchoiceTracker {
             self.observe_finalization(head.round, head.digest);
         }
 
-        Some(FinalityPlan {
-            preferred: self.desired(),
-            block_anchor: ForkchoiceTargets::anchored(candidate),
-        })
+        Some(self.desired())
     }
 
     pub(super) fn next_head_update(&self, heartbeat_due: bool) -> Option<ForkchoiceTargets> {
@@ -265,7 +247,7 @@ mod tests {
     }
 
     #[test]
-    fn roundless_block_builds_finality_plan_without_moving_certified_head() {
+    fn roundless_block_advances_finality_without_moving_certified_head() {
         let current = execution_header(100, None, digest(1));
         let mut tracker = ForkchoiceTracker::new(&current);
         let certified = digest(3);
@@ -273,28 +255,19 @@ mod tests {
 
         let block = execution_block(101, None);
         let block_digest = block.digest();
-        let plan = tracker
+        let forkchoice = tracker
             .observe_block(&block)
             .expect("a later block should require finality work");
 
         assert_eq!(
-            plan,
-            FinalityPlan {
-                preferred: ForkchoiceTargets {
-                    head: certified,
-                    finalized: block_digest,
-                },
-                block_anchor: ForkchoiceTargets {
-                    head: block_digest,
-                    finalized: block_digest,
-                },
+            forkchoice,
+            ForkchoiceTargets {
+                head: certified,
+                finalized: block_digest,
             }
         );
 
-        tracker.note_submitted(plan.block_anchor);
-        assert_eq!(tracker.next_head_update(false), Some(plan.preferred));
-
-        tracker.note_submitted(plan.preferred);
+        tracker.note_submitted(forkchoice);
         assert_eq!(tracker.next_head_update(false), None);
     }
 }

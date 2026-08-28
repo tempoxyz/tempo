@@ -78,7 +78,6 @@ struct StubExecutionProviderInner {
     forkchoices: Mutex<Vec<ForkchoiceState>>,
     reject_payloads: AtomicBool,
     reject_forkchoices: AtomicBool,
-    sync_forkchoices: AtomicBool,
     forkchoice_gate: Mutex<Option<oneshot::Receiver<()>>>,
 }
 
@@ -109,10 +108,6 @@ impl StubExecutionProvider {
 
     pub(super) fn reject_forkchoices(&self) {
         self.inner.reject_forkchoices.store(true, Ordering::SeqCst);
-    }
-
-    pub(super) fn set_forkchoices_syncing(&self, syncing: bool) {
-        self.inner.sync_forkchoices.store(syncing, Ordering::SeqCst);
     }
 
     pub(super) fn pause_next_forkchoice(&self) -> oneshot::Sender<()> {
@@ -191,7 +186,6 @@ impl ExecutionEngine for StubExecutionProvider {
         self.inner.forkchoices.lock().push(state);
         let gate = self.inner.forkchoice_gate.lock().take();
         let rejected = self.inner.reject_forkchoices.load(Ordering::SeqCst);
-        let syncing = self.inner.sync_forkchoices.load(Ordering::SeqCst);
         async move {
             if let Some(gate) = gate {
                 let _ = gate.await;
@@ -200,8 +194,6 @@ impl ExecutionEngine for StubExecutionProvider {
                 PayloadStatusEnum::Invalid {
                     validation_error: "rejected by test engine".into(),
                 }
-            } else if syncing {
-                PayloadStatusEnum::Syncing
             } else {
                 PayloadStatusEnum::Valid
             };
