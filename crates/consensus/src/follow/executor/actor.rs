@@ -1,13 +1,8 @@
 //! Execution-layer driver for follower nodes.
 //!
-//! This actor sends verified certificate targets to Reth as forkchoice heads. It advances the safe
-//! and finalized targets as marshal delivers persisted finalized blocks. It also refreshes
-//! forkchoice with a heartbeat and advances marshal's floor behind Reth's finalized state.
-//!
-//! Unlike the executor used by validator nodes, it does not build payloads, canonicalize proposal
-//! heads, or track blocks proposed by this node. Followers receive complete blocks from their
-//! upstream, submit them to Reth as finalized payloads, and rely on Reth's sync machinery plus
-//! marshal gap repair to fill history.
+//! This actor imports marshal-delivered blocks, applies finality for advancing heights, and
+//! refreshes forkchoice on a timer. It moves marshal's floor behind Reth's finalized state. Reth
+//! sync and marshal gap repair fill missing history.
 
 use std::{collections::VecDeque, time::Duration};
 
@@ -25,12 +20,12 @@ use tracing::{Level, debug, error, instrument};
 
 use super::{
     Config, ExecutionEngine, FinalizedBlockProvider, Marshal,
-    fcu::{BlockForkchoice, FinalityPlan, ForkchoiceTargets, ForkchoiceTracker},
+    fcu::{FinalityPlan, ForkchoiceTargets, ForkchoiceTracker},
     ingress::Message,
 };
 use crate::{consensus::block::Block, utils::OptionFuture};
 
-const FINALIZED_FCU_RETRY_INTERVAL: Duration = Duration::from_secs(1);
+const FINALITY_FCU_RETRY_INTERVAL: Duration = Duration::from_secs(1);
 
 pub(crate) struct Actor<TContext, P, E, M = crate::alias::marshal::Mailbox> {
     context: ContextCell<TContext>,
@@ -120,7 +115,7 @@ where
                                 self.forkchoice.note_submitted(submitted_fcu);
                             }
 
-                            // Emits an event on error.
+                            // Floor advancement retries after the next completed execution task.
                             let _: Result<_, _> = self.try_advance_floor().await;
                         }
                         Err(error) => {
@@ -133,9 +128,6 @@ where
                 Some(message) = self.mailbox.next() => {
                     match message {
                         Message::Update(Update::Block(block, ack)) => {
-                            // Marshal delivers persisted finalized blocks in height order. The
-                            // executor submits each payload before using it as Reth's finalized
-                            // forkchoice target.
                             self.block_queue.push_back(((*block).clone(), ack));
                         }
 
@@ -146,10 +138,10 @@ where
                             if self.floor_candidate.is_none() {
                                 self.floor_candidate = Some(height);
                             }
-                            self.forkchoice.observe_certificate(round, digest);
+                            self.forkchoice.observe_finalization(round, digest);
                         }
                         Message::Finalization { round, digest } => {
-                            self.forkchoice.observe_certificate(round, digest);
+                            self.forkchoice.observe_finalization(round, digest);
                         }
                     }
                 }
@@ -179,10 +171,10 @@ where
 
         let execution_engine = self.execution_engine.clone();
         let task = if let Some((block, ack)) = self.block_queue.pop_front() {
-            let forkchoice = self.forkchoice.plan_block(&block, heartbeat);
+            let finality = self.forkchoice.observe_block(&block);
             let context = self.context.child("execute_block");
-            execute_block(context, execution_engine, block, forkchoice, ack).boxed()
-        } else if let Some(forkchoice) = self.forkchoice.plan_update(heartbeat) {
+            execute_block(context, execution_engine, block, finality, ack).boxed()
+        } else if let Some(forkchoice) = self.forkchoice.next_head_update(heartbeat) {
             let context = self.context.child("execute_head_update");
             execute_head_update(context, execution_engine, forkchoice).boxed()
         } else {
@@ -252,6 +244,8 @@ async fn execute_head_update<TContext: Pacer, E: ExecutionEngine + 'static>(
     execution_engine: E,
     forkchoice: ForkchoiceTargets,
 ) -> ExecutionTaskResult {
+    // `SYNCING` is safe because no block acknowledgement depends on head guidance. The heartbeat
+    // resubmits the targets.
     submit_forkchoice_update(&context, &execution_engine, &forkchoice).await?;
     Ok(Some(forkchoice))
 }
@@ -260,20 +254,14 @@ async fn execute_block<TContext: Pacer, E: ExecutionEngine + 'static>(
     context: TContext,
     execution_engine: E,
     block: Block,
-    forkchoice: BlockForkchoice,
+    finality: Option<FinalityPlan>,
     ack: Exact,
 ) -> ExecutionTaskResult {
     submit_new_payload(&context, &execution_engine, block).await?;
 
-    let submitted = match forkchoice {
-        BlockForkchoice::Guide(targets) => {
-            submit_forkchoice_update(&context, &execution_engine, &targets).await?;
-            Some(targets)
-        }
-        BlockForkchoice::Finalize(plan) => {
-            Some(apply_finality(&context, &execution_engine, plan).await?)
-        }
-        BlockForkchoice::None => None,
+    let submitted = match finality {
+        Some(plan) => Some(apply_finality(&context, &execution_engine, plan).await?),
+        None => None,
     };
 
     ack.acknowledge();
@@ -288,8 +276,8 @@ async fn apply_finality<TContext: Pacer, E: ExecutionEngine + ?Sized>(
     match submit_forkchoice_update(context, execution_engine, &plan.preferred).await? {
         ForkchoiceOutcome::Valid => Ok(plan.preferred),
         ForkchoiceOutcome::Syncing => {
-            submit_until_valid(context, execution_engine, &plan.anchor).await?;
-            Ok(plan.anchor)
+            submit_until_valid(context, execution_engine, &plan.block_anchor).await?;
+            Ok(plan.block_anchor)
         }
     }
 }
@@ -305,10 +293,10 @@ async fn submit_until_valid<TContext: Pacer, E: ExecutionEngine + ?Sized>(
             ForkchoiceOutcome::Valid => return Ok(()),
             ForkchoiceOutcome::Syncing => {
                 debug!(
-                    "execution layer is syncing before applying finalized block; retrying block \
-                     anchor FCU"
+                    "execution layer is syncing before applying finality; retrying block anchor \
+                     FCU"
                 );
-                context.sleep(FINALIZED_FCU_RETRY_INTERVAL).await;
+                context.sleep(FINALITY_FCU_RETRY_INTERVAL).await;
             }
         }
     }
@@ -329,16 +317,17 @@ async fn submit_new_payload<TContext: Pacer, E: ExecutionEngine + ?Sized>(
         .new_payload(TempoExecutionData {
             block,
             block_access_list,
-            // can be omitted for finalized blocks
+            // Marshal delivers blocks after consensus finality checks, so this payload needs no
+            // validator set.
             validator_set: None,
         })
         .pace(context, Duration::from_millis(20))
         .await
-        .wrap_err("failed sending finalized payload")?;
+        .wrap_err("failed sending delivered payload")?;
 
     ensure!(
         payload_status.is_valid() || payload_status.is_syncing(),
-        "payload status of finalized block was neither valid nor syncing: \
+        "payload status of delivered block was neither valid nor syncing: \
          `{payload_status}`"
     );
 

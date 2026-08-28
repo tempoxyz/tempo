@@ -32,7 +32,7 @@ pub(super) fn make_block(height: u64, parent_hash: B256) -> Block {
     make_block_at_round(height, parent_hash, Round::zero())
 }
 
-pub(super) fn make_prefork_block(height: u64, parent_hash: B256) -> Block {
+pub(super) fn make_roundless_block(height: u64, parent_hash: B256) -> Block {
     make_block_with_round(height, parent_hash, None)
 }
 
@@ -79,7 +79,6 @@ struct StubExecutionProviderInner {
     reject_payloads: AtomicBool,
     reject_forkchoices: AtomicBool,
     sync_forkchoices: AtomicBool,
-    syncing_forkchoice_head: Mutex<Option<B256>>,
     forkchoice_gate: Mutex<Option<oneshot::Receiver<()>>>,
 }
 
@@ -91,7 +90,7 @@ impl StubExecutionProvider {
 
     /// Models a finalized execution header from before TIP-1031, when headers
     /// had no consensus context and therefore no round.
-    pub(super) fn set_prefork_finalized(&self, number: u64, hash: B256) {
+    pub(super) fn set_finalized_without_round(&self, number: u64, hash: B256) {
         *self.inner.finalized.lock() = BlockNumHash::new(number, hash);
         *self.inner.finalized_round.lock() = None;
     }
@@ -114,10 +113,6 @@ impl StubExecutionProvider {
 
     pub(super) fn set_forkchoices_syncing(&self, syncing: bool) {
         self.inner.sync_forkchoices.store(syncing, Ordering::SeqCst);
-    }
-
-    pub(super) fn set_syncing_forkchoice_head(&self, head: B256) {
-        *self.inner.syncing_forkchoice_head.lock() = Some(head);
     }
 
     pub(super) fn pause_next_forkchoice(&self) -> oneshot::Sender<()> {
@@ -196,8 +191,7 @@ impl ExecutionEngine for StubExecutionProvider {
         self.inner.forkchoices.lock().push(state);
         let gate = self.inner.forkchoice_gate.lock().take();
         let rejected = self.inner.reject_forkchoices.load(Ordering::SeqCst);
-        let syncing = self.inner.sync_forkchoices.load(Ordering::SeqCst)
-            || *self.inner.syncing_forkchoice_head.lock() == Some(state.head_block_hash);
+        let syncing = self.inner.sync_forkchoices.load(Ordering::SeqCst);
         async move {
             if let Some(gate) = gate {
                 let _ = gate.await;

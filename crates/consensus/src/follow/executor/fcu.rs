@@ -1,3 +1,7 @@
+//! Forkchoice policy for follower execution.
+//!
+//! Certificates order the head by round. Marshal-delivered blocks order finality by height.
+
 use alloy_rpc_types_engine::ForkchoiceState;
 use commonware_consensus::types::{Height, Round};
 use reth_primitives_traits::SealedHeader;
@@ -8,7 +12,6 @@ use crate::consensus::{
     block::{Block, round_from_context},
 };
 
-/// A certified head, ordered by consensus round.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 struct CertifiedHead {
     round: Round,
@@ -24,11 +27,7 @@ impl CertifiedHead {
         })
     }
 
-    fn from_block(block: &Block) -> Option<Self> {
-        Self::from_header(block.block().sealed_header())
-    }
-
-    const fn from_finalization(round: Round, digest: Digest) -> Self {
+    const fn from_certificate(round: Round, digest: Digest) -> Self {
         Self { round, digest }
     }
 
@@ -37,14 +36,13 @@ impl CertifiedHead {
     }
 }
 
-/// A persisted block, ordered by execution height.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
-struct DurableFinality {
+struct FinalityTarget {
     height: Height,
     digest: Digest,
 }
 
-impl DurableFinality {
+impl FinalityTarget {
     fn from_header(header: &SealedHeader<TempoHeader>) -> Self {
         let tip = header.num_hash();
         Self {
@@ -53,16 +51,12 @@ impl DurableFinality {
         }
     }
 
-    fn from_block(block: &Block) -> Self {
-        Self::from_header(block.block().sealed_header())
-    }
-
     fn supersedes(self, current: Self) -> bool {
         self.height > current.height
     }
 }
 
-/// Hashes sent in one Engine API forkchoice update.
+/// Engine API targets. Safe always follows finalized.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(super) struct ForkchoiceTargets {
     pub(super) head: Digest,
@@ -70,7 +64,7 @@ pub(super) struct ForkchoiceTargets {
 }
 
 impl ForkchoiceTargets {
-    fn anchored(target: DurableFinality) -> Self {
+    fn anchored(target: FinalityTarget) -> Self {
         Self {
             head: target.digest,
             finalized: target.digest,
@@ -86,93 +80,76 @@ impl ForkchoiceTargets {
     }
 }
 
-/// FCUs needed after a block advances durable finality.
+/// Preferred targets keep the certified head. If Reth reports `SYNCING`, the executor retries the
+/// block anchor until `VALID` before it acknowledges the block.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(super) struct FinalityPlan {
     pub(super) preferred: ForkchoiceTargets,
-    pub(super) anchor: ForkchoiceTargets,
+    pub(super) block_anchor: ForkchoiceTargets,
 }
 
-/// Forkchoice work associated with one delivered block.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub(super) enum BlockForkchoice {
-    None,
-    Guide(ForkchoiceTargets),
-    Finalize(FinalityPlan),
-}
-
-/// Forkchoice progress across certified heads and persisted blocks.
 pub(super) struct ForkchoiceTracker {
     submitted: ForkchoiceTargets,
-    head: Option<CertifiedHead>,
-    finalized: DurableFinality,
+    certified_head: Option<CertifiedHead>,
+    finalized: FinalityTarget,
 }
 
 impl ForkchoiceTracker {
     pub(super) fn new(header: &SealedHeader<TempoHeader>) -> Self {
-        let head = CertifiedHead::from_header(header);
-        let finalized = DurableFinality::from_header(header);
-        let submitted = Self::targets(head, finalized);
+        let certified_head = CertifiedHead::from_header(header);
+        let finalized = FinalityTarget::from_header(header);
+        let submitted = Self::targets(certified_head, finalized);
         Self {
             submitted,
-            head,
+            certified_head,
             finalized,
         }
     }
 
-    /// Moves the head to a later verified certificate.
-    pub(super) fn observe_certificate(&mut self, round: Round, digest: Digest) {
-        let candidate = CertifiedHead::from_finalization(round, digest);
+    pub(super) fn observe_finalization(&mut self, round: Round, digest: Digest) {
+        let candidate = CertifiedHead::from_certificate(round, digest);
         if self
-            .head
+            .certified_head
             .is_none_or(|current| candidate.supersedes(current))
         {
-            self.head = Some(candidate);
+            self.certified_head = Some(candidate);
         }
     }
 
-    /// Plans the forkchoice work for one delivered block.
-    pub(super) fn plan_block(&mut self, block: &Block, force: bool) -> BlockForkchoice {
-        let candidate = DurableFinality::from_block(block);
-        let advances_finality = candidate.supersedes(self.finalized);
-        if advances_finality {
-            self.finalized = candidate;
-            if let Some(head) = CertifiedHead::from_block(block) {
-                self.observe_certificate(head.round, head.digest);
-            }
+    pub(super) fn observe_block(&mut self, block: &Block) -> Option<FinalityPlan> {
+        let header = block.block().sealed_header();
+        let candidate = FinalityTarget::from_header(header);
+        if !candidate.supersedes(self.finalized) {
+            // Replayed blocks cannot move the certified head, even when their header has a later
+            // round.
+            return None;
         }
 
-        let preferred = self.desired();
-        if advances_finality {
-            return BlockForkchoice::Finalize(FinalityPlan {
-                preferred,
-                anchor: ForkchoiceTargets::anchored(candidate),
-            });
+        self.finalized = candidate;
+        if let Some(head) = CertifiedHead::from_header(header) {
+            self.observe_finalization(head.round, head.digest);
         }
 
-        if preferred != self.submitted || force {
-            BlockForkchoice::Guide(preferred)
-        } else {
-            BlockForkchoice::None
-        }
+        Some(FinalityPlan {
+            preferred: self.desired(),
+            block_anchor: ForkchoiceTargets::anchored(candidate),
+        })
     }
 
-    /// Returns the current targets when an update or heartbeat is due.
-    pub(super) fn plan_update(&self, force: bool) -> Option<ForkchoiceTargets> {
+    pub(super) fn next_head_update(&self, heartbeat_due: bool) -> Option<ForkchoiceTargets> {
         let desired = self.desired();
-        (desired != self.submitted || force).then_some(desired)
+        (desired != self.submitted || heartbeat_due).then_some(desired)
     }
 
-    /// Saves the targets from the last completed forkchoice request.
     pub(super) fn note_submitted(&mut self, submitted: ForkchoiceTargets) {
         self.submitted = submitted;
     }
 
     fn desired(&self) -> ForkchoiceTargets {
-        Self::targets(self.head, self.finalized)
+        Self::targets(self.certified_head, self.finalized)
     }
 
-    fn targets(head: Option<CertifiedHead>, finalized: DurableFinality) -> ForkchoiceTargets {
+    fn targets(head: Option<CertifiedHead>, finalized: FinalityTarget) -> ForkchoiceTargets {
         ForkchoiceTargets {
             head: head.map_or(finalized.digest, |target| target.digest),
             finalized: finalized.digest,
@@ -236,16 +213,16 @@ mod tests {
 
     #[test]
     fn later_round_supersedes_earlier_round() {
-        let newer = CertifiedHead::from_finalization(round(9), digest(1));
-        let older = CertifiedHead::from_finalization(round(8), digest(2));
+        let newer = CertifiedHead::from_certificate(round(9), digest(1));
+        let older = CertifiedHead::from_certificate(round(8), digest(2));
         assert!(newer.supersedes(older));
         assert!(!older.supersedes(newer));
     }
 
     #[test]
     fn equal_round_does_not_supersede() {
-        let current = CertifiedHead::from_finalization(round(8), digest(1));
-        let conflicting = CertifiedHead::from_finalization(round(8), digest(2));
+        let current = CertifiedHead::from_certificate(round(8), digest(1));
+        let conflicting = CertifiedHead::from_certificate(round(8), digest(2));
         assert!(!conflicting.supersedes(current));
     }
 
@@ -256,30 +233,30 @@ mod tests {
     }
 
     #[test]
-    fn execution_head_uses_header_round() {
+    fn certified_head_uses_header_round() {
         let header = execution_header(100, Some(round(2)), digest(1));
         assert_eq!(CertifiedHead::from_header(&header).unwrap().round, round(2));
     }
 
     #[test]
-    fn later_durable_height_supersedes() {
-        let current = DurableFinality::from_header(&execution_header(100, None, digest(1)));
-        let conflicting = DurableFinality::from_header(&execution_header(100, None, digest(3)));
-        let newer = DurableFinality::from_header(&execution_header(101, None, digest(2)));
+    fn later_block_height_supersedes_finality_target() {
+        let current = FinalityTarget::from_header(&execution_header(100, None, digest(1)));
+        let conflicting = FinalityTarget::from_header(&execution_header(100, None, digest(3)));
+        let newer = FinalityTarget::from_header(&execution_header(101, None, digest(2)));
         assert!(newer.supersedes(current));
         assert!(!current.supersedes(newer));
         assert!(!conflicting.supersedes(current));
     }
 
     #[test]
-    fn certified_target_advances_only_head() {
+    fn certificate_advances_only_head() {
         let current = execution_header(100, Some(round(1)), digest(1));
         let mut tracker = ForkchoiceTracker::new(&current);
 
-        tracker.observe_certificate(round(2), digest(2));
+        tracker.observe_finalization(round(2), digest(2));
 
         assert_eq!(
-            tracker.plan_update(false),
+            tracker.next_head_update(false),
             Some(ForkchoiceTargets {
                 head: digest(2),
                 finalized: digest(1),
@@ -288,36 +265,36 @@ mod tests {
     }
 
     #[test]
-    fn roundless_durable_block_keeps_certified_head_and_builds_anchor() {
+    fn roundless_block_builds_finality_plan_without_moving_certified_head() {
         let current = execution_header(100, None, digest(1));
         let mut tracker = ForkchoiceTracker::new(&current);
         let certified = digest(3);
-        tracker.observe_certificate(round(3), certified);
+        tracker.observe_finalization(round(3), certified);
 
         let block = execution_block(101, None);
-        let durable = block.digest();
-        let BlockForkchoice::Finalize(plan) = tracker.plan_block(&block, false) else {
-            panic!("a later durable block should require finality work");
-        };
+        let block_digest = block.digest();
+        let plan = tracker
+            .observe_block(&block)
+            .expect("a later block should require finality work");
 
         assert_eq!(
             plan,
             FinalityPlan {
                 preferred: ForkchoiceTargets {
                     head: certified,
-                    finalized: durable,
+                    finalized: block_digest,
                 },
-                anchor: ForkchoiceTargets {
-                    head: durable,
-                    finalized: durable,
+                block_anchor: ForkchoiceTargets {
+                    head: block_digest,
+                    finalized: block_digest,
                 },
             }
         );
 
-        tracker.note_submitted(plan.anchor);
-        assert_eq!(tracker.plan_update(false), Some(plan.preferred));
+        tracker.note_submitted(plan.block_anchor);
+        assert_eq!(tracker.next_head_update(false), Some(plan.preferred));
 
         tracker.note_submitted(plan.preferred);
-        assert_eq!(tracker.plan_update(false), None);
+        assert_eq!(tracker.next_head_update(false), None);
     }
 }

@@ -5,6 +5,7 @@ mod utils;
 use std::{num::NonZeroU64, time::Duration};
 
 use alloy_primitives::B256;
+use alloy_rpc_types_engine::ForkchoiceState;
 use commonware_consensus::{
     Reporter as _,
     marshal::Update,
@@ -18,7 +19,7 @@ use futures::FutureExt as _;
 use super::{Config, init};
 use crate::consensus::Digest;
 use utils::{
-    StubExecutionProvider, StubMarshal, make_block, make_block_at_round, make_prefork_block,
+    StubExecutionProvider, StubMarshal, make_block, make_block_at_round, make_roundless_block,
 };
 
 const EPOCH_LENGTH: NonZeroU64 = NonZeroU64::new(10).expect("epoch length is nonzero");
@@ -45,8 +46,16 @@ fn digest(byte: u8) -> Digest {
     Digest(B256::with_last_byte(byte))
 }
 
+fn forkchoice(head: B256, finalized: B256) -> ForkchoiceState {
+    ForkchoiceState {
+        head_block_hash: head,
+        safe_block_hash: finalized,
+        finalized_block_hash: finalized,
+    }
+}
+
 #[test_traced]
-fn block_is_executed_canonicalized_acknowledged_and_advances_floor_to_deep_candidate() {
+fn delivered_block_advances_execution_finality_and_marshal_floor() {
     deterministic::Runner::default().start(|context| async move {
         let finalized_height = EPOCH_LENGTH.get() * 2;
         let expected_floor = finalized_height - EPOCH_LENGTH.get() - 1;
@@ -94,11 +103,7 @@ fn block_is_executed_canonicalized_acknowledged_and_advances_floor_to_deep_candi
         assert_eq!(provider.payload_count(), 1);
         assert_eq!(
             provider.forkchoices(),
-            vec![alloy_rpc_types_engine::ForkchoiceState {
-                head_block_hash: block_hash,
-                safe_block_hash: block_hash,
-                finalized_block_hash: block_hash,
-            }]
+            vec![forkchoice(block_hash, block_hash)]
         );
     });
 }
@@ -208,11 +213,11 @@ fn stale_block_with_higher_round_does_not_regress_forkchoice() {
 }
 
 #[test_traced]
-fn roundless_prefork_block_advances_finality_by_height() {
+fn roundless_block_advances_finality_by_height() {
     deterministic::Runner::default().start(|context| async move {
         let current = B256::with_last_byte(100);
         let provider = StubExecutionProvider::default();
-        provider.set_prefork_finalized(100, current);
+        provider.set_finalized_without_round(100, current);
 
         let (actor, mut mailbox) = init(
             context.child("follower_executor"),
@@ -226,22 +231,18 @@ fn roundless_prefork_block_advances_finality_by_height() {
         );
         actor.start();
 
-        let block = make_prefork_block(101, current);
+        let block = make_roundless_block(101, current);
         let block_hash = block.block_hash();
         let (ack, waiter) = Exact::handle();
         assert!(mailbox.report(Update::Block(block.into(), ack)).accepted());
         waiter
             .await
-            .expect("valid pre-TIP block should be acknowledged");
+            .expect("valid roundless block should be acknowledged");
 
         assert_eq!(provider.payload_count(), 1);
         assert_eq!(
             provider.forkchoices(),
-            vec![alloy_rpc_types_engine::ForkchoiceState {
-                head_block_hash: block_hash,
-                safe_block_hash: block_hash,
-                finalized_block_hash: block_hash,
-            }]
+            vec![forkchoice(block_hash, block_hash)]
         );
     });
 }
@@ -299,7 +300,7 @@ fn floor_does_not_advance_until_its_execution_block_is_durable() {
 }
 
 #[test_traced]
-fn invalid_payload_exits_without_acknowledging_or_canonicalizing() {
+fn invalid_payload_exits_before_fcu_or_ack() {
     deterministic::Runner::default().start(|context| async move {
         let provider = StubExecutionProvider::default();
         provider.reject_payloads();
@@ -407,15 +408,13 @@ fn tips_are_monotonic_and_coalesced_while_forkchoice_is_in_flight() {
         wait_until(&context, || provider.forkchoices().len() == 2).await;
 
         let forkchoices = provider.forkchoices();
-        assert_eq!(forkchoices[0].head_block_hash, first_digest.0);
-        assert_eq!(forkchoices[1].head_block_hash, highest_digest.0);
-        assert_eq!(forkchoices[1].safe_block_hash, B256::ZERO);
-        assert_eq!(forkchoices[1].finalized_block_hash, B256::ZERO);
+        assert_eq!(forkchoices[0], forkchoice(first_digest.0, B256::ZERO));
+        assert_eq!(forkchoices[1], forkchoice(highest_digest.0, B256::ZERO));
     });
 }
 
 #[test_traced]
-fn finalization_waits_for_durable_block_before_advancing_finalized() {
+fn certificate_advances_head_before_block_advances_finality() {
     deterministic::Runner::default().start(|context| async move {
         let provider = StubExecutionProvider::default();
 
@@ -432,25 +431,20 @@ fn finalization_waits_for_durable_block_before_advancing_finalized() {
         actor.start();
 
         let block = make_block_at_round(1, B256::ZERO, round(2));
-        let finalized = Digest(block.block_hash());
-        mailbox.finalization(round(2), finalized);
+        let block_digest = Digest(block.block_hash());
+        mailbox.finalization(round(2), block_digest);
         wait_until(&context, || provider.forkchoices().len() == 1).await;
 
         let forkchoices = provider.forkchoices();
         assert_eq!(forkchoices.len(), 1);
-        assert_eq!(forkchoices[0].head_block_hash, finalized.0);
-        assert_eq!(forkchoices[0].safe_block_hash, B256::ZERO);
-        assert_eq!(forkchoices[0].finalized_block_hash, B256::ZERO);
+        assert_eq!(forkchoices[0], forkchoice(block_digest.0, B256::ZERO));
 
         let (ack, waiter) = Exact::handle();
         assert!(mailbox.report(Update::Block(block.into(), ack)).accepted());
         waiter.await.expect("durable block should be acknowledged");
-        wait_until(&context, || provider.forkchoices().len() == 2).await;
 
         let forkchoices = provider.forkchoices();
-        assert_eq!(forkchoices[1].head_block_hash, finalized.0);
-        assert_eq!(forkchoices[1].safe_block_hash, finalized.0);
-        assert_eq!(forkchoices[1].finalized_block_hash, finalized.0);
+        assert_eq!(forkchoices[1], forkchoice(block_digest.0, block_digest.0));
     });
 }
 
@@ -476,7 +470,6 @@ fn syncing_certificate_head_falls_back_to_block_anchor_before_acknowledging() {
         mailbox.finalization(round(2), future_head);
         wait_until(&context, || provider.forkchoices().len() == 1).await;
 
-        provider.set_syncing_forkchoice_head(future_head.0);
         provider.set_forkchoices_syncing(true);
         let block = make_block_at_round(1, B256::ZERO, round(1));
         let finalized = block.block_hash();
@@ -501,22 +494,22 @@ fn syncing_certificate_head_falls_back_to_block_anchor_before_acknowledging() {
 
         wait_until(&context, || provider.forkchoices().len() == 5).await;
 
-        let forkchoices = provider.forkchoices();
-        assert_eq!(forkchoices[1].head_block_hash, future_head.0);
-        assert_eq!(forkchoices[1].safe_block_hash, finalized);
-        assert_eq!(forkchoices[1].finalized_block_hash, finalized);
-
-        assert_eq!(forkchoices[2], forkchoices[3]);
-        assert_eq!(forkchoices[3].head_block_hash, finalized);
-        assert_eq!(forkchoices[3].safe_block_hash, finalized);
-        assert_eq!(forkchoices[3].finalized_block_hash, finalized);
-
-        assert_eq!(forkchoices[4], forkchoices[1]);
+        assert_eq!(provider.payload_count(), 1);
+        assert_eq!(
+            provider.forkchoices(),
+            vec![
+                forkchoice(future_head.0, B256::ZERO),
+                forkchoice(future_head.0, finalized),
+                forkchoice(finalized, finalized),
+                forkchoice(finalized, finalized),
+                forkchoice(future_head.0, finalized),
+            ]
+        );
     });
 }
 
 #[test_traced]
-fn valid_certificate_head_finalizes_delivered_block_in_one_fcu() {
+fn valid_preferred_fcu_skips_block_anchor() {
     deterministic::Runner::default().start(|context| async move {
         let provider = StubExecutionProvider::default();
 
@@ -544,20 +537,23 @@ fn valid_certificate_head_finalizes_delivered_block_in_one_fcu() {
             .await
             .expect("known certificate head should finalize the delivered block");
 
-        let forkchoices = provider.forkchoices();
-        assert_eq!(forkchoices.len(), 2);
-        assert_eq!(forkchoices[1].head_block_hash, future_head.0);
-        assert_eq!(forkchoices[1].safe_block_hash, finalized);
-        assert_eq!(forkchoices[1].finalized_block_hash, finalized);
+        assert_eq!(
+            provider.forkchoices(),
+            vec![
+                forkchoice(future_head.0, B256::ZERO),
+                forkchoice(future_head.0, finalized),
+            ]
+        );
     });
 }
 
 #[test_traced]
-fn syncing_head_only_forkchoice_does_not_hold_stale_block_acknowledgement() {
+fn stale_block_ack_precedes_syncing_head_guidance() {
     deterministic::Runner::default().start(|context| async move {
         let current = digest(10);
         let provider = StubExecutionProvider::default();
         provider.set_finalized(100, current.0, round(10));
+        provider.set_forkchoices_syncing(true);
         let release_head_forkchoice = provider.pause_next_forkchoice();
 
         let (actor, mut mailbox) = init(
@@ -572,13 +568,7 @@ fn syncing_head_only_forkchoice_does_not_hold_stale_block_acknowledgement() {
         );
         actor.start();
 
-        mailbox.finalization(round(11), digest(11));
-        wait_until(&context, || provider.forkchoices().len() == 1).await;
-
-        provider.set_forkchoices_syncing(true);
         let latest_head = digest(12);
-        mailbox.finalization(round(12), latest_head);
-
         let stale_block = make_block_at_round(99, digest(98).0, round(9));
         let (ack, waiter) = Exact::handle();
         assert!(
@@ -586,34 +576,35 @@ fn syncing_head_only_forkchoice_does_not_hold_stale_block_acknowledgement() {
                 .report(Update::Block(stale_block.into(), ack))
                 .accepted()
         );
+        mailbox.finalization(round(12), latest_head);
+        wait_until(&context, || provider.forkchoices().len() == 1).await;
 
+        waiter
+            .now_or_never()
+            .expect("stale block acknowledgement should precede head guidance")
+            .expect("stale block should be acknowledged");
+
+        provider.set_forkchoices_syncing(false);
         release_head_forkchoice
             .send(())
-            .expect("the first head FCU should still be waiting");
+            .expect("the head FCU should still be waiting");
+
+        let newer_head = digest(13);
+        mailbox.finalization(round(13), newer_head);
         wait_until(&context, || provider.forkchoices().len() == 2).await;
 
-        let mut waiter = Box::pin(waiter);
-        tokio::select! {
-            result = &mut waiter => {
-                result.expect("head-only FCU should acknowledge the stale block");
-            }
-            _ = context.sleep(Duration::from_millis(100)) => {
-                panic!("head-only FCU held the stale block acknowledgement");
-            }
-        }
-
-        let forkchoices = provider.forkchoices();
-        assert_eq!(forkchoices.len(), 2);
-        assert_eq!(forkchoices[1].head_block_hash, latest_head.0);
-        assert_eq!(forkchoices[1].safe_block_hash, current.0);
-        assert_eq!(forkchoices[1].finalized_block_hash, current.0);
+        assert_eq!(
+            provider.forkchoices(),
+            vec![
+                forkchoice(latest_head.0, current.0),
+                forkchoice(newer_head.0, current.0),
+            ]
+        );
     });
 }
 
-/// An older finalization received while a block FCU is in flight must not
-/// become the next forkchoice target.
 #[test_traced]
-fn delayed_finalization_does_not_regress_newer_block_forkchoice() {
+fn delayed_certificate_does_not_regress_newer_block_forkchoice() {
     deterministic::Runner::default().start(|context| async move {
         let current = Digest(B256::with_last_byte(10));
         let provider = StubExecutionProvider::default();
@@ -641,8 +632,8 @@ fn delayed_finalization_does_not_regress_newer_block_forkchoice() {
         })
         .await;
 
-        let delayed = Digest(B256::with_last_byte(12));
-        mailbox.finalization(round(12), delayed);
+        let older_certificate = Digest(B256::with_last_byte(12));
+        mailbox.finalization(round(12), older_certificate);
         context.sleep(Duration::from_millis(1)).await;
 
         release_block_forkchoice
@@ -651,20 +642,20 @@ fn delayed_finalization_does_not_regress_newer_block_forkchoice() {
         waiter.await.expect("valid payload should be acknowledged");
         context.sleep(Duration::from_millis(1)).await;
 
-        let forkchoices = provider.forkchoices();
-        assert_eq!(forkchoices.len(), 1);
-        assert_eq!(forkchoices[0].head_block_hash, newest.0);
+        let expected = forkchoice(newest.0, newest.0);
+        assert_eq!(provider.forkchoices(), vec![expected]);
 
         wait_until(&context, || provider.forkchoices().len() == 2).await;
-        assert_eq!(provider.forkchoices()[1].head_block_hash, newest.0);
+        assert_eq!(provider.forkchoices(), vec![expected, expected]);
     });
 }
 
 #[test_traced]
-fn execution_tip_round_orders_finalizations_after_restart() {
+fn startup_header_round_orders_certificate_heads() {
     deterministic::Runner::default().start(|context| async move {
         let provider = StubExecutionProvider::default();
-        provider.set_finalized(100, digest(100).0, round(7));
+        let current = digest(100);
+        provider.set_finalized(100, current.0, round(7));
 
         let (actor, mailbox) = init(
             context.child("follower_executor"),
@@ -685,15 +676,16 @@ fn execution_tip_round_orders_finalizations_after_restart() {
         let newer = digest(102);
         mailbox.finalization(round(8), newer);
         wait_until(&context, || !provider.forkchoices().is_empty()).await;
-        assert_eq!(provider.forkchoices()[0].head_block_hash, newer.0);
+        assert_eq!(provider.forkchoices(), vec![forkchoice(newer.0, current.0)]);
     });
 }
 
 #[test_traced]
-fn finalization_supersedes_roundless_prefork_execution_tip() {
+fn certificate_supersedes_roundless_startup_head() {
     deterministic::Runner::default().start(|context| async move {
         let provider = StubExecutionProvider::default();
-        provider.set_prefork_finalized(100, digest(100).0);
+        let current = digest(100);
+        provider.set_finalized_without_round(100, current.0);
 
         let (actor, mailbox) = init(
             context.child("follower_executor"),
@@ -710,45 +702,18 @@ fn finalization_supersedes_roundless_prefork_execution_tip() {
         context.sleep(Duration::from_millis(1)).await;
         assert!(provider.forkchoices().is_empty());
 
-        let finalized = digest(101);
-        mailbox.finalization(round(1), finalized);
+        let certified_head = digest(101);
+        mailbox.finalization(round(1), certified_head);
         wait_until(&context, || !provider.forkchoices().is_empty()).await;
-        assert_eq!(provider.forkchoices()[0].head_block_hash, finalized.0);
-    });
-}
-
-#[test_traced]
-fn finalization_is_driven_to_from_genesis() {
-    deterministic::Runner::default().start(|context| async move {
-        let provider = StubExecutionProvider::default();
-
-        let (actor, mailbox) = init(
-            context.child("follower_executor"),
-            Config {
-                execution_provider: provider.clone(),
-                execution_engine: provider.clone(),
-                marshal: StubMarshal::default(),
-                epoch_strategy: FixedEpocher::new(EPOCH_LENGTH),
-                fcu_heartbeat_interval: Duration::from_secs(60),
-            },
-        );
-        actor.start();
-
-        let finalized = Digest(B256::with_last_byte(9));
-        mailbox.finalization(round(5), finalized);
-
-        wait_until(&context, || !provider.forkchoices().is_empty()).await;
-        let forkchoices = provider.forkchoices();
-        assert_eq!(forkchoices.len(), 1);
         assert_eq!(
-            forkchoices[0].head_block_hash, finalized.0,
-            "nothing is below genesis, so the certificate is driven directly",
+            provider.forkchoices(),
+            vec![forkchoice(certified_head.0, current.0)]
         );
     });
 }
 
 #[test_traced]
-fn heartbeat_resubmits_latest_tip_after_interval() {
+fn heartbeat_resubmits_current_forkchoice_after_interval() {
     deterministic::Runner::default().start(|context| async move {
         let provider = StubExecutionProvider::default();
 
@@ -774,9 +739,8 @@ fn heartbeat_resubmits_latest_tip_after_interval() {
         assert_eq!(provider.forkchoices().len(), 1);
         wait_until(&context, || provider.forkchoices().len() == 2).await;
 
-        let forkchoices = provider.forkchoices();
-        assert_eq!(forkchoices[0], forkchoices[1]);
-        assert_eq!(forkchoices[1].head_block_hash, digest.0);
+        let expected = forkchoice(digest.0, B256::ZERO);
+        assert_eq!(provider.forkchoices(), vec![expected, expected]);
     });
 }
 
@@ -885,9 +849,9 @@ fn startup_uses_execution_finalized_tip_without_immediate_forkchoice() {
         assert!(provider.forkchoices().is_empty());
         wait_until(&context, || !provider.forkchoices().is_empty()).await;
 
-        let forkchoice = provider.forkchoices()[0];
-        assert_eq!(forkchoice.head_block_hash, finalized_hash);
-        assert_eq!(forkchoice.safe_block_hash, finalized_hash);
-        assert_eq!(forkchoice.finalized_block_hash, finalized_hash);
+        assert_eq!(
+            provider.forkchoices(),
+            vec![forkchoice(finalized_hash, finalized_hash)]
+        );
     });
 }
