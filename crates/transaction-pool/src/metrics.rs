@@ -96,6 +96,9 @@ pub struct TempoPoolMaintenanceMetrics {
     /// Number of transactions evicted due to invalidation events.
     pub transactions_invalidated: Counter,
 
+    /// Number of expired transactions evicted.
+    pub expired_transactions_evicted: Counter,
+
     /// Number of transactions re-validated due to transfer policy updates.
     pub transfer_policy_revalidated: Counter,
 

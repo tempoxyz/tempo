@@ -625,7 +625,7 @@ where
             whitelist_removals = updates.whitelist_removals.len(),
             "Processing transaction invalidation events"
         );
-        let evicted = {
+        let (evicted, expired_count) = {
             let all_txs = all_txs.get_or_insert_with(|| pool.all_transactions());
             pool.evict_invalidated_transactions_from(
                 &updates,
@@ -635,9 +635,13 @@ where
                 Some(tip_timestamp.saturating_add(EVICTION_BUFFER_SECS)),
             )
         };
+        let invalidated_count = evicted.len().saturating_sub(expired_count);
         metrics
             .transactions_invalidated
-            .increment(evicted.len() as u64);
+            .increment(invalidated_count as u64);
+        metrics
+            .expired_transactions_evicted
+            .increment(expired_count as u64);
         removed_txs.push(evicted);
         metrics
             .invalidation_eviction_duration_seconds
