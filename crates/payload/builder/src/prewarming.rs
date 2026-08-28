@@ -60,6 +60,7 @@ impl BestTransactionsPrewarming {
                         commands_tx,
                         prewarm,
                         next_expiring_nonce_offset: 0,
+                        in_flight: 0,
                     },
                 );
             });
@@ -87,7 +88,9 @@ impl BestTransactionsPrewarming {
 
             let advance = |ctx: &mut BestTransactionsPrewarmingContext<Txs, Provider>| {
                 let Some(tx) = ctx.best_txs.next() else {
-                    let _ = ctx.transactions_tx.send(None);
+                    if ctx.in_flight == 0 {
+                        let _ = ctx.transactions_tx.send(None);
+                    }
                     return;
                 };
                 let expiring_nonce_offset = if tx.transaction.is_expiring_nonce() {
@@ -109,12 +112,18 @@ impl BestTransactionsPrewarming {
                         .send(Some(PrewarmedTransaction::without_replay(tx.clone())));
                 }
 
+                if parallel {
+                    ctx.in_flight += 1;
+                }
+
                 scope.spawn(move |_| {
                     let tx = Self::prewarm_transaction(prewarm, tx, expiring_nonce_offset);
                     if parallel {
                         let _ = transactions_tx.send(Some(tx));
+                        let _ = commands_tx.send(BestTransactionsCommand::WorkerDone);
+                    } else {
+                        let _ = commands_tx.send(BestTransactionsCommand::Advance);
                     }
-                    let _ = commands_tx.send(BestTransactionsCommand::Advance);
                 });
             };
 
@@ -128,6 +137,10 @@ impl BestTransactionsPrewarming {
             while let Ok(command) = ctx.commands_rx.recv() {
                 match command {
                     BestTransactionsCommand::Advance => {
+                        advance(&mut ctx);
+                    }
+                    BestTransactionsCommand::WorkerDone => {
+                        ctx.in_flight -= 1;
                         advance(&mut ctx);
                     }
                     BestTransactionsCommand::Invalid {
@@ -303,6 +316,10 @@ struct BestTransactionsPrewarmingContext<Txs, Provider> {
     commands_rx: Receiver<BestTransactionsCommand>,
     prewarm: PrewarmingExecutionContext<Provider>,
     next_expiring_nonce_offset: usize,
+    /// Number of parallel prewarm workers spawned but not yet completed. The exhaustion
+    /// sentinel (`None`) is only sent on `transactions_tx` when this reaches zero, so it can
+    /// never race ahead of a still-running worker's `Some(tx)` result.
+    in_flight: usize,
 }
 
 /// Prewarmed transaction returned from [`BestTransactionsPrewarming`] iterator.
@@ -418,6 +435,11 @@ impl<Provider> PrewarmingExecutionContext<Provider> {
 #[derive(Debug)]
 enum BestTransactionsCommand {
     Advance,
+    /// Sent by a parallel prewarm worker when it finishes, distinct from [`Self::Advance`]
+    /// (which also represents a consumer pulling the next item) so the coordinator can track
+    /// how many workers are still in flight and avoid sending the exhaustion sentinel before
+    /// every in-flight worker's `Some(tx)` result has been sent.
+    WorkerDone,
     Invalid {
         invalid: InvalidTransaction,
         old_rx: Receiver<Option<PrewarmedTransaction>>,
@@ -620,6 +642,15 @@ mod tests {
         txs: Vec<BestTransaction>,
         log: Arc<Mutex<TestLog>>,
     ) -> TestPrewarming {
+        prewarming_with_executor_inner(executor, txs, log, false)
+    }
+
+    fn prewarming_with_executor_inner(
+        executor: TaskExecutor,
+        txs: Vec<BestTransaction>,
+        log: Arc<Mutex<TestLog>>,
+        parallel: bool,
+    ) -> TestPrewarming {
         let evm_config = TempoEvmConfig::moderato();
         let provider =
             NoopProvider::<TempoChainSpec, TempoPrimitives>::new(evm_config.chain_spec().clone());
@@ -664,7 +695,7 @@ mod tests {
                 cache: None,
                 evm_env,
                 stop: Arc::default(),
-                parallel: false,
+                parallel,
             },
             TestBestTransactions::new(txs, log),
         );
@@ -733,6 +764,48 @@ mod tests {
 
         assert!(prewarming.next().is_none());
         wait_until(|| log.lock().unwrap().empty_polls == eager_advances + 2);
+    }
+
+    #[test]
+    fn parallel_prewarming_does_not_drop_transactions_when_source_is_smaller_than_eager_fill() {
+        // Regression test for a race where the coordinator's eager-fill loop could observe
+        // the source as exhausted and send the `None` sentinel while an earlier, still
+        // in-flight parallel worker's `Some(tx)` result had not been sent yet. The consumer
+        // would then stop after seeing the premature `None`, silently dropping a valid
+        // transaction.
+        //
+        // The source here is deliberately smaller than the eager-fill batch, so the
+        // coordinator's later eager-fill calls hit exhaustion immediately. To reliably
+        // reproduce the original timing (rather than relying on luck), we first saturate
+        // every worker thread with a blocking sleep, forcing the two real transactions'
+        // prewarm workers to queue behind them -- exactly mirroring a slow/busy worker
+        // finishing after the coordinator has already observed exhaustion.
+        let executor = TaskExecutor::test();
+        let pool = executor.prewarming_pool();
+        for _ in 0..pool.current_num_threads() {
+            pool.spawn(|| thread::sleep(Duration::from_millis(300)));
+        }
+
+        let sender = Address::random();
+        let mut nonces = 0..;
+        let txs: Vec<_> = (0..2)
+            .map(|_| test_tx(sender, nonces.next().expect("nonce")))
+            .collect();
+        let expected_hashes: std::collections::HashSet<_> =
+            txs.iter().map(|tx| *tx.hash()).collect();
+
+        let log = Arc::new(Mutex::new(TestLog::default()));
+        let mut prewarming = prewarming_with_executor_inner(executor.clone(), txs, log, true);
+
+        let mut seen = std::collections::HashSet::new();
+        for _ in 0..expected_hashes.len() {
+            let tx = prewarming
+                .next()
+                .expect("transaction must not be dropped by a premature exhaustion signal");
+            seen.insert(*tx.tx.hash());
+        }
+        assert_eq!(seen, expected_hashes);
+        assert!(prewarming.next().is_none());
     }
 
     #[test]
