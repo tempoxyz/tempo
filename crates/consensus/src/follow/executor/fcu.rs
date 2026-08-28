@@ -12,129 +12,63 @@ use crate::consensus::{
     block::{Block, round_from_context},
 };
 
+/// Follower forkchoice state. Safe always follows finalized.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
-struct CertifiedHead {
-    round: Round,
-    digest: Digest,
+pub(super) struct Forkchoice {
+    head: (Option<Round>, Digest),
+    finalized: (Height, Digest),
 }
 
-impl CertifiedHead {
-    fn from_header(header: &SealedHeader<TempoHeader>) -> Option<Self> {
-        let round = header.consensus_context.map(round_from_context)?;
-        Some(Self {
-            round,
-            digest: Digest(header.hash()),
-        })
-    }
-
-    const fn from_certificate(round: Round, digest: Digest) -> Self {
-        Self { round, digest }
-    }
-
-    fn supersedes(self, current: Self) -> bool {
-        self.round > current.round
-    }
-}
-
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-struct FinalityTarget {
-    height: Height,
-    digest: Digest,
-}
-
-impl FinalityTarget {
-    fn from_header(header: &SealedHeader<TempoHeader>) -> Self {
+impl Forkchoice {
+    pub(super) fn new(header: &SealedHeader<TempoHeader>) -> Self {
         let tip = header.num_hash();
+        let digest = Digest(tip.hash);
         Self {
-            height: Height::new(tip.number),
-            digest: Digest(tip.hash),
+            head: (header.consensus_context.map(round_from_context), digest),
+            finalized: (Height::new(tip.number), digest),
         }
     }
 
-    fn supersedes(self, current: Self) -> bool {
-        self.height > current.height
+    pub(super) const fn head_digest(self) -> Digest {
+        self.head.1
     }
-}
 
-/// Engine API targets. Safe always follows finalized.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub(super) struct Forkchoice {
-    pub(super) head: Digest,
-    pub(super) finalized: Digest,
+    pub(super) const fn finalized_digest(self) -> Digest {
+        self.finalized.1
+    }
+
+    pub(super) fn update_head(&mut self, round: Round, digest: Digest) {
+        if self.head.0.is_none_or(|current| round > current) {
+            self.head = (Some(round), digest);
+        }
+    }
+
+    pub(super) fn update_finalized(&mut self, block: &Block) -> bool {
+        let header = block.block().sealed_header();
+        let tip = header.num_hash();
+        let height = Height::new(tip.number);
+        if height <= self.finalized.0 {
+            return false;
+        }
+
+        let digest = Digest(tip.hash);
+        self.finalized = (height, digest);
+        if let Some(round) = header.consensus_context.map(round_from_context) {
+            self.update_head(round, digest);
+        } else if self.head.0.is_none() {
+            self.head.1 = digest;
+        }
+
+        true
+    }
 }
 
 impl From<Forkchoice> for ForkchoiceState {
     fn from(forkchoice: Forkchoice) -> Self {
         Self {
-            head_block_hash: forkchoice.head.0,
-            safe_block_hash: forkchoice.finalized.0,
-            finalized_block_hash: forkchoice.finalized.0,
-        }
-    }
-}
-
-pub(super) struct ForkchoiceTracker {
-    submitted: Forkchoice,
-    certified_head: Option<CertifiedHead>,
-    finalized: FinalityTarget,
-}
-
-impl ForkchoiceTracker {
-    pub(super) fn new(header: &SealedHeader<TempoHeader>) -> Self {
-        let certified_head = CertifiedHead::from_header(header);
-        let finalized = FinalityTarget::from_header(header);
-        let submitted = Self::targets(certified_head, finalized);
-        Self {
-            submitted,
-            certified_head,
-            finalized,
-        }
-    }
-
-    pub(super) fn observe_finalization(&mut self, round: Round, digest: Digest) {
-        let candidate = CertifiedHead::from_certificate(round, digest);
-        if self
-            .certified_head
-            .is_none_or(|current| candidate.supersedes(current))
-        {
-            self.certified_head = Some(candidate);
-        }
-    }
-
-    pub(super) fn observe_block(&mut self, block: &Block) -> Option<Forkchoice> {
-        let header = block.block().sealed_header();
-        let candidate = FinalityTarget::from_header(header);
-        if !candidate.supersedes(self.finalized) {
-            // Replayed blocks cannot move the certified head, even when their header has a later
-            // round.
-            return None;
-        }
-
-        self.finalized = candidate;
-        if let Some(head) = CertifiedHead::from_header(header) {
-            self.observe_finalization(head.round, head.digest);
-        }
-
-        Some(self.desired())
-    }
-
-    pub(super) fn next_head_update(&self, heartbeat_due: bool) -> Option<Forkchoice> {
-        let desired = self.desired();
-        (desired != self.submitted || heartbeat_due).then_some(desired)
-    }
-
-    pub(super) fn note_submitted(&mut self, submitted: Forkchoice) {
-        self.submitted = submitted;
-    }
-
-    fn desired(&self) -> Forkchoice {
-        Self::targets(self.certified_head, self.finalized)
-    }
-
-    fn targets(head: Option<CertifiedHead>, finalized: FinalityTarget) -> Forkchoice {
-        Forkchoice {
-            head: head.map_or(finalized.digest, |target| target.digest),
-            finalized: finalized.digest,
+            head_block_hash: forkchoice.head_digest().0,
+            safe_block_hash: forkchoice.finalized_digest().0,
+            finalized_block_hash: forkchoice.finalized_digest().0,
         }
     }
 }
@@ -195,79 +129,64 @@ mod tests {
 
     #[test]
     fn later_round_supersedes_earlier_round() {
-        let newer = CertifiedHead::from_certificate(round(9), digest(1));
-        let older = CertifiedHead::from_certificate(round(8), digest(2));
-        assert!(newer.supersedes(older));
-        assert!(!older.supersedes(newer));
+        let mut forkchoice = Forkchoice::new(&execution_header(100, Some(round(8)), digest(1)));
+        forkchoice.update_head(round(9), digest(2));
+        assert_eq!(forkchoice.head, (Some(round(9)), digest(2)));
+
+        forkchoice.update_head(round(8), digest(3));
+        assert_eq!(forkchoice.head, (Some(round(9)), digest(2)));
     }
 
     #[test]
     fn equal_round_does_not_supersede() {
-        let current = CertifiedHead::from_certificate(round(8), digest(1));
-        let conflicting = CertifiedHead::from_certificate(round(8), digest(2));
-        assert!(!conflicting.supersedes(current));
+        let mut forkchoice = Forkchoice::new(&execution_header(100, Some(round(8)), digest(1)));
+        forkchoice.update_head(round(8), digest(2));
+        assert_eq!(forkchoice.head, (Some(round(8)), digest(1)));
     }
 
     #[test]
     fn roundless_header_has_no_certified_head() {
         let header = execution_header(100, None, digest(1));
-        assert_eq!(CertifiedHead::from_header(&header), None);
+        assert_eq!(Forkchoice::new(&header).head, (None, digest(1)));
     }
 
     #[test]
     fn certified_head_uses_header_round() {
         let header = execution_header(100, Some(round(2)), digest(1));
-        assert_eq!(CertifiedHead::from_header(&header).unwrap().round, round(2));
+        assert_eq!(Forkchoice::new(&header).head, (Some(round(2)), digest(1)));
     }
 
     #[test]
-    fn later_block_height_supersedes_finality_target() {
-        let current = FinalityTarget::from_header(&execution_header(100, None, digest(1)));
-        let conflicting = FinalityTarget::from_header(&execution_header(100, None, digest(3)));
-        let newer = FinalityTarget::from_header(&execution_header(101, None, digest(2)));
-        assert!(newer.supersedes(current));
-        assert!(!current.supersedes(newer));
-        assert!(!conflicting.supersedes(current));
+    fn later_block_height_advances_finality() {
+        let mut forkchoice = Forkchoice::new(&execution_header(100, None, digest(1)));
+        assert!(!forkchoice.update_finalized(&execution_block(100, None)));
+        assert!(forkchoice.update_finalized(&execution_block(101, None)));
+        assert_eq!(forkchoice.finalized.0, Height::new(101));
     }
 
     #[test]
     fn certificate_advances_only_head() {
         let current = execution_header(100, Some(round(1)), digest(1));
-        let mut tracker = ForkchoiceTracker::new(&current);
+        let mut forkchoice = Forkchoice::new(&current);
 
-        tracker.observe_finalization(round(2), digest(2));
+        forkchoice.update_head(round(2), digest(2));
 
-        assert_eq!(
-            tracker.next_head_update(false),
-            Some(Forkchoice {
-                head: digest(2),
-                finalized: digest(1),
-            })
-        );
+        assert_eq!(forkchoice.head, (Some(round(2)), digest(2)));
+        assert_eq!(forkchoice.finalized, (Height::new(100), digest(1)));
     }
 
     #[test]
     fn roundless_block_advances_finality_without_moving_certified_head() {
         let current = execution_header(100, None, digest(1));
-        let mut tracker = ForkchoiceTracker::new(&current);
+        let mut forkchoice = Forkchoice::new(&current);
         let certified = digest(3);
-        tracker.observe_finalization(round(3), certified);
+        forkchoice.update_head(round(3), certified);
 
         let block = execution_block(101, None);
         let block_digest = block.digest();
-        let forkchoice = tracker
-            .observe_block(&block)
-            .expect("a later block should require finality work");
+        assert!(forkchoice.update_finalized(&block));
 
-        assert_eq!(
-            forkchoice,
-            Forkchoice {
-                head: certified,
-                finalized: block_digest,
-            }
-        );
-
-        tracker.note_submitted(forkchoice);
-        assert_eq!(tracker.next_head_update(false), None);
+        assert_eq!(forkchoice.head_digest(), certified);
+        assert_eq!(forkchoice.finalized_digest(), block_digest);
     }
 }

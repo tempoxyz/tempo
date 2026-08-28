@@ -19,9 +19,7 @@ use tempo_node::TempoExecutionData;
 use tracing::{Level, debug, error, instrument};
 
 use super::{
-    Config, ExecutionEngine, FinalizedBlockProvider, Marshal,
-    fcu::{Forkchoice, ForkchoiceTracker},
-    ingress::Message,
+    Config, ExecutionEngine, FinalizedBlockProvider, Marshal, fcu::Forkchoice, ingress::Message,
 };
 use crate::{consensus::block::Block, utils::OptionFuture};
 
@@ -35,7 +33,8 @@ pub(crate) struct Actor<TContext, P, E, M = crate::alias::marshal::Mailbox> {
 
     epoch_strategy: FixedEpocher,
 
-    forkchoice: ForkchoiceTracker,
+    last_fcu: Forkchoice,
+    latest_fcu: Forkchoice,
 
     block_queue: VecDeque<(Block, Exact)>,
     floor_candidate: Option<Height>,
@@ -69,7 +68,7 @@ where
         let finalized_header = execution_provider
             .finalized_header()
             .expect("failed reading finalized execution header");
-        let forkchoice = ForkchoiceTracker::new(&finalized_header);
+        let forkchoice = Forkchoice::new(&finalized_header);
 
         Self {
             context: ContextCell::new(context),
@@ -80,7 +79,8 @@ where
             execution_provider,
             execution_engine,
 
-            forkchoice,
+            last_fcu: forkchoice,
+            latest_fcu: forkchoice,
             block_queue: VecDeque::new(),
             floor_candidate: None,
             execution_task: OptionFuture::none(),
@@ -110,7 +110,7 @@ where
                     match result {
                         Ok(submitted_fcu) => {
                             if let Some(submitted_fcu) = submitted_fcu {
-                                self.forkchoice.note_submitted(submitted_fcu);
+                                self.last_fcu = submitted_fcu;
                             }
 
                             // Floor advancement retries after the next completed execution task.
@@ -136,10 +136,10 @@ where
                             if self.floor_candidate.is_none() {
                                 self.floor_candidate = Some(height);
                             }
-                            self.forkchoice.observe_finalization(round, digest);
+                            self.latest_fcu.update_head(round, digest);
                         }
                         Message::Finalization { round, digest } => {
-                            self.forkchoice.observe_finalization(round, digest);
+                            self.latest_fcu.update_head(round, digest);
                         }
                     }
                 }
@@ -169,10 +169,17 @@ where
 
         let execution_engine = self.execution_engine.clone();
         let task = if let Some((block, ack)) = self.block_queue.pop_front() {
-            let forkchoice = self.forkchoice.observe_block(&block);
+            let forkchoice = self
+                .latest_fcu
+                .update_finalized(&block)
+                .then_some(self.latest_fcu);
             let context = self.context.child("execute_block");
             execute_block(context, execution_engine, block, forkchoice, ack).boxed()
-        } else if let Some(forkchoice) = self.forkchoice.next_head_update(heartbeat) {
+        } else if self.latest_fcu.head_digest() != self.last_fcu.head_digest()
+            || self.latest_fcu.finalized_digest() != self.last_fcu.finalized_digest()
+            || heartbeat
+        {
+            let forkchoice = self.latest_fcu;
             let context = self.context.child("execute_head_update");
             execute_head_update(context, execution_engine, forkchoice).boxed()
         } else {
@@ -293,8 +300,8 @@ async fn submit_new_payload<TContext: Pacer, E: ExecutionEngine + ?Sized>(
 #[instrument(
     skip_all,
     fields(
-        head.digest = %forkchoice.head,
-        finalized.digest = %forkchoice.finalized,
+        head.digest = %forkchoice.head_digest(),
+        finalized.digest = %forkchoice.finalized_digest(),
     )
 )]
 async fn submit_forkchoice_update<TContext: Pacer, E: ExecutionEngine + ?Sized>(
