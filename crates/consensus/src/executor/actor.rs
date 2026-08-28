@@ -484,12 +484,14 @@ where
     /// be treated as invalid state.
     async fn wait_for_execution_layer(&mut self) -> eyre::Result<()> {
         for attempts in 1_u64.. {
-            let span = info_span!("execution_layer_readiness", attempts);
-            if self.execution_node.is_ready().instrument(span).await? {
-                info!(attempts, "execution layer is ready");
+            if self
+                .execution_node
+                .is_ready()
+                .instrument(info_span!("check_execution_layer_readiness", attempts))
+                .await?
+            {
                 break;
             }
-
             self.context
                 .sleep(EXECUTION_LAYER_READY_POLL_INTERVAL)
                 .await;
