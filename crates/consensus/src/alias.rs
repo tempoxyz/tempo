@@ -249,10 +249,7 @@ pub(crate) mod marshal {
         let execution_finalized = execution_finalized_point(execution_node);
 
         match archive_range {
-            Some((floor, tip)) => {
-                validate_archive_tip(tip, execution_finalized)?;
-                Ok(FinalizationRange { floor, tip })
-            }
+            Some((floor, tip)) => Ok(FinalizationRange { floor, tip }),
             None if execution_finalized.0.is_zero() => Ok(FinalizationRange {
                 floor: execution_finalized,
                 // Genesis is not finalized in any round; the zero round
@@ -271,35 +268,6 @@ pub(crate) mod marshal {
                 execution_finalized.0,
             )),
         }
-    }
-
-    fn validate_archive_tip(
-        archive_tip: (Round, Height, Digest),
-        execution_finalized: (Height, Digest),
-    ) -> eyre::Result<()> {
-        let (_, archive_height, archive_digest) = archive_tip;
-        let (execution_height, execution_digest) = execution_finalized;
-
-        ensure!(
-            archive_height >= execution_height,
-            "finalized certificate archive tip height `{}` is below execution finalized height \
-            `{}`; restore consensus storage that covers execution state or reset execution state",
-            archive_height,
-            execution_height,
-        );
-
-        if archive_height == execution_height {
-            ensure!(
-                archive_digest == execution_digest,
-                "finalized certificate archive tip digest `{}` does not match execution finalized \
-                digest `{}` at height `{}`; restore matching consensus and execution state",
-                archive_digest,
-                execution_digest,
-                archive_height,
-            );
-        }
-
-        Ok(())
     }
 
     async fn finalized_archive_range<TContext>(
