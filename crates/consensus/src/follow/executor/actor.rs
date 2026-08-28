@@ -39,7 +39,9 @@ pub(crate) struct Actor<TContext, P, E, M = crate::alias::marshal::Mailbox> {
     epoch_strategy: FixedEpocher,
     floor: Height,
 
+    // The last completed FCU
     last_fcu: Forkchoice,
+    // Next FCU to be delivered when it supersed the last
     pending_fcu: Forkchoice,
 
     block_queue: VecDeque<(Block, Exact)>,
