@@ -64,7 +64,7 @@ use tokio::select;
 use tracing::{Level, Span, debug, error, error_span, info, info_span, instrument, warn};
 
 use super::{
-    Config, ExecutionLayer, Marshal, StageCheckpoints,
+    Config, ExecutionLayer, Marshal,
     ingress::{Build, Command, Message, VerifyBlock},
 };
 use crate::{
@@ -78,8 +78,8 @@ mod tests;
 mod notarized_tree;
 use notarized_tree::{LocalState, NextToForward, NotarizedTree};
 
-/// How often to check whether reth has rebuilt its indices up to the headers checkpoint.
-const INDEX_REBUILD_POLL_INTERVAL: Duration = Duration::from_secs(1);
+/// How often to probe whether the execution layer is ready to process blocks.
+const EXECUTION_LAYER_READY_POLL_INTERVAL: Duration = Duration::from_secs(1);
 
 pub(crate) struct Actor<TContext, TExecutionLayer, TMarshal> {
     context: ContextCell<TContext>,
@@ -313,11 +313,11 @@ where
     }
 
     async fn run(mut self) {
-        if let Err(error) = self.wait_for_index_rebuild().await {
+        if let Err(error) = self.wait_for_execution_layer().await {
             error_span!("shutdown").in_scope(|| {
                 error!(
                     %error,
-                    "failed waiting for execution layer index rebuild",
+                    "failed waiting for execution layer readiness",
                 )
             });
             return;
@@ -472,37 +472,41 @@ where
         Ok(())
     }
 
-    /// Waits for reth's startup index rebuild to catch every index stage up to Headers.
+    /// Waits until reth is ready to process blocks by repeatedly reaffirming the execution layer's
+    /// own forkchoice state.
     ///
-    /// Reth returns the same `SYNCING` status while rebuilding snapshot indices and for a
-    /// disconnected payload, without reporting the reason. This one-shot startup gate opens only
-    /// after the commonly rebuilt indices reach the Headers checkpoint and remains open
-    /// permanently. Once open, snapshot index rebuilding can no longer explain `SYNCING`, allowing
-    /// us to consider it an invalid state when forwarding finalized blocks.
-    async fn wait_for_index_rebuild(&mut self) -> eyre::Result<()> {
+    /// Reth returns `SYNCING` for every forkchoice update while its backfill pipeline is active.
+    /// Because the probe uses the execution layer's current head, safe block, and finalized block,
+    /// it is non-destructive and cannot report `SYNCING` due to a detached CL-provided head. Once
+    /// the probe returns `VALID`, later `SYNCING` responses while forwarding finalized blocks can
+    /// be treated as invalid state.
+    async fn wait_for_execution_layer(&mut self) -> eyre::Result<()> {
         for attempts in 1_u64.. {
-            if check_stagepoint_progress(&self.execution_node, attempts)? {
+            if check_execution_layer_readiness(&self.execution_node, attempts).await? {
                 break;
             }
 
-            self.context.sleep(INDEX_REBUILD_POLL_INTERVAL).await;
+            self.context
+                .sleep(EXECUTION_LAYER_READY_POLL_INTERVAL)
+                .await;
         }
 
         #[instrument(skip_all, fields(attempts = _attempts), err)]
-        fn check_stagepoint_progress(
+        async fn check_execution_layer_readiness(
             execution_node: &impl ExecutionLayer,
             _attempts: u64,
         ) -> eyre::Result<bool> {
-            let checkpoints = execution_node
-                .stage_checkpoints()
-                .wrap_err("failed reading reth stage checkpoints")?;
-
-            if let Some(checkpoints) = checkpoints.filter(StageCheckpoints::is_rebuilt) {
-                info!(
-                    checkpoint = checkpoints.headers.block_number,
-                    "execution indices are rebuilt"
-                );
+            let response = execution_node
+                .fork_choice_updated_with_current_state()
+                .await
+                .wrap_err("execution-layer readiness forkchoice update failed")?;
+            if response.is_valid() {
+                info!("execution layer is ready");
                 return Ok(true);
+            }
+            if !response.payload_status.is_syncing() {
+                return Err(Report::msg(response.payload_status))
+                    .wrap_err("execution-layer readiness forkchoice update was not valid");
             }
 
             Ok(false)

@@ -7,13 +7,11 @@
 use alloy_rpc_types_engine::{ForkchoiceState, PayloadStatusEnum};
 use commonware_macros::test_traced;
 use commonware_runtime::{Runner as _, deterministic};
-use reth_stages_types::StageCheckpoint;
 
 use super::harness::{
     FakeExecution, FakeMarshal, ForkchoiceStateExt as _, GENESIS, Harness, HarnessOptions,
     make_block, round,
 };
-use crate::executor::StageCheckpoints;
 
 #[test_traced]
 fn no_backfill_when_already_at_the_floor() {
@@ -411,7 +409,7 @@ fn rejected_forkchoice_update_fails_startup_backfill() {
 }
 
 #[test_traced]
-fn index_rebuild_stalls_backfill_until_stage_checkpoints_match() {
+fn readiness_fcu_stalls_backfill_until_execution_layer_is_ready() {
     deterministic::Runner::default().start(|context| async move {
         let b1 = make_block(1, 1, GENESIS);
         let d1 = b1.digest();
@@ -419,18 +417,9 @@ fn index_rebuild_stalls_backfill_until_stage_checkpoints_match() {
         let marshal = FakeMarshal::new();
         marshal.add_block(b1);
         let execution = FakeExecution::new();
-        execution.script_stage_checkpoints(Ok(Some(StageCheckpoints {
-            headers: StageCheckpoint::new(1),
-            transaction_lookup: StageCheckpoint::new(0),
-            account_history: StageCheckpoint::new(1),
-            storage_history: StageCheckpoint::new(1),
-        })));
-        execution.script_stage_checkpoints(Ok(Some(StageCheckpoints {
-            headers: StageCheckpoint::new(1),
-            transaction_lookup: StageCheckpoint::new(1),
-            account_history: StageCheckpoint::new(1),
-            storage_history: StageCheckpoint::new(1),
-        })));
+        execution.set_finalized(0, GENESIS);
+        execution
+            .script_readiness_fcus([Ok(PayloadStatusEnum::Syncing), Ok(PayloadStatusEnum::Valid)]);
 
         let h = Harness::builder()
             .execution(execution)
@@ -447,7 +436,12 @@ fn index_rebuild_stalls_backfill_until_stage_checkpoints_match() {
         assert_eq!(
             h.execution.new_payloads(),
             vec![d1],
-            "backfill must begin only after the execution indices are rebuilt",
+            "backfill must begin only after the execution layer is ready",
+        );
+        assert_eq!(
+            h.execution.readiness_fcus(),
+            vec![ForkchoiceState::from_finalized_head(GENESIS, GENESIS); 2],
+            "the readiness gate must reaffirm the execution layer's own state",
         );
     });
 }

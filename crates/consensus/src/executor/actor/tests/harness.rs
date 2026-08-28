@@ -38,7 +38,6 @@ use parking_lot::Mutex;
 use reth_ethereum::rpc::eth::primitives::BlockNumHash;
 use reth_ethereum_engine_primitives::EthBuiltPayload;
 use reth_node_core::primitives::{RecoveredBlock, SealedBlock};
-use reth_stages_types::StageCheckpoint;
 use tempo_node::TempoExecutionData;
 use tempo_payload_types::{EncodedBlock, TempoBuiltPayload, TempoPayloadAttributes};
 use tempo_primitives::{Block as TempoBlock, TempoConsensusContext, TempoHeader};
@@ -46,7 +45,7 @@ use tokio::sync::oneshot;
 
 use crate::{
     consensus::{Digest, block::Block},
-    executor::{Config, ExecutionLayer, Mailbox, Marshal, StageCheckpoints, init},
+    executor::{Config, ExecutionLayer, Mailbox, Marshal, init},
 };
 
 /// The genesis digest all harness chains hang off.
@@ -254,8 +253,10 @@ struct FakeExecutionInner {
     canonical_hash_overrides: ScriptedResults<u64, Result<Option<B256>, &'static str>>,
     /// Scripted block lookup outcomes keyed by digest.
     block_overrides: ScriptedResults<B256, Result<Option<Block>, &'static str>>,
-    /// Scripted persisted-checkpoint outcomes.
-    stage_checkpoint_overrides: ScriptedResults<(), Result<Option<StageCheckpoints>, &'static str>>,
+    /// Complete readiness-FCU outcome sequence.
+    readiness_fcu_overrides: ScriptedResults<(), Result<PayloadStatusEnum, &'static str>>,
+    /// Forkchoice states sent by execution-layer readiness probes.
+    readiness_fcus: Mutex<Vec<ForkchoiceState>>,
     /// Rejects every FCU while set.
     reject_all_fcus: AtomicBool,
     /// Accepts attribute-carrying FCUs without registering a payload build.
@@ -323,7 +324,8 @@ impl FakeExecution {
                 fcu_overrides: ScriptedResults::new(),
                 canonical_hash_overrides: ScriptedResults::new(),
                 block_overrides: ScriptedResults::new(),
-                stage_checkpoint_overrides: ScriptedResults::new(),
+                readiness_fcu_overrides: ScriptedResults::new(),
+                readiness_fcus: Mutex::new(Vec::new()),
                 reject_all_fcus: AtomicBool::new(false),
                 suppress_payload_ids: AtomicBool::new(false),
                 omit_payload_job: AtomicBool::new(false),
@@ -433,12 +435,12 @@ impl FakeExecution {
         self.inner.block_overrides.push(digest.0, outcome);
     }
 
-    /// Appends a persisted-checkpoint response to its scripted sequence.
-    pub(super) fn script_stage_checkpoints(
+    /// Scripts the complete outcome sequence for execution-layer readiness FCUs.
+    pub(super) fn script_readiness_fcus(
         &self,
-        outcome: Result<Option<StageCheckpoints>, &'static str>,
+        outcomes: impl IntoIterator<Item = Result<PayloadStatusEnum, &'static str>>,
     ) {
-        self.inner.stage_checkpoint_overrides.push((), outcome);
+        self.inner.readiness_fcu_overrides.script((), outcomes);
     }
 
     /// Rejects all forkchoice updates until re-enabled.
@@ -518,6 +520,10 @@ impl FakeExecution {
         self.inner.payload_attributes.lock().clone()
     }
 
+    pub(super) fn readiness_fcus(&self) -> Vec<ForkchoiceState> {
+        self.inner.readiness_fcus.lock().clone()
+    }
+
     pub(super) fn fcus(&self) -> Vec<(Digest, Digest, bool)> {
         self.calls()
             .into_iter()
@@ -592,20 +598,32 @@ impl FakeExecution {
 }
 
 impl ExecutionLayer for FakeExecution {
-    fn stage_checkpoints(&self) -> eyre::Result<Option<StageCheckpoints>> {
-        match self.inner.stage_checkpoint_overrides.next_scripted(&()) {
-            NextScriptedResult::Scripted(outcome) => outcome
-                .map_err(Report::msg)
-                .wrap_err("scripted stage checkpoint lookup failed"),
-            NextScriptedResult::Unscripted => Ok(Some(StageCheckpoints {
-                headers: StageCheckpoint::new(0),
-                transaction_lookup: StageCheckpoint::new(0),
-                account_history: StageCheckpoint::new(0),
-                storage_history: StageCheckpoint::new(0),
-            })),
+    fn fork_choice_updated_with_current_state(
+        &self,
+    ) -> impl Future<Output = eyre::Result<ForkchoiceUpdated>> + Send + 'static {
+        let state = self.inner.state.lock();
+        let finalized_block_hash = state
+            .finalized
+            .map_or(B256::ZERO, |finalized| finalized.hash);
+        let forkchoice_state = ForkchoiceState {
+            head_block_hash: state.head,
+            safe_block_hash: finalized_block_hash,
+            finalized_block_hash,
+        };
+        drop(state);
+        self.inner.readiness_fcus.lock().push(forkchoice_state);
+        let outcome = match self.inner.readiness_fcu_overrides.next_scripted(&()) {
+            NextScriptedResult::Scripted(outcome) => outcome,
+            NextScriptedResult::Unscripted => Ok(PayloadStatusEnum::Valid),
             NextScriptedResult::Exhausted => {
-                panic!("stage checkpoint lookup exceeded its scripted outcome sequence")
+                panic!("readiness FCU exceeded its scripted outcome sequence")
             }
+        };
+        async move {
+            outcome
+                .map(ForkchoiceUpdated::from_status)
+                .map_err(Report::msg)
+                .wrap_err("scripted readiness forkchoice update failed")
         }
     }
 

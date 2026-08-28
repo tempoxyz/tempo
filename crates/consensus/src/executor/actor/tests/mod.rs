@@ -1,7 +1,6 @@
 use alloy_primitives::B256;
 use commonware_consensus::types::{Height, Round};
 use futures::executor::block_on;
-use reth_stages_types::StageCheckpoint;
 
 use commonware_consensus::Heightable as _;
 
@@ -9,7 +8,7 @@ use super::{
     ConsensusRequest, ExecutionTask, ExecutionTaskOutcome, ExecutionTaskType, VerifyBlockRequest,
     notarized_tree::LocalState, queue_consensus_request,
 };
-use crate::{consensus::Digest, executor::StageCheckpoints};
+use crate::consensus::Digest;
 
 mod harness;
 
@@ -23,34 +22,6 @@ mod scheduling;
 mod verify;
 
 use harness::{make_block, round};
-
-#[test]
-fn indices_are_only_rebuilt_when_every_index_reaches_headers() {
-    let checkpoint = StageCheckpoint::new(10);
-    assert!(
-        StageCheckpoints {
-            headers: checkpoint,
-            transaction_lookup: checkpoint,
-            account_history: checkpoint,
-            storage_history: checkpoint,
-        }
-        .is_rebuilt()
-    );
-
-    for lagging_index in 0..3 {
-        let mut indices = [checkpoint; 3];
-        indices[lagging_index] = StageCheckpoint::new(9);
-        assert!(
-            !StageCheckpoints {
-                headers: checkpoint,
-                transaction_lookup: indices[0],
-                account_history: indices[1],
-                storage_history: indices[2],
-            }
-            .is_rebuilt()
-        );
-    }
-}
 
 #[test]
 fn execution_task_finishes_with_an_outcome() {

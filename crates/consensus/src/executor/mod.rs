@@ -11,13 +11,9 @@ use commonware_cryptography::ed25519::PublicKey;
 use commonware_runtime::{Clock, Metrics, Spawner};
 use reth_ethereum::{chainspec::EthChainSpec as _, rpc::eth::primitives::BlockNumHash};
 use reth_node_builder::PayloadKind;
-use reth_provider::{
-    BlockHashReader as _, BlockReader as _, BlockSource, StageCheckpointReader as _,
-};
-use reth_stages_types::{StageCheckpoint, StageId};
+use reth_provider::{BlockHashReader as _, BlockReader as _, BlockSource};
 use tempo_node::{TempoExecutionData, TempoFullNode};
 use tempo_payload_types::{TempoBuiltPayload, TempoPayloadAttributes};
-use tempo_telemetry_util::display_option;
 use tokio::sync::oneshot;
 
 mod actor;
@@ -30,28 +26,6 @@ pub(crate) use ingress::Mailbox;
 
 use crate::consensus::{Digest, block::Block};
 
-/// The commonly rebuilt reth stage checkpoints used to determine whether index rebuilding is
-/// complete.
-///
-/// The index is considered rebuilt when the Headers, TransactionLookup, IndexAccountHistory, and
-/// IndexStorageHistory checkpoints all match. These are not all reth stage checkpoints, only the
-/// ones commonly rebuilt at startup.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub(crate) struct StageCheckpoints {
-    headers: StageCheckpoint,
-    transaction_lookup: StageCheckpoint,
-    account_history: StageCheckpoint,
-    storage_history: StageCheckpoint,
-}
-
-impl StageCheckpoints {
-    const fn is_rebuilt(&self) -> bool {
-        self.headers.block_number == self.transaction_lookup.block_number
-            && self.headers.block_number == self.account_history.block_number
-            && self.headers.block_number == self.storage_history.block_number
-    }
-}
-
 /// The execution-layer surface the executor actor drives.
 ///
 /// The abstraction sits at the transport level - engine-API requests and
@@ -63,8 +37,11 @@ impl StageCheckpoints {
 /// Implementations are cheap-clone handles: clones are moved into the
 /// actor's spawned execution tasks.
 pub(crate) trait ExecutionLayer: Clone + Send + Sync + 'static {
-    /// Returns the persisted Headers and index-stage checkpoints once all exist.
-    fn stage_checkpoints(&self) -> eyre::Result<Option<StageCheckpoints>>;
+    /// Reaffirms the execution layer's own current head, safe block, and finalized block through a
+    /// forkchoice update without changing its canonical state.
+    fn fork_choice_updated_with_current_state(
+        &self,
+    ) -> impl Future<Output = eyre::Result<ForkchoiceUpdated>> + Send + 'static;
 
     /// The execution layer's finalized block, falling back to genesis if no
     /// block has been explicitly finalized yet.
@@ -128,39 +105,26 @@ pub(crate) trait Marshal: Clone + Send + Sync + 'static {
 }
 
 impl ExecutionLayer for Arc<TempoFullNode> {
-    fn stage_checkpoints(&self) -> eyre::Result<Option<StageCheckpoints>> {
-        let provider = self.provider.consistent_provider()?;
-        let headers = provider.get_stage_checkpoint(StageId::Headers)?;
-        let transaction_lookup = provider.get_stage_checkpoint(StageId::TransactionLookup)?;
-        let account_history = provider.get_stage_checkpoint(StageId::IndexAccountHistory)?;
-        let storage_history = provider.get_stage_checkpoint(StageId::IndexStorageHistory)?;
-        tracing::info!(
-            headers = %display_option(&headers.as_ref().map(|checkpoint| checkpoint.block_number)),
-            transaction_lookup = %display_option(
-                &transaction_lookup.as_ref().map(|checkpoint| checkpoint.block_number)
-            ),
-            account_history = %display_option(
-                &account_history.as_ref().map(|checkpoint| checkpoint.block_number)
-            ),
-            storage_history = %display_option(
-                &storage_history.as_ref().map(|checkpoint| checkpoint.block_number)
-            ),
-            "read stage checkpoints from execution layer"
-        );
-        Ok(headers
-            .zip(transaction_lookup)
-            .zip(account_history)
-            .zip(storage_history)
-            .map(
-                |(((headers, transaction_lookup), account_history), storage_history)| {
-                    StageCheckpoints {
-                        headers,
-                        transaction_lookup,
-                        account_history,
-                        storage_history,
-                    }
-                },
-            ))
+    fn fork_choice_updated_with_current_state(
+        &self,
+    ) -> impl Future<Output = eyre::Result<ForkchoiceUpdated>> + Send + 'static {
+        let state = self.provider.canonical_in_memory_state();
+        let forkchoice_state = ForkchoiceState {
+            head_block_hash: state.get_canonical_head().hash(),
+            safe_block_hash: state
+                .get_safe_num_hash()
+                .map_or(B256::ZERO, |safe| safe.hash),
+            finalized_block_hash: state
+                .get_finalized_num_hash()
+                .map_or(B256::ZERO, |finalized| finalized.hash),
+        };
+        let engine = self.add_ons_handle.beacon_engine_handle.clone();
+        async move {
+            engine
+                .fork_choice_updated(forkchoice_state, None)
+                .await
+                .map_err(Into::into)
+        }
     }
 
     fn finalized_num_hash(&self) -> BlockNumHash {
