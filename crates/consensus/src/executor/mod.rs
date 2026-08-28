@@ -38,10 +38,8 @@ use crate::consensus::{Digest, block::Block};
 /// actor's spawned execution tasks.
 pub(crate) trait ExecutionLayer: Clone + Send + Sync + 'static {
     /// Reaffirms the execution layer's own current head, safe block, and finalized block through a
-    /// forkchoice update without changing its canonical state.
-    fn fork_choice_updated_with_current_state(
-        &self,
-    ) -> impl Future<Output = eyre::Result<ForkchoiceUpdated>> + Send + 'static;
+    /// forkchoice update without changing its canonical state, returning whether it was accepted.
+    fn is_ready(&self) -> impl Future<Output = eyre::Result<bool>> + Send + 'static;
 
     /// The execution layer's finalized block, falling back to genesis if no
     /// block has been explicitly finalized yet.
@@ -105,26 +103,37 @@ pub(crate) trait Marshal: Clone + Send + Sync + 'static {
 }
 
 impl ExecutionLayer for Arc<TempoFullNode> {
-    fn fork_choice_updated_with_current_state(
-        &self,
-    ) -> impl Future<Output = eyre::Result<ForkchoiceUpdated>> + Send + 'static {
-        let state = self.provider.canonical_in_memory_state();
-        let forkchoice_state = ForkchoiceState {
-            head_block_hash: state.get_canonical_head().hash(),
-            safe_block_hash: state
-                .get_safe_num_hash()
-                .map_or(B256::ZERO, |safe| safe.hash),
-            finalized_block_hash: state
-                .get_finalized_num_hash()
-                .map_or(B256::ZERO, |finalized| finalized.hash),
-        };
-        let engine = self.add_ons_handle.beacon_engine_handle.clone();
-        async move {
-            engine
+    fn is_ready(&self) -> impl Future<Output = eyre::Result<bool>> + Send + 'static {
+        #[tracing::instrument(name = "ExecutionLayer::is_ready", skip_all, ret, err)]
+        async fn is_ready(node: Arc<TempoFullNode>) -> eyre::Result<bool> {
+            let state = node.provider.canonical_in_memory_state();
+            let forkchoice_state = ForkchoiceState {
+                head_block_hash: state.get_canonical_head().hash(),
+                safe_block_hash: state
+                    .get_safe_num_hash()
+                    .map_or(B256::ZERO, |safe| safe.hash),
+                finalized_block_hash: state
+                    .get_finalized_num_hash()
+                    .map_or(B256::ZERO, |finalized| finalized.hash),
+            };
+            let response = node
+                .add_ons_handle
+                .beacon_engine_handle
                 .fork_choice_updated(forkchoice_state, None)
                 .await
-                .map_err(Into::into)
+                .map_err(eyre::Report::from)
+                .wrap_err("execution-layer readiness forkchoice update failed")?;
+            if response.is_valid() {
+                return Ok(true);
+            }
+            if response.payload_status.is_syncing() {
+                return Ok(false);
+            }
+            Err(eyre::Report::msg(response.payload_status))
+                .wrap_err("execution-layer readiness forkchoice update was not valid")
         }
+
+        is_ready(self.clone())
     }
 
     fn finalized_num_hash(&self) -> BlockNumHash {

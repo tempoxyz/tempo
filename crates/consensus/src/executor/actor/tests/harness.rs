@@ -598,9 +598,7 @@ impl FakeExecution {
 }
 
 impl ExecutionLayer for FakeExecution {
-    fn fork_choice_updated_with_current_state(
-        &self,
-    ) -> impl Future<Output = eyre::Result<ForkchoiceUpdated>> + Send + 'static {
+    fn is_ready(&self) -> impl Future<Output = eyre::Result<bool>> + Send + 'static {
         let state = self.inner.state.lock();
         let finalized_block_hash = state
             .finalized
@@ -620,10 +618,17 @@ impl ExecutionLayer for FakeExecution {
             }
         };
         async move {
-            outcome
-                .map(ForkchoiceUpdated::from_status)
+            let status = outcome
                 .map_err(Report::msg)
-                .wrap_err("scripted readiness forkchoice update failed")
+                .wrap_err("scripted readiness forkchoice update failed")?;
+            if status == PayloadStatusEnum::Valid {
+                return Ok(true);
+            }
+            if status == PayloadStatusEnum::Syncing {
+                return Ok(false);
+            }
+            Err(Report::msg(PayloadStatus::from_status(status)))
+                .wrap_err("scripted readiness forkchoice update was not valid")
         }
     }
 

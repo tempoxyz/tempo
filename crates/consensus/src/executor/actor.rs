@@ -61,7 +61,9 @@ use prometheus_client::metrics::{counter::Counter, gauge::Gauge};
 use tempo_node::TempoExecutionData;
 use tempo_payload_types::{TempoBuiltPayload, TempoPayloadAttributes};
 use tokio::select;
-use tracing::{Level, Span, debug, error, error_span, info, info_span, instrument, warn};
+use tracing::{
+    Instrument as _, Level, Span, debug, error, error_span, info, info_span, instrument, warn,
+};
 
 use super::{
     Config, ExecutionLayer, Marshal,
@@ -482,34 +484,15 @@ where
     /// be treated as invalid state.
     async fn wait_for_execution_layer(&mut self) -> eyre::Result<()> {
         for attempts in 1_u64.. {
-            if check_execution_layer_readiness(&self.execution_node, attempts).await? {
+            let span = info_span!("execution_layer_readiness", attempts);
+            if self.execution_node.is_ready().instrument(span).await? {
+                info!(attempts, "execution layer is ready");
                 break;
             }
 
             self.context
                 .sleep(EXECUTION_LAYER_READY_POLL_INTERVAL)
                 .await;
-        }
-
-        #[instrument(skip_all, fields(attempts = _attempts), err)]
-        async fn check_execution_layer_readiness(
-            execution_node: &impl ExecutionLayer,
-            _attempts: u64,
-        ) -> eyre::Result<bool> {
-            let response = execution_node
-                .fork_choice_updated_with_current_state()
-                .await
-                .wrap_err("execution-layer readiness forkchoice update failed")?;
-            if response.is_valid() {
-                info!("execution layer is ready");
-                return Ok(true);
-            }
-            if !response.payload_status.is_syncing() {
-                return Err(Report::msg(response.payload_status))
-                    .wrap_err("execution-layer readiness forkchoice update was not valid");
-            }
-
-            Ok(false)
         }
 
         Ok(())
