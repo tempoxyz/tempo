@@ -82,9 +82,10 @@ impl ForkchoiceTargets {
         advance(&mut self.head, candidate);
     }
 
-    fn advance_finalized(&mut self, candidate: Target) {
-        advance(&mut self.finalized, candidate);
+    fn advance_finalized(&mut self, candidate: Target) -> bool {
+        let advanced = advance(&mut self.finalized, candidate);
         advance(&mut self.head, candidate);
+        advanced
     }
 
     pub(super) fn rpc_state(self) -> ForkchoiceState {
@@ -96,9 +97,12 @@ impl ForkchoiceTargets {
     }
 }
 
-fn advance(current: &mut Target, candidate: Target) {
+fn advance(current: &mut Target, candidate: Target) -> bool {
     if candidate.supersedes(current) {
         *current = candidate;
+        true
+    } else {
+        false
     }
 }
 
@@ -129,9 +133,9 @@ impl ForkchoiceTracker {
     /// Moves the latest finalized target to a later block delivered by marshal.
     ///
     /// This also advances the head when needed, so finalized never moves ahead of
-    /// head.
-    pub(super) fn advance_finalized(&mut self, candidate: Target) {
-        self.latest.advance_finalized(candidate);
+    /// head. Returns whether the finalized target advanced.
+    pub(super) fn advance_finalized(&mut self, candidate: Target) -> bool {
+        self.latest.advance_finalized(candidate)
     }
 
     /// Returns `true` if the latest targets have changed since the last known submitted state.
@@ -251,7 +255,7 @@ mod tests {
         let mut tracker = ForkchoiceTracker::new(current);
         tracker.advance_head(head);
 
-        tracker.advance_finalized(finalized);
+        assert!(tracker.advance_finalized(finalized));
 
         let targets = tracker.latest();
         assert_eq!(targets.head, head);
@@ -267,7 +271,7 @@ mod tests {
         tracker.note_submitted(tracker.latest());
         assert!(!tracker.requires_update());
 
-        tracker.advance_finalized(head);
+        assert!(tracker.advance_finalized(head));
 
         assert!(tracker.requires_update());
     }

@@ -30,6 +30,8 @@ use super::{
 };
 use crate::{consensus::block::Block, utils::OptionFuture};
 
+const FINALIZED_FCU_RETRY_INTERVAL: Duration = Duration::from_secs(1);
+
 pub(crate) struct Actor<TContext, P, E, M = crate::alias::marshal::Mailbox> {
     context: ContextCell<TContext>,
     mailbox: mpsc::UnboundedReceiver<Message>,
@@ -181,13 +183,15 @@ where
         }
 
         let request = if let Some((block, ack)) = self.block_queue.pop_front() {
-            self.forkchoice
+            let finalized_advanced = self
+                .forkchoice
                 .advance_finalized(Target::from_block(&block));
             let forkchoice = (self.forkchoice.requires_update() || heartbeat)
                 .then_some(self.forkchoice.latest());
             ExecutionRequest::Block {
                 block,
                 forkchoice,
+                finalized_advanced,
                 ack,
             }
         } else if self.forkchoice.requires_update() || heartbeat {
@@ -257,12 +261,20 @@ enum ExecutionRequest {
         block: Block,
         forkchoice: Option<ForkchoiceTargets>,
         ack: Exact,
+        /// Whether the block advances finality and must wait for a `VALID` FCU before
+        /// acknowledgement.
+        finalized_advanced: bool,
     },
 }
 
 enum ExecutionTaskResult {
     Completed(Option<ForkchoiceTargets>),
     Fatal(Report),
+}
+
+enum ForkchoiceOutcome {
+    Valid,
+    Syncing,
 }
 
 async fn execute_request<TContext: Pacer, E: ExecutionEngine + 'static>(
@@ -272,14 +284,18 @@ async fn execute_request<TContext: Pacer, E: ExecutionEngine + 'static>(
 ) -> ExecutionTaskResult {
     match request {
         ExecutionRequest::Forkchoice(forkchoice) => {
-            match submit_forkchoice_update(&context, &execution_engine, &forkchoice).await {
-                Ok(()) => ExecutionTaskResult::Completed(Some(forkchoice)),
+            let result = submit_forkchoice_update(&context, &execution_engine, &forkchoice).await;
+            match result {
+                Ok(ForkchoiceOutcome::Valid | ForkchoiceOutcome::Syncing) => {
+                    ExecutionTaskResult::Completed(Some(forkchoice))
+                }
                 Err(error) => ExecutionTaskResult::Fatal(error),
             }
         }
         ExecutionRequest::Block {
             block,
             forkchoice,
+            finalized_advanced,
             ack,
         } => {
             if let Err(error) = submit_new_payload(&context, &execution_engine, block).await {
@@ -287,10 +303,20 @@ async fn execute_request<TContext: Pacer, E: ExecutionEngine + 'static>(
             }
 
             if let Some(forkchoice) = forkchoice {
-                let result =
-                    submit_forkchoice_update(&context, &execution_engine, &forkchoice).await;
-                if let Err(error) = result {
-                    return ExecutionTaskResult::Fatal(error);
+                loop {
+                    let result =
+                        submit_forkchoice_update(&context, &execution_engine, &forkchoice).await;
+                    match result {
+                        Ok(ForkchoiceOutcome::Valid) => break,
+                        Ok(ForkchoiceOutcome::Syncing) if finalized_advanced => {
+                            debug!(
+                                "execution layer is syncing before applying finalized FCU; retrying"
+                            );
+                            context.sleep(FINALIZED_FCU_RETRY_INTERVAL).await;
+                        }
+                        Ok(ForkchoiceOutcome::Syncing) => break,
+                        Err(error) => return ExecutionTaskResult::Fatal(error),
+                    }
                 }
             }
 
@@ -344,7 +370,7 @@ async fn submit_forkchoice_update<TContext: Pacer, E: ExecutionEngine + ?Sized>(
     context: &TContext,
     execution_engine: &E,
     forkchoice: &ForkchoiceTargets,
-) -> eyre::Result<()> {
+) -> eyre::Result<ForkchoiceOutcome> {
     let forkchoice = forkchoice.rpc_state();
 
     let response = execution_engine
@@ -355,10 +381,13 @@ async fn submit_forkchoice_update<TContext: Pacer, E: ExecutionEngine + ?Sized>(
 
     debug!(payload_status = %response.payload_status, "execution layer reported FCU status");
 
-    ensure!(
-        !response.is_invalid(),
-        Report::msg(response.payload_status).wrap_err("execution layer rejected fcu")
-    );
+    if response.payload_status.is_valid() {
+        return Ok(ForkchoiceOutcome::Valid);
+    }
 
-    Ok(())
+    if response.payload_status.is_syncing() {
+        return Ok(ForkchoiceOutcome::Syncing);
+    }
+
+    Err(Report::msg(response.payload_status).wrap_err("execution layer rejected fcu"))
 }

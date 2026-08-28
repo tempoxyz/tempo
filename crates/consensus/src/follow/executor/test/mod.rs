@@ -420,6 +420,119 @@ fn finalization_waits_for_durable_block_before_advancing_finalized() {
     });
 }
 
+#[test_traced]
+fn syncing_block_forkchoice_retries_before_acknowledging() {
+    deterministic::Runner::default().start(|context| async move {
+        let provider = StubExecutionProvider::default();
+        let release_head_forkchoice = provider.pause_next_forkchoice();
+
+        let (actor, mut mailbox) = init(
+            context.child("follower_executor"),
+            Config {
+                execution_provider: provider.clone(),
+                execution_engine: provider.clone(),
+                marshal: StubMarshal::default(),
+                epoch_strategy: FixedEpocher::new(EPOCH_LENGTH),
+                floor: Height::zero(),
+                fcu_heartbeat_interval: Duration::from_secs(60),
+            },
+        );
+        actor.start();
+
+        let future_head = digest(9);
+        mailbox.finalization(round(2), future_head);
+        wait_until(&context, || provider.forkchoices().len() == 1).await;
+
+        provider.set_forkchoices_syncing(true);
+        let block = make_block_at_round(1, B256::ZERO, round(1));
+        let finalized = block.block_hash();
+        let (ack, waiter) = Exact::handle();
+        assert!(mailbox.report(Update::Block(block.into(), ack)).accepted());
+
+        release_head_forkchoice
+            .send(())
+            .expect("the head FCU should still be waiting");
+        wait_until(&context, || provider.forkchoices().len() == 2).await;
+
+        let mut waiter = Box::pin(waiter);
+        tokio::select! {
+            result = &mut waiter => panic!("syncing FCU acknowledged the block: {result:?}"),
+            _ = context.sleep(Duration::from_millis(100)) => {}
+        }
+
+        provider.set_forkchoices_syncing(false);
+        waiter
+            .await
+            .expect("valid retry should acknowledge the durable block");
+
+        let forkchoices = provider.forkchoices();
+        assert_eq!(forkchoices.len(), 3);
+        assert_eq!(forkchoices[1], forkchoices[2]);
+        assert_eq!(forkchoices[2].head_block_hash, future_head.0);
+        assert_eq!(forkchoices[2].safe_block_hash, finalized);
+        assert_eq!(forkchoices[2].finalized_block_hash, finalized);
+    });
+}
+
+#[test_traced]
+fn syncing_head_only_forkchoice_does_not_hold_stale_block_acknowledgement() {
+    deterministic::Runner::default().start(|context| async move {
+        let current = digest(10);
+        let provider = StubExecutionProvider::default();
+        provider.set_finalized(100, current.0, round(10));
+        let release_head_forkchoice = provider.pause_next_forkchoice();
+
+        let (actor, mut mailbox) = init(
+            context.child("follower_executor"),
+            Config {
+                execution_provider: provider.clone(),
+                execution_engine: provider.clone(),
+                marshal: StubMarshal::default(),
+                epoch_strategy: FixedEpocher::new(EPOCH_LENGTH),
+                floor: Height::zero(),
+                fcu_heartbeat_interval: Duration::from_secs(60),
+            },
+        );
+        actor.start();
+
+        mailbox.finalization(round(11), digest(11));
+        wait_until(&context, || provider.forkchoices().len() == 1).await;
+
+        provider.set_forkchoices_syncing(true);
+        let latest_head = digest(12);
+        mailbox.finalization(round(12), latest_head);
+
+        let stale_block = make_block_at_round(99, digest(98).0, round(9));
+        let (ack, waiter) = Exact::handle();
+        assert!(
+            mailbox
+                .report(Update::Block(stale_block.into(), ack))
+                .accepted()
+        );
+
+        release_head_forkchoice
+            .send(())
+            .expect("the first head FCU should still be waiting");
+        wait_until(&context, || provider.forkchoices().len() == 2).await;
+
+        let mut waiter = Box::pin(waiter);
+        tokio::select! {
+            result = &mut waiter => {
+                result.expect("head-only FCU should acknowledge the stale block");
+            }
+            _ = context.sleep(Duration::from_millis(100)) => {
+                panic!("head-only FCU held the stale block acknowledgement");
+            }
+        }
+
+        let forkchoices = provider.forkchoices();
+        assert_eq!(forkchoices.len(), 2);
+        assert_eq!(forkchoices[1].head_block_hash, latest_head.0);
+        assert_eq!(forkchoices[1].safe_block_hash, current.0);
+        assert_eq!(forkchoices[1].finalized_block_hash, current.0);
+    });
+}
+
 /// An older finalization received while a block FCU is in flight must not
 /// become the next forkchoice target.
 #[test_traced]
