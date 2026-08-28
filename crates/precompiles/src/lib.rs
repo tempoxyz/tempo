@@ -1037,7 +1037,7 @@ mod tests {
         }
         .abi_encode()
         .into();
-        let base_cost = input_cost(TempoHardfork::T11, calldata.len());
+        let base_cost = input_cost(TempoHardfork::T11, calldata.len()).unwrap();
 
         let db = CacheDB::new(EmptyDB::new());
         let mut evm = EthEvmFactory::default().create_evm(db, EvmEnv::default());
