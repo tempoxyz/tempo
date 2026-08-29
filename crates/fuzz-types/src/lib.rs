@@ -18,9 +18,16 @@ pub const MODERATO_T1_TIMESTAMP: u64 = MODERATO_T0_TIMESTAMP;
 pub const MODERATO_T2_TIMESTAMP: u64 = 1_774_537_200;
 pub const MODERATO_T3_TIMESTAMP: u64 = 1_776_780_000;
 pub const MODERATO_T4_TIMESTAMP: u64 = 1_778_767_200;
-/// Synthetic T5 activation used by fuzz harnesses. T5 is not scheduled on
-/// Moderato yet, but fuzzing needs a deterministic activation boundary.
+/// Synthetic post-T4 activations used by the harness. They make unreleased
+/// forks independently selectable without binding fixtures to a live schedule.
 pub const FUZZ_T5_TIMESTAMP: u64 = MODERATO_T4_TIMESTAMP + 1_000_000;
+pub const FUZZ_T6_TIMESTAMP: u64 = FUZZ_T5_TIMESTAMP + 1_000_000;
+pub const FUZZ_T7_TIMESTAMP: u64 = FUZZ_T6_TIMESTAMP + 1_000_000;
+pub const FUZZ_T8_TIMESTAMP: u64 = FUZZ_T7_TIMESTAMP + 1_000_000;
+pub const FUZZ_T9_TIMESTAMP: u64 = FUZZ_T8_TIMESTAMP + 1_000_000;
+pub const FUZZ_T10_TIMESTAMP: u64 = FUZZ_T9_TIMESTAMP + 1_000_000;
+pub const FUZZ_T11_TIMESTAMP: u64 = FUZZ_T10_TIMESTAMP + 1_000_000;
+pub const FUZZ_T12_TIMESTAMP: u64 = FUZZ_T11_TIMESTAMP + 1_000_000;
 
 #[repr(u8)]
 #[derive(Clone, Copy, Debug, Deserialize, Eq, Hash, PartialEq, Serialize)]
@@ -188,6 +195,34 @@ impl Default for ChainSpecInput {
                 HardforkActivationInput {
                     hardfork: 5,
                     timestamp: FUZZ_T5_TIMESTAMP,
+                },
+                HardforkActivationInput {
+                    hardfork: 6,
+                    timestamp: FUZZ_T6_TIMESTAMP,
+                },
+                HardforkActivationInput {
+                    hardfork: 7,
+                    timestamp: FUZZ_T7_TIMESTAMP,
+                },
+                HardforkActivationInput {
+                    hardfork: 8,
+                    timestamp: FUZZ_T8_TIMESTAMP,
+                },
+                HardforkActivationInput {
+                    hardfork: 9,
+                    timestamp: FUZZ_T9_TIMESTAMP,
+                },
+                HardforkActivationInput {
+                    hardfork: 10,
+                    timestamp: FUZZ_T10_TIMESTAMP,
+                },
+                HardforkActivationInput {
+                    hardfork: 11,
+                    timestamp: FUZZ_T11_TIMESTAMP,
+                },
+                HardforkActivationInput {
+                    hardfork: 12,
+                    timestamp: FUZZ_T12_TIMESTAMP,
                 },
             ],
         }
