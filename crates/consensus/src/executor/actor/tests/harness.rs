@@ -129,6 +129,16 @@ pub(super) enum ElCall {
     Resolve(PayloadId),
 }
 
+/// The ordinary FCU sent when a genesis-only fake has no finalized marker.
+/// Zero is the Engine API's "unset" sentinel for safe/finalized, not the head.
+pub(super) const STARTUP_FCU: (Digest, Digest, bool) = (GENESIS, Digest(B256::ZERO), false);
+
+pub(super) const STARTUP_FCU_CALL: ElCall = ElCall::Fcu {
+    head: GENESIS,
+    finalized: Digest(B256::ZERO),
+    with_attrs: false,
+};
+
 /// Test constructor for the executor's forkchoice-state convention.
 pub(super) trait ForkchoiceStateExt {
     /// Constructs a state from its `(finalized, head)` pair, setting safe to
@@ -199,17 +209,6 @@ where
         } else {
             scripts.push((key, VecDeque::from([result])));
         }
-    }
-
-    fn script(&self, key: K, results: impl IntoIterator<Item = T>) {
-        let results = results.into_iter().collect::<VecDeque<_>>();
-        assert!(!results.is_empty(), "a scripted sequence must not be empty");
-        let mut scripts = self.0.lock();
-        assert!(
-            !scripts.iter().any(|(existing, _)| existing == &key),
-            "a script must provide the complete sequence in one call",
-        );
-        scripts.push((key, results));
     }
 
     fn pop(&self, key: &K) -> Option<T> {
@@ -392,11 +391,11 @@ impl FakeExecution {
         sender
     }
 
-    /// Scripts the complete sequence of outcomes for `state`.
-    /// Each matching request consumes one outcome in FIFO order; a matching
-    /// request beyond the supplied sequence fails the test instead of falling
-    /// back to default behavior. Payload attributes do not participate in
-    /// matching; another forkchoice state uses the stateful default.
+    /// Appends an FCU response for `state` to its scripted sequence.
+    /// Matching requests consume responses in FIFO order; a request beyond
+    /// the supplied responses fails the test instead of falling back to
+    /// default behavior. Payload attributes do not participate in matching;
+    /// another forkchoice state uses the stateful default.
     ///
     /// The default applies the requested forkchoice state, returning `Valid`
     /// when the head is known and `Syncing` otherwise. A scripted `Ok(Valid)`
@@ -406,9 +405,9 @@ impl FakeExecution {
     pub(super) fn script_fcu(
         &self,
         state: ForkchoiceState,
-        outcomes: impl IntoIterator<Item = Result<PayloadStatusEnum, &'static str>>,
+        response: Result<PayloadStatusEnum, &'static str>,
     ) {
-        self.inner.fcu_overrides.script(state, outcomes);
+        self.inner.fcu_overrides.push(state, response);
     }
 
     /// Scripts the outcome of the next canonical block lookup at `height`.
@@ -580,6 +579,19 @@ impl FakeExecution {
 }
 
 impl ExecutionLayer for FakeExecution {
+    fn current_forkchoice_state(&self) -> eyre::Result<ForkchoiceState> {
+        let state = self.inner.state.lock();
+        eyre::ensure!(state.head != B256::ZERO, "fake has a zero canonical head");
+        let finalized_block_hash = state
+            .finalized
+            .map_or(B256::ZERO, |finalized| finalized.hash);
+        Ok(ForkchoiceState {
+            head_block_hash: state.head,
+            safe_block_hash: finalized_block_hash,
+            finalized_block_hash,
+        })
+    }
+
     fn finalized_num_hash(&self) -> BlockNumHash {
         self.inner
             .state
@@ -1160,7 +1172,7 @@ mod scripted_results_tests {
             NextScriptedResult::Unscripted
         ));
 
-        results.script(1, [Ok(7)]);
+        results.push(1, Ok(7));
         assert!(matches!(
             results.next_scripted(&1),
             NextScriptedResult::Scripted(Ok(7))

@@ -10,7 +10,7 @@ use commonware_macros::test_traced;
 use commonware_runtime::{Runner as _, deterministic};
 
 use super::harness::{
-    ForkchoiceStateExt as _, GENESIS, Harness, HarnessOptions, make_block, round,
+    ForkchoiceStateExt as _, GENESIS, Harness, HarnessOptions, STARTUP_FCU, make_block, round,
 };
 
 #[test_traced]
@@ -77,6 +77,7 @@ fn missing_ancestor_bodies_are_fetched_and_forwarded_bottom_up() {
         assert_eq!(
             h.execution.fcus(),
             vec![
+                STARTUP_FCU,
                 (d1, GENESIS, false),
                 (d2, GENESIS, false),
                 (d3, GENESIS, false)
@@ -226,15 +227,15 @@ fn rejected_notarized_fcu_does_not_advance_the_tracked_state() {
         let d1 = b1.digest();
         h.execution.script_fcu(
             ForkchoiceState::from_finalized_head(GENESIS, d1),
-            [Ok(PayloadStatusEnum::Invalid {
+            Ok(PayloadStatusEnum::Invalid {
                 validation_error: "rejected".into(),
-            })],
+            }),
         );
 
         h.report_pending_head(2, 1, d1);
         h.wait_until(|| h.marshal.fulfill_subscription(d1, b1.clone()))
             .await;
-        h.wait_until(|| h.execution.fcus().len() == 1).await;
+        h.wait_until(|| h.execution.fcus().len() == 2).await;
         h.run_for(Duration::from_millis(10)).await;
 
         assert!(
@@ -260,7 +261,7 @@ fn rejected_notarized_fcu_does_not_advance_the_tracked_state() {
         h.run_for(Duration::from_millis(10)).await;
         assert_eq!(
             h.execution.fcus().len(),
-            1,
+            2,
             "the actor and EL must agree that the head remained at genesis",
         );
     });
@@ -281,15 +282,14 @@ fn rejected_notarized_fcu_is_withheld_then_retried() {
 
         let b1 = make_block(1, 1, GENESIS);
         let d1 = b1.digest();
+        let state = ForkchoiceState::from_finalized_head(GENESIS, d1);
         h.execution.script_fcu(
-            ForkchoiceState::from_finalized_head(GENESIS, d1),
-            [
-                Ok(PayloadStatusEnum::Invalid {
-                    validation_error: "transient".into(),
-                }),
-                Ok(PayloadStatusEnum::Valid),
-            ],
+            state,
+            Ok(PayloadStatusEnum::Invalid {
+                validation_error: "transient".into(),
+            }),
         );
+        h.execution.script_fcu(state, Ok(PayloadStatusEnum::Valid));
 
         h.report_pending_head(2, 1, d1);
         h.wait_until(|| h.marshal.fulfill_subscription(d1, b1.clone()))
@@ -328,7 +328,7 @@ fn syncing_notarized_payload_is_rejected_without_updating_forkchoice() {
             .await;
         h.run_for(Duration::from_millis(10)).await;
 
-        assert!(h.execution.fcus().is_empty());
+        assert_eq!(h.execution.fcus(), vec![STARTUP_FCU]);
         assert_eq!(h.execution.head(), GENESIS);
 
         let candidate = make_block(3, 1, GENESIS);
@@ -358,7 +358,7 @@ fn accepted_notarized_payload_is_rejected_without_updating_forkchoice() {
             .await;
         h.run_for(Duration::from_millis(10)).await;
 
-        assert!(h.execution.fcus().is_empty());
+        assert_eq!(h.execution.fcus(), vec![STARTUP_FCU]);
         assert_eq!(h.execution.head(), GENESIS);
 
         let candidate = make_block(3, 1, GENESIS);
@@ -420,9 +420,9 @@ fn failed_repoint_is_fatal() {
         // failure means consensus and execution disagree fundamentally.
         h.execution.script_fcu(
             ForkchoiceState::from_finalized_head(GENESIS, GENESIS),
-            [Ok(PayloadStatusEnum::Invalid {
+            Ok(PayloadStatusEnum::Invalid {
                 validation_error: "corrupt".into(),
-            })],
+            }),
         );
         h.report_pending_head(5, 0, GENESIS);
 
@@ -452,7 +452,7 @@ fn repoint_transport_error_is_fatal() {
 
         h.execution.script_fcu(
             ForkchoiceState::from_finalized_head(GENESIS, GENESIS),
-            [Err("connection closed")],
+            Err("connection closed"),
         );
         h.report_pending_head(5, 0, GENESIS);
 

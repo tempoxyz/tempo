@@ -10,7 +10,7 @@ use commonware_runtime::{Runner as _, deterministic};
 
 use super::harness::{
     FakeExecution, FakeMarshal, ForkchoiceStateExt as _, GENESIS, Harness, HarnessOptions,
-    make_block, round,
+    STARTUP_FCU, make_block, round,
 };
 
 #[test_traced]
@@ -106,6 +106,7 @@ fn backfill_then_converges_onto_a_notarized_extension() {
         assert_eq!(
             h.execution.fcus(),
             vec![
+                STARTUP_FCU,
                 (d1, d1, false),
                 (d2, d2, false),
                 (d3, d2, false),
@@ -172,7 +173,7 @@ fn execution_layer_body_lookup_error_fails_startup() {
             .await
             .expect("actor should shut down cleanly when the body lookup fails");
         assert!(h.execution.new_payloads().is_empty());
-        assert!(h.execution.fcus().is_empty());
+        assert_eq!(h.execution.fcus(), vec![STARTUP_FCU]);
     });
 }
 
@@ -201,7 +202,7 @@ fn execution_layer_missing_body_from_finalization_info_fails_startup() {
             .expect("actor should shut down cleanly when no block body is available");
         assert_eq!(h.marshal.get_block_log(), vec![1]);
         assert!(h.execution.new_payloads().is_empty());
-        assert!(h.execution.fcus().is_empty());
+        assert_eq!(h.execution.fcus(), vec![STARTUP_FCU]);
     });
 }
 
@@ -221,7 +222,7 @@ fn unsourceable_backfill_block_fails_startup() {
         h.actor
             .await
             .expect("actor should shut down cleanly when the backfill fails");
-        assert!(h.execution.fcus().is_empty());
+        assert_eq!(h.execution.fcus(), vec![STARTUP_FCU]);
     });
 }
 
@@ -323,7 +324,7 @@ fn snapshot_restore_replays_below_execution_finality_without_forkchoice_updates(
         assert_eq!(h.execution.new_payloads(), vec![d1]);
         assert_eq!(
             h.execution.fcus(),
-            vec![],
+            vec![(d2, d2, false)],
             "a forkchoice state below the execution layer's finality is stale \
             and must not be submitted",
         );
@@ -333,7 +334,7 @@ fn snapshot_restore_replays_below_execution_finality_without_forkchoice_updates(
         h.deliver_finalized(b2)
             .await
             .expect("the block at the execution finality should be acknowledged");
-        assert_eq!(h.execution.fcus(), vec![(d2, d2, false)]);
+        assert_eq!(h.execution.fcus(), vec![(d2, d2, false); 2]);
         assert_eq!(h.execution.finalized(), Some((2, d2)));
     });
 }
@@ -368,7 +369,7 @@ fn invalid_payload_fails_startup_backfill() {
             .await
             .expect("actor should shut down cleanly when a backfill payload is invalid");
         assert_eq!(h.execution.new_payloads(), vec![d1]);
-        assert!(h.execution.fcus().is_empty());
+        assert_eq!(h.execution.fcus(), vec![STARTUP_FCU]);
     });
 }
 
@@ -383,9 +384,9 @@ fn rejected_forkchoice_update_fails_startup_backfill() {
         let execution = FakeExecution::new();
         execution.script_fcu(
             ForkchoiceState::from_finalized_head(d1, d1),
-            [Ok(PayloadStatusEnum::Invalid {
+            Ok(PayloadStatusEnum::Invalid {
                 validation_error: "rejected backfill forkchoice".into(),
-            })],
+            }),
         );
 
         let h = Harness::builder()
@@ -402,14 +403,14 @@ fn rejected_forkchoice_update_fails_startup_backfill() {
             .await
             .expect("actor should shut down cleanly when the backfill FCU is rejected");
         assert_eq!(h.execution.new_payloads(), vec![d1]);
-        assert_eq!(h.execution.fcus(), vec![(d1, d1, false)]);
+        assert_eq!(h.execution.fcus(), vec![STARTUP_FCU, (d1, d1, false)]);
         assert_eq!(h.execution.head(), GENESIS);
         assert_eq!(h.execution.finalized(), None);
     });
 }
 
 #[test_traced]
-fn syncing_execution_layer_stalls_the_backfill_until_it_recovers() {
+fn startup_waits_for_valid_fcu_before_backfill() {
     deterministic::Runner::default().start(|context| async move {
         let b1 = make_block(1, 1, GENESIS);
         let d1 = b1.digest();
@@ -417,10 +418,10 @@ fn syncing_execution_layer_stalls_the_backfill_until_it_recovers() {
         let marshal = FakeMarshal::new();
         marshal.add_block(b1);
         let execution = FakeExecution::new();
-        // The execution layer is not ready once (e.g. rebuilding indices),
-        // then accepts the explicit retry.
-        execution.script_new_payload(d1, Ok(PayloadStatusEnum::Syncing));
-        execution.script_new_payload(d1, Ok(PayloadStatusEnum::Valid));
+        execution.set_finalized(0, GENESIS);
+        let startup_fcu = ForkchoiceState::from_finalized_head(GENESIS, GENESIS);
+        execution.script_fcu(startup_fcu, Ok(PayloadStatusEnum::Syncing));
+        execution.script_fcu(startup_fcu, Ok(PayloadStatusEnum::Valid));
 
         let h = Harness::builder()
             .execution(execution)
@@ -436,8 +437,17 @@ fn syncing_execution_layer_stalls_the_backfill_until_it_recovers() {
             .await;
         assert_eq!(
             h.execution.new_payloads(),
-            vec![d1, d1],
-            "the backfill must retry the postponed block until it is accepted",
+            vec![d1],
+            "backfill must begin only after the execution layer is ready",
+        );
+        assert_eq!(
+            h.execution.fcus(),
+            vec![
+                (GENESIS, GENESIS, false),
+                (GENESIS, GENESIS, false),
+                (d1, d1, false),
+            ],
+            "startup must use ordinary FCUs before backfill begins",
         );
     });
 }
@@ -467,6 +477,6 @@ fn new_payload_transport_error_fails_startup() {
             .await
             .expect("actor should shut down cleanly when startup forwarding fails");
         assert_eq!(h.execution.new_payloads(), vec![d1]);
-        assert!(h.execution.fcus().is_empty());
+        assert_eq!(h.execution.fcus(), vec![STARTUP_FCU]);
     });
 }
