@@ -28,7 +28,7 @@ use super::{
 };
 use crate::{consensus::block::Block, utils::OptionFuture};
 
-const SYNCING_RETRY_DELAY: Duration = Duration::from_secs(1);
+const BLOCK_POSTPONED_RETRY_DELAY: Duration = Duration::from_secs(1);
 
 pub(crate) struct Actor<TContext, P, E, M = crate::alias::marshal::Mailbox> {
     context: ContextCell<TContext>,
@@ -41,9 +41,11 @@ pub(crate) struct Actor<TContext, P, E, M = crate::alias::marshal::Mailbox> {
     epoch_strategy: FixedEpocher,
     floor: Height,
 
-    // The last completed FCU
+    // The last non-invalid FCU. A SYNCING response installs its head as Reth's
+    // pipeline target even though its forkchoice markers are not yet applied.
     last_fcu: Forkchoice,
-    // Next FCU to be delivered when it superseded the last
+    // The newest desired forkchoice, including certificate heads received
+    // while Reth is syncing or blocks are queued.
     pending_fcu: Forkchoice,
 
     block_queue: VecDeque<(Block, Exact)>,
@@ -125,15 +127,12 @@ where
                 result = &mut self.execution_task => {
                     self.execution_task = OptionFuture::none();
                     match result {
-                        ExecutionTaskResult::Syncing => {}
                         ExecutionTaskResult::Completed(last_fcu) => {
                             self.last_fcu = last_fcu;
 
                             // Emits an event on error.
                             let _: Result<_, _> = self.try_advance_floor().await;
                         }
-                        // Keep the block unacknowledged until Reth accepts its payload and
-                        // any required FCU. Retry syncing blocks ahead of later blocks.
                         ExecutionTaskResult::BlockPostponed(block, ack) => {
                             self.block_queue.push_front((block, ack));
                         }
@@ -193,9 +192,10 @@ where
 
             let (ack, _waiter) = Exact::handle();
             self.pending_fcu.update_finalized(&block);
-            let forkchoice = (self.pending_fcu.finalized_digest()
-                != self.last_fcu.finalized_digest())
-            .then_some(self.pending_fcu);
+
+            let mut forkchoice = self.last_fcu;
+            let forkchoice = forkchoice.update_finalized(&block).then_some(forkchoice);
+
             let mut request = ExecutionRequest::Block(block, forkchoice, ack);
 
             // Backfill delivers contiguous blocks in order, so SYNCING cannot
@@ -215,13 +215,9 @@ where
                         break;
                     }
                     ExecutionTaskResult::BlockPostponed(block, ack) => {
-                        let forkchoice = (self.pending_fcu.finalized_digest()
-                            != self.last_fcu.finalized_digest())
-                        .then_some(self.pending_fcu);
+                        let mut forkchoice = self.last_fcu;
+                        let forkchoice = forkchoice.update_finalized(&block).then_some(forkchoice);
                         request = ExecutionRequest::Block(block, forkchoice, ack);
-                    }
-                    ExecutionTaskResult::Syncing => {
-                        unreachable!("backfill only executes block requests")
                     }
                     ExecutionTaskResult::Fatal(error) => {
                         return Err(error).wrap_err_with(|| {
@@ -254,9 +250,11 @@ where
         // Prioritize queued blocks so head-only FCUs cannot starve finality.
         let request = if let Some((block, ack)) = self.block_queue.pop_front() {
             self.pending_fcu.update_finalized(&block);
-            let forkchoice = (self.pending_fcu.finalized_digest()
-                != self.last_fcu.finalized_digest())
-            .then_some(self.pending_fcu);
+
+            // Preserve the last head Reth accepted while advancing finality. Newer
+            // certificate heads remain pending until this block has been accepted.
+            let mut forkchoice = self.last_fcu;
+            let forkchoice = forkchoice.update_finalized(&block).then_some(forkchoice);
             ExecutionRequest::Block(block, forkchoice, ack)
         } else if self.should_send_forkchoice() || heartbeat {
             ExecutionRequest::Forkchoice(self.pending_fcu)
@@ -323,7 +321,6 @@ enum ExecutionRequest {
 enum ExecutionTaskResult {
     Completed(Forkchoice),
     BlockPostponed(Block, Exact),
-    Syncing,
     Fatal(Report),
 }
 
@@ -338,10 +335,7 @@ async fn execute_request<TContext: Pacer, E: ExecutionEngine + 'static>(
         ExecutionRequest::Forkchoice(forkchoice) => {
             match submit_forkchoice_update(&context, &execution_engine, &forkchoice).await {
                 Ok(ForkchoiceOutcome::Valid) => ExecutionTaskResult::Completed(forkchoice),
-                Ok(ForkchoiceOutcome::Syncing) => {
-                    context.sleep(SYNCING_RETRY_DELAY).await;
-                    ExecutionTaskResult::Syncing
-                }
+                Ok(ForkchoiceOutcome::Syncing) => ExecutionTaskResult::Completed(forkchoice),
                 Err(error) => ExecutionTaskResult::Fatal(error),
             }
         }
@@ -350,7 +344,7 @@ async fn execute_request<TContext: Pacer, E: ExecutionEngine + 'static>(
                 Ok(NewPayloadOutcome::Valid) => {}
                 Ok(NewPayloadOutcome::Syncing) => {
                     debug!("execution layer is not ready to accept finalized block; postponing");
-                    context.sleep(SYNCING_RETRY_DELAY).await;
+                    context.sleep(BLOCK_POSTPONED_RETRY_DELAY).await;
                     return ExecutionTaskResult::BlockPostponed(block, ack);
                 }
                 Err(error) => return ExecutionTaskResult::Fatal(error),
@@ -363,7 +357,7 @@ async fn execute_request<TContext: Pacer, E: ExecutionEngine + 'static>(
                         debug!(
                             "execution layer is not ready to finalize delivered block; postponing"
                         );
-                        context.sleep(SYNCING_RETRY_DELAY).await;
+                        context.sleep(BLOCK_POSTPONED_RETRY_DELAY).await;
                         return ExecutionTaskResult::BlockPostponed(block, ack);
                     }
                     Err(error) => return ExecutionTaskResult::Fatal(error),

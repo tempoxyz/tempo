@@ -166,7 +166,7 @@ fn syncing_block_is_requeued_ahead_of_later_blocks() {
 }
 
 #[test_traced]
-fn block_queue_preempts_a_syncing_head_and_flushes_before_the_latest_head() {
+fn block_queue_preserves_the_sync_target_before_sending_the_latest_head() {
     deterministic::Runner::default().start(|context| async move {
         let provider = StubExecutionProvider::default();
         provider.sync_forkchoices(1);
@@ -200,10 +200,14 @@ fn block_queue_preempts_a_syncing_head_and_flushes_before_the_latest_head() {
         waiter.await.expect("queued block should be acknowledged");
         wait_until(&context, || provider.forkchoices().len() == 3).await;
 
-        let forkchoices = provider.forkchoices();
-        assert_eq!(forkchoices[0].head_block_hash, first_head.0);
-        assert_eq!(forkchoices[1].head_block_hash, block_hash);
-        assert_eq!(forkchoices[2].head_block_hash, latest_head.0);
+        assert_eq!(
+            provider.forkchoices(),
+            vec![
+                forkchoice(first_head.0, B256::ZERO),
+                forkchoice(first_head.0, block_hash),
+                forkchoice(latest_head.0, block_hash),
+            ]
+        );
     });
 }
 
