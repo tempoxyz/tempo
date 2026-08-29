@@ -170,7 +170,6 @@ fn block_queue_preempts_a_syncing_head_and_flushes_before_the_latest_head() {
     deterministic::Runner::default().start(|context| async move {
         let provider = StubExecutionProvider::default();
         provider.sync_forkchoices(1);
-        let release_forkchoice = provider.pause_next_forkchoice();
 
         let (actor, mut mailbox) = init(
             context.child("follower_executor"),
@@ -188,6 +187,7 @@ fn block_queue_preempts_a_syncing_head_and_flushes_before_the_latest_head() {
         let first_head = digest(2);
         mailbox.finalization(round(2), first_head);
         wait_until(&context, || provider.forkchoices().len() == 1).await;
+        context.sleep(Duration::from_millis(21)).await;
 
         let block = make_block_at_round(1, B256::ZERO, round(1));
         let block_hash = block.block_hash();
@@ -196,10 +196,6 @@ fn block_queue_preempts_a_syncing_head_and_flushes_before_the_latest_head() {
 
         let latest_head = digest(3);
         mailbox.finalization(round(3), latest_head);
-        context.sleep(Duration::from_millis(1)).await;
-        release_forkchoice
-            .send(())
-            .expect("the syncing forkchoice should still be in flight");
 
         waiter.await.expect("queued block should be acknowledged");
         wait_until(&context, || provider.forkchoices().len() == 3).await;

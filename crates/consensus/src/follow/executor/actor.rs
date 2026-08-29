@@ -28,7 +28,7 @@ use super::{
 };
 use crate::{consensus::block::Block, utils::OptionFuture};
 
-const FINALIZED_BLOCK_POSTPONE_DELAY: Duration = Duration::from_secs(1);
+const SYNCING_RETRY_DELAY: Duration = Duration::from_secs(1);
 
 pub(crate) struct Actor<TContext, P, E, M = crate::alias::marshal::Mailbox> {
     context: ContextCell<TContext>,
@@ -338,7 +338,10 @@ async fn execute_request<TContext: Pacer, E: ExecutionEngine + 'static>(
         ExecutionRequest::Forkchoice(forkchoice) => {
             match submit_forkchoice_update(&context, &execution_engine, &forkchoice).await {
                 Ok(ForkchoiceOutcome::Valid) => ExecutionTaskResult::Completed(forkchoice),
-                Ok(ForkchoiceOutcome::Syncing) => ExecutionTaskResult::Syncing,
+                Ok(ForkchoiceOutcome::Syncing) => {
+                    context.sleep(SYNCING_RETRY_DELAY).await;
+                    ExecutionTaskResult::Syncing
+                }
                 Err(error) => ExecutionTaskResult::Fatal(error),
             }
         }
@@ -347,7 +350,7 @@ async fn execute_request<TContext: Pacer, E: ExecutionEngine + 'static>(
                 Ok(NewPayloadOutcome::Valid) => {}
                 Ok(NewPayloadOutcome::Syncing) => {
                     debug!("execution layer is not ready to accept finalized block; postponing");
-                    context.sleep(FINALIZED_BLOCK_POSTPONE_DELAY).await;
+                    context.sleep(SYNCING_RETRY_DELAY).await;
                     return ExecutionTaskResult::BlockPostponed(block, ack);
                 }
                 Err(error) => return ExecutionTaskResult::Fatal(error),
@@ -360,7 +363,7 @@ async fn execute_request<TContext: Pacer, E: ExecutionEngine + 'static>(
                         debug!(
                             "execution layer is not ready to finalize delivered block; postponing"
                         );
-                        context.sleep(FINALIZED_BLOCK_POSTPONE_DELAY).await;
+                        context.sleep(SYNCING_RETRY_DELAY).await;
                         return ExecutionTaskResult::BlockPostponed(block, ack);
                     }
                     Err(error) => return ExecutionTaskResult::Fatal(error),
