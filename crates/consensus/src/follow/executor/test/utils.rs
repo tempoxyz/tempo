@@ -188,7 +188,7 @@ impl ExecutionEngine for StubExecutionProvider {
         let syncing = self
             .inner
             .syncing_payloads
-            .fetch_update(Ordering::SeqCst, Ordering::SeqCst, |remaining| {
+            .try_update(Ordering::SeqCst, Ordering::SeqCst, |remaining| {
                 remaining.checked_sub(1)
             })
             .is_ok();
@@ -217,7 +217,7 @@ impl ExecutionEngine for StubExecutionProvider {
         let syncing = self
             .inner
             .syncing_forkchoices
-            .fetch_update(Ordering::SeqCst, Ordering::SeqCst, |remaining| {
+            .try_update(Ordering::SeqCst, Ordering::SeqCst, |remaining| {
                 remaining.checked_sub(1)
             })
             .is_ok();
