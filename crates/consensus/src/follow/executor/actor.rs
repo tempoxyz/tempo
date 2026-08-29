@@ -18,15 +18,17 @@ use commonware_consensus::{
 };
 use commonware_runtime::{Clock, ContextCell, FutureExt as _, Handle, Pacer, Spawner, spawn_cell};
 use commonware_utils::{Acknowledgement as _, acknowledgement::Exact};
-use eyre::{Report, WrapErr as _, ensure, eyre};
+use eyre::{Report, WrapErr as _, eyre};
 use futures::{FutureExt as _, StreamExt as _, channel::mpsc, future::BoxFuture};
 use tempo_node::TempoExecutionData;
-use tracing::{Level, debug, error, instrument};
+use tracing::{Level, debug, error, info, instrument};
 
 use super::{
     Config, ExecutionEngine, FinalizedBlockProvider, Marshal, fcu::Forkchoice, ingress::Message,
 };
 use crate::{consensus::block::Block, utils::OptionFuture};
+
+const FINALIZED_BLOCK_POSTPONE_DELAY: Duration = Duration::from_secs(1);
 
 pub(crate) struct Actor<TContext, P, E, M = crate::alias::marshal::Mailbox> {
     context: ContextCell<TContext>,
@@ -105,6 +107,11 @@ where
     }
 
     async fn run(mut self) {
+        if let Err(error) = self.backfill_to_finalized_floor().await {
+            error!(%error, "executor failed startup backfill");
+            return;
+        }
+
         let mut heartbeat = false;
         loop {
             self.start_execution_task(heartbeat);
@@ -118,11 +125,17 @@ where
                 result = &mut self.execution_task => {
                     self.execution_task = OptionFuture::none();
                     match result {
+                        ExecutionTaskResult::Syncing => {}
                         ExecutionTaskResult::Completed(last_fcu) => {
                             self.last_fcu = last_fcu;
 
                             // Emits an event on error.
                             let _: Result<_, _> = self.try_advance_floor().await;
+                        }
+                        // Keep the block unacknowledged until Reth accepts its payload and
+                        // any required FCU. Retry syncing blocks ahead of later blocks.
+                        ExecutionTaskResult::BlockPostponed(block, ack) => {
+                            self.block_queue.push_front((block, ack));
                         }
                         ExecutionTaskResult::Fatal(error) => {
                             error!(%error, "execution task failed");
@@ -163,6 +176,65 @@ where
             || self.pending_fcu.finalized_digest() != self.last_fcu.finalized_digest()
     }
 
+    async fn backfill_to_finalized_floor(&mut self) -> eyre::Result<()> {
+        let start = self.execution_provider.finalized_num_hash()?.number + 1;
+        let end = self.floor.get();
+        if start > end {
+            return Ok(());
+        }
+
+        info!(start, end, "backfilling finalized blocks");
+        for height in start..=end {
+            let block = self
+                .marshal
+                .get_block(Height::new(height))
+                .await
+                .ok_or_else(|| eyre!("marshal missing backfill block at height `{height}`"))?;
+
+            let (ack, _waiter) = Exact::handle();
+            self.pending_fcu.update_finalized(&block);
+            let forkchoice = (self.pending_fcu.finalized_digest()
+                != self.last_fcu.finalized_digest())
+            .then_some(self.pending_fcu);
+            let mut request = ExecutionRequest::Block(block, forkchoice, ack);
+
+            // Backfill delivers contiguous blocks in order, so SYNCING cannot
+            // be repaired by a later block filling a gap. Retry this block until
+            // Reth is ready to accept it.
+            loop {
+                match execute_request(
+                    self.context.child("backfill_on_start"),
+                    self.execution_engine.clone(),
+                    self.last_fcu,
+                    request,
+                )
+                .await
+                {
+                    ExecutionTaskResult::Completed(last_fcu) => {
+                        self.last_fcu = last_fcu;
+                        break;
+                    }
+                    ExecutionTaskResult::BlockPostponed(block, ack) => {
+                        let forkchoice = (self.pending_fcu.finalized_digest()
+                            != self.last_fcu.finalized_digest())
+                        .then_some(self.pending_fcu);
+                        request = ExecutionRequest::Block(block, forkchoice, ack);
+                    }
+                    ExecutionTaskResult::Syncing => {
+                        unreachable!("backfill only executes block requests")
+                    }
+                    ExecutionTaskResult::Fatal(error) => {
+                        return Err(error).wrap_err_with(|| {
+                            format!("failed backfilling block at height `{height}`")
+                        });
+                    }
+                }
+            }
+        }
+
+        Ok(())
+    }
+
     fn update_fcu_heartbeat_timer(&mut self) {
         if self.execution_task.is_none() && self.block_queue.is_empty() {
             if self.fcu_heartbeat_timer.is_none() {
@@ -179,11 +251,12 @@ where
             return;
         }
 
+        // Prioritize queued blocks so head-only FCUs cannot starve finality.
         let request = if let Some((block, ack)) = self.block_queue.pop_front() {
-            let forkchoice = self
-                .pending_fcu
-                .update_finalized(&block)
-                .then_some(self.pending_fcu);
+            self.pending_fcu.update_finalized(&block);
+            let forkchoice = (self.pending_fcu.finalized_digest()
+                != self.last_fcu.finalized_digest())
+            .then_some(self.pending_fcu);
             ExecutionRequest::Block(block, forkchoice, ack)
         } else if self.should_send_forkchoice() || heartbeat {
             ExecutionRequest::Forkchoice(self.pending_fcu)
@@ -200,12 +273,7 @@ where
 
     #[instrument(skip_all, err(level = Level::WARN))]
     async fn try_advance_floor(&mut self) -> eyre::Result<()> {
-        let finalized_height = Height::new(
-            self.execution_provider
-                .finalized_header()?
-                .num_hash()
-                .number,
-        );
+        let finalized_height = Height::new(self.execution_provider.finalized_num_hash()?.number);
         let epoch_length = self
             .epoch_strategy
             .containing(finalized_height)
@@ -254,9 +322,12 @@ enum ExecutionRequest {
 
 enum ExecutionTaskResult {
     Completed(Forkchoice),
+    BlockPostponed(Block, Exact),
+    Syncing,
     Fatal(Report),
 }
 
+#[instrument(skip_all)]
 async fn execute_request<TContext: Pacer, E: ExecutionEngine + 'static>(
     context: TContext,
     execution_engine: E,
@@ -266,20 +337,33 @@ async fn execute_request<TContext: Pacer, E: ExecutionEngine + 'static>(
     match request {
         ExecutionRequest::Forkchoice(forkchoice) => {
             match submit_forkchoice_update(&context, &execution_engine, &forkchoice).await {
-                Ok(()) => ExecutionTaskResult::Completed(forkchoice),
+                Ok(ForkchoiceOutcome::Valid) => ExecutionTaskResult::Completed(forkchoice),
+                Ok(ForkchoiceOutcome::Syncing) => ExecutionTaskResult::Syncing,
                 Err(error) => ExecutionTaskResult::Fatal(error),
             }
         }
         ExecutionRequest::Block(block, forkchoice, ack) => {
-            if let Err(error) = submit_new_payload(&context, &execution_engine, block).await {
-                return ExecutionTaskResult::Fatal(error);
+            match submit_new_payload(&context, &execution_engine, &block).await {
+                Ok(NewPayloadOutcome::Valid) => {}
+                Ok(NewPayloadOutcome::Syncing) => {
+                    debug!("execution layer is not ready to accept finalized block; postponing");
+                    context.sleep(FINALIZED_BLOCK_POSTPONE_DELAY).await;
+                    return ExecutionTaskResult::BlockPostponed(block, ack);
+                }
+                Err(error) => return ExecutionTaskResult::Fatal(error),
             }
 
             let last_fcu = if let Some(forkchoice) = forkchoice {
-                if let Err(error) =
-                    submit_forkchoice_update(&context, &execution_engine, &forkchoice).await
-                {
-                    return ExecutionTaskResult::Fatal(error);
+                match submit_forkchoice_update(&context, &execution_engine, &forkchoice).await {
+                    Ok(ForkchoiceOutcome::Valid) => {}
+                    Ok(ForkchoiceOutcome::Syncing) => {
+                        debug!(
+                            "execution layer is not ready to finalize delivered block; postponing"
+                        );
+                        context.sleep(FINALIZED_BLOCK_POSTPONE_DELAY).await;
+                        return ExecutionTaskResult::BlockPostponed(block, ack);
+                    }
+                    Err(error) => return ExecutionTaskResult::Fatal(error),
                 }
                 forkchoice
             } else {
@@ -292,6 +376,16 @@ async fn execute_request<TContext: Pacer, E: ExecutionEngine + 'static>(
     }
 }
 
+enum NewPayloadOutcome {
+    Valid,
+    Syncing,
+}
+
+enum ForkchoiceOutcome {
+    Valid,
+    Syncing,
+}
+
 #[instrument(
     skip_all,
     fields(block.height = %block.height(), block.digest = %block.digest()),
@@ -300,9 +394,9 @@ async fn execute_request<TContext: Pacer, E: ExecutionEngine + 'static>(
 async fn submit_new_payload<TContext: Pacer, E: ExecutionEngine + ?Sized>(
     context: &TContext,
     execution_engine: &E,
-    block: Block,
-) -> eyre::Result<()> {
-    let (block, block_access_list) = block.into_parts();
+    block: &Block,
+) -> eyre::Result<NewPayloadOutcome> {
+    let (block, block_access_list) = block.clone().into_parts();
     let payload_status = execution_engine
         .new_payload(TempoExecutionData {
             block,
@@ -314,13 +408,15 @@ async fn submit_new_payload<TContext: Pacer, E: ExecutionEngine + ?Sized>(
         .await
         .wrap_err("failed sending finalized payload")?;
 
-    ensure!(
-        payload_status.is_valid() || payload_status.is_syncing(),
-        "payload status of finalized block was neither valid nor syncing: \
-         `{payload_status}`"
-    );
+    if payload_status.is_valid() {
+        return Ok(NewPayloadOutcome::Valid);
+    }
 
-    Ok(())
+    if payload_status.is_syncing() {
+        return Ok(NewPayloadOutcome::Syncing);
+    }
+
+    Err(Report::msg(payload_status).wrap_err("execution layer rejected finalized payload"))
 }
 
 #[instrument(
@@ -334,7 +430,7 @@ async fn submit_forkchoice_update<TContext: Pacer, E: ExecutionEngine + ?Sized>(
     context: &TContext,
     execution_engine: &E,
     forkchoice: &Forkchoice,
-) -> eyre::Result<()> {
+) -> eyre::Result<ForkchoiceOutcome> {
     let forkchoice = (*forkchoice).into();
 
     let response = execution_engine
@@ -345,10 +441,13 @@ async fn submit_forkchoice_update<TContext: Pacer, E: ExecutionEngine + ?Sized>(
 
     debug!(payload_status = %response.payload_status, "execution layer reported FCU status");
 
-    ensure!(
-        !response.is_invalid(),
-        Report::msg(response.payload_status).wrap_err("execution layer rejected fcu")
-    );
+    if response.is_valid() {
+        return Ok(ForkchoiceOutcome::Valid);
+    }
 
-    Ok(())
+    if response.payload_status.is_syncing() {
+        return Ok(ForkchoiceOutcome::Syncing);
+    }
+
+    Err(Report::msg(response.payload_status).wrap_err("forkchoice update was not valid"))
 }
