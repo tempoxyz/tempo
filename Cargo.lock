@@ -13829,7 +13829,7 @@ dependencies = [
 
 [[package]]
 name = "tempo-fuzz-harness"
-version = "1.10.1"
+version = "1.13.2"
 dependencies = [
  "alloy-consensus",
  "alloy-eips",

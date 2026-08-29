@@ -661,7 +661,7 @@ fn context_for_hardfork(
 }
 
 fn supported_hardforks() -> Vec<u8> {
-    vec![0, 1, 2, 3, 4, 5]
+    (0..=12).collect()
 }
 
 fn fuzz_moderato_chainspec(input: &ChainSpecInput) -> TempoChainSpec {
@@ -675,7 +675,7 @@ fn fuzz_moderato_chainspec(input: &ChainSpecInput) -> TempoChainSpec {
     chainspec
         .inner
         .hardforks
-        .extend((0..=6).filter_map(|value| {
+        .extend((0..=12).filter_map(|value| {
             hardfork_from_u8(value)
                 .ok()
                 .map(|hardfork| (hardfork, ForkCondition::Timestamp(u64::from(value) + 1)))
@@ -791,6 +791,13 @@ fn hardfork_from_u8(value: u8) -> Result<TempoHardfork, ErrorClass> {
         3 => TempoHardfork::T3,
         4 => TempoHardfork::T4,
         5 => TempoHardfork::T5,
+        6 => TempoHardfork::T6,
+        7 => TempoHardfork::T7,
+        8 => TempoHardfork::T8,
+        9 => TempoHardfork::T9,
+        10 => TempoHardfork::T10,
+        11 => TempoHardfork::T11,
+        12 => TempoHardfork::T12,
         _ => return Err(ErrorClass::InvalidInput),
     })
 }
@@ -1153,5 +1160,14 @@ mod tests {
             chainspec.tempo_hardfork_at(tempo_fuzz_types::MODERATO_T4_TIMESTAMP),
             TempoHardfork::T4
         );
+    }
+
+    #[test]
+    fn zone_hardforks_are_mapped_and_advertised() {
+        assert_eq!(hardfork_from_u8(9), Ok(TempoHardfork::T9));
+        assert_eq!(hardfork_from_u8(10), Ok(TempoHardfork::T10));
+        assert_eq!(hardfork_from_u8(11), Ok(TempoHardfork::T11));
+        assert_eq!(hardfork_from_u8(12), Ok(TempoHardfork::T12));
+        assert_eq!(supported_hardforks(), (0..=12).collect::<Vec<_>>());
     }
 }
