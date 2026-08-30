@@ -1,10 +1,10 @@
 # Allow only the sync-from-upstream workflows on the main branches of the
-# zones-private-fork and zones-firedrill repositories to mint a short-lived
+# tempo-private-fork and tempo-firedrill repositories to mint a short-lived
 # token. `workflows: write` is required because synced commits can touch
 # .github/workflows files.
 subject:
-  - repo:tempoxyz@211589300/zones-private-fork@1329742643:job_workflow_ref:tempoxyz/zones-private-fork/.github/workflows/sync-from-upstream.yml@refs/heads/main
-  - repo:tempoxyz@211589300/zones-firedrill@1330635096:job_workflow_ref:tempoxyz/zones-firedrill/.github/workflows/sync-from-upstream.yml@refs/heads/main
+  - repo:tempoxyz@211589300/tempo-private-fork@1160043351:job_workflow_ref:tempoxyz/tempo-private-fork/.github/workflows/sync-from-upstream.yml@refs/heads/main
+  - repo:tempoxyz@211589300/tempo-firedrill@1167619511:job_workflow_ref:tempoxyz/tempo-firedrill/.github/workflows/sync-from-upstream.yml@refs/heads/main
 permissions:
   contents: write
   workflows: write
