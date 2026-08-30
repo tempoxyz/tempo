@@ -113,6 +113,105 @@ fn block_is_executed_canonicalized_acknowledged_and_advances_floor_to_deep_candi
 }
 
 #[test_traced]
+fn syncing_block_is_requeued_ahead_of_later_blocks() {
+    deterministic::Runner::default().start(|context| async move {
+        let provider = StubExecutionProvider::default();
+        provider.sync_payloads(1);
+        provider.sync_forkchoices(1);
+
+        let (actor, mut mailbox) = init(
+            context.child("follower_executor"),
+            Config {
+                execution_provider: provider.clone(),
+                execution_engine: provider.clone(),
+                marshal: StubMarshal::default(),
+                epoch_strategy: FixedEpocher::new(EPOCH_LENGTH),
+                floor: Height::zero(),
+                fcu_heartbeat_interval: Duration::from_secs(60),
+            },
+        );
+        actor.start();
+
+        let first = make_block_at_round(1, B256::ZERO, round(1));
+        let first_hash = first.block_hash();
+        let second = make_block_at_round(2, first_hash, round(2));
+        let second_hash = second.block_hash();
+        let (first_ack, first_waiter) = Exact::handle();
+        let (second_ack, second_waiter) = Exact::handle();
+        assert!(
+            mailbox
+                .report(Update::Block(first.into(), first_ack))
+                .accepted()
+        );
+        assert!(
+            mailbox
+                .report(Update::Block(second.into(), second_ack))
+                .accepted()
+        );
+
+        context.sleep(Duration::from_secs(1)).await;
+        first_waiter
+            .await
+            .expect("postponed block should be acknowledged");
+        second_waiter
+            .await
+            .expect("later block should be acknowledged");
+
+        assert_eq!(provider.payload_count(), 4);
+        let forkchoices = provider.forkchoices();
+        assert_eq!(forkchoices[0].head_block_hash, first_hash);
+        assert_eq!(forkchoices[1].head_block_hash, first_hash);
+        assert_eq!(forkchoices[2].head_block_hash, second_hash);
+    });
+}
+
+#[test_traced]
+fn block_queue_preserves_the_sync_target_before_sending_the_latest_head() {
+    deterministic::Runner::default().start(|context| async move {
+        let provider = StubExecutionProvider::default();
+        provider.sync_forkchoices(1);
+
+        let (actor, mut mailbox) = init(
+            context.child("follower_executor"),
+            Config {
+                execution_provider: provider.clone(),
+                execution_engine: provider.clone(),
+                marshal: StubMarshal::default(),
+                epoch_strategy: FixedEpocher::new(EPOCH_LENGTH),
+                floor: Height::zero(),
+                fcu_heartbeat_interval: Duration::from_secs(60),
+            },
+        );
+        actor.start();
+
+        let first_head = digest(2);
+        mailbox.finalization(round(2), first_head);
+        wait_until(&context, || provider.forkchoices().len() == 1).await;
+        context.sleep(Duration::from_millis(21)).await;
+
+        let block = make_block_at_round(1, B256::ZERO, round(1));
+        let block_hash = block.block_hash();
+        let (ack, waiter) = Exact::handle();
+        assert!(mailbox.report(Update::Block(block.into(), ack)).accepted());
+
+        let latest_head = digest(3);
+        mailbox.finalization(round(3), latest_head);
+
+        waiter.await.expect("queued block should be acknowledged");
+        wait_until(&context, || provider.forkchoices().len() == 3).await;
+
+        assert_eq!(
+            provider.forkchoices(),
+            vec![
+                forkchoice(first_head.0, B256::ZERO),
+                forkchoice(first_head.0, block_hash),
+                forkchoice(latest_head.0, block_hash),
+            ]
+        );
+    });
+}
+
+#[test_traced]
 fn floor_candidate_uses_execution_depth_and_next_tip_starts_new_cycle() {
     deterministic::Runner::default().start(|context| async move {
         let provider = StubExecutionProvider::default();
@@ -758,6 +857,104 @@ fn durable_block_read_failure_does_not_exit_actor() {
         assert_eq!(provider.payload_count(), 2);
         assert_eq!(provider.forkchoices().len(), 2);
         assert_eq!(marshal.floor(), Height::zero());
+    });
+}
+
+#[test_traced]
+fn startup_backfills_when_marshal_floor_is_ahead_of_execution() {
+    deterministic::Runner::default().start(|context| async move {
+        let provider = StubExecutionProvider::default();
+        let marshal = StubMarshal::default();
+        let first = make_block_at_round(1, B256::ZERO, round(1));
+        let first_hash = first.block_hash();
+        let second = make_block_at_round(2, first_hash, round(2));
+        let second_hash = second.block_hash();
+        marshal.set_block(first);
+        marshal.set_block(second);
+
+        let (actor, _mailbox) = init(
+            context.child("follower_executor"),
+            Config {
+                execution_provider: provider.clone(),
+                execution_engine: provider.clone(),
+                marshal,
+                epoch_strategy: FixedEpocher::new(EPOCH_LENGTH),
+                floor: Height::new(2),
+                fcu_heartbeat_interval: Duration::from_secs(60),
+            },
+        );
+        actor.start();
+
+        wait_until(&context, || provider.forkchoices().len() == 2).await;
+
+        assert_eq!(provider.payload_count(), 2);
+        let forkchoices = provider.forkchoices();
+        assert_eq!(forkchoices[0].head_block_hash, first_hash);
+        assert_eq!(forkchoices[0].finalized_block_hash, first_hash);
+        assert_eq!(forkchoices[1].head_block_hash, second_hash);
+        assert_eq!(forkchoices[1].finalized_block_hash, second_hash);
+    });
+}
+
+#[test_traced]
+fn startup_backfill_retries_a_syncing_block() {
+    deterministic::Runner::default().start(|context| async move {
+        let provider = StubExecutionProvider::default();
+        provider.sync_payloads(1);
+        let marshal = StubMarshal::default();
+        let block = make_block_at_round(1, B256::ZERO, round(1));
+        let block_hash = block.block_hash();
+        marshal.set_block(block);
+
+        let (actor, _mailbox) = init(
+            context.child("follower_executor"),
+            Config {
+                execution_provider: provider.clone(),
+                execution_engine: provider.clone(),
+                marshal,
+                epoch_strategy: FixedEpocher::new(EPOCH_LENGTH),
+                floor: Height::new(1),
+                fcu_heartbeat_interval: Duration::from_secs(60),
+            },
+        );
+        actor.start();
+
+        context.sleep(Duration::from_secs(2)).await;
+        wait_until(&context, || provider.forkchoices().len() == 1).await;
+
+        assert_eq!(provider.payload_count(), 2);
+        assert_eq!(provider.forkchoices()[0].finalized_block_hash, block_hash);
+    });
+}
+
+#[test_traced]
+fn startup_backfills_when_only_the_floor_block_is_missing() {
+    deterministic::Runner::default().start(|context| async move {
+        let provider = StubExecutionProvider::default();
+        let execution_hash = B256::with_last_byte(1);
+        provider.set_finalized(1, execution_hash, round(1));
+        let marshal = StubMarshal::default();
+        let block = make_block_at_round(2, execution_hash, round(2));
+        let block_hash = block.block_hash();
+        marshal.set_block(block);
+
+        let (actor, _mailbox) = init(
+            context.child("follower_executor"),
+            Config {
+                execution_provider: provider.clone(),
+                execution_engine: provider.clone(),
+                marshal,
+                epoch_strategy: FixedEpocher::new(EPOCH_LENGTH),
+                floor: Height::new(2),
+                fcu_heartbeat_interval: Duration::from_secs(60),
+            },
+        );
+        actor.start();
+
+        wait_until(&context, || provider.forkchoices().len() == 1).await;
+
+        assert_eq!(provider.payload_count(), 1);
+        assert_eq!(provider.forkchoices()[0].finalized_block_hash, block_hash);
     });
 }
 

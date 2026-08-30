@@ -14,7 +14,10 @@ use alloy_primitives::B256;
 use alloy_rpc_types_engine::{
     ForkchoiceState, ForkchoiceUpdated, PayloadStatus, PayloadStatusEnum,
 };
-use commonware_consensus::types::{Height, Round};
+use commonware_consensus::{
+    Heightable as _,
+    types::{Height, Round},
+};
 use futures::channel::oneshot;
 use parking_lot::Mutex;
 use reth_ethereum::rpc::eth::primitives::BlockNumHash;
@@ -75,6 +78,8 @@ struct StubExecutionProviderInner {
     durable: Mutex<HashMap<u64, B256>>,
     fail_durable_reads: AtomicBool,
     payloads: AtomicUsize,
+    syncing_payloads: AtomicUsize,
+    syncing_forkchoices: AtomicUsize,
     forkchoices: Mutex<Vec<ForkchoiceState>>,
     reject_payloads: AtomicBool,
     reject_forkchoices: AtomicBool,
@@ -106,6 +111,16 @@ impl StubExecutionProvider {
         self.inner.reject_payloads.store(true, Ordering::SeqCst);
     }
 
+    pub(super) fn sync_payloads(&self, count: usize) {
+        self.inner.syncing_payloads.store(count, Ordering::SeqCst);
+    }
+
+    pub(super) fn sync_forkchoices(&self, count: usize) {
+        self.inner
+            .syncing_forkchoices
+            .store(count, Ordering::SeqCst);
+    }
+
     pub(super) fn reject_forkchoices(&self) {
         self.inner.reject_forkchoices.store(true, Ordering::SeqCst);
     }
@@ -126,6 +141,10 @@ impl StubExecutionProvider {
 }
 
 impl FinalizedBlockProvider for StubExecutionProvider {
+    fn finalized_num_hash(&self) -> eyre::Result<BlockNumHash> {
+        Ok(*self.inner.finalized.lock())
+    }
+
     fn finalized_header(&self) -> eyre::Result<SealedHeader<TempoHeader>> {
         let tip = *self.inner.finalized.lock();
         let consensus_context =
@@ -166,11 +185,20 @@ impl ExecutionEngine for StubExecutionProvider {
     ) -> impl Future<Output = eyre::Result<PayloadStatus>> + Send + 'static {
         self.inner.payloads.fetch_add(1, Ordering::SeqCst);
         let rejected = self.inner.reject_payloads.load(Ordering::SeqCst);
+        let syncing = self
+            .inner
+            .syncing_payloads
+            .try_update(Ordering::SeqCst, Ordering::SeqCst, |remaining| {
+                remaining.checked_sub(1)
+            })
+            .is_ok();
         async move {
             let status = if rejected {
                 PayloadStatusEnum::Invalid {
                     validation_error: "rejected by test provider".into(),
                 }
+            } else if syncing {
+                PayloadStatusEnum::Syncing
             } else {
                 PayloadStatusEnum::Valid
             };
@@ -186,6 +214,13 @@ impl ExecutionEngine for StubExecutionProvider {
         self.inner.forkchoices.lock().push(state);
         let gate = self.inner.forkchoice_gate.lock().take();
         let rejected = self.inner.reject_forkchoices.load(Ordering::SeqCst);
+        let syncing = self
+            .inner
+            .syncing_forkchoices
+            .try_update(Ordering::SeqCst, Ordering::SeqCst, |remaining| {
+                remaining.checked_sub(1)
+            })
+            .is_ok();
         async move {
             if let Some(gate) = gate {
                 let _ = gate.await;
@@ -194,6 +229,8 @@ impl ExecutionEngine for StubExecutionProvider {
                 PayloadStatusEnum::Invalid {
                     validation_error: "rejected by test engine".into(),
                 }
+            } else if syncing {
+                PayloadStatusEnum::Syncing
             } else {
                 PayloadStatusEnum::Valid
             };
@@ -205,16 +242,25 @@ impl ExecutionEngine for StubExecutionProvider {
 #[derive(Clone, Default)]
 pub(super) struct StubMarshal {
     floor: Arc<AtomicU64>,
+    blocks: Arc<Mutex<HashMap<u64, Block>>>,
 }
 
 impl StubMarshal {
     pub(super) fn floor(&self) -> Height {
         Height::new(self.floor.load(Ordering::SeqCst))
     }
+
+    pub(super) fn set_block(&self, block: Block) {
+        self.blocks.lock().insert(block.height().get(), block);
+    }
 }
 
 impl Marshal for StubMarshal {
     type Finalization = Height;
+
+    async fn get_block(&self, height: Height) -> Option<Block> {
+        self.blocks.lock().get(&height.get()).cloned()
+    }
 
     async fn get_finalization(&self, height: Height) -> Option<Self::Finalization> {
         Some(height)
