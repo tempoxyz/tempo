@@ -864,7 +864,6 @@ fn durable_block_read_failure_does_not_exit_actor() {
 fn startup_backfills_when_marshal_floor_is_ahead_of_execution() {
     deterministic::Runner::default().start(|context| async move {
         let provider = StubExecutionProvider::default();
-        provider.sync_payloads(1);
         let marshal = StubMarshal::default();
         let first = make_block_at_round(1, B256::ZERO, round(1));
         let first_hash = first.block_hash();
@@ -886,15 +885,45 @@ fn startup_backfills_when_marshal_floor_is_ahead_of_execution() {
         );
         actor.start();
 
-        context.sleep(Duration::from_secs(2)).await;
         wait_until(&context, || provider.forkchoices().len() == 2).await;
 
-        assert_eq!(provider.payload_count(), 3);
+        assert_eq!(provider.payload_count(), 2);
         let forkchoices = provider.forkchoices();
         assert_eq!(forkchoices[0].head_block_hash, first_hash);
         assert_eq!(forkchoices[0].finalized_block_hash, first_hash);
         assert_eq!(forkchoices[1].head_block_hash, second_hash);
         assert_eq!(forkchoices[1].finalized_block_hash, second_hash);
+    });
+}
+
+#[test_traced]
+fn startup_backfill_retries_a_syncing_block() {
+    deterministic::Runner::default().start(|context| async move {
+        let provider = StubExecutionProvider::default();
+        provider.sync_payloads(1);
+        let marshal = StubMarshal::default();
+        let block = make_block_at_round(1, B256::ZERO, round(1));
+        let block_hash = block.block_hash();
+        marshal.set_block(block);
+
+        let (actor, _mailbox) = init(
+            context.child("follower_executor"),
+            Config {
+                execution_provider: provider.clone(),
+                execution_engine: provider.clone(),
+                marshal,
+                epoch_strategy: FixedEpocher::new(EPOCH_LENGTH),
+                floor: Height::new(1),
+                fcu_heartbeat_interval: Duration::from_secs(60),
+            },
+        );
+        actor.start();
+
+        context.sleep(Duration::from_secs(2)).await;
+        wait_until(&context, || provider.forkchoices().len() == 1).await;
+
+        assert_eq!(provider.payload_count(), 2);
+        assert_eq!(provider.forkchoices()[0].finalized_block_hash, block_hash);
     });
 }
 
