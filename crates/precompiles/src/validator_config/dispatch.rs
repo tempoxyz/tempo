@@ -65,6 +65,41 @@ mod tests {
         ValidatorConfigError,
     };
 
+    alloy::sol! {
+        function flatValidator(address validator) external view returns (
+            bytes32 publicKey,
+            bool active,
+            uint64 index,
+            address validatorAddress,
+            string inboundAddress,
+            string outboundAddress
+        );
+    }
+
+    #[test]
+    fn validator_getter_preserves_dynamic_tuple_boundary() {
+        let validator = IValidatorConfig::Validator {
+            publicKey: FixedBytes::from([1; 32]),
+            active: true,
+            index: 1,
+            validatorAddress: Address::ZERO,
+            inboundAddress: "validator.example:30303".to_string(),
+            outboundAddress: "192.0.2.1:30303".to_string(),
+        };
+
+        let structured = IValidatorConfig::validatorsCall::abi_encode_returns(&validator);
+        let flattened = flatValidatorCall::abi_encode_returns(&flatValidatorReturn {
+            publicKey: validator.publicKey,
+            active: validator.active,
+            index: validator.index,
+            validatorAddress: validator.validatorAddress,
+            inboundAddress: validator.inboundAddress,
+            outboundAddress: validator.outboundAddress,
+        });
+
+        assert_ne!(structured, flattened);
+    }
+
     #[test]
     fn test_function_selector_dispatch() -> eyre::Result<()> {
         let sender = Address::random();
