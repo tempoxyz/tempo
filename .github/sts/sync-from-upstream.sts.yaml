@@ -1,18 +1,10 @@
-# Allow the sync-from-upstream workflow in copies of this repo (scheduled and
-# manually dispatched runs on main) to mint a short-lived token to push the
-# synced main and `release/*` branches. `workflows: write` is required because
-# the synced commits can touch .github/workflows files.
-#
-# This file is mirrored into the copies by the sync itself, where it
-# authorizes tokens scoped to the copy: tempo-private-fork mirrors main
-# byte-for-byte, and tempo-firedrill takes everything except its own
-# .github/workflows — so this file, not the firedrill's checkout, is where
-# its sync authorization must live. Note that its presence in this repo also
-# lets those copies' main-branch workflows mint a token scoped to
-# tempoxyz/tempo, since they carry (nearly) identical contents.
+# Allow only the sync-from-upstream workflows on the main branches of the
+# zones-private-fork and zones-firedrill repositories to mint a short-lived
+# token. `workflows: write` is required because synced commits can touch
+# .github/workflows files.
 subject:
-  - repo:tempoxyz@211589300/tempo-private-fork@1160043351:ref:refs/heads/main
-  - repo:tempoxyz@211589300/tempo-firedrill@1167619511:ref:refs/heads/main
+  - repo:tempoxyz@211589300/zones-private-fork@1329742643:job_workflow_ref:tempoxyz/zones-private-fork/.github/workflows/sync-from-upstream.yml@refs/heads/main
+  - repo:tempoxyz@211589300/zones-firedrill@1330635096:job_workflow_ref:tempoxyz/zones-firedrill/.github/workflows/sync-from-upstream.yml@refs/heads/main
 permissions:
   contents: write
   workflows: write
