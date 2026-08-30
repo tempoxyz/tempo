@@ -50,6 +50,12 @@ pub fn is_constrained_tip20_selector(selector: [u8; 4]) -> bool {
     )
 }
 
+fn has_duplicates_sorted<T: Ord>(values: impl IntoIterator<Item = T>) -> bool {
+    let mut values = values.into_iter().collect::<Vec<_>>();
+    values.sort_unstable();
+    values.windows(2).any(|pair| pair[0] == pair[1])
+}
+
 /// Key information stored in the precompile
 ///
 /// Storage layout (packed into single slot, right-aligned):
@@ -992,6 +998,18 @@ impl AccountKeychain {
 
     /// Validates a list of [`CallScope`]s.
     fn validate_call_scopes(&self, scopes: &[CallScope]) -> Result<()> {
+        // Preserve the incremental pre-T11 validation order for historical reexecution.
+        if self.storage.spec().is_t11() {
+            if has_duplicates_sorted(scopes.iter().map(|scope| scope.target)) {
+                return Err(AccountKeychainError::invalid_call_scope().into());
+            }
+
+            for scope in scopes {
+                self.validate_call_scope(scope)?;
+            }
+            return Ok(());
+        }
+
         let mut seen_targets = HashSet::new();
         for scope in scopes {
             if !seen_targets.insert(scope.target) {
@@ -1043,9 +1061,14 @@ impl AccountKeychain {
             }
         };
 
+        let sort_selectors = self.storage.spec().is_t11();
+        if sort_selectors && has_duplicates_sorted(rules.iter().map(|rule| rule.selector)) {
+            return Err(AccountKeychainError::invalid_call_scope().into());
+        }
+
         let mut selectors = HashSet::new();
         for rule in rules {
-            if !selectors.insert(rule.selector) {
+            if !sort_selectors && !selectors.insert(rule.selector) {
                 return Err(AccountKeychainError::invalid_call_scope().into());
             }
 
@@ -1057,11 +1080,10 @@ impl AccountKeychain {
                 return Err(AccountKeychainError::invalid_call_scope().into());
             }
 
-            let mut unique_recipients = HashSet::new();
-            for recipient in &rule.recipients {
-                if recipient.is_zero() || !unique_recipients.insert(*recipient) {
-                    return Err(AccountKeychainError::invalid_call_scope().into());
-                }
+            if rule.recipients.iter().any(|recipient| recipient.is_zero())
+                || has_duplicates_sorted(rule.recipients.iter().copied())
+            {
+                return Err(AccountKeychainError::invalid_call_scope().into());
             }
         }
 
@@ -1663,6 +1685,59 @@ mod tests {
             }
             _ => panic!("Expected AccountKeychainError, got: {error:?}"),
         }
+    }
+
+    #[test]
+    fn test_t11_sorted_scope_validation_rejects_duplicates() -> eyre::Result<()> {
+        let mut storage = HashMapStorageProvider::new_with_spec(1, TempoHardfork::T11);
+        StorageCtx::enter(&mut storage, || -> eyre::Result<()> {
+            let keychain = AccountKeychain::new();
+            let target = Address::repeat_byte(0x11);
+            let recipient = Address::repeat_byte(0x22);
+
+            let error = keychain
+                .validate_call_scopes(&[
+                    CallScope {
+                        target,
+                        selectorRules: vec![],
+                    },
+                    CallScope {
+                        target,
+                        selectorRules: vec![],
+                    },
+                ])
+                .expect_err("duplicate targets must be rejected");
+            assert_invalid_call_scope(error);
+
+            let mut selector_rules = (0u32..4_096)
+                .map(|selector| SelectorRule {
+                    selector: selector.to_be_bytes().into(),
+                    recipients: vec![],
+                })
+                .collect::<Vec<_>>();
+            selector_rules.push(selector_rules[0].clone());
+
+            let error = keychain
+                .validate_call_scopes(&[CallScope {
+                    target,
+                    selectorRules: selector_rules,
+                }])
+                .expect_err("a duplicate selector at the tail must be rejected");
+            assert_invalid_call_scope(error);
+
+            let error = keychain
+                .validate_call_scopes(&[CallScope {
+                    target: DEFAULT_FEE_TOKEN,
+                    selectorRules: vec![SelectorRule {
+                        selector: TIP20_TRANSFER_SELECTOR.into(),
+                        recipients: vec![recipient, recipient],
+                    }],
+                }])
+                .expect_err("duplicate recipients must be rejected");
+            assert_invalid_call_scope(error);
+
+            Ok(())
+        })
     }
 
     fn unrestricted_restrictions() -> KeyRestrictions {

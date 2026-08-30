@@ -125,7 +125,10 @@ pub fn preserve_storage_credits(credit_owner: Address) -> Result<()> {
 /// Deducts the calldata input cost, returning an OOG halt result if insufficient gas.
 #[inline]
 pub fn charge_input_cost(storage: &mut StorageCtx, calldata: &[u8]) -> Option<PrecompileResult> {
-    if storage.deduct_gas(input_cost(calldata.len())).is_err() {
+    if input_cost(storage.spec(), calldata.len())
+        .and_then(|cost| storage.deduct_gas(cost))
+        .is_err()
+    {
         return Some(Ok(storage.halt_output(PrecompileHalt::OutOfGas)));
     }
     None
