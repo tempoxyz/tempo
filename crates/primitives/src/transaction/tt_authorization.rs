@@ -474,12 +474,8 @@ pub mod tests {
             nonce: 1,
         };
         let signature = TempoSignature::Multisig(
-            MultisigSignature::try_new(
-                claimed_account,
-                config,
-                vec![TempoSignature::default().to_bytes()],
-            )
-            .unwrap(),
+            MultisigSignature::try_new(claimed_account, config, vec![TempoSignature::default()])
+                .unwrap(),
         );
         let signed = TempoSignedAuthorization::new_unchecked(auth, signature);
 

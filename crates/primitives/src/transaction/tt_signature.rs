@@ -738,9 +738,8 @@ impl TempoSignature {
     /// in the keychain precompile.
     /// We cannot check this here, as we don't have access to the keychain precompile.
     ///
-    /// - Multisig: performs stateless shape checks. For version 0, the account must derive from the
-    ///   carried config; for later versions, it remains untrusted until stateful validation matches
-    ///   the config commitment. Owner signatures and quorum are also verified there.
+    /// - Multisig: returns the account from the shape-validated signature. Versioned configs remain
+    ///   untrusted until stateful validation matches the commitment and verifies owner quorum.
     pub fn recover_signer(
         &self,
         sig_hash: &B256,
@@ -754,9 +753,7 @@ impl TempoSignature {
                 // Return the user_address - the root account this transaction is for
                 Ok(keychain_sig.user_address)
             }
-            Self::Multisig(multisig_sig) => multisig_sig
-                .recover_account()
-                .map_err(|_| alloy_consensus::crypto::RecoveryError::new()),
+            Self::Multisig(multisig_sig) => Ok(multisig_sig.account()),
         }
     }
 
@@ -1106,8 +1103,10 @@ mod tests {
         (signing_key, pub_key_x, pub_key_y)
     }
 
-    fn valid_multisig_owner_signature_bytes() -> Bytes {
-        PrimitiveSignature::Secp256k1(alloy_primitives::Signature::test_signature()).to_bytes()
+    fn valid_multisig_owner_signature() -> TempoSignature {
+        TempoSignature::Primitive(PrimitiveSignature::Secp256k1(
+            alloy_primitives::Signature::test_signature(),
+        ))
     }
 
     /// Sign a message hash with P256, normalize s, return (r, s)
@@ -2017,7 +2016,7 @@ mod tests {
             MultisigSignature::try_new(
                 Address::repeat_byte(0x11),
                 config,
-                vec![valid_multisig_owner_signature_bytes()],
+                vec![valid_multisig_owner_signature()],
             )
             .unwrap(),
         );
@@ -2041,12 +2040,8 @@ mod tests {
         let account = config.derive_account().unwrap();
         let inner_hash = B256::repeat_byte(0x24);
         let signature = TempoSignature::Multisig(
-            MultisigSignature::try_new(
-                account,
-                config,
-                vec![valid_multisig_owner_signature_bytes()],
-            )
-            .unwrap(),
+            MultisigSignature::try_new(account, config, vec![valid_multisig_owner_signature()])
+                .unwrap(),
         );
 
         // recover_signer returns the claimed account after stateless shape checks only; it does

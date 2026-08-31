@@ -1,6 +1,8 @@
 use super::{tempo_transaction::MAX_WEBAUTHN_SIGNATURE_LENGTH, tt_signature::TempoSignature};
 use alloc::vec::Vec;
-use alloy_primitives::{Address, B256, Bytes, address, b256, keccak256};
+#[cfg(any(test, feature = "serde"))]
+use alloy_primitives::Bytes;
+use alloy_primitives::{Address, B256, address, b256, keccak256};
 use alloy_rlp::Encodable as _;
 use core::mem::size_of;
 use tempo_contracts::{SAFE_DEPLOYER_ADDRESS, precompiles::INativeMultisig};
@@ -137,12 +139,8 @@ pub enum MultisigSignatureError {
     EmptySignatures,
     /// The owner approval list exceeds [`MAX_MULTISIG_SIGNATURES`].
     TooManySignatures,
-    /// An encoded owner approval is empty.
-    EmptyOwnerSignature,
     /// An encoded primitive owner approval exceeds [`MAX_MULTISIG_OWNER_SIGNATURE_BYTES`].
     OwnerSignatureTooLarge,
-    /// An encoded owner approval is not a valid [`TempoSignature`].
-    InvalidOwnerSignature,
     /// A keychain signature was supplied as an owner approval.
     KeychainOwnerSignature,
 }
@@ -157,9 +155,7 @@ impl MultisigSignatureError {
             Self::ZeroAccount => "multisig account cannot be zero",
             Self::EmptySignatures => "multisig signatures cannot be empty",
             Self::TooManySignatures => "too many multisig signatures",
-            Self::EmptyOwnerSignature => "multisig owner signature cannot be empty",
             Self::OwnerSignatureTooLarge => "multisig owner signature too large",
-            Self::InvalidOwnerSignature => "invalid multisig owner signature",
             Self::KeychainOwnerSignature => {
                 "keychain signatures cannot authorize native multisig owners"
             }
@@ -194,8 +190,6 @@ pub enum MultisigQuorumError {
     SignerNotOwner,
     /// Recovered signers are not strictly ascending.
     SignersNotAscending,
-    /// Recovered signer weight accumulation overflowed.
-    WeightOverflow,
     /// Recovered signer weight does not meet the threshold.
     WeightBelowThreshold,
 }
@@ -210,7 +204,6 @@ impl MultisigQuorumError {
             Self::ExcessSignatures => "excess multisig owner signatures",
             Self::SignerNotOwner => "multisig signer is not an owner",
             Self::SignersNotAscending => "multisig recovered owners must be strictly ascending",
-            Self::WeightOverflow => "multisig recovered owner weight overflow",
             Self::WeightBelowThreshold => "multisig signature weight below threshold",
         }
     }
@@ -268,16 +261,15 @@ impl MultisigWeightAccumulator {
         self.signer_count > 0 && self.recovered_weight >= u16::from(self.threshold)
     }
 
-    /// Returns the accumulated weight after enforcing the configured threshold.
-    pub fn finish(self) -> Result<u8, MultisigQuorumError> {
+    /// Enforces that at least one signer reached the configured threshold.
+    pub fn finish(self) -> Result<(), MultisigQuorumError> {
         if self.signer_count == 0 {
             return Err(MultisigQuorumError::EmptySignatures);
         }
         if self.recovered_weight < u16::from(self.threshold) {
             return Err(MultisigQuorumError::WeightBelowThreshold);
         }
-
-        u8::try_from(self.recovered_weight).map_err(|_| MultisigQuorumError::WeightOverflow)
+        Ok(())
     }
 }
 
@@ -519,12 +511,24 @@ impl MultisigConfig {
     /// Derives the CREATE2 salt for this configuration's initial account identity.
     pub fn account_salt(&self) -> Result<B256, MultisigConfigError> {
         self.validate()?;
-        Ok(keccak256(self.account_salt_preimage()?))
+        Ok(self.account_salt_validated())
     }
 
     /// Derives the native multisig account using the canonical recovery wallet's CREATE2 address.
     pub fn derive_account(&self) -> Result<Address, MultisigConfigError> {
-        let account = multisig_account_address(self.account_salt()?);
+        self.validate()?;
+        self.derive_account_validated()
+    }
+
+    fn account_salt_validated(&self) -> B256 {
+        keccak256(
+            self.account_salt_preimage()
+                .expect("validated multisig config has an encodable owner count"),
+        )
+    }
+
+    fn derive_account_validated(&self) -> Result<Address, MultisigConfigError> {
+        let account = multisig_account_address(self.account_salt_validated());
         if account.is_zero() {
             return Err(MultisigConfigError::DerivedAccountZero);
         }
@@ -537,7 +541,14 @@ impl MultisigConfig {
     /// Computes the persisted commitment for this configuration.
     pub fn commitment(&self) -> Result<B256, MultisigConfigError> {
         self.validate()?;
-        Ok(keccak256(self.commitment_preimage()?))
+        Ok(self.commitment_validated())
+    }
+
+    fn commitment_validated(&self) -> B256 {
+        keccak256(
+            self.commitment_preimage()
+                .expect("validated multisig config has an encodable owner count"),
+        )
     }
 
     /// Returns the configured weight for an owner, if present.
@@ -574,18 +585,6 @@ impl MultisigSignature {
     pub fn try_new(
         account: Address,
         config: MultisigConfig,
-        signatures: Vec<Bytes>,
-    ) -> Result<Self, MultisigSignatureError> {
-        let signatures = signatures
-            .into_iter()
-            .map(decode_multisig_owner_signature)
-            .collect::<Result<Vec<_>, _>>()?;
-        Self::from_decoded(account, config, signatures)
-    }
-
-    pub fn from_decoded(
-        account: Address,
-        config: MultisigConfig,
         signatures: Vec<TempoSignature>,
     ) -> Result<Self, MultisigSignatureError> {
         let signature = Self {
@@ -612,14 +611,7 @@ impl MultisigSignature {
         &self.signatures
     }
 
-    /// Performs stateless sender-recovery checks and returns the attempted multisig account.
-    pub fn recover_account(&self) -> Result<Address, MultisigSignatureError> {
-        self.validate_shape()?;
-        Ok(self.account())
-    }
-
-    /// Validates only the stateless signature payload shape.
-    pub fn validate_shape(&self) -> Result<(), MultisigSignatureError> {
+    fn validate_shape(&self) -> Result<(), MultisigSignatureError> {
         self.validate_shape_at_depth(1)
     }
 
@@ -633,7 +625,7 @@ impl MultisigSignature {
             return Err(MultisigSignatureError::ZeroAccount);
         }
         self.config.validate_for_account(self.account())?;
-        if self.config.version == 0 && self.config.derive_account()? != self.account() {
+        if self.config.version == 0 && self.config.derive_account_validated()? != self.account() {
             return Err(MultisigSignatureError::InitialAccountMismatch);
         }
         if self.signatures.is_empty() {
@@ -662,6 +654,11 @@ impl MultisigSignature {
     /// Returns the multisig owner-approval digest for this signature.
     pub fn digest(&self, inner_digest: B256) -> B256 {
         multisig_digest(inner_digest, self.account(), self.config.version)
+    }
+
+    /// Computes the commitment of the configuration validated at construction or decoding.
+    pub fn config_commitment(&self) -> B256 {
+        self.config.commitment_validated()
     }
 
     /// Returns a heuristic for the in-memory size of the signature.
@@ -705,6 +702,7 @@ impl<'de> Deserialize<'de> for MultisigSignature {
 }
 
 impl MultisigSignature {
+    #[cfg(feature = "serde")]
     fn decode_exact(bytes: &[u8]) -> alloy_rlp::Result<Self> {
         let mut input = bytes;
         let signature = Self::decode_with_depth(&mut input, 1)?;
@@ -770,7 +768,7 @@ impl MultisigSignature {
         }
 
         *buf = rest;
-        Self::from_decoded(account, config, signatures)
+        Self::try_new(account, config, signatures)
             .map_err(|error| alloy_rlp::Error::Custom(error.as_str()))
     }
 }
@@ -823,21 +821,6 @@ pub fn multisig_digest(inner_digest: B256, account: Address, config_version: u64
     keccak256(input)
 }
 
-fn decode_multisig_owner_signature(
-    signature: Bytes,
-) -> Result<TempoSignature, MultisigSignatureError> {
-    if signature.is_empty() {
-        return Err(MultisigSignatureError::EmptyOwnerSignature);
-    }
-    if signature.len() > MAX_MULTISIG_OWNER_SIGNATURE_BYTES
-        && signature[0] != SIGNATURE_TYPE_MULTISIG
-    {
-        return Err(MultisigSignatureError::OwnerSignatureTooLarge);
-    }
-    TempoSignature::from_bytes(&signature)
-        .map_err(|_| MultisigSignatureError::InvalidOwnerSignature)
-}
-
 #[cfg(any(test, feature = "arbitrary"))]
 impl<'a> arbitrary::Arbitrary<'a> for MultisigSignature {
     fn arbitrary(u: &mut arbitrary::Unstructured<'a>) -> arbitrary::Result<Self> {
@@ -861,8 +844,7 @@ impl<'a> arbitrary::Arbitrary<'a> for MultisigSignature {
             .derive_account()
             .map_err(|_| arbitrary::Error::IncorrectFormat)?;
 
-        Self::from_decoded(account, config, signatures)
-            .map_err(|_| arbitrary::Error::IncorrectFormat)
+        Self::try_new(account, config, signatures).map_err(|_| arbitrary::Error::IncorrectFormat)
     }
 }
 
@@ -906,12 +888,18 @@ mod tests {
     }
 
     fn valid_owner_signature_bytes() -> Bytes {
-        PrimitiveSignature::Secp256k1(alloy_primitives::Signature::test_signature()).to_bytes()
+        valid_owner_signature().to_bytes()
+    }
+
+    fn valid_owner_signature() -> TempoSignature {
+        TempoSignature::Primitive(PrimitiveSignature::Secp256k1(
+            alloy_primitives::Signature::test_signature(),
+        ))
     }
 
     fn initial_multisig_signature() -> MultisigSignature {
         let config = sorted_secp_config(&[(indexed_owner(2), 1)], 1);
-        MultisigSignature::from_decoded(
+        MultisigSignature::try_new(
             config.derive_account().unwrap(),
             config,
             vec![TempoSignature::Primitive(PrimitiveSignature::default())],
@@ -1158,11 +1146,7 @@ mod tests {
         ));
 
         assert_eq!(
-            MultisigSignature::from_decoded(
-                account,
-                current_config(indexed_owner(2)),
-                vec![approval],
-            ),
+            MultisigSignature::try_new(account, current_config(indexed_owner(2)), vec![approval],),
             Err(MultisigSignatureError::KeychainOwnerSignature)
         );
     }
@@ -1172,7 +1156,7 @@ mod tests {
         let nested = initial_multisig_signature();
         let account = indexed_owner(1);
         assert!(
-            MultisigSignature::from_decoded(
+            MultisigSignature::try_new(
                 account,
                 current_config(nested.account()),
                 vec![TempoSignature::Multisig(nested)],
@@ -1183,13 +1167,13 @@ mod tests {
 
     #[test]
     fn multisig_shape_rejects_programmatic_excess_nesting() {
-        let leaf = MultisigSignature::from_decoded(
+        let leaf = MultisigSignature::try_new(
             indexed_owner(3),
             current_config(indexed_owner(4)),
             vec![TempoSignature::Primitive(PrimitiveSignature::default())],
         )
         .unwrap();
-        let middle = MultisigSignature::from_decoded(
+        let middle = MultisigSignature::try_new(
             indexed_owner(2),
             current_config(indexed_owner(3)),
             vec![TempoSignature::Multisig(leaf)],
@@ -1197,7 +1181,7 @@ mod tests {
         .unwrap();
 
         assert_eq!(
-            MultisigSignature::from_decoded(
+            MultisigSignature::try_new(
                 indexed_owner(1),
                 current_config(indexed_owner(2)),
                 vec![TempoSignature::Multisig(middle)],
@@ -1215,7 +1199,7 @@ mod tests {
 
         // Reproduce the weight-accounting the native multisig verifier performs: look up each
         // recovered owner's configured weight and feed it to the shared accumulator in order.
-        let ordered_weights = |owners: &[Address]| -> Result<u8, MultisigQuorumError> {
+        let ordered_weights = |owners: &[Address]| -> Result<(), MultisigQuorumError> {
             let mut accumulator = MultisigWeightAccumulator::new(config.threshold)?;
             for &owner in owners {
                 let weight = config
@@ -1226,7 +1210,7 @@ mod tests {
             accumulator.finish()
         };
 
-        assert_eq!(ordered_weights(&[owner_a, owner_b]), Ok(4));
+        assert_eq!(ordered_weights(&[owner_a, owner_b]), Ok(()));
         assert_eq!(
             ordered_weights(&[owner_b]),
             Err(MultisigQuorumError::WeightBelowThreshold)
@@ -1300,7 +1284,7 @@ mod tests {
         signed.sort_by_key(|(owner, _)| *owner);
 
         // Feed the recovered owners through the shared accumulator, as the verifier does.
-        let quorum_weight = |approvals: &[&TempoSignature]| -> Result<u8, MultisigQuorumError> {
+        let quorum_weight = |approvals: &[&TempoSignature]| -> Result<(), MultisigQuorumError> {
             let mut accumulator = MultisigWeightAccumulator::new(config.threshold)?;
             for approval in approvals {
                 let owner = approval.recover_signer(&digest).unwrap();
@@ -1313,7 +1297,7 @@ mod tests {
         };
 
         let both = [&signed[0].1, &signed[1].1];
-        assert_eq!(quorum_weight(&both), Ok(2));
+        assert_eq!(quorum_weight(&both), Ok(()));
 
         // A single owner falls short of the threshold of 2.
         assert!(quorum_weight(&[&signed[0].1]).is_err());
@@ -1355,9 +1339,10 @@ mod tests {
     fn multisig_signature_encodes_complete_config() {
         let config = current_config(indexed_owner(2));
         let account = Address::repeat_byte(0x11);
-        let signatures = vec![valid_owner_signature_bytes()];
+        let signatures = [valid_owner_signature_bytes()];
         let signature =
-            MultisigSignature::try_new(account, config.clone(), signatures.clone()).unwrap();
+            MultisigSignature::try_new(account, config.clone(), vec![valid_owner_signature()])
+                .unwrap();
 
         let mut encoded = Vec::new();
         signature.encode(&mut encoded);
@@ -1386,7 +1371,7 @@ mod tests {
         let wrong_account = Address::repeat_byte(0x99);
 
         let signature =
-            MultisigSignature::try_new(wrong_account, config, vec![valid_owner_signature_bytes()]);
+            MultisigSignature::try_new(wrong_account, config, vec![valid_owner_signature()]);
 
         assert_eq!(
             signature,
@@ -1488,10 +1473,15 @@ mod tests {
         let signature = MultisigSignature::try_new(
             Address::repeat_byte(0x11),
             current_config(indexed_owner(2)),
-            vec![Bytes::from(vec![
-                0xaa;
-                MAX_MULTISIG_OWNER_SIGNATURE_BYTES + 1
-            ])],
+            vec![TempoSignature::Primitive(PrimitiveSignature::WebAuthn(
+                WebAuthnSignature {
+                    webauthn_data: Bytes::from(vec![0; MAX_WEBAUTHN_SIGNATURE_LENGTH + 1]),
+                    r: B256::ZERO,
+                    s: B256::ZERO,
+                    pub_key_x: B256::ZERO,
+                    pub_key_y: B256::ZERO,
+                },
+            ))],
         );
 
         assert_eq!(
@@ -1513,7 +1503,10 @@ mod tests {
             MultisigSignature::try_new(
                 Address::repeat_byte(0x22),
                 current_config(indexed_owner(3)),
-                vec![primitive.to_bytes(), primitive.to_bytes()],
+                vec![
+                    TempoSignature::Primitive(primitive.clone()),
+                    TempoSignature::Primitive(primitive),
+                ],
             )
             .unwrap(),
         );
@@ -1522,7 +1515,7 @@ mod tests {
         let signature = MultisigSignature::try_new(
             Address::repeat_byte(0x11),
             current_config(Address::repeat_byte(0x22)),
-            vec![nested.to_bytes()],
+            vec![nested],
         );
 
         assert!(signature.is_ok());
@@ -1565,12 +1558,8 @@ mod tests {
         let account = config.derive_account().unwrap();
         let signature_hash = B256::ZERO;
         let digest = multisig_digest(signature_hash, account, 0);
-        let signature = MultisigSignature::try_new(
-            account,
-            config,
-            vec![sign_hash(&signer, &digest).to_bytes()],
-        )
-        .unwrap();
+        let signature =
+            MultisigSignature::try_new(account, config, vec![sign_hash(&signer, &digest)]).unwrap();
         let tempo_signature = TempoSignature::Multisig(signature.clone());
 
         let encoded = tempo_signature.to_bytes();
@@ -1591,7 +1580,7 @@ mod tests {
         let account = config.derive_account().unwrap();
         let signature_hash = B256::ZERO;
         let digest = multisig_digest(signature_hash, account, 0);
-        let signatures = vec![sign_hash(&signer, &digest).to_bytes()];
+        let signatures = vec![sign_hash(&signer, &digest)];
         let signature =
             MultisigSignature::try_new(account, config.clone(), signatures.clone()).unwrap();
         let tempo_signature = TempoSignature::Multisig(signature.clone());
@@ -1604,7 +1593,7 @@ mod tests {
                 &config,
                 signatures
                     .iter()
-                    .map(|signature| signature.to_vec())
+                    .map(|signature| signature.to_bytes().to_vec())
                     .collect(),
             )
         );
@@ -1624,7 +1613,7 @@ mod tests {
         let account = config.derive_account().unwrap();
         let digest = multisig_digest(B256::ZERO, account, 0);
         let owner_signature = sign_hash(&signer, &digest);
-        let signatures = vec![owner_signature.to_bytes()];
+        let signatures = vec![owner_signature];
 
         let signature = MultisigSignature::try_new(account, config, signatures).unwrap();
         let mut encoded = Vec::with_capacity(signature.length());
@@ -1695,7 +1684,7 @@ mod tests {
         let primitive =
             PrimitiveSignature::Secp256k1(alloy_primitives::Signature::test_signature());
         let signature = TempoSignature::Multisig(
-            MultisigSignature::from_decoded(
+            MultisigSignature::try_new(
                 indexed_owner(2),
                 current_config(indexed_owner(3)),
                 vec![TempoSignature::Primitive(primitive)],
