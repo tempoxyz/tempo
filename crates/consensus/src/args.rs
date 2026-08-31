@@ -17,6 +17,16 @@ const DEFAULT_MAX_MESSAGE_SIZE_BYTES: u32 =
     reth_consensus_common::validation::MAX_RLP_BLOCK_SIZE as u32;
 const PASSPHRASE_SECRET_WAIT_WARNING_INTERVAL: Duration = Duration::from_secs(5);
 
+/// Capacity of the shared queue carrying gossiped frames into consensus.
+///
+/// The transport drops overflow. A later certificate can replace a dropped one
+/// because it finalizes its ancestry. The bound also prevents peer traffic from
+/// creating unlimited pending work.
+const GOSSIP_FRAME_QUEUE: usize = 256;
+
+/// Capacity of the queue carrying outbound frames to the transport coordinator.
+const GOSSIP_ROUTE_QUEUE: usize = 256;
+
 /// Command line arguments for configuring the consensus layer of a tempo node.
 #[derive(Debug, Clone, clap::Args)]
 pub struct Args {
@@ -289,6 +299,35 @@ pub struct Args {
     #[arg(long = "consensus.fcu-heartbeat-interval", default_value = "5m")]
     pub fcu_heartbeat_interval: PositiveDuration,
 
+    /// Offer the `tempo/1` subprotocol, which gossips finalization
+    /// certificates between nodes. Off by default.
+    #[arg(
+        long = "consensus.devp2p.finalizations",
+        default_value_t = false,
+        default_missing_value = "true",
+        num_args = 0..=1,
+        require_equals = true
+    )]
+    pub gossip_enabled: bool,
+
+    /// Gossiped certificates verified per second, across all peers.
+    ///
+    /// This bounds work on the follower driver. The same task acknowledges
+    /// blocks to marshal, so the limit also bounds how much a certificate flood
+    /// can delay block import.
+    #[arg(
+        long = "consensus.devp2p.finalizations.verify-rate",
+        default_value = "32"
+    )]
+    pub gossip_verify_rate: NonZeroU32,
+
+    /// Frames accepted per second from a single connection.
+    #[arg(
+        long = "consensus.devp2p.finalizations.peer-frame-rate",
+        default_value = "8"
+    )]
+    pub gossip_peer_frame_rate: NonZeroU32,
+
     /// Cache for the signing key loaded from CLI-provided file.
     #[clap(skip)]
     loaded_signing_key: Arc<tokio::sync::OnceCell<Option<SigningKey>>>,
@@ -348,6 +387,19 @@ impl FromStr for PositiveDuration {
 }
 
 impl Args {
+    /// Transport settings for `tempo/1`.
+    ///
+    /// Ingest is enabled only for a certified follower because other modes have
+    /// no driver that can verify a certificate.
+    pub fn gossip_transport(&self, following: bool) -> tempo_node::gossip::Config {
+        tempo_node::gossip::Config {
+            ingest: following,
+            peer_frame_rate: self.gossip_peer_frame_rate,
+            frame_queue: GOSSIP_FRAME_QUEUE,
+            route_queue: GOSSIP_ROUTE_QUEUE,
+        }
+    }
+
     /// Returns the signing key loaded from the configured file.
     ///
     /// When `--consensus.secret` is set, tries to decrypt the signing key.
@@ -492,11 +544,14 @@ mod tests {
         // gate on `--consensus.signing-key`. These args live in the outer
         // binary's CLI struct; we re-declare them here just so clap can
         // resolve the references during parse-time validation.
+        //
+        // NOTE(re #[allow(dead_code)]): those are explicitly allow(dead_code) due to the fact that
+        // those trigger rust-analyzer warnings otherwise.
         #[arg(long = "follow")]
-        #[expect(dead_code)]
+        #[allow(dead_code)]
         follow: Option<String>,
         #[arg(long = "dev")]
-        #[expect(dead_code)]
+        #[allow(dead_code)]
         dev: bool,
 
         #[command(flatten)]

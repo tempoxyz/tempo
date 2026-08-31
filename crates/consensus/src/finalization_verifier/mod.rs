@@ -111,13 +111,25 @@ impl FinalizationVerifier {
             });
         }
 
+        self.verify_certificate(rng, &finalization)?;
+
+        Ok(finalization)
+    }
+
+    /// Verify an already decoded certificate without requiring its block.
+    pub(crate) fn verify_certificate<R: CryptoRng>(
+        &self,
+        rng: &mut R,
+        finalization: &Finalization<Scheme<PublicKey, MinSig>, Digest>,
+    ) -> Result<(), CertificateVerificationError> {
+        let epoch = finalization.epoch();
         let (scheme, used_network_identity) = match self.scheme_provider.scheme(epoch) {
             Some(scheme) => (scheme, false),
             None if epoch.get() >= self.network_identity.from_epoch => {
                 (self.network_scheme.clone(), true)
             }
             None => {
-                return Err(Error::IdentityUnavailable {
+                return Err(CertificateVerificationError::IdentityUnavailable {
                     epoch: epoch.get(),
                     identity_from_epoch: self.network_identity.from_epoch,
                 });
@@ -125,7 +137,11 @@ impl FinalizationVerifier {
         };
 
         if !finalization.verify(rng, scheme.as_ref(), &Sequential) {
-            return Err(Error::VerificationFailed);
+            return Err(if used_network_identity {
+                CertificateVerificationError::FallbackVerificationFailed
+            } else {
+                CertificateVerificationError::Invalid
+            });
         }
 
         // Marshal verifies the certificate again while installing a floor, so retain a
@@ -134,8 +150,28 @@ impl FinalizationVerifier {
             self.scheme_provider.register(epoch, (*scheme).clone());
         }
 
-        Ok(finalization)
+        Ok(())
     }
+}
+
+/// Why an already decoded certificate could not be verified.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, thiserror::Error)]
+pub enum CertificateVerificationError {
+    /// No trusted identity is available for the certificate's epoch.
+    #[error(
+        "finalization epoch `{epoch}` behind network identity starting epoch `{identity_from_epoch}`"
+    )]
+    IdentityUnavailable {
+        epoch: u64,
+        identity_from_epoch: u64,
+    },
+    /// The signature failed against a scheme learned from a finalized boundary.
+    #[error("finalization certificate verification failed")]
+    Invalid,
+    /// The signature failed against the static fallback identity. The epoch-specific identity may
+    /// have rotated while the follower was offline.
+    #[error("finalization certificate did not verify against the network identity fallback")]
+    FallbackVerificationFailed,
 }
 
 /// An error returned while verifying a Tempo finalization certificate.
@@ -156,17 +192,22 @@ pub enum Error {
         expected: u64,
         actual: u64,
     },
-    /// No trusted identity is available for the certificate's epoch.
-    #[error(
-        "finalization epoch `{epoch}` behind network identity starting epoch `{identity_from_epoch}`"
-    )]
-    IdentityUnavailable {
-        epoch: u64,
-        identity_from_epoch: u64,
-    },
-    /// The threshold signature did not verify against the trusted identity.
-    #[error("finalization certificate verification failed")]
-    VerificationFailed,
+    /// The certificate could not be verified against an available identity.
+    #[error(transparent)]
+    CertificateVerification(#[from] CertificateVerificationError),
+}
+
+impl Error {
+    /// Whether the certificate's signature mismatched an available identity.
+    pub(crate) const fn is_signature_mismatch(&self) -> bool {
+        matches!(
+            self,
+            Self::CertificateVerification(
+                CertificateVerificationError::Invalid
+                    | CertificateVerificationError::FallbackVerificationFailed
+            )
+        )
+    }
 }
 
 /// The concrete decoding error for a malformed finalization certificate.

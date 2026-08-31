@@ -98,7 +98,7 @@ trait FeedStateProvider {
 
 impl<TContext: Clock> FeedStateProvider for TestingNode<TContext> {
     fn feed_state(&self) -> FeedStateHandle {
-        self.consensus_config.feed_state.clone()
+        self.feed_state.clone()
     }
 
     fn execution_node(&self) -> Arc<tempo_node::TempoFullNode> {
@@ -250,6 +250,7 @@ impl FollowerBuilder {
             upstream,
             upstream_mailbox,
             execution_node: node.node.clone().into(),
+            gossip: None,
             feed_state: feed_state.clone(),
             partition_prefix,
             epoch_strategy: FixedEpocher::new(commonware_utils::NZU64!(EPOCH_LENGTH)),

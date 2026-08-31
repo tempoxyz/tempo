@@ -452,6 +452,8 @@ mod tests {
             assert_eq!(portal.sequencer_set_version.read()?, 0);
             assert_eq!(portal.sequencer_threshold.read()?, 2);
             assert_eq!(portal.sequencers.read()?, vec![SEQUENCER_A, SEQUENCER_B]);
+            assert_eq!(portal.last_processed_enabled_token_count.read()?, 0);
+            assert!(!portal.token_enablement_cursor_initialized.read()?);
             assert_eq!(
                 portal.role[SEQUENCER_A].read()?,
                 u8::from(ZonePortalRole::Sequencer)
@@ -551,6 +553,10 @@ mod tests {
                 U256::from_be_bytes(expected_token_enablement_hash.0)
             );
             assert_eq!(portal.abdication_effective_at.slot(), U256::from(27));
+            assert_eq!(
+                StorageCtx.sload(created.portal, U256::from(28))?,
+                U256::ZERO
+            );
             let access_abdication_slot = U256::from_be_bytes(
                 keccak256(
                     (
@@ -572,6 +578,30 @@ mod tests {
             assert_eq!(
                 portal.initialize(1, &params, B256::ZERO),
                 Err(ZoneFactoryError::already_initialized().into())
+            );
+            Ok(())
+        })
+    }
+
+    #[test]
+    fn create_zone_initializes_token_cursor_at_t12() -> eyre::Result<()> {
+        let mut storage = HashMapStorageProvider::new_with_spec(1, TempoHardfork::T12);
+        StorageCtx::enter(&mut storage, || -> eyre::Result<()> {
+            TIP20Setup::path_usd(ADMIN).apply()?;
+            let mut factory = factory_with_owner(OWNER)?;
+            let created = factory.create_zone(
+                OWNER,
+                IZoneFactory::createZoneCall {
+                    params: create_params(PATH_USD_ADDRESS),
+                },
+            )?;
+
+            let portal = ZonePortalStorage::new(created.portal);
+            assert_eq!(portal.last_processed_enabled_token_count.read()?, 0);
+            assert!(portal.token_enablement_cursor_initialized.read()?);
+            assert_eq!(
+                StorageCtx.sload(created.portal, U256::from(28))?,
+                U256::ONE << 64
             );
             Ok(())
         })

@@ -1,14 +1,22 @@
 use commonware_actor::Feedback;
 use commonware_consensus::{Reporter, marshal};
 use tempo_node::rpc::consensus::Event;
-use tokio::sync::mpsc;
+use tokio::sync::{mpsc, oneshot};
 
-use crate::consensus::Block;
+use crate::{
+    consensus::Block,
+    gossip::{Certificate, CertificateError, CertificateMailbox},
+};
 
 #[derive(Debug)]
 pub(super) enum Message {
     Event(Box<Event>),
     Finalized(marshal::Update<Block>),
+    /// A `tempo/1` certificate waiting for verification.
+    Certificate {
+        certificate: Box<Certificate>,
+        response: oneshot::Sender<eyre::Result<(), CertificateError>>,
+    },
 }
 
 impl From<Event> for Message {
@@ -20,6 +28,23 @@ impl From<Event> for Message {
 impl From<marshal::Update<Block>> for Message {
     fn from(value: marshal::Update<Block>) -> Self {
         Self::Finalized(value)
+    }
+}
+
+/// Routes certificates to the driver because it owns the epoch schemes.
+impl CertificateMailbox for Mailbox {
+    fn process_certificate(
+        &self,
+        certificate: Certificate,
+    ) -> oneshot::Receiver<eyre::Result<(), CertificateError>> {
+        let (response, receiver) = oneshot::channel();
+        // If the driver has stopped, the response sender is dropped and the
+        // caller receives an error.
+        let _ = self.0.send(Message::Certificate {
+            certificate: Box::new(certificate),
+            response,
+        });
+        receiver
     }
 }
 

@@ -74,7 +74,7 @@ def run-txgen-bench-single [
         | append (build-dev-args)
         | append (log-filter-args $loud)
         | append (if $tracy != "off" { ["--log.tracy" "--log.tracy.filter" $tracy_filter] } else { [] })
-        | append (if $tracing_otlp != "" { [$"--tracing-otlp=($tracing_otlp)"] } else { [] })
+        | append (benchmark-otlp-args $tracing_otlp)
     let args = (dedup-args $base_args $extra_args)
 
     let tracy_env_prefix = if $tracy == "on" {

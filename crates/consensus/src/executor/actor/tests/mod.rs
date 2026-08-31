@@ -1,8 +1,6 @@
 use alloy_primitives::B256;
-use commonware_consensus::types::{Epoch, Height, Round, View};
+use commonware_consensus::types::{Height, Round};
 use futures::executor::block_on;
-use reth_node_core::primitives::SealedBlock;
-use tempo_primitives::{Block as TempoBlock, TempoConsensusContext, TempoHeader};
 
 use commonware_consensus::Heightable as _;
 
@@ -10,35 +8,20 @@ use super::{
     ConsensusRequest, ExecutionTask, ExecutionTaskOutcome, ExecutionTaskType, VerifyBlockRequest,
     notarized_tree::LocalState, queue_consensus_request,
 };
-use crate::consensus::{Digest, block::Block};
+use crate::consensus::Digest;
 
-fn round(view: u64) -> Round {
-    Round::new(Epoch::zero(), View::new(view))
-}
+mod harness;
 
-/// Builds a block constructed in `view` at `height`.
-fn block(view: u64, height: u64, parent: Digest) -> Block {
-    Block::from_execution_block_unchecked(
-        SealedBlock::seal_slow(TempoBlock {
-            header: TempoHeader {
-                inner: alloy_consensus::Header {
-                    number: height,
-                    parent_hash: parent.0,
-                    ..Default::default()
-                },
-                consensus_context: Some(TempoConsensusContext {
-                    epoch: 0,
-                    view,
-                    parent_view: view - 1,
-                    proposer: tempo_primitives::ed25519::PublicKey::from_seed(42),
-                }),
-                ..Default::default()
-            },
-            body: Default::default(),
-        }),
-        None,
-    )
-}
+mod arbitration;
+mod backfill;
+mod build;
+mod convergence;
+mod finalization;
+mod metrics;
+mod scheduling;
+mod verify;
+
+use harness::{make_block, round};
 
 #[test]
 fn execution_task_finishes_with_an_outcome() {
@@ -74,7 +57,7 @@ fn consensus_requests_from_stale_rounds_are_dropped() {
         let (response, _rx) = futures::channel::oneshot::channel();
         ConsensusRequest::Verify(VerifyBlockRequest {
             cause: tracing::Span::none(),
-            block: block(view, height, Digest(B256::ZERO)).into(),
+            block: make_block(view, height, Digest(B256::ZERO)).into(),
             validator_set: None,
             response,
         })
