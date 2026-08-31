@@ -18,8 +18,38 @@ env:
   RUSTC_WRAPPER: "sccache"
 
 jobs:
+  check-changes:
+    name: Check Rust changes
+    runs-on: ubuntu-latest
+    permissions:
+      pull-requests: read
+    outputs:
+      rust: ${{ github.event_name != 'pull_request' || steps.filter.outputs.rust == 'true' }}
+    steps:
+      - uses: dorny/paths-filter@fbd0ab8f3e69293af611ebaee6363fc25e6d187d # v4.0.1
+        id: filter
+        if: github.event_name == 'pull_request'
+        with:
+          filters: |
+            rust:
+              - 'Cargo.lock'
+              - 'Cargo.toml'
+              - '.cargo/**'
+              - '.config/zepter.yaml'
+              - 'deny.toml'
+              - 'rust-toolchain*'
+              - 'rustfmt.toml'
+              - 'bin/**'
+              - 'crates/**'
+              - 'examples/**'
+              - 'xtask/**'
+              - '.github/scripts/check_no_std.sh'
+              - '.github/workflows/lint.yml'
+
   clippy:
     name: clippy
+    needs: check-changes
+    if: needs.check-changes.outputs.rust == 'true'
     runs-on: depot-ubuntu-latest-32
     timeout-minutes: 45
     env:
@@ -53,6 +83,8 @@ jobs:
 
   fmt:
     name: fmt
+    needs: check-changes
+    if: needs.check-changes.outputs.rust == 'true'
     runs-on: depot-ubuntu-latest
     timeout-minutes: 30
     permissions:
@@ -91,7 +123,8 @@ jobs:
       - run: cargo hack check --feature-powerset --depth 1 --partition ${{ matrix.partition }}/2
 
   docs:
-    if: ${{ github.repository == 'tempoxyz/tempo' }}
+    needs: check-changes
+    if: ${{ github.repository == 'tempoxyz/tempo' && needs.check-changes.outputs.rust == 'true' }}
     name: docs
     runs-on: depot-ubuntu-latest-32
     timeout-minutes: 30
@@ -158,12 +191,16 @@ jobs:
       - uses: crate-ci/typos@02ea592e44b3a53c302f697cddca7641cd051c3d # v1.45.0
 
   deny:
+    needs: check-changes
+    if: needs.check-changes.outputs.rust == 'true'
     permissions:
       contents: read
     uses: tempoxyz/ci/.github/workflows/deny.yml@09f481293feb726bcd5c94853063b224a9b2ff24 # main
 
   zepter:
     name: zepter
+    needs: check-changes
+    if: needs.check-changes.outputs.rust == 'true'
     runs-on: depot-ubuntu-latest
     timeout-minutes: 30
     permissions:
@@ -186,6 +223,8 @@ jobs:
 
   no-std:
     name: no-std
+    needs: check-changes
+    if: needs.check-changes.outputs.rust == 'true'
     runs-on: depot-ubuntu-latest
     timeout-minutes: 30
     permissions:
@@ -213,6 +252,7 @@ jobs:
     if: always()
     permissions: {}
     needs:
+      - check-changes
       - clippy
       - fmt
       - docs
@@ -225,5 +265,5 @@ jobs:
       - name: Decide whether the needed jobs succeeded or failed
         uses: re-actors/alls-green@05ac9388f0aebcb5727afa17fcccfecd6f8ec5fe # v1.2.2
         with:
-          allowed-skips: ${{ github.repository != 'tempoxyz/tempo' && 'docs' || '' }}
+          allowed-skips: ${{ needs.check-changes.outputs.rust != 'true' && 'clippy,fmt,docs,deny,zepter,no-std' || (github.repository != 'tempoxyz/tempo' && 'docs' || '') }}
           jobs: ${{ toJSON(needs) }}

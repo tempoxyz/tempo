@@ -17,6 +17,16 @@ on:
       - ".github/workflows/update-reth.yml"
   merge_group:
   pull_request:
+    paths:
+      - "Cargo.lock"
+      - "Cargo.toml"
+      - "crates/**/Cargo.toml"
+      - "tips/verify/**"
+      - "crates/contracts/**"
+      - "crates/precompiles/**"
+      - "scripts/foundry-patch.sh"
+      - ".github/workflows/specs.yml"
+      - ".github/workflows/update-reth.yml"
 
 env:
   CARGO_TERM_COLOR: always
@@ -41,23 +51,16 @@ jobs:
       - uses: dorny/paths-filter@fbd0ab8f3e69293af611ebaee6363fc25e6d187d # v4.0.1
         id: filter
         with:
+          predicate-quantifier: every
           filters: |
             specs:
-              - 'tips/verify/**'
-              - 'crates/contracts/**'
+              - '{tips/verify/**,crates/contracts/**,crates/precompiles/**,.github/workflows/specs.yml}'
               - '!crates/contracts/CHANGELOG.md'
               - '!crates/contracts/Cargo.toml'
-              - 'crates/precompiles/**'
               - '!crates/precompiles/CHANGELOG.md'
               - '!crates/precompiles/Cargo.toml'
-              - '.github/workflows/specs.yml'
             foundry_smoke:
-              - 'Cargo.lock'
-              - 'Cargo.toml'
-              - 'crates/**/Cargo.toml'
-              - 'scripts/foundry-patch.sh'
-              - '.github/workflows/specs.yml'
-              - '.github/workflows/update-reth.yml'
+              - '{Cargo.lock,Cargo.toml,crates/**/Cargo.toml,scripts/foundry-patch.sh,.github/workflows/specs.yml,.github/workflows/update-reth.yml}'
       - name: Check release-only SDK crate changes
         id: release-only
         env:
