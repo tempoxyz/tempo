@@ -674,6 +674,8 @@ def txgen-run-preset-pipeline [
         "--seed" $TXGEN_HELPER_DEFAULT_SEED
         "--rpc" $generate_rpc_url
     ]
+    let txgen_extra_args = (txgen-parse-bench-args $bench_args)
+    let defer_signing = ($txgen_extra_args | any { |arg| $arg == "--defer-signing" })
     let metrics_url_args = ($metrics_url | each { |url| ["--metrics-url" $url] } | flatten)
     let bench_send_base_cmd = [
         $txgen_bench_bin
@@ -722,10 +724,12 @@ def txgen-run-preset-pipeline [
         | append (if $scenario != "" { ["-m" $"scenario=($scenario)"] } else { [] })
         | append (if $pr_number != "" { ["-m" $"pr_number=($pr_number)"] } else { [] })
         | append (if $initial_db_size_bytes > 0 { ["-m" $"initial_db_size_bytes=($initial_db_size_bytes)"] } else { [] })
-    let bench_cmd = $bench_base_cmd | append $report_args | append $metadata_args
+    let bench_cmd = $bench_base_cmd
+        | append (if $defer_signing { ["--late-signing-spec" $spec_path] } else { [] })
+        | append $report_args
+        | append $metadata_args
 
     let bench_env_export = if $bench_env != "" { $"export ($bench_env) && " } else { "" }
-    let txgen_extra_args = (txgen-parse-bench-args $bench_args)
     let use_two_phase_keychain_setup = (txgen-spec-has-keychain-setup $spec_path)
     let txgen_cmd_str = (txgen-shell-join ($txgen_cmd | append $txgen_extra_args))
     let bench_cmd = if $use_two_phase_keychain_setup { $bench_cmd | append "--skip-setup" } else { $bench_cmd }
