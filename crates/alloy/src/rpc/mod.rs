@@ -3,6 +3,15 @@
 mod header;
 pub use header::TempoHeaderResponse;
 
+mod native_multisig;
+#[cfg(feature = "revm")]
+#[doc(hidden)]
+pub use native_multisig::create_mock_native_multisig_signature;
+pub use native_multisig::{
+    MultisigSimulationApproval, MultisigSimulationNestedSpec, MultisigSimulationPrimitiveApproval,
+    MultisigSimulationSpec,
+};
+
 mod request;
 pub use request::{FeeToken, TempoCallBuilderExt, TempoTransactionRequest};
 
