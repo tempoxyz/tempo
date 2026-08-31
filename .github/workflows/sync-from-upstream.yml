@@ -12,7 +12,7 @@ permissions: {}
 
 jobs:
   sync:
-    if: ${{ github.repository != 'tempoxyz/tempo' }}
+    if: ${{ github.repository_owner == 'tempoxyz' && github.repository != 'tempoxyz/tempo' }}
     runs-on: ubuntu-latest
     permissions:
       id-token: write
