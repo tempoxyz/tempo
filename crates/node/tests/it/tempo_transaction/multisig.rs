@@ -8,7 +8,7 @@ use super::{
     types::{ExpectedOutcome, FeePayerContext, TestEnv},
 };
 use alloy::{
-    primitives::{Address, B256, Bytes},
+    primitives::{Address, B256, Bytes, U256},
     signers::{SignerSync, local::PrivateKeySigner},
     sol_types::SolCall,
 };
@@ -33,6 +33,7 @@ use tempo_primitives::{
 };
 
 const EXAMPLE_GAS_LIMIT: u64 = 5_000_000;
+const CONFIG_COMMITMENT_MISMATCH: &str = "multisig configuration commitment mismatch";
 
 pub(super) fn sorted_signers() -> Vec<PrivateKeySigner> {
     let mut signers = (1..=3)
@@ -146,9 +147,10 @@ async fn reject<E: TestEnv>(
     env: &E,
     tx: TempoTransaction,
     signature: TempoSignature,
+    expected_reason: &str,
 ) -> eyre::Result<()> {
     let envelope: TempoTxEnvelope = tx.into_signed(signature).into();
-    env.submit_tx_expecting_rejection(envelope.encoded_2718(), None)
+    env.submit_tx_expecting_rejection(envelope.encoded_2718(), Some(expected_reason))
         .await
 }
 
@@ -187,6 +189,19 @@ async fn assert_active_key<E: TestEnv>(
     let key = keychain.getKey(account, key_id).call().await?;
     assert_eq!(key.keyId, key_id);
     assert!(!key.isRevoked);
+    Ok(())
+}
+
+async fn assert_inactive_key<E: TestEnv>(
+    env: &E,
+    account: Address,
+    key_id: Address,
+) -> eyre::Result<()> {
+    let keychain = IAccountKeychainInstance::new(ACCOUNT_KEYCHAIN_ADDRESS, env.provider());
+    assert_eq!(
+        keychain.getKey(account, key_id).call().await?.keyId,
+        Address::ZERO
+    );
     Ok(())
 }
 
@@ -269,6 +284,11 @@ async fn submit_sponsored<E: TestEnv>(
         .balanceOf(fee_payer.address())
         .call()
         .await?;
+    let account_balance_before = ITIP20::new(DEFAULT_FEE_TOKEN, env.provider())
+        .balanceOf(authorization.account)
+        .call()
+        .await?;
+    assert_eq!(account_balance_before, U256::ZERO);
     let owner_signature = match order {
         SponsorshipOrder::OwnersFirst => {
             tx.fee_token = None;
@@ -294,6 +314,13 @@ async fn submit_sponsored<E: TestEnv>(
         }
     };
     let receipt = submit(env, tx, owner_signature).await?;
+    assert_eq!(
+        ITIP20::new(DEFAULT_FEE_TOKEN, env.provider())
+            .balanceOf(authorization.account)
+            .call()
+            .await?,
+        account_balance_before
+    );
     assert_fee_payer_spent(
         env.provider(),
         FeePayerContext {
@@ -313,7 +340,7 @@ async fn initial_weighted_quorum<E: TestEnv>(
     bob: &PrivateKeySigner,
     carol: &PrivateKeySigner,
     approvals: &[&PrivateKeySigner],
-    expected: ExpectedOutcome,
+    rejection_reason: Option<&str>,
 ) -> eyre::Result<()> {
     let config = multisig_config(salt, 3, &[(alice, 2), (bob, 1), (carol, 1)]);
     let account = derived_account(&config)?;
@@ -321,12 +348,11 @@ async fn initial_weighted_quorum<E: TestEnv>(
 
     let tx = create_basic_aa_tx(env.chain_id(), 0, vec![no_op_call(salt)], EXAMPLE_GAS_LIMIT);
     let signature = sign_multisig(account, tx.signature_hash(), &config, approvals)?;
-    match expected {
-        ExpectedOutcome::Success => {
-            submit(env, tx, signature).await?;
-        }
-        ExpectedOutcome::Rejection => reject(env, tx, signature).await?,
-        ExpectedOutcome::Revert => unreachable!("quorum validation does not execute the call"),
+    if let Some(reason) = rejection_reason {
+        reject(env, tx, signature, reason).await?;
+        assert_eq!(stored_config_commitment(env, account).await?, B256::ZERO);
+    } else {
+        submit(env, tx, signature).await?;
     }
     Ok(())
 }
@@ -421,7 +447,20 @@ async fn nested_ownership<E: TestEnv>(
         &child_config,
         &[alice, bob],
     )?;
-    reject(env, repeated.clone(), stale_signature).await?;
+    reject(
+        env,
+        repeated.clone(),
+        stale_signature,
+        CONFIG_COMMITMENT_MISMATCH,
+    )
+    .await?;
+    assert_eq!(stored_config_commitment(env, parent).await?, B256::ZERO);
+    assert_eq!(
+        stored_config_commitment(env, child).await?,
+        child_current
+            .commitment()
+            .map_err(|error| eyre::eyre!(error.as_str()))?
+    );
     let signature = sign_nested_multisig(
         parent,
         repeated.signature_hash(),
@@ -479,7 +518,6 @@ async fn fee_sponsorship<E: TestEnv>(
 
     let config = multisig_config(0x31, 2, &[(alice, 1), (bob, 1)]);
     let account = derived_account(&config)?;
-    env.fund_account(account).await?;
     submit_sponsored(
         env,
         create_basic_aa_tx(chain_id, 0, vec![no_op_call(0x31)], EXAMPLE_GAS_LIMIT),
@@ -492,7 +530,6 @@ async fn fee_sponsorship<E: TestEnv>(
 
     let config = multisig_config(0x32, 2, &[(alice, 1), (bob, 1)]);
     let account = derived_account(&config)?;
-    env.fund_account(account).await?;
     submit_sponsored(
         env,
         create_basic_aa_tx(chain_id, 0, vec![no_op_call(0x32)], EXAMPLE_GAS_LIMIT),
@@ -512,13 +549,22 @@ async fn weighted_quorum<E: TestEnv>(
     bob: &PrivateKeySigner,
     carol: &PrivateKeySigner,
 ) -> eyre::Result<()> {
-    let cases: &[(u8, &[&PrivateKeySigner], ExpectedOutcome)] = &[
-        (0x41, &[alice, bob], ExpectedOutcome::Success),
-        (0x42, &[bob, carol], ExpectedOutcome::Rejection),
-        (0x43, &[alice, bob, carol], ExpectedOutcome::Rejection),
+    let cases: &[(u8, &[&PrivateKeySigner], Option<&str>)] = &[
+        (0x41, &[alice, bob], None),
+        (0x42, &[alice, carol], None),
+        (
+            0x43,
+            &[bob, carol],
+            Some("multisig signature weight below threshold"),
+        ),
+        (
+            0x44,
+            &[alice, bob, carol],
+            Some("excess multisig owner signatures"),
+        ),
     ];
-    for &(salt, approvals, expected) in cases {
-        initial_weighted_quorum(env, salt, alice, bob, carol, approvals, expected).await?;
+    for &(salt, approvals, rejection_reason) in cases {
+        initial_weighted_quorum(env, salt, alice, bob, carol, approvals, rejection_reason).await?;
     }
     Ok(())
 }
@@ -653,7 +699,17 @@ async fn access_key_authorization_matrix<E: TestEnv>(
                 }
                 nonce += 1;
             }
-            ExpectedOutcome::Rejection => reject(env, tx, signature).await?,
+            ExpectedOutcome::Rejection => {
+                reject(
+                    env,
+                    tx,
+                    signature,
+                    "access keys cannot authorize other keys, only the root key can authorize new keys",
+                )
+                .await?;
+                assert_eq!(stored_config_commitment(env, account).await?, B256::ZERO);
+                assert_inactive_key(env, account, case.target.address()).await?;
+            }
             ExpectedOutcome::Revert => unreachable!("key authorization is validated pre-call"),
         }
     }
@@ -699,6 +755,7 @@ async fn access_key_authorization_matrix<E: TestEnv>(
     );
     let signature = sign_aa_tx_with_secp256k1_access_key(&update, &admin_key, account)?;
     revert(env, update, signature).await?;
+    assert_eq!(stored_config_commitment(env, account).await?, B256::ZERO);
     Ok(())
 }
 
@@ -740,7 +797,14 @@ async fn configuration_rotation_and_access_keys<E: TestEnv>(
     let stale_tx = create_basic_aa_tx(env.chain_id(), 1, vec![no_op_call(0x72)], EXAMPLE_GAS_LIMIT);
     let stale_signature =
         sign_multisig(account, stale_tx.signature_hash(), &config, &[alice, bob])?;
-    reject(env, stale_tx, stale_signature).await?;
+    reject(env, stale_tx, stale_signature, CONFIG_COMMITMENT_MISMATCH).await?;
+    let next_commitment = next_config
+        .commitment()
+        .map_err(|error| eyre::eyre!(error.as_str()))?;
+    assert_eq!(
+        stored_config_commitment(env, account).await?,
+        next_commitment
+    );
 
     let access_key = signer(0x72);
     let stale_authorization = signed_key_authorization(
@@ -760,7 +824,12 @@ async fn configuration_rotation_and_access_keys<E: TestEnv>(
         &next_config,
         &[carol],
     )?;
-    reject(env, stale_sidecar, signature).await?;
+    reject(env, stale_sidecar, signature, CONFIG_COMMITMENT_MISMATCH).await?;
+    assert_eq!(
+        stored_config_commitment(env, account).await?,
+        next_commitment
+    );
+    assert_inactive_key(env, account, access_key.address()).await?;
 
     let current_authorization = signed_key_authorization(
         env.chain_id(),
@@ -802,7 +871,15 @@ async fn configuration_rotation_and_access_keys<E: TestEnv>(
         &source_config,
         &[alice, bob],
     )?;
-    reject(env, forbidden, signature).await?;
+    reject(
+        env,
+        forbidden,
+        signature,
+        &format!("native multisig account {account} cannot be used as an access key"),
+    )
+    .await?;
+    assert_eq!(stored_config_commitment(env, source).await?, B256::ZERO);
+    assert_inactive_key(env, source, account).await?;
     Ok(())
 }
 
