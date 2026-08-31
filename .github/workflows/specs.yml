@@ -9,6 +9,7 @@ on:
       - "Cargo.lock"
       - "Cargo.toml"
       - "crates/**/Cargo.toml"
+      - "tips/tip-1061.md"
       - "tips/verify/**"
       - "crates/contracts/**"
       - "crates/precompiles/**"
@@ -43,6 +44,7 @@ jobs:
         with:
           filters: |
             specs:
+              - 'tips/tip-1061.md'
               - 'tips/verify/**'
               - 'crates/contracts/**'
               - '!crates/contracts/CHANGELOG.md'

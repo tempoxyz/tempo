@@ -95,22 +95,26 @@ printf 'factory_init_code_hash=%s\n' "$factory_init_code_hash"
 printf 'factory_runtime_hash=%s\n' "$factory_runtime_hash"
 printf 'wallet_init_code_hash=%s\n' "$wallet_init_code_hash"
 
+check_tip_constant() {
+  local name="$1"
+  local value="${2#0x}"
+  sed -n "/^pub const ${name}:/,/;$/p" "$repo/tips/tip-1061.md" | grep -Fqi "$value"
+}
+
 if [[ "${1:-}" == "--check" ]]; then
   [[ "$factory" == "$EXPECTED_FACTORY" ]]
   [[ "$factory_init_code_hash" == "$EXPECTED_FACTORY_INIT_CODE_HASH" ]]
   [[ "$factory_runtime_hash" == "$EXPECTED_FACTORY_RUNTIME_HASH" ]]
   [[ "$wallet_init_code_hash" == "$EXPECTED_WALLET_INIT_CODE_HASH" ]]
+  [[ "$FACTORY_DEPLOYMENT_SALT" == "0x$(printf '%064d' 0)" ]]
 
-  for value in \
-    "$SINGLETON_FACTORY" \
-    "$SINGLETON_FACTORY_RUNTIME_HASH" \
-    "$EXPECTED_FACTORY" \
-    "$EXPECTED_FACTORY_INIT_CODE_HASH" \
-    "$EXPECTED_FACTORY_RUNTIME_HASH" \
-    "$EXPECTED_WALLET_INIT_CODE_HASH"
-  do
-    grep -Fqi "${value#0x}" "$repo/tips/tip-1061.md"
-  done
+  check_tip_constant MULTISIG_RECOVERY_SINGLETON_FACTORY "$SINGLETON_FACTORY"
+  check_tip_constant MULTISIG_RECOVERY_SINGLETON_FACTORY_RUNTIME_HASH "$SINGLETON_FACTORY_RUNTIME_HASH"
+  check_tip_constant MULTISIG_RECOVERY_FACTORY_DEPLOYMENT_SALT B256::ZERO
+  check_tip_constant MULTISIG_RECOVERY_FACTORY "$EXPECTED_FACTORY"
+  check_tip_constant MULTISIG_RECOVERY_FACTORY_INIT_CODE_HASH "$EXPECTED_FACTORY_INIT_CODE_HASH"
+  check_tip_constant MULTISIG_RECOVERY_FACTORY_RUNTIME_HASH "$EXPECTED_FACTORY_RUNTIME_HASH"
+  check_tip_constant MULTISIG_RECOVERY_WALLET_INIT_CODE_HASH "$EXPECTED_WALLET_INIT_CODE_HASH"
 elif [[ $# -ne 0 ]]; then
   printf 'usage: %s [--check]\n' "$0" >&2
   exit 2
