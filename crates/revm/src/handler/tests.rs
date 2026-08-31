@@ -5057,26 +5057,110 @@ fn test_t12_rejects_code_bearing_nested_multisig_owner() {
     ));
 }
 
-#[test]
-fn test_aa_gas_native_multisig_charges_commitment_and_witness() {
+fn expected_multisig_node_gas(signature: &MultisigSignature) -> u64 {
     use alloy_rlp::Encodable;
     use revm::interpreter::gas::{
         KECCAK256, KECCAK256WORD, STANDARD_TOKEN_COST, get_tokens_in_calldata_istanbul,
     };
 
-    let config = native_multisig_config();
-    let account = config.derive_account().unwrap();
-    let signature = MultisigSignature::try_new(
-        account,
-        config.clone(),
-        vec![TempoSignature::Primitive(PrimitiveSignature::default())],
+    let keccak = |len: usize| KECCAK256 + KECCAK256WORD * len.div_ceil(32) as u64;
+    let primitive = |signature: &PrimitiveSignature| {
+        ECRECOVER_GAS
+            + match signature {
+                PrimitiveSignature::Secp256k1(_) => 0,
+                PrimitiveSignature::P256(_) => P256_VERIFY_GAS,
+                PrimitiveSignature::WebAuthn(signature) => {
+                    P256_VERIFY_GAS
+                        + get_tokens_in_calldata_istanbul(&signature.webauthn_data)
+                            * STANDARD_TOKEN_COST
+                }
+            }
+    };
+    let config = signature.config();
+    let mut witness = Vec::new();
+    signature.account().encode(&mut witness);
+    config.encode(&mut witness);
+    let proof = if config.version == 0 {
+        keccak(config.account_salt_preimage_len())
+            + tempo_precompiles::native_multisig::MULTISIG_ACCOUNT_CREATE2_GAS
+    } else {
+        keccak(config.commitment_preimage_len())
+    };
+    let approvals = signature
+        .signatures()
+        .iter()
+        .map(|approval| match approval {
+            TempoSignature::Primitive(signature) => primitive(signature),
+            TempoSignature::Multisig(signature) => {
+                COLD_ACCOUNT_ACCESS_COST + expected_multisig_node_gas(signature)
+            }
+            TempoSignature::Keychain(_) => unreachable!("shape validation rejects keychain"),
+        })
+        .sum::<u64>();
+
+    NATIVE_MULTISIG_COMMITMENT_READ_GAS
+        + get_tokens_in_calldata_istanbul(&witness) * STANDARD_TOKEN_COST
+        + proof
+        + keccak(tempo_primitives::transaction::MULTISIG_SIGNATURE_DOMAIN.len() + 32 + 20 + 8)
+        + approvals
+}
+
+#[test]
+fn test_aa_native_multisig_gas_matches_tip_formula() {
+    let p256 = PrimitiveSignature::P256(P256SignatureWithPreHash {
+        r: B256::ZERO,
+        s: B256::ZERO,
+        pub_key_x: B256::ZERO,
+        pub_key_y: B256::ZERO,
+        pre_hash: false,
+    });
+    let webauthn = PrimitiveSignature::WebAuthn(WebAuthnSignature {
+        webauthn_data: Bytes::from_static(&[0, 1, 0xff]),
+        r: B256::ZERO,
+        s: B256::ZERO,
+        pub_key_x: B256::ZERO,
+        pub_key_y: B256::ZERO,
+    });
+    let initial = native_multisig_config();
+    let account = initial.derive_account().unwrap();
+    let mut current = initial.clone();
+    current.version = 1;
+    let direct = |config: MultisigConfig, approval| {
+        MultisigSignature::try_new(account, config, vec![TempoSignature::Primitive(approval)])
+            .unwrap()
+    };
+
+    let child_config = single_owner_native_multisig_config(0x42, Address::repeat_byte(0x44));
+    let child_account = child_config.derive_account().unwrap();
+    let child = MultisigSignature::try_new(
+        child_account,
+        child_config,
+        vec![TempoSignature::Primitive(p256.clone())],
     )
     .unwrap();
-    let base_env = make_single_call_env(Bytes::from(vec![1, 2]));
-    let mut multisig_env = base_env.clone();
-    multisig_env.signature = TempoSignature::Multisig(signature);
+    let parent_config = single_owner_native_multisig_config(0x43, child_account);
+    let parent_account = parent_config.derive_account().unwrap();
+    let nested = MultisigSignature::try_new(
+        parent_account,
+        parent_config,
+        vec![TempoSignature::Multisig(child)],
+    )
+    .unwrap();
 
+    let cases = [
+        (
+            "initial secp256k1",
+            direct(initial, PrimitiveSignature::default()),
+        ),
+        ("current P256", direct(current, p256)),
+        (
+            "initial WebAuthn",
+            direct(native_multisig_config(), webauthn),
+        ),
+        ("nested", nested),
+    ];
     let gas_params = tempo_gas_params(TempoHardfork::T12);
+    let base_env = make_single_call_env(Bytes::from_static(&[1, 2]));
     let base_gas = calculate_aa_batch_intrinsic_gas(
         &base_env,
         &gas_params,
@@ -5084,26 +5168,70 @@ fn test_aa_gas_native_multisig_charges_commitment_and_witness() {
         TempoHardfork::T12,
     )
     .unwrap();
-    let multisig_gas = calculate_aa_batch_intrinsic_gas(
-        &multisig_env,
-        &gas_params,
-        None::<std::iter::Empty<&AccessListItem>>,
-        TempoHardfork::T12,
+
+    for (case, signature) in cases {
+        let mut env = base_env.clone();
+        env.signature = TempoSignature::Multisig(signature.clone());
+        let gas = calculate_aa_batch_intrinsic_gas(
+            &env,
+            &gas_params,
+            None::<std::iter::Empty<&AccessListItem>>,
+            TempoHardfork::T12,
+        )
+        .unwrap();
+        assert_eq!(
+            gas.initial_regular_gas - base_gas.initial_regular_gas,
+            expected_multisig_node_gas(&signature) - ECRECOVER_GAS,
+            "{case}",
+        );
+    }
+}
+
+#[test]
+fn test_multisig_key_authorization_gas_is_independent() {
+    let config = native_multisig_config();
+    let account = config.derive_account().unwrap();
+    let signature = MultisigSignature::try_new(
+        account,
+        config,
+        vec![TempoSignature::Primitive(PrimitiveSignature::default())],
     )
     .unwrap();
-
-    let mut witness = Vec::new();
-    account.encode(&mut witness);
-    config.encode(&mut witness);
-    let keccak = |len: usize| KECCAK256 + KECCAK256WORD * u64::try_from(len.div_ceil(32)).unwrap();
-    let expected = NATIVE_MULTISIG_COMMITMENT_READ_GAS
-        + get_tokens_in_calldata_istanbul(&witness) * STANDARD_TOKEN_COST
-        + keccak(config.account_salt_preimage_len())
-        + keccak(tempo_primitives::transaction::MULTISIG_ACCOUNT_CREATE2_PREIMAGE_LEN)
-        + keccak(tempo_primitives::transaction::MULTISIG_SIGNATURE_DOMAIN.len() + 32 + 20 + 8);
-
+    let authorization =
+        KeyAuthorization::unrestricted(1, SignatureType::Secp256k1, Address::repeat_byte(0x55))
+            .with_account(account);
+    let primitive = authorization
+        .clone()
+        .into_signed(PrimitiveSignature::default());
+    let multisig = authorization.into_signed(TempoSignature::Multisig(signature.clone()));
+    let gas_params = tempo_gas_params(TempoHardfork::T12);
+    let primitive_gas =
+        calculate_key_authorization_gas(&primitive, &gas_params, TempoHardfork::T12).0;
+    let multisig_gas =
+        calculate_key_authorization_gas(&multisig, &gas_params, TempoHardfork::T12).0;
+    let non_signature_gas = primitive_gas - ECRECOVER_GAS;
     assert_eq!(
-        multisig_gas.initial_regular_gas - base_gas.initial_regular_gas,
-        expected
+        multisig_gas - non_signature_gas,
+        expected_multisig_node_gas(&signature),
+    );
+
+    let mut base_env = make_single_call_env(Bytes::new());
+    base_env.key_authorization = Some(primitive);
+    let mut combined_env = base_env.clone();
+    combined_env.signature = TempoSignature::Multisig(signature.clone());
+    combined_env.key_authorization = Some(multisig);
+    let intrinsic = |env| {
+        calculate_aa_batch_intrinsic_gas(
+            env,
+            &gas_params,
+            None::<std::iter::Empty<&AccessListItem>>,
+            TempoHardfork::T12,
+        )
+        .unwrap()
+        .initial_regular_gas
+    };
+    assert_eq!(
+        intrinsic(&combined_env) - intrinsic(&base_env),
+        2 * (expected_multisig_node_gas(&signature) - ECRECOVER_GAS),
     );
 }

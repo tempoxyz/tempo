@@ -1869,8 +1869,6 @@ mod tests {
         let key_id = Address::from([0x33; 20]);
 
         StorageCtx::enter(&mut storage, || {
-            let mut multisig = NativeMultisig::new();
-            multisig.initialize()?;
             let account = store_native_multisig_commitment(&config)?;
 
             let mut keychain = AccountKeychain::new();
@@ -1901,8 +1899,6 @@ mod tests {
         let account = Address::from([0x44; 20]);
 
         StorageCtx::enter(&mut storage, || {
-            let mut multisig = NativeMultisig::new();
-            multisig.initialize()?;
             let multisig_account = store_native_multisig_commitment(&config)?;
 
             let mut keychain = AccountKeychain::new();

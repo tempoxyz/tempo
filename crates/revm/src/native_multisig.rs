@@ -230,11 +230,7 @@ pub(super) fn validate_native_multisig_signature_account(
     spec: TempoHardfork,
     account_mismatch_reason: &'static str,
 ) -> Result<Address, TempoInvalidTransaction> {
-    let account = signature.recover_account().map_err(|reason| {
-        TempoInvalidTransaction::NativeMultisigInvalidTransaction {
-            reason: reason.to_string(),
-        }
-    })?;
+    let account = signature.account();
     if account != expected_account {
         return Err(TempoInvalidTransaction::NativeMultisigInvalidTransaction {
             reason: account_mismatch_reason.to_string(),

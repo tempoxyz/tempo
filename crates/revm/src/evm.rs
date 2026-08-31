@@ -524,8 +524,9 @@ mod tests {
             .gas_limit(2_000_000)
             .build();
         let digest = multisig_digest(tx.signature_hash(), account, 0);
-        let owner_signature =
-            PrimitiveSignature::Secp256k1(signer.sign_hash_sync(&digest)?).to_bytes();
+        let owner_signature = TempoSignature::Primitive(PrimitiveSignature::Secp256k1(
+            signer.sign_hash_sync(&digest)?,
+        ));
         let signed_tx = tx.into_signed(TempoSignature::Multisig(
             MultisigSignature::try_new(account, config, vec![owner_signature]).unwrap(),
         ));
@@ -543,9 +544,6 @@ mod tests {
 
         let mut evm = TempoEvm::new(ctx, ());
         fund_account(&mut evm, account);
-        StorageCtx::enter_ctx(&mut evm.ctx, StorageActions::disabled(), || {
-            NativeMultisig::new().initialize()
-        })?;
 
         Ok((
             evm,

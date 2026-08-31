@@ -664,7 +664,7 @@ mod tests {
                 MultisigSignature::try_new(
                     multisig_account,
                     config,
-                    vec![PrimitiveSignature::default().to_bytes()],
+                    vec![TempoSignature::Primitive(PrimitiveSignature::default())],
                 )
                 .unwrap(),
             ),
