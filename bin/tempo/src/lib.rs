@@ -70,8 +70,8 @@ use tempo_contracts::precompiles::{ZONE_FACTORY_ADDRESS, initial_zone_factory_co
 use tempo_evm::{TempoEvmConfig, consensus::TempoConsensus};
 use tempo_faucet::faucet::{TempoFaucetExt, TempoFaucetExtApiServer};
 pub use tempo_node::{
-    AccountInfoReader, InvalidPoolTransactionError, PoolTransaction, PoolTransactionError,
-    StatefulValidationFn, StatelessValidationFn, TempoNode, TempoNodeArgs,
+    AccountInfoReader, AddressFilter, InvalidPoolTransactionError, PoolTransaction,
+    PoolTransactionError, StatefulValidationFn, StatelessValidationFn, TempoNode, TempoNodeArgs,
     TempoPayloadBuilderBuilder, TempoPoolBuilder, TempoPoolTransactionError,
     TempoPooledTransaction, TransactionOrigin,
 };
@@ -675,6 +675,34 @@ mod tests {
     fn init_defaults_once() {
         static INIT: Once = Once::new();
         INIT.call_once(defaults::init_defaults);
+    }
+
+    #[test]
+    fn txpool_filter_defaults_empty_and_parses_address_list() {
+        let cli = TempoCli::try_parse_from(["tempo", "node", "--dev"]).unwrap();
+        let Commands::Node(node_cmd) = cli.command else {
+            panic!("expected node command");
+        };
+        assert!(node_cmd.ext.node_args.txpool_filter.is_empty());
+
+        let cli = TempoCli::try_parse_from([
+            "tempo",
+            "node",
+            "--dev",
+            "--txpool.filter",
+            "0x0000000000000000000000000000000000000001,0x0000000000000000000000000000000000000002",
+        ])
+        .unwrap();
+        let Commands::Node(node_cmd) = cli.command else {
+            panic!("expected node command");
+        };
+        assert_eq!(
+            node_cmd.ext.node_args.txpool_filter,
+            vec![
+                address!("0000000000000000000000000000000000000001"),
+                address!("0000000000000000000000000000000000000002"),
+            ]
+        );
     }
 
     fn parse_follow(args: &[&str]) -> Option<FollowMode> {
