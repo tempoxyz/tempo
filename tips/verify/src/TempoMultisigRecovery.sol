@@ -259,7 +259,7 @@ contract TempoMultisigRecoveryWallet {
         return false;
     }
 
-    function deriveAccountSalt(InitMultisig calldata init) public pure returns (bytes32) {
+    function deriveAccountSalt(InitMultisig calldata init) public view returns (bytes32) {
         validateConfig(init);
 
         bytes memory input =
@@ -300,7 +300,7 @@ contract TempoMultisigRecoveryWallet {
         return keccak256(abi.encodePacked(callHashes));
     }
 
-    function validateConfig(InitMultisig calldata init) internal pure {
+    function validateConfig(InitMultisig calldata init) internal view {
         if (init.threshold == 0 || init.owners.length == 0 || init.owners.length > MAX_OWNERS) {
             revert InvalidThreshold();
         }
@@ -309,7 +309,10 @@ contract TempoMultisigRecoveryWallet {
         address previousOwner;
         for (uint256 i = 0; i < init.owners.length; ++i) {
             Owner calldata owner = init.owners[i];
-            if (owner.owner == address(0) || owner.owner <= previousOwner || owner.weight == 0) {
+            if (
+                owner.owner == address(0) || owner.owner == address(this)
+                    || owner.owner <= previousOwner || owner.weight == 0
+            ) {
                 revert InvalidOwner();
             }
             previousOwner = owner.owner;
@@ -400,9 +403,6 @@ contract TempoMultisigRecoveryWallet {
             r := calldataload(signature.offset)
             s := calldataload(add(signature.offset, 0x20))
             v := byte(0, calldataload(add(signature.offset, 0x40)))
-        }
-        if (v < 27) {
-            v += 27;
         }
         if ((v != 27 && v != 28) || uint256(s) > SECP256K1_HALF_ORDER) {
             revert InvalidSignature();

@@ -7,6 +7,14 @@ import {
 } from "../src/TempoMultisigRecovery.sol";
 import { Test } from "forge-std/Test.sol";
 
+contract TempoMultisigRecoveryHarness is TempoMultisigRecoveryWallet {
+
+    function validateConfigExternal(InitMultisig calldata init) external view {
+        validateConfig(init);
+    }
+
+}
+
 contract TempoMultisigRecoveryTest is Test {
 
     TempoMultisigRecoveryFactory factory;
@@ -57,6 +65,33 @@ contract TempoMultisigRecoveryTest is Test {
 
         vm.expectRevert(TempoMultisigRecoveryWallet.InvalidThreshold.selector);
         wallet.recover(init, signatures, calls);
+    }
+
+    function testRejectsRawRecoveryIds() public {
+        TempoMultisigRecoveryWallet.InitMultisig memory init = _initConfig();
+        bytes32 accountSalt = _deriveAccountSalt(init);
+        TempoMultisigRecoveryWallet wallet =
+            TempoMultisigRecoveryWallet(payable(factory.deploy(accountSalt)));
+        TempoMultisigRecoveryWallet.Call[] memory calls = new TempoMultisigRecoveryWallet.Call[](0);
+        bytes32 digest = wallet.recoveryDigest(accountSalt, calls);
+
+        for (uint8 v = 0; v < 2; ++v) {
+            bytes[] memory signatures = _sortedSignatures(ownerAKey, ownerBKey, digest);
+            signatures[0][64] = bytes1(v);
+            vm.expectRevert(TempoMultisigRecoveryWallet.InvalidSignature.selector);
+            wallet.recover(init, signatures, calls);
+        }
+    }
+
+    function testRejectsWalletAsOwner() public {
+        TempoMultisigRecoveryHarness harness = new TempoMultisigRecoveryHarness();
+        TempoMultisigRecoveryWallet.InitMultisig memory init;
+        init.threshold = 1;
+        init.owners = new TempoMultisigRecoveryWallet.Owner[](1);
+        init.owners[0] = TempoMultisigRecoveryWallet.Owner({ owner: address(harness), weight: 1 });
+
+        vm.expectRevert(TempoMultisigRecoveryWallet.InvalidOwner.selector);
+        harness.validateConfigExternal(init);
     }
 
     function testRejectsSignatureAfterQuorum() public {
