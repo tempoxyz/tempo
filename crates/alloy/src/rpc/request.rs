@@ -168,6 +168,34 @@ impl TempoTransactionRequest {
         self.calls.push(call);
     }
 
+    /// Replace the Tempo authorization list for this transaction.
+    pub fn set_tempo_authorization_list(
+        &mut self,
+        authorization_list: Vec<TempoSignedAuthorization>,
+    ) {
+        self.tempo_authorization_list = authorization_list;
+    }
+
+    /// Builder-pattern method for replacing the Tempo authorization list.
+    pub fn with_tempo_authorization_list(
+        mut self,
+        authorization_list: Vec<TempoSignedAuthorization>,
+    ) -> Self {
+        self.tempo_authorization_list = authorization_list;
+        self
+    }
+
+    /// Builder-pattern method for appending one Tempo authorization.
+    pub fn tempo_authorization(mut self, authorization: TempoSignedAuthorization) -> Self {
+        self.tempo_authorization_list.push(authorization);
+        self
+    }
+
+    /// Append one authorization to the Tempo authorization list.
+    pub fn push_tempo_authorization(&mut self, authorization: TempoSignedAuthorization) {
+        self.tempo_authorization_list.push(authorization);
+    }
+
     /// Set the access-key signature type used for gas estimation.
     pub fn set_key_type(&mut self, key_type: SignatureType) {
         self.key_type = Some(key_type);

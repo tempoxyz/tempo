@@ -10,7 +10,7 @@ use commonware_consensus::types::Epoch;
 use commonware_cryptography::{
     Signer as _,
     bls12381::{
-        dkg::{self, Output},
+        dkg::{self, feldman_desmedt::Output},
         primitives::{sharing::Mode, variant::MinSig},
     },
     ed25519::PublicKey,
@@ -20,6 +20,7 @@ use commonware_utils::{N3f1, TryFromIterator as _, ordered};
 use eyre::{WrapErr as _, eyre};
 use indicatif::{ParallelProgressIterator, ProgressIterator};
 use itertools::Itertools;
+use rand::SeedableRng as _;
 use rand_08::SeedableRng as _;
 use rayon::prelude::*;
 use reth_evm::{
@@ -45,6 +46,7 @@ use tempo_contracts::{
     contracts::{ARACHNID_CREATE2_FACTORY_BYTECODE, CreateX, Multicall3, SafeDeployer},
     precompiles::{
         INITIAL_FACTORY_OWNER, IValidatorConfigV2, createTokenCall, initial_zone_factory_state,
+        t12_zone_factory_state,
     },
 };
 use tempo_dkg_onchain_artifacts::OnchainDkgOutcome;
@@ -208,6 +210,14 @@ pub(crate) struct GenesisArgs {
     /// T10 hardfork activation time.
     #[arg(long, default_value = "0")]
     t10_time: u64,
+
+    /// T11 hardfork activation time.
+    #[arg(long, default_value = "0")]
+    t11_time: u64,
+
+    /// T12 hardfork activation time.
+    #[arg(long, default_value = "0")]
+    t12_time: u64,
 }
 
 #[derive(Clone, Debug)]
@@ -558,7 +568,7 @@ impl GenesisArgs {
             },
         );
 
-        insert_zone_state_at_genesis(self.t10_time, &mut genesis_alloc);
+        insert_zone_state_at_genesis(self.t10_time, self.t12_time, &mut genesis_alloc);
 
         genesis_alloc.insert(
             HISTORY_STORAGE_ADDRESS,
@@ -642,6 +652,12 @@ impl GenesisArgs {
         chain_config
             .extra_fields
             .insert_value("t10Time".to_string(), self.t10_time)?;
+        chain_config
+            .extra_fields
+            .insert_value("t11Time".to_string(), self.t11_time)?;
+        chain_config
+            .extra_fields
+            .insert_value("t12Time".to_string(), self.t12_time)?;
         let mut extra_data = Bytes::from_static(b"tempo-genesis");
 
         if let Some(consensus_config) = &consensus_config {
@@ -679,11 +695,17 @@ impl GenesisArgs {
 
 fn insert_zone_state_at_genesis(
     t10_time: u64,
+    t12_time: u64,
     genesis_alloc: &mut BTreeMap<Address, GenesisAccount>,
 ) {
     if t10_time == 0 {
-        println!("Initializing ZoneFactory and shared runtimes (T10 active at genesis)");
-        for account in initial_zone_factory_state(INITIAL_FACTORY_OWNER) {
+        println!("Initializing ZoneFactory and shared runtimes");
+        let accounts = if t12_time == 0 {
+            t12_zone_factory_state(INITIAL_FACTORY_OWNER)
+        } else {
+            initial_zone_factory_state(INITIAL_FACTORY_OWNER)
+        };
+        for account in accounts {
             genesis_alloc.insert(
                 account.address,
                 GenesisAccount {
@@ -1173,14 +1195,14 @@ fn generate_consensus_config(
         _ => {}
     }
 
-    let mut rng = rand_08::rngs::StdRng::seed_from_u64(seed.unwrap_or_else(rand_08::random::<u64>));
+    let mut rng = rand::rngs::StdRng::seed_from_u64(seed.unwrap_or_else(rand_08::random::<u64>));
 
     let mut signer_keys = repeat_with(|| PrivateKey::random(&mut rng))
         .take(validators.len())
         .collect::<Vec<_>>();
     signer_keys.sort_by_key(|key| key.public_key());
 
-    let (output, shares) = dkg::deal::<_, _, N3f1>(
+    let (output, shares) = dkg::feldman_desmedt::deal::<_, _, N3f1>(
         &mut rng,
         Mode::NonZeroCounter,
         ordered::Set::try_from_iter(signer_keys.iter().map(|key| key.public_key())).unwrap(),
@@ -1239,13 +1261,16 @@ mod tests {
             ZONE_FACTORY_ADDRESS, ZONE_MESSENGER_ADDRESS, ZONE_PORTAL_IMPL_ADDRESS,
             ZONE_VERIFIER_ADDRESS,
         },
-        zones::{ZONE_MESSENGER_RUNTIME, ZONE_PORTAL_RUNTIME, ZONE_VERIFIER_RUNTIME},
+        zones::{
+            T12_ZONE_MESSENGER_RUNTIME, T12_ZONE_PORTAL_RUNTIME, T12_ZONE_VERIFIER_RUNTIME,
+            ZONE_MESSENGER_RUNTIME, ZONE_PORTAL_RUNTIME, ZONE_VERIFIER_RUNTIME,
+        },
     };
 
     #[test]
     fn t10_genesis_installs_factory_and_canonical_shared_runtimes() {
         let mut alloc = BTreeMap::new();
-        insert_zone_state_at_genesis(0, &mut alloc);
+        insert_zone_state_at_genesis(0, 1, &mut alloc);
         let account = alloc.remove(&ZONE_FACTORY_ADDRESS).unwrap();
         let expected_config =
             U256::from(1) | (U256::from_be_slice(INITIAL_FACTORY_OWNER.as_slice()) << u32::BITS);
@@ -1267,8 +1292,22 @@ mod tests {
     #[test]
     fn future_t10_does_not_install_zone_factory_at_genesis() {
         let mut alloc = BTreeMap::new();
-        insert_zone_state_at_genesis(1, &mut alloc);
+        insert_zone_state_at_genesis(1, 1, &mut alloc);
 
         assert!(!alloc.contains_key(&ZONE_FACTORY_ADDRESS));
+    }
+
+    #[test]
+    fn t12_genesis_installs_t12_shared_runtimes() {
+        let mut alloc = BTreeMap::new();
+        insert_zone_state_at_genesis(0, 0, &mut alloc);
+
+        for (destination, expected) in [
+            (ZONE_PORTAL_IMPL_ADDRESS, T12_ZONE_PORTAL_RUNTIME),
+            (ZONE_VERIFIER_ADDRESS, T12_ZONE_VERIFIER_RUNTIME),
+            (ZONE_MESSENGER_ADDRESS, T12_ZONE_MESSENGER_RUNTIME),
+        ] {
+            assert_eq!(alloc[&destination].code.as_ref(), Some(&expected));
+        }
     }
 }

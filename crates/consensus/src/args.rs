@@ -1,7 +1,7 @@
 //! Command line arguments for configuring the consensus layer of a tempo node.
 use std::{
     net::SocketAddr,
-    num::NonZeroU32,
+    num::{NonZeroU32, NonZeroUsize},
     path::{Path, PathBuf},
     str::FromStr,
     sync::Arc,
@@ -16,6 +16,16 @@ use tempo_consensus_config::{SigningKey, SigningKeyPassphrase};
 const DEFAULT_MAX_MESSAGE_SIZE_BYTES: u32 =
     reth_consensus_common::validation::MAX_RLP_BLOCK_SIZE as u32;
 const PASSPHRASE_SECRET_WAIT_WARNING_INTERVAL: Duration = Duration::from_secs(5);
+
+/// Capacity of the shared queue carrying gossiped frames into consensus.
+///
+/// The transport drops overflow. A later certificate can replace a dropped one
+/// because it finalizes its ancestry. The bound also prevents peer traffic from
+/// creating unlimited pending work.
+const GOSSIP_FRAME_QUEUE: usize = 256;
+
+/// Capacity of the queue carrying outbound frames to the transport coordinator.
+const GOSSIP_ROUTE_QUEUE: usize = 256;
 
 /// Command line arguments for configuring the consensus layer of a tempo node.
 #[derive(Debug, Clone, clap::Args)]
@@ -89,8 +99,8 @@ pub struct Args {
 
     /// The overall number of items that can be received on the various consensus
     /// channels before blocking.
-    #[arg(long = "consensus.mailbox-size", default_value_t = 16_384)]
-    pub mailbox_size: usize,
+    #[arg(long = "consensus.mailbox-size", default_value = "16384")]
+    pub mailbox_size: NonZeroUsize,
 
     /// The maximum number of blocks that will be buffered per peer. Used to
     /// send and receive blocks over the network of the consensus layer.
@@ -289,6 +299,35 @@ pub struct Args {
     #[arg(long = "consensus.fcu-heartbeat-interval", default_value = "5m")]
     pub fcu_heartbeat_interval: PositiveDuration,
 
+    /// Offer the `tempo/1` subprotocol, which gossips finalization
+    /// certificates between nodes. Off by default.
+    #[arg(
+        long = "consensus.devp2p.finalizations",
+        default_value_t = false,
+        default_missing_value = "true",
+        num_args = 0..=1,
+        require_equals = true
+    )]
+    pub gossip_enabled: bool,
+
+    /// Gossiped certificates verified per second, across all peers.
+    ///
+    /// This bounds work on the follower driver. The same task acknowledges
+    /// blocks to marshal, so the limit also bounds how much a certificate flood
+    /// can delay block import.
+    #[arg(
+        long = "consensus.devp2p.finalizations.verify-rate",
+        default_value = "32"
+    )]
+    pub gossip_verify_rate: NonZeroU32,
+
+    /// Frames accepted per second from a single connection.
+    #[arg(
+        long = "consensus.devp2p.finalizations.peer-frame-rate",
+        default_value = "8"
+    )]
+    pub gossip_peer_frame_rate: NonZeroU32,
+
     /// Cache for the signing key loaded from CLI-provided file.
     #[clap(skip)]
     loaded_signing_key: Arc<tokio::sync::OnceCell<Option<SigningKey>>>,
@@ -307,12 +346,13 @@ pub struct Args {
     )]
     pub finalized_blocks_retention: u64,
 
-    /// Require startup to use a consensus finalized certificate archive.
-    ///
-    /// When disabled, startup falls back to the execution layer's finalized
-    /// watermark for compatibility with snapshots that do not include
-    /// consensus finalization state.
-    #[arg(long = "consensus.strict-startup", default_value_t = false)]
+    /// Deprecated compatibility flag. Consensus state is always required on
+    /// startup, so this setting no longer has any effect.
+    #[arg(
+        long = "consensus.strict-startup",
+        default_value_t = true,
+        help = "Deprecated: consensus state is always required on startup, so this flag no longer has any effect."
+    )]
     pub strict_startup: bool,
 
     /// Deprecated compatibility flag. Ignored because the legacy immutable
@@ -347,6 +387,19 @@ impl FromStr for PositiveDuration {
 }
 
 impl Args {
+    /// Transport settings for `tempo/1`.
+    ///
+    /// Ingest is enabled only for a certified follower because other modes have
+    /// no driver that can verify a certificate.
+    pub fn gossip_transport(&self, following: bool) -> tempo_node::gossip::Config {
+        tempo_node::gossip::Config {
+            ingest: following,
+            peer_frame_rate: self.gossip_peer_frame_rate,
+            frame_queue: GOSSIP_FRAME_QUEUE,
+            route_queue: GOSSIP_ROUTE_QUEUE,
+        }
+    }
+
     /// Returns the signing key loaded from the configured file.
     ///
     /// When `--consensus.secret` is set, tries to decrypt the signing key.
@@ -491,6 +544,9 @@ mod tests {
         // gate on `--consensus.signing-key`. These args live in the outer
         // binary's CLI struct; we re-declare them here just so clap can
         // resolve the references during parse-time validation.
+        //
+        // NOTE(re #[allow(dead_code)]): those are explicitly allow(dead_code) due to the fact that
+        // those trigger rust-analyzer warnings otherwise.
         #[arg(long = "follow")]
         #[allow(dead_code)]
         follow: Option<String>,
@@ -515,12 +571,6 @@ mod tests {
         ] {
             parse(&["--dev", flag, "1ms"]);
         }
-    }
-
-    #[test]
-    fn strict_startup_flag_parses() {
-        let cli = parse(&["--dev", "--consensus.strict-startup"]);
-        assert!(cli.consensus.strict_startup);
     }
 
     fn encrypt(plaintext: &[u8], passphrase: &str) -> Vec<u8> {

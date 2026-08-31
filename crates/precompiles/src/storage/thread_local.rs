@@ -218,7 +218,8 @@ impl StorageCtx {
         Self::with_storage(|s| s.state_gas_used())
     }
 
-    /// Returns state gas drawn from regular gas after exhausting the reservoir.
+    /// Returns the state gas that was drawn from regular gas because the reservoir was empty
+    /// (EIP-8037's `state_gas_from_gas_left`).
     pub fn state_gas_spilled(&self) -> u64 {
         Self::with_storage(|s| s.state_gas_spilled())
     }

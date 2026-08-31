@@ -186,32 +186,18 @@ where
         // Reject AA txs where `valid_before` is too close to current time (or already expired).
         // The EVM checks `valid_before > block_timestamp` but the pool needs an extra
         // propagation buffer to prevent txs from expiring at peers with slightly newer tips.
-        if let Some(valid_before) = tx.valid_before {
-            let valid_before = valid_before.get();
-            let min_allowed = tip_timestamp.saturating_add(AA_VALID_BEFORE_MIN_SECS);
-            if valid_before <= min_allowed {
-                return Err(TempoPoolTransactionError::InvalidValidBefore {
-                    valid_before,
-                    min_allowed,
-                });
-            }
-        }
+        let min_allowed = tip_timestamp.saturating_add(AA_VALID_BEFORE_MIN_SECS);
+        tx.ensure_valid_before(min_allowed)?;
 
         // Reject AA txs where `valid_after` is too far in the future.
         // Uses wall-clock time to avoid rejecting valid txs when node is lagging.
-        if let Some(valid_after) = tx.valid_after {
-            let valid_after = valid_after.get();
+        if tx.valid_after.is_some() {
             let current_time = std::time::SystemTime::now()
                 .duration_since(std::time::UNIX_EPOCH)
                 .map(|d| d.as_secs())
                 .unwrap_or(0);
             let max_allowed = current_time.saturating_add(self.aa_valid_after_max_secs);
-            if valid_after > max_allowed {
-                return Err(TempoPoolTransactionError::InvalidValidAfter {
-                    valid_after,
-                    max_allowed,
-                });
-            }
+            tx.ensure_valid_after(max_allowed)?;
         }
 
         Ok(())
@@ -1344,7 +1330,7 @@ mod tests {
         if let TransactionValidationOutcome::Invalid(_, ref err) = outcome {
             assert!(!matches!(
                 err.downcast_other_ref::<TempoPoolTransactionError>(),
-                Some(TempoPoolTransactionError::InvalidValidBefore { .. })
+                Some(TempoPoolTransactionError::InvalidValidBefore(_))
             ));
         }
 
@@ -1358,10 +1344,13 @@ mod tests {
 
         match outcome {
             TransactionValidationOutcome::Invalid(_, ref err) => {
-                assert!(matches!(
-                    err.downcast_other_ref::<TempoPoolTransactionError>(),
-                    Some(TempoPoolTransactionError::InvalidValidBefore { .. })
-                ));
+                let Some(TempoPoolTransactionError::InvalidValidBefore(err)) =
+                    err.downcast_other_ref::<TempoPoolTransactionError>()
+                else {
+                    panic!("Expected InvalidValidBefore error, got: {err:?}");
+                };
+                assert_eq!(err.valid_before, current_time + AA_VALID_BEFORE_MIN_SECS);
+                assert_eq!(err.min_allowed, current_time + AA_VALID_BEFORE_MIN_SECS);
             }
             _ => panic!("Expected Invalid outcome with InvalidValidBefore error, got: {outcome:?}"),
         }
@@ -1377,7 +1366,7 @@ mod tests {
         if let TransactionValidationOutcome::Invalid(_, ref err) = outcome {
             assert!(!matches!(
                 err.downcast_other_ref::<TempoPoolTransactionError>(),
-                Some(TempoPoolTransactionError::InvalidValidBefore { .. })
+                Some(TempoPoolTransactionError::InvalidValidBefore(_))
             ));
         }
     }
@@ -1400,7 +1389,7 @@ mod tests {
         if let TransactionValidationOutcome::Invalid(_, ref err) = outcome {
             assert!(!matches!(
                 err.downcast_other_ref::<TempoPoolTransactionError>(),
-                Some(TempoPoolTransactionError::InvalidValidAfter { .. })
+                Some(TempoPoolTransactionError::InvalidValidAfter(_))
             ));
         }
 
@@ -1414,7 +1403,7 @@ mod tests {
         if let TransactionValidationOutcome::Invalid(_, ref err) = outcome {
             assert!(!matches!(
                 err.downcast_other_ref::<TempoPoolTransactionError>(),
-                Some(TempoPoolTransactionError::InvalidValidAfter { .. })
+                Some(TempoPoolTransactionError::InvalidValidAfter(_))
             ));
         }
 
@@ -1427,10 +1416,13 @@ mod tests {
 
         match outcome {
             TransactionValidationOutcome::Invalid(_, ref err) => {
-                assert!(matches!(
-                    err.downcast_other_ref::<TempoPoolTransactionError>(),
-                    Some(TempoPoolTransactionError::InvalidValidAfter { .. })
-                ));
+                let Some(TempoPoolTransactionError::InvalidValidAfter(err)) =
+                    err.downcast_other_ref::<TempoPoolTransactionError>()
+                else {
+                    panic!("Expected InvalidValidAfter error, got: {err:?}");
+                };
+                assert_eq!(err.valid_after, current_time + 300);
+                assert!(err.max_allowed < err.valid_after);
             }
             _ => panic!("Expected Invalid outcome with InvalidValidAfter error, got: {outcome:?}"),
         }
@@ -2027,8 +2019,8 @@ mod tests {
             assert!(
                 !matches!(
                     tempo_err,
-                    Some(TempoPoolTransactionError::InvalidValidAfter { .. })
-                        | Some(TempoPoolTransactionError::InvalidValidBefore { .. })
+                    Some(TempoPoolTransactionError::InvalidValidAfter(_))
+                        | Some(TempoPoolTransactionError::InvalidValidBefore(_))
                 ),
                 "Should not fail with validity window errors"
             );

@@ -5,10 +5,11 @@ use std::{
 };
 
 use clap::{ArgMatches, FromArgMatches, Parser};
-use eyre::{Context as _, OptionExt, bail, ensure};
+use eyre::{Context as _, OptionExt, ensure};
 use futures::TryStreamExt;
 use reth_cli_commands::download::{
-    DownloadCommand, DownloadPlanArchive, manifest::OutputFileChecksum,
+    DownloadCommand, DownloadPlanArchive,
+    manifest::{OutputFileChecksum, SnapshotManifest},
 };
 use reth_cli_runner::CliRunner;
 use tempo_chainspec::spec::TempoChainSpecParser;
@@ -23,7 +24,10 @@ use crate::snapshot_manifest::{TEMPO_CONSENSUS_MANIFEST_KEY, TempoConsensusManif
 #[derive(Debug, Parser)]
 #[command(
     name = "download",
-    about = "Downloads snapshot archives produced by `tempo snapshot-manifest`."
+    about = "Downloads snapshot archives produced by `tempo snapshot-manifest`.",
+    mut_arg("force", |arg| arg.help(
+        "Overwrite existing snapshot data by removing db, rocksdb, static_files, reth.toml, and the consensus directory."
+    ))
 )]
 pub(crate) struct Args {
     #[command(flatten)]
@@ -32,7 +36,7 @@ pub(crate) struct Args {
     /// Skip encoding consensus state. This will pass-through directly to Reth.
     #[arg(
         long,
-        default_value_t = true,
+        default_value_t = false,
         default_missing_value = "true",
         hide = true,
         num_args = 0..=1,
@@ -40,7 +44,7 @@ pub(crate) struct Args {
     )]
     skip_consensus: bool,
 
-    /// Consensus storage directory. If not set, this will be derived from --datadir.
+    /// Consensus storage directory. If not set, this will be derived from Reth's resolved data dir.
     #[arg(long = "consensus.datadir", value_name = "PATH")]
     consensus_datadir: Option<PathBuf>,
 }
@@ -48,26 +52,18 @@ pub(crate) struct Args {
 pub(crate) fn run_with_runner(matches: &ArgMatches, runner: CliRunner) -> eyre::Result<()> {
     let args = Args::from_arg_matches(matches).wrap_err("failed to parse args")?;
 
-    let datadir = matches
-        .get_raw("datadir")
-        .and_then(|mut v| v.next())
-        .map(PathBuf::from)
-        .expect("--datadir must be set");
-
-    let manifest_url = matches.get_one::<String>("manifest_url").cloned();
-    let manifest_path = matches.get_one::<PathBuf>("manifest_path").cloned();
     let force = matches.get_one::<bool>("force").copied().unwrap_or(false);
 
     runner.block_on(async move {
         if args.inner.prints_plan_json() {
-            let (mut plan, _) = args
+            let (mut plan, prepared) = args
                 .inner
                 .plan()
                 .await
                 .wrap_err("failed to plan execution layer download")?;
 
             if !args.skip_consensus {
-                let loaded_consensus = load_consensus_manifest(manifest_url, manifest_path).await?;
+                let loaded_consensus = load_consensus_manifest(&prepared.manifest)?;
                 plan.push_archive(consensus_download_plan_archive(&loaded_consensus)?);
             }
 
@@ -78,7 +74,8 @@ pub(crate) fn run_with_runner(matches: &ArgMatches, runner: CliRunner) -> eyre::
         info!("running execution layer download...");
 
         let start = Instant::now();
-        args.inner
+        let prepared = args
+            .inner
             .execute::<tempo_node::node::TempoNode>()
             .await
             .wrap_err("execution layer download failed")?;
@@ -92,11 +89,14 @@ pub(crate) fn run_with_runner(matches: &ArgMatches, runner: CliRunner) -> eyre::
             return Ok(());
         }
 
+        let prepared = prepared.ok_or_eyre(
+            "consensus snapshots require a modular execution layer snapshot manifest",
+        )?;
         let consensus_dir = args
             .consensus_datadir
-            .unwrap_or_else(|| datadir.join("consensus"));
+            .unwrap_or_else(|| prepared.data_dir.join("consensus"));
 
-        let loaded_consensus = load_consensus_manifest(manifest_url, manifest_path).await?;
+        let loaded_consensus = load_consensus_manifest(&prepared.manifest)?;
         install_consensus_archive(&consensus_dir, &loaded_consensus, force).await?;
 
         Ok(())
@@ -109,11 +109,6 @@ struct LoadedConsensusManifest {
 }
 
 enum ConsensusArchiveSource {
-    Url(String),
-    Path(PathBuf),
-}
-
-enum ManifestSource {
     Url(String),
     Path(PathBuf),
 }
@@ -148,25 +143,9 @@ fn consensus_download_plan_archive(
     ))
 }
 
-async fn load_consensus_manifest(
-    manifest_url: Option<String>,
-    manifest_path: Option<PathBuf>,
-) -> eyre::Result<LoadedConsensusManifest> {
-    let (manifest_bytes, source) = match (manifest_path, manifest_url) {
-        (None, None) => {
-            bail!("--manifest-url or --manifest-path must be set");
-        }
-        (Some(path), _) => (
-            fs::read(&path).wrap_err("failed to read manifest file")?,
-            ManifestSource::Path(path),
-        ),
-        (_, Some(source)) => fetch_manifest_bytes_from_source(source).await?,
-    };
-
-    let value: serde_json::Value =
-        serde_json::from_slice(&manifest_bytes).wrap_err("failed to parse manifest.json")?;
-
-    let consensus_manifest: TempoConsensusManifest = value
+fn load_consensus_manifest(manifest: &SnapshotManifest) -> eyre::Result<LoadedConsensusManifest> {
+    let consensus_manifest: TempoConsensusManifest = manifest
+        .extensions
         .get(TEMPO_CONSENSUS_MANIFEST_KEY)
         .map(|value| serde_json::from_value(value.clone()))
         .transpose()
@@ -174,8 +153,10 @@ async fn load_consensus_manifest(
         .ok_or_eyre("missing consensus in manifest")?;
 
     let archive_source = resolve_consensus_archive_source(
-        &value,
-        &source,
+        manifest
+            .base_url
+            .as_deref()
+            .ok_or_eyre("missing resolved manifest base URL")?,
         &consensus_manifest.consensus_archive.file,
     )?;
 
@@ -185,49 +166,8 @@ async fn load_consensus_manifest(
     })
 }
 
-async fn fetch_manifest_bytes_from_source(
-    source: String,
-) -> eyre::Result<(Vec<u8>, ManifestSource)> {
-    if let Ok(url) = Url::parse(&source) {
-        return match url.scheme() {
-            "http" | "https" => {
-                let client = reqwest::Client::new();
-                let resp = client
-                    .get(source.clone())
-                    .send()
-                    .await
-                    .wrap_err("failed to fetch from manifest url")?
-                    .error_for_status()
-                    .wrap_err("invalid response from manifest url")?;
-
-                let bytes = resp
-                    .bytes()
-                    .await
-                    .wrap_err("failed to parse manifest from url")?
-                    .to_vec();
-                Ok((bytes, ManifestSource::Url(source)))
-            }
-            "file" => {
-                let path = url
-                    .to_file_path()
-                    .map_err(|_| eyre::eyre!("invalid file:// manifest path: {source}"))?;
-                let bytes = fs::read(&path).wrap_err("failed to read manifest file")?;
-                Ok((bytes, ManifestSource::Path(path)))
-            }
-            scheme => {
-                bail!("unsupported manifest URL scheme: {scheme}");
-            }
-        };
-    }
-
-    let path = PathBuf::from(&source);
-    let bytes = fs::read(&path).wrap_err("failed to read manifest file")?;
-    Ok((bytes, ManifestSource::Path(path)))
-}
-
 fn resolve_consensus_archive_source(
-    manifest_json: &serde_json::Value,
-    source: &ManifestSource,
+    base_url: &str,
     archive_file: &str,
 ) -> eyre::Result<ConsensusArchiveSource> {
     ensure!(!archive_file.is_empty(), "consensus archive file is empty");
@@ -236,52 +176,12 @@ fn resolve_consensus_archive_source(
         return archive_source_from_url(url);
     }
 
-    if let Some(base_url) = manifest_json
-        .get("base_url")
-        .and_then(serde_json::Value::as_str)
-        && !base_url.is_empty()
-    {
-        let mut base = Url::parse(base_url).wrap_err("invalid manifest base_url")?;
-        if !base.path().ends_with('/') {
-            let path = format!("{}/", base.path());
-            base.set_path(&path);
-        }
-        return archive_source_from_url(base.join(archive_file)?);
+    let mut base = Url::parse(base_url).wrap_err("invalid manifest base_url")?;
+    if !base.path().ends_with('/') {
+        let path = format!("{}/", base.path());
+        base.set_path(&path);
     }
-
-    match source {
-        ManifestSource::Url(manifest_url) => {
-            let mut base = Url::parse(manifest_url)?;
-            match base.scheme() {
-                "http" | "https" => {
-                    {
-                        let mut segments = base.path_segments_mut().map_err(|_| {
-                            eyre::eyre!("manifest URL must have a hierarchical path")
-                        })?;
-                        segments.pop_if_empty();
-                        segments.pop();
-                    }
-                    archive_source_from_url(base.join(archive_file)?)
-                }
-                "file" => {
-                    let mut path = base
-                        .to_file_path()
-                        .map_err(|_| eyre::eyre!("invalid file:// manifest path"))?;
-                    path.pop();
-                    Ok(ConsensusArchiveSource::Path(path.join(archive_file)))
-                }
-                scheme => {
-                    bail!("unsupported manifest URL scheme: {scheme}");
-                }
-            }
-        }
-        ManifestSource::Path(manifest_path) => {
-            let manifest_dir = manifest_path.parent().unwrap_or_else(|| Path::new("."));
-            Ok(ConsensusArchiveSource::Path(
-                manifest_dir.join(archive_file),
-            ))
-        }
-    }
+    archive_source_from_url(base.join(archive_file)?)
 }
 
 fn archive_source_from_url(url: Url) -> eyre::Result<ConsensusArchiveSource> {
@@ -291,9 +191,9 @@ fn archive_source_from_url(url: Url) -> eyre::Result<ConsensusArchiveSource> {
             url.to_file_path()
                 .map_err(|_| eyre::eyre!("invalid file:// archive URL"))?,
         )),
-        scheme => {
-            bail!("unsupported consensus archive URL scheme: {scheme}");
-        }
+        scheme => Err(eyre::eyre!(
+            "unsupported consensus archive URL scheme: {scheme}"
+        )),
     }
 }
 
@@ -313,8 +213,12 @@ async fn install_consensus_archive(
         );
     }
 
-    fs::create_dir_all(consensus_dir)
-        .wrap_err_with(|| format!("failed to create {}", consensus_dir.display()))?;
+    prepare_consensus_directory(consensus_dir, force).wrap_err_with(|| {
+        format!(
+            "failed to prepare consensus directory at `{}`",
+            consensus_dir.display()
+        )
+    })?;
     extract_zstd_tar_archive(archive_file.path(), consensus_dir, force)?;
     verify_consensus_output_files(
         consensus_dir,
@@ -322,6 +226,21 @@ async fn install_consensus_archive(
     )?;
 
     info!("persisted consensus archive");
+    Ok(())
+}
+
+#[tracing::instrument(
+    parent = None,
+    skip_all,
+    fields(path = %consensus_dir.display())
+)]
+fn prepare_consensus_directory(consensus_dir: &Path, force: bool) -> eyre::Result<()> {
+    if force && consensus_dir.try_exists()? {
+        info!("removing existing consensus state");
+        fs::remove_dir_all(consensus_dir)?;
+    }
+
+    fs::create_dir_all(consensus_dir)?;
     Ok(())
 }
 
@@ -492,6 +411,29 @@ mod tests {
     }
 
     #[test]
+    fn args_defaults_to_include_consensus() {
+        let args = Args::try_parse_from([
+            "tempo",
+            "--manifest-url",
+            "https://snap/manifest.json",
+            "--datadir",
+            "/d",
+        ])
+        .unwrap();
+
+        assert!(!args.skip_consensus);
+    }
+
+    #[test]
+    fn help_documents_force_removing_consensus_directory() {
+        let help = Args::command().render_long_help().to_string();
+
+        assert!(help.contains(
+            "Overwrite existing snapshot data by removing db, rocksdb, static_files, reth.toml, and the consensus directory."
+        ));
+    }
+
+    #[test]
     fn args_parses_mixed_reth_and_tempo_flags() {
         // Order interleaves tempo + reth flags to exercise both schemas in
         // the same parse pass.
@@ -578,9 +520,8 @@ mod tests {
     }
 
     #[test]
-    fn load_manifest_reads_tempo_consensus_extension_from_path() {
+    fn load_manifest_reads_tempo_consensus_extension_from_prepared_manifest() {
         let dir = tempfile::tempdir().unwrap();
-        let path = dir.path().join("manifest.json");
         let bytes = br#"{
             "block": 42,
             "chain_id": 1,
@@ -602,10 +543,9 @@ mod tests {
             }
         }"#;
 
-        fs::write(&path, bytes).unwrap();
-
-        let manifest =
-            futures::executor::block_on(load_consensus_manifest(None, Some(path))).unwrap();
+        let mut prepared: SnapshotManifest = serde_json::from_slice(bytes).unwrap();
+        prepared.base_url = Some(Url::from_directory_path(dir.path()).unwrap().to_string());
+        let manifest = load_consensus_manifest(&prepared).unwrap();
 
         assert_eq!(manifest.manifest.execution_finalized_height, 40);
         assert_eq!(manifest.manifest.tip_finalization_height, 42);
@@ -623,6 +563,23 @@ mod tests {
                 assert_eq!(archive_path, dir.path().join("consensus.tar.zst"));
             }
             ConsensusArchiveSource::Url(_) => panic!("local manifest must resolve local archive"),
+        }
+    }
+
+    #[test]
+    fn consensus_archive_url_resolves_relative_to_prepared_base_url() {
+        let archive = resolve_consensus_archive_source(
+            "https://snapshots.example.com/tempo-4217-42",
+            "consensus.tar.zst",
+        )
+        .unwrap();
+
+        match archive {
+            ConsensusArchiveSource::Url(url) => assert_eq!(
+                url,
+                "https://snapshots.example.com/tempo-4217-42/consensus.tar.zst"
+            ),
+            ConsensusArchiveSource::Path(_) => panic!("remote manifest must resolve a URL"),
         }
     }
 
@@ -649,6 +606,32 @@ mod tests {
             fs::read(target.path().join(partition_name).join("nested").join("00")).unwrap(),
             b"abc"
         );
+    }
+
+    #[test]
+    fn prepare_consensus_directory_removes_existing_state_when_forced() {
+        let parent = tempfile::tempdir().unwrap();
+        let consensus_dir = parent.path().join("consensus");
+        fs::create_dir_all(consensus_dir.join("nested")).unwrap();
+        fs::write(consensus_dir.join("nested").join("stale"), b"stale").unwrap();
+
+        prepare_consensus_directory(&consensus_dir, true).unwrap();
+
+        assert!(consensus_dir.is_dir());
+        assert!(fs::read_dir(&consensus_dir).unwrap().next().is_none());
+    }
+
+    #[test]
+    fn prepare_consensus_directory_preserves_existing_state_without_force() {
+        let parent = tempfile::tempdir().unwrap();
+        let consensus_dir = parent.path().join("consensus");
+        fs::create_dir_all(&consensus_dir).unwrap();
+        let existing = consensus_dir.join("existing");
+        fs::write(&existing, b"existing").unwrap();
+
+        prepare_consensus_directory(&consensus_dir, false).unwrap();
+
+        assert_eq!(fs::read(existing).unwrap(), b"existing");
     }
 
     #[test]

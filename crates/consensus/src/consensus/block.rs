@@ -21,6 +21,7 @@ use commonware_cryptography::{
 use reth_primitives_traits::{SealedBlock, SealedOrRecoveredBlock};
 use std::fmt::Display;
 use tempo_payload_types::EncodedBlock;
+use tempo_primitives::TempoConsensusContext;
 use tracing::warn;
 
 use crate::consensus::Digest;
@@ -204,19 +205,9 @@ impl Block {
         Digest(self.execution_block.parent_hash())
     }
 
-    /// Returns the timestamp of the wrapped block.
-    pub(crate) fn timestamp(&self) -> u64 {
-        self.execution_block.timestamp()
-    }
-
     /// Returns the wrapped block.
     pub(crate) fn block(&self) -> &SealedBlock<tempo_primitives::Block> {
         self.execution_block.sealed_block()
-    }
-
-    /// Returns the wrapped execution block handle.
-    pub(crate) fn execution_block(&self) -> &SealedOrRecoveredBlock<tempo_primitives::Block> {
-        &self.execution_block
     }
 
     /// Returns the block access list of the wrapped block.
@@ -385,8 +376,8 @@ impl commonware_consensus::CertifiableBlock for Block {
     fn context(&self) -> Self::Context {
         match self.consensus_context {
             Some(ctx) => Context {
-                leader: ctx.proposer.get().into(),
-                round: Round::new(Epoch::new(ctx.epoch), View::new(ctx.view)),
+                leader: ctx.proposer.to_inner(),
+                round: round_from_context(ctx),
                 parent: (View::new(ctx.parent_view), self.parent_digest()),
             },
             None => {
@@ -412,6 +403,10 @@ impl commonware_consensus::CertifiableBlock for Block {
     }
 }
 
+pub(crate) fn round_from_context(context: TempoConsensusContext) -> Round {
+    Round::new(Epoch::new(context.epoch), View::new(context.view))
+}
+
 fn validate_block_access_list_hash(
     expected: Option<B256>,
     block_access_list: Option<&Bytes>,
@@ -430,170 +425,6 @@ fn validate_block_access_list_hash(
         (None, None) => Ok(()),
     }
 }
-
-// =======================================================================
-// TODO: Below here are commented out definitions that will be useful when
-// writing an indexer.
-// =======================================================================
-
-// /// A notarized [`Block`].
-// // XXX: Not used right now but will be used once an indexer is implemented.
-// #[derive(Clone, Debug, PartialEq, Eq)]
-// pub(crate) struct Notarized {
-//     proof: Notarization,
-//     block: Block,
-// }
-
-// #[derive(Debug, thiserror::Error)]
-// #[error(
-//     "invalid notarized block: proof proposal `{proposal}` does not match block digest `{digest}`"
-// )]
-// pub(crate) struct NotarizationProofNotForBlock {
-//     proposal: Digest,
-//     digest: Digest,
-// }
-
-// impl Notarized {
-//     /// Constructs a new [`Notarized`] block.
-//     pub(crate) fn try_new(
-//         proof: Notarization,
-//         block: Block,
-//     ) -> Result<Self, NotarizationProofNotForBlock> {
-//         if proof.proposal.payload != block.digest() {
-//             return Err(NotarizationProofNotForBlock {
-//                 proposal: proof.proposal.payload,
-//                 digest: block.digest(),
-//             });
-//         }
-//         Ok(Self { proof, block })
-//     }
-
-//     pub(crate) fn block(&self) -> &Block {
-//         &self.block
-//     }
-
-//     /// Breaks up [`Notarized`] into its constituent parts.
-//     pub(crate) fn into_parts(self) -> (Notarization, Block) {
-//         (self.proof, self.block)
-//     }
-
-//     /// Verifies the notarized block against `namespace` and `identity`.
-//     ///
-//     // XXX: But why does this ignore the block entirely??
-//     pub(crate) fn verify(&self, namespace: &[u8], identity: &BlsPublicKey) -> bool {
-//         self.proof.verify(namespace, identity)
-//     }
-// }
-
-// impl Write for Notarized {
-//     fn write(&self, buf: &mut impl BufMut) {
-//         self.proof.write(buf);
-//         self.block.write(buf);
-//     }
-// }
-
-// impl Read for Notarized {
-//     // XXX: Same Cfg as for Block.
-//     type Cfg = ();
-
-//     fn read_cfg(buf: &mut impl Buf, _cfg: &Self::Cfg) -> Result<Self, commonware_codec::Error> {
-//         // FIXME: wrapping this to give it some context on what exactly failed, but it doesn't feel great.
-//         // Problem is the catch-all `commonware_codex:Error`.
-//         let proof = Notarization::read(buf)
-//             .map_err(|err| commonware_codec::Error::Wrapped("failed to read proof", err.into()))?;
-//         let block = Block::read(buf)
-//             .map_err(|err| commonware_codec::Error::Wrapped("failed to read block", err.into()))?;
-//         Self::try_new(proof, block).map_err(|err| {
-//             commonware_codec::Error::Wrapped("failed constructing notarized block", err.into())
-//         })
-//     }
-// }
-
-// impl EncodeSize for Notarized {
-//     fn encode_size(&self) -> usize {
-//         self.proof.encode_size() + self.block.encode_size()
-//     }
-// }
-
-// /// Used for an indexer.
-// //
-// // XXX: Not used right now but will be used once an indexer is implemented.
-// #[derive(Clone, Debug, PartialEq, Eq)]
-// pub(crate) struct Finalized {
-//     proof: Finalization,
-//     block: Block,
-// }
-
-// #[derive(Debug, thiserror::Error)]
-// #[error(
-//     "invalid finalized block: proof proposal `{proposal}` does not match block digest `{digest}`"
-// )]
-// pub(crate) struct FinalizationProofNotForBlock {
-//     proposal: Digest,
-//     digest: Digest,
-// }
-
-// impl Finalized {
-//     /// Constructs a new [`Finalized`] block.
-//     pub(crate) fn try_new(
-//         proof: Finalization,
-//         block: Block,
-//     ) -> Result<Self, FinalizationProofNotForBlock> {
-//         if proof.proposal.payload != block.digest() {
-//             return Err(FinalizationProofNotForBlock {
-//                 proposal: proof.proposal.payload,
-//                 digest: block.digest(),
-//             });
-//         }
-//         Ok(Self { proof, block })
-//     }
-
-//     pub(crate) fn block(&self) -> &Block {
-//         &self.block
-//     }
-
-//     /// Breaks up [`Finalized`] into its constituent parts.
-//     pub(crate) fn into_parts(self) -> (Finalization, Block) {
-//         (self.proof, self.block)
-//     }
-
-//     /// Verifies the notarized block against `namespace` and `identity`.
-//     ///
-//     // XXX: But why does this ignore the block entirely??
-//     pub(crate) fn verify(&self, namespace: &[u8], identity: &BlsPublicKey) -> bool {
-//         self.proof.verify(namespace, identity)
-//     }
-// }
-
-// impl Write for Finalized {
-//     fn write(&self, buf: &mut impl BufMut) {
-//         self.proof.write(buf);
-//         self.block.write(buf);
-//     }
-// }
-
-// impl Read for Finalized {
-//     // XXX: Same Cfg as for Block.
-//     type Cfg = ();
-
-//     fn read_cfg(buf: &mut impl Buf, _cfg: &Self::Cfg) -> Result<Self, commonware_codec::Error> {
-//         // FIXME: wrapping this to give it some context on what exactly failed, but it doesn't feel great.
-//         // Problem is the catch-all `commonware_codex:Error`.
-//         let proof = Finalization::read(buf)
-//             .map_err(|err| commonware_codec::Error::Wrapped("failed to read proof", err.into()))?;
-//         let block = Block::read(buf)
-//             .map_err(|err| commonware_codec::Error::Wrapped("failed to read block", err.into()))?;
-//         Self::try_new(proof, block).map_err(|err| {
-//             commonware_codec::Error::Wrapped("failed constructing finalized block", err.into())
-//         })
-//     }
-// }
-
-// impl EncodeSize for Finalized {
-//     fn encode_size(&self) -> usize {
-//         self.proof.encode_size() + self.block.encode_size()
-//     }
-// }
 
 #[cfg(test)]
 mod tests {

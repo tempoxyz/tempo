@@ -125,7 +125,10 @@ pub fn preserve_storage_credits(credit_owner: Address) -> Result<()> {
 /// Deducts the calldata input cost, returning an OOG halt result if insufficient gas.
 #[inline]
 pub fn charge_input_cost(storage: &mut StorageCtx, calldata: &[u8]) -> Option<PrecompileResult> {
-    if storage.deduct_gas(input_cost(calldata.len())).is_err() {
+    if input_cost(storage.spec(), calldata.len())
+        .and_then(|cost| storage.deduct_gas(cost))
+        .is_err()
+    {
         return Some(Ok(storage.halt_output(PrecompileHalt::OutOfGas)));
     }
     None
@@ -148,8 +151,14 @@ fn fill_state_gas(output: &mut PrecompileOutput, storage: &StorageCtx) {
     }
 
     if storage.amsterdam_eip8037_enabled() {
+        // Report the raw tracker values on success and failure alike. The parent
+        // settles them in `handle_reservoir_remaining_gas` exactly like a regular
+        // child frame: on success it adopts the reservoir and merges state gas and
+        // its spilled portion; on revert or halt `rollback_state_gas` credits the
+        // spilled portion back to regular gas and restores the reservoir to the
+        // value this call inherited.
         output.reservoir = storage.reservoir();
-        output.state_gas_used = storage.state_gas_used();
+        output.state_gas_used = storage.state_gas_used() as i64;
         output.state_gas_spilled = storage.state_gas_spilled();
     }
 }

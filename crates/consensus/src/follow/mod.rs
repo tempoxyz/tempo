@@ -6,8 +6,10 @@
 mod driver;
 pub mod engine;
 pub(crate) mod executor;
-pub(crate) mod resolver;
+mod resolver;
 mod stubs;
+#[cfg(test)]
+pub(crate) mod test_utils;
 pub mod upstream;
 
 pub use engine::Config;

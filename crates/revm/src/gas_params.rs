@@ -335,7 +335,10 @@ mod tests {
         );
         assert_eq!(gas_params.get(GasId::code_deposit_state_gas()), 2_300);
 
-        // EIP-7702 delegation: 25,000 regular + 225,000 state per auth
+        // EIP-7702 delegation: 25,000 regular + 225,000 state per auth.
+        // `tx_eip7702_per_empty_account_cost` returns only the regular
+        // portion; the state portion lives in `new_account_state_gas` (+ the
+        // zeroed bytecode state gas).
         assert_eq!(
             gas_params.get(GasId::tx_eip7702_regular_gas()),
             25_000,
@@ -344,7 +347,7 @@ mod tests {
         assert_eq!(
             gas_params.tx_eip7702_per_empty_account_cost(),
             25_000,
-            "EIP-7702 intrinsic per-auth cost is the regular component"
+            "EIP-7702 per auth regular gas per spec"
         );
         assert_eq!(
             gas_params.new_account_state_gas(),
@@ -352,7 +355,9 @@ mod tests {
             "EIP-7702 per auth state gas per spec"
         );
         assert_eq!(
-            gas_params.tx_eip7702_per_empty_account_cost() + gas_params.new_account_state_gas(),
+            gas_params.tx_eip7702_per_empty_account_cost()
+                + gas_params.new_account_state_gas()
+                + gas_params.tx_eip7702_state_gas_bytecode(),
             250_000,
             "EIP-7702 per auth total = 25k regular + 225k state per spec"
         );
@@ -421,7 +426,9 @@ mod tests {
 
         // EIP-7702: 25,000 regular + 225,000 state = 250,000 per auth
         assert_eq!(
-            t4.tx_eip7702_per_empty_account_cost() + t4.new_account_state_gas(),
+            t4.tx_eip7702_per_empty_account_cost()
+                + t4.new_account_state_gas()
+                + t4.tx_eip7702_state_gas_bytecode(),
             250_000,
             "EIP-7702 per auth total must be 250,000"
         );

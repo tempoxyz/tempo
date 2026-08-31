@@ -23,7 +23,7 @@ tempo-consensus-config.workspace = true
 tempo-validator-config.workspace = true
 tempo-dkg-onchain-artifacts.workspace = true
 tempo-evm.workspace = true
-tempo-precompiles.workspace = true
+tempo-precompiles = { workspace = true, features = ["test-utils"] }
 tempo-revm.workspace = true
 
 alloy = { workspace = true, features = [
@@ -58,6 +58,7 @@ eyre.workspace = true
 indicatif = { workspace = true, features = ["rayon"] }
 itertools.workspace = true
 rand_08.workspace = true
+rand.workspace = true
 rayon.workspace = true
 reth-evm.workspace = true
 reth-db.workspace = true

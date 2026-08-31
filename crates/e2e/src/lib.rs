@@ -17,7 +17,7 @@ use commonware_consensus::types::Epoch;
 use commonware_cryptography::{
     Signer as _,
     bls12381::{
-        dkg::{self},
+        dkg::feldman_desmedt as dkg,
         primitives::{group::Share, sharing::Mode},
     },
     ed25519::{PrivateKey, PublicKey},
@@ -27,15 +27,15 @@ use commonware_p2p::simulated::{self, Link, Network, Oracle};
 
 use commonware_codec::Encode;
 use commonware_runtime::{
-    Metrics as _, Runner as _,
+    Runner as _, Supervisor as _,
     deterministic::{self, Context, Runner},
 };
 use commonware_utils::{N3f1, TryFromIterator as _, ordered};
 use futures::future::join_all;
 use itertools::Itertools as _;
-use rand_core::CryptoRngCore;
+use rand_core::CryptoRng;
 use reth_node_metrics::recorder::PrometheusRecorder;
-use tempo_consensus::{consensus, feed::FeedStateHandle};
+use tempo_consensus::feed::FeedStateHandle;
 
 pub mod consensus_snapshot;
 pub mod execution_runtime;
@@ -52,8 +52,10 @@ mod tests;
 pub const CONSENSUS_NODE_PREFIX: &str = "consensus";
 pub const EXECUTION_NODE_PREFIX: &str = "execution";
 
+const MAX_MESSAGE_SIZE: u32 = 1024 * 1024;
+
 fn generate_consensus_node_config(
-    rng: &mut impl CryptoRngCore,
+    rng: &mut impl CryptoRng,
     signers: u32,
     verifiers: u32,
     fee_recipient: Address,
@@ -241,9 +243,9 @@ pub async fn setup_validators(
     }: Setup,
 ) -> (Vec<TestingNode<Context>>, ExecutionRuntime) {
     let (network, mut oracle) = Network::new(
-        context.with_label("network"),
+        context.child("network"),
         simulated::Config {
-            max_size: 1024 * 1024,
+            max_size: MAX_MESSAGE_SIZE,
             disconnect_on_block: true,
             tracked_peer_sets: commonware_utils::NZUsize!(3),
         },
@@ -287,38 +289,14 @@ pub async fn setup_validators(
         execution_config.validator_key = Some(public_key.encode().as_ref().try_into().unwrap());
         execution_config.feed_state = Some(feed_state.clone());
 
-        let engine_config = consensus::Builder {
-            execution_node: None,
-            blocker: oracle.control(private_key.public_key()),
-            peer_manager: oracle.socket_manager(),
-            partition_prefix: uid.clone(),
-            share,
-            signer: private_key.clone(),
-            mailbox_size: 1024,
-            deque_size: 10,
-            time_to_propose: Duration::from_secs(2),
-            time_to_collect_notarizations: Duration::from_secs(3),
-            time_to_retry_nullify_broadcast: Duration::from_secs(10),
-            time_for_peer_response: Duration::from_secs(2),
-            views_to_track: 10,
-            views_until_leader_skip: 5,
-            proposal_return_budget,
-            time_to_build_subblock: Duration::from_millis(100),
-            subblock_broadcast_interval: Duration::from_millis(50),
-            fcu_heartbeat_interval: Duration::from_secs(3),
-            feed_state,
-            with_subblocks,
-            // Plenty of headroom for any test; the marshal will fall back to
-            // reth past this depth via the hybrid finalized blocks store.
-            finalized_blocks_retention: 1024,
-            strict_startup: true,
-        };
-
         nodes.push(TestingNode::new(
             uid,
             private_key,
             oracle.clone(),
-            engine_config,
+            share,
+            feed_state,
+            proposal_return_budget,
+            with_subblocks,
             execution_runtime.handle(),
             execution_config,
             ingress,

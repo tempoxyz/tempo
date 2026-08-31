@@ -1,7 +1,8 @@
 use super::*;
 use crate::{
     FeeTokenResolver, ProtocolFeeManager, TempoBlockEnv, TempoFeeManager, TempoTxEnv,
-    evm::TempoEvm, gas_params::tempo_gas_params, tx::TempoBatchCallEnv,
+    evm::TempoEvm, gas_params::tempo_gas_params, signature_gas::P256_VERIFY_GAS,
+    tx::TempoBatchCallEnv,
 };
 use alloy_primitives::{Address, B256, Bytes, TxKind, U256};
 use proptest::prelude::*;
@@ -23,7 +24,8 @@ use tempo_precompiles::{
     tip_fee_manager::TipFeeManager,
 };
 use tempo_primitives::transaction::{
-    Call, RecoveredTempoAuthorization, TempoSignature, TempoSignedAuthorization,
+    Call, PrimitiveSignature, RecoveredTempoAuthorization, TempoSignature,
+    TempoSignedAuthorization,
     tt_signature::{P256SignatureWithPreHash, WebAuthnSignature},
 };
 
@@ -123,11 +125,13 @@ impl TestHandlerEvm {
 
     fn execute(&mut self, init_gas: &InitialAndFloorGas) -> FrameResult {
         let mut gas = self.handler.tx_gas(&mut self.evm, init_gas);
+        // `execution` commits the EIP-2780 runtime gas phase checkpoint that
+        // `pre_execution` normally opens; open one here to match.
         let checkpoint = self.evm.ctx().journal_mut().checkpoint();
         self.handler
             .execution(&mut self.evm, checkpoint, &mut gas)
             .expect("execution should return a frame result")
-            .expect("execution should not run out of gas before creating a frame")
+            .expect("EIP-2780 is disabled: execution never runs out of runtime gas")
     }
 }
 
@@ -584,7 +588,7 @@ fn test_aa_gas_single_call_vs_normal_tx() {
         0,     // no access list accounts
         0,     // no access list storage
         0,     // no authorization list
-        None,  // no EIP-2780 transfer
+        None,
     );
 
     // AA with secp256k1 + single call should match normal tx exactly
@@ -1845,7 +1849,7 @@ fn test_t3_scope_validation_returns_call_not_allowed_revert_data() {
     let result = handler
         .execution(&mut evm, checkpoint, &mut gas)
         .expect("execution should return a frame result")
-        .expect("execution should not run out of gas before creating a frame");
+        .expect("EIP-2780 is disabled: execution never runs out of runtime gas");
 
     let expected_revert: Bytes = AccountKeychainError::call_not_allowed().abi_encode().into();
 
@@ -2024,12 +2028,12 @@ fn test_multicall_gas_refund_accounting() {
         GAS_LIMIT - INTRINSIC_GAS,
         0,
         calls,
-        |_handler, _evm, gas, _reservoir| {
+        |_handler, _evm, call_gas: &mut GasTracker| {
             let (spent, refund) = calls_gas[call_idx];
             call_idx += 1;
 
             // Create gas with specific spent and refund values
-            let mut gas = Gas::new(gas);
+            let mut gas = Gas::new(call_gas.remaining());
             gas.set_spent(spent);
             gas.record_refund(refund);
 
@@ -3632,25 +3636,42 @@ mod keychain {
     }
 }
 
-/// revm 42 leaves CREATE state gas to EIP-2780's runtime phase.
+/// TIP-1016: Standard CREATE tx should populate initial_state_gas with
+/// create_state_gas when state gas is enabled (T4+).
+///
+/// revm 42 defers the state-gas intrinsics to the EIP-2780 runtime gas phase,
+/// which Tempo keeps disabled, so they are charged in `validate_initial_tx_gas`
+/// instead of upstream's `initial_tx_gas` — hence this goes through the handler.
+///
+/// Note: new_account_state_gas for the caller (nonce==0 with 2D nonce) is added
+/// later in validate_against_state_and_deduct_caller.
 #[test]
-fn test_revm_initial_gas_defers_standard_create_state_gas() {
+fn test_state_gas_standard_create_tx_populates_initial_state_gas() {
+    let mut tx_env = TempoTxEnv::default();
+    tx_env.inner.kind = TxKind::Create;
+    tx_env.inner.data = Bytes::from(vec![0x60, 0x80]);
+    tx_env.inner.gas_limit = 10_000_000;
+    // Avoid the T1+ nonce==0 new-account surcharge.
+    tx_env.inner.nonce = 1;
+
     // TIP-1016 is opt-in via amsterdam_eip8037; manually enable for this test.
-    let gas_params = crate::gas_params::tempo_gas_params_with_amsterdam(TempoHardfork::T4, true);
-    let initcode = Bytes::from(vec![0x60, 0x80]);
+    let mut test = TestHandlerEvm::with_cfg(TempoHardfork::T4, tx_env, |cfg| {
+        cfg.gas_params =
+            crate::gas_params::tempo_gas_params_with_amsterdam(TempoHardfork::T4, true);
+        cfg.enable_amsterdam_eip8037 = true;
+    });
 
-    let init_gas = gas_params.initial_tx_gas(
-        &initcode, true, // is_create
-        0, 0, 0, None,
-    );
-
-    let expected_state_gas = gas_params.create_state_gas();
+    let init_gas = test.validate_initial_tx_gas();
+    let expected_state_gas = test.gas_params().create_state_gas();
 
     assert!(
         expected_state_gas > 0,
         "State gas constants should be non-zero"
     );
-    assert_eq!(init_gas.initial_state_gas, 0);
+    assert_eq!(
+        init_gas.initial_state_gas, expected_state_gas,
+        "CREATE tx should have initial_state_gas = create_state_gas ({expected_state_gas})",
+    );
 }
 
 /// TIP-1016: Standard CALL tx should have zero initial_state_gas.
@@ -4420,9 +4441,7 @@ fn test_state_gas_failed_batch_preserves_upfront_create_intrinsic_gas() {
         test.gas_params().create_state_gas(),
         "first-call CREATE should contribute create_state_gas to AA intrinsic gas"
     );
-    let tx_gas = test.handler.tx_gas(&mut test.evm, &init_gas);
-    let gas_limit = tx_gas.remaining();
-    let reservoir = tx_gas.reservoir();
+    let (gas_limit, reservoir) = test.evm.initial_gas_and_reservoir(&init_gas);
 
     let mut call_idx = 0usize;
     let result = test
@@ -4432,12 +4451,12 @@ fn test_state_gas_failed_batch_preserves_upfront_create_intrinsic_gas() {
             gas_limit,
             reservoir,
             calls,
-            |_handler, _evm, gas, _reservoir| {
+            |_handler, _evm, call_gas: &mut GasTracker| {
                 // Feed the batch executor deterministic per-call outcomes without running real EVM code.
                 let (instruction_result, spent) = call_results[call_idx];
                 call_idx += 1;
 
-                let mut gas = Gas::new(gas);
+                let mut gas = Gas::new(call_gas.remaining());
                 gas.set_spent(spent);
 
                 Ok(FrameResult::Call(CallOutcome::new(

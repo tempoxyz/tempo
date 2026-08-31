@@ -16,6 +16,7 @@ impl Precompile for AccountKeychain {
             calldata,
             |call| match call {
                 IAccountKeychain::IAccountKeychainCalls {
+                    #[schedule(until = T11)]
                     authorizeKey_0(call) => {
                         if self.storage.spec().is_t3() {
                             return self.storage.error_result(
@@ -49,15 +50,15 @@ impl Precompile for AccountKeychain {
                             self.authorize_key(sender, c.keyId, c.signatureType, c.config, None)
                         })
                     },
-                    #[schedule(since = T3)]
+                    #[schedule(since = T3, until = T11)]
                     authorizeKey_1(call) => mutate_void(call, msg_sender, |sender, c| {
                         self.authorize_key(sender, c.keyId, c.signatureType, c.config, None)
                     }),
-                    #[schedule(since = T5)]
+                    #[schedule(since = T5, until = T11)]
                     authorizeKey_2(call) => mutate_void(call, msg_sender, |sender, c| {
                         self.authorize_key(sender, c.keyId, c.signatureType, c.config, Some(c.witness))
                     }),
-                    #[schedule(since = T6)]
+                    #[schedule(since = T6, until = T11)]
                     authorizeAdminKey(call) => mutate_void(call, msg_sender, |sender, c| {
                         self.authorize_admin_key(sender, c.keyId, c.signatureType, Some(c.witness))
                     }),
@@ -69,9 +70,13 @@ impl Precompile for AccountKeychain {
                     updateSpendingLimit(call) => mutate_void(call, msg_sender, |sender, c| {
                         self.update_spending_limit(sender, c)
                     }),
-                    #[schedule(since = T3)]
-                    setAllowedCalls(call) => mutate_void(call, msg_sender, |sender, c| {
+                    #[schedule(since = T3, until = T11)]
+                    setAllowedCalls_0(call) => mutate_void(call, msg_sender, |sender, c| {
                         self.set_allowed_calls(sender, c)
+                    }),
+                    #[schedule(since = T11)]
+                    setAllowedCalls_1(call) => mutate_void(call, msg_sender, |sender, c| {
+                        self.set_allowed_calls_rlp(sender, c)
                     }),
                     #[schedule(since = T3)]
                     removeAllowedCalls(call) => mutate_void(call, msg_sender, |sender, c| {
@@ -108,9 +113,14 @@ mod tests {
         primitives::{B256, U256},
         sol_types::{SolCall, SolError},
     };
+    use alloy_rlp::Encodable;
     use tempo_chainspec::hardfork::TempoHardfork;
     use tempo_contracts::precompiles::{
         IAccountKeychain::IAccountKeychainCalls, UnknownFunctionSelector, legacyAuthorizeKeyCall,
+        legacySetAllowedCallsCall, setAllowedCallsCall,
+    };
+    use tempo_primitives::transaction::{
+        CallScope as RlpCallScope, SelectorRule as RlpSelectorRule,
     };
 
     #[test]
@@ -122,6 +132,7 @@ mod tests {
                 .iter()
                 .copied()
                 .filter(|selector| *selector != getRemainingLimitCall::SELECTOR)
+                .filter(|selector| *selector != setAllowedCallsCall::SELECTOR)
                 .collect();
 
             let unsupported = check_selector_coverage(
@@ -133,6 +144,36 @@ mod tests {
 
             assert_full_coverage([unsupported]);
 
+            Ok(())
+        })
+    }
+
+    #[test]
+    fn test_t11_account_keychain_selector_coverage() -> eyre::Result<()> {
+        let mut storage = HashMapStorageProvider::new_with_spec(1, TempoHardfork::T11);
+        StorageCtx::enter(&mut storage, || {
+            let mut keychain = AccountKeychain::new();
+            let disabled = [
+                legacyAuthorizeKeyCall::SELECTOR,
+                authorizeKeyCall::SELECTOR,
+                IAccountKeychain::authorizeKey_2Call::SELECTOR,
+                IAccountKeychain::authorizeAdminKeyCall::SELECTOR,
+                legacySetAllowedCallsCall::SELECTOR,
+                getRemainingLimitCall::SELECTOR,
+            ];
+            let selectors: Vec<_> = IAccountKeychainCalls::SELECTORS
+                .iter()
+                .copied()
+                .filter(|selector| !disabled.contains(selector))
+                .collect();
+
+            let unsupported = check_selector_coverage(
+                &mut keychain,
+                &selectors,
+                "IAccountKeychain T11",
+                IAccountKeychainCalls::name_by_selector,
+            );
+            assert_full_coverage([unsupported]);
             Ok(())
         })
     }
@@ -403,6 +444,180 @@ mod tests {
             let decoded = UnknownFunctionSelector::abi_decode(&result.bytes)?;
             assert_eq!(decoded.selector.as_slice(), &selector);
 
+            Ok(())
+        })
+    }
+
+    #[test]
+    fn test_t11_direct_authorization_selectors_are_disabled() -> eyre::Result<()> {
+        let account = Address::random();
+        let key_id = Address::random();
+        let witness = B256::random();
+        let config = KeyRestrictions {
+            expiry: u64::MAX,
+            enforceLimits: false,
+            limits: vec![],
+            allowAnyCalls: true,
+            allowedCalls: vec![],
+        };
+        let calls = [
+            legacyAuthorizeKeyCall {
+                keyId: key_id,
+                signatureType: IAccountKeychain::SignatureType::Secp256k1,
+                expiry: u64::MAX,
+                enforceLimits: false,
+                limits: vec![],
+            }
+            .abi_encode(),
+            authorizeKeyCall {
+                keyId: key_id,
+                signatureType: IAccountKeychain::SignatureType::Secp256k1,
+                config: config.clone(),
+            }
+            .abi_encode(),
+            IAccountKeychain::authorizeKey_2Call {
+                keyId: key_id,
+                signatureType: IAccountKeychain::SignatureType::Secp256k1,
+                config,
+                witness,
+            }
+            .abi_encode(),
+            IAccountKeychain::authorizeAdminKeyCall {
+                keyId: key_id,
+                signatureType: IAccountKeychain::SignatureType::Secp256k1,
+                witness,
+            }
+            .abi_encode(),
+        ];
+
+        let mut storage = HashMapStorageProvider::new_with_spec(1, TempoHardfork::T11);
+        StorageCtx::enter(&mut storage, || {
+            let mut keychain = AccountKeychain::new();
+            keychain.initialize()?;
+
+            for calldata in calls {
+                let expected: [u8; 4] = calldata[..4].try_into().expect("selector");
+                let result = keychain.call(&calldata, account)?;
+                let decoded = UnknownFunctionSelector::abi_decode(&result.bytes)?;
+                assert_eq!(decoded.selector, expected);
+            }
+            assert_eq!(keychain.keys[account][key_id].read()?.expiry, 0);
+
+            Ok(())
+        })
+    }
+
+    #[test]
+    fn test_t11_set_allowed_calls_uses_rlp() -> eyre::Result<()> {
+        let account = Address::random();
+        let key_id = Address::random();
+        let target = Address::random();
+        let selector = [0xaa, 0xbb, 0xcc, 0xdd];
+
+        let scopes = vec![RlpCallScope {
+            target,
+            selector_rules: vec![RlpSelectorRule {
+                selector,
+                recipients: vec![],
+            }],
+        }];
+        let mut encoded_scopes = Vec::new();
+        scopes.encode(&mut encoded_scopes);
+
+        let mut storage = HashMapStorageProvider::new_with_spec(1, TempoHardfork::T11);
+        StorageCtx::enter(&mut storage, || {
+            let mut keychain = AccountKeychain::new();
+            keychain.initialize()?;
+            keychain.set_transaction_key(Address::ZERO)?;
+            keychain.set_tx_origin(account)?;
+            keychain.authorize_key(
+                account,
+                key_id,
+                IAccountKeychain::SignatureType::Secp256k1,
+                KeyRestrictions {
+                    expiry: u64::MAX,
+                    enforceLimits: false,
+                    limits: vec![],
+                    allowAnyCalls: true,
+                    allowedCalls: vec![],
+                },
+                None,
+            )?;
+
+            let old_calldata = legacySetAllowedCallsCall {
+                keyId: key_id,
+                scopes: vec![],
+            }
+            .abi_encode();
+            let old_result = keychain.call(&old_calldata, account)?;
+            let old_error = UnknownFunctionSelector::abi_decode(&old_result.bytes)?;
+            assert_eq!(
+                old_error.selector.as_slice(),
+                &legacySetAllowedCallsCall::SELECTOR
+            );
+
+            let calldata = setAllowedCallsCall {
+                keyId: key_id,
+                scopes: encoded_scopes.into(),
+            }
+            .abi_encode();
+            let result = keychain.call(&calldata, account)?;
+            assert!(!result.is_revert());
+
+            let stored = keychain.get_allowed_calls(IAccountKeychain::getAllowedCallsCall {
+                account,
+                keyId: key_id,
+            })?;
+            assert!(stored.isScoped);
+            assert_eq!(stored.scopes.len(), 1);
+            assert_eq!(stored.scopes[0].target, target);
+            assert_eq!(stored.scopes[0].selectorRules[0].selector, selector);
+
+            Ok(())
+        })
+    }
+
+    #[test]
+    fn test_rlp_set_allowed_calls_selector_is_disabled_pre_t11() -> eyre::Result<()> {
+        let calldata = setAllowedCallsCall {
+            keyId: Address::random(),
+            scopes: vec![0xc0].into(),
+        }
+        .abi_encode();
+
+        let mut storage = HashMapStorageProvider::new_with_spec(1, TempoHardfork::T10);
+        StorageCtx::enter(&mut storage, || {
+            let mut keychain = AccountKeychain::new();
+            let result = keychain.call(&calldata, Address::random())?;
+            let decoded = UnknownFunctionSelector::abi_decode(&result.bytes)?;
+            assert_eq!(decoded.selector.as_slice(), &setAllowedCallsCall::SELECTOR);
+            Ok(())
+        })
+    }
+
+    #[test]
+    fn test_t11_set_allowed_calls_rejects_invalid_rlp() -> eyre::Result<()> {
+        let key_id = Address::random();
+        let mut valid_with_trailing = Vec::new();
+        vec![RlpCallScope {
+            target: Address::random(),
+            selector_rules: vec![],
+        }]
+        .encode(&mut valid_with_trailing);
+        valid_with_trailing.push(0x80);
+
+        let mut storage = HashMapStorageProvider::new_with_spec(1, TempoHardfork::T11);
+        StorageCtx::enter(&mut storage, || {
+            let mut keychain = AccountKeychain::new();
+            for scopes in [vec![], vec![0xc0], vec![0x80], valid_with_trailing] {
+                let calldata = setAllowedCallsCall {
+                    keyId: key_id,
+                    scopes: scopes.into(),
+                }
+                .abi_encode();
+                let result = keychain.call(&calldata, Address::random())?;
+                IAccountKeychain::InvalidCallScope::abi_decode(&result.bytes)?;
+            }
             Ok(())
         })
     }

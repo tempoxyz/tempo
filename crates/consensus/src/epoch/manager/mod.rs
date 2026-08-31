@@ -1,7 +1,7 @@
 mod actor;
 pub(super) mod ingress;
 
-use std::time::Duration;
+use std::{num::NonZeroUsize, sync::Arc, time::Duration};
 
 pub(crate) use actor::Actor;
 use commonware_cryptography::ed25519::PublicKey;
@@ -12,18 +12,20 @@ use commonware_p2p::Blocker;
 use commonware_runtime::{
     BufferPooler, Clock, Metrics, Network, Spawner, Storage, buffer::paged::CacheRef,
 };
-use rand_08::{CryptoRng, Rng};
+use rand_core::{CryptoRng, Rng};
+use tempo_node::TempoFullNode;
 
 use crate::{epoch::scheme_provider::SchemeProvider, subblocks};
 
 pub(crate) struct Config<TBlocker> {
     pub(crate) application: crate::consensus::application::Mailbox,
+    pub(crate) execution_node: Arc<TempoFullNode>,
     pub(crate) blocker: TBlocker,
     pub(crate) page_cache: CacheRef,
     pub(crate) epoch_strategy: FixedEpocher,
     pub(crate) time_for_peer_response: Duration,
     pub(crate) time_to_propose: Duration,
-    pub(crate) mailbox_size: usize,
+    pub(crate) mailbox_size: NonZeroUsize,
     pub(crate) subblocks: Option<subblocks::Mailbox>,
     pub(crate) marshal: crate::alias::marshal::Mailbox,
     pub(crate) scheme_provider: SchemeProvider,

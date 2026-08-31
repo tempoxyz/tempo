@@ -34,7 +34,7 @@ on:
       validator-count:
         type: string
         required: false
-        default: "50"
+        default: "10"
       regions:
         type: string
         required: false
@@ -50,7 +50,7 @@ on:
       max-concurrent-requests:
         type: string
         required: false
-        default: "100"
+        default: "5000"
       general-gas-limit:
         type: string
         required: false
@@ -63,6 +63,14 @@ on:
         type: string
         required: false
         default: "feature-1"
+      otlp:
+        type: boolean
+        required: false
+        default: true
+      valscope:
+        type: boolean
+        required: false
+        default: true
     secrets:
       BENCH_LOGS_PUSH_URL:
         required: false
@@ -76,11 +84,13 @@ on:
         required: false
       CLICKHOUSE_PASSWORD:
         required: false
-      DEREK_BENCH_TOKEN:
-        required: false
       VICTORIALOGS_URL:
         required: false
       VICTORIAMETRICS_URL:
+        required: false
+      VALSCOPE_CONTROL_URL:
+        required: false
+      VALSCOPE_INTERNAL_TOKEN:
         required: false
   workflow_dispatch:
     inputs:
@@ -149,7 +159,7 @@ on:
         description: Number of validators.
         type: string
         required: true
-        default: "50"
+        default: "10"
       regions:
         description: Comma-separated cloud regions. Empty uses the selected cloud's five defaults.
         type: string
@@ -169,7 +179,7 @@ on:
         description: Max concurrent sender requests.
         type: string
         required: true
-        default: "100"
+        default: "5000"
       txgen-ref:
         description: Optional ref to pin in tempoxyz/txgen.
         type: string
@@ -196,10 +206,10 @@ on:
         required: true
         default: true
       valscope:
-        description: Generate and publish ValScope static reports.
+        description: Register live ValScope targets for each benchmark phase.
         type: boolean
         required: true
-        default: false
+        default: true
       baseline-args:
         description: Extra args passed only to the baseline node.
         type: string
@@ -268,18 +278,18 @@ jobs:
       BENCH_INPUT_PRESET: ${{ inputs.preset || 'tip20_existing_recipients' }}
       BENCH_INPUT_DURATION: ${{ inputs.duration || (github.event_name == 'pull_request' && '30') || '90' }}
       BENCH_INPUT_BLOAT: ${{ inputs.bloat || '100' }}
-      BENCH_INPUT_VALIDATOR_COUNT: ${{ inputs['validator-count'] || (github.event_name == 'pull_request' && '1') || '50' }}
+      BENCH_INPUT_VALIDATOR_COUNT: ${{ inputs['validator-count'] || (github.event_name == 'pull_request' && '1') || '10' }}
       BENCH_INPUT_REGIONS: ${{ inputs.regions || '' }}
       BENCH_INPUT_INSTANCE_TYPE: ${{ (inputs.cloud || 'aws') == 'gcp' && 'n2-standard-8' || 'c6id.8xlarge' }}
       BENCH_INPUT_LOCAL_SSD_COUNT: ${{ (inputs.cloud || 'aws') == 'gcp' && ((inputs.bloat || '100') == '100' && '4' || '1') || '4' }}
       BENCH_INPUT_TPS: ${{ inputs.tps || (github.event_name == 'pull_request' && '100') || '50000' }}
       BENCH_INPUT_ACCOUNTS: ${{ inputs.accounts || '1000' }}
-      BENCH_INPUT_MAX_CONCURRENT_REQUESTS: ${{ inputs['max-concurrent-requests'] || (github.event_name == 'pull_request' && '10') || '100' }}
+      BENCH_INPUT_MAX_CONCURRENT_REQUESTS: ${{ inputs['max-concurrent-requests'] || (github.event_name == 'pull_request' && '10') || '5000' }}
       BENCH_INPUT_TXGEN_REF: ${{ inputs['txgen-ref'] || '' }}
       BENCH_INPUT_TOKEN_COUNT: ${{ inputs['token-count'] || '4' }}
       BENCH_INPUT_PROFILING: ${{ inputs.profiling || 'off' }}
       BENCH_INPUT_OTLP: ${{ format('{0}', github.event_name != 'workflow_dispatch' || inputs.otlp) }}
-      BENCH_INPUT_VALSCOPE: ${{ github.event_name == 'workflow_dispatch' && (inputs.valscope == true || inputs.valscope == 'true') && 'true' || 'false' }}
+      BENCH_INPUT_VALSCOPE: ${{ (inputs.valscope == true || inputs.valscope == 'true') && 'true' || 'false' }}
       BENCH_INPUT_BASELINE_ARGS: ${{ inputs['baseline-args'] || '' }}
       BENCH_INPUT_FEATURE_ARGS: ${{ inputs['feature-args'] || '' }}
       BENCH_INPUT_GAS_LIMIT: ${{ inputs['gas-limit'] || '5000000000' }}
@@ -291,13 +301,22 @@ jobs:
       CLICKHOUSE_URL: ${{ secrets.CLICKHOUSE_URL }}
       CLICKHOUSE_USER: ${{ secrets.CLICKHOUSE_USER }}
       CLICKHOUSE_PASSWORD: ${{ secrets.CLICKHOUSE_PASSWORD }}
+      VALSCOPE_CONTROL_URL: ${{ secrets.VALSCOPE_CONTROL_URL }}
+      VALSCOPE_INTERNAL_TOKEN: ${{ secrets.VALSCOPE_INTERNAL_TOKEN }}
 
     steps:
+      - name: Fetch GitHub token via STS
+        id: github-sts
+        uses: tempoxyz/gh-actions/actions/github-sts@8819cf80bdcb39c36c34700e3f2ecc08bde54f23
+        with:
+          scope: tempoxyz/tempo-multi-region-benchmark
+          policy: bench-e2e-multi-region
+
       - name: Check org membership
         if: github.event_name != 'schedule'
         uses: actions/github-script@3a2844b7e9c422d3c10d287c895573f7108da1b3 # v9.0.0
         with:
-          github-token: ${{ secrets.DEREK_BENCH_TOKEN || github.token }}
+          github-token: ${{ steps.github-sts.outputs.token }}
           script: |
             const org = 'tempoxyz';
             const username = context.actor;
@@ -310,6 +329,25 @@ jobs:
             } catch {}
 
             core.setFailed(`@${username} is not a member of ${org}`);
+
+      - name: Validate ValScope configuration
+        if: env.BENCH_INPUT_VALSCOPE == 'true'
+        env:
+          BENCH_LOGS_URL: ${{ secrets.TEMPO_TELEMETRY_URL || secrets.BENCH_LOGS_PUSH_URL }}
+          BENCH_METRICS_URL: ${{ secrets.BENCH_VICTORIAMETRICS_URL }}
+        run: |
+          required=(
+            VALSCOPE_CONTROL_URL
+            VALSCOPE_INTERNAL_TOKEN
+            BENCH_LOGS_URL
+            BENCH_METRICS_URL
+          )
+          for name in "${required[@]}"; do
+            if [[ -z "${!name:-}" ]]; then
+              echo "::error::$name is required when ValScope is enabled"
+              exit 1
+            fi
+          done
 
       - name: Fetch ClickHouse metric allowlist
         uses: actions/github-script@3a2844b7e9c422d3c10d287c895573f7108da1b3 # v9.0.0
@@ -339,12 +377,10 @@ jobs:
           repository: tempoxyz/tempo-multi-region-benchmark
           ref: ${{ github.repository == 'tempoxyz/tempo-multi-region-benchmark' && github.sha || 'main' }}
           path: ${{ env.BENCH_REPO_DIR }}
-          token: ${{ secrets.DEREK_BENCH_TOKEN || github.token }}
+          token: ${{ steps.github-sts.outputs.token }}
           persist-credentials: false
 
       - name: Validate Tempo commit ancestry
-        env:
-          GH_TOKEN: ${{ secrets.DEREK_BENCH_TOKEN || github.token }}
         run: |
           resolve_tempo_ref() {
             local ref="${1:-main}"
@@ -431,7 +467,7 @@ jobs:
           terraform_wrapper: false
 
       - name: Setup Rust
-        uses: dtolnay/rust-toolchain@2c7215f132e9ebf062739d9130488b56d53c060c # master
+        uses: dtolnay/rust-toolchain@6c977a6ca4077a0ceb28ffbe03f59d46e9ac8772 # master
         with:
           toolchain: stable
 
@@ -447,6 +483,21 @@ jobs:
         if: env.BENCH_INPUT_CLOUD == 'aws'
         run: |
           "$BENCH_REPO_DIR/scripts/configure_aws_s3_transfer.sh"
+
+      # gcloud persists credentials and command state in SQLite files below its
+      # config directory.  Keep that state out of the runner image's shared
+      # default directory: benchmark phases run many gcloud commands and IAP
+      # tunnels concurrently, and a stale/corrupt default database causes
+      # gcloud to abort before issuing the requested API call.
+      - name: Isolate Google Cloud CLI state
+        if: env.BENCH_INPUT_CLOUD == 'gcp'
+        run: |
+          gcloud_config_dir="$RUNNER_TEMP/gcloud-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}"
+          mkdir -p "$gcloud_config_dir"
+          {
+            echo "CLOUDSDK_CONFIG=$gcloud_config_dir"
+            echo "CLOUDSDK_CORE_PROJECT=$BENCH_GCP_PROJECT_ID"
+          } >> "$GITHUB_ENV"
 
       - name: Authenticate to Google Cloud
         if: env.BENCH_INPUT_CLOUD == 'gcp'
@@ -510,10 +561,7 @@ jobs:
       - name: Install txgen
         if: steps.fetch_tempo_binaries.outcome == 'success'
         env:
-          TXGEN_GIT_TOKEN: ${{ secrets.DEREK_BENCH_TOKEN || github.token }}
           BENCH_TXGEN_REF: ${{ env.BENCH_INPUT_TXGEN_REF }}
-          GHCR_USERNAME: ${{ github.actor }}
-          GHCR_TOKEN: ${{ secrets.DEREK_BENCH_TOKEN || github.token }}
         run: |
           "$BENCH_REPO_DIR/scripts/install_txgen.sh"
 

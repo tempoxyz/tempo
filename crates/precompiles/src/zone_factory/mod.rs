@@ -11,8 +11,11 @@ use crate::{
     tip20_factory::TIP20Factory,
     tip403_registry::TIP403Registry,
 };
-use alloy::primitives::{Address, IntoLogData};
-use std::collections::HashMap;
+use alloy::{
+    primitives::{Address, B256, IntoLogData, keccak256},
+    sol_types::SolValue,
+};
+use std::collections::{HashMap, HashSet};
 use tempo_contracts::precompiles::{
     IZoneFactory, ZONE_MESSENGER_ADDRESS, ZONE_VERIFIER_ADDRESS, ZoneFactoryError,
     ZoneFactoryEvent, ZoneInfo, ZonePortalEvent, ZonePortalRole,
@@ -28,6 +31,8 @@ pub const ZONE_CREATION_GAS: u64 = 15_000_000;
 
 /// Maximum number of equal sequencers in a zone settlement set.
 pub const MAX_SEQUENCERS: usize = 8;
+/// Maximum UTF-8 byte length of enabled token metadata strings.
+const MAX_TOKEN_METADATA_BYTES: usize = 31;
 
 /// Native ZoneFactory storage.
 ///
@@ -113,7 +118,11 @@ impl ZoneFactory {
         {
             return Err(ZoneFactoryError::token_transfer_policy_not_set().into());
         }
-        validate_closed_loop_config(&call.params.allowedAccounts, &call.params.zoneGateways)?;
+        validate_closed_loop_config(
+            &call.params.allowedAccounts,
+            &call.params.zoneGateways,
+            &call.params.sequencers,
+        )?;
         if call.params.admin.is_zero() {
             return Err(ZoneFactoryError::invalid_admin().into());
         }
@@ -129,6 +138,17 @@ impl ZoneFactory {
         let token_name = token.name()?;
         let token_symbol = token.symbol()?;
         let token_currency = token.currency()?;
+        validate_token_metadata(&token_name, &token_symbol, &token_currency)?;
+        let token_enablement_hash = keccak256(
+            (
+                B256::ZERO,
+                call.params.initialToken,
+                token_name.clone(),
+                token_symbol.clone(),
+                token_currency.clone(),
+            )
+                .abi_encode_params(),
+        );
 
         self.next_zone_id.write(
             zone_id
@@ -137,7 +157,7 @@ impl ZoneFactory {
         )?;
         // TIP-1091 deliberately etches the canonical runtime unconditionally. The 96-bit portal
         // prefix makes pre-existing state computationally infeasible to target with CREATE2.
-        ZonePortalStorage::new(portal).initialize(zone_id, &call.params)?;
+        ZonePortalStorage::new(portal).initialize(zone_id, &call.params, token_enablement_hash)?;
 
         self.zones[zone_id].write(ZoneInfoStorage {
             zone_id,
@@ -253,15 +273,34 @@ impl ZoneFactory {
     }
 }
 
+fn validate_token_metadata(name: &str, symbol: &str, currency: &str) -> Result<()> {
+    if [name, symbol, currency]
+        .into_iter()
+        .any(|value| value.len() > MAX_TOKEN_METADATA_BYTES)
+    {
+        return Err(ZoneFactoryError::token_metadata_too_long().into());
+    }
+    Ok(())
+}
+
 fn validate_closed_loop_config(
     allowed_accounts: &[Address],
     zone_gateways: &[Address],
+    sequencers: &[Address],
 ) -> Result<()> {
-    if allowed_accounts.contains(&ZONE_MESSENGER_ADDRESS)
-        || zone_gateways
-            .iter()
-            .any(|gateway| allowed_accounts.contains(gateway))
-    {
+    if allowed_accounts.contains(&ZONE_MESSENGER_ADDRESS) {
+        return Err(ZoneFactoryError::invalid_closed_loop_config().into());
+    }
+
+    let mut seen =
+        HashSet::with_capacity(allowed_accounts.len().saturating_add(zone_gateways.len()));
+    seen.extend(allowed_accounts.iter().copied());
+    if zone_gateways.iter().any(|gateway| seen.contains(gateway)) {
+        return Err(ZoneFactoryError::invalid_closed_loop_config().into());
+    }
+    seen.extend(zone_gateways.iter().copied());
+
+    if sequencers.iter().any(|sequencer| seen.contains(sequencer)) {
         return Err(ZoneFactoryError::invalid_closed_loop_config().into());
     }
     Ok(())
@@ -298,7 +337,7 @@ mod tests {
     use crate::{
         PATH_USD_ADDRESS,
         error::TempoPrecompileError,
-        storage::{StorageCtx, hashmap::HashMapStorageProvider},
+        storage::{ContractStorage, StorageCtx, hashmap::HashMapStorageProvider},
         test_util::TIP20Setup,
     };
     use alloy::{
@@ -307,6 +346,7 @@ mod tests {
     };
     use portal::PortalTokenConfig;
     use tempo_chainspec::hardfork::TempoHardfork;
+    use tempo_contracts::precompiles::ZonePortalCapability;
 
     const OWNER: Address = address!("0x0000000000000000000000000000000000000011");
     const ADMIN: Address = address!("0x0000000000000000000000000000000000000022");
@@ -412,15 +452,23 @@ mod tests {
             assert_eq!(portal.sequencer_set_version.read()?, 0);
             assert_eq!(portal.sequencer_threshold.read()?, 2);
             assert_eq!(portal.sequencers.read()?, vec![SEQUENCER_A, SEQUENCER_B]);
-            assert!(portal.is_sequencer[SEQUENCER_A].read()?);
-            assert!(portal.is_sequencer[SEQUENCER_B].read()?);
+            assert_eq!(portal.last_processed_enabled_token_count.read()?, 0);
+            assert!(!portal.token_enablement_cursor_initialized.read()?);
+            assert_eq!(
+                portal.role[SEQUENCER_A].read()?,
+                u8::from(ZonePortalRole::Sequencer)
+            );
+            assert_eq!(
+                portal.role[SEQUENCER_B].read()?,
+                u8::from(ZonePortalRole::Sequencer)
+            );
             assert_eq!(
                 portal.role[ALLOWED_ACCOUNT].read()?,
-                ZonePortalRole::Account as u8
+                u8::from(ZonePortalRole::Account)
             );
             assert_eq!(
                 portal.role[ZONE_GATEWAY].read()?,
-                ZonePortalRole::CallbackGateway as u8
+                u8::from(ZonePortalRole::CallbackGateway)
             );
             assert!(portal.is_access_enforced.read()?);
             assert!(portal.is_gateway_enforced.read()?);
@@ -428,6 +476,28 @@ mod tests {
             assert_eq!(portal.leader.read()?, SEQUENCER_A);
             assert_eq!(portal.leader_epoch.read()?, 1);
             assert_eq!(portal.leader_activation_tempo_block.read()?, CREATION_BLOCK);
+            assert_eq!(portal.token_enable_count_block.read()?, CREATION_BLOCK);
+            assert_eq!(portal.tokens_enabled_in_current_block.read()?, 1);
+            assert_eq!(portal.pause_expiry.read()?, 0);
+            assert_eq!(
+                portal
+                    .abdication_effective_at(ZonePortalCapability::PausePortal)
+                    .read()?,
+                0
+            );
+            assert_eq!(
+                portal
+                    .abdication_effective_at(ZonePortalCapability::AccessPolicy)
+                    .read()?,
+                0
+            );
+            let expected_token_enablement_hash = keccak256(
+                (B256::ZERO, PATH_USD_ADDRESS, "pathUSD", "pathUSD", "USD").abi_encode_params(),
+            );
+            assert_eq!(
+                portal.token_enablement_hash.read()?,
+                expected_token_enablement_hash
+            );
 
             // Pin the native storage handlers to the canonical Solidity layout.
             assert_eq!(
@@ -438,17 +508,21 @@ mod tests {
                 StorageCtx.sload(created.portal, U256::from(18))?,
                 U256::from(2)
             );
+            assert_eq!(
+                StorageCtx.sload(created.portal, U256::from(19))?,
+                U256::ZERO
+            );
             let membership_slot =
-                U256::from_be_bytes(keccak256((SEQUENCER_A, U256::from(19)).abi_encode()).0);
+                U256::from_be_bytes(keccak256((SEQUENCER_A, U256::from(20)).abi_encode()).0);
             assert_eq!(
                 StorageCtx.sload(created.portal, membership_slot)?,
-                U256::ONE
+                U256::from(u8::from(ZonePortalRole::Sequencer))
             );
             let role_slot =
                 U256::from_be_bytes(keccak256((ALLOWED_ACCOUNT, U256::from(20)).abi_encode()).0);
             assert_eq!(
                 StorageCtx.sload(created.portal, role_slot)?,
-                U256::from(ZonePortalRole::Account as u8)
+                U256::from(u8::from(ZonePortalRole::Account))
             );
             assert_eq!(
                 StorageCtx.sload(created.portal, U256::from(21))?,
@@ -462,16 +536,107 @@ mod tests {
                 U256::from_be_slice(SEQUENCER_A.as_slice()) | (U256::ONE << 160)
             );
             assert_eq!(portal.leader_activation_tempo_block.slot(), U256::from(24));
+            assert_eq!(portal.token_enable_count_block.slot(), U256::from(24));
+            assert_eq!(
+                portal.tokens_enabled_in_current_block.slot(),
+                U256::from(25)
+            );
+            assert_eq!(portal.pause_expiry.slot(), U256::from(25));
             assert_eq!(
                 StorageCtx.sload(created.portal, U256::from(24))?,
-                U256::from(CREATION_BLOCK)
+                U256::from(CREATION_BLOCK) | (U256::from(CREATION_BLOCK) << 192)
+            );
+            assert_eq!(StorageCtx.sload(created.portal, U256::from(25))?, U256::ONE);
+            assert_eq!(portal.token_enablement_hash.slot(), U256::from(26));
+            assert_eq!(
+                StorageCtx.sload(created.portal, U256::from(26))?,
+                U256::from_be_bytes(expected_token_enablement_hash.0)
+            );
+            assert_eq!(portal.abdication_effective_at.slot(), U256::from(27));
+            assert_eq!(
+                StorageCtx.sload(created.portal, U256::from(28))?,
+                U256::ZERO
+            );
+            let access_abdication_slot = U256::from_be_bytes(
+                keccak256(
+                    (
+                        U256::from(u8::from(ZonePortalCapability::AccessPolicy)),
+                        U256::from(27),
+                    )
+                        .abi_encode(),
+                )
+                .0,
+            );
+            assert_eq!(
+                portal
+                    .abdication_effective_at(ZonePortalCapability::AccessPolicy)
+                    .slot(),
+                access_abdication_slot
             );
 
             // Ensure portal can't be re-initialized
             assert_eq!(
-                portal.initialize(1, &params),
+                portal.initialize(1, &params, B256::ZERO),
                 Err(ZoneFactoryError::already_initialized().into())
             );
+            Ok(())
+        })
+    }
+
+    #[test]
+    fn create_zone_initializes_token_cursor_at_t12() -> eyre::Result<()> {
+        let mut storage = HashMapStorageProvider::new_with_spec(1, TempoHardfork::T12);
+        StorageCtx::enter(&mut storage, || -> eyre::Result<()> {
+            TIP20Setup::path_usd(ADMIN).apply()?;
+            let mut factory = factory_with_owner(OWNER)?;
+            let created = factory.create_zone(
+                OWNER,
+                IZoneFactory::createZoneCall {
+                    params: create_params(PATH_USD_ADDRESS),
+                },
+            )?;
+
+            let portal = ZonePortalStorage::new(created.portal);
+            assert_eq!(portal.last_processed_enabled_token_count.read()?, 0);
+            assert!(portal.token_enablement_cursor_initialized.read()?);
+            assert_eq!(
+                StorageCtx.sload(created.portal, U256::from(28))?,
+                U256::ONE << 64
+            );
+            Ok(())
+        })
+    }
+
+    #[test]
+    fn create_zone_rejects_oversized_initial_token_metadata() -> eyre::Result<()> {
+        let mut storage = HashMapStorageProvider::new_with_spec(1, TempoHardfork::T10);
+        StorageCtx::enter(&mut storage, || -> eyre::Result<()> {
+            let mut factory = factory_with_owner(OWNER)?;
+
+            let long_name = TIP20Setup::create("nnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnn", "N", ADMIN)
+                .apply()?
+                .address();
+            let long_symbol =
+                TIP20Setup::create("Symbol", "ssssssssssssssssssssssssssssssss", ADMIN)
+                    .apply()?
+                    .address();
+            let long_currency = TIP20Setup::create("Currency", "C", ADMIN)
+                .currency("cccccccccccccccccccccccccccccccc")
+                .apply()?
+                .address();
+
+            for token in [long_name, long_symbol, long_currency] {
+                let err = factory
+                    .create_zone(
+                        OWNER,
+                        IZoneFactory::createZoneCall {
+                            params: create_params(token),
+                        },
+                    )
+                    .unwrap_err();
+                assert_eq!(err, ZoneFactoryError::token_metadata_too_long().into());
+                assert_eq!(factory.next_zone_id()?, 1);
+            }
             Ok(())
         })
     }
@@ -573,6 +738,8 @@ mod tests {
             for (allowed_accounts, zone_gateways) in [
                 (vec![ZONE_MESSENGER_ADDRESS], vec![ZONE_GATEWAY]),
                 (vec![ALLOWED_ACCOUNT], vec![ALLOWED_ACCOUNT]),
+                (vec![SEQUENCER_A], vec![ZONE_GATEWAY]),
+                (vec![ALLOWED_ACCOUNT], vec![SEQUENCER_A]),
             ] {
                 let mut params = create_params(PATH_USD_ADDRESS);
                 params.allowedAccounts = allowed_accounts;
@@ -622,6 +789,31 @@ mod tests {
             params.sequencers = vec![SEQUENCER_B, SEQUENCER_A];
             factory.create_zone(OWNER, IZoneFactory::createZoneCall { params })?;
             assert_eq!(factory.zone(1)?.sequencers, vec![SEQUENCER_B, SEQUENCER_A]);
+            Ok(())
+        })
+    }
+
+    #[test]
+    fn create_zone_allows_admin_as_sequencer() -> eyre::Result<()> {
+        let mut storage = HashMapStorageProvider::new_with_spec(1, TempoHardfork::T10);
+        StorageCtx::enter(&mut storage, || -> eyre::Result<()> {
+            TIP20Setup::path_usd(ADMIN).apply()?;
+            let mut factory = factory_with_owner(OWNER)?;
+            let mut params = create_params(PATH_USD_ADDRESS);
+            params.sequencers = vec![ADMIN];
+            params.threshold = 1;
+
+            let created = factory.create_zone(OWNER, IZoneFactory::createZoneCall { params })?;
+
+            assert_eq!(factory.zone(created.zoneId)?.admin, ADMIN);
+            assert_eq!(factory.zone(created.zoneId)?.sequencers, vec![ADMIN]);
+            let portal = ZonePortalStorage::new(created.portal);
+            assert_eq!(portal.admin.read()?, ADMIN);
+            assert_eq!(portal.sequencers.read()?, vec![ADMIN]);
+            assert_eq!(
+                portal.role[ADMIN].read()?,
+                u8::from(ZonePortalRole::Sequencer)
+            );
             Ok(())
         })
     }

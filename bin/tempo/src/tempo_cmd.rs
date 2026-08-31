@@ -1005,7 +1005,7 @@ impl GenerateSigningKey {
             secret,
             force,
         } = self;
-        let signing_key = PrivateKey::random(&mut rand_08::thread_rng());
+        let signing_key = PrivateKey::random(rand::rng());
         let public_key = signing_key.public_key();
         let signing_key = SigningKey::from(signing_key);
         let passphrase = secret

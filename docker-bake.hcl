@@ -11,7 +11,11 @@ variable "TEMPO_NIGHTLY_ENGINE_DEFAULTS" {
 }
 
 group "default" {
-  targets = ["tempo", "tempo-sidecar", "tempo-xtask"]
+  targets = ["tempo", "tempo-localnet", "tempo-sidecar", "tempo-xtask"]
+}
+
+group "nightly" {
+  targets = ["tempo", "tempo-localnet", "tempo-sidecar", "tempo-xtask"]
 }
 
 target "docker-metadata" {}
@@ -49,6 +53,11 @@ target "tempo" {
   args = {
     TEMPO_NIGHTLY_ENGINE_DEFAULTS = "${TEMPO_NIGHTLY_ENGINE_DEFAULTS}"
   }
+}
+
+target "tempo-localnet" {
+  inherits = ["_common", "docker-metadata"]
+  target = "tempo-localnet"
 }
 
 target "tempo-sidecar" {
