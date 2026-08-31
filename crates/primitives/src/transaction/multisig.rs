@@ -43,19 +43,19 @@ pub const MULTISIG_RECOVERY_SINGLETON_FACTORY_RUNTIME_HASH: B256 =
     b256!("2fa86add0aed31f33a762c9d88e807c475bd51d0f52bd0955754b2608f7e4989");
 
 /// Dedicated CREATE2 factory for recovery wallets on non-Tempo EVM chains.
-pub const MULTISIG_RECOVERY_FACTORY: Address = address!("08919882768F959FCFd64aD86097368f76BC9808");
+pub const MULTISIG_RECOVERY_FACTORY: Address = address!("8a196A227C48Ae8A3E36EebD4E106675CC0f6E64");
 
 /// Keccak-256 of the dedicated recovery factory creation code.
 pub const MULTISIG_RECOVERY_FACTORY_INIT_CODE_HASH: B256 =
-    b256!("595a7ee10fa3bf56214edcd947fd963571fccbfe80f013d4739c93b2c9ea287c");
+    b256!("7b42ecafbba234c24f2ff2048bafe1d7c0117bac1676006e32e83788b2d6af59");
 
 /// Keccak-256 of the dedicated recovery factory runtime code.
 pub const MULTISIG_RECOVERY_FACTORY_RUNTIME_HASH: B256 =
-    b256!("a44ed7004678d01a23f6a04f77d453f0fc6e2e8bc51af79f7d32193f30215f46");
+    b256!("652767050367e6f3b47e14e416d212a549f6666a2c4867e157a39a7306b357ad");
 
 /// Keccak-256 of the canonical recovery wallet creation code.
 pub const MULTISIG_RECOVERY_WALLET_INIT_CODE_HASH: B256 =
-    b256!("5bda203056c9735495be335da97e26667ba119894dd0d447587c1378ed897c4c");
+    b256!("4b5ff53c5328a10a6ec5224adf16de5e204a47057c98af037ee30b7de660a8a6");
 
 /// CREATE2 preimage length: 1-byte `0xff` + 20-byte factory + 32-byte salt +
 /// 32-byte init-code hash.
@@ -1050,13 +1050,13 @@ mod tests {
         );
         assert_eq!(
             account,
-            alloy_primitives::address!("a4e1866c3252527d36d43a3a98122eb0017a85e5")
+            alloy_primitives::address!("f4b916c5aea0fb199bd942389be00db0690c961f")
         );
         assert_eq!(multisig_account_address(account_salt), account);
         assert_eq!(
             multisig_digest(B256::repeat_byte(0x42), account, 0),
             alloy_primitives::b256!(
-                "9aad77147b627d4c58165c22dcfafad33260bb863385fc4f8843d22bd59fd428"
+                "dba6b49849aaef399fbc1de73fe26d520f21846c80c3e5d2486ad56e8df3cee3"
             )
         );
 

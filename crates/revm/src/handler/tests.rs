@@ -4492,7 +4492,7 @@ fn native_multisig_execution_remains_inactive() {
     let account = config.derive_account().unwrap();
     let aa_env = TempoBatchCallEnv {
         signature: TempoSignature::Multisig(
-            MultisigSignature::try_new(account, config, vec![Bytes::from_static(&[0xaa; 65])])
+            MultisigSignature::try_new(account, config, vec![TempoSignature::default()])
                 .expect("valid multisig test fixture"),
         ),
         aa_calls: vec![Call {
