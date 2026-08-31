@@ -79,6 +79,7 @@ where
         }
     }
 }
+
 impl<Client, EvmConfig> TempoTransactionPool<Client, EvmConfig>
 where
     Client: StateProviderFactory
@@ -129,6 +130,8 @@ where
     /// 4. **Fee payer balance changes**: Transactions whose fee payer no longer has enough
     ///    balance in the resolved fee token after a TIP20 transfer
     /// 5. **Fee token pauses**: Transactions using a token paused in the committed block
+    /// 6. **Native multisig updates**: Transactions whose authorization depends on a changed
+    ///    multisig configuration
     ///
     /// All checks are combined into one scan to avoid iterating the pool multiple times
     /// per block.
@@ -136,24 +139,31 @@ where
         &self,
         updates: &crate::maintain::TempoPoolUpdates,
     ) -> Vec<Arc<ValidPoolTransaction<TempoPooledTransaction>>> {
-        if !updates.has_invalidation_events() {
+        if !updates.requires_pool_scan() {
             return Vec::new();
         }
 
         let all_txs = self.all_transactions();
-        self.evict_invalidated_transactions_from(updates, all_txs.iter(), None)
+        self.scan_and_remove_invalidated_transactions(
+            updates,
+            all_txs.iter(),
+            None,
+            MultisigUpdateAction::Evict,
+        )
+        .evicted
     }
 
-    /// See [`Self::evict_invalidated_transactions`]; returns the removed transactions so
-    /// the caller controls when they are dropped.
-    pub(crate) fn evict_invalidated_transactions_from<'a>(
+    /// Scans one transaction snapshot and partitions removals by their next action.
+    pub(crate) fn scan_and_remove_invalidated_transactions<'a>(
         &self,
         updates: &crate::maintain::TempoPoolUpdates,
         transactions: impl IntoIterator<Item = &'a Arc<ValidPoolTransaction<TempoPooledTransaction>>>,
         expiry_cutoff: Option<u64>,
-    ) -> Vec<Arc<ValidPoolTransaction<TempoPooledTransaction>>> {
-        if !updates.has_invalidation_events() && expiry_cutoff.is_none() {
-            return Vec::new();
+        multisig_action: MultisigUpdateAction,
+    ) -> InvalidationScanOutcome {
+        let has_multisig_updates = updates.has_multisig_updates();
+        if !updates.requires_pool_scan() && expiry_cutoff.is_none() {
+            return InvalidationScanOutcome::default();
         }
 
         // Fetch state provider if any check needs on-chain reads:
@@ -227,6 +237,7 @@ where
         };
 
         let mut to_remove = Vec::new();
+        let mut to_revalidate = Vec::new();
         let mut revoked_count = 0;
         let mut key_authorization_target_count = 0;
         let mut spending_limit_count = 0;
@@ -244,6 +255,14 @@ where
         let mut fee_balance_cache: HashMap<(Address, Address), U256> = HashMap::default();
 
         for tx in transactions {
+            if has_multisig_updates && updates.affects_multisig_transaction(&tx.transaction) {
+                match multisig_action {
+                    MultisigUpdateAction::Evict => to_remove.push(*tx.hash()),
+                    MultisigUpdateAction::Revalidate => to_revalidate.push(*tx.hash()),
+                }
+                continue;
+            }
+
             if expiry_cutoff.is_some_and(|cutoff| tx.transaction.is_expired_by(cutoff)) {
                 to_remove.push(*tx.hash());
                 continue;
@@ -506,8 +525,17 @@ where
             }
         }
 
+        let multisig_to_revalidate = if to_revalidate.is_empty() {
+            Vec::new()
+        } else {
+            self.remove_transactions(to_revalidate)
+        };
+
         if to_remove.is_empty() {
-            return Vec::new();
+            return InvalidationScanOutcome {
+                evicted: Vec::new(),
+                multisig_to_revalidate,
+            };
         }
 
         tracing::debug!(
@@ -526,7 +554,10 @@ where
             paused_token_count,
             "Evicting invalidated or expired transactions"
         );
-        self.remove_transactions(to_remove)
+        InvalidationScanOutcome {
+            evicted: self.remove_transactions(to_remove),
+            multisig_to_revalidate,
+        }
     }
 
     /// Adds a validated transaction to the subpool derived from its type and nonce key.
@@ -619,6 +650,20 @@ where
             }
         }
     }
+}
+
+/// How the shared invalidation scan handles transactions affected by multisig updates.
+#[derive(Debug, Clone, Copy)]
+pub(crate) enum MultisigUpdateAction {
+    Evict,
+    Revalidate,
+}
+
+/// Transactions removed by one invalidation scan, partitioned by their next action.
+#[derive(Default)]
+pub(crate) struct InvalidationScanOutcome {
+    pub(crate) evicted: Vec<Arc<ValidPoolTransaction<TempoPooledTransaction>>>,
+    pub(crate) multisig_to_revalidate: Vec<Arc<ValidPoolTransaction<TempoPooledTransaction>>>,
 }
 
 // Manual Clone implementation
@@ -1648,6 +1693,52 @@ mod tests {
         assert_eq!(size.queued, 0);
         assert_eq!(size.queued_size, 0);
         assert_eq!(size.total, 1);
+    }
+
+    #[test]
+    fn classifies_multisig_revalidation_during_invalidation_scan() {
+        let multisig_account = Address::random();
+        let multisig =
+            crate::test_utils::TxBuilder::aa(multisig_account).build_multisig(multisig_account);
+        let expired = crate::test_utils::TxBuilder::aa(Address::random())
+            .valid_before(10)
+            .build();
+        let pool = create_test_pool(create_provider_with_tip());
+        add_validated(&pool, multisig.clone());
+        add_validated(&pool, expired.clone());
+
+        let mut updates = crate::maintain::TempoPoolUpdates::new();
+        updates.multisig_config_changes.insert(multisig_account);
+        let all_txs = pool.all_transactions();
+        let InvalidationScanOutcome {
+            evicted,
+            multisig_to_revalidate,
+        } = pool.scan_and_remove_invalidated_transactions(
+            &updates,
+            all_txs.iter(),
+            Some(10),
+            MultisigUpdateAction::Revalidate,
+        );
+
+        assert_eq!(tx_hashes(&multisig_to_revalidate), vec![*multisig.hash()]);
+        assert_eq!(tx_hashes(&evicted), vec![*expired.hash()]);
+        assert!(pool.get(multisig.hash()).is_none());
+        assert!(pool.get(expired.hash()).is_none());
+    }
+
+    #[test]
+    fn public_invalidation_evicts_affected_multisig_transactions() {
+        let account = Address::random();
+        let multisig = crate::test_utils::TxBuilder::aa(account).build_multisig(account);
+        let pool = create_test_pool(create_provider_with_tip());
+        add_validated(&pool, multisig.clone());
+
+        let mut updates = crate::maintain::TempoPoolUpdates::new();
+        updates.multisig_config_changes.insert(account);
+
+        let evicted = pool.evict_invalidated_transactions(&updates);
+        assert_eq!(tx_hashes(&evicted), vec![*multisig.hash()]);
+        assert!(pool.get(multisig.hash()).is_none());
     }
 
     fn sponsored_keychain_transaction(
