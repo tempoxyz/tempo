@@ -196,6 +196,7 @@ impl BestTransactionsPrewarming {
             let result = match evm.transact_raw(tx_env) {
                 Ok(result) => result.result,
                 Err(err) => {
+                    // Discard actions recorded by the failed transaction before reusing this worker.
                     evm.clear_actions();
                     trace!(
                         target: "payload_builder",
