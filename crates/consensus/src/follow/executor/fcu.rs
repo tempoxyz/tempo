@@ -18,17 +18,25 @@ use crate::consensus::{
 /// Follower forkchoice state. Safe always follows finalized.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(super) struct Forkchoice {
-    head: (Option<Round>, Digest),
-    finalized: (Height, Digest),
+    head: (Round, Digest),
+    finalized: (Height, Round, Digest),
 }
 
 impl Forkchoice {
     pub(super) fn new(header: &SealedHeader<TempoHeader>) -> Self {
         let tip = header.num_hash();
         let digest = Digest(tip.hash);
+
+        // Post-activation headers carry consensus context. Round zero is a safe fallback for legacy
+        // or genesis headers because any certified post-activation round supersedes it.
+        let round = header
+            .consensus_context
+            .map(round_from_context)
+            .unwrap_or_else(Round::zero);
+
         Self {
-            head: (header.consensus_context.map(round_from_context), digest),
-            finalized: (Height::new(tip.number), digest),
+            head: (round, digest),
+            finalized: (Height::new(tip.number), round, digest),
         }
     }
 
@@ -37,12 +45,12 @@ impl Forkchoice {
     }
 
     pub(super) const fn finalized_digest(self) -> Digest {
-        self.finalized.1
+        self.finalized.2
     }
 
     pub(super) fn update_head(&mut self, round: Round, digest: Digest) {
-        if self.head.0.is_none_or(|current| round > current) {
-            self.head = (Some(round), digest);
+        if round > self.finalized.1 && round > self.head.0 {
+            self.head = (round, digest);
         }
     }
 
@@ -53,11 +61,15 @@ impl Forkchoice {
         }
 
         let digest = block.digest();
-        self.finalized = (height, digest);
 
         // Post-activation blocks always carry consensus context. If one does not,
         // `context()` safely falls back to the sentinel round zero.
-        self.update_head(block.context().round, digest);
+        let round = block.context().round;
+        self.finalized = (height, round, digest);
+
+        if self.head.0 <= round {
+            self.head = (round, digest);
+        }
 
         true
     }
@@ -131,29 +143,29 @@ mod tests {
     fn later_round_supersedes_earlier_round() {
         let mut forkchoice = Forkchoice::new(&execution_header(100, Some(round(8)), digest(1)));
         forkchoice.update_head(round(9), digest(2));
-        assert_eq!(forkchoice.head, (Some(round(9)), digest(2)));
+        assert_eq!(forkchoice.head, (round(9), digest(2)));
 
         forkchoice.update_head(round(8), digest(3));
-        assert_eq!(forkchoice.head, (Some(round(9)), digest(2)));
+        assert_eq!(forkchoice.head, (round(9), digest(2)));
     }
 
     #[test]
     fn equal_round_does_not_supersede() {
         let mut forkchoice = Forkchoice::new(&execution_header(100, Some(round(8)), digest(1)));
         forkchoice.update_head(round(8), digest(2));
-        assert_eq!(forkchoice.head, (Some(round(8)), digest(1)));
+        assert_eq!(forkchoice.head, (round(8), digest(1)));
     }
 
     #[test]
-    fn roundless_header_has_no_certified_head() {
+    fn roundless_header_uses_round_zero() {
         let header = execution_header(100, None, digest(1));
-        assert_eq!(Forkchoice::new(&header).head, (None, digest(1)));
+        assert_eq!(Forkchoice::new(&header).head, (Round::zero(), digest(1)));
     }
 
     #[test]
     fn certified_head_uses_header_round() {
         let header = execution_header(100, Some(round(2)), digest(1));
-        assert_eq!(Forkchoice::new(&header).head, (Some(round(2)), digest(1)));
+        assert_eq!(Forkchoice::new(&header).head, (round(2), digest(1)));
     }
 
     #[test]
@@ -171,8 +183,29 @@ mod tests {
 
         forkchoice.update_head(round(2), digest(2));
 
-        assert_eq!(forkchoice.head, (Some(round(2)), digest(2)));
-        assert_eq!(forkchoice.finalized, (Height::new(100), digest(1)));
+        assert_eq!(forkchoice.head, (round(2), digest(2)));
+        assert_eq!(
+            forkchoice.finalized,
+            (Height::new(100), round(1), digest(1))
+        );
+    }
+
+    #[test]
+    fn head_must_supersede_finalized_round() {
+        let current = execution_header(100, Some(round(1)), digest(1));
+        let mut forkchoice = Forkchoice::new(&current);
+        forkchoice.update_head(round(2), digest(2));
+
+        let finalized = execution_block(101, Some(round(2)));
+        let finalized_digest = finalized.digest();
+        assert!(forkchoice.update_finalized(&finalized));
+        assert_eq!(forkchoice.head, (round(2), finalized_digest));
+
+        forkchoice.update_head(round(2), digest(3));
+        assert_eq!(forkchoice.head, (round(2), finalized_digest));
+
+        forkchoice.update_head(round(3), digest(4));
+        assert_eq!(forkchoice.head, (round(3), digest(4)));
     }
 
     #[test]

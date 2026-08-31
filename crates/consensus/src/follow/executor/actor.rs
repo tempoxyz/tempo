@@ -81,8 +81,8 @@ where
         let finalized_header = execution_provider
             .finalized_header()
             .expect("failed reading finalized execution header");
-        let forkchoice = Forkchoice::new(&finalized_header);
 
+        let forkchoice = Forkchoice::new(&finalized_header);
         Self {
             context: ContextCell::new(context),
 
