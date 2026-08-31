@@ -15,9 +15,15 @@ use {
     alloy_primitives::B256,
     tempo_primitives::{
         TempoSignature,
-        transaction::{MultisigSignature, PrimitiveSignature},
+        transaction::{MAX_WEBAUTHN_SIGNATURE_LENGTH, MultisigSignature, PrimitiveSignature},
     },
 };
+
+#[cfg(feature = "revm")]
+const WEBAUTHN_FIXED_SIGNATURE_BYTES: usize = 128;
+#[cfg(feature = "revm")]
+const MAX_MULTISIG_WEBAUTHN_DATA_BYTES: usize =
+    MAX_WEBAUTHN_SIGNATURE_LENGTH - WEBAUTHN_FIXED_SIGNATURE_BYTES;
 
 /// Native multisig spec used only to construct an RPC simulation signature.
 #[derive(Clone, Debug, PartialEq, Eq, Hash, Serialize, Deserialize)]
@@ -241,23 +247,22 @@ fn create_multisig_simulation_primitive(
 ) -> PrimitiveSignature {
     key_type.map_or_else(
         create_conservative_native_multisig_primitive_signature,
-        |key_type| super::revm_compat::create_mock_primitive_signature(&key_type, key_data),
+        |key_type| {
+            super::revm_compat::create_mock_primitive_signature_with_webauthn_limit(
+                &key_type,
+                key_data,
+                MAX_MULTISIG_WEBAUTHN_DATA_BYTES,
+            )
+        },
     )
 }
 
 #[cfg(feature = "revm")]
 fn create_conservative_native_multisig_primitive_signature() -> PrimitiveSignature {
-    use tempo_primitives::transaction::{
-        MAX_WEBAUTHN_SIGNATURE_LENGTH, tt_signature::WebAuthnSignature,
-    };
+    use tempo_primitives::transaction::tt_signature::WebAuthnSignature;
 
-    const WEBAUTHN_FIXED_SIGNATURE_BYTES: usize = 128;
     PrimitiveSignature::WebAuthn(WebAuthnSignature {
-        webauthn_data: Bytes::from(vec![
-            0xff;
-            MAX_WEBAUTHN_SIGNATURE_LENGTH
-                - WEBAUTHN_FIXED_SIGNATURE_BYTES
-        ]),
+        webauthn_data: Bytes::from(vec![0xff; MAX_MULTISIG_WEBAUTHN_DATA_BYTES]),
         r: B256::ZERO,
         s: B256::ZERO,
         pub_key_x: B256::ZERO,

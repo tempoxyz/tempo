@@ -151,6 +151,15 @@ pub(super) fn create_mock_primitive_signature(
     sig_type: &SignatureType,
     key_data: Option<Bytes>,
 ) -> tempo_primitives::transaction::tt_signature::PrimitiveSignature {
+    const MAX_WEBAUTHN_SIZE: usize = 8192;
+    create_mock_primitive_signature_with_webauthn_limit(sig_type, key_data, MAX_WEBAUTHN_SIZE)
+}
+
+pub(super) fn create_mock_primitive_signature_with_webauthn_limit(
+    sig_type: &SignatureType,
+    key_data: Option<Bytes>,
+    max_webauthn_size: usize,
+) -> tempo_primitives::transaction::tt_signature::PrimitiveSignature {
     use tempo_primitives::transaction::tt_signature::{
         P256SignatureWithPreHash, PrimitiveSignature, WebAuthnSignature,
     };
@@ -174,8 +183,6 @@ pub(super) fn create_mock_primitive_signature(
             const AUTH_DATA_SIZE: usize = 37;
             const MIN_WEBAUTHN_SIZE: usize = AUTH_DATA_SIZE + BASE_CLIENT_JSON.len();
             const DEFAULT_WEBAUTHN_SIZE: usize = 800;
-            const MAX_WEBAUTHN_SIZE: usize = 8192;
-
             let size = if let Some(data) = key_data.as_ref() {
                 match data.len() {
                     1 => data[0] as usize,
@@ -186,7 +193,7 @@ pub(super) fn create_mock_primitive_signature(
             } else {
                 DEFAULT_WEBAUTHN_SIZE
             }
-            .clamp(MIN_WEBAUTHN_SIZE, MAX_WEBAUTHN_SIZE);
+            .clamp(MIN_WEBAUTHN_SIZE, max_webauthn_size);
 
             // Nonzero bytes make the mock conservative for calldata gas while preserving the
             // authenticator-data shape expected by WebAuthn validation.
@@ -348,6 +355,24 @@ mod tests {
         assert_eq!(
             approval.webauthn_data.len(),
             MAX_WEBAUTHN_SIGNATURE_LENGTH - 128
+        );
+    }
+
+    #[test]
+    fn multisig_webauthn_size_hint_is_clamped_to_owner_limit() {
+        use tempo_primitives::transaction::MAX_MULTISIG_OWNER_SIGNATURE_BYTES;
+
+        let (account, mut spec) = one_of_one_spec();
+        let MultisigSimulationApproval::Primitive(approval) = &mut spec.approvals[0] else {
+            unreachable!()
+        };
+        approval.key_type = Some(SignatureType::WebAuthn);
+        approval.key_data = Some(Bytes::copy_from_slice(&u32::MAX.to_be_bytes()));
+
+        let signature = create_mock_native_multisig_signature(account, &spec).unwrap();
+        assert_eq!(
+            signature.signatures()[0].encoded_length(),
+            MAX_MULTISIG_OWNER_SIGNATURE_BYTES
         );
     }
 }
