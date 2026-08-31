@@ -31,6 +31,7 @@ mod codec {
     use reth_codecs::{
         Compact,
         alloy::transaction::{CompactEnvelope, Envelope},
+        compress::DecompressError,
         txtype::{
             COMPACT_EXTENDED_IDENTIFIER_FLAG, COMPACT_IDENTIFIER_EIP1559,
             COMPACT_IDENTIFIER_EIP2930, COMPACT_IDENTIFIER_LEGACY,
@@ -190,7 +191,7 @@ mod codec {
     }
 
     impl reth_db_api::table::Decompress for TempoTxEnvelope {
-        fn decompress(value: &[u8]) -> Result<Self, reth_codecs::compress::DecompressError> {
+        fn decompress(value: &[u8]) -> Result<Self, DecompressError> {
             let (obj, _) = Compact::from_compact(value, value.len());
             Ok(obj)
         }
