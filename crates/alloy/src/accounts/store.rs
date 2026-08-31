@@ -2375,7 +2375,7 @@ fn validate_authorizer_binding(
             if authorization.account != Some(account) {
                 return Err("multisig authorization must name the target account");
             }
-            if signature.recover_account().ok() != Some(account) {
+            if signature.account() != account {
                 return Err("multisig signature claims a different account");
             }
         }
@@ -2417,7 +2417,7 @@ struct WritableAccount {
 
 #[derive(Serialize)]
 #[serde(rename_all = "camelCase")]
-struct WritableAccessKey {
+struct WritableAccessKey<'a> {
     address: Address,
     access: Address,
     chain_id: u64,
@@ -2429,7 +2429,7 @@ struct WritableAccessKey {
     limits: Option<Vec<WritableTokenLimit>>,
     #[serde(skip_serializing_if = "Option::is_none")]
     scopes: Option<Vec<WritableScope>>,
-    key_authorization: WritableSignedKeyAuthorization,
+    key_authorization: WritableSignedKeyAuthorization<'a>,
 }
 
 #[derive(Clone, Serialize)]
@@ -2451,7 +2451,7 @@ struct WritableScope {
 
 #[derive(Serialize)]
 #[serde(rename_all = "camelCase")]
-struct WritableSignedKeyAuthorization {
+struct WritableSignedKeyAuthorization<'a> {
     address: Address,
     chain_id: String,
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -2468,7 +2468,7 @@ struct WritableSignedKeyAuthorization {
     account: Option<Address>,
     #[serde(rename = "type")]
     key_type: &'static str,
-    signature: WritableAuthorizationSignature,
+    signature: WritableAuthorizationSignature<'a>,
 }
 
 #[derive(Serialize)]
@@ -2494,9 +2494,9 @@ enum WritablePrimitiveSignature {
 
 #[derive(Serialize)]
 #[serde(untagged)]
-enum WritableAuthorizationSignature {
+enum WritableAuthorizationSignature<'a> {
     Primitive(WritablePrimitiveSignature),
-    Multisig(MultisigSignature),
+    Multisig(&'a MultisigSignature),
 }
 
 #[derive(Serialize)]
@@ -2625,11 +2625,11 @@ fn writable_scopes(authorization: &SignedKeyAuthorization) -> Option<Vec<Writabl
     })
 }
 
-fn writable_access_key(
+fn writable_access_key<'a>(
     account: Address,
     signer: &PrivateKeySigner,
-    authorization: &SignedKeyAuthorization,
-) -> Result<WritableAccessKey, TempoAccountsError> {
+    authorization: &'a SignedKeyAuthorization,
+) -> Result<WritableAccessKey<'a>, TempoAccountsError> {
     let limits = authorization.limits.as_ref().map(|limits| {
         limits
             .iter()
@@ -2645,9 +2645,7 @@ fn writable_access_key(
         TempoSignature::Primitive(signature) => {
             WritableAuthorizationSignature::Primitive(writable_signature(signature)?)
         }
-        TempoSignature::Multisig(signature) => {
-            WritableAuthorizationSignature::Multisig(signature.clone())
-        }
+        TempoSignature::Multisig(signature) => WritableAuthorizationSignature::Multisig(signature),
         TempoSignature::Keychain(_) => {
             return Err(TempoAccountsError::InvalidAuthorization(
                 "key authorization signatures cannot use keychain encoding",
@@ -3643,7 +3641,7 @@ mod tests {
                     MultisigSignature::try_new(
                         account,
                         config,
-                        vec![PrimitiveSignature::default().to_bytes()],
+                        vec![TempoSignature::Primitive(PrimitiveSignature::default())],
                     )
                     .unwrap(),
                 ));
@@ -3694,7 +3692,7 @@ mod tests {
         let multisig = MultisigSignature::try_new(
             Address::repeat_byte(0x66),
             config,
-            vec![PrimitiveSignature::default().to_bytes()],
+            vec![TempoSignature::Primitive(PrimitiveSignature::default())],
         )
         .unwrap();
 

@@ -471,9 +471,7 @@ impl SignedKeyAuthorization {
     pub fn recover_authorizing_account(&self) -> Result<Address, RecoveryError> {
         match &self.signature {
             TempoSignature::Primitive(_) => self.recover_signer(),
-            TempoSignature::Multisig(signature) => signature
-                .recover_account()
-                .map_err(|_| RecoveryError::new()),
+            TempoSignature::Multisig(signature) => Ok(signature.account()),
             TempoSignature::Keychain(_) => Err(RecoveryError::new()),
         }
     }
@@ -981,7 +979,7 @@ mod tests {
             crate::transaction::MultisigSignature::try_new(
                 Address::repeat_byte(0x44),
                 multisig_config(),
-                vec![PrimitiveSignature::default().to_bytes()],
+                vec![TempoSignature::Primitive(PrimitiveSignature::default())],
             )
             .unwrap(),
         );
@@ -1018,7 +1016,7 @@ mod tests {
             crate::transaction::MultisigSignature::try_new(
                 Address::repeat_byte(0x44),
                 multisig_config(),
-                vec![PrimitiveSignature::default().to_bytes()],
+                vec![TempoSignature::Primitive(PrimitiveSignature::default())],
             )
             .unwrap(),
         );
@@ -1046,7 +1044,7 @@ mod tests {
             crate::transaction::MultisigSignature::try_new(
                 account,
                 multisig_config(),
-                vec![PrimitiveSignature::default().to_bytes()],
+                vec![TempoSignature::Primitive(PrimitiveSignature::default())],
             )
             .unwrap(),
         );
