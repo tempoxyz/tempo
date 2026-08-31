@@ -639,7 +639,7 @@ def start-e2e-local-node [
     }
 }
 
-def build-e2e-consensus-args [node_dir: string, trusted_peers: string, port: int, consensus_ip: string] {
+def build-e2e-consensus-args [node_dir: string, signing_dir: string, trusted_peers: string, port: int, consensus_ip: string] {
     let addr = ($node_dir | path basename)
     let inferred_ip = if ($addr | str contains ":") {
         $addr | split row ":" | get 0
@@ -647,8 +647,8 @@ def build-e2e-consensus-args [node_dir: string, trusted_peers: string, port: int
         "0.0.0.0"
     }
     let ip = if $consensus_ip != "" { $consensus_ip } else { $inferred_ip }
-    let signing_key = $"($node_dir)/signing.key"
-    let signing_share = $"($node_dir)/signing.share"
+    let signing_key = $"($signing_dir)/signing.key"
+    let signing_share = $"($signing_dir)/signing.share"
     let enode_key = $"($node_dir)/enode.key"
     let signing_key_contents = (open --raw $signing_key | into binary)
     let signing_key_is_encrypted = ($signing_key_contents | bytes starts-with 0x[61 67 65 2d 65 6e 63 72 79 70 74 69 6f 6e 2e 6f 72 67 2f])
@@ -1002,7 +1002,19 @@ def run-local-e2e-phase [run: record, ctx: record] {
     let hardfork = ($run | get -o hardfork | default "")
     let side_args = if $run_type == "baseline" { $ctx.baseline_args } else { $ctx.feature_args }
     let side_env = if $run_type == "baseline" { $ctx.baseline_env } else { $ctx.feature_env }
-    let extra_args = (parse-cli-args $side_args)
+    let parsed_side_args = (parse-cli-args $side_args)
+    let diagnostic_arg_prefix = "--bench.feature-diagnostic-mode="
+    let diagnostic_args = ($parsed_side_args | where { |arg| $arg | str starts-with $diagnostic_arg_prefix })
+    let diagnostic_mode = if $run_type == "feature" and ($diagnostic_args | length) > 0 {
+        $diagnostic_args | last | str replace $diagnostic_arg_prefix ""
+    } else {
+        "none"
+    }
+    if $diagnostic_mode not-in ["none" "swap-cpus" "swap-storage" "swap-identities" "reverse-rpc"] {
+        print $"Error: diagnostic mode must be one of: none, swap-cpus, swap-storage, swap-identities, reverse-rpc \(got '($diagnostic_mode)'\)"
+        return 1
+    }
+    let extra_args = ($parsed_side_args | where { |arg| not ($arg | str starts-with $diagnostic_arg_prefix) })
     let local_reth_args = if $run_type == "baseline" { $ctx.baseline_local_reth_args } else { $ctx.feature_local_reth_args }
 
     cleanup-local-e2e-processes
@@ -1032,6 +1044,21 @@ def run-local-e2e-phase [run: record, ctx: record] {
         }
     }
 
+    let a_datadir = if $diagnostic_mode == "swap-storage" { $ctx.b.datadir } else { $ctx.a.datadir }
+    let b_datadir = if $diagnostic_mode == "swap-storage" { $ctx.a.datadir } else { $ctx.b.datadir }
+    let a_signing_dir = if $diagnostic_mode == "swap-identities" { $ctx.b.node_dir } else { $ctx.a.node_dir }
+    let b_signing_dir = if $diagnostic_mode == "swap-identities" { $ctx.a.node_dir } else { $ctx.b.node_dir }
+    let a_cpus = if $diagnostic_mode == "swap-cpus" { $ctx.b.cpus } else { $ctx.a.cpus }
+    let b_cpus = if $diagnostic_mode == "swap-cpus" { $ctx.a.cpus } else { $ctx.b.cpus }
+    if $diagnostic_mode in ["swap-storage" "swap-identities"] {
+        # The restored consensus stores are identity-specific. Recreate them so the diagnostic
+        # changes only the requested execution database or signing identity assignment.
+        for dir in [$"($a_datadir)/consensus" $"($b_datadir)/consensus"] {
+            if ($dir | path exists) { rm -rf $dir }
+        }
+    }
+    print $"  Feature diagnostic mode: ($diagnostic_mode)"
+
     let a_log_dir = $"($LOCALNET_DIR)/logs-e2e-local-($phase)-a"
     let b_log_dir = $"($LOCALNET_DIR)/logs-e2e-local-($phase)-b"
     for dir in [$a_log_dir $b_log_dir] {
@@ -1055,16 +1082,16 @@ def run-local-e2e-phase [run: record, ctx: record] {
 
     let a_rpc = "http://127.0.0.1:8545"
     let b_rpc = "http://127.0.0.1:8645"
-    let a_base_args = (build-base-args $genesis $ctx.a.datadir $a_log_dir "0.0.0.0" 8545 9001)
-        | append (build-e2e-consensus-args $ctx.a.node_dir $ctx.trusted_peers $ctx.a.consensus_port $ctx.a.ip)
+    let a_base_args = (build-base-args $genesis $a_datadir $a_log_dir "0.0.0.0" 8545 9001)
+        | append (build-e2e-consensus-args $ctx.a.node_dir $a_signing_dir $ctx.trusted_peers $ctx.a.consensus_port $ctx.a.ip)
         | append $local_reth_args
         | append (log-filter-args $ctx.loud)
         | append (if $ctx.gas_limit != "" { ["--builder.gaslimit" $ctx.gas_limit] } else { [] })
         | append (if $ctx.samply { ["--log.samply"] } else { [] })
         | append (if $ctx.tracy != "off" { ["--log.tracy" "--log.tracy.filter" $ctx.tracy_filter] } else { [] })
         | append (benchmark-otlp-args $ctx.tracing_otlp)
-    let b_base_args = (build-base-args $genesis $ctx.b.datadir $b_log_dir "0.0.0.0" 8645 9101)
-        | append (build-e2e-consensus-args $ctx.b.node_dir $ctx.trusted_peers $ctx.b.consensus_port $ctx.b.ip)
+    let b_base_args = (build-base-args $genesis $b_datadir $b_log_dir "0.0.0.0" 8645 9101)
+        | append (build-e2e-consensus-args $ctx.b.node_dir $b_signing_dir $ctx.trusted_peers $ctx.b.consensus_port $ctx.b.ip)
         | append $local_reth_args
         | append (log-filter-args $ctx.loud)
         | append (if $ctx.gas_limit != "" { ["--builder.gaslimit" $ctx.gas_limit] } else { [] })
@@ -1084,8 +1111,8 @@ def run-local-e2e-phase [run: record, ctx: record] {
     mark-schelk-dirty-at $ctx.a.state_path
     mark-schelk-dirty-at $ctx.b.state_path
 
-    start-e2e-local-node a $phase $run.tempo $a_args $env_prefix $a_otel $tracy_env_prefix $ctx.samply $ctx.samply_args $ctx.results_dir $ctx.a.cpus $ctx.a.memory
-    start-e2e-local-node b $phase $run.tempo $b_args $env_prefix $b_otel "" $ctx.samply $ctx.samply_args $ctx.results_dir $ctx.b.cpus $ctx.b.memory
+    start-e2e-local-node a $phase $run.tempo $a_args $env_prefix $a_otel $tracy_env_prefix $ctx.samply $ctx.samply_args $ctx.results_dir $a_cpus $ctx.a.memory
+    start-e2e-local-node b $phase $run.tempo $b_args $env_prefix $b_otel "" $ctx.samply $ctx.samply_args $ctx.results_dir $b_cpus $ctx.b.memory
 
     sleep 2sec
     let rpc_timeout = if $ctx.bloat > 0 { 600 } else { 300 }
@@ -1136,7 +1163,12 @@ def run-local-e2e-phase [run: record, ctx: record] {
     }
     let metrics_urls = ["a:http://127.0.0.1:9001/metrics" "b:http://127.0.0.1:9101/metrics"]
         | append (if $ctx.runner_metrics_url != "" { [$"runner:($ctx.runner_metrics_url)"] } else { [] })
-    let submit_rpc_url = [$a_rpc $b_rpc] | str join ","
+    let generate_rpc_url = if $diagnostic_mode == "reverse-rpc" { $b_rpc } else { $a_rpc }
+    let submit_rpc_url = if $diagnostic_mode == "reverse-rpc" {
+        [$b_rpc $a_rpc] | str join ","
+    } else {
+        [$a_rpc $b_rpc] | str join ","
+    }
 
     if $phase_exit == 0 {
         let phase_started_ms = ((date now | into int) / 1_000_000 | into int)
@@ -1146,7 +1178,7 @@ def run-local-e2e-phase [run: record, ctx: record] {
                 --txgen-tempo-bin $ctx.txgen.txgen_tempo_bin
                 --txgen-bench-bin $ctx.txgen.txgen_bench_bin
                 --preset-path $ctx.preset_path
-                --generate-rpc-url $a_rpc
+                --generate-rpc-url $generate_rpc_url
                 --submit-rpc-url $submit_rpc_url
                 --metrics-url $metrics_urls
                 --report-path $"($ctx.results_dir)/report-($phase).json"
