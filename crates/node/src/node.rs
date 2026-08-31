@@ -160,23 +160,6 @@ impl TempoNodeArgs {
     }
 }
 
-fn parse_address_filter(value: &str) -> Result<AddressFilter, String> {
-    match value.parse::<AddressFilter>() {
-        Ok(filter) => Ok(filter),
-        Err(list_error) => {
-            let contents = std::fs::read_to_string(value).map_err(|file_error| {
-                format!(
-                    "invalid address list ({list_error}); failed to read `{value}` as a file: {file_error}"
-                )
-            })?;
-
-            contents
-                .parse::<AddressFilter>()
-                .map_err(|error| format!("invalid address list in `{value}`: {error}"))
-        }
-    }
-}
-
 /// Builds the node's network and announces `tempo/1`.
 ///
 /// The protocol must be registered before the network starts. `RLPx`
@@ -893,6 +876,24 @@ where
                 build_time_multiplier: self.build_time_multiplier,
             },
         ))
+    }
+}
+
+/// Parses `value` as an address list, falling back to reading it as a file.
+fn parse_address_filter(value: &str) -> Result<AddressFilter, String> {
+    match value.parse::<AddressFilter>() {
+        Ok(filter) => Ok(filter),
+        Err(list_error) => {
+            let contents = std::fs::read_to_string(value).map_err(|file_error| {
+                format!(
+                    "invalid address list ({list_error}); failed to read `{value}` as a file: {file_error}"
+                )
+            })?;
+
+            contents
+                .parse::<AddressFilter>()
+                .map_err(|error| format!("invalid address list in `{value}`: {error}"))
+        }
     }
 }
 
