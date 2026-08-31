@@ -1015,21 +1015,18 @@ def run-local-e2e-phase [run: record, ctx: record] {
     let a_cpus = if $swap_cpus { $ctx.b.cpus } else { $ctx.a.cpus }
     let b_cpus = if $swap_cpus { $ctx.a.cpus } else { $ctx.b.cpus }
 
-    mut a_node_dir = $ctx.a.node_dir
-    mut b_node_dir = $ctx.b.node_dir
-    if $swap_signing_keys {
-        $a_node_dir = $"($ctx.results_dir)/identity-($phase)-a"
-        $b_node_dir = $"($ctx.results_dir)/identity-($phase)-b"
-        for dir in [$a_node_dir $b_node_dir] {
-            if ($dir | path exists) { rm -rf $dir }
-            mkdir $dir
+    let a_node_dir = if $swap_signing_keys { $ctx.b.node_dir } else { $ctx.a.node_dir }
+    let b_node_dir = if $swap_signing_keys { $ctx.a.node_dir } else { $ctx.b.node_dir }
+    let trusted_peers = if $swap_signing_keys {
+        let peers = ($ctx.trusted_peers | split row ",")
+        if ($peers | length) != 2 {
+            error make { msg: "identity swap requires exactly two trusted peers" }
         }
-        cp $"($ctx.a.node_dir)/enode.key" $"($a_node_dir)/enode.key"
-        cp $"($ctx.b.node_dir)/enode.key" $"($b_node_dir)/enode.key"
-        for file in ["signing.key" "signing.share"] {
-            cp $"($ctx.b.node_dir)/($file)" $"($a_node_dir)/($file)"
-            cp $"($ctx.a.node_dir)/($file)" $"($b_node_dir)/($file)"
-        }
+        let a_peer = ($peers | get 0 | split row "@")
+        let b_peer = ($peers | get 1 | split row "@")
+        [$"($b_peer | get 0)@($a_peer | get 1)" $"($a_peer | get 0)@($b_peer | get 1)"] | str join ","
+    } else {
+        $ctx.trusted_peers
     }
 
     {
@@ -1091,7 +1088,7 @@ def run-local-e2e-phase [run: record, ctx: record] {
     let a_rpc = "http://127.0.0.1:8545"
     let b_rpc = "http://127.0.0.1:8645"
     let a_base_args = (build-base-args $genesis $a_datadir $a_log_dir "0.0.0.0" 8545 9001)
-        | append (build-e2e-consensus-args $a_node_dir $ctx.trusted_peers $ctx.a.consensus_port $ctx.a.ip)
+        | append (build-e2e-consensus-args $a_node_dir $trusted_peers $ctx.a.consensus_port $ctx.a.ip)
         | append $local_reth_args
         | append (log-filter-args $ctx.loud)
         | append (if $ctx.gas_limit != "" { ["--builder.gaslimit" $ctx.gas_limit] } else { [] })
@@ -1099,7 +1096,7 @@ def run-local-e2e-phase [run: record, ctx: record] {
         | append (if $ctx.tracy != "off" { ["--log.tracy" "--log.tracy.filter" $ctx.tracy_filter] } else { [] })
         | append (benchmark-otlp-args $ctx.tracing_otlp)
     let b_base_args = (build-base-args $genesis $b_datadir $b_log_dir "0.0.0.0" 8645 9101)
-        | append (build-e2e-consensus-args $b_node_dir $ctx.trusted_peers $ctx.b.consensus_port $ctx.b.ip)
+        | append (build-e2e-consensus-args $b_node_dir $trusted_peers $ctx.b.consensus_port $ctx.b.ip)
         | append $local_reth_args
         | append (log-filter-args $ctx.loud)
         | append (if $ctx.gas_limit != "" { ["--builder.gaslimit" $ctx.gas_limit] } else { [] })
