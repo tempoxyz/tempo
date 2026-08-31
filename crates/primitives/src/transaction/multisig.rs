@@ -1,9 +1,9 @@
 use super::{tempo_transaction::MAX_WEBAUTHN_SIGNATURE_LENGTH, tt_signature::TempoSignature};
 use alloc::vec::Vec;
-use alloy_primitives::{Address, B256, Bytes, keccak256};
+use alloy_primitives::{Address, B256, Bytes, address, b256, keccak256};
 use alloy_rlp::Encodable as _;
 use core::mem::size_of;
-use tempo_contracts::precompiles::INativeMultisig;
+use tempo_contracts::{SAFE_DEPLOYER_ADDRESS, precompiles::INativeMultisig};
 
 #[cfg(feature = "serde")]
 use serde::{Deserialize, Deserializer, Serialize, Serializer, de::Error as _};
@@ -30,11 +30,42 @@ pub const MAX_MULTISIG_NESTING_DEPTH: usize = 2;
 /// Maximum encoded byte length for one primitive owner approval.
 pub const MAX_MULTISIG_OWNER_SIGNATURE_BYTES: usize = 1 + MAX_WEBAUTHN_SIGNATURE_LENGTH;
 
-/// Domain prefix for native multisig account derivation.
+/// Domain prefix for native multisig account CREATE2 salt derivation.
 pub const MULTISIG_ACCOUNT_DOMAIN: &[u8] = b"tempo:multisig:account";
+
+/// Safe Singleton Factory used to deploy the dedicated recovery factory.
+pub const MULTISIG_RECOVERY_SINGLETON_FACTORY: Address = SAFE_DEPLOYER_ADDRESS;
+
+/// Expected runtime-code hash of [`MULTISIG_RECOVERY_SINGLETON_FACTORY`].
+pub const MULTISIG_RECOVERY_SINGLETON_FACTORY_RUNTIME_HASH: B256 =
+    b256!("2fa86add0aed31f33a762c9d88e807c475bd51d0f52bd0955754b2608f7e4989");
+
+/// Dedicated CREATE2 factory for recovery wallets on non-Tempo EVM chains.
+pub const MULTISIG_RECOVERY_FACTORY: Address = address!("08919882768F959FCFd64aD86097368f76BC9808");
+
+/// Keccak-256 of the dedicated recovery factory creation code.
+pub const MULTISIG_RECOVERY_FACTORY_INIT_CODE_HASH: B256 =
+    b256!("595a7ee10fa3bf56214edcd947fd963571fccbfe80f013d4739c93b2c9ea287c");
+
+/// Keccak-256 of the dedicated recovery factory runtime code.
+pub const MULTISIG_RECOVERY_FACTORY_RUNTIME_HASH: B256 =
+    b256!("a44ed7004678d01a23f6a04f77d453f0fc6e2e8bc51af79f7d32193f30215f46");
+
+/// Keccak-256 of the canonical recovery wallet creation code.
+pub const MULTISIG_RECOVERY_WALLET_INIT_CODE_HASH: B256 =
+    b256!("5bda203056c9735495be335da97e26667ba119894dd0d447587c1378ed897c4c");
+
+/// CREATE2 preimage length: 1-byte `0xff` + 20-byte factory + 32-byte salt +
+/// 32-byte init-code hash.
+pub const MULTISIG_ACCOUNT_CREATE2_PREIMAGE_LEN: usize = 1 + 20 + 32 + 32;
 
 /// Domain prefix for native multisig configuration commitments.
 pub const MULTISIG_CONFIG_DOMAIN: &[u8] = b"tempo:multisig:config";
+
+/// Returns the canonical native multisig account for a precomputed account salt.
+pub fn multisig_account_address(account_salt: B256) -> Address {
+    MULTISIG_RECOVERY_FACTORY.create2(account_salt, MULTISIG_RECOVERY_WALLET_INIT_CODE_HASH)
+}
 
 /// Native multisig config validation error.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
@@ -368,9 +399,9 @@ impl alloy_rlp::Decodable for MultisigConfig {
 }
 
 impl MultisigConfig {
-    /// Byte length of the account-derivation preimage: domain, 32-byte salt, 1-byte threshold,
+    /// Byte length of the account-salt preimage: domain, 32-byte salt, 1-byte threshold,
     /// 1-byte owner count, and a 20-byte address plus 1-byte weight per owner.
-    pub fn account_derivation_preimage_len(&self) -> usize {
+    pub fn account_salt_preimage_len(&self) -> usize {
         MULTISIG_ACCOUNT_DOMAIN.len() + 32 + 2 + self.owners.len() * 21
     }
 
@@ -380,13 +411,13 @@ impl MultisigConfig {
         MULTISIG_CONFIG_DOMAIN.len() + 32 + 8 + 2 + self.owners.len() * 21
     }
 
-    /// Encodes the canonical account-derivation preimage.
+    /// Encodes the canonical account-salt preimage.
     ///
     /// This checks that the owner count is encodable; callers must separately validate the config
     /// before relying on the resulting hash.
-    pub fn account_derivation_preimage(&self) -> Result<Vec<u8>, MultisigConfigError> {
+    pub fn account_salt_preimage(&self) -> Result<Vec<u8>, MultisigConfigError> {
         let owner_count = self.encoded_owner_count()?;
-        let mut input = Vec::with_capacity(self.account_derivation_preimage_len());
+        let mut input = Vec::with_capacity(self.account_salt_preimage_len());
         input.extend_from_slice(MULTISIG_ACCOUNT_DOMAIN);
         input.extend_from_slice(self.salt.as_slice());
         self.append_owner_set(&mut input, owner_count);
@@ -485,10 +516,15 @@ impl MultisigConfig {
         Ok(total_weight as u8)
     }
 
-    /// Derives the native multisig account address from this configuration's identity fields.
-    pub fn derive_account(&self) -> Result<Address, MultisigConfigError> {
+    /// Derives the CREATE2 salt for this configuration's initial account identity.
+    pub fn account_salt(&self) -> Result<B256, MultisigConfigError> {
         self.validate()?;
-        let account = Address::from_slice(&keccak256(self.account_derivation_preimage()?)[12..]);
+        Ok(keccak256(self.account_salt_preimage()?))
+    }
+
+    /// Derives the native multisig account using the canonical recovery wallet's CREATE2 address.
+    pub fn derive_account(&self) -> Result<Address, MultisigConfigError> {
+        let account = multisig_account_address(self.account_salt()?);
         if account.is_zero() {
             return Err(MultisigConfigError::DerivedAccountZero);
         }
@@ -1006,18 +1042,33 @@ mod tests {
     }
 
     #[test]
+    fn recovery_factory_matches_singleton_create2_vector() {
+        let factory = MULTISIG_RECOVERY_SINGLETON_FACTORY
+            .create2(B256::ZERO, MULTISIG_RECOVERY_FACTORY_INIT_CODE_HASH);
+        assert_eq!(factory, MULTISIG_RECOVERY_FACTORY);
+    }
+
+    #[test]
     fn multisig_domains_match_spec_vectors() {
         let mut config = sorted_secp_config(&[(Address::repeat_byte(0x11), 1)], 1);
+        let account_salt = config.account_salt().unwrap();
         let account = config.derive_account().unwrap();
 
         assert_eq!(
-            account,
-            alloy_primitives::address!("8820d1497eeaf4f68e00b2cfc00a2f3b1dbb00da")
+            account_salt,
+            alloy_primitives::b256!(
+                "7162e370e58784e6b33d61878820d1497eeaf4f68e00b2cfc00a2f3b1dbb00da"
+            )
         );
+        assert_eq!(
+            account,
+            alloy_primitives::address!("a4e1866c3252527d36d43a3a98122eb0017a85e5")
+        );
+        assert_eq!(multisig_account_address(account_salt), account);
         assert_eq!(
             multisig_digest(B256::repeat_byte(0x42), account, 0),
             alloy_primitives::b256!(
-                "bf944a7a752b2cfab0418d5fb4591c5a7ff62976488edce11794d7f35fb34f41"
+                "9aad77147b627d4c58165c22dcfafad33260bb863385fc4f8843d22bd59fd428"
             )
         );
 
