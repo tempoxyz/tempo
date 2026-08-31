@@ -112,6 +112,7 @@ pub(super) fn validate_state<DB: Database + Debug>(
         let internals = EvmInternals::new(journal, block, cfg, tx);
         let mut provider =
             EvmPrecompileStorageProvider::new_max_gas(internals, cfg).with_actions(actions.clone());
+        provider.set_tip1060_storage_credits(false);
         let validation = StorageCtx::enter(&mut provider, || {
             let multisig = NativeMultisig::new();
 

@@ -295,7 +295,8 @@ fn translate_allowed_calls_for_precompile(
 ///   On T1/T1A this was double-charged alongside the gas-metered precompile call.
 ///
 /// T1B+: Gas = signature verification + SLOAD (existing key check) +
-///   SSTORE (write key) + N × SSTORE (per spending limit)
+///   SSTORE (write key) + N × SSTORE (per spending limit), plus the T12
+///   warm SLOAD that rejects native multisig accounts as access keys.
 ///   This is the sole gas accounting — the precompile runs with unlimited gas.
 ///
 /// Returns `(total_gas, state_gas)` where `total_gas` includes the state gas portion.
@@ -350,6 +351,10 @@ fn calculate_key_authorization_gas(
             sstore_cost = sstore_cost.saturating_add(STORAGE_CREDIT_VALUE);
         }
         let mut regular_gas = sig_gas + sload_cost + sstore_cost * num_sstores + BUFFER;
+
+        if spec.is_t12() {
+            regular_gas += gas_params.warm_storage_read_cost();
+        }
 
         if has_t5_witness {
             regular_gas += sload_cost + KEY_AUTH_EXTRA_EVENT_BUFFER;

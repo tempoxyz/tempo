@@ -5235,3 +5235,15 @@ fn test_multisig_key_authorization_gas_is_independent() {
         2 * (expected_multisig_node_gas(&signature) - ECRECOVER_GAS),
     );
 }
+
+#[test]
+fn test_t12_key_authorization_charges_warm_multisig_commitment_read() {
+    let authorization =
+        KeyAuthorization::unrestricted(1, SignatureType::Secp256k1, Address::repeat_byte(0x55))
+            .into_signed(PrimitiveSignature::default());
+    let gas_params = tempo_gas_params(TempoHardfork::T12);
+    let t11 = calculate_key_authorization_gas(&authorization, &gas_params, TempoHardfork::T11).0;
+    let t12 = calculate_key_authorization_gas(&authorization, &gas_params, TempoHardfork::T12).0;
+
+    assert_eq!(t12 - t11, gas_params.warm_storage_read_cost());
+}
