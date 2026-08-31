@@ -127,7 +127,10 @@ pub trait PrecompileStorageProvider {
     fn gas_used(&self) -> u64;
 
     /// Returns the state-creating gas used so far (cold SSTORE zero->non-zero, code deposit).
-    fn state_gas_used(&self) -> u64;
+    fn state_gas_used(&self) -> i64;
+
+    /// Returns state gas drawn from regular gas after exhausting the reservoir.
+    fn state_gas_spilled(&self) -> u64;
 
     /// Returns the gas refunded so far.
     fn gas_refunded(&self) -> i64;

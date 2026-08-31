@@ -568,7 +568,17 @@ where
     ChainSpec: EthChainSpec + 'static,
 {
     type RpcReceipt = TempoTransactionReceipt;
+    type RpcLog = Log;
     type Error = EthApiError;
+
+    fn convert_log(
+        &self,
+        log: Log,
+        _receipt: &TempoReceipt,
+        _header: &reth_primitives_traits::SealedHeader<TempoHeader>,
+    ) -> Result<Self::RpcLog, Self::Error> {
+        Ok(log)
+    }
 
     fn convert_receipts(
         &self,

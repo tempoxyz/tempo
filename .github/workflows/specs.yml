@@ -265,30 +265,51 @@ jobs:
           path: foundry
           persist-credentials: false
 
+      - name: Check Foundry EVM compatibility
+        id: evm-compatibility
+        run: |
+          tempo_revm=$(sed -nE 's/^revm = \{ version = "([0-9]+)\..*/\1/p' tempo/Cargo.toml)
+          foundry_revm=$(sed -nE 's/^revm = \{ version = "([0-9]+)\..*/\1/p' foundry/Cargo.toml)
+          if [[ -z "$tempo_revm" || -z "$foundry_revm" ]]; then
+            echo "Unable to determine Tempo or Foundry revm major version" >&2
+            exit 1
+          fi
+          if [[ "$tempo_revm" == "$foundry_revm" ]]; then
+            echo "compatible=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "compatible=false" >> "$GITHUB_OUTPUT"
+            echo "::notice::Skipping Foundry precompile tests: Tempo uses revm $tempo_revm while Foundry uses revm $foundry_revm"
+          fi
+
       - name: Setup Rust
+        if: steps.evm-compatibility.outputs.compatible == 'true'
         uses: dtolnay/rust-toolchain@4cda84d5c5c54efe2404f9d843567869ab1699d4 # stable
 
       - uses: rui314/setup-mold@9c9c13bf4c3f1adef0cc596abc155580bcb04444 # v1
+        if: steps.evm-compatibility.outputs.compatible == 'true'
       - uses: mozilla-actions/sccache-action@9e7fa8a12102821edf02ca5dbea1acd0f89a2696 # v0.0.10
+        if: steps.evm-compatibility.outputs.compatible == 'true'
       - uses: Swatinem/rust-cache@c19371144df3bb44fab255c43d04cbc2ab54d1c4 # v2.9.1
+        if: steps.evm-compatibility.outputs.compatible == 'true'
         with:
           workspaces: foundry
 
       - name: Install llvm-tools
-        if: needs.check-precompiles.outputs.coverage == 'true'
+        if: steps.evm-compatibility.outputs.compatible == 'true' && needs.check-precompiles.outputs.coverage == 'true'
         run: rustup component add llvm-tools-preview
 
       - name: Patch foundry to use checked-out tempo crates
+        if: steps.evm-compatibility.outputs.compatible == 'true'
         run: tempo/scripts/foundry-patch.sh "$GITHUB_WORKSPACE/tempo" "$GITHUB_WORKSPACE/foundry"
 
       # Build and run WITH coverage (only on PR when precompiles changed)
       - name: Build foundry forge with coverage instrumentation
-        if: needs.check-precompiles.outputs.coverage == 'true'
+        if: steps.evm-compatibility.outputs.compatible == 'true' && needs.check-precompiles.outputs.coverage == 'true'
         working-directory: foundry
         run: RUSTFLAGS="-C instrument-coverage" cargo build --bin forge --profile release --no-default-features
 
       - name: Run Forge tests with Rust precompiles (with coverage)
-        if: needs.check-precompiles.outputs.coverage == 'true'
+        if: steps.evm-compatibility.outputs.compatible == 'true' && needs.check-precompiles.outputs.coverage == 'true'
         working-directory: tempo/tips/verify
         run: |
           echo "Running forge test with Rust precompiles"
@@ -296,26 +317,26 @@ jobs:
 
       # Build and run WITHOUT coverage (main/merge_group or no precompiles changes)
       - name: Build foundry forge
-        if: needs.check-precompiles.outputs.coverage != 'true'
+        if: steps.evm-compatibility.outputs.compatible == 'true' && needs.check-precompiles.outputs.coverage != 'true'
         working-directory: foundry
         run: cargo build --bin forge --profile release --no-default-features
 
       - name: Run Forge tests with Rust precompiles
-        if: needs.check-precompiles.outputs.coverage != 'true'
+        if: steps.evm-compatibility.outputs.compatible == 'true' && needs.check-precompiles.outputs.coverage != 'true'
         working-directory: tempo/tips/verify
         run: |
           echo "Running forge test with Rust precompiles"
           ../../../foundry/target/release/forge test -vvv
 
       - name: Generate coverage profdata
-        if: needs.check-precompiles.outputs.coverage == 'true'
+        if: steps.evm-compatibility.outputs.compatible == 'true' && needs.check-precompiles.outputs.coverage == 'true'
         run: |
           LLVM_BIN="$(rustc --print sysroot)/lib/rustlib/$(rustc -vV | grep host | cut -d' ' -f2)/bin"
           mkdir -p coverage
           "$LLVM_BIN/llvm-profdata" merge -sparse tempo/tips/verify/*.profraw -o coverage/forge-test.profdata
 
       - name: Upload forge coverage artifacts
-        if: needs.check-precompiles.outputs.coverage == 'true'
+        if: steps.evm-compatibility.outputs.compatible == 'true' && needs.check-precompiles.outputs.coverage == 'true'
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
           name: forge-test-coverage

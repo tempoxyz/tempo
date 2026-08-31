@@ -148,16 +148,9 @@ fn fill_state_gas(output: &mut PrecompileOutput, storage: &StorageCtx) {
     }
 
     if storage.amsterdam_eip8037_enabled() {
-        if output.is_success() {
-            // On success: parent takes the child's final reservoir.
-            output.reservoir = storage.reservoir();
-            output.state_gas_used = storage.state_gas_used();
-        } else {
-            // On revert or halt: state changes are undone, so ALL state gas returns
-            // to the parent's reservoir.
-            output.reservoir = storage.state_gas_used() + storage.reservoir();
-            output.state_gas_used = 0;
-        }
+        output.reservoir = storage.reservoir();
+        output.state_gas_used = storage.state_gas_used();
+        output.state_gas_spilled = storage.state_gas_spilled();
     }
 }
 

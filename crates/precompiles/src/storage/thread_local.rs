@@ -214,8 +214,13 @@ impl StorageCtx {
     }
 
     /// Returns the state-creating gas used so far (cold SSTORE zero->non-zero, code deposit).
-    pub fn state_gas_used(&self) -> u64 {
+    pub fn state_gas_used(&self) -> i64 {
         Self::with_storage(|s| s.state_gas_used())
+    }
+
+    /// Returns state gas drawn from regular gas after exhausting the reservoir.
+    pub fn state_gas_spilled(&self) -> u64 {
+        Self::with_storage(|s| s.state_gas_spilled())
     }
 
     /// Returns the gas refunded so far.
