@@ -160,7 +160,7 @@ macro_rules! tempo_hardfork {
 // -------------------------------------------------------------------------------------
 // Tempo hardfork definitions — append new variants here.
 // -------------------------------------------------------------------------------------
-tempo_hardfork! (
+tempo_hardfork!(
     /// Tempo-specific hardforks for network upgrades.
     #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
     #[derive(Default)]
