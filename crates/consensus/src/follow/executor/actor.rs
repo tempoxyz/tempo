@@ -109,8 +109,7 @@ where
     }
 
     async fn run(mut self) {
-        if let Err(error) = self.backfill_to_finalized_floor().await {
-            error!(%error, "executor failed startup backfill");
+        if self.backfill_to_finalized_floor().await.is_err() {
             return;
         }
 
@@ -175,6 +174,7 @@ where
             || self.pending_fcu.finalized_digest() != self.last_fcu.finalized_digest()
     }
 
+    #[instrument(skip_all, err)]
     async fn backfill_to_finalized_floor(&mut self) -> eyre::Result<()> {
         let start = self.execution_provider.finalized_num_hash()?.number + 1;
         let end = self.floor.get();
