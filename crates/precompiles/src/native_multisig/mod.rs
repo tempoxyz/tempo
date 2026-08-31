@@ -41,11 +41,6 @@ pub struct NativeMultisig {
 }
 
 impl NativeMultisig {
-    /// Initializes the precompile storage layout.
-    pub fn initialize(&mut self) -> Result<()> {
-        self.__initialize()
-    }
-
     /// Returns the persistent commitment slot for `account`.
     pub fn config_commitment_storage_slot(account: Address) -> U256 {
         Self::new().config_commitments[account].slot()
@@ -97,10 +92,12 @@ impl NativeMultisig {
             .map_err(map_multisig_config_error)?;
         let stored = self.get_config_commitment(msg_sender)?;
         if current.version == 0 {
-            if !stored.is_zero() || self.derive_account_from_config(&current)? != msg_sender {
+            if !stored.is_zero()
+                || self.derive_account_from_validated_config(&current)? != msg_sender
+            {
                 return Err(NativeMultisigError::invalid_config().into());
             }
-        } else if stored.is_zero() || self.hash_config_commitment(&current)? != stored {
+        } else if stored.is_zero() || self.hash_validated_config_commitment(&current)? != stored {
             return Err(NativeMultisigError::invalid_config().into());
         }
 
@@ -117,7 +114,7 @@ impl NativeMultisig {
         };
         next.validate_for_account(msg_sender)
             .map_err(map_multisig_config_error)?;
-        let commitment = self.hash_config_commitment(&next)?;
+        let commitment = self.hash_validated_config_commitment(&next)?;
         if commitment.is_zero() {
             return Err(NativeMultisigError::invalid_config().into());
         }
@@ -150,9 +147,13 @@ impl NativeMultisig {
 
     fn derive_account_from_config(&self, config: &MultisigConfig) -> Result<Address> {
         config.validate().map_err(map_multisig_config_error)?;
+        self.derive_account_from_validated_config(config)
+    }
+
+    fn derive_account_from_validated_config(&self, config: &MultisigConfig) -> Result<Address> {
         let preimage = config
             .account_salt_preimage()
-            .map_err(map_multisig_config_error)?;
+            .expect("validated multisig config has an encodable owner count");
         let account_salt = self.storage.keccak256(&preimage)?;
         self.storage.deduct_gas(MULTISIG_ACCOUNT_CREATE2_GAS)?;
         let account = multisig_account_address(account_salt);
@@ -165,10 +166,10 @@ impl NativeMultisig {
         Ok(account)
     }
 
-    fn hash_config_commitment(&self, config: &MultisigConfig) -> Result<B256> {
+    fn hash_validated_config_commitment(&self, config: &MultisigConfig) -> Result<B256> {
         let preimage = config
             .commitment_preimage()
-            .map_err(map_multisig_config_error)?;
+            .expect("validated multisig config has an encodable owner count");
         self.storage.keccak256(&preimage)
     }
 }
@@ -226,6 +227,32 @@ mod tests {
         vec![INativeMultisig::MultisigOwner { owner, weight: 1 }]
     }
 
+    fn update_error(
+        account: Address,
+        current: &MultisigConfig,
+        stored: B256,
+        threshold: u8,
+        owners: Vec<INativeMultisig::MultisigOwner>,
+    ) -> NativeMultisigError {
+        let mut storage = HashMapStorageProvider::new_with_spec(1, TempoHardfork::T12)
+            .with_tx_kind(TxKind::Call(NATIVE_MULTISIG_ADDRESS));
+        StorageCtx::enter(&mut storage, || {
+            let mut multisig = NativeMultisig::new();
+            multisig.set_tx_origin(account)?;
+            multisig.set_directly_authorized_account(account)?;
+            if !stored.is_zero() {
+                multisig.config_commitments[account].write(stored)?;
+            }
+            match multisig.update_multisig_config(account, abi_config(current), threshold, owners) {
+                Err(TempoPrecompileError::NativeMultisigError(error)) => {
+                    Ok::<_, TempoPrecompileError>(error)
+                }
+                result => panic!("expected native multisig error, got {result:?}"),
+            }
+        })
+        .unwrap()
+    }
+
     #[test]
     fn commitment_slot_matches_tip_layout() {
         let account = Address::repeat_byte(0x11);
@@ -267,9 +294,6 @@ mod tests {
         let account = config.derive_account().unwrap();
         let mut storage = HashMapStorageProvider::new_with_spec(1, TempoHardfork::T11)
             .with_tx_kind(TxKind::Call(NATIVE_MULTISIG_ADDRESS));
-
-        StorageCtx::enter(&mut storage, || NativeMultisig::new().initialize())?;
-        storage.reset_counters();
 
         let first_owner = address!("0000000000000000000000000000000000000022");
         StorageCtx::enter(&mut storage, || {
@@ -440,5 +464,123 @@ mod tests {
             })?;
         }
         Ok(())
+    }
+
+    #[test]
+    fn update_rejects_invalid_state_and_version() {
+        let initial = initial_config();
+        let account = initial.derive_account().unwrap();
+        let mut current = initial.clone();
+        current.version = 1;
+        let mut overflow = current.clone();
+        overflow.version = u64::MAX;
+        let next = abi_owners(Address::repeat_byte(0x22));
+
+        for (case, config, stored) in [
+            (
+                "initial against nonzero state",
+                &initial,
+                B256::repeat_byte(1),
+            ),
+            ("current against zero state", &current, B256::ZERO),
+            (
+                "current against mismatching state",
+                &current,
+                B256::repeat_byte(2),
+            ),
+            (
+                "version overflow",
+                &overflow,
+                overflow.commitment().unwrap(),
+            ),
+        ] {
+            assert_eq!(
+                update_error(account, config, stored, 1, next.clone()),
+                NativeMultisigError::invalid_config(),
+                "{case}",
+            );
+        }
+    }
+
+    #[test]
+    fn update_config_errors_follow_tip_order() {
+        let current = initial_config();
+        let account = current.derive_account().unwrap();
+        let owner = |byte, weight| INativeMultisig::MultisigOwner {
+            owner: Address::repeat_byte(byte),
+            weight,
+        };
+        let too_many = (1..=49).map(|byte| owner(byte, 1)).collect::<Vec<_>>();
+
+        let cases = [
+            (
+                "empty owners precede zero threshold",
+                0,
+                vec![],
+                NativeMultisigError::invalid_multisig_owner(),
+            ),
+            (
+                "owner limit precedes zero threshold",
+                0,
+                too_many,
+                NativeMultisigError::too_many_owners(),
+            ),
+            (
+                "zero owner precedes zero weight",
+                1,
+                vec![INativeMultisig::MultisigOwner {
+                    owner: Address::ZERO,
+                    weight: 0,
+                }],
+                NativeMultisigError::invalid_multisig_owner(),
+            ),
+            (
+                "self owner precedes zero weight",
+                1,
+                vec![INativeMultisig::MultisigOwner {
+                    owner: account,
+                    weight: 0,
+                }],
+                NativeMultisigError::invalid_multisig_owner(),
+            ),
+            (
+                "zero weight precedes duplicate owner",
+                1,
+                vec![owner(0x22, 1), owner(0x22, 0)],
+                NativeMultisigError::invalid_weight(),
+            ),
+            (
+                "duplicate owner",
+                1,
+                vec![owner(0x22, 1), owner(0x22, 1)],
+                NativeMultisigError::duplicate_owner(),
+            ),
+            (
+                "owner order",
+                1,
+                vec![owner(0x33, 1), owner(0x22, 1)],
+                NativeMultisigError::invalid_owner_order(),
+            ),
+            (
+                "weight overflow precedes reachability",
+                u8::MAX,
+                vec![owner(0x22, 128), owner(0x33, 128)],
+                NativeMultisigError::invalid_weight(),
+            ),
+            (
+                "unreachable threshold",
+                2,
+                vec![owner(0x22, 1)],
+                NativeMultisigError::invalid_threshold(),
+            ),
+        ];
+
+        for (case, threshold, owners, expected) in cases {
+            assert_eq!(
+                update_error(account, &current, B256::ZERO, threshold, owners),
+                expected,
+                "{case}",
+            );
+        }
     }
 }

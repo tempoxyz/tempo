@@ -1,7 +1,8 @@
-use alloy::primitives::{Address, B256};
+#[cfg(test)]
+use alloy::primitives::Address;
+use alloy::primitives::B256;
 use tempo_primitives::transaction::{
-    MAX_MULTISIG_NESTING_DEPTH, MultisigQuorumError, MultisigSignature, MultisigWeightAccumulator,
-    TempoSignature,
+    MultisigQuorumError, MultisigSignature, MultisigWeightAccumulator, TempoSignature,
 };
 
 use super::NativeMultisig;
@@ -43,17 +44,12 @@ impl NativeMultisig {
         &self,
         signature: &MultisigSignature,
     ) -> Result<(), NativeMultisigAuthError> {
-        signature
-            .validate_shape()
-            .map_err(|error| NativeMultisigAuthError::invalid_transaction(error.as_str()))?;
-        let mut account_path = vec![signature.account()];
-        self.validate_authorization_state_inner(signature, &mut account_path)
+        self.validate_authorization_state_inner(signature)
     }
 
     fn validate_authorization_state_inner(
         &self,
         signature: &MultisigSignature,
-        account_path: &mut Vec<Address>,
     ) -> Result<(), NativeMultisigAuthError> {
         if !is_valid_multisig_account(signature.account(), self.storage.spec()) {
             return Err(NativeMultisigAuthError::invalid_transaction(
@@ -65,11 +61,8 @@ impl NativeMultisig {
         let config = signature.config();
         let valid = if config.version == 0 {
             stored.is_zero()
-                && config
-                    .derive_account()
-                    .is_ok_and(|account| account == signature.account())
         } else {
-            !stored.is_zero() && config.commitment().is_ok_and(|expected| expected == stored)
+            !stored.is_zero() && signature.config_commitment() == stored
         };
         if !valid {
             return Err(NativeMultisigAuthError::validation_failed(
@@ -81,20 +74,7 @@ impl NativeMultisig {
             let TempoSignature::Multisig(nested) = approval else {
                 continue;
             };
-            let account = nested.account();
-            if account_path.len() >= MAX_MULTISIG_NESTING_DEPTH {
-                return Err(NativeMultisigAuthError::invalid_transaction(
-                    "native multisig nesting depth exceeded",
-                ));
-            }
-            if account_path.contains(&account) {
-                return Err(NativeMultisigAuthError::invalid_transaction(
-                    "native multisig owner cycle detected",
-                ));
-            }
-            account_path.push(account);
-            self.validate_authorization_state_inner(nested, account_path)?;
-            account_path.pop();
+            self.validate_authorization_state_inner(nested)?;
         }
         Ok(())
     }
@@ -138,11 +118,11 @@ impl NativeMultisig {
                 if index + 1 != signature.signatures().len() {
                     return Err(quorum_error(MultisigQuorumError::ExcessSignatures));
                 }
-                return weight.finish().map(|_| ()).map_err(quorum_error);
+                return weight.finish().map_err(quorum_error);
             }
         }
 
-        weight.finish().map(|_| ()).map_err(quorum_error)
+        weight.finish().map_err(quorum_error)
     }
 }
 
@@ -195,7 +175,7 @@ mod tests {
                 ))
             })
             .collect();
-        MultisigSignature::from_decoded(account, config, approvals).unwrap()
+        MultisigSignature::try_new(account, config, approvals).unwrap()
     }
 
     fn assert_quorum_error(signature: &MultisigSignature, expected: MultisigQuorumError) {
@@ -222,7 +202,7 @@ mod tests {
         } else {
             Address::repeat_byte(0x22)
         };
-        MultisigSignature::from_decoded(
+        MultisigSignature::try_new(
             account,
             config,
             vec![TempoSignature::Primitive(PrimitiveSignature::Secp256k1(
@@ -315,7 +295,7 @@ mod tests {
             multisig_digest(inner_digest, outer_account, 0),
             &[&owner],
         );
-        let outer = MultisigSignature::from_decoded(
+        let outer = MultisigSignature::try_new(
             outer_account,
             outer_config,
             vec![TempoSignature::Multisig(nested)],
