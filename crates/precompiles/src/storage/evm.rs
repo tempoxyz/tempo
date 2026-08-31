@@ -517,8 +517,9 @@ impl<'a> PrecompileStorageProvider for EvmPrecompileStorageProvider<'a> {
     }
 
     #[inline]
-    fn state_gas_used(&self) -> i64 {
-        self.gas_tracker.state_gas_spent()
+    fn state_gas_used(&self) -> u64 {
+        // SAFETY: we never decrement the state gas spent counter
+        self.gas_tracker.state_gas_spent() as u64
     }
 
     #[inline]
@@ -1215,8 +1216,8 @@ mod tests {
         assert_eq!(
             provider.state_gas_used(),
             state_gas_before_code
-                + gas_params.create_state_gas() as i64
-                + gas_params.code_deposit_state_gas(1) as i64,
+                + gas_params.create_state_gas()
+                + gas_params.code_deposit_state_gas(1),
             "set_code(new account, 1 byte) should add CREATE state gas plus 2,300 code deposit state gas"
         );
 
@@ -1233,7 +1234,7 @@ mod tests {
         // but the 3rd SSTORE (230k) must spill 190k into regular gas.
         let gas_limit = 1_000_000u64;
         let reservoir = 500_000u64;
-        let state_gas_per_sstore = 230_000i64;
+        let state_gas_per_sstore = 230_000u64;
         let mut provider = evm.provider_with_gas_limit(gas_limit, reservoir);
         let address = Address::random();
 
@@ -1248,7 +1249,7 @@ mod tests {
         );
         assert_eq!(
             provider.reservoir(),
-            reservoir - state_gas_per_sstore as u64,
+            reservoir - state_gas_per_sstore,
             "reservoir should decrease by state gas cost"
         );
 
@@ -1262,7 +1263,7 @@ mod tests {
         );
         assert_eq!(
             provider.reservoir(),
-            reservoir - 2 * state_gas_per_sstore as u64,
+            reservoir - 2 * state_gas_per_sstore,
             "reservoir should have 40k left after 2 SSTOREs"
         );
         let remaining_reservoir = provider.reservoir(); // 40k
@@ -1283,7 +1284,7 @@ mod tests {
         );
 
         // Regular gas increase = normal sstore cost + spill from reservoir
-        let spill = state_gas_per_sstore as u64 - remaining_reservoir; // 230k - 40k = 190k
+        let spill = state_gas_per_sstore - remaining_reservoir; // 230k - 40k = 190k
         let expected_regular_after = regular_gas_before_spill + regular_gas_per_sstore + spill;
         assert_eq!(
             provider.gas_used(),
@@ -1353,7 +1354,7 @@ mod tests {
         );
         assert_eq!(
             provider.state_gas_used(),
-            expected_state_gas as i64,
+            expected_state_gas,
             "set_code on a new account should charge CREATE state gas plus code deposit state gas"
         );
 
@@ -1563,7 +1564,7 @@ mod tests {
         provider.sstore(address, slot, U256::ZERO)?;
         assert_eq!(provider.gas_refunded(), 247_800);
         let net_gas_after_refund =
-            provider.gas_used() as i64 + provider.state_gas_used() - provider.gas_refunded();
+            provider.gas_used() + provider.state_gas_used() - provider.gas_refunded() as u64;
         assert_eq!(
             net_gas_after_refund, 100,
             "TIP-1016 says 0->X->0 should net to GAS_WARM_ACCESS (100)"

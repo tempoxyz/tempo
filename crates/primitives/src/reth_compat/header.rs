@@ -65,7 +65,6 @@ impl reth_primitives_traits::header::HeaderMut for TempoHeader {
 mod codec {
     use crate::{TempoConsensusContext, TempoHeader};
     use alloy_consensus::Header;
-    use reth_codecs::compress::DecompressError;
 
     /// Trailing fields grouped into a dedicated struct to maximize the use of bits
     /// in a type's bitfields. We add to this prior to occupying another slot in
@@ -140,7 +139,7 @@ mod codec {
     }
 
     impl reth_db_api::table::Decompress for TempoHeader {
-        fn decompress(value: &[u8]) -> Result<Self, DecompressError> {
+        fn decompress(value: &[u8]) -> Result<Self, reth_codecs::DecompressError> {
             let (obj, _) = reth_codecs::Compact::from_compact(value, value.len());
             Ok(obj)
         }

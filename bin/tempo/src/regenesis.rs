@@ -379,12 +379,13 @@ where
                 .map(|replacement| (replacement.hashed_address, Some(replacement.account))),
         )
         .with_storages(replacements.iter().map(|replacement| {
-            let storage = HashedStorage::from_iter(
-                replacement
+            let storage = HashedStorage {
+                storage: replacement
                     .hashed_storage
                     .iter()
-                    .map(|entry| (entry.key, entry.value)),
-            );
+                    .map(|entry| (entry.key, entry.value))
+                    .collect(),
+            };
             (replacement.hashed_address, storage)
         }));
 
