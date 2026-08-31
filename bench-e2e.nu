@@ -1002,26 +1002,61 @@ def run-local-e2e-phase [run: record, ctx: record] {
     let hardfork = ($run | get -o hardfork | default "")
     let side_args = if $run_type == "baseline" { $ctx.baseline_args } else { $ctx.feature_args }
     let side_env = if $run_type == "baseline" { $ctx.baseline_env } else { $ctx.feature_env }
-    let extra_args = (parse-cli-args $side_args)
+    let parsed_extra_args = (parse-cli-args $side_args)
+    let swap_mounts = ($parsed_extra_args | any { |arg| $arg == "--bench-e2e-swap-mounts" })
+    let swap_cpus = ($parsed_extra_args | any { |arg| $arg == "--bench-e2e-swap-cpus" })
+    let swap_signing_keys = ($parsed_extra_args | any { |arg| $arg == "--bench-e2e-swap-signing-keys" })
+    let reverse_rpc = ($parsed_extra_args | any { |arg| $arg == "--bench-e2e-reverse-rpc" })
+    let extra_args = ($parsed_extra_args | where { |arg| not ($arg starts-with "--bench-e2e-") })
     let local_reth_args = if $run_type == "baseline" { $ctx.baseline_local_reth_args } else { $ctx.feature_local_reth_args }
+
+    let a_datadir = if $swap_mounts { $ctx.b.datadir } else { $ctx.a.datadir }
+    let b_datadir = if $swap_mounts { $ctx.a.datadir } else { $ctx.b.datadir }
+    let a_cpus = if $swap_cpus { $ctx.b.cpus } else { $ctx.a.cpus }
+    let b_cpus = if $swap_cpus { $ctx.a.cpus } else { $ctx.b.cpus }
+
+    mut a_node_dir = $ctx.a.node_dir
+    mut b_node_dir = $ctx.b.node_dir
+    if $swap_signing_keys {
+        $a_node_dir = $"($ctx.results_dir)/identity-($phase)-a"
+        $b_node_dir = $"($ctx.results_dir)/identity-($phase)-b"
+        for dir in [$a_node_dir $b_node_dir] {
+            if ($dir | path exists) { rm -rf $dir }
+            mkdir $dir
+        }
+        cp $"($ctx.a.node_dir)/enode.key" $"($a_node_dir)/enode.key"
+        cp $"($ctx.b.node_dir)/enode.key" $"($b_node_dir)/enode.key"
+        for file in ["signing.key" "signing.share"] {
+            cp $"($ctx.b.node_dir)/($file)" $"($a_node_dir)/($file)"
+            cp $"($ctx.a.node_dir)/($file)" $"($b_node_dir)/($file)"
+        }
+    }
+
+    {
+        swap_mounts: $swap_mounts
+        swap_cpus: $swap_cpus
+        swap_signing_keys: $swap_signing_keys
+        reverse_rpc: $reverse_rpc
+        node_args: $extra_args
+    } | to json | save -f $"($ctx.results_dir)/diagnostic-config-($phase).json"
 
     cleanup-local-e2e-processes
     bench-restore-at $ctx.a.state_path $ctx.a.mount $ctx.a.datadir
     bench-restore-at $ctx.b.state_path $ctx.b.mount $ctx.b.datadir
 
-    for path in [$genesis $ctx.a.node_dir $ctx.b.node_dir] {
+    for path in [$genesis $a_node_dir $b_node_dir] {
         if not ($path | path exists) {
             print $"Error: required e2e path does not exist after snapshot recovery: ($path)"
             exit 1
         }
     }
     if $hardfork != "" or $ctx.gas_limit != "" or $ctx.general_gas_limit != "" {
-        e2e-regenesis $ctx.regenesis_tempo $genesis $ctx.a.datadir $hardfork $ctx.gas_limit $ctx.general_gas_limit
-        e2e-regenesis $ctx.regenesis_tempo $genesis $ctx.b.datadir $hardfork $ctx.gas_limit $ctx.general_gas_limit
+        e2e-regenesis $ctx.regenesis_tempo $genesis $a_datadir $hardfork $ctx.gas_limit $ctx.general_gas_limit
+        e2e-regenesis $ctx.regenesis_tempo $genesis $b_datadir $hardfork $ctx.gas_limit $ctx.general_gas_limit
     }
     for role_info in [
-        { role: "a", node_dir: $ctx.a.node_dir }
-        { role: "b", node_dir: $ctx.b.node_dir }
+        { role: "a", node_dir: $a_node_dir }
+        { role: "b", node_dir: $b_node_dir }
     ] {
         for required_file in ["signing.key" "signing.share" "enode.key"] {
             let path = $"($role_info.node_dir)/($required_file)"
@@ -1055,16 +1090,16 @@ def run-local-e2e-phase [run: record, ctx: record] {
 
     let a_rpc = "http://127.0.0.1:8545"
     let b_rpc = "http://127.0.0.1:8645"
-    let a_base_args = (build-base-args $genesis $ctx.a.datadir $a_log_dir "0.0.0.0" 8545 9001)
-        | append (build-e2e-consensus-args $ctx.a.node_dir $ctx.trusted_peers $ctx.a.consensus_port $ctx.a.ip)
+    let a_base_args = (build-base-args $genesis $a_datadir $a_log_dir "0.0.0.0" 8545 9001)
+        | append (build-e2e-consensus-args $a_node_dir $ctx.trusted_peers $ctx.a.consensus_port $ctx.a.ip)
         | append $local_reth_args
         | append (log-filter-args $ctx.loud)
         | append (if $ctx.gas_limit != "" { ["--builder.gaslimit" $ctx.gas_limit] } else { [] })
         | append (if $ctx.samply { ["--log.samply"] } else { [] })
         | append (if $ctx.tracy != "off" { ["--log.tracy" "--log.tracy.filter" $ctx.tracy_filter] } else { [] })
         | append (benchmark-otlp-args $ctx.tracing_otlp)
-    let b_base_args = (build-base-args $genesis $ctx.b.datadir $b_log_dir "0.0.0.0" 8645 9101)
-        | append (build-e2e-consensus-args $ctx.b.node_dir $ctx.trusted_peers $ctx.b.consensus_port $ctx.b.ip)
+    let b_base_args = (build-base-args $genesis $b_datadir $b_log_dir "0.0.0.0" 8645 9101)
+        | append (build-e2e-consensus-args $b_node_dir $ctx.trusted_peers $ctx.b.consensus_port $ctx.b.ip)
         | append $local_reth_args
         | append (log-filter-args $ctx.loud)
         | append (if $ctx.gas_limit != "" { ["--builder.gaslimit" $ctx.gas_limit] } else { [] })
@@ -1084,8 +1119,8 @@ def run-local-e2e-phase [run: record, ctx: record] {
     mark-schelk-dirty-at $ctx.a.state_path
     mark-schelk-dirty-at $ctx.b.state_path
 
-    start-e2e-local-node a $phase $run.tempo $a_args $env_prefix $a_otel $tracy_env_prefix $ctx.samply $ctx.samply_args $ctx.results_dir $ctx.a.cpus $ctx.a.memory
-    start-e2e-local-node b $phase $run.tempo $b_args $env_prefix $b_otel "" $ctx.samply $ctx.samply_args $ctx.results_dir $ctx.b.cpus $ctx.b.memory
+    start-e2e-local-node a $phase $run.tempo $a_args $env_prefix $a_otel $tracy_env_prefix $ctx.samply $ctx.samply_args $ctx.results_dir $a_cpus $ctx.a.memory
+    start-e2e-local-node b $phase $run.tempo $b_args $env_prefix $b_otel "" $ctx.samply $ctx.samply_args $ctx.results_dir $b_cpus $ctx.b.memory
 
     sleep 2sec
     let rpc_timeout = if $ctx.bloat > 0 { 600 } else { 300 }
@@ -1136,17 +1171,18 @@ def run-local-e2e-phase [run: record, ctx: record] {
     }
     let metrics_urls = ["a:http://127.0.0.1:9001/metrics" "b:http://127.0.0.1:9101/metrics"]
         | append (if $ctx.runner_metrics_url != "" { [$"runner:($ctx.runner_metrics_url)"] } else { [] })
-    let submit_rpc_url = [$a_rpc $b_rpc] | str join ","
+    let generate_rpc_url = if $reverse_rpc { $b_rpc } else { $a_rpc }
+    let submit_rpc_url = if $reverse_rpc { [$b_rpc $a_rpc] } else { [$a_rpc $b_rpc] } | str join ","
 
     if $phase_exit == 0 {
         let phase_started_ms = ((date now | into int) / 1_000_000 | into int)
-        let initial_db_size_bytes = (e2e-db-size-bytes $ctx.a.datadir)
+        let initial_db_size_bytes = (e2e-db-size-bytes $a_datadir)
         let sender_exit = (try {
             let bench_result = (txgen-run-preset-pipeline
                 --txgen-tempo-bin $ctx.txgen.txgen_tempo_bin
                 --txgen-bench-bin $ctx.txgen.txgen_bench_bin
                 --preset-path $ctx.preset_path
-                --generate-rpc-url $a_rpc
+                --generate-rpc-url $generate_rpc_url
                 --submit-rpc-url $submit_rpc_url
                 --metrics-url $metrics_urls
                 --report-path $"($ctx.results_dir)/report-($phase).json"
