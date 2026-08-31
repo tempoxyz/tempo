@@ -1024,20 +1024,14 @@ impl GenerateSigningKey {
             warn_unencrypted_signing_key_deprecation();
         }
 
-        OpenOptions::new()
-            .write(true)
-            .create_new(!force)
-            .create(force)
-            .truncate(force)
-            .open(&output)
-            .map_err(Report::new)
-            .and_then(|f| match passphrase {
-                Some(passphrase) => signing_key
-                    .write_encrypted(f, passphrase)
-                    .map_err(Report::new),
-                None => signing_key.to_writer_unencrypted(f).map_err(Report::new),
-            })
-            .wrap_err_with(|| format!("failed writing signing key to `{}`", output.display()))?;
+        let file = open_signing_key_file(&output, force)?;
+        match passphrase {
+            Some(passphrase) => signing_key
+                .write_encrypted(file, passphrase)
+                .map_err(Report::new),
+            None => signing_key.to_writer_unencrypted(file).map_err(Report::new),
+        }
+        .wrap_err_with(|| format!("failed writing signing key to `{}`", output.display()))?;
         eprintln!(
             "wrote signing key to: {}\npublic key: {public_key}",
             output.display()
@@ -1056,6 +1050,28 @@ This compatibility mode is deprecated and will be removed in a future release.
 Pass `--secret <PATH>` (preferably a FIFO, for example `--secret <(cmd)`) to encrypt the key at rest.
 !!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!"
     );
+}
+
+fn open_signing_key_file(path: &Path, force: bool) -> eyre::Result<std::fs::File> {
+    let mut options = OpenOptions::new();
+    options
+        .write(true)
+        .create_new(!force)
+        .create(force)
+        .truncate(force);
+
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::OpenOptionsExt as _;
+
+        // Match tempo_consensus_config::SigningKey::write_to_file_encrypted.
+        options.mode(0o600);
+    }
+
+    options
+        .open(path)
+        .map_err(Report::new)
+        .wrap_err_with(|| format!("failed opening signing key file `{}`", path.display()))
 }
 
 fn read_secret<P: AsRef<Path>>(path: P) -> eyre::Result<SigningKeyPassphrase> {
@@ -1138,18 +1154,10 @@ impl EncryptSigningKey {
             )
         })?;
 
-        OpenOptions::new()
-            .write(true)
-            .create_new(!force)
-            .create(force)
-            .truncate(force)
-            .open(&output)
+        let file = open_signing_key_file(&output, force)?;
+        signing_key
+            .write_encrypted(file, passphrase)
             .map_err(Report::new)
-            .and_then(|f| {
-                signing_key
-                    .write_encrypted(f, passphrase)
-                    .map_err(Report::new)
-            })
             .wrap_err_with(|| {
                 format!(
                     "failed writing encrypted signing key to `{}`",
@@ -2053,5 +2061,55 @@ mod tests {
         let err = crate::TempoRpcModuleValidator::parse_selection("not-a-real-module").unwrap_err();
 
         assert!(err.contains("Unknown RPC module: 'not-a-real-module'"));
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn generate_signing_key_restricts_output_permissions() {
+        use std::os::unix::fs::PermissionsExt as _;
+
+        let dir = tempfile::tempdir().unwrap();
+        let output = dir.path().join("signing.key");
+
+        GenerateSigningKey {
+            output: output.clone(),
+            secret: None,
+            force: false,
+        }
+        .run()
+        .unwrap();
+
+        assert_eq!(output.metadata().unwrap().permissions().mode() & 0o777, 0o600);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn encrypt_signing_key_restricts_output_permissions() {
+        use std::os::unix::fs::PermissionsExt as _;
+
+        let dir = tempfile::tempdir().unwrap();
+        let input = dir.path().join("plaintext.key");
+        let output = dir.path().join("encrypted.key");
+        let secret = dir.path().join("passphrase");
+
+        GenerateSigningKey {
+            output: input.clone(),
+            secret: None,
+            force: false,
+        }
+        .run()
+        .unwrap();
+        std::fs::write(&secret, b"hunter2\n").unwrap();
+
+        EncryptSigningKey {
+            input,
+            output: output.clone(),
+            secret,
+            force: false,
+        }
+        .run()
+        .unwrap();
+
+        assert_eq!(output.metadata().unwrap().permissions().mode() & 0o777, 0o600);
     }
 }
