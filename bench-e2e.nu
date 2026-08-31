@@ -1017,17 +1017,14 @@ def run-local-e2e-phase [run: record, ctx: record] {
 
     let a_node_dir = if $swap_signing_keys { $ctx.b.node_dir } else { $ctx.a.node_dir }
     let b_node_dir = if $swap_signing_keys { $ctx.a.node_dir } else { $ctx.b.node_dir }
-    let trusted_peers = if $swap_signing_keys {
-        let peers = ($ctx.trusted_peers | split row ",")
-        if ($peers | length) != 2 {
-            error make { msg: "identity swap requires exactly two trusted peers" }
-        }
-        let a_peer = ($peers | get 0 | split row "@")
-        let b_peer = ($peers | get 1 | split row "@")
-        [$"($b_peer | get 0)@($a_peer | get 1)" $"($a_peer | get 0)@($b_peer | get 1)"] | str join ","
-    } else {
-        $ctx.trusted_peers
-    }
+    # Validator identities are bound to their configured consensus and execution P2P addresses
+    # in genesis. Move the complete network identity to its original address while leaving the
+    # process's datadir, CPU set, HTTP RPC port, and metrics label in place. Remapping only the
+    # peer IDs causes authenticated consensus handshakes to reject both validators.
+    let a_consensus_ip = if $swap_signing_keys { $ctx.b.ip } else { $ctx.a.ip }
+    let b_consensus_ip = if $swap_signing_keys { $ctx.a.ip } else { $ctx.b.ip }
+    let a_consensus_port = if $swap_signing_keys { $ctx.b.consensus_port } else { $ctx.a.consensus_port }
+    let b_consensus_port = if $swap_signing_keys { $ctx.a.consensus_port } else { $ctx.b.consensus_port }
 
     {
         swap_mounts: $swap_mounts
@@ -1088,7 +1085,7 @@ def run-local-e2e-phase [run: record, ctx: record] {
     let a_rpc = "http://127.0.0.1:8545"
     let b_rpc = "http://127.0.0.1:8645"
     let a_base_args = (build-base-args $genesis $a_datadir $a_log_dir "0.0.0.0" 8545 9001)
-        | append (build-e2e-consensus-args $a_node_dir $trusted_peers $ctx.a.consensus_port $ctx.a.ip)
+        | append (build-e2e-consensus-args $a_node_dir $ctx.trusted_peers $a_consensus_port $a_consensus_ip)
         | append $local_reth_args
         | append (log-filter-args $ctx.loud)
         | append (if $ctx.gas_limit != "" { ["--builder.gaslimit" $ctx.gas_limit] } else { [] })
@@ -1096,7 +1093,7 @@ def run-local-e2e-phase [run: record, ctx: record] {
         | append (if $ctx.tracy != "off" { ["--log.tracy" "--log.tracy.filter" $ctx.tracy_filter] } else { [] })
         | append (benchmark-otlp-args $ctx.tracing_otlp)
     let b_base_args = (build-base-args $genesis $b_datadir $b_log_dir "0.0.0.0" 8645 9101)
-        | append (build-e2e-consensus-args $b_node_dir $trusted_peers $ctx.b.consensus_port $ctx.b.ip)
+        | append (build-e2e-consensus-args $b_node_dir $ctx.trusted_peers $b_consensus_port $b_consensus_ip)
         | append $local_reth_args
         | append (log-filter-args $ctx.loud)
         | append (if $ctx.gas_limit != "" { ["--builder.gaslimit" $ctx.gas_limit] } else { [] })
