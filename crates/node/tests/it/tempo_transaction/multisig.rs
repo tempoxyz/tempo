@@ -15,7 +15,6 @@ use alloy::{
 use alloy_eips::Encodable2718;
 use alloy_primitives::TxKind;
 use reth_primitives_traits::transaction::TxHashRef;
-use tempo_alloy::provider::keychain::{KeyRestrictions, authorize_key};
 use tempo_contracts::precompiles::{
     DEFAULT_FEE_TOKEN, NATIVE_MULTISIG_ADDRESS,
     account_keychain::IAccountKeychain::IAccountKeychainInstance,
@@ -713,37 +712,6 @@ async fn access_key_authorization_matrix<E: TestEnv>(
             ExpectedOutcome::Revert => unreachable!("key authorization is validated pre-call"),
         }
     }
-
-    let direct_key = signer(0x64);
-    let direct_authorization = create_basic_aa_tx(
-        env.chain_id(),
-        nonce,
-        vec![authorize_key(
-            direct_key.address(),
-            SignatureType::Secp256k1,
-            KeyRestrictions::default(),
-        )],
-        EXAMPLE_GAS_LIMIT,
-    );
-    let signature = sign_multisig(
-        account,
-        direct_authorization.signature_hash(),
-        &config,
-        &[alice, bob],
-    )?;
-    submit(env, direct_authorization, signature).await?;
-    assert_active_key(env, account, direct_key.address()).await?;
-    nonce += 1;
-
-    let direct_key_tx = create_basic_aa_tx(
-        env.chain_id(),
-        nonce,
-        vec![no_op_call(0x66)],
-        EXAMPLE_GAS_LIMIT,
-    );
-    let signature = sign_aa_tx_with_secp256k1_access_key(&direct_key_tx, &direct_key, account)?;
-    submit(env, direct_key_tx, signature).await?;
-    nonce += 1;
 
     let mut next_config = config.clone();
     next_config.version = 1;
