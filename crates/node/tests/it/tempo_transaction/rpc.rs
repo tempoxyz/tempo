@@ -1,15 +1,16 @@
-//! Remote RPC transaction checks (testnet & devnet).
+//! RPC transaction environments and integration checks.
 //!
-//! These tests target a live RPC endpoint and cover the same core transaction
-//! matrices as the local integration tests, using the faucet for funding.
+//! The remote environment targets live testnet and devnet endpoints using the faucet for funding.
+//! Local RPC tests use an in-process node when they need a specific hardfork or controlled mining.
 //!
 //! Uses alloy's [`RetryBackoffLayer`] to automatically retry transient RPC
 //! errors (429 rate-limits, connection errors) with backoff at the transport
 //! level, so individual call sites don't need manual retry logic.
 use alloy::{
     consensus::BlockHeader,
-    primitives::{Address, B256, Bytes, U256},
+    primitives::{Address, B256, Bytes, TxKind, U256},
     providers::Provider,
+    rpc::types::TransactionRequest,
     signers::local::PrivateKeySigner,
     transports::{
         RpcError, TransportErrorKind,
@@ -18,13 +19,29 @@ use alloy::{
 };
 use alloy_eips::Encodable2718;
 use reth_primitives_traits::transaction::TxHashRef;
+use tempo_alloy::rpc::{
+    MultisigSimulationApproval, MultisigSimulationPrimitiveApproval, MultisigSimulationSpec,
+};
 use tempo_chainspec::{
     hardfork::{TempoHardfork, TempoHardforks},
     spec::{DEV, MODERATO, PRESTO},
 };
-use tempo_primitives::{TempoTxEnvelope, transaction::tempo_transaction::Call};
+use tempo_contracts::precompiles::DEFAULT_FEE_TOKEN;
+use tempo_node::rpc::TempoTransactionRequest;
+use tempo_primitives::{
+    SignatureType, TempoTransaction, TempoTxEnvelope,
+    transaction::{MultisigConfig, tempo_transaction::Call, tt_signature::TempoSignature},
+};
 
-use super::helpers::*;
+use super::{
+    helpers::*,
+    local::Localnet,
+    multisig::{
+        derived_account, multisig_config, no_op_call, sign_multisig, sorted_signers,
+        stored_config_commitment,
+    },
+    types::TestEnv,
+};
 
 /// Maximum number of 1-second poll iterations when waiting for RPC state to settle.
 const RPC_POLL_RETRIES: usize = 30;
@@ -119,7 +136,7 @@ impl RpcEnv {
     }
 }
 
-impl super::types::TestEnv for RpcEnv {
+impl TestEnv for RpcEnv {
     type P = alloy::providers::RootProvider;
 
     fn provider(&self) -> &Self::P {
@@ -300,4 +317,198 @@ async fn wait_for_receipt(
         tokio::time::sleep(std::time::Duration::from_secs(1)).await;
     }
     Err(eyre::eyre!("timed out waiting for receipt {tx_hash}"))
+}
+
+async fn fill_multisig_transaction(
+    env: &Localnet,
+    account: Address,
+    calls: Vec<Call>,
+    config: MultisigConfig,
+    owners: &[Address],
+    expected_nonce: u64,
+) -> eyre::Result<TempoTransaction> {
+    let expected_calls = calls.clone();
+    let request = multisig_fill_request(account, calls, config, owners, None);
+    let request = serde_json::to_value(request)?;
+    let filled: serde_json::Value = env
+        .provider()
+        .raw_request("eth_fillTransaction".into(), [request])
+        .await?;
+    let tx = parse_filled_tx(&filled)?;
+
+    assert_eq!(tx.chain_id, env.chain_id());
+    assert_eq!(tx.nonce, expected_nonce);
+    assert_eq!(tx.nonce_key, U256::ZERO);
+    assert_eq!(tx.calls, expected_calls);
+    assert!(tx.gas_limit > 0);
+    assert!(
+        tx.fee_token.is_none(),
+        "eth_fillTransaction should not select the fee token"
+    );
+    Ok(tx)
+}
+
+fn multisig_fill_request(
+    account: Address,
+    calls: Vec<Call>,
+    config: MultisigConfig,
+    owners: &[Address],
+    gas: Option<u64>,
+) -> TempoTransactionRequest {
+    TempoTransactionRequest {
+        inner: TransactionRequest {
+            from: Some(account),
+            gas,
+            ..Default::default()
+        },
+        calls,
+        multisig_simulation: Some(MultisigSimulationSpec {
+            config,
+            approvals: owners
+                .iter()
+                .map(|owner| {
+                    MultisigSimulationApproval::Primitive(MultisigSimulationPrimitiveApproval {
+                        owner: *owner,
+                        key_type: Some(SignatureType::Secp256k1),
+                        key_data: None,
+                    })
+                })
+                .collect(),
+        }),
+        ..Default::default()
+    }
+}
+
+async fn submit_local_raw_transaction(
+    env: &mut Localnet,
+    tx: TempoTransaction,
+    signature: TempoSignature,
+) -> eyre::Result<serde_json::Value> {
+    let envelope: TempoTxEnvelope = tx.into_signed(signature).into();
+    let tx_hash = *envelope.tx_hash();
+    let rpc_hash: B256 = env
+        .provider()
+        .raw_request("eth_sendRawTransaction".into(), [envelope.encoded_2718()])
+        .await?;
+    assert_eq!(rpc_hash, tx_hash);
+
+    for _ in 0..3 {
+        env.setup.node.advance_block().await?;
+        let receipt: Option<serde_json::Value> = env
+            .provider()
+            .raw_request("eth_getTransactionReceipt".into(), [tx_hash])
+            .await?;
+        if let Some(receipt) = receipt {
+            assert_eq!(receipt["status"].as_str(), Some("0x1"));
+            return Ok(receipt);
+        }
+    }
+
+    Err(eyre::eyre!(
+        "Transaction receipt not found for {tx_hash} after 3 blocks"
+    ))
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn test_tip_1061_fill_sign_send() -> eyre::Result<()> {
+    let mut env =
+        Localnet::with_schedule(crate::utils::ForkSchedule::DevnetAt(TempoHardfork::T12)).await?;
+    let signers = sorted_signers();
+    let (alice, bob) = (&signers[0], &signers[1]);
+    let config = multisig_config(0x81, 2, &[(alice, 1), (bob, 1)]);
+    let account = derived_account(&config)?;
+    env.fund_account(account).await?;
+
+    let owners = [alice.address(), bob.address()];
+    let mut initial = fill_multisig_transaction(
+        &env,
+        account,
+        vec![no_op_call(0x81)],
+        config.clone(),
+        &owners,
+        0,
+    )
+    .await?;
+    initial.fee_token = Some(DEFAULT_FEE_TOKEN);
+    let signature = sign_multisig(account, initial.signature_hash(), &config, &[alice, bob])?;
+    submit_local_raw_transaction(&mut env, initial, signature).await?;
+
+    assert_eq!(stored_config_commitment(&env, account).await?, B256::ZERO);
+
+    let mut repeated = fill_multisig_transaction(
+        &env,
+        account,
+        vec![no_op_call(0x82)],
+        config.clone(),
+        &owners,
+        1,
+    )
+    .await?;
+    repeated.fee_token = Some(DEFAULT_FEE_TOKEN);
+    let signature = sign_multisig(account, repeated.signature_hash(), &config, &[alice, bob])?;
+    submit_local_raw_transaction(&mut env, repeated, signature).await?;
+
+    assert_eq!(env.provider().get_transaction_count(account).await?, 2);
+    Ok(())
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn test_tip_1061_fill_with_supplied_gas_skips_estimation() -> eyre::Result<()> {
+    let env =
+        Localnet::with_schedule(crate::utils::ForkSchedule::DevnetAt(TempoHardfork::T12)).await?;
+    let signers = sorted_signers();
+    let (alice, bob) = (&signers[0], &signers[1]);
+    let config = multisig_config(0x83, 2, &[(alice, 1), (bob, 1)]);
+    let account = derived_account(&config)?;
+    let gas_limit = 123_456;
+    let request = multisig_fill_request(
+        account,
+        vec![Call {
+            to: TxKind::Call(DEFAULT_FEE_TOKEN),
+            value: U256::ZERO,
+            input: Bytes::new(),
+        }],
+        config,
+        &[alice.address(), bob.address()],
+        Some(gas_limit),
+    );
+
+    let filled: serde_json::Value = env
+        .provider()
+        .raw_request(
+            "eth_fillTransaction".into(),
+            [serde_json::to_value(request)?],
+        )
+        .await?;
+
+    assert_eq!(parse_filled_tx(&filled)?.gas_limit, gas_limit);
+    Ok(())
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn test_fill_transaction_rejects_mismatched_chain_id() -> eyre::Result<()> {
+    let env = Localnet::new().await?;
+    let request = TempoTransactionRequest {
+        inner: TransactionRequest {
+            from: Some(Address::random()),
+            chain_id: Some(env.chain_id() + 1),
+            gas: Some(21_000),
+            ..Default::default()
+        },
+        ..Default::default()
+    };
+
+    let result = env
+        .provider()
+        .raw_request::<_, serde_json::Value>(
+            "eth_fillTransaction".into(),
+            [serde_json::to_value(request)?],
+        )
+        .await;
+    let error = result.expect_err("mismatched explicit chain ID must be rejected");
+    assert!(
+        error.to_string().contains("chainId does not match node's"),
+        "unexpected error: {error}"
+    );
+    Ok(())
 }
