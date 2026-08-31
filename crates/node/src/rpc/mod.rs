@@ -3,20 +3,24 @@ pub mod consensus;
 pub mod error;
 pub mod eth_ext;
 pub mod fork_schedule;
+mod native_multisig;
 pub mod operator;
 pub mod simulate;
 pub mod token;
 
 pub use admin::{TempoAdminApi, TempoAdminApiServer};
+use alloy_eips::BlockId;
 use alloy_primitives::B256;
-use alloy_rpc_types_eth::{Log, ReceiptWithBloom};
+use alloy_rpc_types_eth::{Log, ReceiptWithBloom, state::EvmOverrides};
 pub use consensus::{TempoConsensusApiServer, TempoConsensusRpc};
 pub use eth_ext::{TempoEthExt, TempoEthExtApiServer};
 pub use fork_schedule::{TempoForkScheduleApiServer, TempoForkScheduleRpc};
 use futures::{TryFutureExt, future::Either};
 pub use operator::{TempoOperatorApiServer, TempoOperatorRpc};
 use reth_errors::RethError;
-use reth_primitives_traits::{HeaderTy, Recovered, SealedHeaderFor, TransactionMeta, WithEncoded};
+use reth_primitives_traits::{
+    HeaderTy, NodePrimitives, Recovered, SealedHeaderFor, TransactionMeta, TxTy, WithEncoded,
+};
 use reth_rpc_eth_api::{FromEthApiError, IntoEthApiError, RpcTxReq};
 use reth_transaction_pool::{PoolTransaction, PoolTx, TransactionOrigin, TransactionPool};
 pub use simulate::{TempoSimulate, TempoSimulateApiServer, TempoSimulateV1Response};
@@ -45,7 +49,7 @@ use reth_node_builder::rpc::{EthApiBuilder, EthApiCtx};
 use reth_provider::{ChainSpecProvider, ProviderError};
 use reth_rpc::{DynRpcConverter, eth::EthApi};
 use reth_rpc_eth_api::{
-    EthApiTypes, RpcConverter, RpcNodeCore, RpcNodeCoreExt,
+    EthApiTypes, FullEthApiTypes, RpcConverter, RpcNodeCore, RpcNodeCoreExt,
     helpers::{
         Call, EthApiSpec, EthBlocks, EthCall, EthFees, EthState, EthSubscriptions, EthTransactions,
         LoadBlock, LoadFee, LoadPendingBlock, LoadReceipt, LoadState, LoadTransaction,
@@ -58,8 +62,8 @@ use reth_rpc_eth_api::{
     transaction::{ConvertReceiptInput, ReceiptConverter},
 };
 use reth_rpc_eth_types::{
-    EthApiError, EthStateCache, FeeHistoryCache, GasPriceOracle, PendingBlock, SignError,
-    builder::config::PendingBlockKind, receipt::EthReceiptConverter,
+    EthApiError, EthStateCache, FeeHistoryCache, FillTransaction, GasPriceOracle, PendingBlock,
+    SignError, builder::config::PendingBlockKind, receipt::EthReceiptConverter,
 };
 use tempo_alloy::{TempoNetwork, rpc::TempoTransactionReceipt};
 use tempo_evm::{TempoBlockEnv, TempoHaltReason, TempoInvalidTransaction};
@@ -69,6 +73,10 @@ use tempo_primitives::{
 };
 use tempo_revm::TempoTxEnv;
 use tokio::sync::{Mutex, broadcast};
+
+use self::native_multisig::{
+    prepare_native_multisig_simulation, replace_multisig_spec_with_mock_signature,
+};
 
 /// Placeholder constant for `eth_getBalance` calls because the native token balance is N/A on
 /// Tempo.
@@ -450,6 +458,9 @@ where
         mut request: TempoTransactionRequest,
         mut db: impl Database<Error: Into<EthApiError>>,
     ) -> Result<TxEnvFor<Self::Evm>, Self::Error> {
+        prepare_native_multisig_simulation(&mut request, evm_env.cfg_env.spec, &mut db)
+            .map_err(Self::Error::from_eth_err)?;
+
         if let Some(nonce_key) = request.nonce_key
             && !nonce_key.is_zero()
             && request.nonce.is_none()
@@ -481,6 +492,8 @@ impl<N> LoadTransaction for TempoEthApi<N> where N: TempoEthApiBounds {}
 impl<N> EthTransactions for TempoEthApi<N>
 where
     N: TempoEthApiBounds,
+    Self: EthApiTypes<NetworkTypes = TempoNetwork> + FullEthApiTypes + RpcNodeCore<Pool = N::Pool>,
+    <Self as RpcNodeCore>::Primitives: NodePrimitives<SignedTx = TempoTxEnvelope>,
 {
     fn signers(&self) -> &SignersForRpc<Self::Provider, Self::NetworkTypes> {
         self.inner.signers()
@@ -488,6 +501,56 @@ where
 
     fn send_raw_transaction_sync_timeout(&self) -> std::time::Duration {
         self.inner.send_raw_transaction_sync_timeout()
+    }
+
+    fn fill_transaction(
+        &self,
+        mut request: RpcTxReq<Self::NetworkTypes>,
+    ) -> impl Future<Output = Result<FillTransaction<TxTy<Self::Primitives>>, Self::Error>> + Send
+    where
+        Self: EthApiSpec + LoadBlock + EstimateCall + LoadFee,
+    {
+        let this = self.clone();
+        async move {
+            request.inner.value.get_or_insert_default();
+            if request.inner.nonce.is_none() {
+                request.inner.nonce = Some(this.next_available_nonce_for(&request).await?);
+            }
+            let chain_id = this.chain_id();
+            if let Some(request_chain_id) = request.inner.chain_id
+                && request_chain_id != chain_id.to::<u64>()
+            {
+                return Err(Self::Error::from_eth_err(EthApiError::InvalidParams(
+                    format!(
+                        "chainId mismatch: expected {}, actual {request_chain_id}",
+                        chain_id.to::<u64>(),
+                    ),
+                )));
+            }
+            request.inner.chain_id = Some(chain_id.to());
+
+            if request.inner.gas.is_none() {
+                let estimated_gas = EstimateCall::estimate_gas_at(
+                    &this,
+                    request.clone(),
+                    BlockId::pending(),
+                    EvmOverrides::default(),
+                )
+                .await?;
+                request.inner.gas = Some(estimated_gas.to());
+            }
+
+            replace_multisig_spec_with_mock_signature(&mut request)
+                .map_err(Self::Error::from_eth_err)?;
+
+            let filled = EthTransactions::fill_transaction(&this.inner, request)
+                .await
+                .map_err(Self::Error::from_eth_err)?;
+            Ok(FillTransaction {
+                raw: filled.raw,
+                tx: filled.tx,
+            })
+        }
     }
 
     fn send_pool_transaction(
