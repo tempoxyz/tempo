@@ -9,7 +9,7 @@ use crate::{
         TempoToken, TempoTokenApiServer,
     },
 };
-use alloy_primitives::{Address, B256};
+use alloy_primitives::B256;
 use reth_chainspec::{ChainKind, EthChainSpec, Hardforks, NamedChain};
 use reth_ethereum::network::{NetworkHandle, PeersInfo as _, primitives::BasicNetworkPrimitives};
 use reth_node_api::{
@@ -74,9 +74,14 @@ pub struct TempoNodeArgs {
     #[arg(long = "txpool.max-tempo-authorizations", default_value_t = DEFAULT_MAX_TEMPO_AUTHORIZATIONS)]
     pub max_tempo_authorizations: usize,
 
-    /// Addresses checked against transaction senders and direct call targets during pool admission.
-    #[arg(long = "txpool.filter", value_name = "ADDRESS", value_delimiter = ',')]
-    pub txpool_filter: Vec<Address>,
+    /// Comma-separated addresses or a file containing comma/newline-separated addresses used for
+    /// transaction sender and direct call target checks.
+    #[arg(
+        long = "txpool.filter",
+        value_name = "ADDRESSES_OR_FILE",
+        value_parser = parse_address_filter
+    )]
+    pub txpool_filter: Option<AddressFilter>,
 
     /// Enable state provider metrics for the payload builder.
     #[arg(long = "builder.state-provider-metrics", default_value_t = false)]
@@ -118,7 +123,7 @@ impl Default for TempoNodeArgs {
         Self {
             aa_valid_after_max_secs: DEFAULT_AA_VALID_AFTER_MAX_SECS,
             max_tempo_authorizations: DEFAULT_MAX_TEMPO_AUTHORIZATIONS,
-            txpool_filter: Vec::new(),
+            txpool_filter: None,
             builder_state_provider_metrics: false,
             builder_disable_prewarming: false,
             builder_enable_prewarming: true,
@@ -135,7 +140,7 @@ impl TempoNodeArgs {
         TempoPoolBuilder {
             aa_valid_after_max_secs: self.aa_valid_after_max_secs,
             max_tempo_authorizations: self.max_tempo_authorizations,
-            address_filter: AddressFilter::new(self.txpool_filter.iter().copied()),
+            address_filter: self.txpool_filter.clone().unwrap_or_default(),
             ..Default::default()
         }
     }
@@ -151,6 +156,23 @@ impl TempoNodeArgs {
             enable_prewarming: !self.builder_disable_prewarming,
             enable_parallel: self.builder_parallel,
             build_time_multiplier: self.builder_build_time_multiplier,
+        }
+    }
+}
+
+fn parse_address_filter(value: &str) -> Result<AddressFilter, String> {
+    match value.parse::<AddressFilter>() {
+        Ok(filter) => Ok(filter),
+        Err(list_error) => {
+            let contents = std::fs::read_to_string(value).map_err(|file_error| {
+                format!(
+                    "invalid address list ({list_error}); failed to read `{value}` as a file: {file_error}"
+                )
+            })?;
+
+            contents
+                .parse::<AddressFilter>()
+                .map_err(|error| format!("invalid address list in `{value}`: {error}"))
         }
     }
 }
@@ -876,7 +898,9 @@ where
 
 #[cfg(test)]
 mod tests {
-    use super::{TempoNode, TempoNodeArgs, TempoPayloadBuilderBuilder, TempoPoolBuilder};
+    use super::{
+        AddressFilter, TempoNode, TempoNodeArgs, TempoPayloadBuilderBuilder, TempoPoolBuilder,
+    };
     use alloy_primitives::Address;
 
     #[test]
@@ -907,7 +931,7 @@ mod tests {
         let address = Address::with_last_byte(1);
         let node = TempoNode::new(
             &TempoNodeArgs {
-                txpool_filter: vec![address],
+                txpool_filter: Some(AddressFilter::new([address])),
                 ..Default::default()
             },
             None,

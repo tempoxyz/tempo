@@ -3,12 +3,13 @@
 use crate::transaction::{TempoPoolTransactionError, TempoPooledTransaction};
 use alloy_primitives::{Address, map::AddressSet};
 use reth_transaction_pool::PoolTransaction;
+use std::str::FromStr;
 
 /// Addresses checked against transaction senders and direct call targets.
 ///
 /// Ordinary Ethereum-style transactions have at most one direct call target. Tempo
 /// transactions may contain multiple calls, so every direct target is checked.
-#[derive(Clone, Debug, Default)]
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct AddressFilter {
     addresses: AddressSet,
 }
@@ -72,6 +73,33 @@ impl FromIterator<Address> for AddressFilter {
 impl From<Vec<Address>> for AddressFilter {
     fn from(addresses: Vec<Address>) -> Self {
         Self::new(addresses)
+    }
+}
+
+impl FromStr for AddressFilter {
+    type Err = String;
+
+    fn from_str(value: &str) -> Result<Self, Self::Err> {
+        let mut addresses = Vec::new();
+
+        for (line, values) in value.trim_start_matches('\u{feff}').lines().enumerate() {
+            for value in values
+                .split(',')
+                .map(str::trim)
+                .filter(|value| !value.is_empty())
+            {
+                let address = value.parse::<Address>().map_err(|error| {
+                    format!("invalid address `{value}` on line {}: {error}", line + 1)
+                })?;
+                addresses.push(address);
+            }
+        }
+
+        if addresses.is_empty() {
+            return Err("no addresses provided".to_string());
+        }
+
+        Ok(Self::new(addresses))
     }
 }
 
@@ -167,5 +195,32 @@ mod tests {
 
         assert_eq!(filter.len(), 1);
         assert!(filter.contains(&address));
+    }
+
+    #[test]
+    fn parses_comma_and_newline_separated_addresses() {
+        let first = Address::with_last_byte(10);
+        let second = Address::with_last_byte(11);
+        let filter = format!("{first}, {second}\n\n{first},")
+            .parse::<AddressFilter>()
+            .unwrap();
+
+        assert_eq!(filter.len(), 2);
+        assert!(filter.contains(&first));
+        assert!(filter.contains(&second));
+    }
+
+    #[test]
+    fn rejects_empty_and_invalid_address_lists() {
+        assert_eq!(
+            "\n, \n".parse::<AddressFilter>().unwrap_err(),
+            "no addresses provided"
+        );
+        assert!(
+            "0x0000000000000000000000000000000000000001\nnot-an-address"
+                .parse::<AddressFilter>()
+                .unwrap_err()
+                .contains("invalid address `not-an-address` on line 2")
+        );
     }
 }
