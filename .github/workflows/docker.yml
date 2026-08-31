@@ -157,6 +157,7 @@ jobs:
         env:
           VERGEN_GIT_SHA: ${{ github.sha }}
           VERGEN_GIT_SHA_SHORT: ${{ steps.shortsha.outputs.shortsha }}
+          TEMPO_NIGHTLY_ENGINE_DEFAULTS: ${{ (github.event_name == 'schedule' || github.event.inputs.nightly == 'true') && 'true' || 'false' }}
 
       - name: Install cosign
         uses: sigstore/cosign-installer@cad07c2e89fa2edd6e2d7bab4c1aa38e53f76003 # v4.1.1

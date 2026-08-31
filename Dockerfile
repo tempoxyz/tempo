@@ -32,8 +32,11 @@ WORKDIR /data
 # tempo
 FROM base AS tempo
 ARG RUST_PROFILE=profiling
+ARG TEMPO_NIGHTLY_ENGINE_DEFAULTS=false
+ENV TEMPO_NIGHTLY_ENGINE_DEFAULTS=${TEMPO_NIGHTLY_ENGINE_DEFAULTS}
 COPY --from=builder /app/target/${RUST_PROFILE}/tempo /usr/local/bin/tempo
-ENTRYPOINT ["/usr/local/bin/tempo"]
+COPY scripts/docker/tempo-entrypoint.sh /usr/local/bin/tempo-entrypoint
+ENTRYPOINT ["/usr/local/bin/tempo-entrypoint"]
 
 # tempo-sidecar
 FROM base AS tempo-sidecar
