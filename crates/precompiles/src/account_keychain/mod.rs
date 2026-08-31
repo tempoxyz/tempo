@@ -19,11 +19,12 @@ pub use tempo_contracts::precompiles::{
         burnKeyAuthorizationWitnessCall, getAllowedCallsCall, getKeyCall, getRemainingLimitCall,
         getRemainingLimitWithPeriodCall, getTransactionKeyCall,
         isKeyAuthorizationWitnessBurnedCall, removeAllowedCallsCall, revokeKeyCall,
-        setAllowedCallsCall, updateSpendingLimitCall,
+        updateSpendingLimitCall,
     },
     authorizeKeyCall, authorizeKeyWithWitnessCall, getAllowedCallsReturn, getRemainingLimitReturn,
+    legacySetAllowedCallsCall, setAllowedCallsCall,
 };
-use tempo_primitives::TempoAddressExt;
+use tempo_primitives::{TempoAddressExt, transaction::CallScope as RlpCallScope};
 
 use crate::{
     ACCOUNT_KEYCHAIN_ADDRESS,
@@ -38,6 +39,16 @@ use tempo_precompiles_macros::{Storable, contract};
 const TIP20_TRANSFER_SELECTOR: [u8; 4] = ITIP20::transferCall::SELECTOR;
 const TIP20_APPROVE_SELECTOR: [u8; 4] = ITIP20::approveCall::SELECTOR;
 const TIP20_TRANSFER_WITH_MEMO_SELECTOR: [u8; 4] = ITIP20::transferWithMemoCall::SELECTOR;
+
+/// Additional cost for each 32-byte word decoded as RLP by `setAllowedCalls`.
+const RLP_INPUT_PER_WORD_COST: u64 = 50;
+
+#[inline]
+fn rlp_input_cost(input_len: usize) -> u64 {
+    input_len
+        .div_ceil(32)
+        .saturating_mul(RLP_INPUT_PER_WORD_COST as usize) as u64
+}
 
 /// (T7+) Alias for zero remaining periodic spend, used to avoid clearing the storage slot.
 const ZERO_PERIODIC_REMAINING_SENTINEL: U256 = U256::MAX;
@@ -568,25 +579,41 @@ impl AccountKeychain {
     }
 
     /// Root/admin-only create-or-replace updates for one or more target call scopes.
-    pub fn set_allowed_calls(
+    pub fn set_allowed_calls_rlp(
         &mut self,
         msg_sender: Address,
         call: setAllowedCallsCall,
     ) -> Result<()> {
-        if !self.storage.spec().is_t3() {
+        self.storage.deduct_gas(rlp_input_cost(call.scopes.len()))?;
+
+        let scopes: Vec<RlpCallScope> = alloy_rlp::decode_exact(call.scopes.as_ref())
+            .map_err(|_| AccountKeychainError::invalid_call_scope())?;
+        let scopes: Vec<CallScope> = scopes.into_iter().map(Into::into).collect();
+        if scopes.is_empty() {
             return Err(AccountKeychainError::invalid_call_scope().into());
         }
 
+        self.set_allowed_calls_decoded(msg_sender, call.keyId, scopes)
+    }
+
+    fn set_allowed_calls_decoded(
+        &mut self,
+        msg_sender: Address,
+        key_id: Address,
+        scopes: Vec<CallScope>,
+    ) -> Result<()> {
+        if !self.storage.spec().is_t3() {
+            return Err(AccountKeychainError::invalid_call_scope().into());
+        }
         self.ensure_admin_caller(msg_sender)?;
 
         let current_timestamp = self.storage.timestamp().saturating_to::<u64>();
-        let key = self.load_active_key(msg_sender, call.keyId, current_timestamp)?;
+        let key = self.load_active_key(msg_sender, key_id, current_timestamp)?;
         if key.is_admin {
             return Err(AccountKeychainError::invalid_key_id().into());
         }
 
-        let key_hash = Self::spending_limit_key(msg_sender, call.keyId);
-        let scopes = call.scopes;
+        let key_hash = Self::spending_limit_key(msg_sender, key_id);
 
         if scopes.is_empty() {
             return Err(AccountKeychainError::invalid_call_scope().into());
@@ -599,6 +626,15 @@ impl AccountKeychain {
         }
 
         self.key_scopes[key_hash].is_scoped.write(true)
+    }
+
+    /// Pre-T11 ABI-encoded create-or-replace updates for target call scopes.
+    pub fn set_allowed_calls(
+        &mut self,
+        msg_sender: Address,
+        call: legacySetAllowedCallsCall,
+    ) -> Result<()> {
+        self.set_allowed_calls_decoded(msg_sender, call.keyId, call.scopes)
     }
 
     /// Root/admin-only removal of one target call scope.
@@ -1594,7 +1630,18 @@ mod tests {
     use alloy::primitives::{Address, B256, TxKind, U256};
     use revm::state::Bytecode;
     use tempo_chainspec::hardfork::TempoHardfork;
-    use tempo_contracts::precompiles::{DEFAULT_FEE_TOKEN, IAccountKeychain::SignatureType};
+    use tempo_contracts::precompiles::{
+        DEFAULT_FEE_TOKEN, IAccountKeychain::SignatureType,
+        legacySetAllowedCallsCall as setAllowedCallsCall,
+    };
+
+    #[test]
+    fn test_rlp_input_cost() {
+        assert_eq!(rlp_input_cost(0), 0);
+        assert_eq!(rlp_input_cost(1), 50);
+        assert_eq!(rlp_input_cost(32), 50);
+        assert_eq!(rlp_input_cost(33), 100);
+    }
 
     fn authorize_key(
         keychain: &mut AccountKeychain,

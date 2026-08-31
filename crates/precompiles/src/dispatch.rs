@@ -15,6 +15,15 @@ sol! {
     error StaticCallNotAllowed();
 }
 
+/// Maximum memory the ABI decoder may allocate for a precompile call.
+pub const ABI_DECODER_MEMORY_LIMIT: usize = 16 * 1024 * 1024;
+
+/// Returns the ABI decoder configuration used for precompile calls.
+#[inline]
+pub const fn abi_decoder_config() -> alloy::sol_types::abi::AbiDecoderConfig {
+    alloy::sol_types::abi::AbiDecoderConfig::new().memory_limit(ABI_DECODER_MEMORY_LIMIT)
+}
+
 pub mod typed {
     use super::*;
 
@@ -248,9 +257,18 @@ macro_rules! dispatch {
                 $(
                     if <$iface::$calls as alloy::sol_types::SolInterface>::valid_selector(selector) {
                         type Calls = $iface::$calls;
-                        return $crate::dispatch::dispatch_call($calldata, <Calls as alloy::sol_types::SolInterface>::abi_decode, |$call| match $match_call {
-                            $(Calls::$variant($binding) => $body,)*
-                        });
+                        return $crate::dispatch::dispatch_call(
+                            $calldata,
+                            |data| {
+                                <Calls as alloy::sol_types::SolInterface>::abi_decode_with_config(
+                                    data,
+                                    $crate::dispatch::abi_decoder_config(),
+                                )
+                            },
+                            |$call| match $match_call {
+                                $(Calls::$variant($binding) => $body,)*
+                            },
+                        );
                     }
                 )*
                 return $crate::dispatch::unknown_selector_result($calldata);
@@ -315,6 +333,10 @@ mod tests {
             function get(uint256 value) external view returns (uint256);
             function set(uint256 value) external returns (uint256);
             function clear(uint256 value) external;
+        }
+
+        interface ITestMemoryDispatch {
+            function setValues(uint256[] values) external;
         }
 
         error CustomTypedError(uint256 code);
@@ -408,6 +430,29 @@ mod tests {
             .into_precompile_result(0, 0)
             .unwrap_err();
         assert!(matches!(error, PrecompileError::Fatal(message) if message == "boom"));
+        Ok(())
+    }
+
+    #[test]
+    fn dispatch_limits_abi_decoder_memory() -> eyre::Result<()> {
+        let mut calldata = ITestMemoryDispatch::setValuesCall::SELECTOR.to_vec();
+        calldata.extend(U256::from(32).to_be_bytes::<32>());
+        calldata.extend(U256::from(ABI_DECODER_MEMORY_LIMIT as u64).to_be_bytes::<32>());
+
+        let mut storage = HashMapStorageProvider::new_with_spec(1, TempoHardfork::T1);
+        let output = StorageCtx::enter(&mut storage, || {
+            dispatch!(
+                &calldata,
+                |call| match call {
+                    ITestMemoryDispatch::ITestMemoryDispatchCalls {
+                        setValues(_) => Ok(PrecompileOutput::new(0, Bytes::new(), 0)),
+                    }
+                }
+            )
+        })?;
+
+        assert!(output.is_revert());
+        assert!(output.bytes.is_empty());
         Ok(())
     }
 }

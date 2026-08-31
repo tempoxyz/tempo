@@ -416,6 +416,7 @@ where
 mod tests {
     use super::*;
     use crate::{
+        account_keychain::setAllowedCallsCall,
         storage::{StorageCtx, hashmap::HashMapStorageProvider},
         tip20::TIP20Token,
     };
@@ -430,6 +431,7 @@ mod tests {
     use revm::{
         context::{ContextTr, TxEnv},
         database::{CacheDB, EmptyDB},
+        precompile::{PrecompileHalt, PrecompileStatus},
         state::{AccountInfo, Bytecode},
     };
     use tempo_contracts::precompiles::{ITIP20, UnknownFunctionSelector};
@@ -1020,6 +1022,45 @@ mod tests {
         assert_eq!(input_cost(TempoHardfork::T11, 1).unwrap(), 30);
         assert_eq!(input_cost(TempoHardfork::T11, 32).unwrap(), 30);
         assert_eq!(input_cost(TempoHardfork::T11, 33).unwrap(), 60);
+    }
+
+    #[test]
+    fn test_t11_set_allowed_calls_charges_rlp_input_before_decoding() {
+        let mut cfg = CfgEnv::<TempoHardfork>::default();
+        cfg.set_spec_and_mainnet_gas_params(TempoHardfork::T11);
+        let precompile =
+            tempo_precompile!("AccountKeychain", &cfg, |_input| { AccountKeychain::new() });
+
+        let calldata: Bytes = setAllowedCallsCall {
+            keyId: Address::random(),
+            scopes: vec![0xc0].into(),
+        }
+        .abi_encode()
+        .into();
+        let base_cost = input_cost(TempoHardfork::T11, calldata.len()).unwrap();
+
+        let db = CacheDB::new(EmptyDB::new());
+        let mut evm = EthEvmFactory::default().create_evm(db, EvmEnv::default());
+        let block = evm.block.clone();
+        let tx = TxEnv::default();
+        let evm_internals = EvmInternals::new(evm.journal_mut(), &block, &cfg, &tx);
+        let input = PrecompileInput {
+            data: &calldata,
+            caller: Address::ZERO,
+            internals: evm_internals,
+            gas: base_cost + 49,
+            is_static: false,
+            value: U256::ZERO,
+            target_address: ACCOUNT_KEYCHAIN_ADDRESS,
+            bytecode_address: ACCOUNT_KEYCHAIN_ADDRESS,
+            reservoir: 0,
+        };
+
+        let output = AlloyEvmPrecompile::call(&precompile, input).expect("expected OOG output");
+        assert!(matches!(
+            output.status,
+            PrecompileStatus::Halt(PrecompileHalt::OutOfGas)
+        ));
     }
 
     #[test]
