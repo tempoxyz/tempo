@@ -3,7 +3,10 @@
 //! Certificates order the head by round. Marshal-delivered blocks order finality by height.
 
 use alloy_rpc_types_engine::ForkchoiceState;
-use commonware_consensus::types::{Height, Round};
+use commonware_consensus::{
+    CertifiableBlock as _, Heightable as _,
+    types::{Height, Round},
+};
 use reth_primitives_traits::SealedHeader;
 use tempo_primitives::TempoHeader;
 
@@ -44,20 +47,17 @@ impl Forkchoice {
     }
 
     pub(super) fn update_finalized(&mut self, block: &Block) -> bool {
-        let header = block.block().sealed_header();
-        let tip = header.num_hash();
-        let height = Height::new(tip.number);
+        let height = block.height();
         if height <= self.finalized.0 {
             return false;
         }
 
-        let digest = Digest(tip.hash);
+        let digest = block.digest();
         self.finalized = (height, digest);
-        if let Some(round) = header.consensus_context.map(round_from_context) {
-            self.update_head(round, digest);
-        } else if self.head.0.is_none() {
-            self.head.1 = digest;
-        }
+
+        // Post-activation blocks always carry consensus context. If one does not,
+        // `context()` safely falls back to the sentinel round zero.
+        self.update_head(block.context().round, digest);
 
         true
     }
