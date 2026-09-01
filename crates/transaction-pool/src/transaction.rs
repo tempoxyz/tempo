@@ -11,7 +11,8 @@ use alloy_eips::{
 };
 use alloy_evm::FromRecoveredTx;
 use alloy_primitives::{
-    Address, B256, Bytes, TxHash, TxKind, U256, bytes, keccak256, map::AddressMap,
+    Address, B256, Bytes, TxHash, TxKind, U256, bytes, keccak256,
+    map::{AddressMap, AddressSet},
 };
 use alloy_sol_types::SolInterface;
 use reth_evm::execute::WithTxEnv;
@@ -35,7 +36,9 @@ use tempo_precompiles::{
 };
 use tempo_primitives::{
     TempoTxEnvelope,
-    transaction::{InvalidValidAfter, InvalidValidBefore, calc_gas_balance_spending},
+    transaction::{
+        InvalidValidAfter, InvalidValidBefore, MultisigSignature, calc_gas_balance_spending,
+    },
 };
 use tempo_revm::{TempoInvalidTransaction, TempoTxEnv};
 use thiserror::Error;
@@ -211,6 +214,36 @@ impl TempoPooledTransaction {
             account: keychain_sig.user_address,
             key_id,
             fee_token,
+        })
+    }
+
+    /// Returns whether this transaction's authorization depends on one of the changed multisig
+    /// configs, including nested owner accounts.
+    pub(crate) fn depends_on_multisig_config(&self, changed_accounts: &AddressSet) -> bool {
+        fn contains_changed_account(
+            signature: &MultisigSignature,
+            changed_accounts: &AddressSet,
+        ) -> bool {
+            changed_accounts.contains(&signature.account())
+                || signature.signatures().iter().any(|approval| {
+                    approval
+                        .as_multisig()
+                        .is_some_and(|nested| contains_changed_account(nested, changed_accounts))
+                })
+        }
+
+        self.inner().as_aa().is_some_and(|aa_tx| {
+            let key_authorization = aa_tx.tx().key_authorization.as_ref();
+            aa_tx
+                .signature()
+                .as_multisig()
+                .is_some_and(|signature| contains_changed_account(signature, changed_accounts))
+                || key_authorization
+                    .and_then(|authorization| authorization.signature.as_multisig())
+                    .is_some_and(|signature| contains_changed_account(signature, changed_accounts))
+                || key_authorization.is_some_and(|authorization| {
+                    changed_accounts.contains(&authorization.authorization.key_id)
+                })
         })
     }
 
@@ -955,6 +988,7 @@ mod tests {
     use super::*;
     use crate::test_utils::TxBuilder;
     use alloy_consensus::TxEip1559;
+    use alloy_eips::eip7702::Authorization;
     use alloy_primitives::{Address, Signature, TxKind, address};
     use alloy_signer::SignerSync;
     use alloy_signer_local::PrivateKeySigner;
@@ -964,9 +998,10 @@ mod tests {
     use tempo_contracts::precompiles::ITIP20;
     use tempo_precompiles::{PATH_USD_ADDRESS, nonce::NonceManager};
     use tempo_primitives::transaction::{
-        TEMPO_EXPIRING_NONCE_KEY, TempoTransaction,
+        KeyAuthorization, MultisigConfig, MultisigOwner, MultisigSignature, SignatureType,
+        TEMPO_EXPIRING_NONCE_KEY, TempoSignedAuthorization, TempoTransaction,
         tempo_transaction::Call,
-        tt_signature::{PrimitiveSignature, TempoSignature},
+        tt_signature::{KeychainSignature, PrimitiveSignature, TempoSignature},
         tt_signed::AASigned,
     };
 
@@ -1118,6 +1153,102 @@ mod tests {
         assert!(
             tx.aa_transaction_id().is_none(),
             "Non-AA tx should have no AA transaction ID"
+        );
+    }
+
+    #[test]
+    fn test_multisig_accounts_includes_key_authorization_tree() {
+        let account = Address::random();
+        let nested_account = Address::random();
+        let access_key = PrivateKeySigner::random();
+        let key_authorization = |nested: Option<Address>| {
+            let primitive_owner = Address::repeat_byte(0x11);
+            let owner_approval = TempoSignature::Primitive(PrimitiveSignature::Secp256k1(
+                Signature::test_signature(),
+            ));
+            let owner_approval = match nested {
+                None => owner_approval,
+                Some(nested_account) => TempoSignature::Multisig(
+                    MultisigSignature::try_new(
+                        nested_account,
+                        MultisigConfig {
+                            salt: B256::ZERO,
+                            version: 1,
+                            threshold: 1,
+                            owners: vec![MultisigOwner {
+                                owner: primitive_owner,
+                                weight: 1,
+                            }],
+                        },
+                        vec![owner_approval],
+                    )
+                    .unwrap(),
+                ),
+            };
+            KeyAuthorization::unrestricted(42431, SignatureType::Secp256k1, access_key.address())
+                .with_account(account)
+                .into_signed(TempoSignature::Multisig(
+                    MultisigSignature::try_new(
+                        account,
+                        MultisigConfig {
+                            salt: B256::ZERO,
+                            version: 1,
+                            threshold: 1,
+                            owners: vec![MultisigOwner {
+                                owner: nested.unwrap_or(primitive_owner),
+                                weight: 1,
+                            }],
+                        },
+                        vec![owner_approval],
+                    )
+                    .unwrap(),
+                ))
+        };
+
+        let direct = TxBuilder::aa(account)
+            .key_authorization(key_authorization(None))
+            .build_keychain(account, &access_key);
+        assert!(direct.depends_on_multisig_config(&AddressSet::from_iter([account])));
+        assert!(!direct.depends_on_multisig_config(&AddressSet::from_iter([nested_account])));
+
+        let nested = TxBuilder::aa(account)
+            .key_authorization(key_authorization(Some(nested_account)))
+            .build_keychain(account, &access_key);
+        assert!(nested.depends_on_multisig_config(&AddressSet::from_iter([account])));
+        assert!(nested.depends_on_multisig_config(&AddressSet::from_iter([nested_account])));
+    }
+
+    #[test]
+    fn multisig_config_dependencies_include_access_key_targets() {
+        let account = Address::random();
+        let key_id = Address::random();
+        let key_authorization =
+            KeyAuthorization::unrestricted(42431, SignatureType::Secp256k1, key_id)
+                .with_account(account)
+                .into_signed(TempoSignature::Primitive(PrimitiveSignature::default()));
+        let key_transaction = TxBuilder::aa(account)
+            .key_authorization(key_authorization)
+            .build();
+        assert!(key_transaction.depends_on_multisig_config(&AddressSet::from_iter([key_id])));
+
+        let authority = Address::random();
+        let authorization = TempoSignedAuthorization::new_unchecked(
+            Authorization {
+                chain_id: U256::from(42431),
+                address: Address::random(),
+                nonce: 0,
+            },
+            TempoSignature::Keychain(KeychainSignature::new(
+                authority,
+                PrimitiveSignature::default(),
+            )),
+        );
+        let authorization_transaction = TxBuilder::aa(account)
+            .authorization_list(vec![authorization])
+            .build();
+        assert!(
+            !authorization_transaction
+                .depends_on_multisig_config(&AddressSet::from_iter([authority]))
         );
     }
 
