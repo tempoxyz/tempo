@@ -42,12 +42,21 @@ use super::block::Block;
 /// To better support peers near tip during network instability, we multiply
 /// the consensus activity timeout by this factor.
 const SYNCER_ACTIVITY_TIMEOUT_MULTIPLIER: u64 = 10;
-// Reth starts persistence only after the number of canonical in-memory blocks
-// exceeds this threshold. Allow twice that many outstanding blocks so marshal
-// cannot stall immediately before the flush trigger.
-const MAX_PENDING_ACKS: NonZeroUsize =
-    NonZeroUsize::new(DEFAULT_PERSISTENCE_THRESHOLD as usize * 2)
-        .expect("twice Reth's persistence threshold is nonzero");
+/// Maximum number of finalized blocks marshal may deliver without receiving
+/// acknowledgements from the executor.
+///
+/// The executor acknowledges blocks only after Reth persists them, while Reth
+/// starts persistence only after its canonical in-memory block count exceeds
+/// [`DEFAULT_PERSISTENCE_THRESHOLD`]. A depth of 70 (ten times the current
+/// threshold) gives persistence enough runway to start and finish without
+/// stalling marshal and, consequently, consensus progress.
+const MAX_PENDING_ACKS: NonZeroUsize = NonZeroUsize::new(70).expect("70 is nonzero");
+
+const _: () = assert!(
+    MAX_PENDING_ACKS.get() as u64 > DEFAULT_PERSISTENCE_THRESHOLD
+        && (MAX_PENDING_ACKS.get() as u64).is_multiple_of(DEFAULT_PERSISTENCE_THRESHOLD),
+    "marshal pending-ack depth must be a multiple of and exceed Reth's persistence threshold",
+);
 
 /// Settings for [`Engine`].
 ///
