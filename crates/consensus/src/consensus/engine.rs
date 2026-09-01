@@ -19,10 +19,10 @@ use commonware_runtime::{
     BufferPooler, Clock, ContextCell, Handle, Metrics, Network, Pacer, Spawner, Storage,
     buffer::paged::CacheRef, spawn_cell,
 };
-use commonware_utils::NZUsize;
 use eyre::{OptionExt as _, WrapErr as _};
 use futures::future::try_join_all;
 use rand_core::{CryptoRng, Rng};
+use reth_engine_primitives::DEFAULT_PERSISTENCE_THRESHOLD;
 use tempo_node::TempoFullNode;
 use tracing::info;
 
@@ -42,8 +42,12 @@ use super::block::Block;
 /// To better support peers near tip during network instability, we multiply
 /// the consensus activity timeout by this factor.
 const SYNCER_ACTIVITY_TIMEOUT_MULTIPLIER: u64 = 10;
-// Ensure the marshal delivers blocks sequentially.
-const MAX_PENDING_ACKS: NonZeroUsize = NZUsize!(1);
+// Reth starts persistence only after the number of canonical in-memory blocks
+// exceeds this threshold. Allow twice that many outstanding blocks so marshal
+// cannot stall immediately before the flush trigger.
+const MAX_PENDING_ACKS: NonZeroUsize =
+    NonZeroUsize::new(DEFAULT_PERSISTENCE_THRESHOLD as usize * 2)
+        .expect("twice Reth's persistence threshold is nonzero");
 
 /// Settings for [`Engine`].
 ///
