@@ -150,9 +150,7 @@ contract TempoMultisigRecoveryWallet {
     }
 
     /// @notice Binds this wallet to the config committed to by `salt`. Callable once.
-    /// @dev Permissionless but safe: only the factory can CREATE2 a wallet at this address, and it
-    /// always calls this in the same transaction as deployment, so the wallet is never observable
-    /// in a deployed-but-uninitialized state.
+    /// @dev Only the factory can call this, and it does so in the same transaction as deployment.
     function initialize(bytes32 salt) external {
         if (msg.sender != FACTORY) {
             revert UnauthorizedFactory();

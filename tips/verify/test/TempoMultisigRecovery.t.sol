@@ -17,6 +17,12 @@ contract TempoMultisigRecoveryHarness is TempoMultisigRecoveryWallet {
 
 contract TempoMultisigRecoveryTest is Test {
 
+    struct RecoveryFixture {
+        TempoMultisigRecoveryWallet.InitMultisig init;
+        bytes32 accountSalt;
+        TempoMultisigRecoveryWallet wallet;
+    }
+
     TempoMultisigRecoveryFactory factory;
 
     uint256 ownerAKey = 0xA11CE;
@@ -54,32 +60,26 @@ contract TempoMultisigRecoveryTest is Test {
     }
 
     function testRejectsBelowThresholdRecovery() public {
-        TempoMultisigRecoveryWallet.InitMultisig memory init = _initConfig();
-        bytes32 accountSalt = _deriveAccountSalt(init);
-        TempoMultisigRecoveryWallet wallet =
-            TempoMultisigRecoveryWallet(payable(factory.deploy(accountSalt)));
+        RecoveryFixture memory fixture = _deployDefaultWallet();
         TempoMultisigRecoveryWallet.Call[] memory calls = new TempoMultisigRecoveryWallet.Call[](0);
 
         bytes[] memory signatures = new bytes[](1);
-        signatures[0] = _sign(ownerAKey, wallet.recoveryDigest(accountSalt, calls));
+        signatures[0] = _sign(ownerAKey, fixture.wallet.recoveryDigest(fixture.accountSalt, calls));
 
         vm.expectRevert(TempoMultisigRecoveryWallet.InvalidThreshold.selector);
-        wallet.recover(init, signatures, calls);
+        fixture.wallet.recover(fixture.init, signatures, calls);
     }
 
     function testRejectsRawRecoveryIds() public {
-        TempoMultisigRecoveryWallet.InitMultisig memory init = _initConfig();
-        bytes32 accountSalt = _deriveAccountSalt(init);
-        TempoMultisigRecoveryWallet wallet =
-            TempoMultisigRecoveryWallet(payable(factory.deploy(accountSalt)));
+        RecoveryFixture memory fixture = _deployDefaultWallet();
         TempoMultisigRecoveryWallet.Call[] memory calls = new TempoMultisigRecoveryWallet.Call[](0);
-        bytes32 digest = wallet.recoveryDigest(accountSalt, calls);
+        bytes32 digest = fixture.wallet.recoveryDigest(fixture.accountSalt, calls);
 
         for (uint8 v = 0; v < 2; ++v) {
             bytes[] memory signatures = _sortedSignatures(ownerAKey, ownerBKey, digest);
             signatures[0][64] = bytes1(v);
             vm.expectRevert(TempoMultisigRecoveryWallet.InvalidSignature.selector);
-            wallet.recover(init, signatures, calls);
+            fixture.wallet.recover(fixture.init, signatures, calls);
         }
     }
 
@@ -110,20 +110,14 @@ contract TempoMultisigRecoveryTest is Test {
     }
 
     function testRejectsZeroValueEmptyCalldataCall() public {
-        TempoMultisigRecoveryWallet.InitMultisig memory init = _initConfig();
-        bytes32 accountSalt = _deriveAccountSalt(init);
-        TempoMultisigRecoveryWallet wallet =
-            TempoMultisigRecoveryWallet(payable(factory.deploy(accountSalt)));
-        TempoMultisigRecoveryWallet.Call[] memory calls = new TempoMultisigRecoveryWallet.Call[](1);
-        calls[0] = TempoMultisigRecoveryWallet.Call({ target: address(0xBEEF), value: 0, data: "" });
-
-        bytes[] memory signatures =
-            _sortedSignatures(ownerAKey, ownerBKey, wallet.recoveryDigest(accountSalt, calls));
+        RecoveryFixture memory fixture = _deployDefaultWallet();
+        (TempoMultisigRecoveryWallet.Call[] memory calls, bytes[] memory signatures) =
+            _signedSingleCall(fixture, address(0xBEEF), 0, "");
 
         vm.expectRevert(
             abi.encodeWithSelector(TempoMultisigRecoveryWallet.UnsupportedCall.selector, uint256(0))
         );
-        wallet.recover(init, signatures, calls);
+        fixture.wallet.recover(fixture.init, signatures, calls);
     }
 
     function testRejectsInitializationByNonFactory() public {
@@ -166,104 +160,81 @@ contract TempoMultisigRecoveryTest is Test {
     }
 
     function testRejectsNonTransferCall() public {
-        TempoMultisigRecoveryWallet.InitMultisig memory init = _initConfig();
-        bytes32 accountSalt = _deriveAccountSalt(init);
-        TempoMultisigRecoveryWallet wallet =
-            TempoMultisigRecoveryWallet(payable(factory.deploy(accountSalt)));
+        RecoveryFixture memory fixture = _deployDefaultWallet();
 
         // A non-transfer call (here ERC-20 approve) is rejected even with a valid quorum, so a
         // compromised owner set cannot use the cross-chain address for approvals, governance, or
         // bridging — only asset transfers.
-        TempoMultisigRecoveryWallet.Call[] memory calls = new TempoMultisigRecoveryWallet.Call[](1);
-        calls[0] = TempoMultisigRecoveryWallet.Call({
-            target: address(0xDEAD),
-            value: 0,
-            data: abi.encodeWithSignature("approve(address,uint256)", address(0xBEEF), 1)
-        });
-
-        bytes[] memory signatures =
-            _sortedSignatures(ownerAKey, ownerBKey, wallet.recoveryDigest(accountSalt, calls));
+        (TempoMultisigRecoveryWallet.Call[] memory calls, bytes[] memory signatures) = _signedSingleCall(
+            fixture,
+            address(0xDEAD),
+            0,
+            abi.encodeWithSignature("approve(address,uint256)", address(0xBEEF), 1)
+        );
 
         vm.expectRevert(
             abi.encodeWithSelector(TempoMultisigRecoveryWallet.UnsupportedCall.selector, uint256(0))
         );
-        wallet.recover(init, signatures, calls);
+        fixture.wallet.recover(fixture.init, signatures, calls);
     }
 
     function testSweepsErc20ViaTransfer() public {
-        TempoMultisigRecoveryWallet.InitMultisig memory init = _initConfig();
-        bytes32 accountSalt = _deriveAccountSalt(init);
-        address walletAddr = factory.deploy(accountSalt);
-        TempoMultisigRecoveryWallet wallet = TempoMultisigRecoveryWallet(payable(walletAddr));
+        RecoveryFixture memory fixture = _deployDefaultWallet();
+        address walletAddr = address(fixture.wallet);
 
         MockERC20 token = new MockERC20();
         token.mint(walletAddr, 1000);
         address recipient = address(0xBEEF);
 
-        TempoMultisigRecoveryWallet.Call[] memory calls = new TempoMultisigRecoveryWallet.Call[](1);
-        calls[0] = TempoMultisigRecoveryWallet.Call({
-            target: address(token),
-            value: 0,
-            data: abi.encodeWithSignature("transfer(address,uint256)", recipient, 1000)
-        });
-
-        bytes[] memory signatures =
-            _sortedSignatures(ownerAKey, ownerBKey, wallet.recoveryDigest(accountSalt, calls));
-        wallet.recover(init, signatures, calls);
+        (TempoMultisigRecoveryWallet.Call[] memory calls, bytes[] memory signatures) = _signedSingleCall(
+            fixture,
+            address(token),
+            0,
+            abi.encodeWithSignature("transfer(address,uint256)", recipient, 1000)
+        );
+        fixture.wallet.recover(fixture.init, signatures, calls);
 
         assertEq(token.balanceOf(recipient), 1000);
         assertEq(token.balanceOf(walletAddr), 0);
     }
 
     function testSweepsErc20WithNoReturnData() public {
-        TempoMultisigRecoveryWallet.InitMultisig memory init = _initConfig();
-        bytes32 accountSalt = _deriveAccountSalt(init);
-        address walletAddr = factory.deploy(accountSalt);
-        TempoMultisigRecoveryWallet wallet = TempoMultisigRecoveryWallet(payable(walletAddr));
+        RecoveryFixture memory fixture = _deployDefaultWallet();
+        address walletAddr = address(fixture.wallet);
         MockNoReturnERC20 token = new MockNoReturnERC20();
         token.mint(walletAddr, 1000);
         address recipient = address(0xBEEF);
 
-        TempoMultisigRecoveryWallet.Call[] memory calls = new TempoMultisigRecoveryWallet.Call[](1);
-        calls[0] = TempoMultisigRecoveryWallet.Call({
-            target: address(token),
-            value: 0,
-            data: abi.encodeWithSignature("transfer(address,uint256)", recipient, 1000)
-        });
-
-        bytes[] memory signatures =
-            _sortedSignatures(ownerAKey, ownerBKey, wallet.recoveryDigest(accountSalt, calls));
-        wallet.recover(init, signatures, calls);
+        (TempoMultisigRecoveryWallet.Call[] memory calls, bytes[] memory signatures) = _signedSingleCall(
+            fixture,
+            address(token),
+            0,
+            abi.encodeWithSignature("transfer(address,uint256)", recipient, 1000)
+        );
+        fixture.wallet.recover(fixture.init, signatures, calls);
 
         assertEq(token.balanceOf(recipient), 1000);
         assertEq(token.balanceOf(walletAddr), 0);
     }
 
     function testRejectsErc20TransferToNonContract() public {
-        TempoMultisigRecoveryWallet.InitMultisig memory init = _initConfig();
-        bytes32 accountSalt = _deriveAccountSalt(init);
-        TempoMultisigRecoveryWallet wallet =
-            TempoMultisigRecoveryWallet(payable(factory.deploy(accountSalt)));
-
-        TempoMultisigRecoveryWallet.Call[] memory calls = new TempoMultisigRecoveryWallet.Call[](1);
-        calls[0] = TempoMultisigRecoveryWallet.Call({
-            target: address(0xDEAD),
-            value: 0,
-            data: abi.encodeWithSignature("transfer(address,uint256)", address(0xBEEF), 1)
-        });
-        bytes[] memory signatures =
-            _sortedSignatures(ownerAKey, ownerBKey, wallet.recoveryDigest(accountSalt, calls));
+        RecoveryFixture memory fixture = _deployDefaultWallet();
+        (TempoMultisigRecoveryWallet.Call[] memory calls, bytes[] memory signatures) = _signedSingleCall(
+            fixture,
+            address(0xDEAD),
+            0,
+            abi.encodeWithSignature("transfer(address,uint256)", address(0xBEEF), 1)
+        );
 
         vm.expectRevert(
             abi.encodeWithSelector(TempoMultisigRecoveryWallet.UnsupportedCall.selector, uint256(0))
         );
-        wallet.recover(init, signatures, calls);
+        fixture.wallet.recover(fixture.init, signatures, calls);
     }
 
     function testAcceptsSafeNftMintsAndReportsReceiverInterfaces() public {
-        TempoMultisigRecoveryWallet.InitMultisig memory init = _initConfig();
-        address walletAddr = factory.deploy(_deriveAccountSalt(init));
-        TempoMultisigRecoveryWallet wallet = TempoMultisigRecoveryWallet(payable(walletAddr));
+        RecoveryFixture memory fixture = _deployDefaultWallet();
+        address walletAddr = address(fixture.wallet);
         MockERC721 nft = new MockERC721();
         MockERC1155 multiToken = new MockERC1155();
 
@@ -272,72 +243,59 @@ contract TempoMultisigRecoveryTest is Test {
 
         assertEq(nft.ownerOf(1), walletAddr);
         assertEq(multiToken.balanceOf(2, walletAddr), 3);
-        assertTrue(wallet.supportsInterface(0x01ffc9a7));
-        assertTrue(wallet.supportsInterface(0x150b7a02));
-        assertTrue(wallet.supportsInterface(0x4e2312e0));
-        assertFalse(wallet.supportsInterface(0xffffffff));
+        assertTrue(fixture.wallet.supportsInterface(0x01ffc9a7));
+        assertTrue(fixture.wallet.supportsInterface(0x150b7a02));
+        assertTrue(fixture.wallet.supportsInterface(0x4e2312e0));
+        assertFalse(fixture.wallet.supportsInterface(0xffffffff));
     }
 
     function testRejectsRecoveryTransferFromThirdParty() public {
-        TempoMultisigRecoveryWallet.InitMultisig memory init = _initConfig();
-        bytes32 accountSalt = _deriveAccountSalt(init);
-        address walletAddr = factory.deploy(accountSalt);
-        TempoMultisigRecoveryWallet wallet = TempoMultisigRecoveryWallet(payable(walletAddr));
+        RecoveryFixture memory fixture = _deployDefaultWallet();
+        address walletAddr = address(fixture.wallet);
         MockERC721 nft = new MockERC721();
         address victim = address(0xCAFE);
         nft.mint(victim, 1);
         vm.prank(victim);
         nft.approve(walletAddr, 1);
 
-        TempoMultisigRecoveryWallet.Call[] memory calls = new TempoMultisigRecoveryWallet.Call[](1);
-        calls[0] = TempoMultisigRecoveryWallet.Call({
-            target: address(nft),
-            value: 0,
-            data: abi.encodeWithSignature(
+        (TempoMultisigRecoveryWallet.Call[] memory calls, bytes[] memory signatures) = _signedSingleCall(
+            fixture,
+            address(nft),
+            0,
+            abi.encodeWithSignature(
                 "transferFrom(address,address,uint256)", victim, address(0xBEEF), 1
             )
-        });
-        bytes[] memory signatures =
-            _sortedSignatures(ownerAKey, ownerBKey, wallet.recoveryDigest(accountSalt, calls));
+        );
 
         vm.expectRevert(
             abi.encodeWithSelector(TempoMultisigRecoveryWallet.UnsupportedCall.selector, uint256(0))
         );
-        wallet.recover(init, signatures, calls);
+        fixture.wallet.recover(fixture.init, signatures, calls);
         assertEq(nft.ownerOf(1), victim);
     }
 
     function testRejectsThirdPartyFromForEverySafeNftSelector() public {
-        TempoMultisigRecoveryWallet.InitMultisig memory init = _initConfig();
-        bytes32 accountSalt = _deriveAccountSalt(init);
-        TempoMultisigRecoveryWallet wallet =
-            TempoMultisigRecoveryWallet(payable(factory.deploy(accountSalt)));
+        RecoveryFixture memory fixture = _deployDefaultWallet();
         MockERC721 target = new MockERC721();
         address victim = address(0xCAFE);
         address recipient = address(0xBEEF);
 
         _assertUnsupported(
-            wallet,
-            init,
-            accountSalt,
+            fixture,
             address(target),
             abi.encodeWithSignature(
                 "safeTransferFrom(address,address,uint256)", victim, recipient, 1
             )
         );
         _assertUnsupported(
-            wallet,
-            init,
-            accountSalt,
+            fixture,
             address(target),
             abi.encodeWithSignature(
                 "safeTransferFrom(address,address,uint256,bytes)", victim, recipient, 1, bytes("x")
             )
         );
         _assertUnsupported(
-            wallet,
-            init,
-            accountSalt,
+            fixture,
             address(target),
             abi.encodeWithSignature(
                 "safeTransferFrom(address,address,uint256,uint256,bytes)",
@@ -353,9 +311,7 @@ contract TempoMultisigRecoveryTest is Test {
         uint256[] memory amounts = new uint256[](1);
         amounts[0] = 2;
         _assertUnsupported(
-            wallet,
-            init,
-            accountSalt,
+            fixture,
             address(target),
             abi.encodeWithSignature(
                 "safeBatchTransferFrom(address,address,uint256[],uint256[],bytes)",
@@ -369,53 +325,43 @@ contract TempoMultisigRecoveryTest is Test {
     }
 
     function testSweepsOwnedErc721ViaTransferFrom() public {
-        TempoMultisigRecoveryWallet.InitMultisig memory init = _initConfig();
-        bytes32 accountSalt = _deriveAccountSalt(init);
-        address walletAddr = factory.deploy(accountSalt);
-        TempoMultisigRecoveryWallet wallet = TempoMultisigRecoveryWallet(payable(walletAddr));
+        RecoveryFixture memory fixture = _deployDefaultWallet();
+        address walletAddr = address(fixture.wallet);
         MockERC721 nft = new MockERC721();
         nft.mint(walletAddr, 1);
 
-        TempoMultisigRecoveryWallet.Call[] memory calls = new TempoMultisigRecoveryWallet.Call[](1);
-        calls[0] = TempoMultisigRecoveryWallet.Call({
-            target: address(nft),
-            value: 0,
-            data: abi.encodeWithSignature(
+        (TempoMultisigRecoveryWallet.Call[] memory calls, bytes[] memory signatures) = _signedSingleCall(
+            fixture,
+            address(nft),
+            0,
+            abi.encodeWithSignature(
                 "transferFrom(address,address,uint256)", walletAddr, address(0xBEEF), 1
             )
-        });
-        bytes[] memory signatures =
-            _sortedSignatures(ownerAKey, ownerBKey, wallet.recoveryDigest(accountSalt, calls));
+        );
 
-        wallet.recover(init, signatures, calls);
+        fixture.wallet.recover(fixture.init, signatures, calls);
         assertEq(nft.ownerOf(1), address(0xBEEF));
     }
 
     function testRejectsMalformedNftTransfer() public {
-        TempoMultisigRecoveryWallet.InitMultisig memory init = _initConfig();
-        bytes32 accountSalt = _deriveAccountSalt(init);
-        address walletAddr = factory.deploy(accountSalt);
-        TempoMultisigRecoveryWallet wallet = TempoMultisigRecoveryWallet(payable(walletAddr));
+        RecoveryFixture memory fixture = _deployDefaultWallet();
+        address walletAddr = address(fixture.wallet);
         MockERC721 nft = new MockERC721();
 
-        TempoMultisigRecoveryWallet.Call[] memory calls = new TempoMultisigRecoveryWallet.Call[](1);
-        calls[0] = TempoMultisigRecoveryWallet.Call({
-            target: address(nft),
-            value: 0,
-            data: abi.encodePacked(bytes4(0x23b872dd), bytes32(uint256(uint160(walletAddr))))
-        });
-        bytes[] memory signatures =
-            _sortedSignatures(ownerAKey, ownerBKey, wallet.recoveryDigest(accountSalt, calls));
+        (TempoMultisigRecoveryWallet.Call[] memory calls, bytes[] memory signatures) = _signedSingleCall(
+            fixture,
+            address(nft),
+            0,
+            abi.encodePacked(bytes4(0x23b872dd), bytes32(uint256(uint160(walletAddr))))
+        );
 
         vm.expectRevert();
-        wallet.recover(init, signatures, calls);
+        fixture.wallet.recover(fixture.init, signatures, calls);
     }
 
     function testRejectsFalseTokenReturn() public {
-        TempoMultisigRecoveryWallet.InitMultisig memory init = _initConfig();
-        bytes32 accountSalt = _deriveAccountSalt(init);
-        address walletAddr = factory.deploy(accountSalt);
-        TempoMultisigRecoveryWallet wallet = TempoMultisigRecoveryWallet(payable(walletAddr));
+        RecoveryFixture memory fixture = _deployDefaultWallet();
+        address walletAddr = address(fixture.wallet);
         MockFalseERC20 token = new MockFalseERC20();
 
         bytes[] memory payloads = new bytes[](2);
@@ -426,19 +372,15 @@ contract TempoMultisigRecoveryTest is Test {
 
         for (uint256 i = 0; i < payloads.length; ++i) {
             TempoMultisigRecoveryWallet.Call[] memory calls =
-                new TempoMultisigRecoveryWallet.Call[](1);
-            calls[0] = TempoMultisigRecoveryWallet.Call({
-                target: address(token), value: 0, data: payloads[i]
-            });
-            bytes[] memory signatures =
-                _sortedSignatures(ownerAKey, ownerBKey, wallet.recoveryDigest(accountSalt, calls));
+                _singleCall(address(token), 0, payloads[i]);
+            bytes[] memory signatures = _quorumSignatures(fixture, calls);
 
             vm.expectRevert(
                 abi.encodeWithSelector(
                     TempoMultisigRecoveryWallet.CallFailed.selector, uint256(0), abi.encode(false)
                 )
             );
-            wallet.recover(init, signatures, calls);
+            fixture.wallet.recover(fixture.init, signatures, calls);
         }
     }
 
@@ -483,23 +425,65 @@ contract TempoMultisigRecoveryTest is Test {
         return keccak256(input);
     }
 
+    function _deployDefaultWallet() internal returns (RecoveryFixture memory fixture) {
+        fixture.init = _initConfig();
+        fixture.accountSalt = _deriveAccountSalt(fixture.init);
+        fixture.wallet = TempoMultisigRecoveryWallet(payable(factory.deploy(fixture.accountSalt)));
+    }
+
+    function _singleCall(
+        address target,
+        uint256 value,
+        bytes memory data
+    )
+        internal
+        pure
+        returns (TempoMultisigRecoveryWallet.Call[] memory calls)
+    {
+        calls = new TempoMultisigRecoveryWallet.Call[](1);
+        calls[0] = TempoMultisigRecoveryWallet.Call({ target: target, value: value, data: data });
+    }
+
+    function _quorumSignatures(
+        RecoveryFixture memory fixture,
+        TempoMultisigRecoveryWallet.Call[] memory calls
+    )
+        internal
+        view
+        returns (bytes[] memory)
+    {
+        return _sortedSignatures(
+            ownerAKey, ownerBKey, fixture.wallet.recoveryDigest(fixture.accountSalt, calls)
+        );
+    }
+
+    function _signedSingleCall(
+        RecoveryFixture memory fixture,
+        address target,
+        uint256 value,
+        bytes memory data
+    )
+        internal
+        view
+        returns (TempoMultisigRecoveryWallet.Call[] memory calls, bytes[] memory signatures)
+    {
+        calls = _singleCall(target, value, data);
+        signatures = _quorumSignatures(fixture, calls);
+    }
+
     function _assertUnsupported(
-        TempoMultisigRecoveryWallet wallet,
-        TempoMultisigRecoveryWallet.InitMultisig memory init,
-        bytes32 accountSalt,
+        RecoveryFixture memory fixture,
         address target,
         bytes memory data
     )
         internal
     {
-        TempoMultisigRecoveryWallet.Call[] memory calls = new TempoMultisigRecoveryWallet.Call[](1);
-        calls[0] = TempoMultisigRecoveryWallet.Call({ target: target, value: 0, data: data });
-        bytes[] memory signatures =
-            _sortedSignatures(ownerAKey, ownerBKey, wallet.recoveryDigest(accountSalt, calls));
+        TempoMultisigRecoveryWallet.Call[] memory calls = _singleCall(target, 0, data);
+        bytes[] memory signatures = _quorumSignatures(fixture, calls);
         vm.expectRevert(
             abi.encodeWithSelector(TempoMultisigRecoveryWallet.UnsupportedCall.selector, uint256(0))
         );
-        wallet.recover(init, signatures, calls);
+        fixture.wallet.recover(fixture.init, signatures, calls);
     }
 
     function _sign(uint256 privateKey, bytes32 digest) internal pure returns (bytes memory) {
