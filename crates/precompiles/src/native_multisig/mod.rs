@@ -130,7 +130,8 @@ impl NativeMultisig {
     }
 
     fn ensure_update_authorized(&self, msg_sender: Address) -> Result<()> {
-        if StorageCtx.tx_kind() != Some(TxKind::Call(NATIVE_MULTISIG_ADDRESS))
+        if msg_sender.is_zero()
+            || StorageCtx.tx_kind() != Some(TxKind::Call(NATIVE_MULTISIG_ADDRESS))
             || self.tx_origin.t_read()? != msg_sender
             || self.directly_authorized_account.t_read()? != msg_sender
         {
@@ -391,6 +392,18 @@ mod tests {
         let account = config.derive_account().unwrap();
         let other = Address::repeat_byte(0x44);
         let valid_target = Some(TxKind::Call(NATIVE_MULTISIG_ADDRESS));
+
+        assert_eq!(
+            update_error(
+                Address::ZERO,
+                &config,
+                B256::ZERO,
+                1,
+                abi_owners(Address::repeat_byte(0x22)),
+            ),
+            NativeMultisigError::unauthorized_multisig_caller(),
+        );
+
         let cases = [
             (
                 "missing transaction target",
