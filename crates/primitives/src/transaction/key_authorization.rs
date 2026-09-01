@@ -1,5 +1,5 @@
 use super::SignatureType;
-use crate::transaction::PrimitiveSignature;
+use crate::transaction::TempoSignature;
 use alloc::vec::Vec;
 use alloy_consensus::crypto::RecoveryError;
 use alloy_primitives::{Address, B256, U256, keccak256};
@@ -356,7 +356,7 @@ impl KeyAuthorization {
     }
 
     /// Convert the key authorization into a [`SignedKeyAuthorization`] with a signature.
-    pub fn into_signed(self, signature: PrimitiveSignature) -> SignedKeyAuthorization {
+    pub fn into_signed(self, signature: impl Into<TempoSignature>) -> SignedKeyAuthorization {
         SignedKeyAuthorization::new(self, signature)
     }
 
@@ -420,50 +420,70 @@ pub struct SignedKeyAuthorization {
     #[deref]
     pub authorization: KeyAuthorization,
 
-    /// Signature authorizing this key (signed by root key)
-    pub signature: PrimitiveSignature,
+    /// Signature authorizing this key.
+    pub signature: TempoSignature,
 
-    /// Cached signer recovered from `signature`.
+    /// Cached primitive signer and the signed payload fingerprint it was recovered from.
     ///
     /// Excluded from encoding, equality, hashing, and arbitrary generation.
     #[cfg_attr(feature = "serde", serde(skip))]
     #[cfg_attr(any(test, feature = "arbitrary"), arbitrary(default))]
     #[rlp(skip, default)]
-    signer: OnceLock<Address>,
+    signer: OnceLock<(B256, Address)>,
 }
 
 impl SignedKeyAuthorization {
     /// Create a signed key authorization with an empty signer cache.
-    pub fn new(authorization: KeyAuthorization, signature: PrimitiveSignature) -> Self {
+    pub fn new(authorization: KeyAuthorization, signature: impl Into<TempoSignature>) -> Self {
         Self {
             authorization,
-            signature,
+            signature: signature.into(),
             signer: OnceLock::new(),
         }
     }
 
-    /// Recover the signer of the [`KeyAuthorization`].
+    /// Recovers and cryptographically verifies a primitive signer.
     pub fn recover_signer(&self) -> Result<Address, RecoveryError> {
-        if let Some(signer) = self.signer.get() {
+        let TempoSignature::Primitive(signature) = &self.signature else {
+            return Err(RecoveryError::new());
+        };
+        let signature_hash = self.authorization.signature_hash();
+        let mut cache_input = Vec::with_capacity(B256::len_bytes() + signature.encoded_length());
+        cache_input.extend_from_slice(signature_hash.as_slice());
+        cache_input.extend_from_slice(&signature.to_bytes());
+        let cache_key = keccak256(cache_input);
+        if let Some((cached_key, signer)) = self.signer.get()
+            && *cached_key == cache_key
+        {
             return Ok(*signer);
         }
 
-        let signer = self
-            .signature
-            .recover_signer(&self.authorization.signature_hash())?;
-        self.cache_signer(signer);
+        let signer = signature.recover_signer(&signature_hash)?;
+        self.cache_signer(cache_key, signer);
 
         Ok(signer)
     }
 
+    /// Returns the account that claims to authorize this key.
+    ///
+    /// Primitive signatures are verified here. A multisig account is only shape-checked; callers
+    /// must verify its owner quorum against native multisig state before granting authority.
+    pub fn recover_authorizing_account(&self) -> Result<Address, RecoveryError> {
+        match &self.signature {
+            TempoSignature::Primitive(_) => self.recover_signer(),
+            TempoSignature::Multisig(signature) => Ok(signature.account()),
+            TempoSignature::Keychain(_) => Err(RecoveryError::new()),
+        }
+    }
+
     #[cfg(feature = "std")]
-    fn cache_signer(&self, signer: Address) {
-        let _ = self.signer.set(signer);
+    fn cache_signer(&self, cache_key: B256, signer: Address) {
+        let _ = self.signer.set((cache_key, signer));
     }
 
     #[cfg(not(feature = "std"))]
-    fn cache_signer(&self, signer: Address) {
-        let _ = self.signer.set(alloc::boxed::Box::new(signer));
+    fn cache_signer(&self, cache_key: B256, signer: Address) {
+        let _ = self.signer.set(alloc::boxed::Box::new((cache_key, signer)));
     }
 
     /// Calculates a heuristic for the in-memory size of the signed key authorization
@@ -707,7 +727,7 @@ mod selector_hex_serde {
 mod tests {
     use super::*;
     use crate::transaction::{
-        TempoSignature,
+        PrimitiveSignature, TempoSignature,
         tt_authorization::tests::{generate_secp256k1_keypair, sign_hash},
     };
     use alloy_rlp::{Decodable, Encodable};
@@ -727,6 +747,18 @@ mod tests {
             witness: None,
             is_admin: false,
             account: None,
+        }
+    }
+
+    fn multisig_config() -> crate::transaction::MultisigConfig {
+        crate::transaction::MultisigConfig {
+            salt: B256::ZERO,
+            version: 1,
+            threshold: 1,
+            owners: vec![crate::transaction::MultisigOwner {
+                owner: Address::repeat_byte(0x55),
+                weight: 1,
+            }],
         }
     }
 
@@ -926,6 +958,106 @@ mod tests {
         let bad_recovered = bad_signed.recover_signer();
         assert!(bad_recovered.is_ok());
         assert_ne!(bad_recovered.unwrap(), expected_address);
+    }
+
+    #[test]
+    fn signer_cache_is_bound_to_signed_payload() {
+        let (signing_key, expected_address) = generate_secp256k1_keypair();
+        let auth = make_auth(Some(1000), None);
+        let signature = match sign_hash(&signing_key, &auth.signature_hash()) {
+            TempoSignature::Primitive(signature) => signature,
+            _ => unreachable!("secp256k1 signing returns a primitive signature"),
+        };
+        let mut signed = auth.into_signed(signature);
+
+        assert_eq!(signed.recover_signer().unwrap(), expected_address);
+
+        signed.authorization.expiry = NonZeroU64::new(2000);
+        assert_ne!(signed.recover_signer().unwrap(), expected_address);
+
+        signed.signature = TempoSignature::Multisig(
+            crate::transaction::MultisigSignature::try_new(
+                Address::repeat_byte(0x44),
+                multisig_config(),
+                vec![TempoSignature::Primitive(PrimitiveSignature::default())],
+            )
+            .unwrap(),
+        );
+        assert!(signed.recover_signer().is_err());
+    }
+
+    #[test]
+    fn primitive_signed_authorization_encoding_is_unchanged() {
+        #[derive(alloy_rlp::RlpEncodable)]
+        struct LegacySignedKeyAuthorization {
+            authorization: KeyAuthorization,
+            signature: PrimitiveSignature,
+        }
+
+        let auth = make_auth(Some(1000), None);
+        let signature = PrimitiveSignature::default();
+        let signed = auth.clone().into_signed(signature.clone());
+        let legacy = LegacySignedKeyAuthorization {
+            authorization: auth,
+            signature,
+        };
+
+        let mut encoded = Vec::new();
+        signed.encode(&mut encoded);
+        let mut legacy_encoded = Vec::new();
+        legacy.encode(&mut legacy_encoded);
+        assert_eq!(encoded, legacy_encoded);
+    }
+
+    #[test]
+    fn multisig_signed_authorization_roundtrip() {
+        let auth = make_auth(None, None).with_account(Address::repeat_byte(0x44));
+        let signature = TempoSignature::Multisig(
+            crate::transaction::MultisigSignature::try_new(
+                Address::repeat_byte(0x44),
+                multisig_config(),
+                vec![TempoSignature::Primitive(PrimitiveSignature::default())],
+            )
+            .unwrap(),
+        );
+        let signed = auth.into_signed(signature);
+
+        let mut encoded = Vec::new();
+        signed.encode(&mut encoded);
+        let decoded = SignedKeyAuthorization::decode(&mut encoded.as_slice())
+            .expect("decode multisig-signed key authorization");
+
+        assert_eq!(decoded, signed);
+        assert!(decoded.signature.is_multisig());
+        assert!(decoded.recover_signer().is_err());
+        assert_eq!(
+            decoded.recover_authorizing_account().unwrap(),
+            Address::repeat_byte(0x44)
+        );
+    }
+
+    #[cfg(feature = "serde")]
+    #[test]
+    fn signed_key_authorization_json_roundtrips_multisig_rlp_bytes() {
+        let account = Address::repeat_byte(0x44);
+        let signature = TempoSignature::Multisig(
+            crate::transaction::MultisigSignature::try_new(
+                account,
+                multisig_config(),
+                vec![TempoSignature::Primitive(PrimitiveSignature::default())],
+            )
+            .unwrap(),
+        );
+        let signed = make_auth(None, None)
+            .with_account(account)
+            .into_signed(signature);
+
+        let json = serde_json::to_value(&signed).unwrap();
+        assert!(json["signature"].is_string());
+        assert_eq!(
+            serde_json::from_value::<SignedKeyAuthorization>(json).unwrap(),
+            signed
+        );
     }
 
     #[test]
