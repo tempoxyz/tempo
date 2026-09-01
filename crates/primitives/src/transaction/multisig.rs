@@ -43,19 +43,19 @@ pub const MULTISIG_RECOVERY_SINGLETON_FACTORY_RUNTIME_HASH: B256 =
     b256!("2fa86add0aed31f33a762c9d88e807c475bd51d0f52bd0955754b2608f7e4989");
 
 /// Dedicated CREATE2 factory for recovery wallets on non-Tempo EVM chains.
-pub const MULTISIG_RECOVERY_FACTORY: Address = address!("8a196A227C48Ae8A3E36EebD4E106675CC0f6E64");
+pub const MULTISIG_RECOVERY_FACTORY: Address = address!("5B572547f14c002Aac05f2deb19a36fbf23F2f33");
 
 /// Keccak-256 of the dedicated recovery factory creation code.
 pub const MULTISIG_RECOVERY_FACTORY_INIT_CODE_HASH: B256 =
-    b256!("7b42ecafbba234c24f2ff2048bafe1d7c0117bac1676006e32e83788b2d6af59");
+    b256!("32c2f9b9926477ca22da4308d7efa1b92a2c2db3f434a0afa77fc32bdecbe48b");
 
 /// Keccak-256 of the dedicated recovery factory runtime code.
 pub const MULTISIG_RECOVERY_FACTORY_RUNTIME_HASH: B256 =
-    b256!("652767050367e6f3b47e14e416d212a549f6666a2c4867e157a39a7306b357ad");
+    b256!("e74489073cf29a2000b643988575b615febec333a826512de4e1e8db10228a60");
 
 /// Keccak-256 of the canonical recovery wallet creation code.
 pub const MULTISIG_RECOVERY_WALLET_INIT_CODE_HASH: B256 =
-    b256!("4b5ff53c5328a10a6ec5224adf16de5e204a47057c98af037ee30b7de660a8a6");
+    b256!("583cc63a2e37f645b43eac911b1a6d6de08b83abdc308c61364edda8cfc3bd37");
 
 /// CREATE2 preimage length: 1-byte `0xff` + 20-byte factory + 32-byte salt +
 /// 32-byte init-code hash.
@@ -1050,13 +1050,13 @@ mod tests {
         );
         assert_eq!(
             account,
-            alloy_primitives::address!("f4b916c5aea0fb199bd942389be00db0690c961f")
+            alloy_primitives::address!("91847576f406d0842ad7c1a0c97c22a122e64278")
         );
         assert_eq!(multisig_account_address(account_salt), account);
         assert_eq!(
             multisig_digest(B256::repeat_byte(0x42), account, 0),
             alloy_primitives::b256!(
-                "dba6b49849aaef399fbc1de73fe26d520f21846c80c3e5d2486ad56e8df3cee3"
+                "7a62ef46efdf76a6a0ab6c38c5fdeda2169d6a0de3643bb9912a4fbce881a870"
             )
         );
 
