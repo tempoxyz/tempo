@@ -114,6 +114,10 @@ pub(crate) struct Actor<TContext, TExecutionLayer, TMarshal> {
     /// Finalized blocks waiting to be forwarded to the execution layer.
     pending_finalizations: VecDeque<FinalizedBlockRequest>,
 
+    /// Acknowledgements for forwarded finalized blocks, ordered by height and
+    /// held until Reth has persisted the corresponding blocks.
+    pending_finalization_acknowledgments: VecDeque<FinalizationAcknowledgment>,
+
     /// The latest not-yet-started consensus request - validating a proposed
     /// block or building one - keyed by its round. The two kinds share one
     /// slot because a node either verifies or proposes in a round, never
@@ -297,6 +301,7 @@ where
             fcu_heartbeat_timer: OptionFuture::none(),
 
             pending_finalizations: VecDeque::new(),
+            pending_finalization_acknowledgments: VecDeque::new(),
             pending_consensus_request: None,
 
             execution_task: OptionFuture::none(),
@@ -347,6 +352,16 @@ where
         });
 
         loop {
+            if let Err(error) = self.acknowledge_persisted_finalizations() {
+                error_span!("shutdown").in_scope(|| {
+                    error!(
+                        %error,
+                        "executor failed checking persisted execution-layer height; shutting down"
+                    )
+                });
+                break;
+            }
+
             // The tree is pruned to the advancing finalized tip here,
             // before the scheduling decisions below read it. The select
             // branches only record primary state. Metrics observe the same
@@ -459,6 +474,20 @@ where
                         .push(run_payload_job(self.execution_node.clone(), job).boxed());
                 }
             }
+            ExecutionTaskOutcome::Finalized {
+                canonicalized,
+                acknowledgment,
+            } => {
+                self.notarized_tree.set_local_state(canonicalized);
+                if let Some(last) = self.pending_finalization_acknowledgments.back() {
+                    assert!(
+                        last.height <= acknowledgment.height,
+                        "invariant violation: finalization acknowledgements must be ordered by height"
+                    );
+                }
+                self.pending_finalization_acknowledgments
+                    .push_back(acknowledgment);
+            }
             ExecutionTaskOutcome::NotarizedBlockRejected { digest, .. } => {
                 // The cause is logged by the task itself. The timestamp keeps
                 // the block from being retried in a tight loop: it is withheld
@@ -470,6 +499,29 @@ where
             ExecutionTaskOutcome::Fatal { error } => {
                 return Err(error.wrap_err("execution task failed"));
             }
+        }
+        Ok(())
+    }
+
+    fn acknowledge_persisted_finalizations(&mut self) -> eyre::Result<()> {
+        if self.pending_finalization_acknowledgments.is_empty() {
+            return Ok(());
+        }
+
+        let persisted_height = self
+            .execution_node
+            .persisted_block_number()
+            .wrap_err("failed reading persisted execution-layer height")?;
+        while self
+            .pending_finalization_acknowledgments
+            .front()
+            .is_some_and(|acknowledgment| acknowledgment.height.get() <= persisted_height)
+        {
+            self.pending_finalization_acknowledgments
+                .pop_front()
+                .expect("front was present")
+                .acknowledgment
+                .acknowledge();
         }
         Ok(())
     }
@@ -531,7 +583,7 @@ where
             let target =
                 finalization_target(&self.execution_node, canonicalized, request.block.as_ref())?;
 
-            let canonicalized = forward_finalized(
+            let (canonicalized, acknowledgment) = forward_finalized(
                 self.execution_node.clone(),
                 self.public_key.clone(),
                 self.metrics.clone(),
@@ -545,6 +597,7 @@ where
                     to execution layer"
                 )
             })?;
+            acknowledgment.acknowledgment.acknowledge();
             self.notarized_tree.set_local_state(canonicalized);
         }
 
@@ -898,6 +951,12 @@ struct FinalizedBlockRequest {
     acknowledgment: Exact,
 }
 
+#[derive(Debug)]
+struct FinalizationAcknowledgment {
+    height: Height,
+    acknowledgment: Exact,
+}
+
 /// An in-flight fetch of a notarized block body that is missing from the
 /// tree, keyed by the digest being fetched and the round it was
 /// notarized in.
@@ -1047,6 +1106,7 @@ impl ExecutionTaskFinished {
     fn target(&self) -> Option<LocalState> {
         match &self.outcome {
             ExecutionTaskOutcome::Completed { canonicalized, .. } => *canonicalized,
+            ExecutionTaskOutcome::Finalized { canonicalized, .. } => Some(*canonicalized),
             ExecutionTaskOutcome::NotarizedBlockRejected { target, .. } => Some(*target),
             ExecutionTaskOutcome::Fatal { .. } => None,
         }
@@ -1082,6 +1142,10 @@ enum ExecutionTaskOutcome {
         /// execution layer and that still needs to be driven to completion.
         payload_job: Option<StartPayloadJob>,
     },
+    Finalized {
+        canonicalized: LocalState,
+        acknowledgment: FinalizationAcknowledgment,
+    },
     /// A notarized block could not be forwarded and should be retried later.
     NotarizedBlockRejected {
         digest: Digest,
@@ -1096,6 +1160,7 @@ impl ExecutionTaskOutcome {
     fn name(&self) -> &'static str {
         match self {
             Self::Completed { .. } => "completed",
+            Self::Finalized { .. } => "finalized",
             Self::NotarizedBlockRejected { .. } => "rejected",
             Self::Fatal { .. } => "fatal",
         }
@@ -1243,9 +1308,9 @@ async fn execute_finalization(
         Err(error) => return ExecutionTaskOutcome::Fatal { error },
     };
     match forward_finalized(execution_node, public_key, metrics, target, request).await {
-        Ok(target) => ExecutionTaskOutcome::Completed {
-            canonicalized: Some(target),
-            payload_job: None,
+        Ok((canonicalized, acknowledgment)) => ExecutionTaskOutcome::Finalized {
+            canonicalized,
+            acknowledgment,
         },
         Err(error) => ExecutionTaskOutcome::Fatal { error },
     }
@@ -1651,7 +1716,7 @@ async fn forward_finalized(
     metrics: Metrics,
     target: LocalState,
     request: FinalizedBlockRequest,
-) -> eyre::Result<LocalState> {
+) -> eyre::Result<(LocalState, FinalizationAcknowledgment)> {
     let FinalizedBlockRequest {
         cause,
         block,
@@ -1659,6 +1724,7 @@ async fn forward_finalized(
     } = request;
 
     let consensus_context = block.header().consensus_context;
+    let height = block.height();
 
     let (execution_block, block_access_list) = (*block).clone().into_parts();
     let payload_status = execution_node
@@ -1696,9 +1762,13 @@ async fn forward_finalized(
         metrics.finalized_blocks_proposed_by_self.inc();
     }
 
-    acknowledgment.acknowledge();
-
-    Ok(target)
+    Ok((
+        target,
+        FinalizationAcknowledgment {
+            height,
+            acknowledgment,
+        },
+    ))
 }
 
 /// Drives convergence of the EL to the pending notarized tip.

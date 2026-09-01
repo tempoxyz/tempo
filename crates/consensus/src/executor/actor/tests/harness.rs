@@ -234,6 +234,8 @@ where
 struct FakeExecutionInner {
     genesis: B256,
     state: Mutex<ElState>,
+    persisted_block_number: AtomicU64,
+    persist_forkchoice_updates: AtomicBool,
     calls: Mutex<Vec<ElCall>>,
     /// Complete new-payload outcome sequences keyed by block hash. A digest
     /// absent from this map uses the fake's stateful default behavior; a
@@ -312,6 +314,8 @@ impl FakeExecution {
                     head: genesis,
                     finalized: None,
                 }),
+                persisted_block_number: AtomicU64::new(0),
+                persist_forkchoice_updates: AtomicBool::new(true),
                 calls: Mutex::new(Vec::new()),
                 payload_overrides: ScriptedResults::new(),
                 payload_validator_sets: Mutex::new(Vec::new()),
@@ -349,6 +353,19 @@ impl FakeExecution {
 
     pub(super) fn set_finalized(&self, height: u64, digest: Digest) {
         self.inner.state.lock().finalized = Some(BlockNumHash::new(height, digest.0));
+        self.set_persisted_block_number(height);
+    }
+
+    pub(super) fn set_persisted_block_number(&self, height: u64) {
+        self.inner
+            .persisted_block_number
+            .store(height, Ordering::SeqCst);
+    }
+
+    pub(super) fn persist_forkchoice_updates(&self, persist: bool) {
+        self.inner
+            .persist_forkchoice_updates
+            .store(persist, Ordering::SeqCst);
     }
 
     /// Makes `block` servable through `block_by_digest`.
@@ -572,6 +589,11 @@ impl FakeExecution {
                 finalized_height,
                 fcu.finalized_block_hash,
             ));
+            if self.inner.persist_forkchoice_updates.load(Ordering::SeqCst) {
+                self.inner
+                    .persisted_block_number
+                    .fetch_max(finalized_height, Ordering::SeqCst);
+            }
         }
 
         PayloadStatusEnum::Valid
@@ -598,6 +620,10 @@ impl ExecutionLayer for FakeExecution {
             .lock()
             .finalized
             .unwrap_or_else(|| BlockNumHash::new(0, self.genesis_hash()))
+    }
+
+    fn persisted_block_number(&self) -> eyre::Result<u64> {
+        Ok(self.inner.persisted_block_number.load(Ordering::SeqCst))
     }
 
     fn genesis_hash(&self) -> B256 {

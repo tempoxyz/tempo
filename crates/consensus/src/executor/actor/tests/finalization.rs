@@ -1,7 +1,7 @@
 //! Scenario tests for the finalization pipeline: finalized blocks arriving
 //! from the marshal actor are forwarded to the execution layer as
 //! `newPayload` + `forkchoiceUpdated` pairs, in order, and acknowledged
-//! only once the execution layer accepted them.
+//! only once the execution layer persisted them.
 
 use alloy_rpc_types_engine::{ForkchoiceState, PayloadStatusEnum};
 use commonware_macros::test_traced;
@@ -71,6 +71,41 @@ fn finalized_blocks_are_forwarded_in_order() {
             .collect::<Vec<_>>();
         assert_eq!(h.execution.fcus(), expected_fcus);
         assert_eq!(h.execution.finalized(), Some((3, digests[2])));
+    });
+}
+
+#[test_traced]
+fn finalized_blocks_are_acknowledged_through_persisted_height() {
+    deterministic::Runner::default().start(|context| async move {
+        let mut h = Harness::start_at_genesis(&context);
+        h.execution.persist_forkchoice_updates(false);
+
+        let b1 = make_block(1, 1, GENESIS);
+        let b2 = make_block(2, 2, b1.digest());
+        let b3 = make_block(3, 3, b2.digest());
+        let d3 = b3.digest();
+
+        h.deliver_tip(round(3), 3, d3);
+        let w1 = h.deliver_finalized(b1);
+        let w2 = h.deliver_finalized(b2);
+        let w3 = h.deliver_finalized(b3);
+        futures::pin_mut!(w1, w2, w3);
+
+        h.wait_until(|| h.execution.finalized() == Some((3, d3)))
+            .await;
+        assert!(futures::poll!(&mut w1).is_pending());
+        assert!(futures::poll!(&mut w2).is_pending());
+        assert!(futures::poll!(&mut w3).is_pending());
+
+        h.execution.set_persisted_block_number(2);
+        h.deliver_tip(round(3), 3, d3);
+        (&mut w1).await.expect("height 1 should be acknowledged");
+        (&mut w2).await.expect("height 2 should be acknowledged");
+        assert!(futures::poll!(&mut w3).is_pending());
+
+        h.execution.set_persisted_block_number(3);
+        h.deliver_tip(round(3), 3, d3);
+        w3.await.expect("height 3 should be acknowledged");
     });
 }
 
