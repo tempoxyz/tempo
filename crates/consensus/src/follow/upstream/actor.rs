@@ -12,7 +12,6 @@ use jsonrpsee::{
 };
 use rand_08::Rng as _;
 use reth_primitives_traits::{SealedBlock, SealedOrRecoveredBlock};
-use tempo_evm::consensus::validate_body_against_header;
 use tempo_node::rpc::consensus::{CertifiedBlock, Event, Query, TempoConsensusApiClient};
 use tempo_primitives::{TempoHeader, TempoTxEnvelope};
 use tempo_telemetry_util::display_duration;
@@ -443,9 +442,8 @@ async fn get_block(client: Arc<WsClient>, digest: Digest) -> eyre::Result<Option
     let block = block
         .map(|block| {
             ensure!(block.hash() == digest.0, "mismatched block hash");
-            validate_body_against_header(block.body(), block.header())
-                .wrap_err("upstream block body does not match its header")?;
-            Ok(Block::from_execution_block_unchecked(block, None))
+            Block::try_from_execution_block(block, None)
+                .wrap_err("upstream block or consensus sidecar is invalid")
         })
         .transpose()?;
 

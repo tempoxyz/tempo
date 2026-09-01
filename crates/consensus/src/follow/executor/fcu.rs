@@ -118,7 +118,7 @@ mod tests {
             header: tempo_header(height, round),
             body: BlockBody::default(),
         };
-        Block::from_execution_block(SealedBlock::seal_slow(block), None)
+        Block::try_from_execution_block(SealedBlock::seal_slow(block), None)
             .expect("test block should not contain BAL side data")
     }
 

@@ -13494,6 +13494,7 @@ dependencies = [
  "rand 0.10.2",
  "rand 0.8.6",
  "rand_core 0.10.1",
+ "reth-consensus",
  "reth-consensus-common",
  "reth-engine-primitives",
  "reth-ethereum",
