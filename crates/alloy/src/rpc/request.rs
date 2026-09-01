@@ -9,11 +9,12 @@ use serde::{Deserialize, Serialize};
 use tempo_primitives::{
     AASigned, SignatureType, TempoTransaction, TempoTxEnvelope,
     transaction::{
-        Call, SignedKeyAuthorization, TempoSignedAuthorization, TempoTypedTransaction,
-        key_authorization::serde_nonzero_quantity_opt,
+        Call, MultisigSignature, SignedKeyAuthorization, TempoSignedAuthorization,
+        TempoTypedTransaction, key_authorization::serde_nonzero_quantity_opt,
     },
 };
 
+use super::native_multisig::MultisigSimulationSpec;
 use crate::TempoNetwork;
 
 /// An Ethereum [`TransactionRequest`] extended with Tempo-specific fields.
@@ -80,6 +81,15 @@ pub struct TempoTransactionRequest {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub key_authorization: Option<SignedKeyAuthorization>,
 
+    /// Native multisig spec for state-aware gas estimation and calls.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub multisig_simulation: Option<MultisigSimulationSpec>,
+
+    /// Validated mock signature populated by the state-aware RPC path.
+    #[doc(hidden)]
+    #[serde(skip)]
+    pub multisig_simulation_signature: Option<MultisigSignature>,
+
     /// Transaction valid before timestamp in seconds (for expiring nonces, [TIP-1009]).
     /// Transaction can only be included in a block before this timestamp.
     ///
@@ -119,6 +129,8 @@ impl TempoTransactionRequest {
             || self.key_id.is_some()
             || self.key_type.is_some()
             || self.key_data.is_some()
+            || self.multisig_simulation.is_some()
+            || self.multisig_simulation_signature.is_some()
             || self.valid_before.is_some()
             || self.valid_after.is_some()
             || self.fee_payer_signature.is_some()
@@ -461,6 +473,8 @@ impl From<TempoTransaction> for TempoTransactionRequest {
             key_id: None,
             nonce_key: Some(tx.nonce_key),
             key_authorization: tx.key_authorization,
+            multisig_simulation: None,
+            multisig_simulation_signature: None,
             valid_before: tx.valid_before,
             valid_after: tx.valid_after,
             fee_payer_signature: tx.fee_payer_signature,

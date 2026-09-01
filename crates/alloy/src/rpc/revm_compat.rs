@@ -33,6 +33,18 @@ impl TempoTransactionRequest {
         if is_aa && self.calls.is_empty() && self.inner.to.is_none() {
             return Err(ValueError::new(self, "empty calls list"));
         }
+        if self.key_id.is_some() && self.multisig_simulation.is_some() {
+            return Err(ValueError::new(
+                self,
+                "keyId cannot be combined with a native multisig spec",
+            ));
+        }
+        if self.multisig_simulation.is_some() && self.multisig_simulation_signature.is_none() {
+            return Err(ValueError::new(
+                self,
+                "native multisig simulation requires state-aware preprocessing",
+            ));
+        }
 
         let fee_payer = if self.fee_payer_signature.is_some() {
             // Try to recover the fee payer address from the signature. A dummy or incomplete
@@ -47,16 +59,20 @@ impl TempoTransactionRequest {
             None
         };
 
+        let key_type = self.key_type.unwrap_or(SignatureType::Secp256k1);
+
         let Self {
             inner,
             fee_token,
             calls,
-            key_type,
+            key_type: _,
             key_data,
             key_id,
             tempo_authorization_list,
             nonce_key,
             key_authorization,
+            multisig_simulation: _,
+            multisig_simulation_signature,
             valid_before,
             valid_after,
             fee_payer_signature: _,
@@ -68,16 +84,16 @@ impl TempoTransactionRequest {
         tx_env.unique_tx_identifier = Some(RPC_SIMULATION_UNIQUE_TX_IDENTIFIER);
         tx_env.fee_payer = fee_payer;
         tx_env.tempo_tx_env = if is_aa {
-            let key_type = key_type.unwrap_or(SignatureType::Secp256k1);
-            let mock_signature =
-                create_mock_tempo_sig(&key_type, key_data.as_ref(), key_id, caller_addr, is_t1c);
-
+            let mock_signature = multisig_simulation_signature.map_or_else(
+                || create_mock_tempo_sig(&key_type, key_data.as_ref(), key_id, caller_addr, is_t1c),
+                TempoSignature::Multisig,
+            );
             let mut calls = calls;
-            if let Some(to) = &inner.to {
+            if let Some(to) = inner.to {
                 calls.push(Call {
-                    to: *to,
+                    to,
                     value: inner.value.unwrap_or_default(),
-                    input: inner.input.clone().into_input().unwrap_or_default(),
+                    input: inner.input.into_input().unwrap_or_default(),
                 });
             }
 
@@ -135,6 +151,15 @@ pub(super) fn create_mock_primitive_signature(
     sig_type: &SignatureType,
     key_data: Option<Bytes>,
 ) -> tempo_primitives::transaction::tt_signature::PrimitiveSignature {
+    const MAX_WEBAUTHN_SIZE: usize = 8192;
+    create_mock_primitive_signature_with_webauthn_limit(sig_type, key_data, MAX_WEBAUTHN_SIZE)
+}
+
+pub(super) fn create_mock_primitive_signature_with_webauthn_limit(
+    sig_type: &SignatureType,
+    key_data: Option<Bytes>,
+    max_webauthn_size: usize,
+) -> tempo_primitives::transaction::tt_signature::PrimitiveSignature {
     use tempo_primitives::transaction::tt_signature::{
         P256SignatureWithPreHash, PrimitiveSignature, WebAuthnSignature,
     };
@@ -158,8 +183,6 @@ pub(super) fn create_mock_primitive_signature(
             const AUTH_DATA_SIZE: usize = 37;
             const MIN_WEBAUTHN_SIZE: usize = AUTH_DATA_SIZE + BASE_CLIENT_JSON.len();
             const DEFAULT_WEBAUTHN_SIZE: usize = 800;
-            const MAX_WEBAUTHN_SIZE: usize = 8192;
-
             let size = if let Some(data) = key_data.as_ref() {
                 match data.len() {
                     1 => data[0] as usize,
@@ -170,9 +193,11 @@ pub(super) fn create_mock_primitive_signature(
             } else {
                 DEFAULT_WEBAUTHN_SIZE
             }
-            .clamp(MIN_WEBAUTHN_SIZE, MAX_WEBAUTHN_SIZE);
+            .clamp(MIN_WEBAUTHN_SIZE, max_webauthn_size);
 
-            let mut webauthn_data = vec![0u8; AUTH_DATA_SIZE];
+            // Nonzero bytes make the mock conservative for calldata gas while preserving the
+            // authenticator-data shape expected by WebAuthn validation.
+            let mut webauthn_data = vec![0xff; AUTH_DATA_SIZE];
             webauthn_data[32] = 0x01;
 
             let additional_bytes = size - MIN_WEBAUTHN_SIZE;
@@ -198,8 +223,13 @@ pub(super) fn create_mock_primitive_signature(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::rpc::{
+        MultisigSimulationApproval, MultisigSimulationPrimitiveApproval, MultisigSimulationSpec,
+        create_mock_native_multisig_signature,
+    };
     use alloy_primitives::{TxKind, address};
     use alloy_rpc_types_eth::TransactionRequest;
+    use tempo_primitives::transaction::PrimitiveSignature;
 
     #[test]
     fn access_key_request_populates_typed_simulation_env() {
@@ -230,6 +260,119 @@ mod tests {
         assert_eq!(
             env.unique_tx_identifier,
             Some(RPC_SIMULATION_UNIQUE_TX_IDENTIFIER)
+        );
+    }
+
+    fn one_of_one_spec() -> (Address, MultisigSimulationSpec) {
+        use tempo_primitives::transaction::{MultisigConfig, MultisigOwner};
+
+        let owner = address!("0x1111111111111111111111111111111111111111");
+        let config = MultisigConfig {
+            salt: B256::repeat_byte(0x55),
+            version: 0,
+            threshold: 1,
+            owners: vec![MultisigOwner { owner, weight: 1 }],
+        };
+        (
+            config.derive_account().unwrap(),
+            MultisigSimulationSpec {
+                config,
+                approvals: vec![MultisigSimulationApproval::Primitive(
+                    MultisigSimulationPrimitiveApproval {
+                        owner,
+                        key_type: Some(SignatureType::Secp256k1),
+                        key_data: None,
+                    },
+                )],
+            },
+        )
+    }
+
+    #[test]
+    fn multisig_spec_requires_state_aware_preprocessing() {
+        let (account, spec) = one_of_one_spec();
+        let request = TempoTransactionRequest {
+            inner: TransactionRequest {
+                from: Some(account),
+                to: Some(TxKind::Call(Address::ZERO)),
+                ..Default::default()
+            },
+            multisig_simulation: Some(spec),
+            ..Default::default()
+        };
+
+        let err = request
+            .try_into_tempo_tx_env(TempoTxEnv::default(), true)
+            .expect_err("unvalidated spec must be rejected");
+        assert_eq!(
+            err.to_string(),
+            "native multisig simulation requires state-aware preprocessing"
+        );
+    }
+
+    #[test]
+    fn multisig_simulation_rejects_implicit_contract_creation() {
+        let (account, spec) = one_of_one_spec();
+        let signature = create_mock_native_multisig_signature(account, &spec).unwrap();
+        let initcode = Bytes::from_static(&[0x60, 0x00]);
+        let request = TempoTransactionRequest {
+            inner: TransactionRequest {
+                from: Some(account),
+                input: initcode.into(),
+                ..Default::default()
+            },
+            multisig_simulation: Some(spec),
+            multisig_simulation_signature: Some(signature),
+            ..Default::default()
+        };
+
+        let error = request
+            .try_into_tempo_tx_env(TempoTxEnv::default(), true)
+            .expect_err("AA creation requires an explicit create call");
+        assert_eq!(error.to_string(), "empty calls list");
+    }
+
+    #[test]
+    fn omitted_multisig_key_type_uses_maximum_webauthn_shape() {
+        use tempo_primitives::transaction::{
+            MAX_MULTISIG_OWNER_SIGNATURE_BYTES, MAX_WEBAUTHN_SIGNATURE_LENGTH,
+        };
+
+        let (account, mut spec) = one_of_one_spec();
+        let MultisigSimulationApproval::Primitive(approval) = &mut spec.approvals[0] else {
+            unreachable!()
+        };
+        approval.key_type = None;
+        let signature = create_mock_native_multisig_signature(account, &spec).unwrap();
+        let approval = &signature.signatures()[0];
+        assert_eq!(
+            approval.encoded_length(),
+            MAX_MULTISIG_OWNER_SIGNATURE_BYTES
+        );
+        let TempoSignature::Primitive(PrimitiveSignature::WebAuthn(approval)) = approval else {
+            panic!("missing key type should use WebAuthn")
+        };
+        assert_eq!(
+            approval.webauthn_data.len(),
+            MAX_WEBAUTHN_SIGNATURE_LENGTH - 128
+        );
+    }
+
+    #[test]
+    fn multisig_webauthn_size_hint_is_clamped_to_owner_limit() {
+        use tempo_primitives::transaction::MAX_MULTISIG_OWNER_SIGNATURE_BYTES;
+
+        let (account, mut spec) = one_of_one_spec();
+        let MultisigSimulationApproval::Primitive(approval) = &mut spec.approvals[0] else {
+            unreachable!()
+        };
+        approval.key_type = Some(SignatureType::WebAuthn);
+        approval.key_data = Some(Bytes::copy_from_slice(&u32::MAX.to_be_bytes()));
+
+        let signature = create_mock_native_multisig_signature(account, &spec).unwrap();
+        assert_eq!(
+            signature.signatures()[0].encoded_length(),
+            MAX_MULTISIG_OWNER_SIGNATURE_BYTES
         );
     }
 }
