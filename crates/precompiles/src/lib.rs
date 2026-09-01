@@ -229,6 +229,8 @@ pub fn extend_tempo_precompiles(
             Some(ValidatorConfig::create_precompile(&env))
         } else if *address == ACCOUNT_KEYCHAIN_ADDRESS {
             Some(AccountKeychain::create_precompile(&env))
+        } else if *address == NATIVE_MULTISIG_ADDRESS && env.cfg.spec.is_t12() {
+            Some(NativeMultisig::create_precompile(&env))
         } else if *address == VALIDATOR_CONFIG_V2_ADDRESS {
             Some(ValidatorConfigV2::create_precompile(&env))
         } else if *address == SIGNATURE_VERIFIER_ADDRESS && env.cfg.spec.is_t3() {
@@ -1237,6 +1239,27 @@ mod tests {
     }
 
     #[test]
+    fn test_native_multisig_registered_at_t12_only() {
+        let mut t11 = CfgEnv::<TempoHardfork>::default();
+        t11.set_spec_and_mainnet_gas_params(TempoHardfork::T11);
+        assert!(
+            test_tempo_precompiles(&t11)
+                .get(&NATIVE_MULTISIG_ADDRESS)
+                .is_none(),
+            "NativeMultisig should NOT be registered before T12"
+        );
+
+        let mut t12 = CfgEnv::<TempoHardfork>::default();
+        t12.set_spec_and_mainnet_gas_params(TempoHardfork::T12);
+        assert!(
+            test_tempo_precompiles(&t12)
+                .get(&NATIVE_MULTISIG_ADDRESS)
+                .is_some(),
+            "NativeMultisig should be registered at T12"
+        );
+    }
+
+    #[test]
     fn test_p256verify_availability_across_t1c_boundary() {
         let p256verify_address = p256verify_address();
         let has_p256 = |spec: TempoHardfork| -> bool {
@@ -1272,7 +1295,7 @@ mod tests {
 
     #[test]
     fn multisig_account_eligibility_uses_registered_precompiles() {
-        let spec = TempoHardfork::T11;
+        let spec = TempoHardfork::T12;
         let p256verify_address = p256verify_address();
         for address in EthPrecompiles::new(ethereum_precompile_spec(spec)).warm_addresses() {
             assert!(!is_valid_multisig_account(*address, spec));
