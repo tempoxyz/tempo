@@ -196,6 +196,8 @@ impl BestTransactionsPrewarming {
             let result = match evm.transact_raw(tx_env) {
                 Ok(result) => result.result,
                 Err(err) => {
+                    // Discard actions recorded by the failed transaction before reusing this worker.
+                    evm.clear_actions();
                     trace!(
                         target: "payload_builder",
                         %err,
@@ -493,7 +495,10 @@ mod tests {
     };
     use tempo_chainspec::TempoChainSpec;
     use tempo_evm::{TempoEvmConfig, TempoNextBlockEnvAttributes};
-    use tempo_primitives::{TempoHeader, TempoPrimitives, TempoTxEnvelope};
+    use tempo_precompiles::storage::actions::StorageAction;
+    use tempo_primitives::{
+        TempoHeader, TempoPrimitives, TempoTransaction, TempoTxEnvelope, transaction::Call,
+    };
     use tempo_transaction_pool::transaction::TempoPooledTransaction;
 
     #[derive(Debug, Default)]
@@ -582,6 +587,38 @@ mod tests {
         })
     }
 
+    fn test_payment_tx(sender: Address, gas_limit: u64) -> BestTransaction {
+        let mut token = [0u8; 20];
+        token[..2].copy_from_slice(&[0x20, 0xc0]);
+        let token = Address::from(token);
+
+        // transfer(address,uint256) with a zero recipient and amount.
+        let mut input = vec![0xa9, 0x05, 0x9c, 0xbb];
+        input.resize(4 + 32 + 32, 0);
+        let tx = TempoTransaction {
+            chain_id: 42431,
+            fee_token: Some(token),
+            gas_limit,
+            calls: vec![Call {
+                to: TxKind::Call(token),
+                value: U256::ZERO,
+                input: input.into(),
+            }],
+            nonce_key: U256::ONE,
+            ..Default::default()
+        };
+        let envelope = TempoTxEnvelope::AA(tx.into_signed(Signature::test_signature().into()));
+        let pooled = TempoPooledTransaction::new(Recovered::new_unchecked(envelope, sender));
+        Arc::new(ValidPoolTransaction {
+            transaction_id: TransactionId::new(0u64.into(), 0),
+            transaction: pooled,
+            propagate: true,
+            timestamp: Instant::now(),
+            origin: TransactionOrigin::External,
+            authority_ids: None,
+        })
+    }
+
     struct TestPrewarming {
         prewarming: Option<BestTransactionsPrewarming>,
         executor: TaskExecutor,
@@ -620,6 +657,19 @@ mod tests {
         txs: Vec<BestTransaction>,
         log: Arc<Mutex<TestLog>>,
     ) -> TestPrewarming {
+        let context = prewarming_context(executor.clone(), false);
+        let prewarming =
+            BestTransactionsPrewarming::new(context, TestBestTransactions::new(txs, log));
+        TestPrewarming {
+            prewarming: Some(prewarming),
+            executor,
+        }
+    }
+
+    fn prewarming_context(
+        executor: TaskExecutor,
+        parallel: bool,
+    ) -> PrewarmingExecutionContext<NoopProvider<TempoChainSpec, TempoPrimitives>> {
         let evm_config = TempoEvmConfig::moderato();
         let provider =
             NoopProvider::<TempoChainSpec, TempoPrimitives>::new(evm_config.chain_spec().clone());
@@ -656,21 +706,14 @@ mod tests {
         let evm_env = evm_config
             .next_evm_env(&parent_header, &attributes)
             .expect("test next block env");
-        let prewarming = BestTransactionsPrewarming::new(
-            PrewarmingExecutionContext {
-                provider,
-                executor: executor.clone(),
-                parent_hash: parent_header.hash(),
-                cache: None,
-                evm_env,
-                stop: Arc::default(),
-                parallel: false,
-            },
-            TestBestTransactions::new(txs, log),
-        );
-        TestPrewarming {
-            prewarming: Some(prewarming),
+        PrewarmingExecutionContext {
+            provider,
             executor,
+            parent_hash: parent_header.hash(),
+            cache: None,
+            evm_env,
+            stop: Arc::default(),
+            parallel,
         }
     }
 
@@ -795,5 +838,58 @@ mod tests {
         pool.broadcast(pool.current_num_threads(), |worker| {
             assert_eq!(*worker.get::<usize>(), 1);
         });
+    }
+
+    #[test]
+    fn failed_prewarm_clears_actions_before_same_worker_is_reused() {
+        let executor = TaskExecutor::test();
+        let mut context = prewarming_context(executor, true);
+        context.evm_env.block_env.basefee = 0;
+
+        let pool = WorkerPool::new(1, "prewarm-actions-test");
+        pool.init::<PrewarmEvmState>(|_| context.evm_for_ctx());
+
+        pool.install_fn(|| {
+            let failed_action = StorageAction::Sstore(
+                Address::random(),
+                U256::from(1),
+                U256::from(2),
+                U256::from(3),
+            );
+            WorkerPool::with_worker_mut(|worker| {
+                let evm = worker
+                    .get_mut::<PrewarmEvmState>()
+                    .as_mut()
+                    .expect("prewarm EVM");
+                // Model an action recorded before the failed execution returned an error.
+                assert_eq!(evm.replace_actions(vec![failed_action]), Some(Vec::new()));
+            });
+
+            let sender = Address::random();
+            let failed = BestTransactionsPrewarming::prewarm_transaction(
+                context.clone(),
+                test_payment_tx(sender, 0),
+                None,
+            );
+            assert!(failed.replay.is_none());
+            WorkerPool::with_worker_mut(|worker| {
+                let evm = worker
+                    .get_mut::<PrewarmEvmState>()
+                    .as_mut()
+                    .expect("prewarm EVM");
+                assert_eq!(evm.take_actions(), Some(Vec::new()));
+            });
+
+            let successful = BestTransactionsPrewarming::prewarm_transaction(
+                context,
+                test_payment_tx(sender, 500_000),
+                None,
+            );
+            let replay = successful.replay.expect("successful prewarm replay");
+            assert!(!replay.actions.is_empty());
+            assert!(!replay.actions.contains(&failed_action));
+        });
+
+        pool.clear();
     }
 }

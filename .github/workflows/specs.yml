@@ -112,7 +112,8 @@ jobs:
         uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
         with:
           repository: foundry-rs/foundry
-          ref: master
+          # Keep Foundry on revm 42 to match the version used by reth and Tempo.
+          ref: 8811c408fe72c244317a508e5343fc460447be1a
           path: foundry
           persist-credentials: false
 
@@ -260,7 +261,8 @@ jobs:
         uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
         with:
           repository: foundry-rs/foundry
-          ref: master
+          # Keep Foundry on revm 42 to match the version used by reth and Tempo.
+          ref: 8811c408fe72c244317a508e5343fc460447be1a
           path: foundry
           persist-credentials: false
 
