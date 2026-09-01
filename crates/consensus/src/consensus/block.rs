@@ -62,10 +62,10 @@ impl BlockAccessListError {
 #[derive(Debug, thiserror::Error)]
 pub(crate) enum Error {
     /// The execution block body does not match the commitments in its header.
-    #[error("execution block body does not match its header: {0}")]
+    #[error("execution block body does not match its header")]
     Body(#[from] ConsensusError),
     /// The BAL sidecar does not match the commitment in the execution block header.
-    #[error("block access list does not match its header commitment: {0}")]
+    #[error("block access list does not match its header commitment")]
     BlockAccessList(#[from] BlockAccessListError),
 }
 
