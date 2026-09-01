@@ -1,0 +1,84 @@
+name: Recover Release R2 Upload
+
+permissions: {}
+
+on:
+  workflow_dispatch:
+    inputs:
+      run_id:
+        description: "Release workflow run containing the artifacts"
+        required: true
+        type: string
+      version:
+        description: "Release version (for example, v1.13.1)"
+        required: true
+        type: string
+      source_sha:
+        description: "Full source commit SHA used for the release"
+        required: true
+        type: string
+
+jobs:
+  upload-cloudflare:
+    name: Upload existing release artifacts to R2
+    environment: upload-binaries
+    runs-on: depot-ubuntu-latest
+    permissions:
+      actions: read
+      contents: read
+    steps:
+      - name: Validate source run
+        env:
+          GH_TOKEN: ${{ github.token }}
+          RUN_ID: ${{ inputs.run_id }}
+          SOURCE_SHA: ${{ inputs.source_sha }}
+          VERSION: ${{ inputs.version }}
+        run: |
+          set -euo pipefail
+
+          [[ "$RUN_ID" =~ ^[0-9]+$ ]]
+          [[ "$SOURCE_SHA" =~ ^[0-9a-f]{40}$ ]]
+          [[ "$VERSION" =~ ^v[0-9]+\.[0-9]+\.[0-9]+$ ]]
+
+          run=$(gh api "repos/${GITHUB_REPOSITORY}/actions/runs/${RUN_ID}")
+          [[ $(jq -r '.name' <<< "$run") == "Release" ]]
+          [[ $(jq -r '.status' <<< "$run") == "completed" ]]
+          [[ $(jq -r '.head_sha' <<< "$run") == "$SOURCE_SHA" ]]
+
+      - name: Download release artifacts
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        with:
+          github-token: ${{ github.token }}
+          run-id: ${{ inputs.run_id }}
+          path: artifacts
+
+      - name: Prepare binary directory
+        env:
+          VERSION: ${{ inputs.version }}
+        run: |
+          set -euo pipefail
+          mkdir "$VERSION"
+          find artifacts -type f -exec mv -t "$VERSION" -- {} +
+          test -n "$(find "$VERSION" -maxdepth 1 -type f -print -quit)"
+
+      - name: Determine destination directory
+        id: dest
+        env:
+          SOURCE_SHA: ${{ inputs.source_sha }}
+          VERSION: ${{ inputs.version }}
+        run: |
+          if [[ "${{ github.repository }}" == "tempoxyz/tempo-private-fork" ]]; then
+            echo "dir=${SOURCE_SHA}/${VERSION}" >> "$GITHUB_OUTPUT"
+          else
+            echo "dir=binaries/${VERSION}" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Upload artifacts to R2
+        uses: shallwefootball/upload-s3-action@4350529f410221787ccf424e50133cbc1b52704e # v1.3.3
+        with:
+          aws_key_id: ${{ secrets.R2_BINARIES_KEY_ID }}
+          aws_secret_access_key: ${{ secrets.R2_BINARIES_SECRET_KEY }}
+          aws_bucket: ${{ secrets.R2_BINARIES_BUCKET }}
+          endpoint: ${{ secrets.R2_BINARIES_ENDPOINT }}
+          source_dir: ${{ inputs.version }}
+          destination_dir: ${{ steps.dest.outputs.dir }}
