@@ -14,7 +14,7 @@ use reth_evm::{ConfigureEvm, EvmEnvFor, EvmFactory, EvmFor, block::BlockExecutor
 use reth_primitives_traits::{
     Account, Bytecode, SealedBlock, transaction::error::InvalidTransactionError,
 };
-use reth_provider::BlockReaderIdExt;
+use reth_provider::{BlockHashReader, BlockReaderIdExt};
 use reth_revm::database::StateProviderDatabase;
 use reth_storage_api::{
     AccountReader, BytecodeReader, StateProvider, StateProviderBox, StateProviderFactory,
@@ -369,8 +369,13 @@ where
         &self,
     ) -> ProviderResult<(StateProviderBox, Arc<StateCache>)> {
         let state_provider = self.inner.client().latest()?;
-        let latest_hash = self.inner.client().chain_info()?.best_hash;
-        Ok((state_provider, self.state_cache_for_tip(latest_hash)))
+        let latest = self.inner.client().chain_info()?;
+
+        // Reth's overlay state provider resolves its in-memory ancestry lazily. Resolve it while
+        // acquiring the provider so persistence cannot remove that ancestry before validation.
+        state_provider.block_hash(latest.best_number)?;
+
+        Ok((state_provider, self.state_cache_for_tip(latest.best_hash)))
     }
 
     /// Returns the shared cache if it matches `tip_hash`, otherwise an empty ephemeral cache.
