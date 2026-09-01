@@ -4,7 +4,7 @@ use alloy::{
     providers::{Provider, ProviderBuilder, WsConnect},
 };
 use clap::Parser;
-use eyre::{Context, Result};
+use eyre::{Context, Result, eyre};
 use futures::StreamExt;
 use metrics::{describe_gauge, describe_histogram, gauge, histogram};
 use metrics_exporter_prometheus::PrometheusBuilder;
@@ -174,10 +174,8 @@ impl TxLatencyArgs {
             Duration::from_secs(self.max_pending_age_secs),
         );
 
-        let monitor_handle = tokio::spawn(async move {
-            if let Err(err) = monitor.watch_transactions().await {
-                error!(err = %err, "tx latency monitor exited with error");
-            }
+        let mut monitor_handle = tokio::spawn(async move {
+            monitor.watch_transactions().await
         });
 
         let server = Server::new(TcpListener::bind(addr));
@@ -189,6 +187,20 @@ impl TxLatencyArgs {
             .context("failed to install SIGINT handler")?;
 
         tokio::select! {
+            res = &mut monitor_handle => {
+                match res {
+                    Ok(Err(err)) => {
+                        error!(err = %err, "tx latency monitor exited with error");
+                        return Err(err);
+                    }
+                    Ok(Ok(())) => {
+                        return Err(eyre!("tx latency monitor exited unexpectedly"));
+                    }
+                    Err(join_err) => {
+                        return Err(join_err).wrap_err("tx latency monitor task panicked");
+                    }
+                }
+            }
             _ = sigterm.recv() => tracing::info!("Received SIGTERM, shutting down gracefully"),
             _ = sigint.recv() => tracing::info!("Received SIGINT, shutting down gracefully"),
         }
