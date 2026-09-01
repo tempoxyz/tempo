@@ -21,13 +21,14 @@ use commonware_utils::{Acknowledgement as _, acknowledgement::Exact};
 use eyre::{Report, WrapErr as _, eyre};
 use futures::{FutureExt as _, StreamExt as _, channel::mpsc, future::BoxFuture};
 use tempo_node::TempoExecutionData;
-use tracing::{Level, debug, error, info, instrument};
+use tracing::{Instrument as _, Level, debug, error, info, info_span, instrument};
 
 use super::{
     Config, ExecutionEngine, FinalizedBlockProvider, Marshal, fcu::Forkchoice, ingress::Message,
 };
 use crate::{consensus::block::Block, utils::OptionFuture};
 
+const EXECUTION_LAYER_READY_POLL_INTERVAL: Duration = Duration::from_secs(1);
 const BLOCK_POSTPONED_RETRY_DELAY: Duration = Duration::from_secs(1);
 
 pub(crate) struct Actor<TContext, P, E, M = crate::alias::marshal::Mailbox> {
@@ -82,6 +83,10 @@ where
             .finalized_header()
             .expect("failed reading finalized execution header");
 
+        // Start from finalized rather than the canonical head. A pipeline resumed
+        // from a previous run may still be advancing toward a previously requested head, making
+        // the canonical head observed here stale. Followers use finalized as a stable baseline and
+        // rebuild from ordered block delivery, discarding any pending execution head.
         let forkchoice = Forkchoice::new(&finalized_header);
         Self {
             context: ContextCell::new(context),
@@ -109,6 +114,10 @@ where
     }
 
     async fn run(mut self) {
+        if self.wait_for_execution_layer().await.is_err() {
+            return;
+        }
+
         if self.backfill_to_finalized_floor().await.is_err() {
             return;
         }
@@ -175,6 +184,33 @@ where
     }
 
     #[instrument(skip_all, err)]
+    async fn wait_for_execution_layer(&mut self) -> eyre::Result<()> {
+        for attempts in 1_u64.. {
+            let forkchoice_state = self.last_fcu.into();
+            let response = self
+                .execution_engine
+                .fork_choice_updated(forkchoice_state, None)
+                .instrument(info_span!("execution_layer_readiness", attempts))
+                .await
+                .wrap_err("execution-layer readiness forkchoice update failed")?;
+
+            if response.is_valid() {
+                break;
+            }
+            if !response.payload_status.is_syncing() {
+                return Err(Report::msg(response.payload_status))
+                    .wrap_err("execution-layer readiness forkchoice update was not valid");
+            }
+
+            self.context
+                .sleep(EXECUTION_LAYER_READY_POLL_INTERVAL)
+                .await;
+        }
+
+        Ok(())
+    }
+
+    #[instrument(skip_all, err)]
     async fn backfill_to_finalized_floor(&mut self) -> eyre::Result<()> {
         let start = self.execution_provider.finalized_num_hash()?.number + 1;
         let end = self.floor.get();
@@ -196,34 +232,27 @@ where
             let mut forkchoice = self.last_fcu;
             let forkchoice = forkchoice.update_finalized(&block).then_some(forkchoice);
 
-            let mut request = ExecutionRequest::Block(block, forkchoice, ack);
-
-            // Backfill delivers contiguous blocks in order, so SYNCING cannot
-            // be repaired by a later block filling a gap. Retry this block until
-            // Reth is ready to accept it.
-            loop {
-                match execute_request(
-                    self.context.child("backfill_on_start"),
-                    self.execution_engine.clone(),
-                    self.last_fcu,
-                    request,
-                )
-                .await
-                {
-                    ExecutionTaskResult::Completed(last_fcu) => {
-                        self.last_fcu = last_fcu;
-                        break;
-                    }
-                    ExecutionTaskResult::BlockPostponed(block, ack) => {
-                        let mut forkchoice = self.last_fcu;
-                        let forkchoice = forkchoice.update_finalized(&block).then_some(forkchoice);
-                        request = ExecutionRequest::Block(block, forkchoice, ack);
-                    }
-                    ExecutionTaskResult::Fatal(error) => {
-                        return Err(error).wrap_err_with(|| {
-                            format!("failed backfilling block at height `{height}`")
-                        });
-                    }
+            let request = ExecutionRequest::Block(block, forkchoice, ack);
+            match execute_request(
+                self.context.child("backfill_on_start"),
+                self.execution_engine.clone(),
+                self.last_fcu,
+                request,
+            )
+            .await
+            {
+                ExecutionTaskResult::Completed(last_fcu) => {
+                    self.last_fcu = last_fcu;
+                }
+                ExecutionTaskResult::BlockPostponed(_, _) => {
+                    return Err(eyre!(
+                        "execution layer reported SYNCING for startup backfill block `{height}` after its readiness probe succeeded"
+                    ));
+                }
+                ExecutionTaskResult::Fatal(error) => {
+                    return Err(error).wrap_err_with(|| {
+                        format!("failed backfilling block at height `{height}`")
+                    });
                 }
             }
         }

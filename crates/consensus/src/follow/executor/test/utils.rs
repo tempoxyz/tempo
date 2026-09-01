@@ -18,7 +18,7 @@ use commonware_consensus::{
     Heightable as _,
     types::{Height, Round},
 };
-use futures::channel::oneshot;
+use futures::{channel::oneshot, future::Either};
 use parking_lot::Mutex;
 use reth_ethereum::rpc::eth::primitives::BlockNumHash;
 use reth_node_core::primitives::{SealedBlock, SealedHeader};
@@ -80,6 +80,9 @@ struct StubExecutionProviderInner {
     payloads: AtomicUsize,
     syncing_payloads: AtomicUsize,
     syncing_forkchoices: AtomicUsize,
+    syncing_readiness_probes: AtomicUsize,
+    readiness_complete: AtomicBool,
+    readiness_probes: AtomicUsize,
     forkchoices: Mutex<Vec<ForkchoiceState>>,
     reject_payloads: AtomicBool,
     reject_forkchoices: AtomicBool,
@@ -119,6 +122,16 @@ impl StubExecutionProvider {
         self.inner
             .syncing_forkchoices
             .store(count, Ordering::SeqCst);
+    }
+
+    pub(super) fn sync_readiness_probes(&self, count: usize) {
+        self.inner
+            .syncing_readiness_probes
+            .store(count, Ordering::SeqCst);
+    }
+
+    pub(super) fn readiness_probes(&self) -> usize {
+        self.inner.readiness_probes.load(Ordering::SeqCst)
     }
 
     pub(super) fn reject_forkchoices(&self) {
@@ -211,6 +224,27 @@ impl ExecutionEngine for StubExecutionProvider {
         state: ForkchoiceState,
         _attributes: Option<TempoPayloadAttributes>,
     ) -> impl Future<Output = eyre::Result<ForkchoiceUpdated>> + Send + 'static {
+        if !self.inner.readiness_complete.load(Ordering::SeqCst) {
+            self.inner.readiness_probes.fetch_add(1, Ordering::SeqCst);
+            let syncing = self
+                .inner
+                .syncing_readiness_probes
+                .try_update(Ordering::SeqCst, Ordering::SeqCst, |remaining| {
+                    remaining.checked_sub(1)
+                })
+                .is_ok();
+            if !syncing {
+                self.inner.readiness_complete.store(true, Ordering::SeqCst);
+            }
+            return Either::Left(async move {
+                Ok(ForkchoiceUpdated::from_status(if syncing {
+                    PayloadStatusEnum::Syncing
+                } else {
+                    PayloadStatusEnum::Valid
+                }))
+            });
+        }
+
         self.inner.forkchoices.lock().push(state);
         let gate = self.inner.forkchoice_gate.lock().take();
         let rejected = self.inner.reject_forkchoices.load(Ordering::SeqCst);
@@ -221,7 +255,7 @@ impl ExecutionEngine for StubExecutionProvider {
                 remaining.checked_sub(1)
             })
             .is_ok();
-        async move {
+        Either::Right(async move {
             if let Some(gate) = gate {
                 let _ = gate.await;
             }
@@ -235,7 +269,7 @@ impl ExecutionEngine for StubExecutionProvider {
                 PayloadStatusEnum::Valid
             };
             Ok(ForkchoiceUpdated::from_status(status))
-        }
+        })
     }
 }
 

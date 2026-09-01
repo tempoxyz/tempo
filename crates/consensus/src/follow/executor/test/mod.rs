@@ -763,7 +763,7 @@ fn heartbeat_resubmits_latest_tip_after_interval() {
         actor.start();
 
         let digest = Digest(B256::with_last_byte(1));
-        let tip = Update::Tip(Round::zero(), Height::new(1), digest);
+        let tip = Update::Tip(round(1), Height::new(1), digest);
         assert!(mailbox.report(tip).accepted());
         wait_until(&context, || provider.forkchoices().len() == 1).await;
 
@@ -897,14 +897,42 @@ fn startup_backfills_when_marshal_floor_is_ahead_of_execution() {
 }
 
 #[test_traced]
-fn startup_backfill_retries_a_syncing_block() {
+fn startup_backfill_fails_if_payload_is_syncing_after_readiness() {
     deterministic::Runner::default().start(|context| async move {
         let provider = StubExecutionProvider::default();
         provider.sync_payloads(1);
         let marshal = StubMarshal::default();
         let block = make_block_at_round(1, B256::ZERO, round(1));
-        let block_hash = block.block_hash();
         marshal.set_block(block);
+
+        let (actor, _mailbox) = init(
+            context.child("follower_executor"),
+            Config {
+                execution_provider: provider.clone(),
+                execution_engine: provider.clone(),
+                marshal,
+                epoch_strategy: FixedEpocher::new(EPOCH_LENGTH),
+                floor: Height::new(1),
+                fcu_heartbeat_interval: Duration::from_secs(60),
+            },
+        );
+        let actor_handle = actor.start();
+        actor_handle
+            .await
+            .expect("syncing startup payload should make the actor exit cleanly");
+
+        assert_eq!(provider.payload_count(), 1);
+        assert!(provider.forkchoices().is_empty());
+    });
+}
+
+#[test_traced]
+fn startup_waits_for_execution_readiness_before_backfill() {
+    deterministic::Runner::default().start(|context| async move {
+        let provider = StubExecutionProvider::default();
+        provider.sync_readiness_probes(1);
+        let marshal = StubMarshal::default();
+        marshal.set_block(make_block_at_round(1, B256::ZERO, round(1)));
 
         let (actor, _mailbox) = init(
             context.child("follower_executor"),
@@ -919,11 +947,12 @@ fn startup_backfill_retries_a_syncing_block() {
         );
         actor.start();
 
-        context.sleep(Duration::from_secs(2)).await;
-        wait_until(&context, || provider.forkchoices().len() == 1).await;
+        wait_until(&context, || provider.readiness_probes() == 1).await;
+        assert_eq!(provider.payload_count(), 0);
 
-        assert_eq!(provider.payload_count(), 2);
-        assert_eq!(provider.forkchoices()[0].finalized_block_hash, block_hash);
+        context.sleep(Duration::from_secs(1)).await;
+        wait_until(&context, || provider.payload_count() == 1).await;
+        assert_eq!(provider.readiness_probes(), 2);
     });
 }
 
@@ -959,7 +988,7 @@ fn startup_backfills_when_only_the_floor_block_is_missing() {
 }
 
 #[test_traced]
-fn startup_uses_execution_finalized_tip_without_immediate_forkchoice() {
+fn startup_uses_execution_finalized_tip() {
     deterministic::Runner::default().start(|context| async move {
         let provider = StubExecutionProvider::default();
         let finalized_hash = B256::with_last_byte(10);
@@ -987,5 +1016,6 @@ fn startup_uses_execution_finalized_tip_without_immediate_forkchoice() {
         assert_eq!(forkchoice.head_block_hash, finalized_hash);
         assert_eq!(forkchoice.safe_block_hash, finalized_hash);
         assert_eq!(forkchoice.finalized_block_hash, finalized_hash);
+        assert_eq!(provider.readiness_probes(), 1);
     });
 }
