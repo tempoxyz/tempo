@@ -118,6 +118,93 @@ pub(super) fn multisig_from_approvals(
     ))
 }
 
+struct MultisigAccountFixture<'a> {
+    account: Address,
+    config: MultisigConfig,
+    owners: Vec<&'a PrivateKeySigner>,
+    nonce: u64,
+}
+
+impl<'a> MultisigAccountFixture<'a> {
+    async fn funded<E: TestEnv>(
+        env: &mut E,
+        salt: u8,
+        threshold: u8,
+        owners: &[(&'a PrivateKeySigner, u8)],
+    ) -> eyre::Result<Self> {
+        let config = multisig_config(salt, threshold, owners);
+        let account = derived_account(&config)?;
+        env.fund_account(account).await?;
+        Ok(Self {
+            account,
+            config,
+            owners: owners.iter().map(|(owner, _)| *owner).collect(),
+            nonce: 0,
+        })
+    }
+
+    fn transaction<E: TestEnv>(&self, env: &E, calls: Vec<Call>) -> TempoTransaction {
+        create_basic_aa_tx(env.chain_id(), self.nonce, calls, EXAMPLE_GAS_LIMIT)
+    }
+
+    fn no_op_transaction<E: TestEnv>(&self, env: &E, byte: u8) -> TempoTransaction {
+        self.transaction(env, vec![no_op_call(byte)])
+    }
+
+    fn sign(&self, tx: &TempoTransaction) -> eyre::Result<TempoSignature> {
+        self.sign_with(tx, &self.owners)
+    }
+
+    fn sign_with(
+        &self,
+        tx: &TempoTransaction,
+        owners: &[&PrivateKeySigner],
+    ) -> eyre::Result<TempoSignature> {
+        sign_multisig(self.account, tx.signature_hash(), &self.config, owners)
+    }
+
+    fn key_authorization(
+        &self,
+        chain_id: u64,
+        key_id: Address,
+        is_admin: bool,
+    ) -> eyre::Result<SignedKeyAuthorization> {
+        signed_key_authorization(
+            chain_id,
+            self.account,
+            &self.config,
+            key_id,
+            is_admin,
+            KeyAuthorizationSigner::Quorum(&self.owners),
+        )
+    }
+
+    async fn submit_signed<E: TestEnv>(
+        &mut self,
+        env: &mut E,
+        tx: TempoTransaction,
+        signature: TempoSignature,
+    ) -> eyre::Result<()> {
+        submit(env, tx, signature).await?;
+        self.nonce += 1;
+        Ok(())
+    }
+
+    async fn submit_no_op<E: TestEnv>(&mut self, env: &mut E, byte: u8) -> eyre::Result<()> {
+        let tx = self.no_op_transaction(env, byte);
+        let signature = self.sign(&tx)?;
+        self.submit_signed(env, tx, signature).await
+    }
+
+    async fn assert_uninitialized<E: TestEnv>(&self, env: &E) -> eyre::Result<()> {
+        assert_eq!(
+            stored_config_commitment(env, self.account).await?,
+            B256::ZERO
+        );
+        Ok(())
+    }
+}
+
 fn sign_nested_multisig(
     account: Address,
     inner_digest: B256,
@@ -341,17 +428,15 @@ async fn initial_weighted_quorum<E: TestEnv>(
     approvals: &[&PrivateKeySigner],
     rejection_reason: Option<&str>,
 ) -> eyre::Result<()> {
-    let config = multisig_config(salt, 3, &[(alice, 2), (bob, 1), (carol, 1)]);
-    let account = derived_account(&config)?;
-    env.fund_account(account).await?;
-
-    let tx = create_basic_aa_tx(env.chain_id(), 0, vec![no_op_call(salt)], EXAMPLE_GAS_LIMIT);
-    let signature = sign_multisig(account, tx.signature_hash(), &config, approvals)?;
+    let mut fixture =
+        MultisigAccountFixture::funded(env, salt, 3, &[(alice, 2), (bob, 1), (carol, 1)]).await?;
+    let tx = fixture.no_op_transaction(env, salt);
+    let signature = fixture.sign_with(&tx, approvals)?;
     if let Some(reason) = rejection_reason {
         reject(env, tx, signature, reason).await?;
-        assert_eq!(stored_config_commitment(env, account).await?, B256::ZERO);
+        fixture.assert_uninitialized(env).await?;
     } else {
-        submit(env, tx, signature).await?;
+        fixture.submit_signed(env, tx, signature).await?;
     }
     Ok(())
 }
@@ -361,20 +446,13 @@ async fn repeated_initial_authorization<E: TestEnv>(
     alice: &PrivateKeySigner,
     bob: &PrivateKeySigner,
 ) -> eyre::Result<()> {
-    let config = multisig_config(0x11, 2, &[(alice, 1), (bob, 1)]);
-    let account = derived_account(&config)?;
-    env.fund_account(account).await?;
+    let mut fixture = MultisigAccountFixture::funded(env, 0x11, 2, &[(alice, 1), (bob, 1)]).await?;
 
-    let initial = create_basic_aa_tx(env.chain_id(), 0, vec![no_op_call(0x11)], EXAMPLE_GAS_LIMIT);
-    let signature = sign_multisig(account, initial.signature_hash(), &config, &[alice, bob])?;
-    submit(env, initial, signature).await?;
+    fixture.submit_no_op(env, 0x11).await?;
+    fixture.assert_uninitialized(env).await?;
 
-    assert_eq!(stored_config_commitment(env, account).await?, B256::ZERO);
-
-    let repeated = create_basic_aa_tx(env.chain_id(), 1, vec![no_op_call(0x12)], EXAMPLE_GAS_LIMIT);
-    let signature = sign_multisig(account, repeated.signature_hash(), &config, &[alice, bob])?;
-    submit(env, repeated, signature).await?;
-    assert_eq!(stored_config_commitment(env, account).await?, B256::ZERO);
+    fixture.submit_no_op(env, 0x12).await?;
+    fixture.assert_uninitialized(env).await?;
     Ok(())
 }
 
@@ -420,35 +498,24 @@ async fn nested_ownership<E: TestEnv>(
     alice: &PrivateKeySigner,
     bob: &PrivateKeySigner,
 ) -> eyre::Result<()> {
-    let child_config = multisig_config(0x21, 2, &[(alice, 1), (bob, 1)]);
-    let child = derived_account(&child_config)?;
-    env.fund_account(child).await?;
+    let mut child_fixture =
+        MultisigAccountFixture::funded(env, 0x21, 2, &[(alice, 1), (bob, 1)]).await?;
+    let child = child_fixture.account;
 
-    let child_initial =
-        create_basic_aa_tx(env.chain_id(), 0, vec![no_op_call(0x21)], EXAMPLE_GAS_LIMIT);
-    let signature = sign_multisig(
-        child,
-        child_initial.signature_hash(),
-        &child_config,
-        &[alice, bob],
-    )?;
-    submit(env, child_initial, signature).await?;
+    child_fixture.submit_no_op(env, 0x21).await?;
 
-    let mut child_current = child_config.clone();
+    let child_initial_config = child_fixture.config.clone();
+    let mut child_current = child_initial_config.clone();
     child_current.version = 1;
-    let child_rotation = create_basic_aa_tx(
-        env.chain_id(),
-        1,
-        vec![update_config_call(&child_config, &child_current)],
-        EXAMPLE_GAS_LIMIT,
+    let child_rotation = child_fixture.transaction(
+        env,
+        vec![update_config_call(&child_initial_config, &child_current)],
     );
-    let signature = sign_multisig(
-        child,
-        child_rotation.signature_hash(),
-        &child_config,
-        &[alice, bob],
-    )?;
-    submit(env, child_rotation, signature).await?;
+    let signature = child_fixture.sign(&child_rotation)?;
+    child_fixture
+        .submit_signed(env, child_rotation, signature)
+        .await?;
+    child_fixture.config = child_current;
 
     let parent_config = MultisigConfig {
         salt: B256::repeat_byte(0x22),
@@ -469,7 +536,7 @@ async fn nested_ownership<E: TestEnv>(
         parent_initial.signature_hash(),
         &parent_config,
         child,
-        &child_current,
+        &child_fixture.config,
         &[alice, bob],
     )?;
     submit(env, parent_initial, signature).await?;
@@ -480,7 +547,7 @@ async fn nested_ownership<E: TestEnv>(
         repeated.signature_hash(),
         &parent_config,
         child,
-        &child_config,
+        &child_initial_config,
         &[alice, bob],
     )?;
     reject(
@@ -493,7 +560,8 @@ async fn nested_ownership<E: TestEnv>(
     assert_eq!(stored_config_commitment(env, parent).await?, B256::ZERO);
     assert_eq!(
         stored_config_commitment(env, child).await?,
-        child_current
+        child_fixture
+            .config
             .commitment()
             .map_err(|error| eyre::eyre!(error.as_str()))?
     );
@@ -502,7 +570,7 @@ async fn nested_ownership<E: TestEnv>(
         repeated.signature_hash(),
         &parent_config,
         child,
-        &child_current,
+        &child_fixture.config,
         &[alice, bob],
     )?;
     submit(env, repeated, signature).await?;
@@ -519,7 +587,7 @@ async fn nested_ownership<E: TestEnv>(
         authorization.signature_hash(),
         &parent_config,
         child,
-        &child_current,
+        &child_fixture.config,
         &[alice, bob],
     )?;
     let mut authorize =
@@ -530,7 +598,7 @@ async fn nested_ownership<E: TestEnv>(
         authorize.signature_hash(),
         &parent_config,
         child,
-        &child_current,
+        &child_fixture.config,
         &[alice, bob],
     )?;
     submit(env, authorize, signature).await?;
@@ -610,31 +678,17 @@ async fn initial_and_immediate_access_key_use<E: TestEnv>(
     alice: &PrivateKeySigner,
     bob: &PrivateKeySigner,
 ) -> eyre::Result<()> {
-    let config = multisig_config(0x51, 2, &[(alice, 1), (bob, 1)]);
-    let account = derived_account(&config)?;
+    let mut fixture = MultisigAccountFixture::funded(env, 0x51, 2, &[(alice, 1), (bob, 1)]).await?;
     let access_key = signer(0x51);
-    env.fund_account(account).await?;
 
-    let authorization = KeyAuthorization::unrestricted(
-        env.chain_id(),
-        SignatureType::Secp256k1,
-        access_key.address(),
-    )
-    .with_account(account);
-    let authorization_signature = sign_multisig(
-        account,
-        authorization.signature_hash(),
-        &config,
-        &[alice, bob],
-    )?;
+    let mut tx = fixture.no_op_transaction(env, 0x51);
+    tx.key_authorization =
+        Some(fixture.key_authorization(env.chain_id(), access_key.address(), false)?);
+    let signature = sign_aa_tx_with_secp256k1_access_key(&tx, &access_key, fixture.account)?;
+    fixture.submit_signed(env, tx, signature).await?;
 
-    let mut tx = create_basic_aa_tx(env.chain_id(), 0, vec![no_op_call(0x51)], EXAMPLE_GAS_LIMIT);
-    tx.key_authorization = Some(authorization.into_signed(authorization_signature));
-    let signature = sign_aa_tx_with_secp256k1_access_key(&tx, &access_key, account)?;
-    submit(env, tx, signature).await?;
-
-    assert_eq!(stored_config_commitment(env, account).await?, B256::ZERO);
-    assert_active_key(env, account, access_key.address()).await?;
+    fixture.assert_uninitialized(env).await?;
+    assert_active_key(env, fixture.account, access_key.address()).await?;
     Ok(())
 }
 
@@ -643,35 +697,20 @@ async fn access_key_authorization_matrix<E: TestEnv>(
     alice: &PrivateKeySigner,
     bob: &PrivateKeySigner,
 ) -> eyre::Result<()> {
-    let config = multisig_config(0x61, 2, &[(alice, 1), (bob, 1)]);
-    let account = derived_account(&config)?;
+    let mut fixture = MultisigAccountFixture::funded(env, 0x61, 2, &[(alice, 1), (bob, 1)]).await?;
     let access_key = signer(0x61);
-    env.fund_account(account).await?;
 
-    let authorization = KeyAuthorization::unrestricted(
-        env.chain_id(),
-        SignatureType::Secp256k1,
-        access_key.address(),
-    )
-    .with_account(account);
-    let authorization_signature = sign_multisig(
-        account,
-        authorization.signature_hash(),
-        &config,
-        &[alice, bob],
-    )?;
+    let mut initial = fixture.no_op_transaction(env, 0x61);
+    initial.key_authorization =
+        Some(fixture.key_authorization(env.chain_id(), access_key.address(), false)?);
+    let signature = fixture.sign(&initial)?;
+    fixture.submit_signed(env, initial, signature).await?;
+    assert_active_key(env, fixture.account, access_key.address()).await?;
 
-    let mut initial =
-        create_basic_aa_tx(env.chain_id(), 0, vec![no_op_call(0x61)], EXAMPLE_GAS_LIMIT);
-    initial.key_authorization = Some(authorization.into_signed(authorization_signature));
-    let signature = sign_multisig(account, initial.signature_hash(), &config, &[alice, bob])?;
-    submit(env, initial, signature).await?;
-    assert_active_key(env, account, access_key.address()).await?;
-
-    let access_key_tx =
-        create_basic_aa_tx(env.chain_id(), 1, vec![no_op_call(0x62)], EXAMPLE_GAS_LIMIT);
-    let signature = sign_aa_tx_with_secp256k1_access_key(&access_key_tx, &access_key, account)?;
-    submit(env, access_key_tx, signature).await?;
+    let access_key_tx = fixture.no_op_transaction(env, 0x62);
+    let signature =
+        sign_aa_tx_with_secp256k1_access_key(&access_key_tx, &access_key, fixture.account)?;
+    fixture.submit_signed(env, access_key_tx, signature).await?;
 
     struct Case<'a> {
         outer: &'a PrivateKeySigner,
@@ -707,33 +746,26 @@ async fn access_key_authorization_matrix<E: TestEnv>(
             expected: ExpectedOutcome::Success,
         },
     ];
-    let mut nonce = 2;
     for (index, case) in cases.into_iter().enumerate() {
         let key_authorization = signed_key_authorization(
             env.chain_id(),
-            account,
-            &config,
+            fixture.account,
+            &fixture.config,
             case.target.address(),
             case.is_admin,
             case.authorizer,
         )?;
-        let mut tx = create_basic_aa_tx(
-            env.chain_id(),
-            nonce,
-            vec![no_op_call(0x63 + index as u8)],
-            EXAMPLE_GAS_LIMIT,
-        );
+        let mut tx = fixture.no_op_transaction(env, 0x63 + index as u8);
         tx.key_authorization = Some(key_authorization);
-        let signature = sign_aa_tx_with_secp256k1_access_key(&tx, case.outer, account)?;
+        let signature = sign_aa_tx_with_secp256k1_access_key(&tx, case.outer, fixture.account)?;
 
         match case.expected {
             ExpectedOutcome::Success => {
-                submit(env, tx, signature).await?;
-                assert_active_key(env, account, case.target.address()).await?;
+                fixture.submit_signed(env, tx, signature).await?;
+                assert_active_key(env, fixture.account, case.target.address()).await?;
                 if case.is_admin {
-                    assert_admin_key(env, account, case.target.address()).await?;
+                    assert_admin_key(env, fixture.account, case.target.address()).await?;
                 }
-                nonce += 1;
             }
             ExpectedOutcome::Rejection => {
                 reject(
@@ -743,24 +775,19 @@ async fn access_key_authorization_matrix<E: TestEnv>(
                     "access keys cannot authorize other keys, only the root key can authorize new keys",
                 )
                 .await?;
-                assert_eq!(stored_config_commitment(env, account).await?, B256::ZERO);
-                assert_inactive_key(env, account, case.target.address()).await?;
+                fixture.assert_uninitialized(env).await?;
+                assert_inactive_key(env, fixture.account, case.target.address()).await?;
             }
             ExpectedOutcome::Revert => unreachable!("key authorization is validated pre-call"),
         }
     }
 
-    let mut next_config = config.clone();
+    let mut next_config = fixture.config.clone();
     next_config.version = 1;
-    let update = create_basic_aa_tx(
-        env.chain_id(),
-        nonce,
-        vec![update_config_call(&config, &next_config)],
-        EXAMPLE_GAS_LIMIT,
-    );
-    let signature = sign_aa_tx_with_secp256k1_access_key(&update, &admin_key, account)?;
+    let update = fixture.transaction(env, vec![update_config_call(&fixture.config, &next_config)]);
+    let signature = sign_aa_tx_with_secp256k1_access_key(&update, &admin_key, fixture.account)?;
     revert(env, update, signature).await?;
-    assert_eq!(stored_config_commitment(env, account).await?, B256::ZERO);
+    fixture.assert_uninitialized(env).await?;
     Ok(())
 }
 
@@ -770,12 +797,12 @@ async fn configuration_rotation_and_access_keys<E: TestEnv>(
     bob: &PrivateKeySigner,
     carol: &PrivateKeySigner,
 ) -> eyre::Result<()> {
-    let config = multisig_config(0x71, 2, &[(alice, 1), (bob, 1)]);
-    let account = derived_account(&config)?;
-    env.fund_account(account).await?;
+    let mut fixture = MultisigAccountFixture::funded(env, 0x71, 2, &[(alice, 1), (bob, 1)]).await?;
+    let account = fixture.account;
+    let initial_config = fixture.config.clone();
 
     let next_config = MultisigConfig {
-        salt: config.salt,
+        salt: initial_config.salt,
         version: 1,
         threshold: 1,
         owners: vec![MultisigOwner {
@@ -783,99 +810,76 @@ async fn configuration_rotation_and_access_keys<E: TestEnv>(
             weight: 1,
         }],
     };
-    let rotation = create_basic_aa_tx(
-        env.chain_id(),
-        0,
-        vec![update_config_call(&config, &next_config)],
-        EXAMPLE_GAS_LIMIT,
-    );
-    let signature = sign_multisig(account, rotation.signature_hash(), &config, &[alice, bob])?;
-    submit(env, rotation, signature).await?;
+    let rotation =
+        fixture.transaction(env, vec![update_config_call(&initial_config, &next_config)]);
+    let signature = fixture.sign(&rotation)?;
+    fixture.submit_signed(env, rotation, signature).await?;
+    fixture.config = next_config;
+    fixture.owners = vec![carol];
 
     assert_eq!(
         stored_config_commitment(env, account).await?,
-        next_config
+        fixture
+            .config
             .commitment()
             .map_err(|error| eyre::eyre!(error.as_str()))?
     );
 
-    let stale_tx = create_basic_aa_tx(env.chain_id(), 1, vec![no_op_call(0x72)], EXAMPLE_GAS_LIMIT);
-    let stale_signature =
-        sign_multisig(account, stale_tx.signature_hash(), &config, &[alice, bob])?;
+    let stale_tx = fixture.no_op_transaction(env, 0x72);
+    let stale_signature = sign_multisig(
+        account,
+        stale_tx.signature_hash(),
+        &initial_config,
+        &[alice, bob],
+    )?;
     reject(env, stale_tx, stale_signature, CONFIG_COMMITMENT_MISMATCH).await?;
-    let next_commitment = next_config
+    let current_commitment = fixture
+        .config
         .commitment()
         .map_err(|error| eyre::eyre!(error.as_str()))?;
     assert_eq!(
         stored_config_commitment(env, account).await?,
-        next_commitment
+        current_commitment
     );
 
     let access_key = signer(0x72);
     let stale_authorization = signed_key_authorization(
         env.chain_id(),
         account,
-        &config,
+        &initial_config,
         access_key.address(),
         false,
         KeyAuthorizationSigner::Quorum(&[alice, bob]),
     )?;
-    let mut stale_sidecar =
-        create_basic_aa_tx(env.chain_id(), 1, vec![no_op_call(0x73)], EXAMPLE_GAS_LIMIT);
+    let mut stale_sidecar = fixture.no_op_transaction(env, 0x73);
     stale_sidecar.key_authorization = Some(stale_authorization);
-    let signature = sign_multisig(
-        account,
-        stale_sidecar.signature_hash(),
-        &next_config,
-        &[carol],
-    )?;
+    let signature = fixture.sign(&stale_sidecar)?;
     reject(env, stale_sidecar, signature, CONFIG_COMMITMENT_MISMATCH).await?;
     assert_eq!(
         stored_config_commitment(env, account).await?,
-        next_commitment
+        current_commitment
     );
     assert_inactive_key(env, account, access_key.address()).await?;
 
-    let current_authorization = signed_key_authorization(
-        env.chain_id(),
-        account,
-        &next_config,
-        access_key.address(),
-        false,
-        KeyAuthorizationSigner::Quorum(&[carol]),
-    )?;
-    let mut current =
-        create_basic_aa_tx(env.chain_id(), 1, vec![no_op_call(0x74)], EXAMPLE_GAS_LIMIT);
+    let current_authorization =
+        fixture.key_authorization(env.chain_id(), access_key.address(), false)?;
+    let mut current = fixture.no_op_transaction(env, 0x74);
     current.key_authorization = Some(current_authorization);
-    let signature = sign_multisig(account, current.signature_hash(), &next_config, &[carol])?;
-    submit(env, current, signature).await?;
+    let signature = fixture.sign(&current)?;
+    fixture.submit_signed(env, current, signature).await?;
     assert_active_key(env, account, access_key.address()).await?;
 
-    let access_key_tx =
-        create_basic_aa_tx(env.chain_id(), 2, vec![no_op_call(0x75)], EXAMPLE_GAS_LIMIT);
+    let access_key_tx = fixture.no_op_transaction(env, 0x75);
     let signature = sign_aa_tx_with_secp256k1_access_key(&access_key_tx, &access_key, account)?;
-    submit(env, access_key_tx, signature).await?;
+    fixture.submit_signed(env, access_key_tx, signature).await?;
 
-    let source_config = multisig_config(0x73, 2, &[(alice, 1), (bob, 1)]);
-    let source = derived_account(&source_config)?;
-    env.fund_account(source).await?;
-    let forbidden_authorization = signed_key_authorization(
-        env.chain_id(),
-        source,
-        &source_config,
-        account,
-        false,
-        KeyAuthorizationSigner::Quorum(&[alice, bob]),
-    )?;
-    let mut forbidden =
-        create_basic_aa_tx(env.chain_id(), 0, vec![no_op_call(0x76)], EXAMPLE_GAS_LIMIT);
+    let source_fixture =
+        MultisigAccountFixture::funded(env, 0x73, 2, &[(alice, 1), (bob, 1)]).await?;
+    let forbidden_authorization =
+        source_fixture.key_authorization(env.chain_id(), account, false)?;
+    let mut forbidden = source_fixture.no_op_transaction(env, 0x76);
     forbidden.key_authorization = Some(forbidden_authorization);
-    let signature = sign_multisig(
-        source,
-        forbidden.signature_hash(),
-        &source_config,
-        &[alice, bob],
-    )?;
+    let signature = source_fixture.sign(&forbidden)?;
     reject(
         env,
         forbidden,
@@ -883,8 +887,8 @@ async fn configuration_rotation_and_access_keys<E: TestEnv>(
         &format!("native multisig account {account} cannot be used as an access key"),
     )
     .await?;
-    assert_eq!(stored_config_commitment(env, source).await?, B256::ZERO);
-    assert_inactive_key(env, source, account).await?;
+    source_fixture.assert_uninitialized(env).await?;
+    assert_inactive_key(env, source_fixture.account, account).await?;
     Ok(())
 }
 
