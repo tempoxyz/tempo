@@ -225,7 +225,16 @@ impl Monitor {
             .connect(self.rpc_url.as_str())
             .await?;
 
+        self.update_tip20_pools_with_provider(provider).await
+    }
+
+    async fn update_tip20_pools_with_provider<P: Provider + Clone>(
+        &mut self,
+        provider: P,
+    ) -> Result<()> {
         let fee_amm: ITIPFeeAMMInstance<_, _> = ITIPFeeAMM::new(TIP_FEE_MANAGER_ADDRESS, provider);
+        let mut first_error = None;
+        let mut failed_pools = 0;
 
         for &(token_a, token_b) in &self.known_pairs {
             debug!(%token_a, %token_b, "fetching pool");
@@ -242,18 +251,20 @@ impl Monitor {
                 }
                 Err(e) => {
                     counter!("tempo_fee_amm_errors", "request" => "pool").increment(1);
-
-                    return Err(eyre!(
-                        "failed to fetch pool {} -> {}: {}",
-                        token_a,
-                        token_b,
-                        e
-                    ));
+                    failed_pools += 1;
+                    first_error.get_or_insert_with(|| {
+                        eyre!("failed to fetch pool {token_a} -> {token_b}: {e}")
+                    });
                 }
             }
         }
 
-        Ok(())
+        match first_error {
+            Some(error) => {
+                Err(error.wrap_err(format!("failed to refresh {failed_pools} FeeAMM pool(s)")))
+            }
+            None => Ok(()),
+        }
     }
 
     #[instrument(name = "monitor::update_metrics", skip(self))]
@@ -324,4 +335,58 @@ fn parse_mint_tokens(log: &Log) -> (Address, Address) {
         Address::from_word(log.topics()[2]),
         Address::from_word(log.topics()[3]),
     )
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use alloy::{primitives::Bytes, providers::mock::Asserter, sol_types::SolCall};
+    use tempo_precompiles::tip_fee_manager::ITIPFeeAMM::getPoolCall;
+
+    fn mock_provider(asserter: Asserter) -> impl Provider + Clone {
+        ProviderBuilder::new().connect_mocked_client(asserter)
+    }
+
+    #[tokio::test]
+    async fn pool_refresh_continues_after_one_rpc_failure() {
+        let token_a = Address::repeat_byte(0xAA);
+        let token_b = Address::repeat_byte(0xBB);
+        let known_pairs = [(token_a, token_b), (token_b, token_a)]
+            .into_iter()
+            .collect();
+        let mut monitor = Monitor {
+            rpc_url: "http://localhost:8545".parse().unwrap(),
+            poll_interval: 1,
+            tokens: Default::default(),
+            pools: Default::default(),
+            known_pairs,
+            last_processed_block: 0,
+        };
+
+        let asserter = Asserter::new();
+        asserter.push_failure_msg("transient rpc error");
+        let pool = Pool {
+            reserveUserToken: 10,
+            reserveValidatorToken: 20,
+        };
+        asserter.push_success(&Bytes::from(getPoolCall::abi_encode_returns(&pool)));
+
+        let error = monitor
+            .update_tip20_pools_with_provider(mock_provider(asserter))
+            .await
+            .expect_err("the refresh should still report the failed pool");
+
+        assert!(
+            error
+                .to_string()
+                .contains("failed to refresh 1 FeeAMM pool(s)"),
+            "unexpected error: {error:#}"
+        );
+        assert_eq!(
+            monitor.pools.len(),
+            1,
+            "a failed pool must not prevent later pools from refreshing"
+        );
+        assert_eq!(monitor.pools.values().next(), Some(&pool));
+    }
 }
