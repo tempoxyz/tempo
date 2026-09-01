@@ -22,7 +22,7 @@ use tempo_contracts::precompiles::{
 };
 use tempo_precompiles::{ACCOUNT_KEYCHAIN_ADDRESS, tip20::ITIP20};
 use tempo_primitives::{
-    SignatureType, TempoTransaction, TempoTxEnvelope,
+    SignatureType, TempoAddressExt, TempoTransaction, TempoTxEnvelope,
     transaction::{
         FEE_PAYER_SIGNATURE_MARKER, KeyAuthorization, MultisigConfig, MultisigOwner,
         MultisigSignature, SignedKeyAuthorization, multisig_digest,
@@ -107,7 +107,7 @@ pub(super) fn sign_multisig(
     multisig_from_approvals(account, config, approvals)
 }
 
-fn multisig_from_approvals(
+pub(super) fn multisig_from_approvals(
     account: Address,
     config: &MultisigConfig,
     approvals: Vec<TempoSignature>,
@@ -142,7 +142,7 @@ async fn submit<E: TestEnv>(
     env.submit_tx(envelope.encoded_2718(), tx_hash).await
 }
 
-async fn reject<E: TestEnv>(
+pub(super) async fn reject<E: TestEnv>(
     env: &E,
     tx: TempoTransaction,
     signature: TempoSignature,
@@ -245,7 +245,7 @@ fn signed_key_authorization(
     Ok(authorization.into_signed(signature))
 }
 
-fn update_config_call(current: &MultisigConfig, next: &MultisigConfig) -> Call {
+pub(super) fn update_config_call(current: &MultisigConfig, next: &MultisigConfig) -> Call {
     assert_eq!(next.salt, current.salt);
     assert_eq!(next.version, current.version + 1);
     Call {
@@ -375,6 +375,43 @@ async fn repeated_initial_authorization<E: TestEnv>(
     let signature = sign_multisig(account, repeated.signature_hash(), &config, &[alice, bob])?;
     submit(env, repeated, signature).await?;
     assert_eq!(stored_config_commitment(env, account).await?, B256::ZERO);
+    Ok(())
+}
+
+async fn reserved_accounts_are_rejected<E: TestEnv>(
+    env: &E,
+    alice: &PrivateKeySigner,
+    bob: &PrivateKeySigner,
+) -> eyre::Result<()> {
+    let mut config = multisig_config(0x12, 2, &[(alice, 1), (bob, 1)]);
+    config.version = 1;
+
+    let mut tip20 = [0u8; 20];
+    tip20[..12].copy_from_slice(&Address::TIP20_PREFIX);
+    tip20[19] = 1;
+    let mut zone_portal = [0u8; 20];
+    zone_portal[..12].copy_from_slice(&Address::ZONE_PORTAL_PREFIX);
+    zone_portal[19] = 1;
+    let mut virtual_account = [0u8; 20];
+    virtual_account[4..14].fill(0xfd);
+
+    for account in [
+        Address::from(tip20),
+        Address::from(zone_portal),
+        Address::from(virtual_account),
+        Address::with_last_byte(1),
+        NATIVE_MULTISIG_ADDRESS,
+    ] {
+        let tx = create_basic_aa_tx(env.chain_id(), 0, vec![no_op_call(0x12)], EXAMPLE_GAS_LIMIT);
+        let signature = sign_multisig(account, tx.signature_hash(), &config, &[alice, bob])?;
+        reject(
+            env,
+            tx,
+            signature,
+            "multisig signature names a reserved account address",
+        )
+        .await?;
+    }
     Ok(())
 }
 
@@ -856,6 +893,7 @@ pub(super) async fn run_tip_1061_examples<E: TestEnv>(env: &mut E) -> eyre::Resu
     let (alice, bob, carol) = (&signers[0], &signers[1], &signers[2]);
 
     repeated_initial_authorization(env, alice, bob).await?;
+    reserved_accounts_are_rejected(env, alice, bob).await?;
     nested_ownership(env, alice, bob).await?;
     fee_sponsorship(env, alice, bob).await?;
     weighted_quorum(env, alice, bob, carol).await?;
