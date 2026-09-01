@@ -103,6 +103,21 @@ fn apply_tempo_cli_overrides(cli: &mut TempoCli) -> eyre::Result<()> {
     }
 
     if let Commands::Node(node_cmd) = &mut cli.command
+        && node_cmd
+            .ext
+            .node_args
+            .engine_disable_sparse_trie_sharing_with_payload_builder
+    {
+        node_cmd.engine.share_sparse_trie_with_payload_builder = false;
+    }
+
+    if let Commands::Node(node_cmd) = &mut cli.command
+        && node_cmd.ext.node_args.engine_persist_during_build
+    {
+        node_cmd.engine.suppress_persistence_during_build = false;
+    }
+
+    if let Commands::Node(node_cmd) = &mut cli.command
         && node_cmd.dev.dev
         && node_cmd.chain.genesis_hash() == DEV.genesis_hash()
     {
@@ -1008,6 +1023,13 @@ mod tests {
                 .node_args
                 .engine_disable_execution_cache_sharing_with_builder
         );
+        assert!(
+            !node_cmd
+                .ext
+                .node_args
+                .engine_disable_sparse_trie_sharing_with_payload_builder
+        );
+        assert!(!node_cmd.ext.node_args.engine_persist_during_build);
         assert_eq!(node_cmd.builder.max_payload_tasks, 1);
         assert!(!node_cmd.ext.node_args.builder_disable_prewarming);
         assert!(node_cmd.ext.node_args.builder_enable_prewarming);
@@ -1044,6 +1066,35 @@ mod tests {
                 .engine_disable_execution_cache_sharing_with_builder
         );
         assert!(!node_cmd.engine.share_execution_cache_with_payload_builder);
+
+        let mut cli = TempoCli::try_parse_from([
+            "tempo",
+            "node",
+            "--dev",
+            "--engine.disable-sparse-trie-sharing-with-payload-builder",
+        ])
+        .unwrap();
+        apply_tempo_cli_overrides(&mut cli).unwrap();
+        let Commands::Node(node_cmd) = cli.command else {
+            panic!("expected node command");
+        };
+        assert!(
+            node_cmd
+                .ext
+                .node_args
+                .engine_disable_sparse_trie_sharing_with_payload_builder
+        );
+        assert!(!node_cmd.engine.share_sparse_trie_with_payload_builder);
+
+        let mut cli =
+            TempoCli::try_parse_from(["tempo", "node", "--dev", "--engine.persist-during-build"])
+                .unwrap();
+        apply_tempo_cli_overrides(&mut cli).unwrap();
+        let Commands::Node(node_cmd) = cli.command else {
+            panic!("expected node command");
+        };
+        assert!(node_cmd.ext.node_args.engine_persist_during_build);
+        assert!(!node_cmd.engine.suppress_persistence_during_build);
 
         let cli = TempoCli::try_parse_from([
             "tempo",
