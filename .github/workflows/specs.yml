@@ -9,6 +9,7 @@ on:
       - "Cargo.lock"
       - "Cargo.toml"
       - "crates/**/Cargo.toml"
+      - "tips/tip-1061.md"
       - "tips/verify/**"
       - "crates/contracts/**"
       - "crates/precompiles/**"
@@ -43,6 +44,7 @@ jobs:
         with:
           filters: |
             specs:
+              - 'tips/tip-1061.md'
               - 'tips/verify/**'
               - 'crates/contracts/**'
               - '!crates/contracts/CHANGELOG.md'
@@ -181,7 +183,10 @@ jobs:
       - name: Install Foundry
         uses: foundry-rs/foundry-toolchain@908c540300062bd5a7e473851cdb4282204cee09 # v1.9.1
         with:
-          version: nightly
+          version: nightly-423ac0d4080830fd2ec6ea52175b323a095973e9
+
+      - name: Verify TIP-1061 recovery artifacts
+        run: tips/verify/gen_recovery_init_code_hash.sh --check
 
       - name: Run Forge build
         working-directory: tips/verify
