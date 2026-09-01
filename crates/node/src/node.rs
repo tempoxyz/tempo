@@ -97,6 +97,17 @@ pub struct TempoNodeArgs {
     )]
     pub engine_disable_execution_cache_sharing_with_builder: bool,
 
+    /// Disable sharing the sparse trie with the payload builder.
+    #[arg(
+        long = "engine.disable-sparse-trie-sharing-with-payload-builder",
+        default_value_t = false
+    )]
+    pub engine_disable_sparse_trie_sharing_with_payload_builder: bool,
+
+    /// Allow persistence I/O while the payload builder is active.
+    #[arg(long = "engine.persist-during-build", default_value_t = false)]
+    pub engine_persist_during_build: bool,
+
     /// Initial estimate of total replayable payload build work divided by work
     /// at transaction cutoff.
     ///
@@ -119,6 +130,8 @@ impl Default for TempoNodeArgs {
             builder_enable_prewarming: true,
             builder_parallel: false,
             engine_disable_execution_cache_sharing_with_builder: false,
+            engine_disable_sparse_trie_sharing_with_payload_builder: false,
+            engine_persist_during_build: false,
             builder_build_time_multiplier: DEFAULT_BUILD_TIME_MULTIPLIER,
         }
     }

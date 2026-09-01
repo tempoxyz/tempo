@@ -607,6 +607,76 @@ def taskset-command [cmd: list<string>, cpus: string] {
     }
 }
 
+def e2e-arg-value [args: list<string>, name: string] {
+    let prefix = $"--($name)="
+    for arg in $args {
+        if ($arg starts-with $prefix) {
+            return ($arg | split row "=" | skip 1 | str join "=")
+        }
+    }
+    ""
+}
+
+def numactl-command [cmd: list<string>, policy: string] {
+    if $policy == "" {
+        return $cmd
+    }
+    if (which numactl | is-empty) {
+        error make { msg: $"numactl is required for E2E NUMA policy '($policy)'" }
+    }
+    let numactl_args = if $policy == "interleave" {
+        ["--interleave=all"]
+    } else if ($policy starts-with "membind:") {
+        [ $"--membind=(($policy | split row ':' | skip 1 | str join ':'))" ]
+    } else if ($policy starts-with "preferred:") {
+        [ $"--preferred=(($policy | split row ':' | skip 1 | str join ':'))" ]
+    } else {
+        error make { msg: $"unsupported E2E NUMA policy '($policy)'; use interleave, membind:N, or preferred:N" }
+    }
+    ["numactl" ...$numactl_args ...$cmd]
+}
+
+def print-e2e-topology [] {
+    if (^uname | str trim) != "Linux" {
+        return
+    }
+
+    print "=== E2E NUMA and NVMe topology ==="
+    let numactl = (run-external "numactl" "--hardware" | complete)
+    if $numactl.stdout != "" { print $numactl.stdout }
+    if $numactl.stderr != "" { print $numactl.stderr }
+
+    for datadir in [$E2E_A_MOUNT $E2E_B_MOUNT] {
+        let mount = (run-external "findmnt" "-T" $datadir "-no" "SOURCE" | complete)
+        if $mount.stdout != "" {
+            let source = ($mount.stdout | str trim)
+            print $"($datadir) -> ($source)"
+            let devices = (run-external "lsblk" "-s" "-o" "NAME,KNAME,PKNAME,PATH,TYPE,MODEL" $source | complete)
+            if $devices.stdout != "" { print $devices.stdout }
+            if $devices.stderr != "" { print $devices.stderr }
+        }
+        if $mount.stderr != "" { print $mount.stderr }
+    }
+
+    let irq_script = 'set +e
+for sysdev in /sys/class/block/nvme*n1; do
+    [ -e "$sysdev" ] || continue
+    dev="${sysdev##*/}"
+    node="unknown"
+    [ -r "$sysdev/device/numa_node" ] && node=$(cat "$sysdev/device/numa_node")
+    affinities=$(for irq in "$sysdev"/device/msi_irqs/*; do
+        [ -e "$irq" ] || continue
+        irq_no="${irq##*/}"
+        [ -r "/proc/irq/$irq_no/smp_affinity_list" ] && cat "/proc/irq/$irq_no/smp_affinity_list"
+    done | sort -u | paste -sd, -)
+    printf "%s numa_node=%s irq_affinity=%s\\n" "$dev" "$node" "${affinities:-none}"
+done'
+    let irq = (run-external "bash" "-lc" $irq_script | complete)
+    if $irq.stdout != "" { print $irq.stdout }
+    if $irq.stderr != "" { print $irq.stderr }
+    print "=== End E2E NUMA and NVMe topology ==="
+}
+
 def start-e2e-local-node [
     role: string,
     phase: string,
@@ -620,13 +690,15 @@ def start-e2e-local-node [
     results_dir: string,
     cpus: string,
     memory: string,
+    numa_policy: string,
 ] {
     let profile_label = $"($phase)-($role)"
     let full_samply_args = if $samply {
         $samply_args | append ["--save-only" "--presymbolicate" "--output" $"($results_dir)/profile-($profile_label).json.gz"]
     } else { [] }
     let pinned_cmd = taskset-command [$tempo_bin ...$args] $cpus
-    let node_cmd = wrap-samply $pinned_cmd $samply $full_samply_args
+    let placed_cmd = numactl-command $pinned_cmd $numa_policy
+    let node_cmd = wrap-samply $placed_cmd $samply $full_samply_args
     let node_cmd_str = ($node_cmd | str join " ")
     let script = $"($env_prefix)($otel_attrs)($tracy_env_prefix)($node_cmd_str) 2>&1"
     let unit_phase = ($phase | str replace -a "_" "-" | str replace -a "." "-")
@@ -1002,7 +1074,13 @@ def run-local-e2e-phase [run: record, ctx: record] {
     let hardfork = ($run | get -o hardfork | default "")
     let side_args = if $run_type == "baseline" { $ctx.baseline_args } else { $ctx.feature_args }
     let side_env = if $run_type == "baseline" { $ctx.baseline_env } else { $ctx.feature_env }
-    let extra_args = (parse-cli-args $side_args)
+    let raw_extra_args = (parse-cli-args $side_args)
+    let numa_policy = e2e-arg-value $raw_extra_args "bench-e2e-numa"
+    let numa_policy_a_override = e2e-arg-value $raw_extra_args "bench-e2e-numa-a"
+    let numa_policy_b_override = e2e-arg-value $raw_extra_args "bench-e2e-numa-b"
+    let numa_policy_a = if $numa_policy_a_override != "" { $numa_policy_a_override } else { $numa_policy }
+    let numa_policy_b = if $numa_policy_b_override != "" { $numa_policy_b_override } else { $numa_policy }
+    let extra_args = ($raw_extra_args | where { |arg| not ($arg starts-with "--bench-e2e-numa") })
     let local_reth_args = if $run_type == "baseline" { $ctx.baseline_local_reth_args } else { $ctx.feature_local_reth_args }
 
     cleanup-local-e2e-processes
@@ -1081,11 +1159,14 @@ def run-local-e2e-phase [run: record, ctx: record] {
     let a_otel = $"OTEL_RESOURCE_ATTRIBUTES=benchmark_id=($ctx.benchmark_id),benchmark_run=($phase),runner_role=a,run_type=($run_type),git_ref=($run.ref),reference_epoch=($ctx.reference_epoch) "
     let b_otel = $"OTEL_RESOURCE_ATTRIBUTES=benchmark_id=($ctx.benchmark_id),benchmark_run=($phase),runner_role=b,run_type=($run_type),git_ref=($run.ref),reference_epoch=($ctx.reference_epoch) "
 
+    print-e2e-topology
+    print $"E2E NUMA policies for ($phase): a='($numa_policy_a)' b='($numa_policy_b)'"
+
     mark-schelk-dirty-at $ctx.a.state_path
     mark-schelk-dirty-at $ctx.b.state_path
 
-    start-e2e-local-node a $phase $run.tempo $a_args $env_prefix $a_otel $tracy_env_prefix $ctx.samply $ctx.samply_args $ctx.results_dir $ctx.a.cpus $ctx.a.memory
-    start-e2e-local-node b $phase $run.tempo $b_args $env_prefix $b_otel "" $ctx.samply $ctx.samply_args $ctx.results_dir $ctx.b.cpus $ctx.b.memory
+    start-e2e-local-node a $phase $run.tempo $a_args $env_prefix $a_otel $tracy_env_prefix $ctx.samply $ctx.samply_args $ctx.results_dir $ctx.a.cpus $ctx.a.memory $numa_policy_a
+    start-e2e-local-node b $phase $run.tempo $b_args $env_prefix $b_otel "" $ctx.samply $ctx.samply_args $ctx.results_dir $ctx.b.cpus $ctx.b.memory $numa_policy_b
 
     sleep 2sec
     let rpc_timeout = if $ctx.bloat > 0 { 600 } else { 300 }
