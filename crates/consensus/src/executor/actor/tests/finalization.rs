@@ -110,6 +110,37 @@ fn finalized_blocks_are_acknowledged_through_persisted_height() {
 }
 
 #[test_traced]
+fn finalized_block_is_not_acknowledged_until_its_digest_is_persisted() {
+    deterministic::Runner::default().start(|context| async move {
+        let mut h = Harness::start_at_genesis(&context);
+        h.execution.persist_forkchoice_updates(false);
+
+        let block = make_block(1, 1, GENESIS);
+        let digest = block.digest();
+        let abandoned_digest = make_block(9, 1, GENESIS).digest();
+        h.deliver_tip(round(1), 1, digest);
+        let waiter = h.deliver_finalized(block);
+        futures::pin_mut!(waiter);
+
+        h.wait_until(|| h.execution.finalized() == Some((1, digest)))
+            .await;
+        h.execution.set_persisted_block_hash(1, abandoned_digest);
+        h.deliver_tip(round(1), 1, digest);
+        h.run_for(std::time::Duration::from_millis(1)).await;
+        assert!(
+            futures::poll!(&mut waiter).is_pending(),
+            "persisting a different block at the same height must not resolve the ACK"
+        );
+
+        h.execution.set_persisted_block_hash(1, digest);
+        h.deliver_tip(round(1), 1, digest);
+        waiter
+            .await
+            .expect("the finalized block's persisted digest should resolve the ACK");
+    });
+}
+
+#[test_traced]
 fn syncing_finalized_block_is_fatal() {
     deterministic::Runner::default().start(|context| async move {
         let mut h = Harness::start_at_genesis(&context);

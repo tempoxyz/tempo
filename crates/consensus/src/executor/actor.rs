@@ -517,6 +517,28 @@ where
             .front()
             .is_some_and(|acknowledgment| acknowledgment.height.get() <= persisted_height)
         {
+            let acknowledgment = self
+                .pending_finalization_acknowledgments
+                .front()
+                .expect("front was present");
+            let persisted_digest = self
+                .execution_node
+                .persisted_block_hash(acknowledgment.height.get())
+                .wrap_err_with(|| {
+                    format!(
+                        "failed reading persisted execution block hash at height `{}`",
+                        acknowledgment.height
+                    )
+                })?;
+            if persisted_digest != Some(acknowledgment.digest.0) {
+                debug!(
+                    height = %acknowledgment.height,
+                    expected_digest = %acknowledgment.digest,
+                    ?persisted_digest,
+                    "persisted execution block does not match finalized block"
+                );
+                break;
+            }
             self.pending_finalization_acknowledgments
                 .pop_front()
                 .expect("front was present")
@@ -954,6 +976,7 @@ struct FinalizedBlockRequest {
 #[derive(Debug)]
 struct FinalizationAcknowledgment {
     height: Height,
+    digest: Digest,
     acknowledgment: Exact,
 }
 
@@ -1725,6 +1748,7 @@ async fn forward_finalized(
 
     let consensus_context = block.header().consensus_context;
     let height = block.height();
+    let digest = block.digest();
 
     let (execution_block, block_access_list) = (*block).clone().into_parts();
     let payload_status = execution_node
@@ -1766,6 +1790,7 @@ async fn forward_finalized(
         target,
         FinalizationAcknowledgment {
             height,
+            digest,
             acknowledgment,
         },
     ))

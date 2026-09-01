@@ -162,6 +162,9 @@ struct ElState {
     /// The canonical index: height -> hash, derived from accepted
     /// forkchoice updates (plus seeded history).
     canonical: BTreeMap<u64, B256>,
+    /// Blocks written to the fake database, independently of the in-memory
+    /// canonical index.
+    persisted: BTreeMap<u64, B256>,
     head: B256,
     finalized: Option<BlockNumHash>,
 }
@@ -311,6 +314,7 @@ impl FakeExecution {
                 state: Mutex::new(ElState {
                     blocks: HashMap::from([(genesis, (0, B256::ZERO))]),
                     canonical: BTreeMap::from([(0, genesis)]),
+                    persisted: BTreeMap::from([(0, genesis)]),
                     head: genesis,
                     finalized: None,
                 }),
@@ -357,9 +361,23 @@ impl FakeExecution {
     }
 
     pub(super) fn set_persisted_block_number(&self, height: u64) {
+        let mut state = self.inner.state.lock();
+        let persisted = state
+            .canonical
+            .range(..=height)
+            .map(|(&height, &digest)| (height, digest))
+            .collect::<Vec<_>>();
+        state.persisted.extend(persisted);
         self.inner
             .persisted_block_number
             .store(height, Ordering::SeqCst);
+    }
+
+    pub(super) fn set_persisted_block_hash(&self, height: u64, digest: Digest) {
+        self.inner.state.lock().persisted.insert(height, digest.0);
+        self.inner
+            .persisted_block_number
+            .fetch_max(height, Ordering::SeqCst);
     }
 
     pub(super) fn persist_forkchoice_updates(&self, persist: bool) {
@@ -590,6 +608,12 @@ impl FakeExecution {
                 fcu.finalized_block_hash,
             ));
             if self.inner.persist_forkchoice_updates.load(Ordering::SeqCst) {
+                let persisted = state
+                    .canonical
+                    .range(..=finalized_height)
+                    .map(|(&height, &digest)| (height, digest))
+                    .collect::<Vec<_>>();
+                state.persisted.extend(persisted);
                 self.inner
                     .persisted_block_number
                     .fetch_max(finalized_height, Ordering::SeqCst);
@@ -624,6 +648,10 @@ impl ExecutionLayer for FakeExecution {
 
     fn persisted_block_number(&self) -> eyre::Result<u64> {
         Ok(self.inner.persisted_block_number.load(Ordering::SeqCst))
+    }
+
+    fn persisted_block_hash(&self, height: u64) -> eyre::Result<Option<B256>> {
+        Ok(self.inner.state.lock().persisted.get(&height).copied())
     }
 
     fn genesis_hash(&self) -> B256 {
