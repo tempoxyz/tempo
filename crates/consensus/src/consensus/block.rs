@@ -18,6 +18,7 @@ use commonware_cryptography::{
     Committable, Digestible, Signer as _,
     ed25519::{PrivateKey, PublicKey},
 };
+use reth_consensus_common::validation::validate_body_against_header;
 use reth_primitives_traits::{SealedBlock, SealedOrRecoveredBlock};
 use std::fmt::Display;
 use tempo_payload_types::EncodedBlock;
@@ -293,6 +294,13 @@ impl Read for Block {
             commonware_codec::Error::Wrapped("reading RLP encoded block", rlp_err.into())
         })?;
 
+        validate_body_against_header(inner.body(), inner.header()).map_err(|error| {
+            commonware_codec::Error::Wrapped(
+                "validating execution block body against header",
+                error.into(),
+            )
+        })?;
+
         #[cfg(feature = "bal")]
         let block_access_list = {
             if inner.block_access_list_hash().is_some() {
@@ -430,6 +438,7 @@ fn validate_block_access_list_hash(
 mod tests {
     #[cfg(feature = "bal")]
     use alloy_consensus::BlockHeader as _;
+    use alloy_consensus::{BlockBody, EMPTY_ROOT_HASH};
     use alloy_primitives::{B256, bytes, keccak256};
     #[cfg(not(feature = "bal"))]
     use commonware_codec::Write as _;
@@ -448,7 +457,7 @@ mod tests {
             header: TempoHeader {
                 inner: alloy_consensus::Header {
                     base_fee_per_gas: Some(0),
-                    withdrawals_root: Some(B256::ZERO),
+                    withdrawals_root: Some(EMPTY_ROOT_HASH),
                     blob_gas_used: Some(0),
                     excess_blob_gas: Some(0),
                     parent_beacon_block_root: Some(B256::ZERO),
@@ -458,7 +467,10 @@ mod tests {
                 },
                 ..Default::default()
             },
-            body: Default::default(),
+            body: BlockBody {
+                withdrawals: Some(Default::default()),
+                ..Default::default()
+            },
         })
     }
 
@@ -488,7 +500,7 @@ mod tests {
                     gas_limit: 30_000_000,
                     timestamp: 1_700_000_000,
                     base_fee_per_gas: Some(1_000_000_000),
-                    withdrawals_root: Some(B256::ZERO),
+                    withdrawals_root: Some(EMPTY_ROOT_HASH),
                     blob_gas_used: Some(0),
                     excess_blob_gas: Some(0),
                     parent_beacon_block_root: Some(B256::ZERO),
@@ -497,7 +509,10 @@ mod tests {
                 },
                 ..Default::default()
             },
-            body: Default::default(),
+            body: BlockBody {
+                withdrawals: Some(Default::default()),
+                ..Default::default()
+            },
         });
         let expected = Block::from_execution_block(execution_block.clone(), None)
             .expect("block has no BAL side data");
@@ -511,6 +526,43 @@ mod tests {
         let encoded = decoded.encode();
 
         assert_eq!(encoded.as_ref(), block_bytes.as_slice());
+    }
+
+    #[test]
+    fn read_rejects_execution_body_that_does_not_match_header() {
+        let execution_block = SealedBlock::seal_slow(TempoBlock {
+            header: TempoHeader {
+                inner: alloy_consensus::Header {
+                    base_fee_per_gas: Some(0),
+                    withdrawals_root: Some(B256::ZERO),
+                    blob_gas_used: Some(0),
+                    excess_blob_gas: Some(0),
+                    parent_beacon_block_root: Some(B256::ZERO),
+                    requests_hash: Some(B256::ZERO),
+                    ..Default::default()
+                },
+                ..Default::default()
+            },
+            body: BlockBody {
+                withdrawals: Some(Default::default()),
+                ..Default::default()
+            },
+        });
+        let mut encoded = Vec::new();
+        alloy_rlp::Encodable::encode(&execution_block, &mut encoded);
+
+        let err = Block::read_cfg(&mut encoded.as_slice(), &()).unwrap_err();
+
+        assert!(
+            matches!(
+                err,
+                commonware_codec::Error::Wrapped(
+                    "validating execution block body against header",
+                    _
+                )
+            ),
+            "unexpected error: {err:?}"
+        );
     }
 
     #[cfg(not(feature = "bal"))]
