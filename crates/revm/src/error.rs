@@ -9,6 +9,7 @@ use tempo_primitives::transaction::{KeyAuthorizationChainIdError, KeychainVersio
 ///
 /// This enum extends the standard Ethereum [`InvalidTransaction`] with Tempo-specific
 /// validation errors that occur during transaction processing.
+#[non_exhaustive]
 #[derive(Debug, Clone, PartialEq, Eq, Hash, thiserror::Error)]
 pub enum TempoInvalidTransaction {
     /// Standard Ethereum transaction validation error.
@@ -236,6 +237,10 @@ pub enum TempoInvalidTransaction {
     #[error("keychain operations are not supported in subblock transactions")]
     KeychainOpInSubblockTransaction,
 
+    /// Native multisig transactions are not active.
+    #[error("native multisig transactions are not active")]
+    NativeMultisigNotActive,
+
     /// Fee payment error.
     #[error(transparent)]
     CollectFeePreTx(#[from] FeePaymentError),
@@ -325,6 +330,7 @@ impl TempoInvalidTransaction {
             | Self::AccessKeyExpiryInPast { .. }
             | Self::KeychainPrecompileError { .. }
             | Self::KeychainValidationFailed { .. }
+            | Self::NativeMultisigNotActive
             | Self::CollectFeePreTx(_)
             | Self::NonceManagerError(_)
             | Self::V2KeychainBeforeActivation => false,

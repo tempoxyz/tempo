@@ -80,7 +80,13 @@ impl TempoSignedAuthorization {
     /// # Note
     ///
     /// Implementers should check that the authority has no code.
+    /// Native multisig signatures are not valid in EIP-7702 authorization lists and cannot be
+    /// authenticated by this stateless recovery API.
     pub fn recover_authority(&self) -> Result<Address, alloy_consensus::crypto::RecoveryError> {
+        if self.signature.is_multisig() {
+            return Err(alloy_consensus::crypto::RecoveryError::new());
+        }
+
         let sig_hash = self.signature_hash();
         self.signature.recover_signer(&sig_hash)
     }
@@ -309,7 +315,7 @@ impl AuthorizationTr for RecoveredTempoAuthorization {
 #[cfg(test)]
 pub mod tests {
     use super::*;
-    use crate::TempoSignature;
+    use crate::{TempoSignature, transaction::MultisigSignature};
     use alloy_primitives::{U256, address};
     use alloy_signer::SignerSync;
     use alloy_signer_local::PrivateKeySigner;
@@ -448,5 +454,37 @@ pub mod tests {
         let bad_lazy = RecoveredTempoAuthorization::new(bad_signed);
         assert!(bad_lazy.authority().is_some());
         assert_ne!(bad_lazy.authority().unwrap(), expected_address);
+    }
+
+    #[test]
+    fn test_multisig_cannot_recover_eip7702_authority() {
+        let claimed_account = Address::random();
+        let config = crate::transaction::MultisigConfig {
+            salt: B256::ZERO,
+            version: 1,
+            threshold: 1,
+            owners: vec![crate::transaction::MultisigOwner {
+                owner: Address::repeat_byte(0x11),
+                weight: 1,
+            }],
+        };
+        let auth = Authorization {
+            chain_id: U256::ONE,
+            address: Address::random(),
+            nonce: 1,
+        };
+        let signature = TempoSignature::Multisig(
+            MultisigSignature::try_new(claimed_account, config, vec![TempoSignature::default()])
+                .unwrap(),
+        );
+        let signed = TempoSignedAuthorization::new_unchecked(auth, signature);
+
+        assert!(signed.recover_authority().is_err());
+        assert!(signed.clone().into_recovered().authority().is_none());
+        assert!(
+            RecoveredTempoAuthorization::new(signed)
+                .authority()
+                .is_none()
+        );
     }
 }
