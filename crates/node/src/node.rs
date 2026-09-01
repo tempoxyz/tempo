@@ -50,7 +50,7 @@ use tempo_payload_builder::{
 use tempo_payload_types::TempoPayloadAttributes;
 use tempo_primitives::{TempoHeader, TempoPrimitives, TempoTxEnvelope, TempoTxType};
 use tempo_transaction_pool::{
-    AA2dPool, AA2dPoolConfig, TempoTransactionPool,
+    AA2dPool, AA2dPoolConfig, AddressFilter, TempoTransactionPool,
     amm::AmmLiquidityCache,
     ordering::TempoTipOrdering,
     transaction::TempoPooledTransaction,
@@ -64,7 +64,7 @@ use tempo_transaction_pool::{
 pub const BLOCK_GAS_LIMIT_500M: u64 = 500_000_000;
 
 /// Tempo node CLI arguments.
-#[derive(Debug, Clone, Copy, PartialEq, clap::Args)]
+#[derive(Debug, Clone, PartialEq, clap::Args)]
 pub struct TempoNodeArgs {
     /// Maximum allowed `valid_after` offset for AA txs.
     #[arg(long = "txpool.aa-valid-after-max-secs", default_value_t = DEFAULT_AA_VALID_AFTER_MAX_SECS)]
@@ -73,6 +73,15 @@ pub struct TempoNodeArgs {
     /// Maximum number of authorizations allowed in an AA transaction.
     #[arg(long = "txpool.max-tempo-authorizations", default_value_t = DEFAULT_MAX_TEMPO_AUTHORIZATIONS)]
     pub max_tempo_authorizations: usize,
+
+    /// Comma-separated addresses or a file containing comma/newline-separated addresses used for
+    /// transaction sender and direct call target checks.
+    #[arg(
+        long = "txpool.filter",
+        value_name = "ADDRESSES_OR_FILE",
+        value_parser = parse_address_filter
+    )]
+    pub txpool_filter: Option<AddressFilter>,
 
     /// Enable state provider metrics for the payload builder.
     #[arg(long = "builder.state-provider-metrics", default_value_t = false)]
@@ -114,6 +123,7 @@ impl Default for TempoNodeArgs {
         Self {
             aa_valid_after_max_secs: DEFAULT_AA_VALID_AFTER_MAX_SECS,
             max_tempo_authorizations: DEFAULT_MAX_TEMPO_AUTHORIZATIONS,
+            txpool_filter: None,
             builder_state_provider_metrics: false,
             builder_disable_prewarming: false,
             builder_enable_prewarming: true,
@@ -130,6 +140,7 @@ impl TempoNodeArgs {
         TempoPoolBuilder {
             aa_valid_after_max_secs: self.aa_valid_after_max_secs,
             max_tempo_authorizations: self.max_tempo_authorizations,
+            address_filter: self.txpool_filter.clone().unwrap_or_default(),
             ..Default::default()
         }
     }
@@ -583,6 +594,8 @@ pub struct TempoPoolBuilder {
     pub max_tempo_authorizations: usize,
     /// Whether to skip the FeeAMM liquidity check during pool admission.
     pub disable_fee_amm_check: bool,
+    /// Addresses checked against transaction senders and direct call targets.
+    pub address_filter: AddressFilter,
     /// Optional additional stateless validation check forwarded to the inner ETH validator.
     pub additional_stateless_validation: Option<StatelessValidationFn<TempoPooledTransaction>>,
     /// Optional additional stateful validation check forwarded to the inner ETH validator.
@@ -605,6 +618,12 @@ impl TempoPoolBuilder {
     /// Configures whether to disable the FeeAMM liquidity check during pool admission.
     pub const fn with_disable_fee_amm_check(mut self, disable: bool) -> Self {
         self.disable_fee_amm_check = disable;
+        self
+    }
+
+    /// Configures transaction sender and direct call target checks.
+    pub fn with_address_filter(mut self, address_filter: AddressFilter) -> Self {
+        self.address_filter = address_filter;
         self
     }
 
@@ -683,6 +702,7 @@ impl core::fmt::Debug for TempoPoolBuilder {
             .field("aa_valid_after_max_secs", &self.aa_valid_after_max_secs)
             .field("max_tempo_authorizations", &self.max_tempo_authorizations)
             .field("disable_fee_amm_check", &self.disable_fee_amm_check)
+            .field("address_filter", &self.address_filter)
             .field(
                 "additional_stateless_validation",
                 &self.additional_stateless_validation.as_ref().map(|_| "..."),
@@ -701,6 +721,7 @@ impl Default for TempoPoolBuilder {
             aa_valid_after_max_secs: DEFAULT_AA_VALID_AFTER_MAX_SECS,
             max_tempo_authorizations: DEFAULT_MAX_TEMPO_AUTHORIZATIONS,
             disable_fee_amm_check: false,
+            address_filter: AddressFilter::default(),
             additional_stateless_validation: None,
             additional_stateful_validation: None,
         }
@@ -750,6 +771,7 @@ where
             aa_valid_after_max_secs,
             max_tempo_authorizations,
             disable_fee_amm_check,
+            address_filter,
             additional_stateless_validation,
             additional_stateful_validation,
         } = self;
@@ -763,6 +785,7 @@ where
                 amm_liquidity_cache.clone(),
             )
             .with_disable_fee_amm_check(disable_fee_amm_check)
+            .with_address_filter(address_filter.clone())
         });
         let protocol_pool = Pool::new(
             validator,
@@ -856,9 +879,30 @@ where
     }
 }
 
+/// Parses `value` as an address list, falling back to reading it as a file.
+fn parse_address_filter(value: &str) -> Result<AddressFilter, String> {
+    match value.parse::<AddressFilter>() {
+        Ok(filter) => Ok(filter),
+        Err(list_error) => {
+            let contents = std::fs::read_to_string(value).map_err(|file_error| {
+                format!(
+                    "invalid address list ({list_error}); failed to read `{value}` as a file: {file_error}"
+                )
+            })?;
+
+            contents
+                .parse::<AddressFilter>()
+                .map_err(|error| format!("invalid address list in `{value}`: {error}"))
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
-    use super::{TempoNode, TempoNodeArgs, TempoPayloadBuilderBuilder, TempoPoolBuilder};
+    use super::{
+        AddressFilter, TempoNode, TempoNodeArgs, TempoPayloadBuilderBuilder, TempoPoolBuilder,
+    };
+    use alloy_primitives::Address;
 
     #[test]
     fn tempo_node_maps_pool_builder() {
@@ -881,6 +925,21 @@ mod tests {
             TempoNode::default().map_pool_builder(|pool| pool.with_disable_fee_amm_check(true));
 
         assert!(node.pool_builder.disable_fee_amm_check);
+    }
+
+    #[test]
+    fn tempo_node_configures_address_filter() {
+        let address = Address::with_last_byte(1);
+        let node = TempoNode::new(
+            &TempoNodeArgs {
+                txpool_filter: Some(AddressFilter::new([address])),
+                ..Default::default()
+            },
+            None,
+        );
+
+        assert_eq!(node.pool_builder.address_filter.len(), 1);
+        assert!(node.pool_builder.address_filter.contains(&address));
     }
 
     #[test]

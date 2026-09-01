@@ -23,8 +23,9 @@ use reth_storage_api::{
     errors::{ProviderError, ProviderResult},
 };
 use reth_trie::{
-    AccountProof, HashedPostState, HashedStorage, MultiProof, MultiProofTargets, StorageMultiProof,
-    StorageProof, TrieInput, updates::TrieUpdates,
+    AccountProof, DecodedMultiProofV2, HashedPostState, HashedStorage, MultiProof,
+    MultiProofTargets, MultiProofTargetsV2, StorageMultiProof, StorageProof, TrieInput,
+    updates::TrieUpdates,
 };
 use revm::{
     context::{BlockEnv, CfgEnv},
@@ -191,6 +192,13 @@ impl StateProofProvider for InMemoryStateProvider {
         _input: TrieInput,
         _targets: MultiProofTargets,
     ) -> ProviderResult<MultiProof> {
+        Err(ProviderError::UnsupportedProvider)
+    }
+    fn multiproof_v2(
+        &self,
+        _input: TrieInput,
+        _targets: MultiProofTargetsV2,
+    ) -> ProviderResult<DecodedMultiProofV2> {
         Err(ProviderError::UnsupportedProvider)
     }
     fn witness(

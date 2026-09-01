@@ -20,6 +20,9 @@ invariant = { runs = 10, depth = 50, fail_on_revert = true, show_solidity = true
 
 [profile.next]
 hardfork = "tempo:T11"
+# These suites exercise the direct authorization selectors removed in T11.
+# They continue to run under the default T10 profile.
+no_match_contract = "^AccountKeychain(Test|InvariantTest)$"
 
 [profile.fuzz500]
 invariant = { runs = 500, depth = 500, fail_on_revert = true, show_solidity = true }

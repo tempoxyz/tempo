@@ -299,7 +299,7 @@ pub fn add_errors_to_registry<T: SolInterface>(
         registry.insert(
             selector.into(),
             Box::new(move |data: &[u8]| {
-                T::abi_decode(data)
+                T::abi_decode_with_config(data, crate::dispatch::abi_decoder_config())
                     .ok()
                     .map(|error| DecodedTempoPrecompileError {
                         error: converter(error),

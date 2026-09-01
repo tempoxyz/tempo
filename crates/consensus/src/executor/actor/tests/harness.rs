@@ -31,7 +31,7 @@ use commonware_consensus::{
     simplex::types::Context,
     types::{Epoch, Height, Round, View},
 };
-use commonware_runtime::{Clock, Handle, Metrics, Pacer, Spawner, deterministic};
+use commonware_runtime::{Clock, Handle, Metrics, Spawner, deterministic};
 use commonware_utils::{Acknowledgement as _, acknowledgement::Exact};
 use eyre::{Report, WrapErr as _};
 use parking_lot::Mutex;
@@ -129,6 +129,16 @@ pub(super) enum ElCall {
     Resolve(PayloadId),
 }
 
+/// The ordinary FCU sent when a genesis-only fake has no finalized marker.
+/// Zero is the Engine API's "unset" sentinel for safe/finalized, not the head.
+pub(super) const STARTUP_FCU: (Digest, Digest, bool) = (GENESIS, Digest(B256::ZERO), false);
+
+pub(super) const STARTUP_FCU_CALL: ElCall = ElCall::Fcu {
+    head: GENESIS,
+    finalized: Digest(B256::ZERO),
+    with_attrs: false,
+};
+
 /// Test constructor for the executor's forkchoice-state convention.
 pub(super) trait ForkchoiceStateExt {
     /// Constructs a state from its `(finalized, head)` pair, setting safe to
@@ -156,14 +166,31 @@ struct ElState {
     finalized: Option<BlockNumHash>,
 }
 
-type ScriptedResult<T> = Result<T, &'static str>;
-type ScriptedSequence<T> = VecDeque<ScriptedResult<T>>;
+enum ScriptedResult<T> {
+    Immediate(Result<T, &'static str>),
+    Delayed {
+        response: Result<T, &'static str>,
+        release: oneshot::Receiver<()>,
+    },
+}
 
-struct ScriptedResults<K, T>(Mutex<Vec<(K, ScriptedSequence<T>)>>);
+impl<T> ScriptedResult<T> {
+    async fn resolve(self) -> Result<T, &'static str> {
+        match self {
+            Self::Immediate(result) => result,
+            Self::Delayed { response, release } => match release.await {
+                Ok(()) => response,
+                Err(_) => Err("delayed scripted result sender was dropped"),
+            },
+        }
+    }
+}
+
+struct ScriptedResults<K, T>(Mutex<Vec<(K, VecDeque<T>)>>);
 
 enum NextScriptedResult<T> {
     Unscripted,
-    Scripted(Result<T, &'static str>),
+    Scripted(T),
     Exhausted,
 }
 
@@ -175,7 +202,7 @@ where
         Self(Mutex::new(Vec::new()))
     }
 
-    fn push(&self, key: K, result: Result<T, &'static str>) {
+    fn push(&self, key: K, result: T) {
         let mut scripts = self.0.lock();
         if let Some((_, results)) = scripts.iter_mut().find(|(existing, _)| existing == &key) {
             results.push_back(result);
@@ -184,18 +211,7 @@ where
         }
     }
 
-    fn script(&self, key: K, results: impl IntoIterator<Item = Result<T, &'static str>>) {
-        let results = results.into_iter().collect::<VecDeque<_>>();
-        assert!(!results.is_empty(), "a scripted sequence must not be empty");
-        let mut scripts = self.0.lock();
-        assert!(
-            !scripts.iter().any(|(existing, _)| existing == &key),
-            "a script must provide the complete sequence in one call",
-        );
-        scripts.push((key, results));
-    }
-
-    fn pop(&self, key: &K) -> Option<Result<T, &'static str>> {
+    fn pop(&self, key: &K) -> Option<T> {
         self.0
             .lock()
             .iter_mut()
@@ -223,7 +239,7 @@ struct FakeExecutionInner {
     /// absent from this map uses the fake's stateful default behavior; a
     /// digest present in it must not receive more calls than scripted.
     /// A scripted `Ok(Valid)` still marks the block as known to the execution layer.
-    payload_overrides: ScriptedResults<B256, PayloadStatusEnum>,
+    payload_overrides: ScriptedResults<B256, ScriptedResult<PayloadStatusEnum>>,
     /// Validator sets received with new-payload requests, keyed by block hash.
     payload_validator_sets: Mutex<Vec<(Digest, Option<Vec<B256>>)>>,
     /// Payload attributes received with forkchoice-update requests.
@@ -231,11 +247,11 @@ struct FakeExecutionInner {
     /// Complete FCU outcome sequences keyed by forkchoice state. An absent
     /// state uses the fake's stateful default; a present state must not receive
     /// more calls than scripted.
-    fcu_overrides: ScriptedResults<ForkchoiceState, PayloadStatusEnum>,
+    fcu_overrides: ScriptedResults<ForkchoiceState, Result<PayloadStatusEnum, &'static str>>,
     /// Scripted canonical-hash lookup outcomes keyed by height.
-    canonical_hash_overrides: ScriptedResults<u64, Option<B256>>,
+    canonical_hash_overrides: ScriptedResults<u64, Result<Option<B256>, &'static str>>,
     /// Scripted block lookup outcomes keyed by digest.
-    block_overrides: ScriptedResults<B256, Option<Block>>,
+    block_overrides: ScriptedResults<B256, Result<Option<Block>, &'static str>>,
     /// Rejects every FCU while set.
     reject_all_fcus: AtomicBool,
     /// Accepts attribute-carrying FCUs without registering a payload build.
@@ -342,10 +358,9 @@ impl FakeExecution {
 
     // ---- fault injection ----
 
-    /// Scripts the complete sequence of new-payload outcomes for `digest`.
-    /// Each request consumes one outcome in FIFO order; a request beyond the
-    /// supplied sequence fails the test instead of falling back to default
-    /// behavior. The whole sequence must be installed in one call.
+    /// Appends a new-payload response for `digest` to its scripted sequence.
+    /// Requests consume responses in FIFO order; a request beyond the supplied
+    /// responses fails the test instead of falling back to default behavior.
     ///
     /// A digest without a script uses the stateful default: `Valid` if its
     /// parent is known to the fake execution layer, otherwise `Syncing`.
@@ -355,16 +370,32 @@ impl FakeExecution {
     pub(super) fn script_new_payload(
         &self,
         digest: Digest,
-        outcomes: impl IntoIterator<Item = Result<PayloadStatusEnum, &'static str>>,
+        response: Result<PayloadStatusEnum, &'static str>,
     ) {
-        self.inner.payload_overrides.script(digest.0, outcomes);
+        self.inner
+            .payload_overrides
+            .push(digest.0, ScriptedResult::Immediate(response));
     }
 
-    /// Scripts the complete sequence of outcomes for `state`.
-    /// Each matching request consumes one outcome in FIFO order; a matching
-    /// request beyond the supplied sequence fails the test instead of falling
-    /// back to default behavior. Payload attributes do not participate in
-    /// matching; another forkchoice state uses the stateful default.
+    /// Appends a delayed new-payload response for `digest` and returns the
+    /// sender that releases it.
+    pub(super) fn script_delayed_new_payload(
+        &self,
+        digest: Digest,
+        response: Result<PayloadStatusEnum, &'static str>,
+    ) -> oneshot::Sender<()> {
+        let (sender, release) = oneshot::channel();
+        self.inner
+            .payload_overrides
+            .push(digest.0, ScriptedResult::Delayed { response, release });
+        sender
+    }
+
+    /// Appends an FCU response for `state` to its scripted sequence.
+    /// Matching requests consume responses in FIFO order; a request beyond
+    /// the supplied responses fails the test instead of falling back to
+    /// default behavior. Payload attributes do not participate in matching;
+    /// another forkchoice state uses the stateful default.
     ///
     /// The default applies the requested forkchoice state, returning `Valid`
     /// when the head is known and `Syncing` otherwise. A scripted `Ok(Valid)`
@@ -374,9 +405,9 @@ impl FakeExecution {
     pub(super) fn script_fcu(
         &self,
         state: ForkchoiceState,
-        outcomes: impl IntoIterator<Item = Result<PayloadStatusEnum, &'static str>>,
+        response: Result<PayloadStatusEnum, &'static str>,
     ) {
-        self.inner.fcu_overrides.script(state, outcomes);
+        self.inner.fcu_overrides.push(state, response);
     }
 
     /// Scripts the outcome of the next canonical block lookup at `height`.
@@ -415,15 +446,6 @@ impl FakeExecution {
     pub(super) fn omit_payload_job(&self, omit: bool) {
         self.inner.omit_payload_job.store(omit, Ordering::SeqCst);
     }
-
-    // NOTE: the fake deliberately offers no way to hold a new-payload or
-    // FCU response open. The actor paces those futures
-    // (`Pacer::pace`), and the deterministic runtime *blocks* when a paced
-    // future is still pending at its pace deadline - a test-side gate can
-    // then never be released, deadlocking the test. To keep the execution
-    // task slot occupied over a stretch of virtual time, script a SYNCING
-    // payload status instead: the actor's own postpone-retry pause holds
-    // the slot without a pending execution-layer future.
 
     // ---- payload builds ----
 
@@ -557,6 +579,19 @@ impl FakeExecution {
 }
 
 impl ExecutionLayer for FakeExecution {
+    fn current_forkchoice_state(&self) -> eyre::Result<ForkchoiceState> {
+        let state = self.inner.state.lock();
+        eyre::ensure!(state.head != B256::ZERO, "fake has a zero canonical head");
+        let finalized_block_hash = state
+            .finalized
+            .map_or(B256::ZERO, |finalized| finalized.hash);
+        Ok(ForkchoiceState {
+            head_block_hash: state.head,
+            safe_block_hash: finalized_block_hash,
+            finalized_block_hash,
+        })
+    }
+
     fn finalized_num_hash(&self) -> BlockNumHash {
         self.inner
             .state
@@ -603,42 +638,36 @@ impl ExecutionLayer for FakeExecution {
             .payload_validator_sets
             .lock()
             .push((Digest(digest), validator_set));
-
-        let outcome = match self.inner.payload_overrides.next_scripted(&digest) {
-            NextScriptedResult::Scripted(outcome) => outcome,
-            NextScriptedResult::Unscripted => {
-                Ok(if self.inner.state.lock().blocks.contains_key(&parent) {
-                    PayloadStatusEnum::Valid
-                } else {
-                    PayloadStatusEnum::Syncing
-                })
-            }
+        let scripted_result = match self.inner.payload_overrides.next_scripted(&digest) {
+            NextScriptedResult::Scripted(result) => Some(result),
+            NextScriptedResult::Unscripted => None,
             NextScriptedResult::Exhausted => panic!(
                 "new-payload request for `{}` exceeded its scripted outcome sequence",
                 Digest(digest),
             ),
         };
-        let outcome = outcome.map_err(Report::msg).wrap_err_with(|| {
-            format!(
-                "scripted new-payload request failed for `{}`",
-                Digest(digest)
-            )
-        });
-        let result = match outcome {
-            Ok(status) => {
-                if status == PayloadStatusEnum::Valid {
-                    self.inner
-                        .state
-                        .lock()
-                        .blocks
-                        .insert(digest, (height, parent));
-                }
-                Ok(PayloadStatus::from_status(status))
-            }
-            Err(error) => Err(error),
-        };
+        let inner = self.inner.clone();
 
-        async move { result }
+        async move {
+            let outcome = match scripted_result {
+                Some(result) => result.resolve().await,
+                None => Ok(if inner.state.lock().blocks.contains_key(&parent) {
+                    PayloadStatusEnum::Valid
+                } else {
+                    PayloadStatusEnum::Syncing
+                }),
+            };
+            let status = outcome.map_err(Report::msg).wrap_err_with(|| {
+                format!(
+                    "scripted new-payload request failed for `{}`",
+                    Digest(digest)
+                )
+            })?;
+            if status == PayloadStatusEnum::Valid {
+                inner.state.lock().blocks.insert(digest, (height, parent));
+            }
+            Ok(PayloadStatus::from_status(status))
+        }
     }
 
     fn fork_choice_updated(
@@ -960,7 +989,7 @@ impl HarnessBuilder {
 
     pub(super) fn start<TContext>(self, context: &TContext) -> Harness<TContext>
     where
-        TContext: Clock + Metrics + Pacer + Spawner,
+        TContext: Clock + Metrics + Spawner,
     {
         self.try_start(context)
             .expect("executor actor should initialize")
@@ -968,7 +997,7 @@ impl HarnessBuilder {
 
     pub(super) fn try_start<TContext>(self, context: &TContext) -> eyre::Result<Harness<TContext>>
     where
-        TContext: Clock + Metrics + Pacer + Spawner,
+        TContext: Clock + Metrics + Spawner,
     {
         let Self {
             execution,
@@ -1018,7 +1047,7 @@ impl Harness {
 
 impl<TContext> Harness<TContext>
 where
-    TContext: Clock + Metrics + Pacer + Spawner,
+    TContext: Clock + Metrics + Spawner,
 {
     /// Starts the actor on a genesis-only chain: empty fakes, floor and tip
     /// at genesis.
@@ -1136,14 +1165,14 @@ mod scripted_results_tests {
 
     #[test]
     fn absent_and_exhausted_scripts_are_distinct() {
-        let results = ScriptedResults::<u8, u8>::new();
+        let results = ScriptedResults::<u8, Result<u8, &'static str>>::new();
 
         assert!(matches!(
             results.next_scripted(&1),
             NextScriptedResult::Unscripted
         ));
 
-        results.script(1, [Ok(7)]);
+        results.push(1, Ok(7));
         assert!(matches!(
             results.next_scripted(&1),
             NextScriptedResult::Scripted(Ok(7))

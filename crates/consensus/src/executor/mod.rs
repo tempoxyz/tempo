@@ -8,7 +8,7 @@ use commonware_consensus::{
     types::{Height, Round},
 };
 use commonware_cryptography::ed25519::PublicKey;
-use commonware_runtime::{Clock, Metrics, Pacer, Spawner};
+use commonware_runtime::{Clock, Metrics, Spawner};
 use reth_ethereum::{chainspec::EthChainSpec as _, rpc::eth::primitives::BlockNumHash};
 use reth_node_builder::PayloadKind;
 use reth_provider::{BlockHashReader as _, BlockReader as _, BlockSource};
@@ -37,6 +37,38 @@ use crate::consensus::{Digest, block::Block};
 /// Implementations are cheap-clone handles: clones are moved into the
 /// actor's spawned execution tasks.
 pub(crate) trait ExecutionLayer: Clone + Send + Sync + 'static {
+    /// The execution layer's current canonical forkchoice state.
+    ///
+    /// The head must be nonzero. The Engine API reserves zero as the
+    /// "unset" sentinel for the safe and finalized hashes only.
+    fn current_forkchoice_state(&self) -> eyre::Result<ForkchoiceState>;
+
+    /// Reaffirms the execution layer's own current head, safe block, and finalized block through a
+    /// forkchoice update without changing its canonical state, returning whether it was accepted.
+    fn is_ready(&self) -> impl Future<Output = eyre::Result<bool>> + Send + 'static {
+        // Carries the actual implementation so that we can instrument it.
+        #[tracing::instrument(name = "is_ready", skip_all, ret, err)]
+        async fn _impl<E: ExecutionLayer>(execution_node: E) -> eyre::Result<bool> {
+            let forkchoice_state = execution_node
+                .current_forkchoice_state()
+                .wrap_err("failed to read execution layer forkchoice state")?;
+            let response = execution_node
+                .fork_choice_updated(forkchoice_state, None)
+                .await
+                .wrap_err("execution-layer readiness forkchoice update failed")?;
+            if response.is_valid() {
+                return Ok(true);
+            }
+            if response.payload_status.is_syncing() {
+                return Ok(false);
+            }
+            Err(eyre::Report::msg(response.payload_status))
+                .wrap_err("execution-layer readiness forkchoice update was not valid")
+        }
+
+        _impl(self.clone())
+    }
+
     /// The execution layer's finalized block, falling back to genesis if no
     /// block has been explicitly finalized yet.
     fn finalized_num_hash(&self) -> BlockNumHash;
@@ -99,6 +131,27 @@ pub(crate) trait Marshal: Clone + Send + Sync + 'static {
 }
 
 impl ExecutionLayer for Arc<TempoFullNode> {
+    fn current_forkchoice_state(&self) -> eyre::Result<ForkchoiceState> {
+        let state = self.provider.canonical_in_memory_state();
+        let head_block_hash = state.get_canonical_head().hash();
+        eyre::ensure!(
+            head_block_hash != B256::ZERO,
+            "execution layer returned a zero canonical head"
+        );
+
+        // Zero is the Engine API's "unset" sentinel for safe/finalized.
+        // Reth accepts it by leaving the corresponding marker unchanged.
+        Ok(ForkchoiceState {
+            head_block_hash,
+            safe_block_hash: state
+                .get_safe_num_hash()
+                .map_or(B256::ZERO, |safe| safe.hash),
+            finalized_block_hash: state
+                .get_finalized_num_hash()
+                .map_or(B256::ZERO, |finalized| finalized.hash),
+        })
+    }
+
     fn finalized_num_hash(&self) -> BlockNumHash {
         self.provider
             .canonical_in_memory_state()
@@ -188,7 +241,7 @@ pub(crate) fn init<TContext, TExecutionLayer, TMarshal>(
     config: Config<TExecutionLayer, TMarshal>,
 ) -> eyre::Result<(Actor<TContext, TExecutionLayer, TMarshal>, Mailbox)>
 where
-    TContext: Clock + Metrics + Pacer + Spawner,
+    TContext: Clock + Metrics + Spawner,
     TExecutionLayer: ExecutionLayer,
     TMarshal: Marshal,
 {

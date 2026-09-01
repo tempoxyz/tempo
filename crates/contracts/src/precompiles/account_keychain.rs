@@ -6,6 +6,8 @@ pub use IAccountKeychain::{
     authorizeKey_1Call as authorizeKeyCall, authorizeKey_2Call as authorizeKeyWithWitnessCall,
     getAllowedCallsReturn, getRemainingLimitWithPeriodCall,
     getRemainingLimitWithPeriodReturn as getRemainingLimitReturn,
+    setAllowedCalls_0Call as legacySetAllowedCallsCall,
+    setAllowedCalls_1Call as setAllowedCallsCall,
 };
 
 crate::sol! {
@@ -165,6 +167,10 @@ crate::sol! {
             address keyId,
             CallScope[] calldata scopes
         ) external;
+
+        /// Set or replace RLP-encoded allowed calls for one or more key+target pairs.
+        /// @dev `scopes` is the canonical RLP encoding of a non-empty CallScope list.
+        function setAllowedCalls(address keyId, bytes calldata scopes) external;
 
         /// Remove any configured call scope for a key+target pair.
         function removeAllowedCalls(address keyId, address target) external;

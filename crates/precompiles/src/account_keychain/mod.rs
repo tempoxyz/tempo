@@ -19,11 +19,12 @@ pub use tempo_contracts::precompiles::{
         burnKeyAuthorizationWitnessCall, getAllowedCallsCall, getKeyCall, getRemainingLimitCall,
         getRemainingLimitWithPeriodCall, getTransactionKeyCall,
         isKeyAuthorizationWitnessBurnedCall, removeAllowedCallsCall, revokeKeyCall,
-        setAllowedCallsCall, updateSpendingLimitCall,
+        updateSpendingLimitCall,
     },
     authorizeKeyCall, authorizeKeyWithWitnessCall, getAllowedCallsReturn, getRemainingLimitReturn,
+    legacySetAllowedCallsCall, setAllowedCallsCall,
 };
-use tempo_primitives::TempoAddressExt;
+use tempo_primitives::{TempoAddressExt, transaction::CallScope as RlpCallScope};
 
 use crate::{
     ACCOUNT_KEYCHAIN_ADDRESS,
@@ -39,6 +40,16 @@ const TIP20_TRANSFER_SELECTOR: [u8; 4] = ITIP20::transferCall::SELECTOR;
 const TIP20_APPROVE_SELECTOR: [u8; 4] = ITIP20::approveCall::SELECTOR;
 const TIP20_TRANSFER_WITH_MEMO_SELECTOR: [u8; 4] = ITIP20::transferWithMemoCall::SELECTOR;
 
+/// Additional cost for each 32-byte word decoded as RLP by `setAllowedCalls`.
+const RLP_INPUT_PER_WORD_COST: u64 = 50;
+
+#[inline]
+fn rlp_input_cost(input_len: usize) -> u64 {
+    input_len
+        .div_ceil(32)
+        .saturating_mul(RLP_INPUT_PER_WORD_COST as usize) as u64
+}
+
 /// (T7+) Alias for zero remaining periodic spend, used to avoid clearing the storage slot.
 const ZERO_PERIODIC_REMAINING_SENTINEL: U256 = U256::MAX;
 
@@ -48,6 +59,12 @@ pub fn is_constrained_tip20_selector(selector: [u8; 4]) -> bool {
         selector,
         TIP20_TRANSFER_SELECTOR | TIP20_APPROVE_SELECTOR | TIP20_TRANSFER_WITH_MEMO_SELECTOR
     )
+}
+
+fn has_duplicates_sorted<T: Ord>(values: impl IntoIterator<Item = T>) -> bool {
+    let mut values = values.into_iter().collect::<Vec<_>>();
+    values.sort_unstable();
+    values.windows(2).any(|pair| pair[0] == pair[1])
 }
 
 /// Key information stored in the precompile
@@ -562,25 +579,41 @@ impl AccountKeychain {
     }
 
     /// Root/admin-only create-or-replace updates for one or more target call scopes.
-    pub fn set_allowed_calls(
+    pub fn set_allowed_calls_rlp(
         &mut self,
         msg_sender: Address,
         call: setAllowedCallsCall,
     ) -> Result<()> {
-        if !self.storage.spec().is_t3() {
+        self.storage.deduct_gas(rlp_input_cost(call.scopes.len()))?;
+
+        let scopes: Vec<RlpCallScope> = alloy_rlp::decode_exact(call.scopes.as_ref())
+            .map_err(|_| AccountKeychainError::invalid_call_scope())?;
+        let scopes: Vec<CallScope> = scopes.into_iter().map(Into::into).collect();
+        if scopes.is_empty() {
             return Err(AccountKeychainError::invalid_call_scope().into());
         }
 
+        self.set_allowed_calls_decoded(msg_sender, call.keyId, scopes)
+    }
+
+    fn set_allowed_calls_decoded(
+        &mut self,
+        msg_sender: Address,
+        key_id: Address,
+        scopes: Vec<CallScope>,
+    ) -> Result<()> {
+        if !self.storage.spec().is_t3() {
+            return Err(AccountKeychainError::invalid_call_scope().into());
+        }
         self.ensure_admin_caller(msg_sender)?;
 
         let current_timestamp = self.storage.timestamp().saturating_to::<u64>();
-        let key = self.load_active_key(msg_sender, call.keyId, current_timestamp)?;
+        let key = self.load_active_key(msg_sender, key_id, current_timestamp)?;
         if key.is_admin {
             return Err(AccountKeychainError::invalid_key_id().into());
         }
 
-        let key_hash = Self::spending_limit_key(msg_sender, call.keyId);
-        let scopes = call.scopes;
+        let key_hash = Self::spending_limit_key(msg_sender, key_id);
 
         if scopes.is_empty() {
             return Err(AccountKeychainError::invalid_call_scope().into());
@@ -593,6 +626,15 @@ impl AccountKeychain {
         }
 
         self.key_scopes[key_hash].is_scoped.write(true)
+    }
+
+    /// Pre-T11 ABI-encoded create-or-replace updates for target call scopes.
+    pub fn set_allowed_calls(
+        &mut self,
+        msg_sender: Address,
+        call: legacySetAllowedCallsCall,
+    ) -> Result<()> {
+        self.set_allowed_calls_decoded(msg_sender, call.keyId, call.scopes)
     }
 
     /// Root/admin-only removal of one target call scope.
@@ -992,6 +1034,18 @@ impl AccountKeychain {
 
     /// Validates a list of [`CallScope`]s.
     fn validate_call_scopes(&self, scopes: &[CallScope]) -> Result<()> {
+        // Preserve the incremental pre-T11 validation order for historical reexecution.
+        if self.storage.spec().is_t11() {
+            if has_duplicates_sorted(scopes.iter().map(|scope| scope.target)) {
+                return Err(AccountKeychainError::invalid_call_scope().into());
+            }
+
+            for scope in scopes {
+                self.validate_call_scope(scope)?;
+            }
+            return Ok(());
+        }
+
         let mut seen_targets = HashSet::new();
         for scope in scopes {
             if !seen_targets.insert(scope.target) {
@@ -1043,9 +1097,14 @@ impl AccountKeychain {
             }
         };
 
+        let sort_selectors = self.storage.spec().is_t11();
+        if sort_selectors && has_duplicates_sorted(rules.iter().map(|rule| rule.selector)) {
+            return Err(AccountKeychainError::invalid_call_scope().into());
+        }
+
         let mut selectors = HashSet::new();
         for rule in rules {
-            if !selectors.insert(rule.selector) {
+            if !sort_selectors && !selectors.insert(rule.selector) {
                 return Err(AccountKeychainError::invalid_call_scope().into());
             }
 
@@ -1057,11 +1116,10 @@ impl AccountKeychain {
                 return Err(AccountKeychainError::invalid_call_scope().into());
             }
 
-            let mut unique_recipients = HashSet::new();
-            for recipient in &rule.recipients {
-                if recipient.is_zero() || !unique_recipients.insert(*recipient) {
-                    return Err(AccountKeychainError::invalid_call_scope().into());
-                }
+            if rule.recipients.iter().any(|recipient| recipient.is_zero())
+                || has_duplicates_sorted(rule.recipients.iter().copied())
+            {
+                return Err(AccountKeychainError::invalid_call_scope().into());
             }
         }
 
@@ -1572,7 +1630,18 @@ mod tests {
     use alloy::primitives::{Address, B256, TxKind, U256};
     use revm::state::Bytecode;
     use tempo_chainspec::hardfork::TempoHardfork;
-    use tempo_contracts::precompiles::{DEFAULT_FEE_TOKEN, IAccountKeychain::SignatureType};
+    use tempo_contracts::precompiles::{
+        DEFAULT_FEE_TOKEN, IAccountKeychain::SignatureType,
+        legacySetAllowedCallsCall as setAllowedCallsCall,
+    };
+
+    #[test]
+    fn test_rlp_input_cost() {
+        assert_eq!(rlp_input_cost(0), 0);
+        assert_eq!(rlp_input_cost(1), 50);
+        assert_eq!(rlp_input_cost(32), 50);
+        assert_eq!(rlp_input_cost(33), 100);
+    }
 
     fn authorize_key(
         keychain: &mut AccountKeychain,
@@ -1663,6 +1732,59 @@ mod tests {
             }
             _ => panic!("Expected AccountKeychainError, got: {error:?}"),
         }
+    }
+
+    #[test]
+    fn test_t11_sorted_scope_validation_rejects_duplicates() -> eyre::Result<()> {
+        let mut storage = HashMapStorageProvider::new_with_spec(1, TempoHardfork::T11);
+        StorageCtx::enter(&mut storage, || -> eyre::Result<()> {
+            let keychain = AccountKeychain::new();
+            let target = Address::repeat_byte(0x11);
+            let recipient = Address::repeat_byte(0x22);
+
+            let error = keychain
+                .validate_call_scopes(&[
+                    CallScope {
+                        target,
+                        selectorRules: vec![],
+                    },
+                    CallScope {
+                        target,
+                        selectorRules: vec![],
+                    },
+                ])
+                .expect_err("duplicate targets must be rejected");
+            assert_invalid_call_scope(error);
+
+            let mut selector_rules = (0u32..4_096)
+                .map(|selector| SelectorRule {
+                    selector: selector.to_be_bytes().into(),
+                    recipients: vec![],
+                })
+                .collect::<Vec<_>>();
+            selector_rules.push(selector_rules[0].clone());
+
+            let error = keychain
+                .validate_call_scopes(&[CallScope {
+                    target,
+                    selectorRules: selector_rules,
+                }])
+                .expect_err("a duplicate selector at the tail must be rejected");
+            assert_invalid_call_scope(error);
+
+            let error = keychain
+                .validate_call_scopes(&[CallScope {
+                    target: DEFAULT_FEE_TOKEN,
+                    selectorRules: vec![SelectorRule {
+                        selector: TIP20_TRANSFER_SELECTOR.into(),
+                        recipients: vec![recipient, recipient],
+                    }],
+                }])
+                .expect_err("duplicate recipients must be rejected");
+            assert_invalid_call_scope(error);
+
+            Ok(())
+        })
     }
 
     fn unrestricted_restrictions() -> KeyRestrictions {

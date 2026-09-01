@@ -70,8 +70,8 @@ use tempo_contracts::precompiles::{ZONE_FACTORY_ADDRESS, initial_zone_factory_co
 use tempo_evm::{TempoEvmConfig, consensus::TempoConsensus};
 use tempo_faucet::faucet::{TempoFaucetExt, TempoFaucetExtApiServer};
 pub use tempo_node::{
-    AccountInfoReader, InvalidPoolTransactionError, PoolTransaction, PoolTransactionError,
-    StatefulValidationFn, StatelessValidationFn, TempoNode, TempoNodeArgs,
+    AccountInfoReader, AddressFilter, InvalidPoolTransactionError, PoolTransaction,
+    PoolTransactionError, StatefulValidationFn, StatelessValidationFn, TempoNode, TempoNodeArgs,
     TempoPayloadBuilderBuilder, TempoPoolBuilder, TempoPoolTransactionError,
     TempoPooledTransaction, TransactionOrigin,
 };
@@ -675,6 +675,80 @@ mod tests {
     fn init_defaults_once() {
         static INIT: Once = Once::new();
         INIT.call_once(defaults::init_defaults);
+    }
+
+    #[test]
+    fn txpool_filter_defaults_empty_and_parses_address_list_or_file() {
+        let cli = TempoCli::try_parse_from(["tempo", "node", "--dev"]).unwrap();
+        let Commands::Node(node_cmd) = cli.command else {
+            panic!("expected node command");
+        };
+        assert!(node_cmd.ext.node_args.txpool_filter.is_none());
+
+        let cli = TempoCli::try_parse_from([
+            "tempo",
+            "node",
+            "--dev",
+            "--txpool.filter",
+            "0x0000000000000000000000000000000000000001,0x0000000000000000000000000000000000000002",
+        ])
+        .unwrap();
+        let Commands::Node(node_cmd) = cli.command else {
+            panic!("expected node command");
+        };
+        let filter = node_cmd.ext.node_args.txpool_filter.as_ref().unwrap();
+        assert_eq!(filter.len(), 2);
+        assert!(filter.contains(&address!("0000000000000000000000000000000000000001")));
+        assert!(filter.contains(&address!("0000000000000000000000000000000000000002")));
+
+        let file = tempfile::NamedTempFile::new().unwrap();
+        std::fs::write(
+            file.path(),
+            "0x0000000000000000000000000000000000000003\n\n\
+             0x0000000000000000000000000000000000000004, \
+             0x0000000000000000000000000000000000000005,\
+             0x0000000000000000000000000000000000000003\n",
+        )
+        .unwrap();
+        let cli = TempoCli::try_parse_from([
+            "tempo",
+            "node",
+            "--dev",
+            "--txpool.filter",
+            file.path().to_str().unwrap(),
+        ])
+        .unwrap();
+        let Commands::Node(node_cmd) = cli.command else {
+            panic!("expected node command");
+        };
+        let filter = node_cmd.ext.node_args.txpool_filter.as_ref().unwrap();
+        assert_eq!(filter.len(), 3);
+        assert!(filter.contains(&address!("0000000000000000000000000000000000000003")));
+        assert!(filter.contains(&address!("0000000000000000000000000000000000000004")));
+        assert!(filter.contains(&address!("0000000000000000000000000000000000000005")));
+    }
+
+    #[test]
+    fn txpool_filter_reports_invalid_file_entry() {
+        let file = tempfile::NamedTempFile::new().unwrap();
+        std::fs::write(
+            file.path(),
+            "0x0000000000000000000000000000000000000001\nnot-an-address\n",
+        )
+        .unwrap();
+
+        let error = TempoCli::try_parse_from([
+            "tempo",
+            "node",
+            "--dev",
+            "--txpool.filter",
+            file.path().to_str().unwrap(),
+        ])
+        .unwrap_err()
+        .to_string();
+
+        assert!(error.contains(file.path().to_str().unwrap()));
+        assert!(error.contains("invalid address `not-an-address` on line 2"));
     }
 
     fn parse_follow(args: &[&str]) -> Option<FollowMode> {
