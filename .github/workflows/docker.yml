@@ -161,6 +161,18 @@ jobs:
       - id: shortsha
         run: echo "shortsha=$(echo ${{ github.sha }} | cut -c1-7)" >> "$GITHUB_OUTPUT"
 
+      - name: Configure nightly engine defaults
+        id: nightly-engine-defaults
+        if: ${{ github.event_name == 'schedule' || github.event.inputs.nightly == 'true' }}
+        shell: bash
+        run: |
+          {
+            echo "set<<EOF"
+            echo "tempo.args.RETH_ENGINE_PERSISTENCE_THRESHOLD=30"
+            echo "tempo.args.RETH_ENGINE_NUM_STATE_MASKING_BLOCKS=20"
+            echo "EOF"
+          } >> "$GITHUB_OUTPUT"
+
       - name: Build and push Docker images
         id: build-and-push
         uses: depot/bake-action@1d58c2668346981089b088b7ef36755b206b20e9 # v1.13.0
@@ -176,10 +188,11 @@ jobs:
           push: true
           no-cache: ${{ startsWith(github.ref, 'refs/tags/v') }}
           pull: ${{ github.event_name != 'merge_group' }}
+          set: |
+            ${{ steps.nightly-engine-defaults.outputs.set }}
         env:
           VERGEN_GIT_SHA: ${{ github.sha }}
           VERGEN_GIT_SHA_SHORT: ${{ steps.shortsha.outputs.shortsha }}
-          TEMPO_NIGHTLY_ENGINE_DEFAULTS: ${{ (github.event_name == 'schedule' || github.event.inputs.nightly == 'true') && 'true' || 'false' }}
 
       - name: Install cosign
         uses: sigstore/cosign-installer@cad07c2e89fa2edd6e2d7bab4c1aa38e53f76003 # v4.1.1

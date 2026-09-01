@@ -6,10 +6,6 @@ variable "VERGEN_GIT_SHA_SHORT" {
   default = ""
 }
 
-variable "TEMPO_NIGHTLY_ENGINE_DEFAULTS" {
-  default = "false"
-}
-
 group "default" {
   targets = ["tempo", "tempo-localnet", "tempo-sidecar", "tempo-xtask"]
 }
@@ -50,9 +46,6 @@ target "_common" {
 target "tempo" {
   inherits = ["_common", "docker-metadata"]
   target = "tempo"
-  args = {
-    TEMPO_NIGHTLY_ENGINE_DEFAULTS = "${TEMPO_NIGHTLY_ENGINE_DEFAULTS}"
-  }
 }
 
 target "tempo-localnet" {

@@ -33,11 +33,12 @@ WORKDIR /data
 # tempo
 FROM base AS tempo
 ARG RUST_PROFILE=profiling
-ARG TEMPO_NIGHTLY_ENGINE_DEFAULTS=false
-ENV TEMPO_NIGHTLY_ENGINE_DEFAULTS=${TEMPO_NIGHTLY_ENGINE_DEFAULTS}
+ARG RETH_ENGINE_PERSISTENCE_THRESHOLD=7
+ENV RETH_ENGINE_PERSISTENCE_THRESHOLD=${RETH_ENGINE_PERSISTENCE_THRESHOLD}
+ARG RETH_ENGINE_NUM_STATE_MASKING_BLOCKS=0
+ENV RETH_ENGINE_NUM_STATE_MASKING_BLOCKS=${RETH_ENGINE_NUM_STATE_MASKING_BLOCKS}
 COPY --from=builder /app/target/${RUST_PROFILE}/tempo /usr/local/bin/tempo
-COPY scripts/docker/tempo-entrypoint.sh /usr/local/bin/tempo-entrypoint
-ENTRYPOINT ["/usr/local/bin/tempo-entrypoint"]
+ENTRYPOINT ["/usr/local/bin/tempo"]
 
 # tempo-localnet
 FROM base AS tempo-localnet
