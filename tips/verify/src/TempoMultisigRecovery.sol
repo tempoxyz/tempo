@@ -195,14 +195,17 @@ contract TempoMultisigRecoveryWallet {
             if (!ok) {
                 revert CallFailed(i, returndata);
             }
-            if (calls[i].data.length >= 4 && bytes4(calls[i].data[:4]) == ERC20_TRANSFER) {
-                // Match SafeERC20's optional-return convention: deployed token contracts may
-                // return no data, but an explicit result must be exactly ABI-encoded `true`.
-                if (
-                    returndata.length != 0
-                        && (returndata.length != 32 || !abi.decode(returndata, (bool)))
-                ) {
-                    revert CallFailed(i, returndata);
+            if (calls[i].data.length >= 4) {
+                bytes4 selector = bytes4(calls[i].data[:4]);
+                // ERC-20 transfer and the selector shared by ERC-20/ERC-721 transferFrom use the
+                // optional-return convention. Standard ERC-721 transferFrom returns no data.
+                if (selector == ERC20_TRANSFER || selector == ERC721_TRANSFER_FROM) {
+                    if (
+                        returndata.length != 0
+                            && (returndata.length != 32 || !abi.decode(returndata, (bool)))
+                    ) {
+                        revert CallFailed(i, returndata);
+                    }
                 }
             }
         }
@@ -210,8 +213,8 @@ contract TempoMultisigRecoveryWallet {
 
     /// @notice Restricts recovery to native-value sweeps and standard ERC-20/721/1155 transfers.
     /// @dev A data-carrying call must target a standard transfer selector and send no value; an
-    /// empty-calldata call is a native-value sweep. Everything else (approvals, governance,
-    /// bridging, arbitrary calls) is rejected.
+    /// empty-calldata call is a native-value sweep and may invoke recipient code. Other calldata
+    /// (including approvals) is rejected.
     function _isAllowedRecoveryCall(Call calldata call_) internal view returns (bool) {
         if (call_.data.length == 0) {
             return call_.value != 0;

@@ -411,29 +411,35 @@ contract TempoMultisigRecoveryTest is Test {
         wallet.recover(init, signatures, calls);
     }
 
-    function testRejectsErc20FalseReturn() public {
+    function testRejectsFalseTokenReturn() public {
         TempoMultisigRecoveryWallet.InitMultisig memory init = _initConfig();
         bytes32 accountSalt = _deriveAccountSalt(init);
         address walletAddr = factory.deploy(accountSalt);
         TempoMultisigRecoveryWallet wallet = TempoMultisigRecoveryWallet(payable(walletAddr));
         MockFalseERC20 token = new MockFalseERC20();
 
-        TempoMultisigRecoveryWallet.Call[] memory calls = new TempoMultisigRecoveryWallet.Call[](1);
-        calls[0] = TempoMultisigRecoveryWallet.Call({
-            target: address(token),
-            value: 0,
-            data: abi.encodeWithSignature("transfer(address,uint256)", address(0xBEEF), 1)
-        });
-
-        bytes[] memory signatures =
-            _sortedSignatures(ownerAKey, ownerBKey, wallet.recoveryDigest(accountSalt, calls));
-
-        vm.expectRevert(
-            abi.encodeWithSelector(
-                TempoMultisigRecoveryWallet.CallFailed.selector, uint256(0), abi.encode(false)
-            )
+        bytes[] memory payloads = new bytes[](2);
+        payloads[0] = abi.encodeWithSignature("transfer(address,uint256)", address(0xBEEF), 1);
+        payloads[1] = abi.encodeWithSignature(
+            "transferFrom(address,address,uint256)", walletAddr, address(0xBEEF), 1
         );
-        wallet.recover(init, signatures, calls);
+
+        for (uint256 i = 0; i < payloads.length; ++i) {
+            TempoMultisigRecoveryWallet.Call[] memory calls =
+                new TempoMultisigRecoveryWallet.Call[](1);
+            calls[0] = TempoMultisigRecoveryWallet.Call({
+                target: address(token), value: 0, data: payloads[i]
+            });
+            bytes[] memory signatures =
+                _sortedSignatures(ownerAKey, ownerBKey, wallet.recoveryDigest(accountSalt, calls));
+
+            vm.expectRevert(
+                abi.encodeWithSelector(
+                    TempoMultisigRecoveryWallet.CallFailed.selector, uint256(0), abi.encode(false)
+                )
+            );
+            wallet.recover(init, signatures, calls);
+        }
     }
 
     function _initConfig()
@@ -541,6 +547,10 @@ contract MockERC20 {
 contract MockFalseERC20 {
 
     function transfer(address, uint256) external pure returns (bool) {
+        return false;
+    }
+
+    function transferFrom(address, address, uint256) external pure returns (bool) {
         return false;
     }
 
