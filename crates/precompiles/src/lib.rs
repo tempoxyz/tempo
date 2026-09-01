@@ -15,6 +15,7 @@ pub(crate) mod ip_validation;
 pub mod account_keychain;
 pub mod address_registry;
 pub mod current_committee;
+pub mod native_multisig;
 pub mod nonce;
 pub mod receive_policy_guard;
 pub mod signature_verifier;
@@ -36,6 +37,7 @@ use crate::{
     account_keychain::AccountKeychain,
     address_registry::AddressRegistry,
     current_committee::CurrentCommittee,
+    native_multisig::NativeMultisig,
     nonce::NonceManager,
     receive_policy_guard::ReceivePolicyGuard,
     signature_verifier::SignatureVerifier,
@@ -68,12 +70,12 @@ use revm::{
 
 pub use tempo_contracts::precompiles::{
     ACCOUNT_KEYCHAIN_ADDRESS, ADDRESS_REGISTRY_ADDRESS, CURRENT_COMMITTEE_ADDRESS,
-    DEFAULT_FEE_TOKEN, NONCE_PRECOMPILE_ADDRESS, PATH_USD_ADDRESS, RECEIVE_POLICY_GUARD_ADDRESS,
-    SIGNATURE_VERIFIER_ADDRESS, STABLECOIN_DEX_ADDRESS, STORAGE_CREDITS_ADDRESS,
-    SYSTEM_PRECOMPILES, TIP_FEE_MANAGER_ADDRESS, TIP20_CHANNEL_RESERVE_ADDRESS,
-    TIP20_FACTORY_ADDRESS, TIP403_REGISTRY_ADDRESS, VALIDATOR_CONFIG_ADDRESS,
-    VALIDATOR_CONFIG_V2_ADDRESS, ZONE_FACTORY_ADDRESS, ZONE_MESSENGER_ADDRESS,
-    ZONE_PORTAL_IMPL_ADDRESS, ZONE_VERIFIER_ADDRESS,
+    DEFAULT_FEE_TOKEN, NATIVE_MULTISIG_ADDRESS, NONCE_PRECOMPILE_ADDRESS, PATH_USD_ADDRESS,
+    RECEIVE_POLICY_GUARD_ADDRESS, SIGNATURE_VERIFIER_ADDRESS, STABLECOIN_DEX_ADDRESS,
+    STORAGE_CREDITS_ADDRESS, SYSTEM_PRECOMPILES, TIP_FEE_MANAGER_ADDRESS,
+    TIP20_CHANNEL_RESERVE_ADDRESS, TIP20_FACTORY_ADDRESS, TIP403_REGISTRY_ADDRESS,
+    VALIDATOR_CONFIG_ADDRESS, VALIDATOR_CONFIG_V2_ADDRESS, ZONE_FACTORY_ADDRESS,
+    ZONE_MESSENGER_ADDRESS, ZONE_PORTAL_IMPL_ADDRESS, ZONE_VERIFIER_ADDRESS,
 };
 
 // Re-export storage layout helpers for read-only contexts (e.g., pool validation)
@@ -166,14 +168,28 @@ pub fn tempo_precompiles(
     actions: StorageActions,
     non_creditable_slots: Rc<RefCell<NonCreditableSlots>>,
 ) -> PrecompilesMap {
-    let spec = if cfg.spec.is_t1c() {
-        cfg.spec.into()
-    } else {
-        SpecId::PRAGUE
-    };
-    let mut precompiles = PrecompilesMap::from_static(EthPrecompiles::new(spec).precompiles);
+    let mut precompiles = PrecompilesMap::from_static(
+        EthPrecompiles::new(ethereum_precompile_spec(cfg.spec)).precompiles,
+    );
     extend_tempo_precompiles(&mut precompiles, cfg, actions, non_creditable_slots);
     precompiles
+}
+
+fn ethereum_precompile_spec(spec: TempoHardfork) -> SpecId {
+    if spec.is_t1c() {
+        spec.into()
+    } else {
+        SpecId::PRAGUE
+    }
+}
+
+/// Returns whether an address can represent a native multisig account at `spec`.
+pub fn is_valid_multisig_account(account: Address, spec: TempoHardfork) -> bool {
+    !account.is_zero()
+        && !account.is_virtual()
+        && !account.as_slice().starts_with(&Address::ZONE_PORTAL_PREFIX)
+        && !account.is_precompile(spec)
+        && !EthPrecompiles::new(ethereum_precompile_spec(spec)).contains(&account)
 }
 
 /// Registers Tempo-specific precompiles into an existing [`PrecompilesMap`] by installing a
@@ -345,6 +361,13 @@ impl AccountKeychain {
     }
 }
 
+impl NativeMultisig {
+    /// Creates the EVM precompile for this type.
+    pub fn create_precompile(env: &PrecompileEnv) -> DynPrecompile {
+        tempo_precompile!("NativeMultisig", env: env, |input| { Self::new() })
+    }
+}
+
 impl ValidatorConfig {
     /// Creates the EVM precompile for this type.
     pub fn create_precompile(env: &PrecompileEnv) -> DynPrecompile {
@@ -442,6 +465,10 @@ mod tests {
             StorageActions::disabled(),
             Rc::new(RefCell::new(NonCreditableSlots::empty())),
         )
+    }
+
+    fn p256verify_address() -> Address {
+        Address::from_word(U256::from(revm::precompile::secp256r1::P256VERIFY_ADDRESS).into())
     }
 
     #[test]
@@ -1211,13 +1238,13 @@ mod tests {
 
     #[test]
     fn test_p256verify_availability_across_t1c_boundary() {
+        let p256verify_address = p256verify_address();
         let has_p256 = |spec: TempoHardfork| -> bool {
-            // P256VERIFY lives at address 0x100 (256), added in Osaka
-            let p256_addr = Address::from_word(U256::from(256).into());
-
             let mut cfg = CfgEnv::<TempoHardfork>::default();
             cfg.set_spec_and_mainnet_gas_params(spec);
-            test_tempo_precompiles(&cfg).get(&p256_addr).is_some()
+            test_tempo_precompiles(&cfg)
+                .get(&p256verify_address)
+                .is_some()
         };
 
         // Pre-T1C hardforks should use Prague precompiles (no P256VERIFY)
@@ -1241,5 +1268,33 @@ mod tests {
                 "P256VERIFY should be available at {spec:?} (T1C+)"
             );
         }
+    }
+
+    #[test]
+    fn multisig_account_eligibility_uses_registered_precompiles() {
+        let spec = TempoHardfork::T11;
+        let p256verify_address = p256verify_address();
+        for address in EthPrecompiles::new(ethereum_precompile_spec(spec)).warm_addresses() {
+            assert!(!is_valid_multisig_account(*address, spec));
+        }
+        for &(address, activated) in SYSTEM_PRECOMPILES {
+            if activated <= spec {
+                assert!(!is_valid_multisig_account(address, spec));
+            }
+        }
+
+        assert!(is_valid_multisig_account(
+            p256verify_address,
+            TempoHardfork::T1B
+        ));
+        assert!(!is_valid_multisig_account(
+            p256verify_address,
+            TempoHardfork::T1C
+        ));
+
+        let mut zone_portal = [0u8; 20];
+        zone_portal[..12].copy_from_slice(&Address::ZONE_PORTAL_PREFIX);
+        zone_portal[19] = 1;
+        assert!(!is_valid_multisig_account(Address::from(zone_portal), spec));
     }
 }

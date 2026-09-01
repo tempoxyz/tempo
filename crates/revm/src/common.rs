@@ -303,6 +303,10 @@ impl<S, M> PrecompileStorageProvider for ReadOnlyStorageProvider<'_, S, M>
 where
     S: TempoStateAccess<M>,
 {
+    fn tx_kind(&self) -> Option<TxKind> {
+        None
+    }
+
     fn spec(&self) -> TempoHardfork {
         self.spec
     }
