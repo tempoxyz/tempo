@@ -18,7 +18,7 @@ use alloy::{
     },
     sol_types::SolCall,
 };
-use alloy_eips::Encodable2718;
+use alloy_eips::{Encodable2718, eip2930::AccessListItem};
 use reth_ethereum::network::{NetworkSyncUpdater, SyncState};
 use reth_node_api::BuiltPayload;
 use reth_primitives_traits::transaction::TxHashRef;
@@ -39,14 +39,18 @@ use tempo_precompiles::{
 use tempo_primitives::{
     TempoTransaction, TempoTxEnvelope,
     transaction::{
-        KeyAuthorization, SignedKeyAuthorization,
+        KeyAuthorization, MAX_MULTISIG_OWNERS, MultisigConfig, MultisigOwner,
+        SignedKeyAuthorization, multisig_digest,
         tempo_transaction::Call,
         tt_signature::{KeychainSignature, PrimitiveSignature, TempoSignature, WebAuthnSignature},
         tt_signed::AASigned,
     },
 };
+use tempo_revm::{
+    TempoBatchCallEnv, calculate_aa_batch_intrinsic_gas, gas_params::tempo_gas_params,
+};
 
-use super::helpers::*;
+use super::{helpers::*, multisig, types::TestEnv};
 
 fn test_secp256k1_access_key_signature() -> TempoSignature {
     TempoSignature::Primitive(PrimitiveSignature::Secp256k1(Signature::test_signature()))
@@ -97,11 +101,12 @@ impl Localnet {
     }
 
     pub(crate) async fn with_schedule(schedule: ForkSchedule) -> eyre::Result<Self> {
+        Self::from_builder(TestNodeBuilder::new().with_schedule(schedule)).await
+    }
+
+    async fn from_builder(builder: TestNodeBuilder) -> eyre::Result<Self> {
         reth_tracing::init_test_tracing();
-        let setup = TestNodeBuilder::new()
-            .with_schedule(schedule)
-            .build_with_node_access()
-            .await?;
+        let setup = builder.build_with_node_access().await?;
         let provider = alloy::providers::RootProvider::new_http(setup.node.rpc_url());
         let chain_id = provider.get_chain_id().await?;
         let funder_signer = MnemonicBuilder::from_phrase(TEST_MNEMONIC).build()?;
@@ -114,6 +119,301 @@ impl Localnet {
             funder_addr,
         })
     }
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn test_native_multisig_rejects_code_and_delegation() -> eyre::Result<()> {
+    let signers = multisig::sorted_signers();
+    let (alice, bob) = (&signers[0], &signers[1]);
+    let configs = [
+        multisig::multisig_config(0x81, 2, &[(alice, 1), (bob, 1)]),
+        multisig::multisig_config(0x82, 2, &[(alice, 1), (bob, 1)]),
+    ];
+    let mut delegation = vec![0xef, 0x01, 0x00];
+    delegation.extend_from_slice(Address::repeat_byte(0x55).as_slice());
+
+    let mut genesis: serde_json::Value =
+        serde_json::from_str(&make_genesis_at(TempoHardfork::T12))?;
+    for (config, code) in configs.iter().zip([vec![0x00], delegation]) {
+        let account = multisig::derived_account(config)?;
+        genesis["alloc"][format!("{account:#x}")] = serde_json::json!({
+            "nonce": "0x1",
+            "balance": "0x0",
+            "code": format!("0x{}", alloy::hex::encode(code)),
+        });
+    }
+
+    let mut env = Localnet::from_builder(
+        TestNodeBuilder::new().with_genesis(serde_json::to_string(&genesis)?),
+    )
+    .await?;
+    for (index, config) in configs.iter().enumerate() {
+        let account = multisig::derived_account(config)?;
+        env.fund_account(account).await?;
+        let tx = create_basic_aa_tx(
+            env.chain_id,
+            1,
+            vec![multisig::no_op_call(0x81 + index as u8)],
+            5_000_000,
+        );
+        let signature =
+            multisig::sign_multisig(account, tx.signature_hash(), config, &[alice, bob])?;
+        multisig::reject(
+            &env,
+            tx,
+            signature,
+            "native multisig account cannot have code or EIP-7702 delegation",
+        )
+        .await?;
+    }
+    Ok(())
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn test_multisig_rotation_evicts_stale_pool_transaction() -> eyre::Result<()> {
+    let mut env = Localnet::with_schedule(ForkSchedule::DevnetAt(TempoHardfork::T12)).await?;
+    let signers = multisig::sorted_signers();
+    let (alice, bob, carol) = (&signers[0], &signers[1], &signers[2]);
+    let config = multisig::multisig_config(0x83, 2, &[(alice, 1), (bob, 1)]);
+    let account = multisig::derived_account(&config)?;
+    env.fund_account(account).await?;
+
+    let next = MultisigConfig {
+        salt: config.salt,
+        version: 1,
+        threshold: 1,
+        owners: vec![MultisigOwner {
+            owner: carol.address(),
+            weight: 1,
+        }],
+    };
+    let valid_after = nonzero_timestamp(env.current_block_timestamp().await? + 60);
+    let chain_id = env.chain_id;
+    let delayed = |config: &MultisigConfig,
+                   owners: &[&PrivateKeySigner]|
+     -> eyre::Result<TempoTxEnvelope> {
+        let mut tx = create_basic_aa_tx(chain_id, 0, vec![multisig::no_op_call(0x83)], 5_000_000);
+        tx.nonce_key = U256::from(1);
+        tx.valid_after = Some(valid_after);
+        let signature = multisig::sign_multisig(account, tx.signature_hash(), config, owners)?;
+        Ok(TempoTxEnvelope::from(tx.into_signed(signature)))
+    };
+
+    let stale = delayed(&config, &[alice, bob])?;
+    let stale_hash = *stale.tx_hash();
+    env.setup
+        .node
+        .rpc
+        .inject_tx(stale.encoded_2718().into())
+        .await?;
+    assert!(env.setup.node.inner.pool.contains(&stale_hash));
+
+    let rotation = create_basic_aa_tx(
+        env.chain_id,
+        0,
+        vec![multisig::update_config_call(&config, &next)],
+        5_000_000,
+    );
+    let signature =
+        multisig::sign_multisig(account, rotation.signature_hash(), &config, &[alice, bob])?;
+    submit_and_mine_aa_tx(&mut env.setup, rotation, signature).await?;
+    wait_until_pool_not_contains(
+        &env.setup.node.inner.pool,
+        &stale_hash,
+        "multisig config rotation",
+    )
+    .await?;
+
+    let replacement = delayed(&next, &[carol])?;
+    let replacement_hash = *replacement.tx_hash();
+    env.setup
+        .node
+        .rpc
+        .inject_tx(replacement.encoded_2718().into())
+        .await?;
+    assert!(env.setup.node.inner.pool.contains(&replacement_hash));
+    Ok(())
+}
+
+struct P256Owner {
+    key: p256::ecdsa::SigningKey,
+    x: B256,
+    y: B256,
+    address: Address,
+}
+
+struct MaximalMultisig {
+    owners: Vec<P256Owner>,
+    child: Address,
+    child_config: MultisigConfig,
+    account: Address,
+    config: MultisigConfig,
+}
+
+impl MaximalMultisig {
+    fn new() -> eyre::Result<Self> {
+        let owners = (0..8)
+            .map(|_| {
+                let (key, x, y, address) = generate_p256_access_key();
+                P256Owner { key, x, y, address }
+            })
+            .collect::<Vec<_>>();
+        let config = |salt, required: Vec<Address>, dummy: u8| {
+            let mut addresses = required;
+            let mut byte = dummy;
+            while addresses.len() < MAX_MULTISIG_OWNERS {
+                let candidate = Address::repeat_byte(byte);
+                byte = byte.wrapping_add(1);
+                if !addresses.contains(&candidate) {
+                    addresses.push(candidate);
+                }
+            }
+            addresses.sort_unstable();
+            MultisigConfig {
+                salt: B256::repeat_byte(salt),
+                version: 0,
+                threshold: 8,
+                owners: addresses
+                    .into_iter()
+                    .map(|owner| MultisigOwner { owner, weight: 1 })
+                    .collect(),
+            }
+        };
+
+        let child_config = config(
+            0x91,
+            owners.iter().map(|owner| owner.address).collect(),
+            0x40,
+        );
+        let child = multisig::derived_account(&child_config)?;
+        let mut outer_owners = owners[..7]
+            .iter()
+            .map(|owner| owner.address)
+            .collect::<Vec<_>>();
+        outer_owners.push(child);
+        let config = config(0x92, outer_owners, 0x80);
+        let account = multisig::derived_account(&config)?;
+        Ok(Self {
+            owners,
+            child,
+            child_config,
+            account,
+            config,
+        })
+    }
+
+    fn approval(&self, index: usize, digest: B256) -> eyre::Result<TempoSignature> {
+        let owner = &self.owners[index];
+        let signature = if index.is_multiple_of(2) {
+            sign_p256_primitive(digest, &owner.key, owner.x, owner.y)?
+        } else {
+            sign_webauthn_primitive(digest, &owner.key, owner.x, owner.y, "https://tempo.xyz")?
+        };
+        Ok(TempoSignature::Primitive(signature))
+    }
+
+    fn approvals(
+        &self,
+        count: usize,
+        digest: B256,
+    ) -> eyre::Result<Vec<(Address, TempoSignature)>> {
+        (0..count)
+            .map(|index| Ok((self.owners[index].address, self.approval(index, digest)?)))
+            .collect()
+    }
+
+    fn node(
+        account: Address,
+        config: &MultisigConfig,
+        mut approvals: Vec<(Address, TempoSignature)>,
+    ) -> eyre::Result<TempoSignature> {
+        approvals.sort_unstable_by_key(|(owner, _)| *owner);
+        multisig::multisig_from_approvals(
+            account,
+            config,
+            approvals
+                .into_iter()
+                .map(|(_, signature)| signature)
+                .collect(),
+        )
+    }
+
+    fn sign(&self, inner_digest: B256) -> eyre::Result<TempoSignature> {
+        let outer_digest = multisig_digest(inner_digest, self.account, 0);
+        let child_digest = multisig_digest(outer_digest, self.child, 0);
+        let child = Self::node(
+            self.child,
+            &self.child_config,
+            self.approvals(8, child_digest)?,
+        )?;
+        let mut approvals = self.approvals(7, outer_digest)?;
+        approvals.push((self.child, child));
+        Self::node(self.account, &self.config, approvals)
+    }
+
+    fn priced(
+        &self,
+        mut tx: TempoTransaction,
+        under: u64,
+    ) -> eyre::Result<(TempoTransaction, TempoSignature)> {
+        let signature = self.sign(tx.signature_hash())?;
+        tx.gas_limit = multisig_intrinsic_gas(&tx, &signature) - under;
+        let signature = self.sign(tx.signature_hash())?;
+        assert_eq!(
+            tx.gas_limit + under,
+            multisig_intrinsic_gas(&tx, &signature),
+        );
+        Ok((tx, signature))
+    }
+}
+
+fn multisig_intrinsic_gas(tx: &TempoTransaction, signature: &TempoSignature) -> u64 {
+    calculate_aa_batch_intrinsic_gas(
+        &TempoBatchCallEnv {
+            signature: signature.clone(),
+            aa_calls: tx.calls.clone(),
+            ..Default::default()
+        },
+        &tempo_gas_params(TempoHardfork::T12),
+        None::<std::iter::Empty<&AccessListItem>>,
+        TempoHardfork::T12,
+    )
+    .expect("valid maximal multisig has computable intrinsic gas")
+    .initial_total_gas()
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn test_maximal_multisig_intrinsic_gas_boundary() -> eyre::Result<()> {
+    let mut env = Localnet::with_schedule(ForkSchedule::DevnetAt(TempoHardfork::T12)).await?;
+    let multisig = MaximalMultisig::new()?;
+    env.fund_account(multisig.account).await?;
+
+    let bootstrap =
+        create_basic_aa_tx(env.chain_id, 0, vec![multisig::no_op_call(0x91)], 5_000_000);
+    let signature = multisig.sign(bootstrap.signature_hash())?;
+    submit_and_mine_aa_tx(&mut env.setup, bootstrap, signature).await?;
+
+    let transaction = |nonce| {
+        create_basic_aa_tx(
+            env.chain_id,
+            nonce,
+            vec![multisig::no_op_call(0x92)],
+            5_000_000,
+        )
+    };
+    let (exact, signature) = multisig.priced(transaction(1), 0)?;
+    let exact: TempoTxEnvelope = exact.into_signed(signature).into();
+    let exact_hash = *exact.tx_hash();
+    env.setup
+        .node
+        .rpc
+        .inject_tx(exact.encoded_2718().into())
+        .await?;
+    assert!(env.setup.node.inner.pool.contains(&exact_hash));
+
+    let (insufficient, signature) = multisig.priced(transaction(2), 1)?;
+    multisig::reject(&env, insufficient, signature, "exceeds the gas limit").await?;
+    Ok(())
 }
 
 impl super::types::TestEnv for Localnet {
