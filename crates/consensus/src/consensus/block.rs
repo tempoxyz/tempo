@@ -18,7 +18,6 @@ use commonware_cryptography::{
     Committable, Digestible, Signer as _,
     ed25519::{PrivateKey, PublicKey},
 };
-use reth_consensus_common::validation::validate_body_against_header;
 use reth_primitives_traits::{SealedBlock, SealedOrRecoveredBlock};
 use std::fmt::Display;
 use tempo_payload_types::EncodedBlock;
@@ -26,6 +25,7 @@ use tempo_primitives::TempoConsensusContext;
 use tracing::warn;
 
 use crate::consensus::Digest;
+use tempo_evm::consensus::validate_body_against_header;
 
 /// Error returned when a BAL sidecar does not match the execution block header.
 #[derive(Debug, thiserror::Error, PartialEq, Eq)]

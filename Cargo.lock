@@ -13509,6 +13509,7 @@ dependencies = [
  "tempo-chainspec",
  "tempo-consensus-config",
  "tempo-dkg-onchain-artifacts",
+ "tempo-evm",
  "tempo-node",
  "tempo-payload-types",
  "tempo-precompiles",
