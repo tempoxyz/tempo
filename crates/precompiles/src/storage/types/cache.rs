@@ -188,8 +188,9 @@ where
     /// Returns a mutable reference to a lazily initialized handler for the given key.
     #[inline]
     pub(crate) fn get_or_insert_mut(&mut self, key: &K, f: impl FnOnce() -> H) -> &mut H {
-        let mut cache = self.inner.borrow_mut();
-        let ptr = match &mut *cache {
+        // `&mut self` already guarantees exclusive access, so skip the `RefCell` borrow tracking.
+        let cache = self.inner.get_mut();
+        let ptr = match cache {
             HandlerCacheState::Linear(linear) => {
                 if let Some(ptr) = linear.find_mut(key) {
                     ptr
@@ -198,7 +199,7 @@ where
                 } else {
                     let map = Self::promote_to_map(linear);
                     *cache = HandlerCacheState::Mapped(map);
-                    match &mut *cache {
+                    match cache {
                         HandlerCacheState::Mapped(map) => map.get_or_insert_mut(key, f),
                         HandlerCacheState::Linear(_) => unreachable!("handler cache was promoted"),
                     }
