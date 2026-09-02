@@ -109,7 +109,6 @@ fn backfill_then_converges_onto_a_notarized_extension() {
                 STARTUP_FCU,
                 (d1, d1, false),
                 (d2, d2, false),
-                (d3, d2, false),
                 (d4, d2, false),
             ],
             "notarized convergence must preserve the backfilled finalized boundary",
@@ -316,8 +315,9 @@ fn snapshot_restore_replays_below_execution_finality_without_forkchoice_updates(
             })
             .start(&context);
 
-        // Re-delivery of the block at the floor: acknowledged, but no
-        // forkchoice update is submitted for the stale state.
+        // Re-delivery of the block at the floor: delivered (the execution
+        // layer answers from its caches) and acknowledged on that answer;
+        // no forkchoice update is submitted for the stale state.
         h.deliver_finalized(b1)
             .await
             .expect("the re-delivered block should be acknowledged");

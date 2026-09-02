@@ -7,7 +7,7 @@ use commonware_consensus::{CertifiableBlock as _, Heightable as _};
 
 use std::time::{Duration, SystemTime};
 
-use super::{LocalState, NOTARIZED_REJECTION_RETRY_DELAY, NextToForward, NotarizedTree};
+use super::{LocalState, NOTARIZED_REJECTION_RETRY_DELAY, NotarizedTree};
 use crate::consensus::{Digest, block::Block};
 
 /// The reference "now" for tree queries; tests state rejection times
@@ -75,30 +75,33 @@ fn record(tree: &mut NotarizedTree, block: &Block) {
     tree.heal();
 }
 
-/// The next block to forward, if any; panics if the next convergence step
-/// is a repoint instead of a block.
-fn next_block(tree: &NotarizedTree, now: SystemTime) -> Option<std::sync::Arc<Block>> {
-    match tree.next_to_forward(now) {
-        Some(NextToForward::Block(block)) => Some(block),
-        Some(NextToForward::Repoint(height, digest)) => {
-            panic!("expected a block to forward, got a repoint to `{digest}` at `{height}`")
-        }
-        None => None,
-    }
+/// The digest of the next block to deliver, if any.
+fn next_delivery(tree: &NotarizedTree, now: SystemTime) -> Option<Digest> {
+    tree.next_to_deliver(now).map(|block| block.digest())
 }
 
-/// Simulates the completed forward of `block`: the execution layer
-/// accepted it as its new head, and the resulting forkchoice state is
-/// reported back into the tree.
-fn forwarded(tree: &mut NotarizedTree, block: &Block) {
+/// Simulates the completed delivery of `block`: the execution layer
+/// accepted its new-payload request.
+fn delivered(tree: &mut NotarizedTree, block: &Block) {
+    tree.mark_delivered(&block.digest());
+}
+
+/// Simulates an accepted forkchoice update moving the head onto `block`.
+fn head_moved(tree: &mut NotarizedTree, block: &Block) {
     let local_state = tree
         .local_state()
         .update_head(block.height(), block.digest());
     tree.set_local_state(local_state);
 }
 
+/// Simulates full convergence onto `block`: delivered, then made the head.
+fn converged(tree: &mut NotarizedTree, block: &Block) {
+    delivered(tree, block);
+    head_moved(tree, block);
+}
+
 #[test]
-fn forwards_chain_on_top_of_finalized_tip_in_order() {
+fn delivers_chain_on_top_of_finalized_tip_bottom_up() {
     let finalized = Digest(B256::repeat_byte(0xff));
     let mut tree = empty_tree(finalized);
 
@@ -107,15 +110,24 @@ fn forwards_chain_on_top_of_finalized_tip_in_order() {
     record(&mut tree, &a);
     record(&mut tree, &b);
 
-    let next = next_block(&tree, T0).expect("chain start");
-    assert_eq!(next.digest(), a.digest());
+    // Only the block directly above a known block can be delivered; there
+    // is no known block to move the head onto yet.
+    assert_eq!(next_delivery(&tree, T0), Some(a.digest()));
+    assert_eq!(tree.next_head(T0), None);
 
-    forwarded(&mut tree, &a);
-    let next = next_block(&tree, T0).expect("chain continues");
-    assert_eq!(next.digest(), b.digest());
+    // Once a is delivered, b is deliverable and a is the highest known
+    // block on the path: the head can already move onto it.
+    delivered(&mut tree, &a);
+    assert_eq!(next_delivery(&tree, T0), Some(b.digest()));
+    assert_eq!(tree.next_head(T0), Some((Height::new(11), a.digest())));
 
-    forwarded(&mut tree, &b);
-    assert!(next_block(&tree, T0).is_none());
+    // With the whole path delivered, one forkchoice update covers it.
+    delivered(&mut tree, &b);
+    assert_eq!(next_delivery(&tree, T0), None);
+    assert_eq!(tree.next_head(T0), Some((Height::new(12), b.digest())));
+
+    head_moved(&mut tree, &b);
+    assert_eq!(tree.next_head(T0), None);
 }
 
 #[test]
@@ -126,63 +138,65 @@ fn sibling_notarized_in_later_round_supersedes() {
     let a1 = block(1, 11, finalized);
     let a2 = block(2, 11, finalized);
     record(&mut tree, &a1);
-    // The stale sibling was forwarded and become the head ...
-    forwarded(&mut tree, &a1);
+    // The stale sibling was converged onto and became the head ...
+    converged(&mut tree, &a1);
 
     // ... but a report of its sibling redefines the canonical path; the
     // walk anchors at the finalized tip, and the superseding sibling is
-    // forwarded next.
+    // delivered next and then made the head.
     record(&mut tree, &a2);
-    let next = next_block(&tree, T0).expect("supersede fork");
-    assert_eq!(next.digest(), a2.digest());
+    assert_eq!(next_delivery(&tree, T0), Some(a2.digest()));
+    delivered(&mut tree, &a2);
+    assert_eq!(tree.next_head(T0), Some((Height::new(11), a2.digest())));
 }
 
 #[test]
-fn fork_replays_from_the_nearest_anchor() {
+fn fork_extends_from_the_nearest_known_block() {
     let finalized = Digest(B256::repeat_byte(0xff));
     let mut tree = empty_tree(finalized);
 
-    // F - N0 - N1 - N2 is forwarded in full ...
+    // F - N0 - N1 - N2 is converged onto in full ...
     let n0 = block(1, 11, finalized);
     let n1 = block(2, 12, n0.digest());
     let n2 = block(3, 13, n1.digest());
     record(&mut tree, &n0);
     record(&mut tree, &n1);
     record(&mut tree, &n2);
-    forwarded(&mut tree, &n2);
-    assert!(next_block(&tree, T0).is_none());
+    delivered(&mut tree, &n0);
+    delivered(&mut tree, &n1);
+    converged(&mut tree, &n2);
+    assert_eq!(next_delivery(&tree, T0), None);
 
     // ... when F - N0 - N1' - N3 becomes the canonical chain. The report
-    // arrives before the bodies; forwarding stalls until the ancestry
+    // arrives before the bodies; delivery stalls until the ancestry
     // is walkable.
     let n1p = block(4, 12, n0.digest());
     let n3 = block(5, 13, n1p.digest());
     report_parent(&mut tree, &n3);
     tree.heal();
-    assert!(next_block(&tree, T0).is_none());
+    assert_eq!(next_delivery(&tree, T0), None);
+    assert_eq!(tree.next_head(T0), None);
 
     // N3's body arrives, but its parent N1' is still missing: the
     // ancestry does not reach down to a block the execution layer has.
     tree.record_block(n3.clone().into());
     tree.heal();
-    assert!(next_block(&tree, T0).is_none());
+    assert_eq!(next_delivery(&tree, T0), None);
+    assert_eq!(tree.next_head(T0), None);
 
     // N1' arrives via the fetch machinery, completing the ancestry. The
-    // head (N2) sits off the new canonical path and is no anchor, so the
-    // walk runs to the finalized tip and the path is replayed from there:
-    // the trunk block N0 - already known to the execution layer, which
-    // answers it from its caches - comes first, then the fork branch.
+    // head (N2) sits off the new canonical path, but the trunk block N0 is
+    // known to the execution layer: the fork branch is delivered from
+    // directly above it, and the head can be moved back onto N0 meanwhile.
     tree.record_block(n1p.clone().into());
     tree.heal();
-
-    let next = next_block(&tree, T0).expect("trunk replay");
-    assert_eq!(next.digest(), n0.digest());
-    forwarded(&mut tree, &n0);
-    let next = next_block(&tree, T0).expect("fork branch");
-    assert_eq!(next.digest(), n1p.digest());
-    forwarded(&mut tree, &n1p);
-    let next = next_block(&tree, T0).expect("fork tip");
-    assert_eq!(next.digest(), n3.digest());
+    assert_eq!(next_delivery(&tree, T0), Some(n1p.digest()));
+    assert_eq!(tree.next_head(T0), Some((Height::new(11), n0.digest())));
+    delivered(&mut tree, &n1p);
+    assert_eq!(next_delivery(&tree, T0), Some(n3.digest()));
+    delivered(&mut tree, &n3);
+    assert_eq!(next_delivery(&tree, T0), None);
+    assert_eq!(tree.next_head(T0), Some((Height::new(13), n3.digest())));
 }
 
 #[test]
@@ -190,12 +204,13 @@ fn fork_during_ancestor_fetch_keeps_the_fetch_target() {
     let finalized = Digest(B256::repeat_byte(0xff));
     let mut tree = empty_tree(finalized);
 
-    // F - N1 - N2 is forwarded in full ...
+    // F - N1 - N2 is converged onto in full ...
     let n1 = block(1, 11, finalized);
     let n2 = block(2, 12, n1.digest());
     record(&mut tree, &n1);
     record(&mut tree, &n2);
-    forwarded(&mut tree, &n2);
+    delivered(&mut tree, &n1);
+    converged(&mut tree, &n2);
 
     // ... when the chain forks to F - N3 - N4. N3's report arrives first
     // (from the context preceding N4's validation) and becomes the
@@ -213,24 +228,25 @@ fn fork_during_ancestor_fetch_keeps_the_fetch_target() {
     tree.heal();
 
     // ... and the fetch target is unchanged — N3, re-derived from N4's
-    // context — so the in-flight fetch for N3 is kept, and forwarding
+    // context — so the in-flight fetch for N3 is kept, and delivery
     // stalls on the gap meanwhile.
     assert_eq!(tree.first_missing_ancestor(), Some((round(3), n3.digest())),);
-    assert!(next_block(&tree, T0).is_none());
+    assert_eq!(next_delivery(&tree, T0), None);
 
     // The landed fetch delivers N3's body, completing the ancestry down
-    // to the finalized tip - the anchor while the head sits on the
-    // orphaned branch.
+    // to the finalized tip - the nearest known block while the head sits
+    // on the orphaned branch.
     tree.record_block(n3.clone().into());
     tree.heal();
 
-    let next = next_block(&tree, T0).expect("fork branch");
-    assert_eq!(next.digest(), n3.digest());
-    forwarded(&mut tree, &n3);
-    let next = next_block(&tree, T0).expect("fork tip");
-    assert_eq!(next.digest(), n4.digest());
-    forwarded(&mut tree, &n4);
-    assert!(next_block(&tree, T0).is_none());
+    assert_eq!(next_delivery(&tree, T0), Some(n3.digest()));
+    delivered(&mut tree, &n3);
+    assert_eq!(next_delivery(&tree, T0), Some(n4.digest()));
+    delivered(&mut tree, &n4);
+    assert_eq!(next_delivery(&tree, T0), None);
+    assert_eq!(tree.next_head(T0), Some((Height::new(12), n4.digest())));
+    head_moved(&mut tree, &n4);
+    assert_eq!(tree.next_head(T0), None);
 }
 
 #[test]
@@ -246,16 +262,15 @@ fn heads_off_the_canonical_path_are_no_anchor() {
     record(&mut tree, &b2);
 
     // A head off the canonical path (b1 was superseded by b2) is no
-    // anchor: the walk runs to the finalized tip, and the path is
-    // replayed from there - the common parent a first (a cached no-op
-    // for the execution layer), then the superseding sibling.
-    forwarded(&mut tree, &a);
-    forwarded(&mut tree, &b1);
-    let next = next_block(&tree, T0).expect("replayed parent");
-    assert_eq!(next.digest(), a.digest());
-    forwarded(&mut tree, &a);
-    let next = next_block(&tree, T0).expect("chain continues");
-    assert_eq!(next.digest(), b2.digest());
+    // anchor: the superseding sibling is delivered on top of the common
+    // parent a, which the execution layer knows, and the head - until b2
+    // is delivered - can only be moved back onto a.
+    delivered(&mut tree, &a);
+    converged(&mut tree, &b1);
+    assert_eq!(next_delivery(&tree, T0), Some(b2.digest()));
+    assert_eq!(tree.next_head(T0), Some((Height::new(11), a.digest())));
+    delivered(&mut tree, &b2);
+    assert_eq!(tree.next_head(T0), Some((Height::new(12), b2.digest())));
 }
 
 #[test]
@@ -271,8 +286,9 @@ fn missing_body_caps_the_chain() {
     report_parent(&mut tree, &b);
     record(&mut tree, &c);
 
-    forwarded(&mut tree, &a);
-    assert!(next_block(&tree, T0).is_none());
+    converged(&mut tree, &a);
+    assert_eq!(next_delivery(&tree, T0), None);
+    assert_eq!(tree.next_head(T0), None);
 }
 
 #[test]
@@ -358,7 +374,7 @@ fn finalized_tip_never_regresses() {
     record(&mut tree, &b);
     tree.set_network_finalized_tip(round(1), Height::new(11), a.digest());
     tree.heal();
-    forwarded(&mut tree, &b);
+    converged(&mut tree, &b);
 
     // A tip below the tracked one (replayed on startup) is ignored: the
     // boundary, the tree's data, and the local head stay untouched.
@@ -428,11 +444,11 @@ fn validation_cached_ancestors_complete_the_ancestry_without_a_fetch() {
     let finalized = Digest(B256::repeat_byte(0xff));
     let mut tree = empty_tree(finalized);
 
-    // The old fork F - A is forwarded in full ...
+    // The old fork F - A is converged onto in full ...
     let a = block(1, 11, finalized);
     record(&mut tree, &a);
-    forwarded(&mut tree, &a);
-    assert!(next_block(&tree, T0).is_none());
+    converged(&mut tree, &a);
+    assert_eq!(next_delivery(&tree, T0), None);
 
     // ... while the winning fork's ancestor B1 is cached by its validation
     // — a body without any report; it is never named a pending head.
@@ -449,14 +465,11 @@ fn validation_cached_ancestors_complete_the_ancestry_without_a_fetch() {
     tree.heal();
     assert_eq!(tree.first_missing_ancestor(), None);
 
-    // ... but the heal pass walks the ancestry and re-roots the stranded
-    // meet down to the fork point, and the fork branch is forwarded
-    // from its start.
-    let next = next_block(&tree, T0).expect("fork branch");
-    assert_eq!(next.digest(), b1.digest());
-    forwarded(&mut tree, &b1);
-    let next = next_block(&tree, T0).expect("fork tip");
-    assert_eq!(next.digest(), b2.digest());
+    // ... but the walk down the ancestry finds the fork point at the
+    // finalized tip, and the fork branch is delivered from its start.
+    assert_eq!(next_delivery(&tree, T0), Some(b1.digest()));
+    delivered(&mut tree, &b1);
+    assert_eq!(next_delivery(&tree, T0), Some(b2.digest()));
 }
 
 #[test]
@@ -464,12 +477,13 @@ fn finalized_tip_reroots_a_head_stranded_on_an_orphaned_branch() {
     let finalized = Digest(B256::repeat_byte(0xff));
     let mut tree = empty_tree(finalized);
 
-    // The fork F - A1 - A2 is reported and forwarded in full ...
+    // The fork F - A1 - A2 is reported and converged onto in full ...
     let a1 = block(1, 11, finalized);
     let a2 = block(2, 12, a1.digest());
     record(&mut tree, &a1);
     record(&mut tree, &a2);
-    forwarded(&mut tree, &a2);
+    delivered(&mut tree, &a1);
+    converged(&mut tree, &a2);
 
     // ... when the network finalizes B1, A1's sibling, orphaning the
     // branch the head sits on. The heal pass re-sets the fork's pending
@@ -480,50 +494,55 @@ fn finalized_tip_reroots_a_head_stranded_on_an_orphaned_branch() {
     tree.heal();
     assert_eq!(tree.pending_head.digest, b1.digest());
 
-    // The finalization pipeline delivers B1; the head - sitting on the
-    // orphaned branch - is rebased onto it (mirroring
-    // `forward_finalized`), which also reopens the forwarding gate.
+    // Nothing can be named while B1 is undelivered; its delivery through
+    // the finalization pipeline makes it the head target (a repoint) ...
+    assert_eq!(tree.next_head(T0), None);
+    tree.set_delivered_finalized(Height::new(11), b1.digest());
+    assert_eq!(tree.next_head(T0), Some((Height::new(11), b1.digest())));
+
+    // ... and the accepted forkchoice update rebases the stranded head.
     let local_state = tree
         .local_state()
         .update_finalized(Height::new(11), b1.digest())
         .update_head(Height::new(11), b1.digest());
     tree.set_local_state(local_state);
+    assert_eq!(tree.next_head(T0), None);
 
-    // The next report builds on B2: the rebased head B1 anchors the
-    // walk, so B2 is forwarded without any fetch.
+    // The next report builds on B2: the rebased head B1 is known, so B2
+    // is delivered without any fetch.
     report_parent(&mut tree, &b2);
     tree.record_block(b2.clone().into());
     tree.heal();
-    let next = next_block(&tree, T0).expect("fork branch");
-    assert_eq!(next.digest(), b2.digest());
+    assert_eq!(next_delivery(&tree, T0), Some(b2.digest()));
 }
 
 /// The deferral predicate for consensus requests: a parent converges
-/// imminently when the execution layer already has it (head or finalized
-/// tip), or when it is the pending head, its body in hand, one forward
-/// step above a converged anchor - and does not when it is further out,
-/// its body needs a fetch, or it belongs to a superseded report.
+/// imminently when the execution layer already knows it, or when it is
+/// the pending head, its body in hand, one delivery above a known block -
+/// and does not when it is further out, its body needs a fetch, or it
+/// belongs to a superseded report.
 #[test]
-fn convergence_is_imminent_only_one_step_from_an_anchor() {
+fn convergence_is_imminent_only_one_delivery_from_a_known_block() {
     let finalized = Digest(B256::repeat_byte(0xff));
     let mut tree = empty_tree(finalized);
 
     // The delivered finalized tip is converged already.
     assert!(tree.converges_imminently(finalized));
 
-    // A pending head whose recorded body sits directly on the head (here
-    // still the finalized tip) is one forward step away ...
+    // A pending head whose recorded body sits directly on a known block
+    // (here the finalized tip) is one delivery away ...
     let a = block(1, 11, finalized);
     record(&mut tree, &a);
     assert!(tree.converges_imminently(a.digest()));
 
-    // ... but two steps away is not imminent: b needs a forwarded first.
+    // ... but two deliveries away is not imminent: a needs a delivery
+    // first. The delivery alone suffices; the head need not move.
     let b = block(2, 12, a.digest());
     record(&mut tree, &b);
     assert!(!tree.converges_imminently(b.digest()));
-    forwarded(&mut tree, &a);
+    delivered(&mut tree, &a);
     assert!(tree.converges_imminently(b.digest()));
-    // The superseded a stays imminent only because the head sits on it.
+    // The superseded a stays imminent because the execution layer knows it.
     assert!(tree.converges_imminently(a.digest()));
 
     // A pending head whose body is not in hand needs a fetch first: the
@@ -534,8 +553,8 @@ fn convergence_is_imminent_only_one_step_from_an_anchor() {
     assert!(!tree.converges_imminently(c.digest()));
 
     // A sibling fork one step above the finalized tip is imminent even
-    // though it is not the head's child: the replay from the tip anchor
-    // hands it out directly.
+    // though it is not the head's child: it is delivered directly on top
+    // of the tip.
     let a2 = block(4, 11, finalized);
     record(&mut tree, &a2);
     assert!(tree.converges_imminently(a2.digest()));
@@ -570,7 +589,8 @@ fn depths_measure_backlogs() {
     assert_eq!(tree.depths().convergence_depth, None);
 
     // A re-anchor below the head measures negative.
-    forwarded(&mut tree, &b);
+    delivered(&mut tree, &a);
+    converged(&mut tree, &b);
     tree.set_pending_head(round(4), a.digest());
     assert_eq!(tree.depths().convergence_depth, Some(-1));
 
@@ -586,8 +606,8 @@ fn next_finalized_delivery_is_imminent() {
     let finalized = Digest(B256::repeat_byte(0xff));
     let mut tree = empty_tree(finalized);
 
-    // One above the local finalized tip: the marshal's next dispatch is
-    // the tip itself.
+    // One above the delivered finalized block: the marshal's next
+    // dispatch is the tip itself.
     let next = block(1, 11, finalized);
     tree.set_network_finalized_tip(round(1), Height::new(11), next.digest());
     tree.heal();
@@ -599,53 +619,93 @@ fn next_finalized_delivery_is_imminent() {
     tree.heal();
     assert!(!tree.converges_imminently(above.digest()));
 
-    // The gap closes as deliveries land.
-    let local_state = tree
-        .local_state()
-        .update_finalized(Height::new(11), next.digest())
-        .update_head(Height::new(11), next.digest());
-    tree.set_local_state(local_state);
+    // The gap closes as deliveries land - before the forkchoice update
+    // finalizing them.
+    tree.set_delivered_finalized(Height::new(11), next.digest());
     assert!(tree.converges_imminently(above.digest()));
 }
 
+/// Blocks the execution layer knows: the canonicalized state, the
+/// delivered finalized block, and delivered notarized blocks - not
+/// recorded bodies the execution layer has not seen.
+#[test]
+fn known_blocks_are_the_canonicalized_state_and_delivered_blocks() {
+    let finalized = Digest(B256::repeat_byte(0xff));
+    let mut tree = empty_tree(finalized);
+    assert_eq!(tree.known_height(finalized), Some(Height::new(10)));
+
+    // A recorded body is not known until delivered.
+    let a = block(1, 11, finalized);
+    record(&mut tree, &a);
+    assert!(!tree.is_known(a.digest()));
+    delivered(&mut tree, &a);
+    assert_eq!(tree.known_height(a.digest()), Some(Height::new(11)));
+
+    // Re-recording the body keeps the delivery status.
+    tree.record_block(a.clone().into());
+    assert!(tree.is_known(a.digest()));
+
+    // A delivered finalized block is known before it is canonicalized.
+    let f = block(2, 11, finalized);
+    tree.set_network_finalized_tip(round(2), Height::new(11), f.digest());
+    tree.heal();
+    assert!(!tree.is_known(f.digest()));
+    tree.set_delivered_finalized(Height::new(11), f.digest());
+    assert_eq!(tree.known_height(f.digest()), Some(Height::new(11)));
+    assert_eq!(
+        tree.delivered_finalized(),
+        (Height::new(11), f.digest()),
+        "the delivered finalized block is the next finalized target",
+    );
+
+    // Canonicalizing a finalized block the tree did not see delivered
+    // (the startup backfill) advances the delivered finalized block too.
+    let g = block(3, 12, f.digest());
+    tree.set_network_finalized_tip(round(3), Height::new(12), g.digest());
+    tree.heal();
+    tree.set_local_state(LocalState {
+        head: (Height::new(12), g.digest()),
+        finalized: (Height::new(12), g.digest()),
+    });
+    assert_eq!(tree.delivered_finalized(), (Height::new(12), g.digest()));
+    assert!(tree.is_known(g.digest()));
+}
+
 /// A head stranded on an abandoned notarized branch while consensus
-/// re-anchors on the (already forwarded) finalized tip itself: the walk in
-/// `next_to_forward` cannot reach an anchor - it only hands out blocks
-/// strictly above one - so `repoint_to_finalized_tip` must take over and
-/// report the tip to repoint the head onto.
+/// re-anchors on the (already delivered) finalized tip itself: there is
+/// nothing to deliver, and the head target is the tip.
 #[test]
 fn stranded_head_is_repointed_onto_the_finalized_tip() {
     let finalized = Digest(B256::repeat_byte(0xff));
     let mut tree = empty_tree(finalized);
 
     // No convergence step while the head sits on the finalized tip.
-    assert!(tree.next_to_forward(T0).is_none());
+    assert_eq!(next_delivery(&tree, T0), None);
+    assert_eq!(tree.next_head(T0), None);
 
-    // A block is notarized and forwarded, then its view nullifies and the
-    // network abandons it; consensus re-anchors on the finalized tip.
+    // A block is notarized and converged onto, then its view nullifies
+    // and the network abandons it; consensus re-anchors on the finalized
+    // tip.
     let abandoned = block(1, 11, finalized);
     record(&mut tree, &abandoned);
-    forwarded(&mut tree, &abandoned);
+    converged(&mut tree, &abandoned);
     tree.set_pending_head(round(0), finalized);
     tree.heal();
 
-    // There is no block above the anchor to hand out; the step is the
-    // repoint.
-    let Some(NextToForward::Repoint(height, digest)) = tree.next_to_forward(T0) else {
-        panic!("stranded head must be repointed");
-    };
-    assert_eq!((height, digest), (Height::new(10), finalized));
+    // There is no block to deliver; the head target is the tip.
+    assert_eq!(next_delivery(&tree, T0), None);
+    assert_eq!(tree.next_head(T0), Some((Height::new(10), finalized)));
 
     // The repoint forkchoice update is accepted: the head is back on the
     // tip and there is nothing left to do.
-    let local_state = tree.local_state().update_head(height, digest);
+    let local_state = tree.local_state().update_head(Height::new(10), finalized);
     tree.set_local_state(local_state);
     assert_eq!(tree.local_state().head, (Height::new(10), finalized));
-    assert!(tree.next_to_forward(T0).is_none());
+    assert_eq!(tree.next_head(T0), None);
 }
 
 /// No repoint while the finalized-block delivery for the tip is still
-/// outstanding: the finalization pipeline moves the head then.
+/// outstanding: the tip cannot be named before the execution layer has it.
 #[test]
 fn no_repoint_while_the_finalized_tip_delivery_is_outstanding() {
     let finalized = Digest(B256::repeat_byte(0xff));
@@ -653,24 +713,29 @@ fn no_repoint_while_the_finalized_tip_delivery_is_outstanding() {
 
     let a1 = block(1, 11, finalized);
     record(&mut tree, &a1);
-    forwarded(&mut tree, &a1);
+    converged(&mut tree, &a1);
 
-    // A sibling of the forwarded block finalizes; its delivery has not
+    // A sibling of the converged block finalizes; its delivery has not
     // arrived yet. A report re-anchoring on it must not trigger a repoint.
     let b1 = block(2, 11, finalized);
     tree.set_network_finalized_tip(round(2), Height::new(11), b1.digest());
     tree.set_pending_head(round(2), b1.digest());
     tree.heal();
-    assert!(tree.next_to_forward(T0).is_none());
+    assert_eq!(next_delivery(&tree, T0), None);
+    assert_eq!(tree.next_head(T0), None);
 
-    // The delivery lands (mirroring `forward_finalized`), rebasing the
-    // head; there is nothing left to repoint.
+    // The delivery lands: the head target is the finalized block ...
+    tree.set_delivered_finalized(Height::new(11), b1.digest());
+    assert_eq!(tree.next_head(T0), Some((Height::new(11), b1.digest())));
+
+    // ... and once the forkchoice update rebased the head, there is
+    // nothing left to repoint.
     let local_state = tree
         .local_state()
         .update_finalized(Height::new(11), b1.digest())
         .update_head(Height::new(11), b1.digest());
     tree.set_local_state(local_state);
-    assert!(tree.next_to_forward(T0).is_none());
+    assert_eq!(tree.next_head(T0), None);
 }
 
 #[test]
@@ -678,33 +743,33 @@ fn reported_parents_supersede_by_report_order_not_notarization_order() {
     let finalized = Digest(B256::repeat_byte(0xff));
     let mut tree = empty_tree(finalized);
 
-    // X and its child Y are forwarded in full ...
+    // X and its child Y are converged onto in full ...
     let x = block(1, 11, finalized);
     let y = block(2, 12, x.digest());
     record(&mut tree, &x);
     record(&mut tree, &y);
-    forwarded(&mut tree, &y);
-    assert!(next_block(&tree, T0).is_none());
+    delivered(&mut tree, &x);
+    converged(&mut tree, &y);
+    assert_eq!(next_delivery(&tree, T0), None);
+    assert_eq!(tree.next_head(T0), None);
 
     // ... but Y never certifies, and a later context reports the *older*
-    // X as the parent being built on. With the head still on Y - not on
-    // X's ancestry - the walk anchors at the finalized tip and hands out
-    // X itself, so that its forkchoice update repoints the head.
+    // X as the parent being built on. X is known to the execution layer:
+    // nothing is delivered, the head is repointed onto X directly.
     report_parent(&mut tree, &x);
     tree.heal();
-    let next = next_block(&tree, T0).expect("repoint to older parent");
-    assert_eq!(next.digest(), x.digest());
+    assert_eq!(next_delivery(&tree, T0), None);
+    assert_eq!(tree.next_head(T0), Some((Height::new(11), x.digest())));
     // Once the head is X, there is nothing left to do.
-    forwarded(&mut tree, &x);
-    assert!(next_block(&tree, T0).is_none());
+    head_moved(&mut tree, &x);
+    assert_eq!(tree.next_head(T0), None);
 
     // A context building on Y again re-roots forward: Y is the pending
-    // head once more and, with the head on X, is simply the next block
-    // to forward.
+    // head once more and, being known, simply the next head.
     report_parent(&mut tree, &y);
     tree.heal();
-    let next = next_block(&tree, T0).expect("flip back");
-    assert_eq!(next.digest(), y.digest());
+    assert_eq!(next_delivery(&tree, T0), None);
+    assert_eq!(tree.next_head(T0), Some((Height::new(12), y.digest())));
 }
 
 #[test]
@@ -712,29 +777,28 @@ fn head_reported_while_the_ancestry_was_unwalkable_is_found() {
     let finalized = Digest(B256::repeat_byte(0xff));
     let mut tree = empty_tree(finalized);
 
-    // A is picked up for forwarding ...
+    // A is picked up for delivery ...
     let a = block(1, 11, finalized);
     record(&mut tree, &a);
-    let next = next_block(&tree, T0).expect("chain start");
-    assert_eq!(next.digest(), a.digest());
+    assert_eq!(next_delivery(&tree, T0), Some(a.digest()));
 
-    // ... and while the forward is in flight, B's report arrives without
-    // its body. The completed forward makes A the head, but the pending
+    // ... and while the delivery is in flight, B's report arrives without
+    // its body. The completed delivery makes A known, but the pending
     // head's ancestry is not walkable yet, so nothing can be handed out.
     let b = block(2, 12, a.digest());
     report_parent(&mut tree, &b);
     tree.heal();
-    forwarded(&mut tree, &a);
-    assert!(next_block(&tree, T0).is_none());
+    converged(&mut tree, &a);
+    assert_eq!(next_delivery(&tree, T0), None);
+    assert_eq!(tree.next_head(T0), None);
 
-    // B's body closes the gap: the head A - derived fresh as the anchor
-    // - is found, and B is the next block to forward. (A cached
+    // B's body closes the gap: the known A - derived fresh as the anchor
+    // - is found, and B is the next block to deliver. (A cached
     // convergence position would have missed A's head report while the
     // ancestry was unwalkable and re-selected A forever.)
     tree.record_block(b.clone().into());
     tree.heal();
-    let next = next_block(&tree, T0).expect("gap closed");
-    assert_eq!(next.digest(), b.digest());
+    assert_eq!(next_delivery(&tree, T0), Some(b.digest()));
 }
 
 #[test]
@@ -747,28 +811,63 @@ fn rejected_blocks_are_withheld_until_the_retry_delay_elapses() {
     record(&mut tree, &a);
     record(&mut tree, &b);
 
-    // The rejected candidate halts forwarding until the retry delay has
+    // The rejected candidate halts delivery until the retry delay has
     // fully elapsed.
-    tree.mark_rejected(&a.digest(), T0);
-    assert!(next_block(&tree, T0).is_none());
+    assert!(tree.mark_rejected(&a.digest(), T0));
+    assert_eq!(next_delivery(&tree, T0), None);
     let just_before_retry = T0 + NOTARIZED_REJECTION_RETRY_DELAY - Duration::from_millis(1);
-    assert!(next_block(&tree, just_before_retry).is_none());
-    let next = next_block(&tree, T0 + NOTARIZED_REJECTION_RETRY_DELAY).expect("rejection expired");
-    assert_eq!(next.digest(), a.digest());
+    assert_eq!(next_delivery(&tree, just_before_retry), None);
+    assert_eq!(
+        next_delivery(&tree, T0 + NOTARIZED_REJECTION_RETRY_DELAY),
+        Some(a.digest())
+    );
 
     // Re-recording the body clears the timestamp.
     tree.mark_rejected(&a.digest(), T0);
     tree.record_block(a.clone().into());
     tree.heal();
-    let next = next_block(&tree, T0).expect("timestamp cleared");
-    assert_eq!(next.digest(), a.digest());
+    assert_eq!(next_delivery(&tree, T0), Some(a.digest()));
 
     // Blocks above the rejected one are unaffected once the head is
     // past it.
     tree.mark_rejected(&a.digest(), T0);
-    forwarded(&mut tree, &a);
-    let next = next_block(&tree, T0).expect("chain continues");
-    assert_eq!(next.digest(), b.digest());
+    converged(&mut tree, &a);
+    assert_eq!(next_delivery(&tree, T0), Some(b.digest()));
+
+    // Blocks the tree does not hold cannot be marked.
+    assert!(!tree.mark_rejected(&Digest(B256::repeat_byte(0xaa)), T0));
+}
+
+/// A rejection revokes the block's delivery status: the execution layer
+/// refused a forkchoice update naming it, so it is delivered anew - after
+/// the retry delay - before it is named again.
+#[test]
+fn rejection_revokes_delivery() {
+    let finalized = Digest(B256::repeat_byte(0xff));
+    let mut tree = empty_tree(finalized);
+
+    let a = block(1, 11, finalized);
+    let b = block(2, 12, a.digest());
+    record(&mut tree, &a);
+    record(&mut tree, &b);
+    delivered(&mut tree, &a);
+    delivered(&mut tree, &b);
+    assert_eq!(tree.next_head(T0), Some((Height::new(12), b.digest())));
+
+    // The forkchoice update onto b fails: b is unknown again and withheld,
+    // which also withholds the head move onto its known parent.
+    tree.mark_rejected(&b.digest(), T0);
+    assert!(!tree.is_known(b.digest()));
+    assert_eq!(next_delivery(&tree, T0), None);
+    assert_eq!(tree.next_head(T0), None);
+
+    // After the delay, b is delivered again, and a fresh acceptance clears
+    // the rejection.
+    let retry = T0 + NOTARIZED_REJECTION_RETRY_DELAY;
+    assert_eq!(next_delivery(&tree, retry), Some(b.digest()));
+    assert_eq!(tree.next_head(retry), Some((Height::new(11), a.digest())));
+    delivered(&mut tree, &b);
+    assert_eq!(tree.next_head(T0), Some((Height::new(12), b.digest())));
 }
 
 #[test]

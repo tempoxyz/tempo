@@ -11,7 +11,8 @@ use tempo_payload_types::TempoPayloadAttributes;
 use tempo_primitives::TempoConsensusContext;
 
 use super::harness::{
-    ElCall, ForkchoiceStateExt as _, GENESIS, Harness, built_payload, make_block, round,
+    ElCall, ForkchoiceStateExt as _, GENESIS, Harness, STARTUP_FCU, built_payload, make_block,
+    round,
 };
 use crate::consensus::Digest;
 
@@ -221,20 +222,12 @@ fn build_canceled_while_queued_still_reaffirms_the_head() {
         h.deliver_finalized(b1)
             .await
             .expect("finalized block should be acknowledged");
-        h.wait_until(|| {
-            h.execution
-                .fcus()
-                .iter()
-                .filter(|(head, ..)| *head == d1)
-                .count()
-                >= 2
-        })
-        .await;
 
-        assert!(
-            !h.execution.fcus().iter().any(|(.., attrs)| *attrs),
-            "the canceled build must not submit attributes; the FCU degrades \
-            to a bare head re-affirmation",
+        assert_eq!(
+            h.execution.fcus(),
+            vec![STARTUP_FCU, (d1, d1, false)],
+            "the canceled build must not submit attributes; its FCU degrades \
+            to the bare head and finality update",
         );
         assert!(h.execution.pending_payload_jobs().is_empty());
     });
@@ -344,10 +337,12 @@ fn aborted_payload_job_fails_the_build_without_shutdown() {
 }
 
 #[test_traced]
-fn rejected_build_forkchoice_update_fails_the_build_without_shutdown() {
+fn rejected_build_forkchoice_update_is_fatal() {
     deterministic::Runner::default().start(|context| async move {
         let h = Harness::start_at_genesis(&context);
 
+        // The build re-affirms the tracked state; a rejection means the
+        // execution layer disagrees with the executor about that state.
         h.execution.script_fcu(
             ForkchoiceState::from_finalized_head(GENESIS, GENESIS),
             Ok(PayloadStatusEnum::Invalid {
@@ -357,18 +352,15 @@ fn rejected_build_forkchoice_update_fails_the_build_without_shutdown() {
         let rx = h.build(round(1), GENESIS);
         rx.await.expect_err("the failed FCU must fail the build");
 
-        // Build failures are not fatal for the executor.
-        let b1 = make_block(1, 1, GENESIS);
-        let verdict = h
-            .verify(round(2), b1)
+        h.actor
             .await
-            .expect("verification should complete");
-        assert!(verdict.is_some());
+            .expect("actor should shut down cleanly on a rejected build forkchoice update");
+        assert!(h.execution.pending_payload_jobs().is_empty());
     });
 }
 
 #[test_traced]
-fn forkchoice_update_transport_error_fails_the_build_without_shutdown() {
+fn build_forkchoice_update_transport_error_is_fatal() {
     deterministic::Runner::default().start(|context| async move {
         let h = Harness::start_at_genesis(&context);
 
@@ -380,14 +372,10 @@ fn forkchoice_update_transport_error_fails_the_build_without_shutdown() {
         rx.await
             .expect_err("an FCU transport error must fail the build");
 
-        // Build transport failures are request-local. The actor remains
-        // available for later consensus work.
-        let b1 = make_block(1, 1, GENESIS);
-        let verdict = h
-            .verify(round(2), b1)
+        h.actor
             .await
-            .expect("verification should complete after the FCU transport error");
-        assert!(verdict.is_some());
+            .expect("actor should shut down cleanly on a build forkchoice transport error");
+        assert!(h.execution.pending_payload_jobs().is_empty());
     });
 }
 

@@ -1,7 +1,8 @@
 //! The notarized tree: the executor's record of the chain above the
-//! finalized tip, of the forkchoice state the execution layer last
-//! accepted, and of how far that state has converged onto the pending
-//! head's ancestry.
+//! finalized tip, of which of those blocks the execution layer has
+//! accepted, of the forkchoice state the execution layer last accepted,
+//! and of how far that state has converged onto the pending head's
+//! ancestry.
 
 use std::{
     collections::HashMap,
@@ -22,23 +23,34 @@ use crate::consensus::{Digest, block::Block};
 mod tests;
 
 /// How long a notarized block the execution layer failed to process is
-/// withheld from forwarding before it becomes eligible for a retry.
+/// withheld from delivery and forkchoice updates before it becomes
+/// eligible for a retry.
 pub(super) const NOTARIZED_REJECTION_RETRY_DELAY: Duration = Duration::from_secs(10);
 
-/// A block known to the executor together with the validator set to validate
-/// it against.
+/// A block known to the executor together with what the execution layer
+/// has said about it.
 #[derive(Clone, Debug)]
 pub(super) struct BlockEntry {
     pub(super) block: Arc<Block>,
+    /// The execution layer accepted the block through a new-payload request.
+    delivered: bool,
     rejected_at: Option<SystemTime>,
 }
 
 impl BlockEntry {
-    /// Whether the block may be forwarded at `now`: it is not withheld by
-    /// a rejection younger than [`NOTARIZED_REJECTION_RETRY_DELAY`].
+    /// Whether the block may be delivered or made the head at `now`: it is
+    /// not withheld by a rejection younger than
+    /// [`NOTARIZED_REJECTION_RETRY_DELAY`].
     fn forwardable(&self, now: SystemTime) -> bool {
         self.rejected_at
             .is_none_or(|rejected_at| now >= rejected_at + NOTARIZED_REJECTION_RETRY_DELAY)
+    }
+
+    /// The round the block's parent was notarized in, derived from the
+    /// block's consensus context.
+    fn parent_round(&self) -> Round {
+        let context = self.block.context();
+        Round::new(context.round.epoch(), context.parent.0)
     }
 }
 
@@ -91,8 +103,9 @@ impl LocalState {
     }
 }
 
-/// Tracks notarized blocks at the tip of the chain and returns which block can
-/// be forwarded to the EL next.
+/// Tracks notarized blocks at the tip of the chain and returns which block
+/// can be delivered to the execution layer next, and which block the
+/// execution layer's head can be moved onto.
 ///
 /// The canonical target is `pending_head`: the parent of the most recent
 /// consensus context. This is expected to be reported by the simplex engine via
@@ -113,29 +126,33 @@ impl LocalState {
 /// The tree holds data strictly above the finalized *network* tip,
 /// which it tracks itself: recording and pruning are guarded against it.
 ///
-/// The tree is self-canonicalizing: [`Self::next_to_forward`] walks the
-/// pending head's ancestry down to the nearest *anchor* the execution
-/// layer provably has - its own head, or the network's finalized tip -
-/// and hands out the block directly above it, derived fresh on every
-/// query. There is no cached convergence state that could go stale
-/// against a fork. When the pending head is the finalized tip itself,
-/// there is no block above the anchor: the step is a bare forkchoice
-/// update repointing the head onto the tip.
+/// # Delivery and forkchoice are separate steps
+///
+/// [`Self::next_to_deliver`] hands out the next block whose parent the
+/// execution layer *knows* (accepted through a delivery or validation, or
+/// part of the tracked state) for a bare new-payload request.
+/// [`Self::next_head`] names the highest known block on the pending head's
+/// ancestry for a forkchoice update, so an update can never make the
+/// execution layer sync. Both walk the ancestry fresh on every query.
 ///
 /// Recording methods only insert primary state (the pending head, the
-/// local state, and bodies, guarded against the finalized tip);
-/// [`Self::heal`], run by the actor once per event-loop iteration, prunes
-/// what the advancing finalized tip covers.
+/// local state, bodies and their delivery status, guarded against the
+/// finalized tip); [`Self::heal`], run by the actor once per event-loop
+/// iteration, prunes what the advancing finalized tip covers.
 #[derive(Debug)]
 pub(super) struct NotarizedTree {
     /// The latest observed finalized tip of the network: the tree's
     /// lower bound. The tree only records notarized blocks above this finalized
     /// tip.
     network_finalized_tip: (Round, Height, Digest),
+    /// The highest finalized block the execution layer accepted through a
+    /// new-payload request: the finalized side of the next forkchoice
+    /// update. Sits between `local_finalized_tip` and
+    /// `network_finalized_tip`.
+    delivered_finalized: (Height, Digest),
     /// The finalized tip as canonicalized on the execution layer: the
     /// finalized side of the last accepted forkchoice state. Trails
-    /// `network_finalized_tip` until the finalization pipeline catches up,
-    /// which forwarding is gated on.
+    /// `delivered_finalized` until the forkchoice update lands.
     local_finalized_tip: (Height, Digest),
     /// The pending head reported by the most recent consensus context: the
     /// tip of the canonical path the execution layer's head is converged
@@ -163,36 +180,6 @@ pub(super) struct Depths {
     /// below the head; `None` while the pending head's body - and with it
     /// its height - is unknown.
     pub(super) convergence_depth: Option<i64>,
-}
-
-/// The next convergence step toward the pending head, returned by
-/// [`NotarizedTree::next_to_forward`].
-#[derive(Debug)]
-pub(super) enum NextToForward {
-    /// Forward this block: a new-payload request followed by a forkchoice
-    /// update making it the head.
-    Block(Arc<Block>),
-    /// Repoint the head onto the already-known finalized tip with a bare
-    /// forkchoice update; there is no block to deliver.
-    Repoint(Height, Digest),
-}
-
-impl NextToForward {
-    /// The digest of the block the step converges the head onto.
-    pub(super) fn digest(&self) -> Digest {
-        match self {
-            Self::Block(block) => block.digest(),
-            Self::Repoint(_, digest) => *digest,
-        }
-    }
-
-    /// The height of the block the step converges the head onto.
-    pub(super) fn height(&self) -> Height {
-        match self {
-            Self::Block(block) => block.height(),
-            Self::Repoint(height, _) => *height,
-        }
-    }
 }
 
 /// The parent of the most recent consensus context: the notarized block
@@ -224,6 +211,7 @@ impl NotarizedTree {
     ) -> Self {
         Self {
             network_finalized_tip,
+            delivered_finalized: local_state.finalized,
             local_finalized_tip: local_state.finalized,
             pending_head: PendingHead::finalized_tip(network_finalized_tip),
             local_head: local_state.head,
@@ -239,6 +227,12 @@ impl NotarizedTree {
             head: self.local_head,
             finalized: self.local_finalized_tip,
         }
+    }
+
+    /// The highest finalized block the execution layer accepted: the
+    /// finalized target of the next forkchoice update.
+    pub(super) fn delivered_finalized(&self) -> (Height, Digest) {
+        self.delivered_finalized
     }
 
     /// A snapshot of the tree's convergence measures, for metrics.
@@ -263,44 +257,59 @@ impl NotarizedTree {
         }
     }
 
-    /// Returns if `digest` is at the head or finalized tip of the tracked EL state.
-    pub(super) fn is_local_notarized_or_finalized_tip(&self, digest: Digest) -> bool {
-        self.local_head.1 == digest || self.local_finalized_tip.1 == digest
+    /// Whether the execution layer has `digest`: the tracked head or
+    /// finalized block, the delivered finalized block, or a delivered entry.
+    pub(super) fn is_known(&self, digest: Digest) -> bool {
+        self.known_height(digest).is_some()
     }
 
-    /// Returns if `digest` is at the head of the tracked EL state.
-    pub(super) fn is_local_head(&self, digest: Digest) -> bool {
-        self.local_head.1 == digest
+    /// The height of `digest` if the execution layer has it.
+    pub(super) fn known_height(&self, digest: Digest) -> Option<Height> {
+        if self.local_head.1 == digest {
+            return Some(self.local_head.0);
+        }
+        if self.local_finalized_tip.1 == digest {
+            return Some(self.local_finalized_tip.0);
+        }
+        if self.delivered_finalized.1 == digest {
+            return Some(self.delivered_finalized.0);
+        }
+        self.blocks
+            .get(&digest)
+            .filter(|entry| entry.delivered)
+            .map(|entry| entry.block.height())
     }
 
-    /// Whether convergence is expected to make `digest` known to the
-    /// execution layer imminently (or if the execution layer is already
-    /// converged).
-    ///
-    /// These are the conditions:
-    ///
-    /// 1. `digest` is the local finalized tip or head, or
-    /// 2. `digest` is the network finalized tip, and the network finalized
-    ///    tip is the next block to be delivered (known fact: marshal only
-    ///    delivers finalized tips if a certificate and block are available).
-    /// 3. `digest` is the pending head, its body is in hand, and it sits
-    ///    directly on a converged anchor - the local head, or the local
-    ///    finalized tip for a fork switch replayed from the tip. One
-    ///    forward step remains either way.
+    /// Whether the execution layer has `digest` or is one step from it: the
+    /// network finalized tip about to be delivered by the marshal actor, or
+    /// the pending head with its body in hand and its parent known.
     pub(super) fn converges_imminently(&self, digest: Digest) -> bool {
-        self.is_local_notarized_or_finalized_tip(digest)
+        self.is_known(digest)
             || (self.network_finalized_tip.2 == digest
-                && self.local_finalized_tip.0.next() == self.network_finalized_tip.1)
+                && self.delivered_finalized.0.next() == self.network_finalized_tip.1)
             || (self.pending_head.digest == digest
-                && self.blocks.get(&digest).is_some_and(|entry| {
-                    self.is_local_notarized_or_finalized_tip(entry.block.parent_digest())
-                }))
+                && self
+                    .blocks
+                    .get(&digest)
+                    .is_some_and(|entry| self.is_known(entry.block.parent_digest())))
     }
 
-    /// Records a forkchoice state newly accepted by the execution layer.
+    /// Records an accepted forkchoice state. A finalized block the tree did
+    /// not see delivered (startup backfill) advances the delivered one too.
     pub(super) fn set_local_state(&mut self, local_state: LocalState) {
         self.local_head = local_state.head;
         self.local_finalized_tip = local_state.finalized;
+        if local_state.finalized.0 > self.delivered_finalized.0 {
+            self.delivered_finalized = local_state.finalized;
+        }
+    }
+
+    /// Records a finalized block the execution layer accepted; a no-op at
+    /// or below the tracked height.
+    pub(super) fn set_delivered_finalized(&mut self, height: Height, digest: Digest) {
+        if height > self.delivered_finalized.0 {
+            self.delivered_finalized = (height, digest);
+        }
     }
 
     /// Records a consensus context's parent as the pending head of the
@@ -315,6 +324,8 @@ impl NotarizedTree {
     /// Records the body of a block unless the finalized tip covers its
     /// height. Such a stale block is expunged so that it is neither
     /// fetched nor forwarded again.
+    ///
+    /// Re-recording clears a rejection but keeps the delivery status.
     pub(super) fn record_block(&mut self, block: Arc<Block>) {
         if block.height() <= self.network_finalized_tip.1 {
             debug!(
@@ -325,10 +336,16 @@ impl NotarizedTree {
             self.remove(&block.digest());
             return;
         }
+        let digest = block.digest();
+        let delivered = self
+            .blocks
+            .get(&digest)
+            .is_some_and(|entry| entry.delivered);
         self.blocks.insert(
-            block.digest(),
+            digest,
             BlockEntry {
                 block,
+                delivered,
                 rejected_at: None,
             },
         );
@@ -348,11 +365,11 @@ impl NotarizedTree {
     /// traded for recovery speed, bounded by the advancing finalized tip,
     /// which sweeps everything it passes.
     pub(super) fn heal(&mut self) {
-        // `first_missing_ancestor` and `next_to_forward` bound their walks
-        // by the network's finalized tip, which is only correct while the
-        // locally canonicalized finalized tip does not run ahead of it. The
-        // marshal actor upholds this: it reports a finalized tip before
-        // delivering the finalized blocks covered by it.
+        // `first_missing_ancestor`, `next_to_deliver` and `next_head` bound
+        // their walks by the network's finalized tip, which is only correct
+        // while the locally canonicalized finalized tip does not run ahead
+        // of it. The marshal actor upholds this: it reports a finalized tip
+        // before delivering the finalized blocks covered by it.
         debug_assert!(
             self.local_finalized_tip.0 <= self.network_finalized_tip.1,
             "the locally canonicalized finalized tip must never run ahead of \
@@ -372,14 +389,25 @@ impl NotarizedTree {
         }
     }
 
-    /// Marks the block as rejected by the execution layer at `now`,
-    /// excluding it from forwarding until
-    /// [`NOTARIZED_REJECTION_RETRY_DELAY`] has elapsed or the entry is
-    /// expunged.
-    pub(super) fn mark_rejected(&mut self, digest: &Digest, now: SystemTime) {
+    /// Marks the block as accepted by the execution layer, clearing any
+    /// rejection.
+    pub(super) fn mark_delivered(&mut self, digest: &Digest) {
         if let Some(entry) = self.blocks.get_mut(digest) {
-            entry.rejected_at = Some(now);
+            entry.delivered = true;
+            entry.rejected_at = None;
         }
+    }
+
+    /// Withholds the block from delivery for [`NOTARIZED_REJECTION_RETRY_DELAY`]
+    /// after `now` and revokes its delivery status. Returns whether the tree
+    /// holds the block.
+    pub(super) fn mark_rejected(&mut self, digest: &Digest, now: SystemTime) -> bool {
+        let Some(entry) = self.blocks.get_mut(digest) else {
+            return false;
+        };
+        entry.rejected_at = Some(now);
+        entry.delivered = false;
+        true
     }
 
     /// Removes a block from the tree, re-setting a pending head naming it
@@ -417,45 +445,45 @@ impl NotarizedTree {
         }
     }
 
-    /// Returns the next convergence step toward the pending head.
-    ///
-    /// Returns a block if it is directly above the anchor (this can be
-    /// the local head or local finalized tip).
-    ///
-    /// Returns just a digest if the execution layer is to be re-pointed to the
-    /// an ancestor of the current local head.
-    ///
-    /// *NOTE:* This digest right now only works for the finalized tip.
-    ///
-    /// **FIXME:** Allow for repointing to any ancestor.
-    pub(super) fn next_to_forward(&self, now: SystemTime) -> Option<NextToForward> {
-        if self.local_finalized_tip.0 < self.network_finalized_tip.1 {
-            return None;
-        }
-        let (_, finalized_height, finalized_digest) = self.network_finalized_tip;
+    /// The lowest block on the pending head's ancestry the execution layer
+    /// does not have but whose parent it has, if the ancestry is walkable
+    /// and no block on the way is withheld.
+    pub(super) fn next_to_deliver(&self, now: SystemTime) -> Option<Arc<Block>> {
+        let (_, finalized_height, _) = self.network_finalized_tip;
 
-        let mut child: Option<&BlockEntry> = None;
+        let mut candidate: Option<&BlockEntry> = None;
         let mut digest = self.pending_head.digest;
-        while digest != self.local_head.1 && digest != finalized_digest {
+        while !self.is_known(digest) {
             let entry = self.blocks.get(&digest)?;
-            if entry.block.height() <= finalized_height {
+            if entry.block.height() <= finalized_height || !entry.forwardable(now) {
                 return None;
             }
-            child = Some(entry);
+            candidate = Some(entry);
             digest = entry.block.parent_digest();
         }
-        match child {
-            Some(entry) => entry
-                .forwardable(now)
-                .then(|| NextToForward::Block(entry.block.clone())),
-            // If the anchor is the local finalized tip and the notarized branch
-            // is stranded, repoint to the finalized tip.
-            //
-            // NOTE: This works because we short-circuit on
-            // `local_finalized < network_finalized`. If we did not do that,
-            // this would potentially trigger a SYNCING.
-            None => (digest == finalized_digest && self.local_head.1 != finalized_digest)
-                .then_some(NextToForward::Repoint(finalized_height, finalized_digest)),
+        candidate.map(|entry| entry.block.clone())
+    }
+
+    /// The highest block on the pending head's ancestry the execution layer
+    /// has, if it is not the head already, the ancestry down to it is
+    /// walkable, and no block on the way is withheld. Bottoming out on the
+    /// finalized tip repoints onto it.
+    pub(super) fn next_head(&self, now: SystemTime) -> Option<(Height, Digest)> {
+        let (_, finalized_height, _) = self.network_finalized_tip;
+
+        let mut digest = self.pending_head.digest;
+        loop {
+            if digest == self.local_head.1 {
+                return None;
+            }
+            if let Some(height) = self.known_height(digest) {
+                return Some((height, digest));
+            }
+            let entry = self.blocks.get(&digest)?;
+            if entry.block.height() <= finalized_height || !entry.forwardable(now) {
+                return None;
+            }
+            digest = entry.block.parent_digest();
         }
     }
 
@@ -483,8 +511,7 @@ impl NotarizedTree {
             if entry.block.height() <= finalized_height {
                 break;
             }
-            let context = entry.block.context();
-            round = Round::new(context.round.epoch(), context.parent.0);
+            round = entry.parent_round();
             digest = entry.block.parent_digest();
         }
         None
