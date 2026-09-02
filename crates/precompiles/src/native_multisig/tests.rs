@@ -277,6 +277,8 @@ fn update_requires_root_authorized_direct_outer_call() -> eyre::Result<()> {
 fn update_rejects_invalid_state_and_version() {
     let initial = initial_config();
     let account = initial.derive_account().unwrap();
+    let mut other_initial = initial.clone();
+    other_initial.salt = B256::repeat_byte(0x42);
     let mut current = initial.clone();
     current.version = 1;
     let mut overflow = current.clone();
@@ -289,6 +291,7 @@ fn update_rejects_invalid_state_and_version() {
             &initial,
             B256::repeat_byte(1),
         ),
+        ("initial for another account", &other_initial, B256::ZERO),
         ("current against zero state", &current, B256::ZERO),
         (
             "current against mismatching state",
