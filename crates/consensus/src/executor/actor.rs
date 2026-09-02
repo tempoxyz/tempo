@@ -643,6 +643,11 @@ where
         self.notarized_tree
             .set_delivered_finalized(block.height(), block.digest());
         if block.height() <= self.notarized_tree.local_state().finalized.0 {
+            // NOTE: this block is already final on the execution layer. This
+            // can happen if marshal is anchored below the EL and delivers
+            // finalized blocks the EL already knows about. In this case, it
+            // makes sense to ACK immediately rather than wait for an FCU
+            // sweep.
             self.acknowledge(request);
         } else {
             self.pending_acknowledgements.push_back(request);
