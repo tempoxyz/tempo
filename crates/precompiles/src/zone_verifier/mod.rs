@@ -18,16 +18,16 @@ const CONFIG_V1: &[u8] = &[1];
 const MAX_FUTURE_SKEW_MILLIS: u64 = 300_000;
 
 /// Measurements for the T11 EIF built from `tempoxyz/zones` PR 1258 at commit
-/// `b1fb22706409e730b6863b8b3da6e7fef517a0f7`.
+/// `0ce969b6e78008005ae904ae79bee04d40d1997c`.
 const APPROVED_PCRS: Option<[[u8; 48]; 3]> = Some([
     alloy::primitives::hex!(
-        "b4f039505618f3da8ca8884a048bcee39864b7ad8b861f48e9abb313ee3f32d0f80df102baf45f00e60ddc1cc8a2a768"
+        "2b06c5f176f84a2affa5f7999d7db771d7ecda8a4550af6441e2f728b5cfaf46d99e79a5a9e50fea84de91daa728b3f2"
     ),
     alloy::primitives::hex!(
         "baa774ff6af9362bc5c4ecafa99c98c371d3d1e1e040e99890b9ba13d81ded18408fa2a65affa148ee2aaafa09142c81"
     ),
     alloy::primitives::hex!(
-        "e98c7b002bc4d34cfe39149b69cac66b1adf2fca340e32112bc4e13125f2921f3e567b4a032778d6b42db1a489131d1d"
+        "3f00d3a7a3edd1df4814108f7e92b74d78bd222fb45eb248a1256a4ca7cdd9240882459f2a7c04ae72ed6245432cf070"
     ),
 ]);
 
@@ -170,11 +170,7 @@ mod tests {
             ))
         );
         assert_eq!(
-            batch_commitment(
-                42_431,
-                Address::from([0x11; 20]),
-                &call(),
-            ),
+            batch_commitment(42_431, Address::from([0x11; 20]), &call(),),
             B256::from(alloy::primitives::hex!(
                 "764c1f24b00b253ae1a06fe31ba8858a2352e9350e09a6c6028bea47233c0cb9"
             ))
