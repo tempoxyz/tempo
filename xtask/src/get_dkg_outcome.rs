@@ -1,5 +1,7 @@
 //! Dump DKG outcome from a block's extra_data.
 
+use std::sync::Arc;
+
 use alloy::{
     primitives::{B256, Bytes},
     providers::{Provider, ProviderBuilder},
@@ -7,33 +9,25 @@ use alloy::{
 use commonware_codec::{Encode as _, ReadExt as _};
 use commonware_consensus::types::{Epoch, Epocher as _, FixedEpocher};
 use commonware_cryptography::ed25519::PublicKey;
-use commonware_utils::{N3f1, NZU64};
-use eyre::{Context as _, eyre};
+use commonware_utils::N3f1;
+use eyre::{Context as _, OptionExt as _, ensure, eyre};
 use serde::Serialize;
+use tempo_chainspec::spec::TempoChainSpec;
 use tempo_dkg_onchain_artifacts::OnchainDkgOutcome;
 
 #[derive(Debug, clap::Args)]
-#[clap(group = clap::ArgGroup::new("target").required(true))]
 pub(crate) struct GetDkgOutcome {
-    /// RPC endpoint URL (http://, https://, ws://, or wss://)
+    /// Chain to inspect (mainnet, moderato, testnet, dev, or a genesis JSON path).
+    #[arg(long, short, value_parser = tempo_chainspec::spec::chain_value_parser)]
+    chain: Arc<TempoChainSpec>,
+
+    /// RPC endpoint URL override. Required when the selected chainspec does not define a default.
     #[arg(long)]
-    rpc_url: String,
+    rpc_url: Option<String>,
 
-    /// Block number to query directly (use when epoch length varies)
-    #[arg(long, group = "target")]
-    block: Option<u64>,
-
-    /// Block hash to query directly
-    #[arg(long, group = "target")]
-    block_hash: Option<B256>,
-
-    /// Epoch number to query (requires --epoch-length)
-    #[arg(long, group = "target", requires = "epoch_length")]
-    epoch: Option<u64>,
-
-    /// Epoch length in blocks (required with --epoch)
-    #[arg(long, requires = "epoch")]
-    epoch_length: Option<u64>,
+    /// Epoch number to query
+    #[arg(long)]
+    epoch: u64,
 }
 
 #[derive(Serialize)]
@@ -66,42 +60,45 @@ fn pubkey_to_hex(pk: &PublicKey) -> String {
 
 impl GetDkgOutcome {
     pub(crate) async fn run(self) -> eyre::Result<()> {
+        let Self {
+            chain,
+            rpc_url,
+            epoch,
+        } = self;
+
+        let rpc_url = rpc_url
+            .or_else(|| chain.default_follow_url().map(str::to_owned))
+            .ok_or_eyre(
+                "selected chainspec does not define a default RPC URL; pass --rpc-url for a custom network",
+            )?;
+
         let provider = ProviderBuilder::new()
-            .connect(&self.rpc_url)
+            .connect(&rpc_url)
             .await
             .wrap_err("failed to connect to RPC")?;
 
-        let block = if let Some(hash) = self.block_hash {
-            provider
-                .get_block_by_hash(hash)
-                .await
-                .wrap_err_with(|| format!("failed to fetch block hash `{hash}`"))?
-                .ok_or_else(|| eyre!("block {hash} not found"))?
-        } else {
-            let block_number = if let Some(block) = self.block {
-                block
-            } else {
-                let epoch = self.epoch.expect("epoch required when block not provided");
-                let epoch_length = self.epoch_length.expect("epoch_length required with epoch");
-                let epocher = FixedEpocher::new(NZU64!(epoch_length));
-                epocher
-                    .last(Epoch::new(epoch))
-                    .expect("fixed epocher is valid for all epochs")
-                    .get()
-            };
+        let epoch_length = chain
+            .info
+            .epoch_length()
+            .ok_or_eyre("epochLength not found in chainspec")?;
 
-            provider
-                .get_block_by_number(block_number.into())
-                .await
-                .wrap_err_with(|| format!("failed to fetch block number `{block_number}`"))?
-                .ok_or_else(|| eyre!("block {block_number} not found"))?
-        };
+        let epocher = FixedEpocher::new(epoch_length);
+        let block_number = epocher
+            .last(Epoch::new(epoch))
+            .expect("fixed epocher is valid for all epochs")
+            .get();
+
+        let block = provider
+            .get_block_by_number(block_number.into())
+            .await
+            .wrap_err_with(|| format!("failed to fetch block number `{block_number}`"))?
+            .ok_or_else(|| eyre!("block {block_number} not found"))?;
 
         let block_number = block.header.number;
         let block_hash = block.header.hash;
         let extra_data = &block.header.inner.extra_data;
 
-        eyre::ensure!(
+        ensure!(
             !extra_data.is_empty(),
             "block {} has empty extra_data (not an epoch boundary?)",
             block_number
@@ -111,7 +108,6 @@ impl GetDkgOutcome {
             .wrap_err("failed to parse DKG outcome from extra_data")?;
 
         let sharing = outcome.sharing();
-
         let info = DkgOutcomeInfo {
             epoch: outcome.epoch.get(),
             block_number,
