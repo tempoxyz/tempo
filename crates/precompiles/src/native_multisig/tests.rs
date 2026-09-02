@@ -583,21 +583,26 @@ mod auth {
         let nested_account = nested_config.derive_account().unwrap();
         let outer_config = initial_config(&[(nested_account, 1)], 1);
         let outer_account = outer_config.derive_account().unwrap();
-        let nested = signed_initial(
-            nested_config,
+        let outer = |nested| {
+            MultisigSignature::try_new(
+                outer_account,
+                outer_config.clone(),
+                vec![TempoSignature::Multisig(nested)],
+            )
+            .unwrap()
+        };
+
+        let valid = outer(signed_initial(
+            nested_config.clone(),
             multisig_digest(inner_digest, outer_account, 0),
             &[&owner],
-        );
-        let outer = MultisigSignature::try_new(
-            outer_account,
-            outer_config,
-            vec![TempoSignature::Multisig(nested)],
-        )
-        .unwrap();
-
+        ));
         assert_eq!(
-            NativeMultisig::verify_authorization_quorum(inner_digest, &outer),
+            NativeMultisig::verify_authorization_quorum(inner_digest, &valid),
             Ok(())
         );
+
+        let invalid = outer(signed_initial(nested_config, inner_digest, &[&owner]));
+        assert_quorum_error(&invalid, MultisigQuorumError::SignerNotOwner);
     }
 }
