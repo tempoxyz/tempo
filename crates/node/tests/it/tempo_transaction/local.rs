@@ -158,13 +158,9 @@ async fn test_native_multisig_rejects_code_and_delegation() -> eyre::Result<()> 
         );
         let signature =
             multisig::sign_multisig(account, tx.signature_hash(), config, &[alice, bob])?;
-        multisig::reject(
-            &env,
-            tx,
-            signature,
-            "native multisig account cannot have code or EIP-7702 delegation",
-        )
-        .await?;
+        let expected_reason =
+            format!("native multisig account {account} cannot have code or EIP-7702 delegation");
+        multisig::reject(&env, tx, signature, &expected_reason).await?;
     }
     Ok(())
 }
