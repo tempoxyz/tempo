@@ -77,6 +77,9 @@ pub struct TempoPooledTransaction {
     /// Stores `(fee_token, balance_slot)` so the payload builder's state-aware iterator
     /// can check if the fee payer's balance was modified without recomputing the keccak.
     fee_balance_slot: OnceLock<Option<(Address, U256)>>,
+    /// In-memory size of the transaction, computed once since sub-pool accounting queries it on
+    /// every insertion, promotion and removal.
+    size: usize,
 }
 
 impl TempoPooledTransaction {
@@ -109,6 +112,7 @@ impl TempoPooledTransaction {
             calc_gas_balance_spending(transaction.gas_limit(), transaction.max_fee_per_gas())
                 .saturating_add(value);
         let fee_token_cost = cost - value;
+        let size = transaction.size();
         Self {
             inner: EthPooledTransaction {
                 transaction,
@@ -128,6 +132,7 @@ impl TempoPooledTransaction {
             key_authorization_signer_subject: OnceLock::new(),
             key_authorization_target_subject: OnceLock::new(),
             fee_balance_slot: OnceLock::new(),
+            size,
         }
     }
 
@@ -397,6 +402,7 @@ impl TempoPooledTransaction {
             key_expiry: OnceLock::new(),
             resolved_fee_token: OnceLock::new(),
             key_authorization_signer_subject: OnceLock::new(),
+            size: self.size,
         }
     }
 
@@ -744,8 +750,9 @@ impl PoolTransactionError for TempoPoolTransactionError {
 }
 
 impl InMemorySize for TempoPooledTransaction {
+    #[inline]
     fn size(&self) -> usize {
-        self.inner.size()
+        self.size
     }
 }
 
