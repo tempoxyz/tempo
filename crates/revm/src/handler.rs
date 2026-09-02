@@ -46,10 +46,10 @@ use tempo_precompiles::{
     error::TempoPrecompileError,
     nonce::{INonce::getNonceCall, NonceManager},
     storage::{
-        Handler as _, PrecompileStorageProvider, StorageActions, StorageCtx,
+        Handler as _, PrecompileStorageProvider, StorageActions, StorageCtx, StorageKey,
         evm::EvmPrecompileStorageProvider,
     },
-    tip20::{ITIP20::InsufficientBalance, TIP20Error, TIP20Token},
+    tip20::{ITIP20::InsufficientBalance, TIP20Error, TIP20Token, tip20_slots},
     tip20_channel_reserve::TIP20ChannelReserve,
 };
 use tempo_primitives::{
@@ -2458,12 +2458,10 @@ pub fn get_token_balance<JOURNAL>(
 where
     JOURNAL: JournalTr,
 {
-    // Address has already been validated as having TIP20 prefix
+    // Address has already been validated as having TIP20 prefix. Derive the balance slot directly
+    // instead of constructing a full token handle for a single mapping lookup.
     journal.load_account(token)?;
-    let balance_slot = TIP20Token::from_address(token)
-        .expect("TIP20 prefix already validated")
-        .balances[sender]
-        .slot();
+    let balance_slot = sender.mapping_slot(tip20_slots::BALANCES);
     let balance = journal.sload(token, balance_slot)?.data;
 
     Ok(balance)

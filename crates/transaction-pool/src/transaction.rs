@@ -430,7 +430,7 @@ impl TempoPooledTransaction {
                 .resolved_fee_token()
                 .unwrap_or_else(|| self.inner().fee_token().unwrap_or(DEFAULT_FEE_TOKEN));
             let fee_payer = self.fee_payer().ok()?;
-            let slot = TIP20Token::from_address_unchecked(fee_token).balances[fee_payer].slot();
+            let slot = fee_payer.mapping_slot(tip20_slots::BALANCES);
             Some((fee_token, slot))
         })
     }
