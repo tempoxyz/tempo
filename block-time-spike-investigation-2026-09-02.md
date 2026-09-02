@@ -117,12 +117,14 @@ p50/p90/p99 by 11.6%/10.7%/27.0%; builder latency remained neutral.
 | CPU swap | [33421299267](https://github.com/tempoxyz/tempo/actions/runs/33421299267) / `21ae8a6c-1756-4696-b9f6-e265adb201e8` | 496 | 7,060 | 12,504 | 34 |
 | RPC reversal | [33421299272](https://github.com/tempoxyz/tempo/actions/runs/33421299272) / `eaf1a51f-c946-46bc-9c03-9085c6335ff1` | 475 | 4,097 | 10,588 | 10 |
 
-The runner maps `/reth-bench-a` to `/dev/nvme2n1` and
-`/reth-bench-b` to `/dev/nvme3n1`. The harness assigns CPU set A as
-`0-7,16-23` and CPU set B as `8-15,24-31`. The diagnostic result says the
-slow series follows the physical A-datadir + B-CPU combination, not a logical
-validator role. That is the concrete explanation for why one node often looks
-like “the bad follower” and why the bad side can move between runs.
+The device names are runner-instance-specific. A historical runner snapshot
+mapped `/reth-bench-a` to `/dev/nvme2n1` and `/reth-bench-b` to
+`/dev/nvme3n1`; the profiling runner used `/dev/nvme0n1` and `/dev/nvme1n1`,
+respectively. The harness assigns CPU set A as `0-7,16-23` and CPU set B as
+`8-15,24-31`. The diagnostic result says the slow series follows the physical
+A-datadir + B-CPU combination, not a logical validator role. That is the
+concrete explanation for why one node often looks like “the bad follower” and
+why the bad side can move between runs.
 
 ## Telemetry during a bad run
 
