@@ -648,6 +648,26 @@ where
             // finalized blocks the EL already knows about. In this case, it
             // makes sense to ACK immediately rather than wait for an FCU
             // sweep.
+            // The execution layer confirms it is the block it finalized at
+            // this height before it is acknowledged.
+            let canonical = self
+                .execution_node
+                .canonical_block_hash(block.height().get())
+                .wrap_err_with(|| {
+                    format!(
+                        "failed reading canonical execution block hash at finalized block \
+                        height `{}`",
+                        block.height(),
+                    )
+                })?;
+            ensure!(
+                canonical == Some(block.digest().0),
+                "re-delivered finalized block `{}` at height `{}` conflicts with the \
+                execution layer's canonical block `{canonical:?}` at the same height, which \
+                the execution layer already considers final",
+                block.digest(),
+                block.height(),
+            );
             self.acknowledge(request);
         } else {
             self.pending_acknowledgements.push_back(request);

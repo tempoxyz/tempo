@@ -354,6 +354,31 @@ fn forkchoice_update_transport_error_is_fatal() {
 }
 
 #[test_traced]
+fn conflicting_finalized_block_at_the_tracked_height_is_fatal() {
+    deterministic::Runner::default().start(|context| async move {
+        let mut h = Harness::start_at_genesis(&context);
+
+        let b1 = make_block(1, 1, GENESIS);
+        h.deliver_tip(round(1), 1, b1.digest());
+        h.deliver_finalized(b1)
+            .await
+            .expect("first block should be acknowledged");
+
+        // A different block at the height the execution layer already
+        // finalized means consensus failed fundamentally; the execution
+        // layer's canonical chain is what the re-delivery is checked against.
+        let conflicting = make_block(9, 1, GENESIS);
+        h.deliver_finalized(conflicting)
+            .await
+            .expect_err("a conflicting finalized block must not be acknowledged");
+
+        h.actor
+            .await
+            .expect("actor should shut down cleanly on a fatal error");
+    });
+}
+
+#[test_traced]
 fn redelivered_finalized_block_at_the_tracked_state_is_acknowledged() {
     deterministic::Runner::default().start(|context| async move {
         let mut h = Harness::start_at_genesis(&context);
