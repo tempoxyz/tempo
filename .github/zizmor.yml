@@ -16,3 +16,9 @@ rules:
       # update-reth intentionally persists its Derek token for authenticated git
       # pushes after checkout.
       - update-reth.yml:37
+  ref-version-mismatch:
+    # tempoxyz/gh-actions publishes no version tags, so a version comment on a pin to it
+    # (e.g. `# main`) can never match and the audit fires whenever gh-actions main moves.
+    # The shared scan workflow disables this audit by default for repos without their own
+    # zizmor config; this repo has one, so it opts out here. pinact covers third-party comments.
+    disable: true
