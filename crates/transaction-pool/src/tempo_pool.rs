@@ -238,6 +238,7 @@ where
         let mut unwhitelisted_count = 0;
         let mut insolvent_fee_payer_count = 0;
         let mut paused_token_count = 0;
+        let has_paused_tokens = !updates.paused_tokens.is_empty();
         let has_keychain_subject_updates = updates.has_keychain_subject_updates();
         let has_key_authorization_target_updates =
             !updates.key_authorization_target_changes.is_empty();
@@ -249,9 +250,10 @@ where
                 continue;
             }
 
-            if updates
-                .paused_tokens
-                .contains(&tx.transaction.effective_fee_token())
+            if has_paused_tokens
+                && updates
+                    .paused_tokens
+                    .contains(&tx.transaction.effective_fee_token())
             {
                 to_remove.push(*tx.hash());
                 paused_token_count += 1;
