@@ -17,6 +17,11 @@ crate::sol! {
             uint64 nextDepositNumber;
         }
 
+        struct TokenEnablementTransition {
+            uint64 prevProcessedTokenCount;
+            uint64 nextProcessedTokenCount;
+        }
+
         function verify(
             uint32 zoneId,
             uint64 tempoBlockNumber,
@@ -25,6 +30,7 @@ crate::sol! {
             uint64 expectedWithdrawalBatchIndex,
             BlockTransition calldata blockTransition,
             DepositQueueTransition calldata depositQueueTransition,
+            TokenEnablementTransition calldata tokenEnablementTransition,
             bytes32 withdrawalQueueHash,
             bytes calldata verifierConfig,
             bytes calldata proof

@@ -76,6 +76,10 @@ fn signature_verification(c: &mut Criterion) {
             prevDepositNumber: 0,
             nextDepositNumber: 0,
         },
+        tokenEnablementTransition: IZoneVerifier::TokenEnablementTransition {
+            prevProcessedTokenCount: 0,
+            nextProcessedTokenCount: 0,
+        },
         withdrawalQueueHash: B256::ZERO,
         verifierConfig: Bytes::from_static(&[1]),
         proof: document.into(),
