@@ -116,7 +116,7 @@ jobs:
           targets: ${{ matrix.platform.target }}
 
       - name: Setup mold linker
-        uses: rui314/setup-mold@7e4f20ad28a2e8ca6fd0892ccf72e2abb706b9c3 # v1
+        uses: tempoxyz/gh-actions/actions/setup-mold@ab45d76f6e7420a094281a22aee1973ecc0754f8
 
       - name: Get build profile
         id: profile
