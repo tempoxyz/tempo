@@ -1244,6 +1244,10 @@ mod tests {
                 prevDepositNumber: 0,
                 nextDepositNumber: 0,
             },
+            tokenEnablementTransition: IZoneVerifier::TokenEnablementTransition {
+                prevProcessedTokenCount: 0,
+                nextProcessedTokenCount: 0,
+            },
             withdrawalQueueHash: B256::ZERO,
             verifierConfig: Bytes::new(),
             proof: Bytes::new(),
