@@ -17,17 +17,17 @@ use self::attestation::{AWS_NITRO_ROOT_DER, AttestationError, verify_attestation
 const CONFIG_V1: &[u8] = &[1];
 const MAX_FUTURE_SKEW_MILLIS: u64 = 300_000;
 
-/// Measurements for the T11 EIF built from `tempoxyz/zones` PR 1258 at commit
-/// `0ce969b6e78008005ae904ae79bee04d40d1997c`.
+/// Measurements for the T11 EIF built from `tempoxyz/zones` at commit
+/// `f3dfb2fd2febb85105cf745897c51cd80e19ef05`.
 const APPROVED_PCRS: Option<[[u8; 48]; 3]> = Some([
     alloy::primitives::hex!(
-        "2b06c5f176f84a2affa5f7999d7db771d7ecda8a4550af6441e2f728b5cfaf46d99e79a5a9e50fea84de91daa728b3f2"
+        "526b21a93ad7c8e77af1116d3ff09277c39aec884176559ea9ab83e1269ea2f5145125870ff1813db9fcb16acd2d7b1f"
     ),
     alloy::primitives::hex!(
         "baa774ff6af9362bc5c4ecafa99c98c371d3d1e1e040e99890b9ba13d81ded18408fa2a65affa148ee2aaafa09142c81"
     ),
     alloy::primitives::hex!(
-        "3f00d3a7a3edd1df4814108f7e92b74d78bd222fb45eb248a1256a4ca7cdd9240882459f2a7c04ae72ed6245432cf070"
+        "0b539be25b7bb9c4e776947b77a23fb9a4c2a3913ed0d0afc712a7244be7c41daf69298d0bc5ccfcff4f50ad5b634ff9"
     ),
 ]);
 
