@@ -94,7 +94,7 @@ mod codec {
                 Self::Eip7702(tx) => tx.tx().to_compact(buf),
                 Self::AA(tx) => {
                     let mut len = tx.tx().to_compact(buf);
-                    len += tx.signature().to_bytes().to_compact(buf);
+                    len += tx.signature().to_compact(buf);
                     len
                 }
             };
