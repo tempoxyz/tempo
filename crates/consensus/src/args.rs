@@ -110,7 +110,7 @@ pub struct Args {
     ///
     /// Local proposal work is paced against this value minus
     /// `--consensus.network-budget`.
-    #[arg(long = "consensus.target-block-time", default_value = "550ms")]
+    #[arg(long = "consensus.target-block-time", default_value = "200ms")]
     pub target_block_time: PositiveDuration,
 
     /// Maximum amount of time to wait for the leader's proposal before timing

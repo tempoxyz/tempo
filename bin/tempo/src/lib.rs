@@ -914,7 +914,7 @@ mod tests {
         assert!(!node_cmd.ext.node_args.builder_parallel);
         assert_eq!(
             node_cmd.ext.consensus.target_block_time.into_duration(),
-            Duration::from_millis(550)
+            Duration::from_millis(200)
         );
         assert_eq!(
             node_cmd.ext.consensus.wait_for_proposal.into_duration(),
@@ -957,7 +957,7 @@ mod tests {
         };
         assert_eq!(
             node_cmd.ext.consensus.target_block_time.into_duration(),
-            Duration::from_millis(550)
+            Duration::from_millis(200)
         );
         assert_eq!(
             node_cmd.ext.consensus.wait_for_proposal.into_duration(),
