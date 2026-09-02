@@ -176,6 +176,7 @@ reth-evm = { git = "https://github.com/paradigmxyz/reth", rev = "420513c" }
 reth-evm-ethereum = { git = "https://github.com/paradigmxyz/reth", rev = "420513c" }
 reth-metrics = { git = "https://github.com/paradigmxyz/reth", rev = "420513c" }
 reth-network-api = { git = "https://github.com/paradigmxyz/reth", rev = "420513c" }
+reth-network-p2p = { git = "https://github.com/paradigmxyz/reth", rev = "420513c" }
 reth-network-peers = { git = "https://github.com/paradigmxyz/reth", rev = "420513c", default-features = false }
 reth-nippy-jar = { git = "https://github.com/paradigmxyz/reth", rev = "420513c" }
 reth-node-api = { git = "https://github.com/paradigmxyz/reth", rev = "420513c" }

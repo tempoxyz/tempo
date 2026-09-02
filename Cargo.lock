@@ -13500,6 +13500,8 @@ dependencies = [
  "reth-ethereum",
  "reth-ethereum-engine-primitives",
  "reth-evm",
+ "reth-network-api",
+ "reth-network-p2p",
  "reth-node-builder",
  "reth-node-core",
  "reth-primitives-traits",
