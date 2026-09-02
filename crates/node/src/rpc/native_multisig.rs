@@ -67,7 +67,9 @@ mod tests {
         MultisigSimulationPrimitiveApproval, MultisigSimulationSpec,
     };
     use tempo_precompiles::NATIVE_MULTISIG_ADDRESS;
-    use tempo_primitives::transaction::{MultisigConfig, MultisigOwner, SignatureType};
+    use tempo_primitives::transaction::{
+        MultisigConfig, MultisigOwner, PrimitiveSignature, SignatureType, TempoSignature,
+    };
 
     #[derive(Default)]
     struct SlotDb(HashMap<U256, U256>);
@@ -209,24 +211,45 @@ mod tests {
 
         prepare_native_multisig_simulation(&mut request, TempoHardfork::T12, &mut db).unwrap();
         assert!(request.multisig_simulation.is_none());
-        assert!(request.multisig_simulation_signature.is_some());
+        let signature = request.multisig_simulation_signature.as_ref().unwrap();
+        assert!(matches!(
+            signature.signatures(),
+            [TempoSignature::Multisig(nested)]
+                if matches!(
+                    nested.signatures(),
+                    [TempoSignature::Primitive(PrimitiveSignature::P256(_))]
+                )
+        ));
     }
 
     #[test]
-    fn rejects_spec_without_sender() {
-        let (_, spec) = spec(0);
-        let mut request = TempoTransactionRequest {
-            multisig_simulation: Some(spec),
+    fn rejects_invalid_specs() {
+        let (_, simulation) = spec(0);
+        let mut missing_sender = TempoTransactionRequest {
+            multisig_simulation: Some(simulation),
             ..Default::default()
         };
 
+        assert!(matches!(
+            prepare_native_multisig_simulation(
+                &mut missing_sender,
+                TempoHardfork::T12,
+                &mut SlotDb::default(),
+            ),
+            Err(EthApiError::InvalidParams(_))
+        ));
+
+        let (account, spec) = spec(0);
+        let mut request = request(account, spec);
+        request.key_id = Some(Address::repeat_byte(0x44));
         assert!(matches!(
             prepare_native_multisig_simulation(
                 &mut request,
                 TempoHardfork::T12,
                 &mut SlotDb::default(),
             ),
-            Err(EthApiError::InvalidParams(_))
+            Err(EthApiError::InvalidParams(error))
+                if error == "keyId cannot be combined with a native multisig spec"
         ));
     }
 }
