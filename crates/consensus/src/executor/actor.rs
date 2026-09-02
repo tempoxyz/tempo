@@ -466,25 +466,9 @@ where
             ExecutionTaskOutcome::Validated { request, status } => {
                 self.handle_validated(request, status)
             }
-            ExecutionTaskOutcome::Delivered { digest, status } => match status {
-                Ok(PayloadStatusEnum::Valid) => self.notarized_tree.mark_delivered(&digest),
-                // The block is withheld until the retry delay elapses so
-                // that it is not retried in a tight loop; the finalization
-                // pipeline remains the fatal-on-failure backstop.
-                Ok(status) => {
-                    warn!(
-                        %status,
-                        "execution layer did not accept the notarized block; withholding it",
-                    );
-                    let now = self.context.current();
-                    self.notarized_tree.mark_rejected(&digest, now);
-                }
-                Err(error) => {
-                    warn!(%error, "failed delivering notarized block; withholding it");
-                    let now = self.context.current();
-                    self.notarized_tree.mark_rejected(&digest, now);
-                }
-            },
+            ExecutionTaskOutcome::Delivered { digest, status } => {
+                self.handle_delivered(digest, status)
+            }
             ExecutionTaskOutcome::FinalizedDelivered { request, status } => {
                 self.handle_finalized_delivered(request, status)?
             }
@@ -601,6 +585,29 @@ where
         Ok(())
     }
 
+    /// `VALID` makes the notarized block known to the execution layer.
+    /// Anything else withholds it for the retry delay so that it is not
+    /// retried in a tight loop; the finalization pipeline remains the
+    /// fatal-on-failure backstop.
+    fn handle_delivered(&mut self, digest: Digest, status: eyre::Result<PayloadStatusEnum>) {
+        match status {
+            Ok(PayloadStatusEnum::Valid) => self.notarized_tree.mark_delivered(&digest),
+            Ok(status) => {
+                warn!(
+                    %status,
+                    "execution layer did not accept the notarized block; withholding it",
+                );
+                let now = self.context.current();
+                self.notarized_tree.mark_rejected(&digest, now);
+            }
+            Err(error) => {
+                warn!(%error, "failed delivering notarized block; withholding it");
+                let now = self.context.current();
+                self.notarized_tree.mark_rejected(&digest, now);
+            }
+        }
+    }
+
     /// A non-`VALID` answer is fatal. Otherwise the block becomes the next
     /// finalized target and is acknowledged once the forkchoice update
     /// finalizing it lands - or right away if the execution layer already
@@ -709,8 +716,9 @@ where
     }
 
     /// Climbs from the tracked finalized state to the finalized floor
-    /// before entering the loop, delivering and finalizing one block at a
-    /// time. The head starts on the finalized tip and follows it.
+    /// before entering the loop: delivers every block, then finalizes the
+    /// floor with one forkchoice update. The head starts on the finalized
+    /// tip and follows it.
     async fn backfill_to_finalized_floor(&mut self) -> eyre::Result<()> {
         let start = self.notarized_tree.local_state().finalized.0.get() + 1;
         let end = self.finalized_floor.get();
@@ -722,6 +730,7 @@ where
                 "backfilling finalized blocks before entering executor loop"
             );
         }
+        let mut floor = None;
         for height in heights {
             let span = info_span!("backfill_on_start", %height);
             let block = get_block(
@@ -747,29 +756,32 @@ where
                 "payload status of backfilled finalized block at height `{height}` was \
                 not valid: {status}",
             );
-
-            let target = self
-                .notarized_tree
-                .local_state()
-                .update_finalized(block.height(), block.digest());
-            let response = submit_forkchoice_update(&self.execution_node, span, target, None)
-                .await
-                .wrap_err_with(|| {
-                    format!(
-                        "failed finalizing backfilled finalized block at height `{height}` \
-                        on the execution layer"
-                    )
-                })?;
-            if !response.is_valid() {
-                bail!(
-                    "forkchoice update finalizing the backfilled finalized block at height \
-                    `{height}` was not valid: {}",
-                    response.payload_status,
-                );
-            }
-            self.notarized_tree.set_local_state(target);
+            floor = Some((block.height(), block.digest(), span));
         }
 
+        let Some((height, digest, span)) = floor else {
+            return Ok(());
+        };
+        let target = self
+            .notarized_tree
+            .local_state()
+            .update_finalized(height, digest);
+        let response = submit_forkchoice_update(&self.execution_node, span, target, None)
+            .await
+            .wrap_err_with(|| {
+                format!(
+                    "failed finalizing the backfilled finalized floor at height `{height}` \
+                    on the execution layer"
+                )
+            })?;
+        if !response.is_valid() {
+            bail!(
+                "forkchoice update finalizing the backfilled finalized floor at height \
+                `{height}` was not valid: {}",
+                response.payload_status,
+            );
+        }
+        self.notarized_tree.set_local_state(target);
         Ok(())
     }
 
