@@ -3766,7 +3766,11 @@ mod keychain {
         let expected =
             gas_params.warm_storage_read_cost() + gas_params.cold_storage_additional_cost();
 
-        for gas_limit in [expected, expected - 1] {
+        for (gas_limit, gas_cap) in [
+            (expected, None),
+            (expected - 1, None),
+            (expected, Some(expected - 1)),
+        ] {
             let (signer, user) = generate_keypair();
             let access_key = Address::random();
             let signed = sign_key_auth(
@@ -3782,14 +3786,27 @@ mod keychain {
                 false,
             );
             evm.tx.inner.gas_limit = gas_limit;
+            if let Some(gas_cap) = gas_cap {
+                evm.inner.ctx.cfg.tx_gas_limit_cap = Some(gas_cap);
+                evm.inner.ctx.cfg.enable_amsterdam_eip8037 = true;
+            }
             let mut init_gas = InitialAndFloorGas::default();
             let result = h.validate_against_state_and_deduct_caller(&mut evm, &mut init_gas);
 
             assert_eq!(init_gas.initial_regular_gas, expected);
-            if gas_limit == expected {
-                result.expect("exact commitment-read gas should pass");
-            } else {
-                assert!(matches!(
+            match gas_cap {
+                Some(gas_cap) => assert!(matches!(
+                    result,
+                    Err(EVMError::Transaction(
+                        TempoInvalidTransaction::EthInvalidTransaction(
+                            InvalidTransaction::GasFloorMoreThanGasLimit {
+                                gas_floor,
+                                gas_limit: actual_cap,
+                            }
+                        )
+                    )) if gas_floor == expected && actual_cap == gas_cap
+                )),
+                None if gas_limit < expected => assert!(matches!(
                     result,
                     Err(EVMError::Transaction(
                         TempoInvalidTransaction::EthInvalidTransaction(
@@ -3799,7 +3816,8 @@ mod keychain {
                             }
                         )
                     )) if actual_limit == gas_limit && initial_gas == expected
-                ));
+                )),
+                None => result.expect("exact commitment-read gas should pass"),
             }
         }
     }
