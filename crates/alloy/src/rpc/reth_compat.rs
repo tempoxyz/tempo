@@ -187,7 +187,7 @@ mod tests {
         let tx_env = req.try_into_tx_env(&evm_env).expect("try_into_tx_env");
         let estimated_calls = tx_env.tempo_tx_env.expect("tempo_tx_env").aa_calls;
 
-        assert_eq!(estimated_calls, built_calls);
+        assert_eq!(&estimated_calls[..], &built_calls[..]);
     }
 
     #[test]
@@ -421,7 +421,8 @@ mod tests {
         let aa_calls = tx_env.tempo_tx_env.expect("tempo_tx_env").aa_calls;
 
         assert_eq!(
-            aa_calls, calls,
+            &aa_calls[..],
+            &calls[..],
             "roundtrip via try_into_tx_env must preserve exact call list"
         );
     }

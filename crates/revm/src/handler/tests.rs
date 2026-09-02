@@ -564,7 +564,7 @@ fn test_aa_gas_single_call_vs_normal_tx() {
         signature: TempoSignature::Primitive(PrimitiveSignature::Secp256k1(
             alloy_primitives::Signature::test_signature(),
         )), // dummy secp256k1 sig
-        aa_calls: vec![call],
+        aa_calls: vec![call].into(),
         key_authorization: None,
         signature_hash: B256::ZERO,
         ..Default::default()
@@ -629,7 +629,7 @@ fn test_aa_gas_multiple_calls_overhead() {
         signature: TempoSignature::Primitive(PrimitiveSignature::Secp256k1(
             alloy_primitives::Signature::test_signature(),
         )),
-        aa_calls: calls,
+        aa_calls: calls.into(),
         key_authorization: None,
         signature_hash: B256::ZERO,
         ..Default::default()
@@ -682,7 +682,7 @@ fn test_aa_gas_p256_signature() {
             pub_key_y: B256::ZERO,
             pre_hash: false,
         })),
-        aa_calls: vec![call],
+        aa_calls: vec![call].into(),
         key_authorization: None,
         signature_hash: B256::ZERO,
         ..Default::default()
@@ -724,7 +724,7 @@ fn test_aa_gas_create_call() {
         signature: TempoSignature::Primitive(PrimitiveSignature::Secp256k1(
             alloy_primitives::Signature::test_signature(),
         )),
-        aa_calls: vec![call],
+        aa_calls: vec![call].into(),
         key_authorization: None,
         signature_hash: B256::ZERO,
         ..Default::default()
@@ -766,7 +766,7 @@ fn test_aa_gas_value_transfer() {
         signature: TempoSignature::Primitive(PrimitiveSignature::Secp256k1(
             alloy_primitives::Signature::test_signature(),
         )),
-        aa_calls: vec![call],
+        aa_calls: vec![call].into(),
         key_authorization: None,
         signature_hash: B256::ZERO,
         ..Default::default()
@@ -805,7 +805,7 @@ fn test_aa_gas_access_list() {
         signature: TempoSignature::Primitive(PrimitiveSignature::Secp256k1(
             alloy_primitives::Signature::test_signature(),
         )),
-        aa_calls: vec![call],
+        aa_calls: vec![call].into(),
         key_authorization: None,
         signature_hash: B256::ZERO,
         ..Default::default()
@@ -897,7 +897,7 @@ fn test_aa_gas_floor_gas_prague() {
         signature: TempoSignature::Primitive(PrimitiveSignature::Secp256k1(
             alloy_primitives::Signature::test_signature(),
         )),
-        aa_calls: vec![call],
+        aa_calls: vec![call].into(),
         key_authorization: None,
         signature_hash: B256::ZERO,
         ..Default::default()
@@ -1387,7 +1387,7 @@ fn test_key_authorization_gas_in_batch() {
         signature: TempoSignature::Primitive(PrimitiveSignature::Secp256k1(
             alloy_primitives::Signature::test_signature(),
         )),
-        aa_calls: vec![call.clone()],
+        aa_calls: vec![call.clone()].into(),
         key_authorization: Some(key_auth),
         signature_hash: B256::ZERO,
         ..Default::default()
@@ -1397,7 +1397,7 @@ fn test_key_authorization_gas_in_batch() {
         signature: TempoSignature::Primitive(PrimitiveSignature::Secp256k1(
             alloy_primitives::Signature::test_signature(),
         )),
-        aa_calls: vec![call],
+        aa_calls: vec![call].into(),
         key_authorization: None,
         signature_hash: B256::ZERO,
         ..Default::default()
@@ -1485,7 +1485,8 @@ fn test_2d_nonce_gas_in_intrinsic_gas() {
                             to: TxKind::Call(Address::random()),
                             value: U256::ZERO,
                             input: Bytes::new(),
-                        }],
+                        }]
+                        .into(),
                         nonce_key,
                         ..Default::default()
                     })),
@@ -1601,7 +1602,8 @@ fn test_2d_nonce_gas_limit_validation() {
                             to: TxKind::Call(Address::random()),
                             value: U256::ZERO,
                             input: Bytes::new(),
-                        }],
+                        }]
+                        .into(),
                         nonce_key: U256::ONE,
                         ..Default::default()
                     })),
@@ -1669,7 +1671,8 @@ fn test_t3_scope_validation_moves_to_execution() {
                 to: TxKind::Call(target),
                 value: U256::ZERO,
                 input: Bytes::from_static(&CALL_SCOPE_SELECTOR),
-            }],
+            }]
+            .into(),
             signature_hash: B256::ZERO,
             override_key_id: Some(access_key),
             ..Default::default()
@@ -1785,7 +1788,8 @@ fn test_t3_scope_validation_returns_call_not_allowed_revert_data() {
                 to: TxKind::Call(target),
                 value: U256::ZERO,
                 input: Bytes::from_static(&DENIED_SELECTOR),
-            }],
+            }]
+            .into(),
             signature_hash: B256::ZERO,
             override_key_id: Some(access_key),
             ..Default::default()
@@ -1885,7 +1889,7 @@ fn test_t3_scope_validation_empty_calls_returns_custom_error() {
         },
         tempo_tx_env: Some(Box::new(TempoBatchCallEnv {
             signature,
-            aa_calls: vec![],
+            aa_calls: vec![].into(),
             signature_hash: B256::ZERO,
             override_key_id: Some(access_key),
             ..Default::default()
@@ -2027,7 +2031,7 @@ fn test_multicall_gas_refund_accounting() {
         &mut evm,
         GAS_LIMIT - INTRINSIC_GAS,
         0,
-        calls,
+        calls.into(),
         |_handler, _evm, call_gas: &mut GasTracker| {
             let (spent, refund) = calls_gas[call_idx];
             call_idx += 1;
@@ -2086,7 +2090,7 @@ fn secp256k1_sig() -> TempoSignature {
 fn make_aa_env(calls: Vec<Call>) -> TempoBatchCallEnv {
     TempoBatchCallEnv {
         signature: secp256k1_sig(),
-        aa_calls: calls,
+        aa_calls: calls.into(),
         key_authorization: None,
         signature_hash: B256::ZERO,
         ..Default::default()
@@ -2335,7 +2339,7 @@ proptest! {
         let tx_env = TempoTxEnv {
             inner: revm::context::TxEnv::default(),
             tempo_tx_env: Some(Box::new(TempoBatchCallEnv {
-                aa_calls: calls,
+                aa_calls: calls.into(),
                 signature: secp256k1_sig(),
                 signature_hash: B256::ZERO,
                 ..Default::default()
@@ -2357,7 +2361,7 @@ proptest! {
         let tx_env = TempoTxEnv {
             inner: revm::context::TxEnv::default(),
             tempo_tx_env: Some(Box::new(TempoBatchCallEnv {
-                aa_calls: vec![],
+                aa_calls: vec![].into(),
                 signature: secp256k1_sig(),
                 signature_hash: B256::ZERO,
                 ..Default::default()
@@ -2539,7 +2543,8 @@ fn test_t1_2d_nonce_key_charges_250k_gas() {
                         to: TxKind::Call(TEST_TARGET),
                         value: U256::ZERO,
                         input: Bytes::new(),
-                    }],
+                    }]
+                    .into(),
                     nonce_key,
                     ..Default::default()
                 })),
@@ -2633,7 +2638,8 @@ fn test_t1_existing_2d_nonce_key_charges_5k_gas() {
                         to: TxKind::Call(TEST_TARGET),
                         value: U256::ZERO,
                         input: Bytes::new(),
-                    }],
+                    }]
+                    .into(),
                     nonce_key,
                     ..Default::default()
                 })),
@@ -2741,7 +2747,8 @@ mod keychain {
                     to: TxKind::Call(Address::ZERO),
                     value: U256::ZERO,
                     input: Bytes::new(),
-                }],
+                }]
+                .into(),
                 key_authorization: key_auth,
                 signature_hash: B256::ZERO,
                 override_key_id: Some(access_key),
@@ -3707,7 +3714,7 @@ fn test_state_gas_aa_create_tx_populates_initial_state_gas() {
         signature: TempoSignature::Primitive(PrimitiveSignature::Secp256k1(
             alloy_primitives::Signature::test_signature(),
         )),
-        aa_calls: vec![call],
+        aa_calls: vec![call].into(),
         key_authorization: None,
         signature_hash: B256::ZERO,
         ..Default::default()
@@ -3745,7 +3752,7 @@ fn test_state_gas_aa_call_tx_zero_initial_state_gas() {
         signature: TempoSignature::Primitive(PrimitiveSignature::Secp256k1(
             alloy_primitives::Signature::test_signature(),
         )),
-        aa_calls: vec![call],
+        aa_calls: vec![call].into(),
         key_authorization: None,
         signature_hash: B256::ZERO,
         ..Default::default()
@@ -4034,7 +4041,7 @@ fn test_state_gas_aa_mixed_batch_create_and_call() {
         signature: TempoSignature::Primitive(PrimitiveSignature::Secp256k1(
             alloy_primitives::Signature::test_signature(),
         )),
-        aa_calls: calls,
+        aa_calls: calls.into(),
         key_authorization: None,
         signature_hash: B256::ZERO,
         ..Default::default()
@@ -4080,7 +4087,7 @@ fn test_state_gas_aa_multiple_create_calls() {
         signature: TempoSignature::Primitive(PrimitiveSignature::Secp256k1(
             alloy_primitives::Signature::test_signature(),
         )),
-        aa_calls: calls,
+        aa_calls: calls.into(),
         key_authorization: None,
         signature_hash: B256::ZERO,
         ..Default::default()
@@ -4169,7 +4176,8 @@ fn test_state_gas_aa_auth_list_nonce_zero() {
             to: TxKind::Call(Address::random()),
             value: U256::ZERO,
             input: Bytes::from(vec![1, 2, 3]),
-        }],
+        }]
+        .into(),
         tempo_authorization_list: vec![RecoveredTempoAuthorization::new(
             TempoSignedAuthorization::new_unchecked(
                 alloy_eips::eip7702::Authorization {
@@ -4213,7 +4221,8 @@ fn test_state_gas_aa_nonce_zero_new_account() {
             to: TxKind::Call(Address::random()),
             value: U256::ZERO,
             input: Bytes::from(vec![1, 2, 3]),
-        }],
+        }]
+        .into(),
         nonce_key: U256::ONE,
         ..Default::default()
     };
@@ -4249,7 +4258,8 @@ fn test_state_gas_auth_list_zero_on_t1() {
             to: TxKind::Call(Address::random()),
             value: U256::ZERO,
             input: Bytes::from(vec![1, 2, 3]),
-        }],
+        }]
+        .into(),
         tempo_authorization_list: vec![RecoveredTempoAuthorization::new(
             TempoSignedAuthorization::new_unchecked(
                 alloy_eips::eip7702::Authorization {
@@ -4336,7 +4346,7 @@ fn test_state_gas_aa_create_total_gas_includes_state_gas() {
         signature: TempoSignature::Primitive(PrimitiveSignature::Secp256k1(
             alloy_primitives::Signature::test_signature(),
         )),
-        aa_calls: vec![call],
+        aa_calls: vec![call].into(),
         key_authorization: None,
         signature_hash: B256::ZERO,
         ..Default::default()
@@ -4372,7 +4382,8 @@ fn test_state_gas_aa_auth_nonce_zero_total_gas_includes_state_gas() {
             to: TxKind::Call(Address::random()),
             value: U256::ZERO,
             input: Bytes::from(vec![1, 2, 3]),
-        }],
+        }]
+        .into(),
         tempo_authorization_list: vec![RecoveredTempoAuthorization::new(
             TempoSignedAuthorization::new_unchecked(
                 alloy_eips::eip7702::Authorization {
@@ -4450,7 +4461,7 @@ fn test_state_gas_failed_batch_preserves_upfront_create_intrinsic_gas() {
             &mut test.evm,
             gas_limit,
             reservoir,
-            calls,
+            calls.into(),
             |_handler, _evm, call_gas: &mut GasTracker| {
                 // Feed the batch executor deterministic per-call outcomes without running real EVM code.
                 let (instruction_result, spent) = call_results[call_idx];

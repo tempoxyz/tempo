@@ -1581,7 +1581,8 @@ mod tests {
                                 to: TxKind::Call(PATH_USD_ADDRESS),
                                 value: U256::ZERO,
                                 input: calldata.clone(),
-                            }],
+                            }]
+                            .into(),
                             nonce_key,
                             ..Default::default()
                         })

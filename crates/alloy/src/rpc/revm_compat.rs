@@ -82,7 +82,7 @@ impl TempoTransactionRequest {
             }
 
             Some(Box::new(TempoBatchCallEnv {
-                aa_calls: calls,
+                aa_calls: calls.into(),
                 signature: mock_signature,
                 tempo_authorization_list: tempo_authorization_list
                     .into_iter()

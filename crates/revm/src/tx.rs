@@ -11,6 +11,7 @@ use revm::context::{
         AccessList, AccessListItem, RecoveredAuthority, RecoveredAuthorization, SignedAuthorization,
     },
 };
+use std::sync::Arc;
 use tempo_primitives::{
     AASigned, TempoSignature, TempoTransaction, TempoTxEnvelope,
     transaction::{
@@ -30,8 +31,11 @@ pub struct TempoBatchCallEnv {
     /// validAfter timestamp
     pub valid_after: Option<u64>,
 
-    /// Multiple calls for Tempo transactions
-    pub aa_calls: Vec<Call>,
+    /// Multiple calls for Tempo transactions.
+    ///
+    /// Shared so that cloning the transaction environment (the pool caches it, the prewarming
+    /// workers and the builder each clone it) and executing the batch do not deep-copy the calls.
+    pub aa_calls: Arc<[Call]>,
 
     /// Authorization list (EIP-7702 with Tempo signatures)
     ///
@@ -380,7 +384,7 @@ impl FromRecoveredTx<AASigned> for TempoTxEnv {
                 signature: signature.clone(),
                 valid_before: valid_before.map(NonZeroU64::get),
                 valid_after: valid_after.map(NonZeroU64::get),
-                aa_calls: calls.clone(),
+                aa_calls: Arc::from(calls.as_slice()),
                 // Recover authorizations upfront to avoid recovery during execution
                 tempo_authorization_list: tempo_authorization_list
                     .iter()
@@ -959,7 +963,8 @@ mod tests {
                         value: U256::from(100),
                         input: input2,
                     },
-                ],
+                ]
+                .into(),
                 ..Default::default()
             })),
             ..Default::default()
@@ -977,7 +982,7 @@ mod tests {
         // Test with tempo_tx_env but empty calls list
         let tx_env = super::TempoTxEnv {
             tempo_tx_env: Some(Box::new(super::TempoBatchCallEnv {
-                aa_calls: vec![],
+                aa_calls: vec![].into(),
                 ..Default::default()
             })),
             ..Default::default()
@@ -1031,7 +1036,8 @@ mod tests {
                         value: U256::from(100),
                         input: input3.clone(),
                     },
-                ],
+                ]
+                .into(),
                 ..Default::default()
             })),
             ..Default::default()
@@ -1048,7 +1054,7 @@ mod tests {
         // AA transaction with empty calls list
         let empty_aa_tx = super::TempoTxEnv {
             tempo_tx_env: Some(Box::new(super::TempoBatchCallEnv {
-                aa_calls: vec![],
+                aa_calls: vec![].into(),
                 ..Default::default()
             })),
             ..Default::default()
