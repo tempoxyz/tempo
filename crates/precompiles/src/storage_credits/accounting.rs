@@ -111,6 +111,16 @@ fn store_credit_state<B: StorageCreditsBackend>(
     Ok(())
 }
 
+#[inline]
+fn charge_storage_creation<B: StorageCreditsBackend>(backend: &mut B) -> Result<(), B::Error> {
+    let cost = backend.gas_params().get(GasId::sstore_set_state_gas());
+    if backend.amsterdam_eip8037_enabled() {
+        backend.charge_state_gas(cost)
+    } else {
+        backend.charge_execution_gas(cost)
+    }
+}
+
 /// Applies TIP-1060 storage credits after a single SSTORE has been journaled.
 ///
 /// When provided, `key` lets the hook skip minting a credit for the single transaction-local slot
@@ -126,15 +136,6 @@ pub fn sstore_storage_credits<B: StorageCreditsBackend>(
     key: Option<U256>,
     caller_state_load: &StateLoad<SStoreResult>,
 ) -> Result<(), B::Error> {
-    let charge_creation = |backend: &mut B| {
-        let cost = backend.gas_params().get(GasId::sstore_set_state_gas());
-        if backend.amsterdam_eip8037_enabled() {
-            backend.charge_state_gas(cost)
-        } else {
-            backend.charge_execution_gas(cost)
-        }
-    };
-
     // Before TIP-1016 storage_state_gas was used to charge execution gas.
 
     let sstore_flags = SstoreTransitionFlags::from(caller_state_load);
@@ -204,12 +205,12 @@ pub fn sstore_storage_credits<B: StorageCreditsBackend>(
             }
             CreditMode::Direct | CreditMode::Preserve => {
                 // Direct without spendable credits, or Preserve, pays the creditable portion as gas.
-                charge_creation(backend)?;
+                charge_storage_creation(backend)?;
             }
             CreditMode::Refund => {
                 // Charge the 245k creditable portion upfront and record a pending refund-eligible
                 // creation, settled at end-of-transaction.
-                charge_creation(backend)?;
+                charge_storage_creation(backend)?;
                 transient_state.pending_refunds = transient_state.pending_refunds.saturating_add(1);
                 store_credit_state(backend, account_slot, transient_state)?;
             }
