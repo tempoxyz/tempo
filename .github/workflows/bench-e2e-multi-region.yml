@@ -461,10 +461,9 @@ jobs:
           } >> "$GITHUB_STEP_SUMMARY"
 
       - name: Setup Terraform
-        uses: hashicorp/setup-terraform@dfe3c3f87815947d99a8997f908cb6525fc44e9e # v4.0.1
+        uses: tempoxyz/gh-actions/actions/setup-terraform@d9f22a1d62ed20d6d18b1dbbc33779b56996c068 # main
         with:
-          terraform_version: "1.14.7"
-          terraform_wrapper: false
+          version: 1.14.7
 
       - name: Setup Rust
         uses: dtolnay/rust-toolchain@6c977a6ca4077a0ceb28ffbe03f59d46e9ac8772 # master
