@@ -26,7 +26,7 @@ use crate::{
     address_registry::AddressRegistry,
     error::{Result, TempoPrecompileError},
     receive_policy_guard::{InboundKind, ReceivePolicyGuard, RecoveryMode},
-    storage::{Handler, Mapping},
+    storage::{Handler, Mapping, Slot},
     tip20::{rewards::UserRewardInfo, roles::DEFAULT_ADMIN_ROLE},
     tip20_factory::TIP20Factory,
     tip403_registry::{ALLOW_ALL_POLICY_ID, AuthRole, ITIP403Registry, TIP403Registry},
@@ -58,6 +58,28 @@ pub fn validate_usd_currency(token: Address) -> Result<()> {
         return Err(TIP20Error::invalid_currency().into());
     }
     Ok(())
+}
+
+/// Storage word of the short-string encoding of [`USD_CURRENCY`]: the bytes `"USD"` left-aligned
+/// with `length * 2` in the last byte.
+const USD_CURRENCY_WORD: U256 =
+    uint!(0x5553440000000000000000000000000000000000000000000000000000000006_U256);
+
+/// Mask selecting the three content bytes of a short string plus its length byte, which is all
+/// the string decoder looks at for a three-byte short string.
+const SHORT_STRING_3_MASK: U256 =
+    uint!(0xffffff00000000000000000000000000000000000000000000000000000000ff_U256);
+
+impl TIP20Token {
+    /// Returns whether the token's stored currency is exactly [`USD_CURRENCY`] by inspecting only
+    /// the currency base slot, without decoding the string.
+    ///
+    /// This is equivalent to `currency()? == USD_CURRENCY` but performs a single storage read and
+    /// no allocation. Callers must ensure `token` has the TIP-20 prefix.
+    pub fn is_usd_currency_unchecked(token: Address) -> Result<bool> {
+        let word = Slot::<U256>::new(slots::CURRENCY, token).read()?;
+        Ok(word & SHORT_STRING_3_MASK == USD_CURRENCY_WORD)
+    }
 }
 
 /// TIP-20 token contract — the native token standard on Tempo.
@@ -4844,5 +4866,38 @@ pub(crate) mod tests {
             })?;
         }
         Ok(())
+    }
+}
+
+#[cfg(test)]
+mod usd_currency_tests {
+    use super::*;
+    use crate::storage::hashmap::HashMapStorageProvider;
+
+    #[test]
+    fn is_usd_currency_matches_decoded_currency() {
+        let mut storage = HashMapStorageProvider::new_with_spec(1, TempoHardfork::T3);
+        StorageCtx::enter(&mut storage, || {
+            let mut token = TIP20Token::from_address_unchecked(PATH_USD_ADDRESS);
+            for currency in [
+                "USD",
+                "EUR",
+                "",
+                "USDX",
+                "usd",
+                "US",
+                "USDUSDUSDUSDUSDUSDUSDUSDUSDUSDUSDUSD",
+            ] {
+                token.currency.write(currency.to_string())?;
+                assert_eq!(
+                    TIP20Token::is_usd_currency_unchecked(PATH_USD_ADDRESS)?,
+                    currency == USD_CURRENCY,
+                    "currency {currency:?}"
+                );
+                assert_eq!(token.currency()? == USD_CURRENCY, currency == USD_CURRENCY);
+            }
+            Ok::<_, TempoPrecompileError>(())
+        })
+        .unwrap();
     }
 }

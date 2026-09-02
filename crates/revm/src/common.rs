@@ -129,8 +129,7 @@ pub trait TempoStateAccess<M = ()> {
     {
         self.with_read_only_storage_ctx(spec, actions, || {
             // SAFETY: caller must ensure prefix is already checked
-            let token = TIP20Token::from_address_unchecked(fee_token);
-            Ok(token.currency.len()? == 3 && token.currency.read()?.as_str() == "USD")
+            TIP20Token::is_usd_currency_unchecked(fee_token)
         })
     }
 
@@ -148,25 +147,25 @@ pub trait TempoStateAccess<M = ()> {
     {
         self.with_read_only_storage_ctx(spec, actions, || {
             // SAFETY: caller must ensure prefix is already checked
+            if TIP20Token::is_usd_currency_unchecked(fee_token)? {
+                return Ok(Ok(()));
+            }
+
+            // Only decode the stored currency for the error message.
             let token = TIP20Token::from_address_unchecked(fee_token);
             let len = token.currency.len()?;
-
             let currency = if len > 31 {
                 format!("<{len} bytes>")
             } else {
                 token.currency.read()?
             };
 
-            if currency.as_str() != "USD" {
-                return Ok(Err(EVMError::Transaction(
-                    TempoInvalidTransaction::FeeTokenNotUsdCurrency {
-                        address: fee_token,
-                        currency,
-                    },
-                )));
-            }
-
-            Ok(Ok(()))
+            Ok(Err(EVMError::Transaction(
+                TempoInvalidTransaction::FeeTokenNotUsdCurrency {
+                    address: fee_token,
+                    currency,
+                },
+            )))
         })
         .map_err(|err: TempoPrecompileError| EVMError::Custom(err.to_string()))?
     }
