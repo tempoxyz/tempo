@@ -56,7 +56,7 @@ jobs:
           } >> "$GITHUB_OUTPUT"
 
       - name: Set up Docker Buildx
-        uses: tempoxyz/gh-actions/vendor/docker/setup-buildx-action@6f436eb3a168279692739e8c0c9fdb52b94bfae7
+        uses: tempoxyz/gh-actions/vendor/docker/setup-buildx-action@3626124474a987bc74b41fc7ae65b2e23f8e4e4e
 
       - name: Build reproducible binary
         env:

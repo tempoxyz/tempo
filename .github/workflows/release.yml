@@ -64,7 +64,7 @@ jobs:
       - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
         with:
           persist-credentials: false
-      - uses: tempoxyz/gh-actions/vendor/dtolnay/rust-toolchain@6f436eb3a168279692739e8c0c9fdb52b94bfae7
+      - uses: tempoxyz/gh-actions/vendor/dtolnay/rust-toolchain@3626124474a987bc74b41fc7ae65b2e23f8e4e4e
       - name: Verify crate version matches tag
         # Check that the Cargo version starts with the tag,
         # so that Cargo version 1.4.8 can be matched against both v1.4.8 and v1.4.8-rc.1
@@ -111,7 +111,7 @@ jobs:
           persist-credentials: false
 
       - name: Install Rust toolchain
-        uses: tempoxyz/gh-actions/vendor/dtolnay/rust-toolchain@6f436eb3a168279692739e8c0c9fdb52b94bfae7
+        uses: tempoxyz/gh-actions/vendor/dtolnay/rust-toolchain@3626124474a987bc74b41fc7ae65b2e23f8e4e4e
         with:
           targets: ${{ matrix.platform.target }}
 
@@ -195,7 +195,7 @@ jobs:
           printf '%s' "$GPG_PASSPHRASE" | gpg --passphrase-fd 0 --pinentry-mode loopback --batch -ab "$ARCHIVE_PATH"
 
       - name: Generate SBOM (SPDX-JSON) for archive
-        uses: tempoxyz/gh-actions/vendor/anchore/sbom-action@6f436eb3a168279692739e8c0c9fdb52b94bfae7
+        uses: tempoxyz/gh-actions/vendor/anchore/sbom-action@3626124474a987bc74b41fc7ae65b2e23f8e4e4e
         with:
           file: ${{ steps.prepare.outputs.archive_path }}
           format: spdx-json
@@ -304,7 +304,7 @@ jobs:
           token: ${{ steps.app-token.outputs.token }}
           persist-credentials: true
 
-      - uses: tempoxyz/gh-actions/vendor/dtolnay/rust-toolchain@6f436eb3a168279692739e8c0c9fdb52b94bfae7
+      - uses: tempoxyz/gh-actions/vendor/dtolnay/rust-toolchain@3626124474a987bc74b41fc7ae65b2e23f8e4e4e
 
       - name: Open Cargo version bump PR
         env:
@@ -420,7 +420,7 @@ jobs:
             echo "dir=binaries/${VERSION}" >> "$GITHUB_OUTPUT"
           fi
 
-      - uses: tempoxyz/gh-actions/vendor/shallwefootball/upload-s3-action@6f436eb3a168279692739e8c0c9fdb52b94bfae7
+      - uses: tempoxyz/gh-actions/vendor/shallwefootball/upload-s3-action@3626124474a987bc74b41fc7ae65b2e23f8e4e4e
         with:
           aws_key_id: ${{ secrets.R2_BINARIES_KEY_ID }}
           aws_secret_access_key: ${{ secrets.R2_BINARIES_SECRET_KEY }}

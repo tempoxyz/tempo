@@ -27,11 +27,11 @@ jobs:
         with:
           persist-credentials: false
 
-      - uses: tempoxyz/gh-actions/vendor/depot/setup-action@6f436eb3a168279692739e8c0c9fdb52b94bfae7
+      - uses: tempoxyz/gh-actions/vendor/depot/setup-action@3626124474a987bc74b41fc7ae65b2e23f8e4e4e
 
       - name: Docker metadata for tempo-profiling
         id: meta-tempo
-        uses: tempoxyz/gh-actions/vendor/docker/metadata-action@6f436eb3a168279692739e8c0c9fdb52b94bfae7
+        uses: tempoxyz/gh-actions/vendor/docker/metadata-action@3626124474a987bc74b41fc7ae65b2e23f8e4e4e
         with:
           images: ${{ env.REGISTRY }}/tempo
           bake-target: tempo
@@ -40,7 +40,7 @@ jobs:
             type=sha,prefix=${{ github.event.inputs.tag }}-sha-
 
       - name: Log in to Container Registry
-        uses: tempoxyz/gh-actions/vendor/docker/login-action@6f436eb3a168279692739e8c0c9fdb52b94bfae7
+        uses: tempoxyz/gh-actions/vendor/docker/login-action@3626124474a987bc74b41fc7ae65b2e23f8e4e4e
         with:
           registry: ${{ env.REGISTRY }}
           username: ${{ github.actor }}
@@ -50,7 +50,7 @@ jobs:
         run: echo "shortsha=$(echo ${{ github.sha }} | cut -c1-7)" >> "$GITHUB_OUTPUT"
 
       - name: Build and push Docker images
-        uses: tempoxyz/gh-actions/vendor/depot/bake-action@6f436eb3a168279692739e8c0c9fdb52b94bfae7
+        uses: tempoxyz/gh-actions/vendor/depot/bake-action@3626124474a987bc74b41fc7ae65b2e23f8e4e4e
         with:
           files: |
             docker-bake.hcl

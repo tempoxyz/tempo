@@ -40,7 +40,7 @@ jobs:
         with:
           persist-credentials: false
 
-      - uses: tempoxyz/gh-actions/vendor/depot/setup-action@6f436eb3a168279692739e8c0c9fdb52b94bfae7
+      - uses: tempoxyz/gh-actions/vendor/depot/setup-action@3626124474a987bc74b41fc7ae65b2e23f8e4e4e
 
       - name: Determine Docker labels
         id: docker-labels
@@ -63,7 +63,7 @@ jobs:
 
       - name: Docker metadata for tempo
         id: meta-tempo
-        uses: tempoxyz/gh-actions/vendor/docker/metadata-action@6f436eb3a168279692739e8c0c9fdb52b94bfae7
+        uses: tempoxyz/gh-actions/vendor/docker/metadata-action@3626124474a987bc74b41fc7ae65b2e23f8e4e4e
         with:
           images: |
             ${{ env.REGISTRY }}/tempo
@@ -84,7 +84,7 @@ jobs:
 
       - name: Docker metadata for tempo-localnet
         id: meta-tempo-localnet
-        uses: tempoxyz/gh-actions/vendor/docker/metadata-action@6f436eb3a168279692739e8c0c9fdb52b94bfae7
+        uses: tempoxyz/gh-actions/vendor/docker/metadata-action@3626124474a987bc74b41fc7ae65b2e23f8e4e4e
         with:
           images: |
             ${{ env.REGISTRY }}/tempo-localnet
@@ -105,7 +105,7 @@ jobs:
 
       - name: Docker metadata for tempo-sidecar
         id: meta-tempo-sidecar
-        uses: tempoxyz/gh-actions/vendor/docker/metadata-action@6f436eb3a168279692739e8c0c9fdb52b94bfae7
+        uses: tempoxyz/gh-actions/vendor/docker/metadata-action@3626124474a987bc74b41fc7ae65b2e23f8e4e4e
         with:
           images: |
             ${{ env.REGISTRY }}/tempo-sidecar
@@ -126,7 +126,7 @@ jobs:
 
       - name: Docker metadata for tempo-xtask
         id: meta-tempo-xtask
-        uses: tempoxyz/gh-actions/vendor/docker/metadata-action@6f436eb3a168279692739e8c0c9fdb52b94bfae7
+        uses: tempoxyz/gh-actions/vendor/docker/metadata-action@3626124474a987bc74b41fc7ae65b2e23f8e4e4e
         with:
           images: |
             ${{ env.REGISTRY }}/tempo-xtask
@@ -146,14 +146,14 @@ jobs:
             type=ref,event=pr
 
       - name: Log in to Container Registry
-        uses: tempoxyz/gh-actions/vendor/docker/login-action@6f436eb3a168279692739e8c0c9fdb52b94bfae7
+        uses: tempoxyz/gh-actions/vendor/docker/login-action@3626124474a987bc74b41fc7ae65b2e23f8e4e4e
         with:
           registry: ${{ env.REGISTRY }}
           username: ${{ github.actor }}
           password: ${{ secrets.GITHUB_TOKEN }}
 
       - name: Log in to Docker Hub
-        uses: tempoxyz/gh-actions/vendor/docker/login-action@6f436eb3a168279692739e8c0c9fdb52b94bfae7
+        uses: tempoxyz/gh-actions/vendor/docker/login-action@3626124474a987bc74b41fc7ae65b2e23f8e4e4e
         with:
           username: ${{ vars.DOCKER_HUB_USER }}
           password: ${{ secrets.DOCKER_HUB_TOKEN }}
@@ -163,7 +163,7 @@ jobs:
 
       - name: Build and push Docker images
         id: build-and-push
-        uses: tempoxyz/gh-actions/vendor/depot/bake-action@6f436eb3a168279692739e8c0c9fdb52b94bfae7
+        uses: tempoxyz/gh-actions/vendor/depot/bake-action@3626124474a987bc74b41fc7ae65b2e23f8e4e4e
         with:
           files: |
             docker-bake.hcl
@@ -181,7 +181,7 @@ jobs:
           VERGEN_GIT_SHA_SHORT: ${{ steps.shortsha.outputs.shortsha }}
 
       - name: Install cosign
-        uses: tempoxyz/gh-actions/vendor/sigstore/cosign-installer@6f436eb3a168279692739e8c0c9fdb52b94bfae7
+        uses: tempoxyz/gh-actions/vendor/sigstore/cosign-installer@3626124474a987bc74b41fc7ae65b2e23f8e4e4e
 
       - name: Sign Docker images
         id: sign-images
