@@ -48,6 +48,9 @@ impl BestTransactionsPrewarming {
         };
 
         let prewarm_executor = prewarm.executor();
+        // Shared so that scheduling a transaction only bumps a refcount instead of cloning the
+        // whole context (provider, executor, cache and EVM env) for every transaction.
+        let prewarm = Arc::new(prewarm);
         prewarm
             .executor()
             .spawn_blocking_named("builder-prewarm", move || {
@@ -170,7 +173,7 @@ impl BestTransactionsPrewarming {
     /// a [`PrewarmedTransaction`] with populated replay data is returned.
     #[instrument(level = "trace", skip_all, fields(parallel = prewarm.parallel, tx_hash = ?tx.hash()))]
     fn prewarm_transaction<Provider>(
-        prewarm: PrewarmingExecutionContext<Provider>,
+        prewarm: Arc<PrewarmingExecutionContext<Provider>>,
         tx: BestTransaction,
         expiring_nonce_offset: Option<usize>,
     ) -> PrewarmedTransaction
@@ -303,7 +306,7 @@ struct BestTransactionsPrewarmingContext<Txs, Provider> {
     transactions_tx: Sender<Option<PrewarmedTransaction>>,
     commands_tx: Sender<BestTransactionsCommand>,
     commands_rx: Receiver<BestTransactionsCommand>,
-    prewarm: PrewarmingExecutionContext<Provider>,
+    prewarm: Arc<PrewarmingExecutionContext<Provider>>,
     next_expiring_nonce_offset: usize,
 }
 
@@ -867,7 +870,7 @@ mod tests {
 
             let sender = Address::random();
             let failed = BestTransactionsPrewarming::prewarm_transaction(
-                context.clone(),
+                Arc::new(context.clone()),
                 test_payment_tx(sender, 0),
                 None,
             );
@@ -881,7 +884,7 @@ mod tests {
             });
 
             let successful = BestTransactionsPrewarming::prewarm_transaction(
-                context,
+                Arc::new(context),
                 test_payment_tx(sender, 500_000),
                 None,
             );
