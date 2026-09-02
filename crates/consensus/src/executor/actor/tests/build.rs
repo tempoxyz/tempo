@@ -223,11 +223,12 @@ fn build_canceled_while_queued_still_reaffirms_the_head() {
             .await
             .expect("finalized block should be acknowledged");
 
+        h.wait_until(|| h.execution.fcus().len() == 3).await;
         assert_eq!(
             h.execution.fcus(),
-            vec![STARTUP_FCU, (d1, d1, false)],
+            vec![STARTUP_FCU, (d1, d1, false), (d1, d1, false)],
             "the canceled build must not submit attributes; its FCU degrades \
-            to the bare head and finality update",
+            to a bare re-affirmation of the head",
         );
         assert!(h.execution.pending_payload_jobs().is_empty());
     });

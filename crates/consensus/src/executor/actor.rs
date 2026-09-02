@@ -1053,55 +1053,40 @@ where
             }
             Some((round, ConsensusRequest::Build { cause, build })) => {
                 // Builds are registered via FCU setting the head hash to the
-                // parent, so the parent must be known to the execution
-                // layer. The update moves the head onto it if it is not
-                // there yet: the parent is the pending head consensus
-                // reported, so there is no convergence to fight.
-                match self.build_target(build.digest) {
-                    BuildTarget::Ready(target) => {
-                        if self.is_stale_forkchoice(target)? {
-                            info!(
-                                build.parent = %build.digest,
-                                "tracked finality is below the execution layer's; dropping the build",
-                            );
-                        } else {
-                            let fut = execute_forkchoice(
-                                self.execution_node.clone(),
-                                cause.clone(),
-                                target,
-                                Some((cause, build)),
-                            );
-                            self.set_execution_task(ExecutionTask::new(
-                                ExecutionTaskType::Build,
-                                fut,
-                            ));
-                            return Ok(());
-                        }
-                    }
-                    BuildTarget::Stale => {
+                // parent. So running it with the head anywhere else would fight
+                // notarized-chain convergence.
+                if self.notarized_tree.is_local_head(build.digest) {
+                    let target = self.notarized_tree.local_state();
+                    if self.is_stale_forkchoice(target)? {
                         info!(
-                            finalized = %self.notarized_tree.delivered_finalized().1,
                             build.parent = %build.digest,
-                            "finality advanced past the parent to build on, dropping the build",
+                            "tracked finality is below the execution layer's; dropping the build",
                         );
+                    } else {
+                        let fut = execute_forkchoice(
+                            self.execution_node.clone(),
+                            cause.clone(),
+                            target,
+                            Some((cause, build)),
+                        );
+                        self.set_execution_task(ExecutionTask::new(ExecutionTaskType::Build, fut));
+                        return Ok(());
                     }
+                } else if self.is_convergence_target(build.digest) {
                     // Reschedules the request; the actor will not spin on
                     // `start_next_execution_request` as long as it remains
                     // scheduled before the select! in the select-loop (some
                     // other event needs to take place first; ideally the
                     // result of the convergence target we are falling through
                     // to).
-                    BuildTarget::Unknown if self.is_convergence_target(build.digest) => {
-                        self.pending_consensus_request =
-                            Some((round, ConsensusRequest::Build { cause, build }));
-                    }
-                    BuildTarget::Unknown => {
-                        info!(
-                            execution.head_hash = %self.notarized_tree.local_state().head.1,
-                            build.parent = %build.digest,
-                            "not ready to build new block, dropping it",
-                        );
-                    }
+                    self.pending_consensus_request =
+                        Some((round, ConsensusRequest::Build { cause, build }));
+                } else {
+                    info!(
+                        execution.head_hash = %self.notarized_tree.local_state().head.1,
+                        build.parent = %build.digest,
+                        "not ready to build new block, dropping it",
+                    );
                 }
             }
             None => {}
@@ -1226,37 +1211,6 @@ where
 
         Ok((target != local).then_some(target))
     }
-
-    /// The forkchoice state a build on top of `parent` is registered with:
-    /// the head on the parent, finality on the delivered finalized block.
-    fn build_target(&self, parent: Digest) -> BuildTarget {
-        let Some(height) = self.notarized_tree.known_height(parent) else {
-            return BuildTarget::Unknown;
-        };
-        let (finalized_height, finalized_digest) = self.notarized_tree.delivered_finalized();
-        let target = self
-            .notarized_tree
-            .local_state()
-            .update_finalized(finalized_height, finalized_digest)
-            .update_head(height, parent);
-        if target.head.1 == parent {
-            BuildTarget::Ready(target)
-        } else {
-            BuildTarget::Stale
-        }
-    }
-}
-
-/// Whether a build can be registered on its parent, see
-/// [`Actor::build_target`].
-enum BuildTarget {
-    /// The forkchoice state to register the build with.
-    Ready(LocalState),
-    /// The parent is not known to the execution layer (yet).
-    Unknown,
-    /// Finality advanced past the parent: the build can never be
-    /// registered.
-    Stale,
 }
 
 #[instrument(skip_all, fields(height), err)]

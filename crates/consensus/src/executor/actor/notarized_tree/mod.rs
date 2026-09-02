@@ -263,6 +263,11 @@ impl NotarizedTree {
         self.known_height(digest).is_some()
     }
 
+    /// Returns if `digest` is at the head of the tracked EL state.
+    pub(super) fn is_local_head(&self, digest: Digest) -> bool {
+        self.local_head.1 == digest
+    }
+
     /// The height of `digest` if the execution layer has it.
     pub(super) fn known_height(&self, digest: Digest) -> Option<Height> {
         if self.local_head.1 == digest {
