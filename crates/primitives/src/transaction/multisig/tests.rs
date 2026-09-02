@@ -226,9 +226,19 @@ fn multisig_domains_match_spec_vectors() {
         alloy_primitives::b256!("7a62ef46efdf76a6a0ab6c38c5fdeda2169d6a0de3643bb9912a4fbce881a870")
     );
 
-    let initial_commitment = config.commitment().unwrap();
+    assert_eq!(
+        config.commitment().unwrap(),
+        alloy_primitives::b256!("a9e7d1e2ad25e227a4de5f38f3bba31d854ffc8efec46aaa8649097a516bb4ee")
+    );
     config.version = 1;
-    assert_ne!(config.commitment().unwrap(), initial_commitment);
+    assert_eq!(
+        config.commitment().unwrap(),
+        alloy_primitives::b256!("6237ca5930f2265d4fb70a0305dd6ceea4df227053b4a62c304489ede946a2f8")
+    );
+    assert_eq!(
+        multisig_digest(B256::repeat_byte(0x42), account, 1),
+        alloy_primitives::b256!("cceb022fd342beddcf6583e680c18a34936212276a680f026e52728b5ebb722b")
+    );
 }
 
 #[test]
