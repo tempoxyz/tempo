@@ -75,16 +75,17 @@ impl AmmLiquidityCache {
             let inner = self.inner.read();
             hardfork = inner.hardfork;
 
+            // Validators always accept fees in their own token, and this is the common case, so
+            // answer it before doing any swap math.
+            if inner.unique_tokens.contains(&user_token) {
+                return Ok(true);
+            }
+
             let calc_swap = |input| compute_amount_out(input).map_err(ProviderError::other);
             let out1 = calc_swap(fee)?;
             let out2 = hardfork.is_t5().then(|| calc_swap(out1)).transpose()?;
 
             for &validator_token in &inner.unique_tokens {
-                // Validators always accept fees in their own token.
-                if validator_token == user_token {
-                    return Ok(true);
-                }
-
                 let direct = inner
                     .pool_cache
                     .get(&(user_token, validator_token))
