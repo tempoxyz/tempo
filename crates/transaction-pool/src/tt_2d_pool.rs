@@ -180,6 +180,12 @@ impl AA2dPool {
         self.metrics.set_transaction_counts(total, pending, queued);
     }
 
+    /// Returns the base fee the eviction orders are currently keyed against.
+    #[cfg(test)]
+    pub(crate) const fn base_fee(&self) -> u64 {
+        self.base_fee
+    }
+
     pub(crate) fn set_base_fee(&mut self, base_fee: u64) {
         if self.base_fee == base_fee {
             return;
