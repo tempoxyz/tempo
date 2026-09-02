@@ -22,8 +22,11 @@ use revm::{
 use tempo_chainspec::hardfork::TempoHardfork;
 use tempo_contracts::precompiles::{DEFAULT_FEE_TOKEN, ITIPFeeAMM, NATIVE_MULTISIG_ADDRESS};
 use tempo_precompiles::{
-    PATH_USD_ADDRESS, TIP_FEE_MANAGER_ADDRESS, account_keychain::getTransactionKeyCall,
-    native_multisig::NativeMultisigStateError, storage::ContractStorage, test_util::TIP20Setup,
+    PATH_USD_ADDRESS, TIP_FEE_MANAGER_ADDRESS,
+    account_keychain::getTransactionKeyCall,
+    native_multisig::{NativeMultisigAuthorizationError, NativeMultisigStateError},
+    storage::ContractStorage,
+    test_util::TIP20Setup,
     tip_fee_manager::TipFeeManager,
 };
 use tempo_primitives::transaction::{
@@ -3759,29 +3762,46 @@ mod keychain {
 
     #[test]
     fn test_t12_ordinary_key_authorization_charges_one_commitment_read() {
-        let (signer, user) = generate_keypair();
-        let access_key = Address::random();
-        let signed = sign_key_auth(
-            &signer,
-            KeyAuthorization::unrestricted(1337, SignatureType::Secp256k1, access_key),
-        );
-        let (mut evm, h) = make_evm(
-            user,
-            access_key,
-            Some(signed),
-            TempoHardfork::T12,
-            None,
-            false,
-        );
         let gas_params = tempo_gas_params(TempoHardfork::T12);
         let expected =
             gas_params.warm_storage_read_cost() + gas_params.cold_storage_additional_cost();
-        let mut init_gas = InitialAndFloorGas::default();
 
-        h.validate_against_state_and_deduct_caller(&mut evm, &mut init_gas)
-            .expect("ordinary access-key authorization should pass");
+        for gas_limit in [expected, expected - 1] {
+            let (signer, user) = generate_keypair();
+            let access_key = Address::random();
+            let signed = sign_key_auth(
+                &signer,
+                KeyAuthorization::unrestricted(1337, SignatureType::Secp256k1, access_key),
+            );
+            let (mut evm, h) = make_evm(
+                user,
+                access_key,
+                Some(signed),
+                TempoHardfork::T12,
+                None,
+                false,
+            );
+            evm.tx.inner.gas_limit = gas_limit;
+            let mut init_gas = InitialAndFloorGas::default();
+            let result = h.validate_against_state_and_deduct_caller(&mut evm, &mut init_gas);
 
-        assert_eq!(init_gas.initial_regular_gas, expected);
+            assert_eq!(init_gas.initial_regular_gas, expected);
+            if gas_limit == expected {
+                result.expect("exact commitment-read gas should pass");
+            } else {
+                assert!(matches!(
+                    result,
+                    Err(EVMError::Transaction(
+                        TempoInvalidTransaction::EthInvalidTransaction(
+                            InvalidTransaction::CallGasCostMoreThanGasLimit {
+                                gas_limit: actual_limit,
+                                initial_gas,
+                            }
+                        )
+                    )) if actual_limit == gas_limit && initial_gas == expected
+                ));
+            }
+        }
     }
 
     #[test]
@@ -5049,7 +5069,16 @@ fn test_t12_current_multisig_requires_matching_commitment() {
     current.version = 1;
     let actual = current.commitment().unwrap();
     let mut aa_env = make_single_call_env(Bytes::new());
-    aa_env.signature = TempoSignature::Multisig(mock_multisig_signature(account, current));
+    aa_env.signature = TempoSignature::Multisig(
+        MultisigSignature::try_new(
+            account,
+            current,
+            vec![TempoSignature::Primitive(PrimitiveSignature::Secp256k1(
+                alloy_primitives::Signature::new(U256::ZERO, U256::ZERO, false),
+            ))],
+        )
+        .unwrap(),
+    );
     let mut test = TestHandlerEvm::aa(TempoHardfork::T12, aa_env, |tx_env| {
         tx_env.inner.caller = account;
         tx_env.execution_context = ExecutionContext::Simulation;
@@ -5072,6 +5101,22 @@ fn test_t12_current_multisig_requires_matching_commitment() {
     store_native_multisig_account(&mut test.evm, &config);
     test.validate_against_state_and_deduct_caller()
         .expect("matching current witness should pass simulation validation");
+
+    test.evm.inner.ctx.tx.execution_context = ExecutionContext::Transaction {
+        tx_hash: B256::ZERO,
+    };
+    assert!(matches!(
+        test.validate_against_state_and_deduct_caller(),
+        Err(EVMError::Transaction(
+            TempoInvalidTransaction::NativeMultisigInvalidTransaction(
+                NativeMultisigInvalidReason::Authorization(
+                    NativeMultisigAuthorizationError::OwnerSignatureRecoveryFailed {
+                        approval_index: 0
+                    }
+                )
+            )
+        ))
+    ));
 }
 
 #[test]
