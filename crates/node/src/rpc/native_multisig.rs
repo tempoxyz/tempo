@@ -183,7 +183,7 @@ mod tests {
             },
             approvals: vec![MultisigSimulationPrimitiveApproval {
                 owner: nested_owner,
-                key_type: Some(SignatureType::Secp256k1),
+                key_type: Some(SignatureType::P256),
                 key_data: None,
             }],
         };
