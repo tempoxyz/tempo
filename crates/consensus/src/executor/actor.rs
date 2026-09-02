@@ -625,12 +625,14 @@ where
         );
         match status {
             Ok(PayloadStatusEnum::Valid) => {}
-            Ok(status) => bail!(
-                "payload status of finalized block `{}` at height `{}` was not \
-                valid: {status}",
-                block.digest(),
-                block.height(),
-            ),
+            Ok(status) => {
+                bail!(
+                    "payload status of finalized block `{}` at height `{}` was \
+                    not valid: {status}",
+                    block.digest(),
+                    block.height(),
+                );
+            }
             Err(error) => {
                 return Err(error.wrap_err(format!(
                     "failed delivering finalized block `{}` at height `{}`",
