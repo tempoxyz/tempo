@@ -1186,7 +1186,18 @@ impl TIP20Token {
     /// # Errors
     /// - `SpendingLimitExceeded` — access key spending limit exceeded
     pub fn check_and_update_spending_limit(&mut self, from: Address, amount: U256) -> Result<()> {
-        AccountKeychain::new().authorize_transfer(from, self.address, amount)
+        // Root-key transactions (the common case) never hit spending limits, so read the transient
+        // transaction key first and only build the keychain handle when there is an access key.
+        let transaction_key = AccountKeychain::current_transaction_key()?;
+        if transaction_key == Address::ZERO {
+            return Ok(());
+        }
+        AccountKeychain::new().authorize_transfer_with_key(
+            from,
+            self.address,
+            amount,
+            transaction_key,
+        )
     }
 
     /// Core transfer: debits `from`, credits `to.target`, emits `Transfer(from, event_addr, amount)`.
