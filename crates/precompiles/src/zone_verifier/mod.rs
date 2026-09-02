@@ -20,7 +20,7 @@ const MAX_FUTURE_SKEW_MILLIS: u64 = 300_000;
 /// Production measurements remain deliberately unset until the reproducible T11 EIF is finalized.
 const APPROVED_PCRS: Option<[[u8; 48]; 3]> = None;
 
-const BATCH_ATTESTATION_TYPE: &str = "NitroBatchAttestation(uint256 parentChainId,address verifier,address portal,uint32 zoneId,uint64 tempoBlockNumber,uint64 anchorBlockNumber,bytes32 anchorBlockHash,uint64 expectedWithdrawalBatchIndex,bytes32 prevBlockHash,bytes32 nextBlockHash,bytes32 prevProcessedHash,bytes32 nextProcessedHash,uint64 prevDepositNumber,uint64 nextDepositNumber,bytes32 withdrawalQueueHash,bytes32 verifierConfigHash)";
+const BATCH_ATTESTATION_TYPE: &str = "NitroBatchAttestation(uint256 parentChainId,address verifier,address portal,uint32 zoneId,uint64 tempoBlockNumber,uint64 anchorBlockNumber,bytes32 anchorBlockHash,uint64 expectedWithdrawalBatchIndex,bytes32 prevBlockHash,bytes32 nextBlockHash,bytes32 prevProcessedHash,bytes32 nextProcessedHash,uint64 prevDepositNumber,uint64 nextDepositNumber,uint64 prevProcessedTokenCount,uint64 nextProcessedTokenCount,bytes32 withdrawalQueueHash,bytes32 verifierConfigHash)";
 
 #[contract(addr = ZONE_VERIFIER_ADDRESS)]
 pub struct ZoneVerifier {}
@@ -101,6 +101,8 @@ fn batch_commitment(chain_id: u64, portal: Address, call: &IZoneVerifier::verify
             call.depositQueueTransition.nextProcessedHash,
             call.depositQueueTransition.prevDepositNumber,
             call.depositQueueTransition.nextDepositNumber,
+            call.tokenEnablementTransition.prevProcessedTokenCount,
+            call.tokenEnablementTransition.nextProcessedTokenCount,
             call.withdrawalQueueHash,
             keccak256(&call.verifierConfig),
         )
@@ -119,22 +121,26 @@ mod tests {
 
     fn call() -> IZoneVerifier::verifyCall {
         IZoneVerifier::verifyCall {
-            zoneId: 7,
-            tempoBlockNumber: 100,
-            anchorBlockNumber: 99,
-            anchorBlockHash: B256::repeat_byte(0x21),
-            expectedWithdrawalBatchIndex: 3,
+            zoneId: 12,
+            tempoBlockNumber: 9,
+            anchorBlockNumber: 10,
+            anchorBlockHash: B256::with_last_byte(11),
+            expectedWithdrawalBatchIndex: 13,
             blockTransition: IZoneVerifier::BlockTransition {
-                prevBlockHash: B256::repeat_byte(0x31),
-                nextBlockHash: B256::repeat_byte(0x32),
+                prevBlockHash: B256::with_last_byte(1),
+                nextBlockHash: B256::with_last_byte(2),
             },
             depositQueueTransition: IZoneVerifier::DepositQueueTransition {
-                prevProcessedHash: B256::repeat_byte(0x41),
-                nextProcessedHash: B256::repeat_byte(0x42),
-                prevDepositNumber: 4,
-                nextDepositNumber: 9,
+                prevProcessedHash: B256::with_last_byte(3),
+                nextProcessedHash: B256::with_last_byte(4),
+                prevDepositNumber: 5,
+                nextDepositNumber: 6,
             },
-            withdrawalQueueHash: B256::repeat_byte(0x51),
+            tokenEnablementTransition: IZoneVerifier::TokenEnablementTransition {
+                prevProcessedTokenCount: 7,
+                nextProcessedTokenCount: 8,
+            },
+            withdrawalQueueHash: B256::with_last_byte(9),
             verifierConfig: Bytes::from_static(CONFIG_V1),
             proof: Bytes::new(),
         }
@@ -144,12 +150,22 @@ mod tests {
     fn batch_commitment_type_hash_is_stable() {
         assert_eq!(
             IZoneVerifier::verifyCall::SELECTOR,
-            [0x71, 0x06, 0xa4, 0x3e]
+            [0xe5, 0x7a, 0x63, 0x66]
         );
         assert_eq!(
             keccak256(BATCH_ATTESTATION_TYPE),
             B256::from(alloy::primitives::hex!(
-                "2499a8e67450aa54a0f713d04bc99117224746a9b4c56cadc6b2ac87234573d7"
+                "d09980465a50a967b8b5b35dc6b3d8f9eb9245916e285a7555f3937ceda0ac68"
+            ))
+        );
+        assert_eq!(
+            batch_commitment(
+                42_431,
+                Address::from([0x11; 20]),
+                &call(),
+            ),
+            B256::from(alloy::primitives::hex!(
+                "764c1f24b00b253ae1a06fe31ba8858a2352e9350e09a6c6028bea47233c0cb9"
             ))
         );
     }
@@ -165,7 +181,7 @@ mod tests {
             expected
         );
 
-        let mutations: [fn(&mut IZoneVerifier::verifyCall); 13] = [
+        let mutations: [fn(&mut IZoneVerifier::verifyCall); 15] = [
             |call| call.zoneId += 1,
             |call| call.tempoBlockNumber += 1,
             |call| call.anchorBlockNumber += 1,
@@ -177,6 +193,8 @@ mod tests {
             |call| call.depositQueueTransition.nextProcessedHash[0] ^= 1,
             |call| call.depositQueueTransition.prevDepositNumber += 1,
             |call| call.depositQueueTransition.nextDepositNumber += 1,
+            |call| call.tokenEnablementTransition.prevProcessedTokenCount += 1,
+            |call| call.tokenEnablementTransition.nextProcessedTokenCount += 1,
             |call| call.withdrawalQueueHash[0] ^= 1,
             |call| call.verifierConfig = Bytes::from_static(&[2]),
         ];

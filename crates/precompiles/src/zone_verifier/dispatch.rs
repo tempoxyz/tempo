@@ -6,8 +6,8 @@ use crate::{Precompile, charge_input_cost, dispatch, view};
 
 use super::ZoneVerifier;
 
-// selector + 14 static ABI words + one-byte config tail + maximum proof tail.
-const MAX_CALLDATA_LEN: usize = 4 + 14 * 32 + 2 * 32 + 32 + super::attestation::MAX_DOCUMENT_LEN;
+// selector + 16 static ABI words + one-byte config tail + maximum proof tail.
+const MAX_CALLDATA_LEN: usize = 4 + 16 * 32 + 2 * 32 + 32 + super::attestation::MAX_DOCUMENT_LEN;
 
 impl Precompile for ZoneVerifier {
     fn call(&mut self, calldata: &[u8], msg_sender: Address) -> PrecompileResult {
@@ -56,6 +56,10 @@ mod tests {
                 nextProcessedHash: B256::ZERO,
                 prevDepositNumber: 0,
                 nextDepositNumber: 0,
+            },
+            tokenEnablementTransition: IZoneVerifier::TokenEnablementTransition {
+                prevProcessedTokenCount: 0,
+                nextProcessedTokenCount: 0,
             },
             withdrawalQueueHash: B256::ZERO,
             verifierConfig: Bytes::from_static(&[1]),
