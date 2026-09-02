@@ -619,6 +619,53 @@ where
             }
         }
     }
+
+    /// Adds a batch of validated transactions, returning the results in input order.
+    ///
+    /// AA 2D transactions are inserted into the 2D pool one by one, everything else (including
+    /// invalid outcomes, which only need to be forwarded for event listeners) is handed to the
+    /// protocol pool as a single batch so it takes its write lock, enforces its limits and
+    /// updates its metrics once instead of once per transaction.
+    fn add_validated_transactions(
+        &self,
+        transactions: Vec<(
+            TransactionOrigin,
+            TransactionValidationOutcome<TempoPooledTransaction>,
+        )>,
+    ) -> Vec<PoolResult<AddedTransactionOutcome>> {
+        let mut results: Vec<Option<PoolResult<AddedTransactionOutcome>>> =
+            (0..transactions.len()).map(|_| None).collect();
+        let mut protocol_batch = Vec::new();
+
+        for (idx, (origin, outcome)) in transactions.into_iter().enumerate() {
+            let is_aa_2d = matches!(
+                &outcome,
+                TransactionValidationOutcome::Valid { transaction, .. }
+                    if transaction.transaction().is_aa_2d()
+            );
+            if is_aa_2d {
+                results[idx] = Some(self.add_validated_transaction(origin, outcome));
+            } else {
+                protocol_batch.push((idx, (origin, outcome)));
+            }
+        }
+
+        if !protocol_batch.is_empty() {
+            let (indices, batch): (Vec<_>, Vec<_>) = protocol_batch.into_iter().unzip();
+            let batch_results = self
+                .protocol_pool
+                .inner()
+                .add_transactions_with_origins(batch);
+            for (idx, result) in indices.into_iter().zip(batch_results) {
+                results[idx] = Some(result);
+            }
+        }
+
+        results
+            .into_iter()
+            .map(|result| result.expect("every transaction produces exactly one result"))
+            .collect()
+    }
 }
 
 // Manual Clone implementation
@@ -716,13 +763,17 @@ where
                 .await;
         }
 
-        self.protocol_pool
+        let outcomes = self
+            .protocol_pool
             .validator()
             .validate_transactions_with_origin(origin, transactions)
-            .await
-            .into_iter()
-            .map(|outcome| self.add_validated_transaction(origin, outcome))
-            .collect()
+            .await;
+        self.add_validated_transactions(
+            outcomes
+                .into_iter()
+                .map(|outcome| (origin, outcome))
+                .collect(),
+        )
     }
 
     async fn add_transactions_with_origins(
@@ -746,14 +797,12 @@ where
             .map(|(origin, _)| *origin)
             .collect::<Vec<_>>();
 
-        self.protocol_pool
+        let outcomes = self
+            .protocol_pool
             .validator()
             .validate_transactions(transactions)
-            .await
-            .into_iter()
-            .zip(origins)
-            .map(|(outcome, origin)| self.add_validated_transaction(origin, outcome))
-            .collect()
+            .await;
+        self.add_validated_transactions(origins.into_iter().zip(outcomes).collect())
     }
 
     fn transaction_event_listener(&self, tx_hash: B256) -> Option<TransactionEvents> {
@@ -1630,6 +1679,68 @@ mod tests {
             },
         );
         provider
+    }
+
+    #[test]
+    fn mixed_batch_results_keep_input_order() {
+        use reth_primitives_traits::transaction::error::InvalidTransactionError;
+        use reth_transaction_pool::error::InvalidPoolTransactionError;
+
+        let pool = create_test_pool(create_provider_with_tip());
+
+        let valid = |pooled: TempoPooledTransaction| TransactionValidationOutcome::Valid {
+            balance: *pooled.cost(),
+            state_nonce: pooled.nonce(),
+            bytecode_hash: None,
+            transaction: ValidTransaction::new(pooled, None),
+            propagate: true,
+            authorities: None,
+        };
+
+        let aa_2d_first = crate::test_utils::TxBuilder::aa(Address::random())
+            .nonce_key(U256::from(1))
+            .build();
+        // AA transactions with the default (zero) nonce key stay in the protocol pool.
+        let protocol = crate::test_utils::TxBuilder::aa(Address::random()).build();
+        let invalid = crate::test_utils::TxBuilder::aa(Address::random()).build();
+        let aa_2d_second = crate::test_utils::TxBuilder::aa(Address::random())
+            .nonce_key(U256::from(7))
+            .build();
+
+        let expected_hashes = [
+            *aa_2d_first.hash(),
+            *protocol.hash(),
+            *invalid.hash(),
+            *aa_2d_second.hash(),
+        ];
+
+        let results = pool.add_validated_transactions(vec![
+            (TransactionOrigin::External, valid(aa_2d_first)),
+            (TransactionOrigin::Local, valid(protocol)),
+            (
+                TransactionOrigin::External,
+                TransactionValidationOutcome::Invalid(
+                    invalid,
+                    InvalidPoolTransactionError::Consensus(
+                        InvalidTransactionError::TxTypeNotSupported,
+                    ),
+                ),
+            ),
+            (TransactionOrigin::Private, valid(aa_2d_second)),
+        ]);
+
+        assert_eq!(results.len(), expected_hashes.len());
+        assert_eq!(results[0].as_ref().unwrap().hash, expected_hashes[0]);
+        assert_eq!(results[1].as_ref().unwrap().hash, expected_hashes[1]);
+        assert_eq!(results[2].as_ref().unwrap_err().hash, expected_hashes[2]);
+        assert_eq!(results[3].as_ref().unwrap().hash, expected_hashes[3]);
+
+        let size = pool.pool_size();
+        assert_eq!(size.total, 3);
+        assert!(pool.contains(&expected_hashes[0]));
+        assert!(pool.contains(&expected_hashes[1]));
+        assert!(!pool.contains(&expected_hashes[2]));
+        assert!(pool.contains(&expected_hashes[3]));
     }
 
     #[test]
