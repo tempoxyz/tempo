@@ -420,6 +420,27 @@ async fn test_tip_1061_fill_sign_send() -> eyre::Result<()> {
     env.fund_account(account).await?;
 
     let owners = [alice.address(), bob.address()];
+    let request = serde_json::to_value(multisig_fill_request(
+        account,
+        vec![no_op_call(0x80)],
+        config.clone(),
+        &owners,
+        None,
+    ))?;
+    for (method, params) in [
+        ("eth_estimateGas", vec![request.clone()]),
+        (
+            "eth_call",
+            vec![request.clone(), serde_json::json!("pending")],
+        ),
+        ("eth_createAccessList", vec![request.clone()]),
+    ] {
+        env.provider()
+            .raw_request::<_, serde_json::Value>(method.into(), params)
+            .await
+            .unwrap_or_else(|error| panic!("{method} failed: {error}"));
+    }
+
     let mut initial = fill_multisig_transaction(
         &env,
         account,
