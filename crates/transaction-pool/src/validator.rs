@@ -46,6 +46,7 @@ use tempo_primitives::{
 use tempo_revm::{
     TempoBlockEnv, TempoInvalidTransaction, TempoStateAccess, error::FeePaymentError,
 };
+use tracing::debug;
 
 // Reject AA txs where `valid_before` is too close to current time (or already expired) to prevent block invalidation.
 const AA_VALID_BEFORE_MIN_SECS: u64 = 3;
@@ -84,6 +85,9 @@ const MAX_KEYCHAIN_CALL_SCOPES: u8 = 64;
 const MAX_KEYCHAIN_SELECTOR_RULES_PER_SCOPE: u8 = 64;
 /// Maximum number of recipients per selector rule.
 const MAX_KEYCHAIN_RECIPIENTS_PER_SELECTOR: u8 = 64;
+
+/// Maximum number of attempts to obtain a state provider that resolves its in-memory overlay.
+const MAX_STATE_PROVIDER_ATTEMPTS: u8 = 3;
 
 /// Validator for Tempo transactions.
 #[derive(Debug)]
@@ -365,12 +369,36 @@ where
     }
 
     /// Returns the latest state provider and a state cache valid for the provider's tip.
+    ///
+    /// The provider snapshots the database when it is created but only overlays the canonical
+    /// in-memory blocks on top of it when it first reads state. Persistence can complete in that
+    /// gap and drop those blocks from the in-memory chain while the snapshot still predates their
+    /// write, leaving the overlay unresolvable. Forcing the overlay here keeps that failure
+    /// recoverable, because a fresh provider observes the persisted blocks; deferring it to the
+    /// EVM would surface it as a fatal database error mid-validation instead.
     fn latest_state_provider_and_cache(
         &self,
     ) -> ProviderResult<(StateProviderBox, Arc<StateCache>)> {
-        let state_provider = self.inner.client().latest()?;
-        let latest_hash = self.inner.client().chain_info()?.best_hash;
-        Ok((state_provider, self.state_cache_for_tip(latest_hash)))
+        let mut attempt = 1;
+        loop {
+            let state_provider = self.inner.client().latest()?;
+            let latest_hash = self.inner.client().chain_info()?.best_hash;
+
+            // Any account read resolves the overlay; the account itself is irrelevant.
+            match state_provider.basic_account(&Address::ZERO) {
+                Ok(_) => return Ok((state_provider, self.state_cache_for_tip(latest_hash))),
+                Err(err) if attempt == MAX_STATE_PROVIDER_ATTEMPTS => return Err(err),
+                Err(err) => {
+                    debug!(
+                        target: "txpool",
+                        %err,
+                        attempt,
+                        "retrying state provider with an unresolvable in-memory overlay"
+                    );
+                    attempt += 1;
+                }
+            }
+        }
     }
 
     /// Returns the shared cache if it matches `tip_hash`, otherwise an empty ephemeral cache.
