@@ -442,7 +442,8 @@ async fn get_block(client: Arc<WsClient>, digest: Digest) -> eyre::Result<Option
     let block = block
         .map(|block| {
             ensure!(block.hash() == digest.0, "mismatched block hash");
-            Ok(Block::from_execution_block_unchecked(block, None))
+            Block::try_from_execution_block(block, None)
+                .wrap_err("upstream block or consensus sidecar is invalid")
         })
         .transpose()?;
 

@@ -19,7 +19,7 @@ use commonware_runtime::{Clock, Pacer, Spawner};
 use eyre::OptionExt as _;
 use futures::channel::mpsc;
 use reth_engine_primitives::ConsensusEngineHandle;
-use reth_ethereum::{chainspec::EthChainSpec as _, rpc::eth::primitives::BlockNumHash};
+use reth_ethereum::chainspec::EthChainSpec as _;
 use reth_primitives_traits::{NodePrimitives, SealedHeader};
 use reth_provider::{
     BlockHashReader, BlockIdReader, ChainSpecProvider as _, DatabaseProviderFactory as _,
@@ -30,11 +30,11 @@ use tempo_node::{TempoExecutionData, TempoPayloadTypes};
 use tempo_payload_types::TempoPayloadAttributes;
 use tempo_primitives::TempoHeader;
 
-use crate::consensus::{Digest, block::Block};
+use crate::consensus::Digest;
 
 mod actor;
-mod fcu;
 mod ingress;
+mod target;
 
 #[cfg(test)]
 mod test;
@@ -67,10 +67,6 @@ where
 
 /// Finalized block state needed to initialize and advance the follower.
 pub(crate) trait FinalizedBlockProvider: Send + Sync {
-    /// Execution layer's finalized block, falling back to genesis if no
-    /// block has been explicitly finalized yet.
-    fn finalized_num_hash(&self) -> eyre::Result<BlockNumHash>;
-
     /// Execution layer's effective finalized header. Returns genesis when no
     /// explicit finalized marker exists on a fresh chain.
     fn finalized_header(&self) -> eyre::Result<SealedHeader<TempoHeader>>;
@@ -99,8 +95,6 @@ pub(crate) trait ExecutionEngine: Send + Sync {
 pub(crate) trait Marshal: Clone + Send + Sync {
     type Finalization: Send;
 
-    fn get_block(&self, height: Height) -> impl Future<Output = Option<Block>> + Send;
-
     fn get_finalization(
         &self,
         height: Height,
@@ -114,13 +108,11 @@ where
     N: ProviderNodeTypes,
     N::Primitives: NodePrimitives<BlockHeader = TempoHeader>,
 {
-    fn finalized_num_hash(&self) -> eyre::Result<BlockNumHash> {
-        Ok(BlockIdReader::finalized_block_num_hash(self)?
-            .unwrap_or_else(|| BlockNumHash::new(0, self.chain_spec().genesis_hash())))
-    }
-
     fn finalized_header(&self) -> eyre::Result<SealedHeader<TempoHeader>> {
-        HeaderProvider::sealed_header_by_hash(self, self.finalized_num_hash()?.hash)
+        let hash = BlockIdReader::finalized_block_num_hash(self)?
+            .map(|tip| tip.hash)
+            .unwrap_or_else(|| self.chain_spec().genesis_hash());
+        HeaderProvider::sealed_header_by_hash(self, hash)
             .map_err(eyre::Report::new)?
             .ok_or_eyre("finalized execution block is missing its header")
     }
@@ -159,11 +151,6 @@ impl ExecutionEngine for ConsensusEngineHandle<TempoPayloadTypes> {
 
 impl Marshal for crate::alias::marshal::Mailbox {
     type Finalization = SimplexFinalization<Scheme<PublicKey, MinSig>, Digest>;
-
-    fn get_block(&self, height: Height) -> impl Future<Output = Option<Block>> + Send {
-        let mailbox = self.clone();
-        async move { mailbox.get_block(height).await }
-    }
 
     fn get_finalization(
         &self,
