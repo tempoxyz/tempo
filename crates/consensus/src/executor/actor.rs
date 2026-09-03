@@ -20,12 +20,16 @@
 //! verify or build a block on top of some `$PARENT` will only pass if the the
 //! local tracked tip is at `$PARENT`.
 //!
-//! # Notarizations are retried, finalizations are fatal
+//! # Notarizations are retried, everything else is fatal
 //!
 //! A notarized block rejected by the execution layer is retried while it
 //! remains above the network finalized tip. Once that tip advances to or past
 //! the block's height, the notarized block is ejected. In contrast, an
 //! `INVALID` finalized block is a hard failure that shuts down the node.
+//!
+//! Forkchoice updates only ever name blocks the execution layer has already
+//! accepted, so an update not answered `VALID` means the executor's view of
+//! the execution layer has diverged from it: the node shuts down.
 
 use std::{
     collections::VecDeque,
@@ -35,7 +39,7 @@ use std::{
 
 use alloy_primitives::B256;
 
-use alloy_rpc_types_engine::{PayloadId, PayloadStatusEnum};
+use alloy_rpc_types_engine::{ForkchoiceUpdated, PayloadId, PayloadStatusEnum};
 use commonware_consensus::{
     Heightable as _,
     marshal::Update,
@@ -1082,7 +1086,8 @@ enum ExecutionTaskOutcome {
         /// execution layer and that still needs to be driven to completion.
         payload_job: Option<StartPayloadJob>,
     },
-    /// A notarized block could not be forwarded and should be retried later.
+    /// The new-payload request for a notarized block failed; the block is
+    /// retried later.
     NotarizedBlockRejected {
         digest: Digest,
         target: LocalState,
@@ -1125,7 +1130,17 @@ async fn execute_heartbeat(
     canonicalized: LocalState,
     cause: Span,
 ) -> ExecutionTaskOutcome {
-    if let Err(error) = submit_forkchoice_update(
+    match is_stale_forkchoice(&execution_node, canonicalized) {
+        Ok(false) => {}
+        Ok(true) => {
+            return ExecutionTaskOutcome::Completed {
+                canonicalized: None,
+                payload_job: None,
+            };
+        }
+        Err(error) => return ExecutionTaskOutcome::Fatal { error },
+    }
+    match submit_forkchoice_update(
         &execution_node,
         cause,
         canonicalized,
@@ -1134,11 +1149,13 @@ async fn execute_heartbeat(
     )
     .await
     {
-        warn!(%error, "forkchoice update heartbeat failed");
-    }
-    ExecutionTaskOutcome::Completed {
-        canonicalized: None,
-        payload_job: None,
+        Ok(_) => ExecutionTaskOutcome::Completed {
+            canonicalized: None,
+            payload_job: None,
+        },
+        Err(error) => ExecutionTaskOutcome::Fatal {
+            error: error.wrap_err("forkchoice update heartbeat failed"),
+        },
     }
 }
 
@@ -1179,6 +1196,20 @@ async fn execute_build(
 
     let (attributes, payload_response) = build_attributes.unzip();
 
+    match is_stale_forkchoice(&execution_node, canonicalized) {
+        Ok(false) => {}
+        Ok(true) => {
+            // Dropping the response channel signals the failure to the
+            // subscriber.
+            info!("tracked finality is below the execution layer's; dropping the build");
+            return ExecutionTaskOutcome::Completed {
+                canonicalized: None,
+                payload_job: None,
+            };
+        }
+        Err(error) => return ExecutionTaskOutcome::Fatal { error },
+    }
+
     // The forkchoice update is submitted even if it would not change the
     // forkchoice state: the execution layer treats it as a no-op (the FCU
     // heartbeat relies on this).
@@ -1193,8 +1224,8 @@ async fn execute_build(
     )
     .await
     {
-        Ok(payload_id) => {
-            let payload_job = match (payload_response, payload_id) {
+        Ok(fcu_response) => {
+            let payload_job = match (payload_response, fcu_response.payload_id) {
                 (Some(response), Some(payload_id)) => Some(StartPayloadJob {
                     cause,
                     payload_id,
@@ -1211,15 +1242,11 @@ async fn execute_build(
                 payload_job,
             }
         }
-        Err(error) => {
-            // Dropping the response channels signals the failure to the
-            // subscribers; the cause is only logged here.
-            warn!(%error, "forkchoice update failed");
-            ExecutionTaskOutcome::Completed {
-                canonicalized: None,
-                payload_job: None,
-            }
-        }
+        // Dropping the response channel signals the failure to the
+        // subscriber.
+        Err(error) => ExecutionTaskOutcome::Fatal {
+            error: error.wrap_err("forkchoice update registering the payload build failed"),
+        },
     }
 }
 
@@ -1265,22 +1292,45 @@ async fn execute_notarization(
     validator_set: Option<Vec<B256>>,
 ) -> ExecutionTaskOutcome {
     let digest = step.digest();
-    let is_repoint = matches!(step, NextToForward::Repoint(..));
     let target = on_top_of.update_head(step.height(), digest);
-    match forward_notarized(execution_node, on_top_of, target, step, validator_set).await {
+    if let NextToForward::Block(block) = step
+        && forward_notarized(&execution_node, block, validator_set)
+            .await
+            .is_err()
+    {
+        // The cause is logged by `forward_notarized`.
+        return ExecutionTaskOutcome::NotarizedBlockRejected { digest, target };
+    }
+
+    // The forkchoice update is skipped when it would not change anything or
+    // when the tracked finality trails the execution layer's, but the state
+    // is reported either way so that the tree's tracked state stays
+    // consistent.
+    let canonicalized = async {
+        if target != on_top_of && !is_stale_forkchoice(&execution_node, target)? {
+            submit_forkchoice_update(
+                &execution_node,
+                Span::current(),
+                target,
+                None,
+                ForkchoiceUpdateKind::Canonicalize {
+                    head_or_finalized: HeadOrFinalized::Head,
+                },
+            )
+            .await?;
+        }
+        eyre::Ok(target)
+    }
+    .await;
+    match canonicalized {
         Ok(canonicalized) => ExecutionTaskOutcome::Completed {
             canonicalized: Some(canonicalized),
             payload_job: None,
         },
-        // A failed repoint is fatal: the target is expected to be an ancestor
-        // of the current canonical chain. Anything but success means that CL
-        // and EL disagree.
-        Err(error) if is_repoint => ExecutionTaskOutcome::Fatal {
+        Err(error) => ExecutionTaskOutcome::Fatal {
             error: error
-                .wrap_err("failed repointing the execution layer's head onto the finalized tip"),
+                .wrap_err("failed moving the execution layer's head onto the notarized block"),
         },
-        // The cause is logged by `forward_notarized`.
-        Err(_logged) => ExecutionTaskOutcome::NotarizedBlockRejected { digest, target },
     }
 }
 
@@ -1495,62 +1545,7 @@ async fn submit_forkchoice_update(
     canonicalized: LocalState,
     attrs: Option<TempoPayloadAttributes>,
     kind: ForkchoiceUpdateKind,
-) -> eyre::Result<Option<PayloadId>> {
-    // The execution layer's finalized tip only ever advances. The tracked
-    // state can trail the execution layer's finality: it starts at the
-    // consensus finalized floor, which can sit below the execution layer's
-    // finalized tip after a snapshot restore, and only catches up as the
-    // marshal re-delivers the already-finalized blocks.
-    //
-    // Whenever the execution layer's finality is at or ahead of the tracked
-    // finalized block, that block must lie on the execution layer's
-    // canonical chain - anything else means two conflicting blocks were
-    // finalized. A forkchoice state whose finalized block is strictly below
-    // the execution layer's own is stale in its entirety and is not
-    // submitted. Callers treat the skip as a no-op; a payload-build request
-    // affected by it fails through the missing payload ID.
-    if let execution_finalized = execution_node.finalized_num_hash()
-        && execution_finalized.number >= canonicalized.finalized.0.get()
-    {
-        let canonical_digest = execution_node
-            .canonical_block_hash(canonicalized.finalized.0.get())
-            .wrap_err_with(|| {
-                format!(
-                    "failed reading canonical execution block hash at the tracked \
-                    finalized height `{}`",
-                    canonicalized.finalized.0,
-                )
-            })?
-            .ok_or_else(|| {
-                eyre!(
-                    "no canonical execution block hash at the tracked \
-                    finalized height `{}`, even though it is at or below the \
-                    execution layer's finalized height `{}`",
-                    canonicalized.finalized.0,
-                    execution_finalized.number,
-                )
-            })?;
-        ensure!(
-            canonical_digest == canonicalized.finalized.1.0,
-            "tracked finalized block `{}` at height `{}` conflicts with the \
-            execution layer's canonical block `{canonical_digest}` at the same \
-            height, which the execution layer already considers final; two \
-            different blocks must never be finalized at the same height",
-            canonicalized.finalized.1,
-            canonicalized.finalized.0,
-        );
-
-        if execution_finalized.number > canonicalized.finalized.0.get() {
-            debug!(
-                execution_finalized_height = execution_finalized.number,
-                execution_finalized_hash = %execution_finalized.hash,
-                "tracked finalized state is below the execution layer's \
-                finalized tip; skipping the forkchoice update",
-            );
-            return Ok(None);
-        }
-    }
-
+) -> eyre::Result<ForkchoiceUpdated> {
     let fcu_response = execution_node
         .fork_choice_updated(canonicalized.to_forkchoice_state(), attrs)
         .await
@@ -1573,7 +1568,59 @@ async fn submit_forkchoice_update(
             .wrap_err("forkchoice-update was not valid");
     }
 
-    Ok(fcu_response.payload_id)
+    Ok(fcu_response)
+}
+
+/// Whether `target` finalizes below the execution layer's own finality, so
+/// that submitting it would move finality backwards. The tracked state
+/// trails execution-layer finality after a snapshot restore until the
+/// marshal actor's re-deliveries catch up; a tracked finalized block the
+/// execution layer's canonical chain contradicts is fatal.
+fn is_stale_forkchoice(
+    execution_node: &impl ExecutionLayer,
+    target: LocalState,
+) -> eyre::Result<bool> {
+    let execution_finalized = execution_node.finalized_num_hash();
+    if execution_finalized.number < target.finalized.0.get() {
+        return Ok(false);
+    }
+    let canonical_digest = execution_node
+        .canonical_block_hash(target.finalized.0.get())
+        .wrap_err_with(|| {
+            format!(
+                "failed reading canonical execution block hash at the tracked \
+                finalized height `{}`",
+                target.finalized.0,
+            )
+        })?
+        .ok_or_else(|| {
+            eyre!(
+                "no canonical execution block hash at the tracked finalized height \
+                `{}`, even though it is at or below the execution layer's finalized \
+                height `{}`",
+                target.finalized.0,
+                execution_finalized.number,
+            )
+        })?;
+    ensure!(
+        canonical_digest == target.finalized.1.0,
+        "tracked finalized block `{}` at height `{}` conflicts with the execution \
+        layer's canonical block `{canonical_digest}` at the same height, which the \
+        execution layer already considers final; two different blocks must never be \
+        finalized at the same height",
+        target.finalized.1,
+        target.finalized.0,
+    );
+    if execution_finalized.number > target.finalized.0.get() {
+        debug!(
+            execution_finalized_height = execution_finalized.number,
+            execution_finalized_hash = %execution_finalized.hash,
+            "tracked finalized state is below the execution layer's finalized tip; \
+            skipping the forkchoice update",
+        );
+        return Ok(true);
+    }
+    Ok(false)
 }
 
 fn finalization_target(
@@ -1679,16 +1726,20 @@ async fn forward_finalized(
         "payload status of finalized block was not valid: {payload_status}"
     );
 
-    submit_forkchoice_update(
-        &execution_node,
-        cause.clone(),
-        target,
-        None,
-        ForkchoiceUpdateKind::Canonicalize {
-            head_or_finalized: HeadOrFinalized::Finalized,
-        },
-    )
-    .await?;
+    // The tracked state still folds the target when the update is stale, so
+    // the re-deliveries catch it up with the execution layer's finality.
+    if !is_stale_forkchoice(&execution_node, target)? {
+        submit_forkchoice_update(
+            &execution_node,
+            cause.clone(),
+            target,
+            None,
+            ForkchoiceUpdateKind::Canonicalize {
+                head_or_finalized: HeadOrFinalized::Finalized,
+            },
+        )
+        .await?;
+    }
 
     if let Some(public_key) = public_key.as_ref()
         && consensus_context.is_some_and(|context| context.proposer.to_inner() == *public_key)
@@ -1701,7 +1752,8 @@ async fn forward_finalized(
     Ok(target)
 }
 
-/// Drives convergence of the EL to the pending notarized tip.
+/// Delivers a notarized block to the execution layer via a new-payload
+/// request.
 ///
 /// The caller is responsible for only forwarding blocks that link to the
 /// canonicalized state, so the new-payload request must come back valid;
@@ -1709,55 +1761,34 @@ async fn forward_finalized(
 #[instrument(
     skip_all,
     fields(
-        block.digest = %step.digest(),
-        block.height = %step.height(),
+        block.digest = %block.digest(),
+        block.height = %block.height(),
     ),
     err(level = Level::WARN),
 )]
 async fn forward_notarized(
-    execution_node: impl ExecutionLayer,
-    on_top_of: LocalState,
-    target: LocalState,
-    step: NextToForward,
+    execution_node: &impl ExecutionLayer,
+    block: Arc<Block>,
     validator_set: Option<Vec<B256>>,
-) -> eyre::Result<LocalState> {
-    if let NextToForward::Block(block) = step {
-        let (block, block_access_list) = Arc::unwrap_or_clone(block).into_parts();
-        let payload_status = execution_node
-            .new_payload(TempoExecutionData {
-                block,
-                block_access_list,
-                validator_set,
-            })
-            .await
-            .wrap_err(
-                "failed sending new-payload request to execution engine to \
-                forward notarized block",
-            )?;
-        ensure!(
-            payload_status.is_valid(),
-            "payload status of notarized block was neither valid nor invalid \
-            (likely syncing): `{payload_status}`",
-        );
-    }
-
-    // The forkchoice update is skipped when it would not change anything,
-    // but the state is reported either way so that the tree's tracked
-    // state stays consistent.
-    if target == on_top_of {
-        return Ok(target);
-    }
-    submit_forkchoice_update(
-        &execution_node,
-        Span::current(),
-        target,
-        None,
-        ForkchoiceUpdateKind::Canonicalize {
-            head_or_finalized: HeadOrFinalized::Head,
-        },
-    )
-    .await?;
-    Ok(target)
+) -> eyre::Result<()> {
+    let (block, block_access_list) = Arc::unwrap_or_clone(block).into_parts();
+    let payload_status = execution_node
+        .new_payload(TempoExecutionData {
+            block,
+            block_access_list,
+            validator_set,
+        })
+        .await
+        .wrap_err(
+            "failed sending new-payload request to execution engine to \
+            forward notarized block",
+        )?;
+    ensure!(
+        payload_status.is_valid(),
+        "payload status of notarized block was neither valid nor invalid \
+        (likely syncing): `{payload_status}`",
+    );
+    Ok(())
 }
 
 /// Marker to indicate whether the head hash or finalized hash should be updated.
