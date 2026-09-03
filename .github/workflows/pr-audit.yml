@@ -53,7 +53,7 @@ jobs:
       pull-requests: read
     steps:
       - name: Handle audit command
-        uses: tempoxyz/gh-actions/actions/pr-audit-comment@4bf4080e1262b19a9b8e0e4d16ee4ba07d23edf9
+        uses: tempoxyz/gh-actions/actions/pr-audit-comment@7741a8658354abd422dd1b941d07f809682ca96d
         with:
           command-regex: '^(?:@decofe\s+)?(?:cyclops\s+(?:private\s+)?audit|derek\s+audit)\b'
           permission-check-mode: association
