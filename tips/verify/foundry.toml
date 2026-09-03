@@ -1,5 +1,5 @@
 [profile.default]
-hardfork = "tempo:T10"
+hardfork = "tempo:T11"
 
 # layout and file system
 src = "src"
@@ -17,12 +17,11 @@ remappings = [
 via-ir = true
 optimizer = true
 invariant = { runs = 10, depth = 50, fail_on_revert = true, show_solidity = true }
+# These suites exercise the direct authorization selectors removed in T11.
+no_match_contract = "^AccountKeychain(Test|InvariantTest)$"
 
 [profile.next]
-hardfork = "tempo:T11"
-# These suites exercise the direct authorization selectors removed in T11.
-# They continue to run under the default T10 profile.
-no_match_contract = "^AccountKeychain(Test|InvariantTest)$"
+hardfork = "tempo:T12"
 
 [profile.fuzz500]
 invariant = { runs = 500, depth = 500, fail_on_revert = true, show_solidity = true }

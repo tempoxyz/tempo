@@ -14,8 +14,10 @@ use commonware_cryptography::{
 };
 use commonware_parallel::Sequential;
 use rand_core::CryptoRng;
+use reth_consensus::ConsensusError;
 use tempo_chainspec::NetworkIdentity;
 use tempo_dkg_onchain_artifacts::OnchainDkgOutcome;
+use tempo_evm::consensus::validate_body_against_header;
 use tempo_node::rpc::consensus::CertifiedBlock;
 
 use crate::{config::NAMESPACE, consensus::Digest, epoch::SchemeProvider};
@@ -85,6 +87,9 @@ impl FinalizationVerifier {
         rng: &mut impl CryptoRng,
         certified: &CertifiedBlock,
     ) -> Result<Finalization<Scheme<PublicKey, MinSig>, Digest>, Error> {
+        validate_body_against_header(certified.block.body(), certified.block.header())
+            .map_err(Error::BlockBodyMismatch)?;
+
         // TODO: Decode certificates when constructing `CertifiedBlock` instead of keeping their
         // bytes opaque and decoding them at each consumer.
         let bytes = alloy_primitives::hex::decode(&certified.certificate)
@@ -177,6 +182,9 @@ pub enum CertificateVerificationError {
 /// An error returned while verifying a Tempo finalization certificate.
 #[derive(Debug, thiserror::Error)]
 pub enum Error {
+    /// The block body did not match the commitments in its header.
+    #[error("finalized block body does not match its header")]
+    BlockBodyMismatch(#[source] ConsensusError),
     /// The certificate was not valid hex or did not decode as a Tempo finalization.
     #[error("malformed finalization certificate")]
     MalformedCertificate(#[source] MalformedCertificateError),
