@@ -66,38 +66,11 @@ contract AccountKeychainInvariantTest is InvariantBaseTest {
         targetContract(address(this));
 
         _setupInvariantBase();
-        if (!_supportsDirectKeyAuthorization()) {
-            vm.skip(true, "direct key authorization removed in T11");
-        }
         (_actors,) = _buildActors(10);
         _potentialKeyIds = _buildAddressPool(20, KEY_ID_POOL_OFFSET);
 
         // Seed each actor with an initial key to ensure handlers have keys to work with
         _seedInitialKeys();
-    }
-
-    /// @dev Direct key authorization was removed in T11 in favor of transaction key authorization.
-    function _supportsDirectKeyAuthorization() internal returns (bool) {
-        IAccountKeychain.KeyRestrictions memory config = IAccountKeychain.KeyRestrictions({
-            expiry: uint64(block.timestamp + 1 days),
-            enforceLimits: false,
-            limits: new IAccountKeychain.TokenLimit[](0),
-            allowAnyCalls: true,
-            allowedCalls: new IAccountKeychain.CallScope[](0)
-        });
-
-        (bool success, bytes memory returnData) = address(keychain)
-            .call(
-                abi.encodeWithSignature(
-                    "authorizeKey(address,uint8,(uint64,bool,(address,uint256,uint64)[],bool,(address,(bytes4,address[])[])[]))",
-                    address(0),
-                    uint8(IAccountKeychain.SignatureType.Secp256k1),
-                    config
-                )
-            );
-
-        return success || returnData.length < 4
-            || bytes4(returnData) != bytes4(keccak256("UnknownFunctionSelector(bytes4)"));
     }
 
     /// @dev Seeds each actor with one initial key to bootstrap the fuzzer state
