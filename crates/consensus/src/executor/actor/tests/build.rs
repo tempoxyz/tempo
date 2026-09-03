@@ -11,7 +11,8 @@ use tempo_payload_types::TempoPayloadAttributes;
 use tempo_primitives::TempoConsensusContext;
 
 use super::harness::{
-    ElCall, ForkchoiceStateExt as _, GENESIS, Harness, built_payload, make_block, round,
+    ElCall, ForkchoiceStateExt as _, GENESIS, Harness, STARTUP_FCU, built_payload, make_block,
+    round,
 };
 use crate::consensus::Digest;
 
@@ -221,20 +222,13 @@ fn build_canceled_while_queued_still_reaffirms_the_head() {
         h.deliver_finalized(b1)
             .await
             .expect("finalized block should be acknowledged");
-        h.wait_until(|| {
-            h.execution
-                .fcus()
-                .iter()
-                .filter(|(head, ..)| *head == d1)
-                .count()
-                >= 2
-        })
-        .await;
 
-        assert!(
-            !h.execution.fcus().iter().any(|(.., attrs)| *attrs),
-            "the canceled build must not submit attributes; the FCU degrades \
-            to a bare head re-affirmation",
+        h.wait_until(|| h.execution.fcus().len() == 3).await;
+        assert_eq!(
+            h.execution.fcus(),
+            vec![STARTUP_FCU, (d1, d1, false), (d1, d1, false)],
+            "the canceled build must not submit attributes; its FCU degrades \
+            to a bare re-affirmation of the head",
         );
         assert!(h.execution.pending_payload_jobs().is_empty());
     });
