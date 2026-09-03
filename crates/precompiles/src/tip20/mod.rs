@@ -1268,25 +1268,6 @@ impl TIP20Token {
     /// Validates the receive policy of `to.target`. If blocked, moves the funds into the guard
     /// account and stores a claim receipt; returns `true`. Returns `false` when the inbound is
     /// authorized and the caller should proceed with the normal transfer or mint.
-    pub(crate) fn validate_inbound_or_block(
-        &mut self,
-        originator: Address,
-        to: &Recipient,
-        amount: U256,
-        mint_total_supply: Option<U256>,
-        memo: B256,
-    ) -> Result<bool> {
-        self.validate_inbound_or_block_with(
-            &TIP403Registry::new(),
-            originator,
-            to,
-            amount,
-            mint_total_supply,
-            memo,
-        )
-    }
-
-    /// Same as [`Self::validate_inbound_or_block`] using an already constructed registry handle.
     pub(crate) fn validate_inbound_or_block_with(
         &mut self,
         registry: &TIP403Registry,
