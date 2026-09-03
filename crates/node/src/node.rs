@@ -66,6 +66,10 @@ pub const BLOCK_GAS_LIMIT_500M: u64 = 500_000_000;
 /// Tempo node CLI arguments.
 #[derive(Debug, Clone, PartialEq, clap::Args)]
 pub struct TempoNodeArgs {
+    /// Enable devp2p networking.
+    #[arg(long = "devp2p", default_value_t = false)]
+    pub devp2p: bool,
+
     /// Maximum allowed `valid_after` offset for AA txs.
     #[arg(long = "txpool.aa-valid-after-max-secs", default_value_t = DEFAULT_AA_VALID_AFTER_MAX_SECS)]
     pub aa_valid_after_max_secs: u64,
@@ -121,6 +125,7 @@ pub struct TempoNodeArgs {
 impl Default for TempoNodeArgs {
     fn default() -> Self {
         Self {
+            devp2p: false,
             aa_valid_after_max_secs: DEFAULT_AA_VALID_AFTER_MAX_SECS,
             max_tempo_authorizations: DEFAULT_MAX_TEMPO_AUTHORIZATIONS,
             txpool_filter: None,
@@ -160,26 +165,42 @@ impl TempoNodeArgs {
     }
 }
 
-/// Builds the node's network and announces `tempo/1`.
+/// Builds the node's optional devp2p network and announces `tempo/1` when configured.
 ///
 /// The protocol must be registered before the network starts. `RLPx`
 /// capabilities are negotiated when a session opens, so existing sessions do
 /// not learn about protocols added later. On a small network, this could leave
 /// a follower with no gossip peer.
 ///
-/// All other behavior comes from the standard Ethereum network builder. The
-/// provider used by the `eth` request handler does not change.
-#[derive(Debug, Default, Clone)]
+/// When disabled, the standard Ethereum network is initialized and immediately
+/// shut down so the concrete network handle remains available to node services.
+#[derive(Debug, Clone)]
 pub struct TempoNetworkBuilder {
+    enabled: bool,
     gossip: Option<GossipProtocol>,
 }
 
 impl TempoNetworkBuilder {
+    /// Creates a network builder that starts devp2p only when enabled.
+    pub const fn new(enabled: bool) -> Self {
+        Self {
+            enabled,
+            gossip: None,
+        }
+    }
+
     /// Announces `tempo/1` on every session this node establishes.
     pub fn with_finalization_cert_gossip(gossip: GossipProtocol) -> Self {
         Self {
+            enabled: true,
             gossip: Some(gossip),
         }
+    }
+}
+
+impl Default for TempoNetworkBuilder {
+    fn default() -> Self {
+        Self::new(false)
     }
 }
 
@@ -205,6 +226,12 @@ where
         }
 
         let handle = ctx.start_network(network, pool);
+        if !self.enabled {
+            handle.shutdown().await?;
+            reth_tracing::tracing::info!(target: "reth::cli", "P2P networking disabled");
+            return Ok(handle);
+        }
+
         reth_tracing::tracing::info!(
             target: "reth::cli",
             enode = %handle.local_node_record(),
@@ -236,7 +263,7 @@ impl TempoNode {
             pool_builder: args.pool_builder(),
             payload_builder_builder: args.payload_builder_builder(),
             validator_key,
-            network_builder: TempoNetworkBuilder::default(),
+            network_builder: TempoNetworkBuilder::new(args.devp2p),
         }
     }
 
@@ -903,6 +930,34 @@ mod tests {
         AddressFilter, TempoNode, TempoNodeArgs, TempoPayloadBuilderBuilder, TempoPoolBuilder,
     };
     use alloy_primitives::Address;
+    use clap::Parser;
+
+    #[derive(Debug, Parser)]
+    struct TestCli {
+        #[command(flatten)]
+        node: TempoNodeArgs,
+    }
+
+    #[test]
+    fn tempo_node_disables_devp2p_by_default() {
+        let default_cli = TestCli::try_parse_from(["tempo"]).unwrap();
+        assert!(!default_cli.node.devp2p);
+
+        let enabled_cli = TestCli::try_parse_from(["tempo", "--devp2p"]).unwrap();
+        assert!(enabled_cli.node.devp2p);
+
+        let node = TempoNode::new(&TempoNodeArgs::default(), None);
+        assert!(!node.network_builder.enabled);
+
+        let node = TempoNode::new(
+            &TempoNodeArgs {
+                devp2p: true,
+                ..Default::default()
+            },
+            None,
+        );
+        assert!(node.network_builder.enabled);
+    }
 
     #[test]
     fn tempo_node_maps_pool_builder() {
