@@ -87,6 +87,9 @@ const PRE_T11_INPUT_PER_WORD_COST: u64 = 6;
 /// Input per word cost starting at T11.
 const POST_T11_INPUT_PER_WORD_COST: u64 = 30;
 
+/// Additional T11 cost per value processed by duplicate validation.
+const T11_DEDUP_PER_ITEM_COST: u64 = 20;
+
 /// Gas cost for `ecrecover` signature verification (used by KeyAuthorization and Permit).
 pub const ECRECOVER_GAS: u64 = 3_000;
 
@@ -107,6 +110,31 @@ pub fn input_cost(spec: TempoHardfork, calldata_len: usize) -> Result<u64> {
         .div_ceil(32)
         .checked_mul(per_word_cost)
         .ok_or(error::TempoPrecompileError::OutOfGas)
+}
+
+/// Returns the additional gas cost for duplicate validation at `spec`.
+#[inline]
+pub fn dedup_cost(spec: TempoHardfork, item_count: usize) -> Result<u64> {
+    if !spec.is_t11() {
+        return Ok(0);
+    }
+
+    u64::try_from(item_count)
+        .map_err(|_| error::TempoPrecompileError::OutOfGas)?
+        .checked_mul(T11_DEDUP_PER_ITEM_COST)
+        .ok_or(error::TempoPrecompileError::OutOfGas)
+}
+
+/// Charges for duplicate validation, then returns whether `values` contains duplicates.
+#[inline]
+pub fn has_duplicates_metered<T: Ord>(
+    storage: &mut StorageCtx,
+    values: impl IntoIterator<Item = T>,
+) -> Result<bool> {
+    let mut values = values.into_iter().collect::<Vec<_>>();
+    storage.deduct_gas(dedup_cost(storage.spec(), values.len())?)?;
+    values.sort_unstable();
+    Ok(values.windows(2).any(|pair| pair[0] == pair[1]))
 }
 
 /// Trait implemented by all Tempo precompile contract types.
@@ -1061,6 +1089,13 @@ mod tests {
             output.status,
             PrecompileStatus::Halt(PrecompileHalt::OutOfGas)
         ));
+    }
+
+    #[test]
+    fn test_dedup_cost_schedule() {
+        assert_eq!(dedup_cost(TempoHardfork::T10, 65_536).unwrap(), 0);
+        assert_eq!(dedup_cost(TempoHardfork::T11, 0).unwrap(), 0);
+        assert_eq!(dedup_cost(TempoHardfork::T11, 65_536).unwrap(), 1_310_720);
     }
 
     #[test]
