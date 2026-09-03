@@ -51,7 +51,6 @@ pub(crate) struct TestExecutorBuilder {
     pub(crate) parent_hash: B256,
     pub(crate) general_gas_limit: u64,
     pub(crate) shared_gas_limit: u64,
-    pub(crate) validator_set: Option<Vec<B256>>,
     pub(crate) parent_beacon_block_root: Option<B256>,
     pub(crate) subblock_fee_recipients: HashMap<PartialValidatorKey, Address>,
     /// Sets `cfg_env.enable_amsterdam_eip8037` to gate TIP-1016 behavior in tests.
@@ -72,7 +71,6 @@ impl Default for TestExecutorBuilder {
             parent_hash: B256::ZERO,
             general_gas_limit: 10_000_000,
             shared_gas_limit: 10_000_000,
-            validator_set: None,
             parent_beacon_block_root: None,
             subblock_fee_recipients: HashMap::new(),
             amsterdam_eip8037_enabled: false,
@@ -103,16 +101,6 @@ impl TestExecutorBuilder {
 
     pub(crate) fn with_spec(mut self, spec: TempoHardfork) -> Self {
         self.spec = spec;
-        self
-    }
-
-    pub(crate) fn with_validator_set(mut self, validators: Vec<B256>) -> Self {
-        self.validator_set = Some(validators);
-        self
-    }
-
-    pub(crate) fn with_shared_gas_limit(mut self, limit: u64) -> Self {
-        self.shared_gas_limit = limit;
         self
     }
 
@@ -193,7 +181,6 @@ impl TestExecutorBuilder {
             },
             general_gas_limit: self.general_gas_limit,
             shared_gas_limit: self.shared_gas_limit,
-            validator_set: self.validator_set,
             consensus_context: None,
             subblock_fee_recipients: self.subblock_fee_recipients,
         };

@@ -37,7 +37,6 @@ impl TempoBlockAssembler {
                     inner,
                     general_gas_limit,
                     shared_gas_limit,
-                    validator_set: _,
                     consensus_context,
                     subblock_fee_recipients: _,
                 },
@@ -190,7 +189,6 @@ mod tests {
             },
             general_gas_limit,
             shared_gas_limit,
-            validator_set: None,
             consensus_context: None,
             subblock_fee_recipients: HashMap::new(),
         };
@@ -301,7 +299,6 @@ mod tests {
             },
             general_gas_limit,
             shared_gas_limit,
-            validator_set: None,
             consensus_context: Some(ctx),
             subblock_fee_recipients: HashMap::new(),
         };
@@ -383,7 +380,6 @@ mod tests {
             },
             general_gas_limit,
             shared_gas_limit,
-            validator_set: None,
             consensus_context: None,
             subblock_fee_recipients: HashMap::new(),
         };

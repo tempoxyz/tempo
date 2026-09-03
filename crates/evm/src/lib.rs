@@ -304,8 +304,6 @@ impl ConfigureEvm for TempoEvmConfig {
             },
             general_gas_limit: block.header().general_gas_limit,
             shared_gas_limit: block.header().shared_gas_limit,
-            // Not available when we only have a block body.
-            validator_set: None,
             consensus_context: block.header().consensus_context,
             subblock_fee_recipients,
         })
@@ -331,8 +329,6 @@ impl ConfigureEvm for TempoEvmConfig {
             },
             general_gas_limit: attributes.general_gas_limit,
             shared_gas_limit: attributes.shared_gas_limit,
-            // Fine to not validate during block building.
-            validator_set: None,
             consensus_context: attributes.consensus_context,
             subblock_fee_recipients: Default::default(),
         })
@@ -589,8 +585,6 @@ mod tests {
         // Verify context fields
         assert_eq!(context.general_gas_limit, 10_000_000);
         assert_eq!(context.shared_gas_limit, 3_000_000);
-        assert!(context.validator_set.is_none());
-
         // Verify subblock_fee_recipients was extracted from metadata
         let partial_key = PartialValidatorKey::from_slice(&validator_key[..15]);
         assert_eq!(
@@ -676,7 +670,6 @@ mod tests {
         // Verify context fields from attributes
         assert_eq!(context.general_gas_limit, 12_000_000);
         assert_eq!(context.shared_gas_limit, 4_000_000);
-        assert!(context.validator_set.is_none());
         assert_eq!(context.inner.parent_hash, parent.hash());
         assert_eq!(
             context.inner.parent_beacon_block_root,
