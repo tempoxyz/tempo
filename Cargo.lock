@@ -13868,7 +13868,6 @@ dependencies = [
  "alloy-evm",
  "alloy-json-abi",
  "alloy-primitives",
- "alloy-rlp",
  "alloy-signer",
  "alloy-signer-local",
  "bitflags 2.11.1",
