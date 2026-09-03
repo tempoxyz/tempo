@@ -11,6 +11,8 @@ use commonware_runtime::{Metrics as _, Runner as _, deterministic};
 use futures::executor::block_on;
 use parking_lot::Mutex;
 use prometheus_client::metrics::counter::Counter;
+use reth_node_core::primitives::SealedBlock;
+use tempo_primitives::{Block as TempoBlock, BlockBody};
 
 use super::{
     Fetcher, MAX_RETRY_DELAY, RETRY_STATE_TTL, RetryState, resolve_block, resolve_finalized,
@@ -87,6 +89,32 @@ fn malformed_finalization_is_retried() {
         let height = Height::new(6);
         let (mut certified, _) = make_certified_block(height);
         certified.certificate = "not-hex".to_string();
+        upstream.add_finalization(height, certified);
+
+        assert_eq!(resolve_finalized(&upstream, height).await, None);
+        assert_eq!(upstream.finalization_reads(), 1);
+    });
+}
+
+#[test]
+fn finalized_block_with_mismatched_body_is_retried() {
+    block_on(async {
+        let upstream = StubUpstream::default();
+        let height = Height::new(6);
+        let (mut certified, _) = make_certified_block(height);
+        let sealed = certified.block.into_sealed_block();
+        let (inner, hash) = sealed.split();
+        certified.block = SealedBlock::new_unchecked(
+            TempoBlock {
+                header: inner.header,
+                body: BlockBody {
+                    withdrawals: Some(Default::default()),
+                    ..inner.body
+                },
+            },
+            hash,
+        )
+        .into();
         upstream.add_finalization(height, certified);
 
         assert_eq!(resolve_finalized(&upstream, height).await, None);

@@ -369,8 +369,8 @@ jobs:
               body: buildBody('Resolving refs...'),
             });
 
-      - uses: dtolnay/rust-toolchain@4360b52568e2003a75bf9bc1d59f33a8e3fc893c # stable
-      - uses: mozilla-actions/sccache-action@9e7fa8a12102821edf02ca5dbea1acd0f89a2696 # v0.0.10
+      - uses: tempoxyz/gh-actions/vendor/dtolnay/rust-toolchain@3626124474a987bc74b41fc7ae65b2e23f8e4e4e
+      - uses: tempoxyz/gh-actions/vendor/mozilla-actions/sccache-action@3626124474a987bc74b41fc7ae65b2e23f8e4e4e
         continue-on-error: true
 
       - name: Install uv

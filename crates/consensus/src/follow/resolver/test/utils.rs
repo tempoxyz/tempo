@@ -42,7 +42,7 @@ pub(super) fn make_block(height: u64) -> Block {
         header,
         body: BlockBody::default(),
     };
-    Block::from_execution_block(SealedBlock::seal_slow(inner), None)
+    Block::try_from_execution_block(SealedBlock::seal_slow(inner), None)
         .expect("test block should not contain BAL side data")
 }
 

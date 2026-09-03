@@ -33,6 +33,14 @@ pub const ALLOWED_FUTURE_BLOCK_TIME_MILLIS: u64 = 0;
 /// Maximum extra data size for Tempo blocks.
 pub const TEMPO_MAXIMUM_EXTRA_DATA_SIZE: usize = 10 * 1_024; // 10KiB
 
+/// Validates that an execution block body matches the commitments in its header.
+pub fn validate_body_against_header(
+    body: &BlockBody,
+    header: &TempoHeader,
+) -> Result<(), ConsensusError> {
+    reth_consensus_common::validation::validate_body_against_header(body, header)
+}
+
 /// Tempo consensus implementation.
 #[derive(Debug, Clone)]
 pub struct TempoConsensus<C = TempoChainSpec> {
@@ -186,7 +194,7 @@ where
         body: &BlockBody,
         header: &SealedHeader<TempoHeader>,
     ) -> Result<(), ConsensusError> {
-        Consensus::<Block>::validate_body_against_header(&self.inner, body, header)
+        validate_body_against_header(body, header.header())
     }
 
     fn validate_block_pre_execution(

@@ -59,7 +59,7 @@ jobs:
           persist-credentials: false
 
       - name: Install Rust toolchain
-        uses: dtolnay/rust-toolchain@6c977a6ca4077a0ceb28ffbe03f59d46e9ac8772 # master
+        uses: tempoxyz/gh-actions/vendor/dtolnay/rust-toolchain@3626124474a987bc74b41fc7ae65b2e23f8e4e4e
         with:
           toolchain: nightly
           components: rustfmt
