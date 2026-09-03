@@ -1029,21 +1029,16 @@ where
         }
     }
 
-    /// Returns if the convergence machinery is expected to imminently make
-    /// `digest` available to the execution layer.
-    ///
-    /// There are 2 options:
-    ///
-    /// 1. either the block is already queued, or
-    /// 2. we expect the block to be scheduled next.
-    ///
-    /// Point 2 allows for marshal to deliver the next finalized block
-    /// just-in-time.
+    /// Whether `digest` is queued for delivery or is the next thing
+    /// convergence does, so that a request waiting on it is held rather
+    /// than failed.
     fn is_convergence_target(&self, digest: Digest) -> bool {
         self.pending_finalizations
             .iter()
             .any(|request| request.block.digest() == digest)
-            || self.notarized_tree.converges_imminently(digest)
+            || self
+                .notarized_tree
+                .converges_imminently(digest, self.context.current())
     }
 
     /// Picks the next execution task: consensus request, finalized

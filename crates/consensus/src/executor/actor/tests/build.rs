@@ -176,6 +176,31 @@ fn build_on_an_unknown_parent_is_dropped() {
 }
 
 #[test_traced]
+fn build_on_a_known_block_off_the_pending_head_path_is_dropped() {
+    deterministic::Runner::default().start(|context| async move {
+        let h = Harness::start_at_genesis(&context);
+
+        // a1 is known to the execution layer through its validation, but
+        // consensus never reports it as the pending head: the head will not
+        // converge onto it, so a build on top of it cannot be held.
+        let a1 = make_block(1, 1, GENESIS);
+        let da1 = a1.digest();
+        h.verify(round(1), a1)
+            .await
+            .expect("verification should complete")
+            .expect("block should be valid");
+
+        let rx = h.build(round(2), da1);
+        rx.await
+            .expect_err("a build whose parent the head will not reach must fail");
+        assert!(
+            !h.execution.fcus().iter().any(|(.., attrs)| *attrs),
+            "no build may be registered off the pending head's path",
+        );
+    });
+}
+
+#[test_traced]
 fn queued_build_is_dropped_when_finality_advances_past_its_parent() {
     deterministic::Runner::default().start(|context| async move {
         let mut h = Harness::start_at_genesis(&context);

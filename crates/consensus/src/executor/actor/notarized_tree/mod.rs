@@ -301,18 +301,16 @@ impl NotarizedTree {
             .map(|entry| entry.block.height())
     }
 
-    /// Whether the execution layer has `digest` or is one step from it: the
-    /// network finalized tip about to be delivered by the marshal actor, or
-    /// the pending head with its body in hand and its parent known.
-    pub(super) fn converges_imminently(&self, digest: Digest) -> bool {
-        self.is_known(digest)
+    /// Whether `digest` is the next thing convergence does: the head target
+    /// of the next forkchoice update, the next block to deliver, or the next
+    /// finalized block the marshal actor delivers.
+    pub(super) fn converges_imminently(&self, digest: Digest, now: SystemTime) -> bool {
+        self.next_head(now).is_some_and(|(_, head)| head == digest)
+            || self
+                .next_to_deliver(now)
+                .is_some_and(|block| block.digest() == digest)
             || (self.network_finalized_tip.2 == digest
                 && self.delivered_finalized.0.next() == self.network_finalized_tip.1)
-            || (self.pending_head.digest == digest
-                && self
-                    .blocks
-                    .get(&digest)
-                    .is_some_and(|entry| self.is_known(entry.block.parent_digest())))
     }
 
     /// Records an accepted forkchoice state. A finalized block the tree did
