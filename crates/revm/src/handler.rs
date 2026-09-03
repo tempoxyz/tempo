@@ -49,7 +49,7 @@ use tempo_precompiles::{
         Handler as _, PrecompileStorageProvider, StorageActions, StorageCtx, StorageKey,
         evm::EvmPrecompileStorageProvider,
     },
-    tip20::{ITIP20::InsufficientBalance, TIP20Error, TIP20Token, tip20_slots},
+    tip20::{ITIP20::InsufficientBalance, TIP20Error, tip20_slots},
     tip20_channel_reserve::TIP20ChannelReserve,
 };
 use tempo_primitives::{

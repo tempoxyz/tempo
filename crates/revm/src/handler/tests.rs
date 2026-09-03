@@ -21,7 +21,7 @@ use tempo_chainspec::hardfork::TempoHardfork;
 use tempo_contracts::precompiles::{DEFAULT_FEE_TOKEN, ITIPFeeAMM};
 use tempo_precompiles::{
     PATH_USD_ADDRESS, TIP_FEE_MANAGER_ADDRESS, storage::ContractStorage, test_util::TIP20Setup,
-    tip_fee_manager::TipFeeManager,
+    tip_fee_manager::TipFeeManager, tip20::TIP20Token,
 };
 use tempo_primitives::transaction::{
     Call, PrimitiveSignature, RecoveredTempoAuthorization, TempoSignature,

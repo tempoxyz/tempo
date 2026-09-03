@@ -14,7 +14,7 @@ use crate::{
     account_keychain::AccountKeychain,
     error::{Result, TempoPrecompileError},
     storage::{Handler, LayoutCtx, StorableType, StorageCtx, StorageKey},
-    tip20::{TIP20Token, tip20_slots},
+    tip20::tip20_slots,
 };
 use alloy::primitives::{Address, U256};
 use std::{cell::OnceCell, collections::BTreeMap};
@@ -374,7 +374,10 @@ impl StorageCreditDeltas {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::storage::{StorageCtx, hashmap::HashMapStorageProvider};
+    use crate::{
+        storage::{StorageCtx, hashmap::HashMapStorageProvider},
+        tip20::TIP20Token,
+    };
 
     #[test]
     fn test_set_mode_budget_semantics() -> eyre::Result<()> {

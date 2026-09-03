@@ -27,10 +27,7 @@ use std::{
 };
 use tempo_contracts::precompiles::ITIP20;
 use tempo_precompiles::{
-    DEFAULT_FEE_TOKEN,
-    nonce::NonceManager,
-    storage::StorageKey,
-    tip20::{TIP20Token, tip20_slots},
+    DEFAULT_FEE_TOKEN, nonce::NonceManager, storage::StorageKey, tip20::tip20_slots,
     tip403_registry::tip403_registry_slots,
 };
 use tempo_primitives::{
