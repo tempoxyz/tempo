@@ -21,7 +21,6 @@ use commonware_cryptography::{bls12381::primitives::variant::MinSig, ed25519::Pu
 use commonware_resolver::opaque;
 use commonware_runtime::{Clock, Metrics, Spawner, telemetry::metrics::Registered};
 use eyre::Report;
-use futures::{FutureExt as _, future::Either};
 use parking_lot::Mutex;
 use prometheus_client::metrics::counter::Counter;
 use reth_ethereum::provider::db::DatabaseEnv;
@@ -35,6 +34,7 @@ use reth_provider::{
 use tempo_evm::consensus::validate_body_against_header;
 use tempo_node::{node::TempoNode, rpc::consensus::CertifiedBlock};
 use tempo_primitives::Block as TempoBlock;
+use tokio::select;
 use tracing::{debug, error, instrument, warn};
 
 use crate::consensus::{Block, Digest};
@@ -245,31 +245,24 @@ impl RetryState {
 }
 
 /// Resolves an encoded block from the execution layer, then races upstream RPC and devp2p.
-#[instrument(skip(execution_provider, upstream, block_network))]
+#[instrument(skip_all, fields(%digest))]
 async fn resolve_block<P: BlockProvider, U: Upstream, N: BlockNetwork>(
     execution_provider: &P,
     upstream: &U,
-    block_network: &N,
-    block_digest: Digest,
+    network: &N,
+    digest: Digest,
 ) -> Option<Bytes> {
     match execution_provider
-        .block_by_hash(block_digest)
+        .block_by_hash(digest)
         .inspect_err(|error| error!(%error, "execution layer error looking up block"))
     {
         Err(_) => None,
         Ok(Some(block)) => Some(block.encode()),
-        Ok(None) => {
-            let upstream = upstream.get_block(block_digest).fuse();
-            let block_network = block_network.get_block(block_digest).fuse();
-            futures::pin_mut!(upstream, block_network);
-
-            let block = match futures::future::select(upstream, block_network).await {
-                Either::Left((Some(block), _)) | Either::Right((Some(block), _)) => Some(block),
-                Either::Left((None, block_network)) => block_network.await,
-                Either::Right((None, upstream)) => upstream.await,
-            };
-            block.map(|block| block.encode())
-        }
+        Ok(None) => select!(
+            Some(block) = upstream.get_block(digest) => Some(block.encode()),
+            Some(block) = network.get_block(digest) => Some(block.encode()),
+            else => None,
+        ),
     }
 }
 

@@ -416,7 +416,6 @@ fn follower_progresses_over_devp2p_without_upstream() {
     let _ = tempo_eyre::install();
 
     let warmup_height = 5;
-    let progress_delta = 10;
 
     let setup = Setup::new()
         .how_many_signers(1)
@@ -452,8 +451,10 @@ fn follower_progresses_over_devp2p_without_upstream() {
             .latest_consensus_height()
             .expect("follower reports a processed height once it has caught up");
 
-        wait_for_height(&context, &follower, baseline + progress_delta).await;
-        follower.feed.get_finalization(Query::Latest).await.unwrap();
+        wait_for_height(&context, &follower, baseline + 10).await;
+
+        let finalization = follower.feed.get_finalization(Query::Latest).await.unwrap();
+        assert!(finalization.block.number() >= baseline + 10);
     });
 }
 

@@ -18,8 +18,8 @@ use super::{Config, try_init};
 use crate::{
     epoch::SchemeProvider,
     follow::test_utils::{
-        DkgFixture, EPOCH_LENGTH, StubExecutionProvider, StubMarshal, dkg_fixture,
-        make_block, make_certified_block, make_finalization,
+        DkgFixture, EPOCH_LENGTH, StubExecutionProvider, StubMarshal, dkg_fixture, make_block,
+        make_certified_block, make_finalization,
     },
     gossip::{CertificateError, CertificateMailbox as _},
 };
@@ -136,7 +136,6 @@ fn valid_finalization_is_certified_and_reported() {
 
         let marshal = StubMarshal::default();
 
-
         let (actor, mailbox) = try_init(
             context.child("driver"),
             Config {
@@ -238,7 +237,7 @@ fn network_identity_verifies_finalization_when_epoch_scheme_is_missing() {
 /// marshal and its round and digest to execution so both can pursue the same
 /// block.
 #[test_traced]
-fn gossiped_certificate_is_admitted_and_nudges_the_execution_layer() {
+fn gossiped_certificate_is_admitted_and_reported_only_to_marshal() {
     deterministic::Runner::default().start(|mut context| async move {
         let fixture = dkg_fixture(&mut context, Epoch::zero());
         let network_fixture = dkg_fixture(&mut context, Epoch::new(2));
@@ -706,7 +705,6 @@ fn finalization_failing_the_identity_fallback_hints_current_epoch_boundary() {
 
         let marshal = StubMarshal::default();
 
-
         let strategy = FixedEpocher::new(EPOCH_LENGTH);
         let expected_boundary = strategy
             .last(Epoch::zero())
@@ -820,7 +818,6 @@ fn scheme_before_network_identity_epoch_is_required() {
         provider.add_header(&startup_block);
 
         let marshal = StubMarshal::default();
-
 
         let schemes = SchemeProvider::new();
         let (actor, mailbox) = try_init(
@@ -1015,7 +1012,6 @@ fn startup_installs_missing_consensus_epoch_scheme_from_marshal() {
         provider.add_header(&startup_block);
 
         let marshal = StubMarshal::default();
-
 
         let strategy = FixedEpocher::new(EPOCH_LENGTH);
         let last_finalized_height = Height::new(EPOCH_LENGTH.get() * 3);
