@@ -26,6 +26,9 @@ abstract contract HandlerBase is InvariantBase {
     bytes4 internal immutable ERR_NONCE_OVERFLOW;
     bytes4 internal immutable ERR_INVALID_NONCE_KEY;
 
+    address[] private _pendingCreateRevertSenders;
+    uint64[] private _pendingCreateRevertNonceKeys;
+
     constructor() {
         ERR_INSUFFICIENT_BALANCE = ITIP20.InsufficientBalance.selector;
         ERR_POLICY_FORBIDS = ITIP20.PolicyForbids.selector;
@@ -397,8 +400,8 @@ abstract contract HandlerBase is InvariantBase {
     function _syncProtocolNonceFromVm(address account) internal {
         uint256 actualNonce = vm.getNonce(account);
         if (actualNonce > ghost_protocolNonce[account]) {
+            ghost_totalProtocolNonceTxs += actualNonce - ghost_protocolNonce[account];
             ghost_protocolNonce[account] = actualNonce;
-            ghost_totalProtocolNonceTxs++;
         }
     }
 
@@ -407,9 +410,9 @@ abstract contract HandlerBase is InvariantBase {
     function _sync2dNonceAfterFailure(address account, uint64 nonceKey) internal {
         uint64 actualNonce = nonce.getNonce(account, nonceKey);
         if (actualNonce > ghost_2dNonce[account][nonceKey]) {
+            ghost_total2dNonceTxs += actualNonce - ghost_2dNonce[account][nonceKey];
             ghost_2dNonce[account][nonceKey] = actualNonce;
             _mark2dNonceKeyUsed(account, nonceKey);
-            ghost_total2dNonceTxs++;
         }
     }
 
@@ -529,15 +532,24 @@ abstract contract HandlerBase is InvariantBase {
         }
     }
 
-    /// @notice Record nonce consumption when an included 2D nonce CREATE reverts.
-    /// @dev `executeTransaction` exposes the consumed nonces after the handler returns, so the
-    ///      rejection path records the deterministic increments instead of querying stale state.
+    /// @notice Defer nonce reconciliation for an included 2D nonce CREATE that reverts.
+    /// @dev `executeTransaction` exposes the final nonce state after the handler returns.
     function _record2dNonceCreateRevert(address sender, uint64 nonceKey) internal {
-        _updateProtocolNonce(sender);
-        ghost_totalProtocolNonceTxs++;
-        _update2dNonce(sender, nonceKey);
-        ghost_total2dNonceTxs++;
+        _pendingCreateRevertSenders.push(sender);
+        _pendingCreateRevertNonceKeys.push(nonceKey);
         ghost_totalTxReverted++;
+    }
+
+    /// @notice Reconcile nonce state deferred by reverting CREATE handlers.
+    function _reconcileCreateRevertNonces() internal {
+        for (uint256 i = 0; i < _pendingCreateRevertSenders.length; i++) {
+            address sender = _pendingCreateRevertSenders[i];
+            _syncProtocolNonceFromVm(sender);
+            _sync2dNonceAfterFailure(sender, _pendingCreateRevertNonceKeys[i]);
+        }
+
+        delete _pendingCreateRevertSenders;
+        delete _pendingCreateRevertNonceKeys;
     }
 
     // ============ Transaction Building Helpers ============
