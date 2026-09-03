@@ -445,10 +445,6 @@ impl NotarizedTree {
 /// the next block to deliver and the next block to make the head.
 impl NotarizedTree {
     /// The block consensus reported building on: the convergence target.
-    #[cfg_attr(
-        not(test),
-        expect(dead_code, reason = "the build gate switches to the pending head next")
-    )]
     pub(super) fn pending_head(&self) -> Digest {
         self.pending_head.digest
     }
