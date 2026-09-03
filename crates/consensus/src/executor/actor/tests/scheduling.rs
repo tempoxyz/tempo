@@ -10,7 +10,7 @@ use commonware_runtime::{Runner as _, Spawner as _, Supervisor as _, determinist
 use futures::future::Either;
 
 use super::harness::{
-    ElCall, ForkchoiceStateExt as _, GENESIS, Harness, HarnessOptions, STARTUP_FCU,
+    ElCall, FakeExecution, ForkchoiceStateExt as _, GENESIS, Harness, HarnessOptions, STARTUP_FCU,
     STARTUP_FCU_CALL, built_payload, make_block, round,
 };
 
@@ -686,5 +686,86 @@ fn actor_exits_when_the_mailbox_closes() {
         h.actor
             .await
             .expect("actor should exit cleanly when all mailbox handles are gone");
+    });
+}
+
+#[test_traced]
+fn held_build_is_rescheduled_after_a_stale_repoint() {
+    deterministic::Runner::default().start(|context| async move {
+        // A restored consensus snapshot anchors the floor at height 1 while
+        // the execution layer is final at height 2: every forkchoice update
+        // onto the tracked finality is stale and folds without an engine
+        // call.
+        let b1 = make_block(1, 1, GENESIS);
+        let b2 = make_block(2, 2, b1.digest());
+        let (d1, d2) = (b1.digest(), b2.digest());
+        let execution = FakeExecution::new();
+        execution.seed_canonical_block(&b1);
+        execution.seed_canonical_block(&b2);
+        execution.set_finalized(2, d2);
+        let h = Harness::builder()
+            .execution(execution)
+            .harness_options(HarnessOptions {
+                finalized_floor: 1,
+                finalized_tip: (round(1), 1, d1),
+                ..Default::default()
+            })
+            .start(&context);
+
+        // Strand the tracked head on a notarized sibling of b2.
+        let a2 = make_block(3, 2, d1);
+        let da2 = a2.digest();
+        h.verify(round(3), a2)
+            .await
+            .expect("verification should complete")
+            .expect("a2 should be valid");
+        h.report_pending_head(4, 3, da2);
+
+        // Hold the execution slot with a validation (held itself until the
+        // head is on a2) so that the re-anchor on the finalized tip and the
+        // build on it queue up behind it.
+        let a3 = make_block(4, 3, da2);
+        let da3 = a3.digest();
+        let release = h
+            .execution
+            .script_delayed_new_payload(da3, Ok(PayloadStatusEnum::Valid));
+        let validation = h.verify(round(4), a3);
+        futures::pin_mut!(validation);
+        let deadline = h.run_for(Duration::from_millis(1));
+        futures::pin_mut!(deadline);
+        let validation = match futures::future::select(validation, deadline).await {
+            Either::Left(_) => panic!("the gated validation completed early"),
+            Either::Right(((), validation)) => validation,
+        };
+        h.wait_until(|| h.execution.new_payloads().last() == Some(&da3))
+            .await;
+        h.report_pending_head(5, 1, d1);
+        let build = h.build(round(5), d1);
+        futures::pin_mut!(build);
+        release.send(()).expect("validation should still be gated");
+        validation
+            .await
+            .expect("validation should complete")
+            .expect("a3 should be valid");
+
+        // The build is held while the head is expected to be repointed
+        // onto the tip; the repoint is stale and submits nothing. The held
+        // build must be re-examined once the repoint completes and fail
+        // fast (it is below the execution layer's finality), rather than
+        // wait for an unrelated event.
+        let deadline = h.run_for(Duration::from_millis(100));
+        futures::pin_mut!(deadline);
+        match futures::future::select(build, deadline).await {
+            Either::Left((result, _deadline)) => {
+                result.expect_err("a build below the execution layer's finality must fail");
+            }
+            Either::Right(((), _build)) => {
+                panic!("the held build was not re-examined after the stale repoint")
+            }
+        }
+        assert!(
+            !h.execution.fcus().iter().any(|(.., attrs)| *attrs),
+            "no payload may be registered below the execution layer's finality",
+        );
     });
 }
