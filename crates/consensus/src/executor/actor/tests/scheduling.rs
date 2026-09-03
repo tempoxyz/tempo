@@ -536,7 +536,7 @@ fn heartbeat_timer_is_rearmed_after_work_finishes() {
 }
 
 #[test_traced]
-fn idle_actor_sends_forkchoice_heartbeats_and_survives_their_failure() {
+fn idle_actor_sends_forkchoice_heartbeats() {
     deterministic::Runner::default().start(|context| async move {
         let h = Harness::builder()
             .harness_options(HarnessOptions {
@@ -559,23 +559,37 @@ fn idle_actor_sends_forkchoice_heartbeats_and_survives_their_failure() {
                 .all(|fcu| *fcu == (GENESIS, GENESIS, false)),
             "heartbeats re-affirm the tracked state",
         );
-
-        // Failing heartbeats are logged, not fatal.
-        h.execution.reject_all_fcus(true);
-        h.run_for(Duration::from_secs(1)).await;
-        h.execution.reject_all_fcus(false);
-
-        let b1 = make_block(1, 1, GENESIS);
-        let verdict = h
-            .verify(round(1), b1)
-            .await
-            .expect("the actor must still be serving requests");
-        assert!(verdict.is_some());
     });
 }
 
 #[test_traced]
-fn idle_actor_survives_heartbeat_transport_error() {
+fn rejected_heartbeat_is_fatal() {
+    deterministic::Runner::default().start(|context| async move {
+        let h = Harness::builder()
+            .harness_options(HarnessOptions {
+                fcu_heartbeat_interval: Duration::from_millis(300),
+                ..Default::default()
+            })
+            .start(&context);
+
+        // A heartbeat re-affirms the state the execution layer last
+        // accepted. Rejecting it means the execution layer no longer agrees
+        // with the executor about its own state. (The startup readiness
+        // probe must pass first.)
+        h.wait_until(|| h.execution.fcus().len() == 1).await;
+        h.execution.reject_all_fcus(true);
+        h.actor
+            .await
+            .expect("actor should shut down cleanly on a rejected heartbeat");
+        assert_eq!(
+            h.execution.fcus(),
+            vec![STARTUP_FCU, (GENESIS, GENESIS, false)]
+        );
+    });
+}
+
+#[test_traced]
+fn heartbeat_transport_error_is_fatal() {
     deterministic::Runner::default().start(|context| async move {
         let h = Harness::builder()
             .harness_options(HarnessOptions {
@@ -585,25 +599,14 @@ fn idle_actor_survives_heartbeat_transport_error() {
             .start(&context);
         let state = ForkchoiceState::from_finalized_head(GENESIS, GENESIS);
         h.execution.script_fcu(state, Err("connection closed"));
-        h.execution.script_fcu(state, Ok(PayloadStatusEnum::Valid));
 
-        h.wait_until(|| h.execution.fcus().len() == 3).await;
+        h.actor
+            .await
+            .expect("actor should shut down cleanly on a heartbeat transport error");
         assert_eq!(
             h.execution.fcus(),
-            vec![
-                STARTUP_FCU,
-                (GENESIS, GENESIS, false),
-                (GENESIS, GENESIS, false),
-            ],
-            "a failed heartbeat must not stop the explicitly accepted next heartbeat",
+            vec![STARTUP_FCU, (GENESIS, GENESIS, false)]
         );
-
-        let b1 = make_block(1, 1, GENESIS);
-        let verdict = h
-            .verify(round(1), b1)
-            .await
-            .expect("actor must keep serving after a heartbeat transport error");
-        assert!(verdict.is_some());
     });
 }
 

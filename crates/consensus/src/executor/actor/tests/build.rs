@@ -344,10 +344,12 @@ fn aborted_payload_job_fails_the_build_without_shutdown() {
 }
 
 #[test_traced]
-fn rejected_build_forkchoice_update_fails_the_build_without_shutdown() {
+fn rejected_build_forkchoice_update_is_fatal() {
     deterministic::Runner::default().start(|context| async move {
         let h = Harness::start_at_genesis(&context);
 
+        // The build re-affirms the tracked state; a rejection means the
+        // execution layer disagrees with the executor about that state.
         h.execution.script_fcu(
             ForkchoiceState::from_finalized_head(GENESIS, GENESIS),
             Ok(PayloadStatusEnum::Invalid {
@@ -357,18 +359,15 @@ fn rejected_build_forkchoice_update_fails_the_build_without_shutdown() {
         let rx = h.build(round(1), GENESIS);
         rx.await.expect_err("the failed FCU must fail the build");
 
-        // Build failures are not fatal for the executor.
-        let b1 = make_block(1, 1, GENESIS);
-        let verdict = h
-            .verify(round(2), b1)
+        h.actor
             .await
-            .expect("verification should complete");
-        assert!(verdict.is_some());
+            .expect("actor should shut down cleanly on a rejected build forkchoice update");
+        assert!(h.execution.pending_payload_jobs().is_empty());
     });
 }
 
 #[test_traced]
-fn forkchoice_update_transport_error_fails_the_build_without_shutdown() {
+fn build_forkchoice_update_transport_error_is_fatal() {
     deterministic::Runner::default().start(|context| async move {
         let h = Harness::start_at_genesis(&context);
 
@@ -380,14 +379,10 @@ fn forkchoice_update_transport_error_fails_the_build_without_shutdown() {
         rx.await
             .expect_err("an FCU transport error must fail the build");
 
-        // Build transport failures are request-local. The actor remains
-        // available for later consensus work.
-        let b1 = make_block(1, 1, GENESIS);
-        let verdict = h
-            .verify(round(2), b1)
+        h.actor
             .await
-            .expect("verification should complete after the FCU transport error");
-        assert!(verdict.is_some());
+            .expect("actor should shut down cleanly on a build forkchoice transport error");
+        assert!(h.execution.pending_payload_jobs().is_empty());
     });
 }
 
