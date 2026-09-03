@@ -233,6 +233,11 @@ impl TempoHardfork {
         *self as u8
     }
 
+    /// Returns the latest defined Tempo hardfork.
+    pub const fn latest() -> Self {
+        Self::VARIANTS[Self::VARIANTS.len() - 1]
+    }
+
     /// Returns the hardfork at the given [`Self::VARIANTS`] position, see
     /// [`Self::variant_index`].
     ///

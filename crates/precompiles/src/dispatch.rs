@@ -10,6 +10,7 @@ use alloy::{
     sol_types::{SolCall, SolError},
 };
 use revm::precompile::{PrecompileHalt, PrecompileOutput, PrecompileResult};
+use tempo_chainspec::hardfork::TempoHardfork;
 
 sol! {
     error StaticCallNotAllowed();
@@ -18,10 +19,14 @@ sol! {
 /// Maximum memory the ABI decoder may allocate for a precompile call.
 pub const ABI_DECODER_MEMORY_LIMIT: usize = 16 * 1024 * 1024;
 
-/// Returns the ABI decoder configuration used for precompile calls.
+/// Returns the hardfork-aware ABI decoder configuration used to dispatch precompile calls.
 #[inline]
-pub const fn abi_decoder_config() -> alloy::sol_types::abi::AbiDecoderConfig {
-    alloy::sol_types::abi::AbiDecoderConfig::new().memory_limit(ABI_DECODER_MEMORY_LIMIT)
+pub const fn abi_decoder_config_for_spec(
+    spec: TempoHardfork,
+) -> alloy::sol_types::abi::AbiDecoderConfig {
+    alloy::sol_types::abi::AbiDecoderConfig::new()
+        .memory_limit(ABI_DECODER_MEMORY_LIMIT)
+        .strict(spec.is_t11())
 }
 
 pub mod typed {
@@ -262,7 +267,9 @@ macro_rules! dispatch {
                             |data| {
                                 <Calls as alloy::sol_types::SolInterface>::abi_decode_with_config(
                                     data,
-                                    $crate::dispatch::abi_decoder_config(),
+                                    $crate::dispatch::abi_decoder_config_for_spec(
+                                        $crate::storage::StorageCtx.spec(),
+                                    ),
                                 )
                             },
                             |$call| match $match_call {

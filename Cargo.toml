@@ -411,6 +411,13 @@ vergen-git2 = "10.0.1"
 
 [patch.crates-io]
 
+# TODO: remove once https://github.com/alloy-rs/core/pull/1180 is released.
+alloy-dyn-abi = { git = "https://github.com/alloy-rs/core", rev = "0fe71bdd7dafa9b31cbcce8508a6480540c038c0" }
+alloy-json-abi = { git = "https://github.com/alloy-rs/core", rev = "0fe71bdd7dafa9b31cbcce8508a6480540c038c0" }
+alloy-primitives = { git = "https://github.com/alloy-rs/core", rev = "0fe71bdd7dafa9b31cbcce8508a6480540c038c0" }
+alloy-sol-macro-expander = { git = "https://github.com/alloy-rs/core", rev = "0fe71bdd7dafa9b31cbcce8508a6480540c038c0" }
+alloy-sol-types = { git = "https://github.com/alloy-rs/core", rev = "0fe71bdd7dafa9b31cbcce8508a6480540c038c0" }
+
 # Commonware v2026.7.0
 # commonware-actor = { git = "https://github.com/commonwarexyz/monorepo", rev = "5950bf7179bb0650a57ed58b9e0478822944b335" }
 # commonware-broadcast = { git = "https://github.com/commonwarexyz/monorepo", rev = "5950bf7179bb0650a57ed58b9e0478822944b335" }
