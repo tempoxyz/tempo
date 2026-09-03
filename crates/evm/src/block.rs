@@ -421,15 +421,6 @@ where
         &self,
         metadata: &[SubBlockMetadata],
     ) -> Result<(), BlockValidationError> {
-        // T4 sets the shared gas limit to zero, so any gas spilled into the
-        // incentive section exceeds the available block capacity.
-        if self.evm().cfg.spec.is_t4() {
-            if self.incentive_gas_used > 0 {
-                return Err(BlockValidationError::msg("incentive gas limit exceeded"));
-            }
-            return Ok(());
-        }
-
         // Skip incentive gas validation if validator set context is not available.
         let Some(validator_set) = &self.validator_set else {
             return Ok(());
@@ -782,16 +773,10 @@ where
     fn finish(
         mut self,
     ) -> Result<(Self::Evm, BlockExecutionResult<Self::Receipt>), BlockExecutionError> {
-        let seen_subblock_signatures = match self.section {
-            BlockSection::System {
-                seen_subblocks_signatures,
-            } => seen_subblocks_signatures,
-            _ => false,
-        };
-
-        // Post T4, if subblocks metadata transaction was not seen, imply empty metadata.
-        if !seen_subblock_signatures && self.evm().cfg.spec.is_t4() {
-            self.validate_shared_gas(&[])?;
+        // T4 sets the shared gas limit to zero, so any gas spilled into the
+        // incentive section exceeds the available block capacity.
+        if self.evm().cfg.spec.is_t4() && self.incentive_gas_used > 0 {
+            return Err(BlockValidationError::msg("incentive gas limit exceeded").into());
         }
 
         self.apply_current_committee_system_call()?;
