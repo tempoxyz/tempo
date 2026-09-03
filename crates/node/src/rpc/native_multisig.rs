@@ -41,8 +41,8 @@ pub(super) fn replace_multisig_spec_with_mock_signature(
         EthApiError::InvalidParams("native multisig simulation requires from".to_string())
     })?;
 
-    let signature = create_mock_native_multisig_signature(account, spec)
-        .map_err(|error| EthApiError::InvalidParams(error.to_string()))?;
+    let signature =
+        create_mock_native_multisig_signature(account, spec).map_err(EthApiError::InvalidParams)?;
     request.multisig_simulation = None;
     request.multisig_simulation_signature = Some(signature);
     Ok(request.multisig_simulation_signature.as_ref())
