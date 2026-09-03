@@ -92,11 +92,6 @@ pub struct Args {
     #[arg(long = "consensus.worker-threads", default_value_t = 3)]
     pub worker_threads: usize,
 
-    /// The maximum number of messages that can be queued on the various consensus
-    /// channels before blocking.
-    #[arg(long = "consensus.message-backlog", default_value_t = 16_384)]
-    pub message_backlog: usize,
-
     /// The overall number of items that can be received on the various consensus
     /// channels before blocking.
     #[arg(long = "consensus.mailbox-size", default_value = "16384")]
@@ -263,6 +258,14 @@ pub struct Args {
     /// Timeout for the handshake process.
     #[arg(long = "consensus.handshake-timeout", default_value = "5s")]
     pub handshake_timeout: PositiveDuration,
+
+    /// Timeout for resolving, connecting to, and handshaking with a peer.
+    #[arg(long = "consensus.dial-timeout", default_value = "15s")]
+    pub dial_timeout: PositiveDuration,
+
+    /// Maximum number of distinct peers retained for each validator set.
+    #[arg(long = "consensus.max-peers-per-set", default_value = "1024")]
+    pub max_peers_per_set: NonZeroUsize,
 
     /// Maximum number of concurrent handshake attempts allowed.
     #[arg(

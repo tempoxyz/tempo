@@ -823,7 +823,7 @@ where
                         info!("local DKG ceremony was a success");
                         Some((new_output, ShareState::Plaintext(Some(new_share))))
                     }
-                    Err(reason @ dkg::Error::MissingPlayerDealing) => {
+                    Err(dkg::FinalizeError::Error(reason @ dkg::Error::MissingPlayerDealing)) => {
                         warn!(
                             reason = %Report::new(reason),
                             "missing critical DKG state to reconstruct a share in this epoch; has \
@@ -1146,7 +1146,9 @@ where
                             info!("local DKG ceremony was a success");
                             Some((new_output, ShareState::Plaintext(Some(new_share))))
                         }
-                        Err(reason @ dkg::Error::MissingPlayerDealing) => {
+                        Err(dkg::FinalizeError::Error(
+                            reason @ dkg::Error::MissingPlayerDealing,
+                        )) => {
                             warn!(
                                 reason = %Report::new(reason),
                                 "missing critical DKG state to reconstruct a share in this epoch; has \
@@ -1437,7 +1439,7 @@ where
         let (recovered_output, share) = match player.finalize(&mut self.context, logs, &Sequential)
         {
             Ok(recovered) => recovered,
-            Err(dkg::Error::MissingPlayerDealing) => return Ok(None),
+            Err(dkg::FinalizeError::Error(dkg::Error::MissingPlayerDealing)) => return Ok(None),
             Err(error) => {
                 return Err(eyre::Report::new(error))
                     .wrap_err("failed finalizing revealed share from dealer logs");

@@ -183,7 +183,7 @@ pub(crate) mod marshal {
                 start,
                 partition_prefix: config.partition_prefix,
                 mailbox_size: config.mailbox_size,
-                view_retention_timeout: config.view_retention_timeout,
+                view_retention: config.view_retention_timeout,
                 prunable_items_per_section: storage::PRUNABLE_ITEMS_PER_SECTION,
                 page_cache,
                 replay_buffer: storage::REPLAY_BUFFER,
@@ -197,7 +197,7 @@ pub(crate) mod marshal {
         )
         .await;
 
-        if let Some(marshal_stored_height) = marshal_stored_height {
+        if let Some(marshal_stored_height) = marshal_stored_height.height() {
             ensure!(
                 finalized_tip.1 >= marshal_stored_height,
                 "finalizations archive is inconsistent with the node's consensus metadata: \
@@ -209,9 +209,11 @@ pub(crate) mod marshal {
         }
 
         let startup_floor_height = finalized_floor.0;
-        let last_finalized_height = marshal_stored_height.map_or(startup_floor_height, |height| {
-            height.max(startup_floor_height)
-        });
+        let last_finalized_height = marshal_stored_height
+            .height()
+            .map_or(startup_floor_height, |height| {
+                height.max(startup_floor_height)
+            });
 
         info!(
             marshal_stored = ?marshal_stored_height,

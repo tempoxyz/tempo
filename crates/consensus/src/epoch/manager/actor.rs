@@ -347,7 +347,10 @@ where
                 epoch,
                 floor,
                 scheme,
-                elector: elector::Random,
+                #[allow(deprecated)]
+                elector: elector::Random::<commonware_cryptography::Sha256>::new(
+                    elector::RandomVersion::V0,
+                ),
                 strategy: Sequential,
 
                 reporter: Reporters::<_, crate::subblocks::Mailbox, _>::from((
@@ -370,12 +373,24 @@ where
                 certification_timeout: self.config.time_to_collect_notarizations,
                 timeout_retry: self.config.time_to_retry_nullify_broadcast,
                 fetch_timeout: self.config.time_for_peer_response,
-                activity_timeout: self.config.views_to_track,
-                skip_timeout: self.config.views_until_leader_skip,
+                view_retention: self.config.views_to_track,
+                skip: simplex::config::SkipPolicy::Enabled {
+                    timeout: self
+                        .config
+                        .time_to_collect_notarizations
+                        .max(self.config.time_to_retry_nullify_broadcast)
+                        .saturating_add(
+                            self.config.time_to_propose.saturating_mul(
+                                u32::try_from(self.config.views_until_leader_skip.get())
+                                    .unwrap_or(u32::MAX),
+                            ),
+                        ),
+                    budget: simplex::config::SkipBudget::Participants,
+                },
 
                 mailbox_size: self.config.mailbox_size,
-                fetch_concurrent: crate::config::NUMBER_CONCURRENT_FETCHES,
-                forwarding: commonware_consensus::simplex::config::ForwardingPolicy::Disabled,
+                forward: commonware_consensus::simplex::config::ForwardPolicy::Disabled,
+                track_historical_votes: true,
             },
         );
 

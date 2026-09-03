@@ -203,6 +203,7 @@ where
             key_partition: format!("{TEST_PARTITION_PREFIX}-prunable-key"),
             key_page_cache: cache,
             value_partition: format!("{TEST_PARTITION_PREFIX}-prunable-value"),
+            metadata_partition: format!("{TEST_PARTITION_PREFIX}-prunable-metadata"),
             // Tests use blocks small enough that compression overhead would
             // dominate; mirror production's compression to keep the codec
             // path identical.

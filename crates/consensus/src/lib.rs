@@ -83,25 +83,16 @@ pub async fn run_consensus_stack(
             .await
             .wrap_err("failed to start network")?;
 
-    let message_backlog = config.message_backlog;
-    let votes = network.register(VOTES_CHANNEL_IDENT, VOTES_LIMIT, message_backlog);
-    let certificates = network.register(
-        CERTIFICATES_CHANNEL_IDENT,
-        CERTIFICATES_LIMIT,
-        message_backlog,
-    );
-    let resolver = network.register(RESOLVER_CHANNEL_IDENT, RESOLVER_LIMIT, message_backlog);
-    let broadcaster = network.register(
-        BROADCASTER_CHANNEL_IDENT,
-        BROADCASTER_LIMIT,
-        message_backlog,
-    );
-    let marshal = network.register(MARSHAL_CHANNEL_IDENT, backfill_quota, message_backlog);
-    let dkg = network.register(DKG_CHANNEL_IDENT, DKG_LIMIT, message_backlog);
+    let votes = network.register(VOTES_CHANNEL_IDENT, VOTES_LIMIT);
+    let certificates = network.register(CERTIFICATES_CHANNEL_IDENT, CERTIFICATES_LIMIT);
+    let resolver = network.register(RESOLVER_CHANNEL_IDENT, RESOLVER_LIMIT);
+    let broadcaster = network.register(BROADCASTER_CHANNEL_IDENT, BROADCASTER_LIMIT);
+    let marshal = network.register(MARSHAL_CHANNEL_IDENT, backfill_quota);
+    let dkg = network.register(DKG_CHANNEL_IDENT, DKG_LIMIT);
     // We create the subblocks channel even though it might not be used to make
     // sure that we don't ban peers that activate subblocks and send messages
     // through this subchannel.
-    let subblocks = network.register(SUBBLOCKS_CHANNEL_IDENT, SUBBLOCKS_LIMIT, message_backlog);
+    let subblocks = network.register(SUBBLOCKS_CHANNEL_IDENT, SUBBLOCKS_LIMIT);
 
     let target_block_time = config.target_block_time.into_duration();
     // Consensus owns the end-to-end local proposal window. The network budget
@@ -263,9 +254,11 @@ async fn instantiate_network(
         allow_private_ips: config.allow_private_ips,
         allow_dns: config.allow_dns,
         tracked_peer_sets: crate::config::PEERSETS_TO_TRACK,
+        max_peers_per_set: config.max_peers_per_set,
         synchrony_bound: config.synchrony_bound.into_duration(),
         max_handshake_age: config.handshake_stale_after.into_duration(),
         handshake_timeout: config.handshake_timeout.into_duration(),
+        dial_timeout: config.dial_timeout.into_duration(),
         max_concurrent_handshakes: config.max_concurrent_handshakes,
         block_duration: config.time_to_unblock_byzantine_peer.into_duration(),
         dial_frequency: config.wait_before_peers_redial.into_duration(),

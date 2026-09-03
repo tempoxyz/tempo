@@ -13,7 +13,8 @@ use commonware_cryptography::{
     Signer as _,
     bls12381::{
         dkg::feldman_desmedt::{
-            self as dkg, DealerPrivMsg, DealerPubMsg, Info, Output, PlayerAck, SignedDealerLog,
+            self as dkg, DealerPrivMsg, DealerPubMsg, Info, Output, PlayerAck, Reveal,
+            SignedDealerLog,
         },
         primitives::{
             group::Share,
@@ -22,14 +23,13 @@ use commonware_cryptography::{
         },
     },
     ed25519::{PrivateKey, PublicKey},
-    transcript::{Summary, Transcript},
+    transcript::{Summary, Transcript, Version},
 };
 use commonware_parallel::Strategy;
-use commonware_runtime::{BufferPooler, Clock, Metrics, buffer::paged::CacheRef};
+use commonware_runtime::{BufferPooler, Clock, Metrics, ReadOptions, buffer::paged::CacheRef};
 use commonware_storage::{journal::segmented, metadata};
 use commonware_utils::{N3f1, NZU16, NZU32, NZUsize, ordered};
 use eyre::{OptionExt, WrapErr as _, bail};
-use futures::StreamExt as _;
 use tempo_primitives::TempoHeader;
 use tracing::{debug, info, instrument, warn};
 
@@ -55,8 +55,8 @@ pub(super) struct Storage<TContext>
 where
     TContext: BufferPooler + commonware_runtime::Storage + Clock + Metrics,
 {
-    states: metadata::Metadata<TContext, u64, State>,
-    events: segmented::variable::Journal<TContext, Event>,
+    states: Option<metadata::Metadata<TContext, u64, State>>,
+    events: Option<segmented::variable::Journal<TContext, Event>>,
 
     current: Option<State>,
     cache: BTreeMap<Epoch, Events>,
@@ -84,11 +84,15 @@ where
 
     pub(super) async fn init_verified(self, state: State) -> eyre::Result<Storage<TContext>> {
         let Self { mut storage } = self;
-        storage
-            .states
-            .put_sync(state.epoch.get(), state.clone())
-            .await
-            .wrap_err("unable to write initial state to metadata")?;
+        storage.states = Some(
+            storage
+                .states
+                .take()
+                .expect("DKG states storage is available")
+                .put_sync(state.epoch.get(), state.clone())
+                .await
+                .wrap_err("unable to write initial state to metadata")?,
+        );
         storage.current = Some(state);
         Ok(storage)
     }
@@ -138,10 +142,21 @@ where
 
     /// Persists the outcome of a DKG ceremony to state
     pub(super) async fn set_state(&mut self, state: State) -> eyre::Result<()> {
-        if let Some(old) = self.states.put(state.epoch.get(), state.clone()) {
+        let states = self
+            .states
+            .as_mut()
+            .expect("DKG states storage is available");
+        if let Some(old) = states.put(state.epoch.get(), state.clone()) {
             warn!(epoch = %old.epoch, "overwriting existing state");
         }
-        self.states.sync().await.wrap_err("failed writing state")?;
+        self.states = Some(
+            self.states
+                .take()
+                .expect("DKG states storage is available")
+                .sync()
+                .await
+                .wrap_err("failed writing state")?,
+        );
         self.current = Some(state);
         Ok(())
     }
@@ -171,7 +186,10 @@ where
         }
 
         let section = epoch.get();
-        self.events
+        let (events, _, _) = self
+            .events
+            .take()
+            .expect("DKG events storage is available")
             .append(
                 section,
                 &Event::Ack {
@@ -181,11 +199,12 @@ where
             )
             .await
             .wrap_err("unable to write event to storage")?;
-
-        self.events
-            .sync(section)
-            .await
-            .wrap_err("unable to sync events journal")?;
+        self.events = Some(
+            events
+                .sync(section)
+                .await
+                .wrap_err("unable to sync events journal")?,
+        );
 
         self.cache
             .entry(epoch)
@@ -222,7 +241,10 @@ where
         }
 
         let section = epoch.get();
-        self.events
+        let (events, _, _) = self
+            .events
+            .take()
+            .expect("DKG events storage is available")
             .append(
                 section,
                 &Event::Dealing {
@@ -233,11 +255,12 @@ where
             )
             .await
             .wrap_err("unable to write event to storage")?;
-
-        self.events
-            .sync(section)
-            .await
-            .wrap_err("unable to sync events journal")?;
+        self.events = Some(
+            events
+                .sync(section)
+                .await
+                .wrap_err("unable to sync events journal")?,
+        );
 
         self.cache
             .entry(epoch)
@@ -269,7 +292,10 @@ where
         }
 
         let section = epoch.get();
-        self.events
+        let (events, _, _) = self
+            .events
+            .take()
+            .expect("DKG events storage is available")
             .append(
                 section,
                 &Event::Log {
@@ -279,10 +305,12 @@ where
             )
             .await
             .wrap_err("failed to append log to journal")?;
-        self.events
-            .sync(section)
-            .await
-            .wrap_err("unable to sync journal")?;
+        self.events = Some(
+            events
+                .sync(section)
+                .await
+                .wrap_err("unable to sync journal")?,
+        );
 
         let cache = self.cache.entry(epoch).or_default();
         cache.logs.insert(dealer, log);
@@ -313,7 +341,10 @@ where
         }
 
         let section = epoch.get();
-        self.events
+        let (events, _, _) = self
+            .events
+            .take()
+            .expect("DKG events storage is available")
             .append(
                 section,
                 &Event::Finalized {
@@ -324,10 +355,12 @@ where
             )
             .await
             .wrap_err("failed to append finalized block to journal")?;
-        self.events
-            .sync(section)
-            .await
-            .wrap_err("unable to sync journal")?;
+        self.events = Some(
+            events
+                .sync(section)
+                .await
+                .wrap_err("unable to sync journal")?,
+        );
 
         let cache = self.cache.entry(epoch).or_default();
         cache.finalized.insert(
@@ -413,7 +446,7 @@ where
         };
 
         let (mut dealer, pub_msg, priv_msgs) = dkg::Dealer::start::<N3f1>(
-            Transcript::resume(seed).noise(b"dealer-rng"),
+            Transcript::resume(seed, Version::V0).noise(b"dealer-rng"),
             round.info.clone(),
             me.clone(),
             share,
@@ -489,15 +522,26 @@ where
 
     #[instrument(skip_all, fields(%up_to_epoch), err)]
     pub(super) async fn prune(&mut self, up_to_epoch: Epoch) -> eyre::Result<()> {
-        self.events
+        let (events, _) = self
+            .events
+            .take()
+            .expect("DKG events storage is available")
             .prune(up_to_epoch.get())
             .await
             .wrap_err("unable to prune events journal")?;
-        self.states.retain(|&key, _| key >= up_to_epoch.get());
+        self.events = Some(events);
         self.states
-            .sync()
-            .await
-            .wrap_err("unable to prune events metadata")?;
+            .as_mut()
+            .expect("DKG states storage is available")
+            .retain(|&key, _| key >= up_to_epoch.get());
+        self.states = Some(
+            self.states
+                .take()
+                .expect("DKG states storage is available")
+                .sync()
+                .await
+                .wrap_err("unable to prune events metadata")?,
+        );
         self.cache.retain(|&epoch, _| epoch >= up_to_epoch);
         Ok(())
     }
@@ -563,11 +607,10 @@ impl Builder {
         // Replay msgs to populate epoch caches
         let mut cache = BTreeMap::<Epoch, Events>::new();
         {
-            let replay = events
-                .replay(0, 0, READ_BUFFER)
+            let mut replay = events
+                .replay(0, 0, READ_BUFFER, ReadOptions::default())
                 .await
                 .wrap_err("unable to start a replay stream to populate events cache")?;
-            futures::pin_mut!(replay);
 
             while let Some(result) = replay.next().await {
                 let (section, _, _, event) =
@@ -576,6 +619,9 @@ impl Builder {
                 let events = cache.entry(epoch).or_default();
                 events.insert(event);
             }
+            events = replay
+                .finish()
+                .wrap_err("unable to finish replaying events journal")?;
         }
 
         eyre::ensure!(
@@ -584,8 +630,8 @@ impl Builder {
         );
         Ok(Unverified {
             storage: Storage {
-                states,
-                events,
+                states: Some(states),
+                events: Some(events),
                 current,
                 cache,
             },
@@ -1049,6 +1095,8 @@ impl Round {
                 state.epoch.get(),
                 previous_output,
                 Mode::NonZeroCounter,
+                #[allow(deprecated)]
+                Reveal::V0,
                 dealers.clone(),
                 players.clone(),
             )
@@ -1116,12 +1164,11 @@ impl Player {
         }
 
         // Otherwise generate a new ack
-        let dkg::Verdict::Valid(ack) =
-            self.player
-                .dealer_message::<N3f1>(dealer.clone(), pub_msg.clone(), priv_msg.clone())
-        else {
-            bail!("applying dealer message to player instance did not result in a usable ack");
-        };
+        let ack = self
+            .player
+            .dealer_message::<N3f1>(dealer.clone(), pub_msg.clone(), priv_msg.clone())
+            .wrap_err("applying dealer message to player instance failed")?
+            .ok_or_eyre("dealer message was already processed without a cached acknowledgement")?;
         storage
             .append_dealing(epoch, dealer.clone(), pub_msg, priv_msg)
             .await
@@ -1140,9 +1187,9 @@ impl Player {
         if self.acks.contains_key(&dealer) {
             return;
         }
-        if let dkg::Verdict::Valid(ack) =
-            self.player
-                .dealer_message::<N3f1>(dealer.clone(), pub_msg, priv_msg)
+        if let Ok(Some(ack)) = self
+            .player
+            .dealer_message::<N3f1>(dealer.clone(), pub_msg, priv_msg)
         {
             self.acks.insert(dealer, ack);
         }
@@ -1154,7 +1201,7 @@ impl Player {
         rng: &mut impl rand_core::CryptoRng,
         logs: dkg::Logs<MinSig, PublicKey, N3f1>,
         strategy: &impl Strategy,
-    ) -> Result<(Output<MinSig, PublicKey>, Share), dkg::Error> {
+    ) -> Result<(Output<MinSig, PublicKey>, Share), dkg::FinalizeError<PublicKey>> {
         self.player
             .finalize::<N3f1, commonware_cryptography::ed25519::Batch>(rng, logs, strategy)
     }
@@ -1366,9 +1413,11 @@ mod tests {
                 "new storage must not contain a state"
             );
 
-            unverified
+            let (events, _, _) = unverified
                 .storage
                 .events
+                .take()
+                .expect("DKG events storage is available")
                 .append(
                     0,
                     &Event::Finalized {
@@ -1379,7 +1428,7 @@ mod tests {
                 )
                 .await
                 .unwrap();
-            unverified.storage.events.sync(0).await.unwrap();
+            unverified.storage.events = Some(events.sync(0).await.unwrap());
             drop(unverified);
 
             let result = builder()
