@@ -116,6 +116,16 @@ impl<'a> EvmPrecompileStorageProvider<'a> {
         self.actions.replace(actions)
     }
 
+    /// EIP-214: mutating storage, logs, or code is forbidden in a static call.
+    #[inline]
+    fn reject_if_static(&self) -> Result<(), TempoPrecompileError> {
+        if self.is_static {
+            Err(TempoPrecompileError::StateChangeInStaticCall)
+        } else {
+            Ok(())
+        }
+    }
+
     #[inline]
     fn deduct_state_gas(&mut self, gas: u64) -> Result<(), TempoPrecompileError> {
         if !self.gas_tracker.record_state_cost(gas) {
@@ -197,6 +207,8 @@ impl<'a> EvmPrecompileStorageProvider<'a> {
         value: U256,
         action: impl FnOnce(&SStoreResult) -> StorageAction,
     ) -> Result<(), TempoPrecompileError> {
+        self.reject_if_static()?;
+
         // T4+: pre-charge static gas before loading storage to avoid cheap useless work.
         let skip_cold_load = if self.spec.is_t4() {
             self.deduct_gas(self.gas_params.sstore_static_gas())?;
@@ -306,6 +318,7 @@ impl crate::storage_credits::StorageCreditsBackend for EvmPrecompileStorageProvi
         value: U256,
         skip_cold_load: bool,
     ) -> Result<SstoreTransitionFlags, Self::Error> {
+        self.reject_if_static()?;
         let val = self.sstore_journal(address, key, value, skip_cold_load)?;
         self.actions.record_always(StorageAction::Sstore(
             address,
@@ -352,6 +365,7 @@ impl<'a> PrecompileStorageProvider for EvmPrecompileStorageProvider<'a> {
 
     #[inline]
     fn set_code(&mut self, address: Address, code: Bytecode) -> Result<(), TempoPrecompileError> {
+        self.reject_if_static()?;
         let code_len = code.len();
         self.deduct_gas(self.gas_params.code_deposit_cost(code_len))?;
 
@@ -462,6 +476,7 @@ impl<'a> PrecompileStorageProvider for EvmPrecompileStorageProvider<'a> {
         key: U256,
         value: U256,
     ) -> Result<(), TempoPrecompileError> {
+        self.reject_if_static()?;
         self.deduct_gas(self.gas_params.warm_storage_read_cost())?;
         self.internals.tstore(address, key, value);
         Ok(())
@@ -469,6 +484,7 @@ impl<'a> PrecompileStorageProvider for EvmPrecompileStorageProvider<'a> {
 
     #[inline]
     fn emit_event(&mut self, address: Address, event: LogData) -> Result<(), TempoPrecompileError> {
+        self.reject_if_static()?;
         self.deduct_gas(
             gas::LOG
                 + self
@@ -797,6 +813,25 @@ mod tests {
                 spec,
                 amsterdam_eip8037_enabled,
                 false,
+                gas_params,
+            )
+        }
+
+        fn provider_static(&mut self) -> EvmPrecompileStorageProvider<'_> {
+            let ctx = self.0.ctx_mut();
+            let spec = ctx.cfg.spec;
+            let amsterdam_eip8037_enabled = ctx.cfg.enable_amsterdam_eip8037;
+            let gas_params = ctx.cfg.gas_params.clone();
+            let evm_internals =
+                EvmInternals::new(&mut ctx.journaled_state, &ctx.block, &ctx.cfg, &ctx.tx);
+
+            EvmPrecompileStorageProvider::new(
+                evm_internals,
+                u64::MAX,
+                0,
+                spec,
+                amsterdam_eip8037_enabled,
+                true,
                 gas_params,
             )
         }
@@ -1571,5 +1606,97 @@ mod tests {
         );
 
         Ok(())
+    }
+
+    #[test]
+    fn test_sstore_rejected_in_static_context() {
+        let mut evm = TestEvm::default();
+        let mut provider = evm.provider_static();
+        let address = Address::random();
+
+        let err = provider
+            .sstore(address, U256::ZERO, U256::from(1))
+            .expect_err("sstore must reject in static context");
+
+        assert!(matches!(err, TempoPrecompileError::StateChangeInStaticCall));
+        assert_eq!(
+            provider.gas_used(),
+            0,
+            "no gas should be deducted before the static guard fires"
+        );
+    }
+
+    #[test]
+    fn test_tstore_rejected_in_static_context() {
+        let mut evm = TestEvm::default();
+        let mut provider = evm.provider_static();
+        let address = Address::random();
+
+        let err = provider
+            .tstore(address, U256::ZERO, U256::from(1))
+            .expect_err("tstore must reject in static context");
+
+        assert!(matches!(err, TempoPrecompileError::StateChangeInStaticCall));
+        assert_eq!(
+            provider.gas_used(),
+            0,
+            "no gas should be deducted before the static guard fires"
+        );
+    }
+
+    #[test]
+    fn test_emit_event_rejected_in_static_context() {
+        let mut evm = TestEvm::default();
+        let mut provider = evm.provider_static();
+        let address = Address::random();
+
+        let err = provider
+            .emit_event(
+                address,
+                LogData::new_unchecked(Vec::new(), Default::default()),
+            )
+            .expect_err("emit_event must reject in static context");
+
+        assert!(matches!(err, TempoPrecompileError::StateChangeInStaticCall));
+        assert_eq!(
+            provider.gas_used(),
+            0,
+            "no gas should be deducted before the static guard fires"
+        );
+    }
+
+    #[test]
+    fn test_set_code_rejected_in_static_context() {
+        let mut evm = TestEvm::default();
+        let mut provider = evm.provider_static();
+        let address = Address::random();
+
+        let err = provider
+            .set_code(address, Bytecode::new_raw(vec![0x60, 0x01].into()))
+            .expect_err("set_code must reject in static context");
+
+        assert!(matches!(err, TempoPrecompileError::StateChangeInStaticCall));
+        assert_eq!(
+            provider.gas_used(),
+            0,
+            "no gas should be deducted before the static guard fires"
+        );
+    }
+
+    #[test]
+    fn test_sload_allowed_in_static_context() {
+        let mut evm = TestEvm::default();
+        let address = Address::random();
+        {
+            let mut provider = evm.provider_max_gas();
+            provider
+                .sstore(address, U256::ZERO, U256::from(7))
+                .expect("sstore in non-static context");
+        }
+        let mut provider = evm.provider_static();
+        let value = provider
+            .sload(address, U256::ZERO)
+            .expect("sload must remain allowed in static context");
+        assert_eq!(value, U256::from(7));
     }
 }

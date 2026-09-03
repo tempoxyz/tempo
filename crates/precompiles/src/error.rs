@@ -116,6 +116,14 @@ pub enum TempoPrecompileError {
     #[error("Gas limit exceeded")]
     OutOfGas,
 
+    /// A state-changing operation was attempted while the precompile was
+    /// invoked in a static call context (EIP-214 / EIP-1153).
+    ///
+    /// Returned by state-mutating storage provider methods when the provider
+    /// was constructed with `is_static = true`.
+    #[error("State change attempted in static call context (EIP-214)")]
+    StateChangeInStaticCall,
+
     /// The calldata's 4-byte selector does not match any known precompile function.
     #[error("Unknown function selector: {0:?}")]
     UnknownFunctionSelector([u8; 4]),
@@ -179,7 +187,7 @@ impl TempoPrecompileError {
             Self::ZoneFactoryError(e) => e.selector(),
             Self::UnknownFunctionSelector(selector) => *selector,
             Self::Panic(_) | Self::StorageDeltaUnderflow(_) => Panic::SELECTOR,
-            Self::OutOfGas | Self::Fatal(_) => [0, 0, 0, 0],
+            Self::OutOfGas | Self::StateChangeInStaticCall | Self::Fatal(_) => [0, 0, 0, 0],
         }
         .into()
     }
@@ -188,9 +196,11 @@ impl TempoPrecompileError {
     /// rather than swallowed, because state may be inconsistent.
     pub fn is_system_error(&self) -> bool {
         match self {
-            Self::OutOfGas | Self::Fatal(_) | Self::Panic(_) | Self::StorageDeltaUnderflow(_) => {
-                true
-            }
+            Self::OutOfGas
+            | Self::Fatal(_)
+            | Self::Panic(_)
+            | Self::StorageDeltaUnderflow(_)
+            | Self::StateChangeInStaticCall => true,
             Self::StablecoinDEX(_)
             | Self::TIP20(_)
             | Self::TIP20ChannelReserveError(_)
@@ -237,6 +247,7 @@ impl TempoPrecompileError {
     ///
     /// # Errors
     /// - `PrecompileOutput::halt(PrecompileHalt::OutOfGas, ..)` — if the variant is [`OutOfGas`](Self::OutOfGas)
+    /// - `PrecompileError::Fatal` — if the variant is [`StateChangeInStaticCall`](Self::StateChangeInStaticCall)
     /// - `PrecompileError::Fatal` — if the variant is [`Fatal`](Self::Fatal)
     pub fn into_precompile_result(self, gas: u64, reservoir: u64) -> PrecompileResult {
         let bytes = match self {
@@ -280,6 +291,11 @@ impl TempoPrecompileError {
             }
             .abi_encode()
             .into(),
+            Self::StateChangeInStaticCall => {
+                return Err(PrecompileError::Fatal(
+                    "state change attempted in static call context (EIP-214)".to_string(),
+                ));
+            }
             Self::Fatal(msg) => {
                 return Err(PrecompileError::Fatal(msg));
             }
