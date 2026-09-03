@@ -97,6 +97,23 @@ fn forwarded(tree: &mut NotarizedTree, block: &Block) {
     tree.set_local_state(local_state);
 }
 
+/// The digest of the next block to deliver, if any.
+fn next_delivery(tree: &NotarizedTree, now: SystemTime) -> Option<Digest> {
+    tree.next_to_deliver(now).map(|block| block.digest())
+}
+
+/// Simulates the completed delivery of `block`: the execution layer
+/// accepted its new-payload request.
+fn delivered(tree: &mut NotarizedTree, block: &Block) {
+    tree.mark_delivered(&block.digest());
+}
+
+/// Simulates full convergence onto `block`: delivered, then made the head.
+fn converged(tree: &mut NotarizedTree, block: &Block) {
+    delivered(tree, block);
+    forwarded(tree, block);
+}
+
 #[test]
 fn forwards_chain_on_top_of_finalized_tip_in_order() {
     let finalized = Digest(B256::repeat_byte(0xff));
@@ -554,8 +571,11 @@ fn depths_measure_backlogs() {
     assert_eq!(depths.blocks, 0);
     assert_eq!(depths.finalization_lag, 0);
     assert_eq!(depths.convergence_depth, Some(0));
+    assert_eq!(depths.uncanonicalized_blocks, 0);
 
     // Two recorded blocks, the pending head two above the local head.
+    // Recorded bodies are not uncanonicalized until delivered; delivered
+    // ones are until the head passes them.
     let a = block(1, 11, finalized);
     let b = block(2, 12, a.digest());
     record(&mut tree, &a);
@@ -563,6 +583,12 @@ fn depths_measure_backlogs() {
     let depths = tree.depths();
     assert_eq!(depths.blocks, 2);
     assert_eq!(depths.convergence_depth, Some(2));
+    assert_eq!(depths.uncanonicalized_blocks, 0);
+    delivered(&mut tree, &a);
+    delivered(&mut tree, &b);
+    assert_eq!(tree.depths().uncanonicalized_blocks, 2);
+    forwarded(&mut tree, &a);
+    assert_eq!(tree.depths().uncanonicalized_blocks, 1);
 
     // A pending head without a body has no known height.
     let c = block(3, 13, b.digest());
@@ -784,4 +810,228 @@ fn reaffirmed_finalized_tip_needs_no_fetch() {
     tree.set_pending_head(round(2), finalized);
 
     assert_eq!(tree.first_missing_ancestor(), None);
+}
+
+#[test]
+fn delivers_chain_on_top_of_finalized_tip_bottom_up() {
+    let finalized = Digest(B256::repeat_byte(0xff));
+    let mut tree = empty_tree(finalized);
+
+    let a = block(1, 11, finalized);
+    let b = block(2, 12, a.digest());
+    record(&mut tree, &a);
+    record(&mut tree, &b);
+
+    // Only the block directly above a known block can be delivered; there
+    // is no known block to move the head onto yet.
+    assert_eq!(next_delivery(&tree, T0), Some(a.digest()));
+    assert_eq!(tree.next_head(T0), None);
+
+    // Once a is delivered, b is deliverable and a is the highest known
+    // block on the path: the head can already move onto it.
+    delivered(&mut tree, &a);
+    assert_eq!(next_delivery(&tree, T0), Some(b.digest()));
+    assert_eq!(tree.next_head(T0), Some((Height::new(11), a.digest())));
+
+    // With the whole path delivered, one forkchoice update covers it.
+    delivered(&mut tree, &b);
+    assert_eq!(next_delivery(&tree, T0), None);
+    assert_eq!(tree.next_head(T0), Some((Height::new(12), b.digest())));
+
+    forwarded(&mut tree, &b);
+    assert_eq!(tree.next_head(T0), None);
+}
+
+#[test]
+fn fork_extends_from_the_nearest_known_block() {
+    let finalized = Digest(B256::repeat_byte(0xff));
+    let mut tree = empty_tree(finalized);
+
+    // F - N0 - N1 - N2 is converged onto in full ...
+    let n0 = block(1, 11, finalized);
+    let n1 = block(2, 12, n0.digest());
+    let n2 = block(3, 13, n1.digest());
+    record(&mut tree, &n0);
+    record(&mut tree, &n1);
+    record(&mut tree, &n2);
+    delivered(&mut tree, &n0);
+    delivered(&mut tree, &n1);
+    converged(&mut tree, &n2);
+    assert_eq!(next_delivery(&tree, T0), None);
+
+    // ... when F - N0 - N1' - N3 becomes the canonical chain. The report
+    // arrives before the bodies; delivery stalls until the ancestry
+    // is walkable.
+    let n1p = block(4, 12, n0.digest());
+    let n3 = block(5, 13, n1p.digest());
+    report_parent(&mut tree, &n3);
+    tree.heal();
+    assert_eq!(next_delivery(&tree, T0), None);
+    assert_eq!(tree.next_head(T0), None);
+
+    // N3's body arrives, but its parent N1' is still missing: the
+    // ancestry does not reach down to a block the execution layer has.
+    tree.record_block(n3.clone().into());
+    tree.heal();
+    assert_eq!(next_delivery(&tree, T0), None);
+    assert_eq!(tree.next_head(T0), None);
+
+    // N1' arrives via the fetch machinery, completing the ancestry. The
+    // head (N2) sits off the new canonical path, but the trunk block N0 is
+    // known to the execution layer: the fork branch is delivered from
+    // directly above it, and the head can be moved back onto N0 meanwhile.
+    tree.record_block(n1p.clone().into());
+    tree.heal();
+    assert_eq!(next_delivery(&tree, T0), Some(n1p.digest()));
+    assert_eq!(tree.next_head(T0), Some((Height::new(11), n0.digest())));
+    delivered(&mut tree, &n1p);
+    assert_eq!(next_delivery(&tree, T0), Some(n3.digest()));
+    delivered(&mut tree, &n3);
+    assert_eq!(next_delivery(&tree, T0), None);
+    assert_eq!(tree.next_head(T0), Some((Height::new(13), n3.digest())));
+}
+
+/// A head stranded on an abandoned notarized branch while consensus
+/// re-anchors on the (already delivered) finalized tip itself: there is
+/// nothing to deliver, and the head target is the tip.
+#[test]
+fn next_head_repoints_a_stranded_head_onto_the_finalized_tip() {
+    let finalized = Digest(B256::repeat_byte(0xff));
+    let mut tree = empty_tree(finalized);
+
+    // No convergence step while the head sits on the finalized tip.
+    assert_eq!(next_delivery(&tree, T0), None);
+    assert_eq!(tree.next_head(T0), None);
+
+    // A block is notarized and converged onto, then its view nullifies
+    // and the network abandons it; consensus re-anchors on the finalized
+    // tip.
+    let abandoned = block(1, 11, finalized);
+    record(&mut tree, &abandoned);
+    converged(&mut tree, &abandoned);
+    tree.set_pending_head(round(0), finalized);
+    tree.heal();
+    assert_eq!(tree.pending_head(), finalized);
+
+    // There is no block to deliver; the head target is the tip.
+    assert_eq!(next_delivery(&tree, T0), None);
+    assert_eq!(tree.next_head(T0), Some((Height::new(10), finalized)));
+
+    // The repoint forkchoice update is accepted: the head is back on the
+    // tip and there is nothing left to do.
+    let local_state = tree.local_state().update_head(Height::new(10), finalized);
+    tree.set_local_state(local_state);
+    assert_eq!(tree.next_head(T0), None);
+}
+
+/// No head target while the finalized-block delivery for the tip is still
+/// outstanding: the tip cannot be named before the execution layer has it.
+#[test]
+fn next_head_waits_for_the_finalized_tip_delivery() {
+    let finalized = Digest(B256::repeat_byte(0xff));
+    let mut tree = empty_tree(finalized);
+
+    let a1 = block(1, 11, finalized);
+    record(&mut tree, &a1);
+    converged(&mut tree, &a1);
+
+    // A sibling of the converged block finalizes; its delivery has not
+    // arrived yet. A report re-anchoring on it must not name it.
+    let b1 = block(2, 11, finalized);
+    tree.set_network_finalized_tip(round(2), Height::new(11), b1.digest());
+    tree.set_pending_head(round(2), b1.digest());
+    tree.heal();
+    assert_eq!(next_delivery(&tree, T0), None);
+    assert_eq!(tree.next_head(T0), None);
+
+    // The delivery lands: the head target is the finalized block ...
+    tree.set_delivered_finalized(Height::new(11), b1.digest());
+    assert_eq!(tree.next_head(T0), Some((Height::new(11), b1.digest())));
+
+    // ... and once the forkchoice update rebased the head, there is
+    // nothing left to repoint.
+    let local_state = tree
+        .local_state()
+        .update_finalized(Height::new(11), b1.digest())
+        .update_head(Height::new(11), b1.digest());
+    tree.set_local_state(local_state);
+    assert_eq!(tree.next_head(T0), None);
+}
+
+/// Blocks the execution layer knows: the canonicalized state, the
+/// delivered finalized block, and delivered notarized blocks - not
+/// recorded bodies the execution layer has not seen.
+#[test]
+fn known_blocks_are_the_canonicalized_state_and_delivered_blocks() {
+    let finalized = Digest(B256::repeat_byte(0xff));
+    let mut tree = empty_tree(finalized);
+    assert_eq!(tree.known_height(finalized), Some(Height::new(10)));
+
+    // A recorded body is not known until delivered.
+    let a = block(1, 11, finalized);
+    record(&mut tree, &a);
+    assert!(!tree.is_known(a.digest()));
+    delivered(&mut tree, &a);
+    assert_eq!(tree.known_height(a.digest()), Some(Height::new(11)));
+
+    // Re-recording the body keeps the delivery status.
+    tree.record_block(a.clone().into());
+    assert!(tree.is_known(a.digest()));
+
+    // A delivered finalized block is known before it is canonicalized.
+    let f = block(2, 11, finalized);
+    tree.set_network_finalized_tip(round(2), Height::new(11), f.digest());
+    tree.heal();
+    assert!(!tree.is_known(f.digest()));
+    tree.set_delivered_finalized(Height::new(11), f.digest());
+    assert_eq!(tree.known_height(f.digest()), Some(Height::new(11)));
+    assert_eq!(
+        tree.delivered_finalized(),
+        (Height::new(11), f.digest()),
+        "the delivered finalized block is the next finalized target",
+    );
+
+    // Canonicalizing a finalized block the tree did not see delivered
+    // (the startup backfill) advances the delivered finalized block too.
+    let g = block(3, 12, f.digest());
+    tree.set_network_finalized_tip(round(3), Height::new(12), g.digest());
+    tree.heal();
+    tree.set_local_state(LocalState {
+        head: (Height::new(12), g.digest()),
+        finalized: (Height::new(12), g.digest()),
+    });
+    assert_eq!(tree.delivered_finalized(), (Height::new(12), g.digest()));
+    assert!(tree.is_known(g.digest()));
+}
+
+/// A rejection revokes the block's delivery status: the execution layer
+/// refused it, so it is delivered anew - after the retry delay - before it
+/// is named again.
+#[test]
+fn rejection_revokes_delivery() {
+    let finalized = Digest(B256::repeat_byte(0xff));
+    let mut tree = empty_tree(finalized);
+
+    let a = block(1, 11, finalized);
+    let b = block(2, 12, a.digest());
+    record(&mut tree, &a);
+    record(&mut tree, &b);
+    delivered(&mut tree, &a);
+    delivered(&mut tree, &b);
+    assert_eq!(tree.next_head(T0), Some((Height::new(12), b.digest())));
+
+    // b is rejected: unknown again and withheld, which also withholds the
+    // head move onto its known parent.
+    tree.mark_rejected(&b.digest(), T0);
+    assert!(!tree.is_known(b.digest()));
+    assert_eq!(next_delivery(&tree, T0), None);
+    assert_eq!(tree.next_head(T0), None);
+
+    // After the delay, b is delivered again, and a fresh acceptance clears
+    // the rejection.
+    let retry = T0 + NOTARIZED_REJECTION_RETRY_DELAY;
+    assert_eq!(next_delivery(&tree, retry), Some(b.digest()));
+    assert_eq!(tree.next_head(retry), Some((Height::new(11), a.digest())));
+    delivered(&mut tree, &b);
+    assert_eq!(tree.next_head(T0), Some((Height::new(12), b.digest())));
 }
