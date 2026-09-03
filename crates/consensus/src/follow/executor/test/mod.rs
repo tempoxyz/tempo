@@ -379,9 +379,10 @@ fn tips_are_monotonic_and_coalesced_while_forkchoice_is_in_flight() {
     });
 }
 
-// A finalization can advance forkchoice before execution receives its block.
+// Marshal emits a tip before it delivers the block, so a tip can advance
+// forkchoice before execution receives that block.
 #[test_traced]
-fn finalization_drives_forkchoice_by_round() {
+fn tip_drives_forkchoice_by_round() {
     deterministic::Runner::default().start(|context| async move {
         let provider = StubExecutionProvider::default();
 
@@ -403,7 +404,7 @@ fn finalization_drives_forkchoice_by_round() {
         wait_until(&context, || provider.forkchoices().len() == 1).await;
 
         let finalized = Digest(B256::with_last_byte(9));
-        mailbox.finalization(round(2), finalized);
+        let _ = mailbox.report(Update::Tip(round(2), Height::new(9), finalized));
         wait_until(&context, || provider.forkchoices().len() == 2).await;
 
         let _ = mailbox.report(Update::Tip(
@@ -424,7 +425,7 @@ fn finalization_drives_forkchoice_by_round() {
 /// An older finalization received while a block FCU is in flight must not
 /// become the next forkchoice target.
 #[test_traced]
-fn delayed_finalization_does_not_regress_newer_block_forkchoice() {
+fn delayed_tip_does_not_regress_newer_block_forkchoice() {
     deterministic::Runner::default().start(|context| async move {
         let current = Digest(B256::with_last_byte(10));
         let provider = StubExecutionProvider::default();
@@ -454,7 +455,7 @@ fn delayed_finalization_does_not_regress_newer_block_forkchoice() {
         .await;
 
         let delayed = Digest(B256::with_last_byte(12));
-        mailbox.finalization(round(12), delayed);
+        let _ = mailbox.report(Update::Tip(round(12), Height::new(101), delayed));
         context.sleep(Duration::from_millis(1)).await;
 
         release_block_forkchoice
@@ -478,7 +479,7 @@ fn execution_tip_round_orders_finalizations_after_restart() {
         let provider = StubExecutionProvider::default();
         provider.set_finalized(100, digest(100).0, round(7));
 
-        let (actor, mailbox) = init(
+        let (actor, mut mailbox) = init(
             context.child("follower_executor"),
             Config {
                 execution_provider: provider.clone(),
@@ -491,24 +492,24 @@ fn execution_tip_round_orders_finalizations_after_restart() {
         );
         actor.start();
 
-        mailbox.finalization(round(6), digest(101));
+        let _ = mailbox.report(Update::Tip(round(6), Height::new(101), digest(101)));
         context.sleep(Duration::from_millis(5)).await;
         assert!(provider.forkchoices().is_empty());
 
         let newer = digest(102);
-        mailbox.finalization(round(8), newer);
+        let _ = mailbox.report(Update::Tip(round(8), Height::new(102), newer));
         wait_until(&context, || !provider.forkchoices().is_empty()).await;
         assert_eq!(provider.forkchoices()[0].head_block_hash, newer.0);
     });
 }
 
 #[test_traced]
-fn finalization_supersedes_roundless_prefork_execution_tip() {
+fn tip_supersedes_roundless_prefork_execution_tip() {
     deterministic::Runner::default().start(|context| async move {
         let provider = StubExecutionProvider::default();
         provider.set_prefork_finalized(100, digest(100).0);
 
-        let (actor, mailbox) = init(
+        let (actor, mut mailbox) = init(
             context.child("follower_executor"),
             Config {
                 execution_provider: provider.clone(),
@@ -525,18 +526,18 @@ fn finalization_supersedes_roundless_prefork_execution_tip() {
         assert!(provider.forkchoices().is_empty());
 
         let finalized = digest(101);
-        mailbox.finalization(round(1), finalized);
+        let _ = mailbox.report(Update::Tip(round(1), Height::new(101), finalized));
         wait_until(&context, || !provider.forkchoices().is_empty()).await;
         assert_eq!(provider.forkchoices()[0].head_block_hash, finalized.0);
     });
 }
 
 #[test_traced]
-fn finalization_is_driven_to_from_genesis() {
+fn tip_is_driven_to_from_genesis() {
     deterministic::Runner::default().start(|context| async move {
         let provider = StubExecutionProvider::default();
 
-        let (actor, mailbox) = init(
+        let (actor, mut mailbox) = init(
             context.child("follower_executor"),
             Config {
                 execution_provider: provider.clone(),
@@ -550,14 +551,14 @@ fn finalization_is_driven_to_from_genesis() {
         actor.start();
 
         let finalized = Digest(B256::with_last_byte(9));
-        mailbox.finalization(round(5), finalized);
+        let _ = mailbox.report(Update::Tip(round(5), Height::new(9), finalized));
 
         wait_until(&context, || !provider.forkchoices().is_empty()).await;
         let forkchoices = provider.forkchoices();
         assert_eq!(forkchoices.len(), 1);
         assert_eq!(
             forkchoices[0].head_block_hash, finalized.0,
-            "nothing is below genesis, so the certificate is driven directly",
+            "nothing is below genesis, so the tip is driven directly",
         );
     });
 }

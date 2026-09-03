@@ -198,7 +198,6 @@ impl<TUpstream> Config<TUpstream> {
                 network_identity: self.network_identity,
                 last_finalized_height,
                 marshal: marshal_mailbox.clone(),
-                executor: executor_mailbox.clone(),
                 epoch_strategy: epoch_strategy.clone(),
             },
         )
@@ -253,12 +252,7 @@ where
 {
     context: ContextCell<TContext>,
     _execution_node: Arc<TempoFullNode>,
-    driver: driver::Driver<
-        TContext,
-        FollowExecutionProvider,
-        crate::alias::marshal::Mailbox,
-        executor::Mailbox,
-    >,
+    driver: driver::Driver<TContext, FollowExecutionProvider, crate::alias::marshal::Mailbox>,
     driver_mailbox: driver::Mailbox,
     resolver: resolver::Mailbox,
     resolver_rx: commonware_consensus::marshal::resolver::handler::Receiver<Digest>,
