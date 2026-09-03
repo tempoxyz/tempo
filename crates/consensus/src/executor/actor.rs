@@ -822,13 +822,7 @@ where
         }
 
         let target = self.notarized_tree.local_state();
-        let fut = execute_forkchoice(
-            self.execution_node.clone(),
-            Span::current(),
-            target,
-            None,
-            ForkchoiceUpdateKind::Heartbeat,
-        );
+        let fut = execute_forkchoice(self.execution_node.clone(), Span::current(), target, None);
         self.set_execution_task(ExecutionTask::new(ExecutionTaskType::Heartbeat, fut));
         Ok(())
     }
@@ -1035,9 +1029,6 @@ where
                         cause.clone(),
                         target,
                         Some((cause, build)),
-                        ForkchoiceUpdateKind::Canonicalize {
-                            head_or_finalized: HeadOrFinalized::Head,
-                        },
                     );
                     self.set_execution_task(ExecutionTask::new(ExecutionTaskType::Build, fut));
                     return Ok(());
@@ -1070,16 +1061,10 @@ where
                 NextToForward::Block(block) => {
                     execute_notarization(self.execution_node.clone(), block, target).boxed()
                 }
-                NextToForward::Repoint(..) => execute_forkchoice(
-                    self.execution_node.clone(),
-                    Span::current(),
-                    target,
-                    None,
-                    ForkchoiceUpdateKind::Canonicalize {
-                        head_or_finalized: HeadOrFinalized::Head,
-                    },
-                )
-                .boxed(),
+                NextToForward::Repoint(..) => {
+                    execute_forkchoice(self.execution_node.clone(), Span::current(), target, None)
+                        .boxed()
+                }
             };
             self.set_execution_task(ExecutionTask::new(ExecutionTaskType::Notarize, fut));
             return Ok(());
@@ -1233,12 +1218,6 @@ struct VerifyBlockRequest {
     /// a value when validation was not possible or the request was
     /// superseded.
     response: oneshot::Sender<Option<Duration>>,
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-enum ForkchoiceUpdateKind {
-    Heartbeat,
-    Canonicalize { head_or_finalized: HeadOrFinalized },
 }
 
 #[derive(Debug, Clone, Copy)]
@@ -1403,7 +1382,6 @@ async fn execute_forkchoice(
     cause: Span,
     target: LocalState,
     build: Option<(Span, Build)>,
-    kind: ForkchoiceUpdateKind,
 ) -> ExecutionTaskOutcome {
     let build = build.filter(|(_, build)| {
         if build.response.is_canceled() {
@@ -1428,7 +1406,7 @@ async fn execute_forkchoice(
         None => (None, None),
     };
 
-    let response = submit_forkchoice_update(&execution_node, cause, target, attributes, kind).await;
+    let response = submit_forkchoice_update(&execution_node, cause, target, attributes).await;
     ExecutionTaskOutcome::Forkchoice {
         target,
         build,
@@ -1456,16 +1434,7 @@ async fn execute_finalization(
     let status = deliver_block(&execution_node, request.block.clone()).await;
     let response = match &status {
         Ok(PayloadStatusEnum::Valid) => {
-            submit_forkchoice_update(
-                &execution_node,
-                request.cause.clone(),
-                target,
-                None,
-                ForkchoiceUpdateKind::Canonicalize {
-                    head_or_finalized: HeadOrFinalized::Finalized,
-                },
-            )
-            .await
+            submit_forkchoice_update(&execution_node, request.cause.clone(), target, None).await
         }
         _ => None,
     };
@@ -1496,16 +1465,7 @@ async fn execute_notarization(
     let status = deliver_block(&execution_node, block).await;
     let response = match &status {
         Ok(PayloadStatusEnum::Valid) => {
-            submit_forkchoice_update(
-                &execution_node,
-                Span::current(),
-                target,
-                None,
-                ForkchoiceUpdateKind::Canonicalize {
-                    head_or_finalized: HeadOrFinalized::Head,
-                },
-            )
-            .await
+            submit_forkchoice_update(&execution_node, Span::current(), target, None).await
         }
         _ => None,
     };
@@ -1666,7 +1626,6 @@ async fn run_payload_job(
         head_block_height = %canonicalized.head.0,
         finalized_block_hash = %canonicalized.finalized.1,
         finalized_block_height = %canonicalized.finalized.0,
-        ?kind,
     ),
 )]
 async fn submit_forkchoice_update(
@@ -1674,7 +1633,6 @@ async fn submit_forkchoice_update(
     cause: Span,
     canonicalized: LocalState,
     attrs: Option<TempoPayloadAttributes>,
-    kind: ForkchoiceUpdateKind,
 ) -> Option<eyre::Result<ForkchoiceUpdated>> {
     match is_stale_forkchoice(execution_node, canonicalized) {
         Ok(false) => {}
@@ -1826,21 +1784,4 @@ fn finalization_target(
             .update_finalized(block.height(), block.digest())
             .update_head(block.height(), block.digest())
     })
-}
-
-/// Marker to indicate whether the head hash or finalized hash should be updated.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-enum HeadOrFinalized {
-    Head,
-    Finalized,
-}
-
-impl std::fmt::Display for HeadOrFinalized {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        let msg = match self {
-            Self::Head => "head",
-            Self::Finalized => "finalized",
-        };
-        f.write_str(msg)
-    }
 }
