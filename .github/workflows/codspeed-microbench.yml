@@ -149,7 +149,7 @@ jobs:
           # shellcheck disable=SC2086  # BUILD_ARGS must word-split into multiple cargo args
           cargo codspeed build $BUILD_ARGS
       - name: Run benchmark target(s)
-        uses: tempoxyz/gh-actions/vendor/CodSpeedHQ/action@3626124474a987bc74b41fc7ae65b2e23f8e4e4e
+        uses: tempoxyz/gh-actions/vendor/CodSpeedHQ/action@58e2045a79b95e1867484a8e3cd28e7804d4cae1
         with:
           mode: ${{ steps.args.outputs.measurement_modes }}
           run: cargo codspeed run ${{ steps.args.outputs.run_args }}
