@@ -189,6 +189,13 @@ pub(super) struct Depths {
 
 /// The next convergence step toward the pending head, returned by
 /// [`NotarizedTree::next_to_forward`].
+#[cfg_attr(
+    not(test),
+    expect(
+        dead_code,
+        reason = "superseded by `next_to_deliver` and `next_head`; removed next"
+    )
+)]
 #[derive(Debug)]
 pub(super) enum NextToForward {
     /// Forward this block: a new-payload request followed by a forkchoice
@@ -199,6 +206,10 @@ pub(super) enum NextToForward {
     Repoint(Height, Digest),
 }
 
+#[expect(
+    dead_code,
+    reason = "superseded by `next_to_deliver` and `next_head`; removed next"
+)]
 impl NextToForward {
     /// The digest of the block the step converges the head onto.
     pub(super) fn digest(&self) -> Digest {
@@ -299,6 +310,10 @@ impl NotarizedTree {
     }
 
     /// Returns if `digest` is at the head or finalized tip of the tracked EL state.
+    #[expect(
+        dead_code,
+        reason = "superseded by `next_to_deliver` and `next_head`; removed next"
+    )]
     pub(super) fn is_local_notarized_or_finalized_tip(&self, digest: Digest) -> bool {
         self.local_head.1 == digest || self.local_finalized_tip.1 == digest
     }
@@ -308,28 +323,16 @@ impl NotarizedTree {
         self.local_head.1 == digest
     }
 
-    /// Whether convergence is expected to make `digest` known to the
-    /// execution layer imminently (or if the execution layer is already
-    /// converged).
-    ///
-    /// These are the conditions:
-    ///
-    /// 1. `digest` is the local finalized tip or head, or
-    /// 2. `digest` is the network finalized tip, and the network finalized
-    ///    tip is the next block to be delivered (known fact: marshal only
-    ///    delivers finalized tips if a certificate and block are available).
-    /// 3. `digest` is the pending head, its body is in hand, and it sits
-    ///    directly on a converged anchor - the local head, or the local
-    ///    finalized tip for a fork switch replayed from the tip. One
-    ///    forward step remains either way.
-    pub(super) fn converges_imminently(&self, digest: Digest) -> bool {
-        self.is_local_notarized_or_finalized_tip(digest)
+    /// Whether `digest` is the next thing convergence does: the head target
+    /// of the next forkchoice update, the next block to deliver, or the next
+    /// finalized block the marshal actor delivers.
+    pub(super) fn converges_imminently(&self, digest: Digest, now: SystemTime) -> bool {
+        self.next_head().is_some_and(|(_, head)| head == digest)
+            || self
+                .next_to_deliver(now)
+                .is_some_and(|block| block.digest() == digest)
             || (self.network_finalized_tip.2 == digest
-                && self.local_finalized_tip.0.next() == self.network_finalized_tip.1)
-            || (self.pending_head.digest == digest
-                && self.blocks.get(&digest).is_some_and(|entry| {
-                    self.is_local_notarized_or_finalized_tip(entry.block.parent_digest())
-                }))
+                && self.delivered_finalized.0.next() == self.network_finalized_tip.1)
     }
 
     /// Records an accepted forkchoice state. A finalized block the tree did
@@ -477,6 +480,13 @@ impl NotarizedTree {
     /// *NOTE:* This digest right now only works for the finalized tip.
     ///
     /// **FIXME:** Allow for repointing to any ancestor.
+    #[cfg_attr(
+        not(test),
+        expect(
+            dead_code,
+            reason = "superseded by `next_to_deliver` and `next_head`; removed next"
+        )
+    )]
     pub(super) fn next_to_forward(&self, now: SystemTime) -> Option<NextToForward> {
         if self.local_finalized_tip.0 < self.network_finalized_tip.1 {
             return None;
@@ -542,15 +552,12 @@ impl NotarizedTree {
 
 /// What the execution layer has, and the two walks that follow from it:
 /// the next block to deliver and the next block to make the head.
-#[cfg_attr(
-    not(test),
-    expect(
-        dead_code,
-        reason = "the scheduler switches from `next_to_forward` to these walks next"
-    )
-)]
 impl NotarizedTree {
     /// The block consensus reported building on: the convergence target.
+    #[cfg_attr(
+        not(test),
+        expect(dead_code, reason = "the build gate switches to the pending head next")
+    )]
     pub(super) fn pending_head(&self) -> Digest {
         self.pending_head.digest
     }
