@@ -37,7 +37,7 @@ pub(crate) fn no_state_kv_active() -> bool {
 
 pub(crate) fn flat_reads_enabled() -> bool {
     tempo_flatmpt::mode() == tempo_flatmpt::FlatMode::Root
-        && std::env::var("TEMPO_FLATMPT_READS").as_deref() == Ok("1")
+        && (no_state_kv_active() || std::env::var("TEMPO_FLATMPT_READS").as_deref() == Ok("1"))
 }
 
 /// Per-block flat-read context shared by the builder's provider and every
@@ -92,7 +92,7 @@ impl HashedKeyMemo {
 pub(crate) struct RevealFeed {
     pub sink: tempo_flatmpt::RevealSink,
     /// Lock-free probabilistic dedup of keys already handed over this block.
-    /// The previous Mutex<HashSet> stalled all ~30 prewarm workers together
+    /// The previous `Mutex<HashSet>` stalled all ~30 prewarm workers together
     /// whenever the 265k-entry set rehashed under the lock (5-10ms correlated
     /// stalls — the dispatch-latch trigger). A false positive only means the
     /// commitment worker fetches that one path itself.
@@ -320,7 +320,10 @@ impl StateProofProvider for FetchTimedProvider {
 }
 
 impl HashedPostStateProvider for FetchTimedProvider {
-    fn hashed_post_state(&self, bundle_state: &reth_revm::db::BundleState) -> HashedPostState {
+    fn hashed_post_state(
+        &self,
+        bundle_state: &reth_revm::db::BundleState,
+    ) -> ProviderResult<HashedPostState> {
         self.inner.hashed_post_state(bundle_state)
     }
 }
@@ -329,16 +332,16 @@ impl FlatReadProvider {
     /// Account point-read; when a reveal feed is attached and this is the
     /// first touch of `key`, the read's walk doubles as the reveal.
     fn read_account_rlp(&self, key: &B256) -> ProviderResult<Option<Vec<u8>>> {
-        if let Some(feed) = &self.shared.reveal {
-            if feed.sent_accounts.first(&key.0) {
-                let (value, nodes) = self
-                    .shared
-                    .snap
-                    .get_value_reveal(&key.0)
-                    .map_err(|e| other(anyhow::anyhow!("{e:#}")))?;
-                feed.sink.account(*key, nodes);
-                return Ok(value);
-            }
+        if let Some(feed) = &self.shared.reveal
+            && feed.sent_accounts.first(&key.0)
+        {
+            let (value, nodes) = self
+                .shared
+                .snap
+                .get_value_reveal(&key.0)
+                .map_err(|e| other(anyhow::anyhow!("{e:#}")))?;
+            feed.sink.account(*key, nodes);
+            return Ok(value);
         }
         self.shared
             .snap
@@ -347,23 +350,23 @@ impl FlatReadProvider {
     }
 
     fn read_storage_rlp(&self, acct: &B256, slot: &B256) -> ProviderResult<Option<Vec<u8>>> {
-        if let Some(feed) = &self.shared.reveal {
-            if feed.sent_slots.first(&{
+        if let Some(feed) = &self.shared.reveal
+            && feed.sent_slots.first(&{
                 let mut k = [0u8; 16];
                 k[..8].copy_from_slice(&acct.0[..8]);
                 k[8..].copy_from_slice(&slot.0[..8]);
                 k
-            }) {
-                let (value, nodes) = self
-                    .shared
-                    .snap
-                    .get_storage_reveal(&acct.0, &slot.0)
-                    .map_err(|e| other(anyhow::anyhow!("{e:#}")))?;
-                if let Some(nodes) = nodes {
-                    feed.sink.storage(*acct, *slot, nodes);
-                }
-                return Ok(value);
+            })
+        {
+            let (value, nodes) = self
+                .shared
+                .snap
+                .get_storage_reveal(&acct.0, &slot.0)
+                .map_err(|e| other(anyhow::anyhow!("{e:#}")))?;
+            if let Some(nodes) = nodes {
+                feed.sink.storage(*acct, *slot, nodes);
             }
+            return Ok(value);
         }
         self.shared
             .snap
@@ -524,7 +527,10 @@ impl StateProofProvider for FlatReadProvider {
 }
 
 impl HashedPostStateProvider for FlatReadProvider {
-    fn hashed_post_state(&self, bundle_state: &reth_revm::db::BundleState) -> HashedPostState {
+    fn hashed_post_state(
+        &self,
+        bundle_state: &reth_revm::db::BundleState,
+    ) -> ProviderResult<HashedPostState> {
         self.inner.hashed_post_state(bundle_state)
     }
 }

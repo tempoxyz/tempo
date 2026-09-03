@@ -203,8 +203,11 @@ impl StateProofProvider for InMemoryStateProvider {
     }
 }
 impl HashedPostStateProvider for InMemoryStateProvider {
-    fn hashed_post_state(&self, _bundle_state: &reth_revm::db::BundleState) -> HashedPostState {
-        HashedPostState::default()
+    fn hashed_post_state(
+        &self,
+        _bundle_state: &reth_revm::db::BundleState,
+    ) -> ProviderResult<HashedPostState> {
+        Ok(HashedPostState::default())
     }
 }
 

@@ -10,7 +10,7 @@
 //!   buffer stays ~2 GB. RAM-build spills between inserts.
 //!
 //!   MPT_RAM_BUILD_GIB=24 cargo run --release -p tempo-flatmpt \
-//!       --example build_golden -- <dump.bin> <out.flat>
+//!   --example build_golden -- <dump.bin> <out.flat>
 
 use alloy_primitives::{U256, keccak256};
 use mpt_flat_poc::{AccountSeed, Config, FlatMpt, Key};
