@@ -404,10 +404,6 @@ where
     TBlocker: Blocker<PublicKey = PublicKey> + Sync,
     TPeerManager: AddressableManager<PublicKey = PublicKey> + Sync,
 {
-    #[expect(
-        clippy::too_many_arguments,
-        reason = "following commonware's style of writing"
-    )]
     pub fn start(
         mut self,
         votes_network: (
@@ -448,10 +444,6 @@ where
         )
     }
 
-    #[expect(
-        clippy::too_many_arguments,
-        reason = "following commonware's style of writing"
-    )]
     async fn run(
         self,
         votes_channel: (
