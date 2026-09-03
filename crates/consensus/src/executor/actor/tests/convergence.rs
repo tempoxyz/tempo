@@ -83,6 +83,45 @@ fn missing_ancestor_bodies_are_fetched_and_forwarded_bottom_up() {
 }
 
 #[test_traced]
+fn long_delivery_runs_are_locked_in_every_few_blocks() {
+    deterministic::Runner::default().start(|context| async move {
+        let h = Harness::start_at_genesis(&context);
+
+        // Ten notarized blocks above genesis, all bodies fetched tip-down.
+        let mut blocks = Vec::new();
+        let mut parent = GENESIS;
+        for height in 1..=10 {
+            let block = make_block(height, height, parent);
+            parent = block.digest();
+            blocks.push(block);
+        }
+        let digests = blocks.iter().map(|b| b.digest()).collect::<Vec<_>>();
+        h.report_pending_head(11, 10, digests[9]);
+        for block in blocks.iter().rev() {
+            h.wait_until(|| {
+                h.marshal
+                    .fulfill_subscription(block.digest(), block.clone())
+            })
+            .await;
+        }
+
+        // The run is delivered bottom-up, with a forkchoice update forced
+        // after every eight deliveries so that the execution layer never
+        // holds more than that many uncanonicalized blocks.
+        h.wait_until(|| h.execution.head() == digests[9]).await;
+        assert_eq!(h.execution.new_payloads(), digests);
+        assert_eq!(
+            h.execution.fcus(),
+            vec![
+                STARTUP_FCU,
+                (digests[7], GENESIS, false),
+                (digests[9], GENESIS, false),
+            ],
+        );
+    });
+}
+
+#[test_traced]
 fn dropped_body_fetch_is_retried() {
     deterministic::Runner::default().start(|context| async move {
         let h = Harness::start_at_genesis(&context);
