@@ -421,9 +421,8 @@ where
         &self,
         metadata: &[SubBlockMetadata],
     ) -> Result<(), BlockValidationError> {
-        // T4 disabled subblocks and set the shared gas limit to zero. Reject any
-        // transaction that spilled into the former shared-gas incentive section
-        // without requiring the legacy validator set context.
+        // T4 sets the shared gas limit to zero, so any gas spilled into the
+        // incentive section exceeds the available block capacity.
         if self.evm().cfg.spec.is_t4() {
             if self.incentive_gas_used > 0 {
                 return Err(BlockValidationError::msg("incentive gas limit exceeded"));
