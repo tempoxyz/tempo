@@ -114,7 +114,7 @@ pub(super) fn built_payload(block: &Block) -> TempoBuiltPayload {
 /// Payload attributes for build requests; contents are irrelevant to the
 /// executor, which passes them through opaquely.
 pub(super) fn attributes() -> TempoPayloadAttributes {
-    TempoPayloadAttributes::new(None, 0, 0, Bytes::new(), None, Vec::new)
+    TempoPayloadAttributes::new(None, 0, 0, Bytes::new(), None)
 }
 
 /// A recorded engine-API call.

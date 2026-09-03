@@ -32,7 +32,7 @@ use crate::{
     dkg,
     epoch::{self, SchemeProvider},
     network::limit_channel,
-    peer_manager, storage, subblocks,
+    peer_manager, storage,
 };
 
 use super::block::Block;
@@ -77,10 +77,7 @@ pub struct Builder<TBlocker, TPeerManager> {
     /// The leader uses this window for payload building, local marshal
     /// persistence, and any final wait before returning the proposal.
     pub proposal_return_budget: Duration,
-    pub time_to_build_subblock: Duration,
-    pub subblock_broadcast_interval: Duration,
     pub fcu_heartbeat_interval: Duration,
-    pub with_subblocks: bool,
 
     pub feed_state: crate::feed::FeedStateHandle,
     pub gossip: Option<crate::gossip::Config>,
@@ -219,22 +216,6 @@ where
             priority_responses: false,
         };
 
-        let subblocks = self.with_subblocks.then(|| {
-            subblocks::Actor::new(subblocks::Config {
-                context: context.child("subblocks"),
-                signer: self.signer.clone(),
-                scheme_provider: scheme_provider.clone(),
-                node: execution_node.clone(),
-                // TODO: subblocks are currently dead; hardcode the recipient to
-                // zero until this is wired through V2 or the subblocks logic is
-                // replaced.
-                fee_recipient: alloy_primitives::Address::ZERO,
-                time_to_build_subblock: self.time_to_build_subblock,
-                subblock_broadcast_interval: self.subblock_broadcast_interval,
-                epoch_strategy: epoch_strategy.clone(),
-            })
-        });
-
         let (feed, feed_mailbox) = crate::feed::init(
             context.child("feed"),
             marshal_mailbox.clone(),
@@ -269,7 +250,6 @@ where
             execution_node: execution_node.clone(),
             executor: executor_mailbox.clone(),
             proposal_return_budget: self.proposal_return_budget,
-            subblocks: subblocks.as_ref().map(|s| s.mailbox()),
             scheme_provider: scheme_provider.clone(),
             epoch_strategy: epoch_strategy.clone(),
         })
@@ -287,7 +267,6 @@ where
                 time_for_peer_response: self.time_for_peer_response,
                 time_to_propose: self.time_to_propose,
                 mailbox_size: self.mailbox_size,
-                subblocks: subblocks.as_ref().map(|s| s.mailbox()),
                 marshal: marshal_mailbox.clone(),
                 scheme_provider: scheme_provider.clone(),
                 time_to_collect_notarizations: self.time_to_collect_notarizations,
@@ -344,8 +323,6 @@ where
             feed_mailbox,
             gossip_mailbox,
             gossip_actor,
-
-            subblocks,
         })
     }
 }
@@ -410,8 +387,6 @@ where
             crate::gossip::NetworkPeerControl,
         >,
     >,
-
-    subblocks: Option<subblocks::Actor<TContext>>,
 }
 
 impl<TContext, TBlocker, TPeerManager> Engine<TContext, TBlocker, TPeerManager>
@@ -459,10 +434,6 @@ where
             impl Sender<PublicKey = PublicKey>,
             impl Receiver<PublicKey = PublicKey>,
         ),
-        subblocks_channel: (
-            impl Sender<PublicKey = PublicKey>,
-            impl Receiver<PublicKey = PublicKey>,
-        ),
     ) -> Handle<eyre::Result<()>> {
         spawn_cell!(
             self.context,
@@ -473,7 +444,6 @@ where
                 broadcast_network,
                 marshal_network,
                 dkg_channel,
-                subblocks_channel,
             )
         )
     }
@@ -505,10 +475,6 @@ where
             impl Receiver<PublicKey = PublicKey>,
         ),
         dkg_channel: (
-            impl Sender<PublicKey = PublicKey>,
-            impl Receiver<PublicKey = PublicKey>,
-        ),
-        subblocks_channel: (
             impl Sender<PublicKey = PublicKey>,
             impl Receiver<PublicKey = PublicKey>,
         ),
@@ -550,13 +516,6 @@ where
             config::DKG_CHANNEL_IDENT,
             self.max_message_size,
         );
-        let subblocks_channel = limit_channel(
-            context,
-            subblocks_channel,
-            config::SUBBLOCKS_CHANNEL_IDENT,
-            self.max_message_size,
-        );
-
         let peer_manager = self.peer_manager.start();
 
         let broadcast = self.broadcast.start(broadcast_channel);
@@ -612,16 +571,6 @@ where
 
         if let Some(gossip_task) = gossip_task {
             tasks.push(gossip_task);
-        }
-
-        if let Some(subblocks) = self.subblocks {
-            tasks.push(
-                self.context
-                    .child("subblocks_channel")
-                    .spawn(|_| subblocks.run(subblocks_channel)),
-            );
-        } else {
-            drop(subblocks_channel);
         }
 
         try_join_all(tasks)

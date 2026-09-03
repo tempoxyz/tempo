@@ -22,7 +22,6 @@ pub const RESOLVER_CHANNEL_IDENT: commonware_p2p::Channel = 2;
 pub const BROADCASTER_CHANNEL_IDENT: commonware_p2p::Channel = 3;
 pub const MARSHAL_CHANNEL_IDENT: commonware_p2p::Channel = 4;
 pub const DKG_CHANNEL_IDENT: commonware_p2p::Channel = 5;
-pub const SUBBLOCKS_CHANNEL_IDENT: commonware_p2p::Channel = 6;
 
 pub(crate) const NUMBER_CONCURRENT_FETCHES: NonZeroUsize = NZUsize!(4);
 
@@ -39,7 +38,4 @@ pub const CERTIFICATES_LIMIT: Quota =
     Quota::per_second(NonZeroU32::new(128).expect("value is not zero"));
 pub const RESOLVER_LIMIT: Quota =
     Quota::per_second(NonZeroU32::new(128).expect("value is not zero"));
-pub const SUBBLOCKS_LIMIT: Quota =
-    Quota::per_second(NonZeroU32::new(128).expect("value is not zero"));
-
 pub const NAMESPACE: &[u8] = b"TEMPO";

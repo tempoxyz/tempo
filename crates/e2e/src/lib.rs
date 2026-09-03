@@ -141,9 +141,6 @@ pub struct Setup {
     /// Local proposal return budget, excluding the network propagation allowance.
     pub proposal_return_budget: Duration,
 
-    /// Whether to activate subblocks building.
-    pub with_subblocks: bool,
-
     /// The fee recipient written into the V2 contract for each validator.
     pub fee_recipient: Address,
 }
@@ -161,7 +158,6 @@ impl Setup {
             },
             epoch_length: 20,
             proposal_return_budget: Duration::from_millis(300),
-            with_subblocks: false,
             fee_recipient: Address::ZERO,
         }
     }
@@ -202,13 +198,6 @@ impl Setup {
         }
     }
 
-    pub fn subblocks(self, with_subblocks: bool) -> Self {
-        Self {
-            with_subblocks,
-            ..self
-        }
-    }
-
     pub fn fee_recipient(self, fee_recipient: Address) -> Self {
         Self {
             fee_recipient,
@@ -237,7 +226,6 @@ pub async fn setup_validators(
         how_many_verifiers,
         linkage,
         proposal_return_budget,
-        with_subblocks,
         fee_recipient,
         ..
     }: Setup,
@@ -296,7 +284,6 @@ pub async fn setup_validators(
             share,
             feed_state,
             proposal_return_budget,
-            with_subblocks,
             execution_runtime.handle(),
             execution_config,
             ingress,

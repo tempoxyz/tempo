@@ -56,7 +56,6 @@ use super::{
 use crate::{
     consensus::{Digest, block::Block},
     epoch::SchemeProvider,
-    subblocks,
     utils::OptionFuture,
 };
 
@@ -125,8 +124,6 @@ where
 
                 execution_node: config.execution_node,
                 executor: config.executor,
-
-                subblocks: config.subblocks,
 
                 scheme_provider: config.scheme_provider,
                 validation_latency_estimator: Default::default(),
@@ -230,7 +227,6 @@ struct Inner<TState> {
 
     execution_node: Arc<TempoFullNode>,
     executor: crate::executor::Mailbox,
-    subblocks: Option<subblocks::Mailbox>,
     scheme_provider: SchemeProvider,
     validation_latency_estimator: Arc<Mutex<ValidationLatencyEstimator>>,
 
@@ -575,7 +571,6 @@ impl Inner<Init> {
             proposer: crate::utils::public_key_to_tempo_primitive(&leader),
         });
 
-        let parent_hash = parent.block_hash();
         let proposer_public_key = crate::utils::public_key_to_b256(&self.public_key);
         let marshal_persist = marshal_persist_estimate();
         // Give the builder only the proposal window that remains when payload
@@ -595,12 +590,6 @@ impl Inner<Init> {
             timestamp_millis_part,
             extra_data,
             consensus_context,
-            move || {
-                self.subblocks
-                    .as_ref()
-                    .and_then(|s| s.get_subblocks(parent_hash).ok())
-                    .unwrap_or_default()
-            },
         )
         .with_payload_build_budget(build_budget)
         .with_validation_latency_estimate(validation_latency_estimate);
@@ -808,7 +797,6 @@ impl Inner<Uninit> {
                 dkg_manager,
                 executor: self.executor.clone(),
             },
-            subblocks: self.subblocks,
             scheme_provider: self.scheme_provider,
             validation_latency_estimator: self.validation_latency_estimator,
             metrics: self.metrics,
