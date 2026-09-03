@@ -87,6 +87,13 @@ use notarized_tree::{LocalState, NotarizedTree};
 /// How often to probe whether the execution layer is ready to process blocks.
 const EXECUTION_LAYER_READY_POLL_INTERVAL: Duration = Duration::from_secs(1);
 
+/// How many `VALID` new-payload answers - validations, notarized and
+/// finalized deliveries alike - are collected before a forkchoice update is
+/// forced. The execution layer persists and prunes relative to its
+/// canonical head, so blocks delivered ahead of the update that
+/// canonicalizes them stay in memory.
+const DELIVERIES_PER_FORKCHOICE_UPDATE: usize = 8;
+
 pub(crate) struct Actor<TContext, TExecutionLayer, TMarshal> {
     context: ContextCell<TContext>,
 
@@ -122,6 +129,10 @@ pub(crate) struct Actor<TContext, TExecutionLayer, TMarshal> {
     /// forkchoice update that finalizes them before they are acknowledged
     /// to the marshal actor. In height order.
     pending_acknowledgements: VecDeque<FinalizedBlockRequest>,
+
+    /// Blocks delivered since the last forkchoice update, see
+    /// [`DELIVERIES_PER_FORKCHOICE_UPDATE`].
+    deliveries_since_forkchoice: usize,
 
     /// The latest not-yet-started consensus request - validating a proposed
     /// block or building one - keyed by its round. The two kinds share one
@@ -318,6 +329,7 @@ where
 
             pending_finalizations: VecDeque::new(),
             pending_acknowledgements: VecDeque::new(),
+            deliveries_since_forkchoice: 0,
             pending_consensus_request: None,
 
             execution_task: OptionFuture::none(),
@@ -528,6 +540,7 @@ where
         let verdict = match status {
             Ok((PayloadStatusEnum::Valid, duration)) => {
                 self.notarized_tree.mark_delivered(&digest);
+                self.deliveries_since_forkchoice += 1;
                 Some(duration)
             }
             Ok((PayloadStatusEnum::Invalid { validation_error }, _)) => {
@@ -646,6 +659,7 @@ where
         match status {
             Ok(PayloadStatusEnum::Valid) => {
                 self.notarized_tree.mark_delivered(&digest);
+                self.deliveries_since_forkchoice += 1;
                 Ok(())
             }
             Ok(status) => {
@@ -707,6 +721,7 @@ where
 
         self.notarized_tree
             .set_delivered_finalized(block.height(), block.digest());
+        self.deliveries_since_forkchoice += 1;
         if block.height() <= self.notarized_tree.local_state().finalized.0 {
             // NOTE: this block is already final on the execution layer. This
             // can happen if marshal is anchored below the EL and delivers
@@ -810,8 +825,9 @@ where
 
     /// Climbs from the tracked finalized state to the finalized floor
     /// before entering the loop, through the regular finalization tasks
-    /// and their outcome handling, awaited in place. One forkchoice update
-    /// at the floor finalizes the delivered blocks.
+    /// and their outcome handling, awaited in place. Every
+    /// [`DELIVERIES_PER_FORKCHOICE_UPDATE`] delivered blocks, and at the
+    /// floor, a forkchoice update finalizes them.
     #[instrument(skip_all, err)]
     async fn backfill_to_finalized_floor(&mut self) -> eyre::Result<()> {
         let start = self.notarized_tree.local_state().finalized.0.get() + 1;
@@ -851,7 +867,10 @@ where
                     )
                 })?;
 
-            if height == end && self.start_forkchoice_update()? {
+            if (self.deliveries_since_forkchoice >= DELIVERIES_PER_FORKCHOICE_UPDATE
+                || height == end)
+                && self.start_forkchoice_update()?
+            {
                 let finished = (&mut self.execution_task).await;
                 self.handle_execution_task_finished(finished)
                     .wrap_err_with(|| {
@@ -1057,9 +1076,10 @@ where
                 .converges_imminently(digest, self.context.current())
     }
 
-    /// Picks the next execution task: consensus request, finalized
-    /// deliveries, the forkchoice update finalizing them, notarized
-    /// deliveries, the forkchoice update moving the head. Finality goes
+    /// Picks the next execution task: consensus request, the forkchoice
+    /// update forced by a long run of deliveries, finalized deliveries, the
+    /// forkchoice update finalizing them, notarized deliveries, the
+    /// forkchoice update moving the head. Finality goes
     /// first so a long notarized run never holds up acknowledgements;
     /// deliveries go before the update so one update covers a whole run.
     #[instrument(
@@ -1134,6 +1154,14 @@ where
             None => {}
         }
 
+        // Too many blocks delivered since the last forkchoice update: lock
+        // them in before delivering more.
+        if self.deliveries_since_forkchoice >= DELIVERIES_PER_FORKCHOICE_UPDATE
+            && self.start_forkchoice_update()?
+        {
+            return Ok(());
+        }
+
         // Finalizations are delivered in order and acknowledged so that the
         // marshal actor can make progress. Every finalized block is
         // delivered, whether or not the execution layer is thought to know
@@ -1166,6 +1194,9 @@ where
     /// Starts the forkchoice update onto the next target, if any; returns
     /// whether it did.
     fn start_forkchoice_update(&mut self) -> eyre::Result<bool> {
+        // Whatever was delivered is either covered by the update below or
+        // cannot be canonicalized by any update.
+        self.deliveries_since_forkchoice = 0;
         let Some(target) = self.next_forkchoice_target()? else {
             return Ok(false);
         };
