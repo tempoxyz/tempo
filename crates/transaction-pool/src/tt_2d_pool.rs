@@ -40,6 +40,10 @@ type PoolUpdateResult = (
     Vec<Arc<ValidPoolTransaction<TempoPooledTransaction>>>,
     Vec<Arc<ValidPoolTransaction<TempoPooledTransaction>>>,
 );
+type AddTransactionResult = (
+    AddedTransaction<TempoPooledTransaction>,
+    Vec<Arc<ValidPoolTransaction<TempoPooledTransaction>>>,
+);
 type StateUpdateResult = (
     Vec<Arc<ValidPoolTransaction<TempoPooledTransaction>>>,
     Vec<Arc<ValidPoolTransaction<TempoPooledTransaction>>>,
@@ -225,6 +229,16 @@ impl AA2dPool {
         on_chain_nonce: u64,
         hardfork: tempo_chainspec::hardfork::TempoHardfork,
     ) -> PoolResult<AddedTransaction<TempoPooledTransaction>> {
+        self.add_transaction_with_queued_discarded(transaction, on_chain_nonce, hardfork)
+            .map(|(added, _)| added)
+    }
+
+    pub(crate) fn add_transaction_with_queued_discarded(
+        &mut self,
+        transaction: Arc<ValidPoolTransaction<TempoPooledTransaction>>,
+        on_chain_nonce: u64,
+        hardfork: tempo_chainspec::hardfork::TempoHardfork,
+    ) -> PoolResult<AddTransactionResult> {
         debug_assert!(
             transaction.transaction.is_aa(),
             "only AA transactions are supported"
@@ -235,7 +249,9 @@ impl AA2dPool {
         // No `by_hash` duplicate check needed here: a duplicate transaction maps to the same
         // expiring nonce hash, which `add_expiring_nonce_transaction` rejects.
         if hardfork.is_t1() && transaction.transaction.is_expiring_nonce() {
-            return self.add_expiring_nonce_transaction(transaction);
+            return self
+                .add_expiring_nonce_transaction(transaction)
+                .map(|added| (added, Vec::new()));
         }
 
         if self.contains(transaction.hash()) {
@@ -431,23 +447,28 @@ impl AA2dPool {
                 self.notify_new_pending(promoted_tx);
             }
 
-            return Ok(AddedTransaction::Pending(AddedPendingTransaction {
-                transaction,
-                replaced: replaced.map(|tx| tx.inner.transaction.clone()),
-                promoted: promoted.into_iter().map(|tx| tx.transaction).collect(),
-                discarded: self.discard(),
-            }));
+            return Ok((
+                AddedTransaction::Pending(AddedPendingTransaction {
+                    transaction,
+                    replaced: replaced.map(|tx| tx.inner.transaction.clone()),
+                    promoted: promoted.into_iter().map(|tx| tx.transaction).collect(),
+                    discarded: self.discard(),
+                }),
+                Vec::new(),
+            ));
         }
 
-        // Call discard for queued transactions too
-        let _ = self.discard();
+        let discarded = self.discard();
 
-        Ok(AddedTransaction::Parked {
-            transaction,
-            replaced: replaced.map(|tx| tx.inner.transaction.clone()),
-            subpool: SubPool::Queued,
-            queued_reason: Some(QueuedReason::NonceGap),
-        })
+        Ok((
+            AddedTransaction::Parked {
+                transaction,
+                replaced: replaced.map(|tx| tx.inner.transaction.clone()),
+                subpool: SubPool::Queued,
+                queued_reason: Some(QueuedReason::NonceGap),
+            },
+            discarded,
+        ))
     }
 
     /// Adds an expiring nonce transaction to the pool.
