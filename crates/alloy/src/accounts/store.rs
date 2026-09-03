@@ -2300,7 +2300,7 @@ fn stored_access_key(key: &PersistedAccessKey) -> Result<TempoStoredAccessKey, T
         validate_authorization_for_account(key.access, authorization).map_err(|reason| {
             TempoAccountsError::InvalidAccessKey {
                 address: key.address,
-                reason: reason.into(),
+                reason,
             }
         })?;
     }
