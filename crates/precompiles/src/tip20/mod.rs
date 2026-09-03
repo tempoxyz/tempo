@@ -194,9 +194,13 @@ impl TIP20Token {
 
     /// Returns the TIP-403 transfer policy ID governing this token's transfers.
     pub fn transfer_policy_id(&self) -> Result<u64> {
+        self.transfer_policy_id_with(&TIP403Registry::new())
+    }
+
+    /// Same as [`Self::transfer_policy_id`] using an already constructed registry handle.
+    pub(crate) fn transfer_policy_id_with(&self, registry: &TIP403Registry) -> Result<u64> {
         if StorageCtx.spec().is_t9()
-            && let Some(policy_id) =
-                TIP403Registry::new().registered_token_transfer_policy_id(self.address)?
+            && let Some(policy_id) = registry.registered_token_transfer_policy_id(self.address)?
         {
             return Ok(policy_id);
         }
@@ -1083,7 +1087,10 @@ impl TIP20Token {
         let to = Recipient::resolve(to)?;
         self.check_not_paused()?;
         to.validate()?;
-        self.ensure_transfer_authorized(from, to.target)?;
+        // One registry handle serves the policy lookup, the authorization checks and the receive
+        // policy check instead of rebuilding it (and its mapping caches) three times.
+        let registry = TIP403Registry::new();
+        self.ensure_transfer_authorized_with(&registry, from, to.target)?;
 
         if let Some(spender) = spender {
             self.consume_allowance(from, spender, amount)?;
@@ -1091,7 +1098,7 @@ impl TIP20Token {
             self.check_and_update_spending_limit(from, amount)?;
         }
 
-        if self.validate_inbound_or_block(from, &to, amount, None, memo)? {
+        if self.validate_inbound_or_block_with(&registry, from, &to, amount, None, memo)? {
             return Ok(None);
         }
 
@@ -1121,15 +1128,23 @@ impl TIP20Token {
         }
 
         // Check if the resolved target address is authorized to receive minted tokens
-        if !TIP403Registry::new().is_authorized_as(
-            self.transfer_policy_id()?,
+        let registry = TIP403Registry::new();
+        if !registry.is_authorized_as(
+            self.transfer_policy_id_with(&registry)?,
             to.target,
             AuthRole::mint_recipient(),
         )? {
             return Err(TIP20Error::policy_forbids().into());
         }
 
-        if self.validate_inbound_or_block(msg_sender, &to, amount, Some(total_supply), memo)? {
+        if self.validate_inbound_or_block_with(
+            &registry,
+            msg_sender,
+            &to,
+            amount,
+            Some(total_supply),
+            memo,
+        )? {
             return Ok(None);
         }
 
@@ -1141,8 +1156,17 @@ impl TIP20Token {
     ///
     /// [TIP-1015]: <https://docs.tempo.xyz/protocol/tips/tip-1015>
     pub fn is_transfer_authorized(&self, from: Address, to: Address) -> Result<bool> {
-        let policy_id = self.transfer_policy_id()?;
-        let registry = TIP403Registry::new();
+        self.is_transfer_authorized_with(&TIP403Registry::new(), from, to)
+    }
+
+    /// Same as [`Self::is_transfer_authorized`] using an already constructed registry handle.
+    pub(crate) fn is_transfer_authorized_with(
+        &self,
+        registry: &TIP403Registry,
+        from: Address,
+        to: Address,
+    ) -> Result<bool> {
+        let policy_id = self.transfer_policy_id_with(registry)?;
 
         // (spec: +T2) short-circuit and skip recipient check if sender fails
         let sender_auth = registry.is_authorized_as(policy_id, from, AuthRole::sender())?;
@@ -1158,7 +1182,17 @@ impl TIP20Token {
     /// # Errors
     /// - `PolicyForbids` — sender or recipient is not authorized by the active transfer policy
     pub fn ensure_transfer_authorized(&self, from: Address, to: Address) -> Result<()> {
-        if !self.is_transfer_authorized(from, to)? {
+        self.ensure_transfer_authorized_with(&TIP403Registry::new(), from, to)
+    }
+
+    /// Same as [`Self::ensure_transfer_authorized`] using an already constructed registry handle.
+    pub(crate) fn ensure_transfer_authorized_with(
+        &self,
+        registry: &TIP403Registry,
+        from: Address,
+        to: Address,
+    ) -> Result<()> {
+        if !self.is_transfer_authorized_with(registry, from, to)? {
             return Err(TIP20Error::policy_forbids().into());
         }
 
@@ -1242,6 +1276,26 @@ impl TIP20Token {
         mint_total_supply: Option<U256>,
         memo: B256,
     ) -> Result<bool> {
+        self.validate_inbound_or_block_with(
+            &TIP403Registry::new(),
+            originator,
+            to,
+            amount,
+            mint_total_supply,
+            memo,
+        )
+    }
+
+    /// Same as [`Self::validate_inbound_or_block`] using an already constructed registry handle.
+    pub(crate) fn validate_inbound_or_block_with(
+        &mut self,
+        registry: &TIP403Registry,
+        originator: Address,
+        to: &Recipient,
+        amount: U256,
+        mint_total_supply: Option<U256>,
+        memo: B256,
+    ) -> Result<bool> {
         if !self.storage.spec().is_t6() {
             return Ok(false);
         }
@@ -1251,7 +1305,7 @@ impl TIP20Token {
 
         let token = self.address;
         let Some((reason, recovery)) =
-            TIP403Registry::new().check_receive_policy(token, originator, to.target)?
+            registry.check_receive_policy(token, originator, to.target)?
         else {
             return Ok(false);
         };
