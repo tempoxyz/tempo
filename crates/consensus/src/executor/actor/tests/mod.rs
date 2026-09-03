@@ -1,12 +1,12 @@
 use alloy_primitives::B256;
-use commonware_consensus::types::{Height, Round};
+use commonware_consensus::types::Round;
 use futures::executor::block_on;
 
 use commonware_consensus::Heightable as _;
 
 use super::{
     ConsensusRequest, ExecutionTask, ExecutionTaskOutcome, ExecutionTaskType, VerifyBlockRequest,
-    notarized_tree::LocalState, queue_consensus_request,
+    queue_consensus_request,
 };
 use crate::consensus::Digest;
 
@@ -25,27 +25,20 @@ use harness::{make_block, round};
 
 #[test]
 fn execution_task_finishes_with_an_outcome() {
-    let state = LocalState {
-        head: (Height::new(1), Digest(B256::repeat_byte(1))),
-        finalized: (Height::new(0), Digest(B256::ZERO)),
-    };
     let mut task = ExecutionTask::new(
         ExecutionTaskType::Verify,
-        state,
-        futures::future::ready(ExecutionTaskOutcome::Completed {
-            canonicalized: None,
-            payload_job: None,
+        futures::future::ready(ExecutionTaskOutcome::Validated {
+            request: None,
+            status: Err(eyre::eyre!("abandoned")),
         }),
     );
 
     assert!(matches!(task.task_type, ExecutionTaskType::Verify));
-    assert_eq!(task.on_top_of, state);
     let finished = block_on(&mut task);
     assert!(matches!(finished.task_type, ExecutionTaskType::Verify));
-    assert_eq!(finished.on_top_of, state);
     assert!(matches!(
         finished.outcome,
-        ExecutionTaskOutcome::Completed { .. }
+        ExecutionTaskOutcome::Validated { request: None, .. }
     ));
 }
 
