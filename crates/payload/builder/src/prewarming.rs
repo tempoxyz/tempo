@@ -1,7 +1,10 @@
-use std::sync::{
-    Arc,
-    atomic::{AtomicBool, Ordering},
-    mpsc::{self, Receiver, Sender},
+use std::{
+    sync::{
+        Arc,
+        atomic::{AtomicBool, Ordering},
+        mpsc::{self, Receiver, Sender},
+    },
+    time::{Duration, Instant},
 };
 
 use alloy_primitives::B256;
@@ -17,6 +20,8 @@ use tempo_evm::{ExpiringNonceReplay, StorageActionReplay, TempoEvmConfig, evm::T
 use tempo_transaction_pool::{StateAwarePoolTransaction, best::BestTransaction};
 use tracing::{instrument, trace};
 
+use crate::metrics::TempoPayloadBuilderMetrics;
+
 pub(crate) type PrewarmEvmState = Option<TempoEvm<StateProviderDatabase<StateProviderBox>>>;
 
 /// Prewarming orchestrator that consumes source [`BestTransactions`] with bounded
@@ -27,6 +32,10 @@ pub(crate) struct BestTransactionsPrewarming {
     transactions_rx: Receiver<Option<PrewarmedTransaction>>,
     commands_tx: Sender<BestTransactionsCommand>,
     stop: Arc<AtomicBool>,
+    metrics: TempoPayloadBuilderMetrics,
+    blocking_receive_elapsed: Duration,
+    blocking_receives: u64,
+    empty_results: u64,
 }
 
 impl BestTransactionsPrewarming {
@@ -45,6 +54,10 @@ impl BestTransactionsPrewarming {
             transactions_rx,
             commands_tx: commands_tx.clone(),
             stop: prewarm.stop.clone(),
+            metrics: prewarm.metrics.clone(),
+            blocking_receive_elapsed: Duration::ZERO,
+            blocking_receives: 0,
+            empty_results: 0,
         };
 
         let prewarm_executor = prewarm.executor();
@@ -248,6 +261,15 @@ impl BestTransactionsPrewarming {
 
 impl Drop for BestTransactionsPrewarming {
     fn drop(&mut self) {
+        self.metrics
+            .prewarm_iterator_blocking_receive_duration_seconds
+            .record(self.blocking_receive_elapsed);
+        self.metrics
+            .prewarm_iterator_blocking_receives
+            .record(self.blocking_receives as f64);
+        self.metrics
+            .prewarm_iterator_empty_results
+            .record(self.empty_results as f64);
         self.stop.store(true, Ordering::Relaxed);
         // Move buffered transaction cleanup to the prewarm coordinator instead of this builder thread.
         let (_drain_tx, replacement_rx) = mpsc::channel();
@@ -262,13 +284,22 @@ impl Iterator for BestTransactionsPrewarming {
     type Item = PrewarmedTransaction;
 
     fn next(&mut self) -> Option<Self::Item> {
-        if let Ok(Some(tx)) = self.transactions_rx.try_recv() {
-            return Some(tx);
+        match self.transactions_rx.try_recv() {
+            Ok(Some(tx)) => return Some(tx),
+            Ok(None) => self.empty_results += 1,
+            Err(_) => {}
         }
         self.commands_tx
             .send(BestTransactionsCommand::Advance)
             .ok()?;
-        self.transactions_rx.recv().ok().flatten()
+        let start = Instant::now();
+        let result = self.transactions_rx.recv().ok().flatten();
+        self.blocking_receive_elapsed += start.elapsed();
+        self.blocking_receives += 1;
+        if result.is_none() {
+            self.empty_results += 1;
+        }
+        result
     }
 }
 
@@ -336,6 +367,7 @@ pub(crate) struct PrewarmingExecutionContext<Provider> {
     evm_env: EvmEnvFor<TempoEvmConfig>,
     stop: Arc<AtomicBool>,
     parallel: bool,
+    metrics: TempoPayloadBuilderMetrics,
 }
 
 impl<Provider> PrewarmingExecutionContext<Provider>
@@ -349,6 +381,7 @@ where
         parent_hash: B256,
         evm_env: EvmEnvFor<TempoEvmConfig>,
         parallel: bool,
+        metrics: TempoPayloadBuilderMetrics,
     ) -> Self {
         Self {
             provider,
@@ -358,13 +391,18 @@ where
             evm_env,
             stop: Arc::new(AtomicBool::new(false)),
             parallel,
+            metrics,
         }
     }
 
     pub(crate) fn evm_for_ctx(&self) -> PrewarmEvmState {
+        let start = Instant::now();
         let mut state_provider = match self.provider.state_by_block_hash(self.parent_hash) {
             Ok(provider) => provider,
             Err(err) => {
+                self.metrics
+                    .prewarm_state_provider_setup_duration_seconds
+                    .record(start.elapsed());
                 trace!(
                     target: "payload_builder",
                     %err,
@@ -374,6 +412,9 @@ where
                 return None;
             }
         };
+        self.metrics
+            .prewarm_state_provider_setup_duration_seconds
+            .record(start.elapsed());
 
         if let Some(cache) = &self.cache {
             state_provider = Box::new(CachedStateProvider::new_prewarm(
@@ -714,6 +755,7 @@ mod tests {
             evm_env,
             stop: Arc::default(),
             parallel,
+            metrics: TempoPayloadBuilderMetrics::default(),
         }
     }
 

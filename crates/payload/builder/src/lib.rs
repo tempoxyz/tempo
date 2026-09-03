@@ -607,6 +607,7 @@ where
             parent_header.hash(),
             executor.evm().evm_env(),
             self.config.enable_parallel,
+            self.metrics.clone(),
         );
         let mut best_txs = if self.config.enable_prewarming {
             if self.config.enable_parallel {

@@ -88,6 +88,14 @@ pub(crate) struct TempoPayloadBuilderMetrics {
     pub(crate) total_normal_transaction_fill_duration_seconds: Histogram,
     /// Time spent waiting for more normal transactions during block fill.
     pub(crate) normal_transaction_fill_idle_duration_seconds: Histogram,
+    /// Time spent blocking for prewarmed transactions during a payload build.
+    pub(crate) prewarm_iterator_blocking_receive_duration_seconds: Histogram,
+    /// Number of blocking receives from the prewarming iterator during a payload build.
+    pub(crate) prewarm_iterator_blocking_receives: Histogram,
+    /// Number of empty results observed from the prewarming iterator during a payload build.
+    pub(crate) prewarm_iterator_empty_results: Histogram,
+    /// Time to create a state provider for a prewarming worker.
+    pub(crate) prewarm_state_provider_setup_duration_seconds: Histogram,
     /// Total wall-clock time spent in transaction execution phases.
     pub(crate) total_transaction_execution_duration_seconds: Histogram,
     /// The time it took to execute subblock transactions in seconds.
