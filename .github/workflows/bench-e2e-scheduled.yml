@@ -175,6 +175,8 @@ jobs:
       run-type: ${{ matrix.run_type }}
       run-pairs: "1"
       clickhouse-run: feature-1
+      baseline-env: ${{ matrix.run_type == 'nightly' && 'RETH_ENGINE_PERSISTENCE_THRESHOLD=50 RETH_ENGINE_NUM_STATE_MASKING_BLOCKS=40' || '' }}
+      feature-env: ${{ matrix.run_type == 'nightly' && 'RETH_ENGINE_PERSISTENCE_THRESHOLD=50 RETH_ENGINE_NUM_STATE_MASKING_BLOCKS=40' || '' }}
       samply: ${{ github.event_name == 'workflow_dispatch' && inputs.samply && 'true' || 'false' }}
     secrets:
       TEMPO_TELEMETRY_URL: ${{ secrets.TEMPO_TELEMETRY_URL }}
