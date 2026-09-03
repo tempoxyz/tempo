@@ -33,8 +33,6 @@ use std::{
     time::{Duration, Instant},
 };
 
-use alloy_primitives::B256;
-
 use alloy_rpc_types_engine::{PayloadId, PayloadStatusEnum};
 use commonware_consensus::{
     Heightable as _,
@@ -629,7 +627,6 @@ where
                 let VerifyBlock {
                     round,
                     block,
-                    validator_set,
                     response,
                 } = *request;
                 // Keep the block body around even if this request is aborted:
@@ -642,7 +639,6 @@ where
                     ConsensusRequest::Verify(VerifyBlockRequest {
                         cause,
                         block,
-                        validator_set,
                         response,
                     }),
                 );
@@ -828,7 +824,7 @@ where
 
         if let Some(step) = self.notarized_tree.next_to_forward(self.context.current()) {
             let on_top_of = self.notarized_tree.local_state();
-            let fut = execute_notarization(self.execution_node.clone(), on_top_of, step, None);
+            let fut = execute_notarization(self.execution_node.clone(), on_top_of, step);
             self.set_execution_task(ExecutionTask::new(
                 ExecutionTaskType::Notarize,
                 on_top_of,
@@ -977,7 +973,6 @@ fn queue_consensus_request(
 struct VerifyBlockRequest {
     cause: Span,
     block: Arc<Block>,
-    validator_set: Option<Vec<B256>>,
     /// Delivers the validation result: `Some(duration)` when the execution
     /// layer accepted the block, `None` when it rejected it. Dropped without
     /// a value when validation was not possible or the request was
@@ -1262,12 +1257,11 @@ async fn execute_notarization(
     execution_node: impl ExecutionLayer,
     on_top_of: LocalState,
     step: NextToForward,
-    validator_set: Option<Vec<B256>>,
 ) -> ExecutionTaskOutcome {
     let digest = step.digest();
     let is_repoint = matches!(step, NextToForward::Repoint(..));
     let target = on_top_of.update_head(step.height(), digest);
-    match forward_notarized(execution_node, on_top_of, target, step, validator_set).await {
+    match forward_notarized(execution_node, on_top_of, target, step).await {
         Ok(canonicalized) => ExecutionTaskOutcome::Completed {
             canonicalized: Some(canonicalized),
             payload_job: None,
@@ -1314,11 +1308,10 @@ async fn execute_validation(
     let VerifyBlockRequest {
         cause: _,
         block,
-        validator_set,
         mut response,
     } = request;
 
-    let work = validate_block(&execution_node, block, validator_set);
+    let work = validate_block(&execution_node, block);
     futures::pin_mut!(work);
 
     let result = select! {
@@ -1371,7 +1364,6 @@ async fn execute_validation(
 async fn validate_block(
     execution_node: &impl ExecutionLayer,
     block: Arc<Block>,
-    validator_set: Option<Vec<B256>>,
 ) -> eyre::Result<Option<Duration>> {
     use alloy_rpc_types_engine::PayloadStatusEnum;
 
@@ -1381,7 +1373,7 @@ async fn validate_block(
         .new_payload(TempoExecutionData {
             block,
             block_access_list,
-            validator_set,
+            validator_set: None,
         })
         .await
         .wrap_err("failed sending new-payload request to execution layer to validate block")?;
@@ -1719,7 +1711,6 @@ async fn forward_notarized(
     on_top_of: LocalState,
     target: LocalState,
     step: NextToForward,
-    validator_set: Option<Vec<B256>>,
 ) -> eyre::Result<LocalState> {
     if let NextToForward::Block(block) = step {
         let (block, block_access_list) = Arc::unwrap_or_clone(block).into_parts();
@@ -1727,7 +1718,7 @@ async fn forward_notarized(
             .new_payload(TempoExecutionData {
                 block,
                 block_access_list,
-                validator_set,
+                validator_set: None,
             })
             .await
             .wrap_err(

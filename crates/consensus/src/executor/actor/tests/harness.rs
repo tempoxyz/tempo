@@ -240,8 +240,6 @@ struct FakeExecutionInner {
     /// digest present in it must not receive more calls than scripted.
     /// A scripted `Ok(Valid)` still marks the block as known to the execution layer.
     payload_overrides: ScriptedResults<B256, ScriptedResult<PayloadStatusEnum>>,
-    /// Validator sets received with new-payload requests, keyed by block hash.
-    payload_validator_sets: Mutex<Vec<(Digest, Option<Vec<B256>>)>>,
     /// Payload attributes received with forkchoice-update requests.
     payload_attributes: Mutex<Vec<TempoPayloadAttributes>>,
     /// Complete FCU outcome sequences keyed by forkchoice state. An absent
@@ -314,7 +312,6 @@ impl FakeExecution {
                 }),
                 calls: Mutex::new(Vec::new()),
                 payload_overrides: ScriptedResults::new(),
-                payload_validator_sets: Mutex::new(Vec::new()),
                 payload_attributes: Mutex::new(Vec::new()),
                 fcu_overrides: ScriptedResults::new(),
                 canonical_hash_overrides: ScriptedResults::new(),
@@ -497,10 +494,6 @@ impl FakeExecution {
             .collect()
     }
 
-    pub(super) fn payload_validator_sets(&self) -> Vec<(Digest, Option<Vec<B256>>)> {
-        self.inner.payload_validator_sets.lock().clone()
-    }
-
     pub(super) fn payload_attributes(&self) -> Vec<TempoPayloadAttributes> {
         self.inner.payload_attributes.lock().clone()
     }
@@ -626,7 +619,6 @@ impl ExecutionLayer for FakeExecution {
         &self,
         payload: TempoExecutionData,
     ) -> impl Future<Output = eyre::Result<PayloadStatus>> + Send + 'static {
-        let validator_set = payload.validator_set.clone();
         let block = Block::from_execution_block_unchecked(payload.block, None);
         let (digest, height, parent) = (
             block.digest().0,
@@ -634,10 +626,6 @@ impl ExecutionLayer for FakeExecution {
             block.parent_digest().0,
         );
         self.record(ElCall::NewPayload(Digest(digest)));
-        self.inner
-            .payload_validator_sets
-            .lock()
-            .push((Digest(digest), validator_set));
         let scripted_result = match self.inner.payload_overrides.next_scripted(&digest) {
             NextScriptedResult::Scripted(result) => Some(result),
             NextScriptedResult::Unscripted => None,
@@ -1124,17 +1112,8 @@ where
         round: Round,
         block: Block,
     ) -> impl Future<Output = eyre::Result<Option<Duration>>> + use<TContext> {
-        self.verify_with_validator_set(round, block, None)
-    }
-
-    pub(super) fn verify_with_validator_set(
-        &self,
-        round: Round,
-        block: Block,
-        validator_set: Option<Vec<B256>>,
-    ) -> impl Future<Output = eyre::Result<Option<Duration>>> + use<TContext> {
         let mailbox = self.mailbox.clone();
-        async move { mailbox.verify_block(round, block, validator_set).await }
+        async move { mailbox.verify_block(round, block).await }
     }
 
     /// Requests a proposal build on top of `parent`, returning the payload

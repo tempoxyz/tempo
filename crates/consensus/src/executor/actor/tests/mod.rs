@@ -58,7 +58,6 @@ fn consensus_requests_from_stale_rounds_are_dropped() {
         ConsensusRequest::Verify(VerifyBlockRequest {
             cause: tracing::Span::none(),
             block: make_block(view, height, Digest(B256::ZERO)).into(),
-            validator_set: None,
             response,
         })
     }

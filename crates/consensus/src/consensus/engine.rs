@@ -250,7 +250,6 @@ where
             execution_node: execution_node.clone(),
             executor: executor_mailbox.clone(),
             proposal_return_budget: self.proposal_return_budget,
-            scheme_provider: scheme_provider.clone(),
             epoch_strategy: epoch_strategy.clone(),
         })
         .await

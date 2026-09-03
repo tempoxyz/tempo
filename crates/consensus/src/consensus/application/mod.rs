@@ -19,8 +19,6 @@ mod ingress;
 pub(super) use actor::Actor;
 pub(crate) use ingress::Mailbox;
 
-use crate::epoch::SchemeProvider;
-
 pub(super) async fn init<TContext>(
     config: Config<TContext>,
 ) -> eyre::Result<(Actor<TContext>, Mailbox)>
@@ -63,7 +61,4 @@ pub(super) struct Config<TContext> {
 
     /// The epoch strategy used by tempo, to map block heights to epochs.
     pub(super) epoch_strategy: FixedEpocher,
-
-    /// The scheme provider to use for the application.
-    pub(crate) scheme_provider: SchemeProvider,
 }
