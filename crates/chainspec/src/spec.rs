@@ -926,13 +926,13 @@ mod tests {
             // At and after T10 activation
             assert!(cs.is_t10_active_at_timestamp(1787320800));
             assert_eq!(cs.tempo_hardfork_at(1787320800), TempoHardfork::T10);
-            // Before T11 activation (1788962400 = Sep 9th 2026 16:00 CEST)
-            assert!(!cs.is_t11_active_at_timestamp(1788962399));
-            assert_eq!(cs.tempo_hardfork_at(1788962399), TempoHardfork::T10);
+            // Before T11 activation (1789048800 = Sep 10th 2026 16:00 CEST)
+            assert!(!cs.is_t11_active_at_timestamp(1789048799));
+            assert_eq!(cs.tempo_hardfork_at(1789048799), TempoHardfork::T10);
 
             // At and after T11 activation
-            assert!(cs.is_t11_active_at_timestamp(1788962400));
-            assert_eq!(cs.tempo_hardfork_at(1788962400), TempoHardfork::T11);
+            assert!(cs.is_t11_active_at_timestamp(1789048800));
+            assert_eq!(cs.tempo_hardfork_at(1789048800), TempoHardfork::T11);
             assert!(!cs.is_t12_active_at_timestamp(u64::MAX));
             assert_eq!(cs.tempo_hardfork_at(u64::MAX), TempoHardfork::T11);
         }
