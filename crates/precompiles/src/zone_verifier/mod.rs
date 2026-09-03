@@ -17,19 +17,7 @@ use self::attestation::{AWS_NITRO_ROOT_DER, AttestationError, verify_attestation
 const CONFIG_V1: &[u8] = &[1];
 const MAX_FUTURE_SKEW_MILLIS: u64 = 300_000;
 
-/// Measurements for the T11 EIF built from `tempoxyz/zones` at commit
-/// `aae5ec36b394fd9c495dc06555f60d719f4ec15e`.
-const APPROVED_PCRS: Option<[[u8; 48]; 3]> = Some([
-    alloy::primitives::hex!(
-        "991542f25207172f2f897a09435ecd511656d0b185d60bb1f6e3adcc9d53756d9bb3b55898d382e48ba479d97e97ee01"
-    ),
-    alloy::primitives::hex!(
-        "baa774ff6af9362bc5c4ecafa99c98c371d3d1e1e040e99890b9ba13d81ded18408fa2a65affa148ee2aaafa09142c81"
-    ),
-    alloy::primitives::hex!(
-        "e6e881d253c49308b5a67b5e426cc1eb19412c60f49e0a2b5b0260432ef6471d37dd5a9d3b51e67591b5694ea36f7ea4"
-    ),
-]);
+/// Measurements for the T11 EIF built from `tempoxyz/zones` at commit\n/// `9b6157f0207e7a50c0191cd37c600cdba2af1b15`.\nconst APPROVED_PCRS: Option<[[u8; 48]; 3]> = Some([\n    alloy::primitives::hex!(\n        "98436c9daffa440c5bdd06480e87df0946e3e310e4948e4189be3cf2ff9a892efe9de3316512964d6d5bbfdac1d9138d"\n    ),\n    alloy::primitives::hex!(\n        "baa774ff6af9362bc5c4ecafa99c98c371d3d1e1e040e99890b9ba13d81ded18408fa2a65affa148ee2aaafa09142c81"\n    ),\n    alloy::primitives::hex!(\n        "dd5e802ae196910dc468c3a8d290af94f0b69d02fedaf4fe43feb94bd6d6342ac95fb9b0fc56a58b32c2b7f7fc6affff"\n    ),\n]);
 
 const BATCH_ATTESTATION_TYPE: &str = "NitroBatchAttestation(uint256 parentChainId,address verifier,address portal,uint32 zoneId,uint64 tempoBlockNumber,uint64 anchorBlockNumber,bytes32 anchorBlockHash,uint64 expectedWithdrawalBatchIndex,bytes32 prevBlockHash,bytes32 nextBlockHash,bytes32 prevProcessedHash,bytes32 nextProcessedHash,uint64 prevDepositNumber,uint64 nextDepositNumber,uint64 prevProcessedTokenCount,uint64 nextProcessedTokenCount,bytes32 withdrawalQueueHash,bytes32 verifierConfigHash)";
 
