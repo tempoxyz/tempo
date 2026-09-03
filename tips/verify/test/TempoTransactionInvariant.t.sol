@@ -1420,8 +1420,7 @@ contract TempoTransactionInvariantTest is InvariantChecker {
             ghost_createOversizedAllowed++;
         } catch {
             _recordCreateRejectedSize();
-            _syncProtocolNonceFromVm(ctx.sender);
-            _handleRevert2d(ctx.sender, ctx.nonceKey);
+            _record2dNonceCreateRevert(ctx.sender, ctx.nonceKey);
         }
     }
 

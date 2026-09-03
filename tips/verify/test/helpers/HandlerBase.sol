@@ -529,6 +529,17 @@ abstract contract HandlerBase is InvariantBase {
         }
     }
 
+    /// @notice Record nonce consumption when an included 2D nonce CREATE reverts.
+    /// @dev `executeTransaction` exposes the consumed nonces after the handler returns, so the
+    ///      rejection path records the deterministic increments instead of querying stale state.
+    function _record2dNonceCreateRevert(address sender, uint64 nonceKey) internal {
+        _updateProtocolNonce(sender);
+        ghost_totalProtocolNonceTxs++;
+        _update2dNonce(sender, nonceKey);
+        ghost_total2dNonceTxs++;
+        ghost_totalTxReverted++;
+    }
+
     // ============ Transaction Building Helpers ============
 
     /// @notice Build and sign a Tempo transaction with default settings
