@@ -591,7 +591,7 @@ where
         evm: &mut TempoEvm<DB, I>,
         mut remaining_gas: u64,
         mut reservoir: u64,
-        calls: Vec<tempo_primitives::transaction::Call>,
+        calls: std::sync::Arc<[tempo_primitives::transaction::Call]>,
         mut execute_single: F,
     ) -> Result<FrameResult, EVMError<DB::Error, TempoInvalidTransaction>>
     where
@@ -742,7 +742,7 @@ where
         &mut self,
         evm: &mut TempoEvm<DB, I>,
         gas: &GasTracker,
-        calls: Vec<tempo_primitives::transaction::Call>,
+        calls: std::sync::Arc<[tempo_primitives::transaction::Call]>,
     ) -> Result<FrameResult, EVMError<DB::Error, TempoInvalidTransaction>> {
         self.execute_multi_call_with(
             evm,
@@ -776,7 +776,7 @@ where
         &mut self,
         evm: &mut TempoEvm<DB, I>,
         gas: &GasTracker,
-        calls: Vec<tempo_primitives::transaction::Call>,
+        calls: std::sync::Arc<[tempo_primitives::transaction::Call]>,
     ) -> Result<FrameResult, EVMError<DB::Error, TempoInvalidTransaction>>
     where
         I: Inspector<TempoContext<DB>, EthInterpreter>,
@@ -2258,7 +2258,7 @@ pub fn calculate_aa_batch_intrinsic_gas<'a>(
     access_list: Option<impl Iterator<Item = &'a AccessListItem>>,
     spec: tempo_chainspec::hardfork::TempoHardfork,
 ) -> Result<InitialAndFloorGas, TempoInvalidTransaction> {
-    let calls = &aa_env.aa_calls;
+    let calls = &aa_env.aa_calls[..];
     let signature = &aa_env.signature;
     let authorization_list = &aa_env.tempo_authorization_list;
     let key_authorization = aa_env.key_authorization.as_ref();
@@ -2376,7 +2376,7 @@ where
         .as_ref()
         .expect("validate_aa_initial_tx_gas called for non-AA transaction");
 
-    let calls = &aa_env.aa_calls;
+    let calls = &aa_env.aa_calls[..];
 
     // Validate all CREATE calls' initcode size upfront (EIP-3860)
     let max_initcode_size = evm.ctx_ref().cfg().max_initcode_size();
