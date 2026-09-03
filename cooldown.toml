@@ -1,4 +1,4 @@
-# Exercise an exact-version exception for the coordinated Alloy 1.7.2 release.
+# Exact-version exceptions for the coordinated Tempo Alloy 1.7.2 release.
 [[allow.exact]]
 crate = "alloy-core"
 version = "1.7.2"
