@@ -1373,7 +1373,6 @@ async fn validate_block(
         .new_payload(TempoExecutionData {
             block,
             block_access_list,
-            validator_set: None,
         })
         .await
         .wrap_err("failed sending new-payload request to execution layer to validate block")?;
@@ -1657,8 +1656,6 @@ async fn forward_finalized(
         .new_payload(TempoExecutionData {
             block: execution_block,
             block_access_list,
-            // can be omitted for finalized blocks
-            validator_set: None,
         })
         .await
         .wrap_err(
@@ -1718,7 +1715,6 @@ async fn forward_notarized(
             .new_payload(TempoExecutionData {
                 block,
                 block_access_list,
-                validator_set: None,
             })
             .await
             .wrap_err(

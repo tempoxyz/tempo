@@ -421,6 +421,16 @@ where
         &self,
         metadata: &[SubBlockMetadata],
     ) -> Result<(), BlockValidationError> {
+        // T4 disabled subblocks and set the shared gas limit to zero. Reject any
+        // transaction that spilled into the former shared-gas incentive section
+        // without requiring the legacy validator set context.
+        if self.evm().cfg.spec.is_t4() {
+            if self.incentive_gas_used > 0 {
+                return Err(BlockValidationError::msg("incentive gas limit exceeded"));
+            }
+            return Ok(());
+        }
+
         // Skip incentive gas validation if validator set context is not available.
         let Some(validator_set) = &self.validator_set else {
             return Ok(());
@@ -1664,7 +1674,6 @@ mod tests {
         let mut db = State::builder().with_bundle_update().build();
         let mut executor = TestExecutorBuilder::default()
             .with_parent_beacon_block_root(B256::ZERO)
-            .with_validator_set(vec![B256::repeat_byte(0x01)])
             .build(&mut db, &chainspec);
 
         executor.inner.evm.cfg.spec = tempo_chainspec::hardfork::TempoHardfork::T4;
@@ -1679,7 +1688,6 @@ mod tests {
         let mut db = State::builder().with_bundle_update().build();
         let mut executor = TestExecutorBuilder::default()
             .with_parent_beacon_block_root(B256::ZERO)
-            .with_validator_set(vec![B256::repeat_byte(0x01)])
             .with_incentive_gas_used(1)
             .build(&mut db, &chainspec);
 
