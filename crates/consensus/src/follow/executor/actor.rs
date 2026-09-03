@@ -312,8 +312,6 @@ async fn submit_new_payload<TContext: Pacer, E: ExecutionEngine + ?Sized>(
         .new_payload(TempoExecutionData {
             block,
             block_access_list,
-            // can be omitted for finalized blocks
-            validator_set: None,
         })
         .pace(context, Duration::from_millis(20))
         .await

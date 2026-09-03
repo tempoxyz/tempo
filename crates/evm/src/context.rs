@@ -1,7 +1,7 @@
 use std::collections::HashMap;
 
 use alloy_evm::eth::EthBlockExecutionCtx;
-use alloy_primitives::{Address, B256};
+use alloy_primitives::Address;
 use reth_evm::NextBlockEnvAttributes;
 use tempo_primitives::{TempoConsensusContext, subblock::PartialValidatorKey};
 
@@ -15,13 +15,6 @@ pub struct TempoBlockExecutionCtx<'a> {
     pub general_gas_limit: u64,
     /// Shared gas limit for the block.
     pub shared_gas_limit: u64,
-    /// Validator set for the block.
-    ///
-    /// Only set for un-finalized blocks coming from consensus layer.
-    ///
-    /// When this is set to `None`, no validation of subblock signatures is performed.
-    /// Make sure to always set this field when executing blocks from untrusted sources
-    pub validator_set: Option<Vec<B256>>,
     /// Consensus metadata for the block. `None` for pre-fork blocks.
     pub consensus_context: Option<TempoConsensusContext>,
     /// Mapping from a subblock validator public key to the fee recipient configured.

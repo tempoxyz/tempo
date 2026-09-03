@@ -51,7 +51,6 @@ pub(crate) struct TestExecutorBuilder {
     pub(crate) parent_hash: B256,
     pub(crate) general_gas_limit: u64,
     pub(crate) shared_gas_limit: u64,
-    pub(crate) validator_set: Option<Vec<B256>>,
     pub(crate) parent_beacon_block_root: Option<B256>,
     pub(crate) subblock_fee_recipients: HashMap<PartialValidatorKey, Address>,
     /// Sets `cfg_env.enable_amsterdam_eip8037` to gate TIP-1016 behavior in tests.
@@ -61,7 +60,6 @@ pub(crate) struct TestExecutorBuilder {
     // Test state to seed into the executor after creation
     pub(crate) initial_section: Option<BlockSection>,
     pub(crate) initial_seen_subblocks: Vec<(PartialValidatorKey, Vec<TempoTxEnvelope>)>,
-    pub(crate) initial_incentive_gas_used: u64,
 }
 
 impl Default for TestExecutorBuilder {
@@ -72,7 +70,6 @@ impl Default for TestExecutorBuilder {
             parent_hash: B256::ZERO,
             general_gas_limit: 10_000_000,
             shared_gas_limit: 10_000_000,
-            validator_set: None,
             parent_beacon_block_root: None,
             subblock_fee_recipients: HashMap::new(),
             amsterdam_eip8037_enabled: false,
@@ -80,7 +77,6 @@ impl Default for TestExecutorBuilder {
             extra_data: Bytes::new(),
             initial_section: None,
             initial_seen_subblocks: Vec::new(),
-            initial_incentive_gas_used: 0,
         }
     }
 }
@@ -103,16 +99,6 @@ impl TestExecutorBuilder {
 
     pub(crate) fn with_spec(mut self, spec: TempoHardfork) -> Self {
         self.spec = spec;
-        self
-    }
-
-    pub(crate) fn with_validator_set(mut self, validators: Vec<B256>) -> Self {
-        self.validator_set = Some(validators);
-        self
-    }
-
-    pub(crate) fn with_shared_gas_limit(mut self, limit: u64) -> Self {
-        self.shared_gas_limit = limit;
         self
     }
 
@@ -146,12 +132,6 @@ impl TestExecutorBuilder {
         txs: Vec<TempoTxEnvelope>,
     ) -> Self {
         self.initial_seen_subblocks.push((proposer, txs));
-        self
-    }
-
-    /// Set the initial incentive gas used (for testing gas limit validation).
-    pub(crate) fn with_incentive_gas_used(mut self, gas: u64) -> Self {
-        self.initial_incentive_gas_used = gas;
         self
     }
 
@@ -193,7 +173,6 @@ impl TestExecutorBuilder {
             },
             general_gas_limit: self.general_gas_limit,
             shared_gas_limit: self.shared_gas_limit,
-            validator_set: self.validator_set,
             consensus_context: None,
             subblock_fee_recipients: self.subblock_fee_recipients,
         };
@@ -207,10 +186,6 @@ impl TestExecutorBuilder {
         for (proposer, txs) in self.initial_seen_subblocks {
             executor.add_seen_subblock_for_test(proposer, txs);
         }
-        if self.initial_incentive_gas_used > 0 {
-            executor.set_incentive_gas_used_for_test(self.initial_incentive_gas_used);
-        }
-
         executor
     }
 }

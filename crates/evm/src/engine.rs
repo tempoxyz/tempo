@@ -25,13 +25,8 @@ impl ConfigureEngineEvm<TempoExecutionData> for TempoEvmConfig {
         let TempoExecutionData {
             block,
             block_access_list: _,
-            validator_set,
         } = payload;
-        let mut context = self.context_for_block(block)?;
-
-        context.validator_set = validator_set.clone();
-
-        Ok(context)
+        self.context_for_block(block)
     }
 
     fn tx_iterator_for_payload(
@@ -224,7 +219,6 @@ mod tests {
         let payload = TempoExecutionData {
             block: block.into(),
             block_access_list: None,
-            validator_set: None,
         };
 
         let result = evm_config.tx_iterator_for_payload(&payload);
@@ -254,12 +248,9 @@ mod tests {
 
         let system_tx = create_subblock_metadata_tx(chainspec.chain().id(), 1);
         let block = create_test_block(vec![system_tx]);
-        let validator_set = Some(vec![B256::repeat_byte(0x01), B256::repeat_byte(0x02)]);
-
         let payload = TempoExecutionData {
             block: block.into(),
             block_access_list: None,
-            validator_set: validator_set.clone(),
         };
 
         let result = evm_config.context_for_payload(&payload);
@@ -270,7 +261,6 @@ mod tests {
         // Verify context fields
         assert_eq!(context.general_gas_limit, 10_000_000);
         assert_eq!(context.shared_gas_limit, 3_000_000);
-        assert_eq!(context.validator_set, validator_set);
         assert!(context.subblock_fee_recipients.is_empty());
     }
 
@@ -285,7 +275,6 @@ mod tests {
         let payload = TempoExecutionData {
             block: block.clone().into(),
             block_access_list: None,
-            validator_set: None,
         };
 
         let result = evm_config.evm_env_for_payload(&payload);
