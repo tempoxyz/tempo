@@ -237,6 +237,11 @@ pub struct ExecutionNodeConfig {
     pub feed_state: Option<FeedStateHandle>,
     /// Share the engine's sparse trie pipeline with the payload builder.
     pub share_sparse_trie_with_payload_builder: bool,
+    /// `tempo/1` transport settings. `None` leaves the subprotocol unannounced.
+    ///
+    /// The protocol is registered before the network starts because `RLPx`
+    /// negotiates capabilities during the handshake.
+    pub gossip: Option<tempo_node::gossip::Config>,
 }
 
 impl ExecutionNodeConfig {
@@ -251,7 +256,21 @@ impl ExecutionNodeConfig {
             validator_key: None,
             feed_state: None,
             share_sparse_trie_with_payload_builder: false,
+            gossip: None,
         }
+    }
+}
+
+/// `tempo/1` transport settings for nodes launched by tests.
+///
+/// Validators publish only. A follower ingests so gossiped certificates reach
+/// its driver, which is the only component able to verify them.
+pub fn gossip_config(ingest: bool) -> tempo_node::gossip::Config {
+    tempo_node::gossip::Config {
+        ingest,
+        peer_frame_rate: commonware_utils::NZU32!(8),
+        frame_queue: 256,
+        route_queue: 256,
     }
 }
 
@@ -757,6 +776,11 @@ pub struct ExecutionNode {
     pub runtime: Runtime,
     /// The exist future that resolves when the node's engine future resolves.
     pub exit_fut: NodeExitFuture,
+    /// The consensus-facing end of the `tempo/1` transport, if announced.
+    ///
+    /// The consensus layer takes this when it starts. It carries receivers, so
+    /// only one consensus instance can own it.
+    pub gossip: Option<tempo_node::gossip::TransportHandle>,
 }
 
 impl ExecutionNode {
@@ -867,6 +891,7 @@ pub async fn launch_execution_node<P: AsRef<Path>>(
         validator_key,
         feed_state,
         share_sparse_trie_with_payload_builder,
+        gossip,
     } = config;
     let node_config = NodeConfig::new(Arc::new(chain_spec))
         .with_rpc(
@@ -896,7 +921,21 @@ pub async fn launch_execution_node<P: AsRef<Path>>(
             c
         });
 
+    // Register before launch: each RLPx session negotiates its subprotocols
+    // during the handshake, so sessions opened later cannot pick `tempo/1` up.
+    let (gossip_protocol, gossip_transport) = match gossip {
+        Some(gossip) => {
+            let (protocol, transport) = tempo_node::gossip::init(gossip, &runtime);
+            (Some(protocol), Some(transport))
+        }
+        None => (None, None),
+    };
+
     let tempo_node = TempoNode::default().with_validator_key(validator_key);
+    let tempo_node = match gossip_protocol {
+        Some(protocol) => tempo_node.with_finalization_cert_gossip(protocol),
+        None => tempo_node,
+    };
 
     let node_handle = if let Some(rocksdb) = rocksdb {
         NodeBuilder::new(node_config)
@@ -927,6 +966,7 @@ pub async fn launch_execution_node<P: AsRef<Path>>(
         node: Box::new(node_handle.node),
         runtime,
         exit_fut: node_handle.node_exit_future,
+        gossip: gossip_transport,
     })
 }
 

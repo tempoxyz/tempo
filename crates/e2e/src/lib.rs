@@ -146,6 +146,10 @@ pub struct Setup {
 
     /// The fee recipient written into the V2 contract for each validator.
     pub fee_recipient: Address,
+
+    /// Whether validators announce `tempo/1` and publish finalization
+    /// certificates over it.
+    pub with_gossip: bool,
 }
 
 impl Setup {
@@ -163,6 +167,7 @@ impl Setup {
             proposal_return_budget: Duration::from_millis(300),
             with_subblocks: false,
             fee_recipient: Address::ZERO,
+            with_gossip: false,
         }
     }
 
@@ -215,6 +220,15 @@ impl Setup {
             ..self
         }
     }
+
+    /// Announces `tempo/1` on every validator so they publish finalization
+    /// certificates to their devp2p peers.
+    pub fn gossip(self, with_gossip: bool) -> Self {
+        Self {
+            with_gossip,
+            ..self
+        }
+    }
 }
 
 impl Default for Setup {
@@ -239,6 +253,7 @@ pub async fn setup_validators(
         proposal_return_budget,
         with_subblocks,
         fee_recipient,
+        with_gossip,
         ..
     }: Setup,
 ) -> (Vec<TestingNode<Context>>, ExecutionRuntime) {
@@ -288,6 +303,9 @@ pub async fn setup_validators(
 
         execution_config.validator_key = Some(public_key.encode().as_ref().try_into().unwrap());
         execution_config.feed_state = Some(feed_state.clone());
+        // Validators publish but never ingest; they already receive certificates
+        // over their authenticated consensus network.
+        execution_config.gossip = with_gossip.then(|| execution_runtime::gossip_config(false));
 
         nodes.push(TestingNode::new(
             uid,
