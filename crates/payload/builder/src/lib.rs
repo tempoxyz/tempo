@@ -93,6 +93,12 @@ use tracing::{Level, debug, debug_span, error, info, instrument, trace, warn};
 /// Exact block RLP length is computed asynchronously after payload construction, so the builder uses
 /// this margin together with known transaction, withdrawal, and extra-data lengths for Osaka size
 /// checks and pacing estimates.
+/// Lower bound for the pre-sized roots task buffers, in transactions.
+const MIN_ROOTS_TASK_CAPACITY: usize = 1024;
+/// Upper bound for the pre-sized roots task buffers, in transactions, so an oversized pool does not
+/// reserve memory the block can never use.
+const MAX_ROOTS_TASK_CAPACITY: usize = 32_768;
+
 const NON_TRANSACTION_SIZE_ESTIMATE: usize = 2048;
 
 /// Source of transactions for payload building.
@@ -571,7 +577,14 @@ where
 
         debug!("building new payload");
 
-        let (roots_tx, roots_rx) = self.spawn_roots_task();
+        // Size the roots task buffers from the pool's pending count so they do not grow through a
+        // dozen reallocations while the block fills.
+        let expected_transactions = self
+            .pool
+            .pool_size()
+            .pending
+            .clamp(MIN_ROOTS_TASK_CAPACITY, MAX_ROOTS_TASK_CAPACITY);
+        let (roots_tx, roots_rx) = self.spawn_roots_task(expected_transactions);
 
         // Prepare system transactions before actual block building and account for their size.
         let prepare_system_txs_start = Instant::now();
@@ -1316,6 +1329,7 @@ where
 
     fn spawn_roots_task(
         &self,
+        expected_transactions: usize,
     ) -> (
         Sender<(BuilderTx, TempoReceipt)>,
         oneshot::Receiver<RootsTaskResult>,
@@ -1325,16 +1339,16 @@ where
         let (result_tx, result_rx) = oneshot::channel();
 
         self.executor
-            .spawn_blocking_named("builder-roots-task", || {
-                let mut transactions = Vec::new();
-                let mut senders = Vec::new();
+            .spawn_blocking_named("builder-roots-task", move || {
+                let mut transactions = Vec::with_capacity(expected_transactions);
+                let mut senders = Vec::with_capacity(expected_transactions);
 
                 let mut transactions_root = OrderedTrieRootEncodedBuilder::new();
                 let mut receipts_root = OrderedTrieRootEncodedBuilder::new();
                 let mut receipts_bloom = Bloom::ZERO;
                 let mut encoded_block_transactions = EncodedBlockTransactionsBuilder::default();
 
-                let mut buf = Vec::new();
+                let mut buf = Vec::with_capacity(1024);
 
                 for (tx, receipt) in transactions_rx.into_iter() {
                     let (tx, sender) = tx.into_parts();
