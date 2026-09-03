@@ -507,7 +507,7 @@ jobs:
 
       - name: Setup Google Cloud CLI
         if: env.BENCH_INPUT_CLOUD == 'gcp'
-        uses: google-github-actions/setup-gcloud@aa5489c8933f4cc7a4f7d45035b3b1440c9c10db # v3
+        uses: tempoxyz/gh-actions/vendor/google-github-actions/setup-gcloud@487be2d19b0ba9ae1903143016444ab752c3e939
         with:
           project_id: ${{ env.BENCH_GCP_PROJECT_ID }}
 
