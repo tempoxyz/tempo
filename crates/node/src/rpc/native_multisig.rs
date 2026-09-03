@@ -68,7 +68,8 @@ mod tests {
     };
     use tempo_precompiles::NATIVE_MULTISIG_ADDRESS;
     use tempo_primitives::transaction::{
-        MultisigConfig, MultisigOwner, PrimitiveSignature, SignatureType, TempoSignature,
+        MultisigConfig, MultisigOwner, MultisigQuorumError, PrimitiveSignature, SignatureType,
+        TempoSignature,
     };
 
     #[derive(Default)]
@@ -224,32 +225,57 @@ mod tests {
 
     #[test]
     fn rejects_invalid_specs() {
+        let invalid_params = |mut request: TempoTransactionRequest, mut db: SlotDb| {
+            match prepare_native_multisig_simulation(&mut request, TempoHardfork::T12, &mut db) {
+                Err(EthApiError::InvalidParams(error)) => error,
+                result => panic!("unexpected result: {result:?}"),
+            }
+        };
+
         let (_, simulation) = spec(0);
-        let mut missing_sender = TempoTransactionRequest {
+        let missing_sender = TempoTransactionRequest {
             multisig_simulation: Some(simulation),
             ..Default::default()
         };
+        assert_eq!(
+            invalid_params(missing_sender, SlotDb::default()),
+            "native multisig simulation requires from"
+        );
 
-        assert!(matches!(
-            prepare_native_multisig_simulation(
-                &mut missing_sender,
-                TempoHardfork::T12,
-                &mut SlotDb::default(),
-            ),
-            Err(EthApiError::InvalidParams(_))
-        ));
+        let (account, simulation) = spec(0);
+        let mut with_key_id = request(account, simulation);
+        with_key_id.key_id = Some(Address::repeat_byte(0x44));
+        assert_eq!(
+            invalid_params(with_key_id, SlotDb::default()),
+            "keyId cannot be combined with a native multisig spec"
+        );
 
-        let (account, spec) = spec(0);
-        let mut request = request(account, spec);
-        request.key_id = Some(Address::repeat_byte(0x44));
-        assert!(matches!(
-            prepare_native_multisig_simulation(
-                &mut request,
-                TempoHardfork::T12,
-                &mut SlotDb::default(),
-            ),
-            Err(EthApiError::InvalidParams(error))
-                if error == "keyId cannot be combined with a native multisig spec"
+        let (account, mut excess) = spec(1);
+        let extra_owner = Address::repeat_byte(0x33);
+        excess.config.owners.push(MultisigOwner {
+            owner: extra_owner,
+            weight: 1,
+        });
+        excess.approvals.push(MultisigSimulationApproval::Primitive(
+            MultisigSimulationPrimitiveApproval {
+                owner: extra_owner,
+                key_type: Some(SignatureType::Secp256k1),
+                key_data: None,
+            },
         ));
+        assert_eq!(
+            invalid_params(request(account, excess), SlotDb::default()),
+            MultisigQuorumError::ExcessSignatures.to_string()
+        );
+
+        let (account, simulation) = spec(1);
+        let actual = simulation.config.commitment().unwrap();
+        assert_eq!(
+            invalid_params(request(account, simulation), SlotDb::default()),
+            format!(
+                "multisig configuration commitment mismatch: expected {}, actual {actual}",
+                B256::ZERO
+            )
+        );
     }
 }
