@@ -54,50 +54,6 @@ fn slow_marshal_fetch_does_not_block_validation() {
 }
 
 #[test_traced]
-fn slow_marshal_fetch_does_not_block_building() {
-    deterministic::Runner::default().start(|context| async move {
-        let h = Harness::start_at_genesis(&context);
-
-        // Leave the missing pending head's marshal subscription unresolved.
-        let pending = make_block(1, 1, GENESIS);
-        let pending_digest = pending.digest();
-        h.report_pending_head(2, 1, pending_digest);
-        h.wait_until(|| h.marshal.open_subscriptions() == vec![(pending_digest, round(1))])
-            .await;
-
-        // A proposal build on the known local head must be registered and
-        // delivered independently of the pending body fetch.
-        let proposal = make_block(3, 1, GENESIS);
-        let proposal_digest = proposal.digest();
-        h.execution.script_built_payload(built_payload(&proposal));
-        let build = h.build(round(3), GENESIS);
-        futures::pin_mut!(build);
-        let deadline = h.run_for(Duration::from_millis(100));
-        futures::pin_mut!(deadline);
-        let payload = match futures::future::select(build, deadline).await {
-            Either::Left((payload, _deadline)) => {
-                payload.expect("build should complete while the fetch is pending")
-            }
-            Either::Right(((), _build)) => {
-                panic!("the pending marshal fetch blocked building")
-            }
-        };
-
-        let (block, _) = payload.into_execution_payload();
-        assert_eq!(block.hash(), proposal_digest.0);
-        assert!(
-            h.execution.fcus().contains(&(GENESIS, GENESIS, true)),
-            "the attribute-carrying build FCU must reach the execution layer",
-        );
-        assert_eq!(
-            h.marshal.open_subscriptions(),
-            vec![(pending_digest, round(1))],
-            "building must not cancel or consume the independent body fetch",
-        );
-    });
-}
-
-#[test_traced]
 fn payload_resolution_does_not_occupy_the_execution_task_slot() {
     deterministic::Runner::default().start(|context| async move {
         let h = Harness::start_at_genesis(&context);

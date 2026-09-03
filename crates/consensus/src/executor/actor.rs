@@ -1084,10 +1084,17 @@ where
                 self.pending_consensus_request = Some((round, ConsensusRequest::Verify(request)));
             }
             Some((round, ConsensusRequest::Build { cause, build })) => {
-                // Builds are registered via FCU setting the head hash to the
-                // parent. So running it with the head anywhere else would fight
-                // notarized-chain convergence.
-                if self.notarized_tree.is_local_head(build.digest) {
+                // Consensus builds on the pending head it reported. The build
+                // runs once the execution layer's head is there, waits while
+                // convergence is about to get there, and is dropped otherwise.
+                let pending_head = self.notarized_tree.pending_head();
+                if build.digest != pending_head {
+                    info!(
+                        %pending_head,
+                        build.parent = %build.digest,
+                        "build is not on the pending head, dropping it",
+                    );
+                } else if self.notarized_tree.is_local_head(pending_head) {
                     let target = self.notarized_tree.local_state();
                     if self.is_stale_forkchoice(target)? {
                         info!(
@@ -1104,7 +1111,7 @@ where
                         self.set_execution_task(ExecutionTask::new(ExecutionTaskType::Build, fut));
                         return Ok(());
                     }
-                } else if self.is_convergence_target(build.digest) {
+                } else if self.is_convergence_target(pending_head) {
                     // Reschedules the request; the actor will not spin on
                     // `start_next_execution_request` as long as it remains
                     // scheduled before the select! in the select-loop (some

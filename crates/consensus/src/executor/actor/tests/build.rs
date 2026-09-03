@@ -181,8 +181,8 @@ fn build_on_a_known_block_off_the_pending_head_path_is_dropped() {
         let h = Harness::start_at_genesis(&context);
 
         // a1 is known to the execution layer through its validation, but
-        // consensus never reports it as the pending head: the head will not
-        // converge onto it, so a build on top of it cannot be held.
+        // consensus never reports it as the pending head: a build on top of
+        // it is not what consensus builds on.
         let a1 = make_block(1, 1, GENESIS);
         let da1 = a1.digest();
         h.verify(round(1), a1)
@@ -197,6 +197,44 @@ fn build_on_a_known_block_off_the_pending_head_path_is_dropped() {
             !h.execution.fcus().iter().any(|(.., attrs)| *attrs),
             "no build may be registered off the pending head's path",
         );
+    });
+}
+
+#[test_traced]
+fn build_on_a_head_the_network_finalized_past_is_dropped() {
+    deterministic::Runner::default().start(|context| async move {
+        let mut h = Harness::start_at_genesis(&context);
+
+        // The head sits on notarized a1.
+        let a1 = make_block(1, 1, GENESIS);
+        let da1 = a1.digest();
+        h.verify(round(1), a1)
+            .await
+            .expect("a1 should validate")
+            .expect("a1 should be valid");
+        h.report_pending_head(2, 1, da1);
+        h.wait_until(|| h.execution.head() == da1).await;
+
+        // The network finalizes b1 on another branch. The tip report alone
+        // re-anchors the pending head onto the tip, so a1 is no longer what
+        // consensus builds on: the build is dropped before the finalized
+        // block is even delivered, and no payload is registered on the
+        // abandoned head.
+        let b1 = make_block(3, 1, GENESIS);
+        let db1 = b1.digest();
+        h.deliver_tip(round(3), 1, db1);
+        h.build(round(4), da1)
+            .await
+            .expect_err("the build on the abandoned head must fail");
+        assert!(
+            !h.execution.fcus().iter().any(|(.., attrs)| *attrs),
+            "no payload may be registered on the abandoned head",
+        );
+
+        h.deliver_finalized(b1)
+            .await
+            .expect("b1 should be acknowledged");
+        assert_eq!(h.execution.head(), db1);
     });
 }
 

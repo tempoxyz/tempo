@@ -222,6 +222,11 @@ impl NotarizedTree {
         }
     }
 
+    /// The block consensus reported building on: the convergence target.
+    pub(super) fn pending_head(&self) -> Digest {
+        self.pending_head.digest
+    }
+
     /// A snapshot of the latest forkchoice state accepted by the execution
     /// layer, for execution tasks to extend. States the execution layer
     /// accepts are reported back via [`Self::set_local_state`].
