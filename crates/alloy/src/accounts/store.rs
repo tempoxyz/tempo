@@ -3685,6 +3685,18 @@ mod tests {
         let authorization =
             || KeyAuthorization::unrestricted(4217, SignatureType::Secp256k1, signer.address());
 
+        let other_account = Address::repeat_byte(0x45);
+        let wrong_account = authorization()
+            .with_account(other_account)
+            .into_signed(PrimitiveSignature::default());
+        assert!(matches!(
+            validate_stored_authorization(account, &signer, &wrong_account),
+            Err(TempoAccountsError::InvalidAuthorizationForAccount(reason))
+                if reason == format!(
+                    "authorization account mismatch: expected {account}, actual {other_account}"
+                )
+        ));
+
         let keychain = authorization().into_signed(TempoSignature::Keychain(
             KeychainSignature::new(account, PrimitiveSignature::default()),
         ));
