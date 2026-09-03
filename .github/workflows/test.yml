@@ -21,8 +21,14 @@ env:
   TEMPO_DEVNET_RPC_URL: ${{ secrets.TEMPO_DEVNET_RPC_URL }}
 
 jobs:
+  cargo-cooldown:
+    permissions:
+      contents: read
+    uses: ./.github/workflows/cargo-cooldown.yml
+
   check-precompiles:
     name: Check precompiles changes
+    needs: cargo-cooldown
     runs-on: ubuntu-latest
     permissions:
       contents: read
@@ -53,6 +59,7 @@ jobs:
 
   genesis:
     name: Genesis generation
+    needs: cargo-cooldown
     runs-on: depot-ubuntu-latest-4
     timeout-minutes: 30
     permissions:
@@ -151,6 +158,7 @@ jobs:
 
   e2e:
     name: e2e (${{ matrix.partition }}/4)
+    needs: cargo-cooldown
     runs-on: depot-ubuntu-latest-32
     timeout-minutes: 30
     permissions:
@@ -189,6 +197,7 @@ jobs:
 
   e2e-flaky:
     name: e2e-flaky
+    needs: cargo-cooldown
     runs-on: depot-ubuntu-latest-32
     timeout-minutes: 30
     continue-on-error: true
@@ -215,6 +224,7 @@ jobs:
 
   cli:
     name: CLI smoke tests
+    needs: cargo-cooldown
     runs-on: depot-ubuntu-latest-4
     timeout-minutes: 30
     permissions:
@@ -257,6 +267,7 @@ jobs:
 
   msrv:
     name: MSRV
+    needs: cargo-cooldown
     runs-on: depot-ubuntu-latest-4
     timeout-minutes: 30
     permissions:

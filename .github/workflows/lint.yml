@@ -18,8 +18,14 @@ env:
   RUSTC_WRAPPER: "sccache"
 
 jobs:
+  cargo-cooldown:
+    permissions:
+      contents: read
+    uses: ./.github/workflows/cargo-cooldown.yml
+
   clippy:
     name: clippy
+    needs: cargo-cooldown
     runs-on: depot-ubuntu-latest-32
     timeout-minutes: 45
     env:
@@ -68,6 +74,7 @@ jobs:
       - run: cargo fmt --all --check
 
   crate-checks:
+    needs: cargo-cooldown
     runs-on: depot-ubuntu-latest-4
     timeout-minutes: 60
     if: github.event_name == 'push'
@@ -94,6 +101,7 @@ jobs:
   docs:
     if: ${{ github.repository == 'tempoxyz/tempo' }}
     name: docs
+    needs: cargo-cooldown
     runs-on: depot-ubuntu-latest-32
     timeout-minutes: 30
     permissions:
@@ -167,6 +175,7 @@ jobs:
 
   zepter:
     name: zepter
+    needs: cargo-cooldown
     runs-on: depot-ubuntu-latest
     timeout-minutes: 30
     permissions:
@@ -189,6 +198,7 @@ jobs:
 
   no-std:
     name: no-std
+    needs: cargo-cooldown
     runs-on: depot-ubuntu-latest
     timeout-minutes: 30
     permissions:

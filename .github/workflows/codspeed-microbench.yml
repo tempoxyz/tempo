@@ -1,8 +1,6 @@
 name: CodSpeed microbenchmarks
 
-permissions:
-  contents: read
-  id-token: write
+permissions: {}
 
 on:
   push:
@@ -61,10 +59,19 @@ env:
   RUSTC_WRAPPER: "sccache"
 
 jobs:
+  cargo-cooldown:
+    permissions:
+      contents: read
+    uses: ./.github/workflows/cargo-cooldown.yml
+
   codspeed:
     name: CodSpeed microbenchmarks
+    needs: cargo-cooldown
     runs-on: depot-ubuntu-latest-4
     timeout-minutes: 60
+    permissions:
+      contents: read
+      id-token: write
     steps:
       - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
         with:

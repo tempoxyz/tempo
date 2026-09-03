@@ -13,9 +13,15 @@ env:
   RUST_BACKTRACE: full
 
 jobs:
+  cargo-cooldown:
+    permissions:
+      contents: read
+    uses: ./.github/workflows/cargo-cooldown.yml
+
   publish:
     name: Publish
     if: github.event.pull_request.merged == true && startsWith(github.event.pull_request.head.ref, 'changelog-release/')
+    needs: cargo-cooldown
     runs-on: depot-ubuntu-latest-4
     permissions:
       contents: read

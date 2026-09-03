@@ -23,8 +23,14 @@ env:
   RUSTC_WRAPPER: "sccache"
 
 jobs:
+  cargo-cooldown:
+    permissions:
+      contents: read
+    uses: ./.github/workflows/cargo-cooldown.yml
+
   check-specs-changes:
     name: Check specs changes
+    needs: cargo-cooldown
     runs-on: ubuntu-latest
     permissions:
       contents: read
