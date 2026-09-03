@@ -119,12 +119,11 @@ pub(crate) struct Actor<
     TContext,
     TExecutionLayer = Arc<tempo_node::TempoFullNode>,
     TMarshal = crate::alias::marshal::Mailbox,
-    TEpochManager = crate::epoch::manager::Mailbox,
 > where
     TContext: BufferPooler + Clock + commonware_runtime::Metrics + Storage,
 {
     /// The actor configuration passed in when constructing the actor.
-    config: super::Config<TExecutionLayer, TMarshal, TEpochManager>,
+    config: super::Config<TExecutionLayer, TMarshal>,
 
     /// The runtime context passed in when constructing the actor.
     context: ContextCell<TContext>,
@@ -144,16 +143,14 @@ pub(crate) struct Actor<
     pending_finalized_blocks: FuturesOrdered<Ready<(Span, Block, Exact)>>,
 }
 
-impl<TContext, TExecutionLayer, TMarshal, TEpochManager>
-    Actor<TContext, TExecutionLayer, TMarshal, TEpochManager>
+impl<TContext, TExecutionLayer, TMarshal> Actor<TContext, TExecutionLayer, TMarshal>
 where
     TContext: BufferPooler + Clock + CryptoRng + commonware_runtime::Metrics + Spawner + Storage,
     TExecutionLayer: ExecutionLayer,
     TMarshal: Marshal,
-    TEpochManager: EpochManager,
 {
     pub(super) async fn new(
-        config: super::Config<TExecutionLayer, TMarshal, TEpochManager>,
+        config: super::Config<TExecutionLayer, TMarshal>,
         context: TContext,
         mailbox: mpsc::UnboundedReceiver<super::ingress::Message>,
     ) -> eyre::Result<Self> {
@@ -191,16 +188,18 @@ where
 
     pub(crate) fn start(
         mut self,
+        epoch_manager: impl EpochManager,
         dkg_channel: (
             impl Sender<PublicKey = PublicKey>,
             impl Receiver<PublicKey = PublicKey>,
         ),
     ) -> Handle<()> {
-        spawn_cell!(self.context, self.run(dkg_channel))
+        spawn_cell!(self.context, self.run(epoch_manager, dkg_channel))
     }
 
     async fn run(
         mut self,
+        mut epoch_manager: impl EpochManager,
         (sender, receiver): (
             impl Sender<PublicKey = PublicKey>,
             impl Receiver<PublicKey = PublicKey>,
@@ -234,7 +233,10 @@ where
         mux.start();
 
         let reason = loop {
-            if let Err(error) = self.run_dkg_loop(&mut storage, &mut dkg_mux).await {
+            if let Err(error) = self
+                .run_dkg_loop(&mut epoch_manager, &mut storage, &mut dkg_mux)
+                .await
+            {
                 break error;
             }
         };
@@ -272,6 +274,7 @@ where
     #[instrument(skip_all, fields(epoch = %storage.current().epoch))]
     async fn run_dkg_loop<TStorageContext, TSender, TReceiver>(
         &mut self,
+        epoch_manager: &mut impl EpochManager,
         storage: &mut state::Storage<TStorageContext>,
         mux: &mut MuxHandle<TSender, TReceiver>,
     ) -> eyre::Result<()>
@@ -296,7 +299,7 @@ where
             storage.prune(previous).await;
         }
 
-        self.enter_epoch(&state)
+        self.enter_epoch(epoch_manager, &state)
             .wrap_err("could not instruct epoch manager to enter a new epoch")?;
 
         // TODO: emit an event with round info
@@ -386,7 +389,7 @@ where
 
                             storage.set_state(new_state).await;
                             // Emits an error event.
-                            let _ = self.exit_epoch(&state);
+                            let _ = self.exit_epoch(epoch_manager, &state);
 
                             true
                         }
@@ -1277,9 +1280,12 @@ where
     }
 
     #[instrument(skip_all, fields(epoch = %state.epoch), err(level = Level::WARN))]
-    fn enter_epoch(&mut self, state: &State) -> eyre::Result<()> {
-        self.config
-            .epoch_manager
+    fn enter_epoch(
+        &mut self,
+        epoch_manager: &mut impl EpochManager,
+        state: &State,
+    ) -> eyre::Result<()> {
+        epoch_manager
             .enter(
                 state.epoch,
                 state.output.public().clone(),
@@ -1290,9 +1296,12 @@ where
     }
 
     #[instrument(skip_all, fields(epoch = %state.epoch), err(level = Level::WARN))]
-    fn exit_epoch(&mut self, state: &State) -> eyre::Result<()> {
-        self.config
-            .epoch_manager
+    fn exit_epoch(
+        &mut self,
+        epoch_manager: &mut impl EpochManager,
+        state: &State,
+    ) -> eyre::Result<()> {
+        epoch_manager
             .exit(state.epoch)
             .wrap_err("could not instruct epoch manager to enter epoch")
     }

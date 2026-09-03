@@ -1,5 +1,5 @@
 //! Scenario tests for notarized-chain convergence: the executor drives the
-//! execution layer's head onto the pending head reported by consensus,
+//! execution layer's head onto the parent selected by consensus requests,
 //! fetching missing bodies from the marshal actor, and never runs ahead of
 //! the finalization pipeline.
 
@@ -10,40 +10,335 @@ use commonware_macros::test_traced;
 use commonware_runtime::{Runner as _, deterministic};
 
 use super::harness::{
-    ForkchoiceStateExt as _, GENESIS, Harness, HarnessOptions, STARTUP_FCU, make_block, round,
+    ForkchoiceStateExt as _, GENESIS, Harness, STARTUP_FCU, built_payload, make_block, round,
 };
 
 #[test_traced]
-fn pending_head_with_known_body_is_forwarded() {
+fn build_converges_onto_its_verified_parent() {
     deterministic::Runner::default().start(|context| async move {
         let h = Harness::start_at_genesis(&context);
 
         let b1 = make_block(1, 1, GENESIS);
         let d1 = b1.digest();
 
-        // The validation request records the body; the pending-head report
-        // marks it as the convergence target.
+        // Verification delivers the body to the EL; the later build request
+        // retrieves it there, selects it as the convergence target and builds on it.
         h.verify(round(1), b1)
             .await
             .expect("verification should complete")
             .expect("block should be valid");
-        h.report_pending_head(2, 1, d1);
+        let proposal = make_block(2, 2, d1);
+        h.execution.script_built_payload(built_payload(&proposal));
+        h.build(round(2), d1).await.expect("build should complete");
 
-        h.wait_until(|| h.execution.head() == d1).await;
+        assert_eq!(h.execution.head(), d1);
         assert_eq!(
             h.execution.fcus().last(),
-            Some(&(d1, GENESIS, false)),
+            Some(&(d1, GENESIS, true)),
             "convergence must move the head without touching the finalized tip",
         );
         assert!(
             h.marshal.subscribe_log().is_empty(),
-            "the body was in hand; nothing may be fetched",
+            "the body is available from the EL; no marshal fetch is needed",
         );
     });
 }
 
 #[test_traced]
-fn missing_ancestor_bodies_are_fetched_and_forwarded_bottom_up() {
+fn an_in_flight_valid_target_can_prove_ancestry_to_the_new_finalized_tip() {
+    deterministic::Runner::default().start(|context| async move {
+        let mut h = Harness::start_at_genesis(&context);
+        let finalized = make_block(1, 1, GENESIS);
+        let target = make_block(2, 2, finalized.digest());
+        let (f, t) = (finalized.digest(), target.digest());
+        h.verify(round(1), finalized.clone())
+            .await
+            .unwrap()
+            .unwrap();
+        h.execution.add_body(target);
+        let release_old = h
+            .execution
+            .script_delayed_new_payload(t, Ok(PayloadStatusEnum::Valid));
+        drop(h.build(round(3), t));
+        h.wait_until(|| h.execution.new_payloads() == vec![f, t])
+            .await;
+
+        // The target's parent becomes finalized while delivery is in flight.
+        // Its VALID response proves ancestry to the current tip directly.
+        h.deliver_tip(round(1), 1, f);
+        h.run_for(Duration::from_millis(10)).await;
+        release_old.send(()).unwrap();
+        h.wait_until(|| h.execution.head() == t).await;
+        assert_eq!(h.execution.new_payloads(), vec![f, t]);
+        assert_eq!(h.execution.fcus(), vec![STARTUP_FCU, (t, GENESIS, false)]);
+
+        // Delivery of the already-announced finality preserves the proof.
+        // Only the FCU's finalized field needs to advance.
+        h.deliver_finalized(finalized).await.unwrap();
+        assert_eq!(h.execution.fcus().last(), Some(&(t, f, false)));
+    });
+}
+
+#[test_traced]
+fn an_in_flight_valid_ancestor_can_become_the_finalized_tip() {
+    deterministic::Runner::default().start(|context| async move {
+        let mut h = Harness::start_at_genesis(&context);
+        let ancestor = make_block(1, 1, GENESIS);
+        let target = make_block(2, 2, ancestor.digest());
+        let (a, t) = (ancestor.digest(), target.digest());
+        h.marshal.add_block(ancestor);
+        h.marshal.add_block(target);
+        let release = h
+            .execution
+            .script_delayed_new_payload(a, Ok(PayloadStatusEnum::Valid));
+
+        drop(h.build(round(3), t));
+        h.wait_until(|| h.execution.new_payloads() == vec![t, a])
+            .await;
+        // The cursor itself becomes finalized while its delivery is in flight.
+        h.deliver_tip(round(1), 1, a);
+        h.run_for(Duration::from_millis(10)).await;
+        assert_eq!(h.execution.fcus(), vec![STARTUP_FCU]);
+
+        release.send(()).unwrap();
+        h.wait_until(|| h.execution.head() == t).await;
+        assert_eq!(h.execution.new_payloads(), vec![t, a, t]);
+        assert_eq!(h.execution.fcus(), vec![STARTUP_FCU, (t, GENESIS, false)]);
+    });
+}
+
+#[test_traced]
+fn finality_overtaking_an_in_flight_valid_ancestor_reprobes_the_target() {
+    deterministic::Runner::default().start(|context| async move {
+        let mut h = Harness::start_at_genesis(&context);
+        let b1 = make_block(1, 1, GENESIS);
+        let b2 = make_block(2, 2, b1.digest());
+        let b3 = make_block(3, 3, b2.digest());
+        let target = make_block(4, 4, b3.digest());
+        let (d1, d2, d3, t) = (b1.digest(), b2.digest(), b3.digest(), target.digest());
+        for block in [b1, b2, b3, target] {
+            h.marshal.add_block(block);
+        }
+        let release = h
+            .execution
+            .script_delayed_new_payload(d1, Ok(PayloadStatusEnum::Valid));
+
+        drop(h.build(round(5), t));
+        h.wait_until(|| h.execution.new_payloads() == vec![t, d3, d2, d1])
+            .await;
+        // Finality advances above the cursor while its VALID response is
+        // pending. The target still descends from the new finalized tip.
+        h.deliver_tip(round(3), 3, d3);
+        h.run_for(Duration::from_millis(10)).await;
+        assert_eq!(h.execution.fcus(), vec![STARTUP_FCU]);
+
+        release.send(()).unwrap();
+        h.wait_until(|| h.execution.head() == t).await;
+        assert_eq!(h.execution.new_payloads(), vec![t, d3, d2, d1, t]);
+        assert_eq!(h.execution.fcus(), vec![STARTUP_FCU, (t, GENESIS, false)]);
+        assert!(h.marshal.subscribe_log().is_empty());
+    });
+}
+
+#[test_traced]
+fn valid_blocks_do_not_end_convergence_before_reaching_finality() {
+    deterministic::Runner::default().start(|context| async move {
+        let h = Harness::start_at_genesis(&context);
+        let b1 = make_block(1, 1, GENESIS);
+        let b2 = make_block(2, 2, b1.digest());
+        let head = make_block(3, 3, b2.digest());
+        let (d1, d2, target) = (b1.digest(), b2.digest(), head.digest());
+        for block in [b1, b2, head] {
+            h.marshal.add_block(block);
+        }
+        for digest in [target, d2, target] {
+            h.execution
+                .script_new_payload(digest, Ok(PayloadStatusEnum::Valid));
+        }
+        let release = h
+            .execution
+            .script_delayed_new_payload(d1, Ok(PayloadStatusEnum::Valid));
+
+        drop(h.build(round(4), target));
+        h.wait_until(|| h.execution.new_payloads() == vec![target, d2, d1])
+            .await;
+        assert_eq!(h.execution.fcus(), vec![STARTUP_FCU]);
+
+        release.send(()).unwrap();
+        h.wait_until(|| h.execution.head() == target).await;
+        assert_eq!(h.execution.new_payloads(), vec![target, d2, d1, target]);
+        assert_eq!(
+            h.execution.fcus(),
+            vec![STARTUP_FCU, (target, GENESIS, false)]
+        );
+    });
+}
+
+#[test_traced]
+fn a_valid_pending_head_on_another_finalized_branch_is_ineligible() {
+    deterministic::Runner::default().start(|context| async move {
+        let mut h = Harness::start_at_genesis(&context);
+        let other = make_block(1, 1, GENESIS);
+        let finalized = make_block(3, 1, GENESIS);
+        let ancestor = make_block(5, 2, other.digest());
+        let head = make_block(6, 3, ancestor.digest());
+        let (f, a, target) = (finalized.digest(), ancestor.digest(), head.digest());
+        h.deliver_tip(round(3), 1, f);
+        h.deliver_finalized(finalized).await.unwrap();
+        for block in [ancestor, head] {
+            h.marshal.add_block(block);
+        }
+        for digest in [target, a] {
+            h.execution
+                .script_new_payload(digest, Ok(PayloadStatusEnum::Valid));
+        }
+
+        drop(h.build(round(7), target));
+        h.wait_until(|| h.execution.new_payloads() == vec![f, target, a])
+            .await;
+        h.run_for(Duration::from_millis(10)).await;
+        assert_eq!(h.execution.fcus(), vec![STARTUP_FCU, (f, f, false)]);
+        assert_eq!(h.execution.head(), f);
+        assert!(h.marshal.open_subscriptions().is_empty());
+    });
+}
+
+#[test_traced]
+fn a_new_finalized_tip_invalidates_an_in_flight_targets_ancestry_proof() {
+    for conflicting in [false, true] {
+        deterministic::Runner::default().start(|context| async move {
+            let mut h = Harness::start_at_genesis(&context);
+            let b1 = make_block(1, 1, GENESIS);
+            let b2 = make_block(2, 2, b1.digest());
+            let b3 = make_block(4, 3, b2.digest());
+            let head = make_block(5, 4, b3.digest());
+            let (d1, d2, d3, target) = (b1.digest(), b2.digest(), b3.digest(), head.digest());
+            let tip = if conflicting {
+                make_block(3, 2, d1)
+            } else {
+                b2.clone()
+            };
+            for block in [b1, b2, b3, head] {
+                h.marshal.add_block(block);
+            }
+            h.execution
+                .script_new_payload(target, Ok(PayloadStatusEnum::Valid));
+            let release = h
+                .execution
+                .script_delayed_new_payload(target, Ok(PayloadStatusEnum::Valid));
+            if !conflicting {
+                h.execution
+                    .script_new_payload(target, Ok(PayloadStatusEnum::Valid));
+            }
+
+            drop(h.build(round(6), target));
+            h.wait_until(|| h.execution.new_payloads() == vec![target, d3, d2, d1, target])
+                .await;
+            assert_eq!(h.execution.fcus(), vec![STARTUP_FCU]);
+            h.deliver_tip(round(if conflicting { 3 } else { 2 }), 2, tip.digest());
+            h.run_for(Duration::from_millis(10)).await;
+            release.send(()).unwrap();
+
+            if conflicting {
+                h.wait_until(|| h.execution.new_payloads() == vec![target, d3, d2, d1, target, d3])
+                    .await;
+                h.run_for(Duration::from_millis(10)).await;
+                assert_eq!(h.execution.fcus(), vec![STARTUP_FCU]);
+            } else {
+                h.wait_until(|| h.execution.head() == target).await;
+                assert_eq!(
+                    h.execution.new_payloads(),
+                    vec![target, d3, d2, d1, target, d3, target]
+                );
+                assert_eq!(
+                    h.execution.fcus(),
+                    vec![STARTUP_FCU, (target, GENESIS, false)]
+                );
+            }
+        });
+    }
+}
+
+#[test_traced]
+fn a_late_fcu_response_does_not_restore_invalidated_head_eligibility() {
+    deterministic::Runner::default().start(|context| async move {
+        let mut h = Harness::start_at_genesis(&context);
+        let finalized = make_block(1, 1, GENESIS);
+        let target = make_block(2, 2, finalized.digest());
+        let (f, t) = (finalized.digest(), target.digest());
+        h.verify(round(1), finalized).await.unwrap().unwrap();
+        h.execution.add_body(target);
+        h.execution
+            .script_new_payload(t, Ok(PayloadStatusEnum::Valid));
+        // The first VALID target still has to walk through f to genesis,
+        // then return to the target before its initial FCU.
+        h.execution
+            .script_new_payload(t, Ok(PayloadStatusEnum::Valid));
+        let release_fresh = h
+            .execution
+            .script_delayed_new_payload(t, Ok(PayloadStatusEnum::Valid));
+        let state = ForkchoiceState::from_finalized_head(GENESIS, t);
+        let release_fcu = h
+            .execution
+            .script_delayed_fcu(state, Ok(PayloadStatusEnum::Valid));
+        h.execution.script_fcu(state, Ok(PayloadStatusEnum::Valid));
+        drop(h.build(round(3), t));
+        h.wait_until(|| h.execution.fcus().contains(&(t, GENESIS, false)))
+            .await;
+
+        h.deliver_tip(round(1), 1, f);
+        h.run_for(Duration::from_millis(10)).await;
+        release_fcu.send(()).unwrap();
+        h.wait_until(|| h.execution.new_payloads() == vec![f, t, f, t, t])
+            .await;
+        assert_eq!(h.execution.head(), GENESIS);
+        assert_eq!(
+            h.execution.fcus(),
+            vec![STARTUP_FCU, (t, GENESIS, false), (GENESIS, GENESIS, false)]
+        );
+
+        release_fresh.send(()).unwrap();
+        h.wait_until(|| h.execution.head() == t).await;
+    });
+}
+
+#[test_traced]
+fn a_valid_child_does_not_establish_the_current_targets_head_eligibility() {
+    deterministic::Runner::default().start(|context| async move {
+        let h = Harness::start_at_genesis(&context);
+        let parent = make_block(1, 1, GENESIS);
+        let child = make_block(2, 2, parent.digest());
+        let (p, c) = (parent.digest(), child.digest());
+        h.verify(round(1), parent).await.unwrap().unwrap();
+        h.execution.add_body(child);
+        let release_child = h
+            .execution
+            .script_delayed_new_payload(c, Ok(PayloadStatusEnum::Valid));
+        let release_parent = h
+            .execution
+            .script_delayed_new_payload(p, Ok(PayloadStatusEnum::Valid));
+        drop(h.build(round(3), c));
+        h.wait_until(|| h.execution.new_payloads() == vec![p, c])
+            .await;
+
+        // Select the parent while the old target's delivery is active.
+        // The child's VALID response must not promote its parent to HEAD.
+        drop(h.build_on(round(4), 1, p));
+        h.run_for(Duration::from_millis(10)).await;
+        release_child.send(()).unwrap();
+        h.wait_until(|| h.execution.new_payloads() == vec![p, c, p])
+            .await;
+        assert_eq!(h.execution.fcus(), vec![STARTUP_FCU]);
+        assert_eq!(h.execution.head(), GENESIS);
+
+        release_parent.send(()).unwrap();
+        h.wait_until(|| h.execution.head() == p).await;
+        assert_eq!(h.execution.fcus(), vec![STARTUP_FCU, (p, GENESIS, false)]);
+    });
+}
+
+#[test_traced]
+fn pending_head_syncing_drives_ancestor_fetches_and_deliveries() {
     deterministic::Runner::default().start(|context| async move {
         let h = Harness::start_at_genesis(&context);
 
@@ -54,7 +349,8 @@ fn missing_ancestor_bodies_are_fetched_and_forwarded_bottom_up() {
 
         // Only the pending head is known; every body on its ancestry is
         // missing and must be fetched, walking the path tip-down.
-        h.report_pending_head(4, 3, d3);
+        // The canceled request still selects the independent convergence target.
+        drop(h.build(round(4), d3));
 
         h.wait_until(|| h.marshal.fulfill_subscription(d3, b3.clone()))
             .await;
@@ -64,6 +360,7 @@ fn missing_ancestor_bodies_are_fetched_and_forwarded_bottom_up() {
             .await;
 
         h.wait_until(|| h.execution.head() == d3).await;
+        assert_eq!(h.execution.head(), d3);
         assert_eq!(
             h.marshal.subscribe_log(),
             vec![(d3, round(3)), (d2, round(2)), (d1, round(1))],
@@ -71,16 +368,129 @@ fn missing_ancestor_bodies_are_fetched_and_forwarded_bottom_up() {
         );
         assert_eq!(
             h.execution.new_payloads(),
-            vec![d1, d2, d3],
-            "blocks are forwarded bottom-up",
+            vec![d3, d2, d1, d3],
+            "each SYNCING response requests a parent, then the target is re-probed",
         );
+        assert_eq!(
+            h.execution.fcus(),
+            vec![STARTUP_FCU, (d3, GENESIS, false)],
+            "one update converges across the delivered run",
+        );
+    });
+}
+
+#[test_traced]
+fn advancing_finality_cancels_the_ancestor_fetch_and_reprobes_the_pending_head() {
+    deterministic::Runner::default().start(|context| async move {
+        let mut h = Harness::start_at_genesis(&context);
+        let b1 = make_block(1, 1, GENESIS);
+        let b2 = make_block(2, 2, b1.digest());
+        let b3 = make_block(3, 3, b2.digest());
+        let (d1, d2, d3) = (b1.digest(), b2.digest(), b3.digest());
+        h.marshal.add_block(b3);
+        drop(h.build(round(4), d3));
+        h.wait_until(|| h.marshal.open_subscriptions() == vec![(d2, round(2))])
+            .await;
+
+        h.deliver_tip(round(2), 2, d2);
+        h.wait_until(|| {
+            h.marshal.open_subscriptions().is_empty() && h.execution.new_payloads() == vec![d3, d3]
+        })
+        .await;
+        assert_eq!(h.execution.head(), GENESIS);
+        h.deliver_finalized(b1).await.unwrap();
+        assert_eq!(h.execution.new_payloads(), vec![d3, d3, d1]);
+        h.deliver_finalized(b2).await.unwrap();
+        h.wait_until(|| h.execution.head() == d3).await;
+        assert_eq!(h.execution.new_payloads(), vec![d3, d3, d1, d2, d3]);
+        assert_eq!(h.marshal.subscribe_log(), vec![(d2, round(2))]);
+    });
+}
+
+#[test_traced]
+fn advancing_finalized_round_cancels_a_fetch_above_the_finalized_height() {
+    deterministic::Runner::default().start(|context| async move {
+        let mut h = Harness::start_at_genesis(&context);
+        let b1 = make_block(1, 1, GENESIS);
+        let parent = make_block(2, 2, b1.digest());
+        let target = make_block(3, 3, parent.digest());
+        let finalized = make_block(2, 1, GENESIS);
+        let (p, t) = (parent.digest(), target.digest());
+        h.marshal.add_block(target);
+        drop(h.build(round(4), t));
+        h.wait_until(|| h.marshal.open_subscriptions() == vec![(p, round(2))])
+            .await;
+
+        // The head remains above finality, but its ancestry crosses the
+        // round boundary before reaching the finalized height.
+        h.deliver_tip(round(2), 1, finalized.digest());
+        h.wait_until(|| {
+            h.marshal.open_subscriptions().is_empty() && h.execution.new_payloads() == vec![t, t]
+        })
+        .await;
+        h.run_for(Duration::from_millis(10)).await;
+        assert_eq!(h.execution.new_payloads(), vec![t, t]);
+        assert_eq!(h.marshal.subscribe_log(), vec![(p, round(2))]);
+        assert_eq!(h.execution.head(), GENESIS);
+    });
+}
+
+#[test_traced]
+fn pending_head_walk_uses_execution_layer_bodies_without_marshal() {
+    deterministic::Runner::default().start(|context| async move {
+        let h = Harness::start_at_genesis(&context);
+        let b1 = make_block(1, 1, GENESIS);
+        let b2 = make_block(2, 2, b1.digest());
+        let (d1, d2) = (b1.digest(), b2.digest());
+        h.execution.add_body(b1);
+        h.execution.add_body(b2);
+
+        // Canceling the build leaves only independent head convergence.
+        drop(h.build(round(3), d2));
+        h.wait_until(|| h.execution.head() == d2).await;
+        assert!(h.marshal.subscribe_log().is_empty());
+        assert_eq!(h.execution.new_payloads(), vec![d2, d1, d2]);
+        assert_eq!(h.execution.fcus(), vec![STARTUP_FCU, (d2, GENESIS, false)]);
+    });
+}
+
+#[test_traced]
+fn a_long_syncing_walk_waits_for_a_valid_target_before_updating_head() {
+    deterministic::Runner::default().start(|context| async move {
+        let h = Harness::start_at_genesis(&context);
+
+        // Ten notarized blocks above genesis, all bodies fetched tip-down.
+        let mut blocks = Vec::new();
+        let mut parent = GENESIS;
+        for height in 1..=10 {
+            let block = make_block(height, height, parent);
+            parent = block.digest();
+            blocks.push(block);
+        }
+        let digests = blocks.iter().map(|b| b.digest()).collect::<Vec<_>>();
+        // The canceled request still selects the independent convergence target.
+        drop(h.build(round(11), digests[9]));
+        for block in blocks.iter().rev() {
+            h.wait_until(|| {
+                h.marshal
+                    .fulfill_subscription(block.digest(), block.clone())
+            })
+            .await;
+        }
+
+        // After eight deliveries, the forced FCU reaffirms genesis. The head
+        // only moves to the target once the target itself returns VALID.
+        h.wait_until(|| h.execution.head() == digests[9]).await;
+        assert_eq!(h.execution.head(), digests[9]);
+        let mut deliveries = digests.iter().rev().copied().collect::<Vec<_>>();
+        deliveries.push(digests[9]);
+        assert_eq!(h.execution.new_payloads(), deliveries);
         assert_eq!(
             h.execution.fcus(),
             vec![
                 STARTUP_FCU,
-                (d1, GENESIS, false),
-                (d2, GENESIS, false),
-                (d3, GENESIS, false)
+                (GENESIS, GENESIS, false),
+                (digests[9], GENESIS, false),
             ],
         );
     });
@@ -93,7 +503,8 @@ fn dropped_body_fetch_is_retried() {
 
         let b1 = make_block(1, 1, GENESIS);
         let d1 = b1.digest();
-        h.report_pending_head(2, 1, d1);
+        // The canceled request still selects the independent convergence target.
+        drop(h.build(round(2), d1));
 
         // Marshal gives up on the first subscription; the block is still on
         // the canonical notarized path, so the fetch must be re-issued.
@@ -103,6 +514,7 @@ fn dropped_body_fetch_is_retried() {
         h.wait_until(|| h.marshal.fulfill_subscription(d1, b1.clone()))
             .await;
         h.wait_until(|| h.execution.head() == d1).await;
+        assert_eq!(h.execution.head(), d1);
     });
 }
 
@@ -115,14 +527,17 @@ fn stale_body_fetch_is_dropped_when_the_pending_head_moves() {
         let a1 = make_block(5, 1, GENESIS);
         let (d1, da1) = (b1.digest(), a1.digest());
 
-        h.report_pending_head(2, 1, d1);
+        // Cancel the build so only its independent HEAD fetch remains.
+        drop(h.build(round(2), d1));
         h.wait_until(|| !h.marshal.open_subscriptions().is_empty())
             .await;
 
         // A newer context re-anchors the pending head onto a different
         // block; the in-flight fetch is now pointless and must be dropped
         // (nobody is required to serve a forked-out block).
-        h.report_pending_head(6, 5, da1);
+        let proposal = make_block(6, 2, da1);
+        h.execution.script_built_payload(built_payload(&proposal));
+        let second = h.build(round(6), da1);
         h.wait_until(|| h.marshal.open_subscriptions() == vec![(da1, round(5))])
             .await;
 
@@ -133,22 +548,17 @@ fn stale_body_fetch_is_dropped_when_the_pending_head_moves() {
 
         h.wait_until(|| h.marshal.fulfill_subscription(da1, a1.clone()))
             .await;
-        h.wait_until(|| h.execution.head() == da1).await;
+        second
+            .await
+            .expect("build on the new branch should complete");
+        assert_eq!(h.execution.head(), da1);
     });
 }
 
 #[test_traced]
-fn rejected_notarized_block_is_withheld_then_retried() {
+fn rejected_pending_head_delivery_waits_for_a_newer_context() {
     deterministic::Runner::default().start(|context| async move {
-        // Retries of rejected notarized blocks are driven by later events;
-        // with nothing else going on, the FCU heartbeat is what re-runs the
-        // scheduler, so the test gives it a short interval.
-        let h = Harness::builder()
-            .harness_options(HarnessOptions {
-                fcu_heartbeat_interval: Duration::from_millis(200),
-                ..Default::default()
-            })
-            .start(&context);
+        let h = Harness::start_at_genesis(&context);
 
         let b1 = make_block(1, 1, GENESIS);
         let d1 = b1.digest();
@@ -161,68 +571,63 @@ fn rejected_notarized_block_is_withheld_then_retried() {
         h.execution
             .script_new_payload(d1, Ok(PayloadStatusEnum::Valid));
 
-        h.report_pending_head(2, 1, d1);
+        // The canceled request still selects the independent convergence target.
+        drop(h.build(round(2), d1));
         h.wait_until(|| h.marshal.fulfill_subscription(d1, b1.clone()))
             .await;
 
-        // The forward is rejected; the block is withheld from retries.
+        // The forward is rejected. The execution layer would answer INVALID
+        // again from its cache, so no timer retries the block.
         h.wait_until(|| h.execution.new_payloads() == vec![d1])
             .await;
-        h.run_for(Duration::from_secs(5)).await;
+        h.run_for(Duration::from_secs(30)).await;
         assert_eq!(
             h.execution.new_payloads(),
             vec![d1],
-            "a rejected block must not be retried in a tight loop",
+            "a rejected block must not be retried on its own",
         );
         assert_eq!(h.execution.head(), GENESIS);
 
-        // After the retry delay (10s) the block becomes forwardable again.
-        h.run_for(Duration::from_secs(6)).await;
+        // A newer consensus context selecting the same head restarts the
+        // delivery from the retained body.
+        drop(h.build(round(3), d1));
         h.wait_until(|| h.execution.head() == d1).await;
         assert_eq!(h.execution.new_payloads(), vec![d1, d1]);
+        assert_eq!(h.marshal.subscribe_log().len(), 1);
     });
 }
 
 #[test_traced]
-fn new_payload_transport_error_is_withheld_then_retried() {
-    deterministic::Runner::default().start(|context| async move {
-        let h = Harness::builder()
-            .harness_options(HarnessOptions {
-                fcu_heartbeat_interval: Duration::from_millis(200),
-                ..Default::default()
-            })
-            .start(&context);
-
-        let b1 = make_block(1, 1, GENESIS);
-        let d1 = b1.digest();
-        h.execution.script_new_payload(d1, Err("connection closed"));
-        h.execution
-            .script_new_payload(d1, Ok(PayloadStatusEnum::Valid));
-
-        h.report_pending_head(2, 1, d1);
-        h.wait_until(|| h.marshal.fulfill_subscription(d1, b1.clone()))
-            .await;
-
-        h.wait_until(|| h.execution.new_payloads() == vec![d1])
-            .await;
-        h.run_for(Duration::from_secs(5)).await;
-        assert_eq!(
-            h.execution.new_payloads(),
-            vec![d1],
-            "a transport failure must not trigger a tight retry loop",
-        );
-
-        h.run_for(Duration::from_secs(6)).await;
-        h.wait_until(|| h.execution.head() == d1).await;
-        assert_eq!(h.execution.new_payloads(), vec![d1, d1]);
-    });
-}
-
-#[test_traced]
-fn rejected_notarized_fcu_does_not_advance_the_tracked_state() {
+fn new_payload_engine_error_is_fatal() {
     deterministic::Runner::default().start(|context| async move {
         let h = Harness::start_at_genesis(&context);
 
+        let b1 = make_block(1, 1, GENESIS);
+        let d1 = b1.digest();
+        h.execution
+            .script_new_payload(d1, Err("engine task stopped"));
+
+        // The canceled request still selects the independent convergence target.
+        drop(h.build(round(2), d1));
+        h.wait_until(|| h.marshal.fulfill_subscription(d1, b1.clone()))
+            .await;
+
+        h.actor
+            .await
+            .expect("actor should shut down cleanly on a failed convergence delivery");
+        assert_eq!(h.execution.new_payloads(), vec![d1]);
+        assert_eq!(h.execution.head(), GENESIS);
+    });
+}
+
+#[test_traced]
+fn rejected_notarized_fcu_is_fatal() {
+    deterministic::Runner::default().start(|context| async move {
+        let h = Harness::start_at_genesis(&context);
+
+        // The forkchoice update names a block the execution layer accepted
+        // through its delivery. A rejection means the executor's view of the
+        // execution layer has diverged from it: the node shuts down.
         let b1 = make_block(1, 1, GENESIS);
         let d1 = b1.digest();
         h.execution.script_fcu(
@@ -232,87 +637,54 @@ fn rejected_notarized_fcu_does_not_advance_the_tracked_state() {
             }),
         );
 
-        h.report_pending_head(2, 1, d1);
+        // The canceled request still selects the independent convergence target.
+        drop(h.build(round(2), d1));
         h.wait_until(|| h.marshal.fulfill_subscription(d1, b1.clone()))
             .await;
-        h.wait_until(|| h.execution.fcus().len() == 2).await;
-        h.run_for(Duration::from_millis(10)).await;
 
+        h.actor
+            .await
+            .expect("actor should shut down cleanly on a rejected forkchoice update");
         assert!(
             h.execution.knows_block(d1),
             "the successful new-payload call must leave the block known to the EL",
         );
+        assert_eq!(h.execution.fcus().len(), 2);
         assert_eq!(
             h.execution.head(),
             GENESIS,
             "the rejected FCU must not move the EL head",
         );
-
-        // Re-anchor consensus on genesis. If the actor had advanced its own
-        // tracked head despite the rejected FCU, it would now issue a repoint.
-        h.report_pending_head(3, 0, GENESIS);
-        let candidate = make_block(3, 1, GENESIS);
-        assert!(
-            h.verify(round(3), candidate)
-                .await
-                .expect("the actor should continue serving validation")
-                .is_some(),
-        );
-        h.run_for(Duration::from_millis(10)).await;
-        assert_eq!(
-            h.execution.fcus().len(),
-            2,
-            "the actor and EL must agree that the head remained at genesis",
-        );
     });
 }
 
 #[test_traced]
-fn rejected_notarized_fcu_is_withheld_then_retried() {
+fn notarized_fcu_transport_error_is_fatal() {
     deterministic::Runner::default().start(|context| async move {
-        // An FCU rejection uses the shared notarized-block retry mechanism:
-        // the block is withheld for the rejection delay, and heartbeats drive
-        // the scheduler until it becomes eligible to be forwarded again.
-        let h = Harness::builder()
-            .harness_options(HarnessOptions {
-                fcu_heartbeat_interval: Duration::from_millis(200),
-                ..Default::default()
-            })
-            .start(&context);
+        let h = Harness::start_at_genesis(&context);
 
         let b1 = make_block(1, 1, GENESIS);
         let d1 = b1.digest();
-        let state = ForkchoiceState::from_finalized_head(GENESIS, d1);
         h.execution.script_fcu(
-            state,
-            Ok(PayloadStatusEnum::Invalid {
-                validation_error: "transient".into(),
-            }),
+            ForkchoiceState::from_finalized_head(GENESIS, d1),
+            Err("connection closed"),
         );
-        h.execution.script_fcu(state, Ok(PayloadStatusEnum::Valid));
 
-        h.report_pending_head(2, 1, d1);
+        // The canceled request still selects the independent convergence target.
+        drop(h.build(round(2), d1));
         h.wait_until(|| h.marshal.fulfill_subscription(d1, b1.clone()))
             .await;
-        h.wait_until(|| h.execution.new_payloads() == vec![d1])
-            .await;
 
-        h.run_for(Duration::from_secs(5)).await;
-        assert_eq!(
-            h.execution.new_payloads(),
-            vec![d1],
-            "a rejected FCU must not trigger a tight convergence retry",
-        );
+        h.actor
+            .await
+            .expect("actor should shut down cleanly on a forkchoice transport error");
+        assert_eq!(h.execution.new_payloads(), vec![d1]);
         assert_eq!(h.execution.head(), GENESIS);
-
-        h.run_for(Duration::from_secs(4)).await;
-        h.wait_until(|| h.execution.head() == d1).await;
-        assert_eq!(h.execution.new_payloads(), vec![d1, d1]);
     });
 }
 
 #[test_traced]
-fn syncing_notarized_payload_is_rejected_without_updating_forkchoice() {
+fn syncing_at_the_finalized_boundary_waits_without_updating_forkchoice() {
     deterministic::Runner::default().start(|context| async move {
         let h = Harness::start_at_genesis(&context);
 
@@ -321,7 +693,8 @@ fn syncing_notarized_payload_is_rejected_without_updating_forkchoice() {
         h.execution
             .script_new_payload(d1, Ok(PayloadStatusEnum::Syncing));
 
-        h.report_pending_head(2, 1, d1);
+        // The canceled request still selects the independent convergence target.
+        drop(h.build(round(2), d1));
         h.wait_until(|| h.marshal.fulfill_subscription(d1, b1.clone()))
             .await;
         h.wait_until(|| h.execution.new_payloads() == vec![d1])
@@ -351,7 +724,8 @@ fn accepted_notarized_payload_is_rejected_without_updating_forkchoice() {
         h.execution
             .script_new_payload(d1, Ok(PayloadStatusEnum::Accepted));
 
-        h.report_pending_head(2, 1, d1);
+        // The canceled request still selects the independent convergence target.
+        drop(h.build(round(2), d1));
         h.wait_until(|| h.marshal.fulfill_subscription(d1, b1.clone()))
             .await;
         h.wait_until(|| h.execution.new_payloads() == vec![d1])
@@ -377,28 +751,34 @@ fn stranded_head_is_repointed_onto_the_finalized_tip() {
         let h = Harness::start_at_genesis(&context);
 
         // The head converges onto notarized a1. After nullifications,
-        // consensus re-anchors onto the finalized tip (genesis): there is
-        // no block to forward, only a bare forkchoice update repointing the
-        // head.
+        // consensus builds on the finalized tip (genesis), delivering it
+        // before the build FCU re-anchors the head.
         let a1 = make_block(1, 1, GENESIS);
         let da1 = a1.digest();
         h.verify(round(1), a1)
             .await
             .expect("verification should complete")
             .expect("block should be valid");
-        h.report_pending_head(2, 1, da1);
-        h.wait_until(|| h.execution.head() == da1).await;
+        let proposal = make_block(2, 2, da1);
+        h.execution.script_built_payload(built_payload(&proposal));
+        h.build(round(2), da1).await.expect("build should complete");
+        assert_eq!(h.execution.head(), da1);
 
-        let payloads_before = h.execution.new_payloads();
-        h.report_pending_head(5, 0, GENESIS);
-        h.wait_until(|| h.execution.head() == GENESIS).await;
+        let mut expected_payloads = h.execution.new_payloads();
+        expected_payloads.push(GENESIS);
+        let proposal = make_block(5, 1, GENESIS);
+        h.execution.script_built_payload(built_payload(&proposal));
+        h.build(round(5), GENESIS)
+            .await
+            .expect("build should complete");
+        assert_eq!(h.execution.head(), GENESIS);
 
         assert_eq!(
             h.execution.new_payloads(),
-            payloads_before,
-            "a repoint is a bare forkchoice update; no payload is forwarded",
+            expected_payloads,
+            "the build delivers genesis before its forkchoice update",
         );
-        assert_eq!(h.execution.fcus().last(), Some(&(GENESIS, GENESIS, false)));
+        assert!(h.execution.fcus().ends_with(&[(GENESIS, GENESIS, true)]));
     });
 }
 
@@ -413,8 +793,10 @@ fn failed_repoint_is_fatal() {
             .await
             .expect("verification should complete")
             .expect("block should be valid");
-        h.report_pending_head(2, 1, da1);
-        h.wait_until(|| h.execution.head() == da1).await;
+        let proposal = make_block(2, 2, da1);
+        h.execution.script_built_payload(built_payload(&proposal));
+        h.build(round(2), da1).await.expect("build should complete");
+        assert_eq!(h.execution.head(), da1);
 
         // A repoint targets an ancestor the execution layer provably has;
         // failure means consensus and execution disagree fundamentally.
@@ -424,7 +806,9 @@ fn failed_repoint_is_fatal() {
                 validation_error: "corrupt".into(),
             }),
         );
-        h.report_pending_head(5, 0, GENESIS);
+        h.build(round(5), GENESIS)
+            .await
+            .expect_err("failed repoint must fail the build");
 
         h.actor
             .await
@@ -447,14 +831,18 @@ fn repoint_transport_error_is_fatal() {
             .await
             .expect("verification should complete")
             .expect("block should be valid");
-        h.report_pending_head(2, 1, da1);
-        h.wait_until(|| h.execution.head() == da1).await;
+        let proposal = make_block(2, 2, da1);
+        h.execution.script_built_payload(built_payload(&proposal));
+        h.build(round(2), da1).await.expect("build should complete");
+        assert_eq!(h.execution.head(), da1);
 
         h.execution.script_fcu(
             ForkchoiceState::from_finalized_head(GENESIS, GENESIS),
             Err("connection closed"),
         );
-        h.report_pending_head(5, 0, GENESIS);
+        h.build(round(5), GENESIS)
+            .await
+            .expect_err("failed repoint must fail the build");
 
         h.actor
             .await
@@ -473,8 +861,10 @@ fn repoint_canonical_lookup_error_is_fatal() {
             .await
             .expect("verification should complete")
             .expect("block should be valid");
-        h.report_pending_head(2, 1, da1);
-        h.wait_until(|| h.execution.head() == da1).await;
+        let proposal = make_block(2, 2, da1);
+        h.execution.script_built_payload(built_payload(&proposal));
+        h.build(round(2), da1).await.expect("build should complete");
+        assert_eq!(h.execution.head(), da1);
         let accepted_fcus = h.execution.fcus();
 
         // Repointing checks the locally tracked finalized hash through the
@@ -482,7 +872,9 @@ fn repoint_canonical_lookup_error_is_fatal() {
         h.execution.set_finalized(0, GENESIS);
         h.execution
             .script_canonical_block_hash(0, Err("database unavailable"));
-        h.report_pending_head(5, 0, GENESIS);
+        h.build(round(5), GENESIS)
+            .await
+            .expect_err("failed repoint must fail the build");
 
         let execution = h.execution.clone();
         h.actor
@@ -506,53 +898,66 @@ fn branch_flip_flop_reconverges_from_resident_bodies() {
         let b2 = make_block(2, 2, b1.digest());
         let d2 = b2.digest();
         for (view, block) in [(1, b1), (2, b2)] {
-            let digest = block.digest();
             h.verify(round(view), block)
                 .await
                 .expect("verification should complete")
                 .expect("block should be valid");
-            h.report_pending_head(view + 1, view, digest);
-            h.wait_until(|| h.execution.head() == digest).await;
         }
+        let proposal = make_block(3, 3, d2);
+        h.execution.script_built_payload(built_payload(&proposal));
+        h.build(round(3), d2).await.expect("build should complete");
+        h.wait_until(|| h.execution.head() == d2).await;
 
         // Branch A: a1 at the same height as b1, body fetched from marshal.
         let a1 = make_block(3, 1, GENESIS);
         let da1 = a1.digest();
-        h.report_pending_head(4, 3, da1);
+        let proposal = make_block(4, 2, da1);
+        h.execution.script_built_payload(built_payload(&proposal));
+        let build = h.build(round(4), da1);
         h.wait_until(|| h.marshal.fulfill_subscription(da1, a1.clone()))
             .await;
-        h.wait_until(|| h.execution.head() == da1).await;
+        build.await.expect("build on branch A should complete");
+        assert_eq!(h.execution.head(), da1);
         let fetches = h.marshal.subscribe_log().len();
 
-        // Flip back to branch B: both bodies are still resident, so the
-        // re-convergence must not fetch anything.
-        h.report_pending_head(5, 2, d2);
+        // Flip back to branch B using the locally available body. The build
+        // still delivers its parent before issuing the forkchoice update.
+        let mut expected_payloads = h.execution.new_payloads();
+        expected_payloads.push(d2);
+        let proposal = make_block(5, 3, d2);
+        h.execution.script_built_payload(built_payload(&proposal));
+        h.build_on(round(5), 2, d2)
+            .await
+            .expect("build should complete");
         h.wait_until(|| h.execution.head() == d2).await;
         assert_eq!(
             h.marshal.subscribe_log().len(),
             fetches,
             "flip-flopping between branches must reuse resident bodies",
         );
-        assert_eq!(h.execution.new_payloads().last(), Some(&d2));
+        assert_eq!(
+            h.execution.new_payloads(),
+            expected_payloads,
+            "the build re-delivers the known parent before forkchoice",
+        );
+        assert!(h.execution.fcus().ends_with(&[(d2, GENESIS, true)]));
     });
 }
 
 #[test_traced]
-fn advancing_finalized_tip_prunes_covered_state() {
+fn advancing_finalized_tip_prevents_building_on_an_old_verified_branch() {
     deterministic::Runner::default().start(|context| async move {
         let mut h = Harness::start_at_genesis(&context);
 
-        // a1's body is resident (from a validation request) but never
-        // becomes the pending head.
+        // The EL executes a1, but it never becomes the pending head.
         let a1 = make_block(1, 1, GENESIS);
         let da1 = a1.digest();
-        h.verify(round(1), a1)
+        h.verify(round(1), a1.clone())
             .await
             .expect("verification should complete")
             .expect("block should be valid");
 
-        // The network finalizes b1 at the same height in a later round;
-        // the tip covers a1, which must be expunged.
+        // The network finalizes b1 at the same height in a later round.
         let b1 = make_block(5, 1, GENESIS);
         let db1 = b1.digest();
         h.deliver_tip(round(5), 1, db1);
@@ -561,19 +966,16 @@ fn advancing_finalized_tip_prunes_covered_state() {
             .expect("finalized block should be acknowledged");
         h.wait_until(|| h.execution.head() == db1).await;
 
-        // A stale context naming the pruned block must not resurrect it:
-        // its round is covered by the finalized tip, so the tree re-anchors
-        // on the tip instead of fetching or forwarding a1.
-        h.report_pending_head(2, 1, da1);
-        h.run_for(Duration::from_millis(500)).await;
+        // The parent's certified round is already covered by finality, so
+        // reject the build before fetching or delivering the old parent.
+        let build = h.build_on(round(2), 1, da1);
+        build
+            .await
+            .expect_err("a build on a parent conflicting with finality must fail");
 
-        assert!(
-            h.marshal.subscribe_log().is_empty(),
-            "nothing may be fetched for a pruned block",
-        );
+        assert!(h.marshal.subscribe_log().is_empty());
         assert_eq!(h.execution.head(), db1);
-        // The validation request itself submitted a1 once; the pruning must
-        // prevent any later forward of it.
+        // The validation request itself submitted a1 once.
         assert_eq!(
             h.execution
                 .new_payloads()

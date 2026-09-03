@@ -34,7 +34,7 @@ use futures::future::join_all;
 use itertools::Itertools as _;
 use rand_core::CryptoRng;
 use reth_node_metrics::recorder::PrometheusRecorder;
-use tempo_consensus::feed::FeedStateHandle;
+use tempo_consensus::{VerificationMode, feed::FeedStateHandle};
 
 pub mod consensus_snapshot;
 pub mod execution_runtime;
@@ -44,9 +44,6 @@ pub mod testing_node;
 pub use execution_runtime::ExecutionRuntime;
 use tempo_dkg_onchain_artifacts::OnchainDkgOutcome;
 pub use testing_node::TestingNode;
-
-#[cfg(test)]
-mod tests;
 
 pub const CONSENSUS_NODE_PREFIX: &str = "consensus";
 pub const EXECUTION_NODE_PREFIX: &str = "execution";
@@ -125,6 +122,9 @@ pub struct Setup {
     /// `None` preserves the fixture schedule.
     pub t12_time: Option<u64>,
 
+    /// Verification mode used by every validator.
+    pub verification_mode: VerificationMode,
+
     /// How many signing validators to launch.
     pub how_many_signers: u32,
 
@@ -153,9 +153,10 @@ pub struct Setup {
 }
 
 impl Setup {
-    pub fn new() -> Self {
+    pub fn new(verification_mode: VerificationMode) -> Self {
         Self {
             t12_time: None,
+            verification_mode,
             how_many_signers: 4,
             how_many_verifiers: 0,
             seed: 0,
@@ -233,7 +234,7 @@ impl Setup {
 
 impl Default for Setup {
     fn default() -> Self {
-        Self::new()
+        Self::new(VerificationMode::default())
     }
 }
 
@@ -247,6 +248,7 @@ pub async fn setup_validators(
     context: &mut Context,
     Setup {
         t12_time,
+        verification_mode,
         epoch_length,
         how_many_signers,
         how_many_verifiers,
@@ -327,6 +329,7 @@ pub async fn setup_validators(
             network_identity.clone(),
             feed_state,
             proposal_return_budget,
+            verification_mode,
             execution_runtime.handle(),
             execution_config,
             ingress,

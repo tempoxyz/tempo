@@ -62,7 +62,7 @@ use super::super::{
     state::{self, Round, ShareState},
 };
 
-type TestActor = Actor<Context, StubExecutionProvider, StubMarshal, StubEpochManager>;
+type TestActor = Actor<Context, StubExecutionProvider, StubMarshal>;
 
 pub(super) struct Harness {
     context: Context,
@@ -279,7 +279,6 @@ impl Harness {
             self.context.child("actor"),
             Config {
                 epoch_strategy: self.epoch_strategy.clone(),
-                epoch_manager: self.epoch_manager.clone(),
                 namespace: crate::config::NAMESPACE.to_vec(),
                 me: self.identity.clone(),
                 mailbox_size: NonZeroUsize::new(1).unwrap(),
@@ -299,9 +298,12 @@ impl Harness {
     pub(super) async fn start(&mut self) {
         let (actor, mailbox) = self.init().await.unwrap();
         self.mailbox = Some(mailbox);
+        let epoch_manager = self.epoch_manager.clone();
         self.handle = Some(match &self.network {
-            Some(network) => actor.start(network.register(self.identity.public_key())),
-            None => actor.start((self.sender.clone(), InertReceiver)),
+            Some(network) => {
+                actor.start(epoch_manager, network.register(self.identity.public_key()))
+            }
+            None => actor.start(epoch_manager, (self.sender.clone(), InertReceiver)),
         });
     }
 

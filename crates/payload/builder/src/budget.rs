@@ -2,13 +2,11 @@
 //!
 //! The builder can stop transaction execution, but it still has to finish
 //! non-interruptible finalization work like state hashing, state root updates,
-//! block assembly, and marshal persistence. These helpers learn the relation
-//! between tx execution cutoff time, total replayable build work, validation
-//! latency feedback, and the size-dependent cost of persisting large blocks
-//! through consensus.
+//! and block assembly. These helpers learn the relation between tx execution
+//! cutoff time, total replayable build work, and validation latency feedback.
 //!
 //! The decision model is:
-//! `leader_idle + predicted_builder_work + predicted_validator_work + 2 * marshal_persist >= budget`.
+//! `leader_idle + predicted_builder_work + predicted_validator_work >= budget`.
 //! Idle waiting only happens on the proposer. Builder work is projected from the
 //! current build, while validator work uses feedback from previously validated
 //! blocks when available and otherwise falls back to the builder projection.
@@ -17,9 +15,7 @@ use std::time::Duration;
 
 #[cfg(test)]
 use tempo_payload_types::ValidationLatencyEstimator;
-use tempo_payload_types::{
-    MarshalPersistEstimator, ValidationLatencyEstimate, ValidationLatencyWorkload,
-};
+use tempo_payload_types::{ValidationLatencyEstimate, ValidationLatencyWorkload};
 
 /// Fixed-point scale for build time multipliers.
 pub(crate) const BUILD_TIME_MULTIPLIER_SCALE: u64 = 1_000_000;
@@ -57,7 +53,6 @@ fn scaled_duration(elapsed: Duration, multiplier: u64) -> Duration {
 pub(crate) struct PayloadBudgetDecision {
     pub(crate) predicted_builder_work: Duration,
     pub(crate) predicted_validator_work: Duration,
-    pub(crate) marshal_persist: Duration,
     pub(crate) total_reserved: Duration,
 }
 
@@ -74,15 +69,12 @@ pub(crate) struct PayloadBudgetDecision {
 /// `current_workload` describes the block currently being assembled.
 ///
 /// The budget is not split into fixed leader/validator buckets. Instead, we
-/// charge proposer idle once, projected builder work once, learned validator
-/// work once capped at the conservative builder-work projection, and marshal
-/// persistence once for each side.
+/// charge proposer idle once, projected builder work once, and learned
+/// validator work once capped at the conservative builder-work projection.
 pub(crate) fn payload_budget_decision(
     elapsed: Duration,
     idle_elapsed: Duration,
     multiplier: u64,
-    marshal_persist: MarshalPersistEstimator,
-    block_size_bytes: usize,
     validation_latency: Option<ValidationLatencyEstimate>,
     current_workload: ValidationLatencyWorkload,
 ) -> PayloadBudgetDecision {
@@ -93,16 +85,12 @@ pub(crate) fn payload_budget_decision(
     let predicted_validator_work = validation_latency_estimate
         .map(|estimate| estimate.min(predicted_builder_work))
         .unwrap_or(predicted_builder_work);
-    let marshal_persist = marshal_persist.estimate(block_size_bytes);
     let total_reserved = idle_elapsed
         .saturating_add(predicted_builder_work)
-        .saturating_add(predicted_validator_work)
-        .saturating_add(marshal_persist)
-        .saturating_add(marshal_persist);
+        .saturating_add(predicted_validator_work);
     PayloadBudgetDecision {
         predicted_builder_work,
         predicted_validator_work,
-        marshal_persist,
         total_reserved,
     }
 }
@@ -173,8 +161,6 @@ mod tests {
             Duration::from_millis(100),
             Duration::ZERO,
             1_350_000,
-            MarshalPersistEstimator::default(),
-            0,
             None,
             ValidationLatencyWorkload::default(),
         );
@@ -189,8 +175,6 @@ mod tests {
             Duration::from_millis(350),
             Duration::from_millis(250),
             1_350_000,
-            MarshalPersistEstimator::default(),
-            0,
             None,
             ValidationLatencyWorkload::default(),
         );
@@ -210,8 +194,6 @@ mod tests {
             Duration::from_millis(100),
             Duration::ZERO,
             1_350_000,
-            MarshalPersistEstimator::default(),
-            0,
             validation_latency,
             workload,
         );
@@ -231,8 +213,6 @@ mod tests {
             Duration::from_millis(100),
             Duration::ZERO,
             1_350_000,
-            MarshalPersistEstimator::default(),
-            0,
             validation_latency,
             ValidationLatencyWorkload::new(200, 10),
         );
@@ -242,35 +222,6 @@ mod tests {
             Duration::from_millis(135)
         );
         assert_eq!(decision.total_reserved, Duration::from_millis(270));
-    }
-
-    #[test]
-    fn payload_budget_accounts_for_marshal_persist_twice() {
-        let marshal_persist = MarshalPersistEstimator::from_ns_per_byte(1_000);
-
-        let decision = payload_budget_decision(
-            Duration::from_millis(100),
-            Duration::ZERO,
-            1_350_000,
-            marshal_persist,
-            15_000,
-            None,
-            ValidationLatencyWorkload::default(),
-        );
-        assert_eq!(decision.marshal_persist, Duration::from_millis(15));
-        assert_eq!(decision.total_reserved, Duration::from_millis(300));
-
-        let decision = payload_budget_decision(
-            Duration::from_millis(100),
-            Duration::ZERO,
-            1_350_000,
-            marshal_persist,
-            14_999,
-            None,
-            ValidationLatencyWorkload::default(),
-        );
-        assert_eq!(decision.marshal_persist, Duration::from_micros(14_999));
-        assert_eq!(decision.total_reserved, Duration::from_micros(299_998));
     }
 
     #[test]

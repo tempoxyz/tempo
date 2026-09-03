@@ -1,64 +1,199 @@
 //! The interface between the consensus layer and the execution layer.
 //!
-//! The application actor implements the [`commonware_consensus::Automaton`]
-//! trait to propose and verify blocks.
+//! [`Inner`] implements [`commonware_consensus::Application`]. At startup the
+//! engine wraps it in [`Marshaled`], selecting inline or deferred verification
+//! and sharing it with marshal's reporter and every epoch's simplex engine. The wrapper
+//! owns everything between consensus and the block: it fetches the parent,
+//! re-proposes epoch boundary blocks, checks epoch membership and parent
+//! linkage, persists verified blocks, broadcasts proposals, and gates the
+//! finalize vote on durability. What is left here is tempo's own view of a
+//! block: how one is built through the executor, and which checks a
+//! proposal must pass before this node votes for it.
+//!
 
-use std::{num::NonZeroUsize, sync::Arc, time::Duration};
+mod r#impl;
 
-use commonware_consensus::types::FixedEpocher;
-use commonware_cryptography::ed25519::PublicKey;
-use commonware_runtime::{Metrics, Pacer, Spawner, Storage};
+pub(super) use r#impl::Config;
+pub(crate) use r#impl::Inner;
 
-use eyre::WrapErr as _;
-use rand_core::{CryptoRng, Rng};
-use tempo_node::TempoFullNode;
+use commonware_actor::Feedback;
+use commonware_consensus::{
+    Automaton, CertifiableAutomaton, CertifiableBlock, Relay, Reporter,
+    marshal::{
+        Update,
+        core::Mailbox,
+        standard::{Deferred, Inline, Standard},
+    },
+    simplex::{Plan, scheme::bls12381_threshold::vrf::Scheme, types::Context},
+    types::{Epocher, FixedEpocher, Round},
+};
+use commonware_cryptography::{
+    bls12381::primitives::variant::MinSig, certificate::Scheme as CertificateScheme,
+    ed25519::PublicKey,
+};
+use commonware_runtime::{Clock, Spawner};
+use commonware_utils::channel::oneshot;
+use rand_core::Rng;
 
-mod actor;
-mod ingress;
+use crate::{VerificationMode, consensus::block::Block};
 
-pub(super) use actor::Actor;
-pub(crate) use ingress::Mailbox;
+pub(crate) type Application<TContext> =
+    Marshaled<TContext, Scheme<PublicKey, MinSig>, Inner, Block, FixedEpocher>;
 
-pub(super) async fn init<TContext>(
-    config: Config<TContext>,
-) -> eyre::Result<(Actor<TContext>, Mailbox)>
+/// A shared application for marshal and every epoch's simplex engine.
+pub(crate) enum Marshaled<E, S, A, B, ES>
 where
-    TContext: Pacer + governor::clock::Clock + Rng + CryptoRng + Spawner + Storage + Metrics,
+    E: Rng + Spawner + commonware_runtime::Metrics + Clock,
+    S: CertificateScheme,
+    A: commonware_consensus::Application<E>,
+    B: CertifiableBlock + Clone,
+    ES: Epocher,
 {
-    let actor = Actor::init(config)
-        .await
-        .wrap_err("failed initializing actor")?;
-    let mailbox = actor.mailbox().clone();
-    Ok((actor, mailbox))
+    Deferred(Deferred<E, S, A, B, ES>),
+    Immediate(Inline<E, S, A, B, ES>),
 }
 
-pub(super) struct Config<TContext> {
-    /// The execution context of the commonwarexyz application (tokio runtime, etc).
-    pub(super) context: TContext,
+impl<E, S, A, B, ES> Clone for Marshaled<E, S, A, B, ES>
+where
+    E: Rng + Spawner + commonware_runtime::Metrics + Clock,
+    S: CertificateScheme,
+    A: commonware_consensus::Application<E>,
+    B: CertifiableBlock + Clone,
+    ES: Epocher,
+{
+    fn clone(&self) -> Self {
+        match self {
+            Self::Deferred(application) => Self::Deferred(application.clone()),
+            Self::Immediate(application) => Self::Immediate(application.clone()),
+        }
+    }
+}
 
-    /// This node's ed25519 public key, used to look up the fee recipient from
-    /// the validator config v2 contract.
-    pub(super) public_key: PublicKey,
+impl<E, S, A, B, ES> Marshaled<E, S, A, B, ES>
+where
+    E: Rng + Spawner + commonware_runtime::Metrics + Clock,
+    S: CertificateScheme,
+    A: commonware_consensus::Application<
+            E,
+            Block = B,
+            SigningScheme = S,
+            Context = Context<B::Digest, S::PublicKey>,
+            Input = (),
+        >,
+    B: CertifiableBlock<Context = <A as commonware_consensus::Application<E>>::Context> + Clone,
+    ES: Epocher,
+{
+    pub(crate) fn new(
+        context: E,
+        inner: A,
+        marshal: Mailbox<S, Standard<B>>,
+        epocher: ES,
+        mode: VerificationMode,
+    ) -> Self {
+        match mode {
+            VerificationMode::Deferred => {
+                Self::Deferred(Deferred::new(context, inner, marshal, epocher))
+            }
+            VerificationMode::Immediate => {
+                Self::Immediate(Inline::new(context, inner, marshal, epocher))
+            }
+        }
+    }
+}
 
-    /// Number of messages held in the application mailbox's ready queue
-    /// before subsequent messages are retained in overflow.
-    pub(super) mailbox_size: NonZeroUsize,
+impl<E, S, A, B, ES> Automaton for Marshaled<E, S, A, B, ES>
+where
+    E: Rng + Spawner + commonware_runtime::Metrics + Clock,
+    S: CertificateScheme,
+    A: commonware_consensus::Application<
+            E,
+            Block = B,
+            SigningScheme = S,
+            Context = Context<B::Digest, S::PublicKey>,
+            Input = (),
+        >,
+    B: CertifiableBlock<Context = <A as commonware_consensus::Application<E>>::Context> + Clone,
+    ES: Epocher,
+{
+    type Context = Context<B::Digest, S::PublicKey>;
+    type Digest = B::Digest;
 
-    /// For subscribing to blocks distributed via the consensus p2p network.
-    pub(super) marshal: crate::alias::marshal::Mailbox,
+    async fn propose(&mut self, context: Self::Context) -> oneshot::Receiver<Self::Digest> {
+        match self {
+            Self::Deferred(application) => application.propose(context).await,
+            Self::Immediate(application) => application.propose(context).await,
+        }
+    }
 
-    pub(super) executor: crate::executor::Mailbox,
+    async fn verify(
+        &mut self,
+        context: Self::Context,
+        payload: Self::Digest,
+    ) -> oneshot::Receiver<bool> {
+        match self {
+            Self::Deferred(application) => application.verify(context, payload).await,
+            Self::Immediate(application) => application.verify(context, payload).await,
+        }
+    }
+}
 
-    /// A handle to the execution node to verify and create new payloads.
-    pub(super) execution_node: Arc<TempoFullNode>,
+impl<E, S, A, B, ES> CertifiableAutomaton for Marshaled<E, S, A, B, ES>
+where
+    E: Rng + Spawner + commonware_runtime::Metrics + Clock,
+    S: CertificateScheme,
+    A: commonware_consensus::Application<
+            E,
+            Block = B,
+            SigningScheme = S,
+            Context = Context<B::Digest, S::PublicKey>,
+            Input = (),
+        >,
+    B: CertifiableBlock<Context = <A as commonware_consensus::Application<E>>::Context> + Clone,
+    ES: Epocher,
+{
+    async fn certify(&mut self, round: Round, payload: Self::Digest) -> oneshot::Receiver<bool> {
+        match self {
+            Self::Deferred(application) => application.certify(round, payload).await,
+            Self::Immediate(application) => application.certify(round, payload).await,
+        }
+    }
+}
 
-    /// Local proposal return budget, excluding the network propagation allowance.
-    ///
-    /// Starts at `target_block_time - network_budget`; `handle_propose`
-    /// subtracts time already spent in the view before handing the remaining
-    /// budget to the payload builder.
-    pub(super) proposal_return_budget: Duration,
+impl<E, S, A, B, ES> Relay for Marshaled<E, S, A, B, ES>
+where
+    E: Rng + Spawner + commonware_runtime::Metrics + Clock,
+    S: CertificateScheme,
+    A: commonware_consensus::Application<E, Block = B, Context = Context<B::Digest, S::PublicKey>>,
+    B: CertifiableBlock<Context = <A as commonware_consensus::Application<E>>::Context> + Clone,
+    ES: Epocher,
+{
+    type PublicKey = S::PublicKey;
+    type Digest = B::Digest;
+    type Plan = Plan<S::PublicKey>;
 
-    /// The epoch strategy used by tempo, to map block heights to epochs.
-    pub(super) epoch_strategy: FixedEpocher,
+    fn broadcast(&mut self, payload: Self::Digest, plan: Self::Plan) -> Feedback {
+        match self {
+            Self::Deferred(application) => application.broadcast(payload, plan),
+            Self::Immediate(application) => application.broadcast(payload, plan),
+        }
+    }
+}
+
+impl<E, S, A, B, ES> Reporter for Marshaled<E, S, A, B, ES>
+where
+    E: Rng + Spawner + commonware_runtime::Metrics + Clock,
+    S: CertificateScheme,
+    A: commonware_consensus::Application<E, Block = B, Context = Context<B::Digest, S::PublicKey>>
+        + Reporter<Activity = Update<B>>,
+    B: CertifiableBlock<Context = <A as commonware_consensus::Application<E>>::Context> + Clone,
+    ES: Epocher,
+{
+    type Activity = Update<B>;
+
+    fn report(&mut self, activity: Self::Activity) -> Feedback {
+        match self {
+            Self::Deferred(application) => application.report(activity),
+            Self::Immediate(application) => application.report(activity),
+        }
+    }
 }

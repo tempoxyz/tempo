@@ -37,18 +37,14 @@ use crate::{
 use ingress::{Command, Message};
 
 /// Authenticates the startup tip and registers its trusted identity before returning the actor.
-pub(crate) async fn init<TContext, TExecutionLayer, TMarshal, TEpochManager>(
+pub(crate) async fn init<TContext, TExecutionLayer, TMarshal>(
     context: TContext,
-    config: Config<TExecutionLayer, TMarshal, TEpochManager>,
-) -> eyre::Result<(
-    Actor<TContext, TExecutionLayer, TMarshal, TEpochManager>,
-    Mailbox,
-)>
+    config: Config<TExecutionLayer, TMarshal>,
+) -> eyre::Result<(Actor<TContext, TExecutionLayer, TMarshal>, Mailbox)>
 where
     TContext: BufferPooler + Clock + CryptoRng + Metrics + Spawner + Storage,
     TExecutionLayer: ExecutionLayer,
     TMarshal: Marshal,
-    TEpochManager: EpochManager,
 {
     let (tx, rx) = mpsc::unbounded();
 
@@ -59,10 +55,8 @@ where
     Ok((actor, mailbox))
 }
 
-pub(crate) struct Config<TExecutionLayer, TMarshal, TEpochManager> {
+pub(crate) struct Config<TExecutionLayer, TMarshal> {
     pub(crate) epoch_strategy: FixedEpocher,
-
-    pub(crate) epoch_manager: TEpochManager,
 
     /// The namespace the dkg manager will use when sending messages during
     /// a dkg ceremony.

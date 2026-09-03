@@ -1,7 +1,8 @@
 //! Scenario tests for the finalization pipeline: finalized blocks arriving
-//! from the marshal actor are forwarded to the execution layer as
-//! `newPayload` + `forkchoiceUpdated` pairs, in order, and acknowledged
-//! only once the execution layer accepted them.
+//! from the marshal actor are delivered to the execution layer through
+//! `newPayload` in order, finalized through a subsequent
+//! `forkchoiceUpdated` that may cover several deliveries, and acknowledged
+//! only once that forkchoice update has been accepted.
 
 use alloy_rpc_types_engine::{ForkchoiceState, PayloadStatusEnum};
 use commonware_macros::test_traced;
@@ -10,8 +11,9 @@ use tempo_primitives::ed25519::PublicKey;
 
 use super::harness::{
     ElCall, ForkchoiceStateExt as _, GENESIS, Harness, HarnessOptions, STARTUP_FCU,
-    STARTUP_FCU_CALL, make_block, make_block_with_proposer, round,
+    STARTUP_FCU_CALL, built_payload, make_block, make_block_with_proposer, round,
 };
+use crate::consensus::Digest;
 
 fn finalized_blocks_proposed_by_self(h: &Harness) -> u64 {
     h.metrics()
@@ -57,19 +59,31 @@ fn finalized_blocks_are_forwarded_in_order() {
         let b3 = make_block(3, 3, b2.digest());
         let digests = [b1.digest(), b2.digest(), b3.digest()];
 
+        // Hold the first delivery open so that the later blocks queue up
+        // behind it, as they do when the execution layer is catching up.
+        let release_first = h
+            .execution
+            .script_delayed_new_payload(digests[0], Ok(PayloadStatusEnum::Valid));
         h.deliver_tip(round(3), 3, b3.digest());
         let w1 = h.deliver_finalized(b1);
         let w2 = h.deliver_finalized(b2);
         let w3 = h.deliver_finalized(b3);
+        h.wait_until(|| h.execution.new_payloads() == vec![digests[0]])
+            .await;
+        release_first
+            .send(())
+            .expect("first delivery should still be gated");
         w1.await.expect("first block should be acknowledged");
         w2.await.expect("second block should be acknowledged");
         w3.await.expect("third block should be acknowledged");
 
         assert_eq!(h.execution.new_payloads(), digests);
-        let expected_fcus = std::iter::once(STARTUP_FCU)
-            .chain(digests.map(|digest| (digest, digest, false)))
-            .collect::<Vec<_>>();
-        assert_eq!(h.execution.fcus(), expected_fcus);
+        assert_eq!(
+            h.execution.fcus(),
+            vec![STARTUP_FCU, (digests[2], digests[2], false)],
+            "queued finalized blocks are delivered back to back and finalized \
+            by a single forkchoice update",
+        );
         assert_eq!(h.execution.finalized(), Some((3, digests[2])));
     });
 }
@@ -181,25 +195,93 @@ fn new_payload_transport_error_is_fatal() {
     });
 }
 
+/// Converges onto branch A, then selects an unavailable target so that
+/// subsequent forkchoice updates must fall back to delivered finality.
+async fn converge_on_branch_a_with_unwalkable_pending_head(h: &Harness) -> (Digest, Digest) {
+    let a1 = make_block(1, 1, GENESIS);
+    let a2 = make_block(2, 2, a1.digest());
+    let (da1, da2) = (a1.digest(), a2.digest());
+    for (view, block) in [(1, a1), (2, a2)] {
+        h.verify(round(view), block)
+            .await
+            .expect("verification should complete")
+            .expect("block should be valid");
+    }
+    let proposal = make_block(3, 3, da2);
+    h.execution.script_built_payload(built_payload(&proposal));
+    h.build(round(3), da2)
+        .await
+        .expect("build on branch A should complete");
+
+    let unknown = make_block(4, 3, da2).digest();
+    drop(h.build_on(round(5), 4, unknown));
+    h.wait_until(|| h.marshal.open_subscriptions() == vec![(unknown, round(4))])
+        .await;
+    (da1, da2)
+}
+
 #[test_traced]
-fn canonical_block_lookup_error_is_fatal() {
+fn finalization_with_an_unavailable_target_needs_no_canonical_ancestry_lookup() {
     deterministic::Runner::default().start(|context| async move {
         let mut h = Harness::start_at_genesis(&context);
+        converge_on_branch_a_with_unwalkable_pending_head(&h).await;
 
-        let b1 = make_block(1, 1, GENESIS);
+        // The old HEAD is ineligible. Finality can advance on branch B
+        // without consulting the canonical ancestry of that old HEAD.
+        let b1 = make_block(3, 1, GENESIS);
+        let db1 = b1.digest();
         h.execution
             .script_canonical_block_hash(1, Err("database unavailable"));
 
-        h.deliver_tip(round(1), 1, b1.digest());
+        h.deliver_tip(round(3), 1, db1);
         h.deliver_finalized(b1)
             .await
-            .expect_err("a canonical lookup failure must not acknowledge the finalized block");
+            .expect("finalization must not depend on the old HEAD's ancestry lookup");
 
-        h.actor
+        assert_eq!(h.execution.fcus().last(), Some(&(db1, db1, false)));
+        assert_eq!(h.execution.head(), db1);
+        assert_eq!(h.execution.finalized(), Some((1, db1)));
+    });
+}
+
+#[test_traced]
+fn finalizing_below_a_head_on_another_branch_moves_the_head() {
+    deterministic::Runner::default().start(|context| async move {
+        let mut h = Harness::start_at_genesis(&context);
+        let (_, da2) = converge_on_branch_a_with_unwalkable_pending_head(&h).await;
+
+        // b1 finalizes on branch B. The unavailable convergence target
+        // leaves HEAD anchored at the latest delivered finalized block.
+        let b1 = make_block(3, 1, GENESIS);
+        let db1 = b1.digest();
+        h.deliver_tip(round(3), 1, db1);
+        h.deliver_finalized(b1)
             .await
-            .expect("actor should shut down cleanly on a canonical lookup error");
-        assert!(h.execution.new_payloads().is_empty());
-        assert_eq!(h.execution.fcus(), vec![STARTUP_FCU]);
+            .expect("the finalized branch should be acknowledged");
+
+        assert_eq!(h.execution.fcus().last(), Some(&(db1, db1, false)));
+        assert_eq!(h.execution.head(), db1);
+        assert_eq!(h.execution.finalized(), Some((1, db1)));
+        assert_ne!(da2, db1);
+    });
+}
+
+#[test_traced]
+fn finalizing_below_a_previous_head_uses_delivered_finality() {
+    deterministic::Runner::default().start(|context| async move {
+        let mut h = Harness::start_at_genesis(&context);
+        let (da1, _) = converge_on_branch_a_with_unwalkable_pending_head(&h).await;
+
+        // Even though the old HEAD descended from a1, it is no longer an
+        // eligible convergence target. Both FCU fields must use a1.
+        h.deliver_tip(round(3), 1, da1);
+        h.deliver_finalized(make_block(1, 1, GENESIS))
+            .await
+            .expect("the finalized ancestor should be acknowledged");
+
+        assert_eq!(h.execution.fcus().last(), Some(&(da1, da1, false)));
+        assert_eq!(h.execution.head(), da1);
+        assert_eq!(h.execution.finalized(), Some((1, da1)));
     });
 }
 
@@ -263,33 +345,6 @@ fn forkchoice_update_transport_error_is_fatal() {
 }
 
 #[test_traced]
-fn finalized_block_below_the_tracked_state_is_fatal() {
-    deterministic::Runner::default().start(|context| async move {
-        let mut h = Harness::start_at_genesis(&context);
-
-        let b1 = make_block(1, 1, GENESIS);
-        let b2 = make_block(2, 2, b1.digest());
-        h.deliver_tip(round(2), 2, b2.digest());
-        h.deliver_finalized(b1.clone())
-            .await
-            .expect("first block should be acknowledged");
-        h.deliver_finalized(b2)
-            .await
-            .expect("second block should be acknowledged");
-
-        // Delivering a block below the tracked finalized height violates
-        // the in-order delivery protocol.
-        h.deliver_finalized(b1)
-            .await
-            .expect_err("a block below the tracked finalized state must not be acknowledged");
-
-        h.actor
-            .await
-            .expect("actor should shut down cleanly on a fatal error");
-    });
-}
-
-#[test_traced]
 fn conflicting_finalized_block_at_the_tracked_height_is_fatal() {
     deterministic::Runner::default().start(|context| async move {
         let mut h = Harness::start_at_genesis(&context);
@@ -300,8 +355,9 @@ fn conflicting_finalized_block_at_the_tracked_height_is_fatal() {
             .await
             .expect("first block should be acknowledged");
 
-        // A different block finalized at the same height means consensus
-        // failed fundamentally.
+        // A different block at the height the execution layer already
+        // finalized means consensus failed fundamentally; the execution
+        // layer's canonical chain is what the re-delivery is checked against.
         let conflicting = make_block(9, 1, GENESIS);
         h.deliver_finalized(conflicting)
             .await
@@ -341,14 +397,11 @@ fn redelivered_finalized_block_at_the_tracked_state_is_acknowledged() {
                     finalized: d1,
                     with_attrs: false,
                 },
+                // The redelivery is delivered again - the execution layer
+                // answers from its caches - and acknowledged on that answer;
+                // the block is final already, so no forkchoice update follows.
                 ElCall::NewPayload(d1),
-                ElCall::Fcu {
-                    head: d1,
-                    finalized: d1,
-                    with_attrs: false,
-                },
             ],
-            "a redelivery is re-checked and re-affirmed before acknowledgment",
         );
         assert_eq!(h.execution.finalized(), Some((1, d1)),);
     });
@@ -404,14 +457,13 @@ fn finalizing_a_canonical_ancestor_leaves_the_head_untouched() {
             .await
             .expect("b1 should validate")
             .expect("b1 should be valid");
-        h.report_pending_head(2, 1, d1);
-        h.wait_until(|| h.execution.head() == d1).await;
-
         h.verify(round(2), b2.clone())
             .await
             .expect("b2 should validate")
             .expect("b2 should be valid");
-        h.report_pending_head(3, 2, d2);
+        let proposal = make_block(3, 3, d2);
+        h.execution.script_built_payload(built_payload(&proposal));
+        h.build(round(3), d2).await.expect("build should complete");
         h.wait_until(|| h.execution.head() == d2).await;
 
         h.deliver_tip(round(1), 1, d1);
@@ -445,7 +497,9 @@ fn finalizing_a_conflicting_branch_moves_the_head() {
             .await
             .expect("a1 should validate")
             .expect("a1 should be valid");
-        h.report_pending_head(2, 1, da1);
+        let proposal = make_block(2, 2, da1);
+        h.execution.script_built_payload(built_payload(&proposal));
+        h.build(round(2), da1).await.expect("build should complete");
         h.wait_until(|| h.execution.head() == da1).await;
 
         h.deliver_tip(round(2), 1, db1);
