@@ -2,7 +2,6 @@
 //! tree unit tests cover the arithmetic; these tests prove that the actor
 //! publishes the measures after processing real messages and EL outcomes.
 
-use alloy_rpc_types_engine::PayloadStatusEnum;
 use commonware_macros::test_traced;
 use commonware_runtime::{Runner as _, deterministic};
 
@@ -117,8 +116,9 @@ fn convergence_depth_is_negative_while_reanchoring_below_the_local_head() {
 
         let b1 = make_block(1, 1, GENESIS);
         let b2 = make_block(2, 2, b1.digest());
-        let (d1, d2) = (b1.digest(), b2.digest());
-        for (view, block, digest) in [(1, b1, d1), (2, b2, d2)] {
+        let b3 = make_block(3, 3, b2.digest());
+        let (d1, d2, d3) = (b1.digest(), b2.digest(), b3.digest());
+        for (view, block, digest) in [(1, b1, d1), (2, b2, d2), (3, b3, d3)] {
             h.verify(round(view), block)
                 .await
                 .expect("verification should complete")
@@ -128,22 +128,16 @@ fn convergence_depth_is_negative_while_reanchoring_below_the_local_head() {
         }
         h.wait_until(|| gauge(&h, "convergence_depth") == 0).await;
 
-        // Re-anchor onto a1, a sibling of b1 at height 1 the execution layer
-        // rejects: the block is withheld, so the pending head stays at
-        // height 1 while the accepted local head remains b2 at height 2, and
-        // the signed distance is observable.
+        // Re-anchor onto a2 on a side branch at height 2 while its parent
+        // a1 is missing: the ancestry is not walkable, so the head stays at
+        // b3 and the signed distance is observable.
         let a1 = make_block(4, 1, GENESIS);
-        let da1 = a1.digest();
-        h.execution.script_new_payload(
-            da1,
-            Ok(PayloadStatusEnum::Invalid {
-                validation_error: "re-anchor rejected by test".into(),
-            }),
-        );
-        h.report_pending_head(5, 4, da1);
-        h.wait_until(|| h.marshal.fulfill_subscription(da1, a1.clone()))
+        let a2 = make_block(5, 2, a1.digest());
+        let da2 = a2.digest();
+        h.report_pending_head(6, 5, da2);
+        h.wait_until(|| h.marshal.fulfill_subscription(da2, a2.clone()))
             .await;
         h.wait_until(|| gauge(&h, "convergence_depth") == -1).await;
-        assert_eq!(h.execution.head(), d2);
+        assert_eq!(h.execution.head(), d3);
     });
 }
