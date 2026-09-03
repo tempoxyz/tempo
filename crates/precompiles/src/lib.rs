@@ -58,7 +58,7 @@ use tempo_primitives::TempoAddressExt;
 #[cfg(test)]
 use alloy::sol_types::SolInterface;
 use alloy::{primitives::Address, sol, sol_types::SolError};
-use alloy_evm::precompiles::{DynPrecompile, PrecompilesMap};
+use alloy_evm::precompiles::{DynPrecompile, PrecompileLookup, PrecompilesMap};
 use revm::{
     context::CfgEnv,
     handler::EthPrecompiles,
@@ -192,43 +192,76 @@ pub fn extend_tempo_precompiles(
 ) {
     let env = PrecompileEnv::new(cfg, actions, non_creditable_slots);
 
-    precompiles.set_precompile_lookup(move |address: &Address| {
+    precompiles.set_precompile_lookup(TempoPrecompileLookup { env });
+    // Tempo precompiles only depend on per-EVM state captured in `env`, so the resolved
+    // wrappers can be reused across calls instead of being rebuilt for every invocation.
+    precompiles.enable_lookup_cache();
+}
+
+/// Resolves Tempo precompiles by address.
+struct TempoPrecompileLookup {
+    env: PrecompileEnv,
+}
+
+impl PrecompileLookup for TempoPrecompileLookup {
+    fn lookup(&self, address: &Address) -> Option<DynPrecompile> {
+        let env = &self.env;
         if address.is_tip20() {
-            Some(TIP20Token::create_precompile(*address, &env))
+            Some(TIP20Token::create_precompile(*address, env))
         } else if *address == TIP20_FACTORY_ADDRESS {
-            Some(TIP20Factory::create_precompile(&env))
+            Some(TIP20Factory::create_precompile(env))
         } else if *address == TIP20_CHANNEL_RESERVE_ADDRESS && env.cfg.spec.is_t5() {
-            Some(TIP20ChannelReserve::create_precompile(&env))
+            Some(TIP20ChannelReserve::create_precompile(env))
         } else if *address == ADDRESS_REGISTRY_ADDRESS && env.cfg.spec.is_t3() {
-            Some(AddressRegistry::create_precompile(&env))
+            Some(AddressRegistry::create_precompile(env))
         } else if *address == TIP403_REGISTRY_ADDRESS {
-            Some(TIP403Registry::create_precompile(&env))
+            Some(TIP403Registry::create_precompile(env))
         } else if *address == TIP_FEE_MANAGER_ADDRESS {
-            Some(TipFeeManager::create_precompile(&env))
+            Some(TipFeeManager::create_precompile(env))
         } else if *address == STABLECOIN_DEX_ADDRESS {
-            Some(StablecoinDEX::create_precompile(&env))
+            Some(StablecoinDEX::create_precompile(env))
         } else if *address == NONCE_PRECOMPILE_ADDRESS {
-            Some(NonceManager::create_precompile(&env))
+            Some(NonceManager::create_precompile(env))
         } else if *address == VALIDATOR_CONFIG_ADDRESS {
-            Some(ValidatorConfig::create_precompile(&env))
+            Some(ValidatorConfig::create_precompile(env))
         } else if *address == ACCOUNT_KEYCHAIN_ADDRESS {
-            Some(AccountKeychain::create_precompile(&env))
+            Some(AccountKeychain::create_precompile(env))
         } else if *address == VALIDATOR_CONFIG_V2_ADDRESS {
-            Some(ValidatorConfigV2::create_precompile(&env))
+            Some(ValidatorConfigV2::create_precompile(env))
         } else if *address == SIGNATURE_VERIFIER_ADDRESS && env.cfg.spec.is_t3() {
-            Some(SignatureVerifier::create_precompile(&env))
+            Some(SignatureVerifier::create_precompile(env))
         } else if *address == RECEIVE_POLICY_GUARD_ADDRESS && env.cfg.spec.is_t6() {
-            Some(ReceivePolicyGuard::create_precompile(&env))
+            Some(ReceivePolicyGuard::create_precompile(env))
         } else if *address == STORAGE_CREDITS_ADDRESS && env.cfg.spec.is_t7() {
-            Some(StorageCredits::create_precompile(&env))
+            Some(StorageCredits::create_precompile(env))
         } else if *address == CURRENT_COMMITTEE_ADDRESS && env.cfg.spec.is_t8() {
-            Some(CurrentCommittee::create_precompile(&env))
+            Some(CurrentCommittee::create_precompile(env))
         } else if *address == ZONE_FACTORY_ADDRESS && env.cfg.spec.is_t10() {
-            Some(ZoneFactory::create_precompile(&env))
+            Some(ZoneFactory::create_precompile(env))
         } else {
             None
         }
-    });
+    }
+
+    fn contains(&self, address: &Address) -> bool {
+        let spec = self.env.cfg.spec;
+        address.is_tip20()
+            || *address == TIP20_FACTORY_ADDRESS
+            || (*address == TIP20_CHANNEL_RESERVE_ADDRESS && spec.is_t5())
+            || (*address == ADDRESS_REGISTRY_ADDRESS && spec.is_t3())
+            || *address == TIP403_REGISTRY_ADDRESS
+            || *address == TIP_FEE_MANAGER_ADDRESS
+            || *address == STABLECOIN_DEX_ADDRESS
+            || *address == NONCE_PRECOMPILE_ADDRESS
+            || *address == VALIDATOR_CONFIG_ADDRESS
+            || *address == ACCOUNT_KEYCHAIN_ADDRESS
+            || *address == VALIDATOR_CONFIG_V2_ADDRESS
+            || (*address == SIGNATURE_VERIFIER_ADDRESS && spec.is_t3())
+            || (*address == RECEIVE_POLICY_GUARD_ADDRESS && spec.is_t6())
+            || (*address == STORAGE_CREDITS_ADDRESS && spec.is_t7())
+            || (*address == CURRENT_COMMITTEE_ADDRESS && spec.is_t8())
+            || (*address == ZONE_FACTORY_ADDRESS && spec.is_t10())
+    }
 }
 
 sol! {

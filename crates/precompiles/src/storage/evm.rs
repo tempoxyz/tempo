@@ -132,9 +132,7 @@ impl<'a> EvmPrecompileStorageProvider<'a> {
         key: U256,
         skip_cold_load: bool,
     ) -> Result<StateLoad<U256>, TempoPrecompileError> {
-        let mut account = self.internals.load_account_mut(address)?;
-        let val = account.sload(key, skip_cold_load)?;
-        Ok(StateLoad::new(val.present_value, val.is_cold))
+        Ok(self.internals.sload_skip_cold_load(address, key, skip_cold_load)?)
     }
 
     /// Performs a raw journaled SSTORE without metering gas or recording a storage action.
@@ -146,10 +144,7 @@ impl<'a> EvmPrecompileStorageProvider<'a> {
         value: U256,
         skip_cold_load: bool,
     ) -> Result<StateLoad<SStoreResult>, TempoPrecompileError> {
-        Ok(self
-            .internals
-            .load_account_mut(address)?
-            .sstore(key, value, skip_cold_load)?)
+        Ok(self.internals.sstore_skip_cold_load(address, key, value, skip_cold_load)?)
     }
 
     /// Performs a metered precompile SLOAD, optionally recording the storage action.
