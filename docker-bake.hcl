@@ -55,8 +55,8 @@ target "tempo" {
 target "tempo-nightly" {
   inherits = ["tempo"]
   args = {
-    RETH_ENGINE_PERSISTENCE_THRESHOLD = "30"
-    RETH_ENGINE_NUM_STATE_MASKING_BLOCKS = "20"
+    RETH_ENGINE_PERSISTENCE_THRESHOLD = "50"
+    RETH_ENGINE_NUM_STATE_MASKING_BLOCKS = "40"
   }
   tags = ["${REGISTRY}/tempo:nightly", "docker.io/tempoxyz/tempo:nightly"]
 }
