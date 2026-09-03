@@ -998,6 +998,7 @@ def run-local-e2e-phase [run: record, ctx: record] {
     let phase = $run.phase
     print $"=== Starting local e2e phase: ($phase) ==="
     let run_type = if ($phase | str starts-with "baseline") { "baseline" } else { "feature" }
+    let samply = $ctx.samply and $run_type == "feature"
     let genesis = ($run | get -o genesis | default $ctx.genesis)
     let hardfork = ($run | get -o hardfork | default "")
     let side_args = if $run_type == "baseline" { $ctx.baseline_args } else { $ctx.feature_args }
@@ -1060,7 +1061,7 @@ def run-local-e2e-phase [run: record, ctx: record] {
         | append $local_reth_args
         | append (log-filter-args $ctx.loud)
         | append (if $ctx.gas_limit != "" { ["--builder.gaslimit" $ctx.gas_limit] } else { [] })
-        | append (if $ctx.samply { ["--log.samply"] } else { [] })
+        | append (if $samply { ["--log.samply"] } else { [] })
         | append (if $ctx.tracy != "off" { ["--log.tracy" "--log.tracy.filter" $ctx.tracy_filter] } else { [] })
         | append (benchmark-otlp-args $ctx.tracing_otlp)
     let b_base_args = (build-base-args $genesis $ctx.b.datadir $b_log_dir "0.0.0.0" 8645 9101)
@@ -1068,7 +1069,7 @@ def run-local-e2e-phase [run: record, ctx: record] {
         | append $local_reth_args
         | append (log-filter-args $ctx.loud)
         | append (if $ctx.gas_limit != "" { ["--builder.gaslimit" $ctx.gas_limit] } else { [] })
-        | append (if $ctx.samply { ["--log.samply"] } else { [] })
+        | append (if $samply { ["--log.samply"] } else { [] })
         | append (benchmark-otlp-args $ctx.tracing_otlp)
     let a_args = (dedup-args $a_base_args $extra_args)
     let b_args = (dedup-args $b_base_args $extra_args)
@@ -1084,8 +1085,8 @@ def run-local-e2e-phase [run: record, ctx: record] {
     mark-schelk-dirty-at $ctx.a.state_path
     mark-schelk-dirty-at $ctx.b.state_path
 
-    start-e2e-local-node a $phase $run.tempo $a_args $env_prefix $a_otel $tracy_env_prefix $ctx.samply $ctx.samply_args $ctx.results_dir $ctx.a.cpus $ctx.a.memory
-    start-e2e-local-node b $phase $run.tempo $b_args $env_prefix $b_otel "" $ctx.samply $ctx.samply_args $ctx.results_dir $ctx.b.cpus $ctx.b.memory
+    start-e2e-local-node a $phase $run.tempo $a_args $env_prefix $a_otel $tracy_env_prefix $samply $ctx.samply_args $ctx.results_dir $ctx.a.cpus $ctx.a.memory
+    start-e2e-local-node b $phase $run.tempo $b_args $env_prefix $b_otel "" $samply $ctx.samply_args $ctx.results_dir $ctx.b.cpus $ctx.b.memory
 
     sleep 2sec
     let rpc_timeout = if $ctx.bloat > 0 { 600 } else { 300 }
@@ -1220,7 +1221,7 @@ def run-local-e2e-phase [run: record, ctx: record] {
             }
         }
     }
-    if $ctx.samply { wait-for-samply-profile }
+    if $samply { wait-for-samply-profile }
     chown-to-current-user $ctx.results_dir
     chown-to-current-user $a_log_dir
     chown-to-current-user $b_log_dir
@@ -1792,7 +1793,7 @@ def "main e2e" [
 
     if $e2e_exit == 0 and $samply {
         print "\nUploading local e2e samply profiles to Firefox Profiler..."
-        for run in $runs {
+        for run in ($runs | where { |run| $run.phase | str starts-with "feature" }) {
             for role in ["a" "b"] {
                 let profile_label = $"($run.phase)-($role)"
                 let profile = $"($results_dir)/profile-($profile_label).json.gz"
