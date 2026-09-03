@@ -87,6 +87,13 @@ use notarized_tree::{LocalState, NotarizedTree};
 /// How often to probe whether the execution layer is ready to process blocks.
 const EXECUTION_LAYER_READY_POLL_INTERVAL: Duration = Duration::from_secs(1);
 
+/// How many `VALID` new-payload answers - validations, notarized and
+/// finalized deliveries alike - are collected before a forkchoice update is
+/// forced. The execution layer persists
+/// and prunes relative to its canonical head, so blocks delivered ahead of
+/// the update that canonicalizes them stay in memory.
+const DELIVERIES_PER_FORKCHOICE_UPDATE: usize = 8;
+
 pub(crate) struct Actor<TContext, TExecutionLayer, TMarshal> {
     context: ContextCell<TContext>,
 
@@ -122,6 +129,10 @@ pub(crate) struct Actor<TContext, TExecutionLayer, TMarshal> {
     /// forkchoice update that finalizes them before they are acknowledged
     /// to the marshal actor. In height order.
     pending_acknowledgements: VecDeque<FinalizedBlockRequest>,
+
+    /// Blocks delivered since the last forkchoice update, see
+    /// [`DELIVERIES_PER_FORKCHOICE_UPDATE`].
+    deliveries_since_forkchoice: usize,
 
     /// The latest not-yet-started consensus request - validating a proposed
     /// block or building one - keyed by its round. The two kinds share one
@@ -178,6 +189,10 @@ struct Metrics {
     /// the head; holds its last value while the pending head's height is
     /// unknown (its body has not arrived yet).
     convergence_depth: commonware_runtime::telemetry::metrics::Registered<Gauge>,
+    /// Number of notarized blocks the execution layer accepted that are not
+    /// on its canonical chain: delivered ahead of their forkchoice update,
+    /// or on branches other than the head's.
+    uncanonicalized_blocks: commonware_runtime::telemetry::metrics::Registered<Gauge>,
 }
 
 impl Metrics {
@@ -207,11 +222,18 @@ impl Metrics {
             (negative after a re-anchor below the head)",
             Gauge::default(),
         );
+        let uncanonicalized_blocks = context.register(
+            "uncanonicalized_blocks",
+            "number of notarized blocks the execution layer accepted that are not on its \
+            canonical chain",
+            Gauge::default(),
+        );
         Self {
             finalized_blocks_proposed_by_self,
             notarized_tree_blocks,
             finalization_lag,
             convergence_depth,
+            uncanonicalized_blocks,
         }
     }
 
@@ -223,6 +245,8 @@ impl Metrics {
         if let Some(depth) = depths.convergence_depth {
             self.convergence_depth.set(depth);
         }
+        self.uncanonicalized_blocks
+            .set(depths.uncanonicalized_blocks as i64);
     }
 }
 
@@ -307,6 +331,7 @@ where
 
             pending_finalizations: VecDeque::new(),
             pending_acknowledgements: VecDeque::new(),
+            deliveries_since_forkchoice: 0,
             pending_consensus_request: None,
 
             execution_task: OptionFuture::none(),
@@ -498,6 +523,7 @@ where
         let verdict = match status {
             Ok((PayloadStatusEnum::Valid, duration)) => {
                 self.notarized_tree.mark_delivered(&digest);
+                self.deliveries_since_forkchoice += 1;
                 Some(duration)
             }
             Ok((PayloadStatusEnum::Invalid { validation_error }, _)) => {
@@ -591,7 +617,10 @@ where
     /// fatal-on-failure backstop.
     fn handle_delivered(&mut self, digest: Digest, status: eyre::Result<PayloadStatusEnum>) {
         match status {
-            Ok(PayloadStatusEnum::Valid) => self.notarized_tree.mark_delivered(&digest),
+            Ok(PayloadStatusEnum::Valid) => {
+                self.notarized_tree.mark_delivered(&digest);
+                self.deliveries_since_forkchoice += 1;
+            }
             Ok(status) => {
                 warn!(
                     %status,
@@ -644,6 +673,7 @@ where
 
         self.notarized_tree
             .set_delivered_finalized(block.height(), block.digest());
+        self.deliveries_since_forkchoice += 1;
         if block.height() <= self.notarized_tree.local_state().finalized.0 {
             // NOTE: this block is already final on the execution layer. This
             // can happen if marshal is anchored below the EL and delivers
@@ -743,9 +773,10 @@ where
     }
 
     /// Climbs from the tracked finalized state to the finalized floor
-    /// before entering the loop: delivers every block, then finalizes the
-    /// floor with one forkchoice update. The head starts on the finalized
-    /// tip and follows it.
+    /// before entering the loop, finalizing every
+    /// [`DELIVERIES_PER_FORKCHOICE_UPDATE`] delivered blocks with one
+    /// forkchoice update. The head starts on the finalized tip and follows
+    /// it.
     async fn backfill_to_finalized_floor(&mut self) -> eyre::Result<()> {
         let start = self.notarized_tree.local_state().finalized.0.get() + 1;
         let end = self.finalized_floor.get();
@@ -757,8 +788,8 @@ where
                 "backfilling finalized blocks before entering executor loop"
             );
         }
-        let mut floor = None;
-        for height in heights {
+        let mut delivered_since_forkchoice = 0;
+        for height in heights.clone() {
             let span = info_span!("backfill_on_start", %height);
             let block = get_block(
                 self.marshal.clone(),
@@ -783,32 +814,36 @@ where
                 "payload status of backfilled finalized block at height `{height}` was \
                 not valid: {status}",
             );
-            floor = Some((block.height(), block.digest(), span));
-        }
 
-        let Some((height, digest, span)) = floor else {
-            return Ok(());
-        };
-        let target = self
-            .notarized_tree
-            .local_state()
-            .update_finalized(height, digest);
-        let response = submit_forkchoice_update(&self.execution_node, span, target, None)
-            .await
-            .wrap_err_with(|| {
-                format!(
-                    "failed finalizing the backfilled finalized floor at height `{height}` \
-                    on the execution layer"
-                )
-            })?;
-        if !response.is_valid() {
-            bail!(
-                "forkchoice update finalizing the backfilled finalized floor at height \
-                `{height}` was not valid: {}",
-                response.payload_status,
-            );
+            delivered_since_forkchoice += 1;
+            if delivered_since_forkchoice < DELIVERIES_PER_FORKCHOICE_UPDATE
+                && height != *heights.end()
+            {
+                continue;
+            }
+            delivered_since_forkchoice = 0;
+
+            let target = self
+                .notarized_tree
+                .local_state()
+                .update_finalized(block.height(), block.digest());
+            let response = submit_forkchoice_update(&self.execution_node, span, target, None)
+                .await
+                .wrap_err_with(|| {
+                    format!(
+                        "failed finalizing backfilled finalized block at height `{height}` \
+                        on the execution layer"
+                    )
+                })?;
+            if !response.is_valid() {
+                bail!(
+                    "forkchoice update finalizing the backfilled finalized block at height \
+                    `{height}` was not valid: {}",
+                    response.payload_status,
+                );
+            }
+            self.notarized_tree.set_local_state(target);
         }
-        self.notarized_tree.set_local_state(target);
         Ok(())
     }
 
@@ -1094,6 +1129,14 @@ where
             None => {}
         }
 
+        // Too many blocks delivered since the last forkchoice update: lock
+        // them in before delivering more.
+        if self.deliveries_since_forkchoice >= DELIVERIES_PER_FORKCHOICE_UPDATE
+            && self.start_forkchoice_update()?
+        {
+            return Ok(());
+        }
+
         // Finalizations are delivered in order and acknowledged so that the
         // marshal actor can make progress. Every finalized block is
         // delivered, whether or not the execution layer is thought to know
@@ -1126,6 +1169,9 @@ where
     /// Starts the forkchoice update onto the next target, if any; returns
     /// whether it did.
     fn start_forkchoice_update(&mut self) -> eyre::Result<bool> {
+        // Whatever was delivered is either covered by the update below or
+        // cannot be canonicalized by any update.
+        self.deliveries_since_forkchoice = 0;
         let Some(target) = self.next_forkchoice_target()? else {
             return Ok(false);
         };

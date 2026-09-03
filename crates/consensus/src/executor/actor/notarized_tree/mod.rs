@@ -180,6 +180,9 @@ pub(super) struct Depths {
     /// below the head; `None` while the pending head's body - and with it
     /// its height - is unknown.
     pub(super) convergence_depth: Option<i64>,
+    /// Number of held blocks the execution layer accepted that are not on
+    /// its canonical chain: delivered above the head, or on other branches.
+    pub(super) uncanonicalized_blocks: usize,
 }
 
 /// The parent of the most recent consensus context: the notarized block
@@ -247,6 +250,18 @@ impl NotarizedTree {
                 .get(&self.pending_head.digest)
                 .map(|entry| entry.block.height())
         };
+        // The head's ancestry held by the tree is the canonical part.
+        let mut canonical = std::collections::HashSet::new();
+        let mut digest = self.local_head.1;
+        while let Some(entry) = self.blocks.get(&digest) {
+            canonical.insert(digest);
+            digest = entry.block.parent_digest();
+        }
+        let uncanonicalized_blocks = self
+            .blocks
+            .iter()
+            .filter(|(digest, entry)| entry.delivered && !canonical.contains(digest))
+            .count();
         Depths {
             blocks: self.blocks.len(),
             finalization_lag: network_finalized_height
@@ -254,6 +269,7 @@ impl NotarizedTree {
                 .saturating_sub(self.local_finalized_tip.0.get()),
             convergence_depth: pending_height
                 .map(|height| height.get() as i64 - self.local_head.0.get() as i64),
+            uncanonicalized_blocks,
         }
     }
 

@@ -573,8 +573,11 @@ fn depths_measure_backlogs() {
     assert_eq!(depths.blocks, 0);
     assert_eq!(depths.finalization_lag, 0);
     assert_eq!(depths.convergence_depth, Some(0));
+    assert_eq!(depths.uncanonicalized_blocks, 0);
 
     // Two recorded blocks, the pending head two above the local head.
+    // Recorded bodies are not uncanonicalized until delivered; delivered
+    // ones are until the head passes them.
     let a = block(1, 11, finalized);
     let b = block(2, 12, a.digest());
     record(&mut tree, &a);
@@ -582,6 +585,12 @@ fn depths_measure_backlogs() {
     let depths = tree.depths();
     assert_eq!(depths.blocks, 2);
     assert_eq!(depths.convergence_depth, Some(2));
+    assert_eq!(depths.uncanonicalized_blocks, 0);
+    delivered(&mut tree, &a);
+    delivered(&mut tree, &b);
+    assert_eq!(tree.depths().uncanonicalized_blocks, 2);
+    head_moved(&mut tree, &a);
+    assert_eq!(tree.depths().uncanonicalized_blocks, 1);
 
     // A pending head without a body has no known height.
     let c = block(3, 13, b.digest());
