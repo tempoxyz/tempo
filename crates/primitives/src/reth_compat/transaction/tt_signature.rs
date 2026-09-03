@@ -6,8 +6,8 @@ impl reth_codecs::Compact for PrimitiveSignature {
     where
         B: alloy_rlp::BufMut + AsMut<[u8]>,
     {
-        let bytes = self.to_bytes();
-        bytes.to_compact(buf)
+        self.encode_bytes_into(buf);
+        self.encoded_length()
     }
 
     fn from_compact(buf: &[u8], len: usize) -> (Self, &[u8]) {
@@ -23,8 +23,8 @@ impl reth_codecs::Compact for TempoSignature {
     where
         B: alloy_rlp::BufMut + AsMut<[u8]>,
     {
-        let bytes = self.to_bytes();
-        bytes.to_compact(buf)
+        self.encode_bytes_into(buf);
+        self.encoded_length()
     }
 
     fn from_compact(buf: &[u8], len: usize) -> (Self, &[u8]) {
