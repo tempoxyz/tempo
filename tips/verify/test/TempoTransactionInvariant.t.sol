@@ -176,8 +176,7 @@ contract TempoTransactionInvariantTest is InvariantChecker {
 
     /// @notice Master invariant - all protocol rules checked after each handler sequence
     /// @dev This single function ensures every invariant is checked after every handler run
-    function invariant_tempoTransaction() public {
-        _reconcileCreateRevertNonces();
+    function invariant_tempoTransaction() public view {
         _checkAllInvariants();
     }
 
@@ -1421,7 +1420,7 @@ contract TempoTransactionInvariantTest is InvariantChecker {
             ghost_createOversizedAllowed++;
         } catch {
             _recordCreateRejectedSize();
-            _record2dNonceCreateRevert(ctx.sender, ctx.nonceKey);
+            ghost_totalTxReverted++;
         }
     }
 
