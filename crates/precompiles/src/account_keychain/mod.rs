@@ -29,7 +29,7 @@ use tempo_primitives::{TempoAddressExt, transaction::CallScope as RlpCallScope};
 use crate::{
     ACCOUNT_KEYCHAIN_ADDRESS,
     error::Result,
-    storage::{Handler, Mapping, Set},
+    storage::{Handler, Mapping, Set, Slot},
     tip20_factory::TIP20Factory,
 };
 use alloy::primitives::{Address, B256, FixedBytes, TxKind, U256, keccak256};
@@ -1557,7 +1557,25 @@ impl AccountKeychain {
     ) -> Result<()> {
         // Get the transaction key for this account
         let transaction_key = self.transaction_key.t_read()?;
+        self.authorize_transfer_with_key(account, token, amount, transaction_key)
+    }
 
+    /// Reads the transaction key of the current transaction from transient storage.
+    ///
+    /// Equivalent to reading the `transaction_key` field of a freshly constructed handle, without
+    /// paying for constructing the whole contract handle.
+    pub fn current_transaction_key() -> Result<Address> {
+        Slot::<Address>::new(slots::TRANSACTION_KEY, crate::ACCOUNT_KEYCHAIN_ADDRESS).t_read()
+    }
+
+    /// Same as [`Self::authorize_transfer`] for an already loaded transaction key.
+    pub fn authorize_transfer_with_key(
+        &mut self,
+        account: Address,
+        token: Address,
+        amount: U256,
+        transaction_key: Address,
+    ) -> Result<()> {
         // If using main key (Address::ZERO), no spending limits apply
         if transaction_key == Address::ZERO {
             return Ok(());
