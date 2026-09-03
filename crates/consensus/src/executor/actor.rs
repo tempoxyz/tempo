@@ -575,6 +575,17 @@ where
         build: Option<(Span, oneshot::Sender<TempoBuiltPayload>)>,
         response: eyre::Result<ForkchoiceUpdated>,
     ) -> eyre::Result<()> {
+        // FIXME: an update whose head is a canonical *ancestor* of reth's
+        // head (a re-anchor after a nullification, a repoint onto the
+        // finalized tip) is answered VALID without reth moving its canonical
+        // head, unless `always_process_payload_attributes_on_canonical_head`
+        // and `unwind_canonical_header` are enabled in its tree config.
+        // Tempo sets neither. The tracked head recorded below then differs
+        // from reth's until the next block on it lands; harmless for the
+        // executor (every update names its head explicitly, builds on the
+        // ancestor work), but RPC `latest` and the txpool stay on the
+        // nullified block for a round. Enabling the flags is a separate
+        // change; pre-existing on main.
         let diverged = || {
             format!(
                 "forkchoice update onto head `{}` at height `{}` and finalized block `{}` at \
