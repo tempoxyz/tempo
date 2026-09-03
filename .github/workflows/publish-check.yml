@@ -30,6 +30,8 @@ jobs:
   cargo-cooldown:
     name: Reject newly published crates
     runs-on: ubuntu-latest
+    env:
+      RUSTC_WRAPPER: ""
     permissions:
       contents: read
     steps:
