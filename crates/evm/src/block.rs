@@ -14,18 +14,14 @@ use alloy_evm::{
 use alloy_primitives::{Address, B256, Bytes, U256};
 use alloy_rlp::Decodable;
 use alloy_sol_types::SolCall;
-use commonware_codec::{DecodeExt, ReadExt};
-use commonware_cryptography::{
-    Verifier,
-    ed25519::{PublicKey, Signature},
-};
+use commonware_codec::ReadExt;
 use reth_evm::block::StateDB;
 use reth_revm::{
     Inspector,
     context::result::{ExecutionResult, ResultAndState},
     state::{Account, Bytecode, EvmState, EvmStorageSlot, TransactionId},
 };
-use std::collections::{HashMap, HashSet};
+use std::collections::HashMap;
 use tempo_chainspec::{TempoChainSpec, hardfork::TempoHardforks};
 use tempo_contracts::precompiles::{
     ADDRESS_REGISTRY_ADDRESS, CURRENT_COMMITTEE_ADDRESS, ICurrentCommittee, INITIAL_FACTORY_OWNER,
@@ -34,8 +30,7 @@ use tempo_contracts::precompiles::{
     initial_zone_factory_state, t12_zone_factory_state,
 };
 use tempo_primitives::{
-    SubBlock, SubBlockMetadata, TempoReceipt, TempoTxEnvelope, TempoTxType,
-    subblock::PartialValidatorKey,
+    SubBlockMetadata, TempoReceipt, TempoTxEnvelope, TempoTxType, subblock::PartialValidatorKey,
 };
 use tempo_revm::{TempoHaltReason, evm::TempoContext};
 use tracing::trace;
@@ -172,13 +167,11 @@ pub struct TempoBlockExecutor<'a, DB: Database, I> {
 
     section: BlockSection,
     seen_subblocks: Vec<(PartialValidatorKey, Vec<TempoTxEnvelope>)>,
-    validator_set: Option<Vec<B256>>,
     subblock_fee_recipients: HashMap<PartialValidatorKey, Address>,
     extra_data: Bytes,
 
     pub(crate) replay_state: StorageActionReplayState,
 
-    shared_gas_limit: u64,
     non_shared_gas_left: u64,
     non_payment_gas_left: u64,
     incentive_gas_used: u64,
@@ -196,10 +189,8 @@ where
     ) -> Self {
         Self {
             incentive_gas_used: 0,
-            validator_set: ctx.validator_set,
             non_payment_gas_left: ctx.general_gas_limit,
             non_shared_gas_left: evm.block().gas_limit.saturating_sub(ctx.shared_gas_limit),
-            shared_gas_limit: ctx.shared_gas_limit,
             extra_data: ctx.inner.extra_data.clone(),
             inner: EthBlockExecutor::new(
                 evm,
@@ -393,7 +384,7 @@ where
             }
 
             let mut buf = metadata_input;
-            let Ok(metadata) = Vec::<SubBlockMetadata>::decode(&mut buf) else {
+            let Ok(_) = Vec::<SubBlockMetadata>::decode(&mut buf) else {
                 return Err(BlockValidationError::msg(
                     "invalid subblocks metadata system transaction",
                 ));
@@ -405,8 +396,6 @@ where
                 ));
             }
 
-            self.validate_shared_gas(&metadata)?;
-
             seen_subblocks_signatures = true;
         } else {
             return Err(BlockValidationError::msg("invalid system transaction"));
@@ -415,108 +404,6 @@ where
         Ok(BlockSection::System {
             seen_subblocks_signatures,
         })
-    }
-
-    pub(crate) fn validate_shared_gas(
-        &self,
-        metadata: &[SubBlockMetadata],
-    ) -> Result<(), BlockValidationError> {
-        // T4 disabled subblocks and set the shared gas limit to zero. Reject any
-        // transaction that spilled into the former shared-gas incentive section
-        // without requiring the legacy validator set context.
-        if self.evm().cfg.spec.is_t4() {
-            if self.incentive_gas_used > 0 {
-                return Err(BlockValidationError::msg("incentive gas limit exceeded"));
-            }
-            return Ok(());
-        }
-
-        // Skip incentive gas validation if validator set context is not available.
-        let Some(validator_set) = &self.validator_set else {
-            return Ok(());
-        };
-        let gas_per_subblock = self
-            .shared_gas_limit
-            .checked_div(validator_set.len() as u64)
-            .expect("validator set must not be empty");
-
-        let mut incentive_gas = 0;
-        let mut seen = HashSet::new();
-        let mut next_non_empty = 0;
-        for metadata in metadata {
-            if !validator_set.contains(&metadata.validator) {
-                return Err(BlockValidationError::msg("invalid subblock validator"));
-            }
-
-            if !seen.insert(metadata.validator) {
-                return Err(BlockValidationError::msg(
-                    "only one subblock per validator is allowed",
-                ));
-            }
-
-            let transactions = if let Some((validator, txs)) =
-                self.seen_subblocks.get(next_non_empty)
-                && validator.matches(metadata.validator)
-            {
-                next_non_empty += 1;
-                txs.clone()
-            } else {
-                Vec::new()
-            };
-
-            let reserved_gas = transactions
-                .iter()
-                .map(|tx| {
-                    core::cmp::min(
-                        tx.gas_limit(),
-                        self.inner.evm.cfg.tx_gas_limit_cap.unwrap_or(u64::MAX),
-                    )
-                })
-                .sum::<u64>();
-
-            let signature_hash = SubBlock {
-                version: metadata.version,
-                fee_recipient: metadata.fee_recipient,
-                parent_hash: self.inner.ctx.parent_hash,
-                transactions: transactions.clone(),
-            }
-            .signature_hash();
-
-            let Ok(validator) = PublicKey::decode(&mut metadata.validator.as_ref()) else {
-                return Err(BlockValidationError::msg("invalid subblock validator"));
-            };
-
-            let Ok(signature) = Signature::decode(&mut metadata.signature.as_ref()) else {
-                return Err(BlockValidationError::msg(
-                    "invalid subblock signature encoding",
-                ));
-            };
-
-            // TODO: Add namespace?
-            if !validator.verify(&[], signature_hash.as_slice(), &signature) {
-                return Err(BlockValidationError::msg("invalid subblock signature"));
-            }
-
-            if reserved_gas > gas_per_subblock {
-                return Err(BlockValidationError::msg(
-                    "subblock gas used exceeds gas per subblock",
-                ));
-            }
-
-            incentive_gas += gas_per_subblock - reserved_gas;
-        }
-
-        if next_non_empty != self.seen_subblocks.len() {
-            return Err(BlockValidationError::msg(
-                "failed to map all non-empty subblocks to metadata",
-            ));
-        }
-
-        if incentive_gas < self.incentive_gas_used {
-            return Err(BlockValidationError::msg("incentive gas limit exceeded"));
-        }
-
-        Ok(())
     }
 
     /// Pre-validate a transaction before execution.
@@ -783,16 +670,8 @@ where
     fn finish(
         mut self,
     ) -> Result<(Self::Evm, BlockExecutionResult<Self::Receipt>), BlockExecutionError> {
-        let seen_subblock_signatures = match self.section {
-            BlockSection::System {
-                seen_subblocks_signatures,
-            } => seen_subblocks_signatures,
-            _ => false,
-        };
-
-        // Post T4, if subblocks metadata transaction was not seen, imply empty metadata.
-        if !seen_subblock_signatures && self.evm().cfg.spec.is_t4() {
-            self.validate_shared_gas(&[])?;
+        if self.evm().cfg.spec.is_t4() && self.incentive_gas_used > 0 {
+            return Err(BlockValidationError::msg("incentive gas limit exceeded").into());
         }
 
         self.apply_current_committee_system_call()?;
@@ -1170,214 +1049,6 @@ mod tests {
         assert_eq!(
             result.unwrap_err().to_string(),
             "subblocks are disabled in T4+"
-        );
-    }
-
-    #[test]
-    fn test_validate_shared_gas() {
-        let chainspec = test_chainspec();
-        let mut db = State::builder().with_bundle_update().build();
-        let signer = PrivateKey::from_seed(0);
-        let validator_key = B256::from_slice(&signer.public_key());
-        let executor = TestExecutorBuilder::default()
-            .with_validator_set(vec![validator_key])
-            .build(&mut db, &chainspec);
-
-        let metadata = vec![create_valid_subblock_metadata(B256::ZERO, &signer)];
-        let result = executor.validate_shared_gas(&metadata);
-        assert!(result.is_ok());
-    }
-
-    #[test]
-    fn test_validate_shared_gas_set_does_not_contain_validator() {
-        let chainspec = test_chainspec();
-        let mut db = State::builder().with_bundle_update().build();
-        let signer = PrivateKey::from_seed(0);
-        let different_validator = B256::repeat_byte(0x42); // Not the signer's key
-        let executor = TestExecutorBuilder::default()
-            .with_validator_set(vec![different_validator])
-            .build(&mut db, &chainspec);
-
-        let metadata = vec![create_valid_subblock_metadata(B256::ZERO, &signer)];
-        let result = executor.validate_shared_gas(&metadata);
-        assert!(result.is_err());
-        assert_eq!(
-            result.unwrap_err().to_string(),
-            "invalid subblock validator"
-        );
-    }
-
-    #[test]
-    fn test_validate_shared_gas_more_than_one_subblock_per_validator() {
-        let chainspec = test_chainspec();
-        let mut db = State::builder().with_bundle_update().build();
-        let signer = PrivateKey::from_seed(0);
-        let validator_key = B256::from_slice(&signer.public_key());
-        let executor = TestExecutorBuilder::default()
-            .with_validator_set(vec![validator_key])
-            .build(&mut db, &chainspec);
-
-        // Same validator appears twice
-        let m = create_valid_subblock_metadata(B256::ZERO, &signer);
-        let metadata = vec![m.clone(), m];
-
-        let result = executor.validate_shared_gas(&metadata);
-        assert!(result.is_err());
-        assert_eq!(
-            result.unwrap_err().to_string(),
-            "only one subblock per validator is allowed"
-        );
-    }
-
-    #[test]
-    fn test_validate_shared_gas_invalid_signature_encoding() {
-        let chainspec = test_chainspec();
-        let mut db = State::builder().with_bundle_update().build();
-        let signer = PrivateKey::from_seed(0);
-        let validator_key = B256::from_slice(&signer.public_key());
-        let executor = TestExecutorBuilder::default()
-            .with_validator_set(vec![validator_key])
-            .build(&mut db, &chainspec);
-
-        // Create metadata with invalid signature encoding
-        let metadata = vec![SubBlockMetadata {
-            version: SubBlockVersion::V1,
-            validator: validator_key,
-            fee_recipient: Address::ZERO,
-            signature: Bytes::from_static(&[0x01, 0x02, 0x03]),
-        }];
-
-        let result = executor.validate_shared_gas(&metadata);
-        assert!(result.is_err());
-        assert_eq!(
-            result.unwrap_err().to_string(),
-            "invalid subblock signature encoding"
-        );
-    }
-
-    #[test]
-    fn test_validate_shared_gas_invalid_signature() {
-        let chainspec = test_chainspec();
-        let mut db = State::builder().with_bundle_update().build();
-        let signer = PrivateKey::from_seed(0);
-        let validator_key = B256::from_slice(&signer.public_key());
-        let executor = TestExecutorBuilder::default()
-            .with_validator_set(vec![validator_key])
-            .build(&mut db, &chainspec);
-
-        // Create metadata with wrong signature
-        let wrong_signer = PrivateKey::from_seed(1);
-        let subblock = tempo_primitives::SubBlock {
-            version: SubBlockVersion::V1,
-            parent_hash: B256::ZERO,
-            fee_recipient: Address::ZERO,
-            transactions: vec![],
-        };
-        let signature_hash = subblock.signature_hash();
-        let wrong_signature = wrong_signer.sign(&[], signature_hash.as_slice());
-
-        let metadata = vec![SubBlockMetadata {
-            version: SubBlockVersion::V1,
-            validator: validator_key, // Correct validator
-            fee_recipient: Address::ZERO,
-            signature: Bytes::copy_from_slice(wrong_signature.as_ref()), // Wrong signature
-        }];
-
-        let result = executor.validate_shared_gas(&metadata);
-        assert!(result.is_err());
-        assert_eq!(
-            result.unwrap_err().to_string(),
-            "invalid subblock signature"
-        );
-    }
-
-    #[test]
-    fn test_validate_shared_gas_gas_used_exceeds_gas_per_subblock() {
-        let chainspec = test_chainspec();
-        let mut db = State::builder().with_bundle_update().build();
-        let signer = PrivateKey::from_seed(0);
-        let validator_key = B256::from_slice(&signer.public_key());
-        let tx = create_legacy_tx();
-        let proposer = PartialValidatorKey::from_slice(&validator_key[..15]);
-
-        // Create subblock with transactions included
-        let subblock = tempo_primitives::SubBlock {
-            version: SubBlockVersion::V1,
-            parent_hash: B256::ZERO,
-            fee_recipient: Address::ZERO,
-            transactions: vec![tx.clone()],
-        };
-
-        let executor = TestExecutorBuilder::default()
-            .with_validator_set(vec![validator_key])
-            .with_shared_gas_limit(100) // Low shared gas limit
-            .with_seen_subblock(proposer, vec![tx])
-            .build(&mut db, &chainspec);
-        let signature_hash = subblock.signature_hash();
-        let signature = signer.sign(&[], signature_hash.as_slice());
-
-        let metadata = vec![SubBlockMetadata {
-            version: SubBlockVersion::V1,
-            validator: validator_key,
-            fee_recipient: Address::ZERO,
-            signature: Bytes::copy_from_slice(signature.as_ref()),
-        }];
-
-        let result = executor.validate_shared_gas(&metadata);
-        assert!(result.is_err());
-        assert_eq!(
-            result.unwrap_err().to_string(),
-            "subblock gas used exceeds gas per subblock"
-        );
-    }
-
-    #[test]
-    fn test_validate_shared_gas_unexpected_subblock_len() {
-        let chainspec = test_chainspec();
-        let mut db = State::builder().with_bundle_update().build();
-        let signer = PrivateKey::from_seed(0);
-        let validator_key = B256::from_slice(&signer.public_key());
-
-        // Add a seen subblock from a different validator that won't match metadata
-        let different_key = B256::repeat_byte(0x99);
-        let different_proposer = PartialValidatorKey::from_slice(&different_key[..15]);
-
-        let executor = TestExecutorBuilder::default()
-            .with_validator_set(vec![validator_key])
-            .with_seen_subblock(different_proposer, vec![])
-            .build(&mut db, &chainspec);
-
-        // Metadata has validator_key but seen_subblocks has different_key
-        let metadata = vec![create_valid_subblock_metadata(B256::ZERO, &signer)];
-
-        let result = executor.validate_shared_gas(&metadata);
-        assert!(result.is_err());
-        assert_eq!(
-            result.unwrap_err().to_string(),
-            "failed to map all non-empty subblocks to metadata"
-        );
-    }
-
-    #[test]
-    fn test_validate_shared_gas_limit_exceeded() {
-        let chainspec = test_chainspec();
-        let mut db = State::builder().with_bundle_update().build();
-        let signer = PrivateKey::from_seed(0);
-        let validator_key = B256::from_slice(&signer.public_key());
-
-        // Set incentive_gas_used higher than available incentive gas
-        let executor = TestExecutorBuilder::default()
-            .with_validator_set(vec![validator_key])
-            .with_incentive_gas_used(100_000_000)
-            .build(&mut db, &chainspec);
-
-        let metadata = vec![create_valid_subblock_metadata(B256::ZERO, &signer)];
-
-        let result = executor.validate_shared_gas(&metadata);
-        assert!(result.is_err());
-        assert_eq!(
-            result.unwrap_err().to_string(),
-            "incentive gas limit exceeded"
         );
     }
 

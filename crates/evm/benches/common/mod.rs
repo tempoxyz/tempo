@@ -407,7 +407,6 @@ where
         },
         general_gas_limit: 10_000_000_000,
         shared_gas_limit: 0,
-        validator_set: None,
         consensus_context: None,
         subblock_fee_recipients: Default::default(),
     };
