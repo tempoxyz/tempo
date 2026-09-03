@@ -413,7 +413,6 @@ where
             shared_gas_limit,
             timestamp_millis_part: attributes.timestamp_millis_part(),
             consensus_context: attributes.consensus_context(),
-            subblock_fee_recipients: Default::default(),
         };
         let evm_env = self
             .evm_config
@@ -964,10 +963,6 @@ where
         self.metrics
             .payment_gas_limit_last
             .set(non_shared_gas_limit as f64 - general_gas_limit as f64);
-        self.metrics
-            .shared_gas_limit_last
-            .set(shared_gas_limit as f64);
-
         let requests = chain_spec
             .is_prague_active_at_timestamp(attributes.timestamp)
             .then(|| execution_result.requests.clone());

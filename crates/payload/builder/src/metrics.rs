@@ -68,8 +68,6 @@ pub(crate) struct TempoPayloadBuilderMetrics {
     pub(crate) general_gas_limit_last: Gauge,
     /// Payment lane gas limit.
     pub(crate) payment_gas_limit_last: Gauge,
-    /// Legacy shared gas limit.
-    pub(crate) shared_gas_limit_last: Gauge,
     /// Time to create the pool's `BestTransactions` iterator, including lock acquisition and snapshot.
     pub(crate) pool_fetch_duration_seconds: Histogram,
     /// Time to acquire the state provider and initialize the state DB.
