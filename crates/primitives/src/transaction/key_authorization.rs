@@ -553,8 +553,24 @@ mod rlp {
         account: Option<Address>,
     }
 
-    impl From<&KeyAuthorization> for KeyAuthorizationWire {
-        fn from(value: &KeyAuthorization) -> Self {
+    /// Borrowing counterpart of [`KeyAuthorizationWire`] used for encoding, so that computing
+    /// the RLP length or encoding an authorization does not clone its limits and call scopes.
+    #[derive(Clone, Debug, alloy_rlp::RlpEncodable)]
+    #[rlp(trailing)]
+    struct KeyAuthorizationWireRef<'a> {
+        chain_id: u64,
+        key_type: SignatureType,
+        key_id: Address,
+        expiry: Option<NonZeroU64>,
+        limits: Option<&'a Vec<TokenLimit>>,
+        allowed_calls: Option<&'a Vec<CallScope>>,
+        witness: Option<B256>,
+        is_admin: Option<NonZeroU64>,
+        account: Option<Address>,
+    }
+
+    impl<'a> From<&'a KeyAuthorization> for KeyAuthorizationWireRef<'a> {
+        fn from(value: &'a KeyAuthorization) -> Self {
             let KeyAuthorization {
                 chain_id,
                 key_type,
@@ -572,8 +588,8 @@ mod rlp {
                 key_type: *key_type,
                 key_id: *key_id,
                 expiry: *expiry,
-                limits: limits.clone(),
-                allowed_calls: allowed_calls.clone(),
+                limits: limits.as_ref(),
+                allowed_calls: allowed_calls.as_ref(),
                 witness: *witness,
                 is_admin: is_admin.then_some(NonZeroU64::MIN),
                 account: *account,
@@ -613,11 +629,11 @@ mod rlp {
 
     impl Encodable for KeyAuthorization {
         fn encode(&self, out: &mut dyn alloy_rlp::BufMut) {
-            KeyAuthorizationWire::from(self).encode(out);
+            KeyAuthorizationWireRef::from(self).encode(out);
         }
 
         fn length(&self) -> usize {
-            KeyAuthorizationWire::from(self).length()
+            KeyAuthorizationWireRef::from(self).length()
         }
     }
 
