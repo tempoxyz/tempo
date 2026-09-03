@@ -1191,6 +1191,17 @@ where
         if self.is_stale_forkchoice(target)? {
             // Nothing to submit: the execution layer is past this finality
             // already. The tracked state catches up to it.
+            //
+            // NOTE: this records a head the execution layer was never told
+            // about - the tracked head starts at the finalized floor at
+            // init, not at the execution layer's head, and moves along with
+            // finality here. That is fine: the recorded head is a canonical
+            // block the execution layer holds, so it is a valid anchor for
+            // convergence, and the first non-stale update names its head
+            // explicitly and realigns the two. The honest alternative,
+            // starting from the execution layer's own head, is unsafe: that
+            // head may sit on a branch nullified while the node was down,
+            // and the backfill's first update would then be rejected.
             self.notarized_tree.set_local_state(target);
             self.acknowledge_finalized();
             return Ok(false);
