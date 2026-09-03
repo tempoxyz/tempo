@@ -72,11 +72,11 @@ jobs:
         with:
           persist-credentials: false
       - name: Install Rust toolchain
-        uses: tempoxyz/gh-actions/vendor/dtolnay/rust-toolchain@c15a165aab8fdb1b1dea82547cfab4f6ce380c38 # gh-actions#98
+        uses: tempoxyz/gh-actions/vendor/dtolnay/rust-toolchain@636efecfbdc385738c8afc9dd3c13aa685e41054 # gh-actions#98
         with:
           toolchain: stable
       - name: Enforce Cargo dependency cooldown
-        uses: tempoxyz/gh-actions/actions/cargo-cooldown@c15a165aab8fdb1b1dea82547cfab4f6ce380c38 # gh-actions#98
+        uses: tempoxyz/gh-actions/actions/cargo-cooldown@636efecfbdc385738c8afc9dd3c13aa685e41054 # gh-actions#98
 
   codspeed:
     name: CodSpeed microbenchmarks
