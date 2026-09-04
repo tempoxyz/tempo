@@ -46,6 +46,8 @@ pub fn validate_body_against_header(
 pub struct TempoConsensus<C = TempoChainSpec> {
     /// Inner Ethereum consensus.
     inner: EthBeaconConsensus<C>,
+    /// How far in the future a block timestamp may be.
+    allowed_future_block_time_millis: u64,
     /// Whether child headers may use the same millisecond timestamp as their parent.
     allow_equal_timestamps: bool,
 }
@@ -65,8 +67,18 @@ where
             inner: EthBeaconConsensus::new(chain_spec)
                 .with_max_extra_data_size(TEMPO_MAXIMUM_EXTRA_DATA_SIZE)
                 .with_allow_bal_hashes(allow_bal_hashes),
+            allowed_future_block_time_millis: ALLOWED_FUTURE_BLOCK_TIME_MILLIS,
             allow_equal_timestamps: false,
         }
+    }
+
+    /// Configures how far in the future a block timestamp may be.
+    pub fn with_allowed_future_block_time_millis(
+        mut self,
+        allowed_future_block_time_millis: u64,
+    ) -> Self {
+        self.allowed_future_block_time_millis = allowed_future_block_time_millis;
+        self
     }
 
     /// Configures whether child headers may use the same millisecond timestamp as their parent.
@@ -93,7 +105,9 @@ where
             .into());
         }
 
-        if header.timestamp_millis() > present_timestamp_millis + ALLOWED_FUTURE_BLOCK_TIME_MILLIS {
+        if header.timestamp_millis()
+            > present_timestamp_millis.saturating_add(self.allowed_future_block_time_millis)
+        {
             return Err(ConsensusError::TimestampIsInFuture {
                 timestamp: header.timestamp_millis(),
                 present_timestamp: present_timestamp_millis,
@@ -1146,20 +1160,54 @@ mod tests {
 
     #[test]
     fn test_validate_header_timestamp_exactly_at_boundary() {
-        let consensus = TempoConsensus::new(MODERATO.clone());
-        let boundary_timestamp = current_timestamp_millis() + ALLOWED_FUTURE_BLOCK_TIME_MILLIS;
+        let present_timestamp = 1_000_000_000;
+        let allowed_future_block_time_millis = 100;
+        let consensus = TempoConsensus::new(MODERATO.clone())
+            .with_allowed_future_block_time_millis(allowed_future_block_time_millis);
+        let boundary_timestamp = present_timestamp + allowed_future_block_time_millis;
+        let shared_gas_limit = MODERATO.shared_gas_limit_at(boundary_timestamp / 1000, 30_000_000);
         let header = TestHeaderBuilder::default()
             .gas_limit(30_000_000)
             .timestamp_millis(boundary_timestamp)
-            .shared_gas_limit(MODERATO.shared_gas_limit_at(boundary_timestamp / 1000, 30_000_000))
+            .shared_gas_limit(shared_gas_limit)
+            .general_gas_limit(MODERATO.general_gas_limit_at(
+                boundary_timestamp / 1000,
+                30_000_000,
+                shared_gas_limit,
+            ))
             .build();
         let sealed = SealedHeader::seal_slow(header);
 
-        let result = consensus.validate_header(&sealed);
+        let result = consensus.validate_header_with_timestamp_millis(&sealed, present_timestamp);
         assert!(
             result.is_ok(),
             "Timestamp exactly at boundary should be accepted, got: {result:?}"
         );
+    }
+
+    #[test]
+    fn test_validate_header_timestamp_past_configured_boundary() {
+        let present_timestamp = 1_000_000_000;
+        let allowed_future_block_time_millis = 100;
+        let consensus = TempoConsensus::new(MODERATO.clone())
+            .with_allowed_future_block_time_millis(allowed_future_block_time_millis);
+        let block_timestamp = present_timestamp + allowed_future_block_time_millis + 1;
+        let header = TestHeaderBuilder::default()
+            .gas_limit(30_000_000)
+            .timestamp_millis(block_timestamp)
+            .build();
+        let sealed = SealedHeader::seal_slow(header);
+
+        let err = consensus
+            .validate_header_with_timestamp_millis(&sealed, present_timestamp)
+            .unwrap_err();
+        assert!(matches!(
+            err,
+            ConsensusError::TimestampIsInFuture {
+                timestamp,
+                present_timestamp: actual_present_timestamp,
+            } if timestamp == block_timestamp && actual_present_timestamp == present_timestamp
+        ));
     }
 
     #[test]
