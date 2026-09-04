@@ -246,6 +246,8 @@ impl BestTransactionsPrewarming {
             }
 
             if result.result.error_code.is_some() {
+                // Finalization errors also leave this worker available for the next transaction.
+                evm.ext().actions.clear();
                 return None;
             }
             let actions = evm.ext().actions.take()?;
@@ -1107,14 +1109,25 @@ mod tests {
                 assert_eq!(evm.ext().actions.take(), Some(Vec::new()));
             });
 
+            let successful_tx = test_payment_tx(sender, 500_000);
             let successful = BestTransactionsPrewarming::prewarm_transaction(
-                context,
-                test_payment_tx(sender, 500_000),
+                context.clone(),
+                successful_tx.clone(),
                 None,
             );
             let replay = successful.replay.expect("successful prewarm replay");
             assert!(!replay.actions.is_empty());
             assert!(!replay.actions.contains(&failed_action));
+
+            // Reuse after failure must produce exactly the trace from a fresh worker, not
+            // merely omit the sentinel used above. This also checks native recorder reuse.
+            BUILDER_PREWARM_EVM.with_borrow_mut(|state| *state = None);
+            let fresh =
+                BestTransactionsPrewarming::prewarm_transaction(context, successful_tx, None);
+            assert_eq!(
+                replay.actions,
+                fresh.replay.expect("fresh worker replay").actions
+            );
         });
 
         pool.install_fn(|| {
