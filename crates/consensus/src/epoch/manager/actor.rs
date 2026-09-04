@@ -352,7 +352,7 @@ where
 
                 reporter: Reporters::<_, crate::subblocks::Mailbox, _>::from((
                     self.config.subblocks.clone(),
-                    self.config.marshal.clone(),
+                    Reporters::from((self.config.marshal.clone(), self.config.application.clone())),
                 )),
                 partition: format!(
                     "{partition_prefix}_consensus_epoch_{epoch}",

@@ -69,6 +69,7 @@ pub(in crate::consensus) struct Actor<TContext, TState = Uninit> {
 
 struct BuildProposalArgs {
     propose_start: Instant,
+    proposal_return_budget: Duration,
     parent_view: View,
     parent_digest: Digest,
     round: Round,
@@ -106,7 +107,10 @@ where
 {
     pub(super) async fn init(config: super::Config<TContext>) -> eyre::Result<Self> {
         let (tx, rx) = mailbox::new(config.context.child("mailbox"), config.mailbox_size);
-        let my_mailbox = Mailbox::from_sender(tx);
+        let mut my_mailbox = Mailbox::from_sender(tx);
+        if let Some(target) = config.adaptive_pacing_target {
+            my_mailbox.enable_pacing(target, config.proposal_return_budget, &config.context);
+        }
 
         let metrics = Metrics::init(&config.context);
 
@@ -272,7 +276,9 @@ impl Inner<Init> {
             round,
             leader,
             started_at: propose_start,
+            proposal_return_budget,
         } = request;
+        let proposal_return_budget = proposal_return_budget.unwrap_or(self.proposal_return_budget);
 
         // Report the parent we are asked to build on as the pending head,
         // so that the executor can get started on bringing the execution
@@ -318,6 +324,7 @@ impl Inner<Init> {
                     &context,
                     BuildProposalArgs {
                         propose_start,
+                        proposal_return_budget,
                         parent_view,
                         parent_digest,
                         round,
@@ -361,6 +368,7 @@ impl Inner<Init> {
 
                     // Keep waiting for the remaining return time, if there's anything left after building the block.
                     context.sleep_until(proposal_return.return_at).await;
+                    self.my_mailbox.proposal_ready(round, block.digest());
                 }
 
                 eyre::Ok(block)
@@ -455,6 +463,7 @@ impl Inner<Init> {
     ) -> eyre::Result<(Block, Option<ProposalReturn>)> {
         let BuildProposalArgs {
             propose_start,
+            proposal_return_budget,
             parent_view,
             parent_digest,
             round,
@@ -581,9 +590,7 @@ impl Inner<Init> {
         // Give the builder only the proposal window that remains when payload
         // construction is requested. This accounts for a late `handle_propose`
         // start instead of resetting the budget at builder entry.
-        let build_budget = self
-            .proposal_return_budget
-            .saturating_sub(propose_start.elapsed());
+        let build_budget = proposal_return_budget.saturating_sub(propose_start.elapsed());
         let validation_latency_estimate = self
             .validation_latency_estimator
             .lock()
@@ -642,8 +649,7 @@ impl Inner<Init> {
         // Pace proposal return from the original propose start. Validators still
         // need to repeat replayable build work and marshal persistence, so leave
         // room for those costs before returning the proposal.
-        let return_delay = self
-            .proposal_return_budget
+        let return_delay = proposal_return_budget
             .saturating_sub(proposal_elapsed)
             .saturating_sub(validation_latency_elapsed)
             .saturating_sub(validator_marshal_persist);

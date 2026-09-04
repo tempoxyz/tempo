@@ -3,25 +3,82 @@ use commonware_actor::{
     mailbox::{self, Policy},
 };
 use commonware_consensus::{
-    Automaton, CertifiableAutomaton, Relay,
-    simplex::{Plan, types::Context},
+    Automaton, CertifiableAutomaton, Relay, Reporter,
+    simplex::{
+        Plan,
+        scheme::bls12381_threshold::vrf::Scheme,
+        types::{Activity, Context},
+    },
     types::{Round, View},
 };
 
-use commonware_cryptography::ed25519::PublicKey;
+use commonware_cryptography::{bls12381::primitives::variant::MinSig, ed25519::PublicKey};
+use commonware_runtime::telemetry::metrics::{Counter, Gauge, MetricsExt as _};
 use commonware_utils::channel::oneshot;
-use std::{collections::VecDeque, time::Instant};
+use parking_lot::Mutex;
+use std::{
+    collections::VecDeque,
+    sync::Arc,
+    time::{Duration, Instant},
+};
 
+use super::pacing::Pacing;
 use crate::consensus::Digest;
 
 #[derive(Clone)]
 pub(crate) struct Mailbox {
     inner: mailbox::Sender<Message>,
+    pacing: Option<Arc<Mutex<Pacing>>>,
+    pacing_metrics: Option<PacingMetrics>,
+}
+
+#[derive(Clone)]
+struct PacingMetrics {
+    budget_ms: Gauge,
+    notarization_ms: Gauge,
+    samples: Counter,
 }
 
 impl Mailbox {
     pub(super) fn from_sender(inner: mailbox::Sender<Message>) -> Self {
-        Self { inner }
+        Self {
+            inner,
+            pacing: None,
+            pacing_metrics: None,
+        }
+    }
+
+    pub(super) fn enable_pacing(
+        &mut self,
+        target: Duration,
+        initial_budget: Duration,
+        context: &impl commonware_runtime::Metrics,
+    ) {
+        self.pacing = Some(Arc::new(Mutex::new(Pacing::new(target, initial_budget))));
+        let budget_ms = context.gauge(
+            "pacing_budget_ms",
+            "adaptive local proposal budget in milliseconds",
+        );
+        budget_ms
+            .metric()
+            .set(initial_budget.min(target).as_millis().min(i64::MAX as u128) as i64);
+        self.pacing_metrics = Some(PacingMetrics {
+            budget_ms,
+            notarization_ms: context.gauge(
+                "pacing_notarization_ms",
+                "last accepted local proposal-to-notarization sample in milliseconds",
+            ),
+            samples: context.counter(
+                "pacing_samples",
+                "successful local views used for adaptive pacing",
+            ),
+        });
+    }
+
+    pub(super) fn proposal_ready(&self, round: Round, digest: Digest) {
+        if let Some(pacing) = &self.pacing {
+            pacing.lock().ready(round, digest, Instant::now());
+        }
     }
 }
 
@@ -50,6 +107,7 @@ pub(super) struct Propose {
     pub(super) round: Round,
     pub(super) leader: PublicKey,
     pub(super) started_at: Instant,
+    pub(super) proposal_return_budget: Option<Duration>,
 }
 
 impl From<Propose> for Message {
@@ -92,12 +150,19 @@ impl Automaton for Mailbox {
         // XXX: Cannot propagate the error upstream because of the trait def.
         // But if the actor no longer responds the application is dead.
         let (tx, rx) = oneshot::channel();
+        let started_at = Instant::now();
+        let proposal_return_budget = self.pacing.as_ref().map(|pacing| {
+            pacing
+                .lock()
+                .begin(context.round, context.parent.0, started_at)
+        });
         let propose = Propose {
             parent: context.parent,
             response: tx,
             round: context.round,
             leader: context.leader,
-            started_at: Instant::now(),
+            started_at,
+            proposal_return_budget,
         };
 
         assert!(
@@ -141,6 +206,46 @@ impl Automaton for Mailbox {
 impl CertifiableAutomaton for Mailbox {
     // NOTE: uses the default impl for CertifiableAutomaton which always
     // returns true.
+}
+
+impl Reporter for Mailbox {
+    type Activity = Activity<Scheme<PublicKey, MinSig>, Digest>;
+
+    fn report(&mut self, activity: Self::Activity) -> Feedback {
+        let (Some(pacing), Some(metrics)) = (&self.pacing, &self.pacing_metrics) else {
+            return Feedback::Ok;
+        };
+        // Capture receipt time before taking the lock; no application mailbox or
+        // async scheduling delay should be attributed to the consensus round.
+        let now = Instant::now();
+        match activity {
+            Activity::Notarization(n) => {
+                let sample = pacing
+                    .lock()
+                    .notarized(n.proposal.round, n.proposal.payload, now);
+                if let Some((elapsed, budget)) = sample {
+                    metrics
+                        .budget_ms
+                        .metric()
+                        .set(budget.as_millis().min(i64::MAX as u128) as i64);
+                    metrics
+                        .notarization_ms
+                        .metric()
+                        .set(elapsed.as_millis().min(i64::MAX as u128) as i64);
+                    metrics.samples.metric().inc();
+                    tracing::info!(
+                        round = %n.proposal.round,
+                        elapsed_ms = elapsed.as_millis(),
+                        budget_ms = budget.as_millis(),
+                        "updated adaptive proposal pacing"
+                    );
+                }
+            }
+            Activity::Nullification(n) => pacing.lock().cancel(n.round),
+            _ => {}
+        }
+        Feedback::Ok
+    }
 }
 
 impl Relay for Mailbox {

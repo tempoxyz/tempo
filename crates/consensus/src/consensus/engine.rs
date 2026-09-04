@@ -77,6 +77,8 @@ pub struct Builder<TBlocker, TPeerManager> {
     /// The leader uses this window for payload building, local marshal
     /// persistence, and any final wait before returning the proposal.
     pub proposal_return_budget: Duration,
+    /// Opt-in target for feedback from locally proposed, notarized views.
+    pub adaptive_pacing_target: Option<Duration>,
     pub time_to_build_subblock: Duration,
     pub subblock_broadcast_interval: Duration,
     pub fcu_heartbeat_interval: Duration,
@@ -269,6 +271,7 @@ where
             execution_node: execution_node.clone(),
             executor: executor_mailbox.clone(),
             proposal_return_budget: self.proposal_return_budget,
+            adaptive_pacing_target: self.adaptive_pacing_target,
             subblocks: subblocks.as_ref().map(|s| s.mailbox()),
             scheme_provider: scheme_provider.clone(),
             epoch_strategy: epoch_strategy.clone(),

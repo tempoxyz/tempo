@@ -154,6 +154,12 @@ pub struct Args {
     #[arg(long = "consensus.network-budget", default_value = "50ms")]
     pub network_budget: PositiveDuration,
 
+    /// Adapt the local proposal budget to this validator's observed time to
+    /// notarize its own proposals. Starts with `target-block-time - network-budget`.
+    /// Only successful consecutive views contribute; consensus timeouts are unchanged.
+    #[arg(long = "consensus.adaptive-pacing", default_value_t = false)]
+    pub adaptive_pacing: bool,
+
     /// Deprecated compatibility flag. Ignored by the elastic proposal budget.
     #[arg(
         long = "consensus.time-to-prepare-proposal-transactions",
