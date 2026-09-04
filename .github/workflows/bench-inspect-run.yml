@@ -84,14 +84,34 @@ jobs:
               copied = subprocess.run(['aws', 's3', 'cp', f's3://{bucket}/{key}', str(samples_file), '--region', 'us-east-1', '--only-show-errors'], capture_output=True, text=True, timeout=90)
               if bounds and copied.returncode == 0:
                   names = {'reth_consensus_engine_persistence_save_blocks_duration_seconds', 'reth_database_transaction_commit_sync_duration_seconds', 'reth_database_transaction_commit_whole_duration_seconds', 'reth_storage_providers_database_save_blocks_commit_mdbx_last', 'reth_storage_providers_database_save_blocks_commit_sf_last', 'reth_storage_providers_database_save_blocks_write_trie_updates_last'}
+                  report_first, report_last = min(bounds), max(bounds)
                   rows = {}
+                  stability = {}
+                  stability_names = {'reth_consensus_engine_beacon_backpressure_active', 'reth_consensus_engine_beacon_executed_blocks', 'reth_blockchain_tree_canonical_chain_height', 'reth_sync_checkpoint'}
+                  stability_tokens = tuple(stability_names) + ('jemalloc', 'resident_memory', 'process_resident')
                   sample_first = None
                   sample_last = None
                   with gzip.open(samples_file, 'rt') as samples:
                       for line in samples:
-                          if not any(name in line for name in names):
+                          if not any(name in line for name in names) and not any(token in line for token in stability_tokens):
                               continue
                           sample = json.loads(line)
+                          name = sample['name']
+                          timestamp = sample['unix_ms']
+                          labels = sample['labels']
+                          if report_first <= timestamp <= report_last and (name in stability_names or any(token in name for token in ('jemalloc', 'resident_memory', 'process_resident'))):
+                              if name != 'reth_sync_checkpoint' or labels.get('stage') == 'Finish':
+                                  identity = (name, json.dumps(labels, sort_keys=True))
+                                  series = stability.setdefault(identity, {'metric': name, 'labels': labels, 'buckets': {}})
+                                  bucket = (timestamp - report_first) // 5000
+                                  point = series['buckets'].setdefault(bucket, {'first_ms': timestamp, 'last_ms': timestamp, 'first': sample['value'], 'last': sample['value'], 'minimum': sample['value'], 'maximum': sample['value'], 'count': 0})
+                                  if timestamp < point['first_ms']:
+                                      point.update(first_ms=timestamp, first=sample['value'])
+                                  if timestamp >= point['last_ms']:
+                                      point.update(last_ms=timestamp, last=sample['value'])
+                                  point['minimum'] = min(point['minimum'], sample['value'])
+                                  point['maximum'] = max(point['maximum'], sample['value'])
+                                  point['count'] += 1
                           if sample['name'] not in names:
                               continue
                           timestamp = sample['unix_ms']
@@ -99,7 +119,7 @@ jobs:
                           sample_last = timestamp if sample_last is None else max(sample_last, timestamp)
                           labels = sample['labels']
                           quantile = labels.get('quantile', 'last')
-                          if not min(bounds) <= timestamp <= max(bounds) or quantile not in ('0.99', 'last') or labels.get('outcome', 'commit') != 'commit':
+                          if not report_first <= timestamp <= report_last or quantile not in ('0.99', 'last') or labels.get('outcome', 'commit') != 'commit':
                               continue
                           identity = (labels.get('node', labels.get('validator', '?')), sample['name'], quantile)
                           prior = rows.get(identity)
@@ -108,6 +128,8 @@ jobs:
                   digest = hashlib.file_digest(samples_file.open('rb'), 'sha256').hexdigest()
                   metric_result = {'source_sha256': digest, 'source_key': key, 'report_first_ms': min(bounds), 'report_last_ms': max(bounds), 'sample_first_ms': sample_first, 'sample_last_ms': sample_last, 'note': 'Maxima of exported quantile or last-value samples within the report range; not pooled quantiles.', 'series': sorted(rows.values(), key=lambda row: (row['node'], row['metric']))}
                   pathlib.Path('inspection-persistence-metrics.json').write_text(json.dumps(metric_result, indent=2))
+                  stability_result = {'source_sha256': digest, 'source_key': key, 'report_first_ms': min(bounds), 'report_last_ms': max(bounds), 'note': 'Observed samples grouped into five-second buckets; absent metrics are unavailable. Finish checkpoint is the block-data frontier, not the masked state/trie frontier. Jemalloc resident excludes non-allocator mappings. No bounded-memory or long-term stability claim follows from this short observation.', 'series': [{**{key: value for key, value in series.items() if key != 'buckets'}, 'buckets': [dict(bucket=bucket, **point) for bucket, point in sorted(series['buckets'].items())]} for _, series in sorted(stability.items())]}
+                  pathlib.Path('inspection-stability-metrics.json').write_text(json.dumps(stability_result, indent=2))
                   runner['persistence_metrics'] = metric_result
           print(json.dumps({'benchmark_id': benchmark, 'validators': results, 'runner': runner}, indent=2))
           with open(os.environ['GITHUB_STEP_SUMMARY'], 'a') as summary:
