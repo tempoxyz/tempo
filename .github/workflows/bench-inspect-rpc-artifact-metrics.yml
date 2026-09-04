@@ -1,0 +1,286 @@
+name: bench-inspect-rpc-artifact-metrics
+on:
+  push:
+    branches: [ejh/20k-tps-10v]
+    paths: [.github/workflows/bench-inspect-rpc-artifact-metrics.yml]
+  workflow_dispatch:
+permissions:
+  actions: read
+jobs:
+  inspect:
+    runs-on: ubuntu-latest
+    timeout-minutes: 25
+    steps:
+      - name: Verify and reduce completed sender admission measurements
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          python3 - <<'PYCODE'
+          import collections
+          import gzip
+          import hashlib
+          import json
+          import math
+          import pathlib
+          import shutil
+          import subprocess
+          import zipfile
+          
+          ARTIFACT_ID = 9940278451
+          RUN_ID = 33875842539
+          ARCHIVE_BYTES = 560237994
+          ARCHIVE_SHA = 'c3fc18fbf278c35330d39ca7a7bdca1d47e0453bdba443112493b1d2a9534ff6'
+          BENCHMARK = 'bench-e2e-multi-region-33875842539-1'
+          COMMIT = 'ce59d060038fbaf01596621a5770a8662a71f5d2'
+          PHASES = {
+              'baseline-1': {
+                  'report_bytes': 77197,
+                  'report_sha': 'b32d9b5f1589d07fda41c58b09c051c85ce0906c9f6622a2f1d3bb5a26263f31',
+                  'samples_bytes': 281576770,
+                  'samples_sha': '004b9b00eb4c42fd5c8e5632567d830bdc7cf16e049c7c45ff37040ccf8e36ed',
+                  'blocks': [83, 293], 'window_ms': [1788528371262, 1788528725073],
+              },
+              'feature-1': {
+                  'report_bytes': 77709,
+                  'report_sha': 'c9829f6d186a70af7f6656908fd972b059f81840f418d4c6457e42ecda6e3367',
+                  'samples_bytes': 290368848,
+                  'samples_sha': '1447e0df1927afccdc8bb00985e04b963bb99e6708db62ff7d09c4259497d3aa',
+                  'blocks': [126, 333], 'window_ms': [1788529560847, 1788529923149],
+              },
+          }
+          RPC_NAMES = {
+              'reth_rpc_server_calls_' + suffix for suffix in
+              ('started_total', 'successful_total', 'failed_total', 'time_seconds_sum', 'time_seconds_count')
+          }
+          POOL_COUNTERS = {
+              'reth_transaction_pool_' + suffix for suffix in
+              ('inserted_transactions', 'invalid_transactions', 'removed_transactions',
+               'pending_transactions_evicted', 'queued_transactions_evicted',
+               'basefee_transactions_evicted', 'blob_transactions_evicted')
+          }
+          POOL_GAUGES = {
+              'reth_transaction_pool_' + suffix for suffix in
+              ('pending_pool_transactions', 'pending_pool_size_bytes', 'queued_pool_transactions',
+               'queued_pool_size_bytes', 'total_transactions', 'inflight_validation_jobs')
+          }
+          PERSISTENCE_COUNTERS = {
+              stem + suffix for stem in
+              ('reth_consensus_engine_beacon_backpressure_stall_duration',
+               'reth_consensus_engine_persistence_save_blocks_duration_seconds',
+               'reth_database_transaction_commit_sync_duration_seconds')
+              for suffix in ('_sum', '_count')
+          }
+          PERSISTENCE_GAUGES = {'reth_consensus_engine_beacon_backpressure_active'}
+          CLIENT_COUNTERS = {'txgen_transactions_' + suffix for suffix in ('sent_total', 'success_total', 'failed_total')}
+          CLIENT_GAUGES = {'txgen_transactions_inflight'}
+          COUNTERS = RPC_NAMES | POOL_COUNTERS | PERSISTENCE_COUNTERS | CLIENT_COUNTERS
+          SELECTED = COUNTERS | POOL_GAUGES | PERSISTENCE_GAUGES | CLIENT_GAUGES
+          NODE_REQUIRED = SELECTED - CLIENT_COUNTERS - CLIENT_GAUGES
+          PREFIXES = ('reth_rpc_server_', 'reth_transaction_pool_',
+                      'reth_consensus_engine_beacon_backpressure_',
+                      'reth_consensus_engine_persistence_save_blocks_',
+                      'reth_database_transaction_commit_sync_', 'txgen_transactions_')
+          
+          
+          def digest(path):
+              with path.open('rb') as source:
+                  return hashlib.file_digest(source, 'sha256').hexdigest()
+          
+          
+          def extract(zipped, name, target, size, expected_sha=None):
+              matches = [entry for entry in zipped.infolist() if entry.filename == name]
+              assert len(matches) == 1 and matches[0].file_size == size, ('ZIP entry size/identity', name)
+              with zipped.open(matches[0]) as source, target.open('wb') as output:
+                  shutil.copyfileobj(source, output, 1024 * 1024)
+              actual_sha = digest(target)
+              assert target.stat().st_size == size
+              if expected_sha is not None:
+                  assert actual_sha == expected_sha, ('entry SHA256 mismatch', name)
+              return {'entry': name, 'bytes': size, 'sha256': actual_sha}
+          
+          
+          def summarize_points(points, counter, first_ms):
+              # Scrapers write concurrently. Sort selected points instead of assuming archive order.
+              points = sorted(points)
+              buckets = {}
+              previous = None
+              decreases = 0
+              for timestamp, value in points:
+                  index = (timestamp - first_ms) // 5000
+                  bucket = buckets.setdefault(index, {'bucket': index, 'first_ms': timestamp,
+                      'last_ms': timestamp, 'first': value, 'last': value,
+                      'minimum': value, 'maximum': value, 'observations': 0,
+                      'delta': 0.0 if counter else None, 'delta_span_ms': 0 if counter else None,
+                      'counter_decreases': 0, 'intervals': 0})
+                  bucket.update(last_ms=timestamp, last=value)
+                  bucket['minimum'] = min(bucket['minimum'], value)
+                  bucket['maximum'] = max(bucket['maximum'], value)
+                  bucket['observations'] += 1
+                  if previous is not None and counter:
+                      earlier_ms, earlier_value = previous
+                      bucket['intervals'] += 1
+                      bucket['delta_span_ms'] += timestamp - earlier_ms
+                      if value < earlier_value:
+                          decreases += 1
+                          bucket['counter_decreases'] += 1
+                          bucket['delta'] = None
+                      elif bucket['delta'] is not None:
+                          bucket['delta'] += value - earlier_value
+                  previous = timestamp, value
+              for bucket in buckets.values():
+                  if counter and bucket['intervals'] == 0:
+                      bucket['delta'] = None
+                  bucket['rate_per_second'] = (bucket['delta'] * 1000 / bucket['delta_span_ms']
+                      if counter and bucket['delta'] is not None and bucket['delta_span_ms'] > 0 else None)
+              whole = {'first_ms': points[0][0], 'last_ms': points[-1][0],
+                       'first': points[0][1], 'last': points[-1][1], 'observations': len(points),
+                       'counter_decreases': decreases,
+                       'delta': points[-1][1] - points[0][1] if counter and len(points) > 1 and not decreases else None}
+              return {'whole': whole, 'buckets': list(buckets.values())}
+          
+          
+          def reduce_samples(lines, first_ms, last_ms, validators):
+              selected = {}
+              inventory = {}
+              identities = {}
+              malformed = 0
+              relevant_lines = 0
+              window_lines = 0
+              for line in lines:
+                  if not any(token in line for token in PREFIXES):
+                      continue
+                  relevant_lines += 1
+                  sample = json.loads(line)
+                  name = sample['name']
+                  if not name.startswith(PREFIXES):
+                      continue
+                  timestamp = sample['unix_ms']
+                  if not first_ms <= timestamp <= last_ms:
+                      continue
+                  window_lines += 1
+                  labels = sample['labels']
+                  node = labels.get('node', labels.get('validator'))
+                  item = inventory.setdefault(name, {'metric': name, 'label_keys': set(),
+                                                     'methods': set(), 'nodes': set(), 'observations': 0})
+                  item['label_keys'].update(labels)
+                  if 'method' in labels:
+                      item['methods'].add(labels['method'])
+                  if node is not None:
+                      item['nodes'].add(node)
+                  item['observations'] += 1
+                  if name not in SELECTED:
+                      continue
+                  if name in RPC_NAMES and labels.get('method') != 'eth_sendRawTransaction':
+                      continue
+                  if name.startswith('reth_database_transaction_commit_sync_') and labels.get('outcome', 'commit') != 'commit':
+                      continue
+                  assert labels.get('benchmark_id') == BENCHMARK, ('benchmark label mismatch', name)
+                  assert labels.get('node_commit_sha') == COMMIT, ('commit label mismatch', name)
+                  if name not in CLIENT_COUNTERS | CLIENT_GAUGES:
+                      assert labels.get('layer') == 'execution', ('unexpected layer', name, labels)
+                      index = str(labels.get('validator_index', ''))
+                      assert index in validators, ('unknown validator', labels)
+                      expected = validators[index]
+                      assert labels.get('region') == expected['region']
+                      expected_name = expected.get('validator_name')
+                      if expected_name:
+                          assert node == expected_name, ('validator name mismatch', labels)
+                      expected_key = expected.get('validator_pubkey', expected.get('pubkey'))
+                      if expected_key:
+                          assert labels.get('validator_pubkey') == expected_key
+                      identities.setdefault(index, set()).add(json.dumps({key: labels.get(key) for key in
+                          ('node', 'validator', 'validator_index', 'validator_pubkey', 'region')}, sort_keys=True))
+                  value = sample['value']
+                  if not isinstance(value, (int, float)) or not math.isfinite(value):
+                      malformed += 1
+                      continue
+                  key = (name, json.dumps(labels, sort_keys=True))
+                  selected.setdefault(key, []).append((timestamp, value))
+              series = [{'metric': name, 'labels': json.loads(labels),
+                         **summarize_points(points, name in COUNTERS, first_ms)}
+                        for (name, labels), points in sorted(selected.items())]
+              coverage = []
+              for index, expected in sorted(validators.items(), key=lambda row: int(row[0])):
+                  found = {s['metric'] for s in series if str(s['labels'].get('validator_index', '')) == index}
+                  coverage.append({'validator_index': index, 'expected_identity': expected,
+                                   'observed_identities': [json.loads(x) for x in sorted(identities.get(index, set()))],
+                                   'present_metrics': sorted(found), 'missing_metrics': sorted(NODE_REQUIRED - found)})
+              global_found = {s['metric'] for s in series}
+              return {'series': series, 'validator_coverage': coverage,
+                      'missing_client_metrics': sorted((CLIENT_COUNTERS | CLIENT_GAUGES) - global_found),
+                      'metric_inventory': [{**x, 'label_keys': sorted(x['label_keys']),
+                                             'methods': sorted(x['methods']), 'nodes': sorted(x['nodes'])}
+                                            for _, x in sorted(inventory.items())],
+                      'relevant_lines': relevant_lines, 'in_window_relevant_lines': window_lines,
+                      'nonfinite_or_nonnumeric_selected_samples': malformed,
+                      'coverage_complete': all(not x['missing_metrics'] for x in coverage) and
+                                           (CLIENT_COUNTERS | CLIENT_GAUGES) <= global_found and malformed == 0}
+          
+          
+          def main():
+              api = f'repos/tempoxyz/tempo/actions/artifacts/{ARTIFACT_ID}'
+              metadata = json.loads(subprocess.check_output(['gh', 'api', api], text=True, timeout=30))
+              assert metadata['id'] == ARTIFACT_ID and metadata['workflow_run']['id'] == RUN_ID
+              assert metadata['name'] == 'tempo-bench-e2e-multi-region-results' and not metadata['expired']
+              assert metadata['size_in_bytes'] == ARCHIVE_BYTES and metadata['digest'] == 'sha256:' + ARCHIVE_SHA
+              archive = pathlib.Path('source-artifact.zip')
+              with archive.open('wb') as output:
+                  subprocess.run(['gh', 'api', api + '/zip'], stdout=output, check=True, timeout=180)
+              assert archive.stat().st_size == ARCHIVE_BYTES and digest(archive) == ARCHIVE_SHA
+              provenance = {'run_id': RUN_ID, 'artifact_id': ARTIFACT_ID, 'archive_bytes': ARCHIVE_BYTES,
+                            'archive_sha256': ARCHIVE_SHA, 'entries': {}}
+              with zipfile.ZipFile(archive) as zipped:
+                  path = pathlib.Path('source-validators.json')
+                  provenance['entries']['validators.json'] = extract(zipped, 'validators.json', path, 2659)
+                  identities = json.loads(path.read_text())
+                  assert len(identities) == 10 and {v['index'] for v in identities} == set(range(10))
+                  validators = {str(v['index']): v for v in identities}
+                  pathlib.Path('inspection-rpc-source-provenance.json').write_text(json.dumps(provenance, indent=2) + '\n')
+                  for phase, expected in PHASES.items():
+                      report_path = pathlib.Path(f'source-{phase}-report.json')
+                      samples_path = pathlib.Path(f'source-{phase}-samples.ndjson.gz')
+                      for name, target, size, sha in (
+                          (f'{phase}/txgen-report.json', report_path, expected['report_bytes'], expected['report_sha']),
+                          (f'{phase}/txgen-report.samples.ndjson.gz', samples_path, expected['samples_bytes'], expected['samples_sha'])):
+                          provenance['entries'][name] = extract(zipped, name, target, size, sha)
+                      report = json.loads(report_path.read_text())
+                      blocks = report['blocks']
+                      assert report['metadata']['benchmark_id'] == BENCHMARK and report['metadata']['node_commit_sha'] == COMMIT
+                      assert [blocks[0]['number'], blocks[-1]['number']] == expected['blocks']
+                      assert [blocks[0]['timestamp_ms'], blocks[-1]['timestamp_ms']] == expected['window_ms']
+                      assert all(b['number'] == a['number'] + 1 and b['timestamp_ms'] > a['timestamp_ms'] for a, b in zip(blocks, blocks[1:]))
+                      print(f'Reducing {phase}, exact blocks {expected["blocks"]}', flush=True)
+                      with gzip.open(samples_path, 'rt') as lines:
+                          result = reduce_samples(lines, *expected['window_ms'], validators)
+                      result.update(run_id=RUN_ID, artifact_id=ARTIFACT_ID, run_label=phase,
+                                    report_window_ms=expected['window_ms'], report_blocks=expected['blocks'],
+                                    report_source=provenance['entries'][f'{phase}/txgen-report.json'],
+                                    samples_source=provenance['entries'][f'{phase}/txgen-report.samples.ndjson.gz'],
+                                    definitions_reth_commit='52ff5164605ec81a71ec303187ec035d19446e3a',
+                                    notes=['RPC call metrics are filtered by the actual method label eth_sendRawTransaction.',
+                                           'Every series preserves all labels. Missing metrics are unavailable, not zero.',
+                                           'Five-second buckets begin at the exact first report block timestamp; selected points are sorted.',
+                                           'Counter increments are attributed to the bucket containing the interval endpoint; delta_span_ms preserves real elapsed coverage, including cross-bucket intervals.',
+                                           'First observation has no delta. Any counter decrease makes that bucket and whole-series delta unavailable; it can indicate reset or concurrent snapshot skew.',
+                                           'Server RPC method time excludes client/SSM transport and pre-handler queueing; this diagnostic makes no transport-capacity claim.',
+                                           'No receipt proof is rerun or changed. This workflow only diagnoses already completed, immutable measurements.'])
+                      pathlib.Path(f'inspection-rpc-{phase}.json').write_text(json.dumps(result, separators=(',', ':')) + '\n')
+                      print(json.dumps({'phase': phase, 'series': len(result['series']), 'coverage_complete': result['coverage_complete'],
+                                        'inventory_metrics': len(result['metric_inventory']),
+                                        'missing_rpc_by_validator': {x['validator_index']: sorted(RPC_NAMES & set(x['missing_metrics'])) for x in result['validator_coverage']}}), flush=True)
+                      samples_path.unlink()
+                      pathlib.Path('inspection-rpc-source-provenance.json').write_text(json.dumps(provenance, indent=2) + '\n')
+              archive.unlink()
+          
+          
+          if __name__ == '__main__':
+              main()
+          PYCODE
+      - name: Upload compact RPC admission evidence
+        if: always()
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: benchmark-rpc-artifact-metrics
+          path: inspection-rpc-*.json
+          if-no-files-found: warn
+          retention-days: 14
