@@ -9,10 +9,29 @@ use alloy_eips::eip2718::Typed2718;
 use alloy_primitives::Bytes;
 use alloy_rlp::Encodable;
 use reth_primitives_traits::{RecoveredBlock, SealedBlock};
+use reth_transaction_pool::PoolTransaction;
 use std::sync::Arc;
 use tempo_payload_types::EncodedBlock;
 use tempo_primitives::TempoTxEnvelope;
+use tempo_transaction_pool::transaction::TempoPooledTransaction;
 use tracing::warn;
+
+/// Block-body RLP length of a pooled transaction, reusing its cached EIP-2718 length.
+///
+/// Typed transactions need an RLP string header around their EIP-2718 bytes. Legacy transactions
+/// are already RLP lists. The pool's encoded length intentionally excludes the typed wrapper.
+pub(crate) fn pooled_transaction_rlp_length(transaction: &TempoPooledTransaction) -> usize {
+    let encoded_length = transaction.encoded_length();
+    if transaction.inner().is_legacy() {
+        encoded_length
+    } else {
+        alloy_rlp::Header {
+            list: false,
+            payload_length: encoded_length,
+        }
+        .length_with_payload()
+    }
+}
 
 /// RLP transaction-list bytes for the execution block.
 ///
@@ -176,7 +195,9 @@ mod tests {
     use proptest::prelude::*;
     use reth_primitives_traits::{RecoveredBlock, SealedBlock};
     use std::sync::Arc;
-    use tempo_primitives::{Block, Header, TempoHeader};
+    use tempo_primitives::{
+        AASigned, Block, Header, TempoHeader, TempoSignature, TempoTransaction, transaction::Call,
+    };
 
     fn arb_address() -> impl Strategy<Value = Address> {
         any::<[u8; 20]>().prop_map(Address::from)
@@ -389,6 +410,77 @@ mod tests {
             },
             Signature::test_signature(),
         ))
+    }
+
+    fn aa_tx(input: Bytes) -> TempoTxEnvelope {
+        TempoTxEnvelope::AA(AASigned::new_unhashed(
+            TempoTransaction {
+                calls: vec![Call {
+                    to: Address::ZERO.into(),
+                    input,
+                    value: U256::ZERO,
+                }],
+                ..Default::default()
+            },
+            TempoSignature::default(),
+        ))
+    }
+
+    #[test]
+    fn pooled_transaction_rlp_length_matches_encoded_envelopes() {
+        // Sweep through the 256-byte wrapper boundary and cover longer RLP length prefixes.
+        for input_length in (0..=300).chain([65_535, 65_536]) {
+            for transaction in [
+                legacy_tx(vec![0x42; input_length].into()),
+                eip1559_tx(vec![0x42; input_length].into()),
+                aa_tx(vec![0x42; input_length].into()),
+            ] {
+                let pooled =
+                    TempoPooledTransaction::new(reth_primitives_traits::Recovered::new_unchecked(
+                        transaction.clone(),
+                        Address::ZERO,
+                    ));
+                assert_eq!(pooled.encoded_length(), transaction.encoded_2718().len());
+                assert_eq!(
+                    pooled_transaction_rlp_length(&pooled),
+                    alloy_rlp::encode(&transaction).len()
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn full_block_admission_respects_rlp_size_cap() {
+        use reth_consensus_common::validation::MAX_RLP_BLOCK_SIZE;
+
+        for transaction in [
+            legacy_tx(vec![0x42; 100].into()),
+            eip1559_tx(vec![0x42; 100].into()),
+            aa_tx(vec![0x42; 100].into()),
+        ] {
+            let pooled =
+                TempoPooledTransaction::new(reth_primitives_traits::Recovered::new_unchecked(
+                    transaction.clone(),
+                    Address::ZERO,
+                ));
+            let tx_size = pooled_transaction_rlp_length(&pooled);
+            let count = (MAX_RLP_BLOCK_SIZE - crate::NON_TRANSACTION_SIZE_ESTIMATE) / tx_size;
+            let block = Block {
+                header: TempoHeader::default(),
+                body: BlockBody {
+                    transactions: vec![transaction; count],
+                    ..Default::default()
+                },
+            };
+            let encoded_size = alloy_rlp::encode(&block).len();
+            assert!(
+                encoded_size <= MAX_RLP_BLOCK_SIZE,
+                "{encoded_size} exceeds block cap"
+            );
+            assert!(
+                crate::NON_TRANSACTION_SIZE_ESTIMATE + (count + 1) * tx_size > MAX_RLP_BLOCK_SIZE
+            );
+        }
     }
 
     fn encoded_block_transactions(transactions: &[TempoTxEnvelope]) -> EncodedBlockTransactionList {
