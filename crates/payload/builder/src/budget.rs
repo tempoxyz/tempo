@@ -168,6 +168,30 @@ mod tests {
     }
 
     #[test]
+    fn delayed_builder_start_stops_before_the_original_proposal_deadline() {
+        let dispatched_at = std::time::Instant::now();
+        let original_budget = Duration::from_millis(250);
+        let attrs = tempo_payload_types::TempoPayloadAttributes::default()
+            .with_payload_build_deadline(dispatched_at + original_budget);
+        let build_start = dispatched_at + Duration::from_millis(174);
+        let remaining = attrs.payload_build_budget_at(build_start).unwrap();
+        let decision = payload_budget_decision(
+            Duration::from_millis(30),
+            Duration::ZERO,
+            DEFAULT_BUILD_TIME_MULTIPLIER_SCALED,
+            MarshalPersistEstimator::default(),
+            0,
+            None,
+            ValidationLatencyWorkload::default(),
+        );
+        // 30 ms of builder work projects to 81 ms of proposer/validator work.
+        // Only 76 ms remained at entry, so we must stop. Reusing the dispatched
+        // 250 ms duration would incorrectly allow more transactions.
+        assert!(decision.total_reserved >= remaining);
+        assert!(decision.total_reserved < original_budget);
+    }
+
+    #[test]
     fn payload_budget_accounts_for_leader_idle_once() {
         let decision = payload_budget_decision(
             Duration::from_millis(100),
