@@ -25,6 +25,15 @@ impl TempoEvmFactory {
         self
     }
 
+    /// Enables storage action recording for speculative execution.
+    pub fn enable_storage_actions(&self, evm: &mut TempoEvm<'_>) {
+        evm.ext_mut().actions.enable();
+        // Enabling replaces the Disabled enum variant with a shared recorder. Rebuild native
+        // precompiles so their cloned recorder observes the same actions as the transaction
+        // handler; otherwise replay omits native call writes while retaining nonce and fees.
+        reth_evm_ethereum::EvmFactory::configure_evm(self, evm);
+    }
+
     pub(crate) fn evm_ext(&self, mut ext: TempoEvmExt) -> TempoEvmExt {
         ext.fee_manager = self.fee_manager.clone();
         ext

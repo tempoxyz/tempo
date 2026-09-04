@@ -445,7 +445,9 @@ where
 
         // Record storage actions for future replay
         if self.parallel {
-            evm.ext_mut().actions.enable();
+            self.evm_config
+                .evm_factory()
+                .enable_storage_actions(&mut evm);
         }
 
         Some(evm)
