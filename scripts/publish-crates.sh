@@ -25,7 +25,7 @@ log() { printf '  \033[1;34m→\033[0m %s\n' "$*"; }
 err() { printf '  \033[1;31m✗\033[0m %s\n' "$*" >&2; exit 1; }
 
 prepare_cargo_graph() {
-    cargo metadata --locked --manifest-path "$TMP_WORK_DIR/Cargo.toml" \
+    cargo metadata --manifest-path "$TMP_WORK_DIR/Cargo.toml" \
         --format-version 1 >/dev/null
     if [[ "${CARGO_COOLDOWN_SKIP:-false}" == "true" ]]; then
         log "WARNING: skipping Cargo dependency cooldown by explicit request"
@@ -203,7 +203,7 @@ python3 "$SANITIZE_PY" gen_workspace "$REPO_ROOT/Cargo.toml" "$TMP_WORK_DIR/Carg
 
 # Seed the lockfile so transitive deps use the same versions as the main workspace
 cp "$REPO_ROOT/Cargo.lock" "$TMP_WORK_DIR/Cargo.lock"
-cargo metadata --locked --manifest-path "$TMP_WORK_DIR/Cargo.toml" \
+cargo metadata --manifest-path "$TMP_WORK_DIR/Cargo.toml" \
     --format-version 1 >/dev/null
 
 log "Running cargo check …"

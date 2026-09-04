@@ -22,6 +22,8 @@ jobs:
         with:
           toolchain: stable
       - name: Enforce Cargo dependency cooldown
-        uses: tempoxyz/gh-actions/actions/cargo-cooldown@e37a986470fb0e05f12131c5d6da8c79d2f5fa11 # gh-actions#101
+        uses: tempoxyz/gh-actions/actions/cargo-cooldown@db0a96e8a2efd76e585c669c1122580087a69b0d # gh-actions#101
+        with:
+          strict-project-config: "true"
       - name: Verify with isolated Cargo policy
         run: .github/scripts/check-cargo-cooldown-lock.sh . cooldown.toml

@@ -376,7 +376,9 @@ jobs:
       - uses: tempoxyz/gh-actions/vendor/mozilla-actions/sccache-action@3626124474a987bc74b41fc7ae65b2e23f8e4e4e
         continue-on-error: true
       - name: Install Cargo cooldown verifier
-        uses: tempoxyz/gh-actions/actions/cargo-cooldown@e37a986470fb0e05f12131c5d6da8c79d2f5fa11 # gh-actions#101
+        uses: tempoxyz/gh-actions/actions/cargo-cooldown@db0a96e8a2efd76e585c669c1122580087a69b0d # gh-actions#101
+        with:
+          strict-project-config: "true"
 
       - name: Install uv
         run: curl -LsSf https://astral.sh/uv/install.sh | env UV_INSTALL_DIR="$HOME/.local/bin" sh
