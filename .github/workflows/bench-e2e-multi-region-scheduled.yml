@@ -170,6 +170,8 @@ jobs:
       max-concurrent-requests: ${{ inputs['max-concurrent-requests'] || '5000' }}
       run-pairs: ${{ inputs['run-pairs'] || '3' }}
       clickhouse-run: feature-1
+      baseline-args: --engine.persistence-threshold 50 --engine.num-state-masking-blocks 40
+      feature-args: --engine.persistence-threshold 50 --engine.num-state-masking-blocks 40
       otlp: true
       valscope: true
     secrets:
