@@ -63,6 +63,17 @@ jobs:
               ('pending_pool_transactions', 'pending_pool_size_bytes', 'queued_pool_transactions',
                'queued_pool_size_bytes', 'total_transactions', 'inflight_validation_jobs')
           }
+          # Expiring nonces use Tempo's AA2D pool, not the protocol pool above.
+          # Its inserted counter omits expiring inserts; removed counts mined/capacity
+          # removals, not bulk expiry. Maintenance invalidated combines expiry/other causes.
+          POOL_COUNTERS |= {
+              'reth_transaction_pool_aa_2d_' + suffix for suffix in
+              ('inserted_transactions', 'removed_transactions', 'promoted_transactions', 'demoted_transactions')
+          } | {'reth_transaction_pool_maintenance_transactions_invalidated'}
+          POOL_GAUGES |= {
+              'reth_transaction_pool_aa_2d_' + suffix for suffix in
+              ('total_transactions', 'pending_transactions', 'queued_transactions', 'tracked_nonce_keys')
+          }
           PERSISTENCE_COUNTERS = {
               stem + suffix for stem in
               ('reth_consensus_engine_beacon_backpressure_stall_duration',

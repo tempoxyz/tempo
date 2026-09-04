@@ -77,6 +77,11 @@ def main():
             sysdir = pathlib.Path('/sys/class/block') / name
             slaves = sysdir / 'slaves'
             row['sysfs_slaves'] = sorted(child.name for child in slaves.iterdir()) if slaves.exists() else []
+            start = sysdir / 'start'
+            row['start_sectors_512'] = int(start.read_text().strip()) if start.exists() else None
+            for attribute in ('physical_block_size', 'logical_block_size', 'minimum_io_size', 'optimal_io_size'):
+                attr = sysdir / 'queue' / attribute
+                row[attribute] = int(attr.read_text().strip()) if attr.exists() else None
             for attribute in ('scheduler', 'rotational'):
                 attr = sysdir / 'queue' / attribute
                 row[attribute] = attr.read_text().strip()[:200] if attr.exists() else None
@@ -94,6 +99,22 @@ def main():
 
     for item in tree:
         visit(item)
+    # sysfs partition start is in 512-byte sectors, independently of logical block size.
+    # Partition offsets are relative to the immediate parent; report raw values as well.
+    for row in devices.values():
+        if row.get('partition_parent') is None or row['start_sectors_512'] is None:
+            continue
+        parent = pathlib.Path('/sys/class/block') / row['partition_parent']
+        offset = row['start_sectors_512'] * 512
+        alignment = {'parent': row['partition_parent'], 'offset_bytes': offset,
+                     'offset_mod_4096': offset % 4096}
+        for attribute in ('physical_block_size', 'logical_block_size', 'minimum_io_size', 'optimal_io_size'):
+            attr = parent / 'queue' / attribute
+            value = int(attr.read_text().strip()) if attr.exists() else None
+            alignment['parent_' + attribute] = value
+            alignment['offset_mod_' + attribute] = offset % value if value else None
+        row['partition_alignment'] = alignment
+    filesystem = os.statvfs(f'/proc/{pid}/root' + database)
     # Read only the service's unified cgroup path and its ancestors, never recurse into siblings.
     cgroup_lines = (process / 'cgroup').read_text().splitlines()
     unified = [line[3:] for line in cgroup_lines if line.startswith('0::')]
@@ -144,6 +165,7 @@ def main():
               'process_stable': True, 'pid': pid, 'datadir': datadir, 'database_path': database,
               'db_flags': {'disable_write_map': disable_write_map, 'sync_mode_explicit': sync_mode},
               'mdbx_mappings': mappings, 'cgroup_io_controls': controls,
+              'filesystem_block_size': filesystem.f_bsize, 'filesystem_fragment_size': filesystem.f_frsize,
               'mount': mount[0], 'device_ancestry': sorted(devices.values(), key=lambda row: row['maj:min']),
               'consumer_to_backing_edges': sorted(edges),
               'notes': ['Metadata only: no payload I/O, writes, benchmarks or dmsetup table.',
