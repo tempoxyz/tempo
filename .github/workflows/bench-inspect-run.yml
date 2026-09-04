@@ -8,7 +8,7 @@ on:
       benchmark-id:
         description: Existing benchmark ID whose validator and runner status should be read.
         type: string
-        default: bench-e2e-multi-region-33868520967-1
+        default: bench-e2e-multi-region-33869141764-1
 permissions:
   contents: read
   id-token: write
@@ -17,7 +17,7 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 5
     env:
-      BENCHMARK_ID: ${{ inputs.benchmark-id || 'bench-e2e-multi-region-33868520967-1' }}
+      BENCHMARK_ID: ${{ inputs.benchmark-id || 'bench-e2e-multi-region-33869141764-1' }}
     steps:
       - name: Configure AWS credentials
         uses: tempoxyz/gh-actions/vendor/aws-actions/configure-aws-credentials@3626124474a987bc74b41fc7ae65b2e23f8e4e4e
@@ -28,7 +28,7 @@ jobs:
       - name: Read validator preparation and benchmark runner status
         run: |
           python3 - <<'PY'
-          import concurrent.futures, json, os, re, subprocess
+          import concurrent.futures, json, os, pathlib, re, statistics, subprocess
           benchmark = os.environ['BENCHMARK_ID']
           if not re.fullmatch(r'bench-e2e-multi-region-\d+-\d+', benchmark):
               raise SystemExit('Expected an existing global benchmark run ID')
@@ -48,11 +48,33 @@ jobs:
               results = list(executor.map(inspect, range(10)))
           runner = {}
           bucket = 'tempo-benchmark-artifacts-934822761402-us-east-1'
-          for artifact in ('status.json', 'timings.json'):
+          for artifact in ('status.json', 'timings.json', 'txgen-report.json'):
               key = f'runs/{benchmark}/artifacts/runner/{artifact}'
               result = subprocess.run(['aws', 's3', 'cp', f's3://{bucket}/{key}', '-', '--region', 'us-east-1', '--only-show-errors'], capture_output=True, text=True, timeout=60)
-              runner[artifact] = json.loads(result.stdout) if result.returncode == 0 else {'status': 'artifact unavailable'}
+              if result.returncode:
+                  runner[artifact] = {'status': 'artifact unavailable'}
+                  continue
+              data = json.loads(result.stdout)
+              pathlib.Path(f'inspection-{artifact}').write_text(json.dumps(data))
+              if artifact == 'txgen-report.json':
+                  blocks = sorted(data.get('blocks', []), key=lambda block: block['number'])
+                  measured = {'benchmark_id': data.get('benchmark_id'), 'metadata': data.get('metadata'), 'note': 'Latest uploaded report; receipt success has not been audited.'}
+                  if len(blocks) >= 2:
+                      if any(b['number'] != a['number'] + 1 or b['timestamp_ms'] <= a['timestamp_ms'] for a, b in zip(blocks, blocks[1:])):
+                          raise ValueError('Report range is not contiguous and increasing')
+                      span = (blocks[-1]['timestamp_ms'] - blocks[0]['timestamp_ms']) / 1000
+                      txs = sum(block['tx_count'] for block in blocks[1:])
+                      measured.update(start=blocks[0], end=blocks[-1], seconds=span, included_transactions=txs, canonical_tps=txs/span, block_time_mean_ms=span*1000/(len(blocks)-1))
+                  runner[artifact] = measured
+              else:
+                  runner[artifact] = data
           print(json.dumps({'benchmark_id': benchmark, 'validators': results, 'runner': runner}, indent=2))
           with open(os.environ['GITHUB_STEP_SUMMARY'], 'a') as summary:
               summary.write('```json\n' + json.dumps(results, indent=2) + '\n```\n')
           PY
+      - name: Preserve inspected benchmark reports
+        uses: actions/upload-artifact@v4
+        with:
+          name: benchmark-inspection
+          path: inspection-*.json
+          if-no-files-found: ignore
