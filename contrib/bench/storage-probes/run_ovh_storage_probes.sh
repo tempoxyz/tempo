@@ -40,23 +40,38 @@ if ((${#missing_packages[@]})); then
 fi
 fio --version > "$results_dir/fio-version.txt"
 
-dm_target=/reth-bench-a
-mountpoint -q -- "$dm_target" || {
-    echo '/reth-bench-a is not already mounted; no mount or snapshot change will be attempted.' >&2
+test "$(findmnt -n -o FSTYPE --target "$RUNNER_TEMP")" = ext4 || {
+    printf 'Expected an existing ext4 target: %s\n' "$RUNNER_TEMP" >&2
     exit 1
 }
-for target in "$dm_target" "$RUNNER_TEMP"; do
-    test "$(findmnt -n -o FSTYPE --target "$target")" = ext4 || {
-        printf 'Expected an existing ext4 target: %s\n' "$target" >&2
-        exit 1
-    }
+dm_target=""
+dm_role=""
+for candidate_role in a b; do
+    candidate="/reth-bench-$candidate_role"
+    if ! mountpoint -q -- "$candidate"; then
+        printf '%s is not already mounted\n' "$candidate" >> "$results_dir/era-selection.txt"
+        continue
+    fi
+    if [[ "$(findmnt -n -o FSTYPE --target "$candidate")" != ext4 ]]; then
+        printf '%s is not ext4\n' "$candidate" >> "$results_dir/era-selection.txt"
+        continue
+    fi
+    mapping_file="$results_dir/bench-era-$candidate_role-table.txt"
+    if ! sudo -n dmsetup table "bench_era_$candidate_role" > "$mapping_file" ||
+        ! awk '$3 == "era" { found=1 } END { exit !found }' "$mapping_file"; then
+        printf '%s has no existing era mapping\n' "$candidate" >> "$results_dir/era-selection.txt"
+        continue
+    fi
+    dm_target="$candidate"
+    dm_role="$candidate_role"
+    printf 'Selected %s\n' "$dm_target" >> "$results_dir/era-selection.txt"
+    findmnt --json --target "$dm_target" > "$results_dir/dm-era-target-mount.json"
+    break
 done
-sudo -n dmsetup table bench_era_a > "$results_dir/bench-era-a-table.txt"
-awk '$3 == "era" { found=1 } END { exit !found }' "$results_dir/bench-era-a-table.txt" || {
-    echo 'bench_era_a is not an existing dm-era mapping.' >&2
-    exit 1
-}
-findmnt --json --target "$dm_target" > "$results_dir/dm-era-target-mount.json"
+if [[ -z "$dm_target" ]]; then
+    printf '%s\n' 'No existing ext4 dm-era benchmark mount is available; era probe skipped without changing mounts or snapshots.' > "$results_dir/era-skip.txt"
+    cat "$results_dir/era-skip.txt"
+fi
 findmnt --json --target "$RUNNER_TEMP" > "$results_dir/plain-target-mount.json"
 printf '%s\n' \
     'The plain ext4 target and the dm-era target may have different physical backing devices.' \
@@ -71,9 +86,11 @@ restore_result_owner() {
 }
 trap restore_result_owner EXIT
 
-sudo -n bash "$probe_source_dir/run_storage_probe.sh" \
-    --target "$dm_target" --out "$results_dir/dm-era-a" \
-    --label ovh-dm-era-a --size-gib 8 --duration 20
+if [[ -n "$dm_target" ]]; then
+    sudo -n bash "$probe_source_dir/run_storage_probe.sh" \
+        --target "$dm_target" --out "$results_dir/dm-era-$dm_role" \
+        --label "ovh-dm-era-$dm_role" --size-gib 8 --duration 20
+fi
 sudo -n bash "$probe_source_dir/run_storage_probe.sh" \
     --target "$RUNNER_TEMP" --out "$results_dir/plain-ext4" \
     --label ovh-plain-ext4 --size-gib 8 --duration 20
