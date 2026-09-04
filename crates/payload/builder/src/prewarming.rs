@@ -1,7 +1,10 @@
-use std::sync::{
-    Arc,
-    atomic::{AtomicBool, Ordering},
-    mpsc::{self, Receiver, Sender},
+use std::{
+    cell::RefCell,
+    sync::{
+        Arc,
+        atomic::{AtomicBool, Ordering},
+        mpsc::{self, Receiver, Sender},
+    },
 };
 
 use alloy_primitives::B256;
@@ -9,7 +12,7 @@ use reth_engine_tree::tree::{CachedStateProvider, SavedCache};
 use reth_evm::{Evm, EvmEnvFor};
 use reth_revm::database::StateProviderDatabase;
 use reth_storage_api::{StateProviderBox, StateProviderFactory};
-use reth_tasks::{TaskExecutor, WorkerPool};
+use reth_tasks::TaskExecutor;
 use reth_transaction_pool::{
     BestTransactions, PoolTransaction, error::InvalidPoolTransactionError,
 };
@@ -18,6 +21,14 @@ use tempo_transaction_pool::{StateAwarePoolTransaction, best::BestTransaction};
 use tracing::{instrument, trace};
 
 pub(crate) type PrewarmEvmState = Option<TempoEvm<StateProviderDatabase<StateProviderBox>>>;
+
+thread_local! {
+    // Validation uses the same Rayon pool and owns its generic Worker state. Keep builder
+    // EVMs separate: validation can initialize or clear that state while a build is active.
+    // Builder scopes are serialized by the named "builder-prewarm" coordinator and joined
+    // before this slot is cleared, so no EVM survives into the next builder context.
+    static BUILDER_PREWARM_EVM: RefCell<Option<PrewarmEvmState>> = const { RefCell::new(None) };
+}
 
 /// Prewarming orchestrator that consumes source [`BestTransactions`] with bounded
 /// lookahead, prewarms buffered transactions in parallel, and produces a new
@@ -83,7 +94,11 @@ impl BestTransactionsPrewarming {
         pool.in_place_scope(|scope| {
             let prewarm = ctx.prewarm.clone();
             scope.spawn(move |_| {
-                pool.init::<PrewarmEvmState>(|_| prewarm.evm_for_ctx());
+                pool.broadcast(pool.current_num_threads(), |_| {
+                    BUILDER_PREWARM_EVM.with_borrow_mut(|state| {
+                        *state = Some(prewarm.evm_for_ctx());
+                    });
+                });
             });
 
             let advance = |ctx: &mut BestTransactionsPrewarmingContext<Txs, Provider>| {
@@ -171,7 +186,9 @@ impl BestTransactionsPrewarming {
             }
         });
 
-        pool.clear();
+        pool.broadcast(pool.current_num_threads(), |_| {
+            BUILDER_PREWARM_EVM.with_borrow_mut(|state| *state = None);
+        });
     }
 
     /// Prewarms a transaction by executing it on top of the latest state.
@@ -187,12 +204,14 @@ impl BestTransactionsPrewarming {
     where
         Provider: StateProviderFactory + Clone + 'static,
     {
-        let replay = WorkerPool::with_worker_mut(|worker| {
+        let replay = BUILDER_PREWARM_EVM.with_borrow_mut(|state| {
             if prewarm.parallel && !is_parallel_candidate(&tx) {
                 return None;
             }
 
-            let evm = worker.get_or_init(|| prewarm.evm_for_ctx()).as_mut()?;
+            let evm = state
+                .get_or_insert_with(|| prewarm.evm_for_ctx())
+                .as_mut()?;
 
             if prewarm.is_stopped() {
                 return None;
@@ -496,6 +515,7 @@ mod tests {
         Recovered, SealedHeader, transaction::error::InvalidTransactionError,
     };
     use reth_storage_api::noop::NoopProvider;
+    use reth_tasks::WorkerPool;
     use reth_transaction_pool::{
         TransactionOrigin, ValidPoolTransaction, identifier::TransactionId,
     };
@@ -898,10 +918,68 @@ mod tests {
         let mut prewarming = prewarming_with_executor(executor.clone(), txs, log);
 
         assert!(prewarming.next().is_some());
+        // Join initialization, transaction execution, and cleanup before inspecting the slot.
+        drop(prewarming);
 
         pool.broadcast(pool.current_num_threads(), |worker| {
             assert_eq!(*worker.get::<usize>(), 1);
+            BUILDER_PREWARM_EVM.with_borrow(|state| assert!(state.is_none()));
         });
+    }
+
+    #[test]
+    fn parallel_prewarming_isolated_from_validation_evm_on_same_worker() {
+        let executor = TaskExecutor::test();
+        let mut context = prewarming_context(executor, true);
+        context.evm_env.block_env.basefee = 0;
+        let mut validation_context = context.clone();
+        validation_context.parallel = false;
+        let pool = WorkerPool::new(1, "prewarm-isolation-test");
+
+        // Validation stores the same concrete EVM type in Worker, but its environment and
+        // action-recording mode belong to another execution context.
+        pool.init::<PrewarmEvmState>(|_| validation_context.evm_for_ctx());
+        pool.install_fn(|| {
+            let tx = BestTransactionsPrewarming::prewarm_transaction(
+                context.clone(),
+                test_payment_tx(Address::random(), 500_000),
+                None,
+            );
+            assert!(
+                tx.replay.is_some(),
+                "builder must use its own recording EVM"
+            );
+            WorkerPool::with_worker_mut(|worker| {
+                assert!(
+                    worker
+                        .get_mut::<PrewarmEvmState>()
+                        .as_mut()
+                        .unwrap()
+                        .take_actions()
+                        .is_none()
+                );
+            });
+        });
+
+        // A completed validation clears its Worker state while the builder remains alive.
+        pool.clear();
+        pool.install_fn(|| {
+            BUILDER_PREWARM_EVM.with_borrow(|state| assert!(state.is_some()));
+        });
+        pool.init::<PrewarmEvmState>(|_| validation_context.evm_for_ctx());
+        pool.install_fn(|| {
+            let tx = BestTransactionsPrewarming::prewarm_transaction(
+                context,
+                test_payment_tx(Address::random(), 500_000),
+                None,
+            );
+            assert!(
+                tx.replay.is_some(),
+                "validation reinitialization must not replace builder EVM"
+            );
+            BUILDER_PREWARM_EVM.with_borrow_mut(|state| *state = None);
+        });
+        pool.clear();
     }
 
     #[test]
@@ -911,8 +989,6 @@ mod tests {
         context.evm_env.block_env.basefee = 0;
 
         let pool = WorkerPool::new(1, "prewarm-actions-test");
-        pool.init::<PrewarmEvmState>(|_| context.evm_for_ctx());
-
         pool.install_fn(|| {
             let failed_action = StorageAction::Sstore(
                 Address::random(),
@@ -920,9 +996,9 @@ mod tests {
                 U256::from(2),
                 U256::from(3),
             );
-            WorkerPool::with_worker_mut(|worker| {
-                let evm = worker
-                    .get_mut::<PrewarmEvmState>()
+            BUILDER_PREWARM_EVM.with_borrow_mut(|state| {
+                let evm = state
+                    .get_or_insert_with(|| context.evm_for_ctx())
                     .as_mut()
                     .expect("prewarm EVM");
                 // Model an action recorded before the failed execution returned an error.
@@ -936,9 +1012,9 @@ mod tests {
                 None,
             );
             assert!(failed.replay.is_none());
-            WorkerPool::with_worker_mut(|worker| {
-                let evm = worker
-                    .get_mut::<PrewarmEvmState>()
+            BUILDER_PREWARM_EVM.with_borrow_mut(|state| {
+                let evm = state
+                    .get_or_insert_with(|| context.evm_for_ctx())
                     .as_mut()
                     .expect("prewarm EVM");
                 assert_eq!(evm.take_actions(), Some(Vec::new()));
@@ -954,6 +1030,8 @@ mod tests {
             assert!(!replay.actions.contains(&failed_action));
         });
 
-        pool.clear();
+        pool.install_fn(|| {
+            BUILDER_PREWARM_EVM.with_borrow_mut(|state| *state = None);
+        });
     }
 }
