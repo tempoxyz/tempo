@@ -13,7 +13,6 @@ jobs:
     timeout-minutes: 45
     env:
       STORAGE_PROBE_CHECKOUT: storage-probe-${{ github.run_id }}-${{ github.run_attempt }}
-      STORAGE_PROBE_RESULTS: ${{ runner.temp }}/tempo-storage-results-${{ github.run_id }}-${{ github.run_attempt }}
     steps:
       - name: Check out isolated probe sources
         uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd
@@ -34,6 +33,6 @@ jobs:
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
         with:
           name: tempo-storage-probe-ovh-${{ github.run_id }}-${{ github.run_attempt }}
-          path: ${{ env.STORAGE_PROBE_RESULTS }}
+          path: ${{ runner.temp }}/tempo-storage-results-${{ github.run_id }}-${{ github.run_attempt }}
           if-no-files-found: warn
           retention-days: 7
