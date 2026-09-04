@@ -611,9 +611,17 @@ jobs:
       - uses: tempoxyz/gh-actions/vendor/mozilla-actions/sccache-action@3626124474a987bc74b41fc7ae65b2e23f8e4e4e
         continue-on-error: true
       - name: Install Cargo cooldown verifier
+        id: cargo_cooldown
         uses: tempoxyz/gh-actions/actions/cargo-cooldown@db0a96e8a2efd76e585c669c1122580087a69b0d # gh-actions#101
         with:
           strict-project-config: "true"
+      - name: Export verified Cargo cooldown location
+        env:
+          VERIFIER_PATH: ${{ steps.cargo_cooldown.outputs.verifier-path }}
+          VERIFIER_SHA256: ${{ steps.cargo_cooldown.outputs.verifier-sha256 }}
+        run: |
+          echo "CARGO_COOLDOWN_BIN=$VERIFIER_PATH" >> "$GITHUB_ENV"
+          echo "CARGO_COOLDOWN_SHA256=$VERIFIER_SHA256" >> "$GITHUB_ENV"
 
       - name: Install Node.js
         uses: actions/setup-node@48b55a011bda9f5d6aeb4c2d9c7362e8dae4041e # v6.4.0
