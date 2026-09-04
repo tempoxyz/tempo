@@ -28,7 +28,8 @@ jobs:
       - name: Read validator preparation and benchmark runner status
         run: |
           python3 - <<'PY'
-          import concurrent.futures, gzip, hashlib, json, os, pathlib, re, subprocess
+          import concurrent.futures, datetime, gzip, hashlib, json, os, pathlib, re, subprocess
+          from collections import deque
           benchmark = os.environ['BENCHMARK_ID']
           if not re.fullmatch(r'bench-e2e-multi-region-\d+-\d+', benchmark):
               raise SystemExit('Expected an existing global benchmark run ID')
@@ -148,6 +149,41 @@ jobs:
                   performance_result = {'source_sha256': digest, 'source_key': key, 'report_first_ms': report_first, 'report_last_ms': report_last, 'note': 'Five-second buckets of observed exports, preserving complete labels and sum/count series. Buckets 0-11 cover the first sixty seconds. Quantiles are exported observations, not recomputed distributions. Missing metrics are unavailable.', 'consensus_metric_inventory': sorted(metric_inventory), 'series': export_series(performance)}
                   pathlib.Path('inspection-performance-metrics.json').write_text(json.dumps(performance_result))
                   runner['persistence_metrics'] = metric_result
+                  def inspect_log(index):
+                      region = regions[index % len(regions)]
+                      log_bucket = f'tempo-benchmark-artifacts-934822761402-{region}'
+                      log_key = f'runs/{benchmark}/artifacts/validator-{index}/tempo-node.log'
+                      log_file = pathlib.Path(f'validator-{index}.log')
+                      fetched = subprocess.run(['aws', 's3', 'cp', f's3://{log_bucket}/{log_key}', str(log_file), '--region', region, '--only-show-errors'], capture_output=True, text=True, timeout=90)
+                      if fetched.returncode:
+                          return {'validator': index, 'status': 'log artifact unavailable'}
+                      patterns = ('stopping pool transaction execution before payload build budget', 'updated marshal persistence estimate', 'updated validation latency estimate', 'sleeping before returning proposal', 'execution task finished')
+                      matches = {pattern: {'count': 0, 'first': [], 'last': deque(maxlen=10)} for pattern in patterns}
+                      parseable = 0
+                      in_range = 0
+                      debug_in_range = 0
+                      with log_file.open(errors='replace') as log:
+                          for line in log:
+                              timestamp = re.search(r'\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(?:\.\d+)?(?:Z|[+-]\d{2}:\d{2})', line)
+                              if timestamp is None:
+                                  continue
+                              parseable += 1
+                              millis = datetime.datetime.fromisoformat(timestamp.group().replace('Z', '+00:00')).timestamp() * 1000
+                              if not report_first <= millis <= report_last:
+                                  continue
+                              in_range += 1
+                              debug_in_range += int('DEBUG' in line)
+                              for pattern, result in matches.items():
+                                  if pattern in line:
+                                      item = {'unix_ms': millis, 'line': line.rstrip()[:2500]}
+                                      result['count'] += 1
+                                      if len(result['first']) < 10:
+                                          result['first'].append(item)
+                                      result['last'].append(item)
+                      return {'validator': index, 'source_key': log_key, 'source_sha256': hashlib.file_digest(log_file.open('rb'), 'sha256').hexdigest(), 'parseable_timestamp_lines': parseable, 'report_window_lines': in_range, 'debug_lines_in_report_window': debug_in_range, 'matches': {pattern: {**result, 'last': list(result['last'])} for pattern, result in matches.items()}}
+                  with concurrent.futures.ThreadPoolExecutor(max_workers=10) as executor:
+                      log_results = list(executor.map(inspect_log, range(10)))
+                  pathlib.Path('inspection-proposal-logs.json').write_text(json.dumps({'report_first_ms': report_first, 'report_last_ms': report_last, 'note': 'First ten and last ten matches per category within the exact report window; each line capped at2500characters. Zero matches do not establish absence when DEBUG was not emitted or timestamps could not be parsed.', 'validators': log_results}, indent=2))
           print(json.dumps({'benchmark_id': benchmark, 'validators': results, 'runner': runner}, indent=2))
           with open(os.environ['GITHUB_STEP_SUMMARY'], 'a') as summary:
               summary.write('```json\n' + json.dumps(results, indent=2) + '\n```\n')
