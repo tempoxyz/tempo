@@ -223,7 +223,7 @@ jobs:
         run: forge build --sizes
 
       - name: Run ABI alignment check
-        run: cargo run -p tempo-xtask -- check-abi
+        run: cargo run --locked -p tempo-xtask -- check-abi
 
   lint:
     name: Forge Fmt
@@ -275,6 +275,11 @@ jobs:
       - name: Setup Rust
         uses: tempoxyz/gh-actions/vendor/dtolnay/rust-toolchain@3626124474a987bc74b41fc7ae65b2e23f8e4e4e
 
+      - name: Install Cargo cooldown verifier
+        uses: tempoxyz/gh-actions/actions/cargo-cooldown@216431dd18ebe7c199654e6c310ed99570ddcc33 # gh-actions#98
+        with:
+          working-directory: tempo
+
       - uses: tempoxyz/gh-actions/actions/setup-mold@ab45d76f6e7420a094281a22aee1973ecc0754f8
       - uses: tempoxyz/gh-actions/vendor/mozilla-actions/sccache-action@3626124474a987bc74b41fc7ae65b2e23f8e4e4e
       - uses: tempoxyz/gh-actions/vendor/Swatinem/rust-cache@3626124474a987bc74b41fc7ae65b2e23f8e4e4e
@@ -288,17 +293,23 @@ jobs:
       - name: Patch foundry to use checked-out tempo crates
         run: tempo/scripts/foundry-patch.sh "$GITHUB_WORKSPACE/tempo" "$GITHUB_WORKSPACE/foundry"
 
+      - name: Check patched Foundry dependency cooldown
+        run: |
+          tempo/.github/scripts/check-cargo-cooldown-lock.sh \
+            "$GITHUB_WORKSPACE/foundry" \
+            "$GITHUB_WORKSPACE/tempo/cooldown.toml"
+
       # Build and run WITH coverage (only on PR when precompiles changed)
       - name: Build foundry forge with coverage instrumentation
         if: needs.check-precompiles.outputs.coverage == 'true'
         working-directory: foundry
-        run: RUSTFLAGS="-C instrument-coverage" cargo build --bin forge --profile release --no-default-features
+        run: RUSTFLAGS="-C instrument-coverage" cargo build --locked --bin forge --profile release --no-default-features
 
       # Build WITHOUT coverage on main/merge-group runs.
       - name: Build foundry forge
         if: needs.check-precompiles.outputs.coverage != 'true'
         working-directory: foundry
-        run: cargo build --bin forge --profile release --no-default-features
+        run: cargo build --locked --bin forge --profile release --no-default-features
 
       - name: Upload patched Forge
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1

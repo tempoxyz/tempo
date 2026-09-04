@@ -121,7 +121,11 @@ cleanup_reth_ipc() {
 # ============================================================================
 
 echo "Installing txgen-tempo and bench-cli..."
-cargo install --git "https://github.com/tempoxyz/txgen" --locked txgen-tempo bench-cli
+cargo install \
+  --git "https://github.com/tempoxyz/txgen" \
+  --rev 945be2f21e5042ec1846535ce234308571828136 \
+  --locked \
+  txgen-tempo bench-cli
 command -v "$TXGEN_TEMPO_BIN"
 command -v "$TXGEN_BENCH_BIN"
 
@@ -145,10 +149,18 @@ build_tempo() {
   fi
   git -C "$src_dir" checkout "$ref"
 
+  if [ "${CARGO_COOLDOWN_REQUIRED:-false}" = "true" ]; then
+    cooldown_args=("$src_dir")
+    if [ -f "${CARGO_COOLDOWN_CONFIG:-}" ]; then
+      cooldown_args+=("$CARGO_COOLDOWN_CONFIG")
+    fi
+    "${CARGO_COOLDOWN_CHECK:?CARGO_COOLDOWN_CHECK is required}" "${cooldown_args[@]}"
+  fi
+
   echo "Building $label tempo ($ref) with features: $build_features"
   cd "$src_dir"
   RUSTFLAGS="-C target-cpu=native" \
-    cargo build --profile profiling --bin tempo --no-default-features --features "$build_features"
+    cargo build --locked --profile profiling --bin tempo --no-default-features --features "$build_features"
   cd -
 }
 

@@ -75,7 +75,7 @@ jobs:
           version: v0.15.0
       - name: Generate genesis
         run: |
-          cargo xtask generate-genesis \
+          cargo run --locked --package tempo-xtask -- generate-genesis \
             --accounts 100 \
             --no-dkg-in-genesis \
             --output generated \
@@ -119,24 +119,24 @@ jobs:
       # Build and run tests WITH coverage (only when precompiles changed)
       - name: Build and compile tests with coverage
         if: needs.check-precompiles.outputs.coverage == 'true'
-        run: cargo nextest run --profile ci -E 'not (package(tempo-e2e) | (package(tempo-node) & binary(it) & test(/test_matrices_(testnet|devnet)/)))' --partition count:${{ matrix.partition }}/2 --no-run
+        run: cargo nextest run --locked --profile ci -E 'not (package(tempo-e2e) | (package(tempo-node) & binary(it) & test(/test_matrices_(testnet|devnet)/)))' --partition count:${{ matrix.partition }}/2 --no-run
         env:
           RUSTFLAGS: -C instrument-coverage
       - name: Run tests with coverage
         if: needs.check-precompiles.outputs.coverage == 'true'
         run: |
           mkdir -p coverage
-          cargo nextest run --profile ci -E 'not (package(tempo-e2e) | (package(tempo-node) & binary(it) & test(/test_matrices_(testnet|devnet)/)))' --partition count:${{ matrix.partition }}/2
+          cargo nextest run --locked --profile ci -E 'not (package(tempo-e2e) | (package(tempo-node) & binary(it) & test(/test_matrices_(testnet|devnet)/)))' --partition count:${{ matrix.partition }}/2
         env:
           RUSTFLAGS: -C instrument-coverage
           LLVM_PROFILE_FILE: ${{ github.workspace }}/coverage/cargo-%p-%m.profraw
       # Build and run tests WITHOUT coverage (when precompiles not changed)
       - name: Build and compile tests
         if: needs.check-precompiles.outputs.coverage != 'true'
-        run: cargo nextest run --profile ci -E 'not (package(tempo-e2e) | (package(tempo-node) & binary(it) & test(/test_matrices_(testnet|devnet)/)))' --partition count:${{ matrix.partition }}/2 --no-run
+        run: cargo nextest run --locked --profile ci -E 'not (package(tempo-e2e) | (package(tempo-node) & binary(it) & test(/test_matrices_(testnet|devnet)/)))' --partition count:${{ matrix.partition }}/2 --no-run
       - name: Run tests
         if: needs.check-precompiles.outputs.coverage != 'true'
-        run: cargo nextest run --profile ci -E 'not (package(tempo-e2e) | (package(tempo-node) & binary(it) & test(/test_matrices_(testnet|devnet)/)))' --partition count:${{ matrix.partition }}/2
+        run: cargo nextest run --locked --profile ci -E 'not (package(tempo-e2e) | (package(tempo-node) & binary(it) & test(/test_matrices_(testnet|devnet)/)))' --partition count:${{ matrix.partition }}/2
       - name: Generate precompiles coverage profdata
         if: needs.check-precompiles.outputs.coverage == 'true'
         run: |
@@ -183,9 +183,9 @@ jobs:
         with:
           tool: nextest@0.9.127
       - name: Build e2e tests
-        run: cargo nextest run --profile ci -E 'package(tempo-e2e)' --partition slice:${{ matrix.partition }}/4 --no-run
+        run: cargo nextest run --locked --profile ci -E 'package(tempo-e2e)' --partition slice:${{ matrix.partition }}/4 --no-run
       - name: Run e2e tests
-        run: cargo nextest run --profile ci -E 'package(tempo-e2e)' --partition slice:${{ matrix.partition }}/4
+        run: cargo nextest run --locked --profile ci -E 'package(tempo-e2e)' --partition slice:${{ matrix.partition }}/4
       - name: Upload e2e test timings
         if: always()
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
@@ -218,9 +218,9 @@ jobs:
         with:
           tool: nextest@0.9.127
       - name: Build flaky e2e tests
-        run: cargo nextest run --profile ci-flaky --no-run
+        run: cargo nextest run --locked --profile ci-flaky --no-run
       - name: Run flaky e2e tests
-        run: cargo nextest run --profile ci-flaky
+        run: cargo nextest run --locked --profile ci-flaky
 
   cli:
     name: CLI smoke tests
@@ -239,7 +239,7 @@ jobs:
         with:
           version: v0.15.0
       - name: Build tempo
-        run: cargo build --bin tempo
+        run: cargo build --locked --bin tempo
       - name: Run CLI tests
         run: ./scripts/test-cli.sh
 
@@ -284,7 +284,7 @@ jobs:
         with:
           version: v0.15.0
       - name: Build with MSRV
-        run: cargo build --bin tempo
+        run: cargo build --locked --bin tempo
         env:
           RUSTFLAGS: -D warnings
 

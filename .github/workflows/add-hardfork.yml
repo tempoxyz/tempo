@@ -64,6 +64,9 @@ jobs:
           toolchain: nightly
           components: rustfmt
 
+      - name: Enforce Cargo dependency cooldown
+        uses: tempoxyz/gh-actions/actions/cargo-cooldown@216431dd18ebe7c199654e6c310ed99570ddcc33 # gh-actions#98
+
       - name: Generate Tempo hardfork plumbing
         id: hardfork
         env:

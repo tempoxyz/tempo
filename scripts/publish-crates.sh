@@ -24,6 +24,15 @@ esac
 log() { printf '  \033[1;34m→\033[0m %s\n' "$*"; }
 err() { printf '  \033[1;31m✗\033[0m %s\n' "$*" >&2; exit 1; }
 
+prepare_cargo_graph() {
+    cargo metadata --manifest-path "$TMP_WORK_DIR/Cargo.toml" \
+        --format-version 1 >/dev/null
+    if [[ "${CARGO_COOLDOWN_REQUIRED:-false}" == "true" ]]; then
+        "$REPO_ROOT/.github/scripts/check-cargo-cooldown-lock.sh" \
+            "$TMP_WORK_DIR" "$REPO_ROOT/cooldown.toml"
+    fi
+}
+
 SANITIZE_PY="$REPO_ROOT/scripts/sanitize_toml.py"
 SANITIZE_RS="$REPO_ROOT/scripts/sanitize_source.py"
 
@@ -168,14 +177,15 @@ python3 "$SANITIZE_PY" gen_workspace "$REPO_ROOT/Cargo.toml" "$TMP_WORK_DIR/Carg
 
 # Seed the lockfile so transitive deps use the same versions as the main workspace
 cp "$REPO_ROOT/Cargo.lock" "$TMP_WORK_DIR/Cargo.lock"
+prepare_cargo_graph
 
 log "Running cargo check …"
-if ! cargo check --manifest-path "$TMP_WORK_DIR/Cargo.toml" 2>&1; then
+if ! cargo check --locked --manifest-path "$TMP_WORK_DIR/Cargo.toml" 2>&1; then
     err "Stripped crates failed to compile!"
 fi
 
 log "Running cargo check --all-features …"
-if ! cargo check --manifest-path "$TMP_WORK_DIR/Cargo.toml" --all-features 2>&1; then
+if ! cargo check --locked --manifest-path "$TMP_WORK_DIR/Cargo.toml" --all-features 2>&1; then
     err "Stripped crates failed to compile with --all-features!"
 fi
 
@@ -286,13 +296,15 @@ tempo-chainspec = { path = "chainspec" }
 tempo-alloy = { path = "alloy" }
 EOF
 
+prepare_cargo_graph
+
 log "Running final cargo check …"
-if ! cargo check --manifest-path "$TMP_WORK_DIR/Cargo.toml" 2>&1; then
+if ! cargo check --locked --manifest-path "$TMP_WORK_DIR/Cargo.toml" 2>&1; then
     err "Resolved crates failed to compile!"
 fi
 
 log "Running final cargo check --all-features …"
-if ! cargo check --manifest-path "$TMP_WORK_DIR/Cargo.toml" --all-features 2>&1; then
+if ! cargo check --locked --manifest-path "$TMP_WORK_DIR/Cargo.toml" --all-features 2>&1; then
     err "Resolved crates failed to compile with --all-features!"
 fi
 
@@ -382,7 +394,7 @@ retry_publish() {
     for ((i = 1; i <= max_attempts; i++)); do
         log "Publishing $name (attempt $i/$max_attempts) …"
         local output
-        if output=$(cargo publish --manifest-path "$crate_dir/Cargo.toml" --allow-dirty 2>&1); then
+        if output=$(cargo publish --locked --manifest-path "$crate_dir/Cargo.toml" --allow-dirty 2>&1); then
             log "$name published ✓"
             return 0
         fi

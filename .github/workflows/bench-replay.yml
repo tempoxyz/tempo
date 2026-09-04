@@ -208,6 +208,9 @@ jobs:
       BENCH_RUN_LABEL: ${{ inputs.run-label || 'Replay Bench' }}
       BENCH_WORK_DIR: bench-results/replay-${{ inputs.chain || 'mainnet' }}
       BENCHMARK_ID: bench-replay-${{ github.run_id }}
+      CARGO_COOLDOWN_REQUIRED: "true"
+      CARGO_COOLDOWN_CHECK: ${{ github.workspace }}/.github/scripts/check-cargo-cooldown-lock.sh
+      CARGO_COOLDOWN_CONFIG: ${{ github.workspace }}/cooldown.toml
     steps:
       - name: Resolve benchmark config
         env:
@@ -372,6 +375,8 @@ jobs:
       - uses: tempoxyz/gh-actions/vendor/dtolnay/rust-toolchain@3626124474a987bc74b41fc7ae65b2e23f8e4e4e
       - uses: tempoxyz/gh-actions/vendor/mozilla-actions/sccache-action@3626124474a987bc74b41fc7ae65b2e23f8e4e4e
         continue-on-error: true
+      - name: Install Cargo cooldown verifier
+        uses: tempoxyz/gh-actions/actions/cargo-cooldown@216431dd18ebe7c199654e6c310ed99570ddcc33 # gh-actions#98
 
       - name: Install uv
         run: curl -LsSf https://astral.sh/uv/install.sh | env UV_INSTALL_DIR="$HOME/.local/bin" sh

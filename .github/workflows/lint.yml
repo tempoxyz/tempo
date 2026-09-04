@@ -95,8 +95,8 @@ jobs:
           version: v0.15.0
       - uses: tempoxyz/gh-actions/vendor/taiki-e/install-action@3626124474a987bc74b41fc7ae65b2e23f8e4e4e
         with:
-          tool: cargo-hack
-      - run: cargo hack check --feature-powerset --depth 1 --partition ${{ matrix.partition }}/2
+          tool: cargo-hack@0.6.45
+      - run: cargo hack check --locked --feature-powerset --depth 1 --partition ${{ matrix.partition }}/2
 
   docs:
     if: ${{ github.repository == 'tempoxyz/tempo' }}
@@ -120,7 +120,7 @@ jobs:
         with:
           version: v0.15.0
       - name: Build documentation
-        run: cargo doc --workspace --all-features --no-deps --document-private-items
+        run: cargo doc --workspace --all-features --locked --no-deps --document-private-items
         env:
           RUSTDOCFLAGS: --cfg docsrs -D warnings --show-type-layout --generate-link-to-definition --enable-index-page -Zunstable-options
       - name: Exclude rustdocs from indexing
@@ -192,6 +192,7 @@ jobs:
       - uses: tempoxyz/gh-actions/actions/cargo-install@ab45d76f6e7420a094281a22aee1973ecc0754f8
         with:
           tool: zepter
+          version: "1.88.1"
       - name: Eagerly pull dependencies
         run: cargo metadata --format-version=1 --locked > /dev/null
       - run: zepter run check

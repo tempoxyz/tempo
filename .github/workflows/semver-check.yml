@@ -47,9 +47,14 @@ jobs:
       - uses: tempoxyz/gh-actions/vendor/dtolnay/rust-toolchain@3626124474a987bc74b41fc7ae65b2e23f8e4e4e
       - uses: tempoxyz/gh-actions/vendor/mozilla-actions/sccache-action@3626124474a987bc74b41fc7ae65b2e23f8e4e4e
 
+      - name: Install Cargo cooldown verifier
+        uses: tempoxyz/gh-actions/actions/cargo-cooldown@216431dd18ebe7c199654e6c310ed99570ddcc33 # gh-actions#98
+
       - uses: tempoxyz/gh-actions/vendor/taiki-e/install-action@3626124474a987bc74b41fc7ae65b2e23f8e4e4e
         with:
-          tool: cargo-semver-checks
+          tool: cargo-semver-checks@0.50.0
 
       - name: Run semver checks on sanitized crates
         run: ./scripts/publish-crates.sh --semver-check
+        env:
+          CARGO_COOLDOWN_REQUIRED: "true"

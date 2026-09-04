@@ -964,6 +964,7 @@ def build-valscope-static-reports [
         exit 1
     }
 
+    check-cargo-cooldown $valscope_dir
     print "Generating ValScope static reports with configured VM/VLogs datasources"
     let out_dir = $"($results_dir)/valscope-static"
     let web_dir = $"($valscope_dir)/apps/web"
@@ -983,7 +984,7 @@ def build-valscope-static-reports [
         exit $web_build.exit_code
     }
     let result = (with-env { VICTORIAMETRICS_URL: $vm_url, VICTORIALOGS_URL: $vlogs_url } {
-        run-external "cargo" "run" "--manifest-path" $manifest "--bin" "valscope-bench-report" "--" "--results-dir" $results_dir "--out-dir" $out_dir "--web-dist" $web_dist "--benchmark-id" $benchmark_id | complete
+        run-external "cargo" "run" "--locked" "--manifest-path" $manifest "--bin" "valscope-bench-report" "--" "--results-dir" $results_dir "--out-dir" $out_dir "--web-dist" $web_dist "--benchmark-id" $benchmark_id | complete
     })
     if $result.stdout != "" { print $result.stdout }
     if $result.stderr != "" { print $result.stderr }
@@ -1541,7 +1542,7 @@ def "main e2e" [
         let tempo_bin = if $profile == "dev" { "./target/debug/tempo" } else { $"./target/($profile)/tempo" }
         let genesis_accounts = ([$accounts 3] | math max) + 1
         print $"Generating local e2e localnet config for validators: ($E2E_VALIDATORS)"
-        cargo run -p tempo-xtask --profile $profile -- generate-localnet -o $init_dir --accounts $genesis_accounts --validators $E2E_VALIDATORS --seed $E2E_SEED --force ...$gas_limit_args ...$general_gas_limit_args ...$snapshot_hardfork_args
+        cargo run --locked -p tempo-xtask --profile $profile -- generate-localnet -o $init_dir --accounts $genesis_accounts --validators $E2E_VALIDATORS --seed $E2E_SEED --force ...$gas_limit_args ...$general_gas_limit_args ...$snapshot_hardfork_args
 
         let trusted_peers = (trusted-peers-from-localnet $init_dir)
         if $trusted_peers == "" {
@@ -1555,7 +1556,7 @@ def "main e2e" [
             ensure-bloat-space $bloat_mib
             print $"Generating local e2e state bloat \(($bloat_mib) MiB\)..."
             let token_args = ($TIP20_TOKEN_IDS | each { |id| ["--token" $"($id)"] } | flatten)
-            cargo run -p tempo-xtask --profile $profile -- generate-state-bloat --size $bloat_mib --out $bloat_file ...$token_args
+            cargo run --locked -p tempo-xtask --profile $profile -- generate-state-bloat --size $bloat_mib --out $bloat_file ...$token_args
         }
 
         let marker = {
