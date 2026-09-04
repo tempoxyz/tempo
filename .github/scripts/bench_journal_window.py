@@ -43,7 +43,7 @@ def category(message):
     return None
 
 result = {"since": since, "until": until, "journal_lines": 0, "journal_bytes": 0,
-          "debug_lines": 0, "categories": {}, "complete": False,
+          "debug_lines": 0, "message_types": {}, "categories": {}, "complete": False,
           "notes": ["Journal window may include setup; this is not the final txgen report or a receipt proof.",
                     "Zero DEBUG matches do not establish absence of the corresponding behavior.",
                     "Metric snapshot is cumulative/current at inspection time, not historical window data."]}
@@ -62,8 +62,14 @@ try:
             break
         entry = json.loads(raw)
         message = entry.get("MESSAGE", "")
+        kind = type(message).__name__
+        result["message_types"][kind] = result["message_types"].get(kind, 0) + 1
+        # Journald JSON encodes binary/control-bearing fields as byte arrays.
+        if isinstance(message, list) and all(isinstance(value, int) and 0 <= value <= 255 for value in message):
+            message = bytes(message).decode("utf-8", errors="replace")
         if not isinstance(message, str):
             continue
+        message = re.sub(r"\x1b\[[0-?]*[ -/]*[@-~]", "", message)
         if " DEBUG " in message or entry.get("PRIORITY") == "7":
             result["debug_lines"] += 1
         name = category(message)
