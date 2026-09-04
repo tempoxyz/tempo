@@ -28,7 +28,7 @@ jobs:
       - name: Read validator preparation and benchmark runner status
         run: |
           python3 - <<'PY'
-          import concurrent.futures, json, os, pathlib, re, subprocess
+          import concurrent.futures, gzip, hashlib, json, os, pathlib, re, subprocess
           benchmark = os.environ['BENCHMARK_ID']
           if not re.fullmatch(r'bench-e2e-multi-region-\d+-\d+', benchmark):
               raise SystemExit('Expected an existing global benchmark run ID')
@@ -68,6 +68,40 @@ jobs:
                   runner[artifact] = measured
               else:
                   runner[artifact] = data
+          report_file = pathlib.Path('inspection-txgen-report.json')
+          if report_file.exists():
+              report = json.loads(report_file.read_text())
+              bounds = [block['timestamp_ms'] for block in report.get('blocks', [])]
+              samples_file = pathlib.Path('inspection-metrics.ndjson.gz')
+              key = f'runs/{benchmark}/artifacts/runner/txgen-report.samples.ndjson.gz'
+              copied = subprocess.run(['aws', 's3', 'cp', f's3://{bucket}/{key}', str(samples_file), '--region', 'us-east-1', '--only-show-errors'], capture_output=True, text=True, timeout=90)
+              if bounds and copied.returncode == 0:
+                  names = {'reth_consensus_engine_persistence_save_blocks_duration_seconds', 'reth_database_transaction_commit_sync_duration_seconds', 'reth_database_transaction_commit_whole_duration_seconds', 'reth_storage_providers_database_save_blocks_commit_mdbx_last', 'reth_storage_providers_database_save_blocks_commit_sf_last', 'reth_storage_providers_database_save_blocks_write_trie_updates_last'}
+                  rows = {}
+                  sample_first = None
+                  sample_last = None
+                  with gzip.open(samples_file, 'rt') as samples:
+                      for line in samples:
+                          if not any(name in line for name in names):
+                              continue
+                          sample = json.loads(line)
+                          if sample['name'] not in names:
+                              continue
+                          timestamp = sample['unix_ms']
+                          sample_first = timestamp if sample_first is None else min(sample_first, timestamp)
+                          sample_last = timestamp if sample_last is None else max(sample_last, timestamp)
+                          labels = sample['labels']
+                          quantile = labels.get('quantile', 'last')
+                          if not min(bounds) <= timestamp <= max(bounds) or quantile not in ('0.99', 'last') or labels.get('outcome', 'commit') != 'commit':
+                              continue
+                          identity = (labels.get('node', labels.get('validator', '?')), sample['name'], quantile)
+                          prior = rows.get(identity)
+                          if prior is None or sample['value'] > prior['maximum_observed']:
+                              rows[identity] = {'node': identity[0], 'metric': identity[1], 'quantile': quantile, 'maximum_observed': sample['value'], 'unix_ms': timestamp}
+                  digest = hashlib.file_digest(samples_file.open('rb'), 'sha256').hexdigest()
+                  metric_result = {'source_sha256': digest, 'source_key': key, 'report_first_ms': min(bounds), 'report_last_ms': max(bounds), 'sample_first_ms': sample_first, 'sample_last_ms': sample_last, 'note': 'Maxima of exported quantile or last-value samples within the report range; not pooled quantiles.', 'series': sorted(rows.values(), key=lambda row: (row['node'], row['metric']))}
+                  pathlib.Path('inspection-persistence-metrics.json').write_text(json.dumps(metric_result, indent=2))
+                  runner['persistence_metrics'] = metric_result
           print(json.dumps({'benchmark_id': benchmark, 'validators': results, 'runner': runner}, indent=2))
           with open(os.environ['GITHUB_STEP_SUMMARY'], 'a') as summary:
               summary.write('```json\n' + json.dumps(results, indent=2) + '\n```\n')
