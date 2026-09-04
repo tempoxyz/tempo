@@ -1,0 +1,98 @@
+name: bench-inspect-scaling-activity
+on:
+  push:
+    branches: [ejh/20k-tps-10v]
+    paths: [.github/workflows/bench-inspect-scaling-activity.yml]
+  workflow_dispatch:
+permissions:
+  contents: read
+  id-token: write
+jobs:
+  inspect:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - name: Configure AWS credentials
+        uses: tempoxyz/gh-actions/vendor/aws-actions/configure-aws-credentials@3626124474a987bc74b41fc7ae65b2e23f8e4e4e
+        with:
+          role-to-assume: arn:aws:iam::934822761402:role/benchmark-runner
+          aws-region: us-east-1
+          role-duration-seconds: 900
+      - name: Read exact failed and latest validator scaling activity
+        env:
+          AWS_PAGER: ''
+          AWS_RETRY_MODE: standard
+          AWS_MAX_ATTEMPTS: '2'
+        run: |
+          python3 - <<'PYCODE'
+          import datetime, hashlib, json, pathlib, subprocess
+
+          # AWS documents IncludeDeletedGroups for retained activity of deleted ASGs:
+          # https://docs.aws.amazon.com/cli/latest/reference/autoscaling/describe-scaling-activities.html
+          region = 'us-east-1'
+          runs = ('33878478875', '33880723446')
+          base = ['aws', 'autoscaling', 'describe-scaling-activities']
+          schema = subprocess.run(base + ['--generate-cli-skeleton', 'input'], capture_output=True, text=True, timeout=20)
+          supported = schema.returncode == 0 and 'IncludeDeletedGroups' in json.loads(schema.stdout)
+          result = {
+              'observed_at': datetime.datetime.now(datetime.timezone.utc).isoformat(),
+              'region': region,
+              'read_only': True,
+              'include_deleted_groups_supported': supported,
+              'maximum_activities_per_group': 50,
+              'groups': [],
+          }
+          fields = ('AutoScalingGroupName', 'AutoScalingGroupState', 'StartTime', 'EndTime',
+                    'StatusCode', 'StatusMessage', 'Description', 'Cause')
+          failed = not supported
+          if not supported:
+              result['error'] = 'Installed AWS CLI does not expose IncludeDeletedGroups; no cloud requests made.'
+          else:
+              for run in runs:
+                  group = f'tempo-e2e-bench-e2e-multi-region-{run}-1-{region}-validator'
+                  item = {'run_id': run, 'group': group}
+                  result['groups'].append(item)
+                  command = base + ['--auto-scaling-group-name', group, '--include-deleted-groups',
+                                    '--region', region, '--page-size', '50', '--max-items', '50',
+                                    '--cli-connect-timeout', '10', '--cli-read-timeout', '30', '--output', 'json']
+                  try:
+                      response = subprocess.run(command, capture_output=True, text=True, timeout=90)
+                      item['exit_code'] = response.returncode
+                      if response.returncode:
+                          failed = True
+                          item['state'] = 'request_failed'
+                          item['error'] = response.stderr[-2000:]
+                          # Do not widen permissions or retry through another role.
+                          continue
+                      data = json.loads(response.stdout)
+                      item['source_sha256'] = hashlib.sha256(response.stdout.encode()).hexdigest()
+                      item['additional_activities_available'] = bool(data.get('NextToken'))
+                      activities = data.get('Activities', [])
+                      if any(activity.get('AutoScalingGroupName') != group for activity in activities):
+                          raise ValueError('AWS returned activity for a different group')
+                      item['state'] = 'observed' if activities else 'no_activity_returned'
+                      item['activities'] = [{key: activity.get(key) for key in fields} for activity in activities]
+                      for activity in item['activities']:
+                          truncated = []
+                          for key, value in list(activity.items()):
+                              if isinstance(value, str) and len(value) > 2000:
+                                  activity[key] = value[:2000]
+                                  truncated.append(key)
+                          activity['truncated_fields'] = truncated
+                  except (subprocess.TimeoutExpired, ValueError) as error:
+                      failed = True
+                      item['state'] = 'inspection_failed'
+                      item['error'] = str(error)[:2000]
+          encoded = json.dumps(result, indent=2)
+          pathlib.Path('inspection-scaling-activity.json').write_text(encoded + '\n')
+          print(encoded)
+          raise SystemExit(1 if failed else 0)
+          PYCODE
+      - name: Upload bounded scaling activity evidence
+        if: always()
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: benchmark-scaling-activity
+          path: inspection-scaling-activity.json
+          if-no-files-found: error
+          retention-days: 14
