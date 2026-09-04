@@ -66,7 +66,7 @@ jobs:
               results = list(executor.map(inspect, range(10)))
           runner = {}
           bucket = 'tempo-benchmark-artifacts-934822761402-us-east-1'
-          for artifact in ('status.json', 'timings.json', 'txgen-report.json', 'sustained-proof-progress.json', 'sustained-proof.json'):
+          for artifact in ('status.json', 'runner-progress.json', 'timings.json', 'txgen-report.json', 'sustained-proof-progress.json', 'sustained-proof.json'):
               key = f'runs/{benchmark}/artifacts/runner/{artifact}'
               result = subprocess.run(['aws', 's3', 'cp', f's3://{bucket}/{key}', '-', '--region', 'us-east-1', '--only-show-errors'], capture_output=True, text=True, timeout=60)
               if result.returncode:
