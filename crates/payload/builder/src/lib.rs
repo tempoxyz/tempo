@@ -21,16 +21,16 @@ use crate::{
     metrics::{BlockBuildStopReason, InstrumentedFinishProvider, TempoPayloadBuilderMetrics},
     prewarming::{BestTransactionsPrewarming, PrewarmedTransaction, PrewarmingExecutionContext},
 };
-use alloy_consensus::{BlockHeader as _, Signed, Transaction as _, TxLegacy, TxReceipt};
+use alloy_consensus::{BlockHeader as _, TxReceipt};
 use alloy_eip7928::bal::Bal;
 use alloy_eips::{eip1559::calculate_block_gas_limit, eip2718::Encodable2718};
 use alloy_primitives::{Address, B256, Bloom, Bytes, U256, keccak256};
-use alloy_rlp::{Decodable, Encodable};
+use alloy_rlp::Encodable;
 use reth_basic_payload_builder::{
     BuildArguments, BuildOutcome, MissingPayloadBehaviour, PayloadBuilder, PayloadConfig,
     is_better_payload,
 };
-use reth_chainspec::{ChainSpecProvider, EthChainSpec, EthereumHardforks};
+use reth_chainspec::{ChainSpecProvider, EthereumHardforks};
 use reth_consensus_common::validation::MAX_RLP_BLOCK_SIZE;
 use reth_engine_tree::tree::{
     CachedStateMetrics, CachedStateMetricsSource, CachedStateProvider,
@@ -44,10 +44,8 @@ use reth_evm::{
 };
 use reth_execution_types::BlockExecutionOutput;
 use reth_payload_builder::{EthBuiltPayload, PayloadBuilderError};
-use reth_payload_primitives::{BuiltPayload, BuiltPayloadExecutedBlock};
-use reth_primitives_traits::{
-    Recovered, RecoveredBlock, transaction::error::InvalidTransactionError,
-};
+use reth_payload_primitives::BuiltPayloadExecutedBlock;
+use reth_primitives_traits::{RecoveredBlock, transaction::error::InvalidTransactionError};
 use reth_revm::{
     State, context::Block, database::StateProviderDatabase,
     db::states::bundle_state::BundleRetention, state::EvmState,
@@ -75,18 +73,14 @@ use tempo_payload_types::{
     TempoBuiltPayload, TempoPayloadAttributes, ValidationLatencyWorkload, marshal_persist_estimate,
 };
 use tempo_precompiles::{storage::StorageActions, validator_config_v2::ValidatorConfigV2};
-use tempo_primitives::{
-    RecoveredSubBlock, SubBlockMetadata, TempoHeader, TempoReceipt, TempoTxEnvelope,
-    subblock::PartialValidatorKey,
-    transaction::envelope::{TEMPO_SYSTEM_TX_SENDER, TEMPO_SYSTEM_TX_SIGNATURE},
-};
+use tempo_primitives::{TempoHeader, TempoReceipt, TempoTxEnvelope};
 use tempo_transaction_pool::{
     StateAwareBestTransactions, TempoTransactionPool,
     best::BestTransaction,
     transaction::{TempoPoolTransactionError, TempoPooledTransaction},
 };
 use tokio::sync::oneshot;
-use tracing::{Level, debug, debug_span, error, info, instrument, trace, warn};
+use tracing::{Level, debug, debug_span, info, instrument, trace, warn};
 
 /// Conservative estimate for non-transaction execution block RLP bytes.
 ///
@@ -144,16 +138,6 @@ pub struct TempoPayloadBuilder<Provider> {
     evm_config: TempoEvmConfig,
     metrics: TempoPayloadBuilderMetrics,
     cache_metrics: CachedStateMetrics,
-    /// Height at which we've seen an invalid subblock.
-    ///
-    /// We pre-validate all of the subblock transactions when collecting subblocks, so this
-    /// should never be set because subblocks with invalid transactions should never make it to the payload builder.
-    ///
-    /// However, due to disruptive nature of subblock-related bugs (invalid subblock
-    /// we're continuously failing to apply halts block building), we protect against this by tracking
-    /// last height at which we've seen an invalid subblock, and not including any subblocks
-    /// at this height for any payloads.
-    highest_invalid_subblock: Arc<AtomicU64>,
     /// Whether to include block access lists in built execution payloads.
     enable_bal: bool,
     /// Learned estimate of total replayable build work divided by work at tx cutoff.
@@ -223,7 +207,6 @@ impl<Provider> TempoPayloadBuilder<Provider> {
             evm_config,
             metrics: TempoPayloadBuilderMetrics::default(),
             cache_metrics: CachedStateMetrics::zeroed(CachedStateMetricsSource::Builder),
-            highest_invalid_subblock: Default::default(),
             enable_bal: cfg!(feature = "bal"),
             build_time_multiplier: Arc::new(AtomicU64::new(scaled_build_time_multiplier(
                 config.build_time_multiplier,
@@ -244,54 +227,6 @@ impl<Provider> TempoPayloadBuilder<Provider> {
             Ordering::Relaxed,
             |current| Some(decay_build_time_multiplier(current, observed)),
         );
-    }
-}
-
-impl<Provider: ChainSpecProvider<ChainSpec = TempoChainSpec>> TempoPayloadBuilder<Provider> {
-    /// Builds system transactions to seal the block.
-    ///
-    /// Returns a vector of system transactions that must be executed at the end of each block:
-    /// - Subblocks signatures - validates subblock signatures
-    fn build_seal_block_txs(
-        &self,
-        evm: &TempoEvm<impl Database>,
-        subblocks: &[RecoveredSubBlock],
-    ) -> Vec<Recovered<TempoTxEnvelope>> {
-        if subblocks.is_empty() && evm.cfg.spec.is_t4() {
-            // Post-T4, omit the subblocks metadata transaction if there are no subblocks
-            return vec![];
-        }
-
-        let chain_spec = self.provider.chain_spec();
-        let chain_id = Some(chain_spec.chain().id());
-
-        // Build subblocks signatures system transaction
-        let subblocks_metadata = subblocks
-            .iter()
-            .map(|s| s.metadata())
-            .collect::<Vec<SubBlockMetadata>>();
-        let subblocks_input = alloy_rlp::encode(&subblocks_metadata)
-            .into_iter()
-            .chain(evm.block.number.to_be_bytes_vec())
-            .collect();
-
-        let subblocks_signatures_tx = Recovered::new_unchecked(
-            TempoTxEnvelope::Legacy(Signed::new_unhashed(
-                TxLegacy {
-                    chain_id,
-                    nonce: 0,
-                    gas_price: 0,
-                    gas_limit: 0,
-                    to: Address::ZERO.into(),
-                    value: U256::ZERO,
-                    input: subblocks_input,
-                },
-                TEMPO_SYSTEM_TX_SIGNATURE,
-            )),
-            TEMPO_SYSTEM_TX_SENDER,
-        );
-
-        vec![subblocks_signatures_tx]
     }
 }
 
@@ -360,7 +295,7 @@ where
         &self,
         args: BuildArguments<TempoPayloadAttributes, TempoBuiltPayload>,
         best_txs: impl FnOnce(BestTransactionsAttributes) -> Txs,
-        empty: bool,
+        _empty: bool,
     ) -> Result<BuildOutcome<TempoBuiltPayload>, PayloadBuilderError>
     where
         Txs: BestTransactions<Item = Arc<ValidPoolTransaction<TempoPooledTransaction>>>
@@ -437,8 +372,7 @@ where
             .gas_limit_with_target(parent_header.gas_limit(), attributes.target_gas_limit);
         let shared_gas_limit =
             chain_spec.shared_gas_limit_at(attributes.timestamp, block_gas_limit);
-        // Non-shared gas limit is the maximum gas available for proposer's pool transactions.
-        // The remaining `shared_gas_limit` is reserved for validator subblocks.
+        // Preserve the legacy shared gas field in the header while filling only from the pool.
         let non_shared_gas_limit = block_gas_limit - shared_gas_limit;
         let general_gas_limit = chain_spec.general_gas_limit_at(
             attributes.timestamp,
@@ -464,45 +398,6 @@ where
         let mut parallel_transactions_executed = 0u64;
         let mut total_fees = U256::ZERO;
 
-        // If building an empty payload, don't include any subblocks
-        //
-        // Also don't include any subblocks if we've seen an invalid subblock
-        // at this height or above.
-        let mut subblocks = if empty
-            || self.highest_invalid_subblock.load(Ordering::Relaxed) > parent_header.number()
-        {
-            vec![]
-        } else {
-            attributes.subblocks()
-        };
-
-        subblocks.retain(|subblock| {
-            // Edge case: remove subblocks with expired transactions
-            //
-            // We pre-validate all of the subblocks on top of parent state in subblocks service
-            // which leaves the only reason for transactions to get invalidated by expiry of
-            // `valid_before` field.
-            if subblock.has_expired_transactions(attributes.timestamp) {
-                self.metrics.inc_subblocks_expired();
-                return false;
-            }
-
-            // Account for the subblock's size
-            estimated_rlp_block_size += subblock.total_tx_size();
-
-            true
-        });
-
-        let subblock_fee_recipients = subblocks
-            .iter()
-            .map(|subblock| {
-                (
-                    PartialValidatorKey::from_slice(&subblock.validator()[..15]),
-                    subblock.fee_recipient,
-                )
-            })
-            .collect();
-
         let next_attributes = TempoNextBlockEnvAttributes {
             inner: NextBlockEnvAttributes {
                 timestamp: attributes.timestamp,
@@ -518,7 +413,6 @@ where
             shared_gas_limit,
             timestamp_millis_part: attributes.timestamp_millis_part(),
             consensus_context: attributes.consensus_context(),
-            subblock_fee_recipients,
         };
         let evm_env = self
             .evm_config
@@ -572,17 +466,6 @@ where
         debug!("building new payload");
 
         let (roots_tx, roots_rx) = self.spawn_roots_task();
-
-        // Prepare system transactions before actual block building and account for their size.
-        let prepare_system_txs_start = Instant::now();
-        let system_txs = self.build_seal_block_txs(executor.evm(), &subblocks);
-        for tx in &system_txs {
-            estimated_rlp_block_size += tx.inner().length();
-        }
-        let prepare_system_txs_elapsed = prepare_system_txs_start.elapsed();
-        self.metrics
-            .prepare_system_transactions_duration_seconds
-            .record(prepare_system_txs_elapsed);
 
         if is_osaka && estimated_rlp_block_size > MAX_RLP_BLOCK_SIZE {
             return Err(PayloadBuilderError::other(ConsensusError::BlockTooLarge {
@@ -701,9 +584,8 @@ where
                 executor.evm().cfg.tx_gas_limit_cap.unwrap_or(u64::MAX),
             );
 
-            // Ensure we still have capacity for this transaction within the non-shared gas limit.
-            // The remaining `shared_gas_limit` is reserved for validator subblocks and must not
-            // be consumed by proposer's pool transactions.
+            // Ensure we still have capacity for this transaction within the legacy non-shared
+            // gas limit.
             if cumulative_gas_used + max_regular_gas_used > non_shared_gas_limit {
                 // Mark this transaction as invalid since it doesn't fit
                 // The iterator will handle lane switching internally when appropriate
@@ -889,10 +771,7 @@ where
 
         check_cancel!();
 
-        // check if we have a better block or received more subblocks
-        if !is_better_payload(best_payload.as_ref(), total_fees)
-            && !is_more_subblocks(best_payload.as_ref(), &subblocks)
-        {
+        if !is_better_payload(best_payload.as_ref(), total_fees) {
             // Release db
             drop(executor);
             drop(db);
@@ -903,94 +782,7 @@ where
             });
         }
 
-        let subblocks_start = Instant::now();
-        let _subblock_txs_span =
-            debug_span!(target: "payload_builder", "execute_subblock_txs").entered();
-        let subblocks_count = subblocks.len() as f64;
-        let mut subblock_transactions = 0f64;
-        // Apply subblock transactions
-        for subblock in subblocks {
-            let subblock_start = Instant::now();
-            let mut subblock_tx_count = 0f64;
-
-            for tx in subblock.into_recovered_iter() {
-                if let Err(err) = executor.execute_transaction(&tx) {
-                    if let BlockExecutionError::Validation(BlockValidationError::InvalidTx {
-                        ..
-                    }) = &err
-                    {
-                        error!(
-                            ?err,
-                            "subblock transaction failed execution, aborting payload building"
-                        );
-                        self.highest_invalid_subblock
-                            .store(executor.evm().block().number.to(), Ordering::Relaxed);
-                        self.metrics.inc_build_failure("subblock_invalid_tx");
-                        return Err(PayloadBuilderError::evm(err));
-                    } else {
-                        return Err(PayloadBuilderError::evm(err));
-                    }
-                }
-                if let Some(bal_task_handle) = &bal_task_handle {
-                    bal_task_handle.bump_bal_index();
-                }
-
-                subblock_tx_count += 1.0;
-                let receipt = executor.receipts().last().unwrap().clone();
-                if !receipt.success {
-                    reverted_transactions += 1;
-                }
-                let _ = roots_tx.send((BuilderTx::Owned(Box::new(tx)), receipt));
-            }
-
-            self.metrics
-                .subblock_execution_duration_seconds
-                .record(subblock_start.elapsed());
-            self.metrics
-                .subblock_transaction_count
-                .record(subblock_tx_count);
-            subblock_transactions += subblock_tx_count;
-        }
-        drop(_subblock_txs_span);
-        let total_subblock_transaction_execution_elapsed = subblocks_start.elapsed();
-        self.metrics
-            .total_subblock_transaction_execution_duration_seconds
-            .record(total_subblock_transaction_execution_elapsed);
-        self.metrics.subblocks.record(subblocks_count);
-        self.metrics.subblocks_last.set(subblocks_count);
-        self.metrics
-            .subblock_transactions
-            .record(subblock_transactions);
-        self.metrics
-            .subblock_transactions_last
-            .set(subblock_transactions);
-
-        // Apply system transactions
-        let system_txs_execution_start = Instant::now();
-        let _system_txs_span =
-            debug_span!(target: "payload_builder", "execute_system_txs").entered();
-        for system_tx in system_txs {
-            executor
-                .execute_transaction(&system_tx)
-                .map_err(PayloadBuilderError::evm)?;
-            if let Some(bal_task_handle) = &bal_task_handle {
-                bal_task_handle.bump_bal_index();
-            }
-
-            let _ = roots_tx.send((
-                BuilderTx::Owned(Box::new(system_tx)),
-                executor.receipts().last().unwrap().clone(),
-            ));
-        }
-        drop(_system_txs_span);
-        let system_txs_execution_elapsed = system_txs_execution_start.elapsed();
-        self.metrics
-            .system_transactions_execution_duration_seconds
-            .record(system_txs_execution_elapsed);
-
-        let total_transaction_execution_elapsed = normal_transaction_fill_elapsed
-            + total_subblock_transaction_execution_elapsed
-            + system_txs_execution_elapsed;
+        let total_transaction_execution_elapsed = normal_transaction_fill_elapsed;
         self.metrics
             .total_transaction_execution_duration_seconds
             .record(total_transaction_execution_elapsed);
@@ -1172,10 +964,6 @@ where
         self.metrics
             .payment_gas_limit_last
             .set(non_shared_gas_limit as f64 - general_gas_limit as f64);
-        self.metrics
-            .shared_gas_limit_last
-            .set(shared_gas_limit as f64);
-
         let requests = chain_spec
             .is_prague_active_at_timestamp(attributes.timestamp)
             .then(|| execution_result.requests.clone());
@@ -1254,22 +1042,18 @@ where
             gas_used,
             cumulative_state_gas_used,
             extra_data = %block.extra_data(),
-            subblocks_count,
             payment_transactions,
             pool_transactions_yielded,
             pool_transactions_included,
             parallel_transactions_executed,
             invalid_pool_transaction_execution_attempts,
             pool_transactions_inclusion_ratio,
-            subblock_transactions,
             total_transactions,
             ?elapsed,
             ?validation_work_duration,
             ?validation_latency_duration,
             ?normal_transaction_fill_elapsed,
             ?normal_transaction_fill_idle_elapsed,
-            ?total_subblock_transaction_execution_elapsed,
-            ?system_txs_execution_elapsed,
             ?total_transaction_execution_elapsed,
             ?sparse_trie_state_root_wait_elapsed,
             ?builder_finish_elapsed,
@@ -1431,28 +1215,6 @@ enum BalMessage {
     BumpIndex,
 }
 
-pub fn is_more_subblocks(
-    best_payload: Option<&TempoBuiltPayload>,
-    subblocks: &[RecoveredSubBlock],
-) -> bool {
-    let Some(best_payload) = best_payload else {
-        return false;
-    };
-    let Some(best_metadata) = best_payload
-        .block()
-        .body()
-        .transactions
-        .iter()
-        .rev()
-        .filter(|tx| tx.is_system_tx())
-        .find_map(|tx| Vec::<SubBlockMetadata>::decode(&mut tx.input().as_ref()).ok())
-    else {
-        return false;
-    };
-
-    subblocks.len() > best_metadata.len()
-}
-
 /// Overrides the block's fee recipient (beneficiary) with the value from the
 /// V2 validator config contract, if the contract is active and returns a
 /// non-zero address for the given `public_key`.
@@ -1510,14 +1272,12 @@ fn maybe_override_fee_recipient<DB: Database>(
 #[derive(Debug)]
 enum BuilderTx {
     Pooled(Arc<ValidPoolTransaction<TempoPooledTransaction>>),
-    Owned(Box<Recovered<TempoTxEnvelope>>),
 }
 
 impl BuilderTx {
     fn into_parts(self) -> (TempoTxEnvelope, Address) {
         match self {
             Self::Pooled(tx) => tx.transaction.inner().clone().into_parts(),
-            Self::Owned(tx) => tx.into_parts(),
         }
     }
 }
@@ -1545,147 +1305,14 @@ pub(crate) struct RootsTaskResult {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use alloy_consensus::BlockBody;
-    use alloy_primitives::{Address, B256, Bytes};
-    use core::num::NonZeroU64;
-    use reth_primitives_traits::Block as _;
-    use tempo_payload_types::EncodedBlock;
-    use tempo_primitives::{
-        AASigned, Block, SignedSubBlock, SubBlock, SubBlockVersion, TempoSignature,
-        TempoTransaction,
-    };
-
-    fn nz(value: u64) -> NonZeroU64 {
-        NonZeroU64::new(value).expect("test valid_before must be non-zero")
-    }
-
-    trait TestExt {
-        fn random() -> Self;
-        fn with_valid_before(_: Option<NonZeroU64>) -> Self
-        where
-            Self: Sized,
-        {
-            Self::random()
-        }
-    }
-
-    impl TestExt for SubBlockMetadata {
-        fn random() -> Self {
-            Self {
-                version: SubBlockVersion::V1,
-                validator: B256::random(),
-                fee_recipient: Address::random(),
-                signature: Bytes::new(),
-            }
-        }
-    }
-
-    impl TestExt for RecoveredSubBlock {
-        fn random() -> Self {
-            Self::with_valid_before(None)
-        }
-
-        fn with_valid_before(valid_before: Option<NonZeroU64>) -> Self {
-            let tx = TempoTxEnvelope::AA(AASigned::new_unhashed(
-                TempoTransaction {
-                    valid_before,
-                    ..Default::default()
-                },
-                TempoSignature::default(),
-            ));
-            let signed = SignedSubBlock {
-                inner: SubBlock {
-                    version: SubBlockVersion::V1,
-                    parent_hash: B256::random(),
-                    fee_recipient: Address::random(),
-                    transactions: vec![tx],
-                },
-                signature: Bytes::new(),
-            };
-            Self::new_unchecked(signed, vec![Address::ZERO], B256::ZERO)
-        }
-    }
-
-    fn payload_with_metadata(count: usize) -> TempoBuiltPayload {
-        let metadata: Vec<_> = (0..count).map(|_| SubBlockMetadata::random()).collect();
-        let input: Bytes = alloy_rlp::encode(&metadata).into();
-        let tx = TempoTxEnvelope::Legacy(Signed::new_unhashed(
-            TxLegacy {
-                chain_id: None,
-                nonce: 0,
-                gas_price: 0,
-                gas_limit: 0,
-                to: Address::random().into(),
-                value: U256::ZERO,
-                input,
-            },
-            TEMPO_SYSTEM_TX_SIGNATURE,
-        ));
-        let block = Block {
-            header: TempoHeader::default(),
-            body: BlockBody {
-                transactions: vec![tx],
-                ommers: vec![],
-                withdrawals: None,
-            },
-        }
-        .try_into_recovered()
-        .unwrap();
-        let eth = EthBuiltPayload::new(Arc::new(block), U256::ZERO, None, None);
-        TempoBuiltPayload::new(
-            eth,
-            None,
-            None,
-            Duration::ZERO,
-            Duration::ZERO,
-            NON_TRANSACTION_SIZE_ESTIMATE,
-            EncodedBlock::default(),
-        )
-    }
-
-    #[test]
-    fn test_is_more_subblocks() {
-        // None payload always returns false
-        assert!(!is_more_subblocks(None, &[]));
-        assert!(!is_more_subblocks(None, &[RecoveredSubBlock::random()]));
-
-        // Equal count returns false (1 == 1)
-        let payload = payload_with_metadata(1);
-        assert!(!is_more_subblocks(
-            Some(&payload),
-            &[RecoveredSubBlock::random()]
-        ));
-
-        // More subblocks returns true (2 > 1)
-        assert!(is_more_subblocks(
-            Some(&payload),
-            &[RecoveredSubBlock::random(), RecoveredSubBlock::random()]
-        ));
-
-        // Fewer subblocks returns false (1 < 2)
-        let payload = payload_with_metadata(2);
-        assert!(!is_more_subblocks(
-            Some(&payload),
-            &[RecoveredSubBlock::random()]
-        ));
-
-        // Empty metadata, empty subblocks returns false (0 > 0 is false)
-        let payload = payload_with_metadata(0);
-        assert!(!is_more_subblocks(Some(&payload), &[]));
-
-        // Empty metadata, one subblock returns true (1 > 0)
-        assert!(is_more_subblocks(
-            Some(&payload),
-            &[RecoveredSubBlock::random()]
-        ));
-    }
+    use alloy_primitives::Bytes;
 
     #[test]
     fn test_extra_data_flow_in_attributes() {
         // Test that extra_data in attributes can be accessed correctly
         let extra_data = Bytes::from(vec![42, 43, 44, 45, 46]);
 
-        let attrs = TempoPayloadAttributes::new(None, 1, 0, extra_data.clone(), None, Vec::new);
+        let attrs = TempoPayloadAttributes::new(None, 1, 0, extra_data.clone(), None);
 
         assert_eq!(attrs.extra_data(), &extra_data);
 
@@ -1693,22 +1320,5 @@ mod tests {
         let injected_data = attrs.extra_data().clone();
 
         assert_eq!(injected_data, extra_data);
-    }
-
-    #[test]
-    fn test_recovered_subblock_has_expired_transactions_boundary() {
-        // valid_before == timestamp → expired
-        let subblock = RecoveredSubBlock::with_valid_before(Some(nz(1000)));
-        assert!(subblock.has_expired_transactions(1000));
-
-        // valid_before < timestamp → expired
-        assert!(subblock.has_expired_transactions(1001));
-
-        // valid_before > timestamp → NOT expired
-        assert!(!subblock.has_expired_transactions(999));
-
-        // No valid_before → NOT expired
-        let subblock_no_expiry = RecoveredSubBlock::with_valid_before(None);
-        assert!(!subblock_no_expiry.has_expired_transactions(1000));
     }
 }

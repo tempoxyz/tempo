@@ -18,8 +18,7 @@ slow-timeout = { period = "3m", terminate-after = 3, on-timeout = "pass" }
 filter = """
   package(tempo-e2e) & (
     test(can_restart_after_joining_from_snapshot) |
-    test(validator_can_fast_sync_after_full_dkg) |
-    test(subblocks_are_included)
+    test(validator_can_fast_sync_after_full_dkg)
   )
 """
 threads-required = "num-test-threads"
@@ -69,8 +68,7 @@ failure-output = "final"
 filter = """
   package(tempo-e2e) & (
     test(can_restart_after_joining_from_snapshot) |
-    test(validator_can_fast_sync_after_full_dkg) |
-    test(subblocks_are_included)
+    test(validator_can_fast_sync_after_full_dkg)
   )
 """
 threads-required = "num-test-threads"

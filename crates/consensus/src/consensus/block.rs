@@ -217,6 +217,7 @@ impl Block {
     }
 
     /// Returns the (eth) hash of the wrapped block.
+    #[cfg(test)]
     pub(crate) fn block_hash(&self) -> B256 {
         self.execution_block.hash()
     }

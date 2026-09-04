@@ -1,4 +1,3 @@
-use alloy_primitives::B256;
 use commonware_actor::Feedback;
 use commonware_consensus::{Reporter, marshal::Update, simplex::types::Context, types::Round};
 use commonware_cryptography::ed25519::PublicKey;
@@ -50,14 +49,12 @@ impl Mailbox {
         &self,
         round: Round,
         block: Block,
-        validator_set: Option<Vec<B256>>,
     ) -> eyre::Result<Option<Duration>> {
         let (response, rx) = oneshot::channel();
         self.inner
             .unbounded_send(Message::in_current_span(VerifyBlock {
                 round,
                 block: Arc::new(block),
-                validator_set,
                 response,
             }))
             .wrap_err("failed sending validate-block request to agent, this means it exited")?;
@@ -155,7 +152,6 @@ pub(super) struct Build {
 pub(super) struct VerifyBlock {
     pub(super) round: Round,
     pub(super) block: Arc<Block>,
-    pub(super) validator_set: Option<Vec<B256>>,
     pub(super) response: oneshot::Sender<Option<Duration>>,
 }
 

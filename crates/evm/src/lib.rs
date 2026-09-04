@@ -334,7 +334,7 @@ impl ConfigureEvm for TempoEvmConfig {
             // Fine to not validate during block building.
             validator_set: None,
             consensus_context: attributes.consensus_context,
-            subblock_fee_recipients: attributes.subblock_fee_recipients,
+            subblock_fee_recipients: Default::default(),
         })
     }
 }
@@ -347,7 +347,6 @@ mod tests {
     use alloy_primitives::{Address, B256, Bytes, TxKind, U256};
     use alloy_rlp::{Encodable, bytes::BytesMut};
     use reth_evm::{ConfigureEvm, NextBlockEnvAttributes};
-    use std::collections::HashMap;
     use tempo_chainspec::hardfork::TempoHardfork;
     use tempo_primitives::{
         BlockBody, SubBlockMetadata, TempoConsensusContext, ed25519::PublicKey,
@@ -486,7 +485,6 @@ mod tests {
             shared_gas_limit: 3_000_000,
             timestamp_millis_part: 750,
             consensus_context: None,
-            subblock_fee_recipients: HashMap::new(),
         };
 
         let result = evm_config.next_evm_env(&parent, &attributes);
@@ -653,11 +651,6 @@ mod tests {
         };
         let parent = SealedHeader::seal_slow(parent_header);
 
-        let fee_recipient = Address::repeat_byte(0x02);
-        let mut subblock_fee_recipients = HashMap::new();
-        let partial_key = PartialValidatorKey::from_slice(&[0x01; 15]);
-        subblock_fee_recipients.insert(partial_key, fee_recipient);
-
         let attributes = TempoNextBlockEnvAttributes {
             inner: NextBlockEnvAttributes {
                 timestamp: 1000,
@@ -673,7 +666,6 @@ mod tests {
             shared_gas_limit: 4_000_000,
             timestamp_millis_part: 999,
             consensus_context: None,
-            subblock_fee_recipients: subblock_fee_recipients.clone(),
         };
 
         let result = evm_config.context_for_next_block(&parent, attributes);
@@ -691,10 +683,6 @@ mod tests {
             Some(B256::repeat_byte(0x05))
         );
 
-        // Verify subblock_fee_recipients passed through
-        assert_eq!(
-            context.subblock_fee_recipients.get(&partial_key),
-            Some(&fee_recipient)
-        );
+        assert!(context.subblock_fee_recipients.is_empty());
     }
 }

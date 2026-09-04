@@ -3473,6 +3473,50 @@ mod keychain {
     }
 
     #[test]
+    fn test_v1_keychain_cross_account_replay_pre_t1c() {
+        let (access_key_signer, access_key) = generate_keypair();
+        let signature_hash = B256::ZERO;
+        let inner_signature = PrimitiveSignature::Secp256k1(
+            access_key_signer
+                .sign_hash_sync(&signature_hash)
+                .expect("access key signs transaction hash"),
+        );
+
+        for user in [Address::repeat_byte(0x11), Address::repeat_byte(0x22)] {
+            let signature =
+                TempoSignature::Keychain(KeychainSignature::new_v1(user, inner_signature.clone()));
+            let (mut evm, h) = make_evm(
+                user,
+                access_key,
+                None,
+                TempoHardfork::T1B,
+                Some(signature),
+                true,
+            );
+
+            // Exercise actual V1 key recovery instead of the estimation-only override.
+            evm.tx
+                .tempo_tx_env
+                .as_mut()
+                .expect("keychain transaction environment")
+                .override_key_id = None;
+
+            let env_result = h.validate_env(&mut evm);
+            assert!(
+                env_result.is_ok(),
+                "V1 replay should pass pre-T1C stateless validation for {user}: {env_result:?}"
+            );
+
+            let state_result =
+                h.validate_against_state_and_deduct_caller(&mut evm, &mut Default::default());
+            assert!(
+                state_result.is_ok(),
+                "V1 replay should use the shared authorized key for {user}: {state_result:?}"
+            );
+        }
+    }
+
+    #[test]
     fn test_keychain_version_rejection() {
         let caller = Address::random();
 

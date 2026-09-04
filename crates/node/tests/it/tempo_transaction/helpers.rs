@@ -639,23 +639,6 @@ pub(crate) fn sign_aa_tx_with_secp256k1_access_key(
     )))
 }
 
-/// Helper to sign AA transaction with secp256k1 access key using legacy V1 keychain signature.
-/// V1 signs the raw sig_hash without binding user_address.
-pub(super) fn sign_aa_tx_with_secp256k1_access_key_v1(
-    tx: &TempoTransaction,
-    access_key_signer: &impl SignerSync,
-    root_key_addr: Address,
-) -> eyre::Result<TempoSignature> {
-    let sig_hash = tx.signature_hash();
-    let signature = access_key_signer.sign_hash_sync(&sig_hash)?;
-    let inner_signature = PrimitiveSignature::Secp256k1(signature);
-
-    Ok(TempoSignature::Keychain(KeychainSignature::new_v1(
-        root_key_addr,
-        inner_signature,
-    )))
-}
-
 /// Low-level WebAuthn signing. Returns a `PrimitiveSignature::WebAuthn`.
 pub(super) fn sign_webauthn_primitive(
     sig_hash: B256,

@@ -52,14 +52,6 @@ pub(crate) struct TempoPayloadBuilderMetrics {
     pub(crate) pool_transactions_inclusion_ratio: Histogram,
     /// Ratio of yielded pool transactions that were included in the last payload.
     pub(crate) pool_transactions_inclusion_ratio_last: Gauge,
-    /// Number of subblocks in the payload.
-    pub(crate) subblocks: Histogram,
-    /// Number of subblocks in the payload.
-    pub(crate) subblocks_last: Gauge,
-    /// Number of subblock transactions in the payload.
-    pub(crate) subblock_transactions: Histogram,
-    /// Number of subblock transactions in the payload.
-    pub(crate) subblock_transactions_last: Gauge,
     /// Amount of gas used in the payload.
     pub(crate) gas_used: Histogram,
     /// Amount of gas used in the payload.
@@ -76,28 +68,16 @@ pub(crate) struct TempoPayloadBuilderMetrics {
     pub(crate) general_gas_limit_last: Gauge,
     /// Payment lane gas limit.
     pub(crate) payment_gas_limit_last: Gauge,
-    /// Shared (subblock) gas limit.
-    pub(crate) shared_gas_limit_last: Gauge,
     /// Time to create the pool's `BestTransactions` iterator, including lock acquisition and snapshot.
     pub(crate) pool_fetch_duration_seconds: Histogram,
     /// Time to acquire the state provider and initialize the state DB.
     pub(crate) state_setup_duration_seconds: Histogram,
-    /// The time it took to prepare system transactions in seconds.
-    pub(crate) prepare_system_transactions_duration_seconds: Histogram,
     /// Total wall-clock time spent filling the block with normal pool transactions.
     pub(crate) total_normal_transaction_fill_duration_seconds: Histogram,
     /// Time spent waiting for more normal transactions during block fill.
     pub(crate) normal_transaction_fill_idle_duration_seconds: Histogram,
     /// Total wall-clock time spent in transaction execution phases.
     pub(crate) total_transaction_execution_duration_seconds: Histogram,
-    /// The time it took to execute subblock transactions in seconds.
-    pub(crate) total_subblock_transaction_execution_duration_seconds: Histogram,
-    /// Execution time for a single subblock.
-    pub(crate) subblock_execution_duration_seconds: Histogram,
-    /// Number of transactions in a single subblock.
-    pub(crate) subblock_transaction_count: Histogram,
-    /// The time it took to execute system transactions in seconds.
-    pub(crate) system_transactions_execution_duration_seconds: Histogram,
     /// The time it took to finalize the payload in seconds. Includes merging transitions and calculating the state root.
     pub(crate) payload_finalization_duration_seconds: Histogram,
     /// Wall-clock time spent waiting for the shared sparse trie state root.
@@ -150,24 +130,11 @@ impl TempoPayloadBuilderMetrics {
             .increment(1);
     }
 
-    /// Increments the build failure counter for a given reason.
-    #[inline]
-    pub(crate) fn inc_build_failure(&self, reason: &'static str) {
-        metrics::counter!("tempo_payload_builder_build_failures_total", "reason" => reason)
-            .increment(1);
-    }
-
     /// Increments the counter for why the payload builder stopped adding pool transactions.
     #[inline]
     pub(crate) fn inc_block_build_stop_reason(&self, reason: BlockBuildStopReason) {
         metrics::counter!("tempo_payload_builder_block_build_stop_total", "reason" => reason.as_str())
             .increment(1);
-    }
-
-    /// Increments the counter for subblocks dropped due to expired transactions.
-    #[inline]
-    pub(crate) fn inc_subblocks_expired(&self) {
-        metrics::counter!("tempo_payload_builder_subblocks_expired_total").increment(1);
     }
 }
 

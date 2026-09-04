@@ -1,6 +1,5 @@
 use crate::TempoTxEnvelope;
 use alloc::vec::Vec;
-use alloy_consensus::transaction::Recovered;
 use alloy_primitives::{Address, B256, Bytes, U256, keccak256, wrap_fixed_bytes};
 use alloy_rlp::{BufMut, Decodable, Encodable, RlpDecodable, RlpEncodable};
 
@@ -113,159 +112,12 @@ impl SubBlock {
             payload_length: self.rlp_encoded_fields_length(),
         }
     }
-
-    fn rlp_decode_fields(buf: &mut &[u8]) -> alloy_rlp::Result<Self> {
-        Ok(Self {
-            version: Decodable::decode(buf)?,
-            parent_hash: Decodable::decode(buf)?,
-            fee_recipient: Decodable::decode(buf)?,
-            transactions: Decodable::decode(buf)?,
-        })
-    }
-
-    /// Returns the total length of the transactions in the subblock.
-    pub fn total_tx_size(&self) -> usize {
-        self.transactions.iter().map(|tx| tx.length()).sum()
-    }
 }
 
 impl Encodable for SubBlock {
     fn encode(&self, out: &mut dyn BufMut) {
         self.rlp_header().encode(out);
         self.rlp_encode_fields(out);
-    }
-}
-
-/// A subblock with a signature.
-#[derive(Debug, Clone, derive_more::Deref, derive_more::DerefMut, PartialEq, Eq)]
-#[cfg_attr(any(test, feature = "arbitrary"), derive(arbitrary::Arbitrary))]
-#[cfg_attr(test, reth_codecs::add_arbitrary_tests(rlp))]
-pub struct SignedSubBlock {
-    /// The subblock.
-    #[deref]
-    #[deref_mut]
-    pub inner: SubBlock,
-    /// The signature of the subblock.
-    pub signature: Bytes,
-}
-
-impl SignedSubBlock {
-    fn rlp_encode_fields(&self, out: &mut dyn BufMut) {
-        self.inner.rlp_encode_fields(out);
-        self.signature.encode(out);
-    }
-
-    fn rlp_encoded_fields_length(&self) -> usize {
-        self.inner.rlp_encoded_fields_length() + self.signature.length()
-    }
-
-    fn rlp_header(&self) -> alloy_rlp::Header {
-        alloy_rlp::Header {
-            list: true,
-            payload_length: self.rlp_encoded_fields_length(),
-        }
-    }
-
-    fn rlp_decode_fields(buf: &mut &[u8]) -> alloy_rlp::Result<Self> {
-        Ok(Self {
-            inner: SubBlock::rlp_decode_fields(buf)?,
-            signature: Decodable::decode(buf)?,
-        })
-    }
-}
-
-impl Encodable for SignedSubBlock {
-    fn encode(&self, out: &mut dyn BufMut) {
-        self.rlp_header().encode(out);
-        self.rlp_encode_fields(out);
-    }
-
-    fn length(&self) -> usize {
-        self.rlp_header().length_with_payload()
-    }
-}
-
-impl Decodable for SignedSubBlock {
-    fn decode(buf: &mut &[u8]) -> alloy_rlp::Result<Self> {
-        let header = alloy_rlp::Header::decode(buf)?;
-        if !header.list {
-            return Err(alloy_rlp::Error::UnexpectedString);
-        }
-
-        let remaining = buf.len();
-
-        let this = Self::rlp_decode_fields(buf)?;
-
-        if buf.len() + header.payload_length != remaining {
-            return Err(alloy_rlp::Error::UnexpectedLength);
-        }
-
-        Ok(this)
-    }
-}
-
-/// A subblock with recovered senders.
-#[derive(Debug, Clone, derive_more::Deref, derive_more::DerefMut)]
-pub struct RecoveredSubBlock {
-    /// Inner subblock.
-    #[deref]
-    #[deref_mut]
-    inner: SignedSubBlock,
-
-    /// The senders of the transactions.
-    senders: Vec<Address>,
-
-    /// The validator that submitted the subblock.
-    validator: B256,
-}
-
-impl RecoveredSubBlock {
-    /// Creates a new [`RecoveredSubBlock`] without validating the signatures.
-    pub fn new_unchecked(inner: SignedSubBlock, senders: Vec<Address>, validator: B256) -> Self {
-        Self {
-            inner,
-            senders,
-            validator,
-        }
-    }
-
-    /// Returns an iterator over `Recovered<&Transaction>`
-    #[inline]
-    pub fn transactions_recovered(&self) -> impl Iterator<Item = Recovered<&TempoTxEnvelope>> + '_ {
-        self.senders
-            .iter()
-            .zip(self.inner.transactions.iter())
-            .map(|(sender, tx)| Recovered::new_unchecked(tx, *sender))
-    }
-
-    /// Returns an iterator over `Recovered<TempoTxEnvelope>`
-    pub fn into_recovered_iter(self) -> impl Iterator<Item = Recovered<TempoTxEnvelope>> {
-        self.senders
-            .into_iter()
-            .zip(self.inner.inner.transactions)
-            .map(|(sender, tx)| Recovered::new_unchecked(tx, sender))
-    }
-
-    /// Returns true if this subblock has any expired transactions for the given timestamp.
-    pub fn has_expired_transactions(&self, timestamp: u64) -> bool {
-        self.transactions
-            .iter()
-            .any(|tx| tx.ensure_valid_before(timestamp).is_err())
-    }
-
-    /// Returns the validator that submitted the subblock.
-    pub fn validator(&self) -> B256 {
-        self.validator
-    }
-
-    /// Returns the metadata for the subblock.
-    pub fn metadata(&self) -> SubBlockMetadata {
-        SubBlockMetadata {
-            validator: self.validator,
-            fee_recipient: self.fee_recipient,
-            version: self.version,
-            signature: self.signature.clone(),
-        }
     }
 }
 
@@ -362,7 +214,7 @@ mod tests {
     }
 
     #[test]
-    fn test_subblock_signature_and_recovery() {
+    fn test_subblock_signature_hash() {
         let subblock = SubBlock {
             version: SubBlockVersion::V1,
             parent_hash: B256::random(),
@@ -390,38 +242,6 @@ mod tests {
         expected_buf.put_u8(SUBBLOCK_SIGNATURE_HASH_MAGIC_BYTE);
         subblock.encode(&mut expected_buf);
         assert_eq!(hash1, keccak256(&expected_buf));
-
-        // SignedSubBlock
-        let signed = SignedSubBlock {
-            inner: subblock.clone(),
-            signature: Bytes::from(vec![1, 2, 3, 4]),
-        };
-
-        // SignedSubBlock RLP roundtrip
-        let mut buf = Vec::new();
-        signed.encode(&mut buf);
-        assert_eq!(buf.len(), signed.length());
-        let decoded = SignedSubBlock::decode(&mut buf.as_slice()).unwrap();
-        assert_eq!(decoded, signed);
-
-        // Deref to SubBlock works
-        assert_eq!(signed.version, SubBlockVersion::V1);
-        assert_eq!(signed.fee_recipient, subblock.fee_recipient);
-
-        // RecoveredSubBlock
-        let validator = B256::random();
-        let recovered = RecoveredSubBlock::new_unchecked(signed.clone(), vec![], validator);
-
-        // Accessors
-        assert_eq!(recovered.validator(), validator);
-        assert!(recovered.transactions_recovered().next().is_none()); // empty
-
-        // metadata()
-        let meta = recovered.metadata();
-        assert_eq!(meta.version, SubBlockVersion::V1);
-        assert_eq!(meta.validator, validator);
-        assert_eq!(meta.fee_recipient, subblock.fee_recipient);
-        assert_eq!(meta.signature, Bytes::from(vec![1, 2, 3, 4]));
     }
 
     #[test]
