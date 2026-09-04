@@ -18,3 +18,5 @@ for cutoff in $expected {
 }
 
 print "Benchmark hardfork order and activation cutoffs are valid"
+# Do not invoke tempo.nu's interactive help entrypoint after the tests.
+exit 0
