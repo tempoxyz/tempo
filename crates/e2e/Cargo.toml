@@ -70,6 +70,8 @@ tracing.workspace = true
 serde_json.workspace = true
 
 [dev-dependencies]
+reth-cli-util.workspace = true
+tempo-payload-types.workspace = true
 commonware-consensus.workspace = true
 commonware-macros.workspace = true
 commonware-parallel.workspace = true
@@ -85,3 +87,20 @@ rand.workspace = true
 
 [lints]
 workspace = true
+
+[[example]]
+name = "incoming_replay_receiver"
+required-features = ["incoming-bench"]
+
+[features]
+incoming-bench = [
+  "reth-cli-util/jemalloc",
+  "reth-ethereum/jemalloc",
+  "tempo-node/jemalloc",
+  "alloy/asm-keccak",
+  "alloy-primitives/asm-keccak",
+  "tempo-node/asm-keccak",
+  "reth-ethereum/asm-keccak",
+  "alloy-primitives/keccak-cache-global",
+  "reth-ethereum/keccak-cache-global",
+]

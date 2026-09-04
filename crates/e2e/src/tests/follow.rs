@@ -252,6 +252,9 @@ impl FollowerBuilder {
             validator_key: None,
             feed_state: Some(feed_state.clone()),
             share_sparse_trie_with_payload_builder: false,
+            incoming_replay: false,
+            persistence_threshold: None,
+            num_state_masking_blocks: 0,
             // A follower is the only mode with a driver that can verify an
             // inbound certificate, so it is also the only one that ingests.
             gossip: with_gossip.then(|| crate::execution_runtime::gossip_config(true)),

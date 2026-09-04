@@ -14,6 +14,7 @@ mod engine;
 pub mod error;
 pub mod evm;
 mod handler;
+mod incoming_replay;
 mod instructions;
 mod pool;
 mod signature_gas;
@@ -23,7 +24,7 @@ mod transaction;
 
 pub use action_replay::{
     ExpiringNonceReplay, StorageActionReplay, StorageActionReplayError, StorageActionReplayOutcome,
-    StorageActionReplayState,
+    StorageActionReplayState, record_storage_action_replay,
 };
 pub use assemble::TempoBlockAssembler;
 pub use block::{TempoBlockExecutor, TempoReceiptBuilder, TempoTxResult};
@@ -36,6 +37,7 @@ pub use handler::{
     TempoConfigSelector, TempoEvmExt, TempoEvmTypes, TempoFeeManager, TempoTxResultExt,
     build_tempo_evm, tempo_execution_config, tempo_tx_registry,
 };
+pub use incoming_replay::TempoPrewarmContext;
 pub use pool::{TempoPoolValidationError, TempoPoolValidationEvm};
 pub use transaction::{ExecutionContext, RecoveredTxEnvelope, TempoAaTx, TempoEvmTx, TempoTxEnv};
 
@@ -210,6 +212,7 @@ impl EvmEnv for TempoEvmEnv {
 /// Tempo-related EVM configuration.
 #[derive(Debug, Clone)]
 pub struct TempoEvmConfig {
+    incoming_replay: bool,
     chain_spec: Arc<TempoChainSpec>,
     evm_factory: TempoEvmFactory,
     /// Block assembler used by payload construction.
@@ -236,10 +239,17 @@ impl TempoEvmConfig {
     /// Creates a Tempo EVM config for `chain_spec`.
     pub fn new(chain_spec: Arc<TempoChainSpec>) -> Self {
         Self {
+            incoming_replay: false,
             evm_factory: TempoEvmFactory::default(),
             block_assembler: TempoBlockAssembler::new(chain_spec.clone()),
             chain_spec,
         }
+    }
+
+    /// Enables the experimental checked incoming-payment replay path.
+    pub fn with_incoming_replay(mut self, enabled: bool) -> Self {
+        self.incoming_replay = enabled;
+        self
     }
 
     /// Returns the chain spec.
@@ -282,6 +292,8 @@ impl TempoEvmConfig {
 }
 
 impl BlockExecutorFactory for TempoEvmConfig {
+    type PrewarmArtifact = StorageActionReplay;
+    type PrewarmContext = TempoPrewarmContext;
     type EvmFactory = TempoEvmFactory;
     type EvmTypes = TempoEvmTypes;
     type Transaction = TempoTxEnvelope;
@@ -300,6 +312,45 @@ impl BlockExecutorFactory for TempoEvmConfig {
         Self: 'a,
     {
         TempoBlockExecutor::new(evm, ctx, self.chain_spec())
+    }
+
+    fn prewarm_context(
+        &self,
+        env: &Self::EvmEnv,
+        ctx: &Self::ExecutionCtx<'_>,
+    ) -> Option<Self::PrewarmContext> {
+        self.incoming_prewarm_context(env, ctx)
+    }
+
+    fn prepare_prewarm_evm<'a>(
+        &self,
+        evm: Self::Evm<'a>,
+        ctx: &Self::PrewarmContext,
+    ) -> Option<Self::Evm<'a>> {
+        self.prepare_incoming_prewarm_evm(evm, ctx)
+    }
+
+    fn prewarm_transaction<'a>(
+        &self,
+        evm: &mut Self::Evm<'a>,
+        transaction: impl reth_evm::ExecutableTxParts<
+            alloy_consensus::transaction::Recovered<TempoTxEnv>,
+            TempoTxEnvelope,
+        >,
+    ) -> Option<Self::PrewarmArtifact> {
+        self.record_incoming_transaction(evm, transaction)
+    }
+
+    fn execute_transaction_with_prewarm<'a>(
+        &self,
+        executor: &mut Self::Executor<'a>,
+        transaction: impl reth_evm::ExecutorTx<Self::Executor<'a>>,
+        artifact: Option<Self::PrewarmArtifact>,
+    ) -> Result<reth_evm::execute::PrewarmExecution, reth_evm::BlockExecutionError>
+    where
+        Self: 'a,
+    {
+        self.execute_incoming_transaction(executor, transaction, artifact)
     }
 
     fn evm_factory(&self) -> &Self::EvmFactory {

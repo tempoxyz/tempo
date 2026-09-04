@@ -50,7 +50,7 @@ use tempo_dkg_onchain_artifacts::OnchainDkgOutcome;
 use tempo_evm::{TempoBlockEnv, TempoEvm, TempoEvmExt, build_tempo_evm};
 use tempo_node::{
     TempoFullNode,
-    node::TempoNode,
+    node::{TempoNode, TempoNodeArgs},
     rpc::consensus::{TempoConsensusApiServer, TempoConsensusRpc},
 };
 use tempo_precompiles::{
@@ -243,6 +243,12 @@ pub struct ExecutionNodeConfig {
     pub feed_state: Option<FeedStateHandle>,
     /// Share the engine's sparse trie pipeline with the payload builder.
     pub share_sparse_trie_with_payload_builder: bool,
+    /// Enable checked speculative replay in the incoming payload validator.
+    pub incoming_replay: bool,
+    /// Override the persistence threshold for explicit frontier tests.
+    pub persistence_threshold: Option<u64>,
+    /// Number of recent blocks whose state writes remain masked.
+    pub num_state_masking_blocks: u64,
     /// `tempo/1` transport settings. `None` leaves the subprotocol unannounced.
     ///
     /// The protocol is registered before the network starts because `RLPx`
@@ -262,6 +268,9 @@ impl ExecutionNodeConfig {
             validator_key: None,
             feed_state: None,
             share_sparse_trie_with_payload_builder: false,
+            incoming_replay: false,
+            persistence_threshold: None,
+            num_state_masking_blocks: 0,
             gossip: None,
         }
     }
@@ -897,6 +906,9 @@ pub async fn launch_execution_node<P: AsRef<Path>>(
         validator_key,
         feed_state,
         share_sparse_trie_with_payload_builder,
+        incoming_replay,
+        persistence_threshold,
+        num_state_masking_blocks,
         gossip,
     } = config;
     let node_config = NodeConfig::new(Arc::new(chain_spec))
@@ -922,6 +934,10 @@ pub async fn launch_execution_node<P: AsRef<Path>>(
             c.network.p2p_secret_key_hex = Some(secret_key);
             // Match Tempo's engine default for nodes launched by tests.
             c.engine.suppress_persistence_during_build = true;
+            if let Some(threshold) = persistence_threshold {
+                c.engine.persistence_threshold = threshold;
+            }
+            c.engine.num_state_masking_blocks = num_state_masking_blocks;
             c.engine.share_sparse_trie_with_payload_builder =
                 share_sparse_trie_with_payload_builder;
             c
@@ -937,7 +953,13 @@ pub async fn launch_execution_node<P: AsRef<Path>>(
         None => (None, None),
     };
 
-    let tempo_node = TempoNode::default().with_validator_key(validator_key);
+    let tempo_node = TempoNode::new(
+        &TempoNodeArgs {
+            evm_incoming_replay: incoming_replay,
+            ..Default::default()
+        },
+        validator_key,
+    );
     let tempo_node = match gossip_protocol {
         Some(protocol) => tempo_node.with_finalization_cert_gossip(protocol),
         None => tempo_node,

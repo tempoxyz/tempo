@@ -7,7 +7,7 @@ use tracing::debug;
 
 /// How quickly the learned marshal persistence rate decays when blocks get cheaper.
 const RATE_DECAY: u64 = 8;
-/// Ignore tiny blocks so fixed archive overhead does not become a large-block byte cost.
+/// Only large blocks may initialize or raise the rate; small blocks may lower it.
 const MIN_SAMPLE_BYTES: usize = 128 * 1024;
 /// Number of recent successful EL validation timings to retain.
 const VALIDATION_LATENCY_SAMPLE_WINDOW: usize = 64;
@@ -31,9 +31,10 @@ pub fn marshal_persist_estimate() -> MarshalPersistEstimator {
 /// blocks teach future build and return budgets how much size-dependent
 /// persistence time to reserve for both proposers and validators.
 /// Consensus records this from local `marshal.verified` time after persisting a
-/// proposal.
+/// proposal. Small successful observations may reduce an existing estimate so
+/// a high rate cannot permanently cap blocks below the large-sample threshold.
 pub fn observe_marshal_persist(block_size_bytes: usize, elapsed: Duration) {
-    if block_size_bytes < MIN_SAMPLE_BYTES || elapsed == Duration::ZERO {
+    if block_size_bytes == 0 || elapsed == Duration::ZERO {
         return;
     }
 
@@ -46,6 +47,12 @@ pub fn observe_marshal_persist(block_size_bytes: usize, elapsed: Duration) {
 
     let _ =
         MARSHAL_PERSIST_NS_PER_BYTE.try_update(Ordering::Relaxed, Ordering::Relaxed, |current| {
+            // Fixed overhead can inflate a small block's per-byte cost. Never
+            // initialize or raise the rate from one, but do accept evidence that
+            // an existing estimate is too high.
+            if block_size_bytes < MIN_SAMPLE_BYTES && (current == 0 || observed >= current) {
+                return None;
+            }
             Some(if current == 0 || observed >= current {
                 observed
             } else {
@@ -328,22 +335,32 @@ mod tests {
     }
 
     #[test]
-    fn observes_large_blocks_and_ignores_tiny_samples() {
+    fn marshal_persist_small_samples_only_reduce_an_existing_rate() {
         MARSHAL_PERSIST_NS_PER_BYTE.store(0, Ordering::Relaxed);
-        observe_marshal_persist(MIN_SAMPLE_BYTES, Duration::from_millis(13));
-
-        assert_eq!(
-            marshal_persist_estimate().estimate(MIN_SAMPLE_BYTES),
-            Duration::from_nanos(13_107_200)
-        );
-
+        observe_marshal_persist(0, Duration::from_millis(1));
+        observe_marshal_persist(MIN_SAMPLE_BYTES, Duration::ZERO);
         observe_marshal_persist(MIN_SAMPLE_BYTES - 1, Duration::from_millis(1));
-        observe_marshal_persist(1_000_000, Duration::ZERO);
+        assert_eq!(marshal_persist_estimate().ns_per_byte, 0);
 
-        assert_eq!(
-            marshal_persist_estimate().estimate(MIN_SAMPLE_BYTES),
-            Duration::from_nanos(13_107_200)
-        );
+        observe_marshal_persist(MIN_SAMPLE_BYTES, Duration::from_millis(13));
+        assert_eq!(marshal_persist_estimate().ns_per_byte, 100);
+
+        // A slow small sample must not inflate the per-byte estimate.
+        observe_marshal_persist(1, Duration::from_millis(1));
+        assert_eq!(marshal_persist_estimate().ns_per_byte, 100);
+        // A faster small sample can lower it, using the existing 1/8 decay.
+        observe_marshal_persist(100_000, Duration::from_millis(2));
+        assert_eq!(marshal_persist_estimate().ns_per_byte, 90);
+        observe_marshal_persist(0, Duration::from_millis(1));
+        observe_marshal_persist(MIN_SAMPLE_BYTES, Duration::ZERO);
+        assert_eq!(marshal_persist_estimate().ns_per_byte, 90);
+
+        // Large blocks still teach an increased rate immediately and use the
+        // same decay when storage gets faster.
+        observe_marshal_persist(MIN_SAMPLE_BYTES, Duration::from_millis(13));
+        assert_eq!(marshal_persist_estimate().ns_per_byte, 100);
+        observe_marshal_persist(1_000_000, Duration::from_millis(20));
+        assert_eq!(marshal_persist_estimate().ns_per_byte, 90);
     }
 
     #[test]

@@ -202,7 +202,7 @@ impl<'a> TempoBlockExecutor<'a> {
     pub(crate) fn new(
         evm: TempoEvm<'a>,
         ctx: TempoBlockExecutionCtx<'a>,
-        chain_spec: &'a TempoChainSpec,
+        chain_spec: &TempoChainSpec,
     ) -> Self {
         let block_gas_limit = evm.block().gas_limit.to::<u64>();
         Self {
