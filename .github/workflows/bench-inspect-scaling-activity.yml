@@ -10,7 +10,7 @@ permissions:
 jobs:
   inspect:
     runs-on: ubuntu-latest
-    timeout-minutes: 5
+    timeout-minutes: 8
     steps:
       - name: Configure AWS credentials
         uses: tempoxyz/gh-actions/vendor/aws-actions/configure-aws-credentials@3626124474a987bc74b41fc7ae65b2e23f8e4e4e
@@ -88,11 +88,106 @@ jobs:
           print(encoded)
           raise SystemExit(1 if failed else 0)
           PYCODE
+      - name: Read current regional instance capacity and quota
+        if: always()
+        env:
+          AWS_PAGER: ''
+          AWS_RETRY_MODE: standard
+          AWS_MAX_ATTEMPTS: '2'
+        run: |
+          python3 - <<'CAPACITY'
+          import collections, datetime, hashlib, json, pathlib, re, subprocess
+          region = 'us-east-1'
+          result = {'observed_at': datetime.datetime.now(datetime.timezone.utc).isoformat(),
+                    'region': region, 'read_only': True, 'requests': [], 'instances': []}
+          def read(service, operation, args):
+              record = {'operation': f'{service}:{operation}'}
+              result['requests'].append(record)
+              try:
+                  response = subprocess.run(['aws', service, operation, '--region', region,
+                      '--cli-connect-timeout', '10', '--cli-read-timeout', '20', '--output', 'json'] + args,
+                      capture_output=True, text=True, timeout=65)
+                  record['exit_code'] = response.returncode
+                  if response.returncode:
+                      record['error'] = response.stderr[-2000:]
+                      return None
+                  record['source_sha256'] = hashlib.sha256(response.stdout.encode()).hexdigest()
+                  return json.loads(response.stdout)
+              except (subprocess.TimeoutExpired, ValueError) as error:
+                  record['error'] = str(error)[:2000]
+                  return None
+
+          # Filter at CLI output: never retain addresses, argv, credentials, or unrelated tags.
+          query = "{instances:Reservations[].Instances[].{id:InstanceId,type:InstanceType,state:State.Name,lifecycle:InstanceLifecycle,tenancy:Placement.Tenancy,benchmark:Tags[?Key=='BenchmarkRunId'].Value|[0],role:Tags[?Key=='Role'].Value|[0]},NextToken:NextToken}"
+          data = read('ec2', 'describe-instances', ['--filters',
+              'Name=instance-state-name,Values=pending,running,stopping,stopped,shutting-down',
+              '--page-size', '100', '--max-items', '200', '--query', query])
+          if data is not None:
+              instances = data.get('instances', [])
+              result['inventory_truncated'] = bool(data.get('NextToken')) or len(instances) > 2000
+              result['instances'] = instances[:2000]
+              types = sorted({item['type'] for item in result['instances']})
+              if len(types) > 100:
+                  result['type_inventory_error'] = 'More than100 distinct types; refusing an unbounded lookup'
+                  type_data = None
+              elif types:
+                  type_data = read('ec2', 'describe-instance-types', ['--instance-types', *types,
+                      '--query', 'InstanceTypes[].{type:InstanceType,vcpus:VCpuInfo.DefaultVCpus}',
+                      '--max-items', '100'])
+              else:
+                  type_data = []
+              vcpus = {item['type']: item['vcpus'] for item in type_data or []}
+              buckets = collections.defaultdict(lambda: {'instances': 0, 'known_default_vcpus': 0, 'unknown_vcpu_instances': 0})
+              for item in result['instances']:
+                  item['default_vcpus'] = vcpus.get(item['type'])
+                  item['lifecycle'] = item['lifecycle'] or 'on-demand'
+                  # Exclude separate Mac, HPC and Inf buckets despite their first letter.
+                  family = item['type'].split('.')[0]
+                  item['standard_on_demand_candidate'] = (item['lifecycle'] == 'on-demand'
+                      and item['tenancy'] != 'host' and family[0] in 'acdhimrtz'
+                      and not family.startswith(('mac', 'hpc', 'inf')))
+                  for key in ('benchmark', 'role'):
+                      value = item.get(key)
+                      if value is not None:
+                          item[key] = str(value)[:160]
+                  key = (item['state'], item['type'], item['lifecycle'], item['tenancy'], item['benchmark'])
+                  bucket = buckets[key]
+                  bucket['instances'] += 1
+                  if item['default_vcpus'] is None:
+                      bucket['unknown_vcpu_instances'] += 1
+                  else:
+                      bucket['known_default_vcpus'] += item['default_vcpus']
+              result['by_state_type_benchmark'] = [dict(zip(('state','type','lifecycle','tenancy','benchmark'), key), **value)
+                  for key, value in sorted(buckets.items(), key=lambda pair: str(pair[0]))]
+              result['default_vcpus_by_type'] = vcpus
+              eligible = [item for item in result['instances'] if item['standard_on_demand_candidate']]
+              for state in ('running', 'pending', 'stopping', 'stopped', 'shutting-down'):
+                  selected = [item for item in eligible if item['state'] == state]
+                  result[f'standard_on_demand_{state}_default_vcpus'] = (
+                      sum(item['default_vcpus'] for item in selected)
+                      if all(item['default_vcpus'] is not None for item in selected) else None)
+          quota = read('service-quotas', 'get-service-quota', ['--service-code', 'ec2',
+              '--quota-code', 'L-1216C47A', '--query', 'Quota.{code:QuotaCode,name:QuotaName,value:Value,unit:Unit,global:GlobalQuota}'])
+          result['running_on_demand_standard_quota'] = quota
+          used = result.get('standard_on_demand_running_default_vcpus')
+          result['estimated_running_standard_headroom_vcpus'] = (
+              quota['value'] - used if quota and used is not None and not result.get('inventory_truncated', True) else None)
+          result['limitations'] = ['Snapshot is eventually consistent; concurrent ASG launches can change capacity.',
+              'Headroom is an instance-inventory estimate, not authoritative quota usage or permission to launch.',
+              'Pending and stopping capacity is reported separately; reserved capacity and specialized quota buckets are not audited.',
+              'No quota, IAM, ASG, or instance changes are performed.']
+          encoded = json.dumps(result, indent=2)
+          pathlib.Path('inspection-regional-capacity.json').write_text(encoded + '\n')
+          print(encoded)
+          raise SystemExit(1 if any('error' in request for request in result['requests']) else 0)
+          CAPACITY
       - name: Upload bounded scaling activity evidence
         if: always()
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
           name: benchmark-scaling-activity
-          path: inspection-scaling-activity.json
+          path: |
+            inspection-scaling-activity.json
+            inspection-regional-capacity.json
           if-no-files-found: error
           retention-days: 14
