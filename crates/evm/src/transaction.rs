@@ -579,7 +579,18 @@ impl FromRecoveredTx<TempoTxEnvelope> for TempoTxEnv {
     }
 }
 
-impl FromTxWithEncoded<TempoTxEnvelope> for TempoTxEnv {}
+impl FromTxWithEncoded<TempoTxEnvelope> for TempoTxEnv {
+    fn from_tx_with_encoded(
+        tx: reth_primitives_traits::WithEncoded<Recovered<TempoTxEnvelope>>,
+    ) -> Self {
+        let is_simulation = tx.encoded_bytes().is_empty();
+        let mut env = Self::from_recovered_tx(tx.1);
+        if is_simulation {
+            env.execution_context = ExecutionContext::Simulation;
+        }
+        env
+    }
+}
 
 #[cfg(test)]
 mod tests {
@@ -659,6 +670,79 @@ mod tests {
         assert_eq!(transaction.ty(), 4);
         assert_eq!(transaction.signer(), SIGNER);
         assert!(transaction.as_eip7702().is_some());
+    }
+
+    #[test]
+    fn executor_conversion_preserves_recovered_signer_without_recovery() {
+        let envelope = TempoTxEnvelope::Eip1559(Signed::new_unhashed(
+            TxEip1559::default(),
+            Signature::new(U256::ZERO, U256::ZERO, false),
+        ));
+        assert!(envelope.recover_signer().is_err());
+        let tx = Recovered::new_unchecked(envelope, SIGNER);
+        let (env, original): (Recovered<TempoTxEnv>, _) =
+            reth_evm::ExecutableTxParts::into_parts(tx);
+        assert_eq!(env.signer(), SIGNER);
+        assert_eq!(env.inner().evm_tx().signer(), SIGNER);
+        assert_eq!(env.inner().recovered().signer(), SIGNER);
+        assert_eq!(original.signer(), SIGNER);
+    }
+
+    #[test]
+    #[should_panic(expected = "consensus transaction must have a recoverable signer")]
+    fn untrusted_envelope_conversion_still_requires_recoverable_signature() {
+        let envelope = TempoTxEnvelope::Eip1559(Signed::new_unhashed(
+            TxEip1559::default(),
+            Signature::new(U256::ZERO, U256::ZERO, false),
+        ));
+        let _ = TempoTxEnv::from(envelope);
+    }
+
+    #[test]
+    fn empty_encoding_marks_simulation_and_preserves_replay_identity() {
+        let env = aa_env(TempoTransaction::default(), SIGNER);
+        let recovered = env.recovered().clone();
+        let expected_identifier = env.channel_open_context_hash();
+        let simulated = TempoTxEnv::from_tx_with_encoded(reth_primitives_traits::WithEncoded::new(
+            Bytes::new(),
+            recovered.clone(),
+        ));
+        assert_eq!(simulated.execution_context(), ExecutionContext::Simulation);
+        assert_eq!(simulated.channel_open_context_hash(), expected_identifier);
+        let wrapped: Recovered<TempoTxEnv> = FromTxWithEncoded::from_tx_with_encoded(
+            reth_primitives_traits::WithEncoded::new(Bytes::new(), recovered.clone()),
+        );
+        assert_eq!(wrapped.signer(), SIGNER);
+        assert_eq!(
+            wrapped.inner().execution_context(),
+            ExecutionContext::Simulation
+        );
+        assert_eq!(
+            wrapped.inner().channel_open_context_hash(),
+            expected_identifier
+        );
+
+        let signed = TempoTxEnv::from_tx_with_encoded(reth_primitives_traits::WithEncoded::new(
+            Bytes::from_static(b"signed"),
+            recovered,
+        ));
+        assert_eq!(signed.execution_context(), env.execution_context());
+        assert_eq!(signed.channel_open_context_hash(), expected_identifier);
+
+        let next_env = aa_env(
+            TempoTransaction {
+                nonce: 1,
+                ..Default::default()
+            },
+            SIGNER,
+        );
+        let next_simulated = TempoTxEnv::from_tx_with_encoded(
+            reth_primitives_traits::WithEncoded::new(Bytes::new(), next_env.recovered().clone()),
+        );
+        assert_ne!(
+            next_simulated.channel_open_context_hash(),
+            expected_identifier
+        );
     }
 
     #[test]

@@ -49,7 +49,7 @@ use crate::utils::{
     block_on_consensus_public_key, fetch_bootnodes, install_crypto_provider,
     print_extensions_footer,
 };
-use alloy_genesis::GenesisAccount;
+use alloy_genesis::Genesis;
 use alloy_primitives::{Address, B256};
 use alloy_signer_local::MnemonicBuilder;
 use clap::{CommandFactory, FromArgMatches};
@@ -63,15 +63,15 @@ use reth_cli_runner::CliRunner;
 use reth_ethereum::{chainspec::EthChainSpec as _, cli::Commands};
 use reth_network_api::Peers;
 use reth_node_builder::{NodeHandle, WithLaunchContext};
-use std::{collections::BTreeMap, sync::Arc, thread};
+use std::{sync::Arc, thread};
 use tempo_chainspec::spec::{DEV, TempoChainSpec};
 use tempo_consensus::{feed as consensus_feed, run_consensus_stack, run_follow_stack};
-use tempo_contracts::precompiles::initial_zone_factory_state;
+use tempo_contracts::precompiles::{ZONE_FACTORY_ADDRESS, initial_zone_factory_config};
 use tempo_evm::{TempoEvmConfig, consensus::TempoConsensus};
 use tempo_faucet::faucet::{TempoFaucetExt, TempoFaucetExtApiServer};
 pub use tempo_node::{
-    AccountInfoReader, InvalidPoolTransactionError, PoolTransaction, PoolTransactionError,
-    StatefulValidationFn, StatelessValidationFn, TempoNode, TempoNodeArgs,
+    AccountInfoReader, AddressFilter, InvalidPoolTransactionError, PoolTransaction,
+    PoolTransactionError, StatefulValidationFn, StatelessValidationFn, TempoNode, TempoNodeArgs,
     TempoPayloadBuilderBuilder, TempoPoolBuilder, TempoPoolTransactionError,
     TempoPooledTransaction, TransactionOrigin,
 };
@@ -85,6 +85,9 @@ use tempo_node::{
 };
 use tokio::sync::oneshot;
 use tracing::{debug, info, info_span, warn, warn_span};
+
+#[cfg(all(feature = "localnet", unix))]
+use nix as _;
 
 const DEFAULT_DEV_ZONE_FACTORY_OWNER: Address =
     alloy_primitives::address!("0xf39Fd6e51aad88F6F4ce6aB8827279cffFb92266");
@@ -108,7 +111,7 @@ fn apply_tempo_cli_overrides(cli: &mut TempoCli) -> eyre::Result<()> {
             .address();
         if owner != DEFAULT_DEV_ZONE_FACTORY_OWNER {
             let mut genesis = node_cmd.chain.genesis().clone();
-            genesis.alloc.extend(zone_factory_genesis_alloc(owner));
+            set_zone_factory_genesis_owner(&mut genesis, owner)?;
             node_cmd.chain = Arc::new(TempoChainSpec::from_genesis(genesis));
         }
     }
@@ -116,22 +119,20 @@ fn apply_tempo_cli_overrides(cli: &mut TempoCli) -> eyre::Result<()> {
     Ok(())
 }
 
-fn zone_factory_genesis_alloc(owner: Address) -> [(Address, GenesisAccount); 4] {
-    initial_zone_factory_state(owner).map(|account| {
-        (
-            account.address,
-            GenesisAccount {
-                code: Some(account.code),
-                storage: account.storage.map(|(slot, value)| {
-                    BTreeMap::from([(
-                        B256::from(slot.to_be_bytes()),
-                        B256::from(value.to_be_bytes()),
-                    )])
-                }),
-                ..Default::default()
-            },
-        )
-    })
+fn set_zone_factory_genesis_owner(genesis: &mut Genesis, owner: Address) -> eyre::Result<()> {
+    let factory = genesis
+        .alloc
+        .get_mut(&ZONE_FACTORY_ADDRESS)
+        .ok_or_eyre("DEV genesis is missing ZoneFactory")?;
+    let storage = factory
+        .storage
+        .as_mut()
+        .ok_or_eyre("DEV ZoneFactory is missing storage")?;
+    storage.insert(
+        B256::ZERO,
+        B256::from(initial_zone_factory_config(owner).to_be_bytes()),
+    );
+    Ok(())
 }
 
 /// Runs the Tempo node CLI.
@@ -300,8 +301,11 @@ pub fn tempo_main_with(mut overrides: TempoOverrides) -> eyre::Result<()> {
 
     let is_node = matches!(cli.command, Commands::Node(_));
 
-    let (args_and_node_handle_tx, args_and_node_handle_rx) =
-        oneshot::channel::<(TempoFullNode, TempoArgs)>();
+    let (consensus_startup_tx, consensus_startup_rx) = oneshot::channel::<(
+        TempoFullNode,
+        TempoArgs,
+        Option<tempo_node::gossip::TransportHandle>,
+    )>();
     let (consensus_dead_tx, mut consensus_dead_rx) = oneshot::channel();
 
     let shutdown_token = tokio_util::sync::CancellationToken::new();
@@ -316,7 +320,7 @@ pub fn tempo_main_with(mut overrides: TempoOverrides) -> eyre::Result<()> {
             return Ok(());
         }
 
-        let (node, args) = args_and_node_handle_rx.blocking_recv().wrap_err(
+        let (node, args, gossip_transport) = consensus_startup_rx.blocking_recv().wrap_err(
             "channel closed before consensus-relevant command line args \
                 and a handle to the execution node could be received",
         )?;
@@ -399,6 +403,7 @@ pub fn tempo_main_with(mut overrides: TempoOverrides) -> eyre::Result<()> {
                     args.follow_upstream_request_timeout.into_duration(),
                     Arc::new(node),
                     cl_feed_state_clone,
+                    gossip_transport,
                 ))
             } else {
                 Either::Right(run_consensus_stack(
@@ -406,6 +411,7 @@ pub fn tempo_main_with(mut overrides: TempoOverrides) -> eyre::Result<()> {
                     args.consensus,
                     Arc::new(node),
                     cl_feed_state_clone,
+                    gossip_transport,
                 ))
             };
 
@@ -447,6 +453,20 @@ pub fn tempo_main_with(mut overrides: TempoOverrides) -> eyre::Result<()> {
         |spec: Arc<TempoChainSpec>| (TempoEvmConfig::new(spec.clone()), TempoConsensus::new(spec));
 
     cli.run_with_components::<TempoNode>(components, async move |builder, args| {
+        // Register before launch because each RLPx session negotiates its
+        // subprotocols during the handshake. The startup channel passes the
+        // consensus half of the transport to the consensus thread.
+        let (gossip_protocol_handler, gossip_transport) =
+            if args.has_gossip(builder.config().dev.dev) {
+                let (protocol_handler, transport) = tempo_node::gossip::init(
+                    args.consensus.gossip_transport(args.follow.is_some()),
+                    builder.task_executor(),
+                );
+                (Some(protocol_handler), Some(transport))
+            } else {
+                (None, None)
+            };
+
         let faucet_args = args.faucet_args.clone();
         let validator_key = args
             .consensus
@@ -495,18 +515,16 @@ pub fn tempo_main_with(mut overrides: TempoOverrides) -> eyre::Result<()> {
             node,
             node_exit_future,
         } = builder
-            .node(overrides.apply_tempo_node(TempoNode::new(
-                &args.node_args,
-                validator_key,
-            )))
+            .node(overrides.apply_tempo_node({
+                let node = TempoNode::new(&args.node_args, validator_key);
+                match gossip_protocol_handler {
+                    Some(protocol_handler) => {
+                        node.with_finalization_cert_gossip(protocol_handler)
+                    }
+                    None => node,
+                }
+            }))
             .apply(|mut builder: WithLaunchContext<_>| {
-                // Enable discv5 peer discovery
-                builder
-                    .config_mut()
-                    .network
-                    .discovery
-                    .enable_discv5_discovery = true;
-
                 // Uncertified follower mode: set debug RPC when certification is off
                 if args.is_following_uncertified() {
                     let follow_url = args
@@ -598,7 +616,7 @@ pub fn tempo_main_with(mut overrides: TempoOverrides) -> eyre::Result<()> {
             });
         }
 
-        let _ = args_and_node_handle_tx.send((node, args));
+        let _ = consensus_startup_tx.send((node, args, gossip_transport));
 
         // TODO: emit these inside a span
         tokio::select! {
@@ -641,20 +659,17 @@ mod tests {
     };
 
     use alloy_genesis::GenesisAccount;
-    use alloy_primitives::{Address, B256, Bytes, U256, address};
+    use alloy_primitives::{Address, B256, Bytes, address};
     use clap::{CommandFactory, FromArgMatches, Parser};
 
     use super::{
-        TempoChainSpec, TempoCli, apply_tempo_cli_overrides, defaults, follow::FollowMode,
-        snapshot_download,
+        TempoArgs, TempoChainSpec, TempoCli, apply_tempo_cli_overrides, defaults,
+        follow::FollowMode, snapshot_download,
     };
     use reth_ethereum::{chainspec::EthChainSpec as _, cli::Commands};
-    use tempo_contracts::{
-        precompiles::{
-            ZONE_FACTORY_ADDRESS, ZONE_MESSENGER_ADDRESS, ZONE_PORTAL_IMPL_ADDRESS,
-            ZONE_VERIFIER_ADDRESS,
-        },
-        zones::{ZONE_MESSENGER_RUNTIME, ZONE_PORTAL_RUNTIME, ZONE_VERIFIER_RUNTIME},
+    use tempo_contracts::precompiles::{
+        ZONE_FACTORY_ADDRESS, ZONE_MESSENGER_ADDRESS, ZONE_PORTAL_IMPL_ADDRESS,
+        ZONE_VERIFIER_ADDRESS, initial_zone_factory_config,
     };
 
     fn init_defaults_once() {
@@ -662,12 +677,90 @@ mod tests {
         INIT.call_once(defaults::init_defaults);
     }
 
+    #[test]
+    fn txpool_filter_defaults_empty_and_parses_address_list_or_file() {
+        let cli = TempoCli::try_parse_from(["tempo", "node", "--dev"]).unwrap();
+        let Commands::Node(node_cmd) = cli.command else {
+            panic!("expected node command");
+        };
+        assert!(node_cmd.ext.node_args.txpool_filter.is_none());
+
+        let cli = TempoCli::try_parse_from([
+            "tempo",
+            "node",
+            "--dev",
+            "--txpool.filter",
+            "0x0000000000000000000000000000000000000001,0x0000000000000000000000000000000000000002",
+        ])
+        .unwrap();
+        let Commands::Node(node_cmd) = cli.command else {
+            panic!("expected node command");
+        };
+        let filter = node_cmd.ext.node_args.txpool_filter.as_ref().unwrap();
+        assert_eq!(filter.len(), 2);
+        assert!(filter.contains(&address!("0000000000000000000000000000000000000001")));
+        assert!(filter.contains(&address!("0000000000000000000000000000000000000002")));
+
+        let file = tempfile::NamedTempFile::new().unwrap();
+        std::fs::write(
+            file.path(),
+            "0x0000000000000000000000000000000000000003\n\n\
+             0x0000000000000000000000000000000000000004, \
+             0x0000000000000000000000000000000000000005,\
+             0x0000000000000000000000000000000000000003\n",
+        )
+        .unwrap();
+        let cli = TempoCli::try_parse_from([
+            "tempo",
+            "node",
+            "--dev",
+            "--txpool.filter",
+            file.path().to_str().unwrap(),
+        ])
+        .unwrap();
+        let Commands::Node(node_cmd) = cli.command else {
+            panic!("expected node command");
+        };
+        let filter = node_cmd.ext.node_args.txpool_filter.as_ref().unwrap();
+        assert_eq!(filter.len(), 3);
+        assert!(filter.contains(&address!("0000000000000000000000000000000000000003")));
+        assert!(filter.contains(&address!("0000000000000000000000000000000000000004")));
+        assert!(filter.contains(&address!("0000000000000000000000000000000000000005")));
+    }
+
+    #[test]
+    fn txpool_filter_reports_invalid_file_entry() {
+        let file = tempfile::NamedTempFile::new().unwrap();
+        std::fs::write(
+            file.path(),
+            "0x0000000000000000000000000000000000000001\nnot-an-address\n",
+        )
+        .unwrap();
+
+        let error = TempoCli::try_parse_from([
+            "tempo",
+            "node",
+            "--dev",
+            "--txpool.filter",
+            file.path().to_str().unwrap(),
+        ])
+        .unwrap_err()
+        .to_string();
+
+        assert!(error.contains(file.path().to_str().unwrap()));
+        assert!(error.contains("invalid address `not-an-address` on line 2"));
+    }
+
     fn parse_follow(args: &[&str]) -> Option<FollowMode> {
+        parse_node_args(args).follow
+    }
+
+    fn parse_node_args(args: &[&str]) -> TempoArgs {
         let cli = TempoCli::try_parse_from(args).unwrap();
         let Commands::Node(node_cmd) = cli.command else {
             panic!("expected node command");
         };
-        node_cmd.ext.follow
+        node_cmd.ext
     }
 
     fn apply_node_overrides(args: &[&str]) -> Arc<TempoChainSpec> {
@@ -686,10 +779,7 @@ mod tests {
             code: Some(Bytes::from_static(&[0xef])),
             storage: Some(BTreeMap::from([(
                 B256::ZERO,
-                B256::from(
-                    (U256::from(1) | (U256::from_be_slice(owner.as_slice()) << u32::BITS))
-                        .to_be_bytes(),
-                ),
+                B256::from(initial_zone_factory_config(owner).to_be_bytes()),
             )])),
             ..Default::default()
         };
@@ -698,17 +788,15 @@ mod tests {
             Some(&expected_factory)
         );
 
-        for (address, code) in [
-            (ZONE_PORTAL_IMPL_ADDRESS, ZONE_PORTAL_RUNTIME),
-            (ZONE_VERIFIER_ADDRESS, ZONE_VERIFIER_RUNTIME),
-            (ZONE_MESSENGER_ADDRESS, ZONE_MESSENGER_RUNTIME),
+        for address in [
+            ZONE_PORTAL_IMPL_ADDRESS,
+            ZONE_VERIFIER_ADDRESS,
+            ZONE_MESSENGER_ADDRESS,
         ] {
             assert_eq!(
                 chain_spec.genesis().alloc.get(&address),
-                Some(&GenesisAccount {
-                    code: Some(code),
-                    ..Default::default()
-                })
+                super::DEV.genesis().alloc.get(&address),
+                "dev mnemonic override must not modify shared Zone runtimes"
             );
         }
     }
@@ -816,6 +904,89 @@ mod tests {
 
         assert!(!node_cmd.ext.is_following_uncertified());
         assert!(node_cmd.ext.has_consensus_engine(false));
+    }
+
+    #[test]
+    fn gossip_is_opt_in_and_requires_a_consensus_engine() {
+        init_defaults_once();
+
+        assert!(
+            !parse_node_args(&[
+                "tempo",
+                "node",
+                "--consensus.signing-key",
+                "unused-signing-key",
+            ])
+            .has_gossip(false)
+        );
+        assert!(!parse_node_args(&["tempo", "node", "--follow"]).has_gossip(false));
+        assert!(
+            parse_node_args(&[
+                "tempo",
+                "node",
+                "--consensus.signing-key",
+                "unused-signing-key",
+                "--consensus.devp2p.finalizations",
+            ])
+            .has_gossip(false)
+        );
+        assert!(
+            parse_node_args(&[
+                "tempo",
+                "node",
+                "--follow",
+                "--consensus.devp2p.finalizations",
+            ])
+            .has_gossip(false)
+        );
+        assert!(
+            !parse_node_args(&[
+                "tempo",
+                "node",
+                "--follow",
+                "--follow.nocertify",
+                "--consensus.devp2p.finalizations",
+            ])
+            .has_gossip(false)
+        );
+        assert!(
+            !parse_node_args(&["tempo", "node", "--dev", "--consensus.devp2p.finalizations",])
+                .has_gossip(true)
+        );
+        assert!(
+            !parse_node_args(&[
+                "tempo",
+                "node",
+                "--consensus.signing-key",
+                "unused-signing-key",
+                "--consensus.devp2p.finalizations=false",
+            ])
+            .has_gossip(false)
+        );
+    }
+
+    #[test]
+    fn gossip_ingest_follows_node_mode() {
+        init_defaults_once();
+
+        let validator = parse_node_args(&[
+            "tempo",
+            "node",
+            "--consensus.signing-key",
+            "unused-signing-key",
+            "--consensus.devp2p.finalizations",
+        ]);
+        assert!(validator.has_gossip(false));
+        assert!(!validator.consensus.gossip_transport(false).ingest);
+
+        let follower = parse_node_args(&[
+            "tempo",
+            "node",
+            "--follow",
+            "--consensus.devp2p.finalizations",
+        ]);
+        assert!(follower.has_gossip(false));
+        assert!(follower.consensus.gossip_transport(true).ingest);
     }
 
     #[test]

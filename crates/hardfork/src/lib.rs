@@ -163,7 +163,7 @@ macro_rules! tempo_hardfork {
 // -------------------------------------------------------------------------------------
 // Tempo hardfork definitions — append new variants here.
 // -------------------------------------------------------------------------------------
-tempo_hardfork! (
+tempo_hardfork!(
     /// Tempo-specific hardforks for network upgrades.
     #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
     #[derive(Default)]
@@ -221,6 +221,10 @@ tempo_hardfork! (
         ///
         /// See <https://docs.tempo.xyz/docs/protocol/upgrades/t11>.
         T11,
+        /// T12 hardfork.
+        ///
+        /// See <https://docs.tempo.xyz/docs/protocol/upgrades/t12>.
+        T12,
     }
 );
 
@@ -230,6 +234,11 @@ impl TempoHardfork {
     /// Useful for storing the hardfork in an atomic, see [`Self::from_variant_index`].
     pub const fn variant_index(&self) -> u8 {
         *self as u8
+    }
+
+    /// Returns the latest defined Tempo hardfork.
+    pub const fn latest() -> Self {
+        Self::VARIANTS[Self::VARIANTS.len() - 1]
     }
 
     /// Returns the hardfork at the given [`Self::VARIANTS`] position, see
@@ -361,6 +370,7 @@ impl TempoHardfork {
             Self::T9 => None,
             Self::T10 => None,
             Self::T11 => None,
+            Self::T12 => None,
         }
     }
 
@@ -383,7 +393,8 @@ impl TempoHardfork {
             Self::T8 => Some(MAINNET_T8_TIMESTAMP),
             Self::T9 => Some(MAINNET_T9_TIMESTAMP),
             Self::T10 => Some(MAINNET_T10_TIMESTAMP),
-            Self::T11 => None,
+            Self::T11 => Some(MAINNET_T11_TIMESTAMP),
+            Self::T12 => None,
         }
     }
 
@@ -407,6 +418,7 @@ impl TempoHardfork {
             Self::T9 => None,
             Self::T10 => None,
             Self::T11 => None,
+            Self::T12 => None,
         }
     }
 
@@ -429,7 +441,8 @@ impl TempoHardfork {
             Self::T8 => Some(MODERATO_T8_TIMESTAMP),
             Self::T9 => Some(MODERATO_T9_TIMESTAMP),
             Self::T10 => Some(MODERATO_T10_TIMESTAMP),
-            Self::T11 => None,
+            Self::T11 => Some(MODERATO_T11_TIMESTAMP),
+            Self::T12 => None,
         }
     }
 }

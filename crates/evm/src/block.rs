@@ -27,8 +27,9 @@ use std::{
 use tempo_chainspec::TempoChainSpec;
 use tempo_contracts::precompiles::{
     ADDRESS_REGISTRY_ADDRESS, CURRENT_COMMITTEE_ADDRESS, ICurrentCommittee, INITIAL_FACTORY_OWNER,
-    RECEIVE_POLICY_GUARD_ADDRESS, SIGNATURE_VERIFIER_ADDRESS, STORAGE_CREDITS_ADDRESS,
-    TIP20_CHANNEL_RESERVE_ADDRESS, VALIDATOR_CONFIG_V2_ADDRESS, initial_zone_factory_state,
+    InitialZoneFactoryAccount, RECEIVE_POLICY_GUARD_ADDRESS, SIGNATURE_VERIFIER_ADDRESS,
+    STORAGE_CREDITS_ADDRESS, TIP20_CHANNEL_RESERVE_ADDRESS, VALIDATOR_CONFIG_V2_ADDRESS,
+    initial_zone_factory_state, t12_zone_factory_state,
 };
 use tempo_primitives::{
     SubBlock, SubBlockMetadata, TempoReceipt, TempoTxEnvelope, TempoTxType,
@@ -294,9 +295,23 @@ impl<'a> TempoBlockExecutor<'a> {
         }
 
         self.deploy_precompile_at_boundary(factory.address, factory.storage.as_slice())?;
+        self.install_zone_runtimes_at_boundary([portal, verifier, messenger])
+    }
 
+    /// Exercises the shared runtime upgrade path at T12.
+    fn upgrade_zone_runtimes_at_boundary(&mut self) -> Result<(), BlockExecutionError> {
+        let [_, portal, verifier, messenger] = t12_zone_factory_state(INITIAL_FACTORY_OWNER);
+        self.install_zone_runtimes_at_boundary([portal, verifier, messenger])
+    }
+
+    /// Installs shared Zone runtimes without modifying their existing storage.
+    fn install_zone_runtimes_at_boundary(
+        &mut self,
+        runtimes: [InitialZoneFactoryAccount; 3],
+    ) -> Result<(), BlockExecutionError> {
         let mut runtime_state = PendingState::default();
-        for account in [portal, verifier, messenger] {
+        let mut changed = false;
+        for account in runtimes {
             let destination = account.address;
             let original = match self
                 .evm_mut()
@@ -314,9 +329,18 @@ impl<'a> TempoBlockExecutor<'a> {
                 .clone()
                 .unwrap_or_default()
                 .with_code(Bytecode::new_raw(account.code));
+            if original
+                .as_ref()
+                .is_some_and(|info| info.code_hash == current.code_hash)
+            {
+                continue;
+            }
+            changed = true;
             runtime_state.insert_account(destination, original, Some(current));
         }
-        self.inner.commit_pending_state(&runtime_state);
+        if changed {
+            self.inner.commit_pending_state(&runtime_state);
+        }
         Ok(())
     }
 
@@ -658,6 +682,9 @@ impl<'a> BlockExecutor for TempoBlockExecutor<'a> {
         if self.evm().config_spec_id().is_t10() {
             self.deploy_zone_factory_at_boundary()?;
         }
+        if self.evm().config_spec_id().is_t12() {
+            self.upgrade_zone_runtimes_at_boundary()?;
+        }
 
         Ok(())
     }
@@ -682,7 +709,7 @@ impl<'a> BlockExecutor for TempoBlockExecutor<'a> {
             let fee_recipient = *self
                 .subblock_fee_recipients
                 .get(&validator)
-                .ok_or(BlockExecutionError::msg("invalid subblock transaction"))?;
+                .ok_or_else(|| BlockValidationError::msg("invalid subblock transaction"))?;
 
             let mut subblock = block;
             subblock.beneficiary = fee_recipient;
@@ -874,7 +901,7 @@ impl TempoBlockExecutor<'_> {
 mod tests {
     use super::*;
     use crate::test_utils::{TestExecutorBuilder, test_chainspec};
-    use alloy_consensus::{Signed, TxLegacy};
+    use alloy_consensus::{Signed, TxLegacy, transaction::Recovered};
     use alloy_primitives::{Bytes, Log, Signature, TxKind, address, bytes::BytesMut};
     use alloy_rlp::Encodable;
     use commonware_codec::Encode as _;
@@ -897,7 +924,7 @@ mod tests {
             CURRENT_COMMITTEE_ADDRESS, ICurrentCommittee, PATH_USD_ADDRESS, ZONE_FACTORY_ADDRESS,
             ZONE_MESSENGER_ADDRESS, ZONE_PORTAL_IMPL_ADDRESS, ZONE_VERIFIER_ADDRESS,
         },
-        zones::{ZONE_MESSENGER_RUNTIME, ZONE_PORTAL_RUNTIME, ZONE_VERIFIER_RUNTIME},
+        zones::{T12_ZONE_MESSENGER_RUNTIME, T12_ZONE_PORTAL_RUNTIME, T12_ZONE_VERIFIER_RUNTIME},
     };
     use tempo_dkg_onchain_artifacts::OnchainDkgOutcome;
     use tempo_primitives::{
@@ -1427,6 +1454,26 @@ mod tests {
 
         let signature = TempoSignature::from(Signature::test_signature());
         TempoTxEnvelope::AA(tx.into_signed(signature))
+    }
+
+    #[test]
+    fn test_execute_transaction_t4_subblock_nonce_returns_validation_error() {
+        let chainspec = DEV.clone();
+        let mut db = InMemoryDB::default();
+        let mut executor = TestExecutorBuilder::default()
+            .with_spec(TempoHardfork::T11)
+            .build(&mut db, &chainspec);
+
+        let proposer = PartialValidatorKey::from_slice(&[0xff; 15]);
+        let subblock_tx = create_subblock_tx(&proposer);
+        let recovered = Recovered::new_unchecked(subblock_tx, Address::ZERO);
+
+        let err = executor.execute_transaction(recovered).unwrap_err();
+        assert!(
+            matches!(&err, BlockExecutionError::Validation(_)),
+            "unexpected error: {err:?}"
+        );
+        assert_eq!(err.to_string(), "invalid subblock transaction");
     }
 
     #[test]
@@ -2102,7 +2149,7 @@ mod tests {
     }
 
     #[test]
-    fn test_deploy_zone_factory_at_boundary_installs_t10_state() {
+    fn test_zone_runtime_hardfork_installation() {
         assert_eq!(
             INITIAL_FACTORY_OWNER,
             address!("0xaF571FD4B3AD43a5807A5E58bFb25ea1aB327A14")
@@ -2119,6 +2166,9 @@ mod tests {
 
         executor.deploy_zone_factory_at_boundary().unwrap();
         executor.deploy_zone_factory_at_boundary().unwrap();
+
+        executor.upgrade_zone_runtimes_at_boundary().unwrap();
+        executor.upgrade_zone_runtimes_at_boundary().unwrap();
 
         let factory = executor
             .evm()
@@ -2139,9 +2189,9 @@ mod tests {
             expected_factory_config
         );
         for (destination, expected) in [
-            (ZONE_PORTAL_IMPL_ADDRESS, ZONE_PORTAL_RUNTIME),
-            (ZONE_VERIFIER_ADDRESS, ZONE_VERIFIER_RUNTIME),
-            (ZONE_MESSENGER_ADDRESS, ZONE_MESSENGER_RUNTIME),
+            (ZONE_PORTAL_IMPL_ADDRESS, T12_ZONE_PORTAL_RUNTIME),
+            (ZONE_VERIFIER_ADDRESS, T12_ZONE_VERIFIER_RUNTIME),
+            (ZONE_MESSENGER_ADDRESS, T12_ZONE_MESSENGER_RUNTIME),
         ] {
             let info = executor
                 .evm()
@@ -2159,8 +2209,8 @@ mod tests {
         let calls = hook_calls.lock().unwrap();
         assert_eq!(
             calls.len(),
-            2,
-            "T10 installation must dispatch both updates"
+            3,
+            "T10 installation and T12 replacement must each dispatch an update"
         );
         assert!(
             calls[0]
@@ -2177,6 +2227,12 @@ mod tests {
                     .accounts
                     .contains_key(&alloy_primitives::keccak256(address)),
                 "shared runtime must be installed in the runtime state hook"
+            );
+            assert!(
+                calls[2]
+                    .accounts
+                    .contains_key(&alloy_primitives::keccak256(address)),
+                "T12 runtime must be installed in the runtime state hook"
             );
         }
     }

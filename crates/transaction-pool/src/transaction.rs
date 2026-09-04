@@ -111,10 +111,10 @@ impl TempoPooledTransaction {
         let fee_token_cost = cost - value;
         Self {
             inner: EthPooledTransaction {
+                transaction,
                 cost,
                 encoded_length,
                 blob_sidecar: EthBlobTransactionSidecar::None,
-                transaction,
             },
             fee_token_cost,
             is_payment,
@@ -364,6 +364,15 @@ impl TempoPooledTransaction {
         self.key_expiry.get().copied().flatten()
     }
 
+    /// Returns whether the transaction or its signing key expires by `cutoff`.
+    pub fn is_expired_by(&self, cutoff: u64) -> bool {
+        [self.inner().valid_before(), self.key_expiry()]
+            .into_iter()
+            .flatten()
+            .min()
+            .is_some_and(|expiry| expiry <= cutoff)
+    }
+
     /// Caches the effective fee token determined during transaction validation.
     ///
     /// The validator sets this after EVM validation resolves the token from the
@@ -371,6 +380,28 @@ impl TempoPooledTransaction {
     /// maintenance code should not call this directly.
     pub fn set_resolved_fee_token(&self, fee_token: Address) {
         let _ = self.resolved_fee_token.set(fee_token);
+    }
+
+    /// Clones this transaction while discarding validation-derived caches.
+    ///
+    /// Revalidation must not reuse cached state such as the resolved fee token and key expiry
+    /// from a previous canonical state. Transaction-intrinsic caches are retained.
+    pub(crate) fn with_discarded_caches(&self) -> Self {
+        Self {
+            inner: self.inner.clone(),
+            fee_token_cost: self.fee_token_cost,
+            is_payment: self.is_payment,
+            expiring_nonce_hash: self.expiring_nonce_hash,
+            nonce_key_slot: self.nonce_key_slot.clone(),
+            expiring_nonce_slot: self.expiring_nonce_slot.clone(),
+            tx_env: self.tx_env.clone(),
+            key_authorization_target_subject: self.key_authorization_target_subject.clone(),
+            // Discard state-dependent caches before revalidation.
+            fee_balance_slot: OnceLock::new(),
+            key_expiry: OnceLock::new(),
+            resolved_fee_token: OnceLock::new(),
+            key_authorization_signer_subject: OnceLock::new(),
+        }
     }
 
     /// Returns the fee token cached during transaction validation, if available.
@@ -669,6 +700,16 @@ pub enum TempoPoolTransactionError {
         min_allowed: u64,
     },
 
+    /// A transaction matched a configured address check.
+    ///
+    /// Thrown during pool admission when the recovered sender or a direct call target
+    /// appears in the node's configured address filter.
+    #[error("Transaction address check failed for {address}")]
+    AddressCheck {
+        /// The address that matched the configured filter.
+        address: Address,
+    },
+
     /// A Tempo EVM validation error returned by the transaction pool.
     ///
     /// Thrown when an EVM2 handler rejects the transaction with an error that is
@@ -707,6 +748,7 @@ impl PoolTransactionError for TempoPoolTransactionError {
             | Self::InvalidValidAfter(_)
             | Self::AccessKeyExpired { .. }
             | Self::KeyAuthorizationExpired { .. }
+            | Self::AddressCheck { .. }
             | Self::Keychain(_) => false,
             Self::SubblockNonceKey
             | Self::TooManyAuthorizations { .. }
@@ -978,6 +1020,24 @@ mod tests {
     }
 
     #[test]
+    fn discarded_caches_preserve_transaction_intrinsic_values() {
+        let transaction = TxBuilder::aa(Address::random())
+            .nonce_key(U256::from(42))
+            .build();
+        let nonce_key_slot = transaction.nonce_key_slot();
+        let _ = transaction.tx_env();
+        transaction.set_key_expiry(Some(123));
+        transaction.set_resolved_fee_token(Address::random());
+
+        let fresh = transaction.with_discarded_caches();
+
+        assert_eq!(fresh.nonce_key_slot(), nonce_key_slot);
+        assert!(fresh.cached_tx_env().is_some());
+        assert_eq!(fresh.key_expiry(), None);
+        assert_eq!(fresh.resolved_fee_token(), None);
+    }
+
+    #[test]
     fn test_payment_classification_positive() {
         // Test that TIP20 address prefix with valid calldata is classified as payment
         let calldata = ITIP20::transferCall {
@@ -1214,6 +1274,12 @@ mod tests {
                 TempoPoolTransactionError::KeyAuthorizationExpired {
                     expiry: 100,
                     min_allowed: 200,
+                },
+                false,
+            ),
+            (
+                TempoPoolTransactionError::AddressCheck {
+                    address: Address::repeat_byte(0x20),
                 },
                 false,
             ),

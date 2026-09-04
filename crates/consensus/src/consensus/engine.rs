@@ -49,7 +49,6 @@ const MAX_PENDING_ACKS: NonZeroUsize = NZUsize!(1);
 ///
 // XXX: Mostly a one-to-one copy of alto for now. We also put the context in here
 // because there doesn't really seem to be a point putting it into an extra initializer.
-#[derive(Clone)]
 pub struct Builder<TBlocker, TPeerManager> {
     pub execution_node: Option<Arc<TempoFullNode>>,
 
@@ -84,6 +83,7 @@ pub struct Builder<TBlocker, TPeerManager> {
     pub with_subblocks: bool,
 
     pub feed_state: crate::feed::FeedStateHandle,
+    pub gossip: Option<crate::gossip::Config>,
 
     /// Number of recently finalized blocks retained in the prunable archive
     /// passed to the marshal actor. Older blocks are served from reth.
@@ -100,6 +100,7 @@ where
         self
     }
 
+    /// Initializes the engine.
     pub async fn try_init<TContext>(
         self,
         context: TContext,
@@ -240,6 +241,26 @@ where
             self.feed_state,
         );
 
+        // Validator gossip is publish-only. Marshal sends durable tips to the
+        // actor, and the transport discards inbound frames.
+        let (gossip_actor, gossip_mailbox) = self
+            .gossip
+            .map(|gossip_config| {
+                crate::gossip::init(
+                    context.child("gossip"),
+                    crate::gossip::actor::Config {
+                        verify_rate: gossip_config.verify_rate,
+                        transport: gossip_config.transport,
+                        epoch_strategy: epoch_strategy.clone(),
+                        finalized_floor,
+                        peer_control: execution_node.network.clone(),
+                        driver: crate::gossip::PublishOnlySink,
+                        marshal: marshal_mailbox.clone(),
+                    },
+                )
+            })
+            .unzip();
+
         let (application, application_mailbox) = application::init(super::application::Config {
             context: context.child("application"),
             public_key: self.signer.public_key(),
@@ -321,6 +342,8 @@ where
 
             feed,
             feed_mailbox,
+            gossip_mailbox,
+            gossip_actor,
 
             subblocks,
         })
@@ -360,7 +383,7 @@ where
     /// Responsible for keeping the consensus layer state and execution layer
     /// states in sync. Drives the chain state of the execution layer by sending
     /// forkchoice-updates.
-    executor: crate::executor::Actor<TContext>,
+    executor: crate::executor::Actor<TContext, Arc<TempoFullNode>, crate::alias::marshal::Mailbox>,
     executor_mailbox: crate::executor::Mailbox,
 
     /// Resolver config that will be passed to the marshal actor upon start.
@@ -378,6 +401,15 @@ where
 
     feed: crate::feed::Actor<TContext>,
     feed_mailbox: crate::feed::Mailbox,
+    gossip_mailbox: Option<crate::gossip::Mailbox>,
+    /// Publish-only certificate gossip for validators.
+    gossip_actor: Option<
+        crate::gossip::Actor<
+            TContext,
+            crate::gossip::PublishOnlySink,
+            crate::gossip::NetworkPeerControl,
+        >,
+    >,
 
     subblocks: Option<subblocks::Actor<TContext>>,
 }
@@ -544,7 +576,13 @@ where
                     self.executor_mailbox,
                     Reporters::from((
                         self.dkg_manager_mailbox.clone(),
-                        Reporters::from((self.peer_manager_mailbox, self.feed_mailbox)),
+                        Reporters::from((
+                            self.peer_manager_mailbox,
+                            Reporters::<_, crate::feed::Mailbox, crate::gossip::Mailbox>::from((
+                                self.feed_mailbox,
+                                self.gossip_mailbox,
+                            )),
+                        )),
                     )),
                 )),
             )),
@@ -557,6 +595,7 @@ where
                 .start(votes_channel, certificates_channel, resolver_channel);
 
         let feed = self.feed.start();
+        let gossip_task = self.gossip_actor.map(crate::gossip::Actor::start);
 
         let dkg_manager = self.dkg_manager.start(dkg_channel);
 
@@ -570,6 +609,10 @@ where
             dkg_manager,
             peer_manager,
         ];
+
+        if let Some(gossip_task) = gossip_task {
+            tasks.push(gossip_task);
+        }
 
         if let Some(subblocks) = self.subblocks {
             tasks.push(

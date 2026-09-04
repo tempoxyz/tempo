@@ -1,4 +1,5 @@
 use crate::{
+    AddressFilter,
     amm::AmmLiquidityCache,
     state_cache::{StateCache, StateCacheDb},
     transaction::{TempoPoolTransactionError, TempoPooledTransaction},
@@ -98,6 +99,8 @@ pub struct TempoTransactionValidator<Client, EvmConfig = TempoEvmConfig> {
     pub(crate) amm_liquidity_cache: AmmLiquidityCache,
     /// Whether to skip the FeeAMM liquidity check during pool admission.
     pub(crate) disable_fee_amm_check: bool,
+    /// Addresses checked against transaction senders and direct call targets.
+    address_filter: AddressFilter,
     /// Cached EVM environment from the latest tip block, updated on each `on_new_head_block`.
     cached_evm_env: RwLock<TempoEvmEnv>,
     /// Tip hash and cache of state reads shared across validation calls, replaced on each
@@ -142,6 +145,7 @@ where
             max_tempo_authorizations,
             amm_liquidity_cache,
             disable_fee_amm_check: false,
+            address_filter: AddressFilter::default(),
             cached_evm_env: parking_lot::RwLock::new(evm_env),
             cached_state: RwLock::new((latest_header.hash(), Arc::new(StateCache::default()))),
             active_hardfork,
@@ -151,6 +155,12 @@ where
     /// Configures whether to skip the FeeAMM liquidity check during pool admission.
     pub const fn with_disable_fee_amm_check(mut self, disable: bool) -> Self {
         self.disable_fee_amm_check = disable;
+        self
+    }
+
+    /// Configures transaction sender and direct call target checks.
+    pub fn with_address_filter(mut self, address_filter: AddressFilter) -> Self {
+        self.address_filter = address_filter;
         self
     }
 
@@ -424,6 +434,13 @@ where
 
         // Validate AA transaction field limits (pool-only DoS limits: calls, access list, token limits).
         if let Err(err) = self.ensure_aa_field_limits(&transaction) {
+            return TransactionValidationOutcome::Invalid(
+                transaction,
+                InvalidPoolTransactionError::other(err),
+            );
+        }
+
+        if let Err(err) = self.address_filter.check(&transaction) {
             return TransactionValidationOutcome::Invalid(
                 transaction,
                 InvalidPoolTransactionError::other(err),
@@ -825,7 +842,7 @@ mod tests {
     use super::*;
     use crate::{test_utils::TxBuilder, transaction::TempoPoolTransactionError};
     use alloy_consensus::{Header, Signed, Transaction, TxLegacy};
-    use alloy_primitives::{Address, B256, TxKind, U256, address, uint};
+    use alloy_primitives::{Address, B256, Bytes, TxKind, U256, address, uint};
     use alloy_signer::Signature;
     use evm2::{bytecode::Bytecode as EvmBytecode, evm::AccountInfo};
     use reth_chainspec::EthChainSpec;
@@ -1057,6 +1074,42 @@ mod tests {
         };
         let ephemeral_cache = validator.state_cache_for_tip(mismatched_tip_hash);
         assert!(!Arc::ptr_eq(&ephemeral_cache, &shared_cache));
+    }
+
+    #[tokio::test]
+    async fn address_filter_checks_later_tempo_calls_during_admission() {
+        let checked_address = Address::with_last_byte(0x42);
+        let transaction = TxBuilder::aa(Address::random())
+            .calls(vec![
+                Call {
+                    to: TxKind::Call(Address::with_last_byte(0x41)),
+                    value: U256::ZERO,
+                    input: Bytes::new(),
+                },
+                Call {
+                    to: TxKind::Call(checked_address),
+                    value: U256::ZERO,
+                    input: Bytes::new(),
+                },
+            ])
+            .build();
+        let validator = setup_validator(&transaction, 1)
+            .with_address_filter(AddressFilter::new([checked_address]));
+
+        let outcome = validator
+            .validate_transaction(TransactionOrigin::External, transaction)
+            .await;
+
+        match outcome {
+            TransactionValidationOutcome::Invalid(_, ref err) => {
+                assert!(matches!(
+                    err.downcast_other_ref::<TempoPoolTransactionError>(),
+                    Some(TempoPoolTransactionError::AddressCheck { address })
+                        if *address == checked_address
+                ));
+            }
+            _ => panic!("Expected Invalid outcome with address check error, got: {outcome:?}"),
+        }
     }
 
     #[test]

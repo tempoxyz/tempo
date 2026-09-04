@@ -724,6 +724,9 @@ mod tests {
 
         fn with_storage(spec: TempoHardfork, address: Address, key: U256, value: U256) -> Self {
             let mut database = InMemoryDB::default();
+            // Storage belongs to an existing account. EVM2 does not create account info
+            // when inserting a database storage slot.
+            database.insert_account_info(&address, evm2::evm::AccountInfo::default());
             database.insert_account_storage(&address, &key, &value);
             Self::with_database(spec, false, database)
         }
@@ -1606,6 +1609,7 @@ mod tests {
         let mut evm = TestEvm::with_storage(TempoHardfork::T7, owner, key, U256::ONE);
         let mut provider = evm.provider_max_gas();
 
+        assert_eq!(provider.sload(owner, key)?, U256::ONE);
         provider.sstore(owner, key, U256::ZERO)?;
         assert_eq!(
             provider.sload(STORAGE_CREDITS_ADDRESS, StorageCredits::slot(owner))?,
@@ -1622,6 +1626,7 @@ mod tests {
         let mut provider = evm.provider_max_gas();
         provider.set_tip1060_storage_credits(false);
 
+        assert_eq!(provider.sload(owner, key)?, U256::ONE);
         provider.sstore(owner, key, U256::ZERO)?;
         assert_eq!(
             provider.sload(STORAGE_CREDITS_ADDRESS, StorageCredits::slot(owner))?,

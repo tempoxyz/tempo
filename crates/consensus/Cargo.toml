@@ -20,6 +20,7 @@ tempo-alloy.workspace = true
 tempo-chainspec = { workspace = true, features = ["reth"] }
 tempo-consensus-config.workspace = true
 tempo-dkg-onchain-artifacts.workspace = true
+tempo-evm.workspace = true
 tempo-node.workspace = true
 tempo-primitives = { workspace = true, features = ["reth"] }
 tempo-payload-types.workspace = true
@@ -65,11 +66,14 @@ prometheus-client.workspace = true
 rand.workspace = true
 rand_08.workspace = true
 
+reth-consensus.workspace = true
 reth-consensus-common.workspace = true
 reth-engine-primitives.workspace = true
 rand_core.workspace = true
 reth-ethereum.workspace = true
 reth-evm.workspace = true
+reth-network-api.workspace = true
+reth-network-p2p.workspace = true
 reth-node-builder.workspace = true
 reth-node-core.workspace = true
 reth-primitives-traits.workspace = true
@@ -85,6 +89,9 @@ url.workspace = true
 [dev-dependencies]
 tempo-precompiles = { workspace = true, features = ["test-utils"] }
 tempo-primitives = { workspace = true, features = ["arbitrary", "test-utils"] }
+
+# Constructing `TempoBuiltPayload` values in the executor test harness.
+reth-ethereum-engine-primitives.workspace = true
 
 age.workspace = true
 reth-provider = { workspace = true, features = ["test-utils"] }

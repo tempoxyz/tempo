@@ -1,7 +1,7 @@
 # This workflow is only intended to be used in forks/copies of tempoxyz/tempo.
-# It syncs the main branch with the upstream repository hourly.
+# It syncs the main and release branches with the upstream repository hourly.
 
-name: Sync main branch with upstream
+name: Sync main and release branches with upstream
 
 on:
   schedule:
@@ -12,29 +12,32 @@ permissions: {}
 
 jobs:
   sync:
-    if: ${{ github.repository != 'tempoxyz/tempo' }}
+    if: ${{ github.repository_owner == 'tempoxyz' && github.repository != 'tempoxyz/tempo' }}
     runs-on: ubuntu-latest
+    permissions:
+      id-token: write
     steps:
-      - name: Generate GitHub App token
-        id: app-token
-        uses: actions/create-github-app-token@1b10c78c7865c340bc4f6099eb2f838309f1e8c3 # v3.1.1
+      - name: Fetch GitHub token via STS
+        id: github-sts
+        uses: tempoxyz/gh-actions/actions/github-sts@8819cf80bdcb39c36c34700e3f2ecc08bde54f23
         with:
-          client-id: ${{ vars.SYNC_APP_ID }}
-          private-key: ${{ secrets.SYNC_APP_PRIVATE_KEY }}
-          permission-contents: write
-          permission-workflows: write
+          policy: sync-from-upstream
 
       - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2 # zizmor: ignore[artipacked]
         with:
-          token: ${{ steps.app-token.outputs.token }}
+          token: ${{ steps.github-sts.outputs.token }}
           fetch-depth: 0
 
-      - name: Sync main with upstream
+      - name: Sync main and release branches with upstream
         run: |
           git remote add upstream https://github.com/tempoxyz/tempo.git
-          git fetch upstream main
+          git fetch upstream \
+            '+refs/heads/main:refs/remotes/upstream/main' \
+            '+refs/heads/release/*:refs/remotes/upstream/release/*'
           git checkout main
           git reset --hard upstream/main
-          git push origin main --force
+          git push origin \
+            '+refs/heads/main:refs/heads/main' \
+            '+refs/remotes/upstream/release/*:refs/heads/release/*'
         env:
-          GH_TOKEN: ${{ steps.app-token.outputs.token }}
+          GH_TOKEN: ${{ steps.github-sts.outputs.token }}

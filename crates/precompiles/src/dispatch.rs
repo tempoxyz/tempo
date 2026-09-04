@@ -10,9 +10,23 @@ use alloy::{
     sol_types::{SolCall, SolError},
 };
 use evm2::precompiles::{PrecompileError, PrecompileHalt, PrecompileResult};
+use tempo_chainspec::hardfork::TempoHardfork;
 
 sol! {
     error StaticCallNotAllowed();
+}
+
+/// Maximum memory the ABI decoder may allocate for a precompile call.
+pub const ABI_DECODER_MEMORY_LIMIT: usize = 16 * 1024 * 1024;
+
+/// Returns the hardfork-aware ABI decoder configuration used to dispatch precompile calls.
+#[inline]
+pub const fn abi_decoder_config_for_spec(
+    spec: TempoHardfork,
+) -> alloy::sol_types::abi::AbiDecoderConfig {
+    alloy::sol_types::abi::AbiDecoderConfig::new()
+        .memory_limit(ABI_DECODER_MEMORY_LIMIT)
+        .strict(spec.is_t11())
 }
 
 pub mod typed {
@@ -121,7 +135,10 @@ pub fn preserve_storage_credits(credit_owner: Address) -> Result<()> {
 /// Deducts the calldata input cost, returning an OOG halt result if insufficient gas.
 #[inline]
 pub fn charge_input_cost(storage: &mut StorageCtx, calldata: &[u8]) -> Option<PrecompileResult> {
-    if storage.deduct_gas(input_cost(calldata.len())).is_err() {
+    if input_cost(storage.spec(), calldata.len())
+        .and_then(|cost| storage.deduct_gas(cost))
+        .is_err()
+    {
         return Some(Err(PrecompileHalt::OutOfGas.into()));
     }
     None
@@ -197,9 +214,20 @@ macro_rules! dispatch {
                 $(
                     if <$iface::$calls as alloy::sol_types::SolInterface>::valid_selector(selector) {
                         type Calls = $iface::$calls;
-                        return $crate::dispatch::dispatch_call($calldata, <Calls as alloy::sol_types::SolInterface>::abi_decode, |$call| match $match_call {
-                            $(Calls::$variant($binding) => $body,)*
-                        });
+                        return $crate::dispatch::dispatch_call(
+                            $calldata,
+                            |data| {
+                                <Calls as alloy::sol_types::SolInterface>::abi_decode_with_config(
+                                    data,
+                                    $crate::dispatch::abi_decoder_config_for_spec(
+                                        $crate::storage::StorageCtx.spec(),
+                                    ),
+                                )
+                            },
+                            |$call| match $match_call {
+                                $(Calls::$variant($binding) => $body,)*
+                            },
+                        );
                     }
                 )*
                 return $crate::dispatch::unknown_selector_result($calldata);
@@ -261,6 +289,10 @@ mod tests {
             function get(uint256 value) external view returns (uint256);
             function set(uint256 value) external returns (uint256);
             function clear(uint256 value) external;
+        }
+
+        interface ITestMemoryDispatch {
+            function setValues(uint256[] values) external;
         }
 
         error CustomTypedError(uint256 code);
@@ -349,6 +381,28 @@ mod tests {
             .into_precompile_result()
             .unwrap_err();
         assert!(matches!(error, PrecompileError::Fatal(message) if message.to_string() == "boom"));
+        Ok(())
+    }
+
+    #[test]
+    fn dispatch_limits_abi_decoder_memory() -> eyre::Result<()> {
+        let mut calldata = ITestMemoryDispatch::setValuesCall::SELECTOR.to_vec();
+        calldata.extend(U256::from(32).to_be_bytes::<32>());
+        calldata.extend(U256::from(ABI_DECODER_MEMORY_LIMIT as u64).to_be_bytes::<32>());
+
+        let mut storage = HashMapStorageProvider::new_with_spec(1, TempoHardfork::T1);
+        let output = StorageCtx::enter(&mut storage, || {
+            dispatch!(
+                &calldata,
+                |call| match call {
+                    ITestMemoryDispatch::ITestMemoryDispatchCalls {
+                        setValues(_) => Ok(evm2::evm::precompile::PrecompileOutput::new(Bytes::new())),
+                    }
+                }
+            )
+        });
+
+        assert!(matches!(output, Err(PrecompileError::Revert(bytes)) if bytes.is_empty()));
         Ok(())
     }
 }

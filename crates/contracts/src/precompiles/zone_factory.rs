@@ -1,4 +1,7 @@
-use crate::zones::{ZONE_MESSENGER_RUNTIME, ZONE_PORTAL_RUNTIME, ZONE_VERIFIER_RUNTIME};
+use crate::zones::{
+    T12_ZONE_MESSENGER_RUNTIME, T12_ZONE_PORTAL_RUNTIME, T12_ZONE_VERIFIER_RUNTIME,
+    ZONE_MESSENGER_RUNTIME, ZONE_PORTAL_RUNTIME, ZONE_VERIFIER_RUNTIME,
+};
 use alloy_primitives::{Address, Bytes, U256, address};
 
 pub use IZoneFactory::{
@@ -36,7 +39,8 @@ pub struct InitialZoneFactoryAccount {
     pub storage: Option<(U256, U256)>,
 }
 
-fn initial_zone_factory_config(owner: Address) -> U256 {
+/// Returns the initial packed ZoneFactory configuration for the given owner.
+pub fn initial_zone_factory_config(owner: Address) -> U256 {
     U256::from(1) | (U256::from_be_slice(owner.as_slice()) << u32::BITS)
 }
 
@@ -61,6 +65,29 @@ pub fn initial_zone_factory_state(owner: Address) -> [InitialZoneFactoryAccount;
         InitialZoneFactoryAccount {
             address: ZONE_MESSENGER_ADDRESS,
             code: ZONE_MESSENGER_RUNTIME,
+            storage: None,
+        },
+    ]
+}
+
+/// Returns the native ZoneFactory state with the T12 shared runtimes.
+pub fn t12_zone_factory_state(owner: Address) -> [InitialZoneFactoryAccount; 4] {
+    let [factory, _, _, _] = initial_zone_factory_state(owner);
+    [
+        factory,
+        InitialZoneFactoryAccount {
+            address: ZONE_PORTAL_IMPL_ADDRESS,
+            code: T12_ZONE_PORTAL_RUNTIME,
+            storage: None,
+        },
+        InitialZoneFactoryAccount {
+            address: ZONE_VERIFIER_ADDRESS,
+            code: T12_ZONE_VERIFIER_RUNTIME,
+            storage: None,
+        },
+        InitialZoneFactoryAccount {
+            address: ZONE_MESSENGER_ADDRESS,
+            code: T12_ZONE_MESSENGER_RUNTIME,
             storage: None,
         },
     ]
