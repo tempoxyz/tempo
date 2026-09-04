@@ -2,11 +2,11 @@
 //! tree unit tests cover the arithmetic; these tests prove that the actor
 //! publishes the measures after processing real messages and EL outcomes.
 
-use alloy_rpc_types_engine::{ForkchoiceState, PayloadStatusEnum};
+use alloy_rpc_types_engine::PayloadStatusEnum;
 use commonware_macros::test_traced;
 use commonware_runtime::{Runner as _, deterministic};
 
-use super::harness::{ForkchoiceStateExt as _, GENESIS, Harness, make_block, round};
+use super::harness::{GENESIS, Harness, make_block, round};
 
 fn gauge(h: &Harness, name: &str) -> i64 {
     let name = format!("executor_{name}");
@@ -128,17 +128,56 @@ fn convergence_depth_is_negative_while_reanchoring_below_the_local_head() {
         }
         h.wait_until(|| gauge(&h, "convergence_depth") == 0).await;
 
-        // Keep the re-anchor from completing so the signed distance remains
-        // observable: the pending head is b1 at height 1 while the accepted
-        // local head remains b2 at height 2.
-        h.execution.script_fcu(
-            ForkchoiceState::from_finalized_head(GENESIS, d1),
+        // Re-anchor onto a1, a sibling of b1 at height 1 the execution layer
+        // rejects: the block is withheld, so the pending head stays at
+        // height 1 while the accepted local head remains b2 at height 2, and
+        // the signed distance is observable.
+        let a1 = make_block(4, 1, GENESIS);
+        let da1 = a1.digest();
+        h.execution.script_new_payload(
+            da1,
             Ok(PayloadStatusEnum::Invalid {
                 validation_error: "re-anchor rejected by test".into(),
             }),
         );
-        h.report_pending_head(4, 1, d1);
+        h.report_pending_head(5, 4, da1);
+        h.wait_until(|| h.marshal.fulfill_subscription(da1, a1.clone()))
+            .await;
         h.wait_until(|| gauge(&h, "convergence_depth") == -1).await;
         assert_eq!(h.execution.head(), d2);
+    });
+}
+
+#[test_traced]
+fn uncanonicalized_blocks_tracks_delivered_blocks_off_the_canonical_chain() {
+    deterministic::Runner::default().start(|context| async move {
+        let h = Harness::start_at_genesis(&context);
+        assert_eq!(gauge(&h, "uncanonicalized_blocks"), 0);
+
+        // A validated block is known to the execution layer but not its
+        // head yet.
+        let b1 = make_block(1, 1, GENESIS);
+        let d1 = b1.digest();
+        h.verify(round(1), b1)
+            .await
+            .expect("verification should complete")
+            .expect("block should be valid");
+        h.wait_until(|| gauge(&h, "uncanonicalized_blocks") == 1)
+            .await;
+
+        // Moving the head onto it canonicalizes it.
+        h.report_pending_head(2, 1, d1);
+        h.wait_until(|| h.execution.head() == d1).await;
+        h.wait_until(|| gauge(&h, "uncanonicalized_blocks") == 0)
+            .await;
+
+        // A validated sibling stays on a side branch.
+        let a1 = make_block(3, 1, GENESIS);
+        h.verify(round(3), a1)
+            .await
+            .expect("verification should complete")
+            .expect("block should be valid");
+        h.wait_until(|| gauge(&h, "uncanonicalized_blocks") == 1)
+            .await;
     });
 }
