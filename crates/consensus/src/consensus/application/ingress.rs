@@ -3,25 +3,80 @@ use commonware_actor::{
     mailbox::{self, Policy},
 };
 use commonware_consensus::{
-    Automaton, CertifiableAutomaton, Relay,
-    simplex::{Plan, types::Context},
+    Automaton, CertifiableAutomaton, Relay, Reporter,
+    simplex::{
+        Plan,
+        scheme::bls12381_threshold::vrf::Scheme,
+        types::{Activity, Context},
+    },
     types::{Round, View},
 };
 
-use commonware_cryptography::ed25519::PublicKey;
+use commonware_cryptography::{bls12381::primitives::variant::MinSig, ed25519::PublicKey};
 use commonware_utils::channel::oneshot;
-use std::{collections::VecDeque, time::Instant};
+use std::{
+    collections::VecDeque,
+    sync::{Arc, Mutex},
+    time::{Duration, Instant},
+};
+
+use super::pacing::Pacing;
 
 use crate::consensus::Digest;
 
 #[derive(Clone)]
 pub(crate) struct Mailbox {
     inner: mailbox::Sender<Message>,
+    pacing: Option<Arc<Mutex<Pacing>>>,
 }
 
 impl Mailbox {
-    pub(super) fn from_sender(inner: mailbox::Sender<Message>) -> Self {
-        Self { inner }
+    pub(super) fn from_sender(
+        inner: mailbox::Sender<Message>,
+        target: Option<Duration>,
+        budget: Duration,
+    ) -> Self {
+        Self {
+            inner,
+            pacing: target.map(|target| Arc::new(Mutex::new(Pacing::new(target, budget)))),
+        }
+    }
+
+    pub(super) fn proposal_budget(
+        &self,
+        round: Round,
+        parent: View,
+        default: Duration,
+    ) -> Duration {
+        self.pacing
+            .as_ref()
+            .and_then(|pacing| pacing.lock().ok())
+            .map_or(default, |mut pacing| pacing.begin(round, parent))
+    }
+
+    pub(super) fn proposal_returned(&self, round: Round, elapsed: Duration) {
+        if let Some(pacing) = &self.pacing
+            && let Ok(mut pacing) = pacing.lock()
+        {
+            pacing.returned(round, elapsed);
+        }
+    }
+}
+
+impl Reporter for Mailbox {
+    type Activity = Activity<Scheme<PublicKey, MinSig>, Digest>;
+
+    fn report(&mut self, activity: Self::Activity) -> Feedback {
+        if let Some(pacing) = &self.pacing
+            && let Ok(mut pacing) = pacing.lock()
+        {
+            match activity {
+                Activity::Notarization(n) => pacing.notarized(n.proposal.round, Instant::now()),
+                Activity::Nullification(n) => pacing.nullified(n.round),
+                _ => {}
+            }
+        }
+        Feedback::Ok
     }
 }
 
@@ -172,7 +227,7 @@ mod tests {
     fn broadcast_overflow_is_dropped() {
         deterministic::Runner::default().start(|context| async move {
             let (sender, mut receiver) = mailbox::new(context.child("mailbox"), NZUsize!(1));
-            let mut mailbox = Mailbox::from_sender(sender);
+            let mut mailbox = Mailbox::from_sender(sender, None, std::time::Duration::ZERO);
             let round = Round::new(Epoch::zero(), View::zero());
             let first = Digest(B256::with_last_byte(1));
             let second = Digest(B256::with_last_byte(2));
