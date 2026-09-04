@@ -23,6 +23,16 @@ on:
         type: string
         required: false
         default: ""
+      baseline-args:
+        description: Extra args passed only to the baseline node.
+        type: string
+        required: false
+        default: ""
+      feature-args:
+        description: Extra args passed only to the feature node.
+        type: string
+        required: false
+        default: ""
       duration:
         type: string
         required: false
