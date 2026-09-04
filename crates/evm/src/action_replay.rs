@@ -600,6 +600,136 @@ mod tests {
     }
 
     #[test]
+    fn expiring_nonce_mint_replay_matches_serial_state() {
+        use alloy_consensus::transaction::Recovered;
+        use alloy_primitives::{Signature, TxKind};
+        use alloy_sol_types::SolCall;
+        use evm2::evm::StateChangeSource;
+        use reth_execution_types::HashedPostStateSink;
+        use tempo_chainspec::spec::DEV;
+        use tempo_precompiles::{
+            PATH_USD_ADDRESS, storage::StorageCtx, test_util::TIP20Setup, tip20::ITIP20,
+        };
+        use tempo_primitives::{
+            TempoTxEnvelope,
+            transaction::{AASigned, Call, PrimitiveSignature, TempoSignature, TempoTransaction},
+        };
+
+        let chainspec = DEV.clone();
+        let sender = Address::repeat_byte(0x01);
+        let recipient = Address::repeat_byte(0x02);
+        let mut executor = crate::test_utils::TestExecutorBuilder::default()
+            .with_spec(TempoHardfork::T12)
+            .build(InMemoryDB::default(), &chainspec);
+        let evm = executor.evm_mut();
+        let mut block = *evm.block();
+        block.basefee = U256::from(1_000_000_000u64);
+        evm.set_block(block);
+        crate::TempoEvmFactory::default().enable_storage_actions(evm);
+        let actions = evm.ext().actions.clone();
+        // Match genesis marker accounts. In particular, nonce storage starts empty while
+        // its account exists, as at the captured failing funding block's parent.
+        for (address, _) in tempo_contracts::precompiles::SYSTEM_PRECOMPILES {
+            evm.overlay_db_mut().insert_account_info(
+                address,
+                AccountInfo::default().with_code(evm2::bytecode::Bytecode::new_raw(
+                    alloy_primitives::Bytes::from_static(&[0xef]),
+                )),
+            );
+        }
+        actions.unrecorded(|| {
+            StorageCtx::enter_evm_without_tip1060_accounting(evm, || {
+                TIP20Setup::path_usd(sender)
+                    .with_issuer(sender)
+                    .with_mint(sender, U256::from(1_000_000_000_000_000u64))
+                    .apply()
+            })
+            .unwrap();
+        });
+        evm.state_mut().commit_transaction();
+        evm.state_mut().clear_transaction_state();
+        let mut backing = InMemoryDB::default();
+        backing.cache = evm.overlay_db().cache.clone();
+
+        let transaction = AASigned::new_unhashed(
+            TempoTransaction {
+                chain_id: evm.version().chain_id,
+                fee_token: Some(PATH_USD_ADDRESS),
+                max_fee_per_gas: 1_000_000_000,
+                max_priority_fee_per_gas: 1,
+                gas_limit: 1_000_000,
+                calls: vec![Call {
+                    to: TxKind::Call(PATH_USD_ADDRESS),
+                    value: U256::ZERO,
+                    input: ITIP20::mintCall {
+                        to: recipient,
+                        amount: U256::from(1000),
+                    }
+                    .abi_encode()
+                    .into(),
+                }],
+                nonce_key: U256::MAX,
+                valid_before: Some(20.try_into().unwrap()),
+                ..Default::default()
+            },
+            TempoSignature::Primitive(PrimitiveSignature::Secp256k1(Signature::test_signature())),
+        );
+        let nonce_hash = transaction.expiring_nonce_hash(sender);
+        let tx: crate::TempoTxEnv =
+            Recovered::new_unchecked(TempoTxEnvelope::AA(transaction), sender).into();
+        let mut prewarm_tx = tx.clone();
+        prewarm_tx.set_expiring_nonce_idx(Some(0));
+        let prewarm = evm
+            .transact(&Recovered::new_unchecked(prewarm_tx, sender))
+            .unwrap()
+            .detach();
+        assert!(prewarm.result.status);
+        let recorded_actions = actions.take().unwrap();
+        let mut serial_executor = crate::test_utils::TestExecutorBuilder::default()
+            .with_spec(TempoHardfork::T12)
+            .build(backing.clone(), &chainspec);
+        assert!(serial_executor.evm().overlay_db().cache.accounts.is_empty());
+        serial_executor.evm_mut().set_block(block);
+        let serial = serial_executor
+            .evm_mut()
+            .transact(&Recovered::new_unchecked(tx, sender))
+            .unwrap()
+            .detach();
+        assert!(serial.result.status);
+        let mut serial_hash = HashedPostStateSink::<reth_trie::KeccakKeyHasher>::default();
+        serial.pending_state.visit(&mut serial_hash).unwrap();
+        let serial_hash = serial_hash.into_hashed_post_state();
+        for warm_replay_cache in [false, true] {
+            let mut replay_executor = crate::test_utils::TestExecutorBuilder::default()
+                .with_spec(TempoHardfork::T12)
+                .build(backing.clone(), &chainspec);
+            assert!(replay_executor.evm().overlay_db().cache.accounts.is_empty());
+            replay_executor.evm_mut().set_block(block);
+            if warm_replay_cache {
+                replay_executor.evm_mut().overlay_db_mut().cache = backing.cache.clone();
+            }
+            let replay = replay_executor
+                .replay_actions(
+                    sender,
+                    recorded_actions.clone(),
+                    false,
+                    Some(ExpiringNonceReplay {
+                        hash: nonce_hash,
+                        valid_before: 20,
+                    }),
+                )
+                .unwrap();
+            let mut replay_hash = HashedPostStateSink::<reth_trie::KeccakKeyHasher>::default();
+            replay.visit(&mut replay_hash).unwrap();
+            assert_eq!(
+                serial_hash,
+                replay_hash.into_hashed_post_state(),
+                "replay cache warm={warm_replay_cache}"
+            );
+        }
+    }
+
+    #[test]
     fn replay_cache_matches_committed_storage_with_absent_or_uncached_account() {
         let address = Address::repeat_byte(0x42);
         let slot = U256::from(7);
