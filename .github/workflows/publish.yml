@@ -34,7 +34,7 @@ jobs:
       - uses: tempoxyz/gh-actions/vendor/dtolnay/rust-toolchain@3626124474a987bc74b41fc7ae65b2e23f8e4e4e
 
       - name: Install Cargo cooldown verifier
-        uses: tempoxyz/gh-actions/actions/cargo-cooldown@216431dd18ebe7c199654e6c310ed99570ddcc33 # gh-actions#98
+        uses: tempoxyz/gh-actions/actions/cargo-cooldown@e37a986470fb0e05f12131c5d6da8c79d2f5fa11 # gh-actions#101
 
       - name: Authenticate with crates.io
         uses: tempoxyz/gh-actions/vendor/rust-lang/crates-io-auth-action@3626124474a987bc74b41fc7ae65b2e23f8e4e4e

@@ -11,21 +11,22 @@ if [[ ! "$COOLDOWN_DAYS" =~ ^[1-9][0-9]*$ ]]; then
   exit 1
 fi
 
-VERIFIER="${CARGO_COOLDOWN_BIN:-$(command -v cargo-cooldown || true)}"
-if [[ -z "$VERIFIER" || ! -x "$VERIFIER" ]]; then
-  echo "ERROR: cargo-cooldown is required but is not installed" >&2
+VERIFIER="${CARGO_COOLDOWN_BIN:?CARGO_COOLDOWN_BIN is required}"
+EXPECTED_VERIFIER_SHA256="${CARGO_COOLDOWN_SHA256:?CARGO_COOLDOWN_SHA256 is required}"
+if [[ ! -x "$VERIFIER" ]]; then
+  echo "ERROR: cargo-cooldown verifier is not executable: $VERIFIER" >&2
   exit 1
 fi
 
 VERIFIER="$(cd "$(dirname "$VERIFIER")" && pwd)/$(basename "$VERIFIER")"
-if [[ -n "${RUNNER_TEMP:-}" ]]; then
-  case "$VERIFIER" in
-    "$RUNNER_TEMP"/cargo-cooldown-*/bin/cargo-cooldown|"$RUNNER_TEMP"/cargo-cooldown-*/bin/cargo-cooldown.exe) ;;
-    *)
-      echo "ERROR: refusing cargo-cooldown outside the checksum-verified action directory: $VERIFIER" >&2
-      exit 1
-      ;;
-  esac
+if command -v sha256sum >/dev/null 2>&1; then
+  ACTUAL_VERIFIER_SHA256="$(sha256sum "$VERIFIER" | awk '{print $1}')"
+else
+  ACTUAL_VERIFIER_SHA256="$(shasum -a 256 "$VERIFIER" | awk '{print $1}')"
+fi
+if [[ "$ACTUAL_VERIFIER_SHA256" != "$EXPECTED_VERIFIER_SHA256" ]]; then
+  echo "ERROR: cargo-cooldown verifier checksum mismatch" >&2
+  exit 1
 fi
 
 WORKSPACE="$(cd "$WORKSPACE" && pwd)"

@@ -104,7 +104,7 @@ jobs:
         with:
           tool: nextest@0.9.127
       - name: Install Cargo cooldown verifier
-        uses: tempoxyz/gh-actions/actions/cargo-cooldown@216431dd18ebe7c199654e6c310ed99570ddcc33 # gh-actions#98
+        uses: tempoxyz/gh-actions/actions/cargo-cooldown@e37a986470fb0e05f12131c5d6da8c79d2f5fa11 # gh-actions#101
 
       # ── amp CLI ────────────────────────────────────────────────
       - name: Install Amp CLI
