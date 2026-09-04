@@ -24,9 +24,12 @@ use eyre::{WrapErr as _, eyre};
 use futures::{StreamExt as _, stream::FuturesUnordered};
 use rand_core::{CryptoRng, Rng};
 use reth_engine_primitives::ConsensusEngineHandle;
+use reth_network_api::BlockDownloaderProvider as _;
+use reth_network_p2p::FullBlockClient;
 use reth_node_builder::NodeTypesWithDBAdapter;
 use reth_provider::providers::BlockchainProvider;
 use tempo_chainspec::NetworkIdentity;
+use tempo_evm::consensus::TempoConsensus;
 use tempo_node::{TempoFullNode, TempoPayloadTypes, node::TempoNode};
 use tracing::{info, info_span};
 
@@ -137,11 +140,26 @@ impl<TUpstream> Config<TUpstream> {
             )
         });
 
+        let network_client = self
+            .execution_node
+            .network
+            .fetch_client()
+            .await
+            .wrap_err("failed to obtain devp2p block client")?;
+        let block_network = FullBlockClient::new(
+            network_client,
+            Arc::new(TempoConsensus::new_with_bal_hashes(
+                self.execution_node.chain_spec(),
+                cfg!(feature = "bal"),
+            )),
+        );
+
         let (resolver, resolver_rx) = resolver::try_init(
             context.child("resolver"),
             resolver::Config {
                 execution_provider: self.execution_node.provider.clone(),
                 upstream: self.upstream_mailbox.clone(),
+                block_network,
                 mailbox_size: self.mailbox_size,
                 upstream_request_timeout: self.upstream_request_timeout,
             },
@@ -180,7 +198,6 @@ impl<TUpstream> Config<TUpstream> {
                 network_identity: self.network_identity,
                 last_finalized_height,
                 marshal: marshal_mailbox.clone(),
-                executor: executor_mailbox.clone(),
                 epoch_strategy: epoch_strategy.clone(),
             },
         )
@@ -235,12 +252,7 @@ where
 {
     context: ContextCell<TContext>,
     _execution_node: Arc<TempoFullNode>,
-    driver: driver::Driver<
-        TContext,
-        FollowExecutionProvider,
-        crate::alias::marshal::Mailbox,
-        executor::Mailbox,
-    >,
+    driver: driver::Driver<TContext, FollowExecutionProvider, crate::alias::marshal::Mailbox>,
     driver_mailbox: driver::Mailbox,
     resolver: resolver::Mailbox,
     resolver_rx: commonware_consensus::marshal::resolver::handler::Receiver<Digest>,

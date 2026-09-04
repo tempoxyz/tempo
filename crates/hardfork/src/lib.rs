@@ -233,6 +233,11 @@ impl TempoHardfork {
         *self as u8
     }
 
+    /// Returns the latest defined Tempo hardfork.
+    pub const fn latest() -> Self {
+        Self::VARIANTS[Self::VARIANTS.len() - 1]
+    }
+
     /// Returns the hardfork at the given [`Self::VARIANTS`] position, see
     /// [`Self::variant_index`].
     ///
@@ -385,7 +390,7 @@ impl TempoHardfork {
             Self::T8 => Some(MAINNET_T8_TIMESTAMP),
             Self::T9 => Some(MAINNET_T9_TIMESTAMP),
             Self::T10 => Some(MAINNET_T10_TIMESTAMP),
-            Self::T11 => None,
+            Self::T11 => Some(MAINNET_T11_TIMESTAMP),
             Self::T12 => None,
         }
     }
@@ -433,7 +438,7 @@ impl TempoHardfork {
             Self::T8 => Some(MODERATO_T8_TIMESTAMP),
             Self::T9 => Some(MODERATO_T9_TIMESTAMP),
             Self::T10 => Some(MODERATO_T10_TIMESTAMP),
-            Self::T11 => None,
+            Self::T11 => Some(MODERATO_T11_TIMESTAMP),
             Self::T12 => None,
         }
     }

@@ -1,8 +1,13 @@
 //! Execution-layer driver for follower nodes.
 //!
-//! This actor sends verified finalized tips to Reth as head, safe, and finalized forkchoice
+//! This actor sends marshal's finalized tips to Reth as head, safe, and finalized forkchoice
 //! updates, periodically refreshes that forkchoice with a heartbeat, and advances marshal's floor
 //! to one epoch behind Reth's finalized state.
+//!
+//! One hash serves as head, safe and finalized, so a forkchoice target must never name a block
+//! marshal has not stored. Marshal tips are the only source of one: the driver does not address
+//! this actor, so a bare verified certificate cannot move Reth's finalized watermark ahead of
+//! marshal's own archives.
 //!
 //! Unlike the executor used by validator nodes, it does not build payloads, canonicalize proposal
 //! heads, or track blocks proposed by this node. Followers receive complete blocks from their
@@ -145,12 +150,6 @@ where
                             if self.floor_candidate.is_none() {
                                 self.floor_candidate = Some(height);
                             }
-                            let candidate = Target::from_finalization(round, digest);
-                            if candidate.supersedes(&self.latest_tip) {
-                                self.latest_tip = candidate;
-                            }
-                        }
-                        Message::Finalization { round, digest } => {
                             let candidate = Target::from_finalization(round, digest);
                             if candidate.supersedes(&self.latest_tip) {
                                 self.latest_tip = candidate;

@@ -1,6 +1,6 @@
 //! Resolver for follow mode.
 //!
-//! Checks the local execution provider first and falls back to the upstream abstraction.
+//! Checks the local execution provider first, then races upstream RPC and devp2p.
 
 use std::{
     collections::BTreeMap,
@@ -24,6 +24,7 @@ use eyre::Report;
 use parking_lot::Mutex;
 use prometheus_client::metrics::counter::Counter;
 use reth_ethereum::provider::db::DatabaseEnv;
+use reth_network_p2p::{BlockAccessListsClient, BlockClient, FullBlockClient};
 use reth_node_builder::NodeTypesWithDBAdapter;
 use reth_primitives_traits::NodePrimitives;
 use reth_provider::{
@@ -33,6 +34,7 @@ use reth_provider::{
 use tempo_evm::consensus::validate_body_against_header;
 use tempo_node::{node::TempoNode, rpc::consensus::CertifiedBlock};
 use tempo_primitives::Block as TempoBlock;
+use tokio::select;
 use tracing::{debug, error, instrument, warn};
 
 use crate::consensus::{Block, Digest};
@@ -54,21 +56,24 @@ pub(super) type Mailbox = opaque::Resolver<Key, handler::Annotation, PublicKey>;
 pub(super) struct Config<
     P = BlockchainProvider<NodeTypesWithDBAdapter<TempoNode, DatabaseEnv>>,
     U = super::upstream::Mailbox,
+    N = NoopBlockNetwork,
 > {
     pub(super) execution_provider: P,
     pub(super) upstream: U,
+    pub(super) block_network: N,
     pub(super) mailbox_size: NonZeroUsize,
     pub(super) upstream_request_timeout: Duration,
 }
 
-pub(super) fn try_init<TContext, P, U>(
+pub(super) fn try_init<TContext, P, U, N>(
     context: TContext,
-    config: Config<P, U>,
+    config: Config<P, U, N>,
 ) -> (Mailbox, handler::Receiver<Digest>)
 where
     TContext: Clock + Metrics + Spawner,
     P: BlockProvider + Clone + 'static,
     U: Upstream + Clone + 'static,
+    N: BlockNetwork + Clone + 'static,
 {
     let mailbox_size = config.mailbox_size;
     let upstream_request_timeouts = context.register(
@@ -83,6 +88,7 @@ where
             context: Arc::new(context.child("fetcher")),
             execution_provider: config.execution_provider,
             upstream: config.upstream,
+            block_network: config.block_network,
             upstream_request_timeout: config.upstream_request_timeout,
             upstream_request_timeouts,
             retries: Arc::new(Mutex::new(RetryState::default())),
@@ -96,25 +102,28 @@ where
     (resolver, receiver)
 }
 
-struct Fetcher<TContext, P, U> {
+struct Fetcher<TContext, P, U, N> {
     context: Arc<TContext>,
     execution_provider: P,
     upstream: U,
+    block_network: N,
     upstream_request_timeout: Duration,
     upstream_request_timeouts: Registered<Counter>,
     retries: Arc<Mutex<RetryState>>,
 }
 
-impl<TContext, P, U> Clone for Fetcher<TContext, P, U>
+impl<TContext, P, U, N> Clone for Fetcher<TContext, P, U, N>
 where
     P: Clone,
     U: Clone,
+    N: Clone,
 {
     fn clone(&self) -> Self {
         Self {
             context: self.context.clone(),
             execution_provider: self.execution_provider.clone(),
             upstream: self.upstream.clone(),
+            block_network: self.block_network.clone(),
             upstream_request_timeout: self.upstream_request_timeout,
             upstream_request_timeouts: self.upstream_request_timeouts.clone(),
             retries: self.retries.clone(),
@@ -122,11 +131,12 @@ where
     }
 }
 
-impl<TContext, P, U> opaque::Fetcher for Fetcher<TContext, P, U>
+impl<TContext, P, U, N> opaque::Fetcher for Fetcher<TContext, P, U, N>
 where
     TContext: Clock,
     P: BlockProvider + Clone + 'static,
     U: Upstream + Clone + 'static,
+    N: BlockNetwork + Clone + 'static,
 {
     type Key = Key;
     type Value = Bytes;
@@ -135,6 +145,7 @@ where
         let context = self.context.clone();
         let execution_provider = self.execution_provider.clone();
         let upstream = self.upstream.clone();
+        let block_network = self.block_network.clone();
         let upstream_request_timeout = self.upstream_request_timeout;
         let upstream_request_timeouts = self.upstream_request_timeouts.clone();
         let retries = self.retries.clone();
@@ -157,7 +168,7 @@ where
             let request = async move {
                 match request_key {
                     handler::Key::Block(digest) => {
-                        resolve_block(&execution_provider, &upstream, digest).await
+                        resolve_block(&execution_provider, &upstream, &block_network, digest).await
                     }
                     handler::Key::Finalized { height } => {
                         resolve_finalized(&upstream, height).await
@@ -233,23 +244,25 @@ impl RetryState {
     }
 }
 
-/// Resolves an encoded block from the execution layer, falling back to the upstream node.
-#[instrument(skip(execution_provider, upstream))]
-async fn resolve_block<P: BlockProvider, U: Upstream>(
+/// Resolves an encoded block from the execution layer, then races upstream RPC and devp2p.
+#[instrument(skip_all, fields(%digest))]
+async fn resolve_block<P: BlockProvider, U: Upstream, N: BlockNetwork>(
     execution_provider: &P,
     upstream: &U,
-    block_digest: Digest,
+    network: &N,
+    digest: Digest,
 ) -> Option<Bytes> {
     match execution_provider
-        .block_by_hash(block_digest)
+        .block_by_hash(digest)
         .inspect_err(|error| error!(%error, "execution layer error looking up block"))
     {
         Err(_) => None,
         Ok(Some(block)) => Some(block.encode()),
-        Ok(None) => upstream
-            .get_block(block_digest)
-            .await
-            .map(|block| block.encode()),
+        Ok(None) => select!(
+            Some(block) = upstream.get_block(digest) => Some(block.encode()),
+            Some(block) = network.get_block(digest) => Some(block.encode()),
+            else => None,
+        ),
     }
 }
 
@@ -291,6 +304,50 @@ pub(super) trait Upstream: Send + Sync {
         &self,
         h: Height,
     ) -> impl Future<Output = Option<CertifiedBlock>> + Send + 'static;
+}
+
+/// Devp2p block lookup used by the resolver.
+pub(super) trait BlockNetwork: Send + Sync {
+    fn get_block(&self, digest: Digest) -> impl Future<Output = Option<Block>> + Send + 'static;
+}
+
+#[derive(Clone, Copy, Debug, Default)]
+pub(super) struct NoopBlockNetwork;
+
+impl BlockNetwork for NoopBlockNetwork {
+    fn get_block(&self, _digest: Digest) -> impl Future<Output = Option<Block>> + Send + 'static {
+        std::future::ready(None)
+    }
+}
+
+impl<C> BlockNetwork for FullBlockClient<C>
+where
+    C: BlockClient<Block = TempoBlock> + BlockAccessListsClient + Send + Sync + 'static,
+    C::Header: alloy_consensus::BlockHeader + alloy_primitives::Sealable,
+{
+    fn get_block(&self, digest: Digest) -> impl Future<Output = Option<Block>> + Send + 'static {
+        let client = self.clone();
+        async move {
+            #[cfg(not(feature = "bal"))]
+            return Block::try_from_execution_block(client.get_full_block(digest.0).await, None)
+                .inspect_err(|error| warn!(%error, %digest, "devp2p block failed validation"))
+                .ok();
+
+            #[cfg(feature = "bal")]
+            let (block, block_access_list) = client
+                .get_full_block_with_access_lists(digest.0)
+                .await
+                .split();
+
+            #[cfg(feature = "bal")]
+            Block::try_from_execution_block(
+                block,
+                block_access_list.map(|block_access_list| block_access_list.into_raw()),
+            )
+            .inspect_err(|error| warn!(%error, %digest, "devp2p block failed validation"))
+            .ok()
+        }
+    }
 }
 
 impl<N> BlockProvider for BlockchainProvider<N>

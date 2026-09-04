@@ -87,6 +87,9 @@ const PRE_T11_INPUT_PER_WORD_COST: u64 = 6;
 /// Input per word cost starting at T11.
 const POST_T11_INPUT_PER_WORD_COST: u64 = 30;
 
+/// Additional T11 cost per value processed by duplicate validation.
+const T11_DEDUP_PER_ITEM_COST: u64 = 20;
+
 /// Gas cost for `ecrecover` signature verification (used by KeyAuthorization and Permit).
 pub const ECRECOVER_GAS: u64 = 3_000;
 
@@ -107,6 +110,31 @@ pub fn input_cost(spec: TempoHardfork, calldata_len: usize) -> Result<u64> {
         .div_ceil(32)
         .checked_mul(per_word_cost)
         .ok_or(error::TempoPrecompileError::OutOfGas)
+}
+
+/// Returns the additional gas cost for duplicate validation at `spec`.
+#[inline]
+pub fn dedup_cost(spec: TempoHardfork, item_count: usize) -> Result<u64> {
+    if !spec.is_t11() {
+        return Ok(0);
+    }
+
+    u64::try_from(item_count)
+        .map_err(|_| error::TempoPrecompileError::OutOfGas)?
+        .checked_mul(T11_DEDUP_PER_ITEM_COST)
+        .ok_or(error::TempoPrecompileError::OutOfGas)
+}
+
+/// Charges for duplicate validation, then returns whether `values` contains duplicates.
+#[inline]
+pub fn has_duplicates_metered<T: Ord>(
+    storage: &mut StorageCtx,
+    values: impl IntoIterator<Item = T>,
+) -> Result<bool> {
+    let mut values = values.into_iter().collect::<Vec<_>>();
+    storage.deduct_gas(dedup_cost(storage.spec(), values.len())?)?;
+    values.sort_unstable();
+    Ok(values.windows(2).any(|pair| pair[0] == pair[1]))
 }
 
 /// Trait implemented by all Tempo precompile contract types.
@@ -416,7 +444,6 @@ where
 mod tests {
     use super::*;
     use crate::{
-        account_keychain::setAllowedCallsCall,
         storage::{StorageCtx, hashmap::HashMapStorageProvider},
         tip20::TIP20Token,
     };
@@ -431,7 +458,6 @@ mod tests {
     use revm::{
         context::{ContextTr, TxEnv},
         database::{CacheDB, EmptyDB},
-        precompile::{PrecompileHalt, PrecompileStatus},
         state::{AccountInfo, Bytecode},
     };
     use tempo_contracts::precompiles::{ITIP20, UnknownFunctionSelector};
@@ -1025,42 +1051,10 @@ mod tests {
     }
 
     #[test]
-    fn test_t11_set_allowed_calls_charges_rlp_input_before_decoding() {
-        let mut cfg = CfgEnv::<TempoHardfork>::default();
-        cfg.set_spec_and_mainnet_gas_params(TempoHardfork::T11);
-        let precompile =
-            tempo_precompile!("AccountKeychain", &cfg, |_input| { AccountKeychain::new() });
-
-        let calldata: Bytes = setAllowedCallsCall {
-            keyId: Address::random(),
-            scopes: vec![0xc0].into(),
-        }
-        .abi_encode()
-        .into();
-        let base_cost = input_cost(TempoHardfork::T11, calldata.len()).unwrap();
-
-        let db = CacheDB::new(EmptyDB::new());
-        let mut evm = EthEvmFactory::default().create_evm(db, EvmEnv::default());
-        let block = evm.block.clone();
-        let tx = TxEnv::default();
-        let evm_internals = EvmInternals::new(evm.journal_mut(), &block, &cfg, &tx);
-        let input = PrecompileInput {
-            data: &calldata,
-            caller: Address::ZERO,
-            internals: evm_internals,
-            gas: base_cost + 49,
-            is_static: false,
-            value: U256::ZERO,
-            target_address: ACCOUNT_KEYCHAIN_ADDRESS,
-            bytecode_address: ACCOUNT_KEYCHAIN_ADDRESS,
-            reservoir: 0,
-        };
-
-        let output = AlloyEvmPrecompile::call(&precompile, input).expect("expected OOG output");
-        assert!(matches!(
-            output.status,
-            PrecompileStatus::Halt(PrecompileHalt::OutOfGas)
-        ));
+    fn test_dedup_cost_schedule() {
+        assert_eq!(dedup_cost(TempoHardfork::T10, 65_536).unwrap(), 0);
+        assert_eq!(dedup_cost(TempoHardfork::T11, 0).unwrap(), 0);
+        assert_eq!(dedup_cost(TempoHardfork::T11, 65_536).unwrap(), 1_310_720);
     }
 
     #[test]

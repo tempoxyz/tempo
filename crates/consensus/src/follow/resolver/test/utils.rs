@@ -27,7 +27,7 @@ use reth_node_core::primitives::SealedBlock;
 use tempo_node::rpc::consensus::CertifiedBlock;
 use tempo_primitives::{Block as TempoBlock, BlockBody, TempoHeader};
 
-use super::super::{BlockProvider, Upstream};
+use super::super::{BlockNetwork, BlockProvider, Upstream};
 use crate::consensus::{Block, Digest};
 
 pub(super) fn make_block(height: u64) -> Block {
@@ -167,5 +167,29 @@ impl Upstream for StubUpstream {
         self.inner.finalization_reads.fetch_add(1, Ordering::SeqCst);
         let finalization = self.inner.finalizations.lock().get(&height.get()).cloned();
         async move { finalization }
+    }
+}
+
+#[derive(Clone, Default)]
+pub(super) struct StubBlockNetwork {
+    blocks: Arc<Mutex<HashMap<Digest, Block>>>,
+    reads: Arc<AtomicUsize>,
+}
+
+impl StubBlockNetwork {
+    pub(super) fn add_block(&self, block: Block) {
+        self.blocks.lock().insert(block.digest(), block);
+    }
+
+    pub(super) fn reads(&self) -> usize {
+        self.reads.load(Ordering::SeqCst)
+    }
+}
+
+impl BlockNetwork for StubBlockNetwork {
+    fn get_block(&self, digest: Digest) -> impl Future<Output = Option<Block>> + Send + 'static {
+        self.reads.fetch_add(1, Ordering::SeqCst);
+        let block = self.blocks.lock().get(&digest).cloned();
+        async move { block }
     }
 }

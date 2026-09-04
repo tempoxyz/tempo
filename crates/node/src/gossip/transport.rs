@@ -70,7 +70,7 @@ use super::wire;
 /// than a legitimate situation.
 const MAX_CONNECTIONS_PER_PEER: usize = 2;
 
-const REGISTERING_DRAIN_BUDGET: usize = 16;
+const INBOUND_DRAIN_BUDGET: usize = 16;
 
 /// Events for the consensus-facing logical peer.
 ///
@@ -530,7 +530,7 @@ impl<S> Connection<S> {
         // Reth can enqueue satellite frames before local registration finishes.
         // Discard them here so coordinator latency does not retain the ingress
         // budget. The limit keeps one peer from monopolizing this task.
-        for _ in 0..REGISTERING_DRAIN_BUDGET {
+        for _ in 0..INBOUND_DRAIN_BUDGET {
             match self.conn.poll_next_unpin(cx) {
                 Poll::Ready(Some(_)) => {
                     self.shared.metrics.frames_received.increment(1);
@@ -592,8 +592,11 @@ impl<S> Connection<S> {
         S: Stream<Item = BytesMut> + Unpin,
     {
         // Check the outbound relay before each inbound frame so a peer that sends
-        // continuously cannot starve locally produced certificates.
-        loop {
+        // continuously cannot starve locally produced certificates. Reth delivers
+        // inbound protocol frames through an unbounded queue, so limit the work in
+        // one poll and self-wake below if more frames remain.
+        let mut drained = 0;
+        while drained < INBOUND_DRAIN_BUDGET {
             if let Some(outbound) = self.outbound.as_mut() {
                 match outbound.poll_next_unpin(cx) {
                     Poll::Ready(Some(Some(frame))) => {
@@ -610,11 +613,15 @@ impl<S> Connection<S> {
             let Some(frame) = ready!(self.conn.poll_next_unpin(cx)) else {
                 return Poll::Ready(None);
             };
+            drained += 1;
             match self.on_inbound(frame) {
                 InboundAction::Continue => {}
                 InboundAction::Close => return Poll::Ready(None),
             }
         }
+
+        cx.waker().wake_by_ref();
+        Poll::Pending
     }
 }
 
@@ -817,9 +824,33 @@ mod tests {
         let mut cx = Context::from_waker(&waker);
 
         assert!(Pin::new(&mut connection).poll_next(&mut cx).is_pending());
-        assert_eq!(polls.load(Ordering::Relaxed), REGISTERING_DRAIN_BUDGET);
+        assert_eq!(polls.load(Ordering::Relaxed), INBOUND_DRAIN_BUDGET);
         assert_eq!(wakes.0.load(Ordering::Relaxed), 1);
         assert!(matches!(connection.state, ConnectionState::Registering(_)));
+    }
+
+    #[test]
+    fn active_drain_is_bounded_and_self_wakes() {
+        let mut config = test_config();
+        config.ingest = false;
+        let (handler, _coordinator, _transport) = build_protocol(config);
+        let polls = Arc::new(AtomicUsize::new(0));
+        let inbound = CountingInbound {
+            polls: Arc::clone(&polls),
+        };
+        let mut connection = connection(&handler, PeerId::with_last_byte(2), inbound);
+        let (_outbound_tx, outbound_rx) = watch::channel(None);
+        connection.outbound = Some(WatchStream::new(outbound_rx));
+        connection.state = ConnectionState::Active;
+
+        let wakes = Arc::new(WakeCounter::default());
+        let waker = Waker::from(Arc::clone(&wakes));
+        let mut cx = Context::from_waker(&waker);
+
+        assert!(Pin::new(&mut connection).poll_next(&mut cx).is_pending());
+        assert_eq!(polls.load(Ordering::Relaxed), INBOUND_DRAIN_BUDGET);
+        assert_eq!(wakes.0.load(Ordering::Relaxed), 1);
+        assert!(matches!(connection.state, ConnectionState::Active));
     }
 
     #[tokio::test]
