@@ -112,8 +112,8 @@ jobs:
                           found.append({'stage': name, 'timestamp': stamp.group() if stamp else None})
                           break
               return list(found)
-          log_key = f'runs/{benchmark}/artifacts/runner/txgen-send.err'
-          stages = {'status': 'artifact unavailable', 'note': 'Latest uploaded log may be from the previous phase. Compare timestamps with the report; absence of a stage is not proof it did not run.'}
+          log_key = f'runs/{benchmark}/artifacts/runner/txgen.out'
+          stages = {'status': 'artifact unavailable', 'artifact': 'txgen.out', 'note': 'Latest uploaded log may be from the previous phase. Compare timestamps with the report; absence of a stage is not proof it did not run.'}
           try:
               head = subprocess.run(['aws', 's3api', 'head-object', '--bucket', bucket, '--key', log_key, '--region', 'us-east-1', '--query', 'ContentLength', '--output', 'text'], capture_output=True, text=True, timeout=20)
               if head.returncode == 0:
