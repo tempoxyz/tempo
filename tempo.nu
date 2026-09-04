@@ -339,6 +339,8 @@ def tempo-hardforks [] {
         | columns
         | where { |key| $key =~ '^t[0-9]+[a-z]?Time$' }
         | each { |key| $key | str replace "Time" "" | str upcase }
+        # JSON field order is not protocol order (T10 may appear before T1).
+        | sort --natural
     )
     if ($forks | is-empty) {
         print "Error: failed to read Tempo hardforks from crates/node/tests/assets/test-genesis.json"
