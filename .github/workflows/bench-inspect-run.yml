@@ -13,16 +13,21 @@ on:
         description: Parse historical metric archives and validator logs as well as compact reports.
         type: boolean
         default: true
+      detailed-performance:
+        description: Also collect broad pool/builder metrics and archived logs; otherwise focus on engine and persistence.
+        type: boolean
+        default: false
 permissions:
   contents: read
   id-token: write
 jobs:
   inspect:
     runs-on: ubuntu-latest
-    timeout-minutes: 5
+    timeout-minutes: 15
     env:
       BENCHMARK_ID: ${{ inputs.benchmark-id || 'bench-e2e-multi-region-33869141764-1' }}
       INCLUDE_METRICS: ${{ inputs.include-metrics || false }}
+      DETAILED_PERFORMANCE: ${{ inputs.detailed-performance || false }}
     steps:
       - name: Configure AWS credentials
         uses: tempoxyz/gh-actions/vendor/aws-actions/configure-aws-credentials@3626124474a987bc74b41fc7ae65b2e23f8e4e4e
@@ -99,8 +104,12 @@ jobs:
                   stability = {}
                   performance = {}
                   metric_inventory = set()
-                  performance_tokens = ('reth_tempo_payload_builder_', 'reth_transaction_pool_', 'execution_cache', 'payload_processor', 'block_validation', 'validate_block', 'execution_duration', 'prewarm', 'reth_sync_execution_', 'reth_sync_block_validation_', 'reth_sync_state_provider_', 'reth_sync_caching_', 'reth_consensus_engine_beacon_new_payload_latency', 'reth_consensus_engine_beacon_block_insert_total_duration', 'notarization_latency', 'finalization_latency')
-                  inventory_tokens = ('consensus', 'marshal', 'simplex', 'proposal', 'verify', 'broadcast', 'notariz', 'finaliz')
+                  detailed = os.environ['DETAILED_PERFORMANCE'] == 'true'
+                  performance_tokens = ('reth_consensus_engine_beacon_', 'reth_payload_builder_')
+                  inventory_tokens = ()
+                  if detailed:
+                      performance_tokens += ('reth_tempo_payload_builder_', 'reth_transaction_pool_', 'execution_cache', 'payload_processor', 'block_validation', 'validate_block', 'execution_duration', 'prewarm', 'reth_sync_execution_', 'reth_sync_block_validation_', 'reth_sync_state_provider_', 'reth_sync_caching_', 'notarization_latency', 'finalization_latency')
+                      inventory_tokens = ('consensus', 'marshal', 'simplex', 'proposal', 'verify', 'broadcast', 'notariz', 'finaliz')
                   def observe(collection, sample):
                       timestamp, name, labels = sample['unix_ms'], sample['name'], sample['labels']
                       identity = (name, json.dumps(labels, sort_keys=True))
@@ -155,10 +164,12 @@ jobs:
                   pathlib.Path('inspection-persistence-metrics.json').write_text(json.dumps(metric_result, indent=2))
                   stability_result = {'source_sha256': digest, 'source_key': key, 'report_first_ms': min(bounds), 'report_last_ms': max(bounds), 'note': 'Observed samples grouped into five-second buckets; absent metrics are unavailable. Finish checkpoint is the block-data frontier, not the masked state/trie frontier. Jemalloc resident excludes non-allocator mappings. No bounded-memory or long-term stability claim follows from this short observation.', 'series': [{**{key: value for key, value in series.items() if key != 'buckets'}, 'buckets': [dict(bucket=bucket, **point) for bucket, point in sorted(series['buckets'].items())]} for _, series in sorted(stability.items())]}
                   pathlib.Path('inspection-stability-metrics.json').write_text(json.dumps(stability_result, indent=2))
-                  performance_result = {'source_sha256': digest, 'source_key': key, 'report_first_ms': report_first, 'report_last_ms': report_last, 'note': 'Five-second buckets of observed exports, preserving complete labels and sum/count series. Buckets 0-11 cover the first sixty seconds. Quantiles are exported observations, not recomputed distributions. Missing metrics are unavailable.', 'consensus_metric_inventory': sorted(metric_inventory), 'series': export_series(performance)}
+                  performance_result = {'source_sha256': digest, 'source_key': key, 'report_first_ms': report_first, 'report_last_ms': report_last, 'detailed_performance': detailed, 'note': 'Five-second buckets of observed exports, preserving complete labels and sum/count series. Buckets 0-11 cover the first sixty seconds. Quantiles are exported observations, not recomputed distributions. Missing metrics are unavailable.', 'consensus_metric_inventory': sorted(metric_inventory), 'series': export_series(performance)}
                   pathlib.Path('inspection-performance-metrics.json').write_text(json.dumps(performance_result))
                   runner['persistence_metrics'] = metric_result
                   def inspect_log(index):
+                      if not detailed:
+                          return {'validator': index, 'status': 'archived logs not requested'}
                       region = regions[index % len(regions)]
                       log_bucket = f'tempo-benchmark-artifacts-934822761402-{region}'
                       log_key = f'runs/{benchmark}/artifacts/validator-{index}/tempo-node.log'
@@ -198,6 +209,7 @@ jobs:
               summary.write('```json\n' + json.dumps(results, indent=2) + '\n```\n')
           PY
       - name: Preserve inspected benchmark reports
+        if: always()
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
           name: benchmark-inspection
