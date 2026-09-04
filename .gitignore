@@ -8,6 +8,7 @@ scripts/data
 coverage/
 
 # Benchmarking artifacts
+.bench-tmp/
 contrib/bench/logs/
 report.json
 report.samples.ndjson.gz

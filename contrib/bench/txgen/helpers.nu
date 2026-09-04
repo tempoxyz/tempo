@@ -10,6 +10,8 @@ const TXGEN_HELPER_ALWAYS_FUND_PRESETS = [
     "neobank-deposit"
     "neobank-swap"
     "neobank-withdraw"
+    "vault-deposit"
+    "vault-withdraw"
 ]
 const TXGEN_HELPER_EXISTING_RECIPIENTS_START = 10000
 const TXGEN_HELPER_KEYCHAIN_ACCESS_KEYS_START = 100000
@@ -598,6 +600,23 @@ def txgen-fund-accounts [txgen_bin: string, spec_path: string, rpc_url: string] 
     txgen-wait-for-txpool-drain $rpc_url $TXGEN_HELPER_FUND_DRAIN_TIMEOUT_SECS
 }
 
+def txgen-prepare-vault-preset [spec_path: string, accounts: int, chain_id: int] {
+    if $chain_id != 1337 or $accounts <= 0 or $accounts > 100000 {
+        error make { msg: "Vault presets require chain ID 1337 and 1..100000 user accounts" }
+    }
+    let operation = ($spec_path | path basename | str replace "vault-" "" | str replace ".yml" "")
+    let template_path = ([ ($spec_path | path dirname) "vault" $"user-($operation).yml" ] | path join)
+    let template = (open $template_path).setup.steps.0
+    let steps = (0..<$accounts | each { |index|
+        $template | update id $"($template.id)_($index)" | update bindings.user.account.select.index $index
+    })
+    let output_dir = ([ (txgen-repo-root) $TXGEN_HELPER_DEFAULT_RENDERED_SPECS_DIR (random uuid) ] | path join)
+    mkdir $output_dir
+    let output = ($output_dir | path join ($spec_path | path basename))
+    { include: $spec_path, append: { setup: { steps: $steps } } } | to yaml | save -f $output
+    $output
+}
+
 def txgen-run-preset-pipeline [
     --txgen-tempo-bin: string
     --txgen-bench-bin: string
@@ -632,7 +651,7 @@ def txgen-run-preset-pipeline [
 ] {
     let chain_id = (txgen-fetch-chain-id $generate_rpc_url)
     $env.TXGEN_ACCOUNTS = ($accounts | into string)
-    let spec_path = ($preset_path | path expand)
+    mut spec_path = ($preset_path | path expand)
     if not ($spec_path | path exists) {
         error make { msg: $"txgen preset file not found: ($spec_path)" }
     }
@@ -643,6 +662,10 @@ def txgen-run-preset-pipeline [
     txgen-configure-fee-amm-env $spec_path
     let preset_name = ($spec_path | path basename | str replace --regex '\.yml$' '')
     let skip_faucet_funding = $skip_funding and ($preset_name not-in $TXGEN_HELPER_ALWAYS_FUND_PRESETS)
+    let is_vault = $preset_name in ["vault-deposit" "vault-withdraw"]
+    if $is_vault {
+        $spec_path = (txgen-prepare-vault-preset $spec_path $accounts $chain_id)
+    }
     let existing_recipient_start = ($env | get --optional TXGEN_EXISTING_RECIPIENTS_START | default "0" | into int)
     let existing_recipient_end = ($env | get --optional TXGEN_EXISTING_RECIPIENTS_END | default "0" | into int)
     let recipient_accounts = if $existing_recipient_end > $existing_recipient_start {
@@ -726,18 +749,18 @@ def txgen-run-preset-pipeline [
 
     let bench_env_export = if $bench_env != "" { $"export ($bench_env) && " } else { "" }
     let txgen_extra_args = (txgen-parse-bench-args $bench_args)
-    let use_two_phase_keychain_setup = (txgen-spec-has-keychain-setup $spec_path)
+    let use_two_phase_setup = $is_vault or (txgen-spec-has-keychain-setup $spec_path)
     let txgen_cmd_str = (txgen-shell-join ($txgen_cmd | append $txgen_extra_args))
-    let bench_cmd = if $use_two_phase_keychain_setup { $bench_cmd | append "--skip-setup" } else { $bench_cmd }
+    let bench_cmd = if $use_two_phase_setup { $bench_cmd | append "--skip-setup" } else { $bench_cmd }
     let bench_cmd_str = (txgen-shell-join $bench_cmd)
     let pipeline = $"set -euo pipefail; ($bench_env_export)ulimit -Sn unlimited && ($txgen_cmd_str) | ($bench_cmd_str)"
 
-    if $use_two_phase_keychain_setup {
+    if $use_two_phase_setup {
         let txgen_setup_cmd_str = (txgen-shell-join ($txgen_setup_cmd | append $txgen_extra_args))
         let bench_setup_cmd_str = (txgen-shell-join ($bench_send_base_cmd | append ["--drain-timeout" 0]))
         let setup_pipeline = $"set -euo pipefail; ($bench_env_export)ulimit -Sn unlimited && ($txgen_setup_cmd_str) | ($bench_setup_cmd_str)"
 
-        print "  Streaming keychain setup transactions into bench send..."
+        print "  Streaming preset setup transactions into bench send..."
         let setup_result = (bash -lc $setup_pipeline | complete)
         if $setup_result.stdout != "" { print $setup_result.stdout }
         if $setup_result.stderr != "" { print $setup_result.stderr }

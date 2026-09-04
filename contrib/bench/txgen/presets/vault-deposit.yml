@@ -1,0 +1,5 @@
+# Deposit one pathUSD through the configured vault and liquidity pool.
+include: vault/base.yml
+mix:
+- sequence: vault_deposits
+  weight: 100

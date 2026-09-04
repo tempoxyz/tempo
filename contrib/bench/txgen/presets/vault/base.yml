@@ -1,0 +1,125 @@
+# Shared contract fixture and user workloads. Use on a fresh local benchmark chain.
+include: setup.yml
+chain_id: 1337
+gas:
+  max_fee_per_gas: 100000000000
+  max_priority_fee_per_gas: 100000000000
+accounts:
+  users:
+    mnemonic: test test test test test test test test test test test junk
+    range:
+    - 0
+    - ${TXGEN_ACCOUNTS}
+  fee_payers:
+    mnemonic: test test test test test test test test test test test junk
+    index: 100000
+  deployers:
+    mnemonic: test test test test test test test test test test test junk
+    index: 100001
+artifacts:
+  ERC20: ../../erc20.abi.json
+  PolicyRegistry: ../../vault/abi/PolicyRegistry.json
+  AccessController:
+    abi: ../../vault/abi/AccessController.json
+    bytecode: ../../vault/bytecodes/AccessController.bin
+  StrategyVault:
+    abi: ../../vault/abi/StrategyVault.json
+    bytecode: ../../vault/bytecodes/StrategyVault.bin
+  RateAccountant:
+    abi: ../../vault/abi/RateAccountant.json
+    bytecode: ../../vault/bytecodes/RateAccountant.bin
+  VaultRouter:
+    abi: ../../vault/abi/VaultRouter.json
+    bytecode: ../../vault/bytecodes/VaultRouter.bin
+  PriceOracle:
+    abi: ../../vault/abi/PriceOracle.json
+    bytecode: ../../vault/bytecodes/PriceOracle.bin
+  LiquidityPool:
+    abi: ../../vault/abi/LiquidityPool.json
+    bytecode: ../../vault/bytecodes/LiquidityPool.bin
+  LiquidityBuffer:
+    abi: ../../vault/abi/LiquidityBuffer.json
+    bytecode: ../../vault/bytecodes/LiquidityBuffer.bin
+  ComponentRegistry:
+    abi: ../../vault/abi/ComponentRegistry.json
+    bytecode: ../../vault/bytecodes/ComponentRegistry.bin
+  VaultEngine:
+    abi: ../../vault/abi/VaultEngine.json
+    bytecode: ../../vault/bytecodes/VaultEngine.bin
+  UserVault:
+    abi: ../../vault/abi/UserVault.json
+    bytecode: ../../vault/bytecodes/UserVault.bin
+  FeeModule:
+    abi: ../../vault/abi/FeeModule.json
+    bytecode: ../../vault/bytecodes/FeeModule.bin
+  VaultFactory:
+    abi: ../../vault/abi/VaultFactory.json
+    bytecode: ../../vault/bytecodes/VaultFactory.bin
+templates:
+  vault_operation:
+    type: tempo
+    from:
+      pool: users
+      select: random
+    sponsor:
+      pool: fee_payers
+      select:
+        index: 0
+    gas_limit: 8000000
+    fee_token: '0x20c0000000000000000000000000000000000000'
+    expiring_nonce: true
+    valid_for_secs: 25
+    calls: []
+sequences:
+  vault_deposits:
+    bindings:
+      user:
+        account:
+          pool: users
+          select: random
+    steps:
+    - name: deposit_pathusd
+      template: vault_operation
+      with:
+        from:
+          var: user.ref
+        calls:
+        - to: '0x20c0000000000000000000000000000000000000'
+          abi: ERC20
+          function: approve
+          args:
+          - '0x7ab1b8f13760b57021ad9baff0be170259245992'
+          - 1000000
+        - to: '0x7ab1b8f13760b57021ad9baff0be170259245992'
+          abi: UserVault
+          function: deposit
+          args:
+          - 1000000
+          - var: user.address
+          - 990000
+  vault_withdrawals:
+    bindings:
+      user:
+        account:
+          pool: users
+          select: random
+    steps:
+    - name: redeem_pathusd
+      template: vault_operation
+      with:
+        from:
+          var: user.ref
+        calls:
+        - to: '0x20c000000000000000000000b40ebef7b60e73cf'
+          abi: ERC20
+          function: approve
+          args:
+          - '0x7ab1b8f13760b57021ad9baff0be170259245992'
+          - 1000000
+        - to: '0x7ab1b8f13760b57021ad9baff0be170259245992'
+          abi: UserVault
+          function: redeem
+          args:
+          - 1000000
+          - var: user.address
+          - 990000

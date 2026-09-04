@@ -1,0 +1,145 @@
+[
+  {
+    "type": "constructor",
+    "stateMutability": "nonpayable",
+    "inputs": [
+      {
+        "name": "arg0",
+        "type": "address"
+      },
+      {
+        "name": "arg1",
+        "type": "address"
+      },
+      {
+        "name": "arg2",
+        "type": "address"
+      }
+    ]
+  },
+  {
+    "type": "function",
+    "name": "deploy",
+    "stateMutability": "nonpayable",
+    "inputs": [
+      {
+        "name": "arg0",
+        "type": "tuple",
+        "components": [
+          {
+            "name": "deploymentId",
+            "type": "bytes32"
+          },
+          {
+            "name": "engine",
+            "type": "address"
+          },
+          {
+            "name": "owner",
+            "type": "address"
+          },
+          {
+            "name": "controls",
+            "type": "tuple",
+            "components": [
+              {
+                "name": "emergencyGuardian",
+                "type": "address"
+              },
+              {
+                "name": "asyncJanitor",
+                "type": "address"
+              },
+              {
+                "name": "maxManagedAssets",
+                "type": "uint256"
+              },
+              {
+                "name": "migrationMode",
+                "type": "uint8"
+              }
+            ]
+          },
+          {
+            "name": "distributorConfig",
+            "type": "tuple",
+            "components": [
+              {
+                "name": "distributor",
+                "type": "address"
+              },
+              {
+                "name": "updateDelay",
+                "type": "uint40"
+              }
+            ]
+          },
+          {
+            "name": "fees",
+            "type": "tuple",
+            "components": [
+              {
+                "name": "fixedFeeCount",
+                "type": "uint8"
+              },
+              {
+                "name": "fixedFees",
+                "type": "tuple[4]",
+                "components": [
+                  {
+                    "name": "account",
+                    "type": "address"
+                  },
+                  {
+                    "name": "rateBps",
+                    "type": "uint16"
+                  }
+                ]
+              },
+              {
+                "name": "excess",
+                "type": "tuple",
+                "components": [
+                  {
+                    "name": "enabled",
+                    "type": "bool"
+                  },
+                  {
+                    "name": "account",
+                    "type": "address"
+                  },
+                  {
+                    "name": "annualTargetRateBps",
+                    "type": "uint16"
+                  },
+                  {
+                    "name": "excessFeeRateBps",
+                    "type": "uint16"
+                  }
+                ]
+              }
+            ]
+          },
+          {
+            "name": "transferPolicyId",
+            "type": "uint64"
+          }
+        ]
+      }
+    ],
+    "outputs": [
+      {
+        "name": "",
+        "type": "address"
+      },
+      {
+        "name": "",
+        "type": "address"
+      },
+      {
+        "name": "",
+        "type": "address"
+      }
+    ]
+  }
+]
