@@ -43,6 +43,13 @@ jobs:
               if result.returncode:
                   return {**output, 'status': 'status artifact unavailable'}
               data = json.loads(result.stdout)
+              context = {'validator': index, 'region': region}
+              for artifact in ('tempo-node-runtime-context.txt', 'storage-baseline-1.json', 'storage-feature-1.json'):
+                  artifact_key = f'runs/{benchmark}/artifacts/validator-{index}/{artifact}'
+                  fetched = subprocess.run(['aws', 's3', 'cp', f's3://{bucket}/{artifact_key}', '-', '--region', region, '--only-show-errors'], capture_output=True, text=True, timeout=60)
+                  if fetched.returncode == 0:
+                      context[artifact] = json.loads(fetched.stdout) if artifact.endswith('.json') else fetched.stdout
+              pathlib.Path(f'inspection-validator-{index}.json').write_text(json.dumps(context, indent=2))
               return {**output, **{key: data.get(key) for key in ('stage', 'status', 'updated_at', 'elapsed_secs')}}
           with concurrent.futures.ThreadPoolExecutor(max_workers=10) as executor:
               results = list(executor.map(inspect, range(10)))
