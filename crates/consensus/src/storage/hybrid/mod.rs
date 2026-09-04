@@ -107,7 +107,7 @@ use reth_provider::{
     BlockReader, BlockSource, ProviderError, ProviderResult,
     providers::{BlockchainProvider, ProviderNodeTypes},
 };
-use tracing::{debug, info, instrument, warn};
+use tracing::{info, instrument};
 
 use crate::consensus::{Digest, block::Block};
 
@@ -297,21 +297,22 @@ where
     /// - Eviction tracks the EL's progress monotonically. Once the EL
     ///   finalizes height `H`, the cache may drop everything below
     ///   `H - retention_blocks + 1` on the next put.
-    async fn evict_below_execution_finalized_floor(&mut self) -> Result<(), archive::Error> {
+    async fn evict_below_execution_finalized_floor(mut self) -> Result<Self, archive::Error> {
         // Reth hasn't finalized anything yet (fresh chain) — nothing is
         // safe to evict.
         let Some(execution_finalized) = self.execution_block_provider.finalized_height() else {
-            return Ok(());
+            return Ok(self);
         };
         let Some(min_to_keep) = execution_finalized.checked_sub(self.retention_blocks) else {
-            return Ok(());
+            return Ok(self);
         };
         // `prune(min)` keeps `min` and above, and the archive rounds `min`
         // *down* to a section boundary, so the actual retained window can
         // exceed `retention_blocks` by up to `items_per_section − 1` items.
         // See the module docs ("Section-rounding") for the full story.
         let prune_floor = min_to_keep.saturating_add(1);
-        prunable::Archive::prune(&mut self.prunable, prune_floor).await
+        self.prunable = prunable::Archive::prune(self.prunable, prune_floor).await?;
+        Ok(self)
     }
 }
 
@@ -324,53 +325,18 @@ where
     type Error = Error;
 
     #[instrument(skip_all, err)]
-    async fn put(&mut self, block: Self::Block) -> Result<(), Self::Error> {
+    async fn put(mut self, block: Self::Block) -> Result<Self, Self::Error> {
         let height = block.height();
         let digest = block.digest();
-        match archive::Archive::put(&mut self.prunable, height.get(), digest, block).await {
-            Ok(()) => {}
-            // The prunable cache has already evicted this height — but
-            // by the cache's eviction invariant
-            // (`oldest_allowed ≤ section_aligned(execution_finalized − retention + 1)
-            // ≤ execution_finalized`), `height < oldest_allowed` implies
-            // `height ≤ execution_finalized`. The EL's finality contract
-            // guarantees every block at or below `execution_finalized` is
-            // durably persisted, so the marshal's subsequent
-            // `Blocks::get(height)` will be served out of the execution
-            // layer fallback path. We can't write to EL ourselves (it owns
-            // its own storage), but we don't have to — the block is
-            // already durable. Treat the put as a successful no-op so
-            // we don't trip the marshal's "failed to finalize" panic
-            // on a perfectly recoverable condition.
-            Err(archive::Error::AlreadyPrunedTo(oldest_allowed)) => {
-                debug!(
-                    %height,
-                    oldest_allowed,
-                    execution_finalized = ?self.execution_block_provider.finalized_height(),
-                    "finalized block below prunable cache window; trusting the \
-                    execution layer's finalized storage and treating put as a \
-                    no-op"
-                );
-            }
-            Err(other) => return Err(other.into()),
-        }
+        self.prunable = archive::Archive::put(self.prunable, height.get(), digest, block).await?;
 
-        if let Err(err) = self.evict_below_execution_finalized_floor().await {
-            // Eviction failures are not fatal; the next put will retry.
-            // We log because they may indicate disk-level issues.
-            warn!(
-                %err,
-                %height,
-                retention = self.retention_blocks,
-                "failed to evict prunable finalized blocks cache after put"
-            );
-        }
-        Ok(())
+        self = self.evict_below_execution_finalized_floor().await?;
+        Ok(self)
     }
 
-    async fn sync(&mut self) -> Result<(), Self::Error> {
-        archive::Archive::sync(&mut self.prunable).await?;
-        Ok(())
+    async fn sync(mut self) -> Result<Self, Self::Error> {
+        self.prunable = archive::Archive::sync(self.prunable).await?;
+        Ok(self)
     }
 
     /// Attempts to read `id` from the prunable archive, falling back to EL on miss.
@@ -398,8 +364,8 @@ where
     }
 
     /// No-op: Cache eviction is EL-driven (see [`Self::evict_below_execution_finalized_floor`]).
-    async fn prune(&mut self, _min: Height) -> Result<(), Self::Error> {
-        Ok(())
+    async fn prune(self, _min: Height) -> Result<Self, Self::Error> {
+        Ok(self)
     }
 
     fn missing_items(&self, start: Height, max: usize) -> Vec<Height> {

@@ -7,7 +7,7 @@ use commonware_codec::DecodeExt;
 use commonware_consensus::{
     Epochable, Reporter, Viewable,
     simplex::{
-        elector::Random,
+        elector::{Random, RandomVersion},
         scheme::bls12381_threshold::vrf::{Certificate, Scheme},
         types::Activity,
     },
@@ -319,11 +319,13 @@ impl<TContext: Spawner + Metrics + Pacer> Actor<TContext> {
             Round::new(epoch_of_next_block, View::new(1))
         };
 
-        let next_proposer = Random::select_leader::<MinSig>(
-            next_round,
-            scheme.participants().len() as u32,
-            certificate.get().map(|signature| signature.seed_signature),
-        );
+        #[allow(deprecated)]
+        let next_proposer = Random::<commonware_cryptography::Sha256>::new(RandomVersion::V0)
+            .select_leader::<MinSig>(
+                next_round,
+                scheme.participants().len() as u32,
+                certificate.get().map(|signature| signature.seed_signature),
+            );
         let next_proposer = scheme.participants()[next_proposer.get() as usize].clone();
 
         debug!(?next_proposer, ?next_round, "determined next proposer");

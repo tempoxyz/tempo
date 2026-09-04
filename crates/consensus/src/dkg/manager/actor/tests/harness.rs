@@ -23,7 +23,11 @@ use commonware_cryptography::{
     Signer as _,
     bls12381::{
         dkg::feldman_desmedt::{self as dkg, Logs, Output, SignedDealerLog},
-        primitives::{group::Share, sharing::Sharing, variant::MinSig},
+        primitives::{
+            group::Share,
+            sharing::{Mode, Sharing},
+            variant::MinSig,
+        },
     },
     ed25519::{Batch, PrivateKey, PublicKey},
     transcript::Summary,
@@ -678,7 +682,7 @@ pub(super) fn dkg_state(
     let players = ordered::Set::try_from_iter(keys.iter().map(|key| key.public_key()))
         .expect("test players should be unique");
     let (output, shares) =
-        dkg::deal::<MinSig, _, N3f1>(&mut *rng, Default::default(), players.clone())
+        dkg::deal::<MinSig, _, N3f1>(&mut *rng, Mode::NonZeroCounter, players.clone())
             .expect("test DKG");
     let shares = keys
         .iter()
@@ -732,13 +736,14 @@ pub(super) fn revealed_recovery_fixture(
                 .find(|key| key.public_key() == player_public_key)
                 .unwrap();
             let mut player = dkg::Player::new(round.info().clone(), player_key.clone()).unwrap();
-            let dkg::Verdict::Valid(ack) = player.dealer_message::<N3f1>(
-                dealer_public_key.clone(),
-                public_message.clone(),
-                private_message,
-            ) else {
-                panic!("test dealing must be valid");
-            };
+            let ack = player
+                .dealer_message::<N3f1>(
+                    dealer_public_key.clone(),
+                    public_message.clone(),
+                    private_message,
+                )
+                .expect("test dealing must be valid")
+                .expect("test dealing must be new");
             dealer.receive_player_ack(player_public_key, ack).unwrap();
         }
 
