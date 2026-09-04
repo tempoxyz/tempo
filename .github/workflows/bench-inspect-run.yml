@@ -6,9 +6,9 @@ on:
   workflow_dispatch:
     inputs:
       benchmark-id:
-        description: Existing benchmark ID whose preparation status should be read.
+        description: Existing benchmark ID whose validator and command status should be read.
         type: string
-        default: bench-e2e-multi-region-33861492894-1
+        default: bench-e2e-multi-region-33868520967-1
 permissions:
   contents: read
   id-token: write
@@ -17,7 +17,7 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 5
     env:
-      BENCHMARK_ID: ${{ inputs.benchmark-id || 'bench-e2e-multi-region-33861492894-1' }}
+      BENCHMARK_ID: ${{ inputs.benchmark-id || 'bench-e2e-multi-region-33868520967-1' }}
     steps:
       - name: Configure AWS credentials
         uses: tempoxyz/gh-actions/vendor/aws-actions/configure-aws-credentials@3626124474a987bc74b41fc7ae65b2e23f8e4e4e
@@ -25,7 +25,7 @@ jobs:
           role-to-assume: arn:aws:iam::934822761402:role/benchmark-runner
           aws-region: us-east-1
           role-duration-seconds: 900
-      - name: Read preparation status for the ten benchmark validators
+      - name: Read validator preparation and benchmark command status
         run: |
           python3 - <<'PY'
           import concurrent.futures, json, os, re, subprocess
@@ -48,7 +48,7 @@ jobs:
               results = list(executor.map(inspect, range(10)))
           commands = []
           for region in regions:
-              query = "Commands[?Comment == 'tempo " + benchmark + " prepare-schelk'].{id:CommandId,status:Status}"
+              query = "Commands[?starts_with(Comment, 'tempo " + benchmark + " ')].{id:CommandId,phase:Comment,status:Status,requested:RequestedDateTime}"
               result = subprocess.run(['aws', 'ssm', 'list-commands', '--region', region, '--query', query, '--output', 'json'], capture_output=True, text=True, timeout=30)
               if result.returncode:
                   commands.append({'region': region, 'status': 'command status unavailable'})
