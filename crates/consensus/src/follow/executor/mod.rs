@@ -22,8 +22,8 @@ use reth_engine_primitives::ConsensusEngineHandle;
 use reth_ethereum::chainspec::EthChainSpec as _;
 use reth_primitives_traits::{NodePrimitives, SealedHeader};
 use reth_provider::{
-    BlockHashReader, BlockIdReader, ChainSpecProvider as _, DatabaseProviderFactory as _,
-    HeaderProvider,
+    BlockHashReader, BlockIdReader, BlockNumReader, ChainSpecProvider as _,
+    DatabaseProviderFactory as _, HeaderProvider,
     providers::{BlockchainProvider, ProviderNodeTypes},
 };
 use tempo_node::{TempoExecutionData, TempoPayloadTypes};
@@ -118,10 +118,13 @@ where
     }
 
     fn durable_block_hash(&self, height: u64) -> eyre::Result<Option<B256>> {
-        self.database_provider_ro()
-            .map_err(eyre::Report::new)?
-            .block_hash(height)
-            .map_err(eyre::Report::new)
+        let provider = self.database_provider_ro().map_err(eyre::Report::new)?;
+        let last_block_number = provider.last_block_number().map_err(eyre::Report::new)?;
+        if last_block_number < height {
+            return Ok(None);
+        }
+
+        provider.block_hash(height).map_err(eyre::Report::new)
     }
 }
 
