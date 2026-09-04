@@ -421,22 +421,23 @@ impl StorageActionReplayState {
     }
 
     fn cached_storage_value<DB>(db: &CacheDB<DB>, address: Address, slot: U256) -> Option<U256> {
-        db.cache.accounts.get(&address).and_then(|cached_account| {
-            let Some(_account) = cached_account.as_ref() else {
-                // Account is in cache and known to not exist, so all its storage is zero.
-                return Some(U256::ZERO);
-            };
-
-            let cached_storage = db.cache.storage.get(&address)?;
+        // Match CacheDB's read order: locally committed slots remain authoritative even when
+        // the account is absent or has not been loaded. A wipe only zeroes uncached slots.
+        if let Some(cached_storage) = db.cache.storage.get(&address) {
             if let Some(slot) = cached_storage.slots.get(&slot).copied() {
-                // Account and slot are in cache.
-                Some(slot)
-            } else {
-                // Account is in cache, but the slot is not. If the storage is reported to be fully known,
-                // it means the slot doesn't exist, and its value is zero.
-                cached_storage.wiped.then_some(U256::ZERO)
+                return Some(slot);
             }
-        })
+            if cached_storage.wiped {
+                return Some(U256::ZERO);
+            }
+        }
+
+        // Known account absence suppresses backing-storage reads, but only after checking writes.
+        db.cache
+            .accounts
+            .get(&address)
+            .is_some_and(Option::is_none)
+            .then_some(U256::ZERO)
     }
 
     /// Returns the current slot value for exact replay.
@@ -596,6 +597,92 @@ mod tests {
         evm.overlay_db_mut()
             .insert_account_storage(&address, &slot, &value);
         evm
+    }
+
+    #[test]
+    fn replay_cache_matches_committed_storage_with_absent_or_uncached_account() {
+        let address = Address::repeat_byte(0x42);
+        let slot = U256::from(7);
+        for account_known_absent in [false, true] {
+            let mut evm = empty_evm(InMemoryDB::default());
+            let db = evm.overlay_db_mut();
+            if account_known_absent {
+                db.cache.accounts.insert(address, None);
+            }
+            let mut pending = PendingState::default();
+            pending.insert_storage(address, slot, U256::ZERO, U256::from(11));
+            db.commit_pending(&pending);
+
+            let actual = db.get_storage(&address, &slot).unwrap();
+            assert_eq!(actual, U256::from(11));
+            assert_eq!(
+                StorageActionReplayState::cached_storage_value(db, address, slot),
+                Some(actual)
+            );
+            let mut replay = StorageActionReplayState::default();
+            assert_eq!(
+                replay
+                    .sload_current_or(db, address, slot, U256::from(3))
+                    .unwrap(),
+                actual
+            );
+            assert!(
+                replay
+                    .sload_exact(db, address, slot, U256::from(3))
+                    .is_err()
+            );
+        }
+    }
+
+    #[test]
+    fn replay_cache_preserves_storage_wipes_and_absent_backing_semantics() {
+        let address = Address::repeat_byte(0x42);
+        let slot = U256::from(7);
+        let other_slot = U256::from(8);
+        let mut evm = state_with_storage(address, slot, U256::from(5));
+        let db = evm.overlay_db_mut();
+        let original = db.get_account(&address).unwrap();
+        let mut deletion = PendingState::default();
+        deletion.insert_account(address, original, None);
+        db.commit_pending(&deletion);
+        assert_eq!(
+            StorageActionReplayState::cached_storage_value(db, address, slot),
+            Some(U256::ZERO)
+        );
+        assert_eq!(db.get_storage(&address, &slot).unwrap(), U256::ZERO);
+
+        // A later committed write takes precedence even while the account is absent and the
+        // storage cache retains the wipe marker; untouched slots still read as zero.
+        let mut write = PendingState::default();
+        write.insert_storage(address, slot, U256::ZERO, U256::from(9));
+        db.commit_pending(&write);
+        assert_eq!(
+            StorageActionReplayState::cached_storage_value(db, address, slot),
+            Some(U256::from(9))
+        );
+        assert_eq!(db.get_storage(&address, &slot).unwrap(), U256::from(9));
+        assert_eq!(
+            StorageActionReplayState::cached_storage_value(db, address, other_slot),
+            Some(U256::ZERO)
+        );
+        assert_eq!(db.get_storage(&address, &other_slot).unwrap(), U256::ZERO);
+    }
+
+    #[test]
+    fn replay_cache_does_not_read_backing_storage_for_known_absent_account() {
+        let address = Address::repeat_byte(0x42);
+        let slot = U256::from(7);
+        let mut backing = InMemoryDB::default();
+        backing.insert_account_info(&address, AccountInfo::default().with_nonce(1));
+        backing.insert_account_storage(&address, &slot, &U256::from(99));
+        let mut evm = empty_evm(backing);
+        let db = evm.overlay_db_mut();
+        db.cache.accounts.insert(address, None);
+        assert_eq!(
+            StorageActionReplayState::cached_storage_value(db, address, slot),
+            Some(U256::ZERO)
+        );
+        assert_eq!(db.get_storage(&address, &slot).unwrap(), U256::ZERO);
     }
 
     #[test]
