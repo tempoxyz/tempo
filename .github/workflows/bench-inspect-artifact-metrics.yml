@@ -1,0 +1,157 @@
+name: bench-inspect-artifact-metrics
+on:
+  push:
+    branches: [ejh/20k-tps-10v]
+    paths: [.github/workflows/bench-inspect-artifact-metrics.yml]
+  workflow_dispatch:
+permissions:
+  actions: read
+jobs:
+  inspect:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - name: Verify and reduce exact standalone incoming baseline archive
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          python3 - <<'PYCODE'
+          import datetime, hashlib, json, os, pathlib, shutil, subprocess, zipfile
+          from collections import deque
+          artifact_id = 9940278451
+          run_id = 33875842539
+          benchmark = 'bench-e2e-multi-region-33875842539-1'
+          entry = 'baseline-1/txgen-report.samples.ndjson.gz'
+          expected_archive_sha = 'c3fc18fbf278c35330d39ca7a7bdca1d47e0453bdba443112493b1d2a9534ff6'
+          expected_report_sha = 'db7e0b02763ea681c0cab7f963f117fa73eeeb4e16ab62609f09b6b500f6f7f8'
+          expected_proof_sha = 'db7505de5025721f64489f3d7e805b30d829d7eaa1b8128c69bea309b05c3572'
+          api = f'repos/tempoxyz/tempo/actions/artifacts/{artifact_id}'
+          metadata = json.loads(subprocess.check_output(['gh', 'api', api], text=True, timeout=30))
+          assert metadata['workflow_run']['id'] == run_id and metadata['id'] == artifact_id
+          assert metadata['name'] == 'tempo-bench-e2e-multi-region-results' and not metadata['expired']
+          assert metadata['size_in_bytes'] == 560237994
+          assert metadata['digest'] == 'sha256:' + expected_archive_sha
+          archive = pathlib.Path('source-artifact.zip')
+          with archive.open('wb') as output:
+              subprocess.run(['gh', 'api', api + '/zip'], stdout=output, check=True, timeout=180)
+          assert archive.stat().st_size == metadata['size_in_bytes']
+          archive_sha = hashlib.file_digest(archive.open('rb'), 'sha256').hexdigest()
+          assert archive_sha == expected_archive_sha, 'Artifact archive SHA mismatch'
+          entry_sizes = {'baseline-1/txgen-report.json': 77197,
+                         'baseline-1/sustained-proof.json': 99265,
+                         entry: 281576770}
+          extracted = {}
+          with zipfile.ZipFile(archive) as zipped:
+              for name, expected_size in entry_sizes.items():
+                  matches = [item for item in zipped.infolist() if item.filename == name]
+                  assert len(matches) == 1 and matches[0].file_size == expected_size
+                  target = pathlib.Path('source-' + name.rsplit('/',1)[1])
+                  with zipped.open(matches[0]) as source_file, target.open('wb') as output:
+                      shutil.copyfileobj(source_file, output, 1024 * 1024)
+                  assert target.stat().st_size == expected_size
+                  extracted[name] = {'bytes': expected_size,
+                                     'sha256': hashlib.file_digest(target.open('rb'), 'sha256').hexdigest()}
+          archive.unlink()
+          report = json.loads(pathlib.Path('source-txgen-report.json').read_text())
+          proof = json.loads(pathlib.Path('source-sustained-proof.json').read_text())
+          def canonical_sha(value):
+              return hashlib.sha256(json.dumps(value, sort_keys=True, separators=(',',':')).encode()).hexdigest()
+          assert canonical_sha(report) == expected_report_sha, 'Baseline report differs from captured report'
+          assert canonical_sha(proof) == expected_proof_sha, 'Baseline proof differs from captured full receipt proof'
+          assert proof['benchmark_id'] == benchmark and proof['run_label'] == 'baseline-1'
+          assert report['metadata']['node_commit_sha'] == 'ce59d060038fbaf01596621a5770a8662a71f5d2'
+          blocks = report['blocks']
+          assert blocks[0]['number'] == 83 and blocks[-1]['number'] == 293
+          assert all(b['number'] == a['number'] + 1 and b['timestamp_ms'] > a['timestamp_ms'] for a,b in zip(blocks,blocks[1:]))
+          bounds = [block['timestamp_ms'] for block in blocks]
+          assert bounds[0] == proof['report_start_timestamp_ms'] == 1788528371262
+          assert bounds[-1] == proof['report_end_timestamp_ms'] == 1788528725073
+          assert sum(block['tx_count'] for block in blocks[1:]) == proof['successful_transactions'] == 399226
+          assert proof['failed_transactions'] == 0
+          samples_file = pathlib.Path('source-txgen-report.samples.ndjson.gz')
+          key = f'github-artifact:{artifact_id}/{entry}'
+          import gzip
+          provenance = {'run_id':run_id, 'artifact_id':artifact_id, 'archive_sha256':archive_sha,
+                        'entry':entry, 'entries':extracted, 'baseline_report_canonical_sha256':expected_report_sha,
+                        'baseline_full_receipt_proof_canonical_sha256':expected_proof_sha,
+                        'report_first_ms':bounds[0], 'report_last_ms':bounds[-1],
+                        'note':'Exact baseline entry; same metric filters and five-second reduction as bench-inspect-run. Raw archive parsing stays on GitHub Actions.'}
+          pathlib.Path('inspection-source-provenance.json').write_text(json.dumps(provenance, indent=2))
+          names = {'reth_consensus_engine_persistence_save_blocks_duration_seconds', 'reth_database_transaction_commit_sync_duration_seconds', 'reth_database_transaction_commit_whole_duration_seconds', 'reth_storage_providers_database_save_blocks_commit_mdbx_last', 'reth_storage_providers_database_save_blocks_commit_sf_last', 'reth_storage_providers_database_save_blocks_write_trie_updates_last'}
+          report_first, report_last = min(bounds), max(bounds)
+          rows = {}
+          stability = {}
+          performance = {}
+          metric_inventory = set()
+          detailed = False
+          performance_tokens = ('reth_consensus_engine_beacon_', 'reth_payload_builder_')
+          inventory_tokens = ()
+          if detailed:
+              performance_tokens += ('reth_tempo_payload_builder_', 'reth_transaction_pool_', 'execution_cache', 'payload_processor', 'block_validation', 'validate_block', 'execution_duration', 'prewarm', 'reth_sync_execution_', 'reth_sync_block_validation_', 'reth_sync_state_provider_', 'reth_sync_caching_', 'notarization_latency', 'finalization_latency')
+              inventory_tokens = ('consensus', 'marshal', 'simplex', 'proposal', 'verify', 'broadcast', 'notariz', 'finaliz')
+          def observe(collection, sample):
+              timestamp, name, labels = sample['unix_ms'], sample['name'], sample['labels']
+              identity = (name, json.dumps(labels, sort_keys=True))
+              series = collection.setdefault(identity, {'metric': name, 'labels': labels, 'buckets': {}})
+              bucket_index = (timestamp - report_first) // 5000
+              point = series['buckets'].setdefault(bucket_index, {'first_ms': timestamp, 'last_ms': timestamp, 'first': sample['value'], 'last': sample['value'], 'minimum': sample['value'], 'maximum': sample['value'], 'count': 0})
+              if timestamp < point['first_ms']:
+                  point.update(first_ms=timestamp, first=sample['value'])
+              if timestamp >= point['last_ms']:
+                  point.update(last_ms=timestamp, last=sample['value'])
+              point['minimum'] = min(point['minimum'], sample['value'])
+              point['maximum'] = max(point['maximum'], sample['value'])
+              point['count'] += 1
+          def export_series(collection):
+              return [{**{key: value for key, value in series.items() if key != 'buckets'}, 'buckets': [dict(bucket=bucket, **point) for bucket, point in sorted(series['buckets'].items())]} for _, series in sorted(collection.items())]
+          stability_names = {'reth_consensus_engine_beacon_backpressure_active', 'reth_consensus_engine_beacon_executed_blocks', 'reth_blockchain_tree_canonical_chain_height', 'reth_sync_checkpoint'}
+          stability_tokens = tuple(stability_names) + ('jemalloc', 'resident_memory', 'process_resident')
+          interesting_tokens = tuple(names) + stability_tokens + performance_tokens + inventory_tokens
+          sample_first = None
+          sample_last = None
+          with gzip.open(samples_file, 'rt') as samples:
+              for line in samples:
+                  if not any(token in line for token in interesting_tokens):
+                      continue
+                  sample = json.loads(line)
+                  name = sample['name']
+                  timestamp = sample['unix_ms']
+                  labels = sample['labels']
+                  if report_first <= timestamp <= report_last:
+                      if any(token in name for token in inventory_tokens):
+                          metric_inventory.add(name)
+                      if any(token in name for token in performance_tokens):
+                          observe(performance, sample)
+                  if report_first <= timestamp <= report_last and (name in stability_names or any(token in name for token in ('jemalloc', 'resident_memory', 'process_resident'))):
+                      if name != 'reth_sync_checkpoint' or labels.get('stage') == 'Finish':
+                          observe(stability, sample)
+                  if sample['name'] not in names:
+                      continue
+                  timestamp = sample['unix_ms']
+                  sample_first = timestamp if sample_first is None else min(sample_first, timestamp)
+                  sample_last = timestamp if sample_last is None else max(sample_last, timestamp)
+                  labels = sample['labels']
+                  quantile = labels.get('quantile', 'last')
+                  if not report_first <= timestamp <= report_last or quantile not in ('0.99', 'last') or labels.get('outcome', 'commit') != 'commit':
+                      continue
+                  identity = (labels.get('node', labels.get('validator', '?')), sample['name'], quantile)
+                  prior = rows.get(identity)
+                  if prior is None or sample['value'] > prior['maximum_observed']:
+                      rows[identity] = {'node': identity[0], 'metric': identity[1], 'quantile': quantile, 'maximum_observed': sample['value'], 'unix_ms': timestamp}
+          digest = hashlib.file_digest(samples_file.open('rb'), 'sha256').hexdigest()
+          metric_result = {'source_sha256': digest, 'source_key': key, 'report_first_ms': min(bounds), 'report_last_ms': max(bounds), 'sample_first_ms': sample_first, 'sample_last_ms': sample_last, 'note': 'Maxima of exported quantile or last-value samples within the report range; not pooled quantiles.', 'series': sorted(rows.values(), key=lambda row: (row['node'], row['metric']))}
+          pathlib.Path('inspection-persistence-metrics.json').write_text(json.dumps(metric_result, indent=2))
+          stability_result = {'source_sha256': digest, 'source_key': key, 'report_first_ms': min(bounds), 'report_last_ms': max(bounds), 'note': 'Observed samples grouped into five-second buckets; absent metrics are unavailable. Finish checkpoint is the block-data frontier, not the masked state/trie frontier. Jemalloc resident excludes non-allocator mappings. No bounded-memory or long-term stability claim follows from this short observation.', 'series': [{**{key: value for key, value in series.items() if key != 'buckets'}, 'buckets': [dict(bucket=bucket, **point) for bucket, point in sorted(series['buckets'].items())]} for _, series in sorted(stability.items())]}
+          pathlib.Path('inspection-stability-metrics.json').write_text(json.dumps(stability_result, indent=2))
+          performance_result = {'source_sha256': digest, 'source_key': key, 'report_first_ms': report_first, 'report_last_ms': report_last, 'detailed_performance': detailed, 'note': 'Five-second buckets of observed exports, preserving complete labels and sum/count series. Buckets 0-11 cover the first sixty seconds. Quantiles are exported observations, not recomputed distributions. Missing metrics are unavailable.', 'consensus_metric_inventory': sorted(metric_inventory), 'series': export_series(performance)}
+          pathlib.Path('inspection-performance-metrics.json').write_text(json.dumps(performance_result))
+          print(json.dumps({'source':provenance,'persistence':metric_result},indent=2))
+          PYCODE
+      - name: Upload compact baseline metric evidence
+        if: always()
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: benchmark-artifact-metrics
+          path: inspection-*.json
+          if-no-files-found: error
+          retention-days: 14
