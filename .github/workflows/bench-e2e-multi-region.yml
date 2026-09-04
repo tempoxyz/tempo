@@ -3,6 +3,10 @@ name: bench-e2e-multi-region
 on:
   workflow_call:
     inputs:
+      benchmark-ref:
+        type: string
+        required: false
+        default: main
       cloud:
         type: string
         required: false
@@ -71,6 +75,14 @@ on:
         type: boolean
         required: false
         default: true
+      verify-sustained:
+        type: boolean
+        required: false
+        default: false
+      storage-mode:
+        type: string
+        required: false
+        default: schelk
     secrets:
       BENCH_LOGS_PUSH_URL:
         required: false
@@ -94,6 +106,11 @@ on:
         required: false
   workflow_dispatch:
     inputs:
+      benchmark-ref:
+        description: Git ref in tempo-multi-region-benchmark; pin a commit for reproducible infrastructure experiments.
+        type: string
+        required: false
+        default: main
       cloud:
         description: Cloud provider used for disposable benchmark infrastructure.
         type: choice
@@ -235,6 +252,19 @@ on:
         type: string
         required: false
         default: ""
+      verify-sustained:
+        description: Verify successful execution TPS and finalized agreement across validators; use duration 360s or longer.
+        type: boolean
+        required: false
+        default: false
+      storage-mode:
+        description: Direct mounts the durable NVMe scratch after a full restore before each phase; schelk uses dm-era tracking.
+        type: choice
+        required: false
+        default: schelk
+        options:
+          - schelk
+          - direct
       run-pairs:
         description: Number of baseline/feature run pairs.
         type: string
@@ -296,6 +326,8 @@ jobs:
       BENCH_INPUT_GENERAL_GAS_LIMIT: ${{ inputs['general-gas-limit'] || '' }}
       BENCH_INPUT_NO_CACHE: ${{ github.event_name == 'workflow_dispatch' && (inputs['no-cache'] == true || inputs['no-cache'] == 'true') && 'true' || 'false' }}
       BENCH_INPUT_BENCH_ARGS: ${{ inputs['bench-args'] || '' }}
+      TEMPO_BENCH_VERIFY_SUSTAINED: ${{ inputs['verify-sustained'] == true && 'true' || 'false' }}
+      TEMPO_BENCH_STORAGE_MODE: ${{ inputs['storage-mode'] || 'schelk' }}
       BENCH_INPUT_RUN_PAIRS: ${{ inputs['run-pairs'] || (github.event_name == 'pull_request' && '1') || '3' }}
       BENCH_INPUT_CLICKHOUSE_RUN: ${{ inputs['clickhouse-run'] || 'feature-1' }}
       CLICKHOUSE_URL: ${{ secrets.CLICKHOUSE_URL }}
@@ -375,10 +407,23 @@ jobs:
         uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
         with:
           repository: tempoxyz/tempo-multi-region-benchmark
-          ref: ${{ github.repository == 'tempoxyz/tempo-multi-region-benchmark' && github.sha || 'main' }}
+          ref: ${{ github.repository == 'tempoxyz/tempo-multi-region-benchmark' && github.sha || inputs['benchmark-ref'] || 'main' }}
           path: ${{ env.BENCH_REPO_DIR }}
           token: ${{ steps.github-sts.outputs.token }}
           persist-credentials: false
+
+      - name: Validate benchmark opt-in support
+        if: env.TEMPO_BENCH_STORAGE_MODE == 'direct' || env.TEMPO_BENCH_VERIFY_SUSTAINED == 'true'
+        run: |
+          runner_help="$("$BENCH_REPO_DIR/scripts/run_comparison.sh" --help 2>&1)"
+          if [[ "$TEMPO_BENCH_STORAGE_MODE" == direct && "$runner_help" != *"--storage-mode"* ]]; then
+            echo "::error::The benchmark infrastructure does not yet support direct storage"
+            exit 1
+          fi
+          if [[ "$TEMPO_BENCH_VERIFY_SUSTAINED" == true && "$runner_help" != *"--verify-sustained"* ]]; then
+            echo "::error::The benchmark infrastructure does not yet support sustained verification"
+            exit 1
+          fi
 
       - name: Validate Tempo commit ancestry
         run: |
