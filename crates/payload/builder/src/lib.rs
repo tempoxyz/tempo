@@ -609,7 +609,7 @@ where
         // Consensus builds carry a remaining proposal budget. When present, the
         // builder stops pool tx execution before projected proposer and validator
         // work would consume that window.
-        let payload_build_budget = attributes.payload_build_budget();
+        let payload_build_budget = attributes.payload_build_budget_at(start);
         let build_time_multiplier = self.build_time_multiplier();
         let marshal_persist = marshal_persist_estimate();
         let validation_latency = attributes.validation_latency_estimate();
