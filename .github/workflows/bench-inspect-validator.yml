@@ -9,6 +9,10 @@ on:
         description: Existing benchmark to inspect; reads validator zero only.
         type: string
         default: bench-e2e-multi-region-33871027933-1
+      sample-start-block:
+        description: Optional first block for a bounded 360-second canonical chain sample.
+        type: string
+        default: ''
 permissions:
   contents: read
   id-token: write
@@ -18,6 +22,7 @@ jobs:
     timeout-minutes: 5
     env:
       BENCHMARK_ID: ${{ inputs.benchmark-id || 'bench-e2e-multi-region-33871027933-1' }}
+      SAMPLE_START_BLOCK: ${{ inputs.sample-start-block || '' }}
     steps:
       - name: Configure AWS credentials
         uses: tempoxyz/gh-actions/vendor/aws-actions/configure-aws-credentials@3626124474a987bc74b41fc7ae65b2e23f8e4e4e
@@ -32,6 +37,9 @@ jobs:
           benchmark = os.environ['BENCHMARK_ID']
           if not re.fullmatch(r'bench-e2e-multi-region-\d+-\d+', benchmark):
               raise SystemExit('Invalid benchmark ID')
+          sample_start = os.environ['SAMPLE_START_BLOCK']
+          if sample_start and not re.fullmatch(r'[0-9]{1,10}', sample_start):
+              raise SystemExit('Invalid sample start block')
           manifest = subprocess.check_output(['aws', 's3', 'cp', f's3://tempo-benchmark-artifacts-934822761402-us-east-1/runs/{benchmark}/artifacts/runner/validators.json', '-', '--region', 'us-east-1', '--only-show-errors'], text=True)
           validator = next(item for item in json.loads(manifest) if item['index'] == 0)
           if not re.fullmatch(r'i-[0-9a-f]+', validator['instance_id']) or validator['region'] != 'us-east-1':
@@ -55,6 +63,44 @@ jobs:
           RPC
           journalctl -u tempo-node --no-pager -n 70 --output=short-iso | cut -c1-1800
           '''
+          if sample_start:
+              command = '''python3 - <<'SAMPLE'
+          import json, time, urllib.request
+          start = SAMPLE_START
+          deadline = time.monotonic() + 40
+          rows = []
+          previous = None
+          intervals = []
+          transactions = 0
+          reason = 'sample limit'
+          for number in range(start, start + 1500):
+              if time.monotonic() >= deadline:
+                  reason = 'observation time limit'
+                  break
+              request = urllib.request.Request('http://127.0.0.1:8545', data=json.dumps({'jsonrpc':'2.0','id':1,'method':'eth_getBlockByNumber','params':[hex(number),False]}).encode(), headers={'Content-Type':'application/json'})
+              block = json.load(urllib.request.urlopen(request, timeout=5)).get('result')
+              if not block:
+                  reason = 'reached current head'
+                  break
+              assert int(block['number'],16) == number
+              millis = block.get('timestampMillisPart', 0)
+              millis = int(millis,16) if isinstance(millis,str) and millis.startswith('0x') else int(millis)
+              timestamp = int(block['timestamp'],16)*1000 + millis
+              if previous:
+                  assert block['parentHash'] == previous['hash'], 'noncanonical parent chain'
+                  assert timestamp > rows[-1][1], 'nonincreasing timestamp'
+                  intervals.append(timestamp-rows[-1][1])
+                  transactions += len(block['transactions'])
+              rows.append([number,timestamp,len(block['transactions'])])
+              previous = {'hash':block['hash']}
+              if timestamp-rows[0][1] >= 360000:
+                  reason = 'covered 360 seconds'
+                  break
+          span = (rows[-1][1]-rows[0][1])/1000 if len(rows)>1 else 0
+          result = {'kind':'live_canonical_sample','requested_start':start,'reason':reason,'complete':reason=='covered 360 seconds','first':rows[0] if rows else None,'last':rows[-1] if rows else None,'terminal_hash':previous['hash'] if previous else None,'seconds':span,'included_transactions':transactions,'intervals':len(intervals),'included_tps':transactions/span if span else None,'mean_block_ms':sum(intervals)/len(intervals) if intervals else None,'max_block_ms':max(intervals) if intervals else None,'receipt_success_verified':False,'note':'Read-only single-validator chain sample; not the txgen report or global success proof.'}
+          print(json.dumps(result))
+          SAMPLE
+          '''.replace('SAMPLE_START', sample_start)
           params = json.dumps({'commands':[command], 'executionTimeout':['60']})
           submitted = subprocess.check_output(['aws','ssm','send-command','--region','us-east-1','--document-name','AWS-RunShellScript','--instance-ids',validator['instance_id'],'--comment',f'{benchmark} read-only validator status','--parameters',params,'--output','json'], text=True)
           command_id = json.loads(submitted)['Command']['CommandId']
