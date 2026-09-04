@@ -11,7 +11,10 @@ use commonware_cryptography::ed25519::PublicKey;
 use commonware_runtime::{Clock, Metrics, Spawner};
 use reth_ethereum::{chainspec::EthChainSpec as _, rpc::eth::primitives::BlockNumHash};
 use reth_node_builder::PayloadKind;
-use reth_provider::{BlockHashReader as _, BlockReader as _, BlockSource};
+use reth_provider::{
+    BlockHashReader as _, BlockNumReader as _, BlockReader as _, BlockSource,
+    DatabaseProviderFactory as _,
+};
 use tempo_node::{TempoExecutionData, TempoFullNode};
 use tempo_payload_types::{TempoBuiltPayload, TempoPayloadAttributes};
 use tokio::sync::oneshot;
@@ -72,6 +75,12 @@ pub(crate) trait ExecutionLayer: Clone + Send + Sync + 'static {
     /// The execution layer's finalized block, falling back to genesis if no
     /// block has been explicitly finalized yet.
     fn finalized_num_hash(&self) -> BlockNumHash;
+
+    /// Highest block persisted in Reth's database, excluding in-memory state.
+    fn persisted_block_number(&self) -> eyre::Result<u64>;
+
+    /// Persisted database block hash at `height`, excluding in-memory state.
+    fn persisted_block_hash(&self, height: u64) -> eyre::Result<Option<B256>>;
 
     /// The hash of the genesis block.
     fn genesis_hash(&self) -> B256;
@@ -157,6 +166,14 @@ impl ExecutionLayer for Arc<TempoFullNode> {
             .canonical_in_memory_state()
             .get_finalized_num_hash()
             .unwrap_or_else(|| BlockNumHash::new(0, self.genesis_hash()))
+    }
+
+    fn persisted_block_number(&self) -> eyre::Result<u64> {
+        self.provider.last_block_number().map_err(Into::into)
+    }
+
+    fn persisted_block_hash(&self, height: u64) -> eyre::Result<Option<B256>> {
+        Ok(self.provider.database_provider_ro()?.block_hash(height)?)
     }
 
     fn genesis_hash(&self) -> B256 {

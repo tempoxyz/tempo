@@ -19,10 +19,10 @@ use commonware_runtime::{
     BufferPooler, Clock, ContextCell, Handle, Metrics, Network, Pacer, Spawner, Storage,
     buffer::paged::CacheRef, spawn_cell,
 };
-use commonware_utils::NZUsize;
 use eyre::{OptionExt as _, WrapErr as _};
 use futures::future::try_join_all;
 use rand_core::{CryptoRng, Rng};
+use reth_engine_primitives::DEFAULT_PERSISTENCE_THRESHOLD;
 use tempo_node::TempoFullNode;
 use tracing::info;
 
@@ -42,8 +42,21 @@ use super::block::Block;
 /// To better support peers near tip during network instability, we multiply
 /// the consensus activity timeout by this factor.
 const SYNCER_ACTIVITY_TIMEOUT_MULTIPLIER: u64 = 10;
-// Ensure the marshal delivers blocks sequentially.
-const MAX_PENDING_ACKS: NonZeroUsize = NZUsize!(1);
+/// Maximum number of finalized blocks marshal may deliver without receiving
+/// acknowledgements from the executor.
+///
+/// The executor acknowledges blocks only after Reth persists them, while Reth
+/// starts persistence only after its canonical in-memory block count exceeds
+/// [`DEFAULT_PERSISTENCE_THRESHOLD`]. A depth of 70 (ten times the current
+/// threshold) gives persistence enough runway to start and finish without
+/// stalling marshal and, consequently, consensus progress.
+const MAX_PENDING_ACKS: NonZeroUsize = NonZeroUsize::new(70).expect("70 is nonzero");
+
+const _: () = assert!(
+    MAX_PENDING_ACKS.get() as u64 > DEFAULT_PERSISTENCE_THRESHOLD
+        && (MAX_PENDING_ACKS.get() as u64).is_multiple_of(DEFAULT_PERSISTENCE_THRESHOLD),
+    "marshal pending-ack depth must be a multiple of and exceed Reth's persistence threshold",
+);
 
 /// Settings for [`Engine`].
 ///
