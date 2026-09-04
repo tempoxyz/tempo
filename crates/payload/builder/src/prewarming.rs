@@ -155,6 +155,9 @@ impl BestTransactionsPrewarming {
                         ctx.in_flight -= 1;
                         advance(&mut ctx);
                     }
+                    BestTransactionsCommand::InvalidIndependent(invalid) => {
+                        ctx.best_txs.mark_invalid(&invalid.tx, invalid.kind);
+                    }
                     BestTransactionsCommand::Invalid {
                         invalid,
                         old_rx,
@@ -303,13 +306,24 @@ impl Iterator for BestTransactionsPrewarming {
 
 impl BestTransactions for BestTransactionsPrewarming {
     fn mark_invalid(&mut self, transaction: &Self::Item, kind: InvalidPoolTransactionError) {
+        let invalid = InvalidTransaction {
+            tx: transaction.tx.clone(),
+            kind,
+        };
+        // Expiring nonces have no dependent transactions to remove from the buffer.
+        // Rotating and forwarding the entire queue for each oversized transaction would
+        // turn draining an already-full block's remaining candidates into quadratic work.
+        if transaction.tx.transaction.is_expiring_nonce() {
+            let _ = self
+                .commands_tx
+                .send(BestTransactionsCommand::InvalidIndependent(invalid));
+            return;
+        }
+
         let (new_tx, new_rx) = mpsc::channel();
         let old_rx = core::mem::replace(&mut self.transactions_rx, new_rx);
         let _ = self.commands_tx.send(BestTransactionsCommand::Invalid {
-            invalid: InvalidTransaction {
-                tx: transaction.tx.clone(),
-                kind,
-            },
+            invalid,
             old_rx,
             new_tx,
         });
@@ -451,6 +465,7 @@ impl<Provider> PrewarmingExecutionContext<Provider> {
 enum BestTransactionsCommand {
     Advance,
     Completed,
+    InvalidIndependent(InvalidTransaction),
     Invalid {
         invalid: InvalidTransaction,
         old_rx: Receiver<Option<PrewarmedTransaction>>,
@@ -620,6 +635,14 @@ mod tests {
     }
 
     fn test_payment_tx(sender: Address, gas_limit: u64) -> BestTransaction {
+        test_payment_tx_with_nonce_key(sender, gas_limit, U256::ONE)
+    }
+
+    fn test_payment_tx_with_nonce_key(
+        sender: Address,
+        gas_limit: u64,
+        nonce_key: U256,
+    ) -> BestTransaction {
         let mut token = [0u8; 20];
         token[..2].copy_from_slice(&[0x20, 0xc0]);
         let token = Address::from(token);
@@ -636,7 +659,7 @@ mod tests {
                 value: U256::ZERO,
                 input: input.into(),
             }],
-            nonce_key: U256::ONE,
+            nonce_key,
             ..Default::default()
         };
         let envelope = TempoTxEnvelope::AA(tx.into_signed(Signature::test_signature().into()));
@@ -890,6 +913,56 @@ mod tests {
         assert_eq!(next.tx.hash(), tx3.hash());
         assert_ne!(next.tx.hash(), tx2.hash());
         wait_until(|| log.lock().unwrap().invalid == 1);
+    }
+
+    #[test]
+    fn expiring_nonce_invalidation_preserves_buffered_results_without_coordinator_work() {
+        let sender = Address::random();
+        let invalid = test_payment_tx_with_nonce_key(sender, 500_000, U256::MAX);
+        let buffered = test_tx(sender, 1);
+        let (transactions_tx, transactions_rx) = mpsc::channel();
+        let (commands_tx, _commands_rx) = mpsc::channel();
+        let mut prewarming = BestTransactionsPrewarming {
+            transactions_rx,
+            commands_tx,
+            stop: Arc::new(AtomicBool::new(false)),
+        };
+        transactions_tx
+            .send(Some(PrewarmedTransaction::without_replay(buffered.clone())))
+            .unwrap();
+
+        prewarming.mark_invalid(
+            &PrewarmedTransaction::without_replay(invalid),
+            InvalidPoolTransactionError::ExceedsGasLimit(500_000, 0),
+        );
+
+        // No coordinator is running: the existing queue must remain readable without
+        // forwarding buffered results into a replacement channel.
+        let next = prewarming
+            .transactions_rx
+            .try_recv()
+            .expect("original queue remains available")
+            .unwrap();
+        assert_eq!(next.tx.hash(), buffered.hash());
+    }
+
+    #[test]
+    fn expiring_nonce_invalidation_is_forwarded_to_source() {
+        let sender = Address::random();
+        let invalid = test_payment_tx_with_nonce_key(sender, 500_000, U256::MAX);
+        let next_tx = test_tx(sender, 1);
+        let log = Arc::new(Mutex::new(TestLog::default()));
+        let mut prewarming = prewarming(vec![invalid.clone(), next_tx.clone()], log.clone());
+        let first = prewarming.next().unwrap();
+        assert_eq!(first.tx.hash(), invalid.hash());
+        prewarming.mark_invalid(
+            &first,
+            InvalidPoolTransactionError::ExceedsGasLimit(500_000, 0),
+        );
+
+        wait_until(|| log.lock().unwrap().invalid == 1);
+        assert_eq!(prewarming.next().unwrap().tx.hash(), next_tx.hash());
+        assert!(prewarming.next().is_none());
     }
 
     #[test]
