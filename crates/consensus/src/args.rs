@@ -154,6 +154,10 @@ pub struct Args {
     #[arg(long = "consensus.network-budget", default_value = "50ms")]
     pub network_budget: PositiveDuration,
 
+    /// Overlap marshal persistence with propagation and voting, requiring durability at certify.
+    #[arg(long = "consensus.inline-durability", default_value_t = false)]
+    pub inline_durability: bool,
+
     /// Deprecated compatibility flag. Ignored by the elastic proposal budget.
     #[arg(
         long = "consensus.time-to-prepare-proposal-transactions",
@@ -560,6 +564,16 @@ mod tests {
 
     fn parse(args: &[&str]) -> TestCli {
         TestCli::try_parse_from(std::iter::once("test").chain(args.iter().copied())).unwrap()
+    }
+
+    #[test]
+    fn inline_durability_is_explicitly_opt_in() {
+        assert!(!parse(&["--dev"]).consensus.inline_durability);
+        assert!(
+            parse(&["--dev", "--consensus.inline-durability"])
+                .consensus
+                .inline_durability
+        );
     }
 
     #[test]

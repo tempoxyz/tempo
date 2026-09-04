@@ -245,6 +245,8 @@ pub struct ExecutionNodeConfig {
     pub share_sparse_trie_with_payload_builder: bool,
     /// Enable checked speculative replay in the incoming payload validator.
     pub incoming_replay: bool,
+    /// Disable MDBX WRITEMAP while retaining durable commits.
+    pub disable_write_map: bool,
     /// Override the persistence threshold for explicit frontier tests.
     pub persistence_threshold: Option<u64>,
     /// Number of recent blocks whose state writes remain masked.
@@ -269,6 +271,7 @@ impl ExecutionNodeConfig {
             feed_state: None,
             share_sparse_trie_with_payload_builder: false,
             incoming_replay: false,
+            disable_write_map: false,
             persistence_threshold: None,
             num_state_masking_blocks: 0,
             gossip: None,
@@ -907,6 +910,7 @@ pub async fn launch_execution_node<P: AsRef<Path>>(
         feed_state,
         share_sparse_trie_with_payload_builder,
         incoming_replay,
+        disable_write_map: _, // Applied when TestingNode opens the database.
         persistence_threshold,
         num_state_masking_blocks,
         gossip,

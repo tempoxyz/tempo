@@ -51,6 +51,7 @@ use tracing::{Level, debug, info, instrument, warn};
 
 use super::{
     Mailbox,
+    durability::Durability,
     ingress::{Broadcast, Message, Propose, Verify},
 };
 use crate::{
@@ -89,7 +90,7 @@ struct ProposalReturn {
 }
 
 impl<TContext, TState> Actor<TContext, TState> {
-    pub(super) fn mailbox(&self) -> &Mailbox {
+    pub(in crate::consensus) fn mailbox(&self) -> &Mailbox {
         &self.inner.my_mailbox
     }
 }
@@ -106,7 +107,10 @@ where
 {
     pub(super) async fn init(config: super::Config<TContext>) -> eyre::Result<Self> {
         let (tx, rx) = mailbox::new(config.context.child("mailbox"), config.mailbox_size);
-        let my_mailbox = Mailbox::from_sender(tx);
+        let durability = config
+            .inline_durability
+            .then(|| Durability::new(config.marshal.clone()));
+        let my_mailbox = Mailbox::from_sender(tx, durability);
 
         let metrics = Metrics::init(&config.context);
 
@@ -201,6 +205,19 @@ where
                 self.context.child("propose").spawn({
                     let inner = self.inner.clone();
                     move |context| inner.handle_propose(*propose, context)
+                });
+            }
+            Message::Certify(certify) => {
+                let durability = self
+                    .inner
+                    .my_mailbox
+                    .durability
+                    .clone()
+                    .expect("inline certification enabled");
+                self.context.child("certify").spawn(move |_| async move {
+                    durability
+                        .certify(certify.round, certify.payload, certify.response)
+                        .await;
                 });
             }
             Message::Verify(verify) => {
@@ -330,6 +347,7 @@ impl Inner<Init> {
 
                     Some(block) = &mut already_verified => {
                         debug!("skipping proposal: verified block already exists for round on restart");
+                        let block = super::durability::recovered_proposal(block, self.my_mailbox.durability.is_some())?;
                         Ok((block, None))
                     },
 
@@ -344,20 +362,26 @@ impl Inner<Init> {
                     && let Some(block) = already_verified.await
                 {
                     debug!("skipping proposal: verified block already exists for round on restart");
+                    let block = super::durability::recovered_proposal(
+                        block,
+                        self.my_mailbox.durability.is_some(),
+                    )?;
                     (block, None)
                 } else {
                     proposal_result?
                 };
 
                 if let Some(proposal_return) = proposal_return {
-                    let persist_start = Instant::now();
-                    if !self.marshal.verified(round, block.clone()).await {
-                        bail!("marshal actor rejected persisting proposal");
+                    if self.my_mailbox.durability.is_none() {
+                        let persist_start = Instant::now();
+                        if !self.marshal.verified(round, block.clone()).await {
+                            bail!("marshal actor rejected persisting proposal");
+                        }
+                        observe_marshal_persist(
+                            proposal_return.block_size_estimate_bytes,
+                            persist_start.elapsed(),
+                        );
                     }
-                    observe_marshal_persist(
-                        proposal_return.block_size_estimate_bytes,
-                        persist_start.elapsed(),
-                    );
 
                     // Keep waiting for the remaining return time, if there's anything left after building the block.
                     context.sleep_until(proposal_return.return_at).await;
@@ -385,6 +409,22 @@ impl Inner<Init> {
             proposal.digest = %proposal_digest,
             "constructed proposal",
         );
+
+        if let Some(durability) = &self.my_mailbox.durability {
+            // Stage both registrations before publishing the digest. The gate task
+            // outlives the proposal response and is consumed only by certification.
+            durability
+                .gates
+                .stage(
+                    round,
+                    proposal_digest,
+                    Arc::new(proposal_block),
+                    response,
+                    "tempo proposal",
+                )
+                .await;
+            return Ok(());
+        }
 
         response.send(proposal_digest).map_err(|_| {
             eyre!(
@@ -425,6 +465,7 @@ impl Inner<Init> {
             proposer,
             mut response,
             round,
+            durable,
         } = verify;
         let VerifyResult { result, block } = select!(
             () = response.closed() => {
@@ -439,11 +480,21 @@ impl Inner<Init> {
             }
         )?;
 
-        if response.send(result).is_err() {
-            warn!("received dropped channel before verification result could be returned");
+        if let Some(durable) = durable {
+            // Full header/EL verification is complete. Keep storage alive after
+            // publishing that verdict, even if consensus moves to another view.
+            super::durability::publish_verification(result, response, durable, async {
+                let block = block.expect("inline verification retains the accepted block");
+                self.marshal.verified(round, block).await
+            })
+            .await;
+        } else {
+            if response.send(result).is_err() {
+                warn!("received dropped channel before verification result could be returned");
+            }
+            // Keep large block drops out of the pre-response path.
+            drop(block);
         }
-        // Keep large block drops out of the pre-response path.
-        drop(block);
 
         Ok(())
     }
@@ -499,7 +550,9 @@ impl Inner<Init> {
             } else {
                 parent
             };
-            if !self.marshal.verified(round, parent.clone()).await {
+            if self.my_mailbox.durability.is_none()
+                && !self.marshal.verified(round, parent.clone()).await
+            {
                 bail!("marshal rejected re-proposed boundary block");
             }
             info!("parent is last height of epoch; re-proposing parent");
@@ -706,6 +759,12 @@ impl Inner<Init> {
                 .containing(block.height())
                 .expect("epoch strategy is for all heights");
             if epoch_info.last() == block.height() && epoch_info.epoch() == round.epoch() {
+                if self.my_mailbox.durability.is_some() {
+                    return Ok(VerifyResult {
+                        result: true,
+                        block: Some(block),
+                    });
+                }
                 if !self.marshal.verified(round, block).await {
                     bail!("marshal actor refused to persist verified re-proposed block");
                 }
@@ -763,6 +822,12 @@ impl Inner<Init> {
         let is_good = validation_duration.is_some();
 
         if is_good {
+            if self.my_mailbox.durability.is_some() {
+                return Ok(VerifyResult {
+                    result: true,
+                    block: Some(block),
+                });
+            }
             // Persist the verified block in the marshal actor.
             if !self.marshal.verified(round, block).await {
                 bail!("marshal actor refused to persist verified block");

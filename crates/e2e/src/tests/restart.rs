@@ -48,6 +48,113 @@ fn committee_of_three_restart() {
     .run()
 }
 
+/// Exercise the actual application, marshal, Simplex, and EVM layers together.
+/// Synced-only crash durability is covered separately by the application tests.
+#[test_traced("WARN")]
+fn inline_durability_committee_of_three_restart() {
+    let setup = Setup::new().how_many_signers(3).seed(0).epoch_length(30);
+    Runner::timed(Duration::from_secs(120)).start(|mut context| async move {
+        let (mut validators, execution_runtime) =
+            setup_validators(&mut context, setup.clone()).await;
+        for validator in &mut validators {
+            validator.inline_durability = true;
+            validator.execution_config.incoming_replay = true;
+            validator.execution_config.persistence_threshold = Some(50);
+            validator.execution_config.num_state_masking_blocks = 40;
+            validator.execution_config.disable_write_map = true;
+            eprintln!("inline durability configuration {}", serde_json::json!({
+                "validator_public_key": validator.public_key().to_string(),
+                "inline_durability": validator.inline_durability,
+                "incoming_replay": validator.execution_config.incoming_replay,
+                "persistence_threshold": validator.execution_config.persistence_threshold,
+                "num_state_masking_blocks": validator.execution_config.num_state_masking_blocks,
+                "disable_write_map": validator.execution_config.disable_write_map,
+                "sync_mode": "Durable",
+            }));
+        }
+        join_all(validators.iter_mut().map(|v| v.start(&context))).await;
+        eprintln!("inline durability: waiting for all three validators at height 5");
+        wait_for_height(&context, 3, 5).await;
+
+        for recipient in [0xAB, 0xCD] {
+            // Existing helper signs with the genesis-funded test mnemonic wallet.
+            let url = validators[0]
+                .execution()
+                .rpc_server_handle()
+                .http_url()
+                .unwrap()
+                .parse()
+                .unwrap();
+            eprintln!("inline durability: submitting signed transaction for recipient {recipient:#x}");
+            let receipt = execution_runtime
+                .set_fee_recipient_v2(url, 0, alloy_primitives::Address::new([recipient; 20]))
+                .await
+                .unwrap();
+            assert!(receipt.status(), "signed transaction must execute successfully");
+            let height = receipt.block_number.unwrap();
+            if recipient == 0xAB {
+                assert!(height < setup.epoch_length, "first signed transaction must precede the epoch boundary");
+            } else {
+                assert!(height > setup.epoch_length, "second signed transaction must follow the epoch boundary");
+            }
+            eprintln!("inline durability: successful tx={} block={} hash={:?}", receipt.transaction_hash, height, receipt.block_hash);
+            wait_for_height(&context, 3, height + 1).await;
+            let urls = validators
+                .iter()
+                .map(|node| {
+                    (node.public_key().to_string(), node.execution().rpc_server_handle().http_url().unwrap())
+                })
+                .collect::<Vec<_>>();
+            execution_runtime
+                .run_async(async move {
+                    use alloy::providers::{Provider as _, ProviderBuilder};
+                    let expected = serde_json::to_value(&receipt).unwrap();
+                    for (validator, url) in urls {
+                        let provider = ProviderBuilder::new().connect_http(url.parse().unwrap());
+                        let observed = provider
+                            .get_transaction_receipt(receipt.transaction_hash)
+                            .await
+                            .unwrap()
+                            .expect("every validator must retain the transaction receipt");
+                        assert_eq!(serde_json::to_value(&observed).unwrap(), expected);
+                        let block = provider
+                            .get_block_by_number(height.into())
+                            .await
+                            .unwrap()
+                            .expect("every validator must agree on the canonical block");
+                        assert_eq!(Some(block.header.hash), receipt.block_hash);
+                        assert_eq!(
+                            block.transactions.hashes().nth(receipt.transaction_index.unwrap() as usize),
+                            Some(receipt.transaction_hash),
+                            "receipt index must identify the signed transaction in the canonical block",
+                        );
+                        eprintln!("inline durability receipt proof {}", serde_json::json!({
+                            "validator_public_key": validator,
+                            "rpc_url": url,
+                            "canonical_block_hash": block.header.hash,
+                            "canonical_transaction_index": receipt.transaction_index.unwrap(),
+                            "receipt": observed,
+                        }));
+                    }
+                })
+                .await
+                .unwrap();
+            eprintln!("inline durability: exact receipt/block/index agreement on all three validators");
+
+            if recipient == 0xAB {
+                eprintln!("inline durability: stopping validator zero");
+                validators[0].stop().await;
+                context.sleep(Duration::from_secs(5)).await;
+                ensure_no_progress(&context, 5).await;
+                eprintln!("inline durability: restarting validator zero");
+                validators[0].start(&context).await;
+                eprintln!("inline durability: waiting for all three validators across epoch boundary {}", setup.epoch_length);
+                wait_for_height(&context, 3, setup.epoch_length + 1).await;
+            }
+        }
+    });
+}
+
 struct SimpleRestart {
     committee_size: u32,
     epoch_length: u64,

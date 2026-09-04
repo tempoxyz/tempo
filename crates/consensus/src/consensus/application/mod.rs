@@ -14,6 +14,9 @@ use rand_core::{CryptoRng, Rng};
 use tempo_node::TempoFullNode;
 
 mod actor;
+mod durability;
+#[cfg(test)]
+mod durability_tests;
 mod ingress;
 
 pub(super) use actor::Actor;
@@ -63,6 +66,7 @@ pub(super) struct Config<TContext> {
     /// subtracts time already spent in the view before handing the remaining
     /// budget to the payload builder.
     pub(super) proposal_return_budget: Duration,
+    pub(super) inline_durability: bool,
 
     /// The epoch strategy used by tempo, to map block heights to epochs.
     pub(super) epoch_strategy: FixedEpocher,

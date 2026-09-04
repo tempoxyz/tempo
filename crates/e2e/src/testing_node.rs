@@ -92,6 +92,8 @@ where
     pub proposal_return_budget: Duration,
     /// Whether the consensus engine starts with subblock production enabled.
     pub with_subblocks: bool,
+    /// Whether consensus overlaps candidate persistence with proposal relay.
+    pub inline_durability: bool,
 
     n_starts: u32,
 }
@@ -133,6 +135,7 @@ where
             feed_state,
             proposal_return_budget,
             with_subblocks,
+            inline_durability: false,
             consensus_handle: None,
             execution_node: None,
             execution_node_datadir,
@@ -185,6 +188,7 @@ where
         self.feed_state = identity_source.feed_state;
         self.proposal_return_budget = identity_source.proposal_return_budget;
         self.with_subblocks = identity_source.with_subblocks;
+        self.inline_durability = identity_source.inline_durability;
         self.network_address = identity_source.network_address;
         self.chain_address = identity_source.chain_address;
     }
@@ -243,9 +247,12 @@ where
         if self.execution_database.is_none() {
             let db_path = self.execution_node_datadir.join("db");
             self.execution_database = Some(
-                reth_db::init_db(db_path, test_db_args())
-                    .expect("failed to init database")
-                    .with_metrics(),
+                reth_db::init_db(
+                    db_path,
+                    test_db_args().with_write_map(!self.execution_config.disable_write_map),
+                )
+                .expect("failed to init database")
+                .with_metrics(),
             );
         }
 
@@ -331,6 +338,7 @@ where
             views_to_track: 10,
             views_until_leader_skip: 5,
             proposal_return_budget: self.proposal_return_budget,
+            inline_durability: self.inline_durability,
             time_to_build_subblock: Duration::from_millis(100),
             subblock_broadcast_interval: Duration::from_millis(50),
             fcu_heartbeat_interval: Duration::from_secs(3),

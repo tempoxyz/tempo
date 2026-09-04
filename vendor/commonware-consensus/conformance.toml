@@ -1,0 +1,175 @@
+["commonware_consensus::aggregation::types::tests::conformance::CodecConformance<Ack<Scheme,Sha256Digest>>"]
+n_cases = 65536
+hash = "c28b55d44ff803a04bfc4dbf07e8f94ff7e577dc43cef99c390caf3289706ce4"
+
+["commonware_consensus::aggregation::types::tests::conformance::CodecConformance<Activity<Scheme,Sha256Digest>>"]
+n_cases = 65536
+hash = "d20fab64a4250b37244b1ce45fa7e062dacefbe56868e063f669f043e40a3d70"
+
+["commonware_consensus::aggregation::types::tests::conformance::CodecConformance<Certificate<Scheme,Sha256Digest>>"]
+n_cases = 65536
+hash = "c7ed824caef05e558858a5566bf3ee8c15658fc3d261d9be73f48086069949b4"
+
+["commonware_consensus::aggregation::types::tests::conformance::CodecConformance<Item<Sha256Digest>>"]
+n_cases = 65536
+hash = "55b287b5530fc9ba77c45ec5030ada38f86b2ddf66a1595fde27d4699667b1a3"
+
+["commonware_consensus::aggregation::types::tests::conformance::CodecConformance<TipAck<Scheme,Sha256Digest>>"]
+n_cases = 65536
+hash = "51b04637257c54cecdc4e5ded4568efccafbc08f20be3fe0951369cab43ba2b6"
+
+["commonware_consensus::marshal::coding::types::test::conformance::CodecConformance<Shard<ReedSolomon<Sha256>,Sha256>>"]
+n_cases = 65536
+hash = "e53b4b684f0344590427aae976d298e3b6fd2b08ef46ff2cad5def04b4f7690b"
+
+["commonware_consensus::marshal::conformance::CodingStorageConformance"]
+n_cases = 32
+hash = "fdcb77156c908af6906b4db9e825cefedbc6c613e2585fcaaa724f3d5b30baac"
+
+["commonware_consensus::marshal::conformance::StandardStorageConformance"]
+n_cases = 32
+hash = "4d95bfc96428ea4220173fe7db87a49e75bb31a3014f04724d57efeba5ab253e"
+
+["commonware_consensus::marshal::resolver::handler::tests::conformance::CodecConformance<Key<D>>"]
+n_cases = 65536
+hash = "481cd68f2e6452c0dda512c75d74ddd2e19ac6c9fb19c642c1a152a0d830c1b2"
+
+["commonware_consensus::ordered_broadcast::types::tests::conformance::CodecConformance<Ack<PublicKey,Scheme,Sha256Digest>>"]
+n_cases = 65536
+hash = "19a763ac953319b94f4b9c81615eafa99807393198ba398e63270796e72695cd"
+
+["commonware_consensus::ordered_broadcast::types::tests::conformance::CodecConformance<Activity<PublicKey,Scheme,Sha256Digest>>"]
+n_cases = 65536
+hash = "2567380ac17bd2e09d0610a7b9c37eeac568536c8dae3823d6d5f5e87d554f04"
+
+["commonware_consensus::ordered_broadcast::types::tests::conformance::CodecConformance<Chunk<PublicKey,Sha256Digest>>"]
+n_cases = 65536
+hash = "43624c9e7ce355baebf32ab6e76db21cb5bf08005396ba43dae96b3a86f3a535"
+
+["commonware_consensus::ordered_broadcast::types::tests::conformance::CodecConformance<Lock<PublicKey,Scheme,Sha256Digest>>"]
+n_cases = 65536
+hash = "0b501fb047ce26f876bc45041a237a145177bb6a5979bc7ef2a4c26f7531853f"
+
+["commonware_consensus::ordered_broadcast::types::tests::conformance::CodecConformance<Node<PublicKey,Scheme,Sha256Digest>>"]
+n_cases = 65536
+hash = "ac52cbf4d43a886454c2008e6c3baf5fc9dbde39a2db8ef3734286aca3746ee4"
+
+["commonware_consensus::ordered_broadcast::types::tests::conformance::CodecConformance<Parent<Scheme,Sha256Digest>>"]
+n_cases = 65536
+hash = "f1bb7460f40a9b5ffbe2a7db22a491121834771b24503af56338ba1241d7f4fb"
+
+["commonware_consensus::ordered_broadcast::types::tests::conformance::CodecConformance<Proposal<PublicKey,Sha256Digest>>"]
+n_cases = 65536
+hash = "6fc6f17d8734a14fb841a8acc1a39cda7519bdd025700663e260d3b000c9c5c6"
+
+["commonware_consensus::simplex::elector::tests::conformance::RandomSelectLeaderConformance"]
+n_cases = 512
+hash = "b67e7a2a61c54156c0422160a6dbc096b01f518c26784505def8b5849c597b74"
+
+["commonware_consensus::simplex::elector::tests::conformance::RoundRobinShuffleConformance"]
+n_cases = 512
+hash = "b892972a5b3cad361beebcc4f90a81dff4833c96411d02f0c5151e29689f1baf"
+
+["commonware_consensus::simplex::scheme::bls12381_threshold::vrf::tests::conformance::CodecConformance<Certificate<MinSig>>"]
+n_cases = 65536
+hash = "16b2dec188a1bd12146d62909bffdbb560f5a54e81de57aec8ec4aef2e8a5e88"
+
+["commonware_consensus::simplex::scheme::bls12381_threshold::vrf::tests::conformance::CodecConformance<Seed<MinSig>>"]
+n_cases = 65536
+hash = "a9fce1350322f848f62aaa67572eb6d510d88ebfa272b6b13371084aae1c3e51"
+
+["commonware_consensus::simplex::scheme::bls12381_threshold::vrf::tests::conformance::CodecConformance<Signature<MinSig>>"]
+n_cases = 65536
+hash = "16b2dec188a1bd12146d62909bffdbb560f5a54e81de57aec8ec4aef2e8a5e88"
+
+["commonware_consensus::simplex::types::tests::conformance::CodecConformance<Activity<Scheme,Sha256Digest>>"]
+n_cases = 65536
+hash = "e65856d6552c849b4a0aca45f794e17968cf18cda7f93e7d1ecab3dbd3958b51"
+
+["commonware_consensus::simplex::types::tests::conformance::CodecConformance<Artifact<Scheme,Sha256Digest>>"]
+n_cases = 65536
+hash = "a46d1f90f592010bd0af0cf76dcdbf66c84a40ab5687ee36119d2e9f59ace641"
+
+["commonware_consensus::simplex::types::tests::conformance::CodecConformance<Backfiller<Scheme,Sha256Digest>>"]
+n_cases = 65536
+hash = "1aa796eb4f51beab398cdb250179d49045b1facec197d3047efc1785e8dda2f0"
+
+["commonware_consensus::simplex::types::tests::conformance::CodecConformance<Certificate<Scheme,Sha256Digest>>"]
+n_cases = 65536
+hash = "bc3cd9b7b060514269f06186b180b5a855fbc65af9ddd0e461bfd05aa9c949ef"
+
+["commonware_consensus::simplex::types::tests::conformance::CodecConformance<ConflictingFinalize<Scheme,Sha256Digest>>"]
+n_cases = 65536
+hash = "9b361e8f45bb08e27ded35ffe7800629c9ba8a82f4d2993e154cfb513f528a21"
+
+["commonware_consensus::simplex::types::tests::conformance::CodecConformance<ConflictingNotarize<Scheme,Sha256Digest>>"]
+n_cases = 65536
+hash = "9b361e8f45bb08e27ded35ffe7800629c9ba8a82f4d2993e154cfb513f528a21"
+
+["commonware_consensus::simplex::types::tests::conformance::CodecConformance<Context<Sha256Digest,PublicKey>>"]
+n_cases = 65536
+hash = "5227154cc56a996363e26b0e006515b97a83a8c7ba580b0b5e760132fc620f4d"
+
+["commonware_consensus::simplex::types::tests::conformance::CodecConformance<Finalization<Scheme,Sha256Digest>>"]
+n_cases = 65536
+hash = "c78e26f7142aed21d0bb8bef88e007baae0fe34b3a2533d1085f7c2b08464e95"
+
+["commonware_consensus::simplex::types::tests::conformance::CodecConformance<Finalize<Scheme,Sha256Digest>>"]
+n_cases = 65536
+hash = "d115ac2d81886e689a239b6fa8a277d69940876e9bbd1b27964284eb046a99e2"
+
+["commonware_consensus::simplex::types::tests::conformance::CodecConformance<Notarization<Scheme,Sha256Digest>>"]
+n_cases = 65536
+hash = "c78e26f7142aed21d0bb8bef88e007baae0fe34b3a2533d1085f7c2b08464e95"
+
+["commonware_consensus::simplex::types::tests::conformance::CodecConformance<Notarize<Scheme,Sha256Digest>>"]
+n_cases = 65536
+hash = "d115ac2d81886e689a239b6fa8a277d69940876e9bbd1b27964284eb046a99e2"
+
+["commonware_consensus::simplex::types::tests::conformance::CodecConformance<Nullification<Scheme>>"]
+n_cases = 65536
+hash = "a44138ebc90cfdf8fdce3174ecf08831716245dc20fc666f30b005c6ae2c34d5"
+
+["commonware_consensus::simplex::types::tests::conformance::CodecConformance<Nullify<Scheme>>"]
+n_cases = 65536
+hash = "d8661e9c02a7c5d6578b48297569075adadd608a2e294c695b965125033204ec"
+
+["commonware_consensus::simplex::types::tests::conformance::CodecConformance<NullifyFinalize<Scheme,Sha256Digest>>"]
+n_cases = 65536
+hash = "bebb2d2616de0716732a4459600c57cade16ab94952bfa39089104983937ad85"
+
+["commonware_consensus::simplex::types::tests::conformance::CodecConformance<Proposal<Sha256Digest>>"]
+n_cases = 65536
+hash = "4ba1f5b5cbf271ae45313d8ac48b05c010166ca743334b9b8051a4a610c58fe7"
+
+["commonware_consensus::simplex::types::tests::conformance::CodecConformance<Request>"]
+n_cases = 65536
+hash = "6f852b6ad6e5dd77804d80781b03c808e186e7e7c5611752f124c625c5c3ee17"
+
+["commonware_consensus::simplex::types::tests::conformance::CodecConformance<Response<Scheme,Sha256Digest>>"]
+n_cases = 65536
+hash = "b9fbf2cfcbc37c87cb7aa8ede95c4ddf93c8bbd9f1a01e86ed72ba14bed920fa"
+
+["commonware_consensus::simplex::types::tests::conformance::CodecConformance<Vote<Scheme,Sha256Digest>>"]
+n_cases = 65536
+hash = "01cc3b0d41d0ef29f02de2729d51b1b31bb96f00c6390e56aadd0fb5117cc7b1"
+
+["commonware_consensus::types::tests::conformance::CodecConformance<Commitment>"]
+n_cases = 65536
+hash = "4cc05ec53b515415070f3634ad2b56677c2a938f596ffc99f7909f24e06a8c99"
+
+["commonware_consensus::types::tests::conformance::CodecConformance<Epoch>"]
+n_cases = 65536
+hash = "56ab85978136cb50f12ea89c8d25ce24451788172fe9d3d3c063f7ae6342d279"
+
+["commonware_consensus::types::tests::conformance::CodecConformance<Height>"]
+n_cases = 65536
+hash = "56ab85978136cb50f12ea89c8d25ce24451788172fe9d3d3c063f7ae6342d279"
+
+["commonware_consensus::types::tests::conformance::CodecConformance<Round>"]
+n_cases = 65536
+hash = "d8ccba2653a5a2e5e317f0f365edbfc4845e3dc4325daefe0b43ca75920a654c"
+
+["commonware_consensus::types::tests::conformance::CodecConformance<View>"]
+n_cases = 65536
+hash = "56ab85978136cb50f12ea89c8d25ce24451788172fe9d3d3c063f7ae6342d279"

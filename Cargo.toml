@@ -11,6 +11,7 @@ keywords = ["blockchain", "ethereum", "evm", "payments", "tempo"]
 publish = false
 
 [workspace]
+exclude = ["vendor/commonware-consensus"]
 members = [
   "bin/tempo",
   "bin/tempo-sidecar",
@@ -406,6 +407,7 @@ vergen-git2 = "10.0.1"
 evm2 = { git = "https://github.com/alloy-rs/evm2?branch=main", rev = "a614d8e05f4cc8b29541216cd89a862cd015deaf" }
 
 [patch.crates-io]
+commonware-consensus = { path = "vendor/commonware-consensus" }
 
 # Commonware v2026.7.0
 # commonware-actor = { git = "https://github.com/commonwarexyz/monorepo", rev = "5950bf7179bb0650a57ed58b9e0478822944b335" }

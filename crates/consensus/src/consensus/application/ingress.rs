@@ -3,25 +3,31 @@ use commonware_actor::{
     mailbox::{self, Policy},
 };
 use commonware_consensus::{
-    Automaton, CertifiableAutomaton, Relay,
+    Automaton, CertifiableAutomaton, Relay, Reporter,
+    marshal::{Update, standard::relay_broadcast},
     simplex::{Plan, types::Context},
     types::{Round, View},
 };
 
 use commonware_cryptography::ed25519::PublicKey;
-use commonware_utils::channel::oneshot;
+use commonware_utils::{Acknowledgement as _, channel::oneshot};
 use std::{collections::VecDeque, time::Instant};
 
-use crate::consensus::Digest;
+use super::durability::Durability;
+use crate::consensus::{Digest, block::Block};
 
 #[derive(Clone)]
 pub(crate) struct Mailbox {
     inner: mailbox::Sender<Message>,
+    pub(super) durability: Option<Durability>,
 }
 
 impl Mailbox {
-    pub(super) fn from_sender(inner: mailbox::Sender<Message>) -> Self {
-        Self { inner }
+    pub(super) fn from_sender(
+        inner: mailbox::Sender<Message>,
+        durability: Option<Durability>,
+    ) -> Self {
+        Self { inner, durability }
     }
 }
 
@@ -31,6 +37,7 @@ pub(super) enum Message {
     Broadcast(Box<Broadcast>),
     Propose(Box<Propose>),
     Verify(Box<Verify>),
+    Certify(Box<Certify>),
 }
 
 impl Policy for Message {
@@ -69,12 +76,19 @@ impl From<Broadcast> for Message {
     }
 }
 
+pub(super) struct Certify {
+    pub(super) payload: Digest,
+    pub(super) round: Round,
+    pub(super) response: oneshot::Sender<bool>,
+}
+
 pub(super) struct Verify {
     pub(super) parent: (View, Digest),
     pub(super) payload: Digest,
     pub(super) proposer: PublicKey,
     pub(super) response: oneshot::Sender<bool>,
     pub(super) round: Round,
+    pub(super) durable: Option<oneshot::Sender<bool>>,
 }
 
 impl From<Verify> for Message {
@@ -116,12 +130,19 @@ impl Automaton for Mailbox {
         // XXX: Cannot propagate the error upstream because of the trait def.
         // But if the actor no longer responds the application is dead.
         let (tx, rx) = oneshot::channel();
+        // Register before enqueueing: certification can race application dispatch.
+        let durable = self.durability.as_ref().map(|durability| {
+            let (tx, rx) = oneshot::channel();
+            durability.gates.insert(context.round, payload, rx);
+            tx
+        });
         let verify = Verify {
             parent: context.parent,
             payload,
             proposer: context.leader,
             round: context.round,
             response: tx,
+            durable,
         };
 
         assert!(
@@ -133,14 +154,43 @@ impl Automaton for Mailbox {
     }
 }
 
-// TODO: figure out if this can be useful for tempo. The original PR implementing
-// this trait:
-// https://github.com/commonwarexyz/monorepo/pull/2565
-// Associated issue:
-// https://github.com/commonwarexyz/monorepo/issues/1767
 impl CertifiableAutomaton for Mailbox {
-    // NOTE: uses the default impl for CertifiableAutomaton which always
-    // returns true.
+    async fn certify(&mut self, round: Round, payload: Digest) -> oneshot::Receiver<bool> {
+        let (response, receiver) = oneshot::channel();
+        if self.durability.is_some() {
+            assert!(
+                self.inner
+                    .enqueue(Message::Certify(Box::new(Certify {
+                        round,
+                        payload,
+                        response
+                    })))
+                    .accepted(),
+                "application is present and ready to receive certification requests"
+            );
+        } else {
+            let _ = response.send(true);
+        }
+        receiver
+    }
+}
+
+impl Reporter for Mailbox {
+    type Activity = Update<Block>;
+
+    fn report(&mut self, update: Self::Activity) -> Feedback {
+        match update {
+            Update::Tip(round, _, _) => {
+                if let Some(durability) = &self.durability {
+                    durability.gates.retain_after(&round);
+                }
+            }
+            // This reporter only observes tips; acknowledge its own dispatch clone.
+            // Execution and DKG reporters still hold their independent acknowledgements.
+            Update::Block(_, ack) => ack.acknowledge(),
+        }
+        Feedback::Ok
+    }
 }
 
 impl Relay for Mailbox {
@@ -149,7 +199,11 @@ impl Relay for Mailbox {
     type Plan = commonware_consensus::simplex::Plan<PublicKey>;
 
     fn broadcast(&mut self, digest: Self::Digest, plan: Self::Plan) -> Feedback {
-        self.inner.enqueue(Broadcast { digest, plan }.into())
+        if let Some(durability) = &self.durability {
+            relay_broadcast(&durability.gates, &durability.marshal, digest, plan)
+        } else {
+            self.inner.enqueue(Broadcast { digest, plan }.into())
+        }
     }
 }
 
@@ -172,7 +226,7 @@ mod tests {
     fn broadcast_overflow_is_dropped() {
         deterministic::Runner::default().start(|context| async move {
             let (sender, mut receiver) = mailbox::new(context.child("mailbox"), NZUsize!(1));
-            let mut mailbox = Mailbox::from_sender(sender);
+            let mut mailbox = Mailbox::from_sender(sender, None);
             let round = Round::new(Epoch::zero(), View::zero());
             let first = Digest(B256::with_last_byte(1));
             let second = Digest(B256::with_last_byte(2));

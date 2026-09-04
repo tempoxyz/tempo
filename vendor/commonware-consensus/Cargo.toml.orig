@@ -1,0 +1,82 @@
+[package]
+name = "commonware-consensus"
+edition.workspace = true
+publish = true
+version.workspace = true
+license.workspace = true
+description = "Order opaque messages in a Byzantine environment."
+readme = "README.md"
+homepage.workspace = true
+repository = "https://github.com/commonwarexyz/monorepo/tree/main/consensus"
+documentation = "https://docs.rs/commonware-consensus"
+
+[lints]
+workspace = true
+
+[dependencies]
+arbitrary = { workspace = true, optional = true, features = ["derive"] }
+bytes.workspace = true
+cfg-if.workspace = true
+commonware-actor.workspace = true
+commonware-broadcast.workspace = true
+commonware-codec.workspace = true
+commonware-coding.workspace = true
+commonware-cryptography.workspace = true
+commonware-formatting.workspace = true
+commonware-macros.workspace = true
+commonware-math.workspace = true
+commonware-parallel.workspace = true
+commonware-resolver.workspace = true
+commonware-utils.workspace = true
+futures.workspace = true
+rand = { workspace = true, features = ["std_rng"] }
+rand_core.workspace = true
+thiserror.workspace = true
+
+[target.'cfg(not(target_arch = "wasm32"))'.dependencies]
+commonware-macros = { workspace = true, features = ["std"] }
+commonware-p2p.workspace = true
+commonware-parallel = { workspace = true, features = ["std"] }
+commonware-runtime.workspace = true
+commonware-storage = { workspace = true, features = ["std"] }
+pin-project.workspace = true
+rand_distr = { workspace = true, optional = true }
+rayon.workspace = true
+tracing.workspace = true
+
+[dev-dependencies]
+commonware-conformance.workspace = true
+commonware-consensus = { path = ".", features = ["mocks"] }
+commonware-resolver = { workspace = true, features = ["mocks"] }
+commonware-runtime = { workspace = true, features = ["test-utils"] }
+paste.workspace = true
+rand = { workspace = true, features = ["alloc"] }
+rand_chacha.workspace = true
+rstest.workspace = true
+tracing-subscriber.workspace = true
+
+[package.metadata.cargo-udeps.ignore]
+development = ["commonware-consensus"]
+
+[lib]
+bench = false
+
+[features]
+mocks = [
+	"commonware-cryptography/mocks",
+	"commonware-p2p/mocks",
+	"commonware-resolver/mocks",
+	"dep:rand_distr",
+]
+arbitrary = [
+	"commonware-codec/arbitrary",
+	"commonware-coding/arbitrary",
+	"commonware-cryptography/arbitrary",
+	"commonware-math/arbitrary",
+	"commonware-p2p/arbitrary",
+	"commonware-resolver/arbitrary",
+	"commonware-runtime/arbitrary",
+	"commonware-storage/arbitrary",
+	"commonware-utils/arbitrary",
+	"dep:arbitrary",
+]
