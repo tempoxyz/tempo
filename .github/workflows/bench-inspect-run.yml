@@ -6,7 +6,7 @@ on:
   workflow_dispatch:
     inputs:
       benchmark-id:
-        description: Existing benchmark ID whose validator and command status should be read.
+        description: Existing benchmark ID whose validator and runner status should be read.
         type: string
         default: bench-e2e-multi-region-33868520967-1
 permissions:
@@ -25,7 +25,7 @@ jobs:
           role-to-assume: arn:aws:iam::934822761402:role/benchmark-runner
           aws-region: us-east-1
           role-duration-seconds: 900
-      - name: Read validator preparation and benchmark command status
+      - name: Read validator preparation and benchmark runner status
         run: |
           python3 - <<'PY'
           import concurrent.futures, json, os, re, subprocess
@@ -46,17 +46,13 @@ jobs:
               return {**output, **{key: data.get(key) for key in ('stage', 'status', 'updated_at', 'elapsed_secs')}}
           with concurrent.futures.ThreadPoolExecutor(max_workers=10) as executor:
               results = list(executor.map(inspect, range(10)))
-          commands = []
-          for region in regions:
-              query = "Commands[?starts_with(Comment, 'tempo " + benchmark + " ')].{id:CommandId,phase:Comment,status:Status,requested:RequestedDateTime}"
-              result = subprocess.run(['aws', 'ssm', 'list-commands', '--region', region, '--query', query, '--output', 'json'], capture_output=True, text=True, timeout=30)
-              if result.returncode:
-                  commands.append({'region': region, 'status': 'command status unavailable'})
-                  continue
-              for command in json.loads(result.stdout):
-                  invocation = subprocess.run(['aws', 'ssm', 'list-command-invocations', '--region', region, '--command-id', command['id'], '--query', 'CommandInvocations[].{instance:InstanceId,status:StatusDetails}', '--output', 'json'], capture_output=True, text=True, timeout=30)
-                  commands.append({'region': region, **command, 'instances': json.loads(invocation.stdout) if invocation.returncode == 0 else []})
-          print(json.dumps({'benchmark_id': benchmark, 'validators': results, 'commands': commands}, indent=2))
+          runner = {}
+          bucket = 'tempo-benchmark-artifacts-934822761402-us-east-1'
+          for artifact in ('status.json', 'timings.json'):
+              key = f'runs/{benchmark}/artifacts/runner/{artifact}'
+              result = subprocess.run(['aws', 's3', 'cp', f's3://{bucket}/{key}', '-', '--region', 'us-east-1', '--only-show-errors'], capture_output=True, text=True, timeout=60)
+              runner[artifact] = json.loads(result.stdout) if result.returncode == 0 else {'status': 'artifact unavailable'}
+          print(json.dumps({'benchmark_id': benchmark, 'validators': results, 'runner': runner}, indent=2))
           with open(os.environ['GITHUB_STEP_SUMMARY'], 'a') as summary:
               summary.write('```json\n' + json.dumps(results, indent=2) + '\n```\n')
           PY
