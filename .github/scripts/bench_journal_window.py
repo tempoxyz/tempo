@@ -14,6 +14,9 @@ first = datetime.datetime.fromisoformat(since.replace("Z", "+00:00")).timestamp(
 last = datetime.datetime.fromisoformat(until.replace("Z", "+00:00")).timestamp()
 assert 0 < last - first <= 900
 patterns = {
+    "payload_job": "New payload job created", "fcu_status": "execution layer reported FCU status",
+    "received_payload": "Received new payload from consensus engine",
+    "fcu_cancelled": "Failed to deliver forkchoiceUpdated response",
     "built_payload": "Built payload", "canonical": "Block added to canonical chain",
     "canonical_commit": "Canonical chain committed", "slow_block": "Slow block",
     "proposal": "constructed proposal", "budget_cutoff": "stopping pool transaction execution before payload build budget",
@@ -52,6 +55,8 @@ proc = subprocess.Popen(["journalctl", "-u", "tempo-node", "--since", since, "--
                         stdout=subprocess.PIPE, stderr=subprocess.PIPE)
 digest = hashlib.sha256()
 started = time.monotonic()
+recent_events = collections.deque(maxlen=160)
+result["slow_build_correlations"] = []
 try:
     for raw in proc.stdout:
         digest.update(raw)
@@ -81,6 +86,16 @@ try:
         elapsed = duration_ms(message.rsplit("elapsed=", 1)[-1]) if name.startswith("task_") else duration_ms(values.get("elapsed", ""))
         score = float(values.get("timing.total_ms", 0)) if name == "slow_block" else elapsed or 0
         row = {"unix_ms": round(timestamp * 1000, 3), "fields": values}
+        evidence = {"unix_ms": row["unix_ms"], "category": name, "line": message[-700:]}
+        recent_events.append(evidence)
+        if name == "task_build" and elapsed is not None and elapsed >= 10000:
+            interval_start = row["unix_ms"] - elapsed
+            nearby = [event for event in recent_events if event["unix_ms"] >= interval_start - 1000]
+            result["slow_build_correlations"].append({"started_unix_ms": interval_start,
+                "finished_unix_ms": row["unix_ms"], "elapsed_ms": elapsed,
+                "events_seen": len(nearby), "events": nearby[:2] + nearby[max(2, len(nearby)-4):]})
+            result["slow_build_correlations"] = sorted(result["slow_build_correlations"],
+                key=lambda item: item["elapsed_ms"], reverse=True)[:3]
         if elapsed is not None:
             row["elapsed_ms"] = round(elapsed, 3)
         group = result["categories"].setdefault(name, {"count": 0, "minutes": {}, "slowest": [], "first": None, "last": None})
@@ -130,7 +145,9 @@ if len(encoded.encode()) > 22000:
 if len(encoded.encode()) > 22000:
     for group in result["categories"].values():
         group["slowest"] = group["slowest"][:1]
+        group.pop("minutes", None)
     result["slowest_reduced_for_output_limit"] = True
+    result["minute_buckets_omitted_for_output_limit"] = True
     encoded = json.dumps(result, separators=(",", ":"))
 assert len(encoded.encode()) <= 22000, "Diagnostic output exceeds SSM bound"
 print(encoded)
