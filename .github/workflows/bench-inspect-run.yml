@@ -90,6 +90,48 @@ jobs:
                   runner[artifact]['finalized_agreement'] = {key: value for key, value in agreement.items() if key != 'execution'}
               else:
                   runner[artifact] = data
+          # Report publication can precede slow metrics exporters. Only expose known
+          # stage names and timestamps, never arbitrary log fields or endpoint URLs.
+          def txgen_stages(log):
+              names = (
+                  'Bench send completed; starting post-processing', 'Skipped txpool drain',
+                  'Ending block fetched', 'Block receipt gas metrics finalized',
+                  'Skipped receipt gas metrics', 'Metrics scrapers stopped',
+                  'Metrics finalized', 'Time series built', 'Sample archive finalized',
+                  'Block stats collected', 'Block reporter events emitted',
+                  'Pushing samples via Prometheus remote write', 'remote write push complete',
+                  'Inserting benchmark results into ClickHouse', 'ClickHouse insert complete',
+                  'Reporters finalized', 'Post-processing completed', 'Metrics forwarding complete',
+              )
+              found = deque(maxlen=100)
+              for line in log.splitlines():
+                  line = re.sub(r'\x1b\[[0-9;]*m', '', line)
+                  stamp = re.search(r'\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(?:\.\d+)?Z', line)
+                  for name in names:
+                      if name in line:
+                          found.append({'stage': name, 'timestamp': stamp.group() if stamp else None})
+                          break
+              return list(found)
+          log_key = f'runs/{benchmark}/artifacts/runner/txgen-send.err'
+          stages = {'status': 'artifact unavailable', 'note': 'Latest uploaded log may be from the previous phase. Compare timestamps with the report; absence of a stage is not proof it did not run.'}
+          try:
+              head = subprocess.run(['aws', 's3api', 'head-object', '--bucket', bucket, '--key', log_key, '--region', 'us-east-1', '--query', 'ContentLength', '--output', 'text'], capture_output=True, text=True, timeout=20)
+              if head.returncode == 0:
+                  length = int(head.stdout.strip())
+                  if length > 0:
+                      tail_path = pathlib.Path('txgen-progress-tail.log')
+                      start = max(0, length - 2 * 1024 * 1024)
+                      fetched = subprocess.run(['aws', 's3api', 'get-object', '--bucket', bucket, '--key', log_key, '--region', 'us-east-1', '--range', f'bytes={start}-{length-1}', str(tail_path)], capture_output=True, text=True, timeout=30)
+                      if fetched.returncode == 0:
+                          raw = tail_path.read_bytes()
+                          stages.update(status='available', source_bytes=length, tail_start=start, tail_bytes=len(raw), tail_sha256=hashlib.sha256(raw).hexdigest(), stages=txgen_stages(raw.decode('utf-8', errors='replace')))
+                      tail_path.unlink(missing_ok=True)
+                  else:
+                      stages.update(status='empty', source_bytes=0, stages=[])
+          except (subprocess.TimeoutExpired, ValueError, OSError):
+              stages['status'] = 'observation unavailable'
+          pathlib.Path('inspection-txgen-stages.json').write_text(json.dumps(stages, indent=2))
+          runner['txgen-stages'] = stages
           report_file = pathlib.Path('inspection-txgen-report.json')
           if report_file.exists() and os.environ['INCLUDE_METRICS'] == 'true':
               report = json.loads(report_file.read_text())
