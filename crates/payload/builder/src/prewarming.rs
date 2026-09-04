@@ -60,6 +60,7 @@ impl BestTransactionsPrewarming {
                         commands_tx,
                         prewarm,
                         next_expiring_nonce_offset: 0,
+                        in_flight: 0,
                     },
                 );
             });
@@ -87,7 +88,11 @@ impl BestTransactionsPrewarming {
 
             let advance = |ctx: &mut BestTransactionsPrewarmingContext<Txs, Provider>| {
                 let Some(tx) = ctx.best_txs.next() else {
-                    let _ = ctx.transactions_tx.send(None);
+                    // Parallel results are sent by workers. An empty source must not overtake
+                    // those results and make the builder stop before they become available.
+                    if !ctx.prewarm.parallel || ctx.in_flight == 0 {
+                        let _ = ctx.transactions_tx.send(None);
+                    }
                     return;
                 };
                 let expiring_nonce_offset = if tx.transaction.is_expiring_nonce() {
@@ -109,12 +114,13 @@ impl BestTransactionsPrewarming {
                         .send(Some(PrewarmedTransaction::without_replay(tx.clone())));
                 }
 
+                ctx.in_flight += 1;
                 scope.spawn(move |_| {
                     let tx = Self::prewarm_transaction(prewarm, tx, expiring_nonce_offset);
                     if parallel {
                         let _ = transactions_tx.send(Some(tx));
                     }
-                    let _ = commands_tx.send(BestTransactionsCommand::Advance);
+                    let _ = commands_tx.send(BestTransactionsCommand::Completed);
                 });
             };
 
@@ -128,6 +134,10 @@ impl BestTransactionsPrewarming {
             while let Ok(command) = ctx.commands_rx.recv() {
                 match command {
                     BestTransactionsCommand::Advance => {
+                        advance(&mut ctx);
+                    }
+                    BestTransactionsCommand::Completed => {
+                        ctx.in_flight -= 1;
                         advance(&mut ctx);
                     }
                     BestTransactionsCommand::Invalid {
@@ -305,6 +315,7 @@ struct BestTransactionsPrewarmingContext<Txs, Provider> {
     commands_rx: Receiver<BestTransactionsCommand>,
     prewarm: PrewarmingExecutionContext<Provider>,
     next_expiring_nonce_offset: usize,
+    in_flight: usize,
 }
 
 /// Prewarmed transaction returned from [`BestTransactionsPrewarming`] iterator.
@@ -420,6 +431,7 @@ impl<Provider> PrewarmingExecutionContext<Provider> {
 #[derive(Debug)]
 enum BestTransactionsCommand {
     Advance,
+    Completed,
     Invalid {
         invalid: InvalidTransaction,
         old_rx: Receiver<Option<PrewarmedTransaction>>,
@@ -760,6 +772,58 @@ mod tests {
             .map(|_| *prewarming.next().expect("transaction").tx.hash())
             .collect::<Vec<_>>();
         assert_eq!(actual, expected);
+    }
+
+    #[test]
+    fn parallel_prewarming_returns_in_flight_transaction_before_empty_source() {
+        let executor = TaskExecutor::test();
+        let pool = executor.prewarming_pool();
+        let workers = pool.current_num_threads();
+        let (ready_tx, ready_rx) = mpsc::channel();
+        let mut releases = Vec::new();
+        for _ in 0..workers {
+            let (release_tx, release_rx) = mpsc::channel::<()>();
+            releases.push(release_tx);
+            let ready_tx = ready_tx.clone();
+            pool.spawn(move || {
+                let _ = ready_tx.send(());
+                let _ = release_rx.recv();
+            });
+        }
+        for _ in 0..workers {
+            ready_rx
+                .recv_timeout(Duration::from_secs(1))
+                .expect("worker started");
+        }
+
+        // Protocol-nonce transactions are executed normally after leaving the worker pool.
+        let tx = test_tx(Address::random(), 0);
+        let expected = *tx.hash();
+        let log = Arc::new(Mutex::new(TestLog::default()));
+        let context = prewarming_context(executor.clone(), true);
+        let mut prewarming = TestPrewarming {
+            prewarming: Some(BestTransactionsPrewarming::new(
+                context,
+                TestBestTransactions::new(vec![tx], log.clone()),
+            )),
+            executor: executor.clone(),
+        };
+
+        let deadline = Instant::now() + Duration::from_secs(1);
+        while log.lock().unwrap().empty_polls < workers * 2 - 1 && Instant::now() < deadline {
+            thread::sleep(Duration::from_millis(1));
+        }
+        let empty_polls = log.lock().unwrap().empty_polls;
+        // Release workers before assertions so a failure cannot block iterator cleanup.
+        drop(releases);
+        assert_eq!(empty_polls, workers * 2 - 1);
+
+        let result = prewarming
+            .next()
+            .expect("in-flight transaction before end of source");
+        assert_eq!(*result.tx.hash(), expected);
+        assert!(result.replay.is_none());
+        assert!(prewarming.next().is_none());
     }
 
     #[test]
