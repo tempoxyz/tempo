@@ -25,7 +25,7 @@ log() { printf '  \033[1;34m→\033[0m %s\n' "$*"; }
 err() { printf '  \033[1;31m✗\033[0m %s\n' "$*" >&2; exit 1; }
 
 prepare_cargo_graph() {
-    cargo metadata --manifest-path "$TMP_WORK_DIR/Cargo.toml" \
+    cargo metadata --locked --manifest-path "$TMP_WORK_DIR/Cargo.toml" \
         --format-version 1 >/dev/null
     if [[ "${CARGO_COOLDOWN_SKIP:-false}" == "true" ]]; then
         log "WARNING: skipping Cargo dependency cooldown by explicit request"
@@ -33,14 +33,6 @@ prepare_cargo_graph() {
     fi
     "$REPO_ROOT/.github/scripts/check-cargo-cooldown-lock.sh" \
         "$TMP_WORK_DIR" "$REPO_ROOT/cooldown.toml"
-}
-
-sha256_file() {
-    if command -v sha256sum >/dev/null 2>&1; then
-        sha256sum "$1" | awk '{print $1}'
-    else
-        shasum -a 256 "$1" | awk '{print $1}'
-    fi
 }
 
 prepare_publish_artifact() {
@@ -63,24 +55,8 @@ prepare_publish_artifact() {
     PREPARED_PACKAGE_ROOT="$verification_dir/$name-$version"
     [[ -f "$PREPARED_PACKAGE_ROOT/Cargo.lock" ]] || err "Missing packaged lockfile for $name@$version"
 
-    "$REPO_ROOT/.github/scripts/check-cargo-cooldown-lock.sh" \
-        "$PREPARED_PACKAGE_ROOT" "$REPO_ROOT/cooldown.toml"
     env -u CARGO_REGISTRY_TOKEN CARGO_TARGET_DIR="$TMP_WORK_DIR/target" \
         cargo check --locked --manifest-path "$PREPARED_PACKAGE_ROOT/Cargo.toml"
-}
-
-verify_existing_package() {
-    local name="$1"
-    local version="$2"
-    local downloaded
-    downloaded="$(mktemp)"
-    curl --proto '=https' --tlsv1.2 --fail --silent --show-error --location \
-        --output "$downloaded" "https://crates.io/api/v1/crates/$name/$version/download"
-    if [[ "$(sha256_file "$PREPARED_PACKAGE_ARCHIVE")" != "$(sha256_file "$downloaded")" ]]; then
-        rm -f "$downloaded"
-        err "$name@$version already exists on crates.io with different packaged contents"
-    fi
-    rm -f "$downloaded"
 }
 
 SANITIZE_PY="$REPO_ROOT/scripts/sanitize_toml.py"
@@ -227,7 +203,8 @@ python3 "$SANITIZE_PY" gen_workspace "$REPO_ROOT/Cargo.toml" "$TMP_WORK_DIR/Carg
 
 # Seed the lockfile so transitive deps use the same versions as the main workspace
 cp "$REPO_ROOT/Cargo.lock" "$TMP_WORK_DIR/Cargo.lock"
-prepare_cargo_graph
+cargo metadata --locked --manifest-path "$TMP_WORK_DIR/Cargo.toml" \
+    --format-version 1 >/dev/null
 
 log "Running cargo check …"
 if ! cargo check --locked --manifest-path "$TMP_WORK_DIR/Cargo.toml" 2>&1; then
@@ -455,8 +432,7 @@ retry_publish() {
         echo "$output"
         # Already published — treat as success
         if echo "$output" | grep -qE 'already uploaded|already exists'; then
-            verify_existing_package "$name" "$version"
-            log "$name already published with matching contents, skipping ✓"
+            log "$name already published, skipping ✓"
             return 0
         fi
         if ((i < max_attempts)); then

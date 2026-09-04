@@ -36,6 +36,19 @@ if [[ ! -f "$LOCKFILE" ]]; then
   exit 1
 fi
 
+lockfile_contains_package() {
+  local lockfile="$1"
+  local expected_name="$2"
+  local expected_version="$3"
+  awk -v expected_name="$expected_name" -v expected_version="$expected_version" '
+    /^\[\[package\]\]$/ { name = ""; version = "" }
+    /^name = "/ { name = $0; sub(/^name = "/, "", name); sub(/"$/, "", name) }
+    /^version = "/ { version = $0; sub(/^version = "/, "", version); sub(/"$/, "", version) }
+    name == expected_name && version == expected_version { found = 1 }
+    END { exit found ? 0 : 1 }
+  ' "$lockfile"
+}
+
 LOCKFILE_SNAPSHOT="$(mktemp)"
 cp "$LOCKFILE" "$LOCKFILE_SNAPSHOT"
 ISOLATED_CARGO_HOME="$(mktemp -d)"
@@ -44,6 +57,7 @@ CONFIG_TARGET="$WORKSPACE/cooldown.toml"
 CONFIG_SNAPSHOT=""
 CONFIG_WAS_PRESENT=false
 CONFIG_REPLACED=false
+FILTERED_CONFIG=""
 
 cleanup() {
   if ! cmp -s "$LOCKFILE_SNAPSHOT" "$LOCKFILE"; then
@@ -60,6 +74,9 @@ cleanup() {
     rm -f "$CONFIG_SNAPSHOT"
   fi
 
+  if [[ -n "$FILTERED_CONFIG" ]]; then
+    rm -f "$FILTERED_CONFIG"
+  fi
   rm -rf "$ISOLATED_CARGO_HOME"
 }
 trap cleanup EXIT
@@ -73,13 +90,7 @@ fi
 CONFIG_LOCKFILE="$(dirname "$CONFIG_SOURCE")/Cargo.lock"
 if [[ -f "$CONFIG_LOCKFILE" ]]; then
   while IFS=$'\t' read -r crate version; do
-    if ! awk -v expected_name="$crate" -v expected_version="$version" '
-      /^\[\[package\]\]$/ { name = ""; version = "" }
-      /^name = "/ { name = $0; sub(/^name = "/, "", name); sub(/"$/, "", name) }
-      /^version = "/ { version = $0; sub(/^version = "/, "", version); sub(/"$/, "", version) }
-      name == expected_name && version == expected_version { found = 1 }
-      END { exit found ? 0 : 1 }
-    ' "$CONFIG_LOCKFILE"; then
+    if ! lockfile_contains_package "$CONFIG_LOCKFILE" "$crate" "$version"; then
       echo "ERROR: cooldown exception $crate@$version is not present in $CONFIG_LOCKFILE" >&2
       exit 1
     fi
@@ -94,6 +105,28 @@ if [[ -f "$CONFIG_LOCKFILE" ]]; then
   ' "$CONFIG_SOURCE")
 fi
 
+CONFIG_TO_INSTALL="$CONFIG_SOURCE"
+if [[ -e "$CONFIG_TARGET" && "$CONFIG_SOURCE" -ef "$CONFIG_TARGET" ]]; then
+  :
+else
+  FILTERED_CONFIG="$(mktemp)"
+  while IFS=$'\t' read -r crate version; do
+    if lockfile_contains_package "$LOCKFILE" "$crate" "$version"; then
+      printf '[[allow.exact]]\ncrate = "%s"\nversion = "%s"\n\n' \
+        "$crate" "$version" >> "$FILTERED_CONFIG"
+    fi
+  done < <(awk '
+    /^\[\[allow\.exact\]\]$/ { exact = 1; crate = ""; next }
+    /^\[/ { exact = 0 }
+    exact && /^crate = "/ { crate = $0; sub(/^crate = "/, "", crate); sub(/"$/, "", crate) }
+    exact && /^version = "/ {
+      version = $0; sub(/^version = "/, "", version); sub(/"$/, "", version)
+      if (crate != "") print crate "\t" version
+    }
+  ' "$CONFIG_SOURCE")
+  CONFIG_TO_INSTALL="$FILTERED_CONFIG"
+fi
+
 if [[ ! -e "$CONFIG_TARGET" || ! "$CONFIG_SOURCE" -ef "$CONFIG_TARGET" ]]; then
   CONFIG_REPLACED=true
   if [[ -f "$CONFIG_TARGET" ]]; then
@@ -101,7 +134,7 @@ if [[ ! -e "$CONFIG_TARGET" || ! "$CONFIG_SOURCE" -ef "$CONFIG_TARGET" ]]; then
     CONFIG_SNAPSHOT="$(mktemp)"
     cp "$CONFIG_TARGET" "$CONFIG_SNAPSHOT"
   fi
-  cp "$CONFIG_SOURCE" "$CONFIG_TARGET"
+  cp "$CONFIG_TO_INSTALL" "$CONFIG_TARGET"
 fi
 
 ORIGINAL_CARGO_HOME="${CARGO_HOME:-${HOME:?HOME is required}/.cargo}"
