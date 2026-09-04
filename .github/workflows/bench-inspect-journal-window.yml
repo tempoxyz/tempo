@@ -1,0 +1,91 @@
+name: bench-inspect-journal-window
+on:
+  push:
+    branches: [ejh/20k-tps-10v]
+    paths: [.github/workflows/bench-inspect-journal-window.yml, .github/scripts/bench_journal_window.py]
+  workflow_dispatch:
+    inputs:
+      benchmark-id:
+        type: string
+        default: bench-e2e-multi-region-33871027933-1
+      validator-index:
+        type: string
+        default: '0'
+      since:
+        type: string
+        default: '2026-09-04T12:32:00Z'
+      until:
+        type: string
+        default: '2026-09-04T12:42:00Z'
+permissions:
+  contents: read
+  id-token: write
+jobs:
+  inspect:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    env:
+      BENCHMARK_ID: ${{ inputs.benchmark-id || 'bench-e2e-multi-region-33871027933-1' }}
+      VALIDATOR_INDEX: ${{ inputs.validator-index || '0' }}
+      SINCE: ${{ inputs.since || '2026-09-04T12:32:00Z' }}
+      UNTIL: ${{ inputs.until || '2026-09-04T12:42:00Z' }}
+    steps:
+      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+      - name: Configure AWS credentials
+        uses: tempoxyz/gh-actions/vendor/aws-actions/configure-aws-credentials@3626124474a987bc74b41fc7ae65b2e23f8e4e4e
+        with:
+          role-to-assume: arn:aws:iam::934822761402:role/benchmark-runner
+          aws-region: us-east-1
+          role-duration-seconds: 900
+      - name: Reduce bounded journal window through SSM
+        run: |
+          python3 - <<'PY'
+          import datetime, json, os, pathlib, re, shlex, subprocess, time
+          benchmark = os.environ['BENCHMARK_ID']
+          index = os.environ['VALIDATOR_INDEX']
+          since, until = os.environ['SINCE'], os.environ['UNTIL']
+          if not re.fullmatch(r'bench-e2e-multi-region-\d+-\d+', benchmark) or not re.fullmatch(r'[0-9]', index):
+              raise SystemExit('Invalid benchmark or validator index')
+          for stamp in (since, until):
+              if not re.fullmatch(r'\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}Z', stamp):
+                  raise SystemExit('Expected a UTC timestamp')
+          duration = (datetime.datetime.fromisoformat(until.replace('Z','+00:00')) - datetime.datetime.fromisoformat(since.replace('Z','+00:00'))).total_seconds()
+          if not 0 < duration <= 900:
+              raise SystemExit('Journal window must be at most15minutes')
+          manifest = json.loads(subprocess.check_output(['aws','s3','cp',f's3://tempo-benchmark-artifacts-934822761402-us-east-1/runs/{benchmark}/artifacts/runner/validators.json','-','--region','us-east-1','--only-show-errors'], text=True))
+          validator = next(item for item in manifest if item['index'] == int(index))
+          region = validator['region']
+          if not re.fullmatch(r'i-[0-9a-f]+', validator['instance_id']) or region not in ('us-east-1','us-west-2','eu-central-1','ap-southeast-1','ap-northeast-1'):
+              raise SystemExit('Unexpected validator identity')
+          source = pathlib.Path('.github/scripts/bench_journal_window.py').read_text()
+          command = 'python3 - ' + shlex.quote(since) + ' ' + shlex.quote(until) + " <<'DIAGNOSTIC'\n" + source + '\nDIAGNOSTIC\n'
+          params = json.dumps({'commands':[command], 'executionTimeout':['60']})
+          submitted = json.loads(subprocess.check_output(['aws','ssm','send-command','--region',region,'--document-name','AWS-RunShellScript','--instance-ids',validator['instance_id'],'--comment',f'{benchmark} read-only bounded journal','--parameters',params,'--output','json'], text=True))
+          command_id = submitted['Command']['CommandId']
+          context = {'benchmark_id':benchmark, 'validator':validator, 'command_id':command_id, 'since':since, 'until':until}
+          print(json.dumps(context))
+          for _ in range(35):
+              invocation = subprocess.run(['aws','ssm','get-command-invocation','--region',region,'--command-id',command_id,'--instance-id',validator['instance_id'],'--output','json'],capture_output=True,text=True)
+              if invocation.returncode == 0:
+                  data = json.loads(invocation.stdout)
+                  if data['Status'] not in ('Pending','InProgress','Delayed'):
+                      pathlib.Path('inspection-journal-invocation.json').write_text(json.dumps({**context,'invocation':data},indent=2))
+                      if data['Status'] != 'Success':
+                          raise SystemExit(data.get('StandardErrorContent','SSM diagnostic failed'))
+                      result = json.loads(data['StandardOutputContent'])
+                      pathlib.Path('inspection-journal-window.json').write_text(json.dumps({**context,'result':result},indent=2))
+                      print(json.dumps({'complete':result['complete'],'journal_lines':result['journal_lines'],'debug_lines':result['debug_lines'],'counts':{k:v['count'] for k,v in result['categories'].items()}}))
+                      break
+              elif 'AccessDenied' in invocation.stderr:
+                  raise SystemExit(invocation.stderr)
+              time.sleep(2)
+          else:
+              raise SystemExit('Diagnostic pending; inspect the same command ID before retrying')
+          PY
+      - name: Preserve bounded journal evidence
+        if: always()
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: benchmark-journal-window
+          path: inspection-journal-*.json
+          if-no-files-found: ignore
