@@ -34,7 +34,11 @@ if sys.argv[1]=='metadata':
         data['commands'].append(command(['nvme','smart-log',node,'--output-format=json']))
     for namespace in Path('/sys/class/block').glob('nvme*n*'):
         if not (namespace/'partition').exists():
-            data['commands'].append(command(['nvme','amzn','stats','--details','/dev/'+namespace.name]))
+            result=command(['nvme','amzn','stats','--details','/dev/'+namespace.name])
+            data['commands'].append(result)
+            if result.get('returncode')!=0 and 'Amazon EC2 NVMe Instance Storage' in (read(namespace/'device/model') or ''):
+                from amazon_nvme_stats import collect
+                data.setdefault('amazon_nvme_statistics',{})[namespace.name]=collect('/dev/'+namespace.name)
     print(json.dumps(data,indent=2))
 elif sys.argv[1]=='sample':
     signal.signal(signal.SIGTERM,lambda *_:sys.exit(0))

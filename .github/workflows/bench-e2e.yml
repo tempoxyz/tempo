@@ -1,4 +1,4 @@
-name: Bench Storage Probe (OVH)
+name: Bench Mapping Controls (OVH)
 
 on:
   workflow_dispatch:
@@ -8,7 +8,7 @@ permissions:
 
 jobs:
   storage-probe:
-    name: storage-probe-ovh
+    name: mapping-controls-ovh
     runs-on: [self-hosted, Linux, X64, bare-metal-dual-schelk]
     timeout-minutes: 45
     env:
@@ -23,7 +23,7 @@ jobs:
           persist-credentials: false
           clean: false
 
-      - name: Probe existing OVH storage mounts
+      - name: Probe existing OVH mapping behavior
         shell: bash
         run: |
           bash "$GITHUB_WORKSPACE/$STORAGE_PROBE_CHECKOUT/contrib/bench/storage-probes/run_ovh_storage_probes.sh"
@@ -32,7 +32,7 @@ jobs:
         if: always()
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
         with:
-          name: tempo-storage-probe-ovh-${{ github.run_id }}-${{ github.run_attempt }}
-          path: ${{ runner.temp }}/tempo-storage-results-${{ github.run_id }}-${{ github.run_attempt }}
+          name: tempo-mapping-controls-ovh-${{ github.run_id }}-${{ github.run_attempt }}
+          path: ${{ runner.temp }}/tempo-mapping-results-${{ github.run_id }}-${{ github.run_attempt }}
           if-no-files-found: warn
           retention-days: 7

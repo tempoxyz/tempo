@@ -7,10 +7,14 @@
  */
 #define _POSIX_C_SOURCE 200809L
 #define _FILE_OFFSET_BITS 64
+#ifdef __linux__
+#define _DEFAULT_SOURCE
+#endif
 #ifdef __APPLE__
 #define _DARWIN_C_SOURCE
 #endif
 #include <errno.h>
+#include <ctype.h>
 #include <fcntl.h>
 #include <getopt.h>
 #include <inttypes.h>
@@ -98,6 +102,146 @@ static void sync_mapping(void *address, size_t length) {
 static double cpu_seconds(struct timeval t) {
     return (double)t.tv_sec + (double)t.tv_usec / 1e6;
 }
+struct process_io {
+    int available;
+    uint64_t read_bytes, write_bytes, cancelled_write_bytes;
+};
+static struct process_io read_process_io(void) {
+    struct process_io result = {0};
+#ifdef __linux__
+    FILE *file = fopen("/proc/self/io", "r");
+    if (!file) return result;
+    char line[256], key[64];
+    uint64_t value;
+    unsigned found = 0;
+    while (fgets(line, sizeof(line), file)) {
+        if (sscanf(line, "%63[^:]: %" SCNu64, key, &value) != 2) continue;
+        if (!strcmp(key, "read_bytes")) { result.read_bytes = value; found |= 1; }
+        if (!strcmp(key, "write_bytes")) { result.write_bytes = value; found |= 2; }
+        if (!strcmp(key, "cancelled_write_bytes")) { result.cancelled_write_bytes = value; found |= 4; }
+    }
+    result.available = found == 7 && !ferror(file);
+    fclose(file);
+#endif
+    return result;
+}
+struct mapping_smaps {
+    int available;
+    uint64_t vmas, kernel_page_kib_min, kernel_page_kib_max;
+    uint64_t mmu_page_kib_min, mmu_page_kib_max, rss_kib;
+    uint64_t file_pmd_mapped_kib, anon_huge_pages_kib;
+    uint64_t shared_dirty_kib, private_dirty_kib, thp_eligible_vmas;
+};
+static struct mapping_smaps read_mapping_smaps(const void *mapping, size_t size) {
+    struct mapping_smaps result = {0};
+#ifdef __linux__
+    if (!mapping) return result;
+    FILE *file = fopen("/proc/self/smaps", "r");
+    if (!file) return result;
+    uintptr_t low = (uintptr_t)mapping, high = low + size, start, end;
+    char line[1024], key[64];
+    uint64_t value;
+    int matches = 0;
+    while (fgets(line, sizeof(line), file)) {
+        if (sscanf(line, "%" SCNxPTR "-%" SCNxPTR, &start, &end) == 2) {
+            matches = start < high && end > low;
+            if (matches) ++result.vmas;
+            continue;
+        }
+        if (!matches || sscanf(line, "%63[^:]: %" SCNu64, key, &value) != 2) continue;
+        if (!strcmp(key, "KernelPageSize")) {
+            if (!result.kernel_page_kib_min || value < result.kernel_page_kib_min) result.kernel_page_kib_min = value;
+            if (value > result.kernel_page_kib_max) result.kernel_page_kib_max = value;
+        } else if (!strcmp(key, "MMUPageSize")) {
+            if (!result.mmu_page_kib_min || value < result.mmu_page_kib_min) result.mmu_page_kib_min = value;
+            if (value > result.mmu_page_kib_max) result.mmu_page_kib_max = value;
+        } else if (!strcmp(key, "Rss")) result.rss_kib += value;
+        else if (!strcmp(key, "FilePmdMapped")) result.file_pmd_mapped_kib += value;
+        else if (!strcmp(key, "AnonHugePages")) result.anon_huge_pages_kib += value;
+        else if (!strcmp(key, "Shared_Dirty")) result.shared_dirty_kib += value;
+        else if (!strcmp(key, "Private_Dirty")) result.private_dirty_kib += value;
+        else if (!strcmp(key, "THPeligible") && value) ++result.thp_eligible_vmas;
+    }
+    result.available = result.vmas > 0 && !ferror(file);
+    fclose(file);
+#else
+    (void)mapping; (void)size;
+#endif
+    return result;
+}
+static void print_mapping_smaps(struct mapping_smaps s) {
+    if (!s.available) { printf("null"); return; }
+    printf("{\"vmas\":%" PRIu64 ",\"kernel_page_kib_min\":%" PRIu64
+           ",\"kernel_page_kib_max\":%" PRIu64 ",\"mmu_page_kib_min\":%" PRIu64
+           ",\"mmu_page_kib_max\":%" PRIu64 ",\"rss_kib\":%" PRIu64
+           ",\"file_pmd_mapped_kib\":%" PRIu64 ",\"anon_huge_pages_kib\":%" PRIu64
+           ",\"shared_dirty_kib\":%" PRIu64 ",\"private_dirty_kib\":%" PRIu64
+           ",\"thp_eligible_vmas\":%" PRIu64 "}", s.vmas, s.kernel_page_kib_min,
+           s.kernel_page_kib_max, s.mmu_page_kib_min, s.mmu_page_kib_max, s.rss_kib,
+           s.file_pmd_mapped_kib, s.anon_huge_pages_kib, s.shared_dirty_kib,
+           s.private_dirty_kib, s.thp_eligible_vmas);
+}
+static void print_process_io_delta(struct process_io before, struct process_io after) {
+    if (!before.available || !after.available) { printf("null"); return; }
+    /* Linux block-layer accounting, not internal SSD/NAND writes. Values are
+     * tiny relative to int64 for this bounded probe, including cancellation. */
+    printf("{\"read_bytes\":%" PRId64 ",\"write_bytes\":%" PRId64
+           ",\"cancelled_write_bytes\":%" PRId64 "}",
+           (int64_t)after.read_bytes - (int64_t)before.read_bytes,
+           (int64_t)after.write_bytes - (int64_t)before.write_bytes,
+           (int64_t)after.cancelled_write_bytes - (int64_t)before.cancelled_write_bytes);
+}
+struct block_io {
+    int available;
+    uint64_t read_ios, read_sectors, write_ios, write_sectors;
+};
+static struct block_io read_block_io(const char *name) {
+    struct block_io result = {0};
+#ifdef __linux__
+    if (!name) return result;
+    char path[256], line[1024];
+    snprintf(path, sizeof(path), "/sys/class/block/%s/stat", name);
+    FILE *file = fopen(path, "r");
+    if (!file) return result;
+    uint64_t merged_read, merged_write, read_ms;
+    if (fgets(line, sizeof(line), file))
+        result.available = sscanf(line, "%" SCNu64 " %" SCNu64 " %" SCNu64 " %" SCNu64
+                                  " %" SCNu64 " %" SCNu64 " %" SCNu64,
+                                  &result.read_ios, &merged_read, &result.read_sectors,
+                                  &read_ms, &result.write_ios, &merged_write, &result.write_sectors) == 7;
+    fclose(file);
+#else
+    (void)name;
+#endif
+    return result;
+}
+static void print_block_io_delta(struct block_io before, struct block_io after) {
+    if (!before.available || !after.available || after.read_ios < before.read_ios ||
+        after.write_ios < before.write_ios || after.read_sectors < before.read_sectors ||
+        after.write_sectors < before.write_sectors) { printf("null"); return; }
+    /* Kernel diskstats sectors are always 512 bytes, independent of the LBA size.
+     * Whole-device counters may include other processes, and are not NAND I/O. */
+    printf("{\"read_ios\":%" PRIu64 ",\"write_ios\":%" PRIu64
+           ",\"read_bytes\":%" PRIu64 ",\"write_bytes\":%" PRIu64 "}",
+           after.read_ios - before.read_ios, after.write_ios - before.write_ios,
+           (after.read_sectors - before.read_sectors) * UINT64_C(512),
+           (after.write_sectors - before.write_sectors) * UINT64_C(512));
+}
+static void mapping_advice(void *mapping, size_t size) {
+    printf("{\"event\":\"mapping_advice\",\"madv_nohugepage\":");
+#ifdef MADV_NOHUGEPAGE
+    errno = 0;
+    int nohuge_rc = madvise(mapping, size, MADV_NOHUGEPAGE);
+    int nohuge_errno = nohuge_rc ? errno : 0;
+    printf("{\"result\":%d,\"errno\":%d}", nohuge_rc, nohuge_errno);
+#else
+    printf("null");
+#endif
+    errno = 0;
+    int random_rc = madvise(mapping, size, MADV_RANDOM);
+    int random_errno = random_rc ? errno : 0;
+    printf(",\"madv_random\":{\"result\":%d,\"errno\":%d}}\n", random_rc, random_errno);
+}
 static void usage(FILE *f) {
     fprintf(f,
       "Usage: mmap_flush_probe --file NEW_PATH [options]\n"
@@ -108,6 +252,9 @@ static void usage(FILE *f) {
       "  --pattern NAME     spread (default) or contiguous\n"
       "  --range NAME       full (default) or dirty\n"
       "  --method NAME      mmap (default) or pwrite (fsync control)\n"
+      "  --init-write-kib N initialization syscall size: 4 or 1024 (default)\n"
+      "  --mdbx-advice      apply MADV_NOHUGEPAGE and MADV_RANDOM to own mapping\n"
+      "  --block-device N   read /sys/class/block/N/stat around each batch\n"
       "  --max-seconds N    stop starting batches after N measured seconds\n"
       "                    (default 60, maximum 600; excludes initialization)\n"
       "  --ready-file PATH --go-file PATH   optional external checkpoint barrier\n"
@@ -123,8 +270,10 @@ static void usage(FILE *f) {
 int main(int argc, char **argv) {
     const char *path = NULL, *pattern = "spread", *range = "full", *method = "mmap";
     const char *ready = NULL, *go = NULL;
+    const char *block_device = NULL;
     uint64_t size_mib = 8192, dirty_mib = 256, batches = 8, seed = 42, max_seconds = 60;
-    uint64_t barrier_seconds = 30;
+    uint64_t barrier_seconds = 30, init_write_kib = 1024;
+    int mdbx_advice = 0;
     static const struct option opts[] = {
       {"file", required_argument, NULL, 'f'}, {"size-mib", required_argument, NULL, 's'},
       {"dirty-mib", required_argument, NULL, 'd'}, {"batches", required_argument, NULL, 'b'},
@@ -133,6 +282,9 @@ int main(int argc, char **argv) {
       {"method", required_argument, NULL, 'm'}, {"help", no_argument, NULL, 'h'},
       {"ready-file", required_argument, NULL, 'R'}, {"go-file", required_argument, NULL, 'G'},
       {"barrier-seconds", required_argument, NULL, 'B'},
+      {"init-write-kib", required_argument, NULL, 'I'},
+      {"mdbx-advice", no_argument, NULL, 'A'},
+      {"block-device", required_argument, NULL, 'D'},
       {NULL, 0, NULL, 0}
     };
     int opt;
@@ -150,6 +302,9 @@ int main(int argc, char **argv) {
           case 'R': ready = optarg; break;
           case 'G': go = optarg; break;
           case 'B': barrier_seconds = number(optarg); break;
+          case 'I': init_write_kib = number(optarg); break;
+          case 'A': mdbx_advice = 1; break;
+          case 'D': block_device = optarg; break;
           case 'h': usage(stdout); return 0;
           default: usage(stderr); return 2;
         }
@@ -159,6 +314,14 @@ int main(int argc, char **argv) {
         invalid("require 0 < dirty-mib <= size-mib <= 65536");
     if (!batches || batches > 1000 || !max_seconds || max_seconds > 600)
         invalid("require batches 1..1000 and max-seconds 1..600");
+    if (init_write_kib != 4 && init_write_kib != 1024) invalid("init-write-kib must be 4 or 1024");
+    if (block_device) {
+        if (!block_device[0] || strlen(block_device) > 128 || !isalnum((unsigned char)block_device[0]))
+            invalid("block-device must be a simple device name");
+        for (const unsigned char *c = (const unsigned char *)block_device; *c; ++c)
+            if (!isalnum(*c) && *c != '-' && *c != '_' && *c != '.')
+                invalid("block-device must not contain paths or special characters");
+    }
     if ((ready == NULL) != (go == NULL) || !barrier_seconds || barrier_seconds > 120)
         invalid("barrier requires both ready/go paths and seconds 1..120");
     if (ready) {
@@ -173,6 +336,7 @@ int main(int argc, char **argv) {
     if ((!contiguous && strcmp(pattern, "spread")) || (!narrow && strcmp(range, "full")) ||
         (!use_pwrite && strcmp(method, "mmap"))) invalid("unknown pattern, range, or method");
     if (use_pwrite && narrow) invalid("pwrite control requires --range full");
+    if (use_pwrite && mdbx_advice) invalid("mdbx-advice requires method mmap");
     long os_page = sysconf(_SC_PAGESIZE);
     if (os_page <= 0 || MIB % (uint64_t)os_page || (uint64_t)os_page % sizeof(uint64_t))
         invalid("unsupported OS page size");
@@ -196,8 +360,12 @@ int main(int argc, char **argv) {
            ",\"os_page_bytes\":%" PRIu64 ",\"dirty_bytes\":%" PRIu64
            ",\"dirty_pages\":%" PRIu64 ",\"batches_requested\":%" PRIu64
            ",\"seed\":%" PRIu64 ",\"pattern\":\"%s\",\"range\":\"%s\",\"method\":\"%s\","
-           "\"max_measured_seconds\":%" PRIu64 ",\"cleanup\":true}\n",
-           size, page, dirty, count, batches, seed, pattern, range, method, max_seconds);
+           "\"max_measured_seconds\":%" PRIu64 ",\"init_write_kib\":%" PRIu64
+           ",\"mdbx_advice\":%s,\"block_device\":",
+           size, page, dirty, count, batches, seed, pattern, range, method, max_seconds,
+           init_write_kib, mdbx_advice ? "true" : "false");
+    if (block_device) printf("\"%s\"", block_device); else printf("null");
+    printf(",\"cleanup\":true}\n");
 
     /* Every byte is written: fallocate/ftruncate alone can leave unwritten extents. */
     double init_start = now();
@@ -207,7 +375,9 @@ int main(int argc, char **argv) {
     uint64_t init_rng = seed ^ UINT64_C(0x3c6ef372fe94f82b);
     for (size_t i = 0; i < chunk / sizeof(*buffer); ++i) buffer[i] = random64(&init_rng);
     for (uint64_t offset = 0; offset < size; offset += chunk)
-        write_all(owned_fd, buffer, chunk, (off_t)offset);
+        for (size_t within = 0; within < chunk; within += (size_t)init_write_kib * 1024)
+            write_all(owned_fd, (unsigned char *)buffer + within, (size_t)init_write_kib * 1024,
+                      (off_t)(offset + within));
     double init_write_end = now();
     sync_file(owned_fd);
     double init_end = now();
@@ -221,6 +391,7 @@ int main(int argc, char **argv) {
     if (!use_pwrite) {
         mapping = mmap(NULL, (size_t)size, PROT_READ | PROT_WRITE, MAP_SHARED, owned_fd, 0);
         if (mapping == MAP_FAILED) die("mmap");
+        if (mdbx_advice) mapping_advice(mapping, (size_t)size);
     }
     uint64_t *selected = malloc((size_t)count * sizeof(*selected));
     size_t bitmap_bytes = (size_t)((pages + 7) / 8);
@@ -283,6 +454,11 @@ int main(int argc, char **argv) {
         }
         uint64_t sync_offset = narrow ? lo * page : 0;
         uint64_t sync_bytes = narrow ? (hi - lo + 1) * page : size;
+        /* Observe outside the timed touch/sync and rusage window. No mapping,
+         * cache, allocation or durability policy is changed by these reads. */
+        struct mapping_smaps smaps_before = read_mapping_smaps(mapping, (size_t)size);
+        struct process_io io_before = read_process_io();
+        struct block_io block_before = read_block_io(block_device);
         struct rusage before, after;
         if (getrusage(RUSAGE_SELF, &before)) die("getrusage");
         uint64_t start_unix_ms = unix_ms();
@@ -302,6 +478,9 @@ int main(int argc, char **argv) {
         double sync_end = now();
         uint64_t end_unix_ms = unix_ms();
         if (getrusage(RUSAGE_SELF, &after)) die("getrusage");
+        struct process_io io_after = read_process_io();
+        struct block_io block_after = read_block_io(block_device);
+        struct mapping_smaps smaps_after = read_mapping_smaps(mapping, (size_t)size);
         total_touch += sync_start - touch_start; total_sync += sync_end - sync_start;
         ++completed;
         printf("{\"event\":\"batch\",\"batch\":%" PRIu64 ",\"file_bytes\":%" PRIu64
@@ -311,7 +490,7 @@ int main(int argc, char **argv) {
                ",\"page_sequence_hash\":\"%016" PRIx64 "\",\"prepare_seconds\":%.9f,"
                "\"touch_seconds\":%.9f,\"sync_seconds\":%.9f,\"sync_call\":\"%s\","
                "\"user_seconds\":%.9f,\"system_seconds\":%.9f,\"minor_faults\":%ld,"
-               "\"major_faults\":%ld,\"voluntary_context_switches\":%ld,\"involuntary_context_switches\":%ld}\n",
+               "\"major_faults\":%ld,\"voluntary_context_switches\":%ld,\"involuntary_context_switches\":%ld",
                batch + 1, size, start_unix_ms, sync_start_unix_ms, end_unix_ms,
                count, dirty, sync_offset, sync_bytes, fingerprint,
                touch_start - prep_start, sync_start - touch_start, sync_end - sync_start,
@@ -320,6 +499,11 @@ int main(int argc, char **argv) {
                cpu_seconds(after.ru_stime) - cpu_seconds(before.ru_stime),
                after.ru_minflt - before.ru_minflt, after.ru_majflt - before.ru_majflt,
                after.ru_nvcsw - before.ru_nvcsw, after.ru_nivcsw - before.ru_nivcsw);
+        printf(",\"proc_self_io_delta\":"); print_process_io_delta(io_before, io_after);
+        printf(",\"block_device_io_delta\":"); print_block_io_delta(block_before, block_after);
+        printf(",\"mapping_smaps_before\":"); print_mapping_smaps(smaps_before);
+        printf(",\"mapping_smaps_after\":"); print_mapping_smaps(smaps_after);
+        printf("}\n");
     }
     if (mapping && munmap(mapping, (size_t)size)) die("munmap");
     printf("{\"event\":\"summary\",\"batches_completed\":%" PRIu64
