@@ -1,0 +1,84 @@
+name: bench-inspect-validator
+on:
+  push:
+    branches: [ejh/20k-tps-10v]
+    paths: [.github/workflows/bench-inspect-validator.yml]
+  workflow_dispatch:
+    inputs:
+      benchmark-id:
+        description: Existing benchmark to inspect; reads validator zero only.
+        type: string
+        default: bench-e2e-multi-region-33871027933-1
+permissions:
+  contents: read
+  id-token: write
+jobs:
+  inspect:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    env:
+      BENCHMARK_ID: ${{ inputs.benchmark-id || 'bench-e2e-multi-region-33871027933-1' }}
+    steps:
+      - name: Configure AWS credentials
+        uses: tempoxyz/gh-actions/vendor/aws-actions/configure-aws-credentials@3626124474a987bc74b41fc7ae65b2e23f8e4e4e
+        with:
+          role-to-assume: arn:aws:iam::934822761402:role/benchmark-runner
+          aws-region: us-east-1
+          role-duration-seconds: 900
+      - name: Read live validator status through SSM
+        run: |
+          python3 - <<'PY'
+          import json, os, pathlib, re, subprocess, time
+          benchmark = os.environ['BENCHMARK_ID']
+          if not re.fullmatch(r'bench-e2e-multi-region-\d+-\d+', benchmark):
+              raise SystemExit('Invalid benchmark ID')
+          manifest = subprocess.check_output(['aws', 's3', 'cp', f's3://tempo-benchmark-artifacts-934822761402-us-east-1/runs/{benchmark}/artifacts/runner/validators.json', '-', '--region', 'us-east-1', '--only-show-errors'], text=True)
+          validator = next(item for item in json.loads(manifest) if item['index'] == 0)
+          if not re.fullmatch(r'i-[0-9a-f]+', validator['instance_id']) or validator['region'] != 'us-east-1':
+              raise SystemExit('Unexpected validator identity')
+          command = '''systemctl is-active tempo-node || true
+          pid=$(systemctl show -p MainPID --value tempo-node)
+          ps -p "$pid" -o pid,pcpu,pmem,etime,comm || true
+          python3 - <<'RPC'
+          import json, urllib.request
+          for method, params in [('eth_blockNumber', []), ('txpool_status', []), ('eth_getBlockByNumber', ['latest', False])]:
+              try:
+                  request = urllib.request.Request('http://127.0.0.1:8545', data=json.dumps({'jsonrpc':'2.0','id':1,'method':method,'params':params}).encode(), headers={'Content-Type':'application/json'})
+                  response = json.load(urllib.request.urlopen(request, timeout=10))
+                  if method == 'eth_getBlockByNumber' and response.get('result'):
+                      block = response['result']
+                      response['result'] = {key:block.get(key) for key in ('number','hash','timestamp','timestampMillisPart')}
+                      response['result']['transactions'] = len(block['transactions'])
+                  print(method, json.dumps(response))
+              except Exception as error:
+                  print(method, type(error).__name__, str(error))
+          RPC
+          journalctl -u tempo-node --no-pager -n 70 --output=short-iso | cut -c1-1800
+          '''
+          params = json.dumps({'commands':[command], 'executionTimeout':['60']})
+          submitted = subprocess.check_output(['aws','ssm','send-command','--region','us-east-1','--document-name','AWS-RunShellScript','--instance-ids',validator['instance_id'],'--comment',f'{benchmark} read-only validator status','--parameters',params,'--output','json'], text=True)
+          command_id = json.loads(submitted)['Command']['CommandId']
+          print(json.dumps({'benchmark_id':benchmark,'validator':validator['instance_id'],'command_id':command_id}))
+          for attempt in range(25):
+              result = subprocess.run(['aws','ssm','get-command-invocation','--region','us-east-1','--command-id',command_id,'--instance-id',validator['instance_id'],'--output','json'], capture_output=True, text=True)
+              if result.returncode == 0:
+                  data = json.loads(result.stdout)
+                  if data['Status'] not in ('Pending','InProgress','Delayed'):
+                      pathlib.Path('inspection-live-validator.json').write_text(json.dumps(data,indent=2))
+                      print(data.get('StandardOutputContent',''))
+                      print(data.get('StandardErrorContent',''))
+                      print('Command status:',data['Status'])
+                      break
+              elif 'AccessDenied' in result.stderr:
+                  raise SystemExit(result.stderr)
+              time.sleep(2)
+          else:
+              raise SystemExit('Diagnostic command still pending; inspect same command ID before retrying')
+          PY
+      - name: Preserve live inspection
+        if: always()
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: benchmark-live-validator
+          path: inspection-live-validator.json
+          if-no-files-found: ignore
