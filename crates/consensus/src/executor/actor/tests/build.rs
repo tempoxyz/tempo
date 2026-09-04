@@ -404,7 +404,7 @@ fn payload_attributes_reach_the_execution_layer_unchanged() {
             proposer: tempo_primitives::ed25519::PublicKey::from_seed(7),
         };
         let extra_data = Bytes::from_static(b"distinct payload attributes");
-        let build_budget = Duration::from_millis(750);
+        let build_deadline = std::time::Instant::now() + Duration::from_millis(750);
         let attributes = TempoPayloadAttributes::new(
             Some(proposer),
             123,
@@ -413,7 +413,7 @@ fn payload_attributes_reach_the_execution_layer_unchanged() {
             Some(consensus_context),
             Vec::new,
         )
-        .with_payload_build_budget(build_budget);
+        .with_payload_build_deadline(build_deadline);
 
         let proposal = make_block(1, 1, GENESIS);
         h.execution.script_built_payload(built_payload(&proposal));
@@ -429,7 +429,7 @@ fn payload_attributes_reach_the_execution_layer_unchanged() {
         assert_eq!(received.timestamp_millis(), 123_456);
         assert_eq!(received.extra_data(), &extra_data);
         assert_eq!(received.consensus_context(), Some(consensus_context));
-        assert_eq!(received.payload_build_budget(), Some(build_budget));
+        assert_eq!(received.payload_build_deadline(), Some(build_deadline));
         assert!(received.validation_latency_estimate().is_none());
         assert!(received.subblocks().is_empty());
     });

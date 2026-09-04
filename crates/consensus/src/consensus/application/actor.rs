@@ -578,12 +578,9 @@ impl Inner<Init> {
         let parent_hash = parent.block_hash();
         let proposer_public_key = crate::utils::public_key_to_b256(&self.public_key);
         let marshal_persist = marshal_persist_estimate();
-        // Give the builder only the proposal window that remains when payload
-        // construction is requested. This accounts for a late `handle_propose`
-        // start instead of resetting the budget at builder entry.
-        let build_budget = self
-            .proposal_return_budget
-            .saturating_sub(propose_start.elapsed());
+        // Keep the original deadline through executor queueing and cache checkout,
+        // rather than resetting the remaining budget when the builder starts.
+        let build_deadline = propose_start + self.proposal_return_budget;
         let validation_latency_estimate = self
             .validation_latency_estimator
             .lock()
@@ -602,7 +599,7 @@ impl Inner<Init> {
                     .unwrap_or_default()
             },
         )
-        .with_payload_build_budget(build_budget)
+        .with_payload_build_deadline(build_deadline)
         .with_validation_latency_estimate(validation_latency_estimate);
 
         // Subscribe to the payload build. The executor owns the build job

@@ -5,7 +5,10 @@ use alloy_rpc_types_eth::Withdrawal;
 use reth_ethereum_engine_primitives::EthPayloadAttributes;
 use reth_node_api::PayloadAttributes;
 use serde::{Deserialize, Serialize};
-use std::{sync::Arc, time::Duration};
+use std::{
+    sync::Arc,
+    time::{Duration, Instant},
+};
 use tempo_primitives::{RecoveredSubBlock, TempoConsensusContext};
 
 /// Container type for all components required to build a payload.
@@ -21,13 +24,13 @@ pub struct TempoPayloadAttributes {
     #[deref_mut]
     #[serde(flatten)]
     inner: EthPayloadAttributes,
-    /// Remaining local proposal budget available to this payload build.
+    /// Local proposal deadline, preserved across queueing and build retries.
     ///
-    /// Consensus sets this to the proposal return budget left when it dispatches
-    /// the build. `None` means the build was not requested by consensus, so the
-    /// builder should not stop early for block pacing.
+    /// `None` means the build was not requested by consensus, so the builder
+    /// should not stop early for block pacing. This process-local clock value
+    /// is intentionally omitted from serialized payload attributes.
     #[serde(skip)]
-    payload_build_budget: Option<Duration>,
+    payload_build_deadline: Option<Instant>,
     /// Validation latency estimate for a consensus payload build.
     ///
     /// Consensus snapshots this from recent locally validated blocks. `None`
@@ -83,7 +86,7 @@ impl TempoPayloadAttributes {
                 slot_number: None,
                 target_gas_limit: None,
             },
-            payload_build_budget: None,
+            payload_build_deadline: None,
             validation_latency_estimate: None,
             timestamp_millis_part,
             extra_data,
@@ -103,23 +106,37 @@ impl TempoPayloadAttributes {
         self.proposer_public_key.as_ref()
     }
 
-    /// Sets the remaining local proposal budget for a consensus payload build.
+    /// Sets a local proposal budget starting now.
     ///
-    /// The value should already account for any time spent before the build was
-    /// requested. The builder treats it as a shared budget for leader
-    /// build/persist work and validator replay/persist work.
-    pub fn with_payload_build_budget(mut self, budget: Duration) -> Self {
-        self.payload_build_budget = Some(budget);
+    /// Callers with an existing proposal start should set its deadline directly
+    /// with [`Self::with_payload_build_deadline`].
+    pub fn with_payload_build_budget(self, budget: Duration) -> Self {
+        self.with_payload_build_deadline(
+            Instant::now()
+                .checked_add(budget)
+                .expect("payload build budget exceeds the monotonic clock range"),
+        )
+    }
+
+    /// Sets the deadline shared by proposer build/persist and validator replay/persist work.
+    pub fn with_payload_build_deadline(mut self, deadline: Instant) -> Self {
+        self.payload_build_deadline = Some(deadline);
         self
     }
 
-    /// Returns the consensus-provided build budget, if this is a paced build.
+    /// Returns the process-local consensus proposal deadline.
+    pub fn payload_build_deadline(&self) -> Option<Instant> {
+        self.payload_build_deadline
+    }
+
+    /// Returns the proposal budget remaining at the start of a build attempt.
     ///
-    /// `None` is intentional for non-consensus builds such as dev or external
-    /// payload requests; those builds are not constrained by the consensus
-    /// block-time budget.
-    pub fn payload_build_budget(&self) -> Option<Duration> {
-        self.payload_build_budget
+    /// The builder must pass the same instant it uses to measure its elapsed
+    /// work, so setup is charged exactly once. Cloning or retrying attributes
+    /// does not reset the deadline. Non-consensus builds remain unpaced.
+    pub fn payload_build_budget_at(&self, build_start: Instant) -> Option<Duration> {
+        self.payload_build_deadline
+            .map(|deadline| deadline.saturating_duration_since(build_start))
     }
 
     /// Sets the validation latency estimate for a consensus payload build.
@@ -167,7 +184,7 @@ impl From<EthPayloadAttributes> for TempoPayloadAttributes {
     fn from(inner: EthPayloadAttributes) -> Self {
         Self {
             inner,
-            payload_build_budget: None,
+            payload_build_deadline: None,
             validation_latency_estimate: None,
             timestamp_millis_part: 0,
             extra_data: Bytes::default(),
@@ -291,6 +308,49 @@ mod tests {
             self.subblocks = Arc::new(f);
             self
         }
+    }
+
+    #[test]
+    fn proposal_budget_accounts_for_delayed_start_and_retries() {
+        let dispatched_at = Instant::now();
+        let deadline = dispatched_at + Duration::from_millis(250);
+        let attrs = TempoPayloadAttributes::default().with_payload_build_deadline(deadline);
+        let build_start = dispatched_at + Duration::from_millis(174);
+        assert_eq!(
+            attrs.payload_build_budget_at(build_start),
+            Some(Duration::from_millis(76))
+        );
+
+        // A cloned retry retains the original deadline instead of receiving a
+        // fresh 250 ms after waiting for the previous attempt.
+        let retry = attrs.clone();
+        assert_eq!(retry.payload_build_deadline(), Some(deadline));
+        assert_eq!(
+            retry.payload_build_budget_at(dispatched_at + Duration::from_millis(240)),
+            Some(Duration::from_millis(10))
+        );
+        assert_eq!(
+            retry.payload_build_budget_at(deadline),
+            Some(Duration::ZERO)
+        );
+        assert_eq!(
+            retry.payload_build_budget_at(deadline + Duration::from_millis(1)),
+            Some(Duration::ZERO)
+        );
+    }
+
+    #[test]
+    fn proposal_deadline_is_local_and_does_not_change_payload_identity() {
+        let attrs = TempoPayloadAttributes::default();
+        let now = Instant::now();
+        assert_eq!(attrs.payload_build_budget_at(now), None);
+        let paced = attrs.clone().with_payload_build_deadline(now);
+        assert_eq!(attrs.payload_id(&B256::ZERO), paced.payload_id(&B256::ZERO));
+        let original_json = serde_json::to_value(&attrs).unwrap();
+        let paced_json = serde_json::to_value(&paced).unwrap();
+        assert_eq!(original_json, paced_json);
+        let decoded: TempoPayloadAttributes = serde_json::from_value(paced_json).unwrap();
+        assert_eq!(decoded.payload_build_budget_at(now), None);
     }
 
     #[test]
