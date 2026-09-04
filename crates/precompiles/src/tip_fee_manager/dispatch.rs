@@ -33,8 +33,8 @@ impl Precompile for TipFeeManager {
                         self.set_validator_token(s, c, beneficiary)
                     }),
                     setUserToken(call) => mutate_void(call, msg_sender, |s, c| self.set_user_token(s, c)),
-                    distributeFees(call) => mutate_void(call, msg_sender, |_, c| {
-                        self.distribute_fees(c.validator, c.token)
+                    distributeFees(call) => mutate_void(call, msg_sender, |s, c| {
+                        self.distribute_fees(s, c.validator, c.token)
                     })
 
                 }

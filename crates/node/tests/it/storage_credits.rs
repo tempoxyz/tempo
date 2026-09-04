@@ -487,10 +487,6 @@ async fn test_tip1060_fee_manager_credit_from_distribute_fees_is_not_redeemable(
 
     let root = MnemonicBuilder::from_phrase(TEST_MNEMONIC).build()?;
     let root_addr = root.address();
-    let attacker = MnemonicBuilder::from_phrase(TEST_MNEMONIC)
-        .index(1)?
-        .build()?;
-    let attacker_addr = attacker.address();
     let validator = MnemonicBuilder::from_phrase(TEST_MNEMONIC)
         .index(2)?
         .build()?;
@@ -505,16 +501,12 @@ async fn test_tip1060_fee_manager_credit_from_distribute_fees_is_not_redeemable(
     let provider = ProviderBuilder::new()
         .wallet(root.clone())
         .connect_http(setup.http_url.clone());
-    let attacker_provider = ProviderBuilder::new()
-        .wallet(attacker)
-        .connect_http(setup.http_url.clone());
     let validator_provider = ProviderBuilder::new()
         .wallet(validator)
         .connect_http(setup.http_url.clone());
     let fee_token = setup_test_token(provider.clone(), root_addr).await?;
     let fee_token_addr = *fee_token.address();
     let root_fee_manager = IFeeManager::new(TIP_FEE_MANAGER_ADDRESS, provider.clone());
-    let attacker_fee_manager = IFeeManager::new(TIP_FEE_MANAGER_ADDRESS, attacker_provider);
     let validator_fee_manager =
         IFeeManager::new(TIP_FEE_MANAGER_ADDRESS, validator_provider.clone());
     let validator_fee_token = ITIP20::new(fee_token_addr, validator_provider);
@@ -522,7 +514,7 @@ async fn test_tip1060_fee_manager_credit_from_distribute_fees_is_not_redeemable(
     let credit_seed_amount = U256::from(1234u64);
 
     let path_usd = ITIP20::new(PATH_USD_ADDRESS, provider.clone());
-    for recipient in [attacker_addr, validator_addr, user_addr, credit_source_addr] {
+    for recipient in [validator_addr, user_addr, credit_source_addr] {
         let receipt = path_usd
             .transfer(recipient, U256::from(10_000_000_000u64))
             .send()
@@ -645,7 +637,7 @@ async fn test_tip1060_fee_manager_credit_from_distribute_fees_is_not_redeemable(
     );
     let fee_manager_credit_before_distribute =
         credits.balanceOf(TIP_FEE_MANAGER_ADDRESS).call().await?;
-    let distribute_receipt = attacker_fee_manager
+    let distribute_receipt = validator_fee_manager
         .distributeFees(validator_addr, fee_token_addr)
         .gas(2_000_000)
         .send()
@@ -1009,9 +1001,8 @@ async fn test_tip1060_distribute_fees_receive_policy_guard_creations_are_account
         "fee token guard custody must start empty before the blocked distribution"
     );
 
-    let distribute_receipt = root_fee_manager
+    let distribute_receipt = validator_fee_manager
         .distributeFees(validator_addr, fee_token_addr)
-        .nonce(provider.get_transaction_count(root_addr).await?)
         .gas(2_000_000)
         .send()
         .await?

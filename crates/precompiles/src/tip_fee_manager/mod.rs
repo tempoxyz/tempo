@@ -288,16 +288,31 @@ impl TipFeeManager {
     /// Transfers a validator's accumulated fee balance to their address via [`TIP20Token`] and
     /// zeroes the ledger. No-ops when the balance is zero.
     ///
+    /// Only the validator themselves may claim their fees (`sender == validator`), matching the
+    /// caller-is-subject pattern used by [`Self::set_validator_token`] / [`Self::set_user_token`].
+    ///
     /// # Errors
+    /// - `Unauthorized` — `sender` is not `validator`
     /// - `InvalidToken` — `token` does not have a valid TIP-20 prefix
-    pub fn distribute_fees(&mut self, validator: Address, token: Address) -> Result<()> {
-        // collect_fee_pre_tx creates FeeManager balance slots for free; do not convert them into storage credits.
-        StorageCtx.set_tip1060_storage_credit_minting(false);
+    pub fn distribute_fees(
+        &mut self,
+        sender: Address,
+        validator: Address,
+        token: Address,
+    ) -> Result<()> {
+        if sender != validator {
+            return Err(FeeManagerError::unauthorized().into());
+        }
 
         let amount = self.collected_fees[validator][token].read()?;
         if amount.is_zero() {
             return Ok(());
         }
+
+        // collect_fee_pre_tx creates FeeManager balance slots for free; do not convert them into
+        // storage credits. Only set the flag once we know there is a non-zero transfer to perform.
+        StorageCtx.set_tip1060_storage_credit_minting(false);
+
         self.collected_fees[validator][token].write(U256::ZERO)?;
 
         // Transfer fees to validator
@@ -1015,7 +1030,7 @@ mod tests {
             assert_eq!(collected, U256::ZERO);
 
             // distribute_fees should be a no-op
-            let result = fee_manager.distribute_fees(validator, token.address());
+            let result = fee_manager.distribute_fees(validator, validator, token.address());
             assert!(result.is_ok(), "Should succeed even with zero balance");
 
             // Validator balance should still be zero
@@ -1062,9 +1077,9 @@ mod tests {
                 tip20_token.balance_of(ITIP20::balanceOfCall { account: validator })?;
             assert_eq!(balance_before, U256::ZERO);
 
-            // Distribute fees
+            // Distribute fees (caller must be the validator)
             let mut fee_manager = TipFeeManager::new();
-            fee_manager.distribute_fees(validator, token.address())?;
+            fee_manager.distribute_fees(validator, validator, token.address())?;
 
             // Verify validator received the fees
             let tip20_token = TIP20Token::from_address(token.address())?;
@@ -1076,6 +1091,45 @@ mod tests {
             let fee_manager = TipFeeManager::new();
             let remaining = fee_manager.collected_fees[validator][token.address()].read()?;
             assert_eq!(remaining, U256::ZERO);
+
+            Ok(())
+        })
+    }
+
+    /// Only the validator may claim their accumulated fees; unrelated EOAs are rejected.
+    #[test]
+    fn test_distribute_fees_rejects_unauthorized_caller() -> eyre::Result<()> {
+        let mut storage = HashMapStorageProvider::new(1);
+        let admin = Address::random();
+        let validator = Address::random();
+        let attacker = Address::random();
+
+        StorageCtx::enter(&mut storage, || {
+            let token = TIP20Setup::create("TestToken", "TEST", admin)
+                .with_issuer(admin)
+                .with_mint(TIP_FEE_MANAGER_ADDRESS, U256::from(1000))
+                .apply()?;
+
+            let mut fee_manager = TipFeeManager::new();
+            let fee_amount = U256::from(500);
+            fee_manager.collected_fees[validator][token.address()].write(fee_amount)?;
+
+            let result = fee_manager.distribute_fees(attacker, validator, token.address());
+            assert_eq!(
+                result,
+                Err(TempoPrecompileError::FeeManagerError(
+                    FeeManagerError::unauthorized()
+                ))
+            );
+
+            // Fees must remain uncleared when the call is rejected
+            let remaining = fee_manager.collected_fees[validator][token.address()].read()?;
+            assert_eq!(remaining, fee_amount);
+
+            let tip20_token = TIP20Token::from_address(token.address())?;
+            let balance =
+                tip20_token.balance_of(ITIP20::balanceOfCall { account: validator })?;
+            assert_eq!(balance, U256::ZERO);
 
             Ok(())
         })
