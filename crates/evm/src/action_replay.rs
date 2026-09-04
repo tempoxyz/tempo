@@ -17,6 +17,33 @@ use tempo_precompiles::{
     tip_fee_manager::amm::{Pool, compute_amount_out},
 };
 
+/// Records a checked transaction for replay without committing writes to the worker EVM.
+/// The caller must enable the shared native recorder and use canonical execution checks.
+pub fn record_storage_action_replay(
+    evm: &mut crate::TempoEvm<'_>,
+    tx: &alloy_consensus::transaction::Recovered<crate::TempoTxEnv>,
+    expiring_nonce: Option<ExpiringNonceReplay>,
+) -> Option<StorageActionReplay> {
+    let result = match evm.transact(tx).map(|executed| executed.detach()) {
+        Ok(result) => result,
+        Err(_) => {
+            evm.ext().actions.clear();
+            return None;
+        }
+    };
+    if result.result.error_code.is_some() {
+        evm.ext().actions.clear();
+        return None;
+    }
+    let actions = evm.ext().actions.take()?;
+    Some(StorageActionReplay {
+        validator_fee: result.result.ext.validator_fee,
+        result: result.result,
+        actions,
+        expiring_nonce,
+    })
+}
+
 impl TempoBlockExecutor<'_> {
     /// Commits a precomputed transaction by replaying recorded storage actions.
     ///

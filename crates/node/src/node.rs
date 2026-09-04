@@ -66,6 +66,10 @@ pub const BLOCK_GAS_LIMIT_500M: u64 = 500_000_000;
 /// Tempo node CLI arguments.
 #[derive(Debug, Clone, PartialEq, clap::Args)]
 pub struct TempoNodeArgs {
+    /// Enable experimental checked speculative replay while validating incoming native payments.
+    #[arg(long = "evm.incoming-replay", default_value_t = false)]
+    pub evm_incoming_replay: bool,
+
     /// Maximum allowed `valid_after` offset for AA txs.
     #[arg(long = "txpool.aa-valid-after-max-secs", default_value_t = DEFAULT_AA_VALID_AFTER_MAX_SECS)]
     pub aa_valid_after_max_secs: u64,
@@ -121,6 +125,7 @@ pub struct TempoNodeArgs {
 impl Default for TempoNodeArgs {
     fn default() -> Self {
         Self {
+            evm_incoming_replay: false,
             aa_valid_after_max_secs: DEFAULT_AA_VALID_AFTER_MAX_SECS,
             max_tempo_authorizations: DEFAULT_MAX_TEMPO_AUTHORIZATIONS,
             txpool_filter: None,
@@ -219,6 +224,8 @@ where
 #[derive(Debug, Default, Clone)]
 #[non_exhaustive]
 pub struct TempoNode {
+    /// Executor configuration for incoming validation.
+    executor_builder: TempoExecutorBuilder,
     /// Transaction pool builder.
     pool_builder: TempoPoolBuilder,
     /// Payload builder builder.
@@ -233,6 +240,9 @@ impl TempoNode {
     /// Create new instance of a Tempo node
     pub fn new(args: &TempoNodeArgs, validator_key: Option<B256>) -> Self {
         Self {
+            executor_builder: TempoExecutorBuilder {
+                incoming_replay: args.evm_incoming_replay,
+            },
             pool_builder: args.pool_builder(),
             payload_builder_builder: args.payload_builder_builder(),
             validator_key,
@@ -454,6 +464,7 @@ where
             self.payload_builder_builder,
             self.network_builder.clone(),
         )
+        .executor(self.executor_builder)
     }
 
     fn add_ons(&self) -> Self::AddOns {
@@ -515,7 +526,10 @@ impl PayloadAttributesBuilder<TempoPayloadAttributes, TempoHeader>
 /// A regular ethereum evm and executor builder.
 #[derive(Debug, Default, Clone, Copy)]
 #[non_exhaustive]
-pub struct TempoExecutorBuilder;
+pub struct TempoExecutorBuilder {
+    /// Opt-in checked native-payment replay for incoming validation.
+    pub incoming_replay: bool,
+}
 
 impl<Node> ExecutorBuilder<Node> for TempoExecutorBuilder
 where
@@ -524,7 +538,8 @@ where
     type EVM = TempoEvmConfig;
 
     async fn build_evm(self, ctx: &BuilderContext<Node>) -> eyre::Result<Self::EVM> {
-        let evm_config = TempoEvmConfig::new(ctx.chain_spec());
+        let evm_config =
+            TempoEvmConfig::new(ctx.chain_spec()).with_incoming_replay(self.incoming_replay);
         Ok(evm_config)
     }
 }
@@ -900,6 +915,28 @@ mod tests {
         AddressFilter, TempoNode, TempoNodeArgs, TempoPayloadBuilderBuilder, TempoPoolBuilder,
     };
     use alloy_primitives::Address;
+
+    #[test]
+    fn incoming_replay_requires_explicit_node_flag() {
+        use clap::Parser;
+        #[derive(Parser)]
+        struct Cli {
+            #[command(flatten)]
+            args: TempoNodeArgs,
+        }
+        let default = Cli::try_parse_from(["tempo"]).unwrap();
+        assert!(
+            !TempoNode::new(&default.args, None)
+                .executor_builder
+                .incoming_replay
+        );
+        let enabled = Cli::try_parse_from(["tempo", "--evm.incoming-replay"]).unwrap();
+        assert!(
+            TempoNode::new(&enabled.args, None)
+                .executor_builder
+                .incoming_replay
+        );
+    }
 
     #[test]
     fn tempo_node_maps_pool_builder() {

@@ -224,33 +224,16 @@ impl BestTransactionsPrewarming {
             tx_env.set_expiring_nonce_idx(expiring_nonce_offset);
             let tx_env = Recovered::new_unchecked(tx_env, tx.transaction.sender());
 
-            let result = match evm.transact(&tx_env).map(|executed| executed.detach()) {
-                Ok(result) => result,
-                Err(err) => {
-                    // Discard actions recorded by the failed transaction before reusing this worker.
-                    evm.ext().actions.clear();
-                    trace!(
-                        target: "payload_builder",
-                        %err,
-                        "Failed to prewarm transaction by execution"
-                    );
-
-                    return None;
-                }
-            };
-
-            trace!(target: "payload_builder", "Prewarmed transaction");
-
             if !prewarm.parallel {
+                if evm
+                    .transact(&tx_env)
+                    .map(|executed| executed.detach())
+                    .is_err()
+                {
+                    evm.ext().actions.clear();
+                }
                 return None;
             }
-
-            if result.result.error_code.is_some() {
-                // Finalization errors also leave this worker available for the next transaction.
-                evm.ext().actions.clear();
-                return None;
-            }
-            let actions = evm.ext().actions.take()?;
             let expiring_nonce = tx
                 .transaction
                 .is_expiring_nonce()
@@ -262,20 +245,7 @@ impl BestTransactionsPrewarming {
                     })
                 })
                 .flatten();
-
-            trace!(
-                target: "payload_builder",
-                actions = actions.len(),
-                expiring_nonce = expiring_nonce.is_some(),
-                "Generated replay for transaction"
-            );
-
-            Some(Box::new(StorageActionReplay {
-                validator_fee: result.result.ext.validator_fee,
-                result: result.result,
-                actions,
-                expiring_nonce,
-            }))
+            tempo_evm::record_storage_action_replay(evm, &tx_env, expiring_nonce).map(Box::new)
         });
 
         PrewarmedTransaction { tx, replay }
