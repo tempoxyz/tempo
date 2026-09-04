@@ -87,31 +87,46 @@ jobs:
                   report_first, report_last = min(bounds), max(bounds)
                   rows = {}
                   stability = {}
+                  performance = {}
+                  metric_inventory = set()
+                  performance_tokens = ('reth_tempo_payload_builder_', 'reth_transaction_pool_', 'execution_cache', 'payload_processor', 'block_validation', 'validate_block', 'execution_duration', 'prewarm', 'reth_sync_execution_', 'reth_sync_block_validation_', 'reth_sync_state_provider_', 'reth_sync_caching_', 'reth_consensus_engine_beacon_new_payload_latency', 'reth_consensus_engine_beacon_block_insert_total_duration', 'notarization_latency', 'finalization_latency')
+                  inventory_tokens = ('consensus', 'marshal', 'simplex', 'proposal', 'verify', 'broadcast', 'notariz', 'finaliz')
+                  def observe(collection, sample):
+                      timestamp, name, labels = sample['unix_ms'], sample['name'], sample['labels']
+                      identity = (name, json.dumps(labels, sort_keys=True))
+                      series = collection.setdefault(identity, {'metric': name, 'labels': labels, 'buckets': {}})
+                      bucket_index = (timestamp - report_first) // 5000
+                      point = series['buckets'].setdefault(bucket_index, {'first_ms': timestamp, 'last_ms': timestamp, 'first': sample['value'], 'last': sample['value'], 'minimum': sample['value'], 'maximum': sample['value'], 'count': 0})
+                      if timestamp < point['first_ms']:
+                          point.update(first_ms=timestamp, first=sample['value'])
+                      if timestamp >= point['last_ms']:
+                          point.update(last_ms=timestamp, last=sample['value'])
+                      point['minimum'] = min(point['minimum'], sample['value'])
+                      point['maximum'] = max(point['maximum'], sample['value'])
+                      point['count'] += 1
+                  def export_series(collection):
+                      return [{**{key: value for key, value in series.items() if key != 'buckets'}, 'buckets': [dict(bucket=bucket, **point) for bucket, point in sorted(series['buckets'].items())]} for _, series in sorted(collection.items())]
                   stability_names = {'reth_consensus_engine_beacon_backpressure_active', 'reth_consensus_engine_beacon_executed_blocks', 'reth_blockchain_tree_canonical_chain_height', 'reth_sync_checkpoint'}
                   stability_tokens = tuple(stability_names) + ('jemalloc', 'resident_memory', 'process_resident')
+                  interesting_tokens = tuple(names) + stability_tokens + performance_tokens + inventory_tokens
                   sample_first = None
                   sample_last = None
                   with gzip.open(samples_file, 'rt') as samples:
                       for line in samples:
-                          if not any(name in line for name in names) and not any(token in line for token in stability_tokens):
+                          if not any(token in line for token in interesting_tokens):
                               continue
                           sample = json.loads(line)
                           name = sample['name']
                           timestamp = sample['unix_ms']
                           labels = sample['labels']
+                          if report_first <= timestamp <= report_last:
+                              if any(token in name for token in inventory_tokens):
+                                  metric_inventory.add(name)
+                              if any(token in name for token in performance_tokens):
+                                  observe(performance, sample)
                           if report_first <= timestamp <= report_last and (name in stability_names or any(token in name for token in ('jemalloc', 'resident_memory', 'process_resident'))):
                               if name != 'reth_sync_checkpoint' or labels.get('stage') == 'Finish':
-                                  identity = (name, json.dumps(labels, sort_keys=True))
-                                  series = stability.setdefault(identity, {'metric': name, 'labels': labels, 'buckets': {}})
-                                  bucket = (timestamp - report_first) // 5000
-                                  point = series['buckets'].setdefault(bucket, {'first_ms': timestamp, 'last_ms': timestamp, 'first': sample['value'], 'last': sample['value'], 'minimum': sample['value'], 'maximum': sample['value'], 'count': 0})
-                                  if timestamp < point['first_ms']:
-                                      point.update(first_ms=timestamp, first=sample['value'])
-                                  if timestamp >= point['last_ms']:
-                                      point.update(last_ms=timestamp, last=sample['value'])
-                                  point['minimum'] = min(point['minimum'], sample['value'])
-                                  point['maximum'] = max(point['maximum'], sample['value'])
-                                  point['count'] += 1
+                                  observe(stability, sample)
                           if sample['name'] not in names:
                               continue
                           timestamp = sample['unix_ms']
@@ -130,6 +145,8 @@ jobs:
                   pathlib.Path('inspection-persistence-metrics.json').write_text(json.dumps(metric_result, indent=2))
                   stability_result = {'source_sha256': digest, 'source_key': key, 'report_first_ms': min(bounds), 'report_last_ms': max(bounds), 'note': 'Observed samples grouped into five-second buckets; absent metrics are unavailable. Finish checkpoint is the block-data frontier, not the masked state/trie frontier. Jemalloc resident excludes non-allocator mappings. No bounded-memory or long-term stability claim follows from this short observation.', 'series': [{**{key: value for key, value in series.items() if key != 'buckets'}, 'buckets': [dict(bucket=bucket, **point) for bucket, point in sorted(series['buckets'].items())]} for _, series in sorted(stability.items())]}
                   pathlib.Path('inspection-stability-metrics.json').write_text(json.dumps(stability_result, indent=2))
+                  performance_result = {'source_sha256': digest, 'source_key': key, 'report_first_ms': report_first, 'report_last_ms': report_last, 'note': 'Five-second buckets of observed exports, preserving complete labels and sum/count series. Buckets 0-11 cover the first sixty seconds. Quantiles are exported observations, not recomputed distributions. Missing metrics are unavailable.', 'consensus_metric_inventory': sorted(metric_inventory), 'series': export_series(performance)}
+                  pathlib.Path('inspection-performance-metrics.json').write_text(json.dumps(performance_result))
                   runner['persistence_metrics'] = metric_result
           print(json.dumps({'benchmark_id': benchmark, 'validators': results, 'runner': runner}, indent=2))
           with open(os.environ['GITHUB_STEP_SUMMARY'], 'a') as summary:
