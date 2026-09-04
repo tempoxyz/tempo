@@ -1,5 +1,7 @@
 use crate::rpc::{TempoHeaderResponse, TempoTransactionRequest};
-use alloy_consensus::{EthereumTxEnvelope, TxEip4844, error::ValueError, transaction::Recovered};
+use alloy_consensus::{
+    EthereumTxEnvelope, Transaction, TxEip4844, error::ValueError, transaction::Recovered,
+};
 use alloy_network::{NetworkTransactionBuilder, TxSigner};
 use alloy_primitives::{Address, B256, Bytes, Signature};
 use reth_primitives_traits::SealedHeader;
@@ -94,7 +96,10 @@ impl TryIntoSimTx<TempoTxEnvelope> for TempoTransactionRequest {
 impl TryIntoTxEnv<Recovered<TempoTxEnv>, TempoEvmEnv> for TempoTransactionRequest {
     type Err = EthApiError;
 
-    fn try_into_tx_env(self, evm_env: &TempoEvmEnv) -> Result<Recovered<TempoTxEnv>, Self::Err> {
+    fn try_into_tx_env(
+        mut self,
+        evm_env: &TempoEvmEnv,
+    ) -> Result<Recovered<TempoTxEnv>, Self::Err> {
         let caller_addr = self.inner.from.unwrap_or_default();
         let is_aa = self.output_tx_type() == TempoTxType::AA;
         if !is_aa {
@@ -109,16 +114,35 @@ impl TryIntoTxEnv<Recovered<TempoTxEnv>, TempoEvmEnv> for TempoTransactionReques
                 .map(|env| Recovered::new_unchecked(env, caller_addr));
         }
 
+        // A sponsorship signature binds the original request, before simulation fee defaults
+        // replace its maximum fee with the effective execution price.
+        let fee_payer = self.fee_payer_signature.as_ref().and_then(|_| {
+            self.clone()
+                .build_aa()
+                .ok()?
+                .recover_fee_payer(caller_addr)
+                .ok()
+        });
+
+        // Calls and gas estimation accept incomplete requests. Apply the same gas, fee, nonce,
+        // and chain defaults as Ethereum simulation before constructing the AA envelope.
+        let normalized = TryIntoTxEnv::<RecoveredTxEnvelope, TempoEvmEnv>::try_into_tx_env(
+            self.inner.clone(),
+            evm_env,
+        )?;
+        self.inner.gas = Some(normalized.gas_limit());
+        self.inner.nonce = Some(normalized.nonce());
+        self.inner.chain_id = normalized.chain_id();
+        self.inner.max_fee_per_gas = Some(normalized.max_fee_per_gas());
+        self.inner.max_priority_fee_per_gas =
+            Some(normalized.max_priority_fee_per_gas().unwrap_or_default());
+
         let key_type = self.key_type.unwrap_or(SignatureType::Secp256k1);
         let key_data = self.key_data.clone();
         let key_id = self.key_id;
-        let has_fee_payer_signature = self.fee_payer_signature.is_some();
         let tx = self
             .build_aa()
             .map_err(|error| EthApiError::InvalidParams(error.to_string()))?;
-        let fee_payer = has_fee_payer_signature
-            .then(|| tx.recover_fee_payer(caller_addr).ok())
-            .flatten();
         let signature = create_mock_tempo_sig(
             &key_type,
             key_data.as_ref(),
@@ -303,6 +327,78 @@ mod tests {
             chain_id: Some(4217),
             ..Default::default()
         }
+    }
+
+    #[test]
+    fn aa_estimation_normalizes_missing_gas_and_optional_fields() {
+        let sender = address!("0xaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa");
+        let target = address!("0x20c0000000000000000000000000000000000000");
+        let mut evm_env = TempoEvmEnv::default();
+        evm_env.version.chain_id = 4217;
+        evm_env.block.gas_limit = alloy_primitives::U256::from(30_000_000);
+
+        for inner in [
+            TransactionRequest {
+                gas: None,
+                ..call_request(target)
+            },
+            TransactionRequest {
+                from: Some(sender),
+                to: Some(TxKind::Call(target)),
+                ..Default::default()
+            },
+            TransactionRequest {
+                transaction_type: Some(TempoTxType::AA as u8),
+                gas: None,
+                ..call_request(target)
+            },
+        ] {
+            let expected = TryIntoTxEnv::<RecoveredTxEnvelope, TempoEvmEnv>::try_into_tx_env(
+                inner.clone(),
+                &evm_env,
+            )
+            .unwrap();
+            let request = TempoTransactionRequest {
+                inner,
+                fee_token: Some(target),
+                ..Default::default()
+            };
+            assert!(
+                request.clone().build_aa().is_err(),
+                "signed requests stay strict"
+            );
+            let env = request
+                .try_into_tx_env(&evm_env)
+                .expect("AA estimation request");
+            assert!(env.as_aa().is_some());
+            assert_eq!(env.signer(), sender);
+            assert_eq!(env.gas_limit(), expected.gas_limit());
+            assert_eq!(env.nonce(), expected.nonce());
+            assert_eq!(env.chain_id(), expected.chain_id());
+            assert_eq!(env.max_fee_per_gas(), expected.max_fee_per_gas());
+            assert_eq!(
+                env.max_priority_fee_per_gas(),
+                Some(expected.max_priority_fee_per_gas().unwrap_or_default())
+            );
+            assert_eq!(
+                env.execution_context(),
+                tempo_evm::ExecutionContext::Simulation
+            );
+        }
+    }
+
+    #[test]
+    fn aa_estimation_rejects_conflicting_fee_fields() {
+        let target = address!("0x20c0000000000000000000000000000000000000");
+        let request = TempoTransactionRequest {
+            inner: TransactionRequest {
+                gas_price: Some(1),
+                ..call_request(target)
+            },
+            fee_token: Some(target),
+            ..Default::default()
+        };
+        assert!(request.try_into_tx_env(&TempoEvmEnv::default()).is_err());
     }
 
     #[test]
