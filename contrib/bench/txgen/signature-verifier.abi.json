@@ -1,0 +1,12 @@
+[
+  {
+    "type": "function",
+    "name": "recover",
+    "inputs": [
+      { "name": "hash", "type": "bytes32" },
+      { "name": "signature", "type": "bytes" }
+    ],
+    "outputs": [{ "name": "signer", "type": "address" }],
+    "stateMutability": "view"
+  }
+]
