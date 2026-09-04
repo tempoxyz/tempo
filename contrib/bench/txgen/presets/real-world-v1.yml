@@ -1,0 +1,442 @@
+# Mainnet-shaped workload based on complete days from 2026-08-05 through 2026-09-03.
+#
+# The 200-point mix models the observed transaction envelope, sponsorship, nonce,
+# authentication, payment, MPP-open, deployment, and revert distributions. Txgen
+# does not yet support EIP-7702 or Channel Reserve voucher generation, so type-4
+# transactions and the settlement half of the MPP lifecycle are not represented.
+
+chain_id: 1337
+
+gas:
+  max_fee_per_gas: 100000000000
+  max_priority_fee_per_gas: 100000000000
+
+accounts:
+  users:
+    mnemonic: "test test test test test test test test test test test junk"
+    range:
+      - 0
+      - ${TXGEN_ACCOUNTS}
+  fee_payers:
+    mnemonic: "test test test test test test test test test test test junk"
+    index: 200000
+
+artifacts:
+  TIP20: ../erc20.abi.json
+  TIP20ChannelReserve: ../tip20-channel-reserve.abi.json
+  FeeAMM: ../fee-amm.abi.json
+
+setup:
+  steps:
+    - id: authorize_keychain_users
+      keychain_authorize_pool:
+        accounts:
+          pool: users
+        access_keys:
+          mnemonic: "test test test test test test test test test test test junk"
+          range:
+            - ${TXGEN_KEYCHAIN_ACCESS_KEYS_START}
+            - ${TXGEN_KEYCHAIN_ACCESS_KEYS_END}
+        key_type: secp256k1
+        gas_limit: ${TXGEN_KEYCHAIN_AUTHORIZE_SETUP_GAS_LIMIT}
+        fee_token: "0x20c0000000000000000000000000000000000000"
+        limits: ${TXGEN_KEYCHAIN_TIP20_LIMITS}
+        allowed_calls: unrestricted
+    - id: approve_channel_reserve
+      tx:
+        type: eip1559
+        from:
+          pool: users
+          select: { index: 0 }
+        gas_limit: 300000
+        call:
+          to: "0x20c0000000000000000000000000000000000001"
+          abi: TIP20
+          function: approve
+          args:
+            - "0x4d50500000000000000000000000000000000000"
+            - "115792089237316195423570985008687907853269984665640564039457584007913129639935"
+    - id: mint_alpha_pathusd_liquidity
+      tx:
+        type: tempo
+        from:
+          pool: users
+          select: { index: 0 }
+        gas_limit: 1000000
+        fee_token: "0x20c0000000000000000000000000000000000000"
+        call:
+          to: "0xfeec000000000000000000000000000000000000"
+          abi: FeeAMM
+          function: mint
+          args:
+            - "0x20c0000000000000000000000000000000000001"
+            - "0x20c0000000000000000000000000000000000000"
+            - ${TXGEN_FEE_AMM_LIQUIDITY_AMOUNT}
+            - "0xfeec000000000000000000000000000000000000"
+    - id: mint_beta_pathusd_liquidity
+      tx:
+        type: tempo
+        from:
+          pool: users
+          select: { index: 0 }
+        gas_limit: 1000000
+        fee_token: "0x20c0000000000000000000000000000000000000"
+        call:
+          to: "0xfeec000000000000000000000000000000000000"
+          abi: FeeAMM
+          function: mint
+          args:
+            - "0x20c0000000000000000000000000000000000002"
+            - "0x20c0000000000000000000000000000000000000"
+            - ${TXGEN_FEE_AMM_LIQUIDITY_AMOUNT}
+            - "0xfeec000000000000000000000000000000000000"
+    - id: mint_theta_pathusd_liquidity
+      tx:
+        type: tempo
+        from:
+          pool: users
+          select: { index: 0 }
+        gas_limit: 1000000
+        fee_token: "0x20c0000000000000000000000000000000000000"
+        call:
+          to: "0xfeec000000000000000000000000000000000000"
+          abi: FeeAMM
+          function: mint
+          args:
+            - "0x20c0000000000000000000000000000000000003"
+            - "0x20c0000000000000000000000000000000000000"
+            - ${TXGEN_FEE_AMM_LIQUIDITY_AMOUNT}
+            - "0xfeec000000000000000000000000000000000000"
+
+templates:
+  memo_sponsored_expiring:
+    type: tempo
+    from:
+      pool: users
+      select: random
+    sponsor:
+      pool: fee_payers
+      select: { index: 0 }
+    gas_limit: 350000
+    fee_token: "0x20c0000000000000000000000000000000000001"
+    expiring_nonce: true
+    valid_for_secs: 25
+    call:
+      to: "0x20c0000000000000000000000000000000000001"
+      abi: TIP20
+      function: transferWithMemo
+      args:
+        - pool:
+            pool: users
+            select: random
+        - 1
+        - random_bytes: 32
+
+  memo_keychain_sponsored_expiring:
+    type: tempo
+    from:
+      pool: users
+      select: random
+    sponsor:
+      pool: fee_payers
+      select: { index: 0 }
+    auth:
+      mode: keychain
+      access_key:
+        from_setup: authorize_keychain_users
+        pair: same_index
+    gas_limit: 3000000
+    fee_token: "0x20c0000000000000000000000000000000000001"
+    expiring_nonce: true
+    valid_for_secs: 25
+    call:
+      to: "0x20c0000000000000000000000000000000000001"
+      abi: TIP20
+      function: transferWithMemo
+      args:
+        - pool:
+            pool: users
+            select: random
+        - 1
+        - random_bytes: 32
+
+  memo_self_protocol:
+    type: tempo
+    from:
+      pool: users
+      select: random
+    gas_limit: 350000
+    call:
+      to: "0x20c0000000000000000000000000000000000001"
+      abi: TIP20
+      function: transferWithMemo
+      args:
+        - pool:
+            pool: users
+            select: random
+        - 1
+        - random_bytes: 32
+
+  memo_self_expiring:
+    type: tempo
+    from:
+      pool: users
+      select: random
+    gas_limit: 350000
+    fee_token: "0x20c0000000000000000000000000000000000001"
+    expiring_nonce: true
+    valid_for_secs: 25
+    call:
+      to: "0x20c0000000000000000000000000000000000001"
+      abi: TIP20
+      function: transferWithMemo
+      args:
+        - pool:
+            pool: users
+            select: random
+        - 1
+        - random_bytes: 32
+
+  memo_keychain_self_protocol:
+    type: tempo
+    from:
+      pool: users
+      select: random
+    auth:
+      mode: keychain
+      access_key:
+        from_setup: authorize_keychain_users
+        pair: same_index
+    gas_limit: 3000000
+    call:
+      to: "0x20c0000000000000000000000000000000000001"
+      abi: TIP20
+      function: transferWithMemo
+      args:
+        - pool:
+            pool: users
+            select: random
+        - 1
+        - random_bytes: 32
+
+  transfer_sponsored_expiring:
+    type: tempo
+    from:
+      pool: users
+      select: random
+    sponsor:
+      pool: fee_payers
+      select: { index: 0 }
+    gas_limit: 350000
+    fee_token: "0x20c0000000000000000000000000000000000001"
+    expiring_nonce: true
+    valid_for_secs: 25
+    call:
+      to: "0x20c0000000000000000000000000000000000001"
+      abi: TIP20
+      function: transfer
+      args:
+        - pool:
+            pool: users
+            select: random
+        - 1
+
+  transfer_self_protocol_default_fee:
+    type: tempo
+    from:
+      pool: users
+      select: random
+    gas_limit: 350000
+    call:
+      to: "0x20c0000000000000000000000000000000000001"
+      abi: TIP20
+      function: transfer
+      args:
+        - pool:
+            pool: users
+            select: random
+        - 1
+
+  transfer_self_protocol_pathusd:
+    type: tempo
+    from:
+      pool: users
+      select: random
+    gas_limit: 350000
+    fee_token: "0x20c0000000000000000000000000000000000000"
+    call:
+      to: "0x20c0000000000000000000000000000000000001"
+      abi: TIP20
+      function: transfer
+      args:
+        - pool:
+            pool: users
+            select: random
+        - 1
+
+  transfer_self_2d:
+    type: tempo
+    from:
+      pool: users
+      select: random
+    gas_limit: 350000
+    fee_token: "0x20c0000000000000000000000000000000000001"
+    nonce_key:
+      uniform:
+        - 1
+        - 9223372036854775807
+    nonce: 0
+    call:
+      to: "0x20c0000000000000000000000000000000000001"
+      abi: TIP20
+      function: transfer
+      args:
+        - pool:
+            pool: users
+            select: random
+        - 1
+
+  transfer_self_expiring:
+    type: tempo
+    from:
+      pool: users
+      select: random
+    gas_limit: 350000
+    fee_token: "0x20c0000000000000000000000000000000000001"
+    expiring_nonce: true
+    valid_for_secs: 25
+    call:
+      to: "0x20c0000000000000000000000000000000000001"
+      abi: TIP20
+      function: transfer
+      args:
+        - pool:
+            pool: users
+            select: random
+        - 1
+
+  channel_open:
+    type: tempo
+    from:
+      pool: users
+      select: { index: 0 }
+    sponsor:
+      pool: fee_payers
+      select: { index: 0 }
+    gas_limit: 1000000
+    fee_token: "0x20c0000000000000000000000000000000000001"
+    expiring_nonce: true
+    valid_for_secs: 25
+    call:
+      to: "0x4d50500000000000000000000000000000000000"
+      abi: TIP20ChannelReserve
+      function: open
+      args: []
+
+  legacy_transfer:
+    type: legacy
+    from:
+      pool: users
+      select: random
+    gas_limit: 350000
+    gas_price: 100000000000
+    call:
+      to: "0x20c0000000000000000000000000000000000001"
+      abi: TIP20
+      function: transfer
+      args:
+        - pool:
+            pool: users
+            select: random
+        - 1
+
+  eip1559_transfer:
+    type: eip1559
+    from:
+      pool: users
+      select: random
+    gas_limit: 350000
+    call:
+      to: "0x20c0000000000000000000000000000000000001"
+      abi: TIP20
+      function: transfer
+      args:
+        - pool:
+            pool: users
+            select: random
+        - 1
+
+  eip1559_revert:
+    type: eip1559
+    from:
+      pool: users
+      select: random
+    gas_limit: 350000
+    call:
+      to: "0x20c0000000000000000000000000000000000001"
+      abi: TIP20
+      function: transfer
+      args:
+        - pool:
+            pool: users
+            select: random
+        - "115792089237316195423570985008687907853269984665640564039457584007913129639935"
+
+  eip1559_deploy:
+    type: eip1559
+    from:
+      pool: users
+      select: random
+    gas_limit: 1000000
+    input: "0x6001600c60003960016000f300"
+
+sequences:
+  channel_open:
+    bindings:
+      salt:
+        bytes32:
+          random_bytes: 32
+    steps:
+      - name: open
+        template: channel_open
+        with:
+          call:
+            args:
+              - "0x0000000000000000000000000000000000000001"
+              - "0x0000000000000000000000000000000000000000"
+              - "0x20c0000000000000000000000000000000000001"
+              - 1
+              - { var: salt }
+              - "0x0000000000000000000000000000000000000000"
+
+mix:
+  - template: memo_sponsored_expiring
+    weight: 48
+  - template: memo_keychain_sponsored_expiring
+    weight: 8
+  - template: memo_self_protocol
+    weight: 28
+  - template: memo_self_expiring
+    weight: 10
+  - template: memo_keychain_self_protocol
+    weight: 2
+  - template: transfer_sponsored_expiring
+    weight: 2
+  - template: transfer_self_protocol_default_fee
+    weight: 5
+  - template: transfer_self_protocol_pathusd
+    weight: 17
+  - template: transfer_self_2d
+    weight: 6
+  - template: transfer_self_expiring
+    weight: 8
+  - sequence: channel_open
+    weight: 20
+  - template: legacy_transfer
+    weight: 20
+  - template: eip1559_transfer
+    weight: 24
+  - template: eip1559_revert
+    weight: 1
+  - template: eip1559_deploy
+    weight: 1
