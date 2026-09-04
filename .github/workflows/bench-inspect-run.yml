@@ -9,6 +9,10 @@ on:
         description: Existing benchmark ID whose validator and runner status should be read.
         type: string
         default: bench-e2e-multi-region-33869141764-1
+      include-metrics:
+        description: Parse historical metric archives and validator logs as well as compact reports.
+        type: boolean
+        default: true
 permissions:
   contents: read
   id-token: write
@@ -18,6 +22,7 @@ jobs:
     timeout-minutes: 5
     env:
       BENCHMARK_ID: ${{ inputs.benchmark-id || 'bench-e2e-multi-region-33869141764-1' }}
+      INCLUDE_METRICS: ${{ inputs.include-metrics || false }}
     steps:
       - name: Configure AWS credentials
         uses: tempoxyz/gh-actions/vendor/aws-actions/configure-aws-credentials@3626124474a987bc74b41fc7ae65b2e23f8e4e4e
@@ -81,7 +86,7 @@ jobs:
               else:
                   runner[artifact] = data
           report_file = pathlib.Path('inspection-txgen-report.json')
-          if report_file.exists():
+          if report_file.exists() and os.environ['INCLUDE_METRICS'] == 'true':
               report = json.loads(report_file.read_text())
               bounds = [block['timestamp_ms'] for block in report.get('blocks', [])]
               samples_file = pathlib.Path('inspection-metrics.ndjson.gz')
