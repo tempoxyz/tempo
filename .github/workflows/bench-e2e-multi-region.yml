@@ -129,16 +129,8 @@ on:
         type: string
         required: false
         default: ""
-      baseline-hardfork:
-        description: Latest active hardfork for the baseline run. Empty = latest Tempo hardfork.
-        type: string
-        required: false
-        default: ""
-      feature-hardfork:
-        description: Latest active hardfork for the feature run. Empty = latest Tempo hardfork.
-        type: string
-        required: false
-        default: ""
+      # This experimental branch uses each binary's latest hardfork and the
+      # default ClickHouse phase, leaving room within GitHub's 25-input limit.
       preset:
         description: Benchmark preset.
         type: choice
@@ -270,12 +262,6 @@ on:
         type: string
         required: true
         default: "3"
-      clickhouse-run:
-        description: Benchmark phase that may use the direct ClickHouse reporter.
-        type: string
-        required: false
-        default: "feature-1"
-
 permissions:
   actions: read
   contents: read
