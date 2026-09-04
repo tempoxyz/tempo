@@ -30,14 +30,16 @@ where
 {
     /// Commits a precomputed transaction by replaying recorded storage actions.
     ///
-    /// `result_closure` observes the synthesized result before the replayed state is committed.
+    /// If speculative actions conflict with canonical state, executes the transaction normally.
+    /// `result_closure` observes exactly one execution result before it is committed.
+    /// Returns `true` if replay was committed, or `false` if canonical execution was used.
     pub fn execute_transaction_with_actions(
         &mut self,
         tx: impl ExecutableTx<Self>,
         replay: StorageActionReplay,
         result_closure: impl FnOnce(&TempoTxResult),
         commit_reads: bool,
-    ) -> Result<(), BlockExecutionError> {
+    ) -> Result<bool, BlockExecutionError> {
         let (tx_env, recovered) = tx.into_parts();
 
         let StorageActionReplay {
@@ -48,21 +50,34 @@ where
         } = replay;
         self.replay_state.reset_tx_changes();
 
-        // TODO: handle reverted transactions
-        if !result.is_success() {
-            return Err(StorageActionReplayError::TransactionExecutionFailed.into());
-        }
-
-        let state = self
-            .replay_actions(
+        // A speculative failure can become valid after earlier transactions execute.
+        let replayed_state = if result.is_success() {
+            self.replay_actions(
                 tx_env.caller(),
                 actions.drain(..),
                 commit_reads,
                 expiring_nonce,
             )
-            .inspect_err(|_| {
+        } else {
+            Err(StorageActionReplayError::TransactionExecutionFailed.into())
+        };
+        let state = match replayed_state {
+            Ok(state) => state,
+            Err(error) => {
+                // Replay has not committed state or invoked the callback. Discard tentative
+                // writes and the pending nonce pointer before considering canonical execution.
                 self.replay_state.reset_tx_changes();
-            })?;
+                let Some(reason) = StorageActionReplayError::from_block_execution_error(&error)
+                else {
+                    return Err(error);
+                };
+                tracing::trace!(?reason, "falling back to canonical transaction execution");
+                self.invalidate_expiring_nonce_cache();
+                return self
+                    .execute_transaction_with_result_closure((tx_env, recovered), result_closure)
+                    .map(|_| false);
+            }
+        };
 
         let cfg = self.inner.evm.cfg_env().clone();
         let gas = result.gas();
@@ -88,7 +103,7 @@ where
 
         self.commit_transaction(result);
 
-        Ok(())
+        Ok(true)
     }
 
     fn replay_actions(
@@ -614,6 +629,298 @@ mod tests {
             [(slot, value)].into_iter().collect(),
         );
         db
+    }
+
+    #[test]
+    fn conflicting_mint_replay_falls_back_to_serial_without_double_accounting() {
+        use alloy_consensus::transaction::Recovered;
+        use alloy_primitives::{Signature, TxKind};
+        use alloy_sol_types::SolCall;
+        use reth_revm::DatabaseCommit;
+        use tempo_chainspec::{hardfork::TempoHardfork, spec::DEV};
+        use tempo_precompiles::{
+            PATH_USD_ADDRESS,
+            storage::{StorageActions, StorageCtx},
+            test_util::TIP20Setup,
+            tip20::ITIP20,
+        };
+        use tempo_primitives::{
+            TempoTxEnvelope,
+            transaction::{AASigned, Call, PrimitiveSignature, TempoSignature, TempoTransaction},
+        };
+        let chainspec = DEV.clone();
+        let sender = Address::repeat_byte(0x01);
+        let mut cfg = revm::context::CfgEnv::default();
+        cfg.spec = TempoHardfork::T12;
+        let mut evm = crate::TempoEvm::new(
+            CacheDB::new(EmptyDB::default()),
+            alloy_evm::EvmEnv {
+                cfg_env: cfg,
+                block_env: tempo_revm::TempoBlockEnv {
+                    inner: revm::context::BlockEnv {
+                        basefee: 1,
+                        gas_limit: 30_000_000,
+                        ..Default::default()
+                    },
+                    ..Default::default()
+                },
+            },
+        );
+        for (address, _) in tempo_contracts::precompiles::SYSTEM_PRECOMPILES {
+            evm.db_mut().insert_account_info(
+                *address,
+                AccountInfo::default().with_code(revm::state::Bytecode::new_raw(
+                    alloy_primitives::Bytes::from_static(&[0xef]),
+                )),
+            );
+        }
+        StorageCtx::enter_ctx(evm.ctx_mut(), StorageActions::disabled(), || {
+            TIP20Setup::path_usd(sender)
+                .with_issuer(sender)
+                .with_mint(sender, U256::from(1_000_000_000_000_000u64))
+                .apply()
+        })
+        .unwrap();
+        let setup = evm.ctx_mut().journaled_state.finalize();
+        evm.db_mut().commit(setup);
+        let backing = evm.db_mut().clone();
+        let env = evm.evm_env();
+        let transactions = (2..=3)
+            .map(|recipient| {
+                let transaction = AASigned::new_unhashed(
+                    TempoTransaction {
+                        chain_id: evm.ctx().cfg.chain_id,
+                        fee_token: Some(PATH_USD_ADDRESS),
+                        max_fee_per_gas: 1_000_000_000,
+                        max_priority_fee_per_gas: 1,
+                        gas_limit: 1_000_000,
+                        calls: vec![Call {
+                            to: TxKind::Call(PATH_USD_ADDRESS),
+                            value: U256::ZERO,
+                            input: ITIP20::mintCall {
+                                to: Address::repeat_byte(recipient),
+                                amount: U256::from(1000),
+                            }
+                            .abi_encode()
+                            .into(),
+                        }],
+                        nonce_key: U256::MAX,
+                        valid_before: Some(20.try_into().unwrap()),
+                        ..Default::default()
+                    },
+                    TempoSignature::Primitive(PrimitiveSignature::Secp256k1(
+                        Signature::test_signature(),
+                    )),
+                );
+                let nonce_hash = transaction.expiring_nonce_hash(sender);
+                let recovered = Recovered::new_unchecked(TempoTxEnvelope::AA(transaction), sender);
+                let mut tx_env: crate::TempoTxEnv =
+                    alloy_evm::IntoTxEnv::into_tx_env(recovered.clone());
+                tx_env.tempo_tx_env.as_mut().unwrap().expiring_nonce_idx = Some(0);
+                let mut prewarmer =
+                    crate::TempoEvm::new(backing.clone(), env.clone()).with_actions();
+                let prewarmed = prewarmer.transact_raw(tx_env).unwrap();
+                assert!(prewarmed.result.is_success());
+                let replay = StorageActionReplay {
+                    validator_fee: prewarmer.validator_fee(),
+                    result: prewarmed.result,
+                    actions: prewarmer.take_actions().unwrap(),
+                    expiring_nonce: Some(ExpiringNonceReplay {
+                        hash: nonce_hash,
+                        valid_before: 20,
+                    }),
+                };
+                (recovered, replay)
+            })
+            .collect::<Vec<_>>();
+        let mut serial_db = State::builder().with_database(backing.clone()).build();
+        let mut replay_db = State::builder().with_database(backing).build();
+        let mut serial = crate::test_utils::TestExecutorBuilder::default()
+            .with_spec(TempoHardfork::T12)
+            .build(&mut serial_db, &chainspec);
+        let mut replayed = crate::test_utils::TestExecutorBuilder::default()
+            .with_spec(TempoHardfork::T12)
+            .build(&mut replay_db, &chainspec);
+        let snapshot = |result: &TempoTxResult| {
+            use alloy_evm::block::TxResult as _;
+            let writes = result
+                .result()
+                .state
+                .iter()
+                .flat_map(|(address, account)| {
+                    account
+                        .storage
+                        .iter()
+                        .filter(|(_, slot)| slot.is_changed())
+                        .map(move |(key, slot)| ((*address, *key), slot.present_value))
+                })
+                .collect::<std::collections::BTreeMap<_, _>>();
+            (writes, result.block_gas_used(), result.validator_fee())
+        };
+        let mut serial_results = Vec::new();
+        let mut replay_results = Vec::new();
+        for (index, (tx, replay)) in transactions.into_iter().enumerate() {
+            serial
+                .execute_transaction_with_result_closure(tx.clone(), |result| {
+                    serial_results.push(snapshot(result));
+                })
+                .unwrap();
+            if index == 1 {
+                // Both mints were speculated against the same parent. The first mint changed
+                // an exact-read slot, so the second trace cannot be applied as recorded.
+                let error = replayed
+                    .replay_actions(sender, replay.actions.clone(), false, replay.expiring_nonce)
+                    .unwrap_err();
+                assert_eq!(
+                    StorageActionReplayError::from_block_execution_error(&error),
+                    Some(StorageActionReplayError::ActionConflict)
+                );
+            }
+            let duplicate_replay = (index == 1).then(|| StorageActionReplay {
+                result: replay.result.clone(),
+                actions: replay.actions.clone(),
+                expiring_nonce: replay.expiring_nonce,
+                validator_fee: replay.validator_fee,
+            });
+            let used_replay = replayed
+                .execute_transaction_with_actions(
+                    tx.clone(),
+                    replay,
+                    |result| {
+                        replay_results.push(snapshot(result));
+                    },
+                    false,
+                )
+                .unwrap();
+            assert_eq!(used_replay, index == 0);
+            assert_eq!(replayed.receipts(), serial.receipts());
+            assert_eq!(replay_results, serial_results);
+            assert_eq!(replay_results.len(), index + 1);
+            assert!(replayed.replay_state.tx_changes.is_empty());
+            if let Some(replay) = duplicate_replay {
+                let committed_before = replayed.evm_mut().db_mut().cache.clone();
+                // A true invalid transaction still fails normal nonce validation. Neither
+                // its speculative nonce writes nor an extra callback/receipt may survive.
+                let error = replayed
+                    .execute_transaction_with_actions(
+                        tx,
+                        replay,
+                        |_| panic!("invalid transaction invoked result callback"),
+                        false,
+                    )
+                    .unwrap_err();
+                assert!(
+                    matches!(error, BlockExecutionError::Validation(_)),
+                    "{error:?}"
+                );
+                assert_eq!(replayed.receipts(), serial.receipts());
+                assert_eq!(replayed.evm_mut().db_mut().cache, committed_before);
+                assert!(replayed.replay_state.tx_changes.is_empty());
+                assert!(
+                    replayed
+                        .replay_state
+                        .expiring_nonce
+                        .pending_ring_ptr
+                        .is_none()
+                );
+            }
+            let slot = NonceManager::new().expiring_nonce_ring_ptr.slot();
+            let serial_ptr = serial
+                .evm_mut()
+                .db_mut()
+                .storage(NONCE_PRECOMPILE_ADDRESS, slot)
+                .unwrap();
+            let replay_ptr = replayed
+                .evm_mut()
+                .db_mut()
+                .storage(NONCE_PRECOMPILE_ADDRESS, slot)
+                .unwrap();
+            assert_eq!(replay_ptr, serial_ptr);
+            assert_eq!(replay_ptr, U256::from(index + 1));
+        }
+        assert_eq!(serial_results.len(), 2);
+    }
+
+    #[test]
+    fn replay_database_failure_is_not_retried_as_a_transaction() {
+        use alloy_consensus::{Signed, TxLegacy, transaction::Recovered};
+        use alloy_primitives::Signature;
+        use revm::{database_interface::DBErrorMarker, state::Bytecode};
+        use std::{cell::Cell, rc::Rc};
+        use tempo_primitives::TempoTxEnvelope;
+
+        #[derive(Debug, thiserror::Error)]
+        #[error("replay database failure")]
+        struct Failure;
+        impl DBErrorMarker for Failure {}
+        #[derive(Debug)]
+        struct FailingDb(Rc<Cell<usize>>);
+        impl revm::Database for FailingDb {
+            type Error = Failure;
+            fn basic(&mut self, _: Address) -> Result<Option<AccountInfo>, Self::Error> {
+                self.0.set(self.0.get() + 1);
+                Err(Failure)
+            }
+            fn code_by_hash(&mut self, _: B256) -> Result<Bytecode, Self::Error> {
+                panic!("must not retry database errors")
+            }
+            fn storage(&mut self, _: Address, _: U256) -> Result<U256, Self::Error> {
+                panic!("must not retry database errors")
+            }
+            fn block_hash(&mut self, _: u64) -> Result<B256, Self::Error> {
+                panic!("must not retry database errors")
+            }
+        }
+        let reads = Rc::new(Cell::new(0));
+        let chainspec = tempo_chainspec::spec::DEV.clone();
+        let mut db = State::builder()
+            .with_database(FailingDb(reads.clone()))
+            .build();
+        let mut executor =
+            crate::test_utils::TestExecutorBuilder::default().build(&mut db, &chainspec);
+        let tx = Recovered::new_unchecked(
+            TempoTxEnvelope::Legacy(Signed::new_unhashed(
+                TxLegacy::default(),
+                Signature::test_signature(),
+            )),
+            Address::ZERO,
+        );
+        let replay = StorageActionReplay {
+            result: ExecutionResult::Success {
+                reason: revm::context::result::SuccessReason::Return,
+                gas: revm::context::result::ResultGas::default(),
+                logs: vec![],
+                output: revm::context::result::Output::Call(Default::default()),
+            },
+            actions: vec![StorageAction::Sstore(
+                Address::repeat_byte(1),
+                U256::ZERO,
+                U256::ZERO,
+                U256::ONE,
+            )],
+            expiring_nonce: None,
+            validator_fee: U256::ZERO,
+        };
+        let error = executor
+            .execute_transaction_with_actions(
+                tx,
+                replay,
+                |_| panic!("failed replay invoked callback"),
+                false,
+            )
+            .unwrap_err();
+        assert!(
+            error.to_string().contains("replay database failure"),
+            "{error:?}"
+        );
+        assert_eq!(
+            StorageActionReplayError::from_block_execution_error(&error),
+            None
+        );
+        assert_eq!(reads.get(), 1);
+        assert!(executor.receipts().is_empty());
+        assert!(executor.replay_state.tx_changes.is_empty());
+        assert!(executor.evm_mut().db_mut().cache.accounts.is_empty());
     }
 
     #[test]

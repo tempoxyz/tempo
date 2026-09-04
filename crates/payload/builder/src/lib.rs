@@ -71,8 +71,7 @@ use std::{
 };
 use tempo_chainspec::{TempoChainSpec, hardfork::TempoHardforks};
 use tempo_evm::{
-    StorageActionReplayError, TempoEvmConfig, TempoNextBlockEnvAttributes, TempoStateAccess,
-    TempoTxResult, evm::TempoEvm,
+    TempoEvmConfig, TempoNextBlockEnvAttributes, TempoStateAccess, TempoTxResult, evm::TempoEvm,
 };
 use tempo_payload_types::{
     TempoBuiltPayload, TempoPayloadAttributes, ValidationLatencyWorkload, marshal_persist_estimate,
@@ -783,13 +782,16 @@ where
             };
 
             let execution_result = if let Some(replay) = pool_tx.replay.take() {
-                parallel_transactions_executed += 1;
-                executor.execute_transaction_with_actions(
-                    tx.transaction.executable(),
-                    *replay,
-                    result_closure,
-                    bal_task_handle.is_some(),
-                )
+                executor
+                    .execute_transaction_with_actions(
+                        tx.transaction.executable(),
+                        *replay,
+                        result_closure,
+                        bal_task_handle.is_some(),
+                    )
+                    .map(|used_replay| {
+                        parallel_transactions_executed += u64::from(used_replay);
+                    })
             } else {
                 executor.invalidate_expiring_nonce_cache();
                 executor
@@ -825,29 +827,6 @@ where
                             self.metrics.inc_pool_tx_skipped("invalid_tx");
                         }
                         continue;
-                    }
-                    BlockExecutionError::Internal(err) => {
-                        if let Some(err) =
-                            StorageActionReplayError::from_internal_block_execution_error(&err)
-                        {
-                            invalid_pool_transaction_execution_attempts += 1;
-                            best_txs.mark_invalid(
-                                &pool_tx,
-                                InvalidPoolTransactionError::Consensus(
-                                    InvalidTransactionError::TxTypeNotSupported,
-                                ),
-                            );
-                            self.metrics.inc_pool_tx_skipped("invalid_replay");
-                            trace!(
-                                target: "payload_builder",
-                                tx_hash = ?tx.hash(),
-                                ?err,
-                                "Skipping invalid replay transaction"
-                            );
-                            continue;
-                        } else {
-                            return Err(PayloadBuilderError::evm(err));
-                        }
                     }
                     _ => return Err(PayloadBuilderError::evm(err)),
                 }
