@@ -150,11 +150,12 @@ build_tempo() {
   git -C "$src_dir" checkout "$ref"
 
   if [ "${CARGO_COOLDOWN_REQUIRED:-false}" = "true" ]; then
-    cooldown_args=("$src_dir")
-    if [ -f "${CARGO_COOLDOWN_CONFIG:-}" ]; then
-      cooldown_args+=("$CARGO_COOLDOWN_CONFIG")
+    cooldown_config="${CARGO_COOLDOWN_CONFIG:?CARGO_COOLDOWN_CONFIG is required}"
+    if [ ! -f "$cooldown_config" ]; then
+      echo "::error::Cargo cooldown config not found: $cooldown_config"
+      exit 1
     fi
-    "${CARGO_COOLDOWN_CHECK:?CARGO_COOLDOWN_CHECK is required}" "${cooldown_args[@]}"
+    "${CARGO_COOLDOWN_CHECK:?CARGO_COOLDOWN_CHECK is required}" "$src_dir" "$cooldown_config"
   fi
 
   echo "Building $label tempo ($ref) with features: $build_features"

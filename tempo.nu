@@ -34,11 +34,10 @@ def check-cargo-cooldown [workspace: string] {
     if $checker == "" {
         error make { msg: "CARGO_COOLDOWN_CHECK is required" }
     }
-    if $config != "" and ($config | path exists) {
-        run-external $checker $workspace $config
-    } else {
-        run-external $checker $workspace
+    if $config == "" or not ($config | path exists) {
+        error make { msg: "CARGO_COOLDOWN_CONFIG must point to an existing policy file" }
     }
+    run-external $checker $workspace $config
 }
 
 # Convert consensus port to node index (e.g., 8000 -> 0, 8100 -> 1)
@@ -112,6 +111,7 @@ def validate-mode [mode: string] {
 
 # Build tempo binary with cargo
 def build-tempo [bins: list<string>, profile: string, features: string, --no-default-features, --extra-rustflags: string = ""] {
+    check-cargo-cooldown "."
     let bin_args = ($bins | each { |bin| ["--bin" $bin] } | flatten)
     let feature_args = (cargo-feature-args $features $no_default_features)
     let build_cmd = ["cargo" "build" "--locked" "--profile" $profile]
@@ -133,6 +133,7 @@ def tempo-xtask-bin [profile: string] {
 }
 
 def build-tempo-xtask [profile: string] {
+    check-cargo-cooldown "."
     let build_cmd = ["cargo" "build" "--locked" "-p" "tempo-xtask" "--profile" $profile]
     print $"Building tempo-xtask: `($build_cmd | str join ' ')`..."
     run-external ($build_cmd | first) ...($build_cmd | skip 1)
@@ -147,6 +148,7 @@ def run-tempo-xtask [profile: string, skip_build: bool, args: list<string>] {
         }
         run-external $xtask_bin ...$args
     } else {
+        check-cargo-cooldown "."
         let run_cmd = ["cargo" "run" "--locked" "-p" "tempo-xtask" "--profile" $profile "--"]
             | append $args
         run-external ($run_cmd | first) ...($run_cmd | skip 1)

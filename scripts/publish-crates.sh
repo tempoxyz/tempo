@@ -27,10 +27,60 @@ err() { printf '  \033[1;31m✗\033[0m %s\n' "$*" >&2; exit 1; }
 prepare_cargo_graph() {
     cargo metadata --manifest-path "$TMP_WORK_DIR/Cargo.toml" \
         --format-version 1 >/dev/null
-    if [[ "${CARGO_COOLDOWN_REQUIRED:-false}" == "true" ]]; then
-        "$REPO_ROOT/.github/scripts/check-cargo-cooldown-lock.sh" \
-            "$TMP_WORK_DIR" "$REPO_ROOT/cooldown.toml"
+    if [[ "${CARGO_COOLDOWN_SKIP:-false}" == "true" ]]; then
+        log "WARNING: skipping Cargo dependency cooldown by explicit request"
+        return
     fi
+    "$REPO_ROOT/.github/scripts/check-cargo-cooldown-lock.sh" \
+        "$TMP_WORK_DIR" "$REPO_ROOT/cooldown.toml"
+}
+
+sha256_file() {
+    if command -v sha256sum >/dev/null 2>&1; then
+        sha256sum "$1" | awk '{print $1}'
+    else
+        shasum -a 256 "$1" | awk '{print $1}'
+    fi
+}
+
+prepare_publish_artifact() {
+    local crate_dir="$1"
+    local name="$2"
+    local version="$3"
+    local package_dir="$TMP_WORK_DIR/target/package"
+
+    env -u CARGO_REGISTRY_TOKEN CARGO_TARGET_DIR="$TMP_WORK_DIR/target" \
+        cargo package --locked --no-verify --allow-dirty \
+        --manifest-path "$crate_dir/Cargo.toml"
+
+    PREPARED_PACKAGE_ARCHIVE="$package_dir/$name-$version.crate"
+    [[ -f "$PREPARED_PACKAGE_ARCHIVE" ]] || err "Missing packaged archive for $name@$version"
+
+    local verification_dir="$package_dir/verified-$name-$version"
+    rm -rf "$verification_dir"
+    mkdir -p "$verification_dir"
+    tar -xzf "$PREPARED_PACKAGE_ARCHIVE" -C "$verification_dir"
+    PREPARED_PACKAGE_ROOT="$verification_dir/$name-$version"
+    [[ -f "$PREPARED_PACKAGE_ROOT/Cargo.lock" ]] || err "Missing packaged lockfile for $name@$version"
+
+    "$REPO_ROOT/.github/scripts/check-cargo-cooldown-lock.sh" \
+        "$PREPARED_PACKAGE_ROOT" "$REPO_ROOT/cooldown.toml"
+    env -u CARGO_REGISTRY_TOKEN CARGO_TARGET_DIR="$TMP_WORK_DIR/target" \
+        cargo check --locked --manifest-path "$PREPARED_PACKAGE_ROOT/Cargo.toml"
+}
+
+verify_existing_package() {
+    local name="$1"
+    local version="$2"
+    local downloaded
+    downloaded="$(mktemp)"
+    curl --proto '=https' --tlsv1.2 --fail --silent --show-error --location \
+        --output "$downloaded" "https://crates.io/api/v1/crates/$name/$version/download"
+    if [[ "$(sha256_file "$PREPARED_PACKAGE_ARCHIVE")" != "$(sha256_file "$downloaded")" ]]; then
+        rm -f "$downloaded"
+        err "$name@$version already exists on crates.io with different packaged contents"
+    fi
+    rm -f "$downloaded"
 }
 
 SANITIZE_PY="$REPO_ROOT/scripts/sanitize_toml.py"
@@ -388,20 +438,25 @@ retry_publish() {
     local crate_dir="$1"
     local name
     name=$(grep -m1 'name = ' "$crate_dir/Cargo.toml" | sed 's/.*"\(.*\)".*/\1/')
+    local version
+    version=$(grep -m1 'version = ' "$crate_dir/Cargo.toml" | sed 's/.*"\(.*\)".*/\1/')
     local max_attempts=10
     local delay=15
+
+    prepare_publish_artifact "$crate_dir" "$name" "$version"
 
     for ((i = 1; i <= max_attempts; i++)); do
         log "Publishing $name (attempt $i/$max_attempts) …"
         local output
-        if output=$(cargo publish --locked --manifest-path "$crate_dir/Cargo.toml" --allow-dirty 2>&1); then
+        if output=$(cargo publish --locked --no-verify --manifest-path "$crate_dir/Cargo.toml" --allow-dirty 2>&1); then
             log "$name published ✓"
             return 0
         fi
         echo "$output"
         # Already published — treat as success
         if echo "$output" | grep -qE 'already uploaded|already exists'; then
-            log "$name already published, skipping ✓"
+            verify_existing_package "$name" "$version"
+            log "$name already published with matching contents, skipping ✓"
             return 0
         fi
         if ((i < max_attempts)); then

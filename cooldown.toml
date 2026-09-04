@@ -1,9 +1,5 @@
 # Exact-version exceptions for the coordinated Tempo Alloy 1.7.2 release.
 [[allow.exact]]
-crate = "alloy-core"
-version = "1.7.2"
-
-[[allow.exact]]
 crate = "alloy-dyn-abi"
 version = "1.7.2"
 
