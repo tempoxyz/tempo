@@ -1,0 +1,52 @@
+name: bench-inspect-run
+on:
+  push:
+    branches: [ejh/20k-tps-10v]
+    paths: [.github/workflows/bench-inspect-run.yml]
+  workflow_dispatch:
+    inputs:
+      benchmark-id:
+        description: Existing benchmark ID whose preparation status should be read.
+        type: string
+        default: bench-e2e-multi-region-33861492894-1
+permissions:
+  contents: read
+  id-token: write
+jobs:
+  inspect:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    env:
+      BENCHMARK_ID: ${{ inputs.benchmark-id || 'bench-e2e-multi-region-33861492894-1' }}
+    steps:
+      - name: Configure AWS credentials
+        uses: tempoxyz/gh-actions/vendor/aws-actions/configure-aws-credentials@3626124474a987bc74b41fc7ae65b2e23f8e4e4e
+        with:
+          role-to-assume: arn:aws:iam::934822761402:role/benchmark-runner
+          aws-region: us-east-1
+          role-duration-seconds: 900
+      - name: Read preparation status for the ten benchmark validators
+        run: |
+          python3 - <<'PY'
+          import concurrent.futures, json, os, re, subprocess
+          benchmark = os.environ['BENCHMARK_ID']
+          if not re.fullmatch(r'bench-e2e-multi-region-\d+-\d+', benchmark):
+              raise SystemExit('Expected an existing global benchmark run ID')
+          regions = ['us-east-1', 'us-west-2', 'eu-central-1', 'ap-southeast-1', 'ap-northeast-1']
+          def inspect(index):
+              region = regions[index % len(regions)]
+              bucket = f'tempo-benchmark-artifacts-934822761402-{region}'
+              key = f'runs/{benchmark}/artifacts/validator-{index}/schelk-prepare-status.json'
+              command = ['aws', 's3', 'cp', f's3://{bucket}/{key}', '-', '--region', region, '--only-show-errors']
+              result = subprocess.run(command, capture_output=True, text=True, timeout=60)
+              output = {'validator': index, 'region': region}
+              if result.returncode:
+                  return {**output, 'status': 'status artifact unavailable'}
+              data = json.loads(result.stdout)
+              return {**output, **{key: data.get(key) for key in ('stage', 'status', 'updated_at', 'elapsed_secs')}}
+          with concurrent.futures.ThreadPoolExecutor(max_workers=10) as executor:
+              results = list(executor.map(inspect, range(10)))
+          print(json.dumps({'benchmark_id': benchmark, 'validators': results}, indent=2))
+          with open(os.environ['GITHUB_STEP_SUMMARY'], 'a') as summary:
+              summary.write('```json\n' + json.dumps(results, indent=2) + '\n```\n')
+          PY
