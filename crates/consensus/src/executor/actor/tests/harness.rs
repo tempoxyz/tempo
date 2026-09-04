@@ -247,7 +247,7 @@ struct FakeExecutionInner {
     /// Complete FCU outcome sequences keyed by forkchoice state. An absent
     /// state uses the fake's stateful default; a present state must not receive
     /// more calls than scripted.
-    fcu_overrides: ScriptedResults<ForkchoiceState, Result<PayloadStatusEnum, &'static str>>,
+    fcu_overrides: ScriptedResults<ForkchoiceState, ScriptedResult<PayloadStatusEnum>>,
     /// Scripted canonical-hash lookup outcomes keyed by height.
     canonical_hash_overrides: ScriptedResults<u64, Result<Option<B256>, &'static str>>,
     /// Scripted block lookup outcomes keyed by digest.
@@ -407,7 +407,22 @@ impl FakeExecution {
         state: ForkchoiceState,
         response: Result<PayloadStatusEnum, &'static str>,
     ) {
-        self.inner.fcu_overrides.push(state, response);
+        self.inner
+            .fcu_overrides
+            .push(state, ScriptedResult::Immediate(response));
+    }
+
+    /// Appends a delayed FCU response for `state` and returns the sender that releases it.
+    pub(super) fn script_delayed_fcu(
+        &self,
+        state: ForkchoiceState,
+        response: Result<PayloadStatusEnum, &'static str>,
+    ) -> oneshot::Sender<()> {
+        let (sender, release) = oneshot::channel();
+        self.inner
+            .fcu_overrides
+            .push(state, ScriptedResult::Delayed { response, release });
+        sender
     }
 
     /// Scripts the outcome of the next canonical block lookup at `height`.
@@ -687,71 +702,74 @@ impl ExecutionLayer for FakeExecution {
                 .push(attributes.clone());
         }
 
-        let outcome = if self.inner.reject_all_fcus.load(Ordering::SeqCst) {
-            Ok(PayloadStatusEnum::Invalid {
+        let scripted = if self.inner.reject_all_fcus.load(Ordering::SeqCst) {
+            Some(ScriptedResult::Immediate(Ok(PayloadStatusEnum::Invalid {
                 validation_error: "rejected by test".into(),
-            })
+            })))
         } else {
             match self.inner.fcu_overrides.next_scripted(&state) {
-                NextScriptedResult::Scripted(Ok(PayloadStatusEnum::Valid)) => {
-                    let applied = self.apply_forkchoice(&state);
-                    assert_eq!(
-                        applied,
-                        PayloadStatusEnum::Valid,
-                        "scripted VALID FCU could not be applied to the fake state: {state:?}",
-                    );
-                    Ok(PayloadStatusEnum::Valid)
-                }
-                NextScriptedResult::Scripted(outcome) => outcome,
-                NextScriptedResult::Unscripted => Ok(self.apply_forkchoice(&state)),
+                NextScriptedResult::Scripted(outcome) => Some(outcome),
+                NextScriptedResult::Unscripted => None,
                 NextScriptedResult::Exhausted => {
                     panic!("FCU request exceeded its scripted outcome sequence: {state:?}")
                 }
             }
         };
+        let execution = self.clone();
+        let inner = self.inner.clone();
+        let was_scripted = scripted.is_some();
 
-        let outcome = outcome.map_err(Report::msg).wrap_err_with(|| {
-            format!(
-                "scripted forkchoice update failed for head `{}`",
-                Digest(state.head_block_hash)
-            )
-        });
-        let result = match outcome {
-            Ok(status) => {
-                let mut response = ForkchoiceUpdated::from_status(status);
-                if response.is_valid()
-                    && attributes.is_some()
-                    && !self.inner.suppress_payload_ids.load(Ordering::SeqCst)
-                {
-                    let payload_id = PayloadId::new(
-                        self.inner
-                            .next_payload_id
-                            .fetch_add(1, Ordering::SeqCst)
-                            .to_be_bytes(),
-                    );
-                    if !self.inner.omit_payload_job.load(Ordering::SeqCst) {
-                        let (sender, receiver) = oneshot::channel();
-                        match self.inner.scripted_builds.lock().pop_front() {
-                            Some(payload) => {
-                                let _ = sender.send(payload);
-                            }
-                            None => {
-                                self.inner.payload_senders.lock().insert(payload_id, sender);
-                            }
-                        }
-                        self.inner
-                            .payload_receivers
-                            .lock()
-                            .insert(payload_id, receiver);
+        async move {
+            let outcome = match scripted {
+                Some(result) => result.resolve().await,
+                None => Ok(execution.apply_forkchoice(&state)),
+            };
+            let outcome = outcome.map_err(Report::msg).wrap_err_with(|| {
+                format!(
+                    "scripted forkchoice update failed for head `{}`",
+                    Digest(state.head_block_hash)
+                )
+            });
+            match outcome {
+                Ok(status) => {
+                    if status == PayloadStatusEnum::Valid && was_scripted {
+                        let applied = execution.apply_forkchoice(&state);
+                        assert_eq!(
+                            applied,
+                            PayloadStatusEnum::Valid,
+                            "scripted VALID FCU could not be applied to the fake state: {state:?}",
+                        );
                     }
-                    response = response.with_payload_id(payload_id);
+                    let mut response = ForkchoiceUpdated::from_status(status);
+                    if response.is_valid()
+                        && attributes.is_some()
+                        && !inner.suppress_payload_ids.load(Ordering::SeqCst)
+                    {
+                        let payload_id = PayloadId::new(
+                            inner
+                                .next_payload_id
+                                .fetch_add(1, Ordering::SeqCst)
+                                .to_be_bytes(),
+                        );
+                        if !inner.omit_payload_job.load(Ordering::SeqCst) {
+                            let (sender, receiver) = oneshot::channel();
+                            match inner.scripted_builds.lock().pop_front() {
+                                Some(payload) => {
+                                    let _ = sender.send(payload);
+                                }
+                                None => {
+                                    inner.payload_senders.lock().insert(payload_id, sender);
+                                }
+                            }
+                            inner.payload_receivers.lock().insert(payload_id, receiver);
+                        }
+                        response = response.with_payload_id(payload_id);
+                    }
+                    Ok(response)
                 }
-                Ok(response)
+                Err(error) => Err(error),
             }
-            Err(error) => Err(error),
-        };
-
-        async move { result }
+        }
     }
 
     fn resolve_payload(

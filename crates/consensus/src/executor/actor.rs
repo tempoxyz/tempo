@@ -1177,12 +1177,12 @@ async fn execute_build(
         build_attributes.take();
     }
 
-    let (attributes, payload_response) = build_attributes.unzip();
+    let (attributes, mut payload_response) = build_attributes.unzip();
 
     // The forkchoice update is submitted even if it would not change the
     // forkchoice state: the execution layer treats it as a no-op (the FCU
     // heartbeat relies on this).
-    match submit_forkchoice_update(
+    let update = submit_forkchoice_update(
         &execution_node,
         cause.clone(),
         canonicalized,
@@ -1190,9 +1190,26 @@ async fn execute_build(
         ForkchoiceUpdateKind::Canonicalize {
             head_or_finalized: HeadOrFinalized::Head,
         },
-    )
-    .await
-    {
+    );
+    futures::pin_mut!(update);
+    let result = match payload_response.as_mut() {
+        Some(response) => select! {
+            biased;
+
+            () = response.cancellation() => {
+                info!("payload build subscriber went away while registering the build; canceling the forkchoice update");
+                return ExecutionTaskOutcome::Completed {
+                    canonicalized: None,
+                    payload_job: None,
+                };
+            },
+
+            result = &mut update => result,
+        },
+        None => update.await,
+    };
+
+    match result {
         Ok(payload_id) => {
             let payload_job = match (payload_response, payload_id) {
                 (Some(response), Some(payload_id)) => Some(StartPayloadJob {

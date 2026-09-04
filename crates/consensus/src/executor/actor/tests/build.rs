@@ -7,6 +7,7 @@ use alloy_primitives::{B256, Bytes};
 use alloy_rpc_types_engine::{ForkchoiceState, PayloadStatusEnum};
 use commonware_macros::test_traced;
 use commonware_runtime::{Runner as _, deterministic};
+use futures::FutureExt as _;
 use tempo_payload_types::TempoPayloadAttributes;
 use tempo_primitives::TempoConsensusContext;
 
@@ -237,6 +238,46 @@ fn build_canceled_while_queued_still_reaffirms_the_head() {
             to a bare head re-affirmation",
         );
         assert!(h.execution.pending_payload_jobs().is_empty());
+    });
+}
+
+#[test_traced]
+fn build_canceled_during_fcu_releases_the_executor_lane() {
+    deterministic::Runner::default().start(|context| async move {
+        let h = Harness::start_at_genesis(&context);
+        let state = ForkchoiceState::from_finalized_head(GENESIS, GENESIS);
+        let _blocked_fcu = h
+            .execution
+            .script_delayed_fcu(state, Ok(PayloadStatusEnum::Valid));
+
+        let build = h.build(round(1), GENESIS);
+        h.wait_until(|| {
+            h.execution.calls().iter().any(|call| {
+                matches!(
+                    call,
+                    ElCall::Fcu {
+                        with_attrs: true,
+                        ..
+                    }
+                )
+            })
+        })
+        .await;
+        drop(build);
+
+        let block = make_block(2, 1, GENESIS);
+        let verify = h.verify(round(2), block).fuse();
+        futures::pin_mut!(verify);
+        futures::select! {
+            result = verify => {
+                result
+                    .expect("verification should run after the canceled build")
+                    .expect("the block should be valid");
+            }
+            () = h.run_for(Duration::from_millis(100)).fuse() => {
+                panic!("the canceled build kept the executor lane blocked");
+            }
+        }
     });
 }
 
