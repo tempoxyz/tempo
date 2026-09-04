@@ -1,0 +1,40 @@
+# One successful secp256k1 recovery per transaction; no contract loop or batching.
+# Fixture: private scalar 1 signs the raw 32-byte 0xaa digest (r || s || v).
+# Expected signer: 0x7E5F4552091A69125d5DfCb7b8C2659029395Bdf.
+chain_id: 1337
+
+gas:
+  max_fee_per_gas: 100000000000
+  max_priority_fee_per_gas: 100000000000
+
+accounts:
+  users:
+    mnemonic: "test test test test test test test test test test test junk"
+    range:
+      - 0
+      - ${TXGEN_ACCOUNTS}
+
+artifacts:
+  SignatureVerifier: ../signature-verifier.abi.json
+
+templates:
+  signature_recover:
+    type: tempo
+    from:
+      pool: users
+      select: random
+    gas_limit: 300000
+    fee_token: "0x20c0000000000000000000000000000000000000"
+    expiring_nonce: true
+    valid_for_secs: 10
+    call:
+      to: "0x5165300000000000000000000000000000000000"
+      abi: SignatureVerifier
+      function: recover
+      args:
+        - "0xaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+        - "0xcf8298b9d991a37626f9816dd75ff8427f5169a0f122a65b8554e9f6504c984f3490ec2e5a8ddaebd27bbb531fefad6336d2a794dbcf2e0f3cae0e7b34bd33e01c"
+
+mix:
+  - template: signature_recover
+    weight: 100
