@@ -78,7 +78,9 @@ impl<N: Network<TransactionRequest = TempoTransactionRequest>> TxFiller<N> for R
 
 /// A [`TxFiller`] that populates transactions with expiring nonce fields ([TIP-1009]).
 ///
-/// Sets `nonce_key` to `U256::MAX`, `nonce` to `0`, and `valid_before` to current time + expiry window.
+/// Sets `nonce_key` to `U256::MAX`, defaults an unset `nonce` to `0`, and sets `valid_before` to
+/// current time + expiry window. An explicitly supplied nonce is preserved as an opaque
+/// discriminator for TIP-1106.
 /// This enables transactions to use the circular buffer replay protection instead of 2D nonce storage.
 ///
 /// [TIP-1009]: <https://docs.tempo.xyz/protocol/tips/tip-1009>
@@ -112,11 +114,11 @@ impl ExpiringNonceFiller {
 
     /// Returns `true` if all expiring nonce fields are properly set:
     /// - `nonce_key` is `TEMPO_EXPIRING_NONCE_KEY`
-    /// - `nonce` is `0`
+    /// - `nonce` is set
     /// - `valid_before` is set
     fn is_filled(tx: &TempoTransactionRequest) -> bool {
         tx.nonce_key == Some(TEMPO_EXPIRING_NONCE_KEY)
-            && tx.nonce() == Some(0)
+            && tx.nonce().is_some()
             && tx.valid_before.is_some()
     }
 
@@ -149,8 +151,10 @@ impl<N: Network<TransactionRequest = TempoTransactionRequest>> TxFiller<N> for E
         {
             // Set expiring nonce key (U256::MAX)
             builder.set_nonce_key(TEMPO_EXPIRING_NONCE_KEY);
-            // Nonce must be 0 for expiring nonce transactions
-            builder.set_nonce(0);
+            // Preserve an explicit TIP-1106 discriminator, defaulting to zero.
+            if builder.nonce().is_none() {
+                builder.set_nonce(0);
+            }
             // Set valid_before to current time + expiry window
             builder.set_valid_before(
                 NonZeroU64::new(Self::current_timestamp() + self.expiry_secs)
@@ -188,8 +192,8 @@ impl<N: Network<TransactionRequest = TempoTransactionRequest>> TxFiller<N> for E
 ///
 /// Nonce resolution depends on the key:
 /// - `U256::ZERO` (protocol nonce): uses `get_transaction_count`
-/// - `TEMPO_EXPIRING_NONCE_KEY` (U256::MAX): always 0, no caching (use [`ExpiringNonceFiller`]
-///   instead for full expiring nonce support including `valid_before`)
+/// - `TEMPO_EXPIRING_NONCE_KEY` (U256::MAX): defaults an unset nonce to 0, no caching (use
+///   [`ExpiringNonceFiller`] instead for full expiring nonce support including `valid_before`)
 /// - Any other key: queries the `NonceManager` precompile via `eth_call`
 #[derive(Clone, Debug)]
 pub struct NonceKeyFiller {
@@ -267,7 +271,7 @@ impl<N: Network<TransactionRequest = TempoTransactionRequest>> TxFiller<N> for N
             .nonce_key
             .ok_or_else(|| TransportErrorKind::custom_str("missing `nonce_key`"))?;
 
-        // Expiring nonces always use nonce 0
+        // Expiring nonces default to discriminator 0 when the caller did not supply one.
         if nonce_key == TEMPO_EXPIRING_NONCE_KEY {
             return Ok(0);
         }
@@ -320,6 +324,23 @@ mod tests {
     use alloy_primitives::{Bytes, ruint::aliases::U256};
     use alloy_provider::{ProviderBuilder, mock::Asserter};
     use eyre;
+
+    #[test]
+    fn expiring_nonce_filler_preserves_explicit_discriminator() {
+        let filler = ExpiringNonceFiller::default();
+        let mut request = TempoTransactionRequest::default().with_nonce(42);
+        let mut tx = SendableTx::Builder(request.clone());
+
+        TxFiller::<TempoNetwork>::fill_sync(&filler, &mut tx);
+        request = tx
+            .as_builder()
+            .expect("transaction remains a builder")
+            .clone();
+
+        assert_eq!(request.nonce_key, Some(TEMPO_EXPIRING_NONCE_KEY));
+        assert_eq!(request.nonce(), Some(42));
+        assert!(request.valid_before.is_some());
+    }
 
     #[tokio::test]
     async fn test_random_2d_nonce_filler() -> eyre::Result<()> {

@@ -86,8 +86,8 @@ pub enum TempoInvalidTransaction {
     #[error("expiring nonce transaction requires valid_before to be set")]
     ExpiringNonceMissingValidBefore,
 
-    /// Expiring nonce transaction must have nonce == 0.
-    #[error("expiring nonce transaction must have nonce == 0")]
+    /// Pre-T12 expiring nonce transaction must have nonce == 0.
+    #[error("expiring nonce transaction must have nonce == 0 before T12")]
     ExpiringNonceNonceNotZero,
 
     /// Subblock transaction must have zero fee.

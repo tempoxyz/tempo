@@ -808,6 +808,37 @@ mod tests {
     }
 
     #[test]
+    fn test_expiring_nonce_discriminator_separates_hashes() {
+        let sender = Address::repeat_byte(0x01);
+        let tx = TempoTransaction {
+            chain_id: 1,
+            gas_limit: 1_000_000,
+            nonce_key: U256::MAX,
+            nonce: 0,
+            valid_before: Some(core::num::NonZeroU64::new(100).unwrap()),
+            calls: vec![Call {
+                to: TxKind::Call(Address::repeat_byte(0x42)),
+                value: U256::ZERO,
+                input: Bytes::new(),
+            }],
+            ..Default::default()
+        };
+        let mut discriminated_tx = tx.clone();
+        discriminated_tx.nonce = 1;
+        let sig =
+            TempoSignature::Primitive(PrimitiveSignature::Secp256k1(Signature::test_signature()));
+        let signed = AASigned::new_unhashed(tx, sig.clone());
+        let discriminated = AASigned::new_unhashed(discriminated_tx, sig);
+
+        assert_ne!(signed.signature_hash(), discriminated.signature_hash());
+        assert_ne!(signed.hash(), discriminated.hash());
+        assert_ne!(
+            signed.expiring_nonce_hash(sender),
+            discriminated.expiring_nonce_hash(sender)
+        );
+    }
+
+    #[test]
     fn test_expiring_nonce_hash_unique_per_sender() {
         let tx = TempoTransaction {
             chain_id: 1,
