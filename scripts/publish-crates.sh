@@ -35,30 +35,6 @@ prepare_cargo_graph() {
         "$TMP_WORK_DIR" "$REPO_ROOT/cooldown.toml"
 }
 
-prepare_publish_artifact() {
-    local crate_dir="$1"
-    local name="$2"
-    local version="$3"
-    local package_dir="$TMP_WORK_DIR/target/package"
-
-    env -u CARGO_REGISTRY_TOKEN CARGO_TARGET_DIR="$TMP_WORK_DIR/target" \
-        cargo package --locked --no-verify --allow-dirty \
-        --manifest-path "$crate_dir/Cargo.toml"
-
-    PREPARED_PACKAGE_ARCHIVE="$package_dir/$name-$version.crate"
-    [[ -f "$PREPARED_PACKAGE_ARCHIVE" ]] || err "Missing packaged archive for $name@$version"
-
-    local verification_dir="$package_dir/verified-$name-$version"
-    rm -rf "$verification_dir"
-    mkdir -p "$verification_dir"
-    tar -xzf "$PREPARED_PACKAGE_ARCHIVE" -C "$verification_dir"
-    PREPARED_PACKAGE_ROOT="$verification_dir/$name-$version"
-    [[ -f "$PREPARED_PACKAGE_ROOT/Cargo.lock" ]] || err "Missing packaged lockfile for $name@$version"
-
-    env -u CARGO_REGISTRY_TOKEN CARGO_TARGET_DIR="$TMP_WORK_DIR/target" \
-        cargo check --locked --manifest-path "$PREPARED_PACKAGE_ROOT/Cargo.toml"
-}
-
 SANITIZE_PY="$REPO_ROOT/scripts/sanitize_toml.py"
 SANITIZE_RS="$REPO_ROOT/scripts/sanitize_source.py"
 
@@ -419,8 +395,6 @@ retry_publish() {
     version=$(grep -m1 'version = ' "$crate_dir/Cargo.toml" | sed 's/.*"\(.*\)".*/\1/')
     local max_attempts=10
     local delay=15
-
-    prepare_publish_artifact "$crate_dir" "$name" "$version"
 
     for ((i = 1; i <= max_attempts; i++)); do
         log "Publishing $name (attempt $i/$max_attempts) …"
