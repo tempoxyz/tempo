@@ -151,6 +151,38 @@ mod tests {
     }
 
     #[test]
+    fn small_marshal_samples_recover_a_budget_that_prevents_large_samples() {
+        use tempo_payload_types::{marshal_persist_estimate, observe_marshal_persist};
+
+        let sample_threshold = 128 * 1024;
+        let budget = Duration::from_millis(250);
+        let decide = |bytes| {
+            payload_budget_decision(
+                Duration::from_millis(40),
+                Duration::ZERO,
+                DEFAULT_BUILD_TIME_MULTIPLIER_SCALED,
+                marshal_persist_estimate(),
+                bytes,
+                None,
+                ValidationLatencyWorkload::default(),
+            )
+        };
+        // One slow archive sync poisons the estimate so even the minimum
+        // eligible sample cannot fit. Future proposals must be smaller.
+        observe_marshal_persist(sample_threshold, Duration::from_secs(1));
+        assert!(decide(sample_threshold).total_reserved >= budget);
+
+        // Storage recovers, but every observation is from a block below the
+        // old sampling threshold. Ignoring these leaves the budget stuck.
+        for _ in 0..32 {
+            let small_block = 4 * 1024;
+            assert!(decide(small_block).total_reserved < budget);
+            observe_marshal_persist(small_block, Duration::from_micros(100));
+        }
+        assert!(decide(sample_threshold).total_reserved < budget);
+    }
+
+    #[test]
     fn observed_build_multiplier_tracks_tail_cost() {
         assert_eq!(
             observed_build_time_multiplier(Duration::from_millis(135), Duration::from_millis(100)),
