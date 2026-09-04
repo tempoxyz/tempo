@@ -28,7 +28,7 @@ jobs:
       - name: Read validator preparation and benchmark runner status
         run: |
           python3 - <<'PY'
-          import concurrent.futures, json, os, pathlib, re, statistics, subprocess
+          import concurrent.futures, json, os, pathlib, re, subprocess
           benchmark = os.environ['BENCHMARK_ID']
           if not re.fullmatch(r'bench-e2e-multi-region-\d+-\d+', benchmark):
               raise SystemExit('Expected an existing global benchmark run ID')
@@ -73,7 +73,7 @@ jobs:
               summary.write('```json\n' + json.dumps(results, indent=2) + '\n```\n')
           PY
       - name: Preserve inspected benchmark reports
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
           name: benchmark-inspection
           path: inspection-*.json
