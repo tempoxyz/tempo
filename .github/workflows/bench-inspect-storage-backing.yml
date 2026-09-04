@@ -27,7 +27,7 @@ jobs:
         run: |
           python3 - <<'PY'
           import concurrent.futures, hashlib, json, pathlib, re, subprocess, time
-          benchmark = 'bench-e2e-multi-region-33880723446-1'
+          benchmark = 'bench-e2e-multi-region-33885509741-1'
           bucket = 'tempo-benchmark-artifacts-934822761402-us-east-1'
           key = f'runs/{benchmark}/artifacts/runner/validators.json'
           raw = subprocess.check_output(['aws','s3','cp',f's3://{bucket}/{key}','-',
