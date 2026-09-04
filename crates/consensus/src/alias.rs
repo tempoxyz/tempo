@@ -198,14 +198,11 @@ pub(crate) mod marshal {
         .await;
 
         if let Some(marshal_stored_height) = marshal_stored_height {
-            ensure!(
-                finalized_tip.1 >= marshal_stored_height,
-                "finalizations archive is inconsistent with the node's consensus metadata: \
-                archive tip height `{}` is below stored marshal height `{marshal_stored_height}`; \
-                have you overwritten consensus storage from a stale snapshot? delete consensus \
-                storage and try again",
+            ensure_marshal_progress_is_covered(
                 finalized_tip.1,
-            );
+                execution_finalized_point(&execution_node).0,
+                marshal_stored_height,
+            )?;
         }
 
         let startup_floor_height = finalized_floor.0;
@@ -225,6 +222,22 @@ pub(crate) mod marshal {
             finalized_floor: last_finalized_height,
             finalized_tip,
         })
+    }
+
+    fn ensure_marshal_progress_is_covered(
+        finalization_tip: Height,
+        execution_finalized: Height,
+        marshal_stored: Height,
+    ) -> eyre::Result<()> {
+        ensure!(
+            finalization_tip.max(execution_finalized) >= marshal_stored,
+            "consensus storage is inconsistent with the node's marshal metadata: certificate \
+            archive tip height `{finalization_tip}` and execution finalized height \
+            `{execution_finalized}` are below stored marshal height `{marshal_stored}`; have you \
+            overwritten consensus storage from a stale snapshot? delete consensus storage and try \
+            again",
+        );
+        Ok(())
     }
 
     struct FinalizationRange {
@@ -481,5 +494,34 @@ pub(crate) mod marshal {
                     Digest(execution_node.chain_spec().genesis_hash()),
                 )
             })
+    }
+
+    #[cfg(test)]
+    mod tests {
+        use super::*;
+
+        #[test]
+        fn execution_finalized_height_covers_trailing_certificate_gap() {
+            ensure_marshal_progress_is_covered(
+                Height::new(32_840_537),
+                Height::new(32_840_540),
+                Height::new(32_840_540),
+            )
+            .expect("execution-backed marshal progress should be recoverable");
+        }
+
+        #[test]
+        fn rejects_marshal_progress_not_covered_by_either_store() {
+            let error = ensure_marshal_progress_is_covered(
+                Height::new(32_840_537),
+                Height::new(32_840_539),
+                Height::new(32_840_540),
+            )
+            .expect_err("uncovered marshal progress should be rejected");
+
+            assert!(error.to_string().contains(
+                "execution finalized height `32840539` are below stored marshal height `32840540`"
+            ));
+        }
     }
 }
