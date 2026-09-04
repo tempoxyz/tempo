@@ -1,0 +1,170 @@
+name: bench-inspect-io-window
+on:
+  push:
+    branches: [ejh/20k-tps-10v]
+    paths: [.github/workflows/bench-inspect-io-window.yml, .github/scripts/bench_io_window.py]
+  workflow_dispatch:
+    inputs:
+      target_run_id:
+        description: Exact live multi-region benchmark run ID
+        type: string
+        required: true
+        default: '33884822499'
+      load_window_confirmed:
+        description: Advisory operator check of current load (final report must verify overlap)
+        type: boolean
+        required: true
+        default: false
+permissions:
+  contents: read
+  actions: read
+  id-token: write
+jobs:
+  inspect:
+    if: github.event_name == 'workflow_dispatch'
+    runs-on: ubuntu-latest
+    timeout-minutes: 6
+    steps:
+      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+      - name: Configure AWS credentials
+        uses: tempoxyz/gh-actions/vendor/aws-actions/configure-aws-credentials@3626124474a987bc74b41fc7ae65b2e23f8e4e4e
+        with:
+          role-to-assume: arn:aws:iam::934822761402:role/benchmark-runner
+          aws-region: us-east-1
+          role-duration-seconds: 900
+      - name: Sample existing I/O counters for 120 seconds
+        env:
+          GH_TOKEN: ${{ github.token }}
+          TARGET_RUN_ID: ${{ inputs.target_run_id }}
+          LOAD_WINDOW_CONFIRMED: ${{ inputs.load_window_confirmed }}
+          AWS_PAGER: ''
+          AWS_RETRY_MODE: standard
+          AWS_MAX_ATTEMPTS: '2'
+        run: |
+          python3 - <<'PY'
+          import base64, concurrent.futures, datetime, hashlib, json, os, pathlib, re, subprocess, tempfile, time, zlib
+          run_id = os.environ['TARGET_RUN_ID']
+          assert re.fullmatch(r'[1-9][0-9]{8,13}', run_id), 'Invalid exact run ID'
+          assert os.environ['LOAD_WINDOW_CONFIRMED'] == 'true', 'Load phase must be confirmed before dispatch'
+          live = json.loads(subprocess.check_output(['gh','api',f'repos/tempoxyz/tempo/actions/runs/{run_id}'], text=True, timeout=20))
+          assert str(live['id']) == run_id and live['status'] == 'in_progress'
+          assert live['path'] == '.github/workflows/bench-e2e-multi-region.yml'
+          assert live['run_attempt'] == 1, 'Only the explicitly scoped attempt1 layout is supported'
+          benchmark = f'bench-e2e-multi-region-{run_id}-1'
+          bucket = 'tempo-benchmark-artifacts-934822761402-us-east-1'
+          key = f'runs/{benchmark}/artifacts/runner/validators.json'
+          raw = subprocess.check_output(['aws','s3','cp',f's3://{bucket}/{key}','-',
+              '--region','us-east-1','--only-show-errors'], text=True, timeout=30)
+          validators = json.loads(raw)
+          assert len(validators) == 10 and {item['index'] for item in validators} == set(range(10))
+          assert len({item['instance_id'] for item in validators}) == 10
+          regions = ('us-east-1','us-west-2','eu-central-1','ap-southeast-1','ap-northeast-1')
+          for item in validators:
+              assert item['region'] == regions[item['index'] % 5]
+              assert re.fullmatch(r'i-[0-9a-f]+', item['instance_id'])
+          pathlib.Path('inspection-io-manifest.json').write_text(json.dumps({
+              'benchmark_id': benchmark, 'manifest_sha256': hashlib.sha256(raw.encode()).hexdigest(),
+              'identity_validation_passed': True, 'operator_load_advisory': True,
+              'measured_window_overlap_verified': False,
+              'window_note': 'Runner status may lag. Verify and crop each node sample window retrospectively against the exact final txgen report; operator advisory does not prove load coverage.',
+              'run_id': int(run_id), 'run_head_sha': live['head_sha'],
+              'validators': [{key: item[key] for key in ('index','region','instance_id')} for item in validators]
+          }, indent=2))
+          def runner_status(label):
+              key = f'runs/{benchmark}/artifacts/runner/status.json'
+              result = {'observed_at': datetime.datetime.now(datetime.timezone.utc).isoformat(),
+                        'source_key': key, 'note': 'Latest uploaded status can lag live execution.'}
+              try:
+                  with tempfile.TemporaryDirectory() as directory:
+                      dest = pathlib.Path(directory) / 'status'
+                      metadata = json.loads(subprocess.check_output(['aws','s3api','get-object',
+                          '--bucket',bucket,'--key',key,'--range','bytes=0-65535',
+                          '--region','us-east-1','--output','json',str(dest)], text=True, timeout=20))
+                      assert dest.stat().st_size <= 65536
+                      if metadata.get('ContentRange'):
+                          assert int(metadata['ContentRange'].split('/')[-1]) <= 65536
+                      raw_status = dest.read_bytes()
+                  data = json.loads(raw_status)
+                  assert data.get('benchmark_id') == benchmark
+                  result.update(source_sha256=hashlib.sha256(raw_status).hexdigest(),
+                                object_last_modified=metadata.get('LastModified'), available=True)
+                  for field in ('status','side','updated_at','commit'):
+                      value = data.get(field)
+                      if value is None or isinstance(value,str) and re.fullmatch(r'[A-Za-z0-9_.:+ -]{1,100}',value):
+                          result[field] = value
+              except (subprocess.SubprocessError, ValueError, KeyError, AssertionError, OSError) as error:
+                  result.update(available=False, error_type=type(error).__name__)
+              pathlib.Path(f'inspection-io-status-{label}.json').write_text(json.dumps(result,indent=2))
+          runner_status('before')
+          source = pathlib.Path('.github/scripts/bench_io_window.py').read_text()
+          command = "python3 - <<'PY_IO_WINDOW'\n" + source + '\nPY_IO_WINDOW\n'
+          source_sha = hashlib.sha256(source.encode()).hexdigest()
+          manifest_sha = hashlib.sha256(raw.encode()).hexdigest()
+          def inspect(item):
+              result = {'benchmark_id': benchmark, 'validator_index': item['index'],
+                        'region': item['region'], 'instance_id': item['instance_id'],
+                        'probe_source_sha256': source_sha, 'manifest_sha256': manifest_sha}
+              try:
+                  submitted = json.loads(subprocess.check_output(['aws','ssm','send-command',
+                      '--region',item['region'],'--document-name','AWS-RunShellScript',
+                      '--instance-ids',item['instance_id'],'--comment',f'{benchmark} read-only 120s I/O counters',
+                      '--parameters',json.dumps({'commands':[command], 'executionTimeout':['150']}),
+                      '--output','json'], text=True, timeout=30))
+                  command_id = submitted['Command']['CommandId']
+                  result['command_id'] = command_id
+                  for _ in range(85):
+                      response = subprocess.run(['aws','ssm','get-command-invocation',
+                          '--region',item['region'],'--command-id',command_id,
+                          '--instance-id',item['instance_id'],'--output','json'],
+                          capture_output=True, text=True, timeout=15)
+                      if response.returncode == 0:
+                          invocation = json.loads(response.stdout)
+                          state = invocation['Status']
+                          if state not in ('Pending','InProgress','Delayed'):
+                              result['ssm_status'] = state
+                              result['response_code'] = invocation.get('ResponseCode')
+                              result['execution_started'] = invocation.get('ExecutionStartDateTime')
+                              if state == 'Success' and invocation.get('ResponseCode') == 0:
+                                  encoded = json.loads(invocation['StandardOutputContent'])
+                                  assert encoded['encoding'] == 'gzip+base64'
+                                  assert 0 < encoded['decoded_size'] <= 128 * 1024
+                                  compressed = base64.b64decode(encoded['data'], validate=True)
+                                  assert len(compressed) <= 18000
+                                  decoder = zlib.decompressobj(16 + zlib.MAX_WBITS)
+                                  decoded = decoder.decompress(compressed, 128 * 1024 + 1)
+                                  assert decoder.eof and not decoder.unused_data and not decoder.unconsumed_tail
+                                  assert len(decoded) == encoded['decoded_size']
+                                  assert hashlib.sha256(decoded).hexdigest() == encoded['decoded_sha256']
+                                  result['decoded_sha256'] = encoded['decoded_sha256']
+                                  result['metadata'] = json.loads(decoded)
+                                  result['sample_state'] = result['metadata']['state']
+                              else:
+                                  # The node probe deliberately reports only exception type on failure.
+                                  result['failure'] = invocation.get('StandardOutputContent','')[:500]
+                              break
+                      elif 'InvocationDoesNotExist' not in response.stderr:
+                          result['ssm_status'] = 'request_failed'
+                          result['error_type'] = 'SSMRequestFailed'
+                          break
+                      time.sleep(2)
+                  else:
+                      result['ssm_status'] = 'inspection_poll_timeout'
+              except (subprocess.SubprocessError, ValueError, KeyError, AssertionError, zlib.error) as error:
+                  result['ssm_status'] = 'inspection_failed'
+                  result['error_type'] = type(error).__name__
+              pathlib.Path(f"inspection-io-node-{item['index']}.json").write_text(json.dumps(result,indent=2))
+              return {key: value for key,value in result.items() if key != 'metadata'}
+          with concurrent.futures.ThreadPoolExecutor(max_workers=10) as executor:
+              summary = list(executor.map(inspect,validators))
+          runner_status('after')
+          print(json.dumps(summary,indent=2))
+          assert all(item.get('ssm_status') == 'Success' and item.get('response_code') == 0 and item.get('sample_state') == 'complete' for item in summary), 'At least one metadata inspection failed; no permission fallback performed'
+          PY
+      - name: Upload bounded I/O counter evidence
+        if: always()
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: benchmark-io-window
+          path: inspection-io-*.json
+          if-no-files-found: error
+          retention-days: 14
