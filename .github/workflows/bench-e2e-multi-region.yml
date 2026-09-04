@@ -693,6 +693,10 @@ jobs:
         id: benchmark
         if: steps.generate_initial_validator_state.outcome == 'success' && steps.initialize_validator_state.outcome == 'success'
         continue-on-error: true
+        # Archive full measurement samples and chain proof for this campaign,
+        # skipping post-load dashboard uploads while provisioning keeps live telemetry.
+        env:
+          CLICKHOUSE_URL: ""
         run: |
           "$BENCH_REPO_DIR/scripts/run_comparison.sh" \
             --stage run-benchmarks \
@@ -731,7 +735,7 @@ jobs:
             --regions "${{ steps.regions.outputs.regions }}" \
             --instance-type "$BENCH_INPUT_INSTANCE_TYPE" \
             --local-ssd-count "$BENCH_INPUT_LOCAL_SSD_COUNT" \
-            --metrics-push-url "${{ secrets.BENCH_VICTORIAMETRICS_URL }}" \
+            --metrics-push-url '' \
             --logs-push-url "${{ secrets.TEMPO_TELEMETRY_URL || secrets.BENCH_LOGS_PUSH_URL }}" \
             --victoriametrics-url "${{ secrets.VICTORIAMETRICS_URL }}" \
             --victorialogs-url "${{ secrets.VICTORIALOGS_URL }}"
