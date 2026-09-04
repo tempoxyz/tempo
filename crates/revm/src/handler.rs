@@ -1791,6 +1791,8 @@ where
         // REVM rejects u64::MAX because protocol nonces are incremented after execution. T12
         // expiring nonces are opaque discriminators and never incremented, so validate the rest
         // of the environment with a temporary in-range value.
+        // TODO: Remove this workaround when migrating to EVM2. Its per-transaction-type handlers
+        // let Tempo omit the nonce-overflow check for T12+ expiring nonce transactions.
         let accepts_max_expiring_nonce = evm.ctx.cfg.spec.is_t12()
             && evm.ctx.tx.nonce() == u64::MAX
             && evm
