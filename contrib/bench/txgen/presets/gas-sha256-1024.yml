@@ -1,0 +1,8 @@
+include:
+  - ../gas-calibration/base.yml
+merge:
+  templates:
+    calibration:
+      call:
+        function: sha256Digest
+        args: [{ random_bytes: 1024 }]

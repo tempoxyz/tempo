@@ -1,0 +1,8 @@
+include:
+  - ../gas-calibration/base.yml
+merge:
+  templates:
+    calibration:
+      call:
+        function: hashControl
+        args: [{ random_bytes: 256 }]
