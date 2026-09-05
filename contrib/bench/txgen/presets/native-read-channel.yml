@@ -1,0 +1,7 @@
+include:
+- ../gas-calibration/native-base.yml
+merge:
+  templates:
+    native_read:
+      call:
+        function: channelCredits

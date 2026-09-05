@@ -46,6 +46,10 @@ The pinned txgen makes expiring-nonce signed payloads unique; offline generation
 with one signer produced 1,000 distinct payloads for each of these fixed inputs.
 Compile this wrapper with `compile.cjs /path/to/solc/package PrecompileCalibration`.
 
+The separate [native public-read fixtures](NATIVE_READS.md) add 15 source-gated
+read paths and a low-rate smoke mix. Their runtime validation and broader native
+mutation/lifecycle coverage remain separate from the hash/opcode fixtures.
+
 The constructor checks all three precompiles and KECCAK256 against an independently
 computed 256-byte fixture before the workload can start. Setup transactions are
 handled by txgen's setup barrier and excluded from its measured sending phase.
