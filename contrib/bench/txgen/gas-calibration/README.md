@@ -103,7 +103,18 @@ checks matching node/state/sender metadata and each side's scenario. The summary
 labels such comparisons **Unpriced**: descriptive deltas between different
 workloads cannot be classified as code improvements or converted into tariff
 multipliers. Paired-mode parsing, routing, summary and audit checks are tested
-locally; the paired runtime surface still requires a CI smoke before use.
+locally; the [first bounded paired smoke](https://github.com/tempoxyz/tempo/actions/runs/33957274123)
+also validates runtime routing, matching recorded settings, preserved preset
+files and the unpriced report surface, with 38,466 successful captured receipts.
+This is one low-rate pair, not a repeatability or pricing result.
+
+The pinned T10 benchmark build leaves the independent TIP-1016 regular/state gas
+split disabled. Its zero `state_gas_used` counters therefore do not establish
+absence of storage costs, and receipts do not expose a per-operation breakdown.
+State-credit, creation, refund, authentication and fee costs still require
+explicit accounting; do not subtract a zero state counter and call the remainder
+pure execution cost. Deployed mainnet build/source equivalence is a separate
+requirement from fixture validation on the pinned comparative baseline.
 
 This study branch requires txgen's `--collect-receipt-outcomes` support. Missing
 or inconsistent receipts fail the run; successful outer receipts alone do not
