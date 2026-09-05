@@ -23,6 +23,13 @@ creation/clearing, cold external-account calls, contract creation and individual
 opcode microbenchmarks remain separate coverage obligations. Any artifact change
 also changes dispatcher layout; compare only identically compiled artifacts.
 
+`gas-calibration-smoke` is a uniform random mix of all 29 individual presets for
+low-rate runtime smoke testing only. It cannot price any individual operation.
+`smoke.py` regenerates that YAML from the base template and individual presets;
+its output must be regenerated when those presets change. Seed 42 with 1,000
+generated workload transactions exercises all 29 template IDs offline, but live
+inclusion and per-operation output checks still require runtime evidence.
+
 The constructor checks all three precompiles and KECCAK256 against an independently
 computed 256-byte fixture before the workload can start. Setup transactions are
 handled by txgen's setup barrier and excluded from its measured sending phase.

@@ -1,0 +1,543 @@
+include:
+- ../gas-calibration/base.yml
+merge:
+  templates:
+    gas_account_context:
+      type: tempo
+      from:
+        pool: users
+        select: random
+      gas_limit: 300000
+      fee_token: '0x20c0000000000000000000000000000000000000'
+      expiring_nonce: true
+      valid_for_secs: 10
+      call:
+        to:
+          var: setup.calibration.address
+        abi: GasCalibration
+        function: accountContext
+        args: []
+    gas_arithmetic:
+      type: tempo
+      from:
+        pool: users
+        select: random
+      gas_limit: 300000
+      fee_token: '0x20c0000000000000000000000000000000000000'
+      expiring_nonce: true
+      valid_for_secs: 10
+      call:
+        to:
+          var: setup.calibration.address
+        abi: GasCalibration
+        function: arithmetic
+        args:
+        - uniform:
+          - 1
+          - 1000000
+        - uniform:
+          - 1
+          - 1000000
+    gas_branch:
+      type: tempo
+      from:
+        pool: users
+        select: random
+      gas_limit: 300000
+      fee_token: '0x20c0000000000000000000000000000000000000'
+      expiring_nonce: true
+      valid_for_secs: 10
+      call:
+        to:
+          var: setup.calibration.address
+        abi: GasCalibration
+        function: branch
+        args:
+        - uniform:
+          - 1
+          - 1000000
+    gas_copy_1024:
+      type: tempo
+      from:
+        pool: users
+        select: random
+      gas_limit: 300000
+      fee_token: '0x20c0000000000000000000000000000000000000'
+      expiring_nonce: true
+      valid_for_secs: 10
+      call:
+        to:
+          var: setup.calibration.address
+        abi: GasCalibration
+        function: copy
+        args:
+        - random_bytes: 1024
+    gas_copy_256:
+      type: tempo
+      from:
+        pool: users
+        select: random
+      gas_limit: 300000
+      fee_token: '0x20c0000000000000000000000000000000000000'
+      expiring_nonce: true
+      valid_for_secs: 10
+      call:
+        to:
+          var: setup.calibration.address
+        abi: GasCalibration
+        function: copy
+        args:
+        - random_bytes: 256
+    gas_copy_32:
+      type: tempo
+      from:
+        pool: users
+        select: random
+      gas_limit: 300000
+      fee_token: '0x20c0000000000000000000000000000000000000'
+      expiring_nonce: true
+      valid_for_secs: 10
+      call:
+        to:
+          var: setup.calibration.address
+        abi: GasCalibration
+        function: copy
+        args:
+        - random_bytes: 32
+    gas_echo:
+      type: tempo
+      from:
+        pool: users
+        select: random
+      gas_limit: 300000
+      fee_token: '0x20c0000000000000000000000000000000000000'
+      expiring_nonce: true
+      valid_for_secs: 10
+      call:
+        to:
+          var: setup.calibration.address
+        abi: GasCalibration
+        function: echo
+        args:
+        - uniform:
+          - 1
+          - 1000000
+    gas_hash_control_1024:
+      type: tempo
+      from:
+        pool: users
+        select: random
+      gas_limit: 300000
+      fee_token: '0x20c0000000000000000000000000000000000000'
+      expiring_nonce: true
+      valid_for_secs: 10
+      call:
+        to:
+          var: setup.calibration.address
+        abi: GasCalibration
+        function: hashControl
+        args:
+        - random_bytes: 1024
+    gas_hash_control_256:
+      type: tempo
+      from:
+        pool: users
+        select: random
+      gas_limit: 300000
+      fee_token: '0x20c0000000000000000000000000000000000000'
+      expiring_nonce: true
+      valid_for_secs: 10
+      call:
+        to:
+          var: setup.calibration.address
+        abi: GasCalibration
+        function: hashControl
+        args:
+        - random_bytes: 256
+    gas_hash_control_32:
+      type: tempo
+      from:
+        pool: users
+        select: random
+      gas_limit: 300000
+      fee_token: '0x20c0000000000000000000000000000000000000'
+      expiring_nonce: true
+      valid_for_secs: 10
+      call:
+        to:
+          var: setup.calibration.address
+        abi: GasCalibration
+        function: hashControl
+        args:
+        - random_bytes: 32
+    gas_identity_1024:
+      type: tempo
+      from:
+        pool: users
+        select: random
+      gas_limit: 300000
+      fee_token: '0x20c0000000000000000000000000000000000000'
+      expiring_nonce: true
+      valid_for_secs: 10
+      call:
+        to:
+          var: setup.calibration.address
+        abi: GasCalibration
+        function: identityCopy
+        args:
+        - random_bytes: 1024
+    gas_identity_256:
+      type: tempo
+      from:
+        pool: users
+        select: random
+      gas_limit: 300000
+      fee_token: '0x20c0000000000000000000000000000000000000'
+      expiring_nonce: true
+      valid_for_secs: 10
+      call:
+        to:
+          var: setup.calibration.address
+        abi: GasCalibration
+        function: identityCopy
+        args:
+        - random_bytes: 256
+    gas_identity_32:
+      type: tempo
+      from:
+        pool: users
+        select: random
+      gas_limit: 300000
+      fee_token: '0x20c0000000000000000000000000000000000000'
+      expiring_nonce: true
+      valid_for_secs: 10
+      call:
+        to:
+          var: setup.calibration.address
+        abi: GasCalibration
+        function: identityCopy
+        args:
+        - random_bytes: 32
+    gas_keccak_1024:
+      type: tempo
+      from:
+        pool: users
+        select: random
+      gas_limit: 300000
+      fee_token: '0x20c0000000000000000000000000000000000000'
+      expiring_nonce: true
+      valid_for_secs: 10
+      call:
+        to:
+          var: setup.calibration.address
+        abi: GasCalibration
+        function: keccakDigest
+        args:
+        - random_bytes: 1024
+    gas_keccak_256:
+      type: tempo
+      from:
+        pool: users
+        select: random
+      gas_limit: 300000
+      fee_token: '0x20c0000000000000000000000000000000000000'
+      expiring_nonce: true
+      valid_for_secs: 10
+      call:
+        to:
+          var: setup.calibration.address
+        abi: GasCalibration
+        function: keccakDigest
+        args:
+        - random_bytes: 256
+    gas_keccak_32:
+      type: tempo
+      from:
+        pool: users
+        select: random
+      gas_limit: 300000
+      fee_token: '0x20c0000000000000000000000000000000000000'
+      expiring_nonce: true
+      valid_for_secs: 10
+      call:
+        to:
+          var: setup.calibration.address
+        abi: GasCalibration
+        function: keccakDigest
+        args:
+        - random_bytes: 32
+    gas_log_1024:
+      type: tempo
+      from:
+        pool: users
+        select: random
+      gas_limit: 300000
+      fee_token: '0x20c0000000000000000000000000000000000000'
+      expiring_nonce: true
+      valid_for_secs: 10
+      call:
+        to:
+          var: setup.calibration.address
+        abi: GasCalibration
+        function: logValue
+        args:
+        - random_bytes: 32
+        - random_bytes: 1024
+    gas_log_256:
+      type: tempo
+      from:
+        pool: users
+        select: random
+      gas_limit: 300000
+      fee_token: '0x20c0000000000000000000000000000000000000'
+      expiring_nonce: true
+      valid_for_secs: 10
+      call:
+        to:
+          var: setup.calibration.address
+        abi: GasCalibration
+        function: logValue
+        args:
+        - random_bytes: 32
+        - random_bytes: 256
+    gas_log_32:
+      type: tempo
+      from:
+        pool: users
+        select: random
+      gas_limit: 300000
+      fee_token: '0x20c0000000000000000000000000000000000000'
+      expiring_nonce: true
+      valid_for_secs: 10
+      call:
+        to:
+          var: setup.calibration.address
+        abi: GasCalibration
+        function: logValue
+        args:
+        - random_bytes: 32
+        - random_bytes: 32
+    gas_ripemd160_1024:
+      type: tempo
+      from:
+        pool: users
+        select: random
+      gas_limit: 300000
+      fee_token: '0x20c0000000000000000000000000000000000000'
+      expiring_nonce: true
+      valid_for_secs: 10
+      call:
+        to:
+          var: setup.calibration.address
+        abi: GasCalibration
+        function: ripemdDigest
+        args:
+        - random_bytes: 1024
+    gas_ripemd160_256:
+      type: tempo
+      from:
+        pool: users
+        select: random
+      gas_limit: 300000
+      fee_token: '0x20c0000000000000000000000000000000000000'
+      expiring_nonce: true
+      valid_for_secs: 10
+      call:
+        to:
+          var: setup.calibration.address
+        abi: GasCalibration
+        function: ripemdDigest
+        args:
+        - random_bytes: 256
+    gas_ripemd160_32:
+      type: tempo
+      from:
+        pool: users
+        select: random
+      gas_limit: 300000
+      fee_token: '0x20c0000000000000000000000000000000000000'
+      expiring_nonce: true
+      valid_for_secs: 10
+      call:
+        to:
+          var: setup.calibration.address
+        abi: GasCalibration
+        function: ripemdDigest
+        args:
+        - random_bytes: 32
+    gas_self_call:
+      type: tempo
+      from:
+        pool: users
+        select: random
+      gas_limit: 300000
+      fee_token: '0x20c0000000000000000000000000000000000000'
+      expiring_nonce: true
+      valid_for_secs: 10
+      call:
+        to:
+          var: setup.calibration.address
+        abi: GasCalibration
+        function: selfCall
+        args:
+        - uniform:
+          - 1
+          - 1000000
+    gas_sha256_1024:
+      type: tempo
+      from:
+        pool: users
+        select: random
+      gas_limit: 300000
+      fee_token: '0x20c0000000000000000000000000000000000000'
+      expiring_nonce: true
+      valid_for_secs: 10
+      call:
+        to:
+          var: setup.calibration.address
+        abi: GasCalibration
+        function: sha256Digest
+        args:
+        - random_bytes: 1024
+    gas_sha256_256:
+      type: tempo
+      from:
+        pool: users
+        select: random
+      gas_limit: 300000
+      fee_token: '0x20c0000000000000000000000000000000000000'
+      expiring_nonce: true
+      valid_for_secs: 10
+      call:
+        to:
+          var: setup.calibration.address
+        abi: GasCalibration
+        function: sha256Digest
+        args:
+        - random_bytes: 256
+    gas_sha256_32:
+      type: tempo
+      from:
+        pool: users
+        select: random
+      gas_limit: 300000
+      fee_token: '0x20c0000000000000000000000000000000000000'
+      expiring_nonce: true
+      valid_for_secs: 10
+      call:
+        to:
+          var: setup.calibration.address
+        abi: GasCalibration
+        function: sha256Digest
+        args:
+        - random_bytes: 32
+    gas_storage_read:
+      type: tempo
+      from:
+        pool: users
+        select: random
+      gas_limit: 300000
+      fee_token: '0x20c0000000000000000000000000000000000000'
+      expiring_nonce: true
+      valid_for_secs: 10
+      call:
+        to:
+          var: setup.calibration.address
+        abi: GasCalibration
+        function: storageRead
+        args: []
+    gas_storage_write:
+      type: tempo
+      from:
+        pool: users
+        select: random
+      gas_limit: 300000
+      fee_token: '0x20c0000000000000000000000000000000000000'
+      expiring_nonce: true
+      valid_for_secs: 10
+      call:
+        to:
+          var: setup.calibration.address
+        abi: GasCalibration
+        function: storageWrite
+        args:
+        - uniform:
+          - 2
+          - 1000000
+    gas_transient:
+      type: tempo
+      from:
+        pool: users
+        select: random
+      gas_limit: 300000
+      fee_token: '0x20c0000000000000000000000000000000000000'
+      expiring_nonce: true
+      valid_for_secs: 10
+      call:
+        to:
+          var: setup.calibration.address
+        abi: GasCalibration
+        function: transientRoundTrip
+        args:
+        - uniform:
+          - 1
+          - 1000000
+  mix:
+  - template: gas_account_context
+    weight: 1
+  - template: gas_arithmetic
+    weight: 1
+  - template: gas_branch
+    weight: 1
+  - template: gas_copy_1024
+    weight: 1
+  - template: gas_copy_256
+    weight: 1
+  - template: gas_copy_32
+    weight: 1
+  - template: gas_echo
+    weight: 1
+  - template: gas_hash_control_1024
+    weight: 1
+  - template: gas_hash_control_256
+    weight: 1
+  - template: gas_hash_control_32
+    weight: 1
+  - template: gas_identity_1024
+    weight: 1
+  - template: gas_identity_256
+    weight: 1
+  - template: gas_identity_32
+    weight: 1
+  - template: gas_keccak_1024
+    weight: 1
+  - template: gas_keccak_256
+    weight: 1
+  - template: gas_keccak_32
+    weight: 1
+  - template: gas_log_1024
+    weight: 1
+  - template: gas_log_256
+    weight: 1
+  - template: gas_log_32
+    weight: 1
+  - template: gas_ripemd160_1024
+    weight: 1
+  - template: gas_ripemd160_256
+    weight: 1
+  - template: gas_ripemd160_32
+    weight: 1
+  - template: gas_self_call
+    weight: 1
+  - template: gas_sha256_1024
+    weight: 1
+  - template: gas_sha256_256
+    weight: 1
+  - template: gas_sha256_32
+    weight: 1
+  - template: gas_storage_read
+    weight: 1
+  - template: gas_storage_write
+    weight: 1
+  - template: gas_transient
+    weight: 1
