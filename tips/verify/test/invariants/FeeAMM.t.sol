@@ -1036,7 +1036,8 @@ contract FeeAMMInvariantTest is InvariantBaseTest {
 
     /// @notice Handler for distributing collected fees
     /// @dev On tempo-foundry, fees are only collected via protocol tx execution
-    ///      This handler tests the distribution mechanism when fees exist
+    ///      This handler tests the distribution mechanism when fees exist.
+    ///      Only the validator may call distributeFees (access control).
     /// @param seed Seed for selecting a pending fee entry
     function distributeFees(uint256 seed) external {
         // Select from tracked pending fees to avoid discarded runs
@@ -1045,6 +1046,7 @@ contract FeeAMMInvariantTest is InvariantBaseTest {
         uint256 collectedBefore = amm.collectedFees(validator, token);
         uint256 validatorBalanceBefore = ITIP20(token).balanceOf(validator);
 
+        vm.prank(validator);
         try amm.distributeFees(validator, token) {
             _removePendingFee(validator, token);
 
@@ -2466,6 +2468,7 @@ contract FeeAMMInvariantTest is InvariantBaseTest {
                 address token = address(_tokens[t]);
                 uint256 pending = amm.collectedFees(validator, token);
                 if (pending > 0) {
+                    vm.prank(validator);
                     try amm.distributeFees(validator, token) {
                         distributedAfterUnblacklist += pending;
                     } catch (bytes memory reason) {
@@ -2485,6 +2488,7 @@ contract FeeAMMInvariantTest is InvariantBaseTest {
             // pathUSD fees
             uint256 pendingPathUSD = amm.collectedFees(validator, address(pathUSD));
             if (pendingPathUSD > 0) {
+                vm.prank(validator);
                 try amm.distributeFees(validator, address(pathUSD)) {
                     distributedAfterUnblacklist += pendingPathUSD;
                 } catch (bytes memory reason) {
@@ -2561,6 +2565,7 @@ contract FeeAMMInvariantTest is InvariantBaseTest {
                 address token = address(_tokens[t]);
                 uint256 pendingFees = amm.collectedFees(validator, token);
                 if (pendingFees > 0) {
+                    vm.prank(validator);
                     try amm.distributeFees(validator, token) { }
                     catch (bytes memory reason) {
                         _assertKnownFeeManagerError(reason);
@@ -2573,6 +2578,7 @@ contract FeeAMMInvariantTest is InvariantBaseTest {
             // Also distribute pathUSD fees
             uint256 pendingPathUSD = amm.collectedFees(validator, address(pathUSD));
             if (pendingPathUSD > 0) {
+                vm.prank(validator);
                 try amm.distributeFees(validator, address(pathUSD)) { }
                 catch (bytes memory reason) {
                     _assertKnownFeeManagerError(reason);
@@ -2874,6 +2880,7 @@ contract FeeAMMInvariantTest is InvariantBaseTest {
             || selector == IFeeAMM.InvalidToken.selector
             || selector == IFeeAMM.InsufficientLiquidity.selector
             || selector == ITIP20.InvalidCurrency.selector || _isKnownTIP20Error(selector)
+            || selector == bytes4(keccak256("Unauthorized()"))
             // FeeManager specific (string reverts)
             || keccak256(reason)
                 == keccak256(abi.encodeWithSignature("Error(string)", "ONLY_DIRECT_CALL"))

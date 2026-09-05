@@ -9,7 +9,7 @@ use alloy::{
     },
     sol_types::SolEvent,
 };
-use alloy_eips::{BlockId, Encodable2718};
+use alloy_eips::Encodable2718;
 use alloy_network::{AnyReceiptEnvelope, EthereumWallet};
 use alloy_primitives::{Address, Signature, U256, address};
 use alloy_rpc_types_eth::TransactionRequest;
@@ -28,20 +28,42 @@ use tempo_primitives::{
 async fn test_set_user_token() -> eyre::Result<()> {
     reth_tracing::init_test_tracing();
 
-    let setup = TestNodeBuilder::new().build_http_only().await?;
+    let validator_wallet = MnemonicBuilder::from_phrase(crate::utils::TEST_MNEMONIC)
+        .index(9)?
+        .build()?;
+    let validator = validator_wallet.address();
+    let dynamic_validator = std::sync::Arc::new(std::sync::Mutex::new(validator));
+    let setup = TestNodeBuilder::new()
+        .with_dynamic_validator(dynamic_validator)
+        .build_http_only()
+        .await?;
     let http_url = setup.http_url;
 
     let wallet = MnemonicBuilder::from_phrase(crate::utils::TEST_MNEMONIC).build()?;
     let user_address = wallet.address();
-    let provider = ProviderBuilder::new().wallet(wallet).connect_http(http_url);
+    let provider = ProviderBuilder::new()
+        .wallet(wallet)
+        .connect_http(http_url.clone());
+    let validator_provider = ProviderBuilder::new()
+        .wallet(validator_wallet)
+        .connect_http(http_url);
 
     // Create test tokens
     let user_token = setup_test_token(provider.clone(), user_address).await?;
     let validator_token = ITIP20::new(PATH_USD_ADDRESS, &provider);
     let fee_manager = IFeeManager::new(TIP_FEE_MANAGER_ADDRESS, provider.clone());
+    let validator_fee_manager = IFeeManager::new(TIP_FEE_MANAGER_ADDRESS, validator_provider);
 
     user_token
         .mint(user_address, U256::from(1e10))
+        .send()
+        .await?
+        .get_receipt()
+        .await?;
+
+    // Fund the validator so it can pay gas for distributeFees claims
+    validator_token
+        .transfer(validator, U256::from(10_000_000_000u64))
         .send()
         .await?
         .get_receipt()
@@ -53,13 +75,6 @@ async fn test_set_user_token() -> eyre::Result<()> {
         fee_manager.userTokens(user_address).call().await?,
         expected_default_token
     );
-
-    let validator = provider
-        .get_block(BlockId::latest())
-        .await?
-        .unwrap()
-        .header
-        .beneficiary;
 
     let validator_balance_before = validator_token.balanceOf(validator).call().await?;
 
@@ -96,8 +111,8 @@ async fn test_set_user_token() -> eyre::Result<()> {
         expected_cost * U256::from(9970) / U256::from(10000)
     );
 
-    // Distribute fees to validator (this distributes ALL accumulated fees for this token)
-    fee_manager
+    // Only the validator may claim accumulated fees
+    validator_fee_manager
         .distributeFees(validator, *validator_token.address())
         .send()
         .await?
@@ -120,7 +135,7 @@ async fn test_set_user_token() -> eyre::Result<()> {
     assert_eq!(current_token, *user_token.address());
 
     // Fees from setUserToken tx also accumulated
-    fee_manager
+    validator_fee_manager
         .distributeFees(validator, *validator_token.address())
         .send()
         .await?
@@ -161,7 +176,7 @@ async fn test_set_user_token() -> eyre::Result<()> {
 
     // Distribute fees before checking validator balance
     let validator_balance_before = validator_token.balanceOf(validator).call().await?;
-    fee_manager
+    validator_fee_manager
         .distributeFees(validator, *validator_token.address())
         .send()
         .await?
