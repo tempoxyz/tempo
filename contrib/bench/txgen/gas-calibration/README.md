@@ -38,6 +38,13 @@ The source-attributed KZG and twelve-round BLAKE2b inputs are also retained in
 EC operations and RSA-sized modular exponentiation. These are separate from the
 29-way hash/opcode mix and do not establish complete input distributions.
 
+Three additional mainnet-sized variants use `mainnet-size-fixtures.json`:
+SHA-256 at 448 bytes, MODEXP with three 32-byte operands, and four-pair BN254.
+Generate their presets with `ethereum-presets.py --mainnet-sizes`; their
+`precompile-mainnet-size-smoke` is separate from the 18-address smoke. The
+fixture generator README records the dated aggregate supporting these sizes.
+These are generated valid inputs, not mainnet replays or pricing evidence.
+
 `PrecompileCalibration` checks every selected fixture's expected result in its
 bounded constructor (one fixture for individual presets, 18 for the smoke), then makes
 one precompile invocation per workload transaction and rejects call failures or

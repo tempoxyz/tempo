@@ -91,7 +91,81 @@ fn add(
     }));
 }
 
+// Size points observed in a dated mainnet aggregate, with newly generated inputs.
+// These do not reproduce the original transactions or claim their value distribution.
+fn mainnet_sizes() -> Vec<Value> {
+    let mut rows = Vec::new();
+    add(
+        &mut rows,
+        "sha256-448",
+        2,
+        (0..448).map(|i| (i % 256) as u8).collect(),
+        hex::decode("afcdb4646801a7f0c78048754ff01adec0da00eb73b20dc0dde7f089c2c24640").unwrap(),
+        "independent Python hashlib SHA-256 of bytes(i % 256 for i in range(448))",
+    );
+
+    let mut modulus_bytes = keccak256("ordinary 32-byte modulus").to_vec();
+    modulus_bytes[0] |= 0x80;
+    modulus_bytes[31] |= 1;
+    let modulus = BigUint::from_bytes_be(&modulus_bytes);
+    let base = BigUint::from_bytes_be(keccak256("ordinary 32-byte base").as_slice()) % &modulus;
+    let mut exponent_bytes = keccak256("ordinary 32-byte exponent").to_vec();
+    exponent_bytes[0] |= 0x80;
+    let exponent = BigUint::from_bytes_be(&exponent_bytes);
+    add(
+        &mut rows,
+        "modexp-256-e256",
+        5,
+        [
+            pad(&[32], 32).repeat(3),
+            pad(&base.to_bytes_be(), 32),
+            exponent_bytes,
+            modulus_bytes,
+        ]
+        .concat(),
+        pad(&base.modpow(&exponent, &modulus).to_bytes_be(), 32),
+        "num-bigint modpow; generated 32-byte operands, observed lengths only",
+    );
+
+    let p = (ark_bn254::G1Affine::generator() * scalar::<ark_bn254::Fr>("bn4 p")).into_affine();
+    let q = (ark_bn254::G1Affine::generator() * scalar::<ark_bn254::Fr>("bn4 q")).into_affine();
+    let r = (ark_bn254::G2Affine::generator() * scalar::<ark_bn254::Fr>("bn4 r")).into_affine();
+    let s = (ark_bn254::G2Affine::generator() * scalar::<ark_bn254::Fr>("bn4 s")).into_affine();
+    add(
+        &mut rows,
+        "bn254-pairing-4",
+        8,
+        [
+            bn1(p),
+            bn2(r),
+            bn1(-p),
+            bn2(r),
+            bn1(q),
+            bn2(s),
+            bn1(-q),
+            bn2(s),
+        ]
+        .concat(),
+        pad(&[1], 32),
+        "pairing cancellation identities; four nonzero pairs, observed count only",
+    );
+    rows
+}
+
 fn main() {
+    let args: Vec<_> = std::env::args().skip(1).collect();
+    if !args.is_empty() {
+        assert_eq!(
+            args,
+            ["--mainnet-sizes"],
+            "only --mainnet-sizes is supported"
+        );
+        println!(
+            "{}",
+            serde_json::to_string_pretty(&mainnet_sizes()).unwrap()
+        );
+        return;
+    }
     let mut rows = Vec::new();
     let message = keccak256("Tempo ordinary calibration fixture v1");
 

@@ -38,3 +38,20 @@ benchmark node; no performance inference may be drawn from running this helper.
 These single fixture points are not full input-distribution coverage or pricing
 evidence. Multiple ordinary inputs/sizes, runtime constructor checks, validated
 receipts, matched repeated timing runs and opcode controls remain necessary.
+
+## Additional mainnet-sized inputs
+
+Passing `-- --mainnet-sizes` emits a separate three-row set for
+`mainnet-size-fixtures.json`: SHA-256 with 448 bytes, MODEXP with three 32-byte
+operands, and BN254 pairing with four nonzero pairs. `ethereum-presets.py
+--mainnet-sizes` emits those individual presets and their separate three-way
+smoke. The default 18-row output is unchanged.
+
+The dimensions were observed in read-only `TEMPO_CHAIN.STAGING.STG_TRACES`
+aggregates over September 4, 2026 07:00 UTC through September 5 07:00 UTC
+(exclusive): 23 SHA calls with median/maximum 448 bytes, nine MODEXP calls with
+32-byte length fields, and 20 pairing calls with 768-byte inputs. Inputs here
+are newly generated and valid, not copies of observed transactions; they do not
+establish the original operand distribution. SHA has an independent hashlib
+expected value, MODEXP uses num-bigint, and pairing uses cancellation identities.
+These cases remain below the same 1,024-byte input bound.
