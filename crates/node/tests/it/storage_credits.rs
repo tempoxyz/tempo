@@ -1,4 +1,6 @@
-use crate::utils::{TEST_MNEMONIC, TestNodeBuilder, get_tempo_receipt, setup_test_token};
+use crate::utils::{
+    PendingTransactionBuilderExt, TEST_MNEMONIC, TestNodeBuilder, setup_test_token,
+};
 use alloy::{
     network::ReceiptResponse,
     primitives::{Address, B256, Bytes, U256, aliases::U96},
@@ -83,12 +85,11 @@ async fn send_tempo_tx<P: Provider>(
             sig,
         )))
         .into();
-    get_tempo_receipt(
-        provider
-            .send_raw_transaction(&envelope.encoded_2718())
-            .await?,
-    )
-    .await
+    provider
+        .send_raw_transaction(&envelope.encoded_2718())
+        .await?
+        .get_tempo_receipt()
+        .await
 }
 
 /// Regression for the TIP-1060 fee-collection path reported in PR review.
@@ -133,17 +134,16 @@ async fn test_tip1060_keychain_fee_refund_does_not_retain_storage_credit() -> ey
             allowedCalls: vec![],
         },
     };
-    let authorize_receipt = get_tempo_receipt(
-        provider
-            .send_transaction(
-                TransactionRequest::default()
-                    .to(ACCOUNT_KEYCHAIN_ADDRESS)
-                    .input(authorize.abi_encode().into())
-                    .gas_limit(2_000_000),
-            )
-            .await?,
-    )
-    .await?;
+    let authorize_receipt = provider
+        .send_transaction(
+            TransactionRequest::default()
+                .to(ACCOUNT_KEYCHAIN_ADDRESS)
+                .input(authorize.abi_encode().into())
+                .gas_limit(2_000_000),
+        )
+        .await?
+        .get_tempo_receipt()
+        .await?;
     assert!(
         authorize_receipt.status(),
         "access-key authorization must succeed"
@@ -188,12 +188,11 @@ async fn test_tip1060_keychain_fee_refund_does_not_retain_storage_credit() -> ey
         )))
         .into();
 
-    let receipt = get_tempo_receipt(
-        provider
-            .send_raw_transaction(&envelope.encoded_2718())
-            .await?,
-    )
-    .await?;
+    let receipt = provider
+        .send_raw_transaction(&envelope.encoded_2718())
+        .await?
+        .get_tempo_receipt()
+        .await?;
     assert!(
         !receipt.status(),
         "the access-key AA transaction must commit the user-call failure path"
@@ -338,12 +337,11 @@ async fn test_tip1060_rebalance_swap_does_not_mint_stale_fee_manager_custody_cre
             sig,
         )))
         .into();
-    let fee_tx_receipt = get_tempo_receipt(
-        root_provider
-            .send_raw_transaction(&envelope.encoded_2718())
-            .await?,
-    )
-    .await?;
+    let fee_tx_receipt = root_provider
+        .send_raw_transaction(&envelope.encoded_2718())
+        .await?
+        .get_tempo_receipt()
+        .await?;
     assert!(fee_tx_receipt.status());
 
     let custody_balance = fee_token.balanceOf(TIP_FEE_MANAGER_ADDRESS).call().await?;
@@ -413,12 +411,11 @@ async fn test_tip1060_rebalance_swap_does_not_mint_stale_fee_manager_custody_cre
             sig,
         )))
         .into();
-    let recreate_receipt = get_tempo_receipt(
-        root_provider
-            .send_raw_transaction(&envelope.encoded_2718())
-            .await?,
-    )
-    .await?;
+    let recreate_receipt = root_provider
+        .send_raw_transaction(&envelope.encoded_2718())
+        .await?
+        .get_tempo_receipt()
+        .await?;
     assert!(recreate_receipt.status());
     assert!(
         fee_token.balanceOf(TIP_FEE_MANAGER_ADDRESS).call().await? > U256::ZERO,
@@ -588,12 +585,11 @@ async fn test_tip1060_fee_manager_credit_from_distribute_fees_is_not_redeemable(
             collect_fees_signature,
         )))
         .into();
-    let collect_fees_receipt = get_tempo_receipt(
-        provider
-            .send_raw_transaction(&collect_fees_envelope.encoded_2718())
-            .await?,
-    )
-    .await?;
+    let collect_fees_receipt = provider
+        .send_raw_transaction(&collect_fees_envelope.encoded_2718())
+        .await?
+        .get_tempo_receipt()
+        .await?;
     assert!(collect_fees_receipt.status());
     assert!(
         !root_fee_manager
@@ -690,12 +686,11 @@ async fn test_tip1060_fee_manager_credit_from_distribute_fees_is_not_redeemable(
             recreate_signature,
         )))
         .into();
-    let recreate_receipt = get_tempo_receipt(
-        provider
-            .send_raw_transaction(&recreate_envelope.encoded_2718())
-            .await?,
-    )
-    .await?;
+    let recreate_receipt = provider
+        .send_raw_transaction(&recreate_envelope.encoded_2718())
+        .await?
+        .get_tempo_receipt()
+        .await?;
     assert!(recreate_receipt.status());
     assert!(
         !root_fee_manager
@@ -852,12 +847,11 @@ async fn test_tip1060_distribute_fees_receive_policy_guard_creations_are_account
             collect_fees_signature,
         )))
         .into();
-    let collect_fees_receipt = get_tempo_receipt(
-        provider
-            .send_raw_transaction(&collect_fees_envelope.encoded_2718())
-            .await?,
-    )
-    .await?;
+    let collect_fees_receipt = provider
+        .send_raw_transaction(&collect_fees_envelope.encoded_2718())
+        .await?
+        .get_tempo_receipt()
+        .await?;
     assert!(collect_fees_receipt.status());
     let payout_amount = root_fee_manager
         .collectedFees(validator_addr, fee_token_addr)
@@ -1111,17 +1105,16 @@ async fn test_tip1060_successful_keychain_spend_fee_refund_cancels_restored_limi
             allowedCalls: vec![],
         },
     };
-    let authorize_receipt = get_tempo_receipt(
-        provider
-            .send_transaction(
-                TransactionRequest::default()
-                    .to(ACCOUNT_KEYCHAIN_ADDRESS)
-                    .input(authorize.abi_encode().into())
-                    .gas_limit(2_000_000),
-            )
-            .await?,
-    )
-    .await?;
+    let authorize_receipt = provider
+        .send_transaction(
+            TransactionRequest::default()
+                .to(ACCOUNT_KEYCHAIN_ADDRESS)
+                .input(authorize.abi_encode().into())
+                .gas_limit(2_000_000),
+        )
+        .await?
+        .get_tempo_receipt()
+        .await?;
     assert!(authorize_receipt.status());
 
     let keychain = IAccountKeychainInstance::new(ACCOUNT_KEYCHAIN_ADDRESS, &provider);
@@ -1164,12 +1157,11 @@ async fn test_tip1060_successful_keychain_spend_fee_refund_cancels_restored_limi
         )))
         .into();
 
-    let receipt = get_tempo_receipt(
-        provider
-            .send_raw_transaction(&envelope.encoded_2718())
-            .await?,
-    )
-    .await?;
+    let receipt = provider
+        .send_raw_transaction(&envelope.encoded_2718())
+        .await?
+        .get_tempo_receipt()
+        .await?;
     assert!(receipt.status());
 
     let remaining_after = keychain
@@ -1270,12 +1262,11 @@ async fn test_tip1060_successful_fee_token_spend_fee_refund_cancels_restored_bal
         )))
         .into();
 
-    let receipt = get_tempo_receipt(
-        fee_payer_provider
-            .send_raw_transaction(&envelope.encoded_2718())
-            .await?,
-    )
-    .await?;
+    let receipt = fee_payer_provider
+        .send_raw_transaction(&envelope.encoded_2718())
+        .await?
+        .get_tempo_receipt()
+        .await?;
     assert!(receipt.status());
     assert_eq!(receipt.fee_token, Some(DEFAULT_FEE_TOKEN));
 
@@ -1363,12 +1354,11 @@ async fn test_tip1060_tip20_clear_mints_and_later_creation_redeems_credit() -> e
             sig,
         )))
         .into();
-    let receipt = get_tempo_receipt(
-        provider
-            .send_raw_transaction(&envelope.encoded_2718())
-            .await?,
-    )
-    .await?;
+    let receipt = provider
+        .send_raw_transaction(&envelope.encoded_2718())
+        .await?
+        .get_tempo_receipt()
+        .await?;
     assert!(receipt.status());
 
     assert_eq!(token.balanceOf(root_addr).call().await?, U256::ZERO);
