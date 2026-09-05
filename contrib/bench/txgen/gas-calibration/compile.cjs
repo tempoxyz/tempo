@@ -9,7 +9,9 @@ if (!/^[A-Za-z][A-Za-z0-9]*$/.test(name)) throw Error('Expected a contract name'
 const filename = name + '.sol';
 const source = fs.readFileSync(path.join(__dirname, filename), 'utf8');
 const settings = {
-  optimizer: { enabled: true, runs: 200 },
+  // Access fixtures must retain repeated SLOADs; their trace test checks this.
+  // All pre-existing calibration artifacts keep their original compiler settings.
+  optimizer: { enabled: name !== 'AccessCalibration', runs: 200 },
   evmVersion: 'cancun',
   outputSelection: { '*': { '*': ['abi', 'evm.bytecode', 'evm.deployedBytecode', 'evm.methodIdentifiers'] } },
 };

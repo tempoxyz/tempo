@@ -19,7 +19,7 @@ Additional bounded application-style opcode fixtures (no workload loops):
 
 The constructor initializes one nonzero storage slot outside the measured phase.
 None of these workload calls creates an unbounded set of storage keys. State
-creation/clearing, cold external-account calls, contract creation and individual
+creation/clearing, contract creation and individual
 opcode microbenchmarks remain separate coverage obligations. Any artifact change
 also changes dispatcher layout; compare only identically compiled artifacts.
 
@@ -70,14 +70,29 @@ The separate [native public-read fixtures](NATIVE_READS.md) add 15 source-gated
 read paths and a low-rate smoke mix. Their runtime validation and broader native
 mutation/lifecycle coverage remain separate from the hash/opcode fixtures.
 
+Seven `gas-access-*` presets add a control, one slot read, two reads of the same
+or different slots, and one/two external STATICCALLs to the same or different
+probe contracts. All slots/probes are initialized during setup; measured calls
+perform at most two reads/calls and no writes. `access-presets.py` emits these
+presets and `gas-access-smoke`. Two calls inside one wrapper are not AA batching.
+The separate `AccessCalibration` artifact deliberately disables optimization so
+the compiler retains repeated SLOADs; do not pool its timings with optimized
+`GasCalibration` controls. Use `gas-access-control` for this artifact's overhead.
+`node validate-access-fixtures.mjs /path/to/anvil` launches a disposable local
+Cancun chain and checks all seven outputs, exact SLOAD counts and cold/warm gas
+costs, and exact STATICCALL counts. These Ethereum semantic checks are not Tempo
+runtime or pricing evidence; the Tempo smoke and repeated comparisons remain
+required. Access warmth resets per transaction, not per block.
+
 The `GasCalibration` constructor checks all three hash/copy precompiles and KECCAK256 against an independently
 computed 256-byte fixture before the workload can start. Setup transactions are
 handled by txgen's setup barrier and excluded from its measured sending phase.
 This does not validate every random input's return value; outer receipt status
 and operation-return checks are distinct requirements.
 
-Build settings are solc `0.8.30+commit.73712a01`, optimizer enabled with 200 runs,
-and Cancun bytecode. The node's active fork is set independently by bench-e2e.
+Build settings are solc `0.8.30+commit.73712a01`, optimizer enabled with 200 runs
+(except the unoptimized access artifact), and Cancun bytecode. The node's active
+fork is set independently by bench-e2e.
 `compile.cjs /path/to/solc/package` emits the artifact used by these presets.
 
 Use `gas-hash-control-N` alongside hash functions and `gas-copy-N` alongside
