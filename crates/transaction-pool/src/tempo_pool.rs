@@ -142,18 +142,22 @@ where
 
         let all_txs = self.all_transactions();
         self.evict_invalidated_transactions_from(updates, all_txs.iter(), None)
+            .0
     }
 
-    /// See [`Self::evict_invalidated_transactions`]; returns the removed transactions so
-    /// the caller controls when they are dropped.
+    /// See [`Self::evict_invalidated_transactions`]; returns the removed transactions and the
+    /// subset removed due to expiry so the caller can account for both causes separately.
     pub(crate) fn evict_invalidated_transactions_from<'a>(
         &self,
         updates: &crate::maintain::TempoPoolUpdates,
         transactions: impl IntoIterator<Item = &'a Arc<ValidPoolTransaction<TempoPooledTransaction>>>,
         expiry_cutoff: Option<u64>,
-    ) -> Vec<Arc<ValidPoolTransaction<TempoPooledTransaction>>> {
+    ) -> (
+        Vec<Arc<ValidPoolTransaction<TempoPooledTransaction>>>,
+        usize,
+    ) {
         if !updates.has_invalidation_events() && expiry_cutoff.is_none() {
-            return Vec::new();
+            return (Vec::new(), 0);
         }
 
         // Fetch state provider if any check needs on-chain reads:
@@ -507,7 +511,7 @@ where
         }
 
         if to_remove.is_empty() {
-            return Vec::new();
+            return (Vec::new(), 0);
         }
 
         tracing::debug!(
@@ -526,7 +530,14 @@ where
             paused_token_count,
             "Evicting invalidated or expired transactions"
         );
-        self.remove_transactions(to_remove)
+        let evicted = self.remove_transactions(to_remove);
+        let expired_count = expiry_cutoff.map_or(0, |cutoff| {
+            evicted
+                .iter()
+                .filter(|tx| tx.transaction.is_expired_by(cutoff))
+                .count()
+        });
+        (evicted, expired_count)
     }
 
     /// Adds a validated transaction to the subpool derived from its type and nonce key.
@@ -1772,6 +1783,40 @@ mod tests {
         let evicted = pool.evict_invalidated_transactions(&updates);
         assert_eq!(tx_hashes(&evicted), vec![*pooled.hash()]);
         assert!(pool.get(pooled.hash()).is_none());
+    }
+
+    #[tokio::test]
+    async fn separates_expired_transactions_from_invalidated_transactions() {
+        let expired_sender = Address::random();
+        let invalidated_sender = Address::random();
+        let expired = crate::test_utils::TxBuilder::aa(expired_sender)
+            .valid_before(100)
+            .build();
+        let invalidated = crate::test_utils::TxBuilder::aa(invalidated_sender).build();
+
+        let provider = create_provider_with_tip();
+        provider.add_account(
+            expired_sender,
+            ExtendedAccount::new(expired.nonce(), *expired.cost()),
+        );
+        provider.add_account(
+            invalidated_sender,
+            ExtendedAccount::new(invalidated.nonce(), *invalidated.cost()),
+        );
+        let pool = create_test_pool(provider);
+        add_validated(&pool, expired.clone());
+        add_validated(&pool, invalidated.clone());
+
+        let mut updates = crate::maintain::TempoPoolUpdates::new();
+        updates.user_token_changes.insert(invalidated_sender);
+        let all_txs = pool.all_transactions();
+        let (evicted, expired_count) =
+            pool.evict_invalidated_transactions_from(&updates, all_txs.iter(), Some(100));
+
+        assert_eq!(evicted.len(), 2);
+        assert_eq!(expired_count, 1);
+        assert!(pool.get(expired.hash()).is_none());
+        assert!(pool.get(invalidated.hash()).is_none());
     }
 
     #[tokio::test]
