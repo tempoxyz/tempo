@@ -26,6 +26,9 @@ for path in sorted((root.parent / "presets").glob("gas-*.yml")):
     if path.name == "gas-calibration-smoke.yml":
         continue
     preset = yaml.safe_load(path.read_text())
+    # Other gas-* families use different artifacts/templates and separate mixes.
+    if preset.get("include") != ["../gas-calibration/base.yml"]:
+        continue
     template = deepcopy(base["merge"]["templates"]["calibration"])
     template["call"].update(preset["merge"]["templates"]["calibration"]["call"])
     templates[path.stem.replace("-", "_")] = template
