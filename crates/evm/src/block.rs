@@ -22,7 +22,7 @@ use commonware_cryptography::{
 use reth_evm::block::StateDB;
 use reth_revm::{
     Inspector,
-    context::result::{ExecutionResult, ResultAndState},
+    context::result::{ExecutionResult, ResultAndState, ResultGas},
     state::{Account, Bytecode, EvmState, EvmStorageSlot, TransactionId},
 };
 use std::collections::{HashMap, HashSet};
@@ -39,6 +39,41 @@ use tempo_primitives::{
 };
 use tempo_revm::{TempoHaltReason, evm::TempoContext};
 use tracing::trace;
+
+/// Tempo's TIP-1016 block-level regular gas for one transaction:
+/// `max(total_spent - state_gas - refunded, floor)`.
+///
+/// Upstream Amsterdam (EIP-8037 + EIP-7778, see revm's
+/// `ResultGas::block_regular_gas_used`) keeps refunds out of the block header
+/// because mainnet refunds come from storage clearing whose execution work was
+/// still performed. Tempo has no clearing refunds (TIP-1060 mints storage
+/// credits instead), so the full, uncapped refund also reduces block gas.
+/// This keeps the header equal to the receipts total minus the state-gas
+/// exemption.
+///
+/// Subtracting the uncapped refund is safe — it cannot report less block gas
+/// than the computational work actually performed — because on the T12 table
+/// the refund counter can only hold the two restore-to-original SSTORE
+/// refunds. The clearing, selfdestruct, and EIP-7702 auth refunds are all
+/// zero, and the storage-credit settlement is settled in the state-gas
+/// dimension (`Gas::refill_reservoir`), not the refund counter. Each
+/// restore-to-original refund reverses a charge made earlier in the same
+/// transaction for a state commitment that was rolled back, and is smaller
+/// than that charge by exactly the warm-access cost, so a set/restore pair
+/// nets the two warm accesses actually executed (`0→x→0`:
+/// 5,100 + 100 − 5,000; `x→y→x`: 2,900 + 100 − 2,800; both 200, upstream's
+/// EIP-3529 calibration). Repeated restoration cycles therefore cannot erase
+/// performed work from section admission or the header; the table invariants
+/// are locked by `test_t12_restore_refunds_net_warm_access_costs` in
+/// `tempo_revm::gas_params`.
+pub(crate) fn tempo_block_regular_gas_used(gas: &ResultGas) -> u64 {
+    core::cmp::max(
+        gas.total_gas_spent()
+            .saturating_sub(gas.state_gas_spent_final())
+            .saturating_sub(gas.inner_refunded()),
+        gas.floor_gas(),
+    )
+}
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub(crate) enum BlockSection {
@@ -690,10 +725,11 @@ where
 
         let inner = result?;
 
-        // TIP-1016 enabled: use block_regular_gas_used (excludes state gas) for section
-        // validation, matching block gas limit semantics. TIP-1016 disabled: use tx_gas_used.
+        // TIP-1016 enabled: use Tempo's refund-aware regular gas (excludes state
+        // gas, subtracts the full refund) for section validation, matching block
+        // gas limit semantics. TIP-1016 disabled: use tx_gas_used.
         let block_gas_used = if self.evm().cfg.enable_amsterdam_eip8037 {
-            inner.result.result.gas().block_regular_gas_used()
+            tempo_block_regular_gas_used(inner.result.result.gas())
         } else {
             inner.result.result.tx_gas_used()
         };
@@ -727,7 +763,13 @@ where
             validator_fee: _,
         } = output;
 
+        let eip8037_enabled = self.evm().cfg.enable_amsterdam_eip8037;
+        let previous_regular_gas = self.inner.block_regular_gas_used;
         let gas_output = self.inner.commit_transaction(inner);
+        if eip8037_enabled {
+            // Replace upstream's EIP-7778 pre-refund addition with Tempo's refund-aware gas.
+            self.inner.block_regular_gas_used = previous_regular_gas.saturating_add(block_gas_used);
+        }
 
         self.section = next_section;
 
@@ -794,8 +836,10 @@ where
 
         // TIP-1016 enabled: block header `gas_used` = block_regular_gas_used.
         // State gas is charged to users (in receipts) but exempted from block
-        // capacity. block_regular_gas_used is accumulated per-tx as
-        // max(total_spent - state_spent, floor) and is independent of refunds.
+        // capacity. The accumulator is corrected per-tx in `commit_transaction`
+        // to Tempo's refund-aware value max(total_spent - state_spent - refunded,
+        // floor), so the header equals the receipts total minus the state-gas
+        // exemption (unlike upstream EIP-7778, which ignores refunds).
         //
         // TIP-1016 disabled: use the standard gas_used from the inner executor which equals
         // cumulative_tx_gas_used (total_spent - refunded), matching the original
@@ -1436,7 +1480,7 @@ mod tests {
         let chainspec = DEV.clone();
         let mut db = State::builder().with_bundle_update().build();
         let mut executor = TestExecutorBuilder::default()
-            .with_spec(TempoHardfork::T11)
+            .with_spec(TempoHardfork::T12)
             .build(&mut db, &chainspec);
 
         let proposer = PartialValidatorKey::from_slice(&[0xff; 15]);
@@ -1912,6 +1956,63 @@ mod tests {
         );
     }
 
+    #[test]
+    fn test_commit_accumulates_refund_aware_block_gas() {
+        let chainspec = Arc::new(TempoChainSpec::from_genesis(DEV.genesis().clone()));
+        let mut db = State::builder().with_bundle_update().build();
+        let mut executor = TestExecutorBuilder::default()
+            .with_general_gas_limit(30_000_000)
+            .with_parent_beacon_block_root(B256::ZERO)
+            .with_amsterdam_eip8037_enabled(true)
+            .build(&mut db, &chainspec);
+
+        executor.apply_pre_execution_changes().unwrap();
+
+        let previous_regular_gas = 123_000;
+        executor.inner.block_regular_gas_used = previous_regular_gas;
+
+        // total=300k, state=40k, refund=30k:
+        // - receipt gas = 270k
+        // - upstream EIP-7778 block gas = 260k
+        // - Tempo refund-aware block gas = 230k
+        let tx = create_legacy_tx();
+        let block_gas_used = 230_000;
+        let output = TempoTxResult {
+            inner: EthTxResult {
+                result: ResultAndState {
+                    result: revm::context::result::ExecutionResult::Success {
+                        reason: revm::context::result::SuccessReason::Return,
+                        gas: ResultGas::new_with_state_gas(300_000, 30_000, 0, 40_000),
+                        logs: vec![],
+                        output: revm::context::result::Output::Call(Bytes::new()),
+                    },
+                    state: Default::default(),
+                },
+                blob_gas_used: 0,
+                tx_type: tx.tx_type(),
+            },
+            next_section: BlockSection::NonShared,
+            is_payment: false,
+            tx: None,
+            block_gas_used,
+            validator_fee: U256::ZERO,
+        };
+
+        let gas_output = executor.commit_transaction(output);
+
+        assert_eq!(gas_output.tx_gas_used(), 270_000);
+        assert_eq!(
+            executor.inner.receipts.last().unwrap().cumulative_gas_used,
+            270_000,
+            "receipt gas must continue to use post-refund transaction gas"
+        );
+        assert_eq!(
+            executor.inner.block_regular_gas_used,
+            previous_regular_gas + block_gas_used,
+            "block gas must preserve the previous accumulator and add Tempo's refund-aware gas"
+        );
+    }
+
     /// T4: incentive gas accounting must also exclude state gas.
     #[test]
     fn test_t4_incentive_gas_excludes_state_gas() {
@@ -2193,13 +2294,13 @@ mod tests {
         }
     }
 
-    /// TIP-1016 (T4+): block header `gas_used` = `block_regular_gas_used`.
+    /// TIP-1016 (T11+): block header `gas_used` = `block_regular_gas_used`.
     /// Receipts track `tx_gas_used` (what the user pays, including state gas).
     /// The difference between receipts total and header gas_used is the state gas
     /// exempted from block capacity.
     #[test]
-    fn test_t4_finish_exempts_state_gas_from_header() {
-        // DEV chainspec has T4 active at timestamp 0.
+    fn test_t11_finish_exempts_state_gas_from_header() {
+        // DEV chainspec has T11 active at timestamp 0.
         let chainspec = Arc::new(TempoChainSpec::from_genesis(DEV.genesis().clone()));
         let mut db = State::builder().with_bundle_update().build();
         let mut executor = TestExecutorBuilder::default()
@@ -2230,10 +2331,10 @@ mod tests {
 
         let (_evm, result) = executor.finish().expect("finish should succeed");
 
-        // T4: Block header gas_used must equal block_regular_gas_used
+        // T11: Block header gas_used must equal block_regular_gas_used
         assert_eq!(
             result.gas_used, regular_gas,
-            "T4 header gas_used ({}) must equal block_regular_gas_used ({})",
+            "T11 header gas_used ({}) must equal block_regular_gas_used ({})",
             result.gas_used, regular_gas
         );
 

@@ -274,9 +274,15 @@ impl TempoHardfork {
     /// Returns the per-transaction gas limit cap.
     /// - Pre-T1A: EIP-7825 Osaka limit (16,777,216 gas)
     /// - T1A+: 30M gas (allows maximum-sized contract deployments under [TIP-1000] state creation)
+    /// - T12+: back to the EIP-7825 Osaka limit (16,777,216 gas). TIP-1016 moves state
+    ///   creation gas into the reservoir (a tx's total gas_limit may exceed this cap),
+    ///   so the regular-gas budget no longer needs to cover state creation costs.
     ///
     /// [TIP-1000]: <https://docs.tempo.xyz/protocol/tips/tip-1000>
     pub const fn tx_gas_limit_cap(&self) -> Option<u64> {
+        if self.is_t12() {
+            return Some(MAX_TX_GAS_LIMIT_OSAKA);
+        }
         if self.is_t1a() {
             return Some(gas::TEMPO_T1_TX_GAS_LIMIT_CAP);
         }
@@ -465,5 +471,22 @@ impl From<SpecId> for TempoHardfork {
         // Default to the default hardfork when converting from SpecId.
         // The actual hardfork should be passed explicitly where needed.
         Self::default()
+    }
+}
+
+#[cfg(test)]
+mod tempo_tests {
+    use super::*;
+
+    #[test]
+    fn tx_gas_limit_cap_drops_back_to_osaka_at_t12() {
+        assert_eq!(
+            TempoHardfork::T11.tx_gas_limit_cap(),
+            Some(gas::TEMPO_T1_TX_GAS_LIMIT_CAP)
+        );
+        assert_eq!(
+            TempoHardfork::T12.tx_gas_limit_cap(),
+            Some(MAX_TX_GAS_LIMIT_OSAKA)
+        );
     }
 }
