@@ -274,6 +274,7 @@ use alloy::{
     network::Ethereum,
     primitives::Address,
     providers::{PendingTransactionBuilder, Provider, RootProvider},
+    rpc::client::RpcClient,
     sol_types::SolEvent,
     transports::http::reqwest::Url,
 };
@@ -391,7 +392,12 @@ pub(crate) async fn get_tempo_receipt(
     pending: PendingTransactionBuilder<Ethereum>,
 ) -> eyre::Result<TempoTransactionReceipt> {
     let (provider, config) = pending.split();
-    let provider = RootProvider::<TempoNetwork>::new(provider.client().clone());
+    let client = RpcClient::new(
+        provider.client().transport().clone(),
+        provider.client().is_local(),
+    )
+    .with_poll_interval(provider.client().poll_interval());
+    let provider = RootProvider::<TempoNetwork>::new(client);
     // get_receipt also polls independently of the heartbeat for one confirmation,
     // so it can recover when the heartbeat misses the block containing the transaction.
     Ok(PendingTransactionBuilder::from_config(provider, config)
