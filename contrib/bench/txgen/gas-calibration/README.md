@@ -30,27 +30,32 @@ its output must be regenerated when those presets change. Seed 42 with 1,000
 generated workload transactions exercises all 29 template IDs offline, but live
 inclusion and per-operation output checks still require runtime evidence.
 
-Two additional fixed-input fixtures use a separate, identically compiled generic
-wrapper: `precompile-kzg-point-evaluation` and `precompile-blake2b-12`.
-Their inputs and expected outputs are recorded with pinned source links in
-`crypto-fixtures.json`; `crypto-fixtures.py` regenerates them from
-`revm-precompile` 42.0.1. The BLAKE2 case is standard twelve-round `abc` compression,
-not an extended-round workload. The KZG case is the library's ordinary
-`basic_test` correct-proof fixture. These are not part of the 29-way smoke mix.
+The 18 `precompile-*` individual presets cover the exact pinned Osaka registry,
+using `ethereum-fixtures.json` from the [ordinary fixture generator](../../crypto-fixture-generator/README.md).
+`ethereum-presets.py` emits their YAML and `precompile-ethereum-smoke`.
+The source-attributed KZG and twelve-round BLAKE2b inputs are also retained in
+`crypto-fixtures.json`; the other fixtures include ordinary signatures, bounded
+EC operations and RSA-sized modular exponentiation. These are separate from the
+29-way hash/opcode mix and do not establish complete input distributions.
 
-`PrecompileCalibration` checks the expected result in its constructor, then makes
+`PrecompileCalibration` checks every selected fixture's expected result in its
+bounded constructor (one fixture for individual presets, 18 for the smoke), then makes
 one precompile invocation per workload transaction and rejects call failures or
 empty output. Fixed fixtures do not establish a distribution over cryptographic
 inputs, and wrapper, transaction, authentication and fee costs are still included.
 The pinned txgen makes expiring-nonce signed payloads unique; offline generation
-with one signer produced 1,000 distinct payloads for each of these fixed inputs.
+with one signer verified this for the initial KZG/BLAKE2 fixtures.
 Compile this wrapper with `compile.cjs /path/to/solc/package PrecompileCalibration`.
+The array-based constructor requires [txgen#198](https://github.com/tempoxyz/txgen/pull/198),
+tested at `45240f0090d1419583558534d51c9402992355b2` (which includes receipt collection).
+Record that pin separately from earlier `13cb6b3` control runs; do not silently
+pool measurements from different generator revisions.
 
 The separate [native public-read fixtures](NATIVE_READS.md) add 15 source-gated
 read paths and a low-rate smoke mix. Their runtime validation and broader native
 mutation/lifecycle coverage remain separate from the hash/opcode fixtures.
 
-The constructor checks all three precompiles and KECCAK256 against an independently
+The `GasCalibration` constructor checks all three hash/copy precompiles and KECCAK256 against an independently
 computed 256-byte fixture before the workload can start. Setup transactions are
 handled by txgen's setup barrier and excluded from its measured sending phase.
 This does not validate every random input's return value; outer receipt status
@@ -79,6 +84,7 @@ raw/summary mismatches. A pass establishes report consistency only; it is not a
 pricing verdict or proof of workload output correctness. This strict gate targets
 ordinary successful workloads, not deliberately reverting conformance tests.
 
-The wider study still needs other inherited precompiles, stateful native methods,
-additional opcode groups, repeat-run measurements, and explicit state-growth
-accounting. These presets are a coverage increment, not an all-precompile result.
+The wider study still needs runtime checks and multiple-input measurements for
+the inherited precompiles, stateful native methods, additional opcode groups,
+repeat-run measurements, and explicit state-growth accounting. These presets are
+a coverage increment, not an all-precompile pricing result.
