@@ -4,6 +4,7 @@ import importlib.util
 import json
 from pathlib import Path
 import tempfile
+import subprocess
 import unittest
 
 spec = importlib.util.spec_from_file_location("audit", Path(__file__).parents[1] / "gas-study-audit.py")
@@ -72,6 +73,41 @@ class GasStudyAuditTests(unittest.TestCase):
     def test_block_gap(self):
         self.raw["baseline-1"]["blocks"][1]["number"] = 3
         self.assertFalse(self.run_audit()["ordinary_workload_data_valid"])
+
+    def test_duplicate_summary_labels(self):
+        self.summary["per_run"].append(self.summary["per_run"][0])
+        self.assertFalse(self.run_audit()["ordinary_workload_data_valid"])
+
+    def test_missing_raw_report(self):
+        del self.raw["feature-1"]
+        self.assertFalse(self.run_audit()["ordinary_workload_data_valid"])
+
+    def test_unsafe_integer_count(self):
+        self.raw["baseline-1"]["blocks"][0]["gas_used"] = 2**53
+        self.assertFalse(self.run_audit()["ordinary_workload_data_valid"])
+
+    def test_unreadable_raw_report(self):
+        self.run_audit()
+        (self.path / "report-feature-1.json").write_text("{broken")
+        result = module.audit(self.path)
+        self.assertFalse(result["ordinary_workload_data_valid"])
+        self.assertIn("unreadable raw report", result["runs"][1]["issues"])
+
+    def test_missing_summary_fails_closed(self):
+        result = module.audit(self.path)
+        self.assertFalse(result["ordinary_workload_data_valid"])
+        self.assertFalse(result["pricing_ready"])
+
+    def test_node_cli_exit_status(self):
+        self.run_audit()
+        script = Path(__file__).parents[1] / "gas-study-audit.mjs"
+        good = subprocess.run(["node", str(script), str(self.path)], capture_output=True, text=True)
+        self.assertEqual(good.returncode, 0)
+        self.raw["baseline-1"]["failed"] = 1
+        self.run_audit()
+        bad = subprocess.run(["node", str(script), str(self.path)], capture_output=True, text=True)
+        self.assertEqual(bad.returncode, 1)
+        self.assertFalse(json.loads(bad.stdout)["ordinary_workload_data_valid"])
 
 
 if __name__ == "__main__":

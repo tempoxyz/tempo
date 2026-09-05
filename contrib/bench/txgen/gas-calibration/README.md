@@ -92,12 +92,20 @@ or inconsistent receipts fail the run; successful outer receipts alone do not
 prove every possible nested call succeeded. No protocol gas prices change.
 
 After downloading a comparison artifact, run
-`uv run python contrib/bench/gas-study-audit.py RESULTS_DIRECTORY`.
+`node contrib/bench/gas-study-audit.mjs RESULTS_DIRECTORY` (the existing
+`uv run python contrib/bench/gas-study-audit.py RESULTS_DIRECTORY` entrypoint
+remains available and delegates to the same Node gate).
 The separate read-only gate rejects missing runs, incomplete/inconsistent counts,
 reverts (including warmup), submission failures, empty retained windows and
 raw/summary mismatches. A pass establishes report consistency only; it is not a
 pricing verdict or proof of workload output correctness. This strict gate targets
 ordinary successful workloads, not deliberately reverting conformance tests.
+
+The e2e workflow applies this gate to `gas-*`, `precompile-*` and `native-read-*`
+presets after generating the summary. A failed gate fails the job and suppresses
+the success-result post; raw artifacts and `gas-study-audit.json` are still
+uploaded. Other preset families are unchanged. A passing gate is still not a
+pricing verdict, semantic proof for every operation, or a saturation check.
 
 The wider study still needs runtime checks and multiple-input measurements for
 the inherited precompiles, stateful native methods, additional opcode groups,
