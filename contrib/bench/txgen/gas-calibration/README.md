@@ -84,6 +84,17 @@ costs, and exact STATICCALL counts. These Ethereum semantic checks are not Tempo
 runtime or pricing evidence; the Tempo smoke and repeated comparisons remain
 required. Access warmth resets per transaction, not per block.
 
+Three `gas-aa-access-*-2` presets use two top-level Tempo AA calls to the same
+control, single-slot-read, or single-probe-read method. Generate these and their
+separate smoke with `access-presets.py --aa-batches`. Compare each with its
+`gas-access-*` single-call counterpart; use the two-control-call preset to measure
+batch overhead before attributing a difference to storage. These are ordinary
+two-call batches, not a batch-size limit test. `validate-aa-access.mjs` takes the
+txgen and cast binary paths and checks 100 signed envelopes per preset, their
+two exact call targets/selectors, and unique payloads. Offline decoding does not
+prove inclusion, warm-state behavior across AA calls, or Tempo execution costs;
+runtime checks remain required. No authorization/keychain variants are implied.
+
 The `GasCalibration` constructor checks all three hash/copy precompiles and KECCAK256 against an independently
 computed 256-byte fixture before the workload can start. Setup transactions are
 handled by txgen's setup barrier and excluded from its measured sending phase.
