@@ -494,7 +494,8 @@ async fn test_stablecoin_dex_order_gas_snapshots(hardfork: TempoHardfork) -> eyr
 #[test_case(TempoHardfork::T6 ; "t6_without_tip1060")]
 #[test_case(TempoHardfork::T7 ; "t7_with_tip1060")]
 #[test_case(TempoHardfork::T8 ; "t8_with_packed_order_layout")]
-#[test_case(TempoHardfork::T9 ; "t9_without_aggregate_liquidity")]
+#[test_case(TempoHardfork::T9 ; "t9_before_aggregate_liquidity_removal")]
+#[test_case(TempoHardfork::T11 ; "t11_without_aggregate_liquidity")]
 #[tokio::test(flavor = "multi_thread")]
 async fn test_stablecoin_dex_revert_gas_snapshots(hardfork: TempoHardfork) -> eyre::Result<()> {
     reth_tracing::init_test_tracing();
