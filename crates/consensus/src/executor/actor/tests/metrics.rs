@@ -147,3 +147,37 @@ fn convergence_depth_is_negative_while_reanchoring_below_the_local_head() {
         assert_eq!(h.execution.head(), d2);
     });
 }
+
+#[test_traced]
+fn uncanonicalized_blocks_tracks_delivered_blocks_off_the_canonical_chain() {
+    deterministic::Runner::default().start(|context| async move {
+        let h = Harness::start_at_genesis(&context);
+        assert_eq!(gauge(&h, "uncanonicalized_blocks"), 0);
+
+        // A validated block is known to the execution layer but not its
+        // head yet.
+        let b1 = make_block(1, 1, GENESIS);
+        let d1 = b1.digest();
+        h.verify(round(1), b1)
+            .await
+            .expect("verification should complete")
+            .expect("block should be valid");
+        h.wait_until(|| gauge(&h, "uncanonicalized_blocks") == 1)
+            .await;
+
+        // Moving the head onto it canonicalizes it.
+        h.report_pending_head(2, 1, d1);
+        h.wait_until(|| h.execution.head() == d1).await;
+        h.wait_until(|| gauge(&h, "uncanonicalized_blocks") == 0)
+            .await;
+
+        // A validated sibling stays on a side branch.
+        let a1 = make_block(3, 1, GENESIS);
+        h.verify(round(3), a1)
+            .await
+            .expect("verification should complete")
+            .expect("block should be valid");
+        h.wait_until(|| gauge(&h, "uncanonicalized_blocks") == 1)
+            .await;
+    });
+}
