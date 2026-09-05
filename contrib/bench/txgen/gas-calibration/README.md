@@ -30,6 +30,22 @@ its output must be regenerated when those presets change. Seed 42 with 1,000
 generated workload transactions exercises all 29 template IDs offline, but live
 inclusion and per-operation output checks still require runtime evidence.
 
+Two additional fixed-input fixtures use a separate, identically compiled generic
+wrapper: `precompile-kzg-point-evaluation` and `precompile-blake2b-12`.
+Their inputs and expected outputs are recorded with pinned source links in
+`crypto-fixtures.json`; `crypto-fixtures.py` regenerates them from
+`revm-precompile` 42.0.1. The BLAKE2 case is standard twelve-round `abc` compression,
+not an extended-round workload. The KZG case is the library's ordinary
+`basic_test` correct-proof fixture. These are not part of the 29-way smoke mix.
+
+`PrecompileCalibration` checks the expected result in its constructor, then makes
+one precompile invocation per workload transaction and rejects call failures or
+empty output. Fixed fixtures do not establish a distribution over cryptographic
+inputs, and wrapper, transaction, authentication and fee costs are still included.
+The pinned txgen makes expiring-nonce signed payloads unique; offline generation
+with one signer produced 1,000 distinct payloads for each of these fixed inputs.
+Compile this wrapper with `compile.cjs /path/to/solc/package PrecompileCalibration`.
+
 The constructor checks all three precompiles and KECCAK256 against an independently
 computed 256-byte fixture before the workload can start. Setup transactions are
 handled by txgen's setup barrier and excluded from its measured sending phase.
