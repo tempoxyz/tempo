@@ -959,6 +959,17 @@ where
         transactions
     }
 
+    fn all_transactions_by_sender(
+        &self,
+        sender: Address,
+    ) -> AllPoolTransactions<Self::Transaction> {
+        let mut transactions = self.protocol_pool.all_transactions_by_sender(sender);
+        self.aa_2d_pool
+            .read()
+            .append_all_transactions_by_sender(sender, &mut transactions);
+        transactions
+    }
+
     fn all_transaction_hashes(&self) -> Vec<B256> {
         let mut hashes = self.protocol_pool.all_transaction_hashes();
         hashes.extend(self.aa_2d_pool.read().all_transaction_hashes_iter());
