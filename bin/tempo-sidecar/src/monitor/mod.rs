@@ -8,7 +8,7 @@ use alloy::{
     sol_types::SolEvent,
 };
 use eyre::{Result, eyre};
-use futures::future::{join_all, try_join_all};
+use futures::future::try_join_all;
 use itertools::Itertools;
 use metrics::{counter, gauge};
 use metrics_exporter_prometheus::PrometheusHandle;
@@ -152,23 +152,25 @@ impl MonitorConfig {
                         Ok(pool) => {
                             // Skip if pool isn't initialized.
                             if pool.reserveUserToken.is_zero() {
-                                None
+                                Ok(None)
                             } else {
                                 debug!(%token_a, %token_b, "discovered pool");
-                                Some((token_a, token_b))
+                                Ok(Some((token_a, token_b)))
                             }
                         }
                         Err(e) => {
                             counter!("tempo_fee_amm_errors", "request" => "pool").increment(1);
                             error!(%token_a, %token_b, "failed to fetch pool: {}", e);
-                            None
+                            Err(eyre!(
+                                "failed to fetch pool {token_a} -> {token_b}: {e}"
+                            ))
                         }
                     }
                 }
             })
             .collect();
 
-        let results = join_all(check_pool_futures).await;
+        let results = try_join_all(check_pool_futures).await?;
         Ok(results.into_iter().flatten().collect())
     }
 }
