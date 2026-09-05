@@ -41,7 +41,7 @@ pub struct FaucetArgs {
         long = "faucet.address",
         requires = "faucet.enabled",
         required_if_eq("faucet.enabled", "true"),
-        num_args(0..)
+        num_args(1..)
     )]
     pub token_addresses: Option<Vec<Address>>,
 
@@ -98,8 +98,71 @@ mod tests {
         args: FaucetArgs,
     }
 
+    const TEST_PRIVATE_KEY: &str =
+        "0xac0974bec39a17e36ba4a6b4d4d2e724d419db3c1bc70c9296eb9c1d68f1c456";
+    const TEST_TOKEN_A: &str = "0x20c0000000000000000000000000000000000000";
+    const TEST_TOKEN_B: &str = "0x20c0000000000000000000000000000000000001";
+
     #[test]
     fn faucet_args_default_sanity_test() {
         assert!(CommandParser::try_parse_from(["tempo"]).is_ok());
+    }
+
+    #[test]
+    fn faucet_enabled_without_address_values_is_rejected() {
+        let result = CommandParser::try_parse_from([
+            "tempo",
+            "--faucet.enabled",
+            "--faucet.private-key",
+            TEST_PRIVATE_KEY,
+            "--faucet.amount",
+            "1",
+            "--faucet.address",
+        ]);
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn faucet_enabled_with_single_address_is_accepted() {
+        let parser = CommandParser::try_parse_from([
+            "tempo",
+            "--faucet.enabled",
+            "--faucet.private-key",
+            TEST_PRIVATE_KEY,
+            "--faucet.amount",
+            "1",
+            "--faucet.address",
+            TEST_TOKEN_A,
+        ])
+        .expect("single-token faucet config should parse");
+
+        let addresses = parser
+            .args
+            .token_addresses
+            .expect("token addresses should be present");
+        assert_eq!(addresses.len(), 1);
+        assert_eq!(addresses[0], TEST_TOKEN_A.parse().unwrap());
+    }
+
+    #[test]
+    fn faucet_enabled_with_multiple_addresses_is_accepted() {
+        let parser = CommandParser::try_parse_from([
+            "tempo",
+            "--faucet.enabled",
+            "--faucet.private-key",
+            TEST_PRIVATE_KEY,
+            "--faucet.amount",
+            "1",
+            "--faucet.address",
+            TEST_TOKEN_A,
+            TEST_TOKEN_B,
+        ])
+        .expect("multi-token faucet config should parse");
+
+        let addresses = parser
+            .args
+            .token_addresses
+            .expect("token addresses should be present");
+        assert_eq!(addresses.len(), 2);
     }
 }
