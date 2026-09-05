@@ -1,9 +1,27 @@
-# Ordinary hash/copy calibration workloads
+# Ordinary precompile/opcode calibration workloads
 
 These presets compare SHA-256, RIPEMD-160 and identity precompiles with KECCAK256,
-memory-copy and transaction/ABI overhead controls. Each call performs one operation.
+memory-copy and transaction/ABI overhead controls. Each hash call performs one operation.
 Inputs are seeded random byte strings of 32, 256 or 1,024 bytes. The separate
 arithmetic preset exercises a small straight-line arithmetic expression.
+
+Additional bounded application-style opcode fixtures (no workload loops):
+
+| Preset | Work performed | Interpretation |
+| --- | --- | --- |
+| storage-read | Read one existing slot | Cold slot at transaction entry |
+| storage-write | Update one existing nonzero slot | Random nonzero values; rare unchanged writes remain possible |
+| transient | One TSTORE/TLOAD round trip | No persistent growth; transaction-local use only |
+| log-N | Emit one event with a tag and N bytes | LOG2 plus ABI encoding, memory and data costs |
+| account-context | Return caller, own balance, chain ID, number and timestamp | Small mixed environment baseline, not isolated opcode timings |
+| echo / self-call | Return a value directly / through one self-STATICCALL | Own address is warm; not a cold-account comparison |
+| branch | One even/odd branch and arithmetic | Ordinary control-flow sequence, not an exhaustive flow-opcode test |
+
+The constructor initializes one nonzero storage slot outside the measured phase.
+None of these workload calls creates an unbounded set of storage keys. State
+creation/clearing, cold external-account calls, contract creation and individual
+opcode microbenchmarks remain separate coverage obligations. Any artifact change
+also changes dispatcher layout; compare only identically compiled artifacts.
 
 The constructor checks all three precompiles and KECCAK256 against an independently
 computed 256-byte fixture before the workload can start. Setup transactions are

@@ -4,6 +4,9 @@ pragma solidity 0.8.30;
 /// Small application-style calls for comparing execution and transaction overhead.
 /// Each transaction performs one operation; setup deployment is outside the workload.
 contract GasCalibration {
+    uint256 private stored = 1;
+    event Value(bytes32 indexed tag, bytes data);
+
     constructor(bytes memory fixture, bytes32 expectedKeccak, bytes32 expectedSha, bytes32 expectedRipemd) {
         require(keccak256(fixture) == expectedKeccak, "keccak fixture");
         require(sha256(fixture) == expectedSha, "sha256 fixture");
@@ -41,6 +44,49 @@ contract GasCalibration {
     function arithmetic(uint256 a, uint256 b) external pure returns (uint256) {
         unchecked {
             return ((a + b) * (a | 1)) ^ (b >> 1);
+        }
+    }
+
+    function storageRead() external view returns (uint256) {
+        return stored;
+    }
+
+    /// Update one existing nonzero slot; no growing mapping or account set.
+    function storageWrite(uint256 value) external {
+        require(value != 0, "nonzero value required");
+        stored = value;
+    }
+
+    /// One round trip per transaction, not a cross-call transient-state pattern.
+    function transientRoundTrip(uint256 value) external returns (uint256 output) {
+        assembly {
+            tstore(0, value)
+            output := tload(0)
+        }
+    }
+
+    function logValue(bytes32 tag, bytes calldata data) external {
+        emit Value(tag, data);
+    }
+
+    function accountContext() external view returns (address, uint256, uint256, uint256, uint256) {
+        return (msg.sender, address(this).balance, block.chainid, block.number, block.timestamp);
+    }
+
+    function echo(uint256 value) external pure returns (uint256) {
+        return value;
+    }
+
+    /// The target is already warm; this is not a cold-account call baseline.
+    function selfCall(uint256 value) external view returns (uint256) {
+        (bool success, bytes memory output) = address(this).staticcall(abi.encodeCall(this.echo, (value)));
+        require(success, "self call failed");
+        return abi.decode(output, (uint256));
+    }
+
+    function branch(uint256 value) external pure returns (uint256) {
+        unchecked {
+            return value % 2 == 0 ? value / 2 : value * 3 + 1;
         }
     }
 }
