@@ -178,10 +178,13 @@ impl TipFeeManager {
     /// Executes a rebalance swap: sells `amount_out` of user-token from the pool in exchange for
     /// validator-token at the rebalance rate (`N / SCALE`). Used by arbitrageurs to rebalance reserves.
     ///
+    /// The pending fee-swap reservation is intentionally not checked here: `rebalance_swap` only
+    /// increases `reserve_validator_token`, which cannot reduce liquidity available for upcoming
+    /// fee swaps. Removals are guarded in [`Self::burn`] instead.
+    ///
     /// # Errors
     /// - `InvalidAmount` — `amount_out` is zero or exceeds `u128`
     /// - `InsufficientReserves` — adding `amount_in` overflows the validator reserve
-    /// - `InsufficientLiquidity` — remaining reserve would violate the pending reservation (T1C+)
     /// - `UnderOverflow` — arithmetic overflow computing `amount_in`
     pub fn rebalance_swap(
         &mut self,
@@ -222,13 +225,6 @@ impl TipFeeManager {
             .reserve_user_token
             .checked_sub(amount_out)
             .ok_or(TIPFeeAMMError::invalid_amount())?;
-
-        if self.storage.spec().is_t1c() {
-            let reserved = self.pending_fee_swap_reservation[pool_id].t_read()?;
-            if pool.reserve_validator_token < reserved {
-                return Err(TIPFeeAMMError::insufficient_liquidity().into());
-            }
-        }
 
         self.pools[pool_id].write(pool)?;
 
@@ -1906,7 +1902,10 @@ mod tests {
     }
 
     #[test]
-    fn test_t1c_rebalance_swap_respects_reservation() -> eyre::Result<()> {
+    fn test_t1c_rebalance_swap_allows_partial_deposit_below_reservation() -> eyre::Result<()> {
+        // rebalance_swap deposits validator_token, so a pool that is already below the
+        // pending fee-swap reservation must still accept a partial top-up. The reservation
+        // guard belongs on burns/withdrawals, not on this deposit path.
         let mut storage = HashMapStorageProvider::new_with_spec(1, TempoHardfork::T1C);
         let admin = Address::random();
         let to = Address::random();
@@ -1931,13 +1930,26 @@ mod tests {
             let pool_id =
                 setup_pool_with_liquidity(&mut amm, user_token, validator_token, liq, liq)?;
 
-            let amount_out: u128 = compute_amount_out(uint!(50000_U256))?.try_into().unwrap();
-            amm.reserve_pool_liquidity(pool_id, amount_out)?;
+            let before = amm.pools[pool_id].read()?;
+            // Reservation above the current validator reserve (and above what this small
+            // rebalance will deposit) reproduces the buggy reject path.
+            let reserved = before
+                .reserve_validator_token
+                .checked_add(50_000)
+                .expect("reservation fits");
+            amm.reserve_pool_liquidity(pool_id, reserved)?;
 
-            amm.rebalance_swap(admin, user_token, validator_token, uint!(5000_U256), to)?;
-            let pool = amm.pools[pool_id].read()?;
-            let reserved = amm.pending_fee_swap_reservation[pool_id].t_read()?;
-            assert!(pool.reserve_validator_token >= reserved);
+            let amount_out = uint!(5000_U256);
+            let amount_in = amm.rebalance_swap(admin, user_token, validator_token, amount_out, to)?;
+            let after = amm.pools[pool_id].read()?;
+
+            assert!(amount_in > U256::ZERO);
+            assert!(after.reserve_validator_token > before.reserve_validator_token);
+            assert!(after.reserve_validator_token < reserved);
+            assert_eq!(
+                after.reserve_user_token,
+                before.reserve_user_token - amount_out.try_into().unwrap()
+            );
 
             Ok(())
         })
