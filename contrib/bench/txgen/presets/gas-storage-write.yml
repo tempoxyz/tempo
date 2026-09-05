@@ -1,0 +1,8 @@
+include:
+  - ../gas-calibration/base.yml
+merge:
+  templates:
+    calibration:
+      call:
+        function: storageWrite
+        args: [{ uniform: [2, 1000000] }]

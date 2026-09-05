@@ -4,6 +4,7 @@
 # Shared build/cache/report helpers are sourced from tempo.nu; the replacement
 # e2e topology stays isolated here.
 source tempo.nu
+source contrib/bench/calibration-pair.nu
 
 const E2E_A_STATE_PATH = "/var/lib/schelk/a.json"
 const E2E_B_STATE_PATH = "/var/lib/schelk/b.json"
@@ -361,6 +362,40 @@ def e2e-snapshot-ready [datadir: string] {
 
 def e2e-snapshots-ready [a_db: string, b_db: string] {
     (e2e-snapshot-ready $a_db) and (e2e-snapshot-ready $b_db)
+}
+
+# Cached snapshots can assign validators to a,b in a different order. Keep each
+# signing key/share bundle intact and bind it to its advertised peer address.
+def e2e-snapshot-topology [a_db: string, b_db: string] {
+    let a_meta = $"($a_db)/($BENCH_META_SUBDIR)"
+    let b_meta = $"($b_db)/($BENCH_META_SUBDIR)"
+    if (open $"($a_meta)/genesis.json") != (open $"($b_meta)/genesis.json") {
+        error make { msg: "Local e2e snapshots have different genesis configurations" }
+    }
+    let a_peers = (open --raw $"($a_meta)/trusted-peers.txt" | str trim | split row "," | each { str trim } | sort)
+    let b_peers = (open --raw $"($b_meta)/trusted-peers.txt" | str trim | split row "," | each { str trim } | sort)
+    if $a_peers != $b_peers {
+        error make { msg: "Local e2e snapshots have different trusted peers" }
+    }
+    let peers = ($a_peers | parse --regex '^enode://(?<identity>[0-9a-f]{128})@(?<ip>[^:]+):(?<port>[0-9]+)$'
+        | each { |peer| $peer | update port { into int } })
+    let expected_addresses = ($E2E_VALIDATORS | split row "," | sort)
+    let actual_addresses = ($peers | each { |peer| $"($peer.ip):($peer.port - 1)" } | sort)
+    if ($a_peers | length) != 2 or ($peers | length) != 2 or $actual_addresses != $expected_addresses {
+        error make { msg: "Local e2e snapshot peers must match the two configured validator addresses" }
+    }
+    let a_identity = (open --raw $"($a_db)/enode.identity" | str trim)
+    let b_identity = (open --raw $"($b_db)/enode.identity" | str trim)
+    let a_peer = ($peers | where identity == $a_identity)
+    let b_peer = ($peers | where identity == $b_identity)
+    if $a_identity == $b_identity or ($a_peer | length) != 1 or ($b_peer | length) != 1 {
+        error make { msg: "Local e2e snapshot identities must each match a distinct trusted peer" }
+    }
+    {
+        trusted_peers: ($a_peers | str join ",")
+        a: { identity: $a_identity, ip: $a_peer.0.ip, consensus_port: ($a_peer.0.port - 1) }
+        b: { identity: $b_identity, ip: $b_peer.0.ip, consensus_port: ($b_peer.0.port - 1) }
+    }
 }
 
 def e2e-snapshot-state-hardfork [datadir: string] {
@@ -1008,6 +1043,9 @@ def run-local-e2e-phase [run: record, ctx: record] {
     cleanup-local-e2e-processes
     bench-restore-at $ctx.a.state_path $ctx.a.mount $ctx.a.datadir
     bench-restore-at $ctx.b.state_path $ctx.b.mount $ctx.b.datadir
+    if (e2e-snapshot-topology $ctx.a.datadir $ctx.b.datadir) != $ctx.snapshot_topology {
+        error make { msg: "Local e2e snapshot identities or peer configuration changed after recovery" }
+    }
 
     for path in [$genesis $ctx.a.node_dir $ctx.b.node_dir] {
         if not ($path | path exists) {
@@ -1128,7 +1166,8 @@ def run-local-e2e-phase [run: record, ctx: record] {
         $tracy_capture_started = true
     }
 
-    let scenario = $ctx.preset
+    let phase_preset = (e2e-phase-preset $phase $ctx.phase_presets)
+    let scenario = $phase_preset.name
     let phase_clickhouse_url = if $ctx.clickhouse_url != "" and ($ctx.clickhouse_run == "" or $ctx.clickhouse_run == $phase) {
         $ctx.clickhouse_url
     } else {
@@ -1145,7 +1184,7 @@ def run-local-e2e-phase [run: record, ctx: record] {
             let bench_result = (txgen-run-preset-pipeline
                 --txgen-tempo-bin $ctx.txgen.txgen_tempo_bin
                 --txgen-bench-bin $ctx.txgen.txgen_bench_bin
-                --preset-path $ctx.preset_path
+                --preset-path $phase_preset.path
                 --generate-rpc-url $a_rpc
                 --submit-rpc-url $submit_rpc_url
                 --metrics-url $metrics_urls
@@ -1310,6 +1349,7 @@ def e2e-generate-summary [results_dir: string] {
     let feature_hardfork = ($config | get -o feature_hardfork | default "")
     let summary_warmup_blocks = ($config | get -o summary_warmup_blocks | default 0 | into int)
     let run_side = ($config | get -o run_side | default "comparison")
+    let calibration_presets = (e2e-calibration-presets $config.preset)
     generate-summary $results_dir $config.baseline_label $config.feature_label ($config.bloat_mib | into int) $config.preset ($config.tps | into int) ($config.duration | into int) --benchmark-id ($config.benchmark_id | default "") --reference-epoch ($config.reference_epoch | default 0 | into int) --baseline-hardfork $baseline_hardfork --feature-hardfork $feature_hardfork --summary-warmup-blocks $summary_warmup_blocks
     let summary_path = $"($results_dir)/summary.json"
     if ($summary_path | path exists) {
@@ -1318,6 +1358,9 @@ def e2e-generate-summary [results_dir: string] {
         let token_count = ($config | get -o token_count | default 4 | into int)
         let summary = (open $summary_path)
         let summary = ($summary | upsert config ($summary.config | upsert token_count $token_count | upsert run_side $run_side | upsert baseline_removed_args $baseline_removed_args | upsert feature_removed_args $feature_removed_args))
+        let summary = if $calibration_presets.kind == "workload" {
+            $summary | upsert config ($summary.config | upsert comparison_kind "workload" | upsert baseline_preset $calibration_presets.baseline | upsert feature_preset $calibration_presets.feature)
+        } else { $summary }
         $summary | to json | save -f $summary_path
     }
 
@@ -1344,7 +1387,11 @@ def "main render-txgen-spec" [
     --preset: string = ""                              # Txgen preset name or scenario expression
     --out-dir: string = ""                             # Directory for rendered scenario specs
 ] {
-    let spec = (txgen-resolve-bench-spec $preset $out_dir)
+    let presets = (e2e-calibration-presets $preset)
+    let spec = (txgen-resolve-bench-spec $presets.baseline $out_dir)
+    if $presets.kind == "workload" {
+        txgen-resolve-bench-spec $presets.feature $out_dir | ignore
+    }
     print $spec.spec_path
 }
 
@@ -1352,7 +1399,7 @@ def "main render-txgen-spec" [
 def "main e2e" [
     --baseline: string                                  # Baseline git SHA/ref
     --feature: string                                   # Feature git SHA/ref
-    --preset: string = ""                               # Txgen preset name
+    --preset: string = ""                               # Txgen preset/scenario or gas-compare:baseline,feature
     --preset-path: string = ""                          # Pre-rendered txgen preset path
     --tps: int = 50000                                  # Target TPS
     --duration: int = 90                                # Duration in seconds
@@ -1401,8 +1448,9 @@ def "main e2e" [
     --valscope-dir: string = "../valscope"               # Path to the ValScope checkout
     --skip-summary                                       # Leave summary generation to a later workflow step
 ] {
+    let calibration_presets = (e2e-calibration-presets $preset)
     let preset_spec = if $preset_path == "" {
-        txgen-resolve-bench-spec $preset
+        txgen-resolve-bench-spec $calibration_presets.baseline
     } else {
         {
             kind: pre_rendered
@@ -1415,6 +1463,22 @@ def "main e2e" [
     if not ($preset_path | path exists) {
         print $"Error: txgen preset file not found: ($preset_path)"
         exit 1
+    }
+    let feature_preset_path = if $calibration_presets.kind == "workload" {
+        let expected_baseline = (txgen-resolve-bench-spec $calibration_presets.baseline).spec_path
+        if ($preset_path | path expand) != ($expected_baseline | path expand) {
+            error make { msg: "workload calibration cannot override the baseline preset file" }
+        }
+        (txgen-resolve-bench-spec $calibration_presets.feature).spec_path
+    } else { $preset_path }
+    if $calibration_presets.kind == "workload" {
+        e2e-validate-calibration-match {
+            ref: $baseline, hardfork: $baseline_hardfork, features: $baseline_features,
+            args: $baseline_args, env: $baseline_env
+        } {
+            ref: $feature, hardfork: $feature_hardfork, features: $feature_features,
+            args: $feature_args, env: $feature_env
+        } $run_side
     }
     txgen-validate-bench-args $bench_args
     let general_gas_limit = if $general_gas_limit == "" and (txgen-spec-has-keychain-setup $preset_path) {
@@ -1474,16 +1538,11 @@ def "main e2e" [
     }
     let a_validator = ($validator_list | get 0)
     let b_validator = ($validator_list | get 1)
-    let a_ip = ($a_validator | split row ":" | get 0)
-    let a_consensus_port = ($a_validator | split row ":" | get 1 | into int)
-    let b_ip = ($b_validator | split row ":" | get 0)
-    let b_consensus_port = ($b_validator | split row ":" | get 1 | into int)
     let a_db = $"($E2E_A_MOUNT)/tempo_e2e_($bloat_mib)mb"
     let b_db = $"($E2E_B_MOUNT)/tempo_e2e_($bloat_mib)mb"
     let a_identity = $a_db
     let b_identity = $b_db
     let genesis_path = $"($a_db)/($BENCH_META_SUBDIR)/genesis.json"
-    let a_trusted_peers_path = $"($a_db)/($BENCH_META_SUBDIR)/trusted-peers.txt"
     let run_started_at = (date now)
     let timestamp = ($run_started_at | format date "%Y%m%d-%H%M%S-%3f")
     let benchmark_id = ($env | get --optional BENCHMARK_ID)
@@ -1594,22 +1653,17 @@ def "main e2e" [
         e2e-synthesize-genesis $genesis_path $baseline_genesis_path $baseline_hardfork_name $gas_limit $general_gas_limit
         e2e-synthesize-genesis $genesis_path $feature_genesis_path $feature_hardfork_name $gas_limit $general_gas_limit
     }
-    let trusted_peers = if ($a_trusted_peers_path | path exists) {
-        open $a_trusted_peers_path | str trim
-    } else {
-        let b_trusted_peers_path = $"($b_db)/($BENCH_META_SUBDIR)/trusted-peers.txt"
-        if ($b_trusted_peers_path | path exists) {
-            open $b_trusted_peers_path | str trim
-        } else {
-            print $"Error: trusted peers file not found in ($a_trusted_peers_path) or ($b_trusted_peers_path)"
-            exit 1
-        }
-    }
+    let snapshot_topology = (e2e-snapshot-topology $a_db $b_db)
+    let trusted_peers = $snapshot_topology.trusted_peers
+    print $"Local e2e snapshot bindings: a=($snapshot_topology.a.ip):($snapshot_topology.a.consensus_port), b=($snapshot_topology.b.ip):($snapshot_topology.b.consensus_port)"
 
     let results_dir = $"($BENCH_RESULTS_DIR)/($timestamp)"
     mkdir $results_dir
     print $"BENCH_RESULTS_DIR=($results_dir)"
     cp $preset_path $"($results_dir)/txgen-spec.yml"
+    if $calibration_presets.kind == "workload" {
+        cp $feature_preset_path $"($results_dir)/txgen-feature-spec.yml"
+    }
 
     git worktree prune
     mkdir $BENCH_WORKTREES_DIR
@@ -1682,13 +1736,14 @@ def "main e2e" [
     let ctx = {
         genesis: $genesis_path
         trusted_peers: $trusted_peers
+        snapshot_topology: $snapshot_topology
         a: {
             state_path: $E2E_A_STATE_PATH
             mount: $E2E_A_MOUNT
             datadir: $a_db
             node_dir: $a_identity
-            ip: $a_ip
-            consensus_port: $a_consensus_port
+            ip: $snapshot_topology.a.ip
+            consensus_port: $snapshot_topology.a.consensus_port
             cpus: $E2E_A_CPUS
             memory: $E2E_A_MEMORY
         }
@@ -1697,13 +1752,17 @@ def "main e2e" [
             mount: $E2E_B_MOUNT
             datadir: $b_db
             node_dir: $b_identity
-            ip: $b_ip
-            consensus_port: $b_consensus_port
+            ip: $snapshot_topology.b.ip
+            consensus_port: $snapshot_topology.b.consensus_port
             cpus: $E2E_B_CPUS
             memory: $E2E_B_MEMORY
         }
         preset: $preset
         preset_path: $preset_path
+        phase_presets: {
+            baseline: { name: $calibration_presets.baseline, path: $preset_path }
+            feature: { name: $calibration_presets.feature, path: $feature_preset_path }
+        }
         tps: $tps
         duration: $duration
         accounts: $accounts

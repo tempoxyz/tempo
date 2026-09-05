@@ -1,0 +1,28 @@
+merge:
+  chain_id: 1337
+  gas:
+    max_fee_per_gas: 100000000000
+    max_priority_fee_per_gas: 100000000000
+  accounts:
+    users:
+      mnemonic: "test test test test test test test test test test test junk"
+      range: [0, ${TXGEN_ACCOUNTS}]
+  artifacts:
+    PrecompileCalibration:
+      abi: ./PrecompileCalibration.json
+      bytecode: ./PrecompileCalibration.json
+  templates:
+    precompile:
+      type: tempo
+      from: { pool: users, select: random }
+      gas_limit: 300000
+      fee_token: "0x20c0000000000000000000000000000000000000"
+      expiring_nonce: true
+      valid_for_secs: 10
+      call:
+        to: { var: setup.fixture.address }
+        abi: PrecompileCalibration
+        function: invoke
+  mix:
+    - template: precompile
+      weight: 100
