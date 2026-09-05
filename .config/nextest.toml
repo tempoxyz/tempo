@@ -1,3 +1,6 @@
+[profile.default]
+slow-timeout = { period = "3m", terminate-after = 1 }
+
 [profile.ci]
 fail-fast = false
 retries = 2
@@ -34,7 +37,6 @@ priority = -100
 filter = "package(tempo-e2e)"
 failure-output = "never"
 threads-required = 4
-slow-timeout = { period = "3m", terminate-after = 1 }
 
 # Separate profile for flaky snapshot-restart tests so they fail-fast independently.
 [profile.ci-flaky]
@@ -42,7 +44,6 @@ inherits = "ci"
 fail-fast = true
 retries = 0
 failure-output = "final"
-slow-timeout = { period = "3m", terminate-after = 1 }
 default-filter = "package(tempo-e2e) & test(can_restart_after_joining_from_snapshot)"
 
 # Dedicated profile for live RPC matrix tests (testnet/devnet).
@@ -79,7 +80,6 @@ priority = -100
 [[profile.default.overrides]]
 filter = "package(tempo-e2e)"
 threads-required = 4
-slow-timeout = { period = "4m", terminate-after = 1 }
 
 [[profile.default.overrides]]
 filter = "package(tempo-node) & binary(it)"
