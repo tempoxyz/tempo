@@ -41,7 +41,7 @@ pub struct FaucetArgs {
         long = "faucet.address",
         requires = "faucet.enabled",
         required_if_eq("faucet.enabled", "true"),
-        num_args(0..)
+        num_args(1..)
     )]
     pub token_addresses: Option<Vec<Address>>,
 
@@ -98,8 +98,48 @@ mod tests {
         args: FaucetArgs,
     }
 
+    const PRIVATE_KEY: &str =
+        "0x0000000000000000000000000000000000000000000000000000000000000001";
+    const TOKEN_A: &str = "0x0000000000000000000000000000000000000001";
+    const TOKEN_B: &str = "0x0000000000000000000000000000000000000002";
+
+    fn faucet_args() -> Vec<&'static str> {
+        vec![
+            "tempo",
+            "--faucet.enabled",
+            "--faucet.private-key",
+            PRIVATE_KEY,
+            "--faucet.amount",
+            "1",
+            "--faucet.address",
+        ]
+    }
+
     #[test]
     fn faucet_args_default_sanity_test() {
         assert!(CommandParser::try_parse_from(["tempo"]).is_ok());
+    }
+
+    #[test]
+    fn faucet_enabled_rejects_empty_address_list() {
+        assert!(CommandParser::try_parse_from(faucet_args()).is_err());
+    }
+
+    #[test]
+    fn faucet_enabled_accepts_single_address() {
+        let mut args = faucet_args();
+        args.push(TOKEN_A);
+
+        let parsed = CommandParser::try_parse_from(args).expect("single faucet address should parse");
+        assert_eq!(parsed.args.addresses().len(), 1);
+    }
+
+    #[test]
+    fn faucet_enabled_accepts_multiple_addresses() {
+        let mut args = faucet_args();
+        args.extend([TOKEN_A, TOKEN_B]);
+
+        let parsed = CommandParser::try_parse_from(args).expect("multiple faucet addresses should parse");
+        assert_eq!(parsed.args.addresses().len(), 2);
     }
 }
