@@ -55,3 +55,30 @@ are newly generated and valid, not copies of observed transactions; they do not
 establish the original operand distribution. SHA has an independent hashlib
 expected value, MODEXP uses num-bigint, and pairing uses cancellation identities.
 These cases remain below the same 1,024-byte input bound.
+
+## Native signature fixtures
+
+Passing `-- --native-signatures` emits eight separate `SignatureVerifier`
+fixtures: recover/verify for secp256k1, P256 raw, P256 SHA-256 prehash, and an
+ordinary WebAuthn assertion. They use fixed public test keys, a 37-byte
+authenticator record without extensions, and `https://bench.example` as a test
+origin. They are not browser-authentication tests or real-user credentials.
+
+Store the output as `native-signature-fixtures.json`, then generate presets with
+`ethereum-presets.py --native-signatures`. The helper verifies the signatures
+locally; its native `source_crypto_gas` field is the source's crypto component,
+not measured total native gas. It does not execute native dispatch locally.
+The wrapper constructor must still validate every expected native return value
+on the pinned benchmark node before the workload starts.
+
+Independent ABI, challenge, hashing, ECDSA and signer checks use a Python backend:
+
+```sh
+uv run --with cryptography==50.0.0 --with pycryptodome==3.23.0 python contrib/bench/txgen/gas-calibration/validate-native-signatures.py
+uv run --with cryptography==50.0.0 --with pycryptodome==3.23.0 python -m unittest discover -s contrib/bench/txgen/gas-calibration -p test_native_signature_fixtures.py
+```
+
+The independent checker does not replace native runtime checks. Keychain/admin
+authorization, full transaction authentication and varied WebAuthn client data
+remain separate coverage obligations. Existing inherited-precompile and size
+fixture outputs are unchanged by this mode.

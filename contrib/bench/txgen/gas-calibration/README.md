@@ -45,6 +45,14 @@ Generate their presets with `ethereum-presets.py --mainnet-sizes`; their
 fixture generator README records the dated aggregate supporting these sizes.
 These are generated valid inputs, not mainnet replays or pricing evidence.
 
+Eight `precompile-native-*` signature presets additionally exercise recover and
+verify with fixed-test-key secp256k1, P256 raw/prehashed and WebAuthn signatures.
+Generate these and `precompile-native-signature-smoke` using
+`ethereum-presets.py --native-signatures`. Their expected outputs have independent
+ABI/hash/signer/ECDSA checks (`validate-native-signatures.py`), but native runtime
+constructor checks remain mandatory. These explicit calls do not benchmark
+implicit transaction authentication or keychain/admin authorization.
+
 `PrecompileCalibration` checks every selected fixture's expected result in its
 bounded constructor (one fixture for individual presets, 18 for the smoke), then makes
 one precompile invocation per workload transaction and rejects call failures or

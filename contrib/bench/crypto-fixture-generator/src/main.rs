@@ -10,6 +10,8 @@ use revm_precompile::{
 };
 use serde_json::{Value, json};
 
+mod native_signatures;
+
 fn pad(bytes: &[u8], length: usize) -> Vec<u8> {
     assert!(bytes.len() <= length);
     let mut out = vec![0; length];
@@ -154,16 +156,14 @@ fn mainnet_sizes() -> Vec<Value> {
 
 fn main() {
     let args: Vec<_> = std::env::args().skip(1).collect();
-    if !args.is_empty() {
-        assert_eq!(
-            args,
-            ["--mainnet-sizes"],
-            "only --mainnet-sizes is supported"
-        );
-        println!(
-            "{}",
-            serde_json::to_string_pretty(&mainnet_sizes()).unwrap()
-        );
+    let extra = match args.as_slice() {
+        [] => None,
+        [mode] if mode == "--mainnet-sizes" => Some(mainnet_sizes()),
+        [mode] if mode == "--native-signatures" => Some(native_signatures::fixtures()),
+        _ => panic!("expected no arguments, --mainnet-sizes or --native-signatures"),
+    };
+    if let Some(rows) = extra {
+        println!("{}", serde_json::to_string_pretty(&rows).unwrap());
         return;
     }
     let mut rows = Vec::new();

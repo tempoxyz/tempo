@@ -26,7 +26,9 @@ The gates were checked in the system-address registry, native lookup, and each
 selected selector's dispatch implementation. Run the combined smoke on T10 or
 later; this source-level check is not proof of a live mainnet deployment's fork.
 SignatureVerifier is separate: the existing `signature-recover` preset exercises
-secp256k1 recovery, and P256/WebAuthn/admin-key variants still need coverage.
+secp256k1 recovery, and the `precompile-native-*` fixtures add explicit
+secp256k1/P256/WebAuthn recover/verify calls with pending runtime validation.
+Keychain/admin-key variants still need coverage.
 
 The constructor checks that the factory recognizes pathUSD and that its deployer
 has a positive pathUSD balance. Solidity return decoding rejects absent/invalid
