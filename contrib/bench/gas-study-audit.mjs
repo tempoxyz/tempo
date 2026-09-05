@@ -11,6 +11,8 @@ export function audit(directory) {
   const summary = read(join(directory, 'summary.json'));
   const issues = [];
   const runs = [];
+  const workloadComparison = summary.config?.comparison_kind === 'workload';
+  let matchedMetadata;
   let pairs = summary.config?.run_pairs;
   if (!count(pairs) || pairs === 0) {
     issues.push('comparison requires a positive integer run_pairs');
@@ -33,6 +35,23 @@ export function audit(directory) {
       continue;
     }
     const problems = [];
+    if (workloadComparison) {
+      const expectedScenario = summary.config?.[label.startsWith('baseline-') ? 'baseline_preset' : 'feature_preset'];
+      if (typeof expectedScenario !== 'string' || !expectedScenario || raw.metadata?.scenario !== expectedScenario) {
+        problems.push('workload scenario does not match the requested comparison side');
+      }
+      const metadataKeys = ['node_commit_sha', 'bloat_mib', 'accounts', 'initial_db_size_bytes',
+        'build_profile', 'tip20_token_count', 'target_tps', 'total_connections'];
+      const metadata = raw.metadata ?? {};
+      if (!/^[0-9a-f]{40}$/.test(metadata.node_commit_sha ?? '') ||
+          metadataKeys.some(key => typeof metadata[key] !== 'string' || !metadata[key])) {
+        problems.push('workload comparison metadata is incomplete or unpinned');
+      }
+      if (matchedMetadata && metadataKeys.some(key => metadata[key] !== matchedMetadata[key])) {
+        problems.push('workload comparison node, state or sender settings differ');
+      }
+      matchedMetadata ??= metadata;
+    }
     const blocks = Array.isArray(raw.blocks) ? raw.blocks : [];
     const numbers = blocks.map(block => block.number);
     const validNumbers = numbers.every(count);

@@ -41,6 +41,39 @@ class GasStudyAuditTests(unittest.TestCase):
         self.assertTrue(result["ordinary_workload_data_valid"])
         self.assertFalse(result["pricing_ready"])
 
+    def workload_comparison(self):
+        self.summary["config"].update(comparison_kind="workload", baseline_preset="gas-echo", feature_preset="gas-branch")
+        for label, raw in self.raw.items():
+            raw["metadata"] = dict(
+                node_commit_sha="b" * 40, bloat_mib="1000", accounts="1000",
+                initial_db_size_bytes="5000000000", build_profile="profiling",
+                tip20_token_count="4", target_tps="1000", total_connections="100",
+                scenario="gas-echo" if label.startswith("baseline") else "gas-branch",
+            )
+
+    def test_matched_workloads_pass_but_remain_unpriced(self):
+        self.workload_comparison()
+        result = self.run_audit()
+        self.assertTrue(result["ordinary_workload_data_valid"])
+        self.assertFalse(result["pricing_ready"])
+
+    def test_workload_scenario_mismatch(self):
+        self.workload_comparison()
+        self.raw["feature-1"]["metadata"]["scenario"] = "gas-echo"
+        self.assertFalse(self.run_audit()["ordinary_workload_data_valid"])
+
+    def test_workload_metadata_mismatch(self):
+        for field in ("node_commit_sha", "bloat_mib", "accounts", "initial_db_size_bytes", "build_profile", "tip20_token_count", "target_tps", "total_connections"):
+            with self.subTest(field=field):
+                self.workload_comparison()
+                self.raw["feature-1"]["metadata"][field] = "different"
+                self.assertFalse(self.run_audit()["ordinary_workload_data_valid"])
+
+    def test_workload_missing_metadata(self):
+        self.workload_comparison()
+        del self.raw["baseline-1"]["metadata"]
+        self.assertFalse(self.run_audit()["ordinary_workload_data_valid"])
+
     def test_revert_in_warmup_is_still_rejected(self):
         self.raw["baseline-1"]["blocks"][0].update(ok_count=1, err_count=1)
         self.assertFalse(self.run_audit()["ordinary_workload_data_valid"])

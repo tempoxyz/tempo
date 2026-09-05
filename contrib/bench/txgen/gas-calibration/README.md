@@ -87,6 +87,24 @@ calldata/intrinsic gas, authentication, fee handling and return-data costs remai
 included. Small arithmetic differences may be below run-to-run noise. Do not
 convert these ratios directly into a new opcode or precompile tariff.
 
+For a same-runner comparison, the e2e preset expression
+`gas-compare:gas-hash-control-256,gas-sha256-256` assigns the first individual
+preset to baseline phases and the second to feature phases. Both sides must use
+the same full node SHA, hardfork, build features, node arguments and environment;
+both comparison sides are required. Existing run ordering and snapshot restoration
+apply unchanged. Use regenerated state until snapshot compatibility is established.
+The expression accepts existing individual `gas-*`, `precompile-*` or
+`native-read-*` presets, not paths or mixed smoke presets. It does not add workload
+batching or change sender rates, concurrency or node limits.
+
+Artifacts preserve both preset files, per-run actual scenario metadata, and the
+baseline/feature workload names in `summary.json`. The receipt gate additionally
+checks matching node/state/sender metadata and each side's scenario. The summary
+labels such comparisons **Unpriced**: descriptive deltas between different
+workloads cannot be classified as code improvements or converted into tariff
+multipliers. Paired-mode parsing, routing, summary and audit checks are tested
+locally; the paired runtime surface still requires a CI smoke before use.
+
 This study branch requires txgen's `--collect-receipt-outcomes` support. Missing
 or inconsistent receipts fail the run; successful outer receipts alone do not
 prove every possible nested call succeeded. No protocol gas prices change.
