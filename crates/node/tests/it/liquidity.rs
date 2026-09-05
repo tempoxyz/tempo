@@ -144,7 +144,7 @@ async fn test_block_building_insufficient_fee_amm_liquidity() -> eyre::Result<()
     provider
         .send_raw_transaction(&envelope.encoded_2718())
         .await?
-        .watch()
+        .get_receipt()
         .await?;
 
     // Now try to send payment transactions that require fee swaps

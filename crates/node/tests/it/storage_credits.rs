@@ -83,11 +83,14 @@ async fn send_tempo_tx<P: Provider>(
             sig,
         )))
         .into();
+    // Poll the receipt as well as the heartbeat, which can miss the mined block.
+    // This Ethereum provider omits Tempo fields, so fetch the full receipt below.
     let tx_hash = provider
         .send_raw_transaction(&envelope.encoded_2718())
         .await?
-        .watch()
-        .await?;
+        .get_receipt()
+        .await?
+        .transaction_hash;
 
     provider
         .raw_request::<_, TempoTransactionReceipt>("eth_getTransactionReceipt".into(), (tx_hash,))
@@ -145,8 +148,9 @@ async fn test_tip1060_keychain_fee_refund_does_not_retain_storage_credit() -> ey
                 .gas_limit(2_000_000),
         )
         .await?
-        .watch()
-        .await?;
+        .get_receipt()
+        .await?
+        .transaction_hash;
     let authorize_receipt = provider
         .raw_request::<_, TempoTransactionReceipt>(
             "eth_getTransactionReceipt".into(),
@@ -200,8 +204,9 @@ async fn test_tip1060_keychain_fee_refund_does_not_retain_storage_credit() -> ey
     let tx_hash = provider
         .send_raw_transaction(&envelope.encoded_2718())
         .await?
-        .watch()
-        .await?;
+        .get_receipt()
+        .await?
+        .transaction_hash;
     let receipt = provider
         .raw_request::<_, TempoTransactionReceipt>("eth_getTransactionReceipt".into(), (tx_hash,))
         .await?;
@@ -352,8 +357,9 @@ async fn test_tip1060_rebalance_swap_does_not_mint_stale_fee_manager_custody_cre
     let fee_tx_hash = root_provider
         .send_raw_transaction(&envelope.encoded_2718())
         .await?
-        .watch()
-        .await?;
+        .get_receipt()
+        .await?
+        .transaction_hash;
     let fee_tx_receipt = root_provider
         .raw_request::<_, TempoTransactionReceipt>(
             "eth_getTransactionReceipt".into(),
@@ -432,8 +438,9 @@ async fn test_tip1060_rebalance_swap_does_not_mint_stale_fee_manager_custody_cre
     let recreate_hash = root_provider
         .send_raw_transaction(&envelope.encoded_2718())
         .await?
-        .watch()
-        .await?;
+        .get_receipt()
+        .await?
+        .transaction_hash;
     let recreate_receipt = root_provider
         .raw_request::<_, TempoTransactionReceipt>(
             "eth_getTransactionReceipt".into(),
@@ -612,8 +619,9 @@ async fn test_tip1060_fee_manager_credit_from_distribute_fees_is_not_redeemable(
     let collect_fees_hash = provider
         .send_raw_transaction(&collect_fees_envelope.encoded_2718())
         .await?
-        .watch()
-        .await?;
+        .get_receipt()
+        .await?
+        .transaction_hash;
     let collect_fees_receipt = provider
         .raw_request::<_, TempoTransactionReceipt>(
             "eth_getTransactionReceipt".into(),
@@ -719,8 +727,9 @@ async fn test_tip1060_fee_manager_credit_from_distribute_fees_is_not_redeemable(
     let recreate_hash = provider
         .send_raw_transaction(&recreate_envelope.encoded_2718())
         .await?
-        .watch()
-        .await?;
+        .get_receipt()
+        .await?
+        .transaction_hash;
     let recreate_receipt = provider
         .raw_request::<_, TempoTransactionReceipt>(
             "eth_getTransactionReceipt".into(),
@@ -886,8 +895,9 @@ async fn test_tip1060_distribute_fees_receive_policy_guard_creations_are_account
     let collect_fees_hash = provider
         .send_raw_transaction(&collect_fees_envelope.encoded_2718())
         .await?
-        .watch()
-        .await?;
+        .get_receipt()
+        .await?
+        .transaction_hash;
     let collect_fees_receipt = provider
         .raw_request::<_, TempoTransactionReceipt>(
             "eth_getTransactionReceipt".into(),
@@ -1155,8 +1165,9 @@ async fn test_tip1060_successful_keychain_spend_fee_refund_cancels_restored_limi
                 .gas_limit(2_000_000),
         )
         .await?
-        .watch()
-        .await?;
+        .get_receipt()
+        .await?
+        .transaction_hash;
     let authorize_receipt = provider
         .raw_request::<_, TempoTransactionReceipt>(
             "eth_getTransactionReceipt".into(),
@@ -1208,8 +1219,9 @@ async fn test_tip1060_successful_keychain_spend_fee_refund_cancels_restored_limi
     let tx_hash = provider
         .send_raw_transaction(&envelope.encoded_2718())
         .await?
-        .watch()
-        .await?;
+        .get_receipt()
+        .await?
+        .transaction_hash;
     let receipt = provider
         .raw_request::<_, TempoTransactionReceipt>("eth_getTransactionReceipt".into(), (tx_hash,))
         .await?;
@@ -1316,8 +1328,9 @@ async fn test_tip1060_successful_fee_token_spend_fee_refund_cancels_restored_bal
     let tx_hash = fee_payer_provider
         .send_raw_transaction(&envelope.encoded_2718())
         .await?
-        .watch()
-        .await?;
+        .get_receipt()
+        .await?
+        .transaction_hash;
     let receipt = root_provider
         .raw_request::<_, TempoTransactionReceipt>("eth_getTransactionReceipt".into(), (tx_hash,))
         .await?;
@@ -1411,8 +1424,9 @@ async fn test_tip1060_tip20_clear_mints_and_later_creation_redeems_credit() -> e
     let hash = provider
         .send_raw_transaction(&envelope.encoded_2718())
         .await?
-        .watch()
-        .await?;
+        .get_receipt()
+        .await?
+        .transaction_hash;
     let receipt = provider
         .raw_request::<_, TempoTransactionReceipt>("eth_getTransactionReceipt".into(), (hash,))
         .await?;
