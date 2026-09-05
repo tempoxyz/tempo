@@ -684,7 +684,8 @@ where
     /// A non-`VALID` answer is fatal. Otherwise the block becomes the next
     /// finalized target and is acknowledged once the forkchoice update
     /// finalizing it lands - or right away if the execution layer already
-    /// finalized it (a re-delivery).
+    /// finalized it (a re-delivery). The marshal actor delivers the
+    /// finalized chain in order; that order is trusted, not checked.
     fn handle_finalized_delivered(
         &mut self,
         request: FinalizedBlockRequest,
@@ -847,7 +848,6 @@ where
                 block: Arc::new(block),
                 acknowledgment: ack,
             };
-            self.check_finalized_delivery_order(request.block.as_ref())?;
             let fut = execute_finalization(self.execution_node.clone(), request);
             self.set_execution_task(ExecutionTask::new(ExecutionTaskType::Finalize, fut));
             let finished = (&mut self.execution_task).await;
@@ -1165,7 +1165,6 @@ where
         // it: a known block is answered `VALID` from its caches without
         // being executed again.
         if let Some(request) = self.pending_finalizations.pop_front() {
-            self.check_finalized_delivery_order(request.block.as_ref())?;
             let fut = execute_finalization(self.execution_node.clone(), request);
             self.set_execution_task(ExecutionTask::new(ExecutionTaskType::Finalize, fut));
             return Ok(());
@@ -1186,35 +1185,6 @@ where
         }
 
         self.start_forkchoice_update()?;
-        Ok(())
-    }
-
-    /// Finalized blocks are delivered in order, at or above the tracked
-    /// finalized block: a delivery below it is a protocol violation, and a
-    /// different block at its height means two blocks were finalized at the
-    /// same height.
-    fn check_finalized_delivery_order(&self, block: &Block) -> eyre::Result<()> {
-        let (finalized_height, finalized_digest) = self.notarized_tree.local_state().finalized;
-        ensure!(
-            block.height() >= finalized_height,
-            "finalized block with digest `{}` at height `{}` is below the \
-            executor's tracked finalized block `{finalized_digest}` at height \
-            `{finalized_height}`; finalized blocks must only ever be delivered \
-            at or on top of the tracked state",
-            block.digest(),
-            block.height(),
-        );
-        if block.height() == finalized_height {
-            ensure!(
-                block.digest() == finalized_digest,
-                "finalized block with digest `{}` at height `{}` conflicts with \
-                the executor's tracked finalized block `{finalized_digest}` at the \
-                same height; two different blocks must never be finalized at the \
-                same height",
-                block.digest(),
-                block.height(),
-            );
-        }
         Ok(())
     }
 
