@@ -26,6 +26,14 @@ This study branch requires txgen's `--collect-receipt-outcomes` support. Missing
 or inconsistent receipts fail the run; successful outer receipts alone do not
 prove every possible nested call succeeded. No protocol gas prices change.
 
+After downloading a comparison artifact, run
+`uv run python contrib/bench/gas-study-audit.py RESULTS_DIRECTORY`.
+The separate read-only gate rejects missing runs, incomplete/inconsistent counts,
+reverts (including warmup), submission failures, empty retained windows and
+raw/summary mismatches. A pass establishes report consistency only; it is not a
+pricing verdict or proof of workload output correctness. This strict gate targets
+ordinary successful workloads, not deliberately reverting conformance tests.
+
 The wider study still needs other inherited precompiles, stateful native methods,
 additional opcode groups, repeat-run measurements, and explicit state-growth
 accounting. These presets are a coverage increment, not an all-precompile result.
