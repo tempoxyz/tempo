@@ -208,6 +208,9 @@ jobs:
       BENCH_RUN_LABEL: ${{ inputs.run-label || 'Replay Bench' }}
       BENCH_WORK_DIR: bench-results/replay-${{ inputs.chain || 'mainnet' }}
       BENCHMARK_ID: bench-replay-${{ github.run_id }}
+      CARGO_COOLDOWN_REQUIRED: "true"
+      CARGO_COOLDOWN_CHECK: ${{ github.workspace }}/.github/scripts/check-cargo-cooldown-lock.sh
+      CARGO_COOLDOWN_CONFIG: ${{ github.workspace }}/cooldown.toml
     steps:
       - name: Resolve benchmark config
         env:
@@ -372,6 +375,18 @@ jobs:
       - uses: tempoxyz/gh-actions/vendor/dtolnay/rust-toolchain@3626124474a987bc74b41fc7ae65b2e23f8e4e4e
       - uses: tempoxyz/gh-actions/vendor/mozilla-actions/sccache-action@3626124474a987bc74b41fc7ae65b2e23f8e4e4e
         continue-on-error: true
+      - name: Install Cargo cooldown verifier
+        id: cargo_cooldown
+        uses: tempoxyz/gh-actions/actions/cargo-cooldown@0aa93238d85fd085d7901320b670cc6adb7a02f3 # gh-actions#101
+        with:
+          strict-project-config: "true"
+      - name: Export verified Cargo cooldown location
+        env:
+          VERIFIER_PATH: ${{ steps.cargo_cooldown.outputs.verifier-path }}
+          VERIFIER_SHA256: ${{ steps.cargo_cooldown.outputs.verifier-sha256 }}
+        run: |
+          echo "CARGO_COOLDOWN_BIN=$VERIFIER_PATH" >> "$GITHUB_ENV"
+          echo "CARGO_COOLDOWN_SHA256=$VERIFIER_SHA256" >> "$GITHUB_ENV"
 
       - name: Install uv
         run: curl -LsSf https://astral.sh/uv/install.sh | env UV_INSTALL_DIR="$HOME/.local/bin" sh

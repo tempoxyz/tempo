@@ -23,6 +23,23 @@ const TIP20_TOKEN_IDS = [0, 1, 2, 3]
 # Helper functions
 # ============================================================================
 
+def check-cargo-cooldown [workspace: string] {
+    let required = ($env | get -o CARGO_COOLDOWN_REQUIRED | default "false")
+    if $required != "true" {
+        return
+    }
+
+    let checker = ($env | get -o CARGO_COOLDOWN_CHECK | default "")
+    let config = ($env | get -o CARGO_COOLDOWN_CONFIG | default "")
+    if $checker == "" {
+        error make { msg: "CARGO_COOLDOWN_CHECK is required" }
+    }
+    if $config == "" or not ($config | path exists) {
+        error make { msg: "CARGO_COOLDOWN_CONFIG must point to an existing policy file" }
+    }
+    run-external $checker $workspace $config
+}
+
 # Convert consensus port to node index (e.g., 8000 -> 0, 8100 -> 1)
 def port-to-node-index [port: int] {
     ($port - 8000) / 100 | into int
@@ -94,9 +111,10 @@ def validate-mode [mode: string] {
 
 # Build tempo binary with cargo
 def build-tempo [bins: list<string>, profile: string, features: string, --no-default-features, --extra-rustflags: string = ""] {
+    check-cargo-cooldown "."
     let bin_args = ($bins | each { |bin| ["--bin" $bin] } | flatten)
     let feature_args = (cargo-feature-args $features $no_default_features)
-    let build_cmd = ["cargo" "build" "--profile" $profile]
+    let build_cmd = ["cargo" "build" "--locked" "--profile" $profile]
         | append $feature_args
         | append $bin_args
     let rustflags = $"($RUSTFLAGS)($extra_rustflags)"
@@ -115,7 +133,8 @@ def tempo-xtask-bin [profile: string] {
 }
 
 def build-tempo-xtask [profile: string] {
-    let build_cmd = ["cargo" "build" "-p" "tempo-xtask" "--profile" $profile]
+    check-cargo-cooldown "."
+    let build_cmd = ["cargo" "build" "--locked" "-p" "tempo-xtask" "--profile" $profile]
     print $"Building tempo-xtask: `($build_cmd | str join ' ')`..."
     run-external ($build_cmd | first) ...($build_cmd | skip 1)
 }
@@ -129,7 +148,8 @@ def run-tempo-xtask [profile: string, skip_build: bool, args: list<string>] {
         }
         run-external $xtask_bin ...$args
     } else {
-        let run_cmd = ["cargo" "run" "-p" "tempo-xtask" "--profile" $profile "--"]
+        check-cargo-cooldown "."
+        let run_cmd = ["cargo" "run" "--locked" "-p" "tempo-xtask" "--profile" $profile "--"]
             | append $args
         run-external ($run_cmd | first) ...($run_cmd | skip 1)
     }
@@ -518,6 +538,7 @@ def cache-upload [worktree_dir: string, profile: string, commit_sha: string, cac
 # Build tempo binary in a git worktree (with optional MinIO cache)
 def build-in-worktree [worktree_dir: string, ref: string, profile: string, features: string, commit_sha: string, --no-cache, --no-default-features, --extra-rustflags: string = "", --bench-features: string = ""] {
     let cache_key = (bench-cache-key $commit_sha $features $no_default_features)
+    check-cargo-cooldown $worktree_dir
 
     # Try cache first
     if not $no_cache and (try-cache-download $worktree_dir $profile $commit_sha $cache_key) {
@@ -527,7 +548,7 @@ def build-in-worktree [worktree_dir: string, ref: string, profile: string, featu
     print $"Building tempo for ($ref) in ($worktree_dir)..."
     let rustflags = $"($RUSTFLAGS)($extra_rustflags)"
     let feature_args = (cargo-feature-args $features $no_default_features)
-    let build_cmd = ["cargo" "build" "--profile" $profile]
+    let build_cmd = ["cargo" "build" "--locked" "--profile" $profile]
         | append $feature_args
         | append ["--bin" "tempo"]
     with-env { RUSTFLAGS: $rustflags } {
@@ -2408,14 +2429,14 @@ def "main bench-init" [
     let genesis_path = $"($abs_localnet)/genesis.json"
     let txgen_genesis_args = ["--mnemonic" (txgen-account-mnemonic)]
     print $"Generating genesis with ($genesis_accounts) accounts..."
-    cargo run -p tempo-xtask --profile $profile -- generate-genesis --output $abs_localnet -a $genesis_accounts ...$txgen_genesis_args --no-dkg-in-genesis
+    cargo run --locked -p tempo-xtask --profile $profile -- generate-genesis --output $abs_localnet -a $genesis_accounts ...$txgen_genesis_args --no-dkg-in-genesis
 
     # Generate bloat file
     let bloat_file = $"($abs_localnet)/state_bloat.bin"
     if $bloat > 0 {
         print $"Generating state bloat \(($bloat) MiB\)..."
         let token_args = ($TIP20_TOKEN_IDS | each { |id| ["--token" $"($id)"] } | flatten)
-        cargo run -p tempo-xtask --profile $profile -- generate-state-bloat --size $bloat --out $bloat_file ...$token_args
+        cargo run --locked -p tempo-xtask --profile $profile -- generate-state-bloat --size $bloat --out $bloat_file ...$token_args
     }
 
     bench-clean-datadir $datadir
@@ -2717,11 +2738,11 @@ def "main bench" [
                 if ($baseline_genesis_dir | path exists) { rm -rf $baseline_genesis_dir }
                 mkdir $baseline_genesis_dir
                 if $baseline == "local" {
-                    cargo run -p tempo-xtask --profile $profile -- generate-genesis --output $baseline_genesis_dir -a $genesis_accounts ...$txgen_genesis_args --no-dkg-in-genesis ...$baseline_genesis_args ...$gas_limit_args ...$general_gas_limit_args
+                    cargo run --locked -p tempo-xtask --profile $profile -- generate-genesis --output $baseline_genesis_dir -a $genesis_accounts ...$txgen_genesis_args --no-dkg-in-genesis ...$baseline_genesis_args ...$gas_limit_args ...$general_gas_limit_args
                 } else {
                     do {
                         cd $baseline_wt
-                        cargo run -p tempo-xtask --profile $profile -- generate-genesis --output $baseline_genesis_dir -a $genesis_accounts ...$txgen_genesis_args --no-dkg-in-genesis ...$baseline_genesis_args ...$gas_limit_args ...$general_gas_limit_args
+                        cargo run --locked -p tempo-xtask --profile $profile -- generate-genesis --output $baseline_genesis_dir -a $genesis_accounts ...$txgen_genesis_args --no-dkg-in-genesis ...$baseline_genesis_args ...$gas_limit_args ...$general_gas_limit_args
                     }
                 }
                 cp $"($baseline_genesis_dir)/genesis.json" $baseline_genesis_path
@@ -2732,13 +2753,13 @@ def "main bench" [
                 if ($feature_genesis_dir | path exists) { rm -rf $feature_genesis_dir }
                 mkdir $feature_genesis_dir
                 if $feature == "local" {
-                    cargo run -p tempo-xtask --profile $profile -- generate-genesis --output $feature_genesis_dir -a $genesis_accounts ...$txgen_genesis_args --no-dkg-in-genesis ...$feature_genesis_args ...$gas_limit_args ...$general_gas_limit_args
+                    cargo run --locked -p tempo-xtask --profile $profile -- generate-genesis --output $feature_genesis_dir -a $genesis_accounts ...$txgen_genesis_args --no-dkg-in-genesis ...$feature_genesis_args ...$gas_limit_args ...$general_gas_limit_args
                 } else {
                     # Use feature worktree for feature genesis so it picks up any
                     # new hardfork-related genesis changes from the feature branch
                     do {
                         cd $feature_wt
-                        cargo run -p tempo-xtask --profile $profile -- generate-genesis --output $feature_genesis_dir -a $genesis_accounts ...$txgen_genesis_args --no-dkg-in-genesis ...$feature_genesis_args ...$gas_limit_args ...$general_gas_limit_args
+                        cargo run --locked -p tempo-xtask --profile $profile -- generate-genesis --output $feature_genesis_dir -a $genesis_accounts ...$txgen_genesis_args --no-dkg-in-genesis ...$feature_genesis_args ...$gas_limit_args ...$general_gas_limit_args
                     }
                 }
                 cp $"($feature_genesis_dir)/genesis.json" $feature_genesis_path
@@ -2749,11 +2770,11 @@ def "main bench" [
                     print $"Generating state bloat \(($bloat) MiB\)..."
                     let token_args = ($TIP20_TOKEN_IDS | each { |id| ["--token" $"($id)"] } | flatten)
                     if $baseline == "local" {
-                        cargo run -p tempo-xtask --profile $profile -- generate-state-bloat --size $bloat --out $bloat_file ...$token_args
+                        cargo run --locked -p tempo-xtask --profile $profile -- generate-state-bloat --size $bloat --out $bloat_file ...$token_args
                     } else {
                         do {
                             cd $baseline_wt
-                            cargo run -p tempo-xtask --profile $profile -- generate-state-bloat --size $bloat --out $bloat_file ...$token_args
+                            cargo run --locked -p tempo-xtask --profile $profile -- generate-state-bloat --size $bloat --out $bloat_file ...$token_args
                         }
                     }
                 }
@@ -2810,11 +2831,11 @@ def "main bench" [
                     if not ($abs_localnet | path exists) { mkdir $abs_localnet }
                     print $"Generating genesis with ($genesis_accounts) accounts from baseline..."
                     if $baseline == "local" {
-                        cargo run -p tempo-xtask --profile $profile -- generate-genesis --output $abs_localnet -a $genesis_accounts ...$txgen_genesis_args --no-dkg-in-genesis ...$gas_limit_args ...$general_gas_limit_args
+                        cargo run --locked -p tempo-xtask --profile $profile -- generate-genesis --output $abs_localnet -a $genesis_accounts ...$txgen_genesis_args --no-dkg-in-genesis ...$gas_limit_args ...$general_gas_limit_args
                     } else {
                         do {
                             cd $baseline_wt
-                            cargo run -p tempo-xtask --profile $profile -- generate-genesis --output $abs_localnet -a $genesis_accounts ...$txgen_genesis_args --no-dkg-in-genesis ...$gas_limit_args ...$general_gas_limit_args
+                            cargo run --locked -p tempo-xtask --profile $profile -- generate-genesis --output $abs_localnet -a $genesis_accounts ...$txgen_genesis_args --no-dkg-in-genesis ...$gas_limit_args ...$general_gas_limit_args
                         }
                     }
                 }
@@ -2823,11 +2844,11 @@ def "main bench" [
                     print $"Generating state bloat \(($bloat) MiB\) from baseline..."
                     let token_args = ($TIP20_TOKEN_IDS | each { |id| ["--token" $"($id)"] } | flatten)
                     if $baseline == "local" {
-                        cargo run -p tempo-xtask --profile $profile -- generate-state-bloat --size $bloat --out $bloat_file ...$token_args
+                        cargo run --locked -p tempo-xtask --profile $profile -- generate-state-bloat --size $bloat --out $bloat_file ...$token_args
                     } else {
                         do {
                             cd $baseline_wt
-                            cargo run -p tempo-xtask --profile $profile -- generate-state-bloat --size $bloat --out $bloat_file ...$token_args
+                            cargo run --locked -p tempo-xtask --profile $profile -- generate-state-bloat --size $bloat --out $bloat_file ...$token_args
                         }
                     }
                 }

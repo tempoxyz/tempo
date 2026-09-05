@@ -103,6 +103,18 @@ jobs:
       - uses: tempoxyz/gh-actions/vendor/taiki-e/install-action@3626124474a987bc74b41fc7ae65b2e23f8e4e4e
         with:
           tool: nextest@0.9.127
+      - name: Install Cargo cooldown verifier
+        id: cargo_cooldown
+        uses: tempoxyz/gh-actions/actions/cargo-cooldown@0aa93238d85fd085d7901320b670cc6adb7a02f3 # gh-actions#101
+        with:
+          strict-project-config: "true"
+      - name: Export verified Cargo cooldown location
+        env:
+          VERIFIER_PATH: ${{ steps.cargo_cooldown.outputs.verifier-path }}
+          VERIFIER_SHA256: ${{ steps.cargo_cooldown.outputs.verifier-sha256 }}
+        run: |
+          echo "CARGO_COOLDOWN_BIN=$VERIFIER_PATH" >> "$GITHUB_ENV"
+          echo "CARGO_COOLDOWN_SHA256=$VERIFIER_SHA256" >> "$GITHUB_ENV"
 
       # ── amp CLI ────────────────────────────────────────────────
       - name: Install Amp CLI
@@ -199,9 +211,12 @@ jobs:
         env:
           AMP_API_KEY: ${{ secrets.AMP_API_KEY }}
         run: |
+          cargo metadata --format-version 1 >/dev/null
+          .github/scripts/check-cargo-cooldown-lock.sh . cooldown.toml
+
           echo "::group::Initial cargo clippy"
           set +e
-          cargo clippy --all-targets --all-features 2>&1
+          cargo clippy --locked --all-targets --all-features 2>&1
           clippy_exit=$?
           set -e
           echo "::endgroup::"
@@ -213,12 +228,14 @@ jobs:
           fi
 
           AMP_PROMPT="This Rust workspace just had its reth dependencies updated to the latest commit \
-          on the paradigmxyz/reth main branch. \`cargo clippy --all-targets --all-features\` is now failing with compilation errors.
+          on the paradigmxyz/reth main branch. \`cargo clippy --locked --all-targets --all-features\` is now failing with compilation errors.
 
-          Run \`cargo clippy --all-targets --all-features\` to see the errors, then fix the Rust source code and repeat \
+          Run \`cargo clippy --locked --all-targets --all-features\` to see the errors, then fix the Rust source code and repeat \
           until cargo clippy passes. You may also bump non-reth dependency versions in Cargo.toml files \
           if needed (e.g. revm, alloy), but do NOT modify the reth rev or git source specifications \
-          in any Cargo.toml — those have already been updated by the workflow.
+          in any Cargo.toml — those have already been updated by the workflow. After changing any \
+          dependency, run \`cargo metadata --format-version 1\` followed by \
+          \`.github/scripts/check-cargo-cooldown-lock.sh . cooldown.toml\` before compiling again.
 
           IMPORTANT: Do NOT suppress warnings with #[allow(...)]. Instead, migrate the code \
           to use the new non-deprecated APIs. Look at the upstream reth source code to understand \
@@ -245,9 +262,12 @@ jobs:
             fi
             echo "::endgroup::"
 
+            cargo metadata --format-version 1 >/dev/null
+            .github/scripts/check-cargo-cooldown-lock.sh . cooldown.toml
+
             echo "::group::Verify cargo clippy"
             set +e
-            cargo clippy --all-targets --all-features 2>&1
+            cargo clippy --locked --all-targets --all-features 2>&1
             clippy_exit=$?
             set -e
             echo "::endgroup::"
@@ -267,9 +287,12 @@ jobs:
         env:
           AMP_API_KEY: ${{ secrets.AMP_API_KEY }}
         run: |
+          cargo metadata --format-version 1 >/dev/null
+          .github/scripts/check-cargo-cooldown-lock.sh . cooldown.toml
+
           echo "::group::Initial test compilation check"
           set +e
-          cargo nextest run --profile ci --no-run 2>&1
+          cargo nextest run --locked --profile ci --no-run 2>&1
           test_exit=$?
           set -e
           echo "::endgroup::"
@@ -283,12 +306,14 @@ jobs:
           AMP_PROMPT="This Rust workspace just had its reth dependencies updated to the latest commit \
           on the paradigmxyz/reth main branch. Test compilation is failing.
 
-          Run \`cargo nextest run --profile ci --no-run\` to build test binaries and see the compilation errors, \
+          Run \`cargo nextest run --locked --profile ci --no-run\` to build test binaries and see the compilation errors, \
           then fix the Rust source code and repeat until test binaries compile successfully. \
-          Also run \`cargo check --workspace\` after fixes to catch compilation regressions. \
+          Also run \`cargo check --workspace --locked\` after fixes to catch compilation regressions. \
           You may also bump non-reth dependency versions in Cargo.toml files if needed (e.g. revm, alloy), \
           but do NOT modify the reth rev or git source specifications in any Cargo.toml — \
-          those have already been updated by the workflow.
+          those have already been updated by the workflow. After changing any dependency, run \
+          \`cargo metadata --format-version 1\` followed by \
+          \`.github/scripts/check-cargo-cooldown-lock.sh . cooldown.toml\` before compiling again.
 
           IMPORTANT: Do NOT suppress warnings with #[allow(...)]. Instead, migrate the code \
           to use the new non-deprecated APIs. Look at the upstream reth source code to understand \
@@ -315,9 +340,12 @@ jobs:
             fi
             echo "::endgroup::"
 
+            cargo metadata --format-version 1 >/dev/null
+            .github/scripts/check-cargo-cooldown-lock.sh . cooldown.toml
+
             echo "::group::Verify test compilation"
             set +e
-            cargo nextest run --profile ci --no-run 2>&1
+            cargo nextest run --locked --profile ci --no-run 2>&1
             test_exit=$?
             set -e
             echo "::endgroup::"
@@ -345,6 +373,7 @@ jobs:
       - uses: tempoxyz/gh-actions/actions/cargo-install@ab45d76f6e7420a094281a22aee1973ecc0754f8
         with:
           tool: zepter
+          version: "1.88.1"
       - name: Fix zepter lint
         run: |
           if ! zepter run check; then
@@ -575,6 +604,8 @@ jobs:
                   echo "Investigate why these tests might be hanging. Look at the logs below for clues — common causes include"
                   echo "deadlocks, infinite loops, tests waiting on network/RPC connections that never resolve, or resource exhaustion."
                   echo "Fix the root cause in the source code if possible."
+                  echo "If you change dependency declarations, run cargo metadata --format-version 1 followed by"
+                  echo ".github/scripts/check-cargo-cooldown-lock.sh . cooldown.toml before running any Cargo build or test command."
                   echo ""
                   echo "Stuck jobs: ${STUCK_NAMES}"
                   echo ""
@@ -597,6 +628,9 @@ jobs:
                 echo "::group::Amp stuck CI investigation"
                 amp-run --dangerously-allow-all -x < /tmp/amp-prompt.txt
                 echo "::endgroup::"
+
+                cargo metadata --format-version 1 >/dev/null
+                .github/scripts/check-cargo-cooldown-lock.sh . cooldown.toml
 
                 if [ -n "$(git status --porcelain)" ]; then
                   git add -A
@@ -625,6 +659,8 @@ jobs:
               echo "You may also bump non-reth dependency versions in Cargo.toml files if needed (e.g. revm, alloy),"
               echo "but do NOT modify the reth rev or git source specifications in any Cargo.toml —"
               echo "those have already been updated by the workflow."
+              echo "After changing any dependency, run cargo metadata --format-version 1 followed by"
+              echo ".github/scripts/check-cargo-cooldown-lock.sh . cooldown.toml before compiling again."
               echo ""
               echo "IMPORTANT: Do NOT suppress warnings with #[allow(...)]. Instead, migrate the code"
               echo "to use the new non-deprecated APIs. Look at the upstream reth source code to understand"
@@ -645,6 +681,9 @@ jobs:
             echo "::group::Amp CI fix"
             amp-run --dangerously-allow-all -x < /tmp/amp-prompt.txt
             echo "::endgroup::"
+
+            cargo metadata --format-version 1 >/dev/null
+            .github/scripts/check-cargo-cooldown-lock.sh . cooldown.toml
 
             # Amp may have committed+pushed already; also handle uncommitted changes
             if [ -n "$(git status --porcelain)" ]; then

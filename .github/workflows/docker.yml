@@ -25,9 +25,15 @@ env:
   REGISTRY: ghcr.io/tempoxyz
 
 jobs:
+  cargo-cooldown:
+    permissions:
+      contents: read
+    uses: ./.github/workflows/cargo-cooldown.yml
+
   build-and-push:
     name: Build and Push Docker Images
     if: ${{ (github.event_name != 'schedule' || github.repository == 'tempoxyz/tempo') && !(github.event_name == 'push' && github.ref == 'refs/heads/main' && github.repository != 'tempoxyz/tempo') }}
+    needs: cargo-cooldown
     runs-on: depot-ubuntu-latest-16
     permissions:
       actions: read

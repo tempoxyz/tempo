@@ -38,4 +38,4 @@ RUN --mount=type=cache,target=/usr/local/cargo/registry,sharing=locked,id=cargo-
     --mount=type=cache,target=/usr/local/cargo/git,sharing=locked,id=cargo-git-${TARGETARCH} \
     --mount=type=cache,target=$SCCACHE_DIR,sharing=locked,id=sccache-${TARGETARCH} \
     RUSTFLAGS="-C link-arg=-fuse-ld=mold ${EXTRA_RUSTFLAGS}" \
-    cargo chef cook --profile ${RUST_PROFILE} --features "${RUST_FEATURES}" --recipe-path recipe.json
+    cargo chef cook --locked --profile ${RUST_PROFILE} --features "${RUST_FEATURES}" --recipe-path recipe.json
