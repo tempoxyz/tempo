@@ -4,7 +4,7 @@ use alloy::{
     providers::{Provider, ProviderBuilder, WsConnect},
 };
 use clap::Parser;
-use eyre::{Context, Result};
+use eyre::{Context, Result, eyre};
 use futures::StreamExt;
 use metrics::{describe_gauge, describe_histogram, gauge, histogram};
 use metrics_exporter_prometheus::PrometheusBuilder;
@@ -13,7 +13,7 @@ use reqwest::Url;
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 use tempo_alloy::{TempoNetwork, primitives::TempoHeader};
 use tokio::signal;
-use tracing::{debug, error, warn};
+use tracing::{debug, warn};
 
 #[derive(Parser, Debug)]
 #[command(author, version, about, long_about = None)]
@@ -142,6 +142,16 @@ impl TransactionLatencyMonitor {
     }
 }
 
+fn monitor_exit_result(
+    result: std::result::Result<Result<()>, tokio::task::JoinError>,
+) -> Result<()> {
+    match result {
+        Ok(Ok(())) => Err(eyre!("tx latency monitor exited unexpectedly")),
+        Ok(Err(err)) => Err(err),
+        Err(err) => Err(eyre!("tx latency monitor task failed: {err}")),
+    }
+}
+
 impl TxLatencyArgs {
     pub async fn run(self) -> Result<()> {
         tracing_subscriber::FmtSubscriber::builder()
@@ -174,11 +184,7 @@ impl TxLatencyArgs {
             Duration::from_secs(self.max_pending_age_secs),
         );
 
-        let monitor_handle = tokio::spawn(async move {
-            if let Err(err) = monitor.watch_transactions().await {
-                error!(err = %err, "tx latency monitor exited with error");
-            }
-        });
+        let mut monitor_handle = tokio::spawn(async move { monitor.watch_transactions().await });
 
         let server = Server::new(TcpListener::bind(addr));
         let server_handle = tokio::spawn(async move { server.run(app).await });
@@ -188,15 +194,43 @@ impl TxLatencyArgs {
         let mut sigint = signal::unix::signal(signal::unix::SignalKind::interrupt())
             .context("failed to install SIGINT handler")?;
 
-        tokio::select! {
-            _ = sigterm.recv() => tracing::info!("Received SIGTERM, shutting down gracefully"),
-            _ = sigint.recv() => tracing::info!("Received SIGINT, shutting down gracefully"),
-        }
+        let result = tokio::select! {
+            _ = sigterm.recv() => {
+                tracing::info!("Received SIGTERM, shutting down gracefully");
+                Ok(())
+            },
+            _ = sigint.recv() => {
+                tracing::info!("Received SIGINT, shutting down gracefully");
+                Ok(())
+            },
+            monitor_result = &mut monitor_handle => monitor_exit_result(monitor_result),
+        };
 
         monitor_handle.abort();
         server_handle.abort();
 
-        tracing::info!("Shutdown complete");
-        Ok(())
+        if result.is_ok() {
+            tracing::info!("Shutdown complete");
+        }
+        result
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[tokio::test]
+    async fn monitor_exit_propagates_monitor_error() {
+        let handle = tokio::spawn(async { Err::<(), _>(eyre!("monitor failed")) });
+        let err = monitor_exit_result(handle.await).unwrap_err();
+        assert_eq!(err.to_string(), "monitor failed");
+    }
+
+    #[tokio::test]
+    async fn monitor_exit_rejects_unexpected_success() {
+        let handle = tokio::spawn(async { Ok::<(), eyre::Report>(()) });
+        let err = monitor_exit_result(handle.await).unwrap_err();
+        assert_eq!(err.to_string(), "tx latency monitor exited unexpectedly");
     }
 }
