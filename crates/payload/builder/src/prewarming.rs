@@ -1006,6 +1006,56 @@ mod tests {
     }
 
     #[test]
+    fn nonce_prewarm_preserves_nonzero_eviction_results() {
+        use tempo_precompiles::{nonce::NonceManager, storage::Handler};
+
+        let mut context = prewarming_context(TaskExecutor::test(), false);
+        context.evm_env.block_env.basefee = 0;
+        context.evm_env.cfg_env.spec = tempo_chainspec::hardfork::TempoHardfork::T11;
+        context.evm_env.cfg_env.disable_nonce_check = true;
+        context.evm_env.cfg_env.disable_balance_check = true;
+        let nonce = NonceManager::new();
+        let old_hash = B256::repeat_byte(0x42);
+        let ring_slot = nonce.expiring_nonce_ring.at_uncached(&0).slot();
+        let old_seen_slot = nonce.expiring_nonce_seen.at_uncached(&old_hash).slot();
+        let parent_values = vec![
+            (nonce.expiring_nonce_ring_ptr.slot(), U256::ZERO),
+            (ring_slot, U256::from_be_bytes(old_hash.0)),
+            (old_seen_slot, U256::ONE),
+        ];
+        let mut backing = CacheDB::new(EmptyDB::default());
+        backing.insert_account_info(
+            NONCE_PRECOMPILE_ADDRESS,
+            AccountInfo {
+                nonce: 1,
+                ..Default::default()
+            },
+        );
+        for &(slot, value) in &parent_values {
+            backing
+                .insert_account_storage(NONCE_PRECOMPILE_ADDRESS, slot, value)
+                .unwrap();
+        }
+        let tx = test_payment_tx_with_nonce_key(Address::random(), 500_000, U256::MAX);
+        let mut warmed = PrewarmedTransaction::without_replay(tx.clone());
+        warmed.nonce_storage = Some(Arc::new(OnceLock::from(parent_values)));
+        let baseline = State::builder().with_database(backing.clone()).build();
+        let mut seeded = State::builder().with_database(backing).build();
+        seeded.basic(NONCE_PRECOMPILE_ADDRESS).unwrap();
+        warmed.seed_nonce_storage(&mut seeded);
+        let mut baseline = TempoEvm::new(baseline, context.evm_env.clone());
+        let mut seeded = TempoEvm::new(seeded, context.evm_env);
+        let tx_env = tx.transaction.clone_tx_env();
+        let expected = baseline.transact_raw(tx_env.clone()).unwrap();
+        let actual = seeded.transact_raw(tx_env).unwrap();
+        assert_eq!(actual.result, expected.result);
+        assert_eq!(actual.state, expected.state);
+        let evicted = &actual.state[&NONCE_PRECOMPILE_ADDRESS].storage[&old_seen_slot];
+        assert_eq!(evicted.original_value(), U256::ONE);
+        assert_eq!(evicted.present_value(), U256::ZERO);
+    }
+
+    #[test]
     fn nonce_prewarm_seeds_missing_slots_without_overwriting_execution() {
         let mut backing = CacheDB::new(EmptyDB::default());
         backing.insert_account_info(
