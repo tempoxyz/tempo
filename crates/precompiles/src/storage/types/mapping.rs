@@ -260,6 +260,33 @@ mod tests {
     }
 
     #[test]
+    fn test_uncached_handler_shares_storage_with_cached_handler() -> eyre::Result<()> {
+        use crate::storage::{Handler, StorageCtx, hashmap::HashMapStorageProvider};
+
+        let mut storage = HashMapStorageProvider::new(1);
+        StorageCtx::enter(&mut storage, || {
+            let address = Address::random();
+            let base_slot = U256::random();
+            let mut mapping = Mapping::<B256, u64>::new(base_slot, address);
+            let key = B256::random();
+            let mut uncached = mapping.at_uncached(&key);
+
+            assert_eq!(uncached.slot(), mapping.at(&key).slot());
+            assert_eq!(uncached.address(), address);
+            assert_eq!(uncached.read()?, 0);
+            uncached.write(300)?;
+            assert_eq!(mapping.at(&key).read()?, 300);
+            mapping.at_mut(&key).write(600)?;
+            assert_eq!(uncached.read()?, 600);
+            assert_eq!(mapping.at_uncached(&B256::random()).read()?, 0);
+
+            let other = Mapping::<B256, u64>::new(base_slot, Address::random());
+            assert_eq!(other.at_uncached(&key).read()?, 0);
+            Ok(())
+        })
+    }
+
+    #[test]
     fn test_nested_mapping_basic_properties() {
         let address = Address::random();
         let base_slot = U256::random();
