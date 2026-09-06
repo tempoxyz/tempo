@@ -22,6 +22,10 @@ use tracing::{instrument, trace};
 
 pub(crate) type PrewarmEvmState = Option<TempoEvm<StateProviderDatabase<StateProviderBox>>>;
 
+// Leave enough queued work to overlap cold nonce storage reads with execution.
+// Two transactions per worker can let the builder catch up before those reads finish.
+const PREWARM_LOOKAHEAD_PER_WORKER: usize = 32;
+
 struct WorkerPrewarmEvm {
     build: Arc<AtomicBool>,
     evm: PrewarmEvmState,
@@ -128,7 +132,7 @@ impl BestTransactionsPrewarming {
             //
             // Keep lookahead bounded by consumption, not worker completion. Running too far
             // ahead can evict prewarmed nonce slots before the builder reads them.
-            for _ in 0..pool.current_num_threads() * 2 {
+            for _ in 0..pool.current_num_threads() * PREWARM_LOOKAHEAD_PER_WORKER {
                 advance(&mut ctx);
             }
 
@@ -782,7 +786,8 @@ mod tests {
     fn prewarming_lookahead_is_bounded_by_consumption() {
         let sender = Address::random();
         let executor = TaskExecutor::test();
-        let lookahead = executor.prewarming_pool().current_num_threads() * 2;
+        let lookahead =
+            executor.prewarming_pool().current_num_threads() * PREWARM_LOOKAHEAD_PER_WORKER;
         let txs = (0..lookahead + 4)
             .map(|nonce| test_tx(sender, nonce as u64))
             .collect::<Vec<_>>();
@@ -810,7 +815,8 @@ mod tests {
     #[test]
     fn empty_source_is_polled_for_eager_advances_and_each_consumer_advance() {
         let executor = TaskExecutor::test();
-        let eager_advances = executor.prewarming_pool().current_num_threads() * 2;
+        let eager_advances =
+            executor.prewarming_pool().current_num_threads() * PREWARM_LOOKAHEAD_PER_WORKER;
         let log = Arc::new(Mutex::new(TestLog::default()));
         let mut prewarming = prewarming_with_executor(executor, Vec::new(), log.clone());
 
