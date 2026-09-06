@@ -17,13 +17,54 @@ use reth_transaction_pool::{
     BestTransactions, PoolTransaction, error::InvalidPoolTransactionError,
 };
 use tempo_evm::{ExpiringNonceReplay, StorageActionReplay, TempoEvmConfig, evm::TempoEvm};
-use tempo_precompiles::NONCE_PRECOMPILE_ADDRESS;
+use tempo_precompiles::{NONCE_PRECOMPILE_ADDRESS, nonce::NonceManager};
 use tempo_transaction_pool::{StateAwarePoolTransaction, best::BestTransaction};
 use tracing::{instrument, trace};
 
 pub(crate) type PrewarmEvmState = Option<TempoEvm<StateProviderDatabase<StateProviderBox>>>;
 
 type PrewarmedNonceStorage = Arc<OnceLock<Vec<(U256, U256)>>>;
+
+/// Reads predicted nonce slots from the parent database, without executing or
+/// modifying the journal. A prediction may miss, but never changes validation.
+fn read_nonce_storage<DB: Database>(
+    db: &mut DB,
+    seen_slot: U256,
+    offset: usize,
+    capacity: u32,
+) -> Result<Option<Vec<(U256, U256)>>, DB::Error> {
+    let nonce = NonceManager::new();
+    let ptr_slot = nonce.expiring_nonce_ring_ptr.slot();
+    let ptr_value = db.storage(NONCE_PRECOMPILE_ADDRESS, ptr_slot)?;
+    let Ok(ptr) = u32::try_from(ptr_value) else {
+        return Ok(None);
+    };
+    if capacity == 0 || ptr >= capacity {
+        return Ok(None);
+    }
+    let index =
+        ((u64::from(ptr) + (offset % capacity as usize) as u64) % u64::from(capacity)) as u32;
+    let ring_slot = nonce.expiring_nonce_ring.at_uncached(&index).slot();
+    let seen_value = db.storage(NONCE_PRECOMPILE_ADDRESS, seen_slot)?;
+    let ring_value = db.storage(NONCE_PRECOMPILE_ADDRESS, ring_slot)?;
+    let mut values = Vec::with_capacity(4);
+    values.extend([
+        (ptr_slot, ptr_value),
+        (seen_slot, seen_value),
+        (ring_slot, ring_value),
+    ]);
+    if !ring_value.is_zero() {
+        let old_hash = B256::from(ring_value.to_be_bytes::<32>());
+        let old_seen_slot = nonce.expiring_nonce_seen.at_uncached(&old_hash).slot();
+        if old_seen_slot != seen_slot {
+            values.push((
+                old_seen_slot,
+                db.storage(NONCE_PRECOMPILE_ADDRESS, old_seen_slot)?,
+            ));
+        }
+    }
+    Ok(Some(values))
+}
 
 struct WorkerPrewarmEvm {
     build: Arc<AtomicBool>,
@@ -207,6 +248,32 @@ impl BestTransactionsPrewarming {
         let replay = prewarm.with_worker_evm(|state| {
             let evm = state.as_mut()?;
 
+            if let (Some(storage), Some(offset)) = (&nonce_storage, expiring_nonce_offset) {
+                let spec = prewarm.evm_env.cfg_env.spec;
+                let seen_slot = if spec.is_t1b() {
+                    tx.transaction.expiring_nonce_slot()
+                } else {
+                    Some(
+                        NonceManager::new()
+                            .expiring_nonce_seen
+                            .at_uncached(tx.hash())
+                            .slot(),
+                    )
+                };
+                if let Some(seen_slot) = seen_slot
+                    && let Ok(Some(values)) = read_nonce_storage(
+                        evm.db_mut(),
+                        seen_slot,
+                        offset,
+                        spec.expiring_nonce_set_capacity(),
+                    )
+                {
+                    // Publish before speculative execution: all values came directly
+                    // from this build's parent, even if execution later fails.
+                    let _ = storage.set(values);
+                }
+            }
+
             let mut tx_env = tx.transaction.clone_tx_env();
             if let Some(tempo_tx_env) = tx_env.tempo_tx_env.as_mut() {
                 tempo_tx_env.expiring_nonce_idx = expiring_nonce_offset;
@@ -230,18 +297,6 @@ impl BestTransactionsPrewarming {
             trace!(target: "payload_builder", "Prewarmed transaction");
 
             if !prewarm.parallel {
-                if let Some(storage) = &nonce_storage
-                    && let Some(account) = result.state.get(&NONCE_PRECOMPILE_ADDRESS)
-                {
-                    // Only forward the parent-state values, never speculative writes.
-                    let _ = storage.set(
-                        account
-                            .storage
-                            .iter()
-                            .map(|(&slot, value)| (slot, value.original_value()))
-                            .collect(),
-                    );
-                }
                 return None;
             }
 
@@ -1021,7 +1076,7 @@ mod tests {
         use tempo_precompiles::nonce::NonceManager;
 
         let capacity = tempo_chainspec::hardfork::TempoHardfork::T11.expiring_nonce_set_capacity();
-        for ptr in [0, capacity - 1] {
+        for (ptr, offset) in [(0, 0), (0, 1), (capacity - 1, 0), (capacity - 1, 1)] {
             let mut context = prewarming_context(TaskExecutor::test(), false);
             context.evm_env.block_env.basefee = 0;
             context.evm_env.cfg_env.spec = tempo_chainspec::hardfork::TempoHardfork::T11;
@@ -1051,7 +1106,22 @@ mod tests {
             }
             let tx = test_payment_tx_with_nonce_key(Address::random(), 500_000, U256::MAX);
             let mut warmed = PrewarmedTransaction::without_replay(tx.clone());
-            warmed.nonce_storage = Some(Arc::new(OnceLock::from(parent_values)));
+            let reads = read_nonce_storage(
+                &mut backing,
+                tx.transaction.expiring_nonce_slot().unwrap(),
+                offset,
+                capacity,
+            )
+            .unwrap()
+            .unwrap();
+            let predicted_index = (ptr + offset as u32) % capacity;
+            let predicted_slot = nonce
+                .expiring_nonce_ring
+                .at_uncached(&predicted_index)
+                .slot();
+            assert!(reads.iter().any(|(slot, _)| *slot == predicted_slot));
+            assert!(reads.contains(&(nonce.expiring_nonce_ring_ptr.slot(), U256::from(ptr))));
+            warmed.nonce_storage = Some(Arc::new(OnceLock::from(reads)));
             let baseline = State::builder().with_database(backing.clone()).build();
             let mut seeded = State::builder().with_database(backing).build();
             seeded.basic(NONCE_PRECOMPILE_ADDRESS).unwrap();
