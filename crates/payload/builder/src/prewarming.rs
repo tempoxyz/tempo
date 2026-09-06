@@ -1,10 +1,7 @@
-use std::{
-    cell::RefCell,
-    sync::{
-        Arc,
-        atomic::{AtomicBool, Ordering},
-        mpsc::{self, Receiver, Sender},
-    },
+use std::sync::{
+    Arc,
+    atomic::{AtomicBool, Ordering},
+    mpsc::{self, Receiver, Sender},
 };
 
 use alloy_primitives::B256;
@@ -12,7 +9,7 @@ use reth_engine_tree::tree::{CachedStateProvider, SavedCache};
 use reth_evm::{Evm, EvmEnvFor};
 use reth_revm::database::StateProviderDatabase;
 use reth_storage_api::{StateProviderBox, StateProviderFactory};
-use reth_tasks::TaskExecutor;
+use reth_tasks::{TaskExecutor, WorkerPool};
 use reth_transaction_pool::{
     BestTransactions, PoolTransaction, error::InvalidPoolTransactionError,
 };
@@ -21,21 +18,6 @@ use tempo_transaction_pool::{StateAwarePoolTransaction, best::BestTransaction};
 use tracing::{instrument, trace};
 
 pub(crate) type PrewarmEvmState = Option<TempoEvm<StateProviderDatabase<StateProviderBox>>>;
-
-// Leave enough queued work to overlap cold nonce storage reads with execution.
-// Two transactions per worker can let the builder catch up before those reads finish.
-const PREWARM_LOOKAHEAD_PER_WORKER: usize = 32;
-
-struct WorkerPrewarmEvm {
-    build: Arc<AtomicBool>,
-    evm: PrewarmEvmState,
-}
-
-thread_local! {
-    // The pool's generic worker-state slot belongs to engine prewarming. Keep the
-    // builder's EVM separate and identify its build before reusing cached state.
-    static BUILDER_PREWARM_EVM: RefCell<Option<WorkerPrewarmEvm>> = const { RefCell::new(None) };
-}
 
 /// Prewarming orchestrator that consumes source [`BestTransactions`] with bounded
 /// lookahead, prewarms buffered transactions in parallel, and produces a new
@@ -61,7 +43,7 @@ impl BestTransactionsPrewarming {
         let (commands_tx, commands_rx) = mpsc::channel();
         let this = Self {
             transactions_rx,
-            commands_tx,
+            commands_tx: commands_tx.clone(),
             stop: prewarm.stop.clone(),
         };
 
@@ -75,6 +57,7 @@ impl BestTransactionsPrewarming {
                         best_txs,
                         transactions_tx,
                         commands_rx,
+                        commands_tx,
                         prewarm,
                         next_expiring_nonce_offset: 0,
                     },
@@ -97,6 +80,11 @@ impl BestTransactionsPrewarming {
         let pool = executor.prewarming_pool();
 
         pool.in_place_scope(|scope| {
+            let prewarm = ctx.prewarm.clone();
+            scope.spawn(move |_| {
+                pool.init::<PrewarmEvmState>(|_| prewarm.evm_for_ctx());
+            });
+
             let advance = |ctx: &mut BestTransactionsPrewarmingContext<Txs, Provider>| {
                 let Some(tx) = ctx.best_txs.next() else {
                     let _ = ctx.transactions_tx.send(None);
@@ -112,6 +100,7 @@ impl BestTransactionsPrewarming {
 
                 let parallel = ctx.prewarm.parallel;
                 let prewarm = ctx.prewarm.clone();
+                let commands_tx = ctx.commands_tx.clone();
                 let transactions_tx = ctx.transactions_tx.clone();
 
                 if !parallel {
@@ -125,14 +114,14 @@ impl BestTransactionsPrewarming {
                     if parallel {
                         let _ = transactions_tx.send(Some(tx));
                     }
+                    let _ = commands_tx.send(BestTransactionsCommand::Advance);
                 });
             };
 
             // Fill the initial batch of transactions to execute and prewarm.
             //
-            // Keep lookahead bounded by consumption, not worker completion. Running too far
-            // ahead can evict prewarmed nonce slots before the builder reads them.
-            for _ in 0..pool.current_num_threads() * PREWARM_LOOKAHEAD_PER_WORKER {
+            // We schedule 2x the number of threads to make sure that workers are never idle.
+            for _ in 0..pool.current_num_threads() * 2 {
                 advance(&mut ctx);
             }
 
@@ -149,20 +138,12 @@ impl BestTransactionsPrewarming {
                         ctx.best_txs.mark_invalid(&invalid.tx, invalid.kind);
                         ctx.transactions_tx = new_tx;
 
-                        let mut discarded = 0;
                         for tx in old_rx {
                             if let Some(tx) = tx
                                 && !is_invalidated_buffered_transaction(&invalid.tx, &tx.tx)
                             {
                                 let _ = ctx.transactions_tx.send(Some(tx));
-                            } else {
-                                discarded += 1;
                             }
-                        }
-                        // Discarded entries will never be consumed, so return their
-                        // lookahead credits here, including exhausted-source markers.
-                        for _ in 0..discarded {
-                            advance(&mut ctx);
                         }
                     }
                     BestTransactionsCommand::NoUpdates => {
@@ -180,9 +161,7 @@ impl BestTransactionsPrewarming {
             }
         });
 
-        pool.broadcast(pool.current_num_threads(), |_| {
-            ctx.prewarm.clear_worker_evm()
-        });
+        pool.clear();
     }
 
     /// Prewarms a transaction by executing it on top of the latest state.
@@ -198,12 +177,16 @@ impl BestTransactionsPrewarming {
     where
         Provider: StateProviderFactory + Clone + 'static,
     {
-        if prewarm.is_stopped() || (prewarm.parallel && !is_parallel_candidate(&tx)) {
-            return PrewarmedTransaction::without_replay(tx);
-        }
+        let replay = WorkerPool::with_worker_mut(|worker| {
+            if prewarm.parallel && !is_parallel_candidate(&tx) {
+                return None;
+            }
 
-        let replay = prewarm.with_worker_evm(|state| {
-            let evm = state.as_mut()?;
+            let evm = worker.get_or_init(|| prewarm.evm_for_ctx()).as_mut()?;
+
+            if prewarm.is_stopped() {
+                return None;
+            }
 
             let mut tx_env = tx.transaction.clone_tx_env();
             if let Some(tempo_tx_env) = tx_env.tempo_tx_env.as_mut() {
@@ -279,9 +262,13 @@ impl Iterator for BestTransactionsPrewarming {
     type Item = PrewarmedTransaction;
 
     fn next(&mut self) -> Option<Self::Item> {
-        let tx = self.transactions_rx.recv().ok()?;
-        let _ = self.commands_tx.send(BestTransactionsCommand::Advance);
-        tx
+        if let Ok(Some(tx)) = self.transactions_rx.try_recv() {
+            return Some(tx);
+        }
+        self.commands_tx
+            .send(BestTransactionsCommand::Advance)
+            .ok()?;
+        self.transactions_rx.recv().ok().flatten()
     }
 }
 
@@ -314,6 +301,7 @@ impl BestTransactions for BestTransactionsPrewarming {
 struct BestTransactionsPrewarmingContext<Txs, Provider> {
     best_txs: Txs,
     transactions_tx: Sender<Option<PrewarmedTransaction>>,
+    commands_tx: Sender<BestTransactionsCommand>,
     commands_rx: Receiver<BestTransactionsCommand>,
     prewarm: PrewarmingExecutionContext<Provider>,
     next_expiring_nonce_offset: usize,
@@ -413,32 +401,6 @@ where
         Some(evm)
     }
 
-    fn with_worker_evm<R>(&self, f: impl FnOnce(&mut PrewarmEvmState) -> R) -> R {
-        BUILDER_PREWARM_EVM.with_borrow_mut(|state| {
-            if state
-                .as_ref()
-                .is_none_or(|cached| !Arc::ptr_eq(&cached.build, &self.stop))
-            {
-                *state = Some(WorkerPrewarmEvm {
-                    build: self.stop.clone(),
-                    evm: self.evm_for_ctx(),
-                });
-            }
-            f(&mut state.as_mut().expect("worker EVM initialized").evm)
-        })
-    }
-
-    fn clear_worker_evm(&self) {
-        BUILDER_PREWARM_EVM.with_borrow_mut(|state| {
-            if state
-                .as_ref()
-                .is_some_and(|cached| Arc::ptr_eq(&cached.build, &self.stop))
-            {
-                *state = None;
-            }
-        });
-    }
-
     pub(crate) fn executor(&self) -> TaskExecutor {
         self.executor.clone()
     }
@@ -522,7 +484,6 @@ mod tests {
         Recovered, SealedHeader, transaction::error::InvalidTransactionError,
     };
     use reth_storage_api::noop::NoopProvider;
-    use reth_tasks::WorkerPool;
     use reth_transaction_pool::{
         TransactionOrigin, ValidPoolTransaction, identifier::TransactionId,
     };
@@ -783,40 +744,28 @@ mod tests {
     }
 
     #[test]
-    fn prewarming_lookahead_is_bounded_by_consumption() {
+    fn prewarming_eagerly_drains_source_iterator() {
         let sender = Address::random();
         let executor = TaskExecutor::test();
-        let lookahead =
-            executor.prewarming_pool().current_num_threads() * PREWARM_LOOKAHEAD_PER_WORKER;
-        let txs = (0..lookahead + 4)
+        let txs = (0..executor.prewarming_pool().current_num_threads() * 2 + 4)
             .map(|nonce| test_tx(sender, nonce as u64))
             .collect::<Vec<_>>();
         let expected = txs.iter().map(|tx| *tx.hash()).collect::<Vec<_>>();
         let log = Arc::new(Mutex::new(TestLog::default()));
 
-        let mut prewarming = prewarming_with_executor(executor.clone(), txs, log.clone());
-        wait_until(|| log.lock().unwrap().yielded >= lookahead);
-        let pool = executor.prewarming_pool();
-        pool.broadcast(pool.current_num_threads(), |_| {});
-        prewarming.no_updates();
-        wait_until(|| log.lock().unwrap().no_updates == 1);
-        assert_eq!(log.lock().unwrap().yielded, lookahead);
+        let mut prewarming = prewarming_with_executor(executor, txs, log.clone());
+        wait_until(|| log.lock().unwrap().yielded == expected.len());
 
-        let first = prewarming.next().expect("first transaction");
-        assert_eq!(*first.tx.hash(), expected[0]);
-        wait_until(|| log.lock().unwrap().yielded == lookahead + 1);
-
-        let actual = (1..expected.len())
+        let actual = (0..expected.len())
             .map(|_| *prewarming.next().expect("transaction").tx.hash())
             .collect::<Vec<_>>();
-        assert_eq!(actual, expected[1..]);
+        assert_eq!(actual, expected);
     }
 
     #[test]
     fn empty_source_is_polled_for_eager_advances_and_each_consumer_advance() {
         let executor = TaskExecutor::test();
-        let eager_advances =
-            executor.prewarming_pool().current_num_threads() * PREWARM_LOOKAHEAD_PER_WORKER;
+        let eager_advances = executor.prewarming_pool().current_num_threads() * 2;
         let log = Arc::new(Mutex::new(TestLog::default()));
         let mut prewarming = prewarming_with_executor(executor, Vec::new(), log.clone());
 
@@ -874,24 +823,6 @@ mod tests {
     }
 
     #[test]
-    fn invalidating_every_buffered_transaction_replenishes_lookahead() {
-        let sender = Address::random();
-        let txs = vec![test_tx(sender, 0), test_tx(sender, 1), test_tx(sender, 2)];
-        let log = Arc::new(Mutex::new(TestLog::default()));
-        let mut prewarming = prewarming(txs, log.clone());
-        let first = prewarming.next().expect("first transaction");
-        wait_until(|| log.lock().unwrap().yielded == 3);
-
-        prewarming.mark_invalid(
-            &first,
-            InvalidPoolTransactionError::Consensus(InvalidTransactionError::TxTypeNotSupported),
-        );
-        assert!(prewarming.next().is_none());
-        assert!(prewarming.next().is_none());
-        assert_eq!(log.lock().unwrap().invalid, 1);
-    }
-
-    #[test]
     fn prewarming_does_not_use_shared_worker_state_slot() {
         let executor = TaskExecutor::test();
         let pool = executor.prewarming_pool();
@@ -904,7 +835,6 @@ mod tests {
 
         assert!(prewarming.next().is_some());
 
-        drop(prewarming);
         pool.broadcast(pool.current_num_threads(), |worker| {
             assert_eq!(*worker.get::<usize>(), 1);
         });
@@ -917,6 +847,7 @@ mod tests {
         context.evm_env.block_env.basefee = 0;
 
         let pool = WorkerPool::new(1, "prewarm-actions-test");
+        pool.init::<PrewarmEvmState>(|_| context.evm_for_ctx());
 
         pool.install_fn(|| {
             let failed_action = StorageAction::Sstore(
@@ -925,8 +856,11 @@ mod tests {
                 U256::from(2),
                 U256::from(3),
             );
-            context.with_worker_evm(|state| {
-                let evm = state.as_mut().expect("prewarm EVM");
+            WorkerPool::with_worker_mut(|worker| {
+                let evm = worker
+                    .get_mut::<PrewarmEvmState>()
+                    .as_mut()
+                    .expect("prewarm EVM");
                 // Model an action recorded before the failed execution returned an error.
                 assert_eq!(evm.replace_actions(vec![failed_action]), Some(Vec::new()));
             });
@@ -938,51 +872,24 @@ mod tests {
                 None,
             );
             assert!(failed.replay.is_none());
-            context.with_worker_evm(|state| {
-                let evm = state.as_mut().expect("prewarm EVM");
+            WorkerPool::with_worker_mut(|worker| {
+                let evm = worker
+                    .get_mut::<PrewarmEvmState>()
+                    .as_mut()
+                    .expect("prewarm EVM");
                 assert_eq!(evm.take_actions(), Some(Vec::new()));
             });
 
             let successful = BestTransactionsPrewarming::prewarm_transaction(
-                context.clone(),
+                context,
                 test_payment_tx(sender, 500_000),
                 None,
             );
             let replay = successful.replay.expect("successful prewarm replay");
             assert!(!replay.actions.is_empty());
             assert!(!replay.actions.contains(&failed_action));
-            context.clear_worker_evm();
         });
-    }
 
-    #[test]
-    fn worker_evm_is_scoped_to_its_build() {
-        let executor = TaskExecutor::test();
-        let first = prewarming_context(executor.clone(), true);
-        let second = prewarming_context(executor, true);
-        let pool = WorkerPool::new(1, "prewarm-build-test");
-        let action =
-            StorageAction::Sstore(Address::random(), U256::from(1), U256::ZERO, U256::from(2));
-
-        pool.install_fn(|| {
-            first.with_worker_evm(|state| {
-                state.as_mut().unwrap().replace_actions(vec![action]);
-            });
-            second.with_worker_evm(|state| {
-                let evm = state.as_mut().unwrap();
-                assert_eq!(evm.take_actions(), Some(Vec::new()));
-                evm.replace_actions(vec![action]);
-            });
-            // A previous build finishing must not clear the next build's EVM.
-            first.clear_worker_evm();
-            second.with_worker_evm(|state| {
-                assert_eq!(state.as_mut().unwrap().take_actions(), Some(vec![action]));
-            });
-            // Returning to an older context also starts from fresh state.
-            first.with_worker_evm(|state| {
-                assert_eq!(state.as_mut().unwrap().take_actions(), Some(Vec::new()));
-            });
-            first.clear_worker_evm();
-        });
+        pool.clear();
     }
 }
