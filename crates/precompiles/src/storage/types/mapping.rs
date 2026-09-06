@@ -66,6 +66,22 @@ impl<K, V: StorableType> Mapping<K, V> {
         self.base_slot
     }
 
+    /// Returns an owned handler without allocating an entry in the handler cache.
+    ///
+    /// Use this when the caller keeps the handler for its entire use, so subsequent
+    /// accesses do not need to look it up through this mapping again.
+    #[inline]
+    pub fn at_uncached(&self, key: &K) -> V::Handler
+    where
+        K: StorageKey,
+    {
+        V::handle(
+            key.mapping_slot(self.base_slot),
+            LayoutCtx::FULL,
+            self.address,
+        )
+    }
+
     /// Returns a `Handler` for the given key.
     ///
     /// This enables the composable pattern: `mapping.at(&key).read()`

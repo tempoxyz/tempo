@@ -241,7 +241,10 @@ where
         let now = U256::from(block_timestamp);
         let ptr = self.replay_state.expiring_nonce.ring_ptr(db)?;
 
-        let seen_slot = nonce_manager.expiring_nonce_seen[expiring_nonce.hash].slot();
+        let seen_slot = nonce_manager
+            .expiring_nonce_seen
+            .at_uncached(&expiring_nonce.hash)
+            .slot();
         let seen_expiry = db
             .storage(NONCE_PRECOMPILE_ADDRESS, seen_slot)
             .map_err(BlockExecutionError::other)?;
@@ -252,12 +255,18 @@ where
         let ptr_u32 = ptr
             .try_into()
             .map_err(|_| StorageActionReplayError::ActionConflict)?;
-        let ring_slot = nonce_manager.expiring_nonce_ring[ptr_u32].slot();
+        let ring_slot = nonce_manager
+            .expiring_nonce_ring
+            .at_uncached(&ptr_u32)
+            .slot();
         let old_hash = db
             .storage(NONCE_PRECOMPILE_ADDRESS, ring_slot)
             .map_err(BlockExecutionError::other)?;
         if !old_hash.is_zero() {
-            let old_seen_slot = nonce_manager.expiring_nonce_seen[B256::from(old_hash)].slot();
+            let old_seen_slot = nonce_manager
+                .expiring_nonce_seen
+                .at_uncached(&B256::from(old_hash))
+                .slot();
             let old_expiry = db
                 .storage(NONCE_PRECOMPILE_ADDRESS, old_seen_slot)
                 .map_err(BlockExecutionError::other)?;
