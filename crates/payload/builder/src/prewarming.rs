@@ -957,6 +957,17 @@ mod tests {
         let pool = WorkerPool::new(1, "nonce-read-handoff-test");
         pool.install_fn(|| {
             let tx = test_payment_tx_with_nonce_key(Address::random(), 500_000, U256::MAX);
+            // Reuse the worker after a speculative execution of the same transaction.
+            // Its writes must not become the parent values forwarded below.
+            let first_reads = Arc::new(OnceLock::new());
+            BestTransactionsPrewarming::prewarm_transaction(
+                context.clone(),
+                tx.clone(),
+                Some(7),
+                Some(first_reads.clone()),
+            );
+            assert!(first_reads.get().is_some());
+
             let reads = Arc::new(OnceLock::new());
             let warmed = BestTransactionsPrewarming::prewarm_transaction(
                 context.clone(),
