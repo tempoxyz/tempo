@@ -764,6 +764,8 @@ where
                 .then(|| format!("{:?}", tx.transaction))
                 .unwrap_or_default();
 
+            pool_tx.seed_nonce_storage(executor.evm_mut().db_mut());
+
             let result_closure = |result: &TempoTxResult| {
                 cumulative_gas_used += result.block_gas_used();
                 cumulative_state_gas_used += result.state_gas_used();
