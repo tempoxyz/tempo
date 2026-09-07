@@ -662,7 +662,7 @@ jobs:
         if: always()
         env:
           GH_TOKEN: ${{ secrets.DEREK_UPDATE_RETH_TOKEN }}
-          SLACK_WEBHOOK_URL: ${{ secrets.SLACK_ENG_TEMPO_WORKFLOWS_WEBHOOK_URL }}
+          SLACK_WEBHOOK_URL: ${{ secrets.SLACK_ENG_RETH_ALERTS_WEBHOOK_URL }}
           OLD_REV_IN: ${{ steps.update.outputs.old_rev }}
           NEW_REV_IN: ${{ steps.update.outputs.new_rev }}
           BUMPED_IN: ${{ steps.update.outputs.bumped }}
