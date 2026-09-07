@@ -376,7 +376,10 @@ impl StorageCreditDeltas {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::storage::{StorageCtx, hashmap::HashMapStorageProvider};
+    use crate::{
+        storage::{StorageCtx, hashmap::HashMapStorageProvider},
+        tip20::TIP20Token,
+    };
 
     #[test]
     fn test_set_mode_budget_semantics() -> eyre::Result<()> {
