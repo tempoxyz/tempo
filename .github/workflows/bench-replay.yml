@@ -150,7 +150,7 @@ on:
         required: false
         default: "Replay Bench"
     secrets:
-      DEREK_TOKEN:
+      DEREK_UPDATE_RETH_TOKEN:
         required: false
       TEMPO_TELEMETRY_URL:
         required: false
@@ -554,7 +554,7 @@ jobs:
         id: upload-charts
         if: success()
         env:
-          GH_TOKEN: ${{ secrets.DEREK_TOKEN }}
+          GH_TOKEN: ${{ secrets.DEREK_UPDATE_RETH_TOKEN }}
         run: bash .github/scripts/bench-upload-charts.sh "$GITHUB_REPOSITORY" "$BENCH_WORK_DIR/charts" > "$BENCH_WORK_DIR/charts.md"
 
       - name: Compare & comment

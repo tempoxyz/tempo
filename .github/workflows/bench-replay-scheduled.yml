@@ -240,7 +240,7 @@ jobs:
       slack: ${{ github.event_name == 'workflow_dispatch' && inputs.slack || 'always' }}
       run-label: ${{ github.event_name == 'schedule' && 'Replay Nightly' || 'Replay Bench' }}
     secrets:
-      DEREK_TOKEN: ${{ secrets.DEREK_TOKEN }}
+      DEREK_UPDATE_RETH_TOKEN: ${{ secrets.DEREK_UPDATE_RETH_TOKEN }}
       TEMPO_TELEMETRY_URL: ${{ secrets.TEMPO_TELEMETRY_URL }}
       GRAFANA_TEMPO: ${{ secrets.GRAFANA_TEMPO }}
       BENCH_MAINNET_RPC_URL: ${{ secrets.BENCH_MAINNET_RPC_URL }}
