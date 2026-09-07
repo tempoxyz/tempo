@@ -46,7 +46,7 @@ use tempo_contracts::{
     contracts::{ARACHNID_CREATE2_FACTORY_BYTECODE, CreateX, Multicall3, SafeDeployer},
     precompiles::{
         INITIAL_FACTORY_OWNER, IValidatorConfigV2, createTokenCall, initial_zone_factory_state,
-        t12_zone_factory_state,
+        t13_zone_factory_state,
     },
 };
 use tempo_dkg_onchain_artifacts::OnchainDkgOutcome;
@@ -572,7 +572,7 @@ impl GenesisArgs {
             },
         );
 
-        insert_zone_state_at_genesis(self.t10_time, self.t12_time, &mut genesis_alloc);
+        insert_zone_state_at_genesis(self.t10_time, self.t13_time, &mut genesis_alloc);
 
         genesis_alloc.insert(
             HISTORY_STORAGE_ADDRESS,
@@ -702,13 +702,13 @@ impl GenesisArgs {
 
 fn insert_zone_state_at_genesis(
     t10_time: u64,
-    t12_time: u64,
+    t13_time: u64,
     genesis_alloc: &mut BTreeMap<Address, GenesisAccount>,
 ) {
     if t10_time == 0 {
         println!("Initializing ZoneFactory and shared runtimes");
-        let accounts = if t12_time == 0 {
-            t12_zone_factory_state(INITIAL_FACTORY_OWNER)
+        let accounts = if t13_time == 0 {
+            t13_zone_factory_state(INITIAL_FACTORY_OWNER)
         } else {
             initial_zone_factory_state(INITIAL_FACTORY_OWNER)
         };
@@ -1269,7 +1269,7 @@ mod tests {
             ZONE_VERIFIER_ADDRESS,
         },
         zones::{
-            T12_ZONE_MESSENGER_RUNTIME, T12_ZONE_PORTAL_RUNTIME, T12_ZONE_VERIFIER_RUNTIME,
+            T13_ZONE_MESSENGER_RUNTIME, T13_ZONE_PORTAL_RUNTIME, T13_ZONE_VERIFIER_RUNTIME,
             ZONE_MESSENGER_RUNTIME, ZONE_PORTAL_RUNTIME, ZONE_VERIFIER_RUNTIME,
         },
     };
@@ -1305,14 +1305,14 @@ mod tests {
     }
 
     #[test]
-    fn t12_genesis_installs_t12_shared_runtimes() {
+    fn t13_genesis_installs_t13_shared_runtimes() {
         let mut alloc = BTreeMap::new();
         insert_zone_state_at_genesis(0, 0, &mut alloc);
 
         for (destination, expected) in [
-            (ZONE_PORTAL_IMPL_ADDRESS, T12_ZONE_PORTAL_RUNTIME),
-            (ZONE_VERIFIER_ADDRESS, T12_ZONE_VERIFIER_RUNTIME),
-            (ZONE_MESSENGER_ADDRESS, T12_ZONE_MESSENGER_RUNTIME),
+            (ZONE_PORTAL_IMPL_ADDRESS, T13_ZONE_PORTAL_RUNTIME),
+            (ZONE_VERIFIER_ADDRESS, T13_ZONE_VERIFIER_RUNTIME),
+            (ZONE_MESSENGER_ADDRESS, T13_ZONE_MESSENGER_RUNTIME),
         ] {
             assert_eq!(alloc[&destination].code.as_ref(), Some(&expected));
         }
