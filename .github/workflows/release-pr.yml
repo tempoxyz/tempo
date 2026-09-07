@@ -66,7 +66,7 @@ jobs:
               path.write_text("---\n" + "".join(kept) + "---\n" + body, encoding="utf-8")
           PY
 
-      - uses: tempoxyz/changelogs@32803466719b87cd6de2a87d2d8f1198c26e3022 # tempoxyz/changelogs#159: first-party PR action
+      - uses: tempoxyz/changelogs@83e69646d7ef76c5f35364d3a06fce3a6fe62bf9 # tempoxyz/changelogs#159: vendored Peter Evans action
         id: changelogs
         with:
           conventional-commit: true
