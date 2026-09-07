@@ -1,5 +1,5 @@
 //! Scenario tests for notarized-chain convergence: the executor drives the
-//! execution layer's head onto the pending head reported by consensus,
+//! execution layer's head onto the parent selected by consensus requests,
 //! fetching missing bodies from the marshal actor, and never runs ahead of
 //! the finalization pipeline.
 
@@ -10,29 +10,32 @@ use commonware_macros::test_traced;
 use commonware_runtime::{Runner as _, deterministic};
 
 use super::harness::{
-    ForkchoiceStateExt as _, GENESIS, Harness, HarnessOptions, STARTUP_FCU, make_block, round,
+    ForkchoiceStateExt as _, GENESIS, Harness, HarnessOptions, STARTUP_FCU, built_payload,
+    make_block, round,
 };
 
 #[test_traced]
-fn pending_head_with_known_body_is_forwarded() {
+fn build_converges_onto_its_verified_parent() {
     deterministic::Runner::default().start(|context| async move {
         let h = Harness::start_at_genesis(&context);
 
         let b1 = make_block(1, 1, GENESIS);
         let d1 = b1.digest();
 
-        // The validation request records the body; the pending-head report
-        // marks it as the convergence target.
+        // The validation request records the body; the later build request
+        // selects it as the convergence target and builds on it.
         h.verify(round(1), b1)
             .await
             .expect("verification should complete")
             .expect("block should be valid");
-        h.report_pending_head(2, 1, d1);
+        let proposal = make_block(2, 2, d1);
+        h.execution.script_built_payload(built_payload(&proposal));
+        h.build(round(2), d1).await.expect("build should complete");
 
-        h.wait_until(|| h.execution.head() == d1).await;
+        assert_eq!(h.execution.head(), d1);
         assert_eq!(
             h.execution.fcus().last(),
-            Some(&(d1, GENESIS, false)),
+            Some(&(d1, GENESIS, true)),
             "convergence must move the head without touching the finalized tip",
         );
         assert!(
@@ -54,7 +57,9 @@ fn missing_ancestor_bodies_are_fetched_and_forwarded_bottom_up() {
 
         // Only the pending head is known; every body on its ancestry is
         // missing and must be fetched, walking the path tip-down.
-        h.report_pending_head(4, 3, d3);
+        let proposal = make_block(4, 4, d3);
+        h.execution.script_built_payload(built_payload(&proposal));
+        let build = h.build(round(4), d3);
 
         h.wait_until(|| h.marshal.fulfill_subscription(d3, b3.clone()))
             .await;
@@ -63,7 +68,10 @@ fn missing_ancestor_bodies_are_fetched_and_forwarded_bottom_up() {
         h.wait_until(|| h.marshal.fulfill_subscription(d1, b1.clone()))
             .await;
 
-        h.wait_until(|| h.execution.head() == d3).await;
+        build
+            .await
+            .expect("build should complete after fetching its ancestry");
+        assert_eq!(h.execution.head(), d3);
         assert_eq!(
             h.marshal.subscribe_log(),
             vec![(d3, round(3)), (d2, round(2)), (d1, round(1))],
@@ -76,8 +84,8 @@ fn missing_ancestor_bodies_are_fetched_and_forwarded_bottom_up() {
         );
         assert_eq!(
             h.execution.fcus(),
-            vec![STARTUP_FCU, (d3, GENESIS, false)],
-            "one forkchoice update moves the head across the whole delivered run",
+            vec![STARTUP_FCU, (d3, GENESIS, false), (d3, GENESIS, true)],
+            "one update converges across the delivered run before the build submits attributes",
         );
     });
 }
@@ -96,7 +104,9 @@ fn long_delivery_runs_are_locked_in_every_few_blocks() {
             blocks.push(block);
         }
         let digests = blocks.iter().map(|b| b.digest()).collect::<Vec<_>>();
-        h.report_pending_head(11, 10, digests[9]);
+        let proposal = make_block(11, 11, digests[9]);
+        h.execution.script_built_payload(built_payload(&proposal));
+        let build = h.build(round(11), digests[9]);
         for block in blocks.iter().rev() {
             h.wait_until(|| {
                 h.marshal
@@ -108,7 +118,10 @@ fn long_delivery_runs_are_locked_in_every_few_blocks() {
         // The run is delivered bottom-up, with a forkchoice update forced
         // after every eight deliveries so that the execution layer never
         // holds more than that many uncanonicalized blocks.
-        h.wait_until(|| h.execution.head() == digests[9]).await;
+        build
+            .await
+            .expect("build should complete after the long delivery run");
+        assert_eq!(h.execution.head(), digests[9]);
         assert_eq!(h.execution.new_payloads(), digests);
         assert_eq!(
             h.execution.fcus(),
@@ -116,6 +129,7 @@ fn long_delivery_runs_are_locked_in_every_few_blocks() {
                 STARTUP_FCU,
                 (digests[7], GENESIS, false),
                 (digests[9], GENESIS, false),
+                (digests[9], GENESIS, true),
             ],
         );
     });
@@ -128,7 +142,9 @@ fn dropped_body_fetch_is_retried() {
 
         let b1 = make_block(1, 1, GENESIS);
         let d1 = b1.digest();
-        h.report_pending_head(2, 1, d1);
+        let proposal = make_block(2, 2, d1);
+        h.execution.script_built_payload(built_payload(&proposal));
+        let build = h.build(round(2), d1);
 
         // Marshal gives up on the first subscription; the block is still on
         // the canonical notarized path, so the fetch must be re-issued.
@@ -137,7 +153,10 @@ fn dropped_body_fetch_is_retried() {
 
         h.wait_until(|| h.marshal.fulfill_subscription(d1, b1.clone()))
             .await;
-        h.wait_until(|| h.execution.head() == d1).await;
+        build
+            .await
+            .expect("build should complete after retrying its parent");
+        assert_eq!(h.execution.head(), d1);
     });
 }
 
@@ -150,17 +169,22 @@ fn stale_body_fetch_is_dropped_when_the_pending_head_moves() {
         let a1 = make_block(5, 1, GENESIS);
         let (d1, da1) = (b1.digest(), a1.digest());
 
-        h.report_pending_head(2, 1, d1);
+        let first = h.build(round(2), d1);
         h.wait_until(|| !h.marshal.open_subscriptions().is_empty())
             .await;
 
         // A newer context re-anchors the pending head onto a different
         // block; the in-flight fetch is now pointless and must be dropped
         // (nobody is required to serve a forked-out block).
-        h.report_pending_head(6, 5, da1);
+        let proposal = make_block(6, 2, da1);
+        h.execution.script_built_payload(built_payload(&proposal));
+        let second = h.build(round(6), da1);
         h.wait_until(|| h.marshal.open_subscriptions() == vec![(da1, round(5))])
             .await;
 
+        first
+            .await
+            .expect_err("the newer build must supersede the first");
         assert!(
             !h.marshal.fulfill_subscription(d1, b1),
             "the stale subscription must have been dropped",
@@ -168,12 +192,15 @@ fn stale_body_fetch_is_dropped_when_the_pending_head_moves() {
 
         h.wait_until(|| h.marshal.fulfill_subscription(da1, a1.clone()))
             .await;
-        h.wait_until(|| h.execution.head() == da1).await;
+        second
+            .await
+            .expect("build on the new branch should complete");
+        assert_eq!(h.execution.head(), da1);
     });
 }
 
 #[test_traced]
-fn rejected_notarized_block_is_withheld_then_retried() {
+fn waiting_build_allows_its_rejected_parent_to_be_retried() {
     deterministic::Runner::default().start(|context| async move {
         // Retries of rejected notarized blocks are driven by later events;
         // with nothing else going on, the FCU heartbeat is what re-runs the
@@ -196,7 +223,9 @@ fn rejected_notarized_block_is_withheld_then_retried() {
         h.execution
             .script_new_payload(d1, Ok(PayloadStatusEnum::Valid));
 
-        h.report_pending_head(2, 1, d1);
+        let proposal = make_block(2, 2, d1);
+        h.execution.script_built_payload(built_payload(&proposal));
+        let mut build = h.build(round(2), d1);
         h.wait_until(|| h.marshal.fulfill_subscription(d1, b1.clone()))
             .await;
 
@@ -210,11 +239,20 @@ fn rejected_notarized_block_is_withheld_then_retried() {
             "a rejected block must not be retried in a tight loop",
         );
         assert_eq!(h.execution.head(), GENESIS);
+        assert!(
+            build
+                .try_recv()
+                .expect("build must remain queued")
+                .is_none()
+        );
 
         // After the retry delay (10s) the block becomes forwardable again.
         h.run_for(Duration::from_secs(6)).await;
         h.wait_until(|| h.execution.head() == d1).await;
         assert_eq!(h.execution.new_payloads(), vec![d1, d1]);
+        build
+            .await
+            .expect("build must complete after its parent is accepted");
     });
 }
 
@@ -234,7 +272,9 @@ fn new_payload_transport_error_is_withheld_then_retried() {
         h.execution
             .script_new_payload(d1, Ok(PayloadStatusEnum::Valid));
 
-        h.report_pending_head(2, 1, d1);
+        let proposal = make_block(2, 2, d1);
+        h.execution.script_built_payload(built_payload(&proposal));
+        let build = h.build(round(2), d1);
         h.wait_until(|| h.marshal.fulfill_subscription(d1, b1.clone()))
             .await;
 
@@ -248,7 +288,10 @@ fn new_payload_transport_error_is_withheld_then_retried() {
         );
 
         h.run_for(Duration::from_secs(6)).await;
-        h.wait_until(|| h.execution.head() == d1).await;
+        build
+            .await
+            .expect("build should complete after retrying its parent");
+        assert_eq!(h.execution.head(), d1);
         assert_eq!(h.execution.new_payloads(), vec![d1, d1]);
     });
 }
@@ -270,10 +313,13 @@ fn rejected_notarized_fcu_is_fatal() {
             }),
         );
 
-        h.report_pending_head(2, 1, d1);
+        let build = h.build(round(2), d1);
         h.wait_until(|| h.marshal.fulfill_subscription(d1, b1.clone()))
             .await;
 
+        build
+            .await
+            .expect_err("failed parent convergence must fail the build");
         h.actor
             .await
             .expect("actor should shut down cleanly on a rejected forkchoice update");
@@ -302,10 +348,13 @@ fn notarized_fcu_transport_error_is_fatal() {
             Err("connection closed"),
         );
 
-        h.report_pending_head(2, 1, d1);
+        let build = h.build(round(2), d1);
         h.wait_until(|| h.marshal.fulfill_subscription(d1, b1.clone()))
             .await;
 
+        build
+            .await
+            .expect_err("failed parent convergence must fail the build");
         h.actor
             .await
             .expect("actor should shut down cleanly on a forkchoice transport error");
@@ -324,7 +373,7 @@ fn syncing_notarized_payload_is_rejected_without_updating_forkchoice() {
         h.execution
             .script_new_payload(d1, Ok(PayloadStatusEnum::Syncing));
 
-        h.report_pending_head(2, 1, d1);
+        let mut build = h.build(round(2), d1);
         h.wait_until(|| h.marshal.fulfill_subscription(d1, b1.clone()))
             .await;
         h.wait_until(|| h.execution.new_payloads() == vec![d1])
@@ -333,6 +382,12 @@ fn syncing_notarized_payload_is_rejected_without_updating_forkchoice() {
 
         assert_eq!(h.execution.fcus(), vec![STARTUP_FCU]);
         assert_eq!(h.execution.head(), GENESIS);
+        assert!(
+            build
+                .try_recv()
+                .expect("build should still be waiting on its parent")
+                .is_none()
+        );
 
         let candidate = make_block(3, 1, GENESIS);
         assert!(
@@ -341,6 +396,9 @@ fn syncing_notarized_payload_is_rejected_without_updating_forkchoice() {
                 .expect("the actor should survive a SYNCING notarized payload")
                 .is_some(),
         );
+        build
+            .await
+            .expect_err("the newer verification must supersede the waiting build");
     });
 }
 
@@ -354,7 +412,7 @@ fn accepted_notarized_payload_is_rejected_without_updating_forkchoice() {
         h.execution
             .script_new_payload(d1, Ok(PayloadStatusEnum::Accepted));
 
-        h.report_pending_head(2, 1, d1);
+        let mut build = h.build(round(2), d1);
         h.wait_until(|| h.marshal.fulfill_subscription(d1, b1.clone()))
             .await;
         h.wait_until(|| h.execution.new_payloads() == vec![d1])
@@ -363,6 +421,12 @@ fn accepted_notarized_payload_is_rejected_without_updating_forkchoice() {
 
         assert_eq!(h.execution.fcus(), vec![STARTUP_FCU]);
         assert_eq!(h.execution.head(), GENESIS);
+        assert!(
+            build
+                .try_recv()
+                .expect("build should still be waiting on its parent")
+                .is_none()
+        );
 
         let candidate = make_block(3, 1, GENESIS);
         assert!(
@@ -371,6 +435,9 @@ fn accepted_notarized_payload_is_rejected_without_updating_forkchoice() {
                 .expect("the actor should survive an ACCEPTED notarized payload")
                 .is_some(),
         );
+        build
+            .await
+            .expect_err("the newer verification must supersede the waiting build");
     });
 }
 
@@ -389,19 +456,29 @@ fn stranded_head_is_repointed_onto_the_finalized_tip() {
             .await
             .expect("verification should complete")
             .expect("block should be valid");
-        h.report_pending_head(2, 1, da1);
-        h.wait_until(|| h.execution.head() == da1).await;
+        let proposal = make_block(2, 2, da1);
+        h.execution.script_built_payload(built_payload(&proposal));
+        h.build(round(2), da1).await.expect("build should complete");
+        assert_eq!(h.execution.head(), da1);
 
         let payloads_before = h.execution.new_payloads();
-        h.report_pending_head(5, 0, GENESIS);
-        h.wait_until(|| h.execution.head() == GENESIS).await;
+        let proposal = make_block(5, 1, GENESIS);
+        h.execution.script_built_payload(built_payload(&proposal));
+        h.build(round(5), GENESIS)
+            .await
+            .expect("build should complete");
+        assert_eq!(h.execution.head(), GENESIS);
 
         assert_eq!(
             h.execution.new_payloads(),
             payloads_before,
             "a repoint is a bare forkchoice update; no payload is forwarded",
         );
-        assert_eq!(h.execution.fcus().last(), Some(&(GENESIS, GENESIS, false)));
+        assert!(
+            h.execution
+                .fcus()
+                .ends_with(&[(GENESIS, GENESIS, false), (GENESIS, GENESIS, true),])
+        );
     });
 }
 
@@ -416,8 +493,10 @@ fn failed_repoint_is_fatal() {
             .await
             .expect("verification should complete")
             .expect("block should be valid");
-        h.report_pending_head(2, 1, da1);
-        h.wait_until(|| h.execution.head() == da1).await;
+        let proposal = make_block(2, 2, da1);
+        h.execution.script_built_payload(built_payload(&proposal));
+        h.build(round(2), da1).await.expect("build should complete");
+        assert_eq!(h.execution.head(), da1);
 
         // A repoint targets an ancestor the execution layer provably has;
         // failure means consensus and execution disagree fundamentally.
@@ -427,7 +506,9 @@ fn failed_repoint_is_fatal() {
                 validation_error: "corrupt".into(),
             }),
         );
-        h.report_pending_head(5, 0, GENESIS);
+        h.build(round(5), GENESIS)
+            .await
+            .expect_err("failed repoint must fail the build");
 
         h.actor
             .await
@@ -450,14 +531,18 @@ fn repoint_transport_error_is_fatal() {
             .await
             .expect("verification should complete")
             .expect("block should be valid");
-        h.report_pending_head(2, 1, da1);
-        h.wait_until(|| h.execution.head() == da1).await;
+        let proposal = make_block(2, 2, da1);
+        h.execution.script_built_payload(built_payload(&proposal));
+        h.build(round(2), da1).await.expect("build should complete");
+        assert_eq!(h.execution.head(), da1);
 
         h.execution.script_fcu(
             ForkchoiceState::from_finalized_head(GENESIS, GENESIS),
             Err("connection closed"),
         );
-        h.report_pending_head(5, 0, GENESIS);
+        h.build(round(5), GENESIS)
+            .await
+            .expect_err("failed repoint must fail the build");
 
         h.actor
             .await
@@ -476,8 +561,10 @@ fn repoint_canonical_lookup_error_is_fatal() {
             .await
             .expect("verification should complete")
             .expect("block should be valid");
-        h.report_pending_head(2, 1, da1);
-        h.wait_until(|| h.execution.head() == da1).await;
+        let proposal = make_block(2, 2, da1);
+        h.execution.script_built_payload(built_payload(&proposal));
+        h.build(round(2), da1).await.expect("build should complete");
+        assert_eq!(h.execution.head(), da1);
         let accepted_fcus = h.execution.fcus();
 
         // Repointing checks the locally tracked finalized hash through the
@@ -485,7 +572,9 @@ fn repoint_canonical_lookup_error_is_fatal() {
         h.execution.set_finalized(0, GENESIS);
         h.execution
             .script_canonical_block_hash(0, Err("database unavailable"));
-        h.report_pending_head(5, 0, GENESIS);
+        h.build(round(5), GENESIS)
+            .await
+            .expect_err("failed repoint must fail the build");
 
         let execution = h.execution.clone();
         h.actor
@@ -509,22 +598,26 @@ fn branch_flip_flop_reconverges_from_resident_bodies() {
         let b2 = make_block(2, 2, b1.digest());
         let d2 = b2.digest();
         for (view, block) in [(1, b1), (2, b2)] {
-            let digest = block.digest();
             h.verify(round(view), block)
                 .await
                 .expect("verification should complete")
                 .expect("block should be valid");
-            h.report_pending_head(view + 1, view, digest);
-            h.wait_until(|| h.execution.head() == digest).await;
         }
+        let proposal = make_block(3, 3, d2);
+        h.execution.script_built_payload(built_payload(&proposal));
+        h.build(round(3), d2).await.expect("build should complete");
+        h.wait_until(|| h.execution.head() == d2).await;
 
         // Branch A: a1 at the same height as b1, body fetched from marshal.
         let a1 = make_block(3, 1, GENESIS);
         let da1 = a1.digest();
-        h.report_pending_head(4, 3, da1);
+        let proposal = make_block(4, 2, da1);
+        h.execution.script_built_payload(built_payload(&proposal));
+        let build = h.build(round(4), da1);
         h.wait_until(|| h.marshal.fulfill_subscription(da1, a1.clone()))
             .await;
-        h.wait_until(|| h.execution.head() == da1).await;
+        build.await.expect("build on branch A should complete");
+        assert_eq!(h.execution.head(), da1);
         let fetches = h.marshal.subscribe_log().len();
 
         // Flip back to branch B: both bodies are still resident, so the
@@ -532,7 +625,11 @@ fn branch_flip_flop_reconverges_from_resident_bodies() {
         // already knows the branch, so the head is repointed onto it with a
         // bare forkchoice update.
         let payloads_before = h.execution.new_payloads();
-        h.report_pending_head(5, 2, d2);
+        let proposal = make_block(5, 3, d2);
+        h.execution.script_built_payload(built_payload(&proposal));
+        h.build_on(round(5), 2, d2)
+            .await
+            .expect("build should complete");
         h.wait_until(|| h.execution.head() == d2).await;
         assert_eq!(
             h.marshal.subscribe_log().len(),
@@ -544,7 +641,11 @@ fn branch_flip_flop_reconverges_from_resident_bodies() {
             payloads_before,
             "a branch the execution layer knows is not delivered again",
         );
-        assert_eq!(h.execution.fcus().last(), Some(&(d2, GENESIS, false)));
+        assert!(
+            h.execution
+                .fcus()
+                .ends_with(&[(d2, GENESIS, false), (d2, GENESIS, true),])
+        );
     });
 }
 
@@ -575,8 +676,9 @@ fn advancing_finalized_tip_prunes_covered_state() {
         // A stale context naming the pruned block must not resurrect it:
         // its round is covered by the finalized tip, so the tree re-anchors
         // on the tip instead of fetching or forwarding a1.
-        h.report_pending_head(2, 1, da1);
-        h.run_for(Duration::from_millis(500)).await;
+        h.build_on(round(2), 1, da1)
+            .await
+            .expect_err("a build on a pruned parent must fail");
 
         assert!(
             h.marshal.subscribe_log().is_empty(),

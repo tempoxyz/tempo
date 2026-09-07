@@ -26,7 +26,7 @@ use alloy_rpc_types_engine::{
     ForkchoiceState, ForkchoiceUpdated, PayloadId, PayloadStatus, PayloadStatusEnum,
 };
 use commonware_consensus::{
-    Heightable as _, Reporter as _,
+    CertifiableBlock as _, Heightable as _, Reporter as _,
     marshal::Update,
     simplex::types::Context,
     types::{Epoch, Height, Round, View},
@@ -1106,18 +1106,6 @@ where
         waiter
     }
 
-    /// Reports `parent` (notarized in `parent_view`) as the pending head via
-    /// a consensus context at `context_view`.
-    pub(super) fn report_pending_head(&self, context_view: u64, parent_view: u64, parent: Digest) {
-        self.mailbox
-            .report_pending_head(Context {
-                round: round(context_view),
-                leader: tempo_primitives::ed25519::PublicKey::from_seed(42).to_inner(),
-                parent: (View::new(parent_view), parent),
-            })
-            .expect("actor should accept the pending-head report");
-    }
-
     /// Requests validation of `block`, resolving to the verdict.
     pub(super) fn verify(
         &self,
@@ -1134,7 +1122,9 @@ where
         validator_set: Option<Vec<B256>>,
     ) -> impl Future<Output = eyre::Result<Option<Duration>>> + use<TContext> {
         let mailbox = self.mailbox.clone();
-        async move { mailbox.verify_block(round, block, validator_set).await }
+        let mut context = block.context();
+        context.round = round;
+        async move { mailbox.verify_block(context, block, validator_set).await }
     }
 
     /// Requests a proposal build on top of `parent`, returning the payload
@@ -1153,8 +1143,38 @@ where
         parent: Digest,
         attributes: TempoPayloadAttributes,
     ) -> futures::channel::oneshot::Receiver<TempoBuiltPayload> {
+        let parent_view = if parent == GENESIS {
+            0
+        } else {
+            round.view().get().saturating_sub(1)
+        };
         self.mailbox
-            .build_proposal(round, parent, attributes)
+            .build_proposal(
+                Context {
+                    round,
+                    leader: tempo_primitives::ed25519::PublicKey::from_seed(42).to_inner(),
+                    parent: (View::new(parent_view), parent),
+                },
+                attributes,
+            )
+            .expect("actor should accept the build request")
+    }
+
+    pub(super) fn build_on(
+        &self,
+        round: Round,
+        parent_view: u64,
+        parent: Digest,
+    ) -> futures::channel::oneshot::Receiver<TempoBuiltPayload> {
+        self.mailbox
+            .build_proposal(
+                Context {
+                    round,
+                    leader: tempo_primitives::ed25519::PublicKey::from_seed(42).to_inner(),
+                    parent: (View::new(parent_view), parent),
+                },
+                attributes(),
+            )
             .expect("actor should accept the build request")
     }
 }

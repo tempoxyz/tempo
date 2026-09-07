@@ -21,21 +21,24 @@ fn building_on_an_unfinalized_head_leaves_forkchoice_unchanged() {
     deterministic::Runner::default().start(|context| async move {
         let h = Harness::start_at_genesis(&context);
 
-        // Converge onto an unfinalized b1 so the two sides of forkchoice are
-        // observably different before the build starts.
+        // Verifying b2 converges onto its unfinalized parent b1, making the
+        // two sides of forkchoice observably different before the build.
         let b1 = make_block(1, 1, GENESIS);
         let d1 = b1.digest();
         h.verify(round(1), b1)
             .await
             .expect("b1 should validate")
             .expect("b1 should be valid");
-        h.report_pending_head(2, 1, d1);
+        h.verify(round(2), make_block(2, 2, d1))
+            .await
+            .unwrap()
+            .unwrap();
         h.wait_until(|| h.execution.head() == d1).await;
         assert_eq!(h.execution.finalized(), Some((0, GENESIS)));
 
-        let proposal = make_block(2, 2, d1);
+        let proposal = make_block(3, 2, d1);
         h.execution.script_built_payload(built_payload(&proposal));
-        h.build(round(2), d1)
+        h.build_on(round(3), 1, d1)
             .await
             .expect("payload should be delivered");
 
@@ -76,8 +79,14 @@ fn pending_payload_job_is_delivered() {
 
         // The delivered block is recorded in the notarized tree: once it is
         // notarized, convergence forwards it without a marshal fetch.
-        h.report_pending_head(2, 1, digest);
-        h.wait_until(|| h.execution.head() == digest).await;
+        let next_proposal = make_block(2, 2, digest);
+        h.execution
+            .script_built_payload(built_payload(&next_proposal));
+        let next_build = h.build(round(2), digest);
+        next_build
+            .await
+            .expect("next build should complete on the retained or fetched parent");
+        assert_eq!(h.execution.head(), digest);
         assert!(h.marshal.subscribe_log().is_empty());
     });
 }
@@ -113,14 +122,20 @@ fn subscriber_cancellation_immediately_before_delivery_discards_the_payload() {
         // Conversely, the actor only asks marshal for a pending-head body when
         // that body is absent from the cache. Observing the subscription below
         // therefore proves that this raced payload was not retained.
-        h.report_pending_head(2, 1, digest);
+        let next_proposal = make_block(2, 2, digest);
+        h.execution
+            .script_built_payload(built_payload(&next_proposal));
+        let next_build = h.build(round(2), digest);
         h.wait_until(|| h.marshal.open_subscriptions() == vec![(digest, round(1))])
             .await;
         assert!(
             h.marshal.fulfill_subscription(digest, proposal),
             "the discarded payload must be fetched before convergence",
         );
-        h.wait_until(|| h.execution.head() == digest).await;
+        next_build
+            .await
+            .expect("next build should complete on the retained or fetched parent");
+        assert_eq!(h.execution.head(), digest);
     });
 }
 
@@ -159,30 +174,38 @@ fn build_is_deferred_while_its_parent_converges_just_in_time() {
 }
 
 #[test_traced]
-fn build_on_an_unknown_parent_is_dropped() {
+fn build_waits_for_its_unknown_parent_to_be_fetched_and_canonicalized() {
     deterministic::Runner::default().start(|context| async move {
         let h = Harness::start_at_genesis(&context);
 
-        let stranger = make_block(7, 7, GENESIS);
-        let rx = h.build(round(8), stranger.digest());
-        rx.await
-            .expect_err("a build that cannot start must signal failure");
-
+        let parent = make_block(7, 1, GENESIS);
+        let digest = parent.digest();
+        let proposal = make_block(8, 2, digest);
+        let mut rx = h.build(round(8), digest);
+        h.wait_until(|| h.marshal.open_subscriptions().contains(&(digest, round(7))))
+            .await;
+        assert!(rx.try_recv().expect("build must remain queued").is_none());
         assert!(
             !h.execution.fcus().iter().any(|(_, _, attrs)| *attrs),
             "no build may be registered for an unknown parent",
         );
+
+        h.execution.script_built_payload(built_payload(&proposal));
+        assert!(h.marshal.fulfill_subscription(digest, parent));
+        rx.await
+            .expect("build should complete once its parent converges");
+        assert_eq!(h.execution.head(), digest);
+        assert!(h.execution.fcus().contains(&(digest, GENESIS, true)));
     });
 }
 
 #[test_traced]
-fn build_on_a_known_block_off_the_pending_head_path_is_dropped() {
+fn build_selects_its_known_parent_as_the_head() {
     deterministic::Runner::default().start(|context| async move {
         let h = Harness::start_at_genesis(&context);
 
-        // a1 is known to the execution layer through its validation, but
-        // consensus never reports it as the pending head: a build on top of
-        // it is not what consensus builds on.
+        // Validation alone does not make a1 the head. The subsequent build
+        // selects it as its parent and drives the execution layer onto it.
         let a1 = make_block(1, 1, GENESIS);
         let da1 = a1.digest();
         h.verify(round(1), a1)
@@ -190,13 +213,12 @@ fn build_on_a_known_block_off_the_pending_head_path_is_dropped() {
             .expect("verification should complete")
             .expect("block should be valid");
 
-        let rx = h.build(round(2), da1);
-        rx.await
-            .expect_err("a build whose parent the head will not reach must fail");
-        assert!(
-            !h.execution.fcus().iter().any(|(.., attrs)| *attrs),
-            "no build may be registered off the pending head's path",
-        );
+        assert_eq!(h.execution.head(), GENESIS);
+        let proposal = make_block(2, 2, da1);
+        h.execution.script_built_payload(built_payload(&proposal));
+        h.build(round(2), da1).await.expect("build should complete");
+        assert_eq!(h.execution.head(), da1);
+        assert!(h.execution.fcus().contains(&(da1, GENESIS, true)));
     });
 }
 
@@ -212,7 +234,10 @@ fn build_on_a_head_the_network_finalized_past_is_dropped() {
             .await
             .expect("a1 should validate")
             .expect("a1 should be valid");
-        h.report_pending_head(2, 1, da1);
+        h.verify(round(2), make_block(2, 2, da1))
+            .await
+            .expect("child should validate")
+            .expect("child should be valid");
         h.wait_until(|| h.execution.head() == da1).await;
 
         // The network finalizes b1 on another branch. The tip report alone
@@ -223,7 +248,7 @@ fn build_on_a_head_the_network_finalized_past_is_dropped() {
         let b1 = make_block(3, 1, GENESIS);
         let db1 = b1.digest();
         h.deliver_tip(round(3), 1, db1);
-        h.build(round(4), da1)
+        h.build_on(round(4), 1, da1)
             .await
             .expect_err("the build on the abandoned head must fail");
         assert!(
@@ -239,7 +264,7 @@ fn build_on_a_head_the_network_finalized_past_is_dropped() {
 }
 
 #[test_traced]
-fn late_pending_head_report_from_an_older_round_is_ignored() {
+fn canceled_build_keeps_its_parent_target_despite_an_older_request() {
     deterministic::Runner::default().start(|context| async move {
         let h = Harness::start_at_genesis(&context);
 
@@ -253,13 +278,16 @@ fn late_pending_head_report_from_an_older_round_is_ignored() {
                 .expect("verification should complete")
                 .expect("block should be valid");
         }
-        h.report_pending_head(4, 2, db1);
+        let build = h.build_on(round(4), 2, db1);
+        drop(build);
         h.wait_until(|| h.execution.head() == db1).await;
 
-        // A report from an older context arrives late (the handlers run
-        // concurrently). It must not move the pending head back onto a1
-        // and cost the node its proposal on b1.
-        h.report_pending_head(3, 1, da1);
+        // An older build arrives after the newest build has been canceled.
+        // Its context must not restore the previous target.
+        h.build_on(round(3), 1, da1)
+            .await
+            .expect_err("an older build cannot select a different parent");
+        assert_eq!(h.execution.head(), db1);
         let proposal = make_block(5, 2, db1);
         h.execution.script_built_payload(built_payload(&proposal));
         h.build(round(5), db1)

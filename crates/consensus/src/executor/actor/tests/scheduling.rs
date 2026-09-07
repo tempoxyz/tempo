@@ -15,22 +15,22 @@ use super::harness::{
 };
 
 #[test_traced]
-fn slow_marshal_fetch_does_not_block_validation() {
+fn newer_verification_supersedes_a_build_waiting_on_marshal() {
     deterministic::Runner::default().start(|context| async move {
         let h = Harness::start_at_genesis(&context);
 
         // Leave the missing pending head's marshal subscription unresolved.
-        let pending = make_block(1, 1, GENESIS);
+        let pending = make_block(3, 1, GENESIS);
         let pending_digest = pending.digest();
-        h.report_pending_head(2, 1, pending_digest);
-        h.wait_until(|| h.marshal.open_subscriptions() == vec![(pending_digest, round(1))])
+        let build = h.build(round(4), pending_digest);
+        h.wait_until(|| h.marshal.open_subscriptions() == vec![(pending_digest, round(3))])
             .await;
 
-        // The body fetch has its own slot in the actor loop. An unrelated
-        // validation against the known finalized parent must still run.
-        let candidate = make_block(3, 1, GENESIS);
+        // A newer verification selects the known finalized parent. It must
+        // supersede the waiting build without waiting for its marshal fetch.
+        let candidate = make_block(5, 1, GENESIS);
         let candidate_digest = candidate.digest();
-        let verify = h.verify(round(3), candidate);
+        let verify = h.verify(round(5), candidate);
         futures::pin_mut!(verify);
         let deadline = h.run_for(Duration::from_millis(100));
         futures::pin_mut!(deadline);
@@ -45,11 +45,12 @@ fn slow_marshal_fetch_does_not_block_validation() {
 
         assert!(verdict.is_some());
         assert_eq!(h.execution.new_payloads(), vec![candidate_digest]);
-        assert_eq!(
-            h.marshal.open_subscriptions(),
-            vec![(pending_digest, round(1))],
-            "validation must not cancel or consume the independent body fetch",
-        );
+        build
+            .await
+            .expect_err("the newer verification must supersede the waiting build");
+        h.wait_until(|| h.marshal.open_subscriptions().is_empty())
+            .await;
+        assert_eq!(h.execution.head(), GENESIS);
     });
 }
 
@@ -255,74 +256,29 @@ fn one_execution_task_at_a_time_and_consensus_requests_win_the_next_slot() {
 }
 
 #[test_traced]
-fn consensus_work_takes_priority_over_ready_convergence() {
+fn verification_precedes_ready_parent_convergence() {
     deterministic::Runner::default().start(|context| async move {
-        let mut h = Harness::start_at_genesis(&context);
+        let h = Harness::start_at_genesis(&context);
+        let parent = make_block(1, 1, GENESIS);
+        let parent_digest = parent.digest();
+        h.verify(round(1), parent).await.unwrap().unwrap();
+        assert_eq!(h.execution.head(), GENESIS);
 
-        let b1 = make_block(1, 1, GENESIS);
-        let d1 = b1.digest();
-        let release_finalization = h
-            .execution
-            .script_delayed_new_payload(d1, Ok(PayloadStatusEnum::Valid));
-        h.deliver_tip(round(1), 1, d1);
-        let finalized = h.deliver_finalized(b1);
-        h.wait_until(|| h.execution.new_payloads() == vec![d1])
-            .await;
-
-        // Make convergence onto b2 ready while finalization still owns the
-        // slot: its pending-head report and body are both already in hand.
-        let b2 = make_block(2, 2, d1);
-        let d2 = b2.digest();
-        h.report_pending_head(3, 2, d2);
-        h.wait_until(|| h.marshal.fulfill_subscription(d2, b2.clone()))
-            .await;
-        h.run_for(Duration::from_millis(10)).await;
-
-        // Queue a validation that also becomes runnable once b1 is finalized.
-        // It must stay queued until the occupied slot becomes available.
-        let candidate = make_block(3, 2, d1);
+        // This request makes both verification and parent convergence ready
+        // in the same admission. The candidate's probe must win the slot.
+        let candidate = make_block(2, 2, parent_digest);
         let candidate_digest = candidate.digest();
-        let verify = h.verify(round(3), candidate);
-        futures::pin_mut!(verify);
-        let deadline = h.run_for(Duration::from_millis(10));
-        futures::pin_mut!(deadline);
-        let verify = match futures::future::select(verify, deadline).await {
-            Either::Left(_) => panic!("verification resolved while the slot was held"),
-            Either::Right(((), verify)) => verify,
-        };
-
-        release_finalization
-            .send(())
-            .expect("finalization should still be gated");
-        finalized.await.expect("first block should be acknowledged");
-        assert!(
-            verify
-                .await
-                .expect("verification should complete")
-                .is_some(),
-            "candidate should be valid",
-        );
-        h.wait_until(|| h.execution.head() == d2).await;
-
+        h.verify(round(2), candidate).await.unwrap().unwrap();
+        h.wait_until(|| h.execution.head() == parent_digest).await;
         assert_eq!(
             h.execution.calls(),
             vec![
                 STARTUP_FCU_CALL,
-                ElCall::NewPayload(d1),
-                // Both operations were ready when the delivery of b1
-                // released the slot, but latency-critical consensus work
-                // ran first. Finality is locked in next, before notarized
-                // convergence delivers b2 and moves the head onto it.
+                ElCall::NewPayload(parent_digest),
                 ElCall::NewPayload(candidate_digest),
                 ElCall::Fcu {
-                    head: d1,
-                    finalized: d1,
-                    with_attrs: false,
-                },
-                ElCall::NewPayload(d2),
-                ElCall::Fcu {
-                    head: d2,
-                    finalized: d1,
+                    head: parent_digest,
+                    finalized: GENESIS,
                     with_attrs: false,
                 },
             ],
@@ -351,7 +307,7 @@ fn finality_is_locked_in_before_notarized_convergence() {
         // and queue the second finalized block behind it.
         let n3 = make_block(3, 3, d2);
         let d3 = n3.digest();
-        h.report_pending_head(4, 3, d3);
+        let build = h.build(round(4), d3);
         h.wait_until(|| h.marshal.fulfill_subscription(d3, n3.clone()))
             .await;
         h.run_for(Duration::from_millis(10)).await;
@@ -363,7 +319,11 @@ fn finality_is_locked_in_before_notarized_convergence() {
             .expect("finalization should still be gated");
         w1.await.expect("first block should be acknowledged");
         w2.await.expect("second block should be acknowledged");
-        h.wait_until(|| h.execution.head() == d3).await;
+        h.wait_until(|| !h.execution.pending_payload_jobs().is_empty())
+            .await;
+        let payload_id = h.execution.pending_payload_jobs()[0];
+        h.wait_until(|| h.execution.calls().contains(&ElCall::Resolve(payload_id)))
+            .await;
 
         assert_eq!(
             h.execution.calls(),
@@ -385,8 +345,20 @@ fn finality_is_locked_in_before_notarized_convergence() {
                     finalized: d2,
                     with_attrs: false,
                 },
+                ElCall::Fcu {
+                    head: d3,
+                    finalized: d2,
+                    with_attrs: true,
+                },
+                ElCall::Resolve(payload_id),
             ],
         );
+        let proposal = make_block(4, 4, d3);
+        h.execution
+            .deliver_payload(payload_id, built_payload(&proposal));
+        build
+            .await
+            .expect("build should complete after finality and parent convergence");
     });
 }
 
@@ -669,17 +641,27 @@ fn held_build_is_rescheduled_after_a_stale_repoint() {
             .await
             .expect("verification should complete")
             .expect("a2 should be valid");
-        h.report_pending_head(4, 3, da2);
+        h.verify(round(4), make_block(4, 3, da2))
+            .await
+            .unwrap()
+            .unwrap();
+        // The stale FCU only moves the actor's tracked head. The EL itself
+        // stays on b2, so observe convergence through the actor's gauge.
+        h.wait_until(|| {
+            h.metrics()
+                .lines()
+                .any(|line| line == "executor_convergence_depth 0")
+        })
+        .await;
 
-        // Hold the execution slot with a validation (held itself until the
-        // head is on a2) so that the re-anchor on the finalized tip and the
-        // build on it queue up behind it.
-        let a3 = make_block(4, 3, da2);
+        // Hold the execution slot with another validation so that the build
+        // re-anchoring onto the finalized tip queues up behind it.
+        let a3 = make_block(5, 3, da2);
         let da3 = a3.digest();
         let release = h
             .execution
             .script_delayed_new_payload(da3, Ok(PayloadStatusEnum::Valid));
-        let validation = h.verify(round(4), a3);
+        let validation = h.verify(round(5), a3);
         futures::pin_mut!(validation);
         let deadline = h.run_for(Duration::from_millis(1));
         futures::pin_mut!(deadline);
@@ -689,8 +671,7 @@ fn held_build_is_rescheduled_after_a_stale_repoint() {
         };
         h.wait_until(|| h.execution.new_payloads().last() == Some(&da3))
             .await;
-        h.report_pending_head(5, 1, d1);
-        let build = h.build(round(5), d1);
+        let build = h.build_on(round(6), 1, d1);
         futures::pin_mut!(build);
         release.send(()).expect("validation should still be gated");
         validation
