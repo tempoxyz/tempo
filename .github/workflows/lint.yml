@@ -18,6 +18,18 @@ env:
   RUSTC_WRAPPER: "sccache"
 
 jobs:
+  bench-hosting:
+    name: benchmark hosting helpers
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+        with:
+          persist-credentials: false
+      - run: node --test .github/scripts/bench-hosting.test.js
+
   clippy:
     name: clippy
     runs-on: depot-ubuntu-latest-32
@@ -216,6 +228,7 @@ jobs:
     if: always()
     permissions: {}
     needs:
+      - bench-hosting
       - clippy
       - fmt
       - docs

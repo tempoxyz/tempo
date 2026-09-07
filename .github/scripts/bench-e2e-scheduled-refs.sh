@@ -27,7 +27,6 @@ set -euo pipefail
 FORCE="${1:-false}"
 STATE_KEY="${2:-${BENCH_E2E_STATE_KEY:-${BENCH_E2E_PRESET:-default}}}"
 REPO="${GITHUB_REPOSITORY:-tempoxyz/tempo}"
-STATE_REPO="${BENCH_E2E_STATE_REPO:-decofe/tempo-bench-charts}"
 
 if [[ ! "$STATE_KEY" =~ ^[A-Za-z0-9_-]+$ ]]; then
   echo "::error::Invalid benchmark state key: $STATE_KEY"
@@ -136,14 +135,8 @@ echo "Committed at: $CREATED_AT"
 echo "::endgroup::"
 
 echo "::group::Reading persisted e2e state"
-LAST_FEATURE_REF=""
-STATE_URL="https://raw.githubusercontent.com/${STATE_REPO}/state/${STATE_FILE}"
-if RAW="$(curl -sfL -H "Authorization: token ${DEREK_TOKEN:-}" "$STATE_URL")"; then
-  LAST_FEATURE_REF="$(echo "$RAW" | tr -d '[:space:]')"
-  echo "Previous e2e feature ref for $STATE_KEY: $LAST_FEATURE_REF"
-else
-  echo "No persisted e2e state found for $STATE_KEY"
-fi
+LAST_FEATURE_REF=$(node "$(dirname "${BASH_SOURCE[0]}")/bench-read-state.js" "$REPO" "${STATE_FILE##*/}" bench-e2e-scheduled.yml)
+echo "Previous e2e feature ref for $STATE_KEY: ${LAST_FEATURE_REF:-none}"
 echo "::endgroup::"
 
 echo "::group::Resolving refs"
