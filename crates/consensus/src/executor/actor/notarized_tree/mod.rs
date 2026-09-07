@@ -101,19 +101,19 @@ impl LocalState {
 /// execution layer's head can be moved onto.
 ///
 /// The canonical target is `pending_head`: the parent of the most recent
-/// consensus context. This is expected to be reported by the simplex engine via
-/// the application actor, and constitutes the view (/block) that simplex
-/// expects to verify or build blocks on top of.
+/// consensus request context, carried by a build or verification request. It
+/// constitutes the view (/block) that simplex expects to verify or build
+/// blocks on top of.
 ///
 /// Contexts double as notarization proofs for their parents, but parents are
 /// not monotonic: after nullifications, a later view may build on an *older*
-/// notarized block than its predecessor. Reports arrive in consensus order,
-/// so the last report wins, and the canonical path is the pending head's
+/// notarized block than its predecessor. The actor guards updates by request
+/// round, so the newest context wins, and the canonical path is the pending head's
 /// ancestry rather than the highest known notarization's.
 ///
 /// Block bodies are captured from validation requests and the node's own
 /// builds (the proposer never verifies its own block) or fetched from the
-/// marshal actor; combined with the reports, they reconstruct the
+/// marshal actor; combined with the contexts, they reconstruct the
 /// canonical path on top of the finalized tip.
 ///
 /// The tree holds data strictly above the finalized *network* tip,
@@ -147,10 +147,10 @@ pub(super) struct NotarizedTree {
     /// finalized side of the last accepted forkchoice state. Trails
     /// `delivered_finalized` until the forkchoice update lands.
     local_finalized_tip: (Height, Digest),
-    /// The pending head reported by the most recent consensus context: the
+    /// The pending head selected by the newest consensus request context: the
     /// tip of the canonical path the execution layer's head is converged
     /// onto. Points to the known network finalized tip if no pending head was
-    /// reported yet or if it goes stale.
+    /// selected yet or if it goes stale.
     pending_head: PendingHead,
     /// The execution layer's current head: the head side of the last
     /// accepted forkchoice state.
@@ -287,7 +287,7 @@ impl NotarizedTree {
     }
 
     /// Records a consensus context's parent as the pending head of the
-    /// chain, superseding any previous report.
+    /// chain, superseding any previous target.
     pub(super) fn set_pending_head(&mut self, notarized_in: Round, digest: Digest) {
         self.pending_head = PendingHead {
             notarized_in,

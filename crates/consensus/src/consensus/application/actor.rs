@@ -267,23 +267,6 @@ impl Inner<Init> {
             started_at: propose_start,
         } = request;
 
-        // Report the parent we are asked to build on as the pending head,
-        // so that the executor can get started on bringing the execution
-        // layer to the right state. On the happy path there should always
-        // be enough headroom between this and the eventual request to build
-        // a block.
-        //
-        // If the EL is not (yet) in the correct state to build a block the
-        // build will fail fast.
-        debug!("reporting notarized tip");
-        if let Err(error) = self.executor.report_pending_head(Context {
-            round,
-            leader: leader.clone(),
-            parent: (parent_view, parent_digest),
-        }) {
-            warn!(%error, "failed reporting the proposal parent as the pending head");
-        }
-
         let proposal_block = {
             let mut proposal = Box::pin(async {
                 // Follow the commonware marshal::standard::inline application:
@@ -599,7 +582,14 @@ impl Inner<Init> {
         let payload = self
             .state
             .executor
-            .build_proposal(round, parent.digest(), attrs)?
+            .build_proposal(
+                Context {
+                    round,
+                    leader,
+                    parent: (parent_view, parent_digest),
+                },
+                attrs,
+            )?
             .await
             .wrap_err(
                 "executor dropped the payload channel: the build failed (the \
@@ -672,17 +662,6 @@ impl Inner<Init> {
         proposer: PublicKey,
         round: Round,
     ) -> eyre::Result<VerifyResult> {
-        // Report the parent we are asked to verify against as the pending
-        // head, so that the executor keeps driving the execution layer
-        // towards it even if this verification is aborted.
-        if let Err(error) = self.executor.report_pending_head(Context {
-            round,
-            leader: proposer.clone(),
-            parent: (parent_view, parent_digest),
-        }) {
-            warn!(%error, "failed reporting the verify parent as the pending head");
-        }
-
         let block = subscribe(&self.execution_node, round, payload, &self.marshal)
             .await
             .wrap_err("failed getting proposal block")?;
@@ -727,11 +706,14 @@ impl Inner<Init> {
         }
 
         let validation_duration = verify_block(
-            round,
+            Context {
+                round,
+                leader: proposer,
+                parent: (parent_view, parent_digest),
+            },
             &self.epoch_strategy,
             &self.state.executor,
             &block,
-            parent_digest,
         )
         .await
         .wrap_err("failed verifying block against execution layer")?;
@@ -833,13 +815,12 @@ struct VerifyResult {
 /// not know the block's parent or the request was superseded by a
 /// newer-round request.
 async fn verify_block(
-    round: Round,
+    context: Context<Digest, PublicKey>,
     epoch_strategy: &FixedEpocher,
     executor: &crate::executor::Mailbox,
     block: &Block,
-    parent_digest: Digest,
 ) -> eyre::Result<Option<Duration>> {
-    let epoch = round.epoch();
+    let epoch = context.round.epoch();
     let epoch_info = epoch_strategy
         .containing(block.height())
         .expect("epoch strategy is for all heights");
@@ -847,7 +828,7 @@ async fn verify_block(
         info!("block does not belong to this epoch");
         return Ok(None);
     }
-    if block.parent_hash() != *parent_digest {
+    if block.parent_hash() != *context.parent.1 {
         info!(
             "parent digest stored in block must match the digest of the parent \
             argument but doesn't"
@@ -855,7 +836,7 @@ async fn verify_block(
         return Ok(None);
     }
 
-    executor.verify_block(round, block.clone()).await
+    executor.verify_block(context, block.clone()).await
 }
 
 #[instrument(skip_all, err(Display))]
