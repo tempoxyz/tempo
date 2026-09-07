@@ -1185,7 +1185,10 @@ async fn execute_build(
         .as_ref()
         .is_some_and(|(_, response)| response.is_canceled())
     {
-        info!("dropping payload build request: the subscriber went away while it was queued");
+        info!(
+            "dropping payload build request: subscriber went away while \
+            awaiting execution"
+        );
         build_attributes.take();
     }
 
@@ -1194,8 +1197,6 @@ async fn execute_build(
     match is_stale_forkchoice(&execution_node, canonicalized) {
         Ok(false) => {}
         Ok(true) => {
-            // Dropping the response channel signals the failure to the
-            // subscriber.
             info!("tracked finality is below the execution layer's; dropping the build");
             return ExecutionTaskOutcome::Completed {
                 canonicalized: None,
@@ -1288,9 +1289,9 @@ async fn execute_notarization(
     let digest = step.digest();
     let target = on_top_of.update_head(step.height(), digest);
     if let NextToForward::Block(block) = step
-        && forward_notarized(&execution_node, block).await.is_err()
-    {
         // The cause is logged by `forward_notarized`.
+        && let Err(_) = forward_notarized(&execution_node, block).await
+    {
         return ExecutionTaskOutcome::NotarizedBlockRejected { digest, target };
     }
 
@@ -1770,8 +1771,7 @@ async fn forward_notarized(
         )?;
     ensure!(
         payload_status.is_valid(),
-        "payload status of notarized block was neither valid nor invalid \
-        (likely syncing): `{payload_status}`",
+        "payload status of notarized block was not VALID: `{payload_status}`",
     );
     Ok(())
 }
