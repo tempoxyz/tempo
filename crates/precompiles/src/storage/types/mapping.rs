@@ -66,6 +66,17 @@ impl<K, V: StorableType> Mapping<K, V> {
         self.base_slot
     }
 
+    /// Computes the entry's storage slot without constructing or caching a value handler.
+    ///
+    /// Uses the normal mapping-slot hashing path, including any global keccak caching.
+    #[inline]
+    pub fn slot_uncached(&self, key: K) -> U256
+    where
+        K: StorageKey,
+    {
+        key.mapping_slot(self.base_slot)
+    }
+
     /// Returns a `Handler` for the given key.
     ///
     /// This enables the composable pattern: `mapping.at(&key).read()`
@@ -210,6 +221,46 @@ mod tests {
     }
 
     #[test]
+    fn test_slot_uncached_matches_indexing() {
+        for base_slot in [U256::ZERO, U256::ONE, U256::MAX] {
+            let mapping = Mapping::<Address, U256>::new(base_slot, Address::ZERO);
+            for key in [
+                Address::ZERO,
+                Address::repeat_byte(0x13),
+                Address::repeat_byte(0xff),
+            ] {
+                let slot = mapping.slot_uncached(key);
+                assert_eq!(slot, key.mapping_slot(base_slot));
+                assert_eq!(slot, mapping[key].slot());
+                assert_eq!(slot, mapping.slot_uncached(key));
+            }
+        }
+    }
+
+    #[test]
+    fn test_slot_uncached_does_not_construct_handler() {
+        struct NoHandler;
+
+        impl StorableType for NoHandler {
+            const LAYOUT: Layout = Layout::Slots(1);
+            type Handler = ();
+
+            fn handle(_: U256, _: LayoutCtx, _: Address) -> Self::Handler {
+                panic!("slot_uncached must not construct a value handler");
+            }
+        }
+
+        let mapping = Mapping::<Address, NoHandler>::new(U256::ONE, Address::ZERO);
+        for key in [
+            Address::ZERO,
+            Address::repeat_byte(0x13),
+            Address::repeat_byte(0xff),
+        ] {
+            assert_eq!(mapping.slot_uncached(key), key.mapping_slot(U256::ONE));
+        }
+    }
+
+    #[test]
     fn test_mapping_basic_properties() {
         let address = Address::random();
         let base_slot = U256::random();
@@ -256,6 +307,7 @@ mod tests {
         // Property 1: Chaining - first .at() returns intermediate Mapping with correct slot
         let intermediate = &nested[key1];
         let expected_intermediate_slot = key1.mapping_slot(base_slot);
+        assert_eq!(nested.slot_uncached(key1), expected_intermediate_slot);
         assert_eq!(
             intermediate.slot(),
             expected_intermediate_slot,
@@ -265,6 +317,7 @@ mod tests {
         // Property 2: Double-hash - second .at() returns final Slot with correct double-derived slot
         let final_slot = &intermediate[key2];
         let expected_final_slot = key2.mapping_slot(expected_intermediate_slot);
+        assert_eq!(intermediate.slot_uncached(key2), expected_final_slot);
         assert_eq!(
             final_slot.slot(),
             expected_final_slot,
