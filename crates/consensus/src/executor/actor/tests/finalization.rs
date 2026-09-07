@@ -7,8 +7,6 @@
 use alloy_rpc_types_engine::{ForkchoiceState, PayloadStatusEnum};
 use commonware_macros::test_traced;
 use commonware_runtime::{Runner as _, deterministic};
-use futures::channel::oneshot;
-use tempo_payload_types::TempoBuiltPayload;
 use tempo_primitives::ed25519::PublicKey;
 
 use super::harness::{
@@ -197,14 +195,9 @@ fn new_payload_transport_error_is_fatal() {
     });
 }
 
-/// Converges the head onto `a1 -> a2` (branch A) through validations and
-/// a build, then requests another build on an unknown parent so that
-/// the pending head's ancestry is not walkable: the forkchoice step
-/// cannot derive the head from the tree and must consult the execution
-/// layer's canonical chain when finality advances.
-async fn converge_on_branch_a_with_unwalkable_pending_head(
-    h: &Harness,
-) -> (Digest, Digest, oneshot::Receiver<TempoBuiltPayload>) {
+/// Converges onto branch A, then selects an unavailable target so that
+/// subsequent forkchoice updates must fall back to delivered finality.
+async fn converge_on_branch_a_with_unwalkable_pending_head(h: &Harness) -> (Digest, Digest) {
     let a1 = make_block(1, 1, GENESIS);
     let a2 = make_block(2, 2, a1.digest());
     let (da1, da2) = (a1.digest(), a2.digest());
@@ -221,40 +214,33 @@ async fn converge_on_branch_a_with_unwalkable_pending_head(
         .expect("build on branch A should complete");
 
     let unknown = make_block(4, 3, da2).digest();
-    let build = h.build_on(round(5), 4, unknown);
+    drop(h.build_on(round(5), 4, unknown));
     h.wait_until(|| h.marshal.open_subscriptions() == vec![(unknown, round(4))])
         .await;
-    (da1, da2, build)
+    (da1, da2)
 }
 
 #[test_traced]
-fn canonical_block_lookup_error_is_fatal() {
+fn finalization_with_an_unavailable_target_needs_no_canonical_ancestry_lookup() {
     deterministic::Runner::default().start(|context| async move {
         let mut h = Harness::start_at_genesis(&context);
-        let (_, da2, _build) = converge_on_branch_a_with_unwalkable_pending_head(&h).await;
-        let fcus_before = h.execution.fcus();
+        converge_on_branch_a_with_unwalkable_pending_head(&h).await;
 
-        // b1 finalizes below the head on another branch. Whether the head
-        // descends from it is read from the canonical chain; the read
-        // failing must not let the finalization through.
+        // The old HEAD is ineligible. Finality can advance on branch B
+        // without consulting the canonical ancestry of that old HEAD.
         let b1 = make_block(3, 1, GENESIS);
+        let db1 = b1.digest();
         h.execution
             .script_canonical_block_hash(1, Err("database unavailable"));
 
-        h.deliver_tip(round(3), 1, b1.digest());
+        h.deliver_tip(round(3), 1, db1);
         h.deliver_finalized(b1)
             .await
-            .expect_err("a canonical lookup failure must not acknowledge the finalized block");
+            .expect("finalization must not depend on the old HEAD's ancestry lookup");
 
-        h.actor
-            .await
-            .expect("actor should shut down cleanly on a canonical lookup error");
-        assert_eq!(
-            h.execution.fcus(),
-            fcus_before,
-            "no forkchoice update may follow the failed lookup",
-        );
-        assert_eq!(h.execution.head(), da2);
+        assert_eq!(h.execution.fcus().last(), Some(&(db1, db1, false)));
+        assert_eq!(h.execution.head(), db1);
+        assert_eq!(h.execution.finalized(), Some((1, db1)));
     });
 }
 
@@ -262,11 +248,10 @@ fn canonical_block_lookup_error_is_fatal() {
 fn finalizing_below_a_head_on_another_branch_moves_the_head() {
     deterministic::Runner::default().start(|context| async move {
         let mut h = Harness::start_at_genesis(&context);
-        let (_, da2, _build) = converge_on_branch_a_with_unwalkable_pending_head(&h).await;
+        let (_, da2) = converge_on_branch_a_with_unwalkable_pending_head(&h).await;
 
-        // b1 finalizes at height 1 on branch B while the head is a2 at
-        // height 2 on branch A. The head does not descend from the
-        // finalized block, so it is moved onto it.
+        // b1 finalizes on branch B. The unavailable convergence target
+        // leaves HEAD anchored at the latest delivered finalized block.
         let b1 = make_block(3, 1, GENESIS);
         let db1 = b1.digest();
         h.deliver_tip(round(3), 1, db1);
@@ -282,21 +267,20 @@ fn finalizing_below_a_head_on_another_branch_moves_the_head() {
 }
 
 #[test_traced]
-fn finalizing_below_a_descending_head_keeps_the_head() {
+fn finalizing_below_a_previous_head_uses_delivered_finality() {
     deterministic::Runner::default().start(|context| async move {
         let mut h = Harness::start_at_genesis(&context);
-        let (da1, da2, _build) = converge_on_branch_a_with_unwalkable_pending_head(&h).await;
+        let (da1, _) = converge_on_branch_a_with_unwalkable_pending_head(&h).await;
 
-        // a1 finalizes below the head a2 while the pending head's ancestry
-        // is not walkable. The canonical chain shows that the head descends
-        // from a1, so only finality moves.
+        // Even though the old HEAD descended from a1, it is no longer an
+        // eligible convergence target. Both FCU fields must use a1.
         h.deliver_tip(round(3), 1, da1);
         h.deliver_finalized(make_block(1, 1, GENESIS))
             .await
             .expect("the finalized ancestor should be acknowledged");
 
-        assert_eq!(h.execution.fcus().last(), Some(&(da2, da1, false)));
-        assert_eq!(h.execution.head(), da2);
+        assert_eq!(h.execution.fcus().last(), Some(&(da1, da1, false)));
+        assert_eq!(h.execution.head(), da1);
         assert_eq!(h.execution.finalized(), Some((1, da1)));
     });
 }

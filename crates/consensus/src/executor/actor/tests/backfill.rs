@@ -10,7 +10,7 @@ use commonware_runtime::{Runner as _, deterministic};
 
 use super::harness::{
     FakeExecution, FakeMarshal, ForkchoiceStateExt as _, GENESIS, Harness, HarnessOptions,
-    STARTUP_FCU, built_payload, make_block, round,
+    STARTUP_FCU, make_block, round,
 };
 
 #[test_traced]
@@ -81,25 +81,21 @@ fn backfill_then_converges_onto_a_notarized_extension() {
             .start(&context);
 
         // Startup first moves the local head and finality to the floor. The
-        // tree's pending head remains anchored at the network finalized tip,
+        // pending head remains anchored at the network finalized tip,
         // so normal notarized convergence can extend from that boundary.
         h.wait_until(|| h.execution.finalized() == Some((2, d2)))
             .await;
         assert_eq!(h.execution.head(), d2);
 
-        // Request a build two blocks above the backfilled boundary.
+        // Select a pending head two blocks above the backfilled boundary.
         // Supplying only that block first makes the actor discover and fetch
-        // the missing ancestor before forwarding both blocks bottom-up.
-        let proposal = make_block(5, 5, d4);
-        h.execution.script_built_payload(built_payload(&proposal));
-        let build = h.build(round(5), d4);
+        // the missing ancestor in response to SYNCING.
+        drop(h.build(round(5), d4));
         h.wait_until(|| h.marshal.fulfill_subscription(d4, b4.clone()))
             .await;
         h.wait_until(|| h.marshal.fulfill_subscription(d3, b3.clone()))
             .await;
-        build
-            .await
-            .expect("build should complete above the backfilled boundary");
+        h.wait_until(|| h.execution.head() == d4).await;
         assert_eq!(h.execution.head(), d4);
 
         assert_eq!(h.marshal.get_block_log(), vec![1, 2]);
@@ -107,15 +103,10 @@ fn backfill_then_converges_onto_a_notarized_extension() {
             h.marshal.subscribe_log(),
             vec![(d4, round(4)), (d3, round(3))],
         );
-        assert_eq!(h.execution.new_payloads(), vec![d1, d2, d3, d4]);
+        assert_eq!(h.execution.new_payloads(), vec![d1, d2, d4, d3, d4]);
         assert_eq!(
             h.execution.fcus(),
-            vec![
-                STARTUP_FCU,
-                (d2, d2, false),
-                (d4, d2, false),
-                (d4, d2, true)
-            ],
+            vec![STARTUP_FCU, (d2, d2, false), (d4, d2, false),],
             "the backfill finalizes the floor with one update, and notarized \
             convergence must preserve that boundary",
         );
