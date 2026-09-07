@@ -1133,6 +1133,7 @@ fn seed_consensus_state(
                 states
                     .put_sync(SHADOW_EPOCH, state)
                     .await
+                    .map(|_| ())
                     .map_err(eyre::Report::from)
                     .wrap_err("unable to write shadow DKG state metadata")
             })
