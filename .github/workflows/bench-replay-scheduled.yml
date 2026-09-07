@@ -138,7 +138,7 @@ jobs:
         id: refs
         env:
           GH_TOKEN: ${{ github.token }}
-          DEREK_TOKEN: ${{ secrets.DEREK_TOKEN }}
+          BENCH_STATE_TOKEN: ${{ secrets.DEREK_UPDATE_RETH_TOKEN }}
           GITHUB_REPOSITORY: ${{ github.repository }}
           INPUT_FORCE: ${{ inputs.force || 'false' }}
           BENCH_REPLAY_CHAIN: ${{ steps.config.outputs.chain }}
@@ -256,29 +256,18 @@ jobs:
     if: success()
     name: save-state
     runs-on: ubuntu-latest
+    permissions:
+      contents: read
     steps:
-      - name: Push state to charts repo
+      - uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6.0.3
+        with:
+          persist-credentials: false
+          sparse-checkout: .github/scripts
+          sparse-checkout-cone-mode: true
+
+      - name: Save benchmark state
         env:
-          DEREK_TOKEN: ${{ secrets.DEREK_TOKEN }}
+          GH_TOKEN: ${{ secrets.DEREK_UPDATE_RETH_TOKEN }}
           FEATURE_REF: ${{ needs.resolve-refs.outputs.feature-ref }}
           BENCH_REPLAY_CHAIN: ${{ needs.resolve-refs.outputs.chain }}
-        run: |
-          CHARTS_REPO="https://x-access-token:${DEREK_TOKEN}@github.com/decofe/tempo-bench-charts.git"
-          TMP_DIR=$(mktemp -d)
-          STATE_FILE="replay-nightly-${BENCH_REPLAY_CHAIN}-last-feature-ref"
-
-          if git clone --depth 1 --branch state "${CHARTS_REPO}" "${TMP_DIR}" 2>/dev/null; then
-            true
-          else
-            git init "${TMP_DIR}"
-            git -C "${TMP_DIR}" remote add origin "${CHARTS_REPO}"
-          fi
-
-          mkdir -p "${TMP_DIR}/state"
-          echo "${FEATURE_REF}" > "${TMP_DIR}/state/${STATE_FILE}"
-          git -C "${TMP_DIR}" add state/
-          git -C "${TMP_DIR}" diff --cached --quiet && echo "No state change" && exit 0
-          git -C "${TMP_DIR}" -c user.name="github-actions" -c user.email="github-actions@github.com" \
-            commit -m "bench: update ${BENCH_REPLAY_CHAIN} replay nightly state to ${FEATURE_REF}"
-          git -C "${TMP_DIR}" push origin HEAD:state
-          rm -rf "${TMP_DIR}"
+        run: bash .github/scripts/bench-state.sh set "$GITHUB_REPOSITORY" "BENCH_REPLAY_${BENCH_REPLAY_CHAIN^^}_LAST_FEATURE_REF" "$FEATURE_REF"

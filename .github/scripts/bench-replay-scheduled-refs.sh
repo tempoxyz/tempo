@@ -23,9 +23,8 @@ set -euxo pipefail
 
 FORCE="${1:-false}"
 REPO="${GITHUB_REPOSITORY:-tempoxyz/tempo}"
-STATE_REPO="${BENCH_REPLAY_STATE_REPO:-decofe/tempo-bench-charts}"
 CHAIN="${BENCH_REPLAY_CHAIN:-mainnet}"
-STATE_FILE="${BENCH_REPLAY_STATE_FILE:-state/replay-nightly-${CHAIN}-last-feature-ref}"
+STATE_VARIABLE="BENCH_REPLAY_${CHAIN^^}_LAST_FEATURE_REF"
 STALE_THRESHOLD_HOURS="${BENCH_REPLAY_STALE_THRESHOLD_HOURS:-24}"
 
 case "$CHAIN" in
@@ -83,16 +82,10 @@ else
 fi
 echo "::endgroup::"
 
-# --- Step 3: Read last successful feature ref from charts repo state branch ---
+# --- Step 3: Read last successful feature ref from repository variables ---
 echo "::group::Reading persisted replay state"
-LAST_FEATURE_REF=""
-STATE_URL="https://raw.githubusercontent.com/${STATE_REPO}/state/${STATE_FILE}"
-if RAW=$(curl -sfL -H "Authorization: token ${DEREK_TOKEN}" "$STATE_URL"); then
-  LAST_FEATURE_REF=$(echo "$RAW" | tr -d '[:space:]')
-  echo "Previous replay feature ref: $LAST_FEATURE_REF"
-else
-  echo "No persisted replay state found"
-fi
+LAST_FEATURE_REF=$(bash "$(dirname "$0")/bench-state.sh" get "$REPO" "$STATE_VARIABLE")
+echo "Previous replay feature ref: ${LAST_FEATURE_REF:-none}"
 echo "::endgroup::"
 
 # --- Step 4: Determine baseline and skip logic ---
