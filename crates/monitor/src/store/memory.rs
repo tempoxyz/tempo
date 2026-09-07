@@ -24,7 +24,7 @@ use crate::{
     },
 };
 
-/// Test backend for [`MonitorStore`](super::MonitorStore).
+/// Test backend for [`MonitorStore`].
 #[derive(Debug)]
 pub struct InMemoryMonitorStore {
     bootstrap_policy: BootstrapPolicy,
