@@ -276,8 +276,6 @@ macro_rules! tempo_precompile {
         tempo_precompile!($id, env: &env, |$input| $impl)
     }};
     ($id:expr, env: $env:expr, |$input:ident| $impl:expr) => {{
-        // Only copy out what the precompile closure needs instead of cloning the whole env,
-        // this runs on every precompile call because the lookup result is not cached.
         let env: &PrecompileEnv = $env;
         let spec = env.cfg.spec;
         let amsterdam_eip8037_enabled = env.cfg.enable_amsterdam_eip8037;
