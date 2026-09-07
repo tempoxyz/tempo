@@ -75,8 +75,11 @@ fn network_storage_failures_stop_actor_and_allow_recovery() {
 
             // No second message should be needed to discover the missing handle,
             // and the actor must return normally rather than panic on an expect.
-            context
-                .timeout(Duration::from_secs(1), harness.wait_for_actor_exit())
+            let mut harness = context
+                .timeout(Duration::from_secs(1), async move {
+                    harness.wait_for_actor_exit().await;
+                    harness
+                })
                 .await
                 .expect("a network storage failure must terminate the actor immediately");
 
@@ -113,7 +116,7 @@ fn network_storage_failures_stop_actor_and_allow_recovery() {
                     .accepted()
             );
             let (_, ack) = context
-                .timeout(Duration::from_secs(1), receiver.recv())
+                .timeout(Duration::from_secs(1), async move { receiver.recv().await })
                 .await
                 .expect("reopened storage must accept the retried dealing")
                 .unwrap();
