@@ -66,6 +66,17 @@ impl<K, V: StorableType> Mapping<K, V> {
         self.base_slot
     }
 
+    /// Computes the entry's storage slot without constructing or caching a value handler.
+    ///
+    /// Uses the normal mapping-slot hashing path, including any global keccak caching.
+    #[inline]
+    pub fn slot_uncached(&self, key: K) -> U256
+    where
+        K: StorageKey,
+    {
+        key.mapping_slot(self.base_slot)
+    }
+
     /// Returns a `Handler` for the given key.
     ///
     /// This enables the composable pattern: `mapping.at(&key).read()`
@@ -241,6 +252,7 @@ mod tests {
         let derived_slot = &mapping[test_key];
         let expected_slot = test_key.mapping_slot(base_slot);
         assert_eq!(derived_slot.slot(), expected_slot);
+        assert_eq!(mapping.slot_uncached(test_key), derived_slot.slot());
     }
 
     #[test]
