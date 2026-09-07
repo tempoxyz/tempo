@@ -138,6 +138,7 @@ jobs:
         id: refs
         env:
           GH_TOKEN: ${{ github.token }}
+          DEREK_TOKEN: ${{ secrets.DEREK_TOKEN }}
           GITHUB_REPOSITORY: ${{ github.repository }}
           INPUT_FORCE: ${{ inputs.force || 'false' }}
           BENCH_REPLAY_CHAIN: ${{ steps.config.outputs.chain }}
@@ -256,18 +257,28 @@ jobs:
     name: save-state
     runs-on: ubuntu-latest
     steps:
-      - name: Prepare benchmark state
+      - name: Push state to charts repo
         env:
+          DEREK_TOKEN: ${{ secrets.DEREK_TOKEN }}
           FEATURE_REF: ${{ needs.resolve-refs.outputs.feature-ref }}
+          BENCH_REPLAY_CHAIN: ${{ needs.resolve-refs.outputs.chain }}
         run: |
-          mkdir -p benchmark-state
-          printf '%s\n' "$FEATURE_REF" > benchmark-state/last-feature-ref
+          CHARTS_REPO="https://x-access-token:${DEREK_TOKEN}@github.com/decofe/tempo-bench-charts.git"
+          TMP_DIR=$(mktemp -d)
+          STATE_FILE="replay-nightly-${BENCH_REPLAY_CHAIN}-last-feature-ref"
 
-      - name: Upload benchmark state
-        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
-        with:
-          name: replay-nightly-${{ needs.resolve-refs.outputs.chain }}-last-feature-ref
-          path: benchmark-state/last-feature-ref
-          retention-days: 90
-          if-no-files-found: error
-          overwrite: true
+          if git clone --depth 1 --branch state "${CHARTS_REPO}" "${TMP_DIR}" 2>/dev/null; then
+            true
+          else
+            git init "${TMP_DIR}"
+            git -C "${TMP_DIR}" remote add origin "${CHARTS_REPO}"
+          fi
+
+          mkdir -p "${TMP_DIR}/state"
+          echo "${FEATURE_REF}" > "${TMP_DIR}/state/${STATE_FILE}"
+          git -C "${TMP_DIR}" add state/
+          git -C "${TMP_DIR}" diff --cached --quiet && echo "No state change" && exit 0
+          git -C "${TMP_DIR}" -c user.name="github-actions" -c user.email="github-actions@github.com" \
+            commit -m "bench: update ${BENCH_REPLAY_CHAIN} replay nightly state to ${FEATURE_REF}"
+          git -C "${TMP_DIR}" push origin HEAD:state
+          rm -rf "${TMP_DIR}"

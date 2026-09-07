@@ -4,7 +4,7 @@
 #
 # The feature ref is the latest successful scheduled docker.yml build. The
 # baseline ref is the last successful scheduled replay feature ref persisted in
-# an Actions artifact. If the nightly Docker build is stale or unchanged, the
+# the charts repo. If the nightly Docker build is stale or unchanged, the
 # caller can alert, fail, or skip before occupying a benchmark runner.
 #
 # Usage: bench-replay-scheduled-refs.sh <force>
@@ -19,10 +19,11 @@
 #   is-stale
 #   stale-age-hours
 #   nightly-created
-set -euo pipefail
+set -euxo pipefail
 
 FORCE="${1:-false}"
 REPO="${GITHUB_REPOSITORY:-tempoxyz/tempo}"
+STATE_REPO="${BENCH_REPLAY_STATE_REPO:-decofe/tempo-bench-charts}"
 CHAIN="${BENCH_REPLAY_CHAIN:-mainnet}"
 STATE_FILE="${BENCH_REPLAY_STATE_FILE:-state/replay-nightly-${CHAIN}-last-feature-ref}"
 STALE_THRESHOLD_HOURS="${BENCH_REPLAY_STALE_THRESHOLD_HOURS:-24}"
@@ -82,10 +83,16 @@ else
 fi
 echo "::endgroup::"
 
-# --- Step 3: Read last successful feature ref from Actions artifacts ---
+# --- Step 3: Read last successful feature ref from charts repo state branch ---
 echo "::group::Reading persisted replay state"
-LAST_FEATURE_REF=$(node "$(dirname "${BASH_SOURCE[0]}")/bench-read-state.js" "$REPO" "${STATE_FILE##*/}" bench-replay-scheduled.yml)
-echo "Previous replay feature ref: ${LAST_FEATURE_REF:-none}"
+LAST_FEATURE_REF=""
+STATE_URL="https://raw.githubusercontent.com/${STATE_REPO}/state/${STATE_FILE}"
+if RAW=$(curl -sfL -H "Authorization: token ${DEREK_TOKEN}" "$STATE_URL"); then
+  LAST_FEATURE_REF=$(echo "$RAW" | tr -d '[:space:]')
+  echo "Previous replay feature ref: $LAST_FEATURE_REF"
+else
+  echo "No persisted replay state found"
+fi
 echo "::endgroup::"
 
 # --- Step 4: Determine baseline and skip logic ---

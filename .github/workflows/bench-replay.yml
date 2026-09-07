@@ -542,13 +542,6 @@ jobs:
             --baseline-name "$BASELINE_NAME" \
             --feature-name "$FEATURE_NAME"
 
-      - name: Upload chart attachments
-        id: upload-charts
-        if: success()
-        env:
-          GH_TOKEN: ${{ secrets.DEREK_TOKEN }}
-        run: node .github/scripts/bench-upload-charts.js "$GITHUB_REPOSITORY" "$BENCH_WORK_DIR/charts"
-
       - name: Upload results
         id: upload-results
         if: "!cancelled()"
@@ -556,6 +549,13 @@ jobs:
         with:
           name: tempo-bench-replay-${{ inputs.chain || 'mainnet' }}-results
           path: ${{ env.BENCH_WORK_DIR }}/
+
+      - name: Upload chart attachments
+        id: upload-charts
+        if: success()
+        env:
+          GH_TOKEN: ${{ secrets.DEREK_TOKEN }}
+        run: bash .github/scripts/bench-upload-charts.sh "$GITHUB_REPOSITORY" "$BENCH_WORK_DIR/charts" > "$BENCH_WORK_DIR/charts.md"
 
       - name: Compare & comment
         if: success() && env.BENCH_COMMENT_ID
@@ -572,7 +572,7 @@ jobs:
               comment = '⚠️ Replay benchmark completed but failed to generate comparison.';
             }
 
-            comment += fs.readFileSync(process.env.BENCH_WORK_DIR + '/charts/charts.md', 'utf8');
+            comment += fs.readFileSync(process.env.BENCH_WORK_DIR + '/charts.md', 'utf8');
 
             const jobUrl = process.env.BENCH_JOB_URL || `${context.serverUrl}/${context.repo.owner}/${context.repo.repo}/actions/runs/${context.runId}`;
             const chain = process.env.BENCH_CHAIN || 'mainnet';
@@ -601,7 +601,7 @@ jobs:
           if [ -f "$BENCH_WORK_DIR/comment.md" ]; then
             cat "$BENCH_WORK_DIR/comment.md" >> "$GITHUB_STEP_SUMMARY"
           fi
-          cat "$BENCH_WORK_DIR/charts/charts.md" >> "$GITHUB_STEP_SUMMARY"
+          cat "$BENCH_WORK_DIR/charts.md" >> "$GITHUB_STEP_SUMMARY"
 
       - name: Send Slack notification (success)
         if: success() && (env.BENCH_SLACK == 'always' || env.BENCH_SLACK == 'on-win')
