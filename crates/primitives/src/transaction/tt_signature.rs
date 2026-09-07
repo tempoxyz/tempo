@@ -115,8 +115,8 @@ fn split_p256_signature_fields(
 /// This enum contains only the base signature types: Secp256k1, P256, and WebAuthn.
 /// It does NOT support Keychain signatures to prevent recursion.
 ///
-/// Note: This enum uses custom RLP encoding via `to_bytes()` and does NOT derive Compact.
-/// The Compact encoding is handled at the parent struct level (e.g., KeyAuthorization).
+/// Custom RLP and Compact encoding writes signature bytes directly through
+/// [`Self::encode_bytes_into`], while decoding delegates to [`Self::from_bytes`].
 #[derive(Clone, Debug, PartialEq, Eq, Hash)]
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 #[cfg_attr(feature = "serde", serde(tag = "type", rename_all = "camelCase"))]
@@ -557,7 +557,8 @@ impl<'a> arbitrary::Arbitrary<'a> for KeychainSignature {
 
 /// AA transaction signature supporting multiple signature schemes
 ///
-/// Note: Uses custom Compact implementation that delegates to `to_bytes()` / `from_bytes()`.
+/// Custom RLP and Compact encoding writes signature bytes directly through
+/// [`Self::encode_bytes_into`], while decoding delegates to [`Self::from_bytes`].
 #[derive(Clone, Debug, PartialEq, Eq, Hash)]
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 #[cfg_attr(feature = "serde", serde(untagged, rename_all = "camelCase"))]
