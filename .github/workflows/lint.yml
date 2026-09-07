@@ -163,7 +163,15 @@ jobs:
   deny:
     permissions:
       contents: read
-    uses: tempoxyz/ci/.github/workflows/deny.yml@400fd3f4ee8c60dae645f7ea2c261aed6d66e5b5 # main
+    uses: tempoxyz/gh-actions/.github/workflows/rust-lint.yml@3a37d720685503bb084ba723ee981a6c1b120360
+    with:
+      run-clippy: false
+      run-fmt: false
+      run-typos: false
+      run-deny: true
+      deny-rust-toolchain: nightly
+    secrets:
+      STEP_SECURITY_API_KEY: ${{ secrets.STEP_SECURITY_API_KEY }}
 
   zepter:
     name: zepter
