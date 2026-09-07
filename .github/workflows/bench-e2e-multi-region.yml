@@ -518,6 +518,7 @@ jobs:
         run: |
           "$BENCH_REPO_DIR/scripts/run_comparison.sh" \
             --stage fetch-tempo-binaries \
+            --run-side feature \
             --cloud "$BENCH_INPUT_CLOUD" \
             --gcp-project-id "$BENCH_GCP_PROJECT_ID" \
             --benchmark-id "$BENCHMARK_ID" \
@@ -572,6 +573,7 @@ jobs:
         run: |
           "$BENCH_REPO_DIR/scripts/run_comparison.sh" \
             --stage generate-initial-validator-state \
+            --run-side feature \
             --cloud "$BENCH_INPUT_CLOUD" \
             --gcp-project-id "$BENCH_GCP_PROJECT_ID" \
             --benchmark-id "$BENCHMARK_ID" \
@@ -619,6 +621,7 @@ jobs:
         run: |
           "$BENCH_REPO_DIR/scripts/run_comparison.sh" \
             --stage initialize-validator-state \
+            --run-side feature \
             --cloud "$BENCH_INPUT_CLOUD" \
             --gcp-project-id "$BENCH_GCP_PROJECT_ID" \
             --benchmark-id "$BENCHMARK_ID" \
@@ -666,6 +669,7 @@ jobs:
         run: |
           "$BENCH_REPO_DIR/scripts/run_comparison.sh" \
             --stage run-benchmarks \
+            --run-side feature \
             --cloud "$BENCH_INPUT_CLOUD" \
             --gcp-project-id "$BENCH_GCP_PROJECT_ID" \
             --benchmark-id "$BENCHMARK_ID" \
