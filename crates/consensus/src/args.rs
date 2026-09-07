@@ -92,6 +92,15 @@ pub struct Args {
     #[arg(long = "consensus.worker-threads", default_value_t = 3)]
     pub worker_threads: usize,
 
+    /// Deprecated compatibility flag. P2P queue capacities are derived from
+    /// peer-set limits and channel quotas, so this value is ignored.
+    #[arg(
+        long = "consensus.message-backlog",
+        value_name = "COUNT",
+        help = "Deprecated: ignored; P2P queue capacities are derived from peer-set limits and channel quotas."
+    )]
+    pub message_backlog: Option<usize>,
+
     /// The overall number of items that can be received on the various consensus
     /// channels before blocking.
     #[arg(long = "consensus.mailbox-size", default_value = "16384")]
@@ -574,6 +583,25 @@ mod tests {
         ] {
             parse(&["--dev", flag, "1ms"]);
         }
+    }
+
+    #[test]
+    fn deprecated_message_backlog_is_only_set_when_supplied() {
+        assert_eq!(parse(&["--dev"]).consensus.message_backlog, None);
+        for value in ["0", "16384", "32768"] {
+            assert_eq!(
+                parse(&["--dev", "--consensus.message-backlog", value])
+                    .consensus
+                    .message_backlog,
+                Some(value.parse().unwrap()),
+            );
+        }
+        assert_eq!(
+            parse(&["--dev", "--consensus.message-backlog=16384"])
+                .consensus
+                .message_backlog,
+            Some(16384),
+        );
     }
 
     fn encrypt(plaintext: &[u8], passphrase: &str) -> Vec<u8> {

@@ -453,6 +453,14 @@ pub fn tempo_main_with(mut overrides: TempoOverrides) -> eyre::Result<()> {
         |spec: Arc<TempoChainSpec>| (TempoEvmConfig::new(spec.clone()), TempoConsensus::new(spec));
 
     cli.run_with_components::<TempoNode>(components, async move |builder, args| {
+        if let Some(value) = args.consensus.message_backlog {
+            warn!(
+                flag = "--consensus.message-backlog",
+                value,
+                "deprecated flag ignored; P2P queue capacities are derived from peer-set limits and channel quotas"
+            );
+        }
+
         // Register before launch because each RLPx session negotiates its
         // subprotocols during the handshake. The startup channel passes the
         // consensus half of the transport to the consensus thread.
