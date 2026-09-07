@@ -1532,10 +1532,7 @@ async fn test_key_authorization_witness_burn_evicts_pending_replay() -> eyre::Re
 async fn test_t6_authorize_admin_key_abi_e2e() -> eyre::Result<()> {
     reth_tracing::init_test_tracing();
 
-    let mut setup = TestNodeBuilder::new()
-        .with_schedule(ForkSchedule::DevnetAt(TempoHardfork::T10))
-        .build_with_node_access()
-        .await?;
+    let mut setup = TestNodeBuilder::new().build_with_node_access().await?;
     let root_signer = MnemonicBuilder::from_phrase(TEST_MNEMONIC).build()?;
     let root_addr = root_signer.address();
     let provider = ProviderBuilder::new_with_network::<TempoNetwork>()
@@ -1612,10 +1609,7 @@ async fn test_t6_inline_admin_key_authorization_e2e() -> eyre::Result<()> {
 async fn test_t6_admin_key_authorizes_child_admin_key_e2e() -> eyre::Result<()> {
     reth_tracing::init_test_tracing();
 
-    let mut setup = TestNodeBuilder::new()
-        .with_schedule(ForkSchedule::DevnetAt(TempoHardfork::T10))
-        .build_with_node_access()
-        .await?;
+    let mut setup = TestNodeBuilder::new().build_with_node_access().await?;
     let root_signer = MnemonicBuilder::from_phrase(TEST_MNEMONIC).build()?;
     let root_addr = root_signer.address();
     let provider = ProviderBuilder::new_with_network::<TempoNetwork>()
