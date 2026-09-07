@@ -5,7 +5,7 @@
 //! ancestry.
 
 use std::{
-    collections::{HashMap, HashSet},
+    collections::HashMap,
     sync::Arc,
     time::{Duration, SystemTime},
 };
@@ -276,18 +276,17 @@ impl NotarizedTree {
                 .get(&self.pending_head.digest)
                 .map(|entry| entry.block.height())
         };
-        // The head's ancestry held by the tree is the canonical part.
-        let mut canonical = HashSet::new();
+        // Delivered blocks minus the delivered ones on the head's ancestry,
+        // which is the canonical part the tree holds.
+        let mut uncanonicalized_blocks =
+            self.blocks.values().filter(|entry| entry.delivered).count();
         let mut digest = self.local_head.1;
         while let Some(entry) = self.blocks.get(&digest) {
-            canonical.insert(digest);
+            if entry.delivered {
+                uncanonicalized_blocks -= 1;
+            }
             digest = entry.block.parent_digest();
         }
-        let uncanonicalized_blocks = self
-            .blocks
-            .iter()
-            .filter(|(digest, entry)| entry.delivered && !canonical.contains(digest))
-            .count();
         Depths {
             blocks: self.blocks.len(),
             finalization_lag: network_finalized_height
