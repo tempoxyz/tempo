@@ -822,16 +822,10 @@ struct VerifyResult {
     block: Option<Block>,
 }
 
-/// Validates `block` against the execution layer through the executor
-/// actor, which serializes the new-payload request with all other
-/// execution-layer work and records the block's body for the
-/// notarized-chain convergence.
+/// Verifies `block` through the executor.
 ///
-/// Returns the EL validation duration when validation reached the execution
-/// layer and succeeded, or `None` if the block is invalid. Returns an error
-/// if validation was not possible, for example if the execution layer does
-/// not know the block's parent or the request was superseded by a
-/// newer-round request.
+/// Returns the time spent in engine calls for a valid block, `None` for an
+/// invalid block, or an error if verification could not complete.
 async fn verify_block(
     context: Context<Digest, PublicKey>,
     epoch_strategy: &FixedEpocher,

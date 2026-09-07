@@ -1,6 +1,6 @@
 //! Scenario tests for the slot shared by proposal building and validation:
 //! only the newest queued consensus request survives, regardless of request
-//! kind, while an already executing request runs to completion.
+//! kind, while the current execution-layer task runs to completion.
 
 use std::time::Duration;
 
@@ -60,18 +60,15 @@ fn build_supersedes_queued_verification_while_another_request_executes() {
         release_active
             .send(())
             .expect("active validation should still be gated");
-        assert!(
-            active
-                .await
-                .expect("the active verification should complete")
-                .is_some(),
-        );
+        let _ = active
+            .await
+            .expect_err("the replaced verification's result is discarded");
         let payload = build.await.expect("the superseding build should complete");
         let (block, _) = payload.into_execution_payload();
         assert_eq!(Digest(block.hash()), proposal_digest);
         assert_eq!(
             h.execution.new_payloads(),
-            vec![active_digest],
+            vec![active_digest, GENESIS],
             "the superseded verification must never reach the execution layer",
         );
     });
@@ -82,13 +79,19 @@ fn verification_supersedes_a_queued_build() {
     deterministic::Runner::default().start(|context| async move {
         let mut h = Harness::start_at_genesis(&context);
 
-        // Both requests defer on b1 while marshal is about to finalize it,
-        // forcing them to arbitrate in the shared pending slot.
+        // An active finalization holds the slot. The build remains queued
+        // and can therefore be replaced by the newer verification.
         let b1 = make_block(1, 1, GENESIS);
         let d1 = b1.digest();
         let candidate = make_block(3, 2, d1);
         let candidate_digest = candidate.digest();
+        let release = h
+            .execution
+            .script_delayed_new_payload(d1, Ok(PayloadStatusEnum::Valid));
         h.deliver_tip(round(1), 1, d1);
+        let finalized = h.deliver_finalized(b1);
+        h.wait_until(|| h.execution.new_payloads() == vec![d1])
+            .await;
 
         let build = h.build(round(2), d1);
         h.run_for(Duration::from_millis(50)).await;
@@ -105,9 +108,12 @@ fn verification_supersedes_a_queued_build() {
         build
             .await
             .expect_err("the newer verification must supersede the queued build");
-        h.deliver_finalized(b1)
+        release
+            .send(())
+            .expect("finalization must still be running");
+        finalized
             .await
-            .expect("the deferred parent should be acknowledged");
+            .expect("the finalized parent should be acknowledged");
         assert!(
             verify
                 .await
@@ -126,7 +132,43 @@ fn verification_supersedes_a_queued_build() {
 }
 
 #[test_traced]
-fn same_round_verification_does_not_supersede_a_queued_build() {
+fn new_verification_replaces_the_request_but_waits_for_active_delivery() {
+    deterministic::Runner::default().start(|context| async move {
+        let h = Harness::start_at_genesis(&context);
+        let parent = make_block(1, 1, GENESIS);
+        let candidate = make_block(2, 2, parent.digest());
+        let old_digest = candidate.digest();
+        let release = h
+            .execution
+            .script_delayed_new_payload(old_digest, Ok(PayloadStatusEnum::Syncing));
+        let mut old = Box::pin(h.verify(round(2), candidate));
+        assert!(futures::poll!(&mut old).is_pending());
+        h.wait_until(|| h.execution.new_payloads() == vec![old_digest])
+            .await;
+
+        let candidate = make_block(3, 1, GENESIS);
+        let new_digest = candidate.digest();
+        let mut new = Box::pin(h.verify(round(3), candidate));
+        assert!(futures::poll!(&mut new).is_pending());
+        h.run_for(Duration::from_millis(50)).await;
+        let _ = old.await.expect_err("the old walk was superseded");
+        assert!(futures::poll!(&mut new).is_pending());
+        assert_eq!(h.execution.new_payloads(), vec![old_digest]);
+
+        release
+            .send(())
+            .expect("the active engine call must not be canceled");
+        new.await.unwrap().unwrap();
+        assert_eq!(h.execution.new_payloads(), vec![old_digest, new_digest]);
+        assert!(
+            h.marshal.subscribe_log().is_empty(),
+            "the old walk must not fetch its parent"
+        );
+    });
+}
+
+#[test_traced]
+fn same_round_verification_waits_for_an_active_build() {
     deterministic::Runner::default().start(|context| async move {
         let mut h = Harness::start_at_genesis(&context);
 
@@ -136,26 +178,26 @@ fn same_round_verification_does_not_supersede_a_queued_build() {
         let candidate = make_block(2, 2, d1);
         h.deliver_tip(round(1), 1, d1);
 
-        // Simplex views are strictly monotonically increasing, and propose and
-        // verify are mutually exclusive within a view. A request from the same
-        // view therefore cannot represent later consensus progress. The build
-        // arrives first and defers on b1, so the same-view verification is
-        // stale on arrival and must not supersede it.
+        // Once the build starts, queue arbitration only considers queued
+        // requests. Even a same-round verification can wait behind it.
         h.execution.script_built_payload(built_payload(&proposal));
         let build = h.build(round(2), d1);
         h.run_for(Duration::from_millis(50)).await;
 
-        let _ = h
-            .verify(round(2), candidate)
-            .await
-            .expect_err("a same-round verification must not replace the queued build");
+        let mut verify = Box::pin(h.verify(round(2), candidate));
+        assert!(futures::poll!(&mut verify).is_pending());
+        h.run_for(Duration::from_millis(10)).await;
+        assert!(h.execution.new_payloads().is_empty());
 
+        assert!(h.marshal.fulfill_subscription(d1, b1.clone()));
+        let payload = build.await.expect("the active build should complete");
+        verify
+            .await
+            .expect("the queued verification should run next")
+            .unwrap();
         h.deliver_finalized(b1)
             .await
             .expect("the deferred parent should be acknowledged");
-        let payload = build
-            .await
-            .expect("the first same-round request should win");
         let (block, _) = payload.into_execution_payload();
         assert_eq!(Digest(block.hash()), proposal.digest());
         assert!(

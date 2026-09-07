@@ -16,20 +16,11 @@ pub(crate) struct Mailbox {
 }
 
 impl Mailbox {
-    /// Requests the agent to verify the block proposed in `context` against the
-    /// execution layer.
+    /// Verifies `block` against the execution layer, fetching missing ancestors
+    /// as needed. The newest context's parent selects the pending head.
     ///
-    /// The parent in the newest request context selects the pending head,
-    /// independently of whether the request completes or is canceled. Verifying
-    /// the candidate does not make the candidate itself the pending head.
-    ///
-    /// The block is validated via a single new-payload request, which requires
-    /// the execution layer to already know the block's parent. If it does not,
-    /// the request fails (the executor drops the response channel) and the
-    /// executor repairs the gap in the background instead.
-    ///
-    /// The round arbitrates the slot shared with build requests: only a
-    /// request from a newer round replaces a queued one.
+    /// Returns the time spent in engine calls for a valid block, `None` for an
+    /// invalid block, or an error if verification could not complete.
     pub(crate) async fn verify_block(
         &self,
         context: Context<Digest, PublicKey>,
@@ -64,12 +55,9 @@ impl Mailbox {
     /// Conversely, the executor dropping its sender means the build failed;
     /// the executor logs the cause.
     ///
-    /// The build waits for the execution layer's head to converge on its parent.
-    /// It is dropped if that parent is superseded by a newer request's parent or
-    /// by finality before the build starts.
-    ///
-    /// The round arbitrates the slot shared with validation requests: only a
-    /// request from a newer round replaces a queued one.
+    /// Fetches and delivers the parent, then starts the build if it is VALID.
+    /// A newer request can replace a queued build. Once started, the build
+    /// continues until it finishes, fails, or its receiver is dropped.
     pub(crate) fn build_proposal(
         &self,
         context: Context<Digest, PublicKey>,
