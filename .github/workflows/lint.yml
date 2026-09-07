@@ -18,8 +18,14 @@ env:
   RUSTC_WRAPPER: "sccache"
 
 jobs:
+  cargo-cooldown:
+    permissions:
+      contents: read
+    uses: ./.github/workflows/cargo-cooldown.yml
+
   clippy:
     name: clippy
+    needs: cargo-cooldown
     runs-on: depot-ubuntu-latest-32
     timeout-minutes: 45
     env:
@@ -68,6 +74,7 @@ jobs:
       - run: cargo fmt --all --check
 
   crate-checks:
+    needs: cargo-cooldown
     runs-on: depot-ubuntu-latest-4
     timeout-minutes: 60
     if: github.event_name == 'push'
@@ -88,12 +95,13 @@ jobs:
           version: v0.15.0
       - uses: tempoxyz/gh-actions/vendor/taiki-e/install-action@3626124474a987bc74b41fc7ae65b2e23f8e4e4e
         with:
-          tool: cargo-hack
-      - run: cargo hack check --feature-powerset --depth 1 --partition ${{ matrix.partition }}/2
+          tool: cargo-hack@0.6.45
+      - run: cargo hack check --locked --feature-powerset --depth 1 --partition ${{ matrix.partition }}/2
 
   docs:
     if: ${{ github.repository == 'tempoxyz/tempo' }}
     name: docs
+    needs: cargo-cooldown
     runs-on: depot-ubuntu-latest-32
     timeout-minutes: 30
     permissions:
@@ -112,7 +120,7 @@ jobs:
         with:
           version: v0.15.0
       - name: Build documentation
-        run: cargo doc --workspace --all-features --no-deps --document-private-items
+        run: cargo doc --workspace --all-features --locked --no-deps --document-private-items
         env:
           RUSTDOCFLAGS: --cfg docsrs -D warnings --show-type-layout --generate-link-to-definition --enable-index-page -Zunstable-options
       - name: Exclude rustdocs from indexing
@@ -167,6 +175,7 @@ jobs:
 
   zepter:
     name: zepter
+    needs: cargo-cooldown
     runs-on: depot-ubuntu-latest
     timeout-minutes: 30
     permissions:
@@ -183,12 +192,14 @@ jobs:
       - uses: tempoxyz/gh-actions/actions/cargo-install@ab45d76f6e7420a094281a22aee1973ecc0754f8
         with:
           tool: zepter
+          version: "1.88.1"
       - name: Eagerly pull dependencies
         run: cargo metadata --format-version=1 --locked > /dev/null
       - run: zepter run check
 
   no-std:
     name: no-std
+    needs: cargo-cooldown
     runs-on: depot-ubuntu-latest
     timeout-minutes: 30
     permissions:

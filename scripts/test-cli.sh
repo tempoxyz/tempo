@@ -18,7 +18,7 @@ run_ok() {
 TEMPO="${1:-$REPO_ROOT/target/debug/tempo}"
 if [[ ! -x "$TEMPO" ]]; then
     echo "Building tempo..."
-    cargo build -p tempo --manifest-path "$REPO_ROOT/Cargo.toml"
+    cargo build --locked -p tempo --manifest-path "$REPO_ROOT/Cargo.toml"
 fi
 echo "Testing: $TEMPO"
 

@@ -14,8 +14,15 @@ env:
   REGISTRY: ghcr.io/tempoxyz
 
 jobs:
+  cargo-cooldown:
+    name: Cargo dependency cooldown
+    permissions:
+      contents: read
+    uses: ./.github/workflows/cargo-cooldown.yml
+
   build-and-push:
     name: Build and Push Profiling Docker Images
+    needs: cargo-cooldown
     runs-on: depot-ubuntu-latest-16
     permissions:
       contents: read

@@ -12,7 +12,7 @@ no_std_crates=(
 
 for crate in "${no_std_crates[@]}"; do
     echo "Checking $crate..."
-    cargo +stable build -p "$crate" --target riscv32imac-unknown-none-elf --no-default-features
+    cargo +stable build --locked -p "$crate" --target riscv32imac-unknown-none-elf --no-default-features
 done
 
 echo "All no_std checks passed!"

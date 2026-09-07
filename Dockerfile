@@ -16,7 +16,7 @@ RUN --mount=type=cache,target=/usr/local/cargo/registry,sharing=locked,id=cargo-
     --mount=type=cache,target=/usr/local/cargo/git,sharing=locked,id=cargo-git-${TARGETARCH} \
     --mount=type=cache,target=$SCCACHE_DIR,sharing=locked,id=sccache-${TARGETARCH} \
     RUSTFLAGS="-C link-arg=-fuse-ld=mold ${EXTRA_RUSTFLAGS}" \
-    cargo build --profile ${RUST_PROFILE} \
+    cargo build --locked --profile ${RUST_PROFILE} \
         --bin tempo --features "${RUST_FEATURES},localnet" \
         --bin tempo-localnet --features "${RUST_FEATURES},localnet" \
         --bin tempo-sidecar \

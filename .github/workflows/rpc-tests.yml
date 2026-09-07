@@ -24,8 +24,14 @@ env:
   TEMPO_DEVNET_RPC_URL: ${{ secrets.TEMPO_DEVNET_RPC_URL || 'https://rpc.devnet.tempoxyz.dev' }}
 
 jobs:
+  cargo-cooldown:
+    permissions:
+      contents: read
+    uses: ./.github/workflows/cargo-cooldown.yml
+
   rpc-tests:
     name: rpc-tests (${{ matrix.network }})
+    needs: cargo-cooldown
     runs-on: depot-ubuntu-latest-4
     timeout-minutes: 30
     permissions:
@@ -51,12 +57,12 @@ jobs:
       - name: Build RPC tests
         id: build
         continue-on-error: ${{ matrix.allow_failure }}
-        run: cargo nextest run --profile ci-rpc -E 'package(tempo-node) & binary(it) & test(/test_matrices_${{ matrix.network }}/)' --no-run
+        run: cargo nextest run --locked --profile ci-rpc -E 'package(tempo-node) & binary(it) & test(/test_matrices_${{ matrix.network }}/)' --no-run
       - name: Run RPC tests
         id: run
         if: steps.build.outcome == 'success'
         continue-on-error: ${{ matrix.allow_failure }}
-        run: cargo nextest run --profile ci-rpc -E 'package(tempo-node) & binary(it) & test(/test_matrices_${{ matrix.network }}/)'
+        run: cargo nextest run --locked --profile ci-rpc -E 'package(tempo-node) & binary(it) & test(/test_matrices_${{ matrix.network }}/)'
       - name: Report allowed devnet failure
         if: matrix.allow_failure && (steps.build.outcome == 'failure' || steps.run.outcome == 'failure')
         run: echo '::warning::Devnet RPC tests failed, but this check is allowed to fail so merge queue processing can continue.'

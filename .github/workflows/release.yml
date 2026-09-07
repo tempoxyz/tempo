@@ -32,6 +32,11 @@ env:
   RUST_BACKTRACE: full
 
 jobs:
+  cargo-cooldown:
+    permissions:
+      contents: read
+    uses: ./.github/workflows/cargo-cooldown.yml
+
   get-version:
     name: Get Version
     runs-on: ubuntu-latest
@@ -73,12 +78,12 @@ jobs:
         run: |
           tag="$TAG"
           tag=${tag#v}
-          cargo_ver=$(cargo metadata --no-deps --format-version 1 | jq -r '.packages[] | select(.name == "tempo").version')
+          cargo_ver=$(cargo metadata --locked --no-deps --format-version 1 | jq -r '.packages[] | select(.name == "tempo").version')
           [[ "$tag" == "$cargo_ver"* ]] || { echo "Tag $tag doesn't match the Cargo version $cargo_ver"; exit 1; }
 
   build-release:
     name: Build Release Binaries
-    needs: get-version
+    needs: [cargo-cooldown, get-version]
     environment: release
     runs-on: ${{ matrix.platform.os }}
     permissions:

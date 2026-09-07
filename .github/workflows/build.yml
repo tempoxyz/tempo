@@ -24,8 +24,14 @@ env:
   RUSTC_WRAPPER: "sccache"
 
 jobs:
+  cargo-cooldown:
+    permissions:
+      contents: read
+    uses: ./.github/workflows/cargo-cooldown.yml
+
   build:
     name: Build
+    needs: cargo-cooldown
     runs-on: depot-ubuntu-latest-16
     permissions:
       contents: read
@@ -40,7 +46,7 @@ jobs:
       - uses: tempoxyz/gh-actions/actions/setup-mold@ab45d76f6e7420a094281a22aee1973ecc0754f8
       - uses: tempoxyz/gh-actions/vendor/mozilla-actions/sccache-action@3626124474a987bc74b41fc7ae65b2e23f8e4e4e
       - name: Build
-        run: cargo build --bin ${{ matrix.binary }} --profile ${{ inputs.profile || 'dev' }}
+        run: cargo build --locked --bin ${{ matrix.binary }} --profile ${{ inputs.profile || 'dev' }}
       - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         id: binary_upload
         with:
