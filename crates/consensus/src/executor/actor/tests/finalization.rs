@@ -7,11 +7,13 @@
 use alloy_rpc_types_engine::{ForkchoiceState, PayloadStatusEnum};
 use commonware_macros::test_traced;
 use commonware_runtime::{Runner as _, deterministic};
+use futures::channel::oneshot;
+use tempo_payload_types::TempoBuiltPayload;
 use tempo_primitives::ed25519::PublicKey;
 
 use super::harness::{
     ElCall, ForkchoiceStateExt as _, GENESIS, Harness, HarnessOptions, STARTUP_FCU,
-    STARTUP_FCU_CALL, make_block, make_block_with_proposer, round,
+    STARTUP_FCU_CALL, built_payload, make_block, make_block_with_proposer, round,
 };
 use crate::consensus::Digest;
 
@@ -196,35 +198,40 @@ fn new_payload_transport_error_is_fatal() {
 }
 
 /// Converges the head onto `a1 -> a2` (branch A) through validations and
-/// pending-head reports, then reports an unknown block as the pending head
-/// so that the pending head's ancestry is not walkable: the forkchoice step
+/// a build, then requests another build on an unknown parent so that
+/// the pending head's ancestry is not walkable: the forkchoice step
 /// cannot derive the head from the tree and must consult the execution
 /// layer's canonical chain when finality advances.
-async fn converge_on_branch_a_with_unwalkable_pending_head(h: &Harness) -> (Digest, Digest) {
+async fn converge_on_branch_a_with_unwalkable_pending_head(
+    h: &Harness,
+) -> (Digest, Digest, oneshot::Receiver<TempoBuiltPayload>) {
     let a1 = make_block(1, 1, GENESIS);
     let a2 = make_block(2, 2, a1.digest());
     let (da1, da2) = (a1.digest(), a2.digest());
-    for (view, block, digest) in [(1, a1, da1), (2, a2, da2)] {
+    for (view, block) in [(1, a1), (2, a2)] {
         h.verify(round(view), block)
             .await
             .expect("verification should complete")
             .expect("block should be valid");
-        h.report_pending_head(view + 1, view, digest);
-        h.wait_until(|| h.execution.head() == digest).await;
     }
+    let proposal = make_block(3, 3, da2);
+    h.execution.script_built_payload(built_payload(&proposal));
+    h.build(round(3), da2)
+        .await
+        .expect("build on branch A should complete");
 
     let unknown = make_block(4, 3, da2).digest();
-    h.report_pending_head(5, 4, unknown);
+    let build = h.build_on(round(5), 4, unknown);
     h.wait_until(|| h.marshal.open_subscriptions() == vec![(unknown, round(4))])
         .await;
-    (da1, da2)
+    (da1, da2, build)
 }
 
 #[test_traced]
 fn canonical_block_lookup_error_is_fatal() {
     deterministic::Runner::default().start(|context| async move {
         let mut h = Harness::start_at_genesis(&context);
-        let (_, da2) = converge_on_branch_a_with_unwalkable_pending_head(&h).await;
+        let (_, da2, _build) = converge_on_branch_a_with_unwalkable_pending_head(&h).await;
         let fcus_before = h.execution.fcus();
 
         // b1 finalizes below the head on another branch. Whether the head
@@ -255,7 +262,7 @@ fn canonical_block_lookup_error_is_fatal() {
 fn finalizing_below_a_head_on_another_branch_moves_the_head() {
     deterministic::Runner::default().start(|context| async move {
         let mut h = Harness::start_at_genesis(&context);
-        let (_, da2) = converge_on_branch_a_with_unwalkable_pending_head(&h).await;
+        let (_, da2, _build) = converge_on_branch_a_with_unwalkable_pending_head(&h).await;
 
         // b1 finalizes at height 1 on branch B while the head is a2 at
         // height 2 on branch A. The head does not descend from the
@@ -278,7 +285,7 @@ fn finalizing_below_a_head_on_another_branch_moves_the_head() {
 fn finalizing_below_a_descending_head_keeps_the_head() {
     deterministic::Runner::default().start(|context| async move {
         let mut h = Harness::start_at_genesis(&context);
-        let (da1, da2) = converge_on_branch_a_with_unwalkable_pending_head(&h).await;
+        let (da1, da2, _build) = converge_on_branch_a_with_unwalkable_pending_head(&h).await;
 
         // a1 finalizes below the head a2 while the pending head's ancestry
         // is not walkable. The canonical chain shows that the head descends
@@ -466,14 +473,13 @@ fn finalizing_a_canonical_ancestor_leaves_the_head_untouched() {
             .await
             .expect("b1 should validate")
             .expect("b1 should be valid");
-        h.report_pending_head(2, 1, d1);
-        h.wait_until(|| h.execution.head() == d1).await;
-
         h.verify(round(2), b2.clone())
             .await
             .expect("b2 should validate")
             .expect("b2 should be valid");
-        h.report_pending_head(3, 2, d2);
+        let proposal = make_block(3, 3, d2);
+        h.execution.script_built_payload(built_payload(&proposal));
+        h.build(round(3), d2).await.expect("build should complete");
         h.wait_until(|| h.execution.head() == d2).await;
 
         h.deliver_tip(round(1), 1, d1);
@@ -507,7 +513,9 @@ fn finalizing_a_conflicting_branch_moves_the_head() {
             .await
             .expect("a1 should validate")
             .expect("a1 should be valid");
-        h.report_pending_head(2, 1, da1);
+        let proposal = make_block(2, 2, da1);
+        h.execution.script_built_payload(built_payload(&proposal));
+        h.build(round(2), da1).await.expect("build should complete");
         h.wait_until(|| h.execution.head() == da1).await;
 
         h.deliver_tip(round(2), 1, db1);
