@@ -546,7 +546,7 @@ jobs:
             --no-slack "true" \
             --bench-args "$BENCH_INPUT_BENCH_ARGS" \
             --run-pairs "$BENCH_INPUT_RUN_PAIRS" \
-            --run-side feature \
+            --run-side comparison \
             --clickhouse-run "$BENCH_INPUT_CLICKHOUSE_RUN" \
             --clickhouse-metrics-file "$GITHUB_WORKSPACE/contrib/bench/clickhouse-metrics.txt" \
             --nodes "$BENCH_INPUT_VALIDATOR_COUNT" \
@@ -601,7 +601,7 @@ jobs:
             --no-slack "true" \
             --bench-args "$BENCH_INPUT_BENCH_ARGS" \
             --run-pairs "$BENCH_INPUT_RUN_PAIRS" \
-            --run-side feature \
+            --run-side comparison \
             --clickhouse-run "$BENCH_INPUT_CLICKHOUSE_RUN" \
             --clickhouse-metrics-file "$GITHUB_WORKSPACE/contrib/bench/clickhouse-metrics.txt" \
             --nodes "$BENCH_INPUT_VALIDATOR_COUNT" \
@@ -649,7 +649,7 @@ jobs:
             --no-slack "true" \
             --bench-args "$BENCH_INPUT_BENCH_ARGS" \
             --run-pairs "$BENCH_INPUT_RUN_PAIRS" \
-            --run-side feature \
+            --run-side comparison \
             --clickhouse-run "$BENCH_INPUT_CLICKHOUSE_RUN" \
             --clickhouse-metrics-file "$GITHUB_WORKSPACE/contrib/bench/clickhouse-metrics.txt" \
             --nodes "$BENCH_INPUT_VALIDATOR_COUNT" \
@@ -697,7 +697,7 @@ jobs:
             --no-slack "true" \
             --bench-args "$BENCH_INPUT_BENCH_ARGS" \
             --run-pairs "$BENCH_INPUT_RUN_PAIRS" \
-            --run-side feature \
+            --run-side comparison \
             --clickhouse-run "$BENCH_INPUT_CLICKHOUSE_RUN" \
             --clickhouse-metrics-file "$GITHUB_WORKSPACE/contrib/bench/clickhouse-metrics.txt" \
             --nodes "$BENCH_INPUT_VALIDATOR_COUNT" \
