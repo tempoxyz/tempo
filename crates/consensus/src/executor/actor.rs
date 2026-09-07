@@ -136,6 +136,12 @@ pub(crate) struct Actor<TContext, TExecutionLayer, TMarshal> {
     /// last forkchoice update, see [`DELIVERIES_PER_FORKCHOICE_UPDATE`].
     deliveries_since_forkchoice: usize,
 
+    /// The round of the newest consensus context whose parent was recorded
+    /// as the pending head. Reports come from concurrently running proposal
+    /// and verification handlers and can arrive out of order; an older
+    /// round's report must not supersede a newer one.
+    pending_head_reported_in: Round,
+
     /// The latest not-yet-started consensus request - validating a proposed
     /// block or building one - keyed by its round. The two kinds share one
     /// slot because a node either verifies or proposes in a round, never
@@ -332,6 +338,7 @@ where
             pending_finalizations: VecDeque::new(),
             pending_acknowledgements: VecDeque::new(),
             deliveries_since_forkchoice: 0,
+            pending_head_reported_in: finalized_tip.0,
             pending_consensus_request: None,
 
             execution_task: OptionFuture::none(),
@@ -1009,6 +1016,15 @@ where
         fields(digest = %context.parent.1),
     )]
     fn record_pending_head(&mut self, context: Context<Digest, PublicKey>) {
+        if context.round < self.pending_head_reported_in {
+            debug!(
+                round = %context.round,
+                newest = %self.pending_head_reported_in,
+                "ignoring pending head report from an older round",
+            );
+            return;
+        }
+        self.pending_head_reported_in = context.round;
         self.notarized_tree.set_pending_head(
             Round::new(context.round.epoch(), context.parent.0),
             context.parent.1,

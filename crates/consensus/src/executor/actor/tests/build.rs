@@ -239,6 +239,37 @@ fn build_on_a_head_the_network_finalized_past_is_dropped() {
 }
 
 #[test_traced]
+fn late_pending_head_report_from_an_older_round_is_ignored() {
+    deterministic::Runner::default().start(|context| async move {
+        let h = Harness::start_at_genesis(&context);
+
+        // Two validated siblings; consensus moves on to build on b1.
+        let a1 = make_block(1, 1, GENESIS);
+        let b1 = make_block(2, 1, GENESIS);
+        let (da1, db1) = (a1.digest(), b1.digest());
+        for (view, block) in [(1, a1), (2, b1)] {
+            h.verify(round(view), block)
+                .await
+                .expect("verification should complete")
+                .expect("block should be valid");
+        }
+        h.report_pending_head(4, 2, db1);
+        h.wait_until(|| h.execution.head() == db1).await;
+
+        // A report from an older context arrives late (the handlers run
+        // concurrently). It must not move the pending head back onto a1
+        // and cost the node its proposal on b1.
+        h.report_pending_head(3, 1, da1);
+        let proposal = make_block(5, 2, db1);
+        h.execution.script_built_payload(built_payload(&proposal));
+        h.build(round(5), db1)
+            .await
+            .expect("the build on the current pending head must complete");
+        assert_eq!(h.execution.head(), db1);
+    });
+}
+
+#[test_traced]
 fn queued_build_is_dropped_when_finality_advances_past_its_parent() {
     deterministic::Runner::default().start(|context| async move {
         let mut h = Harness::start_at_genesis(&context);
