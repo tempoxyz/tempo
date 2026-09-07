@@ -1,29 +1,81 @@
-name: Benchmark state smoke
+name: replay artifact state smoke
 on:
   workflow_dispatch:
-permissions:
-  contents: read
+    inputs:
+      chain:
+        type: string
+        default: mainnet
+      expected:
+        type: string
+        default: ""
+      feature:
+        type: string
+        default: "71e43d6d6529b72ce55ae1726023cd28048cb3b5"
+      fail:
+        type: boolean
+        default: false
+permissions: {}
 jobs:
-  state:
+  resolve-refs:
     runs-on: ubuntu-latest
-    env:
-      GH_TOKEN: ${{ secrets.DEREK_UPDATE_RETH_TOKEN }}
-      STATE_NAME: BENCH_SMOKE_${{ github.run_id }}_LAST_FEATURE_REF
+    permissions:
+      contents: read
+      actions: read
+    outputs:
+      feature-ref: ${{ steps.refs.outputs.feature-ref }}
+      chain: ${{ inputs.chain }}
     steps:
-      - uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10
+      - uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6.0.3
         with:
           persist-credentials: false
-      - name: Verify missing state
-        run: test -z "$(bash .github/scripts/bench-state.sh get "$GITHUB_REPOSITORY" "$STATE_NAME")"
-      - name: Write state
-        id: write
-        run: bash .github/scripts/bench-state.sh set "$GITHUB_REPOSITORY" "$STATE_NAME" "$GITHUB_SHA"
-      - name: Read and update state
+          sparse-checkout: .github/scripts
+      - name: Restore previous successful state and verify branch isolation
+        id: refs
+        env:
+          GH_TOKEN: ${{ github.token }}
+          EXPECTED: ${{ inputs.expected }}
+          FEATURE_REF: ${{ inputs.feature }}
+          CHAIN: ${{ inputs.chain }}
         run: |
-          test "$(bash .github/scripts/bench-state.sh get "$GITHUB_REPOSITORY" "$STATE_NAME")" = "$GITHUB_SHA"
-          previous=$(git rev-parse HEAD)
-          bash .github/scripts/bench-state.sh set "$GITHUB_REPOSITORY" "$STATE_NAME" "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
-          test "$(bash .github/scripts/bench-state.sh get "$GITHUB_REPOSITORY" "$STATE_NAME")" = "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
-      - name: Remove test state
-        if: always() && steps.write.outcome == 'success'
-        run: gh variable delete "$STATE_NAME" --repo "$GITHUB_REPOSITORY"
+          test "$(bash .github/scripts/bench-state.sh "$GITHUB_REPOSITORY" replay "$CHAIN")" = "$EXPECTED"
+          test -z "$(GITHUB_REF_NAME=artifact-isolation-unwritten bash .github/scripts/bench-state.sh "$GITHUB_REPOSITORY" replay "$CHAIN")"
+          echo "feature-ref=$FEATURE_REF" >> "$GITHUB_OUTPUT"
+  bench-replay:
+    needs: resolve-refs
+    runs-on: ubuntu-latest
+    permissions: {}
+    steps:
+      - name: Fixture benchmark success
+        run: "true"
+
+  save-state:
+    needs: [resolve-refs, bench-replay]
+    if: success()
+    name: save-state
+    runs-on: ubuntu-latest
+    permissions: {}
+    steps:
+      - name: Prepare benchmark state
+        env:
+          FEATURE_REF: ${{ needs.resolve-refs.outputs.feature-ref }}
+        run: |
+          [[ "$FEATURE_REF" =~ ^[0-9a-f]{40}$ ]] || exit 1
+          mkdir -p "$RUNNER_TEMP/bench-state"
+          printf '%s\n' "$FEATURE_REF" > "$RUNNER_TEMP/bench-state/feature-ref"
+
+      - name: Save benchmark state
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: bench-state-replay-${{ needs.resolve-refs.outputs.chain }}
+          path: ${{ runner.temp }}/bench-state/feature-ref
+          retention-days: 90
+          if-no-files-found: error
+          overwrite: true
+
+  intentional-failure:
+    needs: save-state
+    if: inputs.fail
+    runs-on: ubuntu-latest
+    permissions: {}
+    steps:
+      - run: exit 1
