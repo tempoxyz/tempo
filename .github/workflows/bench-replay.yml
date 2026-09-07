@@ -334,6 +334,9 @@ jobs:
       - name: Resolve job URL and update status
         if: env.BENCH_COMMENT_ID
         uses: actions/github-script@ed597411d8f924073f98dfc5c65a23a2325f34cd # v8
+        env:
+          INPUT_BASELINE_NAME: ${{ inputs.baseline-name || inputs.baseline || 'merge-base' }}
+          INPUT_FEATURE_NAME: ${{ inputs.feature-name || inputs.feature || inputs.pr-head-ref || github.ref_name }}
         with:
           github-token: ${{ steps.github-sts.outputs.token }}
           script: |
