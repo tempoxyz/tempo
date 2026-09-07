@@ -40,7 +40,7 @@ async fn test_tip20_transfer() -> eyre::Result<()> {
                 .build()
                 .unwrap();
             let account = signer.address();
-            let balance = U256::from(rand::random::<u32>());
+            let balance = U256::from(rand_09::random::<u32>());
             (account, signer, balance)
         })
         .collect();
@@ -164,7 +164,7 @@ async fn test_tip20_mint() -> eyre::Result<()> {
     let account_data: Vec<_> = (1..100)
         .map(|_| {
             let account = Address::random();
-            let balance = U256::from(rand::random::<u32>());
+            let balance = U256::from(rand_09::random::<u32>());
             (account, balance)
         })
         .collect();
@@ -248,7 +248,7 @@ async fn test_tip20_transfer_from() -> eyre::Result<()> {
                 .unwrap()
                 .build()
                 .unwrap();
-            let balance = U256::from(rand::random::<u32>());
+            let balance = U256::from(rand_09::random::<u32>());
             (signer, balance)
         })
         .collect();

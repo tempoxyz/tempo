@@ -30,11 +30,12 @@ env:
 jobs:
   update:
     name: Update reth dependencies
+    if: ${{ github.event_name != 'schedule' || github.repository == 'tempoxyz/tempo' }}
     runs-on: depot-ubuntu-latest-32
     timeout-minutes: 120
     steps:
       # ── checkout ───────────────────────────────────────────────
-      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2 # zizmor: ignore[artipacked]
         with:
           fetch-depth: 0
           token: ${{ secrets.DEREK_UPDATE_RETH_TOKEN }}
@@ -96,12 +97,12 @@ jobs:
           fi
 
       # ── toolchain (matches test.yml) ───────────────────────────
-      - uses: dtolnay/rust-toolchain@stable
-      - uses: rui314/setup-mold@725a8794d15fc7563f59595bd9556495c0564878 # v1
-      - uses: mozilla-actions/sccache-action@9e7fa8a12102821edf02ca5dbea1acd0f89a2696 # v0.0.10
-      - uses: taiki-e/install-action@d0f23220b09a75c6db730f13bb37c4f8144b4382 # v2.75.9
+      - uses: tempoxyz/gh-actions/vendor/dtolnay/rust-toolchain@3626124474a987bc74b41fc7ae65b2e23f8e4e4e
+      - uses: tempoxyz/gh-actions/actions/setup-mold@a65420ff2c90fcc46fe778c044aa7998ae9f246c
+      - uses: tempoxyz/gh-actions/vendor/mozilla-actions/sccache-action@3626124474a987bc74b41fc7ae65b2e23f8e4e4e
+      - uses: tempoxyz/gh-actions/vendor/taiki-e/install-action@3626124474a987bc74b41fc7ae65b2e23f8e4e4e
         with:
-          tool: nextest@0.9.124
+          tool: nextest@0.9.127
 
       # ── amp CLI ────────────────────────────────────────────────
       - name: Install Amp CLI
@@ -173,9 +174,11 @@ jobs:
             exit 0
           fi
 
-          echo "bumped=true" >> "$GITHUB_OUTPUT"
-          echo "old_rev=$BASE_REV" >> "$GITHUB_OUTPUT"
-          echo "new_rev=$NEW_REV" >> "$GITHUB_OUTPUT"
+          {
+            echo "bumped=true"
+            echo "old_rev=$BASE_REV"
+            echo "new_rev=$NEW_REV"
+          } >> "$GITHUB_OUTPUT"
 
           # Update all reth rev references in Cargo.toml files
           find . -name 'Cargo.toml' -exec sed -i "s|paradigmxyz/reth\", rev = \"${CURRENT_REV}\"|paradigmxyz/reth\", rev = \"${NEW_REV}\"|g" {} +
@@ -184,9 +187,11 @@ jobs:
       # ── commit rev bump if changed ──────────────────────────────
       - name: Commit reth rev bump
         if: steps.update.outputs.bumped == 'true'
+        env:
+          NEW_REV: ${{ steps.update.outputs.new_rev }}
         run: |
           git add -A
-          git commit -m "deps: bump reth rev to ${{ steps.update.outputs.new_rev }} ($(date -u +%Y-%m-%d))"
+          git commit -m "deps: bump reth rev to ${NEW_REV} ($(date -u +%Y-%m-%d))"
 
       # ── cargo check + Amp fix loop ────────────────────────────
       - name: Fix compilation errors
@@ -337,7 +342,7 @@ jobs:
           fi
 
       # ── zepter feature lint ─────────────────────────────────────
-      - uses: taiki-e/cache-cargo-install-action@f9eed3e4680f27610dc6d8c67be1b88593f7dade # v3.0.6
+      - uses: tempoxyz/gh-actions/actions/cargo-install@ab45d76f6e7420a094281a22aee1973ecc0754f8
         with:
           tool: zepter
       - name: Fix zepter lint
@@ -363,6 +368,7 @@ jobs:
         env:
           GH_TOKEN: ${{ secrets.DEREK_UPDATE_RETH_TOKEN }}
           AMP_API_KEY: ${{ secrets.AMP_API_KEY }}
+          DETECT_EXISTING_PR: ${{ steps.detect.outputs.existing_pr }}
         run: |
           DATE=$(date -u +%Y-%m-%d)
           TITLE="deps: update reth from main ($DATE)"
@@ -428,7 +434,7 @@ jobs:
               echo ""
             fi
 
-            echo "[GitHub Workflow](${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }})"
+            echo "[GitHub Workflow](${GITHUB_SERVER_URL}/${GITHUB_REPOSITORY}/actions/runs/${GITHUB_RUN_ID})"
           } > /tmp/pr-body.txt
 
           # Skip PR if there are no commits between the branches
@@ -439,7 +445,7 @@ jobs:
           fi
 
           # Check for existing PR
-          EXISTING_PR="${{ steps.detect.outputs.existing_pr }}"
+          EXISTING_PR="${DETECT_EXISTING_PR}"
 
           echo "PR title: $TITLE"
           echo "Commits ahead: $COMMITS_AHEAD"
@@ -483,7 +489,7 @@ jobs:
           fi
 
           BENCH_COMMAND="derek bench preset=tip20"
-          EXISTING_BENCH_COMMENT=$(gh api "repos/${{ github.repository }}/issues/${PR_NUMBER}/comments" \
+          EXISTING_BENCH_COMMENT=$(gh api "repos/${GITHUB_REPOSITORY}/issues/${PR_NUMBER}/comments" \
             --paginate \
             --jq ".[] | select(.body == \"${BENCH_COMMAND}\") | .id" \
             | head -n1)
@@ -531,10 +537,28 @@ jobs:
                 break
               fi
 
-              # All done with no failures = success
-              PENDING=$(echo "$STATUS" | jq -r '[.[] | select((.state == "PENDING" or .state == "QUEUED" or .state == "IN_PROGRESS") and .name != "Review")] | length')
+              # External reviews run after this loop posts their commands, so they must not
+              # block the pre-audit CI gate. Failed reviews are still handled above.
+              PENDING=$(echo "$STATUS" | jq -r '[.[] | select((.state == "PENDING" or .state == "QUEUED" or .state == "IN_PROGRESS") and .name != "Review" and .name != "Cyclops audit run")] | length')
               if [ "$PENDING" = "0" ] 2>/dev/null; then
                 echo "All CI checks passed!"
+                PR_NUMBER=$(gh pr view "$PR_BRANCH" --json number --jq '.number')
+
+                BENCH_COMMAND="derek bench preset=tip20"
+                EXISTING_BENCH_COMMENT=$(gh api "repos/${{ github.repository }}/issues/${PR_NUMBER}/comments" \
+                  --paginate \
+                  --jq ".[] | select(.body == \"${BENCH_COMMAND}\") | .id" \
+                  | head -n1)
+                if [ -n "$EXISTING_BENCH_COMMENT" ]; then
+                  echo "Benchmark command already posted on PR #${PR_NUMBER} as comment ${EXISTING_BENCH_COMMENT}"
+                else
+                  echo "Posting benchmark command on PR #${PR_NUMBER}"
+                  gh pr comment "$PR_NUMBER" --body "$BENCH_COMMAND"
+                fi
+
+                CYCLOPS_COMMAND='cyclops audit note="Review every upstream reth commit included in the revision diff."'
+                echo "Posting Cyclops command on PR #${PR_NUMBER}"
+                gh pr comment "$PR_NUMBER" --body "$CYCLOPS_COMMAND"
                 exit 0
               fi
 
@@ -542,7 +566,7 @@ jobs:
               ELAPSED=$(( (SECONDS - WAIT_START) / 60 ))
               if [ "$ELAPSED" -ge "$CI_TIMEOUT_MINUTES" ]; then
                 echo "CI checks stuck for ${ELAPSED}m — investigating with Amp..."
-                STUCK_NAMES=$(echo "$STATUS" | jq -r '[.[] | select((.state == "PENDING" or .state == "QUEUED" or .state == "IN_PROGRESS") and .name != "Review")] | map(.name) | join(", ")')
+                STUCK_NAMES=$(echo "$STATUS" | jq -r '[.[] | select((.state == "PENDING" or .state == "QUEUED" or .state == "IN_PROGRESS") and .name != "Review" and .name != "Cyclops audit run")] | map(.name) | join(", ")')
 
                 # Fetch logs from in-progress runs for the current HEAD commit
                 HEAD_SHA=$(gh pr view "$PR_BRANCH" --json headRefOid --jq '.headRefOid')
@@ -635,18 +659,24 @@ jobs:
 
       # ── Slack notification ─────────────────────────────────────
       - name: Notify Slack
-        if: always()
+        if: always() && job.status != 'success'
         env:
           GH_TOKEN: ${{ secrets.DEREK_UPDATE_RETH_TOKEN }}
           SLACK_WEBHOOK_URL: ${{ secrets.SLACK_ENG_TEMPO_WORKFLOWS_WEBHOOK_URL }}
+          OLD_REV_IN: ${{ steps.update.outputs.old_rev }}
+          NEW_REV_IN: ${{ steps.update.outputs.new_rev }}
+          BUMPED_IN: ${{ steps.update.outputs.bumped }}
+          CLIPPY_PASSED_IN: ${{ steps.check-loop.outputs.clippy_passed }}
+          TEST_PASSED_IN: ${{ steps.test-loop.outputs.test_passed }}
+          JOB_STATUS_IN: ${{ job.status }}
         run: |
           PR_BRANCH="reth-auto-bump"
-          RUN_URL="${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}"
-          OLD_REV="${{ steps.update.outputs.old_rev }}"
-          NEW_REV="${{ steps.update.outputs.new_rev }}"
-          BUMPED="${{ steps.update.outputs.bumped }}"
-          CLIPPY_PASSED="${{ steps.check-loop.outputs.clippy_passed }}"
-          TEST_PASSED="${{ steps.test-loop.outputs.test_passed }}"
+          RUN_URL="${GITHUB_SERVER_URL}/${GITHUB_REPOSITORY}/actions/runs/${GITHUB_RUN_ID}"
+          OLD_REV="${OLD_REV_IN}"
+          NEW_REV="${NEW_REV_IN}"
+          BUMPED="${BUMPED_IN}"
+          CLIPPY_PASSED="${CLIPPY_PASSED_IN}"
+          TEST_PASSED="${TEST_PASSED_IN}"
 
           PR_NUMBER=""
           PR_URL=""
@@ -656,7 +686,8 @@ jobs:
           fi
 
           # Determine overall status
-          JOB_STATUS="${{ job.status }}"
+          JOB_STATUS="${JOB_STATUS_IN}"
+          MENTION="<!subteam^S09KMRP46D7|reth>"
           if [ "$JOB_STATUS" = "success" ]; then
             EMOJI="✅"
             STATUS="succeeded"
@@ -704,6 +735,7 @@ jobs:
           PAYLOAD=$(jq -n \
             --arg emoji "$EMOJI" \
             --arg status "$STATUS" \
+            --arg mention "$MENTION" \
             --arg details "$DETAILS_TEXT" \
             --arg color "$COLOR" \
             '{
@@ -714,7 +746,7 @@ jobs:
                     type: "section",
                     text: {
                       type: "mrkdwn",
-                      text: ($emoji + " *Reth update " + $status + "*" + $details)
+                      text: ($emoji + " *Reth update " + $status + "*" + (if $mention == "" then "" else "\n" + $mention end) + $details)
                     }
                   }
                 ]

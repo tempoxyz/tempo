@@ -292,15 +292,24 @@ def sanitize_chainspec(chainspec_dir):
 def sanitize_alloy(alloy_dir):
     """Strip node-internal code from tempo-alloy source files.
 
-    The reth_compat.rs file is already deleted by the shell script (publish-crates.sh).
-    This function removes the cfg-gated `mod reth_compat;` declaration from rpc/mod.rs
-    so the crate compiles without the file.
+    The revm_compat.rs and reth_compat.rs files are already deleted by the shell
+    script (publish-crates.sh). This function removes their cfg-gated module
+    declarations from rpc/mod.rs so the crate compiles without those files.
     """
     src = f"{alloy_dir}/src"
 
-    # Delete the cfg-gated `mod reth_compat;` block from rpc/mod.rs
-    delete_lines(f"{src}/rpc/mod.rs", r'^#\[cfg\(feature = "reth"\)\]\nmod reth_compat;\n', expected=1)
-    print(f"  rpc/mod.rs: deleted mod reth_compat declaration", file=sys.stderr)
+    # Delete the cfg-gated compatibility module blocks from rpc/mod.rs
+    delete_lines(
+        f"{src}/rpc/mod.rs",
+        r'^#\[cfg\(feature = "revm"\)\]\nmod revm_compat;\n',
+        expected=1,
+    )
+    delete_lines(
+        f"{src}/rpc/mod.rs",
+        r'^#\[cfg\(feature = "reth"\)\]\nmod reth_compat;\n',
+        expected=1,
+    )
+    print(f"  rpc/mod.rs: deleted revm/reth compatibility declarations", file=sys.stderr)
 
 
 if __name__ == '__main__':

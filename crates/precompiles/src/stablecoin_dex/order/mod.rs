@@ -13,6 +13,7 @@ use tempo_chainspec::hardfork::TempoHardfork;
 use tempo_precompiles_macros::Storable;
 
 const ORDER_VERSION_V1: u8 = 1;
+const ORDER_VERSION_V2: u8 = 2;
 
 /// Represents an order in the stablecoin DEX orderbook.
 ///

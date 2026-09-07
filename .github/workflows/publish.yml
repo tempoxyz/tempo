@@ -25,10 +25,10 @@ jobs:
         with:
           persist-credentials: false
 
-      - uses: dtolnay/rust-toolchain@stable
+      - uses: tempoxyz/gh-actions/vendor/dtolnay/rust-toolchain@3626124474a987bc74b41fc7ae65b2e23f8e4e4e
 
       - name: Authenticate with crates.io
-        uses: rust-lang/crates-io-auth-action@b7e9a28eded4986ec6b1fa40eeee8f8f165559ec # v1
+        uses: tempoxyz/gh-actions/vendor/rust-lang/crates-io-auth-action@3626124474a987bc74b41fc7ae65b2e23f8e4e4e
         id: auth
 
       - name: Publish crates via sanitize pipeline

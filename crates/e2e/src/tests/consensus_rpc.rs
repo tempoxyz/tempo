@@ -57,49 +57,34 @@ async fn consensus_subscribe_and_query_finalization() {
 
     let http_client = HttpClientBuilder::default().build(&http_url).unwrap();
 
-    let mut saw_notarized = false;
-    let mut saw_finalized = false;
-    let mut notarized_height = initial_height;
-    let mut finalized_height = initial_height;
+    let finalized_height = initial_height;
 
-    while !saw_notarized || !saw_finalized {
-        let event = tokio::time::timeout(Duration::from_secs(10), subscription.next())
-            .await
-            .unwrap()
-            .unwrap()
-            .unwrap();
+    let event = tokio::time::timeout(Duration::from_secs(10), subscription.next())
+        .await
+        .unwrap()
+        .unwrap()
+        .unwrap();
 
-        match event {
-            Event::Notarized { block, .. } => {
-                let height = block.block.inner.number;
-                assert!(height > notarized_height);
+    let Event::Finalized { block, .. } = event else {
+        panic!("feed must not publish nullifications or notarizations");
+    };
 
-                notarized_height = height;
-                saw_notarized = true;
-            }
-            Event::Finalized { block, .. } => {
-                let height = block.block.inner.number;
-                assert!(height > finalized_height);
+    let height = block.block.inner.number;
+    assert!(height > finalized_height);
 
-                let queried_block = http_client
-                    .get_finalization(Query::Height(height))
-                    .await
-                    .unwrap();
+    let queried_block = http_client
+        .get_finalization(Query::Height(height))
+        .await
+        .unwrap();
 
-                assert_eq!(queried_block, block);
-
-                finalized_height = height;
-                saw_finalized = true;
-            }
-            Event::Nullified { .. } => {}
-        }
-    }
+    assert_eq!(queried_block, block);
 
     let _ = http_client.get_finalization(Query::Latest).await.unwrap();
 
     let state = http_client.get_latest().await.unwrap();
 
     assert!(state.finalized.is_some());
+    assert!(state.notarized.is_none());
 
     drop(done_tx);
     executor_handle.join().unwrap();

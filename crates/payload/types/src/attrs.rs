@@ -506,7 +506,7 @@ mod tests {
     #[test]
     fn payload_id_includes_consensus_context() {
         let parent = B256::random();
-        let proposer = PublicKey::from_seed([0xab; 32]);
+        let proposer = PublicKey::from_seed(0xab);
 
         let mk = |ctx: Option<TempoConsensusContext>| -> PayloadId {
             let mut attrs = TempoPayloadAttributes::random();
@@ -537,7 +537,7 @@ mod tests {
             epoch: 1,
             view: 1,
             parent_view: 0,
-            proposer: PublicKey::from_seed([0xcd; 32]),
+            proposer: PublicKey::from_seed(0xcd),
         }));
 
         // Without context, falls back to parent-hash-only ID.

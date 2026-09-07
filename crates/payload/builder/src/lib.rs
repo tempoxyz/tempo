@@ -539,19 +539,22 @@ where
         maybe_override_fee_recipient(&mut executor, &attributes);
 
         let bal_task_handle = if self.enable_bal {
-            let bal_task_handle =
-                self.spawn_bal_task(state_root_handle.as_ref().map(|handle| handle.state_hook()));
+            let bal_task_handle = self.spawn_bal_task(
+                state_root_handle
+                    .as_mut()
+                    .map(|handle| handle.take_state_hook()),
+            );
             executor
                 .evm_mut()
                 .db_mut()
                 .set_state_hook(Some(Box::new(bal_task_handle.state_hook())));
             Some(bal_task_handle)
         } else {
-            if let Some(ref handle) = state_root_handle {
+            if let Some(handle) = state_root_handle.as_mut() {
                 executor
                     .evm_mut()
                     .db_mut()
-                    .set_state_hook(Some(Box::new(handle.state_hook())));
+                    .set_state_hook(Some(Box::new(handle.take_state_hook())));
             }
             None
         };
@@ -1009,15 +1012,16 @@ where
         let (evm, execution_result) = executor.finish()?;
         let evm_env = evm.into_env();
 
-        // merge all transitions into bundle state before deriving the hashed post-state
-        db.merge_transitions(BundleRetention::Reverts);
-
         // Drop the state hook to signal that execution is complete and the sparse trie task can
-        // finalize the state root.
+        // finalize the state root. Nothing commits to `db` after `finish`, so this can happen
+        // before the transitions are merged, letting the trie finalization overlap with it.
         db.set_state_hook(None);
 
         // Drop the BAL task sender to trigger finalization.
         let bal_rx = bal_task_handle.map(|handle| handle.into_bal_rx());
+
+        // merge all transitions into bundle state before deriving the hashed post-state
+        db.merge_transitions(BundleRetention::Reverts);
 
         let hashed_state = if let Some(Ok(hashed_state)) = state_root_handle
             .as_mut()
@@ -1026,7 +1030,11 @@ where
         {
             hashed_state
         } else {
-            finish_provider.hashed_post_state(&db.bundle_state)
+            Arc::new(
+                finish_provider
+                    .hashed_post_state(&db.bundle_state)
+                    .map_err(PayloadBuilderError::other)?,
+            )
         };
 
         let (state_root_outcome, sparse_trie_state_root_wait_elapsed) =
@@ -1083,7 +1091,7 @@ where
             (outcome.state_root, outcome.trie_updates)
         } else {
             let (state_root, trie_updates) = finish_provider
-                .state_root_with_updates(hashed_state.clone())
+                .state_root_with_updates((*hashed_state).clone())
                 .map_err(BlockExecutionError::other)?;
 
             (state_root, Arc::new(trie_updates))
@@ -1288,9 +1296,8 @@ where
         let executed_block = BuiltPayloadExecutedBlock {
             recovered_block: block,
             execution_output: Arc::new(execution_output),
-            hashed_state: Arc::new(hashed_state),
+            hashed_state,
             trie_updates,
-            changed_paths: None,
         };
 
         let payload = TempoBuiltPayload::new(

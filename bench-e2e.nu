@@ -16,7 +16,7 @@ const E2E_A_CPUS = "0-7,16-23"
 const E2E_B_CPUS = "8-15,24-31"
 const E2E_A_MEMORY = "60G"
 const E2E_B_MEMORY = "60G"
-const E2E_GAS_LIMIT = "5000000000"
+const E2E_GAS_LIMIT = "1000000000000"
 const E2E_RUNNER_METRICS_URL = "http://127.0.0.1:9100/metrics"
 const E2E_BLOAT_TMP_DIR = "/reth-bench-a/.bench-tmp/e2e-local-init"
 const TRACY_SAMPLING_HZ = 18999
@@ -1062,14 +1062,14 @@ def run-local-e2e-phase [run: record, ctx: record] {
         | append (if $ctx.gas_limit != "" { ["--builder.gaslimit" $ctx.gas_limit] } else { [] })
         | append (if $ctx.samply { ["--log.samply"] } else { [] })
         | append (if $ctx.tracy != "off" { ["--log.tracy" "--log.tracy.filter" $ctx.tracy_filter] } else { [] })
-        | append (if $ctx.tracing_otlp != "" { [$"--tracing-otlp=($ctx.tracing_otlp)"] } else { [] })
+        | append (benchmark-otlp-args $ctx.tracing_otlp)
     let b_base_args = (build-base-args $genesis $ctx.b.datadir $b_log_dir "0.0.0.0" 8645 9101)
         | append (build-e2e-consensus-args $ctx.b.node_dir $ctx.trusted_peers $ctx.b.consensus_port $ctx.b.ip)
         | append $local_reth_args
         | append (log-filter-args $ctx.loud)
         | append (if $ctx.gas_limit != "" { ["--builder.gaslimit" $ctx.gas_limit] } else { [] })
         | append (if $ctx.samply { ["--log.samply"] } else { [] })
-        | append (if $ctx.tracing_otlp != "" { [$"--tracing-otlp=($ctx.tracing_otlp)"] } else { [] })
+        | append (benchmark-otlp-args $ctx.tracing_otlp)
     let a_args = (dedup-args $a_base_args $extra_args)
     let b_args = (dedup-args $b_base_args $extra_args)
 
@@ -1128,8 +1128,7 @@ def run-local-e2e-phase [run: record, ctx: record] {
         $tracy_capture_started = true
     }
 
-    let tps_k = ($ctx.tps // 1000)
-    let scenario = $"($ctx.preset)-($tps_k)k"
+    let scenario = $ctx.preset
     let phase_clickhouse_url = if $ctx.clickhouse_url != "" and ($ctx.clickhouse_run == "" or $ctx.clickhouse_run == $phase) {
         $ctx.clickhouse_url
     } else {
@@ -1341,11 +1340,20 @@ def "main summarize" [
     e2e-generate-summary $results_dir
 }
 
+def "main render-txgen-spec" [
+    --preset: string = ""                              # Txgen preset name or scenario expression
+    --out-dir: string = ""                             # Directory for rendered scenario specs
+] {
+    let spec = (txgen-resolve-bench-spec $preset $out_dir)
+    print $spec.spec_path
+}
+
 # Run the e2e sequence on one runner.
 def "main e2e" [
     --baseline: string                                  # Baseline git SHA/ref
     --feature: string                                   # Feature git SHA/ref
     --preset: string = ""                               # Txgen preset name
+    --preset-path: string = ""                          # Pre-rendered txgen preset path
     --tps: int = 50000                                  # Target TPS
     --duration: int = 90                                # Duration in seconds
     --summary-warmup-blocks: int = 5                    # Initial blocks per run excluded from summary metrics
@@ -1354,7 +1362,7 @@ def "main e2e" [
     --bloat: int = $E2E_DEFAULT_BLOAT                   # State bloat snapshot size in GiB: 0, 1, 10, or 100
     --token-count: int = 4                         # Number of TIP20 tokens to use in txgen presets
     --gas-limit: string = $E2E_GAS_LIMIT                # Builder gas limit
-    --general-gas-limit: string = ""                    # General (non-payment) gas limit override
+    --general-gas-limit: string = $E2E_GAS_LIMIT        # General (non-payment) gas limit override
     --force-bloat                                      # Regenerate and promote both local e2e snapshots
     --init-only                                         # Refresh snapshots and exit without running benchmark phases
     --profile: string = $DEFAULT_PROFILE                # Cargo build profile
@@ -1393,7 +1401,21 @@ def "main e2e" [
     --valscope-dir: string = "../valscope"               # Path to the ValScope checkout
     --skip-summary                                       # Leave summary generation to a later workflow step
 ] {
-    let preset_path = (txgen-preset-path $preset)
+    let preset_spec = if $preset_path == "" {
+        txgen-resolve-bench-spec $preset
+    } else {
+        {
+            kind: pre_rendered
+            scenario_id: $preset
+            spec_path: ($preset_path | path expand)
+            rendered: true
+        }
+    }
+    let preset_path = $preset_spec.spec_path
+    if not ($preset_path | path exists) {
+        print $"Error: txgen preset file not found: ($preset_path)"
+        exit 1
+    }
     txgen-validate-bench-args $bench_args
     let general_gas_limit = if $general_gas_limit == "" and (txgen-spec-has-keychain-setup $preset_path) {
         $gas_limit
@@ -1587,6 +1609,7 @@ def "main e2e" [
     let results_dir = $"($BENCH_RESULTS_DIR)/($timestamp)"
     mkdir $results_dir
     print $"BENCH_RESULTS_DIR=($results_dir)"
+    cp $preset_path $"($results_dir)/txgen-spec.yml"
 
     git worktree prune
     mkdir $BENCH_WORKTREES_DIR

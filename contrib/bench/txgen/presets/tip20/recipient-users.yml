@@ -1,0 +1,9 @@
+merge:
+  templates:
+    tip20_transfer:
+      call:
+        args:
+          - pool:
+              pool: users
+              select: random
+          - 1

@@ -560,8 +560,12 @@ abstract contract HandlerBase is InvariantBase {
         }
 
         TempoTransaction memory tx_ = TempoTransactionLib.create()
-            .withChainId(uint64(block.chainid)).withMaxFeePerGas(TxBuilder.DEFAULT_GAS_PRICE)
-            .withGasLimit(gasLimit).withCalls(calls).withNonceKey(nonceKey).withNonce(txNonce);
+            .withChainId(uint64(block.chainid))
+            .withMaxFeePerGas(TxBuilder.DEFAULT_GAS_PRICE)
+            .withGasLimit(gasLimit)
+            .withCalls(calls)
+            .withNonceKey(nonceKey)
+            .withNonce(txNonce);
 
         signedTx = TxBuilder.signTempo(
             vmRlp,

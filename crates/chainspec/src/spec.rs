@@ -77,6 +77,18 @@ pub struct TempoGenesisInfo {
     /// Activation timestamp for T9 hardfork.
     #[serde(skip_serializing_if = "Option::is_none")]
     t9_time: Option<u64>,
+    /// Activation timestamp for T10 hardfork.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    t10_time: Option<u64>,
+    /// Activation timestamp for T11 hardfork.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    t11_time: Option<u64>,
+    /// Activation timestamp for T12 hardfork.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    t12_time: Option<u64>,
+    /// Activation timestamp for T13 hardfork.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    t13_time: Option<u64>,
 }
 
 impl TempoGenesisInfo {
@@ -208,20 +220,25 @@ impl TempoChainSpec {
         self.default_follow_url
     }
 
+    /// Returns the shared gas limit for the given timestamp and block gas limit.
+    ///
+    /// Prefer [`TempoConsensusSpec::shared_gas_limit_at`] when working with a generic Tempo
+    /// chain specification.
+    pub fn shared_gas_limit_at(&self, timestamp: u64, gas_limit: u64) -> u64 {
+        TempoConsensusSpec::shared_gas_limit_at(self, timestamp, gas_limit)
+    }
+
     /// Returns the general (non-payment) gas limit for the given timestamp and block.
-    /// - Genesis override: fixed at the configured value
-    /// - T1+: fixed at 30M gas
-    /// - Pre-T1: calculated as (gas_limit - shared_gas_limit) / 2
+    ///
+    /// Prefer [`TempoConsensusSpec::general_gas_limit_at`] when working with a generic Tempo
+    /// chain specification.
     pub fn general_gas_limit_at(
         &self,
         timestamp: u64,
         gas_limit: u64,
         shared_gas_limit: u64,
     ) -> u64 {
-        self.info
-            .general_gas_limit()
-            .or_else(|| self.tempo_hardfork_at(timestamp).general_gas_limit())
-            .unwrap_or_else(|| (gas_limit - shared_gas_limit) / 2)
+        TempoConsensusSpec::general_gas_limit_at(self, timestamp, gas_limit, shared_gas_limit)
     }
 
     /// Converts the given [`Genesis`] into a [`TempoChainSpec`].
@@ -450,13 +467,6 @@ macro_rules! tempo_hardforks_trait {
                 )*
             }
 
-            /// Returns the shared gas limit for the given timestamp and block.
-            /// - T4+: 0 gas
-            /// - Pre-T4: block_gas_limit / 10
-            fn shared_gas_limit_at(&self, timestamp: u64, gas_limit: u64) -> u64 {
-                self.tempo_hardfork_at(timestamp)
-                    .shared_gas_limit(gas_limit)
-            }
         }
     };
 }
@@ -466,6 +476,32 @@ tempo_hardfork::tempo_post_genesis_hardforks!(tempo_hardforks_trait);
 impl TempoHardforks for TempoChainSpec {
     fn tempo_fork_activation(&self, fork: TempoHardfork) -> ForkCondition {
         self.fork(fork)
+    }
+}
+
+/// Chain-spec policy for Tempo consensus header gas limits.
+///
+/// The hardfork schedule determines the default Tempo L1 policy, while chains that reuse the
+/// Tempo block format may define their own gas partitioning.
+pub trait TempoConsensusSpec: EthChainSpec<Header = TempoHeader> + TempoHardforks {
+    /// Returns the shared gas limit for the given timestamp and block gas limit.
+    fn shared_gas_limit_at(&self, timestamp: u64, gas_limit: u64) -> u64;
+
+    /// Returns the general (non-payment) gas limit for the given timestamp and gas limits.
+    fn general_gas_limit_at(&self, timestamp: u64, gas_limit: u64, shared_gas_limit: u64) -> u64;
+}
+
+impl TempoConsensusSpec for TempoChainSpec {
+    fn shared_gas_limit_at(&self, timestamp: u64, gas_limit: u64) -> u64 {
+        self.tempo_hardfork_at(timestamp)
+            .shared_gas_limit(gas_limit)
+    }
+
+    fn general_gas_limit_at(&self, timestamp: u64, gas_limit: u64, shared_gas_limit: u64) -> u64 {
+        self.info
+            .general_gas_limit()
+            .or_else(|| self.tempo_hardfork_at(timestamp).general_gas_limit())
+            .unwrap_or_else(|| (gas_limit - shared_gas_limit) / 2)
     }
 }
 
@@ -496,6 +532,23 @@ mod tests {
     fn can_load_dev() {
         let _ = super::TempoChainSpecParser::parse("dev")
             .expect("the dev chainspec must always be well formed");
+    }
+
+    #[test]
+    #[cfg(feature = "cli")]
+    fn dev_genesis_contains_eip2935_history_storage() {
+        use alloy_eips::eip2935::{HISTORY_STORAGE_ADDRESS, HISTORY_STORAGE_CODE};
+
+        let chainspec = super::TempoChainSpecParser::parse("dev")
+            .expect("the dev chainspec must always be well formed");
+        let history = chainspec
+            .genesis()
+            .alloc
+            .get(&HISTORY_STORAGE_ADDRESS)
+            .expect("dev genesis must install EIP-2935 history storage");
+
+        assert_eq!(history.nonce, Some(1));
+        assert_eq!(history.code.as_ref(), Some(&HISTORY_STORAGE_CODE));
     }
 
     #[test]
@@ -754,6 +807,27 @@ mod tests {
         use super::*;
 
         #[test]
+        fn builtin_schedules_match_hardfork_constants() {
+            let mainnet = super::super::TempoChainSpecParser::parse("mainnet")
+                .expect("the mainnet chainspec must always be well formed");
+            let moderato = super::super::TempoChainSpecParser::parse("moderato")
+                .expect("the moderato chainspec must always be well formed");
+
+            for &fork in TempoHardfork::VARIANTS {
+                assert_eq!(
+                    mainnet.info.fork_time(fork),
+                    fork.mainnet_activation_timestamp(),
+                    "mainnet {fork} activation mismatch"
+                );
+                assert_eq!(
+                    moderato.info.fork_time(fork),
+                    fork.moderato_activation_timestamp(),
+                    "moderato {fork} activation mismatch"
+                );
+            }
+        }
+
+        #[test]
         fn mainnet() {
             let cs = super::super::TempoChainSpecParser::parse("mainnet")
                 .expect("the mainnet chainspec must always be well formed");
@@ -833,9 +907,38 @@ mod tests {
             // At and after T7 activation
             assert!(cs.is_t7_active_at_timestamp(1783605600));
             assert_eq!(cs.tempo_hardfork_at(1783605600), TempoHardfork::T7);
-            assert!(!cs.is_t8_active_at_timestamp(u64::MAX));
-            assert!(!cs.is_t9_active_at_timestamp(u64::MAX));
-            assert_eq!(cs.tempo_hardfork_at(u64::MAX), TempoHardfork::T7);
+
+            // Before T8 activation (1785420000 = Jul 30th 2026 16:00 CEST)
+            assert!(!cs.is_t8_active_at_timestamp(1785419999));
+            assert_eq!(cs.tempo_hardfork_at(1785419999), TempoHardfork::T7);
+
+            // At and after T8 activation
+            assert!(cs.is_t8_active_at_timestamp(1785420000));
+            assert_eq!(cs.tempo_hardfork_at(1785420000), TempoHardfork::T8);
+            // Before T9 activation (1786024800 = Aug 6th 2026 16:00 CEST)
+            assert!(!cs.is_t9_active_at_timestamp(1786024799));
+            assert_eq!(cs.tempo_hardfork_at(1786024799), TempoHardfork::T8);
+
+            // At and after T9 activation
+            assert!(cs.is_t9_active_at_timestamp(1786024800));
+            assert_eq!(cs.tempo_hardfork_at(1786024800), TempoHardfork::T9);
+            // Before T10 activation (1787320800 = Aug 21st 2026 16:00 CEST)
+            assert!(!cs.is_t10_active_at_timestamp(1787320799));
+            assert_eq!(cs.tempo_hardfork_at(1787320799), TempoHardfork::T9);
+
+            // At and after T10 activation
+            assert!(cs.is_t10_active_at_timestamp(1787320800));
+            assert_eq!(cs.tempo_hardfork_at(1787320800), TempoHardfork::T10);
+            // Before T11 activation (1789048800 = Sep 10th 2026 16:00 CEST)
+            assert!(!cs.is_t11_active_at_timestamp(1789048799));
+            assert_eq!(cs.tempo_hardfork_at(1789048799), TempoHardfork::T10);
+
+            // At and after T11 activation
+            assert!(cs.is_t11_active_at_timestamp(1789048800));
+            assert_eq!(cs.tempo_hardfork_at(1789048800), TempoHardfork::T11);
+            assert!(!cs.is_t12_active_at_timestamp(u64::MAX));
+            assert!(!cs.is_t13_active_at_timestamp(u64::MAX));
+            assert_eq!(cs.tempo_hardfork_at(u64::MAX), TempoHardfork::T11);
         }
 
         #[test]
@@ -915,9 +1018,38 @@ mod tests {
             // At and after T7 activation
             assert!(cs.is_t7_active_at_timestamp(1783000800));
             assert_eq!(cs.tempo_hardfork_at(1783000800), TempoHardfork::T7);
-            assert!(!cs.is_t8_active_at_timestamp(u64::MAX));
-            assert!(!cs.is_t9_active_at_timestamp(u64::MAX));
-            assert_eq!(cs.tempo_hardfork_at(u64::MAX), TempoHardfork::T7);
+
+            // Before T8 activation (1785160800 = Jul 27th 2026 16:00 CEST)
+            assert!(!cs.is_t8_active_at_timestamp(1785160799));
+            assert_eq!(cs.tempo_hardfork_at(1785160799), TempoHardfork::T7);
+
+            // At and after T8 activation
+            assert!(cs.is_t8_active_at_timestamp(1785160800));
+            assert_eq!(cs.tempo_hardfork_at(1785160800), TempoHardfork::T8);
+            // Before T9 activation (1785938400 = Aug 5th 2026 16:00 CEST)
+            assert!(!cs.is_t9_active_at_timestamp(1785938399));
+            assert_eq!(cs.tempo_hardfork_at(1785938399), TempoHardfork::T8);
+
+            // At and after T9 activation
+            assert!(cs.is_t9_active_at_timestamp(1785938400));
+            assert_eq!(cs.tempo_hardfork_at(1785938400), TempoHardfork::T9);
+            // Before T10 activation (1787234400 = Aug 20th 2026 16:00 CEST)
+            assert!(!cs.is_t10_active_at_timestamp(1787234399));
+            assert_eq!(cs.tempo_hardfork_at(1787234399), TempoHardfork::T9);
+
+            // At and after T10 activation
+            assert!(cs.is_t10_active_at_timestamp(1787234400));
+            assert_eq!(cs.tempo_hardfork_at(1787234400), TempoHardfork::T10);
+            // Before T11 activation (1788962400 = Sep 9th 2026 16:00 CEST)
+            assert!(!cs.is_t11_active_at_timestamp(1788962399));
+            assert_eq!(cs.tempo_hardfork_at(1788962399), TempoHardfork::T10);
+
+            // At and after T11 activation
+            assert!(cs.is_t11_active_at_timestamp(1788962400));
+            assert_eq!(cs.tempo_hardfork_at(1788962400), TempoHardfork::T11);
+            assert!(!cs.is_t12_active_at_timestamp(u64::MAX));
+            assert!(!cs.is_t13_active_at_timestamp(u64::MAX));
+            assert_eq!(cs.tempo_hardfork_at(u64::MAX), TempoHardfork::T11);
         }
 
         #[test]

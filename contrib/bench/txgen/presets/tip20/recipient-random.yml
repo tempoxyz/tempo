@@ -1,0 +1,7 @@
+merge:
+  templates:
+    tip20_transfer:
+      call:
+        args:
+          - random
+          - 1

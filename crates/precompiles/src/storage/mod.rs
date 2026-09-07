@@ -60,6 +60,21 @@ pub trait PrecompileStorageProvider {
         f: &mut dyn FnMut(&AccountInfo),
     ) -> Result<()>;
 
+    /// Returns `EXTCODEHASH(address)` and the account's runtime bytecode.
+    fn account_code(&mut self, address: Address) -> Result<(B256, Bytecode)>;
+
+    /// Copies deployed runtime bytecode between accounts.
+    ///
+    /// Returns `None` when the source account's runtime bytecode is empty.
+    fn copy_runtime(&mut self, source: Address, destination: Address) -> Result<Option<B256>> {
+        let (code_hash, code) = self.account_code(source)?;
+        if code.is_empty() {
+            return Ok(None);
+        }
+        self.set_code(destination, code)?;
+        Ok(Some(code_hash))
+    }
+
     /// Performs an SLOAD operation (persistent storage read).
     fn sload(&mut self, address: Address, key: U256) -> Result<U256>;
 
@@ -113,6 +128,10 @@ pub trait PrecompileStorageProvider {
 
     /// Returns the state-creating gas used so far (cold SSTORE zero->non-zero, code deposit).
     fn state_gas_used(&self) -> u64;
+
+    /// Returns the state gas that was drawn from regular gas because the reservoir was empty
+    /// (EIP-8037's `state_gas_from_gas_left`).
+    fn state_gas_spilled(&self) -> u64;
 
     /// Returns the gas refunded so far.
     fn gas_refunded(&self) -> i64;

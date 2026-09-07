@@ -1,5 +1,5 @@
 use crate::TempoInvalidTransaction;
-use alloy_consensus::{Typed2718, crypto::secp256k1};
+use alloy_consensus::{Typed2718, crypto::secp256k1, transaction::TxHashRef};
 use alloy_evm::{FromRecoveredTx, FromTxWithEncoded, IntoTxEnv, TransactionEnvMut};
 use alloy_primitives::{Address, B256, Bytes, TxKind, U256};
 use core::num::NonZeroU64;
@@ -64,6 +64,23 @@ pub struct TempoBatchCallEnv {
     /// Stores how many other expiring nonce transactions are there in the block before this one.
     pub expiring_nonce_idx: Option<usize>,
 }
+
+/// Identifies the kind of execution represented by a transaction environment.
+///
+/// Signed transactions carry their canonical transaction hash. RPC simulations have no canonical
+/// transaction hash because request normalization and signing can change the eventual transaction.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub enum ExecutionContext {
+    /// Execution or validation of a signed transaction.
+    Transaction {
+        /// Canonical hash of the signed transaction.
+        tx_hash: B256,
+    },
+    /// Non-committing execution of an RPC transaction request.
+    #[default]
+    Simulation,
+}
+
 /// Tempo transaction environment.
 #[derive(Debug, Clone, Default, derive_more::Deref, derive_more::DerefMut)]
 pub struct TempoTxEnv {
@@ -77,6 +94,9 @@ pub struct TempoTxEnv {
 
     /// Whether the transaction is a system transaction.
     pub is_system_tx: bool,
+
+    /// Whether this environment represents a signed transaction or an RPC simulation.
+    pub execution_context: ExecutionContext,
 
     /// Sender-scoped transaction identifier used for replay-sensitive features.
     ///
@@ -114,6 +134,11 @@ impl TempoTxEnv {
         self.tempo_tx_env
             .as_ref()
             .is_some_and(|aa| aa.subblock_transaction)
+    }
+
+    /// Returns the semantic execution context.
+    pub fn execution_context(&self) -> ExecutionContext {
+        self.execution_context
     }
 
     /// Returns the sender-scoped transaction identifier.
@@ -343,6 +368,9 @@ impl FromRecoveredTx<AASigned> for TempoTxEnv {
             },
             fee_token: *fee_token,
             is_system_tx: false,
+            execution_context: ExecutionContext::Transaction {
+                tx_hash: *aa_signed.hash(),
+            },
             unique_tx_identifier: Some(aa_signed.expiring_nonce_hash(caller)),
             fee_payer: fee_payer_signature.map(|sig| {
                 secp256k1::recover_signer(&sig, tx.fee_payer_signature_hash(caller)).ok()
@@ -379,22 +407,34 @@ impl FromRecoveredTx<TempoTxEnvelope> for TempoTxEnv {
                 inner: TxEnv::from_recovered_tx(inner.tx(), sender),
                 fee_token: None,
                 is_system_tx: tx.is_system_tx(),
+                execution_context: ExecutionContext::Transaction {
+                    tx_hash: *tx.tx_hash(),
+                },
                 unique_tx_identifier: Some(tx.unique_tx_identifier(sender)),
                 fee_payer: None,
                 tempo_tx_env: None, // Non-AA transaction
             },
             TempoTxEnvelope::Eip2930(inner) => Self {
                 inner: TxEnv::from_recovered_tx(inner.tx(), sender),
+                execution_context: ExecutionContext::Transaction {
+                    tx_hash: *tx.tx_hash(),
+                },
                 unique_tx_identifier: Some(tx.unique_tx_identifier(sender)),
                 ..Default::default()
             },
             TempoTxEnvelope::Eip1559(inner) => Self {
                 inner: TxEnv::from_recovered_tx(inner.tx(), sender),
+                execution_context: ExecutionContext::Transaction {
+                    tx_hash: *tx.tx_hash(),
+                },
                 unique_tx_identifier: Some(tx.unique_tx_identifier(sender)),
                 ..Default::default()
             },
             TempoTxEnvelope::Eip7702(inner) => Self {
                 inner: TxEnv::from_recovered_tx(inner.tx(), sender),
+                execution_context: ExecutionContext::Transaction {
+                    tx_hash: *tx.tx_hash(),
+                },
                 unique_tx_identifier: Some(tx.unique_tx_identifier(sender)),
                 ..Default::default()
             },
@@ -404,21 +444,37 @@ impl FromRecoveredTx<TempoTxEnvelope> for TempoTxEnv {
 }
 
 impl FromTxWithEncoded<AASigned> for TempoTxEnv {
-    fn from_encoded_tx(tx: &AASigned, sender: Address, _encoded: Bytes) -> Self {
-        Self::from_recovered_tx(tx, sender)
+    fn from_encoded_tx(tx: &AASigned, sender: Address, encoded: Bytes) -> Self {
+        let mut tx_env = Self::from_recovered_tx(tx, sender);
+        tx_env.maybe_mark_rpc_block_simulation(&encoded);
+        tx_env
     }
 }
 
 impl FromTxWithEncoded<TempoTxEnvelope> for TempoTxEnv {
-    fn from_encoded_tx(tx: &TempoTxEnvelope, sender: Address, _encoded: Bytes) -> Self {
-        Self::from_recovered_tx(tx, sender)
+    fn from_encoded_tx(tx: &TempoTxEnvelope, sender: Address, encoded: Bytes) -> Self {
+        let mut tx_env = Self::from_recovered_tx(tx, sender);
+        tx_env.maybe_mark_rpc_block_simulation(&encoded);
+        tx_env
+    }
+}
+
+impl TempoTxEnv {
+    /// Marks the empty envelope Reth intentionally uses for `eth_simulateV1` transactions.
+    ///
+    /// Real signed transactions always have a non-empty EIP-2718 encoding. Reth uses an empty
+    /// encoding only for block simulations so execution layers can omit envelope-derived costs.
+    fn maybe_mark_rpc_block_simulation(&mut self, encoded: &Bytes) {
+        if encoded.is_empty() {
+            self.execution_context = ExecutionContext::Simulation;
+        }
     }
 }
 
 #[cfg(test)]
 mod tests {
     use alloy_consensus::{Signed, TxLegacy, transaction::TxHashRef};
-    use alloy_evm::FromRecoveredTx;
+    use alloy_evm::{FromRecoveredTx, FromTxWithEncoded};
     use alloy_primitives::{Address, Bytes, Signature, TxKind, U256, keccak256};
     use core::num::NonZeroU64;
     use proptest::prelude::*;
@@ -434,7 +490,7 @@ mod tests {
         },
     };
 
-    use crate::{TempoInvalidTransaction, TempoTxEnv};
+    use crate::{ExecutionContext, TempoInvalidTransaction, TempoTxEnv};
 
     fn create_call(to: TxKind) -> Call {
         Call {
@@ -543,6 +599,12 @@ mod tests {
         let expiring_env = TempoTxEnv::from_recovered_tx(&expiring_signed, caller);
         let expected_identifier = expiring_signed.expiring_nonce_hash(caller);
         assert_eq!(
+            expiring_env.execution_context(),
+            ExecutionContext::Transaction {
+                tx_hash: *expiring_signed.hash(),
+            }
+        );
+        assert_eq!(
             expiring_env.channel_open_context_hash(),
             Some(expected_identifier),
             "expiring nonce channel opens must use the sender-scoped transaction identifier"
@@ -578,6 +640,10 @@ mod tests {
         };
 
         let tx_env = super::TempoTxEnv::from_recovered_tx(&envelope, caller);
+        assert_eq!(
+            tx_env.execution_context(),
+            ExecutionContext::Transaction { tx_hash }
+        );
         let signature_hash = signed.signature_hash();
         assert_ne!(
             signature_hash, tx_hash,
@@ -600,6 +666,74 @@ mod tests {
     }
 
     #[test]
+    fn test_empty_encoded_tx_marks_rpc_block_simulation() {
+        let account = Address::repeat_byte(0xAA);
+        let make_signed = |nonce| {
+            let tx = tempo_primitives::transaction::TempoTransaction {
+                chain_id: 1,
+                gas_limit: 100_000,
+                calls: vec![create_call(TxKind::Call(Address::repeat_byte(0x42)))],
+                nonce,
+                ..Default::default()
+            };
+            let signature = TempoSignature::Primitive(PrimitiveSignature::Secp256k1(
+                Signature::test_signature(),
+            ));
+            AASigned::new_unhashed(tx, signature)
+        };
+        let signed = make_signed(0);
+        let envelope = TempoTxEnvelope::AA(signed.clone());
+        let expected_identifier = envelope.unique_tx_identifier(account);
+
+        let tx_env = TempoTxEnv::from_encoded_tx(&envelope, account, Bytes::new());
+
+        assert_eq!(tx_env.execution_context(), ExecutionContext::Simulation);
+        assert_eq!(
+            tx_env.channel_open_context_hash(),
+            Some(expected_identifier)
+        );
+
+        let next_envelope = TempoTxEnvelope::AA(make_signed(1));
+        let next_tx_env = TempoTxEnv::from_encoded_tx(&next_envelope, account, Bytes::new());
+        assert_eq!(
+            next_tx_env.execution_context(),
+            ExecutionContext::Simulation
+        );
+        assert_ne!(
+            next_tx_env.channel_open_context_hash(),
+            tx_env.channel_open_context_hash(),
+            "distinct simulated transactions must retain distinct replay identities"
+        );
+
+        let tx_env = TempoTxEnv::from_encoded_tx(
+            &envelope,
+            account,
+            Bytes::from_static(b"signed transaction"),
+        );
+        assert_eq!(
+            tx_env.execution_context(),
+            ExecutionContext::Transaction {
+                tx_hash: *envelope.tx_hash()
+            }
+        );
+        assert_eq!(
+            tx_env.channel_open_context_hash(),
+            Some(expected_identifier)
+        );
+
+        let direct_aa_env = TempoTxEnv::from_encoded_tx(&signed, account, Bytes::new());
+        assert_eq!(
+            direct_aa_env.execution_context(),
+            ExecutionContext::Simulation,
+            "bare AA and envelope conversions must agree on the empty simulation encoding"
+        );
+        assert_eq!(
+            direct_aa_env.channel_open_context_hash(),
+            Some(expected_identifier)
+        );
+    }
+
+    #[test]
     fn test_tx_env() {
         let tx_env = super::TempoTxEnv::default();
 
@@ -608,6 +742,7 @@ mod tests {
         assert!(tx_env.inner.access_list.is_empty());
         assert!(tx_env.fee_token.is_none());
         assert!(!tx_env.is_system_tx);
+        assert_eq!(tx_env.execution_context(), ExecutionContext::Simulation);
         assert!(tx_env.fee_payer.is_none());
         assert!(tx_env.tempo_tx_env.is_none());
     }

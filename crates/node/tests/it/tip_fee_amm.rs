@@ -69,7 +69,7 @@ async fn test_mint_liquidity() -> eyre::Result<()> {
     let caller = wallet.address();
     let provider = ProviderBuilder::new().wallet(wallet).connect_http(http_url);
 
-    let amount = U256::from(rand::random::<u128>());
+    let amount = U256::from(rand_09::random::<u128>());
 
     // Setup test token and fee AMM
     let token_0 = setup_test_token(provider.clone(), caller).await?;

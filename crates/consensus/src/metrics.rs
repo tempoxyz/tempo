@@ -1,4 +1,4 @@
-use std::net::SocketAddr;
+use std::{net::SocketAddr, sync::Arc};
 
 use axum::{
     Extension, Router,
@@ -27,10 +27,11 @@ pub fn install(context: Context, listen_addr: SocketAddr) -> Handle<eyre::Result
             .wrap_err("failed to bind provided address")?;
 
         // Create a router for the metrics server
+        let context = Arc::new(context);
         let app = Router::new()
             .route(
                 "/metrics",
-                get(|Extension(ctx): Extension<Context>| async move {
+                get(|Extension(ctx): Extension<Arc<Context>>| async move {
                     Response::builder()
                         .status(StatusCode::OK)
                         .header(header::CONTENT_TYPE, "text/plain; version=0.0.4")

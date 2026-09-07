@@ -1,10 +1,11 @@
+use commonware_actor::Feedback;
 use commonware_consensus::{
     Reporter,
     marshal::Update,
     types::{Epoch, Height},
 };
 use commonware_cryptography::{
-    bls12381::{dkg::SignedDealerLog, primitives::variant::MinSig},
+    bls12381::{dkg::feldman_desmedt::SignedDealerLog, primitives::variant::MinSig},
     ed25519::{PrivateKey, PublicKey},
 };
 use commonware_utils::acknowledgement::Exact;
@@ -153,13 +154,17 @@ pub(super) struct VerifyDealerLog {
 impl Reporter for Mailbox {
     type Activity = Update<Block, Exact>;
 
-    async fn report(&mut self, activity: Self::Activity) {
-        if let Err(error) = self
+    fn report(&mut self, activity: Self::Activity) -> Feedback {
+        match self
             .inner
             .unbounded_send(Message::in_current_span(activity))
             .wrap_err("dkg manager no longer running")
         {
-            warn!(%error, "failed to report finalization activity to dkg manager")
+            Ok(()) => Feedback::Ok,
+            Err(error) => {
+                warn!(%error, "failed to report finalization activity to dkg manager");
+                Feedback::Closed
+            }
         }
     }
 }

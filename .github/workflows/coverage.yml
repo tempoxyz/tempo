@@ -31,9 +31,9 @@ jobs:
             const maxWaitMinutes = 30;
             const pollIntervalSeconds = 30;
             const maxAttempts = (maxWaitMinutes * 60) / pollIntervalSeconds;
-            
+
             console.log(`Waiting for Test workflow to complete for commit: ${commitSha}`);
-            
+
             for (let attempt = 1; attempt <= maxAttempts; attempt++) {
               const { data: runs } = await github.rest.actions.listWorkflowRuns({
                 owner: context.repo.owner,
@@ -42,11 +42,11 @@ jobs:
                 head_sha: commitSha,
                 per_page: 1
               });
-              
+
               if (runs.workflow_runs.length > 0) {
                 const run = runs.workflow_runs[0];
                 console.log(`Test workflow status: ${run.status}, conclusion: ${run.conclusion}`);
-                
+
                 if (run.status === 'completed') {
                   if (run.conclusion === 'success') {
                     console.log('Test workflow completed successfully');
@@ -59,13 +59,13 @@ jobs:
               } else {
                 console.log('No Test workflow run found yet');
               }
-              
+
               if (attempt < maxAttempts) {
                 console.log(`Attempt ${attempt}/${maxAttempts}, waiting ${pollIntervalSeconds}s...`);
                 await new Promise(r => setTimeout(r, pollIntervalSeconds * 1000));
               }
             }
-            
+
             console.log('Timeout waiting for Test workflow, proceeding with forge coverage only');
 
   merge-coverage:
@@ -82,19 +82,47 @@ jobs:
           persist-credentials: false
 
       - name: Setup Rust
-        uses: dtolnay/rust-toolchain@stable
+        uses: tempoxyz/gh-actions/vendor/dtolnay/rust-toolchain@3626124474a987bc74b41fc7ae65b2e23f8e4e4e
         with:
           components: llvm-tools-preview
 
+      # test.yml uploads its coverage as cargo-test-coverage[-<partition>] artifacts on the
+      # run for this commit. Resolve that run, then fetch with the GitHub-authored action.
+      - name: Find cargo test coverage artifacts
+        id: cargo-coverage
+        env:
+          GH_TOKEN: ${{ github.token }}
+          COMMIT_SHA: ${{ inputs.commit_sha }}
+        run: |
+          set -euo pipefail
+          find_run() {
+            gh run list -R "$GITHUB_REPOSITORY" --workflow test.yml --commit "$COMMIT_SHA" \
+              --status "$1" --limit 1 --json databaseId --jq '.[0].databaseId // empty'
+          }
+          run_id=$(find_run success)
+          [[ -n "$run_id" ]] || run_id=$(find_run completed)
+          count=0
+          if [[ -n "$run_id" ]]; then
+            count=$(gh api "repos/$GITHUB_REPOSITORY/actions/runs/$run_id/artifacts?per_page=100" \
+              --jq '[.artifacts[] | select(.expired | not) | select(.name | startswith("cargo-test-coverage"))] | length')
+          fi
+          if [[ "$count" -eq 0 ]]; then
+            echo "::warning::No cargo-test-coverage artifacts for $COMMIT_SHA (test.yml run: ${run_id:-none}); continuing with forge coverage only"
+            echo "found=false" >> "$GITHUB_OUTPUT"
+          else
+            echo "Found $count cargo-test-coverage artifact(s) in test.yml run $run_id"
+            echo "found=true" >> "$GITHUB_OUTPUT"
+            echo "run-id=$run_id" >> "$GITHUB_OUTPUT"
+          fi
+
       - name: Download cargo test coverage
-        uses: dawidd6/action-download-artifact@8305c0f1062bb0d184d09ef4493ecb9288447732 # v20
+        if: steps.cargo-coverage.outputs.found == 'true'
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
         with:
-          workflow: test.yml
-          name: cargo-test-coverage
+          run-id: ${{ steps.cargo-coverage.outputs.run-id }}
+          github-token: ${{ github.token }}
+          pattern: cargo-test-coverage*
           path: cargo-coverage
-          if_no_artifact_found: warn
-          search_artifacts: true
-          commit: ${{ inputs.commit_sha }}
         continue-on-error: true
 
       - name: Download forge test coverage
@@ -112,12 +140,15 @@ jobs:
           LLVM_BIN="$(rustc --print sysroot)/lib/rustlib/$(rustc -vV | grep host | cut -d' ' -f2)/bin"
           mkdir -p coverage-report
 
-          # Collect profdata files
+          # Collect profdata files. Each downloaded artifact lands in its own directory under
+          # cargo-coverage/ (one per test partition); the flat path is kept for older layouts.
           PROFDATA_FILES=""
-          if [[ -f cargo-coverage/cargo-test.profdata ]]; then
-            PROFDATA_FILES="$PROFDATA_FILES cargo-coverage/cargo-test.profdata"
-            echo "Found cargo test coverage"
-          fi
+          for profdata in cargo-coverage/cargo-test.profdata cargo-coverage/*/cargo-test.profdata; do
+            if [[ -f "$profdata" ]]; then
+              PROFDATA_FILES="$PROFDATA_FILES $profdata"
+              echo "Found cargo test coverage: $profdata"
+            fi
+          done
           if [[ -f forge-coverage/coverage/forge-test.profdata ]]; then
             PROFDATA_FILES="$PROFDATA_FILES forge-coverage/coverage/forge-test.profdata"
             echo "Found forge test coverage"
@@ -130,6 +161,7 @@ jobs:
           fi
 
           # Merge profdata
+          # shellcheck disable=SC2086  # PROFDATA_FILES must word-split into multiple file args
           "$LLVM_BIN/llvm-profdata" merge -sparse $PROFDATA_FILES -o coverage-report/merged.profdata
 
           # Build object flags
@@ -138,14 +170,15 @@ jobs:
             chmod +x forge-coverage/foundry/target/release/forge
             OBJECT_FLAGS="$OBJECT_FLAGS --object=forge-coverage/foundry/target/release/forge"
           fi
-          if [[ -d cargo-coverage/precompiles-bin ]]; then
-            for bin in cargo-coverage/precompiles-bin/*; do
-              if [[ -f "$bin" ]]; then
-                chmod +x "$bin"
-                OBJECT_FLAGS="$OBJECT_FLAGS --object=$bin"
-              fi
-            done
-          fi
+          # Every partition ships the same test binaries, so pass each binary name once.
+          declare -A SEEN_BIN=()
+          for bin in cargo-coverage/precompiles-bin/* cargo-coverage/*/precompiles-bin/*; do
+            if [[ -f "$bin" && -z "${SEEN_BIN[$(basename "$bin")]:-}" ]]; then
+              SEEN_BIN[$(basename "$bin")]=1
+              chmod +x "$bin"
+              OBJECT_FLAGS="$OBJECT_FLAGS --object=$bin"
+            fi
+          done
 
           if [[ -z "$OBJECT_FLAGS" ]]; then
             echo "No binaries found"
@@ -153,6 +186,7 @@ jobs:
           fi
 
           # Generate report
+          # shellcheck disable=SC2086  # OBJECT_FLAGS must word-split into multiple --object args
           "$LLVM_BIN/llvm-cov" report \
             --instr-profile=coverage-report/merged.profdata \
             $OBJECT_FLAGS \
@@ -170,12 +204,13 @@ jobs:
 
           echo "=== Precompiles Coverage ==="
           cat coverage-report/summary.txt
-          
+
           echo ""
           echo "=== Debug: Line count in summary.txt ==="
           wc -l coverage-report/summary.txt || true
 
           # Generate lcov
+          # shellcheck disable=SC2086  # OBJECT_FLAGS must word-split into multiple --object args
           "$LLVM_BIN/llvm-cov" export \
             --format=lcov \
             --instr-profile=coverage-report/merged.profdata \
@@ -297,24 +332,24 @@ jobs:
 
                 for (const line of fileLines) {
                   const parts = line.trim().split(/\s+/);
-                  
+
                   // llvm-cov report format (13 columns with branches):
                   // Filename Regions MissedRegions RegionCover Functions MissedFunctions FuncCover Lines MissedLines LineCover Branches MissedBranches BranchCover
-                  
+
                   if (parts.length >= 10) {
                     const fullPath = parts[0];
-                    
+
                     // Lines data is at fixed positions: indices 7, 8, 9
                     const linesTotal = parseInt(parts[7]) || 0;
                     const linesMissed = parseInt(parts[8]) || 0;
                     const linesCoverage = parts[9];
                     const linesCovered = linesTotal - linesMissed;
-                    
+
                     // Determine which crate this file belongs to
                     // Paths are like: precompiles/src/... or contracts/src/...
                     let crateName = null;
                     let shortPath = fullPath;
-                    
+
                     if (fullPath.startsWith('precompiles/')) {
                       crateName = 'precompiles';
                       shortPath = fullPath.substring('precompiles/'.length);
@@ -322,7 +357,7 @@ jobs:
                       crateName = 'contracts';
                       shortPath = fullPath.substring('contracts/'.length);
                     }
-                    
+
                     if (crateName && crates[crateName]) {
                       crates[crateName].files.push({
                         path: shortPath,
@@ -342,31 +377,31 @@ jobs:
                 // Generate report per crate
                 for (const [crateName, data] of Object.entries(crates)) {
                   if (data.files.length === 0) continue;
-                  
-                  const cratePercentage = data.total > 0 
+
+                  const cratePercentage = data.total > 0
                     ? ((data.covered / data.total) * 100).toFixed(2) + '%'
                     : '0.00%';
-                  
+
                   body += `### ${crateName}\n\n`;
                   body += `**Coverage: ${data.covered}/${data.total} lines (${cratePercentage})**\n\n`;
                   body += '<details>\n<summary>File details</summary>\n\n';
                   body += '| File | Lines | Coverage |\n';
                   body += '|------|-------|----------|\n';
-                  
+
                   for (const file of data.files) {
                     body += `| \`${file.path}\` | ${file.covered}/${file.total} | ${file.percentage} |\n`;
                   }
-                  
+
                   body += '\n</details>\n\n';
                 }
 
                 // Add overall total (sum of precompiles + contracts only)
                 const totalCovered = crates['precompiles'].covered + crates['contracts'].covered;
                 const totalLines = crates['precompiles'].total + crates['contracts'].total;
-                const totalPercentage = totalLines > 0 
+                const totalPercentage = totalLines > 0
                   ? ((totalCovered / totalLines) * 100).toFixed(2) + '%'
                   : '0.00%';
-                
+
                 if (totalLines > 0) {
                   body += `### Total: ${totalCovered}/${totalLines} lines (${totalPercentage})\n\n`;
                 }

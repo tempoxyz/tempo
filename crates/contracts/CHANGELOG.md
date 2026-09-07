@@ -1,5 +1,15 @@
 # Changelog
 
+## `tempo-contracts@1.11.0`
+
+### Minor Changes
+
+- Added a helper for constructing the complete native ZoneFactory state with a specified initial owner. (by @HamdiAllam, [#7244](https://github.com/tempoxyz/tempo/pull/7244))
+- Added the `LeaderUpdated` event and updated the ZonePortal runtime with leader transition support. (by @HamdiAllam, [#7244](https://github.com/tempoxyz/tempo/pull/7244))
+- Added the T10 hardfork and moved TIP-1091 activation (ZoneFactory precompile and shared Zone runtime installation) from T9 to T10, so the ZonePortal runtime can still change after the audit without reopening T9. (by @HamdiAllam, [#7244](https://github.com/tempoxyz/tempo/pull/7244))
+- Implemented TIP-1091 with a native permissioned ZoneFactory, deterministic ZonePortal proxy accounts, and owner-managed runtimes copied from verified source deployments. Activates at T10. (by @HamdiAllam, [#7244](https://github.com/tempoxyz/tempo/pull/7244))
+- Updated the canonical Zone Portal, Messenger, and Verifier runtime bytecode installed by the T10 hardfork. (by @HamdiAllam, [#7244](https://github.com/tempoxyz/tempo/pull/7244))
+
 ## `tempo-contracts@1.10.1`
 
 ### Patch Changes

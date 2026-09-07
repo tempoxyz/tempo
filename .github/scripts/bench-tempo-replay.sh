@@ -121,7 +121,7 @@ cleanup_reth_ipc() {
 # ============================================================================
 
 echo "Installing txgen-tempo and bench-cli..."
-cargo install --git "https://x-access-token:${DEREK_BENCH_TOKEN}@github.com/tempoxyz/txgen" --locked txgen-tempo bench-cli
+cargo install --git "https://github.com/tempoxyz/txgen" --locked txgen-tempo bench-cli
 command -v "$TXGEN_TEMPO_BIN"
 command -v "$TXGEN_BENCH_BIN"
 
@@ -462,10 +462,10 @@ run_single() {
 
 update_bench_status() {
   local status="$1"
-  if [ -z "${BENCH_COMMENT_ID:-}" ] || [ -z "${BENCH_GH_TOKEN:-${DEREK_BENCH_TOKEN:-}}" ]; then
+  if [ -z "${BENCH_COMMENT_ID:-}" ] || [ -z "${BENCH_GH_TOKEN:-}" ]; then
     return 0
   fi
-  local token="${BENCH_GH_TOKEN:-${DEREK_BENCH_TOKEN}}"
+  local token="$BENCH_GH_TOKEN"
   local body
   body=$(printf 'cc @%s\n\n🚀 Benchmark started! [View job](%s)\n\n⏳ **Status:** %s\n\n%s' \
     "${BENCH_ACTOR:-}" "${BENCH_JOB_URL:-}" "$status" "${BENCH_CONFIG:-}")

@@ -4,7 +4,7 @@
 //! fixed-cache execution path. This is intended as a small CodSpeed/flamegraph target for
 //! TIP-1062 order storage layout work.
 
-#[allow(dead_code)]
+#[expect(dead_code)]
 mod common;
 
 use alloy_consensus::transaction::Recovered;

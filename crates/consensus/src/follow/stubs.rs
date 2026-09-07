@@ -3,6 +3,8 @@
 //! The null broadcast stub satisfies marshal's type requirements but is never
 //! actually used because the follower never broadcasts blocks.
 
+use std::num::NonZeroUsize;
+
 use commonware_broadcast::buffered;
 use commonware_cryptography::{
     Signer as _,
@@ -12,7 +14,7 @@ use commonware_math::algebra::Random as _;
 use commonware_p2p::utils::StaticProvider;
 use commonware_runtime::{BufferPooler, Clock, Metrics, Spawner};
 use commonware_utils::ordered::Set;
-use rand_08::SeedableRng as _;
+use rand::SeedableRng as _;
 
 use crate::consensus::block::Block;
 
@@ -23,10 +25,10 @@ use crate::consensus::block::Block;
 /// execution node and upstream ws connection.
 pub(super) fn null_broadcast<E: Clock + Spawner + Metrics + BufferPooler>(
     context: E,
-    mailbox_size: usize,
+    mailbox_size: NonZeroUsize,
 ) -> buffered::Mailbox<PublicKey, Block> {
     // Generate a random public key for the unused broadcast engine
-    let mut rng = rand_08::rngs::StdRng::seed_from_u64(0);
+    let mut rng = rand::rngs::StdRng::seed_from_u64(0);
     let private_key = PrivateKey::random(&mut rng);
     let public_key = private_key.public_key();
 

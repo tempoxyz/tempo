@@ -1,4 +1,5 @@
 use crate::{
+    AddressFilter,
     amm::AmmLiquidityCache,
     state_cache::{StateCache, StateCacheDb},
     transaction::{TempoPoolTransactionError, TempoPooledTransaction},
@@ -8,8 +9,8 @@ use alloy_consensus::constants::KECCAK_EMPTY;
 use alloy_evm::{Database, EvmEnv};
 use alloy_primitives::{Address, B256};
 use parking_lot::RwLock;
-use reth_chainspec::ChainSpecProvider;
-use reth_evm::ConfigureEvm;
+use reth_chainspec::{ChainSpecProvider, EthChainSpec};
+use reth_evm::{ConfigureEvm, EvmEnvFor, EvmFactory, EvmFor, block::BlockExecutorFactory};
 use reth_primitives_traits::{
     Account, Bytecode, SealedBlock, transaction::error::InvalidTransactionError,
 };
@@ -25,26 +26,20 @@ use reth_transaction_pool::{
 };
 use revm::{
     DatabaseRef,
-    context::{
-        ContextTr, JournalTr,
-        result::{EVMError, InvalidTransaction},
-    },
+    context::result::{EVMError, InvalidTransaction},
 };
 use std::sync::{
     Arc,
     atomic::{AtomicU8, Ordering},
 };
-use tempo_chainspec::{
-    TempoChainSpec,
-    hardfork::{TempoHardfork, TempoHardforks},
-};
-use tempo_evm::{TempoEvmConfig, evm::TempoEvm};
+use tempo_chainspec::hardfork::{TempoHardfork, TempoHardforks};
+use tempo_evm::{TempoEvmConfig, TempoPoolValidationEvm};
 use tempo_precompiles::{
     nonce::{INonce, NonceManager},
     storage::StorageActions,
 };
 use tempo_primitives::{
-    Block, TempoHeader,
+    Block, TempoHeader, TempoPrimitives,
     subblock::has_sub_block_nonce_key_prefix,
     transaction::{TEMPO_EXPIRING_NONCE_KEY, TempoTransaction},
 };
@@ -92,15 +87,19 @@ const MAX_KEYCHAIN_RECIPIENTS_PER_SELECTOR: u8 = 64;
 
 /// Validator for Tempo transactions.
 #[derive(Debug)]
-pub struct TempoTransactionValidator<Client> {
+pub struct TempoTransactionValidator<Client, EvmConfig = TempoEvmConfig> {
     /// Inner validator that performs default Ethereum tx validation.
-    pub(crate) inner: EthTransactionValidator<Client, TempoPooledTransaction, TempoEvmConfig>,
+    pub(crate) inner: EthTransactionValidator<Client, TempoPooledTransaction, EvmConfig>,
     /// Maximum allowed `valid_after` offset for AA txs.
     pub(crate) aa_valid_after_max_secs: u64,
     /// Maximum number of authorizations allowed in an AA transaction.
     pub(crate) max_tempo_authorizations: usize,
     /// Cache of AMM liquidity for validator tokens.
     pub(crate) amm_liquidity_cache: AmmLiquidityCache,
+    /// Whether to skip the FeeAMM liquidity check during pool admission.
+    pub(crate) disable_fee_amm_check: bool,
+    /// Addresses checked against transaction senders and direct call targets.
+    address_filter: AddressFilter,
     /// Cached EVM environment from the latest tip block, updated on each `on_new_head_block`.
     cached_evm_env: RwLock<EvmEnv<TempoHardfork, TempoBlockEnv>>,
     /// Tip hash and cache of state reads shared across validation calls, replaced on each
@@ -114,12 +113,14 @@ pub struct TempoTransactionValidator<Client> {
     active_hardfork: AtomicU8,
 }
 
-impl<Client> TempoTransactionValidator<Client>
+impl<Client, EvmConfig> TempoTransactionValidator<Client, EvmConfig>
 where
-    Client: ChainSpecProvider<ChainSpec = TempoChainSpec> + StateProviderFactory,
+    Client: ChainSpecProvider<ChainSpec: EthChainSpec<Header = TempoHeader> + TempoHardforks>
+        + StateProviderFactory,
+    EvmConfig: ConfigureTempoPoolEvm,
 {
     pub fn new(
-        inner: EthTransactionValidator<Client, TempoPooledTransaction, TempoEvmConfig>,
+        inner: EthTransactionValidator<Client, TempoPooledTransaction, EvmConfig>,
         aa_valid_after_max_secs: u64,
         max_tempo_authorizations: usize,
         amm_liquidity_cache: AmmLiquidityCache,
@@ -142,10 +143,24 @@ where
             aa_valid_after_max_secs,
             max_tempo_authorizations,
             amm_liquidity_cache,
+            disable_fee_amm_check: false,
+            address_filter: AddressFilter::default(),
             cached_evm_env: parking_lot::RwLock::new(evm_env),
             cached_state: RwLock::new((latest_header.hash(), Arc::new(StateCache::default()))),
             active_hardfork,
         }
+    }
+
+    /// Configures whether to skip the FeeAMM liquidity check during pool admission.
+    pub const fn with_disable_fee_amm_check(mut self, disable: bool) -> Self {
+        self.disable_fee_amm_check = disable;
+        self
+    }
+
+    /// Configures transaction sender and direct call target checks.
+    pub fn with_address_filter(mut self, address_filter: AddressFilter) -> Self {
+        self.address_filter = address_filter;
+        self
     }
 
     /// Returns the Tempo hardfork active at the current tip.
@@ -181,32 +196,18 @@ where
         // Reject AA txs where `valid_before` is too close to current time (or already expired).
         // The EVM checks `valid_before > block_timestamp` but the pool needs an extra
         // propagation buffer to prevent txs from expiring at peers with slightly newer tips.
-        if let Some(valid_before) = tx.valid_before {
-            let valid_before = valid_before.get();
-            let min_allowed = tip_timestamp.saturating_add(AA_VALID_BEFORE_MIN_SECS);
-            if valid_before <= min_allowed {
-                return Err(TempoPoolTransactionError::InvalidValidBefore {
-                    valid_before,
-                    min_allowed,
-                });
-            }
-        }
+        let min_allowed = tip_timestamp.saturating_add(AA_VALID_BEFORE_MIN_SECS);
+        tx.ensure_valid_before(min_allowed)?;
 
         // Reject AA txs where `valid_after` is too far in the future.
         // Uses wall-clock time to avoid rejecting valid txs when node is lagging.
-        if let Some(valid_after) = tx.valid_after {
-            let valid_after = valid_after.get();
+        if tx.valid_after.is_some() {
             let current_time = std::time::SystemTime::now()
                 .duration_since(std::time::UNIX_EPOCH)
                 .map(|d| d.as_secs())
                 .unwrap_or(0);
             let max_allowed = current_time.saturating_add(self.aa_valid_after_max_secs);
-            if valid_after > max_allowed {
-                return Err(TempoPoolTransactionError::InvalidValidAfter {
-                    valid_after,
-                    max_allowed,
-                });
-            }
+            tx.ensure_valid_after(max_allowed)?;
         }
 
         Ok(())
@@ -336,7 +337,7 @@ where
 
     /// Validates a batch of transactions against the same state snapshot.
     ///
-    /// All transactions share one throwaway [`TempoEvm`] (journaled writes are discarded
+    /// All transactions share one throwaway pool-validation EVM (journaled writes are discarded
     /// after each transaction while loaded state stays warm) and the validator's tip-scoped
     /// [`StateCache`], so repeated state reads are served from memory across transactions
     /// and across concurrent validation calls.
@@ -346,31 +347,20 @@ where
         cached_state: Arc<StateCache>,
         transactions: impl IntoIterator<Item = (TransactionOrigin, TempoPooledTransaction)>,
     ) -> Vec<TransactionValidationOutcome<TempoPooledTransaction>> {
-        let mut db = StateCacheDb::new(&cached_state, StateProviderDatabase::new(&state_provider));
+        let db = StateCacheDb::new(
+            &cached_state,
+            StateProviderDatabase::new(&state_provider as &dyn StateProvider),
+        );
         let evm_env = self.cached_evm_env.read().clone();
 
-        // Create a throwaway EVM for the whole batch and run validation, reusing the same
-        // validation logic that the block executor uses ([`TempoEvm::validate_transaction`]).
-        // - Skip `valid_after` check: the pool intentionally accepts transactions with a
-        //   future `valid_after` (queued until executable).
-        // - Disable nonce check: the pool accepts future-nonce transactions (queued)
-        //   and handles nonce ordering separately.
-        // - Skip liquidity check: the pool performs its own liquidity validation against a cached view of the AMM state.
-        let mut evm = TempoEvm::new(&mut db, evm_env);
-        evm.inner_mut().skip_valid_after_check = true;
-        evm.inner_mut().skip_liquidity_check = true;
-        evm.ctx_mut().cfg.disable_nonce_check = true;
+        // Create one throwaway EVM through the configured factory for the whole batch. The
+        // capability hook owns all pool-only configuration and per-transaction cleanup while the
+        // EVM and tip-scoped state cache keep repeated reads warm.
+        let mut evm = self.inner.evm_config().pool_evm(db, evm_env);
 
         transactions
             .into_iter()
-            .map(|(origin, transaction)| {
-                let outcome = self.validate_one_with_evm(origin, transaction, &mut evm);
-                // Discard this transaction's journaled writes (nonce bumps, fee deduction,
-                // key authorisation) while keeping loaded accounts and storage warm for the
-                // rest of the batch.
-                evm.ctx_mut().journal_mut().discard_tx();
-                outcome
-            })
+            .map(|(origin, transaction)| self.validate_one_with_evm(origin, transaction, &mut evm))
             .collect()
     }
 
@@ -398,15 +388,16 @@ where
 
     /// Validates one transaction with the given throwaway EVM.
     ///
-    /// The caller is responsible for discarding the journaled writes afterwards.
-    fn validate_one_with_evm<DB>(
+    /// The EVM's pool-validation hook is responsible for discarding transaction-local writes.
+    fn validate_one_with_evm<EV>(
         &self,
         origin: TransactionOrigin,
         transaction: TempoPooledTransaction,
-        evm: &mut TempoEvm<DB>,
+        evm: &mut EV,
     ) -> TransactionValidationOutcome<TempoPooledTransaction>
     where
-        DB: Database<Error = ProviderError> + DatabaseRef<Error = ProviderError>,
+        EV: TempoPoolValidationEvm,
+        EV::DB: Database<Error = ProviderError> + DatabaseRef<Error = ProviderError>,
     {
         // Get the hardfork active at the current tip
         let spec = self.active_hardfork();
@@ -448,6 +439,13 @@ where
             );
         }
 
+        if let Err(err) = self.address_filter.check(&transaction) {
+            return TransactionValidationOutcome::Invalid(
+                transaction,
+                InvalidPoolTransactionError::other(err),
+            );
+        }
+
         // Pool-only time-bound checks: valid_before propagation buffer, valid_after max offset.
         if let Some(tx) = transaction.inner().as_aa()
             && let Err(err) = self.ensure_pool_time_bounds(tx.tx())
@@ -465,10 +463,11 @@ where
         //
         // Returns resolved fee token and key expiry for pool caching.
         let result = if let Some(tx_env) = transaction.cached_tx_env() {
-            evm.validate_transaction(tx_env.clone())
+            let (result, _) = evm.validate_pool_transaction(tx_env.clone());
+            result
         } else {
-            let result = evm.validate_transaction(transaction.tx_env_slow());
-            transaction.cache_tx_env(core::mem::take(&mut evm.ctx_mut().tx));
+            let (result, tx_env) = evm.validate_pool_transaction(transaction.tx_env_slow());
+            transaction.cache_tx_env(tx_env);
             result
         };
         let validation_ctx = match result {
@@ -523,26 +522,33 @@ where
             transaction.set_key_expiry(Some(key_expiry));
         }
 
-        // Validate that transaction has enough liquidity against at least one of the recent validator tokens.
-        let fee = transaction.fee_token_cost();
-        match self.amm_liquidity_cache.has_enough_liquidity(
-            validation_ctx.fee_token,
-            fee,
-            evm.db_mut(),
-        ) {
-            Ok(true) => {}
-            Ok(false) => {
-                return TransactionValidationOutcome::Invalid(
-                    transaction,
-                    InvalidPoolTransactionError::other(TempoPoolTransactionError::Evm(
-                        TempoInvalidTransaction::CollectFeePreTx(
-                            FeePaymentError::InsufficientAmmLiquidity { fee },
-                        ),
-                    )),
-                );
-            }
-            Err(err) => {
-                return TransactionValidationOutcome::Error(*transaction.hash(), Box::new(err));
+        // Validate that transaction has enough liquidity against at least one of the recent
+        // validator tokens, unless the node's fee mechanism does not use the FeeAMM.
+        if !self.disable_fee_amm_check {
+            let fee = transaction.fee_token_cost();
+            match self.amm_liquidity_cache.has_enough_liquidity(
+                validation_ctx.fee_token,
+                fee,
+                evm.db_mut(),
+            ) {
+                Ok(true) => {}
+                Ok(false) => {
+                    return TransactionValidationOutcome::Invalid(
+                        transaction,
+                        InvalidPoolTransactionError::other(TempoPoolTransactionError::Evm(
+                            TempoInvalidTransaction::CollectFeePreTx(
+                                FeePaymentError::InsufficientAmmLiquidity {
+                                    user_token: Some(validation_ctx.fee_token),
+                                    validator_token: None,
+                                    fee,
+                                },
+                            ),
+                        )),
+                    );
+                }
+                Err(err) => {
+                    return TransactionValidationOutcome::Error(*transaction.hash(), Box::new(err));
+                }
             }
         }
 
@@ -550,7 +556,7 @@ where
         // (chain_id, EIP-3607 code check, protocol nonce, etc.) and to produce
         // the Valid outcome with state_nonce and balance for pool ordering.
         let inner_validation = {
-            let cached_state_provider = CachedAccountInfoReader::new(evm.db_ref());
+            let cached_state_provider = CachedAccountInfoReader::new(evm.db());
             self.inner
                 .validate_one_with_state_provider(origin, transaction, &cached_state_provider)
         };
@@ -597,14 +603,8 @@ where
                         );
                     }
 
-                    // Check if T1 hardfork is active for expiring nonce handling
-                    let current_time = self.inner.fork_tracker().tip_timestamp();
-                    let is_t1_active = self
-                        .inner
-                        .chain_spec()
-                        .is_t1_active_at_timestamp(current_time);
-
-                    if is_t1_active && nonce_key == TEMPO_EXPIRING_NONCE_KEY {
+                    // Expiring nonces are only recognized once T1 is active at the tip.
+                    if spec.is_t1() && nonce_key == TEMPO_EXPIRING_NONCE_KEY {
                         // Expiring nonce transactions are validated by the EVM
                     } else {
                         // This is a 2D nonce transaction - validate against 2D nonce
@@ -664,9 +664,11 @@ where
     }
 }
 
-impl<Client> TransactionValidator for TempoTransactionValidator<Client>
+impl<Client, EvmConfig> TransactionValidator for TempoTransactionValidator<Client, EvmConfig>
 where
-    Client: ChainSpecProvider<ChainSpec = TempoChainSpec> + StateProviderFactory,
+    Client: ChainSpecProvider<ChainSpec: EthChainSpec<Header = TempoHeader> + TempoHardforks>
+        + StateProviderFactory,
+    EvmConfig: ConfigureTempoPoolEvm,
 {
     type Transaction = TempoPooledTransaction;
     type Block = Block;
@@ -788,12 +790,57 @@ where
     }
 }
 
+/// Configuration capable of constructing an EVM with Tempo transaction-pool semantics.
+///
+/// This pins pool validation to Tempo's EVM environment while allowing the configured EVM
+/// implementation to adapt its database and precompiles.
+pub trait ConfigureTempoPoolEvm:
+    ConfigureEvm<
+        Primitives = TempoPrimitives,
+        BlockExecutorFactory: BlockExecutorFactory<
+            EvmFactory: EvmFactory<Spec = TempoHardfork, BlockEnv = TempoBlockEnv>,
+        >,
+    > + 'static
+{
+    fn pool_evm<'a>(
+        &self,
+        db: StateCacheDb<'a, StateProviderDatabase<&'a dyn StateProvider>>,
+        evm_env: EvmEnvFor<Self>,
+    ) -> impl TempoPoolValidationEvm<
+        DB = StateCacheDb<'a, StateProviderDatabase<&'a dyn StateProvider>>,
+    > + 'a;
+}
+
+impl<T> ConfigureTempoPoolEvm for T
+where
+    T: ConfigureEvm<
+            Primitives = TempoPrimitives,
+            BlockExecutorFactory: BlockExecutorFactory<
+                EvmFactory: EvmFactory<Spec = TempoHardfork, BlockEnv = TempoBlockEnv>,
+            >,
+        > + 'static,
+    for<'a> EvmFor<T, StateCacheDb<'a, StateProviderDatabase<&'a dyn StateProvider>>>:
+        TempoPoolValidationEvm,
+{
+    fn pool_evm<'a>(
+        &self,
+        db: StateCacheDb<'a, StateProviderDatabase<&'a dyn StateProvider>>,
+        evm_env: EvmEnvFor<Self>,
+    ) -> impl TempoPoolValidationEvm<
+        DB = StateCacheDb<'a, StateProviderDatabase<&'a dyn StateProvider>>,
+    > + 'a {
+        let mut evm = self.evm_with_env(db, evm_env);
+        evm.configure_for_pool();
+        evm
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
     use crate::{test_utils::TxBuilder, transaction::TempoPoolTransactionError};
     use alloy_consensus::{Header, Signed, Transaction, TxLegacy};
-    use alloy_primitives::{Address, B256, TxKind, U256, address, uint};
+    use alloy_primitives::{Address, B256, Bytes, TxKind, U256, address, uint};
     use alloy_signer::Signature;
     use reth_chainspec::EthChainSpec;
     use reth_primitives_traits::{Account, Bytecode, SignedTransaction};
@@ -808,8 +855,9 @@ mod tests {
         Arc,
         atomic::{AtomicUsize, Ordering},
     };
-    use tempo_chainspec::spec::{
-        MODERATO, TEMPO_T0_BASE_FEE, TEMPO_T1_BASE_FEE, TEMPO_T1_TX_GAS_LIMIT_CAP,
+    use tempo_chainspec::{
+        TempoChainSpec,
+        spec::{MODERATO, TEMPO_T0_BASE_FEE, TEMPO_T1_BASE_FEE, TEMPO_T1_TX_GAS_LIMIT_CAP},
     };
     use tempo_precompiles::{
         PATH_USD_ADDRESS,
@@ -1036,6 +1084,42 @@ mod tests {
         };
         let ephemeral_cache = validator.state_cache_for_tip(mismatched_tip_hash);
         assert!(!Arc::ptr_eq(&ephemeral_cache, &shared_cache));
+    }
+
+    #[tokio::test]
+    async fn address_filter_checks_later_tempo_calls_during_admission() {
+        let checked_address = Address::with_last_byte(0x42);
+        let transaction = TxBuilder::aa(Address::random())
+            .calls(vec![
+                Call {
+                    to: TxKind::Call(Address::with_last_byte(0x41)),
+                    value: U256::ZERO,
+                    input: Bytes::new(),
+                },
+                Call {
+                    to: TxKind::Call(checked_address),
+                    value: U256::ZERO,
+                    input: Bytes::new(),
+                },
+            ])
+            .build();
+        let validator = setup_validator(&transaction, 1)
+            .with_address_filter(AddressFilter::new([checked_address]));
+
+        let outcome = validator
+            .validate_transaction(TransactionOrigin::External, transaction)
+            .await;
+
+        match outcome {
+            TransactionValidationOutcome::Invalid(_, ref err) => {
+                assert!(matches!(
+                    err.downcast_other_ref::<TempoPoolTransactionError>(),
+                    Some(TempoPoolTransactionError::AddressCheck { address })
+                        if *address == checked_address
+                ));
+            }
+            _ => panic!("Expected Invalid outcome with address check error, got: {outcome:?}"),
+        }
     }
 
     #[test]
@@ -1293,7 +1377,7 @@ mod tests {
         if let TransactionValidationOutcome::Invalid(_, ref err) = outcome {
             assert!(!matches!(
                 err.downcast_other_ref::<TempoPoolTransactionError>(),
-                Some(TempoPoolTransactionError::InvalidValidBefore { .. })
+                Some(TempoPoolTransactionError::InvalidValidBefore(_))
             ));
         }
 
@@ -1307,10 +1391,13 @@ mod tests {
 
         match outcome {
             TransactionValidationOutcome::Invalid(_, ref err) => {
-                assert!(matches!(
-                    err.downcast_other_ref::<TempoPoolTransactionError>(),
-                    Some(TempoPoolTransactionError::InvalidValidBefore { .. })
-                ));
+                let Some(TempoPoolTransactionError::InvalidValidBefore(err)) =
+                    err.downcast_other_ref::<TempoPoolTransactionError>()
+                else {
+                    panic!("Expected InvalidValidBefore error, got: {err:?}");
+                };
+                assert_eq!(err.valid_before, current_time + AA_VALID_BEFORE_MIN_SECS);
+                assert_eq!(err.min_allowed, current_time + AA_VALID_BEFORE_MIN_SECS);
             }
             _ => panic!("Expected Invalid outcome with InvalidValidBefore error, got: {outcome:?}"),
         }
@@ -1326,7 +1413,7 @@ mod tests {
         if let TransactionValidationOutcome::Invalid(_, ref err) = outcome {
             assert!(!matches!(
                 err.downcast_other_ref::<TempoPoolTransactionError>(),
-                Some(TempoPoolTransactionError::InvalidValidBefore { .. })
+                Some(TempoPoolTransactionError::InvalidValidBefore(_))
             ));
         }
     }
@@ -1349,7 +1436,7 @@ mod tests {
         if let TransactionValidationOutcome::Invalid(_, ref err) = outcome {
             assert!(!matches!(
                 err.downcast_other_ref::<TempoPoolTransactionError>(),
-                Some(TempoPoolTransactionError::InvalidValidAfter { .. })
+                Some(TempoPoolTransactionError::InvalidValidAfter(_))
             ));
         }
 
@@ -1363,7 +1450,7 @@ mod tests {
         if let TransactionValidationOutcome::Invalid(_, ref err) = outcome {
             assert!(!matches!(
                 err.downcast_other_ref::<TempoPoolTransactionError>(),
-                Some(TempoPoolTransactionError::InvalidValidAfter { .. })
+                Some(TempoPoolTransactionError::InvalidValidAfter(_))
             ));
         }
 
@@ -1376,10 +1463,13 @@ mod tests {
 
         match outcome {
             TransactionValidationOutcome::Invalid(_, ref err) => {
-                assert!(matches!(
-                    err.downcast_other_ref::<TempoPoolTransactionError>(),
-                    Some(TempoPoolTransactionError::InvalidValidAfter { .. })
-                ));
+                let Some(TempoPoolTransactionError::InvalidValidAfter(err)) =
+                    err.downcast_other_ref::<TempoPoolTransactionError>()
+                else {
+                    panic!("Expected InvalidValidAfter error, got: {err:?}");
+                };
+                assert_eq!(err.valid_after, current_time + 300);
+                assert!(err.max_allowed < err.valid_after);
             }
             _ => panic!("Expected Invalid outcome with InvalidValidAfter error, got: {outcome:?}"),
         }
@@ -1976,8 +2066,8 @@ mod tests {
             assert!(
                 !matches!(
                     tempo_err,
-                    Some(TempoPoolTransactionError::InvalidValidAfter { .. })
-                        | Some(TempoPoolTransactionError::InvalidValidBefore { .. })
+                    Some(TempoPoolTransactionError::InvalidValidAfter(_))
+                        | Some(TempoPoolTransactionError::InvalidValidBefore(_))
                 ),
                 "Should not fail with validity window errors"
             );

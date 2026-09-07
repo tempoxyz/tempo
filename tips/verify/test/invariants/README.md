@@ -204,6 +204,22 @@ The following are enforced at the protocol level and tested in Rust:
 - **TEMPO-GAS7**: First tx minimum gas (271k) → `crates/transaction-pool/src/validator.rs`
 - **TEMPO-GAS9-14**: Various protocol-level gas rules → `crates/revm/`
 
+## TIP-1060: Storage Credits
+
+### Storage Credit Invariants (`StorageCredits.t.sol`)
+
+Tested through `vmExec.executeTransaction()` so SSTORE accounting and end-of-transaction refund
+settlement run through the production execution path:
+
+- **TEMPO-SC1**: The persistent credit balance follows an independent zero-crossing model across
+  Refund, Preserve, Direct, and bounded-Direct modes, including multi-create budget exhaustion.
+- **TEMPO-SC2**: Non-boundary writes do not change credits; committed storage always matches ghost
+  state, including dirty `x -> 0 -> y` recreations.
+- **TEMPO-SC3**: Reverted storage writes atomically unwind their credit, mode, and budget effects.
+- **TEMPO-SC4**: Credits remain local to the account whose storage changed, regardless of the
+  transaction sender or intermediate caller.
+- **TEMPO-SC5**: Mode and Direct budget are transaction-local and reset between transactions.
+
 ## TIP-1010: Mainnet Gas Parameters (Block Limits)
 
 TIP-1010 defines Tempo's mainnet block gas parameters, including a 500M total block gas limit with a 30M general lane and 470M payment lane allocation.

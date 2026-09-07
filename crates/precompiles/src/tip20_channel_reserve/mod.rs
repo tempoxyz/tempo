@@ -161,7 +161,10 @@ impl TIP20ChannelReserve {
             return Err(TIP20ChannelReserveError::channel_already_exists().into());
         }
 
-        token.ensure_authorized_as(Recipient::resolve(call.payee)?.target, AuthRole::Recipient)?;
+        token.ensure_authorized_as(&[(
+            Recipient::resolve(call.payee)?.target,
+            AuthRole::Recipient,
+        )])?;
         token.system_transfer_from(self.address, msg_sender, U256::from(call.deposit))?;
 
         self.write_channel_state_spending_credit(
@@ -226,7 +229,7 @@ impl TIP20ChannelReserve {
             .expect("cumulative amount already checked to be increasing");
 
         let mut token = TIP20Token::from_address(call.descriptor.token)?;
-        token.ensure_authorized_as(call.descriptor.payer, AuthRole::Sender)?;
+        token.ensure_authorized_as(&[(call.descriptor.payer, AuthRole::Sender)])?;
 
         state.settled = cumulative;
         self.channel_states[channel_id].write(state)?;
@@ -283,10 +286,10 @@ impl TIP20ChannelReserve {
 
             state.deposit = next_deposit;
             let mut token = TIP20Token::from_address(call.descriptor.token)?;
-            token.ensure_authorized_as(
+            token.ensure_authorized_as(&[(
                 Recipient::resolve(call.descriptor.payee)?.target,
                 AuthRole::Recipient,
-            )?;
+            )])?;
             token.system_transfer_from(
                 self.address,
                 msg_sender,
@@ -401,7 +404,7 @@ impl TIP20ChannelReserve {
 
         let mut token = TIP20Token::from_address(call.descriptor.token)?;
         if !delta.is_zero() {
-            token.ensure_authorized_as(call.descriptor.payer, AuthRole::Sender)?;
+            token.ensure_authorized_as(&[(call.descriptor.payer, AuthRole::Sender)])?;
             token.transfer(
                 self.address,
                 ITIP20::transferCall {

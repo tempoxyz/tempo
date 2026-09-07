@@ -34,5 +34,5 @@ serde.workspace = true
 tracing.workspace = true
 
 [dev-dependencies]
-tempo-primitives = { workspace = true, features = ["arbitrary", "reth-codec", "serde"] }
+tempo-primitives = { workspace = true, features = ["arbitrary", "reth-codec", "serde", "test-utils"] }
 serde_json.workspace = true

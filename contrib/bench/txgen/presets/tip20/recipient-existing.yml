@@ -1,0 +1,17 @@
+merge:
+  address_pools:
+    existing_recipients:
+      fast:
+        seed: "test test test test test test test test test test test junk"
+        range:
+          - ${TXGEN_EXISTING_RECIPIENTS_START}
+          - ${TXGEN_EXISTING_RECIPIENTS_END}
+
+  templates:
+    tip20_transfer:
+      call:
+        args:
+          - address_pool:
+              pool: existing_recipients
+              select: random
+          - 1

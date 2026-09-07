@@ -4,10 +4,10 @@
 //! match their Solidity equivalents, ensuring compatibility with the EVM.
 
 use super::*;
+use tempo_precompiles::test_util::storage_conformance::*;
 use tempo_precompiles_macros::{
     gen_test_fields_layout as layout_fields, gen_test_fields_struct as struct_fields,
 };
-use utils::*;
 
 #[test]
 fn test_tip403_registry_layout() {
@@ -17,7 +17,13 @@ fn test_tip403_registry_layout() {
     let solc_layout = load_solc_layout(&sol_path);
 
     // Verify top-level fields
-    let rust_layout = layout_fields!(policy_id_counter, policy_records, policy_set);
+    let rust_layout = layout_fields!(
+        policy_id_counter,
+        policy_records,
+        policy_set,
+        receive_policies,
+        token_transfer_policies
+    );
     if let Err(errors) = compare_layouts(&solc_layout, &rust_layout) {
         panic_layout_mismatch("Layout", errors, &sol_path);
     }
@@ -54,6 +60,17 @@ fn test_tip403_registry_layout() {
             compare_nested_struct_type(&solc_layout, "CompoundPolicyData", &rust_compound)
         {
             panic_layout_mismatch("CompoundPolicyData struct layout", errors, &sol_path);
+        }
+    }
+
+    // Verify `TokenTransferPolicy` packs the ID and set bit into one slot.
+    {
+        use tempo_precompiles::tip403_registry::__packing_token_transfer_policy::*;
+        let rust_binding = struct_fields!(slots::TOKEN_TRANSFER_POLICIES, policy_id, is_set);
+        if let Err(errors) =
+            compare_nested_struct_type(&solc_layout, "TokenTransferPolicy", &rust_binding)
+        {
+            panic_layout_mismatch("TokenTransferPolicy struct layout", errors, &sol_path);
         }
     }
 }
@@ -131,6 +148,7 @@ fn test_stablecoin_dex_layout() {
         asks,
         best_bid_tick,
         best_ask_tick,
+        book_id,
         bid_bitmap,
         ask_bitmap
     );
@@ -210,7 +228,7 @@ fn export_all_storage_constants() {
     let mut all_constants = serde_json::Map::new();
 
     // Helper to convert RustStorageField to JSON
-    let field_to_json = |field: &utils::RustStorageField| {
+    let field_to_json = |field: &RustStorageField| {
         json!({
             "name": field.name,
             "slot": format!("{:#x}", field.slot),
@@ -314,6 +332,7 @@ fn export_all_storage_constants() {
             asks,
             best_bid_tick,
             best_ask_tick,
+            book_id,
             bid_bitmap,
             ask_bitmap
         );

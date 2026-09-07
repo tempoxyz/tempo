@@ -9,7 +9,7 @@
 //! by the execution client/reth. This genesis block is entirely the domain
 //! of the chainspec, which is separate from the config.
 
-use std::num::NonZeroU32;
+use std::num::{NonZeroU32, NonZeroUsize};
 
 use commonware_utils::NZUsize;
 use governor::Quota;
@@ -24,9 +24,9 @@ pub const MARSHAL_CHANNEL_IDENT: commonware_p2p::Channel = 4;
 pub const DKG_CHANNEL_IDENT: commonware_p2p::Channel = 5;
 pub const SUBBLOCKS_CHANNEL_IDENT: commonware_p2p::Channel = 6;
 
-pub(crate) const NUMBER_CONCURRENT_FETCHES: usize = 4;
+pub(crate) const NUMBER_CONCURRENT_FETCHES: NonZeroUsize = NZUsize!(4);
 
-pub(crate) const PEERSETS_TO_TRACK: std::num::NonZeroUsize = NZUsize!(3);
+pub(crate) const PEERSETS_TO_TRACK: NonZeroUsize = NZUsize!(3);
 
 pub(crate) const BLOCKS_FREEZER_TABLE_INITIAL_SIZE_BYTES: u32 = 2u32.pow(21); // 100MB
 

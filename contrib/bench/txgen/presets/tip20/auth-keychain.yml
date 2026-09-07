@@ -1,0 +1,27 @@
+merge:
+  templates:
+    tip20_transfer:
+      auth:
+        mode: keychain
+        access_key:
+          from_setup: authorize_keychain_users
+          pair: same_index
+      gas_limit: 3000000
+
+append:
+  setup:
+    steps:
+      - id: authorize_keychain_users
+        keychain_authorize_pool:
+          accounts:
+            pool: users
+          access_keys:
+            mnemonic: "test test test test test test test test test test test junk"
+            range:
+              - ${TXGEN_KEYCHAIN_ACCESS_KEYS_START}
+              - ${TXGEN_KEYCHAIN_ACCESS_KEYS_END}
+          key_type: secp256k1
+          gas_limit: ${TXGEN_KEYCHAIN_AUTHORIZE_SETUP_GAS_LIMIT}
+          fee_token: "0x20c0000000000000000000000000000000000000"
+          limits: ${TXGEN_KEYCHAIN_TIP20_LIMITS}
+          allowed_calls: ${TXGEN_KEYCHAIN_TIP20_ALLOWED_CALLS}

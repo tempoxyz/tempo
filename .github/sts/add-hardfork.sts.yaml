@@ -1,0 +1,11 @@
+# Allow the Add hardfork workflow (dispatched on main, running in the
+# add-hardfork environment) to mint a short-lived token to push the
+# generated plumbing branch and open its pull request. The
+# job_workflow_ref check pins minting to add-hardfork.yml as it exists on
+# main.
+subject: repo:tempoxyz@211589300/tempo@994992847:environment:add-hardfork
+claim_pattern:
+  job_workflow_ref: tempoxyz/tempo/\.github/workflows/add-hardfork\.yml@refs/heads/main
+permissions:
+  contents: write
+  pull_requests: write

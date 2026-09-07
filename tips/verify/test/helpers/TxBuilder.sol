@@ -152,9 +152,12 @@ library TxBuilder {
         view
         returns (bytes memory)
     {
-        LegacyTransaction memory tx_ = LegacyTransactionLib.create().withNonce(nonce)
-            .withGasPrice(DEFAULT_GAS_PRICE).withGasLimit(callGas(data, nonce) + GAS_LIMIT_BUFFER)
-            .withTo(to).withData(data);
+        LegacyTransaction memory tx_ = LegacyTransactionLib.create()
+            .withNonce(nonce)
+            .withGasPrice(DEFAULT_GAS_PRICE)
+            .withGasLimit(callGas(data, nonce) + GAS_LIMIT_BUFFER)
+            .withTo(to)
+            .withData(data);
 
         return _signLegacy(vmRlp, vm, tx_, privateKey);
     }
@@ -173,8 +176,12 @@ library TxBuilder {
         view
         returns (bytes memory)
     {
-        LegacyTransaction memory tx_ = LegacyTransactionLib.create().withNonce(nonce)
-            .withGasPrice(DEFAULT_GAS_PRICE).withGasLimit(gasLimit).withTo(to).withData(data);
+        LegacyTransaction memory tx_ = LegacyTransactionLib.create()
+            .withNonce(nonce)
+            .withGasPrice(DEFAULT_GAS_PRICE)
+            .withGasLimit(gasLimit)
+            .withTo(to)
+            .withData(data);
 
         return _signLegacy(vmRlp, vm, tx_, privateKey);
     }
@@ -191,9 +198,11 @@ library TxBuilder {
         view
         returns (bytes memory)
     {
-        LegacyTransaction memory tx_ = LegacyTransactionLib.create().withNonce(nonce)
+        LegacyTransaction memory tx_ = LegacyTransactionLib.create()
+            .withNonce(nonce)
             .withGasPrice(DEFAULT_GAS_PRICE)
-            .withGasLimit(createGas(initcode, nonce) + GAS_LIMIT_BUFFER).withTo(address(0))
+            .withGasLimit(createGas(initcode, nonce) + GAS_LIMIT_BUFFER)
+            .withTo(address(0))
             .withData(initcode);
 
         return _signLegacy(vmRlp, vm, tx_, privateKey);
@@ -212,8 +221,11 @@ library TxBuilder {
         view
         returns (bytes memory)
     {
-        LegacyTransaction memory tx_ = LegacyTransactionLib.create().withNonce(nonce)
-            .withGasPrice(DEFAULT_GAS_PRICE).withGasLimit(gasLimit).withTo(address(0))
+        LegacyTransaction memory tx_ = LegacyTransactionLib.create()
+            .withNonce(nonce)
+            .withGasPrice(DEFAULT_GAS_PRICE)
+            .withGasLimit(gasLimit)
+            .withTo(address(0))
             .withData(initcode);
 
         return _signLegacy(vmRlp, vm, tx_, privateKey);
@@ -239,9 +251,12 @@ library TxBuilder {
         calls[0] = TempoCall({ to: to, value: 0, data: data });
 
         TempoTransaction memory tx_ = TempoTransactionLib.create()
-            .withChainId(uint64(block.chainid)).withMaxFeePerGas(DEFAULT_GAS_PRICE)
-            .withGasLimit(callGas(data, txNonce) + GAS_LIMIT_BUFFER).withCalls(calls)
-            .withNonceKey(nonceKey).withNonce(txNonce);
+            .withChainId(uint64(block.chainid))
+            .withMaxFeePerGas(DEFAULT_GAS_PRICE)
+            .withGasLimit(callGas(data, txNonce) + GAS_LIMIT_BUFFER)
+            .withCalls(calls)
+            .withNonceKey(nonceKey)
+            .withNonce(txNonce);
 
         return _signTempo(vmRlp, vm, tx_, privateKey);
     }
@@ -262,8 +277,12 @@ library TxBuilder {
         uint64 gasLimit = multicallGas(calls, txNonce) + GAS_LIMIT_BUFFER;
 
         TempoTransaction memory tx_ = TempoTransactionLib.create()
-            .withChainId(uint64(block.chainid)).withMaxFeePerGas(DEFAULT_GAS_PRICE)
-            .withGasLimit(gasLimit).withCalls(calls).withNonceKey(nonceKey).withNonce(txNonce);
+            .withChainId(uint64(block.chainid))
+            .withMaxFeePerGas(DEFAULT_GAS_PRICE)
+            .withGasLimit(gasLimit)
+            .withCalls(calls)
+            .withNonceKey(nonceKey)
+            .withNonce(txNonce);
 
         return _signTempo(vmRlp, vm, tx_, privateKey);
     }
@@ -290,9 +309,12 @@ library TxBuilder {
         calls[0] = TempoCall({ to: to, value: 0, data: data });
 
         TempoTransaction memory tx_ = TempoTransactionLib.create()
-            .withChainId(uint64(block.chainid)).withMaxFeePerGas(DEFAULT_GAS_PRICE)
-            .withGasLimit(callGas(data, txNonce) + GAS_LIMIT_BUFFER).withCalls(calls)
-            .withNonceKey(nonceKey).withNonce(txNonce);
+            .withChainId(uint64(block.chainid))
+            .withMaxFeePerGas(DEFAULT_GAS_PRICE)
+            .withGasLimit(callGas(data, txNonce) + GAS_LIMIT_BUFFER)
+            .withCalls(calls)
+            .withNonceKey(nonceKey)
+            .withNonce(txNonce);
 
         return _signTempoP256(vmRlp, vm, tx_, p256PrivateKey, pubKeyX, pubKeyY);
     }
@@ -315,8 +337,12 @@ library TxBuilder {
         uint64 gasLimit = multicallGas(calls, txNonce) + GAS_LIMIT_BUFFER;
 
         TempoTransaction memory tx_ = TempoTransactionLib.create()
-            .withChainId(uint64(block.chainid)).withMaxFeePerGas(DEFAULT_GAS_PRICE)
-            .withGasLimit(gasLimit).withCalls(calls).withNonceKey(nonceKey).withNonce(txNonce);
+            .withChainId(uint64(block.chainid))
+            .withMaxFeePerGas(DEFAULT_GAS_PRICE)
+            .withGasLimit(gasLimit)
+            .withCalls(calls)
+            .withNonceKey(nonceKey)
+            .withNonce(txNonce);
 
         return _signTempoP256(vmRlp, vm, tx_, p256PrivateKey, pubKeyX, pubKeyY);
     }
@@ -343,9 +369,12 @@ library TxBuilder {
         calls[0] = TempoCall({ to: to, value: 0, data: data });
 
         TempoTransaction memory tx_ = TempoTransactionLib.create()
-            .withChainId(uint64(block.chainid)).withMaxFeePerGas(DEFAULT_GAS_PRICE)
-            .withGasLimit(callGas(data, txNonce) + GAS_LIMIT_BUFFER).withCalls(calls)
-            .withNonceKey(nonceKey).withNonce(txNonce);
+            .withChainId(uint64(block.chainid))
+            .withMaxFeePerGas(DEFAULT_GAS_PRICE)
+            .withGasLimit(callGas(data, txNonce) + GAS_LIMIT_BUFFER)
+            .withCalls(calls)
+            .withNonceKey(nonceKey)
+            .withNonce(txNonce);
 
         return _signTempoWebAuthn(vmRlp, vm, tx_, p256PrivateKey, pubKeyX, pubKeyY);
     }
@@ -368,8 +397,12 @@ library TxBuilder {
         uint64 gasLimit = multicallGas(calls, txNonce) + GAS_LIMIT_BUFFER;
 
         TempoTransaction memory tx_ = TempoTransactionLib.create()
-            .withChainId(uint64(block.chainid)).withMaxFeePerGas(DEFAULT_GAS_PRICE)
-            .withGasLimit(gasLimit).withCalls(calls).withNonceKey(nonceKey).withNonce(txNonce);
+            .withChainId(uint64(block.chainid))
+            .withMaxFeePerGas(DEFAULT_GAS_PRICE)
+            .withGasLimit(gasLimit)
+            .withCalls(calls)
+            .withNonceKey(nonceKey)
+            .withNonce(txNonce);
 
         return _signTempoWebAuthn(vmRlp, vm, tx_, p256PrivateKey, pubKeyX, pubKeyY);
     }
@@ -395,9 +428,12 @@ library TxBuilder {
         calls[0] = TempoCall({ to: to, value: 0, data: data });
 
         TempoTransaction memory tx_ = TempoTransactionLib.create()
-            .withChainId(uint64(block.chainid)).withMaxFeePerGas(DEFAULT_GAS_PRICE)
-            .withGasLimit(callGas(data, txNonce) + GAS_LIMIT_BUFFER).withCalls(calls)
-            .withNonceKey(nonceKey).withNonce(txNonce);
+            .withChainId(uint64(block.chainid))
+            .withMaxFeePerGas(DEFAULT_GAS_PRICE)
+            .withGasLimit(callGas(data, txNonce) + GAS_LIMIT_BUFFER)
+            .withCalls(calls)
+            .withNonceKey(nonceKey)
+            .withNonce(txNonce);
 
         return _signTempoKeychain(vmRlp, vm, tx_, accessKeyPrivateKey, userAddress);
     }
@@ -419,8 +455,12 @@ library TxBuilder {
         uint64 gasLimit = multicallGas(calls, txNonce) + GAS_LIMIT_BUFFER;
 
         TempoTransaction memory tx_ = TempoTransactionLib.create()
-            .withChainId(uint64(block.chainid)).withMaxFeePerGas(DEFAULT_GAS_PRICE)
-            .withGasLimit(gasLimit).withCalls(calls).withNonceKey(nonceKey).withNonce(txNonce);
+            .withChainId(uint64(block.chainid))
+            .withMaxFeePerGas(DEFAULT_GAS_PRICE)
+            .withGasLimit(gasLimit)
+            .withCalls(calls)
+            .withNonceKey(nonceKey)
+            .withNonce(txNonce);
 
         return _signTempoKeychain(vmRlp, vm, tx_, accessKeyPrivateKey, userAddress);
     }
@@ -446,9 +486,12 @@ library TxBuilder {
         calls[0] = TempoCall({ to: to, value: 0, data: data });
 
         TempoTransaction memory tx_ = TempoTransactionLib.create()
-            .withChainId(uint64(block.chainid)).withMaxFeePerGas(DEFAULT_GAS_PRICE)
-            .withGasLimit(callGas(data, txNonce) + GAS_LIMIT_BUFFER).withCalls(calls)
-            .withNonceKey(nonceKey).withNonce(txNonce);
+            .withChainId(uint64(block.chainid))
+            .withMaxFeePerGas(DEFAULT_GAS_PRICE)
+            .withGasLimit(callGas(data, txNonce) + GAS_LIMIT_BUFFER)
+            .withCalls(calls)
+            .withNonceKey(nonceKey)
+            .withNonce(txNonce);
 
         return _signTempoKeychainP256(
             vmRlp, vm, tx_, accessKeyP256PrivateKey, pubKeyX, pubKeyY, userAddress
@@ -474,9 +517,12 @@ library TxBuilder {
         calls[0] = TempoCall({ to: address(0), value: 0, data: initcode });
 
         TempoTransaction memory tx_ = TempoTransactionLib.create()
-            .withChainId(uint64(block.chainid)).withMaxFeePerGas(DEFAULT_GAS_PRICE)
-            .withGasLimit(createGas(initcode, txNonce) + GAS_LIMIT_BUFFER).withCalls(calls)
-            .withNonceKey(nonceKey).withNonce(txNonce);
+            .withChainId(uint64(block.chainid))
+            .withMaxFeePerGas(DEFAULT_GAS_PRICE)
+            .withGasLimit(createGas(initcode, txNonce) + GAS_LIMIT_BUFFER)
+            .withCalls(calls)
+            .withNonceKey(nonceKey)
+            .withNonce(txNonce);
 
         return _signTempo(vmRlp, vm, tx_, privateKey);
     }
@@ -499,8 +545,12 @@ library TxBuilder {
         calls[0] = TempoCall({ to: address(0), value: 0, data: initcode });
 
         TempoTransaction memory tx_ = TempoTransactionLib.create()
-            .withChainId(uint64(block.chainid)).withMaxFeePerGas(DEFAULT_GAS_PRICE)
-            .withGasLimit(gasLimit).withCalls(calls).withNonceKey(nonceKey).withNonce(txNonce);
+            .withChainId(uint64(block.chainid))
+            .withMaxFeePerGas(DEFAULT_GAS_PRICE)
+            .withGasLimit(gasLimit)
+            .withCalls(calls)
+            .withNonceKey(nonceKey)
+            .withNonce(txNonce);
 
         return _signTempo(vmRlp, vm, tx_, privateKey);
     }
@@ -528,8 +578,12 @@ library TxBuilder {
         uint64 gasLimit = createGas(initcode, txNonce) + GAS_LIMIT_BUFFER + DEFAULT_GAS_LIMIT;
 
         TempoTransaction memory tx_ = TempoTransactionLib.create()
-            .withChainId(uint64(block.chainid)).withMaxFeePerGas(DEFAULT_GAS_PRICE)
-            .withGasLimit(gasLimit).withCalls(calls).withNonceKey(nonceKey).withNonce(txNonce);
+            .withChainId(uint64(block.chainid))
+            .withMaxFeePerGas(DEFAULT_GAS_PRICE)
+            .withGasLimit(gasLimit)
+            .withCalls(calls)
+            .withNonceKey(nonceKey)
+            .withNonce(txNonce);
 
         return _signTempo(vmRlp, vm, tx_, privateKey);
     }
@@ -553,8 +607,11 @@ library TxBuilder {
         calls[1] = TempoCall({ to: address(0), value: 0, data: initcode2 }); // Second CREATE
 
         TempoTransaction memory tx_ = TempoTransactionLib.create()
-            .withChainId(uint64(block.chainid)).withMaxFeePerGas(DEFAULT_GAS_PRICE)
-            .withGasLimit(DEFAULT_CREATE_GAS_LIMIT * 2).withCalls(calls).withNonceKey(nonceKey)
+            .withChainId(uint64(block.chainid))
+            .withMaxFeePerGas(DEFAULT_GAS_PRICE)
+            .withGasLimit(DEFAULT_CREATE_GAS_LIMIT * 2)
+            .withCalls(calls)
+            .withNonceKey(nonceKey)
             .withNonce(txNonce);
 
         return _signTempo(vmRlp, vm, tx_, privateKey);
@@ -578,8 +635,11 @@ library TxBuilder {
         calls[0] = TempoCall({ to: address(0), value: value, data: initcode });
 
         TempoTransaction memory tx_ = TempoTransactionLib.create()
-            .withChainId(uint64(block.chainid)).withMaxFeePerGas(DEFAULT_GAS_PRICE)
-            .withGasLimit(DEFAULT_CREATE_GAS_LIMIT).withCalls(calls).withNonceKey(nonceKey)
+            .withChainId(uint64(block.chainid))
+            .withMaxFeePerGas(DEFAULT_GAS_PRICE)
+            .withGasLimit(DEFAULT_CREATE_GAS_LIMIT)
+            .withCalls(calls)
+            .withNonceKey(nonceKey)
             .withNonce(txNonce);
 
         return _signTempo(vmRlp, vm, tx_, privateKey);
@@ -603,9 +663,13 @@ library TxBuilder {
         calls[0] = TempoCall({ to: address(0), value: 0, data: initcode });
 
         TempoTransaction memory tx_ = TempoTransactionLib.create()
-            .withChainId(uint64(block.chainid)).withMaxFeePerGas(DEFAULT_GAS_PRICE)
-            .withGasLimit(DEFAULT_CREATE_GAS_LIMIT).withCalls(calls).withNonceKey(nonceKey)
-            .withNonce(txNonce).withAuthorizationList(authList);
+            .withChainId(uint64(block.chainid))
+            .withMaxFeePerGas(DEFAULT_GAS_PRICE)
+            .withGasLimit(DEFAULT_CREATE_GAS_LIMIT)
+            .withCalls(calls)
+            .withNonceKey(nonceKey)
+            .withNonce(txNonce)
+            .withAuthorizationList(authList);
 
         return _signTempo(vmRlp, vm, tx_, privateKey);
     }

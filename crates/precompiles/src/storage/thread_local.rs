@@ -15,7 +15,7 @@ use tempo_primitives::TempoBlockEnv;
 
 use crate::{
     Precompile,
-    error::{Result, TempoPrecompileError},
+    error::{IntoPrecompileResult, Result, TempoPrecompileError},
     storage::{PrecompileStorageProvider, StorageActions, evm::EvmPrecompileStorageProvider},
 };
 
@@ -116,6 +116,18 @@ impl StorageCtx {
         result.unwrap()
     }
 
+    /// Returns `EXTCODEHASH(address)` and the account's runtime bytecode.
+    pub fn account_code(&self, address: Address) -> Result<(B256, Bytecode)> {
+        Self::try_with_storage(|s| s.account_code(address))
+    }
+
+    /// Copies deployed runtime bytecode between accounts.
+    ///
+    /// Returns `None` when the source account's runtime bytecode is empty.
+    pub fn copy_runtime(&mut self, source: Address, destination: Address) -> Result<Option<B256>> {
+        Self::try_with_storage(|s| s.copy_runtime(source, destination))
+    }
+
     /// Returns the chain ID.
     pub fn chain_id(&self) -> u64 {
         Self::with_storage(|s| s.chain_id())
@@ -204,6 +216,12 @@ impl StorageCtx {
     /// Returns the state-creating gas used so far (cold SSTORE zero->non-zero, code deposit).
     pub fn state_gas_used(&self) -> u64 {
         Self::with_storage(|s| s.state_gas_used())
+    }
+
+    /// Returns the state gas that was drawn from regular gas because the reservoir was empty
+    /// (EIP-8037's `state_gas_from_gas_left`).
+    pub fn state_gas_spilled(&self) -> u64 {
+        Self::with_storage(|s| s.state_gas_spilled())
     }
 
     /// Returns the gas refunded so far.
@@ -316,11 +334,9 @@ impl StorageCtx {
         PrecompileOutput::halt(halt, self.reservoir())
     }
 
-    /// Returns a [`PrecompileResult`] constructed from the given [`TempoPrecompileError`].
-    pub fn error_result(&self, error: impl Into<TempoPrecompileError>) -> PrecompileResult {
-        error
-            .into()
-            .into_precompile_result(self.gas_used(), self.reservoir())
+    /// Returns a [`PrecompileResult`] constructed from the given error.
+    pub fn error_result(&self, error: impl IntoPrecompileResult) -> PrecompileResult {
+        error.into_precompile_result(self.gas_used(), self.reservoir())
     }
 }
 
@@ -368,7 +384,7 @@ impl<'evm> StorageCtx {
         journal: &'evm mut J,
         block_env: &'evm TempoBlockEnv,
         cfg: &CfgEnv<TempoHardfork>,
-        tx_env: &'evm impl Transaction,
+        tx_env: &'evm (impl Transaction + 'static),
         actions: StorageActions,
         f: impl FnOnce() -> R,
     ) -> R
@@ -392,7 +408,7 @@ impl<'evm> StorageCtx {
         journal: &'evm mut J,
         block_env: &'evm TempoBlockEnv,
         cfg: &CfgEnv<TempoHardfork>,
-        tx_env: &'evm impl Transaction,
+        tx_env: &'evm (impl Transaction + 'static),
         actions: StorageActions,
         f: impl FnOnce() -> R,
     ) -> R
@@ -417,6 +433,7 @@ impl<'evm> StorageCtx {
                 Journal: Debug,
                 Db: Database,
             >,
+        C::Tx: 'static,
     {
         let (tx, block, cfg, journal) = ctx.tx_block_cfg_journal_mut();
         Self::enter_evm(journal, block, cfg, tx, actions, f)
@@ -438,6 +455,7 @@ impl<'evm> StorageCtx {
                 Journal: Debug,
                 Db: Database,
             >,
+        C::Tx: 'static,
     {
         let (tx, block, cfg, journal) = ctx.tx_block_cfg_journal_mut();
         let internals = EvmInternals::new(journal, block, cfg, tx);
@@ -454,7 +472,7 @@ impl<'evm> StorageCtx {
         journal: &'evm mut J,
         block_env: &'evm TempoBlockEnv,
         cfg: &CfgEnv<TempoHardfork>,
-        tx_env: &'evm impl Transaction,
+        tx_env: &'evm (impl Transaction + 'static),
         actions: StorageActions,
         f: impl FnOnce(P) -> R,
     ) -> R

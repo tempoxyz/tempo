@@ -49,39 +49,52 @@ use crate::utils::{
     block_on_consensus_public_key, fetch_bootnodes, install_crypto_provider,
     print_extensions_footer,
 };
+use alloy_genesis::Genesis;
+use alloy_primitives::{Address, B256};
+use alloy_signer_local::MnemonicBuilder;
 use clap::{CommandFactory, FromArgMatches};
-use commonware_runtime::{Metrics, Runner};
+use commonware_runtime::{Runner, Supervisor as _};
 use eyre::{OptionExt, WrapErr as _};
 use futures::{
     FutureExt as _,
     future::{Either, FusedFuture as _},
 };
 use reth_cli_runner::CliRunner;
-use reth_ethereum::{chainspec::EthChainSpec as _, cli::Commands, evm::revm::primitives::B256};
+use reth_ethereum::{chainspec::EthChainSpec as _, cli::Commands};
 use reth_network_api::Peers;
 use reth_node_builder::{NodeHandle, WithLaunchContext};
 use std::{sync::Arc, thread};
-use tempo_chainspec::spec::TempoChainSpec;
+use tempo_chainspec::spec::{DEV, TempoChainSpec};
 use tempo_consensus::{feed as consensus_feed, run_consensus_stack, run_follow_stack};
+use tempo_contracts::precompiles::{ZONE_FACTORY_ADDRESS, initial_zone_factory_config};
 use tempo_evm::{TempoEvmConfig, consensus::TempoConsensus};
 use tempo_faucet::faucet::{TempoFaucetExt, TempoFaucetExtApiServer};
 #[cfg(feature = "exex-overrides")]
 use tempo_node::TempoNodeAdapter;
 pub use tempo_node::{
-    AccountInfoReader, InvalidPoolTransactionError, PoolTransaction, PoolTransactionError,
-    StatefulValidationFn, StatelessValidationFn, TempoNode, TempoNodeArgs,
+    AccountInfoReader, AddressFilter, InvalidPoolTransactionError, PoolTransaction,
+    PoolTransactionError, StatefulValidationFn, StatelessValidationFn, TempoNode, TempoNodeArgs,
     TempoPayloadBuilderBuilder, TempoPoolBuilder, TempoPoolTransactionError,
     TempoPooledTransaction, TransactionOrigin,
 };
 use tempo_node::{
     TempoFullNode,
     rpc::consensus::{TempoConsensusApiServer, TempoConsensusRpc},
-    telemetry::{PrometheusMetricsConfig, install_prometheus_metrics},
+    telemetry::{
+        HardwareMetricsConfig, PrometheusMetricsConfig, install_hardware_metrics,
+        install_prometheus_metrics,
+    },
 };
 use tokio::sync::oneshot;
 use tracing::{debug, info, info_span, warn, warn_span};
 
-fn apply_tempo_cli_overrides(cli: &mut TempoCli) {
+#[cfg(all(feature = "localnet", unix))]
+use nix as _;
+
+const DEFAULT_DEV_ZONE_FACTORY_OWNER: Address =
+    alloy_primitives::address!("0xf39Fd6e51aad88F6F4ce6aB8827279cffFb92266");
+
+fn apply_tempo_cli_overrides(cli: &mut TempoCli) -> eyre::Result<()> {
     if let Commands::Node(node_cmd) = &mut cli.command
         && node_cmd
             .ext
@@ -90,6 +103,38 @@ fn apply_tempo_cli_overrides(cli: &mut TempoCli) {
     {
         node_cmd.engine.share_execution_cache_with_payload_builder = false;
     }
+
+    if let Commands::Node(node_cmd) = &mut cli.command
+        && node_cmd.dev.dev
+        && node_cmd.chain.genesis_hash() == DEV.genesis_hash()
+    {
+        let owner = MnemonicBuilder::try_from_phrase_first(&node_cmd.dev.dev_mnemonic)
+            .wrap_err("failed to derive ZoneFactory owner from --dev.mnemonic")?
+            .address();
+        if owner != DEFAULT_DEV_ZONE_FACTORY_OWNER {
+            let mut genesis = node_cmd.chain.genesis().clone();
+            set_zone_factory_genesis_owner(&mut genesis, owner)?;
+            node_cmd.chain = Arc::new(TempoChainSpec::from_genesis(genesis));
+        }
+    }
+
+    Ok(())
+}
+
+fn set_zone_factory_genesis_owner(genesis: &mut Genesis, owner: Address) -> eyre::Result<()> {
+    let factory = genesis
+        .alloc
+        .get_mut(&ZONE_FACTORY_ADDRESS)
+        .ok_or_eyre("DEV genesis is missing ZoneFactory")?;
+    let storage = factory
+        .storage
+        .as_mut()
+        .ok_or_eyre("DEV ZoneFactory is missing storage")?;
+    storage.insert(
+        B256::ZERO,
+        B256::from(initial_zone_factory_config(owner).to_be_bytes()),
+    );
+    Ok(())
 }
 
 /// Runs the Tempo node CLI.
@@ -200,7 +245,7 @@ pub fn tempo_main_with(mut overrides: TempoOverrides) -> eyre::Result<()> {
         Err(err) => err.exit(),
     };
 
-    apply_tempo_cli_overrides(&mut cli);
+    apply_tempo_cli_overrides(&mut cli)?;
 
     if let Commands::Node(node_cmd) = &cli.command
         && node_cmd.engine.share_sparse_trie_with_payload_builder
@@ -258,8 +303,11 @@ pub fn tempo_main_with(mut overrides: TempoOverrides) -> eyre::Result<()> {
 
     let is_node = matches!(cli.command, Commands::Node(_));
 
-    let (args_and_node_handle_tx, args_and_node_handle_rx) =
-        oneshot::channel::<(TempoFullNode, TempoArgs)>();
+    let (consensus_startup_tx, consensus_startup_rx) = oneshot::channel::<(
+        TempoFullNode,
+        TempoArgs,
+        Option<tempo_node::gossip::TransportHandle>,
+    )>();
     let (consensus_dead_tx, mut consensus_dead_rx) = oneshot::channel();
 
     let shutdown_token = tokio_util::sync::CancellationToken::new();
@@ -274,10 +322,27 @@ pub fn tempo_main_with(mut overrides: TempoOverrides) -> eyre::Result<()> {
             return Ok(());
         }
 
-        let (node, args) = args_and_node_handle_rx.blocking_recv().wrap_err(
+        let (node, args, gossip_transport) = consensus_startup_rx.blocking_recv().wrap_err(
             "channel closed before consensus-relevant command line args \
                 and a handle to the execution node could be received",
         )?;
+
+        let datadir = node
+            .config
+            .datadir
+            .clone()
+            .resolve_datadir(node.chain_spec().chain());
+        let consensus_storage = args
+            .consensus
+            .storage_dir
+            .clone()
+            .unwrap_or_else(|| datadir.data_dir().join("consensus"));
+
+        install_hardware_metrics(HardwareMetricsConfig {
+            datadir: datadir.data_dir().to_path_buf(),
+            static_files_dir: datadir.static_files(),
+            consensus_dir: consensus_storage.clone(),
+        });
 
         if !args.has_consensus_engine(node.config.dev.dev) {
             return futures::executor::block_on(async move {
@@ -285,15 +350,6 @@ pub fn tempo_main_with(mut overrides: TempoOverrides) -> eyre::Result<()> {
                 Ok(())
             });
         }
-
-        let consensus_storage = args.consensus.storage_dir.clone().unwrap_or_else(|| {
-            node.config
-                .datadir
-                .clone()
-                .resolve_datadir(node.chain_spec().chain())
-                .data_dir()
-                .join("consensus")
-        });
 
         info_span!("prepare_consensus").in_scope(|| {
             info!(
@@ -311,7 +367,7 @@ pub fn tempo_main_with(mut overrides: TempoOverrides) -> eyre::Result<()> {
         let runner = commonware_runtime::tokio::Runner::new(runtime_config);
         let ret = runner.start(async move |ctx| {
             let mut metrics_server = tempo_consensus::metrics::install(
-                ctx.with_label("metrics"),
+                ctx.child("metrics"),
                 args.consensus.metrics_address,
             )
             .fuse();
@@ -333,7 +389,7 @@ pub fn tempo_main_with(mut overrides: TempoOverrides) -> eyre::Result<()> {
                     peer_id: format!("{:x}", node.network.peer_id()),
                 };
 
-                install_prometheus_metrics(ctx.with_label("telemetry_metrics"), prometheus_config)
+                install_prometheus_metrics(ctx.child("telemetry_metrics"), prometheus_config)
                     .wrap_err("failed to start Prometheus metrics exporter")?;
             }
 
@@ -343,18 +399,21 @@ pub fn tempo_main_with(mut overrides: TempoOverrides) -> eyre::Result<()> {
                     .ok_or_eyre("No default follow URL for this chain")?;
 
                 Either::Left(run_follow_stack(
-                    ctx.with_label("follow"),
+                    ctx.child("follow"),
                     args.consensus,
                     follow_url,
+                    args.follow_upstream_request_timeout.into_duration(),
                     Arc::new(node),
                     cl_feed_state_clone,
+                    gossip_transport,
                 ))
             } else {
                 Either::Right(run_consensus_stack(
-                    ctx.with_label("consensus"),
+                    ctx.child("consensus"),
                     args.consensus,
                     Arc::new(node),
                     cl_feed_state_clone,
+                    gossip_transport,
                 ))
             };
 
@@ -396,6 +455,20 @@ pub fn tempo_main_with(mut overrides: TempoOverrides) -> eyre::Result<()> {
         |spec: Arc<TempoChainSpec>| (TempoEvmConfig::new(spec.clone()), TempoConsensus::new(spec));
 
     cli.run_with_components::<TempoNode>(components, async move |builder, args| {
+        // Register before launch because each RLPx session negotiates its
+        // subprotocols during the handshake. The startup channel passes the
+        // consensus half of the transport to the consensus thread.
+        let (gossip_protocol_handler, gossip_transport) =
+            if args.has_gossip(builder.config().dev.dev) {
+                let (protocol_handler, transport) = tempo_node::gossip::init(
+                    args.consensus.gossip_transport(args.follow.is_some()),
+                    builder.task_executor(),
+                );
+                (Some(protocol_handler), Some(transport))
+            } else {
+                (None, None)
+            };
+
         let faucet_args = args.faucet_args.clone();
         let validator_key = args
             .consensus
@@ -440,10 +513,13 @@ pub fn tempo_main_with(mut overrides: TempoOverrides) -> eyre::Result<()> {
             url => Some(url.to_string()),
         };
 
-        let tempo_node = overrides.apply_tempo_node(TempoNode::new(
-            &args.node_args,
-            validator_key,
-        ));
+        let tempo_node = overrides.apply_tempo_node({
+            let node = TempoNode::new(&args.node_args, validator_key);
+            match gossip_protocol_handler {
+                Some(protocol_handler) => node.with_finalization_cert_gossip(protocol_handler),
+                None => node,
+            }
+        });
         let is_following_uncertified = args.is_following_uncertified();
         let follow = args.follow.clone();
         let args_for_builder = args.clone();
@@ -457,13 +533,6 @@ pub fn tempo_main_with(mut overrides: TempoOverrides) -> eyre::Result<()> {
         } = builder
             .node(tempo_node)
             .apply(move |mut builder: WithLaunchContext<_>| {
-                // Enable discv5 peer discovery
-                builder
-                    .config_mut()
-                    .network
-                    .discovery
-                    .enable_discv5_discovery = true;
-
                 // Uncertified follower mode: set debug RPC when certification is off
                 if is_following_uncertified {
                     let follow_url = follow
@@ -572,7 +641,7 @@ pub fn tempo_main_with(mut overrides: TempoOverrides) -> eyre::Result<()> {
             });
         }
 
-        let _ = args_and_node_handle_tx.send((node, args));
+        let _ = consensus_startup_tx.send((node, args, gossip_transport));
 
         // TODO: emit these inside a span
         tokio::select! {
@@ -608,26 +677,200 @@ pub fn tempo_main_with(mut overrides: TempoOverrides) -> eyre::Result<()> {
 
 #[cfg(test)]
 mod tests {
-    use std::{sync::Once, time::Duration};
+    use std::{
+        collections::BTreeMap,
+        sync::{Arc, Once},
+        time::Duration,
+    };
 
+    use alloy_genesis::GenesisAccount;
+    use alloy_primitives::{Address, B256, Bytes, address};
     use clap::{CommandFactory, FromArgMatches, Parser};
 
     use super::{
-        TempoCli, apply_tempo_cli_overrides, defaults, follow::FollowMode, snapshot_download,
+        TempoArgs, TempoChainSpec, TempoCli, apply_tempo_cli_overrides, defaults,
+        follow::FollowMode, snapshot_download,
     };
-    use reth_ethereum::cli::Commands;
+    use reth_ethereum::{chainspec::EthChainSpec as _, cli::Commands};
+    use tempo_contracts::precompiles::{
+        ZONE_FACTORY_ADDRESS, ZONE_MESSENGER_ADDRESS, ZONE_PORTAL_IMPL_ADDRESS,
+        ZONE_VERIFIER_ADDRESS, initial_zone_factory_config,
+    };
 
     fn init_defaults_once() {
         static INIT: Once = Once::new();
         INIT.call_once(defaults::init_defaults);
     }
 
+    #[test]
+    fn txpool_filter_defaults_empty_and_parses_address_list_or_file() {
+        let cli = TempoCli::try_parse_from(["tempo", "node", "--dev"]).unwrap();
+        let Commands::Node(node_cmd) = cli.command else {
+            panic!("expected node command");
+        };
+        assert!(node_cmd.ext.node_args.txpool_filter.is_none());
+
+        let cli = TempoCli::try_parse_from([
+            "tempo",
+            "node",
+            "--dev",
+            "--txpool.filter",
+            "0x0000000000000000000000000000000000000001,0x0000000000000000000000000000000000000002",
+        ])
+        .unwrap();
+        let Commands::Node(node_cmd) = cli.command else {
+            panic!("expected node command");
+        };
+        let filter = node_cmd.ext.node_args.txpool_filter.as_ref().unwrap();
+        assert_eq!(filter.len(), 2);
+        assert!(filter.contains(&address!("0000000000000000000000000000000000000001")));
+        assert!(filter.contains(&address!("0000000000000000000000000000000000000002")));
+
+        let file = tempfile::NamedTempFile::new().unwrap();
+        std::fs::write(
+            file.path(),
+            "0x0000000000000000000000000000000000000003\n\n\
+             0x0000000000000000000000000000000000000004, \
+             0x0000000000000000000000000000000000000005,\
+             0x0000000000000000000000000000000000000003\n",
+        )
+        .unwrap();
+        let cli = TempoCli::try_parse_from([
+            "tempo",
+            "node",
+            "--dev",
+            "--txpool.filter",
+            file.path().to_str().unwrap(),
+        ])
+        .unwrap();
+        let Commands::Node(node_cmd) = cli.command else {
+            panic!("expected node command");
+        };
+        let filter = node_cmd.ext.node_args.txpool_filter.as_ref().unwrap();
+        assert_eq!(filter.len(), 3);
+        assert!(filter.contains(&address!("0000000000000000000000000000000000000003")));
+        assert!(filter.contains(&address!("0000000000000000000000000000000000000004")));
+        assert!(filter.contains(&address!("0000000000000000000000000000000000000005")));
+    }
+
+    #[test]
+    fn txpool_filter_reports_invalid_file_entry() {
+        let file = tempfile::NamedTempFile::new().unwrap();
+        std::fs::write(
+            file.path(),
+            "0x0000000000000000000000000000000000000001\nnot-an-address\n",
+        )
+        .unwrap();
+
+        let error = TempoCli::try_parse_from([
+            "tempo",
+            "node",
+            "--dev",
+            "--txpool.filter",
+            file.path().to_str().unwrap(),
+        ])
+        .unwrap_err()
+        .to_string();
+
+        assert!(error.contains(file.path().to_str().unwrap()));
+        assert!(error.contains("invalid address `not-an-address` on line 2"));
+    }
+
     fn parse_follow(args: &[&str]) -> Option<FollowMode> {
+        parse_node_args(args).follow
+    }
+
+    fn parse_node_args(args: &[&str]) -> TempoArgs {
         let cli = TempoCli::try_parse_from(args).unwrap();
         let Commands::Node(node_cmd) = cli.command else {
             panic!("expected node command");
         };
-        node_cmd.ext.follow
+        node_cmd.ext
+    }
+
+    fn apply_node_overrides(args: &[&str]) -> Arc<TempoChainSpec> {
+        init_defaults_once();
+
+        let mut cli = TempoCli::try_parse_from(args).unwrap();
+        apply_tempo_cli_overrides(&mut cli).unwrap();
+        let Commands::Node(node_cmd) = cli.command else {
+            panic!("expected node command");
+        };
+        node_cmd.chain
+    }
+
+    fn assert_zone_factory_alloc(chain_spec: &TempoChainSpec, owner: Address) {
+        let expected_factory = GenesisAccount {
+            code: Some(Bytes::from_static(&[0xef])),
+            storage: Some(BTreeMap::from([(
+                B256::ZERO,
+                B256::from(initial_zone_factory_config(owner).to_be_bytes()),
+            )])),
+            ..Default::default()
+        };
+        assert_eq!(
+            chain_spec.genesis().alloc.get(&ZONE_FACTORY_ADDRESS),
+            Some(&expected_factory)
+        );
+
+        for address in [
+            ZONE_PORTAL_IMPL_ADDRESS,
+            ZONE_VERIFIER_ADDRESS,
+            ZONE_MESSENGER_ADDRESS,
+        ] {
+            assert_eq!(
+                chain_spec.genesis().alloc.get(&address),
+                super::DEV.genesis().alloc.get(&address),
+                "dev mnemonic override must not modify shared Zone runtimes"
+            );
+        }
+    }
+
+    #[test]
+    fn default_dev_mnemonic_owns_zone_factory_genesis_alloc() {
+        let chain_spec = apply_node_overrides(&["tempo", "node", "--dev"]);
+
+        assert_eq!(chain_spec.genesis_hash(), super::DEV.genesis_hash());
+        assert_zone_factory_alloc(
+            &chain_spec,
+            address!("0xf39Fd6e51aad88F6F4ce6aB8827279cffFb92266"),
+        );
+    }
+
+    #[test]
+    fn custom_dev_mnemonic_owns_zone_factory_genesis_alloc() {
+        let chain_spec = apply_node_overrides(&[
+            "tempo",
+            "node",
+            "--dev",
+            "--dev.mnemonic",
+            "abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon about",
+        ]);
+
+        assert_zone_factory_alloc(
+            &chain_spec,
+            address!("0x9858EfFD232B4033E47d90003D41EC34EcaEda94"),
+        );
+    }
+
+    #[test]
+    fn non_dev_chains_are_not_modified() {
+        init_defaults_once();
+
+        let mut cli =
+            TempoCli::try_parse_from(["tempo", "node", "--dev", "--chain=mainnet"]).unwrap();
+        let Commands::Node(node_cmd) = &cli.command else {
+            panic!("expected node command");
+        };
+        let original_chain = node_cmd.chain.clone();
+
+        apply_tempo_cli_overrides(&mut cli).unwrap();
+        let Commands::Node(node_cmd) = cli.command else {
+            panic!("expected node command");
+        };
+
+        assert_eq!(node_cmd.chain.genesis_hash(), original_chain.genesis_hash());
+        assert_eq!(node_cmd.chain.genesis(), original_chain.genesis());
     }
 
     #[test]
@@ -686,6 +929,132 @@ mod tests {
 
         assert!(!node_cmd.ext.is_following_uncertified());
         assert!(node_cmd.ext.has_consensus_engine(false));
+    }
+
+    #[test]
+    fn gossip_is_opt_in_and_requires_a_consensus_engine() {
+        init_defaults_once();
+
+        assert!(
+            !parse_node_args(&[
+                "tempo",
+                "node",
+                "--consensus.signing-key",
+                "unused-signing-key",
+            ])
+            .has_gossip(false)
+        );
+        assert!(!parse_node_args(&["tempo", "node", "--follow"]).has_gossip(false));
+        assert!(
+            parse_node_args(&[
+                "tempo",
+                "node",
+                "--consensus.signing-key",
+                "unused-signing-key",
+                "--consensus.devp2p.finalizations",
+            ])
+            .has_gossip(false)
+        );
+        assert!(
+            parse_node_args(&[
+                "tempo",
+                "node",
+                "--follow",
+                "--consensus.devp2p.finalizations",
+            ])
+            .has_gossip(false)
+        );
+        assert!(
+            !parse_node_args(&[
+                "tempo",
+                "node",
+                "--follow",
+                "--follow.nocertify",
+                "--consensus.devp2p.finalizations",
+            ])
+            .has_gossip(false)
+        );
+        assert!(
+            !parse_node_args(&["tempo", "node", "--dev", "--consensus.devp2p.finalizations",])
+                .has_gossip(true)
+        );
+        assert!(
+            !parse_node_args(&[
+                "tempo",
+                "node",
+                "--consensus.signing-key",
+                "unused-signing-key",
+                "--consensus.devp2p.finalizations=false",
+            ])
+            .has_gossip(false)
+        );
+    }
+
+    #[test]
+    fn gossip_ingest_follows_node_mode() {
+        init_defaults_once();
+
+        let validator = parse_node_args(&[
+            "tempo",
+            "node",
+            "--consensus.signing-key",
+            "unused-signing-key",
+            "--consensus.devp2p.finalizations",
+        ]);
+        assert!(validator.has_gossip(false));
+        assert!(!validator.consensus.gossip_transport(false).ingest);
+
+        let follower = parse_node_args(&[
+            "tempo",
+            "node",
+            "--follow",
+            "--consensus.devp2p.finalizations",
+        ]);
+        assert!(follower.has_gossip(false));
+        assert!(follower.consensus.gossip_transport(true).ingest);
+    }
+
+    #[test]
+    fn follow_upstream_request_timeout_is_certified_follow_only() {
+        init_defaults_once();
+
+        assert!(
+            TempoCli::try_parse_from([
+                "tempo",
+                "node",
+                "--dev",
+                "--follow.upstream-request-timeout",
+                "750ms",
+            ])
+            .is_err()
+        );
+        assert!(
+            TempoCli::try_parse_from([
+                "tempo",
+                "node",
+                "--follow",
+                "--follow.nocertify",
+                "--follow.upstream-request-timeout",
+                "750ms",
+            ])
+            .is_err()
+        );
+
+        let cli = TempoCli::try_parse_from([
+            "tempo",
+            "node",
+            "--follow",
+            "--follow.upstream-request-timeout",
+            "750ms",
+        ])
+        .unwrap();
+        let Commands::Node(node_cmd) = cli.command else {
+            panic!("expected node command");
+        };
+        assert_eq!(
+            node_cmd.ext.follow_upstream_request_timeout.into_duration(),
+            Duration::from_millis(750)
+        );
     }
 
     #[test]
@@ -763,7 +1132,7 @@ mod tests {
             "--engine.disable-execution-cache-sharing-with-builder",
         ])
         .unwrap();
-        apply_tempo_cli_overrides(&mut cli);
+        apply_tempo_cli_overrides(&mut cli).unwrap();
         let Commands::Node(node_cmd) = cli.command else {
             panic!("expected node command");
         };
