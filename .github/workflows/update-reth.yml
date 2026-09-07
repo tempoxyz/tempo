@@ -659,7 +659,7 @@ jobs:
 
       # ── Slack notification ─────────────────────────────────────
       - name: Notify Slack
-        if: always()
+        if: always() && job.status != 'success'
         env:
           GH_TOKEN: ${{ secrets.DEREK_UPDATE_RETH_TOKEN }}
           SLACK_WEBHOOK_URL: ${{ secrets.SLACK_ENG_TEMPO_WORKFLOWS_WEBHOOK_URL }}
