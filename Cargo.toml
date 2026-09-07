@@ -409,20 +409,3 @@ vergen-git2 = "10.0.1"
 # reth-trie-db = { path = "../reth/crates/trie/db" }
 # reth-trie-parallel = { path = "../reth/crates/trie/parallel" }
 # reth-trie-sparse = { path = "../reth/crates/trie/sparse" }
-
-[patch.crates-io]
-
-# Commonware v2026.9.0 release candidate
-commonware-actor = { git = "https://github.com/commonwarexyz/monorepo", rev = "29ad3abd1241dcc9555a4c20c86b821ecd039048" }
-commonware-broadcast = { git = "https://github.com/commonwarexyz/monorepo", rev = "29ad3abd1241dcc9555a4c20c86b821ecd039048" }
-commonware-codec = { git = "https://github.com/commonwarexyz/monorepo", rev = "29ad3abd1241dcc9555a4c20c86b821ecd039048" }
-commonware-consensus = { git = "https://github.com/commonwarexyz/monorepo", rev = "29ad3abd1241dcc9555a4c20c86b821ecd039048" }
-commonware-cryptography = { git = "https://github.com/commonwarexyz/monorepo", rev = "29ad3abd1241dcc9555a4c20c86b821ecd039048" }
-commonware-macros = { git = "https://github.com/commonwarexyz/monorepo", rev = "29ad3abd1241dcc9555a4c20c86b821ecd039048" }
-commonware-math = { git = "https://github.com/commonwarexyz/monorepo", rev = "29ad3abd1241dcc9555a4c20c86b821ecd039048" }
-commonware-p2p = { git = "https://github.com/commonwarexyz/monorepo", rev = "29ad3abd1241dcc9555a4c20c86b821ecd039048" }
-commonware-parallel = { git = "https://github.com/commonwarexyz/monorepo", rev = "29ad3abd1241dcc9555a4c20c86b821ecd039048" }
-commonware-resolver = { git = "https://github.com/commonwarexyz/monorepo", rev = "29ad3abd1241dcc9555a4c20c86b821ecd039048" }
-commonware-runtime = { git = "https://github.com/commonwarexyz/monorepo", rev = "29ad3abd1241dcc9555a4c20c86b821ecd039048" }
-commonware-storage = { git = "https://github.com/commonwarexyz/monorepo", rev = "29ad3abd1241dcc9555a4c20c86b821ecd039048" }
-commonware-utils = { git = "https://github.com/commonwarexyz/monorepo", rev = "29ad3abd1241dcc9555a4c20c86b821ecd039048" }
