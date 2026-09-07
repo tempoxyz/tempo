@@ -1,4 +1,6 @@
 # Scheduled e2e regression benchmarks.
+# State is stored in branch-isolated Actions artifacts for 90 days. Missing or
+# expired state uses the existing first-run baseline rules; no state PAT is needed.
 #
 # Runs nightly at 02:00 UTC and on v*.*.* tag pushes for each scenario below.
 # Nightly runs compare the latest main commit against the
@@ -59,14 +61,12 @@ jobs:
         id: refs
         env:
           GH_TOKEN: ${{ github.token }}
-          BENCH_STATE_TOKEN: ${{ secrets.DEREK_UPDATE_RETH_TOKEN }}
           GITHUB_REPOSITORY: ${{ github.repository }}
           INPUT_FORCE: ${{ inputs.force || 'false' }}
           INPUT_REF: ${{ inputs.ref || '' }}
         run: |
           scenarios=(
-            # Preserve the existing state key so the first public run compares
-            # against the last successfully benchmarked commit for this series.
+            # Keep a distinct state key for each benchmark series.
             '{"preset":"public","state_key":"default","token_count":"1"}'
             '{"preset":"tip20:recipient=existing,fee-token=any_tip20","state_key":"tip20-existing-any","token_count":"4"}'
           )
@@ -95,7 +95,6 @@ jobs:
             run_type="$(get_output "$out" run-type)"
             actor="$(get_output "$out" actor)"
             is_stale="$(get_output "$out" is-stale)"
-            state_variable="$(get_output "$out" state-variable)"
 
             if [ "$is_stale" = "true" ]; then
               stale_scenarios+=("$preset")
@@ -110,10 +109,9 @@ jobs:
                 --arg baseline_name "$baseline_name" \
                 --arg feature_name "$feature_name" \
                 --arg run_type "$run_type" \
-                --arg state_variable "$state_variable" \
                 --arg token_count "$token_count" \
                 --arg state_key "$state_key" \
-                '{preset:$preset, state_key:$state_key, actor:$actor, baseline_ref:$baseline_ref, feature_ref:$feature_ref, baseline_name:$baseline_name, feature_name:$feature_name, run_type:$run_type, state_variable:$state_variable, token_count:$token_count}')"
+                '{preset:$preset, state_key:$state_key, actor:$actor, baseline_ref:$baseline_ref, feature_ref:$feature_ref, baseline_name:$baseline_name, feature_name:$feature_name, run_type:$run_type, token_count:$token_count}')"
               bench_entries+=("$entry")
               if [ "$run_type" = "nightly" ]; then
                 save_entries+=("$entry")
@@ -196,24 +194,26 @@ jobs:
       always() &&
       needs.resolve-refs.outputs.has-nightly-benchmarks == 'true' &&
       needs.bench-e2e.result == 'success'
-    name: save-state
+    name: save-state (${{ matrix.state_key }})
     runs-on: ubuntu-latest
-    permissions:
-      contents: read
+    permissions: {}
+    strategy:
+      fail-fast: false
+      matrix: ${{ fromJSON(needs.resolve-refs.outputs.save-matrix) }}
     steps:
-      - uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6.0.3
-        with:
-          persist-credentials: false
-          sparse-checkout: .github/scripts
-          sparse-checkout-cone-mode: true
+      - name: Prepare benchmark state
+        env:
+          FEATURE_REF: ${{ matrix.feature_ref }}
+        run: |
+          [[ "$FEATURE_REF" =~ ^[0-9a-f]{40}$ ]] || exit 1
+          mkdir -p "$RUNNER_TEMP/bench-state"
+          printf '%s\n' "$FEATURE_REF" > "$RUNNER_TEMP/bench-state/feature-ref"
 
       - name: Save benchmark state
-        env:
-          GH_TOKEN: ${{ secrets.DEREK_UPDATE_RETH_TOKEN }}
-          SAVE_MATRIX: ${{ needs.resolve-refs.outputs.save-matrix }}
-        run: |
-          while IFS= read -r entry; do
-            name=$(jq -r '.state_variable' <<< "$entry")
-            feature_ref=$(jq -r '.feature_ref' <<< "$entry")
-            bash .github/scripts/bench-state.sh set "$GITHUB_REPOSITORY" "$name" "$feature_ref"
-          done < <(jq -c '.include[]' <<< "$SAVE_MATRIX")
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: bench-state-e2e-${{ matrix.state_key }}
+          path: ${{ runner.temp }}/bench-state/feature-ref
+          retention-days: 90
+          if-no-files-found: error
+          overwrite: true

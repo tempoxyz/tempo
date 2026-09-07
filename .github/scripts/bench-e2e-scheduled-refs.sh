@@ -21,7 +21,7 @@
 #   is-stale
 #   stale-age-hours
 #   nightly-created
-#   state-variable
+#   state-key
 set -euo pipefail
 
 FORCE="${1:-false}"
@@ -33,13 +33,9 @@ if [[ ! "$STATE_KEY" =~ ^[A-Za-z0-9_-]+$ ]]; then
   exit 1
 fi
 
-STATE_VARIABLE="BENCH_E2E_${STATE_KEY^^}_LAST_FEATURE_REF"
-STATE_VARIABLE="${STATE_VARIABLE//-/_}"
-
 echo "Force: $FORCE"
 echo "State key: $STATE_KEY"
 echo "Repository: $REPO"
-echo "State variable: $STATE_VARIABLE"
 
 short_sha() {
   printf "%.8s" "$1"
@@ -58,7 +54,6 @@ write_outputs() {
     echo "stale-age-hours=$AGE_HOURS"
     echo "nightly-created=$CREATED_AT"
     echo "state-key=$STATE_KEY"
-    echo "state-variable=$STATE_VARIABLE"
   } >> "$GITHUB_OUTPUT"
 }
 
@@ -136,7 +131,7 @@ echo "Committed at: $CREATED_AT"
 echo "::endgroup::"
 
 echo "::group::Reading persisted e2e state"
-LAST_FEATURE_REF=$(bash "$(dirname "$0")/bench-state.sh" get "$REPO" "$STATE_VARIABLE")
+LAST_FEATURE_REF=$(bash "$(dirname "$0")/bench-state.sh" "$REPO" e2e "$STATE_KEY")
 echo "Previous e2e feature ref for $STATE_KEY: ${LAST_FEATURE_REF:-none}"
 echo "::endgroup::"
 

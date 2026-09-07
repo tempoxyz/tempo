@@ -4,7 +4,7 @@
 #
 # The feature ref is the latest successful scheduled docker.yml build. The
 # baseline ref is the last successful scheduled replay feature ref persisted in
-# the charts repo. If the nightly Docker build is stale or unchanged, the
+# Actions artifacts. If the nightly Docker build is stale or unchanged, the
 # caller can alert, fail, or skip before occupying a benchmark runner.
 #
 # Usage: bench-replay-scheduled-refs.sh <force>
@@ -24,7 +24,6 @@ set -euxo pipefail
 FORCE="${1:-false}"
 REPO="${GITHUB_REPOSITORY:-tempoxyz/tempo}"
 CHAIN="${BENCH_REPLAY_CHAIN:-mainnet}"
-STATE_VARIABLE="BENCH_REPLAY_${CHAIN^^}_LAST_FEATURE_REF"
 STALE_THRESHOLD_HOURS="${BENCH_REPLAY_STALE_THRESHOLD_HOURS:-24}"
 
 case "$CHAIN" in
@@ -82,9 +81,9 @@ else
 fi
 echo "::endgroup::"
 
-# --- Step 3: Read last successful feature ref from repository variables ---
+# --- Step 3: Read last successful feature ref from Actions artifacts ---
 echo "::group::Reading persisted replay state"
-LAST_FEATURE_REF=$(bash "$(dirname "$0")/bench-state.sh" get "$REPO" "$STATE_VARIABLE")
+LAST_FEATURE_REF=$(bash "$(dirname "$0")/bench-state.sh" "$REPO" replay "$CHAIN")
 echo "Previous replay feature ref: ${LAST_FEATURE_REF:-none}"
 echo "::endgroup::"
 

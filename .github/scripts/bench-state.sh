@@ -1,37 +1,56 @@
 #!/usr/bin/env bash
-# Read/write the last successful benchmark commit in repository Actions variables.
-# Usage: bench-state.sh get|set owner/repo BENCH_<SERIES>_LAST_FEATURE_REF [sha]
+# Restore the last successful benchmark commit from an Actions artifact.
+# Usage: bench-state.sh owner/repo replay|e2e state-key
+# Requires GH_TOKEN with actions:read. State is scoped to GITHUB_REF_NAME (main
+# outside Actions). Missing/expired state bootstraps; API/corruption errors fail.
 set -euo pipefail
 
-action=${1:?expected get or set}
-repo=${2:?expected owner/repo}
-name=${3:?expected variable name}
-if [[ ! "$name" =~ ^BENCH_[A-Z0-9_]+_LAST_FEATURE_REF$ ]]; then
-  echo "Invalid benchmark state variable: $name" >&2
-  exit 1
-fi
-export GH_TOKEN="${BENCH_STATE_TOKEN:-${GH_TOKEN:-}}"
-
-case "$action" in
-  get)
-    # Listing distinguishes an absent variable from an authentication/API failure.
-    value=$(gh api --paginate "repos/$repo/actions/variables?per_page=100" \
-      --jq ".variables[] | select(.name == \"$name\") | .value")
+repo=${1:?expected owner/repo}
+series=${2:?expected replay or e2e}
+key=${3:?expected state key}
+case "$series" in
+  replay)
+    case "$key" in mainnet|testnet) ;; *) echo "Invalid replay chain: $key" >&2; exit 1 ;; esac
     ;;
-  set)
-    value=${4:?expected commit SHA}
+  e2e)
+    [[ "$key" =~ ^[A-Za-z0-9_-]+$ ]] || { echo "Invalid e2e state key: $key" >&2; exit 1; }
+    key=${key,,}
     ;;
-  *)
-    echo "Expected get or set" >&2
-    exit 1
-    ;;
+  *) echo "Invalid benchmark series: $series" >&2; exit 1 ;;
 esac
-if [[ -n "$value" && ! "$value" =~ ^[0-9a-f]{40}$ ]] || [[ "$action" == set && -z "$value" ]]; then
-  echo "Invalid commit SHA in $name" >&2
-  exit 1
-fi
-if [[ "$action" == set ]]; then
-  gh variable set "$name" --repo "$repo" --body "$value"
-else
+name="bench-state-$series-$key"
+workflow=".github/workflows/bench-$series-scheduled.yml"
+branch=${GITHUB_REF_NAME:-main}
+
+# Filter before downloading: dispatches on test branches must not change main's
+# baseline. Pagination matters when hourly state accumulates over its retention.
+artifacts=$(gh api --paginate --slurp "repos/$repo/actions/artifacts?name=$name&per_page=100")
+candidates=$(jq -r --arg name "$name" --arg branch "$branch" '
+  [.[].artifacts[] | select(.name == $name and .expired == false
+    and .workflow_run.head_branch == $branch
+    and .workflow_run.head_repository_id == .workflow_run.repository_id)]
+  | sort_by(.id) | reverse | .[] | [.id, .workflow_run.id] | @tsv
+' <<< "$artifacts")
+
+while IFS=$'\t' read -r artifact_id run_id; do
+  [[ -n "$artifact_id" ]] || continue
+  run=$(gh api "repos/$repo/actions/runs/$run_id")
+  if ! jq -e --arg branch "$branch" --arg workflow "$workflow" '
+    .path == $workflow and .head_branch == $branch
+    and .status == "completed" and .conclusion == "success"
+    and (.event == "schedule" or .event == "workflow_dispatch")
+  ' <<< "$run" >/dev/null; then
+    continue
+  fi
+  scratch=$(mktemp -d)
+  trap 'rm -rf "$scratch"' EXIT
+  gh api "repos/$repo/actions/artifacts/$artifact_id/zip" > "$scratch/state.zip"
+  value=$(unzip -p "$scratch/state.zip" feature-ref)
+  if [[ ! "$value" =~ ^[0-9a-f]{40}$ ]]; then
+    echo "Invalid commit SHA in $name artifact $artifact_id" >&2
+    exit 1
+  fi
+  echo "Restored $name from run $run_id" >&2
   printf '%s\n' "$value"
-fi
+  exit 0
+done <<< "$candidates"
