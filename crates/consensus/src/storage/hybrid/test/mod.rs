@@ -711,8 +711,8 @@ fn mid_section_silent_no_op_floor_is_section_aligned_not_requested() {
         hybrid = hybrid.put(trigger).await.expect("put trigger");
 
         // Heights 1..=3 sit below the section-aligned `oldest_allowed`
-        // (4) and must silently no-op — surfacing the prunable's
-        // `AlreadyPrunedTo` here would crash the marshal on a
+        // (4) and must silently no-op — rejecting these puts
+        // here would crash the marshal on a
         // perfectly recoverable condition.
         for height in 1..=3 {
             hybrid = hybrid
@@ -725,8 +725,8 @@ fn mid_section_silent_no_op_floor_is_section_aligned_not_requested() {
 
         // Heights 4 and 5 sit in the live tail of the partially-evicted
         // section. The archive accepts these puts directly (4 ≥
-        // oldest_allowed=4); they do NOT take the `AlreadyPrunedTo`
-        // branch even though they are below the requested retention
+        // oldest_allowed=4); they do NOT take the silent no-op
+        // path even though they are below the requested retention
         // floor of 6.
         for height in 4..=5 {
             hybrid = hybrid

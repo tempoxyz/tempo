@@ -41,14 +41,13 @@
 //!
 //! # Stale puts
 //!
-//! [`Hybrid::put`] absorbs the prunable archive's
-//! [`archive::Error::AlreadyPrunedTo`] as a silent success. The
-//! eviction invariant
+//! The prunable archive silently ignores puts below its prune floor, so
+//! [`Hybrid::put`] treats them as successful no-ops. The eviction invariant
 //! `oldest_allowed ≤ section_aligned(reth.finalized − retention + 1)
 //! ≤ reth.finalized` guarantees that a put at `H < oldest_allowed`
 //! also has `H ≤ reth.finalized`, so the block is durable in reth and
-//! a subsequent [`Blocks::get`] will hit the reth fallback. Surfacing
-//! the error would crash the node on a recoverable condition (e.g.
+//! a subsequent [`Blocks::get`] will hit the reth fallback. Rejecting
+//! the put would crash the node on a recoverable condition (e.g.
 //! follow-mode catching up while reth has synced past the cache
 //! window).
 //!
