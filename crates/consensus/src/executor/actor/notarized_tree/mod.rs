@@ -550,11 +550,6 @@ impl NotarizedTree {
     )
 )]
 impl NotarizedTree {
-    /// The block consensus reported building on: the convergence target.
-    pub(super) fn pending_head(&self) -> Digest {
-        self.pending_head.digest
-    }
-
     /// The highest finalized block the execution layer accepted: the
     /// finalized target of the next forkchoice update.
     pub(super) fn delivered_finalized(&self) -> (Height, Digest) {
@@ -621,10 +616,11 @@ impl NotarizedTree {
     }
 
     /// The highest block on the pending head's ancestry the execution layer
-    /// has, if it is not the head already, the ancestry down to it is
-    /// walkable, and no block on the way is withheld. Bottoming out on the
-    /// finalized tip repoints onto it.
-    pub(super) fn next_head(&self, now: SystemTime) -> Option<(Height, Digest)> {
+    /// has, if it is not the head already and the ancestry down to it is
+    /// walkable. A withheld block on the way does not matter: the head moves
+    /// onto what the execution layer accepted regardless. Bottoming out on
+    /// the finalized tip repoints onto it.
+    pub(super) fn next_head(&self) -> Option<(Height, Digest)> {
         let (_, finalized_height, _) = self.network_finalized_tip;
 
         let mut digest = self.pending_head.digest;
@@ -636,7 +632,7 @@ impl NotarizedTree {
                 return Some((height, digest));
             }
             let entry = self.blocks.get(&digest)?;
-            if entry.block.height() <= finalized_height || !entry.forwardable(now) {
+            if entry.block.height() <= finalized_height {
                 return None;
             }
             digest = entry.block.parent_digest();

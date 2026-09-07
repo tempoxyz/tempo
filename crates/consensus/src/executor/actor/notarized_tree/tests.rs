@@ -825,21 +825,21 @@ fn delivers_chain_on_top_of_finalized_tip_bottom_up() {
     // Only the block directly above a known block can be delivered; there
     // is no known block to move the head onto yet.
     assert_eq!(next_delivery(&tree, T0), Some(a.digest()));
-    assert_eq!(tree.next_head(T0), None);
+    assert_eq!(tree.next_head(), None);
 
     // Once a is delivered, b is deliverable and a is the highest known
     // block on the path: the head can already move onto it.
     delivered(&mut tree, &a);
     assert_eq!(next_delivery(&tree, T0), Some(b.digest()));
-    assert_eq!(tree.next_head(T0), Some((Height::new(11), a.digest())));
+    assert_eq!(tree.next_head(), Some((Height::new(11), a.digest())));
 
     // With the whole path delivered, one forkchoice update covers it.
     delivered(&mut tree, &b);
     assert_eq!(next_delivery(&tree, T0), None);
-    assert_eq!(tree.next_head(T0), Some((Height::new(12), b.digest())));
+    assert_eq!(tree.next_head(), Some((Height::new(12), b.digest())));
 
     forwarded(&mut tree, &b);
-    assert_eq!(tree.next_head(T0), None);
+    assert_eq!(tree.next_head(), None);
 }
 
 #[test]
@@ -867,14 +867,14 @@ fn fork_extends_from_the_nearest_known_block() {
     report_parent(&mut tree, &n3);
     tree.heal();
     assert_eq!(next_delivery(&tree, T0), None);
-    assert_eq!(tree.next_head(T0), None);
+    assert_eq!(tree.next_head(), None);
 
     // N3's body arrives, but its parent N1' is still missing: the
     // ancestry does not reach down to a block the execution layer has.
     tree.record_block(n3.clone().into());
     tree.heal();
     assert_eq!(next_delivery(&tree, T0), None);
-    assert_eq!(tree.next_head(T0), None);
+    assert_eq!(tree.next_head(), None);
 
     // N1' arrives via the fetch machinery, completing the ancestry. The
     // head (N2) sits off the new canonical path, but the trunk block N0 is
@@ -883,12 +883,12 @@ fn fork_extends_from_the_nearest_known_block() {
     tree.record_block(n1p.clone().into());
     tree.heal();
     assert_eq!(next_delivery(&tree, T0), Some(n1p.digest()));
-    assert_eq!(tree.next_head(T0), Some((Height::new(11), n0.digest())));
+    assert_eq!(tree.next_head(), Some((Height::new(11), n0.digest())));
     delivered(&mut tree, &n1p);
     assert_eq!(next_delivery(&tree, T0), Some(n3.digest()));
     delivered(&mut tree, &n3);
     assert_eq!(next_delivery(&tree, T0), None);
-    assert_eq!(tree.next_head(T0), Some((Height::new(13), n3.digest())));
+    assert_eq!(tree.next_head(), Some((Height::new(13), n3.digest())));
 }
 
 /// A head stranded on an abandoned notarized branch while consensus
@@ -901,7 +901,7 @@ fn next_head_repoints_a_stranded_head_onto_the_finalized_tip() {
 
     // No convergence step while the head sits on the finalized tip.
     assert_eq!(next_delivery(&tree, T0), None);
-    assert_eq!(tree.next_head(T0), None);
+    assert_eq!(tree.next_head(), None);
 
     // A block is notarized and converged onto, then its view nullifies
     // and the network abandons it; consensus re-anchors on the finalized
@@ -911,17 +911,16 @@ fn next_head_repoints_a_stranded_head_onto_the_finalized_tip() {
     converged(&mut tree, &abandoned);
     tree.set_pending_head(round(0), finalized);
     tree.heal();
-    assert_eq!(tree.pending_head(), finalized);
 
     // There is no block to deliver; the head target is the tip.
     assert_eq!(next_delivery(&tree, T0), None);
-    assert_eq!(tree.next_head(T0), Some((Height::new(10), finalized)));
+    assert_eq!(tree.next_head(), Some((Height::new(10), finalized)));
 
     // The repoint forkchoice update is accepted: the head is back on the
     // tip and there is nothing left to do.
     let local_state = tree.local_state().update_head(Height::new(10), finalized);
     tree.set_local_state(local_state);
-    assert_eq!(tree.next_head(T0), None);
+    assert_eq!(tree.next_head(), None);
 }
 
 /// No head target while the finalized-block delivery for the tip is still
@@ -942,11 +941,11 @@ fn next_head_waits_for_the_finalized_tip_delivery() {
     tree.set_pending_head(round(2), b1.digest());
     tree.heal();
     assert_eq!(next_delivery(&tree, T0), None);
-    assert_eq!(tree.next_head(T0), None);
+    assert_eq!(tree.next_head(), None);
 
     // The delivery lands: the head target is the finalized block ...
     tree.set_delivered_finalized(Height::new(11), b1.digest());
-    assert_eq!(tree.next_head(T0), Some((Height::new(11), b1.digest())));
+    assert_eq!(tree.next_head(), Some((Height::new(11), b1.digest())));
 
     // ... and once the forkchoice update rebased the head, there is
     // nothing left to repoint.
@@ -955,7 +954,7 @@ fn next_head_waits_for_the_finalized_tip_delivery() {
         .update_finalized(Height::new(11), b1.digest())
         .update_head(Height::new(11), b1.digest());
     tree.set_local_state(local_state);
-    assert_eq!(tree.next_head(T0), None);
+    assert_eq!(tree.next_head(), None);
 }
 
 /// Blocks the execution layer knows: the canonicalized state, the
@@ -1018,20 +1017,19 @@ fn rejection_revokes_delivery() {
     record(&mut tree, &b);
     delivered(&mut tree, &a);
     delivered(&mut tree, &b);
-    assert_eq!(tree.next_head(T0), Some((Height::new(12), b.digest())));
+    assert_eq!(tree.next_head(), Some((Height::new(12), b.digest())));
 
-    // b is rejected: unknown again and withheld, which also withholds the
-    // head move onto its known parent.
+    // b is rejected: unknown again and withheld. The head still moves onto
+    // its accepted parent.
     tree.mark_rejected(&b.digest(), T0);
     assert!(!tree.is_known(b.digest()));
     assert_eq!(next_delivery(&tree, T0), None);
-    assert_eq!(tree.next_head(T0), None);
+    assert_eq!(tree.next_head(), Some((Height::new(11), a.digest())));
 
     // After the delay, b is delivered again, and a fresh acceptance clears
     // the rejection.
     let retry = T0 + NOTARIZED_REJECTION_RETRY_DELAY;
     assert_eq!(next_delivery(&tree, retry), Some(b.digest()));
-    assert_eq!(tree.next_head(retry), Some((Height::new(11), a.digest())));
     delivered(&mut tree, &b);
-    assert_eq!(tree.next_head(T0), Some((Height::new(12), b.digest())));
+    assert_eq!(tree.next_head(), Some((Height::new(12), b.digest())));
 }
