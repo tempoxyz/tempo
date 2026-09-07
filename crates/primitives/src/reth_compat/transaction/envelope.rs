@@ -195,4 +195,42 @@ mod codec {
             Ok(obj)
         }
     }
+
+    #[cfg(test)]
+    mod tests {
+        use super::*;
+        use crate::transaction::tt_signed::tests::arb_tempo_tx;
+        use proptest::prelude::*;
+        use proptest_arbitrary_interop::arb;
+        use reth_codecs::alloy::transaction::{FromTxCompact, ToTxCompact};
+
+        proptest! {
+            #[test]
+            fn proptest_aa_envelope_compact_encoding(
+                tx in arb_tempo_tx(),
+                signature in arb::<TempoSignature>(),
+            ) {
+                let signed = AASigned::new_unhashed(tx, signature);
+                let mut expected = vec![0xaa, 0xbb];
+                signed.tx().to_compact(&mut expected);
+                signed.signature().to_bytes().to_compact(&mut expected);
+
+                let envelope = TempoTxEnvelope::AA(signed);
+                let mut encoded = vec![0xaa, 0xbb];
+                envelope.to_tx_compact(&mut encoded);
+                prop_assert_eq!(&encoded, &expected);
+                let (decoded, rest) = TempoTxEnvelope::from_tx_compact(
+                    &encoded[2..], TempoTxType::AA, TEMPO_SYSTEM_TX_SIGNATURE,
+                );
+                prop_assert_eq!(&decoded, &envelope);
+                prop_assert!(rest.is_empty());
+
+                let mut compact = Vec::new();
+                let len = Compact::to_compact(&envelope, &mut compact);
+                prop_assert_eq!(len, compact.len());
+                let (decoded, _) = <TempoTxEnvelope as Compact>::from_compact(&compact, len);
+                prop_assert_eq!(decoded, envelope);
+            }
+        }
+    }
 }
