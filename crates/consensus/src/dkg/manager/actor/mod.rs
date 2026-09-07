@@ -236,6 +236,10 @@ where
         TSender: Sender<PublicKey = PublicKey>,
         TReceiver: Receiver<PublicKey = PublicKey>,
     {
+        ensure!(
+            !storage.is_poisoned(),
+            "DKG storage must be reopened after a failed or cancelled mutation"
+        );
         let state = storage.current();
 
         self.metrics.reset();
@@ -361,7 +365,7 @@ where
                     match network_msg {
                         Ok((sender, message)) => {
                             // Produces an error event.
-                            let _ = self.handle_network_msg(
+                            let result = self.handle_network_msg(
                                 &round,
                                 &mut round_sender,
                                 storage,
@@ -370,6 +374,14 @@ where
                                 sender,
                                 message,
                             ).await;
+                            // Malformed messages and send failures are recoverable,
+                            // but a failed storage mutation consumes its handle.
+                            // Exit with the original I/O error before another message
+                            // can access the poisoned storage.
+                            if storage.is_poisoned() {
+                                result.wrap_err("DKG storage invalidated while handling a network message")?;
+                                bail!("DKG storage invalidated without a reported error");
+                            }
                         }
                         Err(err) => {
                             break Err(err).wrap_err("network p2p subchannel closed")

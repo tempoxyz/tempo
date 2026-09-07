@@ -21,6 +21,114 @@ use harness::{
 };
 
 #[test]
+fn network_storage_failures_stop_actor_and_allow_recovery() {
+    use commonware_runtime::deterministic::FaultConfig;
+    use commonware_utils::probability;
+
+    // Exercise both failure while appending to a new journal section and
+    // failure while syncing an appended dealing.
+    for fail_open in [true, false] {
+        Runner::default().start(|mut context| async move {
+            let (state, keys, _) = dkg_state(&mut context, Epoch::new(1), 2, true);
+            let round = Round::from_state(&state, crate::config::NAMESPACE);
+            let (_, public, private) = dkg::Dealer::start::<commonware_utils::N3f1>(
+                &mut context,
+                round.info().clone(),
+                keys[1].clone(),
+                None,
+            )
+            .unwrap();
+            let private = private
+                .into_iter()
+                .find(|(player, _)| player == &keys[0].public_key())
+                .unwrap()
+                .1;
+            let message = Message::Dealer(public, private).encode();
+            let network = TestNetwork::default();
+            let (sender, mut receiver) = network.register(keys[1].public_key());
+            let mut sender = mux::GlobalSender::new(sender);
+            let mut harness = Harness::builder(context.child("actor"), "network_storage_failure")
+                .initial_state(state.clone())
+                .identity(keys[0].clone())
+                .network(network)
+                .build()
+                .await;
+            harness.start().await;
+            assert!(!harness.has_dealer_log(state.epoch).await);
+
+            let faults = context.storage_fault_config();
+            if fail_open {
+                faults.write().open_rate = Some(probability!(1.0));
+            } else {
+                faults.write().sync_rate = Some(probability!(1.0));
+            }
+            assert!(
+                sender
+                    .send(
+                        state.epoch.get(),
+                        Recipients::One(keys[0].public_key()),
+                        message.clone(),
+                        true,
+                    )
+                    .accepted()
+            );
+
+            // No second message should be needed to discover the missing handle,
+            // and the actor must return normally rather than panic on an expect.
+            context
+                .timeout(Duration::from_secs(1), harness.wait_for_actor_exit())
+                .await
+                .expect("a network storage failure must terminate the actor immediately");
+
+            *faults.write() = FaultConfig::default();
+            harness.stop().await;
+            assert_eq!(harness.storage().current(), state);
+            harness.start().await;
+            assert!(!harness.has_dealer_log(state.epoch).await);
+
+            // Invalid peer input must remain recoverable: send a malformed message
+            // before retrying the valid dealing and require its acknowledgement.
+            assert!(
+                sender
+                    .send(
+                        state.epoch.get(),
+                        Recipients::One(keys[0].public_key()),
+                        vec![u8::MAX],
+                        true,
+                    )
+                    .accepted()
+            );
+            // Let the mux deliver the malformed message before filling its
+            // single-slot subchannel again.
+            context.sleep(Duration::from_millis(1)).await;
+            assert!(!harness.has_dealer_log(state.epoch).await);
+            assert!(
+                sender
+                    .send(
+                        state.epoch.get(),
+                        Recipients::One(keys[0].public_key()),
+                        message,
+                        true,
+                    )
+                    .accepted()
+            );
+            let (_, ack) = context
+                .timeout(Duration::from_secs(1), receiver.recv())
+                .await
+                .expect("reopened storage must accept the retried dealing")
+                .unwrap();
+            let (epoch, mut ack) = mux::parse(ack).unwrap();
+            assert_eq!(epoch, state.epoch.get());
+            assert!(matches!(
+                Message::read_cfg(&mut ack, &NZU32!(2)).unwrap(),
+                Message::Ack(_)
+            ));
+            harness.stop().await;
+        });
+    }
+}
+
+#[test]
 fn exhausted_ancestry_releases_pending_outcome_request() {
     Runner::default().start(|_| async move {
         let (response, receiver) = oneshot::channel();

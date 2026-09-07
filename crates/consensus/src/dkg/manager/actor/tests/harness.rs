@@ -263,10 +263,14 @@ impl Harness {
     }
 
     pub(super) async fn wait_for_exit(&mut self) {
+        self.wait_for_actor_exit().await;
+        self.reopen_storage().await;
+    }
+
+    pub(super) async fn wait_for_actor_exit(&mut self) {
         let handle = self.handle.take().expect("DKG actor is not running");
         handle.await.expect("DKG actor should stop");
         self.mailbox.take();
-        self.reopen_storage().await;
     }
 
     async fn reopen_storage(&mut self) {

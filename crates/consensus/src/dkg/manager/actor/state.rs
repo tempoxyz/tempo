@@ -55,6 +55,9 @@ pub(super) struct Storage<TContext>
 where
     TContext: BufferPooler + commonware_runtime::Storage + Clock + Metrics,
 {
+    // Commonware mutations consume their handles. These slots are empty while
+    // an operation is in flight, and stay empty after failure or cancellation.
+    // Such storage must be dropped and reopened, never reused by the actor.
     states: Option<metadata::Metadata<TContext, u64, State>>,
     events: Option<segmented::variable::Journal<TContext, Event>>,
 
@@ -102,6 +105,10 @@ impl<TContext> Storage<TContext>
 where
     TContext: BufferPooler + commonware_runtime::Storage + Clock + Metrics,
 {
+    pub(super) fn is_poisoned(&self) -> bool {
+        self.states.is_none() || self.events.is_none()
+    }
+
     /// Returns all player acknowledgments received during the given epoch.
     fn acks_for_epoch(
         &self,
