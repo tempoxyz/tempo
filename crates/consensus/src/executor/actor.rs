@@ -545,6 +545,7 @@ where
     /// followed, if any, moves the tracked state. Anything else withholds the
     /// block for the retry delay so that it is not retried in a tight loop;
     /// the finalization pipeline remains the fatal-on-failure backstop.
+    #[instrument(skip_all, fields(%digest), err)]
     fn handle_delivered(
         &mut self,
         digest: Digest,
@@ -576,6 +577,14 @@ where
     /// A non-`VALID` answer is fatal. Otherwise the forkchoice update that
     /// followed, if any, moves the tracked state onto the finalized block,
     /// which is then acknowledged to the marshal actor.
+    #[instrument(
+        skip_all,
+        fields(
+            block.digest = %request.block.digest(),
+            block.height = %request.block.height(),
+        ),
+        err,
+    )]
     fn handle_finalized_delivered(
         &mut self,
         request: FinalizedBlockRequest,
@@ -722,6 +731,7 @@ where
         Ok(())
     }
 
+    #[instrument(skip_all, err)]
     async fn backfill_to_finalized_floor(&mut self) -> eyre::Result<()> {
         let start = self.notarized_tree.local_state().finalized.0.get() + 1;
         let end = self.finalized_floor.get();
