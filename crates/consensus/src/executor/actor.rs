@@ -65,7 +65,9 @@ use prometheus_client::metrics::{counter::Counter, gauge::Gauge};
 use tempo_node::TempoExecutionData;
 use tempo_payload_types::{TempoBuiltPayload, TempoPayloadAttributes};
 use tokio::select;
-use tracing::{Instrument as _, Span, debug, error, error_span, info, info_span, instrument, warn};
+use tracing::{
+    Instrument as _, Level, Span, debug, error, error_span, info, info_span, instrument, warn,
+};
 
 use super::{
     Config, ExecutionLayer, Marshal,
@@ -464,7 +466,7 @@ where
         let ExecutionTaskFinished { outcome, .. } = finished;
         match outcome {
             ExecutionTaskOutcome::Validated { request, status } => {
-                self.handle_validated(request, status);
+                let _logged = self.handle_validated(request, status);
                 Ok(())
             }
             ExecutionTaskOutcome::Delivered {
@@ -490,17 +492,19 @@ where
     /// Resolves a validation request from the execution layer's answer.
     /// `VALID` and `INVALID` are verdicts; `SYNCING` (unknown parent),
     /// `ACCEPTED`, and transport errors fail the request by dropping its
-    /// channel. Gaps are repaired by convergence, not on this path.
+    /// channel and are returned as errors. Gaps are repaired by
+    /// convergence, not on this path.
+    #[instrument(skip_all, err(level = Level::WARN))]
     fn handle_validated(
         &self,
         request: Option<VerifyBlockRequest>,
         status: eyre::Result<(PayloadStatusEnum, Duration)>,
-    ) {
+    ) -> eyre::Result<()> {
         let Some(VerifyBlockRequest {
             cause, response, ..
         }) = request
         else {
-            return;
+            return Ok(());
         };
         let _entered = cause.enter();
         let verdict = match status {
@@ -513,25 +517,20 @@ where
                 None
             }
             Ok((PayloadStatusEnum::Syncing, _)) => {
-                warn!(
+                bail!(
                     "failed validating block because the execution layer reports \
                     syncing: it does not know the block's parent; the notarized \
                     chain convergence will repair the gap in the background"
                 );
-                return;
             }
             Ok((PayloadStatusEnum::Accepted, _)) => {
-                warn!(
+                bail!(
                     "failed validating block because payload was accepted, meaning \
                     that it was not actually executed by the execution layer for \
                     some reason"
                 );
-                return;
             }
-            Err(error) => {
-                warn!(%error, "failed validating block");
-                return;
-            }
+            Err(error) => return Err(error.wrap_err("failed validating block")),
         };
         if response.send(verdict).is_err() {
             info!(
@@ -539,6 +538,7 @@ where
                 result could be delivered"
             );
         }
+        Ok(())
     }
 
     /// `VALID` delivers the notarized block and the forkchoice update that
@@ -962,6 +962,7 @@ where
             current.finalized_height = %self.notarized_tree.local_state().finalized.0,
             current.finalized_digest = %self.notarized_tree.local_state().finalized.1,
         ),
+        err,
     )]
     fn start_next_execution_task(&mut self) -> eyre::Result<()> {
         if !self.execution_task.is_none() {
