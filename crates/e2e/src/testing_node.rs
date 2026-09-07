@@ -690,7 +690,7 @@ mod tests {
                     .linkage(Link {
                         latency: Duration::from_millis(10),
                         jitter: Duration::from_millis(1),
-                        success_rate: 1.0,
+                        success_rate: commonware_utils::probability!(1.0),
                     })
                     .epoch_length(100);
 
