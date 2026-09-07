@@ -375,7 +375,7 @@ jobs:
         uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
         with:
           repository: tempoxyz/tempo-multi-region-benchmark
-          ref: ${{ github.repository == 'tempoxyz/tempo-multi-region-benchmark' && github.sha || 'main' }}
+          ref: 2c9ca8baab7c11f976fef0b488987cae12b8c644
           path: ${{ env.BENCH_REPO_DIR }}
           token: ${{ steps.github-sts.outputs.token }}
           persist-credentials: false
@@ -546,6 +546,7 @@ jobs:
             --no-slack "true" \
             --bench-args "$BENCH_INPUT_BENCH_ARGS" \
             --run-pairs "$BENCH_INPUT_RUN_PAIRS" \
+            --run-side feature \
             --clickhouse-run "$BENCH_INPUT_CLICKHOUSE_RUN" \
             --clickhouse-metrics-file "$GITHUB_WORKSPACE/contrib/bench/clickhouse-metrics.txt" \
             --nodes "$BENCH_INPUT_VALIDATOR_COUNT" \
@@ -600,6 +601,7 @@ jobs:
             --no-slack "true" \
             --bench-args "$BENCH_INPUT_BENCH_ARGS" \
             --run-pairs "$BENCH_INPUT_RUN_PAIRS" \
+            --run-side feature \
             --clickhouse-run "$BENCH_INPUT_CLICKHOUSE_RUN" \
             --clickhouse-metrics-file "$GITHUB_WORKSPACE/contrib/bench/clickhouse-metrics.txt" \
             --nodes "$BENCH_INPUT_VALIDATOR_COUNT" \
@@ -647,6 +649,7 @@ jobs:
             --no-slack "true" \
             --bench-args "$BENCH_INPUT_BENCH_ARGS" \
             --run-pairs "$BENCH_INPUT_RUN_PAIRS" \
+            --run-side feature \
             --clickhouse-run "$BENCH_INPUT_CLICKHOUSE_RUN" \
             --clickhouse-metrics-file "$GITHUB_WORKSPACE/contrib/bench/clickhouse-metrics.txt" \
             --nodes "$BENCH_INPUT_VALIDATOR_COUNT" \
@@ -694,6 +697,7 @@ jobs:
             --no-slack "true" \
             --bench-args "$BENCH_INPUT_BENCH_ARGS" \
             --run-pairs "$BENCH_INPUT_RUN_PAIRS" \
+            --run-side feature \
             --clickhouse-run "$BENCH_INPUT_CLICKHOUSE_RUN" \
             --clickhouse-metrics-file "$GITHUB_WORKSPACE/contrib/bench/clickhouse-metrics.txt" \
             --nodes "$BENCH_INPUT_VALIDATOR_COUNT" \
