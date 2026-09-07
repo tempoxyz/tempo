@@ -363,6 +363,40 @@ def e2e-snapshots-ready [a_db: string, b_db: string] {
     (e2e-snapshot-ready $a_db) and (e2e-snapshot-ready $b_db)
 }
 
+# Cached snapshots can assign validators to a,b in a different order. Keep each
+# signing key/share bundle intact and bind it to its advertised peer address.
+def e2e-snapshot-topology [a_db: string, b_db: string] {
+    let a_meta = $"($a_db)/($BENCH_META_SUBDIR)"
+    let b_meta = $"($b_db)/($BENCH_META_SUBDIR)"
+    if (open $"($a_meta)/genesis.json") != (open $"($b_meta)/genesis.json") {
+        error make { msg: "Local e2e snapshots have different genesis configurations" }
+    }
+    let a_peers = (open --raw $"($a_meta)/trusted-peers.txt" | str trim | split row "," | each { str trim } | sort)
+    let b_peers = (open --raw $"($b_meta)/trusted-peers.txt" | str trim | split row "," | each { str trim } | sort)
+    if $a_peers != $b_peers {
+        error make { msg: "Local e2e snapshots have different trusted peers" }
+    }
+    let peers = ($a_peers | parse --regex '^enode://(?<identity>[0-9a-f]{128})@(?<ip>[^:]+):(?<port>[0-9]+)$'
+        | each { |peer| $peer | update port { into int } })
+    let expected_addresses = ($E2E_VALIDATORS | split row "," | sort)
+    let actual_addresses = ($peers | each { |peer| $"($peer.ip):($peer.port - 1)" } | sort)
+    if ($a_peers | length) != 2 or ($peers | length) != 2 or $actual_addresses != $expected_addresses {
+        error make { msg: "Local e2e snapshot peers must match the two configured validator addresses" }
+    }
+    let a_identity = (open --raw $"($a_db)/enode.identity" | str trim)
+    let b_identity = (open --raw $"($b_db)/enode.identity" | str trim)
+    let a_peer = ($peers | where identity == $a_identity)
+    let b_peer = ($peers | where identity == $b_identity)
+    if $a_identity == $b_identity or ($a_peer | length) != 1 or ($b_peer | length) != 1 {
+        error make { msg: "Local e2e snapshot identities must each match a distinct trusted peer" }
+    }
+    {
+        trusted_peers: ($a_peers | str join ",")
+        a: { identity: $a_identity, ip: $a_peer.0.ip, consensus_port: ($a_peer.0.port - 1) }
+        b: { identity: $b_identity, ip: $b_peer.0.ip, consensus_port: ($b_peer.0.port - 1) }
+    }
+}
+
 def e2e-snapshot-state-hardfork [datadir: string] {
     let marker = (read-bench-marker $datadir)
     if $marker == null {
@@ -1008,6 +1042,9 @@ def run-local-e2e-phase [run: record, ctx: record] {
     cleanup-local-e2e-processes
     bench-restore-at $ctx.a.state_path $ctx.a.mount $ctx.a.datadir
     bench-restore-at $ctx.b.state_path $ctx.b.mount $ctx.b.datadir
+    if (e2e-snapshot-topology $ctx.a.datadir $ctx.b.datadir) != $ctx.snapshot_topology {
+        error make { msg: "Local e2e snapshot identities or peer configuration changed after recovery" }
+    }
 
     for path in [$genesis $ctx.a.node_dir $ctx.b.node_dir] {
         if not ($path | path exists) {
@@ -1474,16 +1511,11 @@ def "main e2e" [
     }
     let a_validator = ($validator_list | get 0)
     let b_validator = ($validator_list | get 1)
-    let a_ip = ($a_validator | split row ":" | get 0)
-    let a_consensus_port = ($a_validator | split row ":" | get 1 | into int)
-    let b_ip = ($b_validator | split row ":" | get 0)
-    let b_consensus_port = ($b_validator | split row ":" | get 1 | into int)
     let a_db = $"($E2E_A_MOUNT)/tempo_e2e_($bloat_mib)mb"
     let b_db = $"($E2E_B_MOUNT)/tempo_e2e_($bloat_mib)mb"
     let a_identity = $a_db
     let b_identity = $b_db
     let genesis_path = $"($a_db)/($BENCH_META_SUBDIR)/genesis.json"
-    let a_trusted_peers_path = $"($a_db)/($BENCH_META_SUBDIR)/trusted-peers.txt"
     let run_started_at = (date now)
     let timestamp = ($run_started_at | format date "%Y%m%d-%H%M%S-%3f")
     let benchmark_id = ($env | get --optional BENCHMARK_ID)
@@ -1594,17 +1626,9 @@ def "main e2e" [
         e2e-synthesize-genesis $genesis_path $baseline_genesis_path $baseline_hardfork_name $gas_limit $general_gas_limit
         e2e-synthesize-genesis $genesis_path $feature_genesis_path $feature_hardfork_name $gas_limit $general_gas_limit
     }
-    let trusted_peers = if ($a_trusted_peers_path | path exists) {
-        open $a_trusted_peers_path | str trim
-    } else {
-        let b_trusted_peers_path = $"($b_db)/($BENCH_META_SUBDIR)/trusted-peers.txt"
-        if ($b_trusted_peers_path | path exists) {
-            open $b_trusted_peers_path | str trim
-        } else {
-            print $"Error: trusted peers file not found in ($a_trusted_peers_path) or ($b_trusted_peers_path)"
-            exit 1
-        }
-    }
+    let snapshot_topology = (e2e-snapshot-topology $a_db $b_db)
+    let trusted_peers = $snapshot_topology.trusted_peers
+    print $"Local e2e snapshot bindings: a=($snapshot_topology.a.ip):($snapshot_topology.a.consensus_port), b=($snapshot_topology.b.ip):($snapshot_topology.b.consensus_port)"
 
     let results_dir = $"($BENCH_RESULTS_DIR)/($timestamp)"
     mkdir $results_dir
@@ -1682,13 +1706,14 @@ def "main e2e" [
     let ctx = {
         genesis: $genesis_path
         trusted_peers: $trusted_peers
+        snapshot_topology: $snapshot_topology
         a: {
             state_path: $E2E_A_STATE_PATH
             mount: $E2E_A_MOUNT
             datadir: $a_db
             node_dir: $a_identity
-            ip: $a_ip
-            consensus_port: $a_consensus_port
+            ip: $snapshot_topology.a.ip
+            consensus_port: $snapshot_topology.a.consensus_port
             cpus: $E2E_A_CPUS
             memory: $E2E_A_MEMORY
         }
@@ -1697,8 +1722,8 @@ def "main e2e" [
             mount: $E2E_B_MOUNT
             datadir: $b_db
             node_dir: $b_identity
-            ip: $b_ip
-            consensus_port: $b_consensus_port
+            ip: $snapshot_topology.b.ip
+            consensus_port: $snapshot_topology.b.consensus_port
             cpus: $E2E_B_CPUS
             memory: $E2E_B_MEMORY
         }
