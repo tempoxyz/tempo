@@ -6,6 +6,7 @@ pub mod portal;
 use crate::{
     ZONE_FACTORY_ADDRESS,
     error::{Result, TempoPrecompileError},
+    has_duplicates_metered,
     storage::{Handler, Mapping},
     tip20::TIP20Token,
     tip20_factory::TIP20Factory,
@@ -119,6 +120,7 @@ impl ZoneFactory {
             return Err(ZoneFactoryError::token_transfer_policy_not_set().into());
         }
         validate_closed_loop_config(
+            &mut self.storage,
             &call.params.allowedAccounts,
             &call.params.zoneGateways,
             &call.params.sequencers,
@@ -284,12 +286,27 @@ fn validate_token_metadata(name: &str, symbol: &str, currency: &str) -> Result<(
 }
 
 fn validate_closed_loop_config(
+    storage: &mut crate::storage::StorageCtx,
     allowed_accounts: &[Address],
     zone_gateways: &[Address],
     sequencers: &[Address],
 ) -> Result<()> {
     if allowed_accounts.contains(&ZONE_MESSENGER_ADDRESS) {
         return Err(ZoneFactoryError::invalid_closed_loop_config().into());
+    }
+
+    if storage.spec().is_t11() {
+        if has_duplicates_metered(
+            storage,
+            allowed_accounts
+                .iter()
+                .chain(zone_gateways)
+                .chain(sequencers)
+                .copied(),
+        )? {
+            return Err(ZoneFactoryError::invalid_closed_loop_config().into());
+        }
+        return Ok(());
     }
 
     let mut seen =
@@ -694,6 +711,23 @@ mod tests {
             ]
         );
         Ok(())
+    }
+
+    #[test]
+    fn create_zone_rejects_duplicate_roles_at_t11() -> eyre::Result<()> {
+        let mut storage = HashMapStorageProvider::new_with_spec(1, TempoHardfork::T11);
+        StorageCtx::enter(&mut storage, || -> eyre::Result<()> {
+            TIP20Setup::path_usd(ADMIN).apply()?;
+            let mut factory = factory_with_owner(OWNER)?;
+            let mut params = create_params(PATH_USD_ADDRESS);
+            params.allowedAccounts = vec![ALLOWED_ACCOUNT, ALLOWED_ACCOUNT];
+
+            let err = factory
+                .create_zone(OWNER, IZoneFactory::createZoneCall { params })
+                .unwrap_err();
+            assert_eq!(err, ZoneFactoryError::invalid_closed_loop_config().into());
+            Ok(())
+        })
     }
 
     #[test]
