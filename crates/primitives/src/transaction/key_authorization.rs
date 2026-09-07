@@ -553,8 +553,24 @@ mod rlp {
         account: Option<Address>,
     }
 
-    impl From<&KeyAuthorization> for KeyAuthorizationWire {
-        fn from(value: &KeyAuthorization) -> Self {
+    /// Borrowing counterpart of [`KeyAuthorizationWire`] used for encoding, so that computing
+    /// the RLP length or encoding an authorization does not clone its limits and call scopes.
+    #[derive(Clone, Debug, alloy_rlp::RlpEncodable)]
+    #[rlp(trailing)]
+    struct KeyAuthorizationWireRef<'a> {
+        chain_id: u64,
+        key_type: SignatureType,
+        key_id: Address,
+        expiry: Option<NonZeroU64>,
+        limits: Option<&'a Vec<TokenLimit>>,
+        allowed_calls: Option<&'a Vec<CallScope>>,
+        witness: Option<B256>,
+        is_admin: Option<NonZeroU64>,
+        account: Option<Address>,
+    }
+
+    impl<'a> From<&'a KeyAuthorization> for KeyAuthorizationWireRef<'a> {
+        fn from(value: &'a KeyAuthorization) -> Self {
             let KeyAuthorization {
                 chain_id,
                 key_type,
@@ -572,8 +588,8 @@ mod rlp {
                 key_type: *key_type,
                 key_id: *key_id,
                 expiry: *expiry,
-                limits: limits.clone(),
-                allowed_calls: allowed_calls.clone(),
+                limits: limits.as_ref(),
+                allowed_calls: allowed_calls.as_ref(),
                 witness: *witness,
                 is_admin: is_admin.then_some(NonZeroU64::MIN),
                 account: *account,
@@ -613,11 +629,59 @@ mod rlp {
 
     impl Encodable for KeyAuthorization {
         fn encode(&self, out: &mut dyn alloy_rlp::BufMut) {
-            KeyAuthorizationWire::from(self).encode(out);
+            KeyAuthorizationWireRef::from(self).encode(out);
         }
 
         fn length(&self) -> usize {
-            KeyAuthorizationWire::from(self).length()
+            KeyAuthorizationWireRef::from(self).length()
+        }
+    }
+
+    #[cfg(test)]
+    mod tests {
+        use super::*;
+        use proptest::prelude::*;
+        use proptest_arbitrary_interop::arb;
+
+        proptest! {
+            #[test]
+            fn proptest_key_authorization_borrowed_rlp_matches_owned(
+                mut authorization in arb::<KeyAuthorization>(),
+                limits_state in 0..3u8,
+                calls_state in 0..3u8,
+            ) {
+                // Exercise omitted and explicitly empty lists independently of later fields.
+                match limits_state {
+                    0 => authorization.limits = None,
+                    1 => authorization.limits = Some(Vec::new()),
+                    _ => {}
+                }
+                match calls_state {
+                    0 => authorization.allowed_calls = None,
+                    1 => authorization.allowed_calls = Some(Vec::new()),
+                    _ => {}
+                }
+                let owned = KeyAuthorizationWire {
+                    chain_id: authorization.chain_id,
+                    key_type: authorization.key_type,
+                    key_id: authorization.key_id,
+                    expiry: authorization.expiry,
+                    limits: authorization.limits.clone(),
+                    allowed_calls: authorization.allowed_calls.clone(),
+                    witness: authorization.witness,
+                    is_admin: authorization.is_admin.then_some(NonZeroU64::MIN),
+                    account: authorization.account,
+                };
+                let encoded = alloy_rlp::encode(&authorization);
+                prop_assert_eq!(authorization.length(), encoded.len());
+                prop_assert_eq!(owned.length(), encoded.len());
+                prop_assert_eq!(&encoded, &alloy_rlp::encode(&owned));
+
+                let mut input = encoded.as_slice();
+                let decoded = KeyAuthorization::decode(&mut input)?;
+                prop_assert_eq!(decoded, authorization);
+                prop_assert!(input.is_empty());
+            }
         }
     }
 

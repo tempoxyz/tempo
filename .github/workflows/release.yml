@@ -116,7 +116,7 @@ jobs:
           targets: ${{ matrix.platform.target }}
 
       - name: Setup mold linker
-        uses: tempoxyz/gh-actions/actions/setup-mold@ab45d76f6e7420a094281a22aee1973ecc0754f8
+        uses: tempoxyz/gh-actions/actions/setup-mold@a65420ff2c90fcc46fe778c044aa7998ae9f246c
 
       - name: Get build profile
         id: profile
