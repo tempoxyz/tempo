@@ -43,8 +43,7 @@ use alloy_rpc_types_engine::{ForkchoiceUpdated, PayloadId, PayloadStatusEnum};
 use commonware_consensus::{
     Heightable as _,
     marshal::Update,
-    simplex::types::Context,
-    types::{Height, Round},
+    types::{Height, Round, View},
 };
 use commonware_cryptography::ed25519::PublicKey;
 use commonware_runtime::{
@@ -121,7 +120,8 @@ pub(crate) struct Actor<TContext, TExecutionLayer, TMarshal> {
 
     /// The timer for the next FCU heartbeat.
     ///
-    /// Armed only when no execution-layer work is active or queued.
+    /// Armed when no execution-layer work can start, including while a build
+    /// waits for its parent. This also wakes convergence retries after rejection.
     fcu_heartbeat_timer: OptionFuture<BoxFuture<'static, ()>>,
 
     /// Finalized blocks waiting to be delivered to the execution layer.
@@ -136,11 +136,11 @@ pub(crate) struct Actor<TContext, TExecutionLayer, TMarshal> {
     /// last forkchoice update, see [`DELIVERIES_PER_FORKCHOICE_UPDATE`].
     deliveries_since_forkchoice: usize,
 
-    /// The round of the newest consensus context whose parent was recorded
-    /// as the pending head. Reports come from concurrently running proposal
-    /// and verification handlers and can arrive out of order; an older
-    /// round's report must not supersede a newer one.
-    pending_head_reported_in: Round,
+    /// The newest round observed through build and verify contexts or
+    /// finalized-tip reports. Requests can arrive out of order; an older
+    /// round's parent must not supersede a newer one's. Retained independently
+    /// of request cancellation and completion.
+    latest_consensus_round: Round,
 
     /// The latest not-yet-started consensus request - validating a proposed
     /// block or building one - keyed by its round. The two kinds share one
@@ -338,7 +338,7 @@ where
             pending_finalizations: VecDeque::new(),
             pending_acknowledgements: VecDeque::new(),
             deliveries_since_forkchoice: 0,
-            pending_head_reported_in: finalized_tip.0,
+            latest_consensus_round: finalized_tip.0,
             pending_consensus_request: None,
 
             execution_task: OptionFuture::none(),
@@ -916,10 +916,7 @@ where
     }
 
     fn update_fcu_heartbeat_timer(&mut self) {
-        if self.execution_task.is_none()
-            && self.pending_finalizations.is_empty()
-            && self.pending_consensus_request.is_none()
-        {
+        if self.execution_task.is_none() && self.pending_finalizations.is_empty() {
             self.arm_fcu_heartbeat_timer();
         } else {
             self.disarm_fcu_heartbeat_timer();
@@ -930,8 +927,8 @@ where
     /// real work to do first.
     #[instrument(skip_all)]
     fn send_forkchoice_update_heartbeat(&mut self) -> eyre::Result<()> {
-        // The heartbeat timer is only armed while no other execution-layer
-        // work is active or queued.
+        // A waiting build must not suppress retries of its parent's delivery.
+        // Give convergence priority over re-affirming the tracked state.
         if !self.execution_task.is_none() {
             return Ok(());
         }
@@ -951,14 +948,20 @@ where
         let cause = message.cause;
         match message.command {
             Command::Build(build) => {
+                self.record_convergence_target(build.context.round, build.context.parent);
+                // Cancellation discards the build work, not its parent target.
+                if build.response.is_canceled() {
+                    return Ok(());
+                }
                 queue_consensus_request(
                     &mut self.pending_consensus_request,
-                    build.round,
+                    build.context.round,
                     ConsensusRequest::Build { cause, build },
                 );
             }
             Command::Finalize(finalized) => match *finalized {
                 Update::Tip(round, height, digest) => {
+                    self.record_convergence_target(round, (round.view(), digest));
                     // A now-stale in-flight body fetch is dropped by
                     // `update_notarized_block_fetch` on the next loop
                     // iteration.
@@ -973,23 +976,21 @@ where
                     });
                 }
             },
-            Command::PendingHeadReport(report) => {
-                self.record_pending_head(report.context);
-            }
             Command::VerifyBlock(request) => {
                 let VerifyBlock {
-                    round,
+                    context,
                     block,
                     validator_set,
                     response,
                 } = *request;
+                self.record_convergence_target(context.round, context.parent);
                 // Keep the block body around even if this request is aborted:
                 // once the block is notarized, the tree needs the body to
                 // forward it to the execution layer.
                 self.notarized_tree.record_block(block.clone());
                 queue_consensus_request(
                     &mut self.pending_consensus_request,
-                    round,
+                    context.round,
                     ConsensusRequest::Verify(VerifyBlockRequest {
                         cause,
                         block,
@@ -1002,8 +1003,10 @@ where
         Ok(())
     }
 
-    /// Records the context's parent as the pending head that consensus
-    /// reports building on.
+    /// Records the newest observed consensus round and its convergence target.
+    /// Build and verify requests select their parent; finalized-tip reports
+    /// select the finalized block itself. A later round can select an older
+    /// parent after nullifications, so the observed round orders targets.
     ///
     /// NOTE: the first proposed block of an epoch will always have a round
     /// `round = (<epoch>, <view>) = (<epoch>, 0)`. This is not a real round
@@ -1013,22 +1016,20 @@ where
     /// start a simplex engine for `<epoch>` if it does not have this block.
     #[instrument(
         skip_all,
-        fields(digest = %context.parent.1),
+        fields(
+            %round,
+            latest_consensus_round = %self.latest_consensus_round,
+            target.view = %target.0,
+            target.digest = %target.1,
+        ),
     )]
-    fn record_pending_head(&mut self, context: Context<Digest, PublicKey>) {
-        if context.round < self.pending_head_reported_in {
-            debug!(
-                round = %context.round,
-                newest = %self.pending_head_reported_in,
-                "ignoring pending head report from an older round",
-            );
-            return;
+    fn record_convergence_target(&mut self, round: Round, target: (View, Digest)) {
+        if round >= self.latest_consensus_round {
+            info!("updating convergence target");
+            self.latest_consensus_round = round;
+            self.notarized_tree
+                .set_pending_head(Round::new(round.epoch(), target.0), target.1);
         }
-        self.pending_head_reported_in = context.round;
-        self.notarized_tree.set_pending_head(
-            Round::new(context.round.epoch(), context.parent.0),
-            context.parent.1,
-        );
     }
 
     /// Keeps the fetch of missing notarized block bodies pointed at the
@@ -1128,9 +1129,8 @@ where
         // Latency critical requests come first: consensus is waiting on
         // them to vote on or propose a block.
         //
-        // Fail fast if validation or building cannot start immediately, unless
-        // the parent is expected to be made available to the execution layer
-        // imminently.
+        // Validation waits only for imminent parent convergence; builds wait
+        // for their selected parent even when its body still needs fetching.
         match self.pending_consensus_request.take() {
             Some((round, ConsensusRequest::Verify(request))) => {
                 let parent = request.block.parent_digest();
@@ -1148,14 +1148,14 @@ where
                 self.pending_consensus_request = Some((round, ConsensusRequest::Verify(request)));
             }
             Some((round, ConsensusRequest::Build { cause, build })) => {
-                // Consensus builds on the pending head it reported. The build
-                // runs once the execution layer's head is there, waits while
-                // convergence is about to get there, and is dropped otherwise.
+                // Admission selected this request's parent as the pending head
+                // unless a newer context had already arrived. Keep the build
+                // queued until convergence reaches it or the target changes.
                 let pending_head = self.notarized_tree.pending_head();
-                if build.digest != pending_head {
+                if build.context.parent.1 != pending_head {
                     info!(
                         %pending_head,
-                        build.parent = %build.digest,
+                        build.parent = %build.context.parent.1,
                         "build is not on the pending head, dropping it",
                     );
                 } else if self.notarized_tree.is_local_head(pending_head) {
@@ -1168,21 +1168,11 @@ where
                     );
                     self.set_execution_task(ExecutionTask::new(ExecutionTaskType::Build, fut));
                     return Ok(());
-                } else if self.is_convergence_target(pending_head) {
-                    // Reschedules the request; the actor will not spin on
-                    // `start_next_execution_request` as long as it remains
-                    // scheduled before the select! in the select-loop (some
-                    // other event needs to take place first; ideally the
-                    // result of the convergence target we are falling through
-                    // to).
+                } else {
+                    // Fall through to convergence. The next body fetch,
+                    // delivery, or retry heartbeat wakes the waiting build.
                     self.pending_consensus_request =
                         Some((round, ConsensusRequest::Build { cause, build }));
-                } else {
-                    info!(
-                        execution.head_hash = %self.notarized_tree.local_state().head.1,
-                        build.parent = %build.digest,
-                        "not ready to build new block, dropping it",
-                    );
                 }
             }
             None => {}
@@ -1355,7 +1345,7 @@ impl Future for PendingNotarizedBlock {
 /// asked to validate the round's proposal or to build it.
 enum ConsensusRequest {
     Verify(VerifyBlockRequest),
-    Build { cause: Span, build: Build },
+    Build { cause: Span, build: Box<Build> },
 }
 
 /// Queues `request` into `slot` unless the slot already holds a request from
@@ -1552,7 +1542,7 @@ async fn execute_forkchoice(
     execution_node: impl ExecutionLayer,
     cause: Span,
     target: LocalState,
-    build: Option<(Span, Build)>,
+    build: Option<(Span, Box<Build>)>,
 ) -> ExecutionTaskOutcome {
     let build = build.filter(|(_, build)| {
         if build.response.is_canceled() {
@@ -1565,15 +1555,14 @@ async fn execute_forkchoice(
         true
     });
     let (build, attributes) = match build {
-        Some((
-            cause,
-            Build {
-                round: _,
-                digest: _,
+        Some((cause, build)) => {
+            let Build {
                 attributes,
                 response,
-            },
-        )) => (Some((cause, response)), Some(*attributes)),
+                ..
+            } = *build;
+            (Some((cause, response)), Some(*attributes))
+        }
         None => (None, None),
     };
 

@@ -10,7 +10,7 @@ use commonware_runtime::{Runner as _, deterministic};
 
 use super::harness::{
     FakeExecution, FakeMarshal, ForkchoiceStateExt as _, GENESIS, Harness, HarnessOptions,
-    STARTUP_FCU, make_block, round,
+    STARTUP_FCU, built_payload, make_block, round,
 };
 
 #[test_traced]
@@ -87,15 +87,20 @@ fn backfill_then_converges_onto_a_notarized_extension() {
             .await;
         assert_eq!(h.execution.head(), d2);
 
-        // Report a pending head two blocks above the backfilled boundary.
+        // Request a build two blocks above the backfilled boundary.
         // Supplying only that block first makes the actor discover and fetch
         // the missing ancestor before forwarding both blocks bottom-up.
-        h.report_pending_head(5, 4, d4);
+        let proposal = make_block(5, 5, d4);
+        h.execution.script_built_payload(built_payload(&proposal));
+        let build = h.build(round(5), d4);
         h.wait_until(|| h.marshal.fulfill_subscription(d4, b4.clone()))
             .await;
         h.wait_until(|| h.marshal.fulfill_subscription(d3, b3.clone()))
             .await;
-        h.wait_until(|| h.execution.head() == d4).await;
+        build
+            .await
+            .expect("build should complete above the backfilled boundary");
+        assert_eq!(h.execution.head(), d4);
 
         assert_eq!(h.marshal.get_block_log(), vec![1, 2]);
         assert_eq!(
@@ -105,7 +110,12 @@ fn backfill_then_converges_onto_a_notarized_extension() {
         assert_eq!(h.execution.new_payloads(), vec![d1, d2, d3, d4]);
         assert_eq!(
             h.execution.fcus(),
-            vec![STARTUP_FCU, (d2, d2, false), (d4, d2, false)],
+            vec![
+                STARTUP_FCU,
+                (d2, d2, false),
+                (d4, d2, false),
+                (d4, d2, true)
+            ],
             "the backfill finalizes the floor with one update, and notarized \
             convergence must preserve that boundary",
         );

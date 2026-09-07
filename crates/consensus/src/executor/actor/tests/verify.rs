@@ -9,7 +9,7 @@ use commonware_macros::test_traced;
 use commonware_runtime::{Runner as _, deterministic};
 use futures::future::Either;
 
-use super::harness::{GENESIS, Harness, make_block, round};
+use super::harness::{GENESIS, Harness, built_payload, make_block, round};
 
 #[test_traced]
 fn valid_block_resolves_with_a_duration() {
@@ -26,6 +26,126 @@ fn valid_block_resolves_with_a_duration() {
             "a valid block resolves with its duration"
         );
         assert_eq!(h.execution.new_payloads(), vec![b1.digest()]);
+    });
+}
+
+#[test_traced]
+fn verification_selects_only_its_parent_even_when_the_candidate_is_invalid() {
+    for status in [
+        PayloadStatusEnum::Valid,
+        PayloadStatusEnum::Invalid {
+            validation_error: "bad state root".into(),
+        },
+    ] {
+        deterministic::Runner::default().start(|context| async move {
+            let h = Harness::start_at_genesis(&context);
+            let parent = make_block(1, 1, GENESIS);
+            let parent_digest = parent.digest();
+            h.verify(round(1), parent).await.unwrap().unwrap();
+            assert_eq!(h.execution.head(), GENESIS);
+
+            let candidate = make_block(2, 2, parent_digest);
+            let candidate_digest = candidate.digest();
+            let is_valid = matches!(status, PayloadStatusEnum::Valid);
+            h.execution.script_new_payload(candidate_digest, Ok(status));
+            let verdict = h.verify(round(2), candidate).await.unwrap();
+            assert_eq!(verdict.is_some(), is_valid);
+            h.wait_until(|| h.execution.head() == parent_digest).await;
+            assert!(
+                h.execution
+                    .fcus()
+                    .iter()
+                    .all(|(head, _, _)| *head != candidate_digest),
+                "the candidate must never become head through its own verification",
+            );
+
+            // The target survives verification completion. A delayed build
+            // from an older round cannot restore genesis as the pending head.
+            h.build(round(1), GENESIS)
+                .await
+                .expect_err("older build must be dropped");
+            assert_eq!(h.execution.head(), parent_digest);
+        });
+    }
+}
+
+#[test_traced]
+fn older_verification_completion_does_not_restore_its_parent_target() {
+    deterministic::Runner::default().start(|context| async move {
+        let h = Harness::start_at_genesis(&context);
+        let parent = make_block(1, 1, GENESIS);
+        let parent_digest = parent.digest();
+        h.verify(round(1), parent).await.unwrap().unwrap();
+        let candidate = make_block(2, 2, parent_digest);
+        let candidate_digest = candidate.digest();
+        let release = h
+            .execution
+            .script_delayed_new_payload(candidate_digest, Ok(PayloadStatusEnum::Valid));
+        let verify = Box::pin(h.verify(round(2), candidate));
+        let started =
+            Box::pin(h.wait_until(|| h.execution.new_payloads().contains(&candidate_digest)));
+        let verify = match futures::future::select(verify, started).await {
+            Either::Left(_) => panic!("verification must remain gated"),
+            Either::Right(((), verify)) => verify,
+        };
+
+        // A higher round after nullifications builds on the older ancestor.
+        // Record it while the older verification is still in flight.
+        let proposal = make_block(3, 1, GENESIS);
+        h.execution.script_built_payload(built_payload(&proposal));
+        let build = h.build(round(3), GENESIS);
+        h.run_for(Duration::from_millis(10)).await;
+        release
+            .send(())
+            .expect("verification should still be gated");
+        verify.await.unwrap().unwrap();
+        build.await.expect("newer build should complete on genesis");
+        assert_eq!(h.execution.head(), GENESIS);
+        assert!(
+            h.execution
+                .fcus()
+                .iter()
+                .all(|(head, _, _)| *head != candidate_digest)
+        );
+    });
+}
+
+#[test_traced]
+fn canceled_verification_keeps_its_parent_convergence_target() {
+    deterministic::Runner::default().start(|context| async move {
+        let h = Harness::start_at_genesis(&context);
+        let parent = make_block(1, 1, GENESIS);
+        let parent_digest = parent.digest();
+        let candidate = make_block(2, 2, parent_digest);
+        let candidate_digest = candidate.digest();
+        let _release = h
+            .execution
+            .script_delayed_new_payload(candidate_digest, Ok(PayloadStatusEnum::Valid));
+        let verify = Box::pin(h.verify(round(2), candidate));
+        let started =
+            Box::pin(h.wait_until(|| h.execution.new_payloads().contains(&candidate_digest)));
+        let verify = match futures::future::select(verify, started).await {
+            Either::Left(_) => panic!("verification must remain gated"),
+            Either::Right(((), verify)) => verify,
+        };
+        drop(verify);
+
+        h.wait_until(|| {
+            h.marshal
+                .fulfill_subscription(parent_digest, parent.clone())
+        })
+        .await;
+        h.wait_until(|| h.execution.head() == parent_digest).await;
+        assert_eq!(
+            h.execution.new_payloads(),
+            vec![candidate_digest, parent_digest]
+        );
+        assert!(
+            h.execution
+                .fcus()
+                .iter()
+                .all(|(head, _, _)| *head != candidate_digest)
+        );
     });
 }
 
@@ -78,10 +198,9 @@ fn unknown_parent_fails_fast_when_no_convergence_is_expected() {
     deterministic::Runner::default().start(|context| async move {
         let h = Harness::start_at_genesis(&context);
 
-        // b2's parent b1 was never seen: not the local tip, not being
-        // finalized, not the pending head. The request must not be held
-        // back; it runs, the execution layer reports SYNCING, and the
-        // subscriber learns of the failure through the dropped channel.
+        // b2's parent b1 was never seen. The request selects it as the pending
+        // head, but convergence needs a body fetch first. Verification still
+        // probes immediately, and SYNCING drops the response channel.
         let b1 = make_block(1, 1, GENESIS);
         let b2 = make_block(2, 2, b1.digest());
         let _ = h
@@ -261,8 +380,10 @@ fn cancellation_before_verification_delivery_still_leaves_the_body_for_convergen
         h.run_for(Duration::from_millis(50)).await;
 
         // The recorded body still serves convergence: no fetch is needed
-        // once the block is reported as the pending head.
-        h.report_pending_head(2, 1, d1);
+        // once a build names the block as its parent.
+        let proposal = make_block(2, 2, d1);
+        h.execution.script_built_payload(built_payload(&proposal));
+        h.build(round(2), d1).await.expect("build should complete");
         h.wait_until(|| h.execution.head() == d1).await;
         assert!(h.marshal.subscribe_log().is_empty());
     });

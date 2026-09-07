@@ -1,6 +1,6 @@
 use alloy_primitives::B256;
 use commonware_actor::Feedback;
-use commonware_consensus::{Reporter, marshal::Update, simplex::types::Context, types::Round};
+use commonware_consensus::{Reporter, marshal::Update, simplex::types::Context};
 use commonware_cryptography::ed25519::PublicKey;
 use eyre::WrapErr as _;
 use futures::channel::{mpsc, oneshot};
@@ -16,28 +16,12 @@ pub(crate) struct Mailbox {
 }
 
 impl Mailbox {
-    /// Reports that, from simplex's point of view, `context`'s parent is
-    /// the pending head of the chain: the block the proposal of this
-    /// context builds on or is verified against. The agent converges the
-    /// execution layer's head onto it.
-    ///
-    /// The parent is necessarily notarized — simplex only hands out
-    /// propose/verify contexts with notarized parents — so the report
-    /// doubles as a notarization proof. Reported parents are not monotonic
-    /// (after nullifications, a later view may build on an older notarized
-    /// block), so the newest *context* wins, and the head may legitimately
-    /// move backwards.
-    pub(crate) fn report_pending_head(
-        &self,
-        context: Context<Digest, PublicKey>,
-    ) -> eyre::Result<()> {
-        self.inner
-            .unbounded_send(Message::in_current_span(PendingHeadReport { context }))
-            .wrap_err("failed sending pending-head report to agent, this means it exited")
-    }
-
-    /// Requests the agent to verify the block proposed in `round` against the
+    /// Requests the agent to verify the block proposed in `context` against the
     /// execution layer.
+    ///
+    /// The parent in the newest request context selects the pending head,
+    /// independently of whether the request completes or is canceled. Verifying
+    /// the candidate does not make the candidate itself the pending head.
     ///
     /// The block is validated via a single new-payload request, which requires
     /// the execution layer to already know the block's parent. If it does not,
@@ -48,14 +32,14 @@ impl Mailbox {
     /// request from a newer round replaces a queued one.
     pub(crate) async fn verify_block(
         &self,
-        round: Round,
+        context: Context<Digest, PublicKey>,
         block: Block,
         validator_set: Option<Vec<B256>>,
     ) -> eyre::Result<Option<Duration>> {
         let (response, rx) = oneshot::channel();
         self.inner
             .unbounded_send(Message::in_current_span(VerifyBlock {
-                round,
+                context,
                 block: Arc::new(block),
                 validator_set,
                 response,
@@ -67,8 +51,10 @@ impl Mailbox {
         )
     }
 
-    /// Requests the executor to build a proposal on top of `digest` in
-    /// `round`.
+    /// Requests the executor to build a proposal on top of `context`'s parent.
+    ///
+    /// The parent in the newest request context selects the pending head,
+    /// independently of whether the request completes or is canceled.
     ///
     /// The built payload is delivered on the returned channel once the
     /// execution layer finishes constructing it. The receiver may be dropped
@@ -78,22 +64,21 @@ impl Mailbox {
     /// Conversely, the executor dropping its sender means the build failed;
     /// the executor logs the cause.
     ///
-    /// If the executor's tracked execution layer state is outdated, the build
-    /// fails fast.
+    /// The build waits for the execution layer's head to converge on its parent.
+    /// It is dropped if that parent is superseded by a newer request's parent or
+    /// by finality before the build starts.
     ///
     /// The round arbitrates the slot shared with validation requests: only a
     /// request from a newer round replaces a queued one.
     pub(crate) fn build_proposal(
         &self,
-        round: Round,
-        digest: Digest,
+        context: Context<Digest, PublicKey>,
         attributes: TempoPayloadAttributes,
     ) -> eyre::Result<oneshot::Receiver<TempoBuiltPayload>> {
         let (response, rx) = oneshot::channel();
         self.inner
             .unbounded_send(Message::in_current_span(Build {
-                round,
-                digest,
+                context,
                 attributes: Box::new(attributes),
                 response,
             }))
@@ -122,38 +107,23 @@ impl Message {
 #[derive(Debug)]
 pub(super) enum Command {
     /// Requests the agent to canonicalize the head and build a new payload.
-    Build(Build),
+    Build(Box<Build>),
     /// Requests the agent to verify a block against the execution layer.
     VerifyBlock(Box<VerifyBlock>),
     /// Requests the agent to forward a finalization event to the execution layer.
     Finalize(Box<Update<Block>>),
-    /// Reports the contained context's parent as the pending head that
-    /// consensus builds on.
-    PendingHeadReport(PendingHeadReport),
-}
-
-#[derive(Debug)]
-pub(super) struct PendingHeadReport {
-    pub(super) context: Context<Digest, PublicKey>,
-}
-
-impl From<PendingHeadReport> for Command {
-    fn from(value: PendingHeadReport) -> Self {
-        Self::PendingHeadReport(value)
-    }
 }
 
 #[derive(Debug)]
 pub(super) struct Build {
-    pub(super) round: Round,
-    pub(super) digest: Digest,
+    pub(super) context: Context<Digest, PublicKey>,
     pub(super) attributes: Box<TempoPayloadAttributes>,
     pub(super) response: oneshot::Sender<TempoBuiltPayload>,
 }
 
 #[derive(Debug)]
 pub(super) struct VerifyBlock {
-    pub(super) round: Round,
+    pub(super) context: Context<Digest, PublicKey>,
     pub(super) block: Arc<Block>,
     pub(super) validator_set: Option<Vec<B256>>,
     pub(super) response: oneshot::Sender<Option<Duration>>,
@@ -161,7 +131,7 @@ pub(super) struct VerifyBlock {
 
 impl From<Build> for Command {
     fn from(value: Build) -> Self {
-        Self::Build(value)
+        Self::Build(Box::new(value))
     }
 }
 
