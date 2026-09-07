@@ -375,7 +375,8 @@ jobs:
         uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
         with:
           repository: tempoxyz/tempo-multi-region-benchmark
-          ref: ${{ github.repository == 'tempoxyz/tempo-multi-region-benchmark' && github.sha || 'main' }}
+          # Pin the Tailscale implementation for the timeout reproduction.
+          ref: 394f89108e24e96b869cbd7db09ef171f5971261
           path: ${{ env.BENCH_REPO_DIR }}
           token: ${{ steps.github-sts.outputs.token }}
           persist-credentials: false
@@ -485,8 +486,8 @@ jobs:
 
       # gcloud persists credentials and command state in SQLite files below its
       # config directory.  Keep that state out of the runner image's shared
-      # default directory: benchmark phases run many gcloud commands and IAP
-      # tunnels concurrently, and a stale/corrupt default database causes
+      # default directory: benchmark phases run many gcloud commands
+      # concurrently, and a stale/corrupt default database causes
       # gcloud to abort before issuing the requested API call.
       - name: Isolate Google Cloud CLI state
         if: env.BENCH_INPUT_CLOUD == 'gcp'
@@ -510,6 +511,19 @@ jobs:
         uses: tempoxyz/gh-actions/vendor/google-github-actions/setup-gcloud@487be2d19b0ba9ae1903143016444ab752c3e939
         with:
           project_id: ${{ env.BENCH_GCP_PROJECT_ID }}
+
+      # Depot enrolls both AWS and GCP jobs with tag:depot-runner.
+      - name: Verify runner Tailscale connection
+        run: |
+          if ! command -v tailscale >/dev/null 2>&1; then
+            echo "::error::The Depot runner must have Tailscale installed and enrolled"
+            exit 1
+          fi
+          tailscale status --json > "$RUNNER_TEMP/benchmark-tailscale.json"
+          if ! jq -e '.BackendState == "Running" and (((.Self.Tags // []) | index("tag:depot-runner")) != null)' "$RUNNER_TEMP/benchmark-tailscale.json" >/dev/null; then
+            echo "::error::Benchmark RPC and metrics require a connected Tailscale runner with tag:depot-runner"
+            exit 1
+          fi
 
       - name: Fetch Tempo binaries
         id: fetch_tempo_binaries
