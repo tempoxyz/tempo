@@ -621,6 +621,19 @@ where
         response: Option<eyre::Result<ForkchoiceUpdated>>,
     ) -> eyre::Result<()> {
         let Some(response) = response else {
+            // Nothing was submitted: the execution layer is past this
+            // finality already, and it never moves finality backwards. The
+            // tracked state catches up to the target anyway.
+            //
+            // NOTE: this records a head the execution layer was never told
+            // about. It is sound because the head lies on the pending head's
+            // ancestry, and consensus only reports pending heads above the
+            // execution layer's finality, so that ancestry runs through the
+            // finalized chain: the first non-stale update names a head that
+            // descends from its finalized block. The tracked head starts at
+            // the finalized floor rather than at the execution layer's own
+            // head because that head may sit on a branch nullified while the
+            // node was down.
             if build.is_some() {
                 // Dropping the build's response channel signals the failure
                 // to the subscriber.
