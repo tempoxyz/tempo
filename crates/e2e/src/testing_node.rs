@@ -41,6 +41,9 @@ use tempo_evm::TempoEvmConfig;
 use tempo_node::node::TempoNode;
 use tracing::{debug, instrument};
 
+/// Gossiped certificates verified per second. Matches the production default.
+const GOSSIP_VERIFY_RATE: std::num::NonZeroU32 = commonware_utils::NZU32!(32);
+
 /// A testing node that can start and stop both consensus and execution layers.
 pub struct TestingNode<TClock>
 where
@@ -284,6 +287,18 @@ where
         let engine_context = context.child(Box::leak(
             format!("{}_{}", self.uid, self.n_starts).into_boxed_str(),
         ));
+        // The transport carries receivers, so the consensus engine takes it
+        // rather than sharing it with the execution node.
+        let gossip = self
+            .execution_node
+            .as_mut()
+            .expect("execution node must be running before consensus")
+            .gossip
+            .take()
+            .map(|transport| tempo_consensus::gossip::Config {
+                transport,
+                verify_rate: GOSSIP_VERIFY_RATE,
+            });
         let execution_node = self
             .execution_node
             .as_ref()
@@ -293,7 +308,7 @@ where
             .into();
         let config = consensus::Builder {
             execution_node: Some(execution_node),
-            gossip: None,
+            gossip,
             blocker: self.oracle.control(self.public_key()),
             peer_manager: self.oracle.socket_manager(),
             partition_prefix: self.partition_prefix.clone(),

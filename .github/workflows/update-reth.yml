@@ -687,21 +687,19 @@ jobs:
 
           # Determine overall status
           JOB_STATUS="${JOB_STATUS_IN}"
+          MENTION="<!subteam^S09KMRP46D7|reth>"
           if [ "$JOB_STATUS" = "success" ]; then
             EMOJI="✅"
             STATUS="succeeded"
             COLOR="#2eb67d"
-            MENTION=""
           elif [ "$JOB_STATUS" = "cancelled" ]; then
             EMOJI="⚠️"
             STATUS="cancelled"
             COLOR="#e0a523"
-            MENTION="<!subteam^S09KMRP46D7|reth>"
           else
             EMOJI="❌"
             STATUS="failed"
             COLOR="#e01e5a"
-            MENTION="<!subteam^S09KMRP46D7|reth>"
           fi
 
           # Build detail lines

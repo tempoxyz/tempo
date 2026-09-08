@@ -29,7 +29,7 @@ on:
       samply:
         description: "Enable samply profiling"
         required: false
-        default: true
+        default: false
         type: boolean
 
 permissions: {}
@@ -175,7 +175,7 @@ jobs:
       run-type: ${{ matrix.run_type }}
       run-pairs: "1"
       clickhouse-run: feature-1
-      samply: ${{ github.event_name == 'workflow_dispatch' && inputs.samply == false && 'false' || 'true' }}
+      samply: ${{ github.event_name == 'workflow_dispatch' && inputs.samply && 'true' || 'false' }}
     secrets:
       TEMPO_TELEMETRY_URL: ${{ secrets.TEMPO_TELEMETRY_URL }}
       GRAFANA_TEMPO: ${{ secrets.GRAFANA_TEMPO }}

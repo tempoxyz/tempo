@@ -670,6 +670,8 @@ where
     fn finish(
         mut self,
     ) -> Result<(Self::Evm, BlockExecutionResult<Self::Receipt>), BlockExecutionError> {
+        // T4 sets the shared gas limit to zero, so any gas spilled into the
+        // incentive section exceeds the available block capacity.
         if self.evm().cfg.spec.is_t4() && self.incentive_gas_used > 0 {
             return Err(BlockValidationError::msg("incentive gas limit exceeded").into());
         }

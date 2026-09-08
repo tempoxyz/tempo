@@ -1,4 +1,4 @@
-use crate::utils::{ForkSchedule, TEST_MNEMONIC, TestNodeBuilder, setup_test_token};
+use crate::utils::{TEST_MNEMONIC, TestNodeBuilder, setup_test_token};
 use alloy::{
     network::ReceiptResponse,
     primitives::{Address, B256, Bytes, U256, aliases::U96},
@@ -12,7 +12,6 @@ use alloy::{
 use alloy_eips::{BlockId, Encodable2718};
 use alloy_rpc_types_eth::{TransactionReceipt, TransactionRequest};
 use tempo_alloy::rpc::TempoTransactionReceipt;
-use tempo_chainspec::hardfork::TempoHardfork;
 use tempo_contracts::precompiles::{
     DEFAULT_FEE_TOKEN, IFeeManager, IReceivePolicyGuard, IStorageCredits, ITIP20,
     ITIP20ChannelReserve, ITIP403Registry, ITIPFeeAMM,
@@ -107,10 +106,7 @@ async fn send_tempo_tx<P: Provider>(
 async fn test_tip1060_keychain_fee_refund_does_not_retain_storage_credit() -> eyre::Result<()> {
     reth_tracing::init_test_tracing();
 
-    let setup = TestNodeBuilder::new()
-        .with_schedule(ForkSchedule::DevnetAt(TempoHardfork::T10))
-        .build_http_only()
-        .await?;
+    let setup = TestNodeBuilder::new().build_http_only().await?;
     let root = MnemonicBuilder::from_phrase(TEST_MNEMONIC).build()?;
     let root_addr = root.address();
     let provider = ProviderBuilder::new()
@@ -1117,10 +1113,7 @@ async fn test_tip1060_successful_keychain_spend_fee_refund_cancels_restored_limi
 -> eyre::Result<()> {
     reth_tracing::init_test_tracing();
 
-    let setup = TestNodeBuilder::new()
-        .with_schedule(ForkSchedule::DevnetAt(TempoHardfork::T10))
-        .build_http_only()
-        .await?;
+    let setup = TestNodeBuilder::new().build_http_only().await?;
     let root = MnemonicBuilder::from_phrase(TEST_MNEMONIC).build()?;
     let root_addr = root.address();
     let provider = ProviderBuilder::new()
