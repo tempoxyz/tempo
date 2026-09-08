@@ -643,16 +643,17 @@ def txgen-run-preset-pipeline [
     txgen-configure-fee-amm-env $spec_path
     let preset_name = ($spec_path | path basename | str replace --regex '\.yml$' '')
     let tx_count = [($tps * $duration) 1] | math max
+    mut zone_metadata = []
     if $preset_name == "zones" {
-        if $chain_id != 1337 or $accounts != 1 {
-            error make { msg: "zones requires local chain 1337 and --accounts 1" }
+        if $chain_id != 1337 or $accounts < 1 or $accounts > 100000 {
+            error make { msg: "zones requires local chain 1337 and 1–100000 accounts" }
         }
         let portal_code = (txgen-rpc-call $generate_rpc_url '{"jsonrpc":"2.0","id":1,"method":"eth_getCode","params":["0x5ad1000000000000000000000000000000000000","latest"]}')
         if $portal_code.result == "0x" {
             error make { msg: "zones requires the ZonePortal runtime; activate T10 or later before running the benchmark" }
         }
-        let nonce_response = (txgen-rpc-call $generate_rpc_url '{"jsonrpc":"2.0","id":1,"method":"eth_getTransactionCount","params":["0xf39Fd6e51aad88F6F4ce6aB8827279cffFb92266","pending"]}')
-        let latest_nonce = (txgen-rpc-call $generate_rpc_url '{"jsonrpc":"2.0","id":1,"method":"eth_getTransactionCount","params":["0xf39Fd6e51aad88F6F4ce6aB8827279cffFb92266","latest"]}')
+        let nonce_response = (txgen-rpc-call $generate_rpc_url '{"jsonrpc":"2.0","id":1,"method":"eth_getTransactionCount","params":["0xd7932ce865275be97001a0574441d79b143820ec","pending"]}')
+        let latest_nonce = (txgen-rpc-call $generate_rpc_url '{"jsonrpc":"2.0","id":1,"method":"eth_getTransactionCount","params":["0xd7932ce865275be97001a0574441d79b143820ec","latest"]}')
         if $nonce_response.result != $latest_nonce.result {
             error make { msg: "zone fixture deployer has pending transactions; drain its nonce lane before setup" }
         }
@@ -660,7 +661,16 @@ def txgen-run-preset-pipeline [
         let rendered = ([ (txgen-repo-root) $TXGEN_HELPER_DEFAULT_RENDERED_SPECS_DIR (random uuid) "zones.yml" ] | path join)
         let renderer = ([ (txgen-repo-root) "contrib/bench/txgen/zones/render.py" ] | path join)
         let mode = ($env.TXGEN_ZONE_MODE? | default "mixed")
-        ^uv run $renderer --source $spec_path --output $rendered --count $tx_count --nonce $nonce --mode $mode
+        # TIP-1096 allows 230 outstanding deposits, reserving 20 for bounce-backs.
+        # This is a configurable sizing window, not a claimed mainnet settlement cadence.
+        let window_ms = ($env.TXGEN_ZONE_SETTLEMENT_WINDOW_MS? | default "3000" | into int)
+        if $window_ms < 1 { error make { msg: "TXGEN_ZONE_SETTLEMENT_WINDOW_MS must be positive" } }
+        let automatic_zones = ([1 (($tps * $window_ms / 210000) | math ceil | into int)] | math max)
+        let zones = ($env.TXGEN_ZONE_COUNT? | default $automatic_zones | into int)
+        if $zones < 1 { error make { msg: "TXGEN_ZONE_COUNT must be positive" } }
+        $zone_metadata = ["-m" $"zone_count=($zones)" "-m" $"zone_sizing_window_ms=($window_ms)"]
+        print $"  Zones: ($zones), users: ($accounts), sizing window: ($window_ms)ms, capacity: 210 deposits/portal"
+        ^uv run $renderer --source $spec_path --output $rendered --count $tx_count --nonce $nonce --mode $mode --accounts $accounts --zones $zones
         if $env.LAST_EXIT_CODE != 0 {
             error make { msg: "failed to render zone workload" }
         }
@@ -685,10 +695,10 @@ def txgen-run-preset-pipeline [
         "generate"
         "-s" $spec_path
         "-n" $tx_count
-        "--duration" $txgen_duration
         "--seed" $TXGEN_HELPER_DEFAULT_SEED
         "--rpc" $generate_rpc_url
-    ]
+    ] | append (if $preset_name == "zones" { [] } else { ["--duration" $txgen_duration] })
+    # Zones generate the full count: deploying many portals must not consume workload duration.
     let txgen_setup_cmd = [
         $txgen_tempo_bin
         "generate"
@@ -738,6 +748,7 @@ def txgen-run-preset-pipeline [
         "-m" $"build_profile=($build_profile)"
         "-m" $"mode=($benchmark_mode)"
     ]
+        | append $zone_metadata
         | append (if $benchmark_id != "" { ["-m" $"benchmark_id=($benchmark_id)"] } else { [] })
         | append (if $benchmark_run != "" { ["-m" $"benchmark_run=($benchmark_run)"] } else { [] })
         | append (if $run_type != "" { ["-m" $"run_type=($run_type)"] } else { [] })
@@ -770,7 +781,7 @@ def txgen-run-preset-pipeline [
         }
     }
 
-    print $"  Streaming up to ($tx_count) txgen transaction\(s\) over ($txgen_duration) into bench send..."
+    print $"  Streaming up to ($tx_count) txgen transaction\(s\) at target ($tps) TPS into bench send..."
     let result = (bash -lc $pipeline | complete)
     if $result.stdout != "" { print $result.stdout }
     if $result.stderr != "" { print $result.stderr }

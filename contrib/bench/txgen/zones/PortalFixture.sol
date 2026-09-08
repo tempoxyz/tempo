@@ -91,7 +91,6 @@ contract PortalFixture {
         bytes32 tokenSlot = keccak256(abi.encode(token, uint256(6)));
         bytes32 tokensSlot = keccak256(abi.encode(uint256(7)));
         bytes32 roleSlot = keccak256(abi.encode(settlement, uint256(20)));
-        bytes32 userRoleSlot = keccak256(abi.encode(account, uint256(20)));
         bytes32 sequencersSlot = keccak256(abi.encode(uint256(18)));
         bytes32 keysSlot = keccak256(abi.encode(uint256(5)));
         // Public, deterministic benchmark encryption key (private scalar 1).
@@ -101,10 +100,8 @@ contract PortalFixture {
             sstore(7, 1)
             sstore(tokensSlot, token)
             sstore(roleSlot, 1)
-            sstore(userRoleSlot, 1)
-            sstore(18, 2)
+            sstore(18, 1)
             sstore(sequencersSlot, settlement)
-            sstore(add(sequencersSlot, 1), account)
             sstore(5, 1)
             sstore(keysSlot, 0x79be667ef9dcbbac55a06295ce870b07029bfcdb2dce28d959f2815b16f81798)
             sstore(add(keysSlot, 1), or(2, shl(8, number())))
@@ -172,5 +169,10 @@ contract SettlementFixture {
             portal.submitBatch(anchor, 0, blocks, deposits, withdrawalRoot, "", "", height, signatures);
         }
         processedHash[address(portal)] = deposits.nextProcessedHash;
+        if (withdraw) {
+            IPortal.Withdrawal[] memory items = new IPortal.Withdrawal[](1);
+            items[0] = IPortal.Withdrawal(token, bytes32(0), recipient, 1, bytes32(0), 0, 1, "", "");
+            portal.processWithdrawals(items, bytes32(0));
+        }
     }
 }

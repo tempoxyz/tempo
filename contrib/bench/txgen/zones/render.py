@@ -5,6 +5,9 @@
 """Prepare the local portal address and encrypted deposit payload for txgen."""
 
 import argparse
+import copy
+import math
+from collections import Counter
 from pathlib import Path
 
 import rlp
@@ -43,47 +46,84 @@ def encrypted_payload(sender, portal):
     ]
 
 
-def render(source, count, nonce, mode):
-    if count < 1 or nonce < 0:
-        raise ValueError("count must be positive and nonce nonnegative")
-    spec = yaml.safe_load(source.read_text())
-    Account.enable_unaudited_hdwallet_features()
-    sender = Account.from_mnemonic(spec["accounts"]["users"]["mnemonic"]).address
-    # Setup deploys the settlement fixture first, then the portal.
-    portal = to_checksum_address(
-        keccak(rlp.encode([bytes.fromhex(sender[2:]), nonce + 1]))[-20:]
-    )
-    spec["setup"]["steps"][1]["deploy"]["constructor_args"][0] = sender
-    spec["setup"]["steps"][2]["tx"]["calls"][0]["args"][1] = count
-    spec["templates"]["zone_deposit"]["calls"][0]["args"] = [
-        TOKEN,
-        1,
-        0,
-        encrypted_payload(sender, portal),
-        sender,
-    ]
-    for template in spec["templates"].values():
-        settlement = next(
-            call for call in template["calls"] if call["function"] == "settle"
+def render(source, count, nonce, mode, accounts=1, zones=1):
+    if count < 1 or nonce < 0 or not 1 <= accounts <= 100000 or zones < 1:
+        raise ValueError(
+            "count/zones must be positive, nonce nonnegative, accounts 1–100000"
         )
-        settlement["args"][2] = sender
-    withdrawal = [
-        TOKEN,
-        "0x" + ZERO.hex(),
-        sender,
-        1,
-        "0x" + ZERO.hex(),
-        0,
-        1,
-        "0x",
-        "0x",
+    spec = yaml.safe_load(source.read_text())
+    spec["accounts"]["users"]["range"] = [0, accounts]
+    Account.enable_unaudited_hdwallet_features()
+    mnemonic = spec["accounts"]["users"]["mnemonic"]
+    users = [
+        Account.from_mnemonic(mnemonic, account_path=f"m/44'/60'/0'/0/{i}").address
+        for i in range(accounts)
     ]
-    spec["templates"]["zone_withdraw"]["calls"][1]["args"] = [
-        [withdrawal],
-        "0x" + ZERO.hex(),
+    deployer = Account.from_mnemonic(
+        mnemonic, account_path="m/44'/60'/0'/0/100001"
+    ).address
+    portals = [
+        to_checksum_address(
+            keccak(rlp.encode([bytes.fromhex(deployer[2:]), nonce + 1 + i]))[-20:]
+        )
+        for i in range(zones)
     ]
-    if mode != "mixed":
-        spec["mix"] = [{"template": "zone_" + mode, "weight": 100}]
+    settlement, portal_step, funding = spec["setup"]["steps"]
+    steps = [settlement]
+    for i in range(zones):
+        step = copy.deepcopy(portal_step)
+        step["id"] = f"portal_{i}"
+        step["deploy"]["constructor_args"][0] = deployer
+        steps.append(step)
+    for i in range(zones):
+        step = copy.deepcopy(funding)
+        step["id"] = f"fund_{i}"
+        step["tx"]["calls"][0]["args"] = [{"var": f"setup.portal_{i}.address"}, count]
+        steps.append(step)
+    # Use every account and portal independently, without an accounts × portals expansion.
+    pairs = [(i % accounts, i % zones) for i in range(max(accounts, zones))]
+    per_zone = Counter(zone for _, zone in pairs)
+    weight = math.lcm(*per_zone.values())
+    templates = spec["templates"]
+    spec["templates"] = {}
+    spec["mix"] = []
+    for user, zone in pairs:
+        sender = users[user]
+        portal = {"var": f"setup.portal_{zone}.address"}
+        account = {"pool": "users", "select": {"index": user}}
+        if mode != "withdraw":
+            approval = copy.deepcopy(funding)
+            approval["id"] = f"approve_{user}_{zone}"
+            approval["tx"]["from"] = account
+            approval["tx"]["calls"] = [
+                {
+                    "to": TOKEN,
+                    "abi": "ERC20",
+                    "function": "approve",
+                    "args": [portal, "0x" + "ff" * 32],
+                }
+            ]
+            steps.append(approval)
+        for kind in ["deposit", "withdraw"] if mode == "mixed" else [mode]:
+            name = f"zone_{kind}_{user}_{zone}"
+            template = copy.deepcopy(templates["zone_" + kind])
+            template["from"] = account
+            if kind == "deposit":
+                template["calls"][0]["to"] = portal
+                template["calls"][0]["args"] = [
+                    TOKEN,
+                    1,
+                    0,
+                    encrypted_payload(sender, portals[zone]),
+                    sender,
+                ]
+            settlement_call = next(
+                call for call in template["calls"] if call["function"] == "settle"
+            )
+            settlement_call["args"][:3] = [portal, TOKEN, sender]
+            spec["templates"][name] = template
+            spec["mix"].append({"template": name, "weight": weight // per_zone[zone]})
+    spec["setup"]["steps"] = steps
     spec["artifacts"] = {
         name: str((source.parent / path).resolve())
         for name, path in spec["artifacts"].items()
@@ -101,13 +141,22 @@ def main():
     parser.add_argument("--output", type=Path, required=True)
     parser.add_argument("--count", type=int, required=True)
     parser.add_argument(
-        "--nonce", type=int, required=True, help="Current protocol nonce of users[0]"
+        "--nonce", type=int, required=True, help="Current protocol nonce of deployer[0]"
     )
     parser.add_argument(
         "--mode", choices=["mixed", "deposit", "withdraw"], default="mixed"
     )
+    parser.add_argument("--accounts", type=int, default=1)
+    parser.add_argument("--zones", type=int, default=1)
     args = parser.parse_args()
-    spec = render(args.source.resolve(), args.count, args.nonce, args.mode)
+    spec = render(
+        args.source.resolve(),
+        args.count,
+        args.nonce,
+        args.mode,
+        args.accounts,
+        args.zones,
+    )
     args.output.parent.mkdir(parents=True, exist_ok=True)
     args.output.write_text(yaml.safe_dump(spec, sort_keys=False))
 
