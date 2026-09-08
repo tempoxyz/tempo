@@ -265,6 +265,7 @@ jobs:
       TERRAFORM_DIR: ${{ (inputs.cloud || 'aws') == 'gcp' && 'tempo-multi-region-benchmark/terraform/gcp' || 'tempo-multi-region-benchmark/terraform' }}
       BENCHMARK_ID: bench-e2e-multi-region-${{ github.run_id }}-${{ github.run_attempt }}
       BENCH_RESULTS_DIR: tempo-bench-e2e-multi-region-results
+      BENCH_RPC_PATH_COMPARISON: "true"
       BENCH_INPUT_CLOUD: ${{ inputs.cloud || 'aws' }}
       BENCH_GCP_PROJECT_ID: chain-benchmarking-zygis
       BENCH_GCP_WIF_PROVIDER: projects/383683155128/locations/global/workloadIdentityPools/tempo-benchmark/providers/tempo-benchmark
@@ -405,7 +406,7 @@ jobs:
         uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
         with:
           repository: tempoxyz/tempo-multi-region-benchmark
-          ref: bb575178180237726e6510712a75a46026b4d1be # TCP route/qdisc diagnostics validation
+          ref: 414751efc6d4f26f6a35259923f2ea812d3bcd54 # TCP route/qdisc diagnostics validation
           path: ${{ env.BENCH_REPO_DIR }}
           token: ${{ steps.github-sts.outputs.token }}
           persist-credentials: false
@@ -546,6 +547,7 @@ jobs:
         continue-on-error: true
         run: |
           "$BENCH_REPO_DIR/scripts/run_comparison.sh" \
+            --run-side feature \
             --stage fetch-tempo-binaries \
             --cloud "$BENCH_INPUT_CLOUD" \
             --gcp-project-id "$BENCH_GCP_PROJECT_ID" \
@@ -569,7 +571,7 @@ jobs:
             --otlp "$BENCH_INPUT_OTLP" \
             --valscope "$BENCH_INPUT_VALSCOPE" \
             --baseline-args "$BENCH_INPUT_BASELINE_ARGS" \
-            --feature-args "$BENCH_INPUT_FEATURE_ARGS" \
+            --feature-args "--disable-tx-gossip" \
             --gas-limit "$BENCH_INPUT_GAS_LIMIT" \
             --general-gas-limit "$BENCH_INPUT_GENERAL_GAS_LIMIT" \
             --no-cache "$BENCH_INPUT_NO_CACHE" \
@@ -600,6 +602,7 @@ jobs:
         continue-on-error: true
         run: |
           "$BENCH_REPO_DIR/scripts/run_comparison.sh" \
+            --run-side feature \
             --stage generate-initial-validator-state \
             --cloud "$BENCH_INPUT_CLOUD" \
             --gcp-project-id "$BENCH_GCP_PROJECT_ID" \
@@ -623,7 +626,7 @@ jobs:
             --otlp "$BENCH_INPUT_OTLP" \
             --valscope "$BENCH_INPUT_VALSCOPE" \
             --baseline-args "$BENCH_INPUT_BASELINE_ARGS" \
-            --feature-args "$BENCH_INPUT_FEATURE_ARGS" \
+            --feature-args "--disable-tx-gossip" \
             --gas-limit "$BENCH_INPUT_GAS_LIMIT" \
             --general-gas-limit "$BENCH_INPUT_GENERAL_GAS_LIMIT" \
             --no-cache "$BENCH_INPUT_NO_CACHE" \
@@ -647,6 +650,7 @@ jobs:
         continue-on-error: true
         run: |
           "$BENCH_REPO_DIR/scripts/run_comparison.sh" \
+            --run-side feature \
             --stage initialize-validator-state \
             --cloud "$BENCH_INPUT_CLOUD" \
             --gcp-project-id "$BENCH_GCP_PROJECT_ID" \
@@ -670,7 +674,7 @@ jobs:
             --otlp "$BENCH_INPUT_OTLP" \
             --valscope "$BENCH_INPUT_VALSCOPE" \
             --baseline-args "$BENCH_INPUT_BASELINE_ARGS" \
-            --feature-args "$BENCH_INPUT_FEATURE_ARGS" \
+            --feature-args "--disable-tx-gossip" \
             --gas-limit "$BENCH_INPUT_GAS_LIMIT" \
             --general-gas-limit "$BENCH_INPUT_GENERAL_GAS_LIMIT" \
             --no-cache "$BENCH_INPUT_NO_CACHE" \
@@ -694,6 +698,7 @@ jobs:
         continue-on-error: true
         run: |
           "$BENCH_REPO_DIR/scripts/run_comparison.sh" \
+            --run-side feature \
             --stage run-benchmarks \
             --cloud "$BENCH_INPUT_CLOUD" \
             --gcp-project-id "$BENCH_GCP_PROJECT_ID" \
@@ -717,7 +722,7 @@ jobs:
             --otlp "$BENCH_INPUT_OTLP" \
             --valscope "$BENCH_INPUT_VALSCOPE" \
             --baseline-args "$BENCH_INPUT_BASELINE_ARGS" \
-            --feature-args "$BENCH_INPUT_FEATURE_ARGS" \
+            --feature-args "--disable-tx-gossip" \
             --gas-limit "$BENCH_INPUT_GAS_LIMIT" \
             --general-gas-limit "$BENCH_INPUT_GENERAL_GAS_LIMIT" \
             --no-cache "$BENCH_INPUT_NO_CACHE" \
@@ -787,7 +792,7 @@ jobs:
 
           root = Path(os.environ["BENCH_RESULTS_DIR"])
           results = []
-          for phase in ("baseline-1", "feature-1"):
+          for phase in ("feature-1",):
               report = json.loads((root / phase / "txgen-report.json").read_text())
               run_id = str(uuid.UUID(report["benchmark_id"]))
               with gzip.open(root / phase / "txgen-report.samples.ndjson.gz", "rt") as samples:
