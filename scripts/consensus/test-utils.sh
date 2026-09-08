@@ -54,30 +54,44 @@ start_validator() {
 
 # Function to start background transaction generation
 start_tx_generator() {
-  local duration="${1:-999999}"
-  local script_dir="${2:-$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)}"
+  local output_var="$1"
+  local duration="${2:-999999}"
+  local script_dir="${3:-$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)}"
 
   echo "Starting transaction generator..."
   "$script_dir/tx-generator.sh" --duration "$duration" >/dev/null 2>&1 &
-  local tx_gen_pid=$!
-  echo "  Transaction generator started (PID: $tx_gen_pid)"
-  echo "$tx_gen_pid"
+  printf -v "$output_var" '%s' "$!"
+  echo "  Transaction generator started (PID: ${!output_var})"
 }
 
 # Function to stop transaction generator
 stop_tx_generator() {
   local tx_gen_pid="$1"
-  if [ -n "$tx_gen_pid" ] && kill -0 "$tx_gen_pid" 2>/dev/null; then
+
+  if [[ ! "$tx_gen_pid" =~ ^[0-9]+$ ]]; then
+    echo "  ERROR: Invalid transaction generator PID: $tx_gen_pid"
+    return 1
+  fi
+
+  local was_running=false
+  if kill -0 "$tx_gen_pid" 2>/dev/null; then
+    was_running=true
     echo "Stopping transaction generator..."
     kill "$tx_gen_pid" 2>/dev/null || true
-    wait "$tx_gen_pid" 2>/dev/null
-    local exit_code=$?
-    echo "  Transaction generator stopped"
-    if [ $exit_code -ne 0 ] && [ $exit_code -ne 143 ]; then # 143 is SIGTERM
-      echo "  ERROR: Transaction generator failed with exit code $exit_code"
-      return 1
-    fi
   fi
+
+  local exit_code=0
+  wait "$tx_gen_pid" 2>/dev/null || exit_code=$?
+
+  if $was_running; then
+    echo "  Transaction generator stopped"
+  fi
+
+  if [ $exit_code -ne 0 ] && [ $exit_code -ne 143 ]; then # 143 is SIGTERM
+    echo "  ERROR: Transaction generator failed with exit code $exit_code"
+    return 1
+  fi
+
   return 0
 }
 
