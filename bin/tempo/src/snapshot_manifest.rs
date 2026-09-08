@@ -227,7 +227,10 @@ fn prepare_snapshot_consensus_archive(
     let writer_thread = thread::spawn(move || -> eyre::Result<()> {
         // Keep exported snapshots readable by nodes using Commonware before 2026.9.0.
         // Only the fresh output uses V0; the source runtime must accept both layouts.
-        #[allow(deprecated)]
+        #[expect(
+            deprecated,
+            reason = "maintain backward compatibility until all nodes have been updated"
+        )]
         let output_runtime_config = commonware_runtime::tokio::Config::default()
             .with_storage_directory(archive_storage_dir)
             .with_storage_blob_layouts(
