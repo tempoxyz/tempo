@@ -1,5 +1,4 @@
-# Rendered by zones/render.py in the benchmark helper. Run with --accounts 1.
-# The finite sequence is populated with ordered withdrawal suffixes before generation.
+# The helper prepares the encrypted payload with zones/render.py. Use --accounts 1.
 chain_id: 1337
 gas:
   max_fee_per_gas: 100000000000
@@ -11,47 +10,69 @@ accounts:
 artifacts:
   ERC20: ../erc20.abi.json
   PortalFixture: ../zones/PortalFixture.json
+  SettlementFixture: ../zones/SettlementFixture.json
   ZonePortal: ../zones/portal.abi.json
 setup:
   steps:
+    - id: settlement
+      deploy:
+        type: eip1559
+        from: {pool: users, select: {index: 0}}
+        artifact: SettlementFixture
+        gas_limit: 5000000
     - id: portal
       deploy:
         type: eip1559
         from: {pool: users, select: {index: 0}}
         artifact: PortalFixture
-        gas_limit: 20000000
-        constructor_args: []
+        gas_limit: 10000000
+        constructor_args: [null, "0x20c0000000000000000000000000000000000000", {var: setup.settlement.address}]
     - id: fund_and_approve
       tx:
         type: tempo
         from: {pool: users, select: {index: 0}}
-        gas_limit: 1000000
+        gas_limit: 5000000
         fee_token: "0x20c0000000000000000000000000000000000000"
-        calls: []
+        calls:
+          - to: "0x20c0000000000000000000000000000000000000"
+            abi: ERC20
+            function: transfer
+            args: [{var: setup.portal.address}, 0]
+          - to: "0x20c0000000000000000000000000000000000000"
+            abi: ERC20
+            function: approve
+            args: [{var: setup.portal.address}, "0xffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff"]
 templates:
   zone_deposit:
     type: tempo
     from: {pool: users, select: {index: 0}}
-    gas_limit: 1000000
+    gas_limit: 5000000
     fee_token: "0x20c0000000000000000000000000000000000000"
-    call:
-      to: {var: setup.portal.address}
-      abi: ZonePortal
-      function: deposit
-      args: []
+    calls:
+      - to: {var: setup.portal.address}
+        abi: ZonePortal
+        function: deposit
+        args: []
+      - to: {var: setup.settlement.address}
+        abi: SettlementFixture
+        function: settle
+        args: [{var: setup.portal.address}, "0x20c0000000000000000000000000000000000000", null, false]
   zone_withdraw:
     type: tempo
     from: {pool: users, select: {index: 0}}
-    gas_limit: 1000000
+    gas_limit: 5000000
     fee_token: "0x20c0000000000000000000000000000000000000"
-    call:
-      to: {var: setup.portal.address}
-      abi: ZonePortal
-      function: processWithdrawals
-      args: []
-sequences:
-  zone_operations:
-    steps: []
+    calls:
+      - to: {var: setup.settlement.address}
+        abi: SettlementFixture
+        function: settle
+        args: [{var: setup.portal.address}, "0x20c0000000000000000000000000000000000000", null, true]
+      - to: {var: setup.portal.address}
+        abi: ZonePortal
+        function: processWithdrawals
+        args: []
 mix:
-  - sequence: zone_operations
-    weight: 100
+  - template: zone_deposit
+    weight: 50
+  - template: zone_withdraw
+    weight: 50

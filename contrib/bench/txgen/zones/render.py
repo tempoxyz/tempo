@@ -2,7 +2,7 @@
 # requires-python = ">=3.11"
 # dependencies = ["eth-account==0.13.7", "cryptography==46.0.5", "PyYAML==6.0.3"]
 # ///
-"""Render a finite local portal workload; no network access or signing of settlement proofs."""
+"""Prepare the local portal address and encrypted deposit payload for txgen."""
 
 import argparse
 from pathlib import Path
@@ -13,13 +13,11 @@ from cryptography.hazmat.primitives import hashes
 from cryptography.hazmat.primitives.asymmetric import ec
 from cryptography.hazmat.primitives.ciphers.aead import AESGCM
 from cryptography.hazmat.primitives.kdf.hkdf import HKDF
-from eth_abi import encode
 from eth_account import Account
 from eth_utils import keccak, to_checksum_address
 
 TOKEN = "0x20c0000000000000000000000000000000000000"
 ZERO = bytes(32)
-WITHDRAWAL_TYPE = "(address,bytes32,address,uint128,bytes32,uint64,uint64,bytes,bytes)"
 
 
 def encrypted_payload(sender, portal):
@@ -45,125 +43,52 @@ def encrypted_payload(sender, portal):
     ]
 
 
-def render_portal(source, count, nonce, mode):
+def render(source, count, nonce, mode):
     if count < 1 or nonce < 0:
         raise ValueError("count must be positive and nonce nonnegative")
     spec = yaml.safe_load(source.read_text())
     Account.enable_unaudited_hdwallet_features()
     sender = Account.from_mnemonic(spec["accounts"]["users"]["mnemonic"]).address
+    # Setup deploys the settlement fixture first, then the portal.
     portal = to_checksum_address(
-        keccak(rlp.encode([bytes.fromhex(sender[2:]), nonce]))[-20:]
+        keccak(rlp.encode([bytes.fromhex(sender[2:]), nonce + 1]))[-20:]
     )
-    # One protocol-nonce lane preserves the queue order, including interleaved deposits.
-    kinds = [
-        mode if mode != "mixed" else ("deposit" if i % 2 == 0 else "withdraw")
-        for i in range(count)
-    ]
-    withdrawals = kinds.count("withdraw")
-    # No callbacks. Nonzero fallbackNonce distinguishes user withdrawals from deposit refunds.
-    withdrawal = (TOKEN, ZERO, sender, 1, ZERO, 0, 1, b"", b"")
-    suffixes = [ZERO] * (withdrawals + 1)
-    for i in range(withdrawals - 1, -1, -1):
-        suffixes[i] = keccak(
-            encode([WITHDRAWAL_TYPE, "bytes32"], [withdrawal, suffixes[i + 1]])
-        )
-    encoded_withdrawal = [
-        "0x" + v.hex() if isinstance(v, bytes) else v for v in withdrawal
-    ]
-    spec["setup"]["steps"][0]["deploy"]["constructor_args"] = [
-        sender,
-        TOKEN,
-        "0x" + suffixes[0].hex(),
-    ]
-    portal_var = {"var": "setup.portal.address"}
-    calls = []
-    if withdrawals:
-        calls.append(
-            {
-                "to": TOKEN,
-                "abi": "ERC20",
-                "function": "transfer",
-                "args": [portal_var, withdrawals],
-            }
-        )
-    if count > withdrawals:
-        calls.append(
-            {
-                "to": TOKEN,
-                "abi": "ERC20",
-                "function": "approve",
-                "args": [portal_var, count - withdrawals],
-            }
-        )
-    spec["setup"]["steps"][1]["tx"]["calls"] = calls
-    spec["templates"]["zone_deposit"]["call"]["args"] = [
+    spec["setup"]["steps"][1]["deploy"]["constructor_args"][0] = sender
+    spec["setup"]["steps"][2]["tx"]["calls"][0]["args"][1] = count
+    spec["templates"]["zone_deposit"]["calls"][0]["args"] = [
         TOKEN,
         1,
         0,
         encrypted_payload(sender, portal),
         sender,
     ]
-    steps = []
-    index = 0
-    for kind in kinds:
-        step = {"template": "zone_" + kind}
-        if kind == "withdraw":
-            step["with"] = {
-                "call": {
-                    "args": [[encoded_withdrawal], "0x" + suffixes[index + 1].hex()]
-                }
-            }
-            index += 1
-        steps.append(step)
-    spec["sequences"]["zone_operations"]["steps"] = steps
-    # Rendered files live in .bench-tmp, so retain source-relative artifact semantics.
+    for template in spec["templates"].values():
+        settlement = next(
+            call for call in template["calls"] if call["function"] == "settle"
+        )
+        settlement["args"][2] = sender
+    withdrawal = [
+        TOKEN,
+        "0x" + ZERO.hex(),
+        sender,
+        1,
+        "0x" + ZERO.hex(),
+        0,
+        1,
+        "0x",
+        "0x",
+    ]
+    spec["templates"]["zone_withdraw"]["calls"][1]["args"] = [
+        [withdrawal],
+        "0x" + ZERO.hex(),
+    ]
+    if mode != "mixed":
+        spec["mix"] = [{"template": "zone_" + mode, "weight": 100}]
     spec["artifacts"] = {
         name: str((source.parent / path).resolve())
         for name, path in spec["artifacts"].items()
     }
     return spec
-
-
-def render(source, count, nonce, mode):
-    # TIP-1096 limits outstanding ordinary deposits to 230 - 20. There is no
-    # settlement in this fixture, so use another portal instead of filling it.
-    capacity = count if mode == "withdraw" else 420 if mode == "mixed" else 210
-    if count < 1 or nonce < 0:
-        raise ValueError("count must be positive and nonce nonnegative")
-    result = None
-    for index, start in enumerate(range(0, count, capacity)):
-        # Each preceding fixture uses one deployment and one funding transaction.
-        spec = render_portal(
-            source, min(capacity, count - start), nonce + 2 * index, mode
-        )
-        if index == 0:
-            result = spec
-            continue
-        portal_id = f"portal_{index}"
-        spec["setup"]["steps"][0]["id"] = portal_id
-        spec["setup"]["steps"][1]["id"] = f"fund_and_approve_{index}"
-
-        def rename(value, portal_id=portal_id):
-            if isinstance(value, dict):
-                return {key: rename(item) for key, item in value.items()}
-            if isinstance(value, list):
-                return [rename(item) for item in value]
-            if value == "setup.portal.address":
-                return f"setup.{portal_id}.address"
-            return value
-
-        spec = rename(spec)
-        result["setup"]["steps"].extend(spec["setup"]["steps"])
-        result["templates"].update(
-            {
-                f"{name}_{index}": template
-                for name, template in spec["templates"].items()
-            }
-        )
-        for step in spec["sequences"]["zone_operations"]["steps"]:
-            step["template"] += f"_{index}"
-            result["sequences"]["zone_operations"]["steps"].append(step)
-    return result
 
 
 def main():

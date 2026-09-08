@@ -17,8 +17,10 @@ for (const error of result.errors ?? []) {
   if (error.severity === 'error') throw new Error(error.formattedMessage);
 }
 const contracts = result.contracts['PortalFixture.sol'];
-fs.writeFileSync(path.join(__dirname, 'PortalFixture.json'), JSON.stringify({
-  abi: contracts.PortalFixture.abi,
-  bytecode: { object: '0x' + contracts.PortalFixture.evm.bytecode.object },
-}, null, 2) + '\n');
-fs.writeFileSync(path.join(__dirname, 'portal.abi.json'), JSON.stringify(contracts.IPortal.abi, null, 2) + '\n');
+for (const name of ['PortalFixture', 'SettlementFixture']) {
+  fs.writeFileSync(path.join(__dirname, name + '.json'), JSON.stringify({
+    abi: contracts[name].abi,
+    bytecode: { object: '0x' + contracts[name].evm.bytecode.object },
+  }, null, 2) + '\n');
+}
+fs.writeFileSync(path.join(__dirname, 'portal.abi.json'), JSON.stringify(contracts.IPortal.abi.filter(entry => ['deposit', 'processWithdrawals'].includes(entry.name)), null, 2) + '\n');
