@@ -96,13 +96,13 @@ use tracing::{Level, debug, debug_span, error, info, instrument, trace, warn};
 const NON_TRANSACTION_SIZE_ESTIMATE: usize = 2048;
 
 /// Source of transactions for payload building.
-enum PayloadTransactions {
+enum PayloadTransactions<'a> {
     Sequential(StateAwareBestTransactions<Box<dyn BestTransactions<Item = BestTransaction>>>),
-    Prewarming(StateAwareBestTransactions<BestTransactionsPrewarming>),
-    Parallel(BestTransactionsPrewarming),
+    Prewarming(StateAwareBestTransactions<BestTransactionsPrewarming<'a>>),
+    Parallel(BestTransactionsPrewarming<'a>),
 }
 
-impl PayloadTransactions {
+impl PayloadTransactions<'_> {
     /// Returns the next transaction, if available.
     fn next(&mut self) -> Option<PrewarmedTransaction> {
         match self {
@@ -610,15 +610,15 @@ where
             self.config.enable_parallel,
         );
         let mut best_txs = if self.config.enable_prewarming {
+            let prewarming = BestTransactionsPrewarming::new(prewarm_ctx, raw_best_txs)
+                .with_build_limits(
+                    &cancel,
+                    payload_build_budget.and_then(|budget| start.checked_add(budget)),
+                );
             if self.config.enable_parallel {
-                PayloadTransactions::Parallel(BestTransactionsPrewarming::new(
-                    prewarm_ctx,
-                    raw_best_txs,
-                ))
+                PayloadTransactions::Parallel(prewarming)
             } else {
-                PayloadTransactions::Prewarming(StateAwareBestTransactions::new(
-                    BestTransactionsPrewarming::new(prewarm_ctx, raw_best_txs),
-                ))
+                PayloadTransactions::Prewarming(StateAwareBestTransactions::new(prewarming))
             }
         } else {
             PayloadTransactions::Sequential(StateAwareBestTransactions::new(Box::new(raw_best_txs)))
