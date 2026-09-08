@@ -1,9 +1,8 @@
-# Native TIP-20 Channel Reserve opens: one channel per measured transaction.
+# Native TIP-20 Channel Reserve open -> signed settlement: two transactions per channel.
 # Fund the users with pathUSD for fees and token 1 for channel deposits.
 # The native reserve pulls deposits directly; no ERC-20 approval is needed.
-# Channels stay open, consuming one token base unit and creating state per tx.
-# Settlement and close workloads need the opening transaction's channel descriptor;
-# settlement additionally needs voucher signing, which txgen does not yet provide.
+# Settlement pays the full deposit to the payee; the settled channel state remains.
+# Requires txgen sequence `save` and Tempo `mpp_settle` support.
 
 chain_id: 1337
 
@@ -24,9 +23,7 @@ artifacts:
 templates:
   mpp_open:
     type: tempo
-    from:
-      pool: users
-      select: random
+    from: { var: payer.ref }
     gas_limit: 1000000
     fee_token: "0x20c0000000000000000000000000000000000000"
     expiring_nonce: true
@@ -36,15 +33,43 @@ templates:
       abi: TIP20ChannelReserve
       function: open
       args:
-        - pool:
-            pool: users
-            select: random
+        - { var: payee.address }
         - "0x0000000000000000000000000000000000000000"
         - "0x20c0000000000000000000000000000000000001"
         - 1
         - random_bytes: 32
         - "0x0000000000000000000000000000000000000000"
 
+  mpp_settle:
+    type: tempo
+    from: { var: payee.ref }
+    gas_limit: 1000000
+    fee_token: "0x20c0000000000000000000000000000000000000"
+    expiring_nonce: true
+    valid_for_secs: 25
+    mpp_settle:
+      open_transaction: { var: opened.raw }
+      voucher_signer: { var: payer.ref }
+      cumulative_amount: 1
+
+sequences:
+  mpp_open_settle:
+    bindings:
+      payer:
+        account:
+          pool: users
+          select: random
+      payee:
+        account:
+          pool: users
+          select: random
+    steps:
+      - name: open
+        template: mpp_open
+        save: opened
+      - name: settle
+        template: mpp_settle
+
 mix:
-  - template: mpp_open
+  - sequence: mpp_open_settle
     weight: 100
