@@ -783,8 +783,8 @@ def txgen-run-preset-pipeline [
         return { ok: false, exit_code: 1, report_path: $report_path }
     }
 
-    if $preset_name == "zones" and (open $report_path).failed > 0 {
-        print $"ERROR: zone workload contains failed or reverted transactions; see ($report_path)"
+    if $preset_name in ["zones" "vault-deposit" "vault-withdraw"] and (open $report_path).failed > 0 {
+        print $"ERROR: ($preset_name) workload contains failed or reverted transactions; see ($report_path)"
         return { ok: false, exit_code: 1, report_path: $report_path }
     }
     print $"  Report saved: ($report_path)"
