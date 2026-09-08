@@ -265,7 +265,6 @@ jobs:
       TERRAFORM_DIR: ${{ (inputs.cloud || 'aws') == 'gcp' && 'tempo-multi-region-benchmark/terraform/gcp' || 'tempo-multi-region-benchmark/terraform' }}
       BENCHMARK_ID: bench-e2e-multi-region-${{ github.run_id }}-${{ github.run_attempt }}
       BENCH_RESULTS_DIR: tempo-bench-e2e-multi-region-results
-      BENCH_RPC_PATH_COMPARISON: "true"
       BENCH_INPUT_CLOUD: ${{ inputs.cloud || 'aws' }}
       BENCH_GCP_PROJECT_ID: chain-benchmarking-zygis
       BENCH_GCP_WIF_PROVIDER: projects/383683155128/locations/global/workloadIdentityPools/tempo-benchmark/providers/tempo-benchmark
@@ -298,7 +297,7 @@ jobs:
       BENCH_INPUT_NO_CACHE: ${{ github.event_name == 'workflow_dispatch' && (inputs['no-cache'] == true || inputs['no-cache'] == 'true') && 'true' || 'false' }}
       BENCH_INPUT_BENCH_ARGS: ${{ inputs['bench-args'] || '' }}
       BENCH_INPUT_RUN_PAIRS: ${{ inputs['run-pairs'] || (github.event_name == 'pull_request' && '1') || '3' }}
-      BENCH_INPUT_CLICKHOUSE_RUN: "" # Publish the feature validation run
+      BENCH_INPUT_CLICKHOUSE_RUN: ${{ inputs['clickhouse-run'] || 'feature-1' }}
       CLICKHOUSE_URL: ${{ secrets.CLICKHOUSE_URL }}
       CLICKHOUSE_USER: ${{ secrets.CLICKHOUSE_USER }}
       CLICKHOUSE_PASSWORD: ${{ secrets.CLICKHOUSE_PASSWORD }}
@@ -350,15 +349,6 @@ jobs:
             fi
           done
 
-      - name: Require automatic ClickHouse publishing
-        run: |
-          for name in CLICKHOUSE_URL CLICKHOUSE_USER CLICKHOUSE_PASSWORD; do
-            if [[ -z "${!name:-}" ]]; then
-              echo "::error::$name is required for this TCP validation run"
-              exit 1
-            fi
-          done
-
       - name: Fetch ClickHouse metric allowlist
         uses: actions/github-script@3a2844b7e9c422d3c10d287c895573f7108da1b3 # v9.0.0
         with:
@@ -385,13 +375,10 @@ jobs:
         uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
         with:
           repository: tempoxyz/tempo-multi-region-benchmark
-          ref: 31e7d3811840ab5e8d906144601efc07b0fe8ac0 # Validator TCP diagnostics validation
+          ref: e1c94e1660d7a4598866c7e855f2ec231cba206c # TCP metrics PR #386
           path: ${{ env.BENCH_REPO_DIR }}
           token: ${{ steps.github-sts.outputs.token }}
           persist-credentials: false
-
-      - name: Verify ClickHouse access before provisioning
-        run: python3 "$BENCH_REPO_DIR/scripts/publish_tcp_highres.py" --check-access
 
       - name: Validate Tempo commit ancestry
         run: |
@@ -529,7 +516,6 @@ jobs:
         continue-on-error: true
         run: |
           "$BENCH_REPO_DIR/scripts/run_comparison.sh" \
-            --run-side feature \
             --stage fetch-tempo-binaries \
             --cloud "$BENCH_INPUT_CLOUD" \
             --gcp-project-id "$BENCH_GCP_PROJECT_ID" \
@@ -553,7 +539,7 @@ jobs:
             --otlp "$BENCH_INPUT_OTLP" \
             --valscope "$BENCH_INPUT_VALSCOPE" \
             --baseline-args "$BENCH_INPUT_BASELINE_ARGS" \
-            --feature-args "--disable-tx-gossip" \
+            --feature-args "$BENCH_INPUT_FEATURE_ARGS" \
             --gas-limit "$BENCH_INPUT_GAS_LIMIT" \
             --general-gas-limit "$BENCH_INPUT_GENERAL_GAS_LIMIT" \
             --no-cache "$BENCH_INPUT_NO_CACHE" \
@@ -566,7 +552,7 @@ jobs:
             --regions "${{ steps.regions.outputs.regions }}" \
             --instance-type "$BENCH_INPUT_INSTANCE_TYPE" \
             --local-ssd-count "$BENCH_INPUT_LOCAL_SSD_COUNT" \
-            --metrics-push-url "" \
+            --metrics-push-url "${{ secrets.BENCH_VICTORIAMETRICS_URL }}" \
             --logs-push-url "${{ secrets.TEMPO_TELEMETRY_URL || secrets.BENCH_LOGS_PUSH_URL }}" \
             --victoriametrics-url "${{ secrets.VICTORIAMETRICS_URL }}" \
             --victorialogs-url "${{ secrets.VICTORIALOGS_URL }}"
@@ -584,7 +570,6 @@ jobs:
         continue-on-error: true
         run: |
           "$BENCH_REPO_DIR/scripts/run_comparison.sh" \
-            --run-side feature \
             --stage generate-initial-validator-state \
             --cloud "$BENCH_INPUT_CLOUD" \
             --gcp-project-id "$BENCH_GCP_PROJECT_ID" \
@@ -608,7 +593,7 @@ jobs:
             --otlp "$BENCH_INPUT_OTLP" \
             --valscope "$BENCH_INPUT_VALSCOPE" \
             --baseline-args "$BENCH_INPUT_BASELINE_ARGS" \
-            --feature-args "--disable-tx-gossip" \
+            --feature-args "$BENCH_INPUT_FEATURE_ARGS" \
             --gas-limit "$BENCH_INPUT_GAS_LIMIT" \
             --general-gas-limit "$BENCH_INPUT_GENERAL_GAS_LIMIT" \
             --no-cache "$BENCH_INPUT_NO_CACHE" \
@@ -621,7 +606,7 @@ jobs:
             --regions "${{ steps.regions.outputs.regions }}" \
             --instance-type "$BENCH_INPUT_INSTANCE_TYPE" \
             --local-ssd-count "$BENCH_INPUT_LOCAL_SSD_COUNT" \
-            --metrics-push-url "" \
+            --metrics-push-url "${{ secrets.BENCH_VICTORIAMETRICS_URL }}" \
             --logs-push-url "${{ secrets.TEMPO_TELEMETRY_URL || secrets.BENCH_LOGS_PUSH_URL }}" \
             --victoriametrics-url "${{ secrets.VICTORIAMETRICS_URL }}" \
             --victorialogs-url "${{ secrets.VICTORIALOGS_URL }}"
@@ -632,7 +617,6 @@ jobs:
         continue-on-error: true
         run: |
           "$BENCH_REPO_DIR/scripts/run_comparison.sh" \
-            --run-side feature \
             --stage initialize-validator-state \
             --cloud "$BENCH_INPUT_CLOUD" \
             --gcp-project-id "$BENCH_GCP_PROJECT_ID" \
@@ -656,7 +640,7 @@ jobs:
             --otlp "$BENCH_INPUT_OTLP" \
             --valscope "$BENCH_INPUT_VALSCOPE" \
             --baseline-args "$BENCH_INPUT_BASELINE_ARGS" \
-            --feature-args "--disable-tx-gossip" \
+            --feature-args "$BENCH_INPUT_FEATURE_ARGS" \
             --gas-limit "$BENCH_INPUT_GAS_LIMIT" \
             --general-gas-limit "$BENCH_INPUT_GENERAL_GAS_LIMIT" \
             --no-cache "$BENCH_INPUT_NO_CACHE" \
@@ -669,7 +653,7 @@ jobs:
             --regions "${{ steps.regions.outputs.regions }}" \
             --instance-type "$BENCH_INPUT_INSTANCE_TYPE" \
             --local-ssd-count "$BENCH_INPUT_LOCAL_SSD_COUNT" \
-            --metrics-push-url "" \
+            --metrics-push-url "${{ secrets.BENCH_VICTORIAMETRICS_URL }}" \
             --logs-push-url "${{ secrets.TEMPO_TELEMETRY_URL || secrets.BENCH_LOGS_PUSH_URL }}" \
             --victoriametrics-url "${{ secrets.VICTORIAMETRICS_URL }}" \
             --victorialogs-url "${{ secrets.VICTORIALOGS_URL }}"
@@ -680,7 +664,6 @@ jobs:
         continue-on-error: true
         run: |
           "$BENCH_REPO_DIR/scripts/run_comparison.sh" \
-            --run-side feature \
             --stage run-benchmarks \
             --cloud "$BENCH_INPUT_CLOUD" \
             --gcp-project-id "$BENCH_GCP_PROJECT_ID" \
@@ -704,7 +687,7 @@ jobs:
             --otlp "$BENCH_INPUT_OTLP" \
             --valscope "$BENCH_INPUT_VALSCOPE" \
             --baseline-args "$BENCH_INPUT_BASELINE_ARGS" \
-            --feature-args "--disable-tx-gossip" \
+            --feature-args "$BENCH_INPUT_FEATURE_ARGS" \
             --gas-limit "$BENCH_INPUT_GAS_LIMIT" \
             --general-gas-limit "$BENCH_INPUT_GENERAL_GAS_LIMIT" \
             --no-cache "$BENCH_INPUT_NO_CACHE" \
@@ -717,7 +700,7 @@ jobs:
             --regions "${{ steps.regions.outputs.regions }}" \
             --instance-type "$BENCH_INPUT_INSTANCE_TYPE" \
             --local-ssd-count "$BENCH_INPUT_LOCAL_SSD_COUNT" \
-            --metrics-push-url "" \
+            --metrics-push-url "${{ secrets.BENCH_VICTORIAMETRICS_URL }}" \
             --logs-push-url "${{ secrets.TEMPO_TELEMETRY_URL || secrets.BENCH_LOGS_PUSH_URL }}" \
             --victoriametrics-url "${{ secrets.VICTORIAMETRICS_URL }}" \
             --victorialogs-url "${{ secrets.VICTORIALOGS_URL }}"
@@ -754,12 +737,6 @@ jobs:
           fi
           echo "path=$results_dir" >> "$GITHUB_OUTPUT"
           echo "Results directory: $results_dir"
-
-      - name: Publish and verify high-resolution validator TCP
-        run: python3 "$BENCH_REPO_DIR/scripts/publish_tcp_highres.py" "$BENCH_RESULTS_DIR"
-
-      - name: Verify TCP rows were automatically published
-        run: python3 "$BENCH_REPO_DIR/scripts/publish_tcp_highres.py" "$BENCH_RESULTS_DIR" --verify-publication
 
       - name: Upload artifacts
         if: always()
