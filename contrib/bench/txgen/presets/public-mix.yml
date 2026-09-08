@@ -2,7 +2,7 @@
 # Relative transaction shares: plain transfer 25, memo transfer 40, mint 1, MPP 15.
 # Normalized: approximately 30.86%, 49.38%, 1.23%, and 18.52%, respectively.
 # These are benchmark assumptions, not a replay of mainnet activity.
-# Requires the native MPP open/settle preset and a settlement-capable txgen.
+# Uses the native MPP open-only preset with txgen main.
 include: mpp.yml
 
 artifacts:
@@ -56,14 +56,14 @@ templates:
         - {pool: {pool: users, select: random}}
         - 1
 
-# Selection weights: MPP emits two transactions per selection; all others emit one.
+# Each selection emits one transaction, including MPP.
 # Preserve the relative allocations of the four retained workloads.
 mix:
   - template: public_transfer
-    weight: 50
+    weight: 25
   - template: public_transfer_memo
-    weight: 80
+    weight: 40
   - template: public_mint
-    weight: 2
-  - sequence: mpp_open_settle
+    weight: 1
+  - sequence: mpp_open_only
     weight: 15

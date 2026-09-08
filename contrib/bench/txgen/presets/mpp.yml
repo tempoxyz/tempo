@@ -1,8 +1,7 @@
-# Native TIP-20 Channel Reserve open -> signed settlement: two transactions per channel.
+# Native TIP-20 Channel Reserve opens: one transaction per channel.
 # Fund the users with pathUSD for fees and token 1 for channel deposits.
 # The native reserve pulls deposits directly; no ERC-20 approval is needed.
-# Settlement pays the full deposit to the payee; the settled channel state remains.
-# Requires txgen sequence `save` and Tempo `mpp_settle` support.
+# TODO: Add signed settlement after open once https://github.com/tempoxyz/txgen/pull/200 lands.
 
 chain_id: 1337
 
@@ -40,20 +39,8 @@ templates:
         - random_bytes: 32
         - "0x0000000000000000000000000000000000000000"
 
-  mpp_settle:
-    type: tempo
-    from: { var: payee.ref }
-    gas_limit: 1000000
-    fee_token: "0x20c0000000000000000000000000000000000000"
-    expiring_nonce: true
-    valid_for_secs: 25
-    mpp_settle:
-      open_transaction: { var: opened.raw }
-      voucher_signer: { var: payer.ref }
-      cumulative_amount: 1
-
 sequences:
-  mpp_open_settle:
+  mpp_open_only:
     bindings:
       payer:
         account:
@@ -66,10 +53,7 @@ sequences:
     steps:
       - name: open
         template: mpp_open
-        save: opened
-      - name: settle
-        template: mpp_settle
 
 mix:
-  - sequence: mpp_open_settle
+  - sequence: mpp_open_only
     weight: 100
