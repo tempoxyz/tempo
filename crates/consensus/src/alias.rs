@@ -173,7 +173,7 @@ pub(crate) mod marshal {
             .await?;
         }
 
-        let (actor, mailbox, marshal_stored_height) = core::Actor::init(
+        let (actor, mailbox, marshal_floor) = core::Actor::init(
             context,
             finalizations_by_height,
             finalized_blocks,
@@ -197,7 +197,7 @@ pub(crate) mod marshal {
         )
         .await;
 
-        if let Some(marshal_stored_height) = marshal_stored_height.height() {
+        if let Some(marshal_stored_height) = marshal_floor.height() {
             ensure!(
                 finalized_tip.1 >= marshal_stored_height,
                 "finalizations archive is inconsistent with the node's consensus metadata: \
@@ -209,14 +209,14 @@ pub(crate) mod marshal {
         }
 
         let startup_floor_height = finalized_floor.0;
-        let last_finalized_height = marshal_stored_height
+        let last_finalized_height = marshal_floor
             .height()
             .map_or(startup_floor_height, |height| {
                 height.max(startup_floor_height)
             });
 
         info!(
-            marshal_stored = ?marshal_stored_height,
+            marshal_stored = ?marshal_floor,
             selected_floor = %startup_floor_height,
             "setting marshal sync floor"
         );
