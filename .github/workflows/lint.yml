@@ -164,7 +164,7 @@ jobs:
     permissions:
       contents: read
       id-token: write
-    uses: tempoxyz/gh-actions/.github/workflows/rust-deny.yml@389a62fda5433278fd172a999ee6469882967854
+    uses: tempoxyz/gh-actions/.github/workflows/rust-deny.yml@3a9189ec4c3d19f2863398822c73edd06b33fba3
     with:
       rust-toolchain: nightly
 
