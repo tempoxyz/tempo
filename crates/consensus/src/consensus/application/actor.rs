@@ -291,6 +291,11 @@ impl Inner<Init> {
             warn!(%error, "failed reporting the proposal parent as the pending head");
         }
 
+        // Attribute waits after construction separately from execution and
+        // intentional pacing. The recovery query still runs alongside the build.
+        let mut post_build_recovery_lookup_wait = Duration::ZERO;
+        let mut proposal_marshal_persist_elapsed = Duration::ZERO;
+        let mut proposal_pacing_sleep_elapsed = Duration::ZERO;
         let proposal_block = {
             let mut proposal = Box::pin(async {
                 // Follow the commonware marshal::standard::inline application:
@@ -340,6 +345,7 @@ impl Inner<Init> {
 
                 // already_verified blocks are always preferred, even if
                 // building a block failed.
+                let recovery_lookup_wait_start = Instant::now();
                 let (block, proposal_return) = if already_verified.is_some()
                     && let Some(block) = already_verified.await
                 {
@@ -349,18 +355,23 @@ impl Inner<Init> {
                     proposal_result?
                 };
 
+                post_build_recovery_lookup_wait = recovery_lookup_wait_start.elapsed();
+
                 if let Some(proposal_return) = proposal_return {
                     let persist_start = Instant::now();
                     if !self.marshal.verified(round, block.clone()).await {
                         bail!("marshal actor rejected persisting proposal");
                     }
+                    proposal_marshal_persist_elapsed = persist_start.elapsed();
                     observe_marshal_persist(
                         proposal_return.block_size_estimate_bytes,
-                        persist_start.elapsed(),
+                        proposal_marshal_persist_elapsed,
                     );
 
                     // Keep waiting for the remaining return time, if there's anything left after building the block.
+                    let pacing_sleep_start = Instant::now();
                     context.sleep_until(proposal_return.return_at).await;
+                    proposal_pacing_sleep_elapsed = pacing_sleep_start.elapsed();
                 }
 
                 eyre::Ok(block)
@@ -383,6 +394,9 @@ impl Inner<Init> {
         let proposal_digest = proposal_block.digest();
         info!(
             proposal.digest = %proposal_digest,
+            ?post_build_recovery_lookup_wait,
+            ?proposal_marshal_persist_elapsed,
+            ?proposal_pacing_sleep_elapsed,
             "constructed proposal",
         );
 
