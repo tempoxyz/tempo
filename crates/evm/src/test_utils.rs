@@ -43,7 +43,6 @@ pub(crate) fn test_evm_with_basefee<DB: Database>(
 }
 
 use crate::block::BlockSection;
-use tempo_primitives::TempoTxEnvelope;
 
 pub(crate) struct TestExecutorBuilder {
     pub(crate) block_number: u64,
@@ -59,7 +58,7 @@ pub(crate) struct TestExecutorBuilder {
     pub(crate) extra_data: Bytes,
     // Test state to seed into the executor after creation
     pub(crate) initial_section: Option<BlockSection>,
-    pub(crate) initial_seen_subblocks: Vec<(PartialValidatorKey, Vec<TempoTxEnvelope>)>,
+    pub(crate) initial_seen_subblocks: Vec<PartialValidatorKey>,
     pub(crate) initial_incentive_gas_used: u64,
 }
 
@@ -127,13 +126,9 @@ impl TestExecutorBuilder {
         self
     }
 
-    /// Add a seen subblock to the executor (for testing shared gas validation).
-    pub(crate) fn with_seen_subblock(
-        mut self,
-        proposer: PartialValidatorKey,
-        txs: Vec<TempoTxEnvelope>,
-    ) -> Self {
-        self.initial_seen_subblocks.push((proposer, txs));
+    /// Add a seen proposer to the executor for testing historical subblock ordering.
+    pub(crate) fn with_seen_subblock(mut self, proposer: PartialValidatorKey) -> Self {
+        self.initial_seen_subblocks.push(proposer);
         self
     }
 
@@ -191,8 +186,8 @@ impl TestExecutorBuilder {
         if let Some(section) = self.initial_section {
             executor.set_section_for_test(section);
         }
-        for (proposer, txs) in self.initial_seen_subblocks {
-            executor.add_seen_subblock_for_test(proposer, txs);
+        for proposer in self.initial_seen_subblocks {
+            executor.add_seen_subblock_for_test(proposer);
         }
         if self.initial_incentive_gas_used > 0 {
             executor.set_incentive_gas_used_for_test(self.initial_incentive_gas_used);

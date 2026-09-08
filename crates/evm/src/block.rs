@@ -89,11 +89,6 @@ pub struct TempoTxResult {
     next_section: BlockSection,
     /// Whether the transaction is a payment transaction.
     is_payment: bool,
-    /// Full transaction that is being committed.
-    ///
-    /// This is only populated for subblock transactions for which we need to store
-    /// the full transaction encoding for later validation of subblock hash.
-    tx: Option<TempoTxEnvelope>,
     /// Block gas consumed by this transaction. The block `gas_used` field will be incremented by this value.
     block_gas_used: u64,
     /// Validator-credited fee (in the validator's fee token) reported by `collectFeePostTx`.
@@ -122,7 +117,6 @@ impl TempoTxResult {
             },
             next_section,
             is_payment,
-            tx: matches!(next_section, BlockSection::SubBlock { .. }).then(|| tx.clone()),
             block_gas_used,
             validator_fee,
         }
@@ -166,7 +160,7 @@ pub struct TempoBlockExecutor<'a, DB: Database, I> {
         EthBlockExecutor<'a, TempoEvm<DB, I>, &'a TempoChainSpec, TempoReceiptBuilder>,
 
     section: BlockSection,
-    seen_subblocks: Vec<(PartialValidatorKey, Vec<TempoTxEnvelope>)>,
+    seen_subblocks: Vec<PartialValidatorKey>,
     subblock_fee_recipients: HashMap<PartialValidatorKey, Address>,
     extra_data: Bytes,
 
@@ -456,9 +450,7 @@ where
                     })
                 }
                 BlockSection::SubBlock { proposer } => {
-                    if proposer == tx_proposer
-                        || !self.seen_subblocks.iter().any(|(p, _)| *p == tx_proposer)
-                    {
+                    if proposer == tx_proposer || !self.seen_subblocks.contains(&tx_proposer) {
                         Ok(BlockSection::SubBlock {
                             proposer: tx_proposer,
                         })
@@ -607,8 +599,6 @@ where
             inner,
             next_section,
             is_payment: self.is_payment(recovered.tx()),
-            tx: matches!(next_section, BlockSection::SubBlock { .. })
-                .then(|| recovered.tx().clone()),
             block_gas_used,
             validator_fee,
         })
@@ -619,7 +609,6 @@ where
             inner,
             next_section,
             is_payment,
-            tx,
             block_gas_used,
             validator_fee: _,
         } = output;
@@ -639,20 +628,9 @@ where
                 }
             }
             BlockSection::SubBlock { proposer } => {
-                let last_subblock = if let Some(last) = self
-                    .seen_subblocks
-                    .last_mut()
-                    .filter(|(p, _)| *p == proposer)
-                {
-                    last
-                } else {
-                    self.seen_subblocks.push((proposer, Vec::new()));
-                    self.seen_subblocks.last_mut().unwrap()
-                };
-
-                last_subblock
-                    .1
-                    .push(tx.expect("missing tx for subblock transaction"));
+                if self.seen_subblocks.last() != Some(&proposer) {
+                    self.seen_subblocks.push(proposer);
+                }
             }
             BlockSection::GasIncentive => {
                 self.incentive_gas_used += block_gas_used;
@@ -719,13 +697,9 @@ where
         self.section = section;
     }
 
-    /// Add a seen subblock for testing shared gas validation.
-    pub(crate) fn add_seen_subblock_for_test(
-        &mut self,
-        proposer: PartialValidatorKey,
-        txs: Vec<TempoTxEnvelope>,
-    ) {
-        self.seen_subblocks.push((proposer, txs));
+    /// Add a seen proposer for testing historical subblock ordering.
+    pub(crate) fn add_seen_subblock_for_test(&mut self, proposer: PartialValidatorKey) {
+        self.seen_subblocks.push(proposer);
     }
 
     /// Set incentive gas used for testing gas limit validation.
@@ -906,7 +880,7 @@ mod tests {
         let executor = TestExecutorBuilder::default().build(&mut db, &chainspec);
 
         let signer = PrivateKey::from_seed(0);
-        let metadata = vec![create_valid_subblock_metadata(B256::ZERO, &signer)];
+        let metadata = vec![create_subblock_metadata(&signer)];
         let input = create_system_tx_input(metadata, 1);
         let system_tx = create_system_tx(chainspec.chain().id(), input);
 
@@ -946,22 +920,13 @@ mod tests {
         ))
     }
 
-    fn create_valid_subblock_metadata(parent_hash: B256, signer: &PrivateKey) -> SubBlockMetadata {
-        let validator_key = B256::from_slice(&signer.public_key());
-        let subblock = tempo_primitives::SubBlock {
-            version: SubBlockVersion::V1,
-            parent_hash,
-            fee_recipient: Address::ZERO,
-            transactions: vec![],
-        };
-        let signature_hash = subblock.signature_hash();
-        let signature = signer.sign(&[], signature_hash.as_slice());
-
+    fn create_subblock_metadata(signer: &PrivateKey) -> SubBlockMetadata {
         SubBlockMetadata {
             version: SubBlockVersion::V1,
-            validator: validator_key,
+            validator: B256::from_slice(&signer.public_key()),
             fee_recipient: Address::ZERO,
-            signature: Bytes::copy_from_slice(signature.as_ref()),
+            // Historical replay decodes the signature but does not verify it.
+            signature: Bytes::from(vec![0; 64]),
         }
     }
 
@@ -976,7 +941,7 @@ mod tests {
             .build(&mut db, &chainspec);
 
         let signer = PrivateKey::from_seed(0);
-        let metadata = vec![create_valid_subblock_metadata(B256::ZERO, &signer)];
+        let metadata = vec![create_subblock_metadata(&signer)];
         let input = create_system_tx_input(metadata, 1);
         let system_tx = create_system_tx(chainspec.chain().id(), input);
 
@@ -1045,7 +1010,7 @@ mod tests {
         executor.inner.evm.cfg.spec = tempo_chainspec::hardfork::TempoHardfork::T4;
 
         let signer = PrivateKey::from_seed(0);
-        let metadata = vec![create_valid_subblock_metadata(B256::ZERO, &signer)];
+        let metadata = vec![create_subblock_metadata(&signer)];
         let input = create_system_tx_input(metadata, 1);
         let system_tx = create_system_tx(chainspec.chain().id(), input);
 
@@ -1191,7 +1156,7 @@ mod tests {
             .with_section(BlockSection::SubBlock {
                 proposer: proposer2,
             })
-            .with_seen_subblock(proposer1, vec![])
+            .with_seen_subblock(proposer1)
             .build(&mut db, &chainspec);
 
         // Try to submit a tx for proposer1 (already processed)
@@ -1255,7 +1220,6 @@ mod tests {
             },
             next_section: BlockSection::NonShared,
             is_payment: false,
-            tx: None,
             block_gas_used: 21000,
             validator_fee: U256::ZERO,
         };
@@ -1264,6 +1228,42 @@ mod tests {
 
         assert_eq!(gas_output.tx_gas_used(), 21000);
         assert_eq!(executor.section(), BlockSection::NonShared);
+    }
+
+    #[test]
+    fn test_commit_subblocks_preserves_proposer_ordering() {
+        let chainspec = test_chainspec();
+        let mut db = State::builder().with_bundle_update().build();
+        let mut executor = TestExecutorBuilder::default().build(&mut db, &chainspec);
+        let first = PartialValidatorKey::from([1; 15]);
+        let second = PartialValidatorKey::from([2; 15]);
+
+        // Consecutive transactions share a proposer; a later subblock may not return to it.
+        for proposer in [first, first, second] {
+            let tx = create_subblock_tx(&proposer);
+            let section = executor.validate_tx(&tx, 21_000).unwrap();
+            executor.commit_transaction(TempoTxResult::new_precomputed(
+                &tx,
+                ExecutionResult::Revert {
+                    logs: vec![],
+                    gas: ResultGas::default().with_total_gas_spent(21_000),
+                    output: Bytes::new(),
+                },
+                Default::default(),
+                section,
+                false,
+                21_000,
+                U256::ZERO,
+            ));
+        }
+        assert_eq!(executor.seen_subblocks, vec![first, second]);
+        assert_eq!(
+            executor
+                .validate_tx(&create_subblock_tx(&first), 21_000)
+                .unwrap_err()
+                .to_string(),
+            "proposer's subblock already processed"
+        );
     }
 
     #[test]
@@ -1404,7 +1404,6 @@ mod tests {
             },
             next_section: BlockSection::NonShared,
             is_payment: false,
-            tx: None,
             block_gas_used: 21000,
             validator_fee: U256::ZERO,
         };
@@ -1444,7 +1443,6 @@ mod tests {
             },
             next_section: BlockSection::NonShared,
             is_payment: false,
-            tx: None,
             block_gas_used: 21000,
             validator_fee: U256::ZERO,
         };
@@ -1468,7 +1466,6 @@ mod tests {
             },
             next_section: BlockSection::NonShared,
             is_payment: false,
-            tx: None,
             block_gas_used: 50000,
             validator_fee: U256::ZERO,
         };
@@ -1531,7 +1528,6 @@ mod tests {
             },
             next_section: BlockSection::NonShared,
             is_payment: false,
-            tx: None,
             block_gas_used: 50000,
             validator_fee: U256::ZERO,
         };
@@ -1577,7 +1573,6 @@ mod tests {
             },
             next_section: BlockSection::NonShared,
             is_payment: false,
-            tx: None,
             block_gas_used: 200_000,
             validator_fee: U256::ZERO,
         };
@@ -1626,7 +1621,6 @@ mod tests {
             },
             next_section: BlockSection::GasIncentive,
             is_payment: false,
-            tx: None,
             block_gas_used: 200_000,
             validator_fee: U256::ZERO,
         };
