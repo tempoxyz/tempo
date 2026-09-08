@@ -132,6 +132,108 @@ fn network_storage_failures_stop_actor_and_allow_recovery() {
 }
 
 #[test]
+fn local_share_storage_failures_stop_actor_and_allow_recovery() {
+    use commonware_consensus::Reporter as _;
+    use commonware_runtime::deterministic::FaultConfig;
+    use commonware_utils::probability;
+
+    // Fail opening the dealing's journal section, syncing the dealing, or
+    // syncing the ACK after the dealing has already been persisted.
+    for (fail_open, seed_dealing) in [(true, false), (false, false), (false, true)] {
+        Runner::default().start(|mut context| async move {
+            let (state, keys, _) = dkg_state(&mut context, Epoch::new(1), 2, true);
+            let identity = keys[0].clone();
+            let mut harness = Harness::builder(context.child("actor"), "local_storage_failure")
+                .initial_state(state.clone())
+                .identity(identity.clone())
+                .build()
+                .await;
+
+            if seed_dealing {
+                let round = Round::from_state(&state, crate::config::NAMESPACE);
+                let storage = harness.storage_mut();
+                let dealer = storage
+                    .create_dealer_for_round(
+                        identity.clone(),
+                        round.clone(),
+                        state.share.clone(),
+                        state.seed,
+                    )
+                    .unwrap()
+                    .unwrap();
+                let mut player = storage
+                    .create_player_for_round(identity.clone(), &round)
+                    .unwrap()
+                    .unwrap();
+                let (_, public, private) = dealer
+                    .shares_to_distribute()
+                    .find(|(recipient, _, _)| *recipient == identity.public_key())
+                    .unwrap();
+                player
+                    .receive_dealing(storage, state.epoch, identity.public_key(), public, private)
+                    .await
+                    .unwrap();
+            }
+
+            harness.start().await;
+            assert!(!harness.has_dealer_log(state.epoch).await);
+            let faults = context.storage_fault_config();
+            if fail_open {
+                faults.write().open_rate = Some(probability!(1.0));
+            } else {
+                faults.write().sync_rate = Some(probability!(1.0));
+            }
+
+            // An early finalized block triggers delivery of our own dealing and
+            // ACK before the block's header is persisted.
+            let (ack, waiter) = Exact::handle();
+            assert!(
+                harness
+                    .mailbox()
+                    .clone()
+                    .report(Update::Block(Arc::new(block(header(Height::new(10)))), ack))
+                    .accepted()
+            );
+            let mut harness = context
+                .timeout(Duration::from_secs(1), async move {
+                    harness.wait_for_actor_exit().await;
+                    harness
+                })
+                .await
+                .expect("a local storage failure must terminate the actor without panicking");
+            assert!(
+                waiter.await.is_err(),
+                "the failed block must not be acknowledged"
+            );
+
+            *faults.write() = FaultConfig::default();
+            harness.stop().await;
+            assert_eq!(harness.storage().current(), state);
+            assert!(
+                harness
+                    .storage()
+                    .get_latest_finalized_block_for_epoch(&state.epoch)
+                    .is_none()
+            );
+            harness.start().await;
+            assert!(!harness.has_dealer_log(state.epoch).await);
+            harness
+                .report_finalized_header(header(Height::new(10)))
+                .await;
+            harness.stop().await;
+            assert_eq!(
+                *harness
+                    .storage()
+                    .get_latest_finalized_block_for_epoch(&state.epoch)
+                    .unwrap()
+                    .0,
+                Height::new(10)
+            );
+        });
+    }
+}
+
+#[test]
 fn exhausted_ancestry_releases_pending_outcome_request() {
     Runner::default().start(|_| async move {
         let (response, receiver) = oneshot::channel();

@@ -791,7 +791,8 @@ where
                         player_state,
                         round_channel,
                     )
-                    .await;
+                    .await
+                    .wrap_err("failed distributing shares")?;
                 }
             }
             EpochPhase::Midpoint | EpochPhase::Late => {
@@ -919,27 +920,25 @@ where
         dealer_state: &mut Dealer,
         player_state: &mut Option<Player>,
         round_channel: &mut TSender,
-    ) where
+    ) -> eyre::Result<()>
+    where
         TStorageContext: BufferPooler + commonware_runtime::Metrics + Clock + Storage,
         TSender: Sender<PublicKey = PublicKey>,
     {
         let me = self.config.me.public_key();
         for (player, pub_msg, priv_msg) in dealer_state.shares_to_distribute().collect::<Vec<_>>() {
             if player == me {
-                if let Some(player_state) = player_state
-                    && let Ok(ack) = player_state
+                if let Some(player_state) = player_state {
+                    let ack = player_state
                         .receive_dealing(storage, epoch, me.clone(), pub_msg, priv_msg)
                         .await
-                        .inspect(|_| {
-                            self.metrics.shares_distributed.metric().inc();
-                            self.metrics.shares_received.metric().inc();
-                        })
-                        .inspect_err(|error| warn!(%error, "failed to store our own dealing"))
-                    && let Ok(()) = dealer_state
+                        .wrap_err("failed to store our own dealing")?;
+                    self.metrics.shares_distributed.metric().inc();
+                    self.metrics.shares_received.metric().inc();
+                    dealer_state
                         .receive_ack(storage, epoch, me.clone(), ack)
                         .await
-                        .inspect_err(|error| warn!(%error, "failed to store our own ACK"))
-                {
+                        .wrap_err("failed to store our own ACK")?;
                     self.metrics.acks_received.metric().inc();
                     self.metrics.acks_sent.metric().inc();
                     info!("stored our own ACK and share");
@@ -954,6 +953,7 @@ where
                 }
             }
         }
+        Ok(())
     }
 
     #[instrument(

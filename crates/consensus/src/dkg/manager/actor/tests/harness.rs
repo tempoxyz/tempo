@@ -196,6 +196,12 @@ impl Harness {
             .expect("DKG storage is not open while the actor is running")
     }
 
+    pub(super) fn storage_mut(&mut self) -> &mut state::Storage<Context> {
+        self.storage
+            .as_mut()
+            .expect("DKG storage is not open while the actor is running")
+    }
+
     pub(super) async fn start(&mut self) {
         assert!(self.handle.is_none(), "DKG actor is already running");
         drop(self.storage.take());
