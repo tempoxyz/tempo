@@ -45,7 +45,7 @@ def encrypted_payload(sender, portal):
     ]
 
 
-def render(source, count, nonce, mode):
+def render_portal(source, count, nonce, mode):
     if count < 1 or nonce < 0:
         raise ValueError("count must be positive and nonce nonnegative")
     spec = yaml.safe_load(source.read_text())
@@ -122,6 +122,48 @@ def render(source, count, nonce, mode):
         for name, path in spec["artifacts"].items()
     }
     return spec
+
+
+def render(source, count, nonce, mode):
+    # TIP-1096 limits outstanding ordinary deposits to 230 - 20. There is no
+    # settlement in this fixture, so use another portal instead of filling it.
+    capacity = count if mode == "withdraw" else 420 if mode == "mixed" else 210
+    if count < 1 or nonce < 0:
+        raise ValueError("count must be positive and nonce nonnegative")
+    result = None
+    for index, start in enumerate(range(0, count, capacity)):
+        # Each preceding fixture uses one deployment and one funding transaction.
+        spec = render_portal(
+            source, min(capacity, count - start), nonce + 2 * index, mode
+        )
+        if index == 0:
+            result = spec
+            continue
+        portal_id = f"portal_{index}"
+        spec["setup"]["steps"][0]["id"] = portal_id
+        spec["setup"]["steps"][1]["id"] = f"fund_and_approve_{index}"
+
+        def rename(value, portal_id=portal_id):
+            if isinstance(value, dict):
+                return {key: rename(item) for key, item in value.items()}
+            if isinstance(value, list):
+                return [rename(item) for item in value]
+            if value == "setup.portal.address":
+                return f"setup.{portal_id}.address"
+            return value
+
+        spec = rename(spec)
+        result["setup"]["steps"].extend(spec["setup"]["steps"])
+        result["templates"].update(
+            {
+                f"{name}_{index}": template
+                for name, template in spec["templates"].items()
+            }
+        )
+        for step in spec["sequences"]["zone_operations"]["steps"]:
+            step["template"] += f"_{index}"
+            result["sequences"]["zone_operations"]["steps"].append(step)
+    return result
 
 
 def main():

@@ -647,13 +647,17 @@ def txgen-run-preset-pipeline [
         if $chain_id != 1337 or $accounts != 1 {
             error make { msg: "zones requires local chain 1337 and --accounts 1" }
         }
+        let portal_code = (txgen-rpc-call $generate_rpc_url '{"jsonrpc":"2.0","id":1,"method":"eth_getCode","params":["0x5ad1000000000000000000000000000000000000","latest"]}')
+        if $portal_code.result == "0x" {
+            error make { msg: "zones requires the ZonePortal runtime; activate T10 or later before running the benchmark" }
+        }
         let nonce_response = (txgen-rpc-call $generate_rpc_url '{"jsonrpc":"2.0","id":1,"method":"eth_getTransactionCount","params":["0xf39Fd6e51aad88F6F4ce6aB8827279cffFb92266","pending"]}')
         let latest_nonce = (txgen-rpc-call $generate_rpc_url '{"jsonrpc":"2.0","id":1,"method":"eth_getTransactionCount","params":["0xf39Fd6e51aad88F6F4ce6aB8827279cffFb92266","latest"]}')
         if $nonce_response.result != $latest_nonce.result {
             error make { msg: "zone fixture deployer has pending transactions; drain its nonce lane before setup" }
         }
         let nonce = ($nonce_response.result | into int)
-        let rendered = ([ (txgen-repo-root) $TXGEN_HELPER_DEFAULT_RENDERED_SPECS_DIR "zones.yml" ] | path join)
+        let rendered = ([ (txgen-repo-root) $TXGEN_HELPER_DEFAULT_RENDERED_SPECS_DIR (random uuid) "zones.yml" ] | path join)
         let renderer = ([ (txgen-repo-root) "contrib/bench/txgen/zones/render.py" ] | path join)
         let mode = ($env.TXGEN_ZONE_MODE? | default "mixed")
         ^uv run $renderer --source $spec_path --output $rendered --count $tx_count --nonce $nonce --mode $mode
@@ -779,6 +783,10 @@ def txgen-run-preset-pipeline [
         return { ok: false, exit_code: 1, report_path: $report_path }
     }
 
+    if $preset_name == "zones" and (open $report_path).failed > 0 {
+        print $"ERROR: zone workload contains failed or reverted transactions; see ($report_path)"
+        return { ok: false, exit_code: 1, report_path: $report_path }
+    }
     print $"  Report saved: ($report_path)"
     { ok: true, exit_code: 0, report_path: $report_path }
 }

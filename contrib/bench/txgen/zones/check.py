@@ -40,9 +40,12 @@ def main():
     parser.add_argument("--rpc", default="http://127.0.0.1:18545")
     parser.add_argument("--txgen-bin", default="txgen-tempo")
     parser.add_argument("--bench-bin", default="bench")
+    parser.add_argument("--count", type=int, default=6)
     args = parser.parse_args()
     if urlparse(args.rpc).hostname not in ("localhost", "127.0.0.1", "::1"):
         parser.error("only a disposable loopback node is supported")
+    if args.count < 4:
+        parser.error("count must be at least 4 to test an incorrect withdrawal suffix")
 
     def rpc(method, *params):
         request = Request(
@@ -67,28 +70,41 @@ def main():
             portal = to_checksum_address(
                 keccak(rlp.encode([bytes.fromhex(SENDER[2:]), nonce]))[-20:]
             )
-            spec = render(source, 6, nonce, mode)
+            spec = render(source, args.count, nonce, mode)
+            portals = [
+                to_checksum_address(
+                    keccak(rlp.encode([bytes.fromhex(SENDER[2:]), nonce + offset]))[
+                        -20:
+                    ]
+                )
+                for offset in range(0, len(spec["setup"]["steps"]), 2)
+            ]
             # Portal acceptance alone does not prove the recipient can be decrypted.
-            payload = spec["templates"]["zone_deposit"]["call"]["args"][3]
-            x = bytes.fromhex(payload[0][2:])
-            ephemeral_public = ec.EllipticCurvePublicKey.from_encoded_point(
-                ec.SECP256K1(), bytes([payload[1]]) + x
-            )
-            shared = ec.derive_private_key(1, ec.SECP256K1()).exchange(
-                ec.ECDH(), ephemeral_public
-            )
-            key = HKDF(
-                algorithm=hashes.SHA256(),
-                length=32,
-                salt=b"ecies-aes-key",
-                info=bytes.fromhex(portal[2:]) + ZERO + x + bytes.fromhex(SENDER[2:]),
-            ).derive(shared)
-            plaintext = AESGCM(key).decrypt(
-                bytes.fromhex(payload[3][2:]),
-                bytes.fromhex(payload[2][2:] + payload[4][2:]),
-                None,
-            )
-            assert plaintext == bytes.fromhex(SENDER[2:]) + ZERO + bytes(12)
+            for index, address in enumerate(portals):
+                template = "zone_deposit" if index == 0 else f"zone_deposit_{index}"
+                payload = spec["templates"][template]["call"]["args"][3]
+                x = bytes.fromhex(payload[0][2:])
+                ephemeral_public = ec.EllipticCurvePublicKey.from_encoded_point(
+                    ec.SECP256K1(), bytes([payload[1]]) + x
+                )
+                shared = ec.derive_private_key(1, ec.SECP256K1()).exchange(
+                    ec.ECDH(), ephemeral_public
+                )
+                key = HKDF(
+                    algorithm=hashes.SHA256(),
+                    length=32,
+                    salt=b"ecies-aes-key",
+                    info=bytes.fromhex(address[2:])
+                    + ZERO
+                    + x
+                    + bytes.fromhex(SENDER[2:]),
+                ).derive(shared)
+                plaintext = AESGCM(key).decrypt(
+                    bytes.fromhex(payload[3][2:]),
+                    bytes.fromhex(payload[2][2:] + payload[4][2:]),
+                    None,
+                )
+                assert plaintext == bytes.fromhex(SENDER[2:]) + ZERO + bytes(12)
             spec_file = directory / "spec.yml"
             spec_file.write_text(yaml.safe_dump(spec, sort_keys=False))
             tx_file = directory / "transactions.ndjson"
@@ -101,7 +117,7 @@ def main():
                     "-s",
                     str(spec_file),
                     "-n",
-                    "6",
+                    str(args.count),
                     "--rpc",
                     args.rpc,
                     "-o",
@@ -136,10 +152,16 @@ def main():
                 check=True,
             )
             expected_proxy = "0x363d3d373d3d3d363d735ad10000000000000000000000000000000000005af43d82803e903d91602b57fd5bf3"
-            assert rpc("eth_getCode", portal, "latest") == expected_proxy
-            expected_root = spec["setup"]["steps"][0]["deploy"]["constructor_args"][2]
+            assert all(
+                rpc("eth_getCode", address, "latest") == expected_proxy
+                for address in portals
+            )
             slot = "0x" + keccak(encode(["uint256", "uint256"], [0, 11])).hex()
-            assert rpc("eth_getStorageAt", portal, slot, "latest") == expected_root
+            for offset, address in enumerate(portals):
+                root = spec["setup"]["steps"][offset * 2]["deploy"]["constructor_args"][
+                    2
+                ]
+                assert rpc("eth_getStorageAt", address, slot, "latest") == root
             if mode != "deposit":
                 withdrawal = (TOKEN, ZERO, SENDER, 1, ZERO, 0, 1, b"", b"")
                 selector = keccak(
@@ -171,18 +193,25 @@ def main():
             )
             logs = rpc(
                 "eth_getLogs",
-                {"address": portal, "fromBlock": "0x0", "toBlock": "latest"},
+                {"address": portals, "fromBlock": "0x0", "toBlock": "latest"},
             )
             deposits = [log for log in logs if log["topics"][0] == DEPOSIT]
             withdrawals = [log for log in logs if log["topics"][0] == WITHDRAWAL]
             assert len(deposits) == (
-                6 if mode == "deposit" else 0 if mode == "withdraw" else 3
+                args.count
+                if mode == "deposit"
+                else 0
+                if mode == "withdraw"
+                else (args.count + 1) // 2
             )
-            assert len(withdrawals) == 6 - len(deposits)
+            assert len(withdrawals) == args.count - len(deposits)
             assert all(int(log["data"][-64:], 16) == 1 for log in withdrawals)
-            assert rpc("eth_getStorageAt", portal, slot, "latest") == "0x" + ZERO.hex()
+            assert all(
+                rpc("eth_getStorageAt", address, slot, "latest") == "0x" + ZERO.hex()
+                for address in portals
+            )
             print(
-                f"{mode}: setup + 6 calls passed; {len(deposits)} deposits, {len(withdrawals)} successful withdrawals"
+                f"{mode}: setup + {args.count} calls passed; {len(deposits)} deposits, {len(withdrawals)} successful withdrawals"
             )
 
 

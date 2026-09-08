@@ -5,9 +5,11 @@ It renders exactly `tps * duration` operations, alternating encrypted deposits a
 single-item `processWithdrawals` calls. Set `TXGEN_ZONE_MODE=deposit` or
 `TXGEN_ZONE_MODE=withdraw` for either workload alone (default: `mixed`). Requires
 `uv`, chain ID 1337, and a T10-or-later genesis containing the shared zone runtimes.
+The helper checks the runtime before rendering and gives every run its own output
+directory, so rendering another run cannot overwrite an in-flight workload.
 
-Setup deploys a **local-only fixture**, funds its withdrawal escrow, and approves
-its deposit allowance. The constructor seeds portal storage and returns the exact
+Setup deploys **local-only fixtures**, funds their withdrawal escrow, and approves
+their deposit allowances. Each constructor seeds portal storage and returns the exact
 production ERC-1167 proxy bytecode. Workload transactions execute the node's real
 portal implementation, with no extra wrapper calls. Setup is classified as setup
 by txgen and excluded from workload measurements by `bench send`.
@@ -23,7 +25,10 @@ reserves are zero in the fixture. Deposits contain a valid encrypted recipient a
 memo bound to the predicted portal address and depositor. The fixture has one
 sequencer, open access, and one precommitted withdrawal batch. The renderer hashes
 the batch backwards and supplies the correct suffix for each one-item withdrawal.
-All transactions use one account's protocol nonce lane to preserve FIFO ordering.
+Each portal receives at most 210 deposits, respecting TIP-1096's outstanding
+deposit limit without settlement. Larger deposit or mixed runs deploy additional
+portals during setup. Withdrawal-only runs need one portal. All transactions use
+one account's protocol nonce lane to preserve FIFO ordering.
 The final withdrawal clears the batch; subsequent deposits may remain unprocessed.
 Check `WithdrawalProcessed(success=true)`, not just transaction receipt status.
 
@@ -66,3 +71,5 @@ The check executes setup and six operations in each mode, verifies the productio
 proxy bytes, rejects an incorrect withdrawal suffix, counts deposit and successful
 withdrawal events, and checks that the queue is exhausted. Keep the fixture storage
 layout aligned with `crates/precompiles/src/zone_factory/portal.rs` when it changes.
+Use `--count 421` to cross the portal-capacity boundary in both deposit and mixed
+modes. The helper treats failed or reverted transactions in the report as a failed run.
