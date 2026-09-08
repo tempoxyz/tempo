@@ -25,7 +25,7 @@ use jsonrpsee::{core::client::ClientT as _, http_client::HttpClientBuilder, rpc_
 use rand_core::CryptoRng;
 use reth_ethereum::provider::BlockIdReader as _;
 use tempo_consensus::{feed::FeedStateHandle, follow};
-use tempo_node::rpc::consensus::{ConsensusFeed as _, Query, types::Response};
+use tempo_node::rpc::consensus::{ConsensusFeed as _, Event, Query, types::Response};
 
 static EPOCH_LENGTH: u64 = 10;
 
@@ -68,6 +68,7 @@ async fn follower_rpc_survives_execution_node_handle_drop() {
                 node,
                 runtime: _runtime,
                 exit_fut: _exit_fut,
+                gossip: _gossip,
             } = execution_node;
 
             // Production drops this owner after starting the follower engine. The engine must
@@ -131,12 +132,38 @@ impl<T: FeedStateProvider> FeedStateProvider for &T {
     }
 }
 
+/// The upstream a follower runs against.
+///
+/// `follow::Config` is generic over one upstream actor, so both choices have to
+/// meet in a single type. They share the same [`follow::upstream::Mailbox`], so
+/// nothing else in the engine configuration changes with the choice.
+enum TestUpstream<TContext> {
+    InProcess(follow::upstream::in_process::Actor<TContext>),
+    /// Reports no events. The engine treats an exited actor as a failed
+    /// subsystem, so this parks rather than returning.
+    Silent(TContext),
+}
+
+impl<TContext> follow::upstream::UpstreamActor for TestUpstream<TContext>
+where
+    TContext: Clock + RuntimeMetrics + Spawner,
+{
+    fn start(self, reporter: impl commonware_consensus::Reporter<Activity = Event>) -> Handle<()> {
+        match self {
+            Self::InProcess(actor) => follow::upstream::UpstreamActor::start(actor, reporter),
+            Self::Silent(context) => context.spawn(|_| std::future::pending()),
+        }
+    }
+}
+
 #[derive(Default)]
 struct FollowerBuilder {
     name: Option<String>,
     partition_prefix: Option<String>,
     runtime: Option<ExecutionRuntimeHandle>,
     donor: Option<TestingNode<Context>>,
+    with_gossip: bool,
+    silent_upstream: bool,
 }
 
 impl FollowerBuilder {
@@ -147,6 +174,24 @@ impl FollowerBuilder {
     fn runtime(self, runtime: ExecutionRuntimeHandle) -> Self {
         Self {
             runtime: Some(runtime),
+            ..self
+        }
+    }
+
+    /// Announces `tempo/1` with ingest enabled, so gossiped certificates reach
+    /// the follower's driver.
+    fn gossip(self) -> Self {
+        Self {
+            with_gossip: true,
+            ..self
+        }
+    }
+
+    /// Replaces the in-process upstream with one that emits no events and
+    /// answers no requests.
+    fn silent_upstream(self) -> Self {
+        Self {
+            silent_upstream: true,
             ..self
         }
     }
@@ -187,6 +232,8 @@ impl FollowerBuilder {
             partition_prefix,
             runtime,
             donor,
+            with_gossip,
+            silent_upstream,
         } = self;
         let runtime = runtime.expect("must pass a runtime handle to start a follower");
 
@@ -199,14 +246,15 @@ impl FollowerBuilder {
 
         let partition_prefix = partition_prefix.unwrap_or_else(|| name.clone());
         let feed_state = FeedStateHandle::new();
-        let upstream_execution_node = upstream.execution_node();
-        let upstream_feed_state = upstream.feed_state();
 
         let config = crate::ExecutionNodeConfig {
             secret_key: alloy_primitives::B256::random(),
             validator_key: None,
             feed_state: Some(feed_state.clone()),
             share_sparse_trie_with_payload_builder: false,
+            // A follower is the only mode with a driver that can verify an
+            // inbound certificate, so it is also the only one that ingests.
+            gossip: with_gossip.then(|| crate::execution_runtime::gossip_config(true)),
         };
 
         let (spawn_name, db, rocksdb) = if let Some(donor) = donor {
@@ -225,18 +273,29 @@ impl FollowerBuilder {
             (name.clone(), db, None)
         };
 
-        let node = runtime
+        let mut node = runtime
             .spawn_node(&spawn_name, config, db, rocksdb)
             .await
             .expect("must be able to spawn follower execution node");
 
-        let (upstream, upstream_mailbox) = in_process::init(
+        let (in_process_actor, upstream_mailbox) = in_process::init(
             context.child("upstream"),
             in_process::Config {
-                execution_node: upstream_execution_node,
-                feed: upstream_feed_state,
+                execution_node: upstream.execution_node(),
+                feed: upstream.feed_state(),
             },
         );
+
+        let upstream = if silent_upstream {
+            // Dropping the actor closes the receiving end of the mailbox, so
+            // every upstream request resolves to `None` immediately rather than
+            // waiting out the request timeout. Paired with an actor that reports
+            // no events, this is an upstream the follower cannot reach.
+            drop(in_process_actor);
+            TestUpstream::Silent(context.child("silent_upstream"))
+        } else {
+            TestUpstream::InProcess(in_process_actor)
+        };
 
         let network_identity = node
             .node
@@ -250,7 +309,13 @@ impl FollowerBuilder {
             upstream,
             upstream_mailbox,
             execution_node: node.node.clone().into(),
-            gossip: None,
+            gossip: node
+                .gossip
+                .take()
+                .map(|transport| tempo_consensus::gossip::Config {
+                    transport,
+                    verify_rate: commonware_utils::NZU32!(32),
+                }),
             feed_state: feed_state.clone(),
             partition_prefix,
             epoch_strategy: FixedEpocher::new(commonware_utils::NZU64!(EPOCH_LENGTH)),
@@ -338,6 +403,58 @@ fn follower_bootstraps_from_validator() {
             .get_finalization(Query::Height(1))
             .await
             .unwrap();
+    });
+}
+
+/// A follower with no upstream at all still follows the chain.
+///
+/// Certificates arrive over `tempo/1` gossip and carry only a digest, so every
+/// block body has to come down over devp2p. The upstream answers nothing, which
+/// leaves those two devp2p paths as the only source of progress.
+#[test_traced]
+fn follower_progresses_over_devp2p_without_upstream() {
+    let _ = tempo_eyre::install();
+
+    let warmup_height = 5;
+
+    let setup = Setup::new()
+        .how_many_signers(1)
+        .epoch_length(EPOCH_LENGTH)
+        .gossip(true);
+
+    let cfg = deterministic::Config::default().with_seed(setup.seed);
+
+    let executor = Runner::from(cfg);
+    executor.start(|mut context| async move {
+        let (mut validators, execution_runtime) = setup_validators(&mut context, setup).await;
+        join_all(validators.iter_mut().map(|v| v.start(&context))).await;
+
+        // Join at genesis. A follower that joins later needs certificates for the
+        // heights it missed, and only the upstream serves those by height.
+        let follower = Follower::builder()
+            .runtime(execution_runtime.handle())
+            .gossip()
+            .silent_upstream()
+            .follow(&mut context, &validators[0])
+            .await;
+
+        follower.connect_peers(&validators).await;
+
+        // Catch up first, then take that height as the baseline and require the
+        // follower to move past it. A fixed target could be satisfied by a single
+        // burst of catch-up; a target measured from a baseline cannot.
+        wait_for_height(&context, &follower, warmup_height).await;
+
+        let baseline = context
+            .to_metrics()
+            .for_scope(&follower)
+            .latest_consensus_height()
+            .expect("follower reports a processed height once it has caught up");
+
+        wait_for_height(&context, &follower, baseline + 10).await;
+
+        let finalization = follower.feed.get_finalization(Query::Latest).await.unwrap();
+        assert!(finalization.block.number() >= baseline + 10);
     });
 }
 
