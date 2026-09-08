@@ -331,6 +331,7 @@ where
             views_to_track: 10,
             views_until_leader_skip: 5,
             proposal_return_budget: self.proposal_return_budget,
+            adaptive_pacing_target: None,
             time_to_build_subblock: Duration::from_millis(100),
             subblock_broadcast_interval: Duration::from_millis(50),
             fcu_heartbeat_interval: Duration::from_secs(3),

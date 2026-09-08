@@ -350,9 +350,12 @@ where
                 elector: elector::Random,
                 strategy: Sequential,
 
-                reporter: Reporters::<_, crate::subblocks::Mailbox, _>::from((
-                    self.config.subblocks.clone(),
-                    self.config.marshal.clone(),
+                reporter: Reporters::from((
+                    self.config.application.clone(),
+                    Reporters::<_, crate::subblocks::Mailbox, _>::from((
+                        self.config.subblocks.clone(),
+                        self.config.marshal.clone(),
+                    )),
                 )),
                 partition: format!(
                     "{partition_prefix}_consensus_epoch_{epoch}",

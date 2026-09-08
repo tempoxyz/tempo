@@ -15,6 +15,7 @@ use tempo_node::TempoFullNode;
 
 mod actor;
 mod ingress;
+mod pacing;
 
 pub(super) use actor::Actor;
 pub(crate) use ingress::Mailbox;
@@ -63,6 +64,7 @@ pub(super) struct Config<TContext> {
     /// subtracts time already spent in the view before handing the remaining
     /// budget to the payload builder.
     pub(super) proposal_return_budget: Duration,
+    pub(super) adaptive_pacing_target: Option<Duration>,
 
     /// The epoch strategy used by tempo, to map block heights to epochs.
     pub(super) epoch_strategy: FixedEpocher,
