@@ -216,9 +216,9 @@ reth-revm = { git = "https://github.com/paradigmxyz/reth", rev = "280a763", feat
 revm = { version = "43.0.0", features = ["optional_fee_charge"], default-features = false }
 revm-inspectors = "0.43.0"
 
-alloy-json-abi = { version = "1.7.1", default-features = false }
-alloy-primitives = { version = "1.7.1", default-features = false }
-alloy-sol-types = { version = "1.7.1", default-features = false }
+alloy-json-abi = { version = "1.7.2", default-features = false }
+alloy-primitives = { version = "1.7.2", default-features = false }
+alloy-sol-types = { version = "1.7.2", default-features = false }
 
 alloy = { version = "2.4.1", default-features = false }
 alloy-consensus = { version = "2.4.1", default-features = false }

@@ -26,7 +26,7 @@ pub const fn abi_decoder_config_for_spec(
 ) -> alloy::sol_types::abi::AbiDecoderConfig {
     alloy::sol_types::abi::AbiDecoderConfig::new()
         .memory_limit(ABI_DECODER_MEMORY_LIMIT)
-        .validate(spec.is_t11())
+        .strict(spec.is_t11())
 }
 
 pub mod typed {
