@@ -52,7 +52,7 @@ txgen-tempo generate -s .bench-tmp/txgen-specs/zones.yml -n 100 \
   bench send --rpc-url http://127.0.0.1:8545 --tps 100
 ```
 
-## Rebuild and check
+## Rebuild
 
 The checked-in artifact uses solc 0.8.30, optimizer 200 runs, Cancun EVM. Rebuild:
 
@@ -62,17 +62,6 @@ npm install --prefix "$zone_tools" solc@0.8.30
 NODE_PATH="$zone_tools/node_modules" node contrib/bench/txgen/zones/build.cjs
 ```
 
-Start a disposable local Tempo node using `crates/chainspec/src/genesis/dev.json`,
-`--dev`, and `--http.api eth,net,web3,txpool,tempo`, then run:
-
-```sh
-uv run contrib/bench/txgen/zones/check.py --rpc http://127.0.0.1:18545 \
-  --txgen-bin /path/to/txgen-tempo --bench-bin /path/to/bench
-```
-
-The check executes setup and six operations in each mode, verifies the production
-proxy bytes, rejects an incorrect withdrawal suffix, counts deposit and successful
-withdrawal events, and checks that the queue is exhausted. Keep the fixture storage
-layout aligned with `crates/precompiles/src/zone_factory/portal.rs` when it changes.
-Use `--count 421` to cross the portal-capacity boundary in both deposit and mixed
-modes. The helper treats failed or reverted transactions in the report as a failed run.
+Keep the fixture storage layout aligned with
+`crates/precompiles/src/zone_factory/portal.rs` when it changes.
+The helper treats failed or reverted transactions in the report as a failed run.
