@@ -1,4 +1,3 @@
-# Shared contract fixture and user workloads. Use on a fresh local benchmark chain.
 include: setup.yml
 chain_id: 1337
 gas:
@@ -56,70 +55,61 @@ artifacts:
     abi: ../../vault/abi/VaultFactory.json
     bytecode: ../../vault/bytecodes/VaultFactory.bin
 templates:
-  vault_operation:
+  vault_deposit:
     type: tempo
     from:
       pool: users
-      select: random
+      select:
+        index: 0
     sponsor:
       pool: fee_payers
       select:
         index: 0
     gas_limit: 8000000
-    fee_token: '0x20c0000000000000000000000000000000000000'
-    expiring_nonce: true
-    valid_for_secs: 25
-    calls: []
-sequences:
-  vault_deposits:
-    bindings:
-      user:
-        account:
+    fee_token: "0x20c0000000000000000000000000000000000000"
+    calls:
+    - to: "0x20c0000000000000000000000000000000000000"
+      abi: ERC20
+      function: approve
+      args:
+      - "0x7ab1b8f13760b57021ad9baff0be170259245992"
+      - 1000000
+    - to: "0x7ab1b8f13760b57021ad9baff0be170259245992"
+      abi: UserVault
+      function: deposit
+      args:
+      - 1000000
+      - pool:
           pool: users
-          select: random
-    steps:
-    - name: deposit_pathusd
-      template: vault_operation
-      with:
-        from:
-          var: user.ref
-        calls:
-        - to: '0x20c0000000000000000000000000000000000000'
-          abi: ERC20
-          function: approve
-          args:
-          - '0x7ab1b8f13760b57021ad9baff0be170259245992'
-          - 1000000
-        - to: '0x7ab1b8f13760b57021ad9baff0be170259245992'
-          abi: UserVault
-          function: deposit
-          args:
-          - 1000000
-          - var: user.address
-          - 990000
-  vault_withdrawals:
-    bindings:
-      user:
-        account:
+          select:
+            index: 0
+      - 990000
+  vault_withdraw:
+    type: tempo
+    from:
+      pool: users
+      select:
+        index: 0
+    sponsor:
+      pool: fee_payers
+      select:
+        index: 0
+    gas_limit: 8000000
+    fee_token: "0x20c0000000000000000000000000000000000000"
+    calls:
+    - to: "0x20c000000000000000000000b40ebef7b60e73cf"
+      abi: ERC20
+      function: approve
+      args:
+      - "0x7ab1b8f13760b57021ad9baff0be170259245992"
+      - 1000000
+    - to: "0x7ab1b8f13760b57021ad9baff0be170259245992"
+      abi: UserVault
+      function: redeem
+      args:
+      - 1000000
+      - pool:
           pool: users
-          select: random
-    steps:
-    - name: redeem_pathusd
-      template: vault_operation
-      with:
-        from:
-          var: user.ref
-        calls:
-        - to: '0x20c000000000000000000000b40ebef7b60e73cf'
-          abi: ERC20
-          function: approve
-          args:
-          - '0x7ab1b8f13760b57021ad9baff0be170259245992'
-          - 1000000
-        - to: '0x7ab1b8f13760b57021ad9baff0be170259245992'
-          abi: UserVault
-          function: redeem
-          args:
-          - 1000000
-          - var: user.address
-          - 990000
+          select:
+            index: 0
+      - 990000

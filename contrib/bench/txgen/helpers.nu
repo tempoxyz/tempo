@@ -610,10 +610,18 @@ def txgen-prepare-vault-preset [spec_path: string, accounts: int, chain_id: int]
     let steps = (0..<$accounts | each { |index|
         $template | update id $"($template.id)_($index)" | update bindings.user.account.select.index $index
     })
+    let base = (open ([ ($template_path | path dirname) "base.yml" ] | path join))
+    let workload = ($base.templates | get $"vault_($operation)")
+    let templates = (0..<$accounts | each { |index|
+        { name: $"vault_($operation)_($index)", value: ($workload
+            | update from.select {index: $index}
+            | update calls.1.args.1 {pool: {pool: users, select: {index: $index}}}) }
+    } | transpose -r -d)
+    let mix = (0..<$accounts | each { |index| {template: $"vault_($operation)_($index)", weight: 1} })
     let output_dir = ([ (txgen-repo-root) $TXGEN_HELPER_DEFAULT_RENDERED_SPECS_DIR (random uuid) ] | path join)
     mkdir $output_dir
     let output = ($output_dir | path join ($spec_path | path basename))
-    { include: $spec_path, append: { setup: { steps: $steps } } } | to yaml | save -f $output
+    { include: $spec_path, templates: $templates, mix: $mix, append: { setup: { steps: $steps } } } | to yaml | save -f $output
     $output
 }
 
@@ -692,10 +700,9 @@ def txgen-run-preset-pipeline [
         "generate"
         "-s" $spec_path
         "-n" $tx_count
-        "--duration" $txgen_duration
         "--seed" $TXGEN_HELPER_DEFAULT_SEED
         "--rpc" $generate_rpc_url
-    ]
+    ] | append (if $is_vault { [] } else { ["--duration" $txgen_duration] })
     let txgen_setup_cmd = [
         $txgen_tempo_bin
         "generate"
@@ -759,6 +766,7 @@ def txgen-run-preset-pipeline [
     let use_two_phase_setup = $is_vault or (txgen-spec-has-keychain-setup $spec_path)
     let txgen_cmd_str = (txgen-shell-join ($txgen_cmd | append $txgen_extra_args))
     let bench_cmd = if $use_two_phase_setup { $bench_cmd | append "--skip-setup" } else { $bench_cmd }
+    let bench_cmd = if $is_vault { $bench_cmd | append ["--drain-timeout" "300"] } else { $bench_cmd }
     let bench_cmd_str = (txgen-shell-join $bench_cmd)
     let pipeline = $"set -euo pipefail; ($bench_env_export)ulimit -Sn unlimited && ($txgen_cmd_str) | ($bench_cmd_str)"
 
@@ -767,7 +775,11 @@ def txgen-run-preset-pipeline [
         let bench_setup_cmd_str = (txgen-shell-join ($bench_send_base_cmd | append ["--drain-timeout" 0]))
         let setup_pipeline = $"set -euo pipefail; ($bench_env_export)ulimit -Sn unlimited && ($txgen_setup_cmd_str) | ($bench_setup_cmd_str)"
 
-        print "  Streaming preset setup transactions into bench send..."
+        if $is_vault {
+            print "  Streaming vault setup transactions into bench send..."
+        } else {
+            print "  Streaming keychain setup transactions into bench send..."
+        }
         let setup_result = (bash -lc $setup_pipeline | complete)
         if $setup_result.stdout != "" { print $setup_result.stdout }
         if $setup_result.stderr != "" { print $setup_result.stderr }
@@ -775,9 +787,20 @@ def txgen-run-preset-pipeline [
         if $setup_result.exit_code != 0 {
             return { ok: false, exit_code: $setup_result.exit_code, report_path: $report_path }
         }
+        if $is_vault {
+            # Setup is complete. Do not reserve its nonces again when generating the workload.
+            open $spec_path | reject append | insert setup {steps: []} | to yaml | save -f $spec_path
+        }
     }
 
-    print $"  Streaming up to ($tx_count) txgen transaction\(s\) over ($txgen_duration) into bench send..."
+    if $is_vault {
+        print $"  Streaming ($tx_count) vault transactions at target ($tps) TPS into bench send..."
+    } else {
+        print $"  Streaming up to ($tx_count) txgen transaction\(s\) over ($txgen_duration) into bench send..."
+    }
+    let vault_start_block = if $is_vault {
+        (txgen-rpc-call $generate_rpc_url '{"jsonrpc":"2.0","id":1,"method":"eth_blockNumber","params":[]}').result | into int
+    } else { 0 }
     let result = (bash -lc $pipeline | complete)
     if $result.stdout != "" { print $result.stdout }
     if $result.stderr != "" { print $result.stderr }
@@ -790,9 +813,34 @@ def txgen-run-preset-pipeline [
         return { ok: false, exit_code: 1, report_path: $report_path }
     }
 
-    if $preset_name in ["zones" "vault-deposit" "vault-withdraw"] and (open $report_path).failed > 0 {
-        print $"ERROR: ($preset_name) workload contains failed or reverted transactions; see ($report_path)"
+    if $is_vault and (open $report_path).failed > 0 {
+        print $"ERROR: ($preset_name) workload contains sender failures; see ($report_path)"
         return { ok: false, exit_code: 1, report_path: $report_path }
+    }
+    if $is_vault {
+        # Check block receipts after bench drains the pool, without polling every transaction.
+        let report = (open $report_path)
+        let deadline = (date now) + 60sec
+        mut next_block = $vault_start_block + 1
+        mut included = 0
+        mut reverted = 0
+        while $included < $tx_count and (date now) < $deadline {
+            let last = (txgen-rpc-call $generate_rpc_url '{"jsonrpc":"2.0","id":1,"method":"eth_blockNumber","params":[]}').result | into int
+            while $next_block <= $last {
+                let block = ($next_block | format number | get lowerhex)
+                let payload = ({jsonrpc: "2.0", id: 1, method: eth_getBlockReceipts, params: [$block]} | to json -r)
+                let receipts = (txgen-rpc-call $generate_rpc_url $payload).result | where type == "0x76"
+                $included = $included + ($receipts | length)
+                $reverted = $reverted + ($receipts | where status == "0x0" | length)
+                $next_block = $next_block + 1
+            }
+            # An empty pool can precede canonical inclusion of the last built block.
+            if $included < $tx_count { sleep 200ms }
+        }
+        print $"  Vault receipts: ($included) included, ($reverted) reverted, ($report.sent) submitted"
+        if $included != $tx_count or $reverted != 0 {
+            error make { msg: "Vault workload did not include the full transaction count successfully" }
+        }
     }
     print $"  Report saved: ($report_path)"
     { ok: true, exit_code: 0, report_path: $report_path }

@@ -1,5 +1,4 @@
-# Redeem one share through the configured vault and liquidity pool.
 include: vault/base.yml
 mix:
-- sequence: vault_withdrawals
+- template: vault_withdraw
   weight: 100

@@ -2,9 +2,13 @@
 
 `--preset vault-deposit` measures approval plus a UserVault deposit;
 `--preset vault-withdraw` measures share approval plus redemption. Both use
-pathUSD, three-argument slippage-protected calls, sponsored fees, and expiring
-nonces. The helper funds accounts and completes contract and per-user setup
-before generating the measured workload, so setup does not consume nonce expiry.
+pathUSD, three-argument slippage-protected calls, sponsored fees, and one ordered
+nonce lane per user. Each operation is an atomic multicall template; it has no
+sequence receipt barrier or short expiry that would discard queued work under load.
+The helper completes setup before generating the full target TPS times duration
+transaction count, then checks inclusion and success using block receipts after
+the pool drains. A run can take longer than the requested duration when achieved
+throughput is below the target.
 
 Use a fresh chain-1337 benchmark snapshot for every run. Deployment nonces,
 derived contract addresses, and TIP-403 policy 2 are fixed by the fixture.
