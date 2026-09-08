@@ -358,6 +358,27 @@ jobs:
             fi
           done
 
+      - name: Verify ClickHouse access before provisioning
+        run: |
+          python3 - <<'PY'
+          import os, urllib.request, uuid, json, gzip
+          from pathlib import Path
+
+          def query(sql):
+              request = urllib.request.Request(os.environ["CLICKHOUSE_URL"], data=sql.encode(), headers={
+                  "X-ClickHouse-User": os.environ["CLICKHOUSE_USER"],
+                  "X-ClickHouse-Key": os.environ["CLICKHOUSE_PASSWORD"],
+              })
+              try:
+                  with urllib.request.urlopen(request, timeout=60) as response:
+                      return response.read().decode().strip()
+              except Exception as exc:
+                  raise SystemExit("ClickHouse verification failed: " + type(exc).__name__) from None
+
+          assert query("SELECT 1") == "1"
+          print("ClickHouse authenticated query succeeded")
+          PY
+
       - name: Fetch ClickHouse metric allowlist
         uses: actions/github-script@3a2844b7e9c422d3c10d287c895573f7108da1b3 # v9.0.0
         with:
@@ -746,6 +767,39 @@ jobs:
           fi
           echo "path=$results_dir" >> "$GITHUB_OUTPUT"
           echo "Results directory: $results_dir"
+
+      - name: Verify TCP rows were automatically published
+        run: |
+          python3 - <<'PY'
+          import os, urllib.request, uuid, json, gzip
+          from pathlib import Path
+
+          def query(sql):
+              request = urllib.request.Request(os.environ["CLICKHOUSE_URL"], data=sql.encode(), headers={
+                  "X-ClickHouse-User": os.environ["CLICKHOUSE_USER"],
+                  "X-ClickHouse-Key": os.environ["CLICKHOUSE_PASSWORD"],
+              })
+              try:
+                  with urllib.request.urlopen(request, timeout=60) as response:
+                      return response.read().decode().strip()
+              except Exception as exc:
+                  raise SystemExit("ClickHouse verification failed: " + type(exc).__name__) from None
+
+          root = Path(os.environ["BENCH_RESULTS_DIR"])
+          results = []
+          for phase in ("baseline-1", "feature-1"):
+              report = json.loads((root / phase / "txgen-report.json").read_text())
+              run_id = str(uuid.UUID(report["benchmark_id"]))
+              with gzip.open(root / phase / "txgen-report.samples.ndjson.gz", "rt") as samples:
+                  expected = sum(1 for line in samples if json.loads(line)["name"].startswith("tempo_tcp_"))
+              rows = int(query(f"SELECT count() FROM txgen_metric_samples WHERE run_id='{run_id}' AND startsWith(metric_name, 'tempo_tcp_')"))
+              marker = int(query(f"SELECT count() FROM txgen_runs WHERE run_id='{run_id}'"))
+              result = {"phase": phase, "run_id": run_id, "tcp_archive_rows": expected, "tcp_clickhouse_rows": rows, "run_markers": marker}
+              results.append(result)
+              print(json.dumps(result))
+          (root / "tcp-publication-verification.json").write_text(json.dumps(results, indent=2))
+          assert all(r["tcp_archive_rows"] > 0 and r["tcp_archive_rows"] == r["tcp_clickhouse_rows"] and r["run_markers"] == 1 for r in results), "TCP publication counts differ from archives"
+          PY
 
       - name: Upload artifacts
         if: always()
