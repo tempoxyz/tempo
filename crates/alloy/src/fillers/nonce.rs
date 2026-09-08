@@ -283,7 +283,7 @@ impl<N: Network<TransactionRequest = TempoTransactionRequest>> TxFiller<N> for N
 
         if *nonce == NONCE_NOT_FETCHED || !self.cache_enabled {
             *nonce = if nonce_key.is_zero() {
-                provider.get_transaction_count(from).await?
+                provider.get_transaction_count(from).pending().await?
             } else {
                 let contract = INonce::new(NONCE_PRECOMPILE_ADDRESS, provider);
                 contract
