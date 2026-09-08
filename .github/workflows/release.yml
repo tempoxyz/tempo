@@ -66,15 +66,14 @@ jobs:
           persist-credentials: false
       - uses: tempoxyz/gh-actions/vendor/dtolnay/rust-toolchain@3626124474a987bc74b41fc7ae65b2e23f8e4e4e
       - name: Verify crate version matches tag
-        # Check that the Cargo version starts with the tag,
-        # so that Cargo version 1.4.8 can be matched against both v1.4.8 and v1.4.8-rc.1
+        # Accept the exact Cargo version or a hyphen-delimited prerelease of it.
         env:
           TAG: ${{ needs.get-version.outputs.version }}
         run: |
           tag="$TAG"
           tag=${tag#v}
           cargo_ver=$(cargo metadata --no-deps --format-version 1 | jq -r '.packages[] | select(.name == "tempo").version')
-          [[ "$tag" == "$cargo_ver"* ]] || { echo "Tag $tag doesn't match the Cargo version $cargo_ver"; exit 1; }
+          [[ "$tag" == "$cargo_ver" || "$tag" == "$cargo_ver"-* ]] || { echo "Tag $tag doesn't match the Cargo version $cargo_ver"; exit 1; }
 
   build-release:
     name: Build Release Binaries
