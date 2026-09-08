@@ -665,6 +665,13 @@ def txgen-run-preset-pipeline [
     let is_vault = $preset_name in ["vault-deposit" "vault-withdraw"]
     if $is_vault {
         $spec_path = (txgen-prepare-vault-preset $spec_path $accounts $chain_id)
+        # The checked-in deployments use fixed nonces and transfer policy 2.
+        # Check before funding or submitting any setup transactions.
+        let deployer_nonce = (txgen-rpc-call $generate_rpc_url '{"jsonrpc":"2.0","id":1,"method":"eth_getTransactionCount","params":["0xd7932ce865275be97001a0574441d79b143820ec","pending"]}')
+        let policy_counter = (txgen-rpc-call $generate_rpc_url '{"jsonrpc":"2.0","id":1,"method":"eth_call","params":[{"to":"0x403c000000000000000000000000000000000000","data":"0x3cc32f9c"},"pending"]}')
+        if ($deployer_nonce.result | into int) != 0 or ($policy_counter.result | into int) != 2 {
+            error make { msg: "Vault presets require a fresh fixture: deployers[0] nonce must be 0 and TIP-403 policyIdCounter must be 2. Restore the benchmark snapshot before rerunning." }
+        }
     }
     let existing_recipient_start = ($env | get --optional TXGEN_EXISTING_RECIPIENTS_START | default "0" | into int)
     let existing_recipient_end = ($env | get --optional TXGEN_EXISTING_RECIPIENTS_END | default "0" | into int)
