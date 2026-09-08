@@ -43,6 +43,7 @@ use commonware_utils::{
     Acknowledgement as _, N3f1, TryFromIterator as _, acknowledgement::Exact, ordered,
 };
 use futures::{StreamExt as _, channel::mpsc};
+use rand::{SeedableRng as _, rngs::StdRng};
 use rand_core::CryptoRng;
 use reth_node_core::primitives::SealedBlock;
 use tempo_dkg_onchain_artifacts::OnchainDkgOutcome;
@@ -720,6 +721,59 @@ pub(super) struct RevealedRecoveryFixture {
     pub(super) recovered_share: Share,
     signed_logs: Vec<SignedDealerLog<MinSig, PrivateKey>>,
     recovered_state: State,
+}
+
+/// Produce matching reshare commitments for either reveal mode, with two of
+/// the first three (selected) dealers revealing the same player's dealing.
+pub(super) fn reshare_logs_with_two_reveals(
+    info: &dkg::Info<MinSig, PublicKey>,
+    dealers: &[(PrivateKey, Share)],
+    players: &[PrivateKey],
+    revealed_player: &PublicKey,
+) -> Vec<SignedDealerLog<MinSig, PrivateKey>> {
+    dealers
+        .iter()
+        .enumerate()
+        .map(|(index, (key, share))| {
+            // V1 binds signatures to a different transcript. Reuse the same
+            // polynomial randomness, but generate valid ACKs/logs for each mode.
+            let (mut dealer, public, private) = dkg::Dealer::start::<N3f1>(
+                StdRng::seed_from_u64(index as u64),
+                info.clone(),
+                key.clone(),
+                Some(share.clone()),
+            )
+            .unwrap();
+            for (player, private) in private {
+                if index < 2 && &player == revealed_player {
+                    continue;
+                }
+                let key_for_player = players
+                    .iter()
+                    .find(|key| key.public_key() == player)
+                    .unwrap();
+                let ack = dkg::Player::new(info.clone(), key_for_player.clone())
+                    .unwrap()
+                    .dealer_message::<N3f1>(key.public_key(), public.clone(), private)
+                    .unwrap()
+                    .unwrap();
+                dealer.receive_player_ack(player, ack).unwrap();
+            }
+            let signed = dealer.finalize::<N3f1>();
+            let (_, log) = signed.clone().check(info).unwrap();
+            let dkg::DealerLogSummary::Ok { acks, reveals } = log.summary() else {
+                panic!("fixture must contain usable dealer logs");
+            };
+            let expected_reveals = if index < 2 {
+                ordered::Set::try_from_iter([revealed_player.clone()]).unwrap()
+            } else {
+                ordered::Set::default()
+            };
+            assert_eq!(reveals, expected_reveals);
+            assert_eq!(acks.len() + reveals.len(), players.len());
+            signed
+        })
+        .collect()
 }
 
 pub(super) fn revealed_recovery_fixture(

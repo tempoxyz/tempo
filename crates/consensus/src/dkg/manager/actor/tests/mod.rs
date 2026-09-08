@@ -7,17 +7,20 @@ use std::time::Duration;
 use alloy_primitives::B256;
 use commonware_consensus::types::{Epoch, Height};
 use commonware_cryptography::{
-    bls12381::primitives::group::{Private, Share},
+    bls12381::primitives::{
+        group::{Private, Share},
+        sharing::Mode,
+    },
     ed25519::PrivateKey,
 };
 use commonware_runtime::{Runner as _, Supervisor as _, deterministic::Runner};
-use commonware_utils::ordered::Quorum as _;
+use commonware_utils::{TryFromIterator as _, ordered, ordered::Quorum as _};
 use futures::channel::oneshot;
 
 use super::*;
 use harness::{
     EpochEvent, Harness, StubExecutionProvider, TestNetwork, block, dkg_state, header,
-    outcome_header, revealed_recovery_fixture,
+    outcome_header, reshare_logs_with_two_reveals, revealed_recovery_fixture,
 };
 
 #[test]
@@ -737,6 +740,112 @@ fn epoch_shares_only_distributed_in_the_first_half() {
                 },
             ]
         );
+    });
+}
+
+#[test]
+fn finalized_blocks_preserve_legacy_revealed_share_calculation() {
+    Runner::default().start(|mut context| async move {
+        let (mut state, keys, shares) = dkg_state(&mut context, Epoch::new(1), 4, false);
+        let mut dealers = keys.into_iter().zip(shares).collect::<Vec<_>>();
+        dealers.sort_by_key(|(key, _)| key.public_key());
+        let players = (0..7).map(PrivateKey::from_seed).collect::<Vec<_>>();
+        state.players =
+            ordered::Set::try_from_iter(players.iter().map(|k| k.public_key())).unwrap();
+        let revealed_player = players[6].public_key();
+
+        // Resharing from 4 to 7 players selects 3 dealer commitments. V0 needs
+        // f_new + 1 = 3 reveals; V1 needs quorum_old - f_old = 3 - 1 = 2.
+        // Construct both reference rounds independently of Round::from_state,
+        // so changing the actor's version cannot also change the expectation.
+        let mut reference = |reveal| {
+            let info = dkg::Info::new::<N3f1>(
+                crate::config::NAMESPACE,
+                state.epoch.get(),
+                Some(state.output.clone()),
+                Mode::NonZeroCounter,
+                reveal,
+                state.dealers().clone(),
+                state.players().clone(),
+            )
+            .unwrap();
+            let signed = reshare_logs_with_two_reveals(&info, &dealers, &players, &revealed_player);
+            let mut logs = Logs::<MinSig, PublicKey, N3f1>::new(info.clone());
+            for signed in &signed {
+                let (dealer, log) = signed.clone().check(&info).unwrap();
+                logs.record(dealer, log);
+            }
+            let output = observe::<_, _, N3f1, Batch>(&mut context, logs, &Sequential).unwrap();
+            let outcome = OnchainDkgOutcome {
+                epoch: state.epoch.next(),
+                output,
+                next_players: state.players().clone(),
+                is_next_full_dkg: false,
+            };
+            (signed, outcome)
+        };
+        let (_, new_outcome) = reference(dkg::Reveal::V1);
+        #[expect(deprecated, reason = "pin the pre-upgrade revealed-share calculation")]
+        let (legacy_logs, legacy_outcome) = reference(dkg::Reveal::V0);
+
+        assert!(legacy_outcome.output.revealed().is_empty());
+        assert_eq!(
+            new_outcome.output.revealed(),
+            &ordered::Set::try_from_iter([revealed_player]).unwrap()
+        );
+        assert_eq!(legacy_outcome.output.public(), new_outcome.output.public());
+        assert_eq!(
+            legacy_outcome.output.players(),
+            new_outcome.output.players()
+        );
+        assert_eq!(
+            legacy_outcome.output.dealers(),
+            new_outcome.output.dealers()
+        );
+        assert_eq!(
+            legacy_outcome.output.dealers(),
+            &ordered::Set::try_from_iter(dealers.iter().take(3).map(|(k, _)| k.public_key()))
+                .unwrap()
+        );
+
+        // Run the real actor as an observer, using only finalized block input.
+        let mut harness = Harness::builder(context.child("test"), "legacy_reveals")
+            .identity(PrivateKey::from_seed(100))
+            .build()
+            .await;
+        harness.execution.set_next_players(state.players().clone());
+        let mut previous = outcome_header(Height::new(9), &state);
+        harness.execution.add_header(previous.clone());
+        harness.start().await;
+
+        // A contiguous epoch prefix with signed dealer logs (including their
+        // ACKs and reveals) in all four post-midpoint, non-boundary blocks.
+        let mut legacy_logs = legacy_logs.into_iter();
+        for height in 10..=18 {
+            let mut next = header(Height::new(height));
+            next.inner.parent_hash = previous.hash_slow();
+            if height >= 15 {
+                next.inner.extra_data = legacy_logs.next().unwrap().encode().into();
+            }
+            harness.marshal.add_block(block(next.clone()));
+            harness.report_finalized_header(next.clone()).await;
+            previous = next;
+        }
+        assert!(legacy_logs.next().is_none());
+        let actual = harness
+            .mailbox()
+            .get_dkg_outcome(Digest(previous.hash_slow()), Height::new(18))
+            .await
+            .unwrap();
+
+        // Full equality pins V0's transcript as well as its revealed set. The
+        // explicit set comparison catches the calculation change itself.
+        assert_eq!(actual, legacy_outcome);
+        assert_ne!(actual.output.revealed(), new_outcome.output.revealed());
+        assert_ne!(actual.encode(), new_outcome.encode());
+        assert!(harness.marshal.ancestry_reads().is_empty());
+        harness.stop().await;
+        assert_eq!(harness.storage().logs_for_epoch(state.epoch).count(), 4);
     });
 }
 
