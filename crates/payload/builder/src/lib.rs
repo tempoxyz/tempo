@@ -610,20 +610,15 @@ where
             self.config.enable_parallel,
         );
         let mut best_txs = if self.config.enable_prewarming {
+            let prewarming = BestTransactionsPrewarming::new(prewarm_ctx, raw_best_txs)
+                .with_build_limits(
+                    &cancel,
+                    payload_build_budget.and_then(|budget| start.checked_add(budget)),
+                );
             if self.config.enable_parallel {
-                PayloadTransactions::Parallel(
-                    BestTransactionsPrewarming::new(prewarm_ctx, raw_best_txs).with_build_limits(
-                        &cancel,
-                        payload_build_budget.and_then(|budget| start.checked_add(budget)),
-                    ),
-                )
+                PayloadTransactions::Parallel(prewarming)
             } else {
-                PayloadTransactions::Prewarming(StateAwareBestTransactions::new(
-                    BestTransactionsPrewarming::new(prewarm_ctx, raw_best_txs).with_build_limits(
-                        &cancel,
-                        payload_build_budget.and_then(|budget| start.checked_add(budget)),
-                    ),
-                ))
+                PayloadTransactions::Prewarming(StateAwareBestTransactions::new(prewarming))
             }
         } else {
             PayloadTransactions::Sequential(StateAwareBestTransactions::new(Box::new(raw_best_txs)))
