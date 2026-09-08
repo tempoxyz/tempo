@@ -13,6 +13,7 @@ publish = false
 [workspace]
 members = [
   "bin/tempo",
+  "bin/tempo-monitor",
   "bin/tempo-sidecar",
   "crates/alloy",
   "crates/chainspec",
@@ -32,6 +33,7 @@ members = [
   "crates/precompiles",
   "crates/precompiles-macros",
   "crates/primitives",
+  "crates/monitor",
   "crates/contracts",
   "crates/telemetry-util",
   "crates/transaction-pool",
@@ -141,6 +143,7 @@ tempo-payload-types = { path = "crates/payload/types", default-features = false 
 tempo-precompiles = { path = "crates/precompiles", default-features = false }
 tempo-precompiles-macros = { path = "crates/precompiles-macros" }
 tempo-primitives = { path = "crates/primitives", default-features = false }
+monitor = { path = "crates/monitor", default-features = false }
 tempo-contracts = { path = "crates/contracts", default-features = false, features = ["serde"] }
 tempo-telemetry-util = { path = "crates/telemetry-util", default-features = false }
 tempo-transaction-pool = { path = "crates/transaction-pool", default-features = false }
@@ -165,6 +168,7 @@ reth-engine-tree = { git = "https://github.com/paradigmxyz/reth", rev = "5f02aa3
 reth-errors = { git = "https://github.com/paradigmxyz/reth", rev = "5f02aa3" }
 reth-eth-wire-types = { git = "https://github.com/paradigmxyz/reth", rev = "5f02aa3" }
 reth-etl = { git = "https://github.com/paradigmxyz/reth", rev = "5f02aa3" }
+reth-exex = { git = "https://github.com/paradigmxyz/reth", rev = "5f02aa3" }
 reth-ethereum = { git = "https://github.com/paradigmxyz/reth", rev = "5f02aa3" }
 reth-ethereum-cli = { git = "https://github.com/paradigmxyz/reth", rev = "5f02aa3" }
 reth-ethereum-consensus = { git = "https://github.com/paradigmxyz/reth", rev = "5f02aa3" }

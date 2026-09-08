@@ -3,6 +3,25 @@ use tempo_node::TempoNode;
 /// Function used to modify the [`TempoNode`] before launch.
 pub type TempoNodeMapper = dyn FnOnce(TempoNode) -> TempoNode + Send + 'static;
 
+#[cfg(feature = "exex-overrides")]
+pub(crate) mod exex {
+    use std::{future::Future, pin::Pin};
+
+    use reth_exex::ExExContext;
+    use tempo_node::TempoNodeAdapter;
+
+    /// Boxed running ExEx future.
+    pub(crate) type TempoBoxedExEx = Pin<Box<dyn Future<Output = eyre::Result<()>> + Send>>;
+
+    /// Boxed ExEx initialization future.
+    pub(crate) type TempoBoxedExExLauncher =
+        Pin<Box<dyn Future<Output = eyre::Result<TempoBoxedExEx>> + Send>>;
+
+    /// Function used to create a Tempo ExEx from its Reth context.
+    pub(crate) type TempoExExInstaller =
+        dyn FnOnce(ExExContext<TempoNodeAdapter>) -> TempoBoxedExExLauncher + Send + 'static;
+}
+
 /// Optional programmatic overrides for [`tempo_main_with`](crate::tempo_main_with).
 ///
 /// These hooks are applied during startup after CLI arguments have been parsed.
@@ -51,6 +70,8 @@ pub type TempoNodeMapper = dyn FnOnce(TempoNode) -> TempoNode + Send + 'static;
 #[derive(Default)]
 pub struct TempoOverrides {
     pub(crate) tempo_node_mapper: Option<Box<TempoNodeMapper>>,
+    #[cfg(feature = "exex-overrides")]
+    pub(crate) exex_installer: Option<(String, Box<exex::TempoExExInstaller>)>,
 }
 
 impl TempoOverrides {
@@ -78,6 +99,34 @@ impl TempoOverrides {
             Some(mapper) => mapper(node),
             None => node,
         }
+    }
+}
+
+#[cfg(feature = "exex-overrides")]
+impl TempoOverrides {
+    /// Installs an ExEx in the Tempo node launch path.
+    pub fn install_exex<F, R, E>(mut self, id: impl Into<String>, exex: F) -> Self
+    where
+        F: FnOnce(reth_exex::ExExContext<tempo_node::TempoNodeAdapter>) -> R + Send + 'static,
+        R: std::future::Future<Output = eyre::Result<E>> + Send + 'static,
+        E: std::future::Future<Output = eyre::Result<()>> + Send + 'static,
+    {
+        self.exex_installer = Some((
+            id.into(),
+            Box::new(move |ctx| {
+                Box::pin(async move {
+                    let exex = exex(ctx).await?;
+                    Ok(Box::pin(exex) as exex::TempoBoxedExEx)
+                })
+            }),
+        ));
+        self
+    }
+
+    pub(crate) fn take_exex_installer(
+        &mut self,
+    ) -> Option<(String, Box<exex::TempoExExInstaller>)> {
+        self.exex_installer.take()
     }
 }
 

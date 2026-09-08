@@ -7096,6 +7096,32 @@ dependencies = [
 ]
 
 [[package]]
+name = "monitor"
+version = "1.13.2"
+dependencies = [
+ "alloy-consensus",
+ "alloy-eips",
+ "alloy-primitives",
+ "eyre",
+ "futures",
+ "reth-db",
+ "reth-db-api",
+ "reth-exex",
+ "reth-node-api",
+ "reth-primitives-traits",
+ "reth-storage-api",
+ "serde",
+ "serde_json",
+ "tempfile",
+ "tempo-contracts",
+ "tempo-hardfork",
+ "tempo-primitives",
+ "thiserror 2.0.18",
+ "tokio",
+ "tracing",
+]
+
+[[package]]
 name = "more-asserts"
 version = "0.3.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -13338,6 +13364,7 @@ dependencies = [
  "reth-ethereum",
  "reth-ethereum-cli",
  "reth-etl",
+ "reth-exex",
  "reth-metrics",
  "reth-network-api",
  "reth-network-peers",
@@ -13724,6 +13751,17 @@ dependencies = [
  "paste",
  "serde",
  "serde_json",
+]
+
+[[package]]
+name = "tempo-monitor"
+version = "1.13.2"
+dependencies = [
+ "eyre",
+ "monitor",
+ "tempo",
+ "tokio",
+ "tracing",
 ]
 
 [[package]]

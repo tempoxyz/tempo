@@ -1,0 +1,28 @@
+[package]
+name = "tempo-monitor"
+description = "Tempo monitor sidecar"
+
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+authors.workspace = true
+license.workspace = true
+homepage.workspace = true
+repository.workspace = true
+categories.workspace = true
+keywords.workspace = true
+publish.workspace = true
+
+[lints]
+workspace = true
+
+[dependencies]
+eyre.workspace = true
+monitor = { workspace = true, features = ["reth"] }
+tempo = { path = "../tempo", features = ["exex-overrides"] }
+tokio.workspace = true
+tracing.workspace = true
+
+[[bin]]
+name = "tempo-monitor"
+path = "src/main.rs"

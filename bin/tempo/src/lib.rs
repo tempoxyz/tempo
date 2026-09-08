@@ -69,6 +69,8 @@ use tempo_consensus::{feed as consensus_feed, run_consensus_stack, run_follow_st
 use tempo_contracts::precompiles::{ZONE_FACTORY_ADDRESS, initial_zone_factory_config};
 use tempo_evm::{TempoEvmConfig, consensus::TempoConsensus};
 use tempo_faucet::faucet::{TempoFaucetExt, TempoFaucetExtApiServer};
+#[cfg(feature = "exex-overrides")]
+use tempo_node::TempoNodeAdapter;
 pub use tempo_node::{
     AccountInfoReader, AddressFilter, InvalidPoolTransactionError, PoolTransaction,
     PoolTransactionError, StatefulValidationFn, StatelessValidationFn, TempoNode, TempoNodeArgs,
@@ -511,33 +513,38 @@ pub fn tempo_main_with(mut overrides: TempoOverrides) -> eyre::Result<()> {
             url => Some(url.to_string()),
         };
 
+        let tempo_node = overrides.apply_tempo_node({
+            let node = TempoNode::new(&args.node_args, validator_key);
+            match gossip_protocol_handler {
+                Some(protocol_handler) => node.with_finalization_cert_gossip(protocol_handler),
+                None => node,
+            }
+        });
+        let is_following_uncertified = args.is_following_uncertified();
+        let follow = args.follow.clone();
+        let args_for_builder = args.clone();
+
+        #[cfg(feature = "exex-overrides")]
+        let exex_installer = overrides.take_exex_installer();
+
         let NodeHandle {
             node,
             node_exit_future,
         } = builder
-            .node(overrides.apply_tempo_node({
-                let node = TempoNode::new(&args.node_args, validator_key);
-                match gossip_protocol_handler {
-                    Some(protocol_handler) => {
-                        node.with_finalization_cert_gossip(protocol_handler)
-                    }
-                    None => node,
-                }
-            }))
-            .apply(|mut builder: WithLaunchContext<_>| {
+            .node(tempo_node)
+            .apply(move |mut builder: WithLaunchContext<_>| {
                 // Uncertified follower mode: set debug RPC when certification is off
-                if args.is_following_uncertified() {
-                    let follow_url = args
-                        .follow
+                if is_following_uncertified {
+                    let follow_url = follow
                         .as_ref()
                         .and_then(|follow| follow.resolve_url(&builder.config().chain));
                     builder.config_mut().debug.rpc_consensus_url = follow_url;
                 }
 
                 let has_consensus_engine =
-                    args.has_consensus_engine(builder.config().dev.dev);
+                    args_for_builder.has_consensus_engine(builder.config().dev.dev);
 
-                builder.extend_rpc_modules(move |ctx| {
+                let builder = builder.extend_rpc_modules(move |ctx| {
                     if faucet_args.enabled {
                         let faucet_ext = TempoFaucetExt::new(
                             faucet_args.addresses(),
@@ -556,7 +563,25 @@ pub fn tempo_main_with(mut overrides: TempoOverrides) -> eyre::Result<()> {
                     }
 
                     Ok(())
-                })
+                });
+
+                #[cfg(feature = "exex-overrides")]
+                {
+                    if let Some((id, installer)) = exex_installer {
+                        builder.install_exex(
+                            id,
+                            move |ctx: reth_exex::ExExContext<TempoNodeAdapter>| {
+                                installer(ctx)
+                            },
+                        )
+                    } else {
+                        builder
+                    }
+                }
+                #[cfg(not(feature = "exex-overrides"))]
+                {
+                    builder
+                }
             })
             .launch_with_debug_capabilities()
             .await
