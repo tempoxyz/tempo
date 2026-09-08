@@ -31,7 +31,7 @@ use tempo_contracts::precompiles::{
     ADDRESS_REGISTRY_ADDRESS, CURRENT_COMMITTEE_ADDRESS, ICurrentCommittee, INITIAL_FACTORY_OWNER,
     InitialZoneFactoryAccount, RECEIVE_POLICY_GUARD_ADDRESS, SIGNATURE_VERIFIER_ADDRESS,
     STORAGE_CREDITS_ADDRESS, TIP20_CHANNEL_RESERVE_ADDRESS, VALIDATOR_CONFIG_V2_ADDRESS,
-    initial_zone_factory_state, t12_zone_factory_state,
+    initial_zone_factory_state, t13_zone_factory_state,
 };
 use tempo_primitives::{
     SubBlock, SubBlockMetadata, TempoReceipt, TempoTxEnvelope, TempoTxType,
@@ -270,9 +270,9 @@ where
         Ok(())
     }
 
-    /// Exercises the shared runtime upgrade path at T12.
+    /// Exercises the shared runtime upgrade path at T13.
     fn upgrade_zone_runtimes_at_boundary(&mut self) -> Result<(), BlockExecutionError> {
-        let [_, portal, verifier, messenger] = t12_zone_factory_state(INITIAL_FACTORY_OWNER);
+        let [_, portal, verifier, messenger] = t13_zone_factory_state(INITIAL_FACTORY_OWNER);
         self.install_zone_runtimes_at_boundary([portal, verifier, messenger])
     }
 
@@ -650,7 +650,7 @@ where
         if self.inner.spec.is_t10_active_at_timestamp(timestamp) {
             self.deploy_zone_factory_at_boundary()?;
         }
-        if self.inner.spec.is_t12_active_at_timestamp(timestamp) {
+        if self.inner.spec.is_t13_active_at_timestamp(timestamp) {
             self.upgrade_zone_runtimes_at_boundary()?;
         }
 
@@ -880,7 +880,10 @@ mod tests {
             CURRENT_COMMITTEE_ADDRESS, ICurrentCommittee, PATH_USD_ADDRESS, ZONE_FACTORY_ADDRESS,
             ZONE_MESSENGER_ADDRESS, ZONE_PORTAL_IMPL_ADDRESS, ZONE_VERIFIER_ADDRESS,
         },
-        zones::{T12_ZONE_MESSENGER_RUNTIME, T12_ZONE_PORTAL_RUNTIME, T12_ZONE_VERIFIER_RUNTIME},
+        zones::{
+            T13_ZONE_MESSENGER_RUNTIME, T13_ZONE_PORTAL_RUNTIME, T13_ZONE_VERIFIER_RUNTIME,
+            ZONE_MESSENGER_RUNTIME, ZONE_PORTAL_RUNTIME, ZONE_VERIFIER_RUNTIME,
+        },
     };
     use tempo_dkg_onchain_artifacts::OnchainDkgOutcome;
     use tempo_primitives::{
@@ -2104,6 +2107,65 @@ mod tests {
     }
 
     #[test]
+    fn zone_runtime_upgrade_activates_at_t13() {
+        for (activation, expected_runtimes) in [
+            (
+                u64::MAX,
+                [
+                    ZONE_PORTAL_RUNTIME,
+                    ZONE_VERIFIER_RUNTIME,
+                    ZONE_MESSENGER_RUNTIME,
+                ],
+            ),
+            (
+                0,
+                [
+                    T13_ZONE_PORTAL_RUNTIME,
+                    T13_ZONE_VERIFIER_RUNTIME,
+                    T13_ZONE_MESSENGER_RUNTIME,
+                ],
+            ),
+        ] {
+            let mut genesis = DEV.genesis().clone();
+            genesis
+                .config
+                .extra_fields
+                .insert_value("t13Time".into(), activation)
+                .unwrap();
+            let chainspec = Arc::new(TempoChainSpec::from_genesis(genesis));
+            let mut db = State::builder().with_bundle_update().build();
+            let mut executor = TestExecutorBuilder::default()
+                .with_spec(if activation == 0 {
+                    TempoHardfork::T13
+                } else {
+                    TempoHardfork::T12
+                })
+                .with_parent_beacon_block_root(B256::ZERO)
+                .build(&mut db, &chainspec);
+            executor.apply_pre_execution_changes().unwrap();
+            drop(executor);
+
+            for (address, expected) in [
+                ZONE_PORTAL_IMPL_ADDRESS,
+                ZONE_VERIFIER_ADDRESS,
+                ZONE_MESSENGER_ADDRESS,
+            ]
+            .into_iter()
+            .zip(expected_runtimes)
+            {
+                let installed = db
+                    .load_cache_account(address)
+                    .unwrap()
+                    .account_info()
+                    .unwrap()
+                    .code
+                    .unwrap();
+                assert_eq!(installed.original_bytes(), expected);
+            }
+        }
+    }
+
+    #[test]
     fn test_zone_runtime_hardfork_installation() {
         assert_eq!(
             INITIAL_FACTORY_OWNER,
@@ -2149,15 +2211,15 @@ mod tests {
         for (destination, expected) in [
             (
                 ZONE_PORTAL_IMPL_ADDRESS,
-                Bytecode::new_legacy(T12_ZONE_PORTAL_RUNTIME),
+                Bytecode::new_legacy(T13_ZONE_PORTAL_RUNTIME),
             ),
             (
                 ZONE_VERIFIER_ADDRESS,
-                Bytecode::new_legacy(T12_ZONE_VERIFIER_RUNTIME),
+                Bytecode::new_legacy(T13_ZONE_VERIFIER_RUNTIME),
             ),
             (
                 ZONE_MESSENGER_ADDRESS,
-                Bytecode::new_legacy(T12_ZONE_MESSENGER_RUNTIME),
+                Bytecode::new_legacy(T13_ZONE_MESSENGER_RUNTIME),
             ),
         ] {
             let installed = db
@@ -2174,7 +2236,7 @@ mod tests {
         assert_eq!(
             calls.len(),
             3,
-            "T10 installation and T12 replacement must each dispatch an update"
+            "T10 installation and T13 replacement must each dispatch an update"
         );
         assert!(calls[0].contains_key(&ZONE_FACTORY_ADDRESS));
         for address in [
@@ -2188,7 +2250,7 @@ mod tests {
             );
             assert!(
                 calls[2].contains_key(&address),
-                "T12 runtime must be installed in the runtime state hook"
+                "T13 runtime must be installed in the runtime state hook"
             );
         }
     }

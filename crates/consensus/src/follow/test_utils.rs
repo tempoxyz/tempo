@@ -27,31 +27,13 @@ use tempo_dkg_onchain_artifacts::OnchainDkgOutcome;
 use tempo_node::rpc::consensus::CertifiedBlock;
 use tempo_primitives::{Block as TempoBlock, BlockBody, TempoHeader};
 
-use super::driver::{ExecutionProvider, Executor, Marshal};
+use super::driver::{ExecutionProvider, Marshal};
 use crate::{
     consensus::{Block, Digest},
     test_utils::make_certificate,
 };
 
 pub(crate) use crate::test_utils::{DkgFixture, dkg_fixture};
-
-/// Records finalizations sent to execution.
-#[derive(Clone, Default)]
-pub(crate) struct StubExecutor {
-    finalizations: Arc<Mutex<Vec<(Round, Digest)>>>,
-}
-
-impl StubExecutor {
-    pub(crate) fn finalizations(&self) -> Vec<(Round, Digest)> {
-        self.finalizations.lock().clone()
-    }
-}
-
-impl Executor for StubExecutor {
-    fn finalization(&self, round: Round, digest: Digest) {
-        self.finalizations.lock().push((round, digest));
-    }
-}
 
 type ConsensusActivity = Activity<Scheme<PublicKey, MinSig>, Digest>;
 

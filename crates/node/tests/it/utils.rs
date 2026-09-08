@@ -273,7 +273,8 @@ pub(crate) const TEST_MNEMONIC: &str =
 use alloy::{
     network::Ethereum,
     primitives::Address,
-    providers::{PendingTransactionBuilder, Provider},
+    providers::{PendingTransactionBuilder, Provider, RootProvider},
+    rpc::client::RpcClient,
     sol_types::SolEvent,
     transports::http::reqwest::Url,
 };
@@ -287,6 +288,7 @@ use reth_node_builder::{NodeBuilder, NodeConfig, NodeHandle, rpc::RethRpcAddOns}
 use reth_node_core::args::RpcServerArgs;
 use reth_rpc_builder::RpcModuleSelection;
 use std::{sync::Arc, time::Duration};
+use tempo_alloy::{TempoNetwork, rpc::TempoTransactionReceipt};
 use tempo_chainspec::{
     hardfork::{TempoHardfork, TempoHardforks},
     spec::TempoChainSpec,
@@ -383,6 +385,28 @@ pub(crate) async fn setup_test_node(
     };
 
     Ok((setup.http_url, setup.local_node))
+}
+
+pub(crate) trait PendingTransactionBuilderExt {
+    /// Poll the receipt using Tempo's AA-compatible receipt type.
+    async fn get_tempo_receipt(self) -> eyre::Result<TempoTransactionReceipt>;
+}
+
+impl PendingTransactionBuilderExt for PendingTransactionBuilder<Ethereum> {
+    async fn get_tempo_receipt(self) -> eyre::Result<TempoTransactionReceipt> {
+        let (provider, config) = self.split();
+        let client = RpcClient::new(
+            provider.client().transport().clone(),
+            provider.client().is_local(),
+        )
+        .with_poll_interval(provider.client().poll_interval());
+        let provider = RootProvider::<TempoNetwork>::new(client);
+        // get_receipt also polls independently of the heartbeat for one confirmation,
+        // so it can recover when the heartbeat misses the block containing the transaction.
+        Ok(PendingTransactionBuilder::from_config(provider, config)
+            .get_receipt()
+            .await?)
+    }
 }
 
 pub(crate) async fn await_receipts(
