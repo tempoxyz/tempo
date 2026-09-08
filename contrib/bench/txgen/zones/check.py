@@ -7,6 +7,7 @@
 import argparse
 import json
 import subprocess
+import sys
 import tempfile
 from pathlib import Path
 from urllib.parse import urlparse
@@ -125,6 +126,13 @@ def main():
                 ],
                 check=True,
             )
+            filtered = subprocess.run(
+                [sys.executable, str(Path(__file__).with_name("stream.py"))],
+                input=tx_file.read_bytes(),
+                capture_output=True,
+                check=True,
+            )
+            tx_file.write_bytes(filtered.stdout)
             transactions = [
                 json.loads(line) for line in tx_file.read_text().splitlines()
             ]

@@ -29,6 +29,8 @@ Each portal receives at most 210 deposits, respecting TIP-1096's outstanding
 deposit limit without settlement. Larger deposit or mixed runs deploy additional
 portals during setup. Withdrawal-only runs need one portal. All transactions use
 one account's protocol nonce lane to preserve FIFO ordering.
+The helper removes txgen's sequence receipt barriers from workload records;
+protocol nonces enforce their execution order. Setup retains its receipt barriers.
 The final withdrawal clears the batch; subsequent deposits may remain unprocessed.
 Check `WithdrawalProcessed(success=true)`, not just transaction receipt status.
 
@@ -46,7 +48,8 @@ For manual generation (before any transaction consumes the deployer's current no
 uv run contrib/bench/txgen/zones/render.py --count 100 --nonce 0 \
   --output .bench-tmp/txgen-specs/zones.yml
 txgen-tempo generate -s .bench-tmp/txgen-specs/zones.yml -n 100 \
-  --rpc http://127.0.0.1:8545 | bench send --rpc-url http://127.0.0.1:8545 --tps 100
+  --rpc http://127.0.0.1:8545 | python3 contrib/bench/txgen/zones/stream.py | \
+  bench send --rpc-url http://127.0.0.1:8545 --tps 100
 ```
 
 ## Rebuild and check

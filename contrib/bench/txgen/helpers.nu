@@ -753,7 +753,11 @@ def txgen-run-preset-pipeline [
     let txgen_cmd_str = (txgen-shell-join ($txgen_cmd | append $txgen_extra_args))
     let bench_cmd = if $use_two_phase_keychain_setup { $bench_cmd | append "--skip-setup" } else { $bench_cmd }
     let bench_cmd_str = (txgen-shell-join $bench_cmd)
-    let pipeline = $"set -euo pipefail; ($bench_env_export)ulimit -Sn unlimited && ($txgen_cmd_str) | ($bench_cmd_str)"
+    let workload_filter = if $preset_name == "zones" {
+        let filter = ([ (txgen-repo-root) "contrib/bench/txgen/zones/stream.py" ] | path join)
+        $" | (txgen-shell-join ["python3" $filter])"
+    } else { "" }
+    let pipeline = $"set -euo pipefail; ($bench_env_export)ulimit -Sn unlimited && ($txgen_cmd_str)($workload_filter) | ($bench_cmd_str)"
 
     if $use_two_phase_keychain_setup {
         let txgen_setup_cmd_str = (txgen-shell-join ($txgen_setup_cmd | append $txgen_extra_args))
