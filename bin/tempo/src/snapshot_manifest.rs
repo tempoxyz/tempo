@@ -228,8 +228,8 @@ fn prepare_snapshot_consensus_archive(
         #[expect(
             deprecated,
             reason = "Keep exported snapshots readable by nodes using Commonware before 2026.9.0 \
-                      until all nodes have been updated. Only the fresh output uses V0; \
-                      the source runtime must accept both layouts."
+                      until all nodes have been updated; V1 blob creation will be enabled \
+                      in a followup."
         )]
         let output_runtime_config = commonware_runtime::tokio::Config::default()
             .with_storage_directory(archive_storage_dir)
@@ -247,8 +247,17 @@ fn prepare_snapshot_consensus_archive(
         })
     });
 
-    let source_runtime_config =
-        commonware_runtime::tokio::Config::default().with_storage_directory(consensus_dir);
+    #[expect(
+        deprecated,
+        reason = "Opening snapshot source archives can create recovery metadata. Maintain \
+                  backward compatibility until all nodes have been updated; V1 blob creation \
+                  will be enabled in a followup."
+    )]
+    let source_runtime_config = commonware_runtime::tokio::Config::default()
+        .with_storage_directory(consensus_dir)
+        .with_storage_blob_layouts(
+            commonware_runtime::BlobLayout::V0..=commonware_runtime::BlobLayout::V0,
+        );
 
     let source_runner = commonware_runtime::tokio::Runner::new(source_runtime_config);
     let state = source_runner.start(|context| async move {

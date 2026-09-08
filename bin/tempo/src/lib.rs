@@ -356,10 +356,18 @@ pub fn tempo_main_with(mut overrides: TempoOverrides) -> eyre::Result<()> {
             )
         });
 
+        #[expect(
+            deprecated,
+            reason = "Maintain backward compatibility until all nodes have been updated; \
+                      V1 blob creation will be enabled in a followup."
+        )]
         let runtime_config = commonware_runtime::tokio::Config::default()
             .with_tcp_nodelay(Some(true))
             .with_worker_threads(args.consensus.worker_threads)
             .with_storage_directory(consensus_storage)
+            .with_storage_blob_layouts(
+                commonware_runtime::BlobLayout::V0..=commonware_runtime::BlobLayout::V0,
+            )
             .with_catch_panics(true);
 
         let runner = commonware_runtime::tokio::Runner::new(runtime_config);
