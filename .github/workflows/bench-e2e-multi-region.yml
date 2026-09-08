@@ -139,6 +139,7 @@ on:
           - tip20_key_authorization
           - mpp
           - mix
+          - public-mix
           - dex
       duration:
         description: Benchmark duration in seconds.
