@@ -406,7 +406,7 @@ jobs:
         uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
         with:
           repository: tempoxyz/tempo-multi-region-benchmark
-          ref: 414751efc6d4f26f6a35259923f2ea812d3bcd54 # TCP route/qdisc diagnostics validation
+          ref: a27f8d96ab3067a50f334c01c960c2e6c1b911a3 # TCP route/qdisc diagnostics validation
           path: ${{ env.BENCH_REPO_DIR }}
           token: ${{ steps.github-sts.outputs.token }}
           persist-credentials: false
@@ -773,6 +773,9 @@ jobs:
           echo "path=$results_dir" >> "$GITHUB_OUTPUT"
           echo "Results directory: $results_dir"
 
+      - name: Publish and verify high-resolution validator TCP
+        run: python3 "$BENCH_REPO_DIR/scripts/publish_tcp_highres.py" "$BENCH_RESULTS_DIR"
+
       - name: Verify TCP rows were automatically published
         run: |
           python3 - <<'PY'
@@ -797,7 +800,7 @@ jobs:
               run_id = str(uuid.UUID(report["benchmark_id"]))
               with gzip.open(root / phase / "txgen-report.samples.ndjson.gz", "rt") as samples:
                   expected = sum(1 for line in samples if json.loads(line)["name"].startswith("tempo_tcp_"))
-              rows = int(query(f"SELECT count() FROM txgen_metric_samples WHERE run_id='{run_id}' AND startsWith(metric_name, 'tempo_tcp_')"))
+              rows = int(query(f"SELECT count() FROM txgen_metric_samples WHERE run_id='{run_id}' AND source != 'tcp-highres' AND startsWith(metric_name, 'tempo_tcp_')"))
               marker = int(query(f"SELECT count() FROM txgen_runs WHERE run_id='{run_id}'"))
               result = {"phase": phase, "run_id": run_id, "tcp_archive_rows": expected, "tcp_clickhouse_rows": rows, "run_markers": marker}
               results.append(result)
