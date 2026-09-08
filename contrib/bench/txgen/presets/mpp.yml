@@ -1,3 +1,9 @@
+# Native TIP-20 Channel Reserve open -> signed settlement: two transactions per channel.
+# Fund the users with pathUSD for fees and token 1 for channel deposits.
+# The native reserve pulls deposits directly; no ERC-20 approval is needed.
+# Settlement pays the full deposit to the payee; the settled channel state remains.
+# Requires txgen sequence `save` and Tempo `mpp_settle` support.
+
 chain_id: 1337
 
 gas:
@@ -12,125 +18,58 @@ accounts:
       - ${TXGEN_ACCOUNTS}
 
 artifacts:
-  ERC20: ../erc20.abi.json
-  MPPChannel:
-    abi: ../mpp-channel.json
-    bytecode: ../mpp-channel.json
-
-setup:
-  steps:
-    - id: channel
-      deploy:
-        type: eip1559
-        from:
-          pool: users
-          select: { index: 0 }
-        artifact: MPPChannel
-        gas_limit: 20000000
-        constructor_args: []
+  TIP20ChannelReserve: ../tip20-channel-reserve.abi.json
 
 templates:
-  mpp_approve:
-    type: tempo
-    gas_limit: 2000000
-    max_fee_per_gas: 100000000000
-    max_priority_fee_per_gas: 100000000000
-    fee_token: "0x20c0000000000000000000000000000000000000"
-    call:
-      to: "0x20c0000000000000000000000000000000000001"
-      abi: ERC20
-      function: approve
-      args: []
-
   mpp_open:
     type: tempo
-    gas_limit: 2000000
-    max_fee_per_gas: 100000000000
-    max_priority_fee_per_gas: 100000000000
+    from: { var: payer.ref }
+    gas_limit: 1000000
     fee_token: "0x20c0000000000000000000000000000000000000"
+    expiring_nonce: true
+    valid_for_secs: 25
     call:
-      abi: MPPChannel
+      to: "0x4d50500000000000000000000000000000000000"
+      abi: TIP20ChannelReserve
       function: open
-      args: []
+      args:
+        - { var: payee.address }
+        - "0x0000000000000000000000000000000000000000"
+        - "0x20c0000000000000000000000000000000000001"
+        - 1
+        - random_bytes: 32
+        - "0x0000000000000000000000000000000000000000"
 
-  mpp_close:
+  mpp_settle:
     type: tempo
-    gas_limit: 2000000
-    max_fee_per_gas: 100000000000
-    max_priority_fee_per_gas: 100000000000
+    from: { var: payee.ref }
+    gas_limit: 1000000
     fee_token: "0x20c0000000000000000000000000000000000000"
-    call:
-      abi: MPPChannel
-      function: close
-      args: []
+    expiring_nonce: true
+    valid_for_secs: 25
+    mpp_settle:
+      open_transaction: { var: opened.raw }
+      voucher_signer: { var: payer.ref }
+      cumulative_amount: 1
 
 sequences:
-  mpp_approve_open_close:
+  mpp_open_settle:
     bindings:
       payer:
         account:
           pool: users
           select: random
-      token:
-        address:
-          const: "0x20c0000000000000000000000000000000000001"
-      authorized_signer:
-        address:
-          const: "0x0000000000000000000000000000000000000000"
-      salt:
-        bytes32:
-          random_bytes: 32
-      channel_id:
-        abi_hash:
-          types: [address, address, address, bytes32, address, address, uint256]
-          values:
-            - { var: payer.address }
-            - { var: payer.address }
-            - { var: token }
-            - { var: salt }
-            - { var: authorized_signer }
-            - { var: setup.channel.address }
-            - { var: chain_id }
-      channel_key:
-        abi_encode_packed:
-          types: [bytes32, address, address, bytes32]
-          values:
-            - { var: channel_id }
-            - { var: token }
-            - { var: authorized_signer }
-            - { var: salt }
+      payee:
+        account:
+          pool: users
+          select: random
     steps:
-      - name: approve
-        template: mpp_approve
-        with:
-          from: { var: payer.ref }
-          call:
-            args:
-              - { var: setup.channel.address }
-              - 1
       - name: open
         template: mpp_open
-        with:
-          from: { var: payer.ref }
-          call:
-            to: { var: setup.channel.address }
-            args:
-              - { var: payer.address }
-              - { var: token }
-              - 1
-              - { var: salt }
-              - { var: authorized_signer }
-      - name: close
-        template: mpp_close
-        with:
-          from: { var: payer.ref }
-          call:
-            to: { var: setup.channel.address }
-            args:
-              - { var: channel_key }
-              - 0
-              - "0x"
+        save: opened
+      - name: settle
+        template: mpp_settle
 
 mix:
-  - sequence: mpp_approve_open_close
+  - sequence: mpp_open_settle
     weight: 100
