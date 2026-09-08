@@ -632,7 +632,7 @@ def txgen-run-preset-pipeline [
 ] {
     let chain_id = (txgen-fetch-chain-id $generate_rpc_url)
     $env.TXGEN_ACCOUNTS = ($accounts | into string)
-    let spec_path = ($preset_path | path expand)
+    mut spec_path = ($preset_path | path expand)
     if not ($spec_path | path exists) {
         error make { msg: $"txgen preset file not found: ($spec_path)" }
     }
@@ -642,6 +642,26 @@ def txgen-run-preset-pipeline [
     txgen-configure-existing-recipients-env $spec_path $bloat_mib $bloat_token_count
     txgen-configure-fee-amm-env $spec_path
     let preset_name = ($spec_path | path basename | str replace --regex '\.yml$' '')
+    let tx_count = [($tps * $duration) 1] | math max
+    if $preset_name == "zones" {
+        if $chain_id != 1337 or $accounts != 1 {
+            error make { msg: "zones requires local chain 1337 and --accounts 1" }
+        }
+        let nonce_response = (txgen-rpc-call $generate_rpc_url '{"jsonrpc":"2.0","id":1,"method":"eth_getTransactionCount","params":["0xf39Fd6e51aad88F6F4ce6aB8827279cffFb92266","pending"]}')
+        let latest_nonce = (txgen-rpc-call $generate_rpc_url '{"jsonrpc":"2.0","id":1,"method":"eth_getTransactionCount","params":["0xf39Fd6e51aad88F6F4ce6aB8827279cffFb92266","latest"]}')
+        if $nonce_response.result != $latest_nonce.result {
+            error make { msg: "zone fixture deployer has pending transactions; drain its nonce lane before setup" }
+        }
+        let nonce = ($nonce_response.result | into int)
+        let rendered = ([ (txgen-repo-root) $TXGEN_HELPER_DEFAULT_RENDERED_SPECS_DIR "zones.yml" ] | path join)
+        let renderer = ([ (txgen-repo-root) "contrib/bench/txgen/zones/render.py" ] | path join)
+        let mode = ($env.TXGEN_ZONE_MODE? | default "mixed")
+        ^uv run $renderer --source $spec_path --output $rendered --count $tx_count --nonce $nonce --mode $mode
+        if $env.LAST_EXIT_CODE != 0 {
+            error make { msg: "failed to render zone workload" }
+        }
+        $spec_path = $rendered
+    }
     let skip_faucet_funding = $skip_funding and ($preset_name not-in $TXGEN_HELPER_ALWAYS_FUND_PRESETS)
     let existing_recipient_start = ($env | get --optional TXGEN_EXISTING_RECIPIENTS_START | default "0" | into int)
     let existing_recipient_end = ($env | get --optional TXGEN_EXISTING_RECIPIENTS_END | default "0" | into int)
@@ -655,7 +675,6 @@ def txgen-run-preset-pipeline [
         txgen-fund-accounts $txgen_tempo_bin $spec_path $generate_rpc_url
     }
 
-    let tx_count = [($tps * $duration) 1] | math max
     let txgen_duration = $"($duration)s"
     let txgen_cmd = [
         $txgen_tempo_bin

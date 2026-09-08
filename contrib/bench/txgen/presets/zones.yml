@@ -1,0 +1,57 @@
+# Rendered by zones/render.py in the benchmark helper. Run with --accounts 1.
+# The finite sequence is populated with ordered withdrawal suffixes before generation.
+chain_id: 1337
+gas:
+  max_fee_per_gas: 100000000000
+  max_priority_fee_per_gas: 100000000000
+accounts:
+  users:
+    mnemonic: "test test test test test test test test test test test junk"
+    range: [0, 1]
+artifacts:
+  ERC20: ../erc20.abi.json
+  PortalFixture: ../zones/PortalFixture.json
+  ZonePortal: ../zones/portal.abi.json
+setup:
+  steps:
+    - id: portal
+      deploy:
+        type: eip1559
+        from: {pool: users, select: {index: 0}}
+        artifact: PortalFixture
+        gas_limit: 20000000
+        constructor_args: []
+    - id: fund_and_approve
+      tx:
+        type: tempo
+        from: {pool: users, select: {index: 0}}
+        gas_limit: 1000000
+        fee_token: "0x20c0000000000000000000000000000000000000"
+        calls: []
+templates:
+  zone_deposit:
+    type: tempo
+    from: {pool: users, select: {index: 0}}
+    gas_limit: 1000000
+    fee_token: "0x20c0000000000000000000000000000000000000"
+    call:
+      to: {var: setup.portal.address}
+      abi: ZonePortal
+      function: deposit
+      args: []
+  zone_withdraw:
+    type: tempo
+    from: {pool: users, select: {index: 0}}
+    gas_limit: 1000000
+    fee_token: "0x20c0000000000000000000000000000000000000"
+    call:
+      to: {var: setup.portal.address}
+      abi: ZonePortal
+      function: processWithdrawals
+      args: []
+sequences:
+  zone_operations:
+    steps: []
+mix:
+  - sequence: zone_operations
+    weight: 100
