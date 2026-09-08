@@ -49,6 +49,7 @@ pub(crate) struct TestExecutorBuilder {
     pub(crate) epoch_length: NonZeroU64,
     pub(crate) parent_hash: B256,
     pub(crate) general_gas_limit: u64,
+    pub(crate) validate_block_gas: bool,
     pub(crate) shared_gas_limit: u64,
     pub(crate) parent_beacon_block_root: Option<B256>,
     pub(crate) subblock_fee_recipients: HashMap<PartialValidatorKey, Address>,
@@ -69,6 +70,7 @@ impl Default for TestExecutorBuilder {
             epoch_length: NonZeroU64::MIN,
             parent_hash: B256::ZERO,
             general_gas_limit: 10_000_000,
+            validate_block_gas: true,
             shared_gas_limit: 10_000_000,
             parent_beacon_block_root: None,
             subblock_fee_recipients: HashMap::new(),
@@ -83,6 +85,11 @@ impl Default for TestExecutorBuilder {
 }
 
 impl TestExecutorBuilder {
+    pub(crate) fn with_block_gas_validation(mut self, validate: bool) -> Self {
+        self.validate_block_gas = validate;
+        self
+    }
+
     pub(crate) fn with_block_number(mut self, block_number: u64) -> Self {
         self.block_number = block_number;
         self
@@ -165,6 +172,7 @@ impl TestExecutorBuilder {
         );
 
         let ctx = TempoBlockExecutionCtx {
+            validate_block_gas: self.validate_block_gas,
             inner: EthBlockExecutionCtx {
                 parent_hash: self.parent_hash,
                 parent_beacon_block_root: self.parent_beacon_block_root,

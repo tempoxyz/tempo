@@ -288,6 +288,7 @@ impl ConfigureEvm for TempoEvmConfig {
             .collect();
 
         Ok(TempoBlockExecutionCtx {
+            validate_block_gas: false,
             inner: EthBlockExecutionCtx {
                 parent_hash: block.header().parent_hash(),
                 parent_beacon_block_root: block.header().parent_beacon_block_root(),
@@ -315,6 +316,7 @@ impl ConfigureEvm for TempoEvmConfig {
         attributes: Self::NextBlockEnvCtx,
     ) -> Result<TempoBlockExecutionCtx<'_>, Self::Error> {
         Ok(TempoBlockExecutionCtx {
+            validate_block_gas: false,
             inner: EthBlockExecutionCtx {
                 parent_hash: parent.hash(),
                 parent_beacon_block_root: attributes.parent_beacon_block_root,
@@ -581,6 +583,7 @@ mod tests {
         assert!(result.is_ok());
 
         let context = result.unwrap();
+        assert!(!context.validate_block_gas);
 
         // Verify context fields
         assert_eq!(context.general_gas_limit, 10_000_000);
@@ -624,6 +627,7 @@ mod tests {
         let sealed_block = SealedBlock::seal_slow(block);
 
         let context = evm_config.context_for_block(&sealed_block).unwrap();
+        assert!(!context.validate_block_gas);
         assert!(context.subblock_fee_recipients.is_empty());
     }
 
@@ -666,6 +670,7 @@ mod tests {
         assert!(result.is_ok());
 
         let context = result.unwrap();
+        assert!(!context.validate_block_gas);
 
         // Verify context fields from attributes
         assert_eq!(context.general_gas_limit, 12_000_000);

@@ -26,7 +26,9 @@ impl ConfigureEngineEvm<TempoExecutionData> for TempoEvmConfig {
             block,
             block_access_list: _,
         } = payload;
-        self.context_for_block(block)
+        let mut context = self.context_for_block(block)?;
+        context.validate_block_gas = true;
+        Ok(context)
     }
 
     fn tx_iterator_for_payload(
@@ -257,6 +259,7 @@ mod tests {
         assert!(result.is_ok());
 
         let context = result.unwrap();
+        assert!(context.validate_block_gas);
 
         // Verify context fields
         assert_eq!(context.general_gas_limit, 10_000_000);

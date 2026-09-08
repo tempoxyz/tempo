@@ -169,6 +169,7 @@ pub struct TempoBlockExecutor<'a, DB: Database, I> {
     non_shared_gas_left: u64,
     non_payment_gas_left: u64,
     incentive_gas_used: u64,
+    validate_block_gas: bool,
 }
 
 impl<'a, DB, I> TempoBlockExecutor<'a, DB, I>
@@ -183,6 +184,7 @@ where
     ) -> Self {
         Self {
             incentive_gas_used: 0,
+            validate_block_gas: ctx.validate_block_gas,
             non_payment_gas_left: ctx.general_gas_limit,
             non_shared_gas_left: evm.block().gas_limit.saturating_sub(ctx.shared_gas_limit),
             extra_data: ctx.inner.extra_data.clone(),
@@ -650,7 +652,7 @@ where
     ) -> Result<(Self::Evm, BlockExecutionResult<Self::Receipt>), BlockExecutionError> {
         // T4 sets the shared gas limit to zero, so any gas spilled into the
         // incentive section exceeds the available block capacity.
-        if self.evm().cfg.spec.is_t4() && self.incentive_gas_used > 0 {
+        if self.validate_block_gas && self.evm().cfg.spec.is_t4() && self.incentive_gas_used > 0 {
             return Err(BlockValidationError::msg("incentive gas limit exceeded").into());
         }
 
@@ -1359,20 +1361,26 @@ mod tests {
     }
 
     #[test]
-    fn test_finish_t4_without_metadata_rejects_incentive_gas() {
-        let chainspec = DEV.clone();
-        let mut db = State::builder().with_bundle_update().build();
-        let mut executor = TestExecutorBuilder::default()
-            .with_parent_beacon_block_root(B256::ZERO)
-            .with_incentive_gas_used(1)
-            .build(&mut db, &chainspec);
+    fn test_finish_t4_incentive_gas_validation_is_explicit() {
+        for validate in [false, true] {
+            let chainspec = DEV.clone();
+            let mut db = State::builder().with_bundle_update().build();
+            let mut executor = TestExecutorBuilder::default()
+                .with_parent_beacon_block_root(B256::ZERO)
+                .with_incentive_gas_used(1)
+                .with_block_gas_validation(validate)
+                .build(&mut db, &chainspec);
 
-        executor.inner.evm.cfg.spec = tempo_chainspec::hardfork::TempoHardfork::T4;
-        executor.apply_pre_execution_changes().unwrap();
+            executor.inner.evm.cfg.spec = TempoHardfork::T4;
+            executor.apply_pre_execution_changes().unwrap();
 
-        match executor.finish() {
-            Err(err) => assert_eq!(err.to_string(), "incentive gas limit exceeded"),
-            Ok(_) => panic!("finish should fail when T4 block has incentive gas without metadata"),
+            match executor.finish() {
+                Err(err) => {
+                    assert!(validate);
+                    assert_eq!(err.to_string(), "incentive gas limit exceeded");
+                }
+                Ok(_) => assert!(!validate, "consensus must reject T4 incentive gas"),
+            }
         }
     }
 
