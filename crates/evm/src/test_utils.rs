@@ -49,8 +49,8 @@ pub(crate) struct TestExecutorBuilder {
     pub(crate) epoch_length: NonZeroU64,
     pub(crate) parent_hash: B256,
     pub(crate) general_gas_limit: u64,
-    pub(crate) validate_block_gas: bool,
     pub(crate) shared_gas_limit: u64,
+    pub(crate) validate_block_gas: bool,
     pub(crate) parent_beacon_block_root: Option<B256>,
     pub(crate) subblock_fee_recipients: HashMap<PartialValidatorKey, Address>,
     /// Sets `cfg_env.enable_amsterdam_eip8037` to gate TIP-1016 behavior in tests.
@@ -70,8 +70,8 @@ impl Default for TestExecutorBuilder {
             epoch_length: NonZeroU64::MIN,
             parent_hash: B256::ZERO,
             general_gas_limit: 10_000_000,
-            validate_block_gas: true,
             shared_gas_limit: 10_000_000,
+            validate_block_gas: true,
             parent_beacon_block_root: None,
             subblock_fee_recipients: HashMap::new(),
             amsterdam_eip8037_enabled: false,
@@ -85,11 +85,6 @@ impl Default for TestExecutorBuilder {
 }
 
 impl TestExecutorBuilder {
-    pub(crate) fn with_block_gas_validation(mut self, validate: bool) -> Self {
-        self.validate_block_gas = validate;
-        self
-    }
-
     pub(crate) fn with_block_number(mut self, block_number: u64) -> Self {
         self.block_number = block_number;
         self
@@ -107,6 +102,11 @@ impl TestExecutorBuilder {
 
     pub(crate) fn with_spec(mut self, spec: TempoHardfork) -> Self {
         self.spec = spec;
+        self
+    }
+
+    pub(crate) fn with_block_gas_validation(mut self, validate: bool) -> Self {
+        self.validate_block_gas = validate;
         self
     }
 
@@ -172,7 +172,6 @@ impl TestExecutorBuilder {
         );
 
         let ctx = TempoBlockExecutionCtx {
-            validate_block_gas: self.validate_block_gas,
             inner: EthBlockExecutionCtx {
                 parent_hash: self.parent_hash,
                 parent_beacon_block_root: self.parent_beacon_block_root,
@@ -184,6 +183,7 @@ impl TestExecutorBuilder {
             },
             general_gas_limit: self.general_gas_limit,
             shared_gas_limit: self.shared_gas_limit,
+            validate_block_gas: self.validate_block_gas,
             consensus_context: None,
             subblock_fee_recipients: self.subblock_fee_recipients,
         };

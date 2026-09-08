@@ -11,15 +11,15 @@ pub struct TempoBlockExecutionCtx<'a> {
     /// Inner [`EthBlockExecutionCtx`].
     #[deref]
     pub inner: EthBlockExecutionCtx<'a>,
+    /// Non-payment gas limit for the block.
+    pub general_gas_limit: u64,
+    /// Shared gas limit for the block.
+    pub shared_gas_limit: u64,
     /// Enforce the T4 block gas allocation during consensus payload verification.
     ///
     /// Disabled for historical replay, simulation, and payload building, matching
     /// the validation previously enabled by the presence of a validator set.
     pub validate_block_gas: bool,
-    /// Non-payment gas limit for the block.
-    pub general_gas_limit: u64,
-    /// Shared gas limit for the block.
-    pub shared_gas_limit: u64,
     /// Consensus metadata for the block. `None` for pre-fork blocks.
     pub consensus_context: Option<TempoConsensusContext>,
     /// Mapping from a subblock validator public key to the fee recipient configured.

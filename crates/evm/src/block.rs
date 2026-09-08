@@ -161,6 +161,7 @@ pub struct TempoBlockExecutor<'a, DB: Database, I> {
 
     section: BlockSection,
     seen_subblocks: Vec<PartialValidatorKey>,
+    validate_block_gas: bool,
     subblock_fee_recipients: HashMap<PartialValidatorKey, Address>,
     extra_data: Bytes,
 
@@ -169,7 +170,6 @@ pub struct TempoBlockExecutor<'a, DB: Database, I> {
     non_shared_gas_left: u64,
     non_payment_gas_left: u64,
     incentive_gas_used: u64,
-    validate_block_gas: bool,
 }
 
 impl<'a, DB, I> TempoBlockExecutor<'a, DB, I>

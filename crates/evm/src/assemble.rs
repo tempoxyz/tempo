@@ -34,10 +34,10 @@ impl TempoBlockAssembler {
             evm_env,
             execution_ctx:
                 TempoBlockExecutionCtx {
-                    validate_block_gas: _,
                     inner,
                     general_gas_limit,
                     shared_gas_limit,
+                    validate_block_gas: _,
                     consensus_context,
                     subblock_fee_recipients: _,
                 },
@@ -179,7 +179,6 @@ mod tests {
         let parent = SealedHeader::seal_slow(parent_header);
 
         let execution_ctx = TempoBlockExecutionCtx {
-            validate_block_gas: false,
             inner: EthBlockExecutionCtx {
                 parent_hash: parent.hash(),
                 parent_beacon_block_root: Some(B256::ZERO),
@@ -191,6 +190,7 @@ mod tests {
             },
             general_gas_limit,
             shared_gas_limit,
+            validate_block_gas: false,
             consensus_context: None,
             subblock_fee_recipients: HashMap::new(),
         };
@@ -290,7 +290,6 @@ mod tests {
         let parent = SealedHeader::seal_slow(parent_header);
 
         let execution_ctx = TempoBlockExecutionCtx {
-            validate_block_gas: false,
             inner: EthBlockExecutionCtx {
                 parent_hash: parent.hash(),
                 parent_beacon_block_root: Some(B256::ZERO),
@@ -302,6 +301,7 @@ mod tests {
             },
             general_gas_limit,
             shared_gas_limit,
+            validate_block_gas: false,
             consensus_context: Some(ctx),
             subblock_fee_recipients: HashMap::new(),
         };
@@ -372,7 +372,6 @@ mod tests {
         let parent = SealedHeader::seal_slow(parent_header);
 
         let execution_ctx = TempoBlockExecutionCtx {
-            validate_block_gas: false,
             inner: EthBlockExecutionCtx {
                 parent_hash: parent.hash(),
                 parent_beacon_block_root: Some(B256::ZERO),
@@ -384,6 +383,7 @@ mod tests {
             },
             general_gas_limit,
             shared_gas_limit,
+            validate_block_gas: false,
             consensus_context: None,
             subblock_fee_recipients: HashMap::new(),
         };

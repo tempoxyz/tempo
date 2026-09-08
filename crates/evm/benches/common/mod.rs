@@ -396,7 +396,6 @@ where
     let evm: TempoEvm<_, _> =
         TempoEvmFactory::default().create_evm(db, bench_env(hardfork, block_timestamp));
     let ctx = TempoBlockExecutionCtx {
-        validate_block_gas: false,
         inner: EthBlockExecutionCtx {
             parent_hash: B256::ZERO,
             parent_beacon_block_root: Some(B256::ZERO),
@@ -408,6 +407,7 @@ where
         },
         general_gas_limit: 10_000_000_000,
         shared_gas_limit: 0,
+        validate_block_gas: false,
         consensus_context: None,
         subblock_fee_recipients: Default::default(),
     };
