@@ -1,0 +1,19 @@
+# Match the existing-recipient, direct-auth, pathUSD transfer control, adding a memo.
+include:
+  - tip20/base.yml
+  - tip20/recipient-existing.yml
+  - tip20/fee-token-pathusd.yml
+  - tip20/auth-direct.yml
+  - tip20/nonce-expiring.yml
+
+merge:
+  templates:
+    tip20_transfer:
+      call:
+        function: transferWithMemo
+        args:
+          - address_pool:
+              pool: existing_recipients
+              select: random
+          - 1
+          - "0x1111111111111111111111111111111111111111111111111111111111111111"
