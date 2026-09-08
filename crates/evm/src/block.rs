@@ -32,7 +32,7 @@ use tempo_contracts::precompiles::{
 use tempo_primitives::{
     SubBlockMetadata, TempoReceipt, TempoTxEnvelope, TempoTxType, subblock::PartialValidatorKey,
 };
-use tempo_revm::{TempoHaltReason, evm::TempoContext};
+use tempo_revm::{ExecutionContext, TempoHaltReason, evm::TempoContext};
 use tracing::trace;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
@@ -85,6 +85,8 @@ impl ReceiptBuilder for TempoReceiptBuilder {
 pub struct TempoTxResult {
     /// Inner transaction execution result.
     inner: EthTxResult<TempoHaltReason, TempoTxType>,
+    /// Execution provenance used to exempt RPC simulations from block gas validation.
+    execution_context: ExecutionContext,
     /// Next section of the block.
     next_section: BlockSection,
     /// Whether the transaction is a payment transaction.
@@ -100,8 +102,13 @@ pub struct TempoTxResult {
 
 impl TempoTxResult {
     /// Creates a new [`TempoTxResult`] from a precomputed result and state.
+    #[expect(
+        clippy::too_many_arguments,
+        reason = "preserve execution provenance alongside precomputed results"
+    )]
     pub(crate) fn new_precomputed(
         tx: &TempoTxEnvelope,
+        execution_context: ExecutionContext,
         result: ExecutionResult<TempoHaltReason>,
         state: EvmState,
         next_section: BlockSection,
@@ -115,6 +122,7 @@ impl TempoTxResult {
                 blob_gas_used: 0,
                 tx_type: tx.tx_type(),
             },
+            execution_context,
             next_section,
             is_payment,
             block_gas_used,
@@ -161,7 +169,6 @@ pub struct TempoBlockExecutor<'a, DB: Database, I> {
 
     section: BlockSection,
     seen_subblocks: Vec<PartialValidatorKey>,
-    validate_block_gas: bool,
     subblock_fee_recipients: HashMap<PartialValidatorKey, Address>,
     extra_data: Bytes,
 
@@ -169,6 +176,7 @@ pub struct TempoBlockExecutor<'a, DB: Database, I> {
 
     non_shared_gas_left: u64,
     non_payment_gas_left: u64,
+    /// Incentive-section gas from real transactions; simulations are exempt.
     incentive_gas_used: u64,
 }
 
@@ -184,7 +192,6 @@ where
     ) -> Self {
         Self {
             incentive_gas_used: 0,
-            validate_block_gas: ctx.validate_block_gas,
             non_payment_gas_left: ctx.general_gas_limit,
             non_shared_gas_left: evm.block().gas_limit.saturating_sub(ctx.shared_gas_limit),
             extra_data: ctx.inner.extra_data.clone(),
@@ -557,6 +564,7 @@ where
         tx: impl ExecutableTx<Self>,
     ) -> Result<Self::Result, BlockExecutionError> {
         let (mut tx_env, recovered) = tx.into_parts();
+        let execution_context = tx_env.execution_context;
         // Remove any prewarming-specific context that was added to the tx env.
         if let Some(tempo_tx_env) = tx_env.tempo_tx_env.as_mut() {
             tempo_tx_env.expiring_nonce_idx = None;
@@ -599,6 +607,7 @@ where
         let validator_fee = self.evm().validator_fee();
         Ok(TempoTxResult {
             inner,
+            execution_context,
             next_section,
             is_payment: self.is_payment(recovered.tx()),
             block_gas_used,
@@ -609,6 +618,7 @@ where
     fn commit_transaction(&mut self, output: Self::Result) -> GasOutput {
         let TempoTxResult {
             inner,
+            execution_context,
             next_section,
             is_payment,
             block_gas_used,
@@ -635,7 +645,9 @@ where
                 }
             }
             BlockSection::GasIncentive => {
-                self.incentive_gas_used += block_gas_used;
+                if matches!(execution_context, ExecutionContext::Transaction { .. }) {
+                    self.incentive_gas_used += block_gas_used;
+                }
             }
             BlockSection::System { .. } => {
                 // no gas spending for end-of-block system transactions
@@ -652,7 +664,7 @@ where
     ) -> Result<(Self::Evm, BlockExecutionResult<Self::Receipt>), BlockExecutionError> {
         // T4 sets the shared gas limit to zero, so any gas spilled into the
         // incentive section exceeds the available block capacity.
-        if self.validate_block_gas && self.evm().cfg.spec.is_t4() && self.incentive_gas_used > 0 {
+        if self.evm().cfg.spec.is_t4() && self.incentive_gas_used > 0 {
             return Err(BlockValidationError::msg("incentive gas limit exceeded").into());
         }
 
@@ -702,11 +714,6 @@ where
     /// Add a seen proposer for testing historical subblock ordering.
     pub(crate) fn add_seen_subblock_for_test(&mut self, proposer: PartialValidatorKey) {
         self.seen_subblocks.push(proposer);
-    }
-
-    /// Set incentive gas used for testing gas limit validation.
-    pub(crate) fn set_incentive_gas_used_for_test(&mut self, gas: u64) {
-        self.incentive_gas_used = gas;
     }
 
     /// Get the current section for assertions.
@@ -1207,6 +1214,9 @@ mod tests {
 
         let tx = create_legacy_tx();
         let output = TempoTxResult {
+            execution_context: ExecutionContext::Transaction {
+                tx_hash: B256::ZERO,
+            },
             inner: EthTxResult {
                 result: ResultAndState {
                     result: revm::context::result::ExecutionResult::Success {
@@ -1246,6 +1256,9 @@ mod tests {
             let section = executor.validate_tx(&tx, 21_000).unwrap();
             executor.commit_transaction(TempoTxResult::new_precomputed(
                 &tx,
+                ExecutionContext::Transaction {
+                    tx_hash: *tx.tx_hash(),
+                },
                 ExecutionResult::Revert {
                     logs: vec![],
                     gas: ResultGas::default().with_total_gas_spent(21_000),
@@ -1361,25 +1374,63 @@ mod tests {
     }
 
     #[test]
-    fn test_finish_t4_incentive_gas_validation_is_explicit() {
-        for validate in [false, true] {
-            let chainspec = DEV.clone();
-            let mut db = State::builder().with_bundle_update().build();
-            let mut executor = TestExecutorBuilder::default()
-                .with_parent_beacon_block_root(B256::ZERO)
-                .with_incentive_gas_used(1)
-                .with_block_gas_validation(validate)
-                .build(&mut db, &chainspec);
-
-            executor.inner.evm.cfg.spec = TempoHardfork::T4;
-            executor.apply_pre_execution_changes().unwrap();
-
-            match executor.finish() {
-                Err(err) => {
-                    assert!(validate);
-                    assert_eq!(err.to_string(), "incentive gas limit exceeded");
+    fn test_incentive_gas_validation_exempts_only_simulated_transactions() {
+        for hardfork in [TempoHardfork::T3, TempoHardfork::T4] {
+            for simulations in [
+                vec![true],
+                vec![false],
+                vec![false, true],
+                vec![true, false],
+            ] {
+                let chainspec = DEV.clone();
+                let mut db = State::builder().with_bundle_update().build();
+                let mut executor = TestExecutorBuilder::default()
+                    .with_parent_beacon_block_root(B256::ZERO)
+                    .with_general_gas_limit(0)
+                    .build(&mut db, &chainspec);
+                executor.inner.evm.cfg.spec = hardfork;
+                executor.apply_pre_execution_changes().unwrap();
+                let tx = create_legacy_tx();
+                for &simulation in &simulations {
+                    let context = if simulation {
+                        ExecutionContext::Simulation
+                    } else {
+                        ExecutionContext::Transaction {
+                            tx_hash: *tx.tx_hash(),
+                        }
+                    };
+                    let env = tempo_revm::TempoTxEnv {
+                        execution_context: context,
+                        ..Default::default()
+                    };
+                    let recovered = Recovered::new_unchecked(tx.clone(), Address::ZERO);
+                    executor
+                        .execute_transaction_with_actions(
+                            (env, &recovered),
+                            crate::action_replay::StorageActionReplay {
+                                result: ExecutionResult::Success {
+                                    reason: revm::context::result::SuccessReason::Stop,
+                                    logs: vec![],
+                                    gas: ResultGas::default().with_total_gas_spent(21_000),
+                                    output: revm::context::result::Output::Call(Bytes::new()),
+                                },
+                                actions: vec![],
+                                expiring_nonce: None,
+                                validator_fee: U256::ZERO,
+                            },
+                            |_| {},
+                            false,
+                        )
+                        .unwrap();
                 }
-                Ok(_) => assert!(!validate, "consensus must reject T4 incentive gas"),
+                let should_reject = hardfork == TempoHardfork::T4 && simulations.contains(&false);
+                match executor.finish() {
+                    Err(err) => {
+                        assert!(should_reject);
+                        assert_eq!(err.to_string(), "incentive gas limit exceeded");
+                    }
+                    Ok(_) => assert!(!should_reject),
+                }
             }
         }
     }
@@ -1397,6 +1448,9 @@ mod tests {
 
         let tx = create_legacy_tx();
         let output = TempoTxResult {
+            execution_context: ExecutionContext::Transaction {
+                tx_hash: B256::ZERO,
+            },
             inner: EthTxResult {
                 result: ResultAndState {
                     result: revm::context::result::ExecutionResult::Success {
@@ -1436,6 +1490,9 @@ mod tests {
         // Commit first transaction (21000 gas)
         let tx1 = create_legacy_tx();
         let output1 = TempoTxResult {
+            execution_context: ExecutionContext::Transaction {
+                tx_hash: B256::ZERO,
+            },
             inner: EthTxResult {
                 result: ResultAndState {
                     result: revm::context::result::ExecutionResult::Success {
@@ -1459,6 +1516,9 @@ mod tests {
         // Commit second transaction (50000 gas)
         let tx2 = create_legacy_tx();
         let output2 = TempoTxResult {
+            execution_context: ExecutionContext::Transaction {
+                tx_hash: B256::ZERO,
+            },
             inner: EthTxResult {
                 result: ResultAndState {
                     result: revm::context::result::ExecutionResult::Success {
@@ -1521,6 +1581,9 @@ mod tests {
 
         let tx = create_legacy_tx();
         let output = TempoTxResult {
+            execution_context: ExecutionContext::Transaction {
+                tx_hash: B256::ZERO,
+            },
             inner: EthTxResult {
                 result: ResultAndState {
                     result: revm::context::result::ExecutionResult::Success {
@@ -1566,6 +1629,9 @@ mod tests {
         // tx_gas_used = max(300k - 0_refund, 0) = 300k
         let tx = create_legacy_tx();
         let output = TempoTxResult {
+            execution_context: ExecutionContext::Transaction {
+                tx_hash: B256::ZERO,
+            },
             inner: EthTxResult {
                 result: ResultAndState {
                     result: revm::context::result::ExecutionResult::Success {
@@ -1614,6 +1680,9 @@ mod tests {
 
         let tx = create_legacy_tx();
         let output = TempoTxResult {
+            execution_context: ExecutionContext::Transaction {
+                tx_hash: B256::ZERO,
+            },
             inner: EthTxResult {
                 result: ResultAndState {
                     result: revm::context::result::ExecutionResult::Success {

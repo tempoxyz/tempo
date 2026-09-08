@@ -26,9 +26,7 @@ impl ConfigureEngineEvm<TempoExecutionData> for TempoEvmConfig {
             block,
             block_access_list: _,
         } = payload;
-        let mut context = self.context_for_block(block)?;
-        context.validate_block_gas = true;
-        Ok(context)
+        self.context_for_block(block)
     }
 
     fn tx_iterator_for_payload(
@@ -236,7 +234,12 @@ mod tests {
         // Test the recovery function works on all items
         for item in items {
             let recovered = recover_fn.convert(item);
-            assert!(recovered.is_ok());
+            let recovered = recovered.unwrap();
+            let (env, _) = recovered.into_parts();
+            assert!(matches!(
+                env.execution_context,
+                tempo_revm::ExecutionContext::Transaction { .. }
+            ));
         }
 
         assert!(sender_recovery_cache.get(&tx_hash).is_some());
@@ -263,7 +266,6 @@ mod tests {
         // Verify context fields
         assert_eq!(context.general_gas_limit, 10_000_000);
         assert_eq!(context.shared_gas_limit, 3_000_000);
-        assert!(context.validate_block_gas);
         assert!(context.subblock_fee_recipients.is_empty());
     }
 
