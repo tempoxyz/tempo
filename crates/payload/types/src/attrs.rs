@@ -5,7 +5,10 @@ use alloy_rpc_types_eth::Withdrawal;
 use reth_ethereum_engine_primitives::EthPayloadAttributes;
 use reth_node_api::PayloadAttributes;
 use serde::{Deserialize, Serialize};
-use std::{sync::Arc, time::Duration};
+use std::{
+    sync::Arc,
+    time::{Duration, Instant},
+};
 use tempo_primitives::{RecoveredSubBlock, TempoConsensusContext};
 
 /// Container type for all components required to build a payload.
@@ -23,11 +26,12 @@ pub struct TempoPayloadAttributes {
     inner: EthPayloadAttributes,
     /// Remaining local proposal budget available to this payload build.
     ///
-    /// Consensus sets this to the proposal return budget left when it dispatches
-    /// the build. `None` means the build was not requested by consensus, so the
+    /// Consensus records the budget and its monotonic start when it dispatches
+    /// the build, so queueing does not restart the proposal window.
+    /// `None` means the build was not requested by consensus, so the
     /// builder should not stop early for block pacing.
     #[serde(skip)]
-    payload_build_budget: Option<Duration>,
+    payload_build_budget: Option<(Instant, Duration)>,
     /// Validation latency estimate for a consensus payload build.
     ///
     /// Consensus snapshots this from recent locally validated blocks. `None`
@@ -109,17 +113,23 @@ impl TempoPayloadAttributes {
     /// requested. The builder treats it as a shared budget for leader
     /// build/persist work and validator replay/persist work.
     pub fn with_payload_build_budget(mut self, budget: Duration) -> Self {
-        self.payload_build_budget = Some(budget);
+        self.payload_build_budget = Some((Instant::now(), budget));
         self
     }
 
-    /// Returns the consensus-provided build budget, if this is a paced build.
+    /// Returns the proposal budget remaining at builder entry.
+    ///
+    /// Pass the same instant used to measure elapsed builder work. This charges
+    /// executor, forkchoice-update, and payload-worker queueing once, without
+    /// charging builder setup twice. Cloned attributes retain the original clock.
     ///
     /// `None` is intentional for non-consensus builds such as dev or external
     /// payload requests; those builds are not constrained by the consensus
     /// block-time budget.
-    pub fn payload_build_budget(&self) -> Option<Duration> {
-        self.payload_build_budget
+    pub fn payload_build_budget(&self, build_start: Instant) -> Option<Duration> {
+        self.payload_build_budget.map(|(requested_at, budget)| {
+            budget.saturating_sub(build_start.saturating_duration_since(requested_at))
+        })
     }
 
     /// Sets the validation latency estimate for a consensus payload build.
@@ -256,6 +266,55 @@ mod tests {
     use super::*;
     use alloy_rpc_types_eth::Withdrawal;
     use tempo_primitives::ed25519::PublicKey;
+
+    #[test]
+    fn payload_budget_includes_queue_time_and_survives_cloning() {
+        let attrs =
+            TempoPayloadAttributes::default().with_payload_build_budget(Duration::from_millis(500));
+        let (requested_at, _) = attrs.payload_build_budget.unwrap();
+        let queued = attrs.clone();
+
+        assert_eq!(
+            queued.payload_build_budget(requested_at + Duration::from_millis(300)),
+            Some(Duration::from_millis(200)),
+        );
+        // A later worker attempt must not restart the original window.
+        assert_eq!(
+            queued.payload_build_budget(requested_at + Duration::from_millis(450)),
+            Some(Duration::from_millis(50)),
+        );
+    }
+
+    #[test]
+    fn expired_payload_budget_stays_paced() {
+        let attrs =
+            TempoPayloadAttributes::default().with_payload_build_budget(Duration::from_millis(500));
+        let (requested_at, _) = attrs.payload_build_budget.unwrap();
+        for elapsed in [500, 501, 10_000] {
+            assert_eq!(
+                attrs.payload_build_budget(requested_at + Duration::from_millis(elapsed)),
+                Some(Duration::ZERO),
+            );
+        }
+        assert_eq!(
+            TempoPayloadAttributes::default().payload_build_budget(requested_at),
+            None,
+        );
+    }
+
+    #[test]
+    fn payload_budget_clock_is_local_only() {
+        let attrs =
+            TempoPayloadAttributes::default().with_payload_build_budget(Duration::from_millis(500));
+        let encoded = serde_json::to_value(&attrs).unwrap();
+        assert!(encoded.get("payloadBuildBudget").is_none());
+        let decoded: TempoPayloadAttributes = serde_json::from_value(encoded).unwrap();
+        assert_eq!(decoded.payload_build_budget(Instant::now()), None);
+        assert_eq!(
+            attrs.payload_id(&B256::ZERO),
+            decoded.payload_id(&B256::ZERO)
+        );
+    }
 
     trait TestExt: Sized {
         fn random() -> Self;
