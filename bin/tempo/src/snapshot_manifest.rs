@@ -225,11 +225,11 @@ fn prepare_snapshot_consensus_archive(
     let (archive_entries_tx, archive_entries_rx) = tokio::sync::mpsc::channel(64);
 
     let writer_thread = thread::spawn(move || -> eyre::Result<()> {
-        // Keep exported snapshots readable by nodes using Commonware before 2026.9.0.
-        // Only the fresh output uses V0; the source runtime must accept both layouts.
         #[expect(
             deprecated,
-            reason = "maintain backward compatibility until all nodes have been updated"
+            reason = "Keep exported snapshots readable by nodes using Commonware before 2026.9.0 \
+                      until all nodes have been updated. Only the fresh output uses V0; \
+                      the source runtime must accept both layouts."
         )]
         let output_runtime_config = commonware_runtime::tokio::Config::default()
             .with_storage_directory(archive_storage_dir)
