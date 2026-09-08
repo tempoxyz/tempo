@@ -164,13 +164,9 @@ jobs:
     permissions:
       contents: read
       id-token: write
-    uses: tempoxyz/gh-actions/.github/workflows/rust-lint.yml@5e1993280f9a8c01675a4bf638ee513fdf8e12b0
+    uses: tempoxyz/gh-actions/.github/workflows/rust-deny.yml@389a62fda5433278fd172a999ee6469882967854
     with:
-      run-clippy: false
-      run-fmt: false
-      run-typos: false
-      run-deny: true
-      deny-rust-toolchain: nightly
+      rust-toolchain: nightly
 
   zepter:
     name: zepter
