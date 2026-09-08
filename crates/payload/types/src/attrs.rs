@@ -273,6 +273,7 @@ mod tests {
             TempoPayloadAttributes::default().with_payload_build_budget(Duration::from_millis(500));
         let (requested_at, _) = attrs.payload_build_budget.unwrap();
         let queued = attrs.clone();
+        assert_eq!(queued.payload_build_budget, attrs.payload_build_budget);
 
         assert_eq!(
             queued.payload_build_budget(requested_at + Duration::from_millis(300)),
