@@ -215,6 +215,7 @@ where
         // key authorisation) while keeping loaded accounts and storage warm for the
         // rest of the batch.
         self.ctx_mut().journal_mut().discard_tx();
+        self.inner.clear();
         (result, tx)
     }
 }

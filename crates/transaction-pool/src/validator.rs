@@ -3224,4 +3224,97 @@ mod tests {
             ),
         }
     }
+
+    #[tokio::test]
+    async fn rejected_inline_key_authorization_does_not_poison_next_root_aa_transaction() {
+        use alloy_signer::SignerSync;
+        use alloy_signer_local::PrivateKeySigner;
+        use tempo_primitives::transaction::{KeyAuthorization, SignatureType};
+
+        const TIP_TIMESTAMP: u64 = 1_788_393_600;
+
+        let root = PrivateKeySigner::from_bytes(&B256::with_last_byte(1)).unwrap();
+        let access_key = PrivateKeySigner::from_bytes(&B256::with_last_byte(2)).unwrap();
+        let chain_id = MODERATO.chain_id();
+
+        let authorization = KeyAuthorization::unrestricted(
+            chain_id,
+            SignatureType::Secp256k1,
+            access_key.address(),
+        )
+        .with_expiry(TIP_TIMESTAMP);
+        let authorization_signature = root
+            .sign_hash_sync(&authorization.signature_hash())
+            .unwrap();
+        let signed_authorization =
+            authorization.into_signed(PrimitiveSignature::Secp256k1(authorization_signature));
+
+        let build_root_aa = |target: Address, key_authorization| {
+            let tx = TempoTransaction {
+                chain_id,
+                max_priority_fee_per_gas: 1_000_000_000,
+                max_fee_per_gas: 20_000_000_000,
+                gas_limit: 1_000_000,
+                calls: vec![Call {
+                    to: TxKind::Call(target),
+                    value: U256::ZERO,
+                    input: Bytes::new(),
+                }],
+                nonce_key: U256::ZERO,
+                nonce: 0,
+                fee_token: Some(PATH_USD_ADDRESS),
+                key_authorization,
+                ..Default::default()
+            };
+            let unsigned = AASigned::new_unhashed(
+                tx.clone(),
+                TempoSignature::Primitive(PrimitiveSignature::Secp256k1(
+                    Signature::test_signature(),
+                )),
+            );
+            let signature = root.sign_hash_sync(&unsigned.signature_hash()).unwrap();
+            let signed = AASigned::new_unhashed(
+                tx,
+                TempoSignature::Primitive(PrimitiveSignature::Secp256k1(signature)),
+            );
+            TempoPooledTransaction::new(TempoTxEnvelope::from(signed).try_into_recovered().unwrap())
+        };
+
+        let rejected = build_root_aa(Address::repeat_byte(0x44), Some(signed_authorization));
+        let valid = build_root_aa(Address::repeat_byte(0x55), None);
+        assert!(rejected.is_aa());
+        assert!(valid.is_aa());
+        assert_eq!(rejected.sender(), root.address());
+        assert_eq!(valid.sender(), root.address());
+
+        let validator = setup_validator(&rejected, TIP_TIMESTAMP);
+        let outcomes = validator
+            .validate_transactions([
+                (TransactionOrigin::External, rejected),
+                (TransactionOrigin::External, valid),
+            ])
+            .await;
+
+        let TransactionValidationOutcome::Invalid(_, error) = &outcomes[0] else {
+            panic!(
+                "the expired inline authorization must be rejected: {:?}",
+                outcomes[0]
+            );
+        };
+        let Some(TempoPoolTransactionError::Evm(
+            TempoInvalidTransaction::KeychainPrecompileError { reason },
+        )) = error.downcast_other_ref::<TempoPoolTransactionError>()
+        else {
+            panic!("unexpected rejection for the expired inline authorization: {error:?}");
+        };
+        assert!(
+            reason.contains("ExpiryInPast"),
+            "unexpected keychain error: {reason}"
+        );
+        assert!(
+            matches!(&outcomes[1], TransactionValidationOutcome::Valid { .. }),
+            "the valid root-signed AA transaction was rejected after the invalid transaction: {:?}",
+            outcomes[1]
+        );
+    }
 }
