@@ -790,6 +790,10 @@ def txgen-run-preset-pipeline [
         return { ok: false, exit_code: 1, report_path: $report_path }
     }
 
+    if $is_vault and (open $report_path).failed > 0 {
+        print $"ERROR: vault workload contains failed or reverted transactions; see ($report_path)"
+        return { ok: false, exit_code: 1, report_path: $report_path }
+    }
     print $"  Report saved: ($report_path)"
     { ok: true, exit_code: 0, report_path: $report_path }
 }
