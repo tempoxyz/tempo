@@ -19,7 +19,7 @@ jobs:
     steps:
       - name: Fetch GitHub token via STS
         id: app-token
-        uses: tempoxyz/gh-actions/actions/github-sts@8819cf80bdcb39c36c34700e3f2ecc08bde54f23
+        uses: tempoxyz/gh-actions/actions/github-sts@c0292122e255def866c64c55e5844d1e7d5fe7ad
         with:
           policy: release-pr
 
@@ -66,7 +66,7 @@ jobs:
               path.write_text("---\n" + "".join(kept) + "---\n" + body, encoding="utf-8")
           PY
 
-      - uses: tempoxyz/changelogs@29ac40b71b3966761305991d99f21c5195d7466b # master @ 2026-06-09 (post-v0.6.3)
+      - uses: tempoxyz/changelogs@83e69646d7ef76c5f35364d3a06fce3a6fe62bf9 # tempoxyz/changelogs#159: vendored Peter Evans action
         id: changelogs
         with:
           conventional-commit: true

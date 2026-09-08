@@ -119,6 +119,10 @@ impl Encodable for SubBlock {
         self.rlp_header().encode(out);
         self.rlp_encode_fields(out);
     }
+
+    fn length(&self) -> usize {
+        self.rlp_header().length_with_payload()
+    }
 }
 
 /// Metadata for an included subblock.

@@ -116,7 +116,7 @@ jobs:
           targets: ${{ matrix.platform.target }}
 
       - name: Setup mold linker
-        uses: tempoxyz/gh-actions/actions/setup-mold@ab45d76f6e7420a094281a22aee1973ecc0754f8
+        uses: tempoxyz/gh-actions/actions/setup-mold@a65420ff2c90fcc46fe778c044aa7998ae9f246c
 
       - name: Get build profile
         id: profile
@@ -292,7 +292,7 @@ jobs:
     steps:
       - name: Fetch GitHub token via STS
         id: app-token
-        uses: tempoxyz/gh-actions/actions/github-sts@8819cf80bdcb39c36c34700e3f2ecc08bde54f23
+        uses: tempoxyz/gh-actions/actions/github-sts@c0292122e255def866c64c55e5844d1e7d5fe7ad
         with:
           policy: release-pr
 
