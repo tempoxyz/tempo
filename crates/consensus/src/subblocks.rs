@@ -319,7 +319,10 @@ impl<TContext: Spawner + Metrics + Pacer> Actor<TContext> {
             Round::new(epoch_of_next_block, View::new(1))
         };
 
-        #[allow(deprecated)]
+        #[expect(
+            deprecated,
+            reason = "switching random leader election from V0 to V1 requires a hardfork"
+        )]
         let next_proposer = Random::<commonware_cryptography::Sha256>::new(RandomVersion::V0)
             .select_leader::<MinSig>(
                 next_round,

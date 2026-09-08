@@ -347,7 +347,10 @@ where
                 epoch,
                 floor,
                 scheme,
-                #[allow(deprecated)]
+                #[expect(
+                    deprecated,
+                    reason = "switching random leader election from V0 to V1 requires a hardfork"
+                )]
                 elector: elector::Random::<commonware_cryptography::Sha256>::new(
                     elector::RandomVersion::V0,
                 ),
