@@ -151,7 +151,7 @@ fn local_share_storage_failures_stop_actor_and_allow_recovery() {
 
             if seed_dealing {
                 let round = Round::from_state(&state, crate::config::NAMESPACE);
-                let storage = harness.storage_mut();
+                let mut storage = harness.take_storage();
                 let dealer = storage
                     .create_dealer_for_round(
                         identity.clone(),
@@ -169,10 +169,11 @@ fn local_share_storage_failures_stop_actor_and_allow_recovery() {
                     .shares_to_distribute()
                     .find(|(recipient, _, _)| *recipient == identity.public_key())
                     .unwrap();
-                player
+                let (_storage, ack) = player
                     .receive_dealing(storage, state.epoch, identity.public_key(), public, private)
                     .await
                     .unwrap();
+                assert!(ack.is_some());
             }
 
             harness.start().await;
@@ -231,6 +232,119 @@ fn local_share_storage_failures_stop_actor_and_allow_recovery() {
             );
         });
     }
+}
+
+#[test]
+fn rejected_and_duplicate_messages_retain_storage() {
+    use commonware_runtime::deterministic::FaultConfig;
+    use commonware_utils::probability;
+
+    Runner::default().start(|mut context| async move {
+        let (state, keys, _) = dkg_state(&mut context, Epoch::new(1), 2, true);
+        let round = Round::from_state(&state, crate::config::NAMESPACE);
+        let mut harness = Harness::builder(context.child("actor"), "recoverable_messages")
+            .initial_state(state.clone())
+            .build()
+            .await;
+        let mut storage = harness.take_storage();
+        let mut dealer = storage
+            .create_dealer_for_round(
+                keys[1].clone(),
+                round.clone(),
+                state.share.clone(),
+                state.seed,
+            )
+            .unwrap()
+            .unwrap();
+        let mut player = storage
+            .create_player_for_round(keys[0].clone(), &round)
+            .unwrap()
+            .unwrap();
+        let (_, public, private) = dealer
+            .shares_to_distribute()
+            .find(|(recipient, _, _)| *recipient == keys[0].public_key())
+            .unwrap();
+        let (_, _, wrong_private) = dealer
+            .shares_to_distribute()
+            .find(|(recipient, _, _)| *recipient == keys[1].public_key())
+            .unwrap();
+
+        let (storage, rejected) = player
+            .receive_dealing(
+                storage,
+                state.epoch,
+                keys[1].public_key(),
+                public.clone(),
+                wrong_private,
+            )
+            .await
+            .unwrap();
+        assert!(rejected.is_none());
+        let (storage, ack) = player
+            .receive_dealing(
+                storage,
+                state.epoch,
+                keys[1].public_key(),
+                public.clone(),
+                private.clone(),
+            )
+            .await
+            .unwrap();
+        let ack = ack.expect("valid dealing after a rejection must be accepted");
+
+        let (storage, accepted) = dealer
+            .receive_ack(storage, state.epoch, keys[1].public_key(), ack.clone())
+            .await
+            .unwrap();
+        assert!(
+            !accepted,
+            "an ACK attributed to the wrong player is rejected"
+        );
+        let (storage, accepted) = dealer
+            .receive_ack(storage, state.epoch, keys[0].public_key(), ack.clone())
+            .await
+            .unwrap();
+        assert!(accepted);
+
+        // Duplicate messages must return usable storage without another write.
+        let faults = context.storage_fault_config();
+        faults.write().sync_rate = Some(probability!(1.0));
+        let (storage, duplicate) = player
+            .receive_dealing(storage, state.epoch, keys[1].public_key(), public, private)
+            .await
+            .unwrap();
+        assert_eq!(duplicate.as_ref(), Some(&ack));
+        let (storage, accepted) = dealer
+            .receive_ack(storage, state.epoch, keys[0].public_key(), ack)
+            .await
+            .unwrap();
+        assert!(!accepted);
+        *faults.write() = FaultConfig::default();
+
+        let storage = storage
+            .append_finalized_header(state.epoch, header(Height::new(10)))
+            .await
+            .unwrap();
+        assert_eq!(
+            *storage
+                .get_latest_finalized_block_for_epoch(&state.epoch)
+                .unwrap()
+                .0,
+            Height::new(10),
+        );
+        drop(storage);
+        harness.stop().await;
+        let dealer = harness
+            .take_storage()
+            .create_dealer_for_round(keys[1].clone(), round, state.share, state.seed)
+            .unwrap()
+            .unwrap();
+        assert!(
+            dealer
+                .shares_to_distribute()
+                .all(|(recipient, _, _)| recipient != keys[0].public_key())
+        );
+    });
 }
 
 #[test]

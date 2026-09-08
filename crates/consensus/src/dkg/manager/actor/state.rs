@@ -29,7 +29,7 @@ use commonware_parallel::Strategy;
 use commonware_runtime::{BufferPooler, Clock, Metrics, ReadOptions, buffer::paged::CacheRef};
 use commonware_storage::{journal::segmented, metadata};
 use commonware_utils::{N3f1, NZU16, NZU32, NZUsize, ordered};
-use eyre::{OptionExt, WrapErr as _, bail};
+use eyre::{OptionExt, WrapErr as _};
 use tempo_primitives::TempoHeader;
 use tracing::{debug, info, instrument, warn};
 
@@ -51,15 +51,16 @@ pub(super) fn builder() -> Builder {
     Builder::default()
 }
 
+/// DKG storage. Persistent mutations consume this value and return it
+/// only on success. Failure or cancellation drops the handles, so callers must
+/// reopen storage before continuing; there is no invalid storage value to reuse.
+#[must_use = "persistent mutations return the storage needed for subsequent operations"]
 pub(super) struct Storage<TContext>
 where
     TContext: BufferPooler + commonware_runtime::Storage + Clock + Metrics,
 {
-    // Commonware mutations consume their handles. These slots are empty while
-    // an operation is in flight, and stay empty after failure or cancellation.
-    // Such storage must be dropped and reopened, never reused by the actor.
-    states: Option<metadata::Metadata<TContext, u64, State>>,
-    events: Option<segmented::variable::Journal<TContext, Event>>,
+    states: metadata::Metadata<TContext, u64, State>,
+    events: segmented::variable::Journal<TContext, Event>,
 
     current: Option<State>,
     cache: BTreeMap<Epoch, Events>,
@@ -87,15 +88,11 @@ where
 
     pub(super) async fn init_verified(self, state: State) -> eyre::Result<Storage<TContext>> {
         let Self { mut storage } = self;
-        storage.states = Some(
-            storage
-                .states
-                .take()
-                .expect("DKG states storage is available")
-                .put_sync(state.epoch.get(), state.clone())
-                .await
-                .wrap_err("unable to write initial state to metadata")?,
-        );
+        storage.states = storage
+            .states
+            .put_sync(state.epoch.get(), state.clone())
+            .await
+            .wrap_err("unable to write initial state to metadata")?;
         storage.current = Some(state);
         Ok(storage)
     }
@@ -105,10 +102,6 @@ impl<TContext> Storage<TContext>
 where
     TContext: BufferPooler + commonware_runtime::Storage + Clock + Metrics,
 {
-    pub(super) fn is_poisoned(&self) -> bool {
-        self.states.is_none() || self.events.is_none()
-    }
-
     /// Returns all player acknowledgments received during the given epoch.
     fn acks_for_epoch(
         &self,
@@ -148,24 +141,13 @@ where
     }
 
     /// Persists the outcome of a DKG ceremony to state
-    pub(super) async fn set_state(&mut self, state: State) -> eyre::Result<()> {
-        let states = self
-            .states
-            .as_mut()
-            .expect("DKG states storage is available");
-        if let Some(old) = states.put(state.epoch.get(), state.clone()) {
+    pub(super) async fn set_state(mut self, state: State) -> eyre::Result<Self> {
+        if let Some(old) = self.states.put(state.epoch.get(), state.clone()) {
             warn!(epoch = %old.epoch, "overwriting existing state");
         }
-        self.states = Some(
-            self.states
-                .take()
-                .expect("DKG states storage is available")
-                .sync()
-                .await
-                .wrap_err("failed writing state")?,
-        );
+        self.states = self.states.sync().await.wrap_err("failed writing state")?;
         self.current = Some(state);
-        Ok(())
+        Ok(self)
     }
 
     /// Append a player ACK to the journal.
@@ -178,25 +160,23 @@ where
         err,
     )]
     async fn append_ack(
-        &mut self,
+        mut self,
         epoch: Epoch,
         player: PublicKey,
         ack: PlayerAck<PublicKey>,
-    ) -> eyre::Result<()> {
+    ) -> eyre::Result<Self> {
         if self
             .cache
             .get(&epoch)
             .is_some_and(|events| events.acks.contains_key(&player))
         {
             info!(%player, %epoch, "ack for player already found in cache, dropping");
-            return Ok(());
+            return Ok(self);
         }
 
         let section = epoch.get();
         let (events, _, _) = self
             .events
-            .take()
-            .expect("DKG events storage is available")
             .append(
                 section,
                 &Event::Ack {
@@ -206,12 +186,10 @@ where
             )
             .await
             .wrap_err("unable to write event to storage")?;
-        self.events = Some(
-            events
-                .sync(section)
-                .await
-                .wrap_err("unable to sync events journal")?,
-        );
+        self.events = events
+            .sync(section)
+            .await
+            .wrap_err("unable to sync events journal")?;
 
         self.cache
             .entry(epoch)
@@ -219,7 +197,7 @@ where
             .acks
             .insert(player, ack);
 
-        Ok(())
+        Ok(self)
     }
 
     /// Append a dealer's dealing to the journal.
@@ -232,26 +210,24 @@ where
         err,
     )]
     async fn append_dealing(
-        &mut self,
+        mut self,
         epoch: Epoch,
         dealer: PublicKey,
         pub_msg: DealerPubMsg<MinSig>,
         priv_msg: DealerPrivMsg,
-    ) -> eyre::Result<()> {
+    ) -> eyre::Result<Self> {
         if self
             .cache
             .get(&epoch)
             .is_some_and(|events| events.dealings.contains_key(&dealer))
         {
             info!(%dealer, %epoch, "dealing of dealer already found in cache, dropping");
-            return Ok(());
+            return Ok(self);
         }
 
         let section = epoch.get();
         let (events, _, _) = self
             .events
-            .take()
-            .expect("DKG events storage is available")
             .append(
                 section,
                 &Event::Dealing {
@@ -262,12 +238,10 @@ where
             )
             .await
             .wrap_err("unable to write event to storage")?;
-        self.events = Some(
-            events
-                .sync(section)
-                .await
-                .wrap_err("unable to sync events journal")?,
-        );
+        self.events = events
+            .sync(section)
+            .await
+            .wrap_err("unable to sync events journal")?;
 
         self.cache
             .entry(epoch)
@@ -275,16 +249,16 @@ where
             .dealings
             .insert(dealer, (pub_msg, priv_msg));
 
-        Ok(())
+        Ok(self)
     }
 
     /// Appends a dealer log to the journal
     pub(super) async fn append_dealer_log(
-        &mut self,
+        mut self,
         epoch: Epoch,
         dealer: PublicKey,
         log: dkg::DealerLog<MinSig, PublicKey>,
-    ) -> eyre::Result<()> {
+    ) -> eyre::Result<Self> {
         if self
             .cache
             .get(&epoch)
@@ -295,14 +269,12 @@ where
                 %epoch,
                 "dealer log already found in cache; dropping"
             );
-            return Ok(());
+            return Ok(self);
         }
 
         let section = epoch.get();
         let (events, _, _) = self
             .events
-            .take()
-            .expect("DKG events storage is available")
             .append(
                 section,
                 &Event::Log {
@@ -312,24 +284,22 @@ where
             )
             .await
             .wrap_err("failed to append log to journal")?;
-        self.events = Some(
-            events
-                .sync(section)
-                .await
-                .wrap_err("unable to sync journal")?,
-        );
+        self.events = events
+            .sync(section)
+            .await
+            .wrap_err("unable to sync journal")?;
 
         let cache = self.cache.entry(epoch).or_default();
         cache.logs.insert(dealer, log);
-        Ok(())
+        Ok(self)
     }
 
     /// Appends the height, digest, and parent of the finalized header to the journal.
     pub(super) async fn append_finalized_header(
-        &mut self,
+        mut self,
         epoch: Epoch,
         header: TempoHeader,
-    ) -> eyre::Result<()> {
+    ) -> eyre::Result<Self> {
         let height = Height::new(header.number());
         let digest = Digest(header.hash_slow());
         let parent = Digest(header.parent_hash());
@@ -344,14 +314,12 @@ where
                 %parent,
                 "finalized block was already found in cache; dropping",
             );
-            return Ok(());
+            return Ok(self);
         }
 
         let section = epoch.get();
         let (events, _, _) = self
             .events
-            .take()
-            .expect("DKG events storage is available")
             .append(
                 section,
                 &Event::Finalized {
@@ -362,12 +330,10 @@ where
             )
             .await
             .wrap_err("failed to append finalized block to journal")?;
-        self.events = Some(
-            events
-                .sync(section)
-                .await
-                .wrap_err("unable to sync journal")?,
-        );
+        self.events = events
+            .sync(section)
+            .await
+            .wrap_err("unable to sync journal")?;
 
         let cache = self.cache.entry(epoch).or_default();
         cache.finalized.insert(
@@ -378,7 +344,7 @@ where
                 parent,
             },
         );
-        Ok(())
+        Ok(self)
     }
 
     pub(super) fn cache_dkg_outcome(
@@ -528,29 +494,21 @@ where
     }
 
     #[instrument(skip_all, fields(%up_to_epoch), err)]
-    pub(super) async fn prune(&mut self, up_to_epoch: Epoch) -> eyre::Result<()> {
+    pub(super) async fn prune(mut self, up_to_epoch: Epoch) -> eyre::Result<Self> {
         let (events, _) = self
             .events
-            .take()
-            .expect("DKG events storage is available")
             .prune(up_to_epoch.get())
             .await
             .wrap_err("unable to prune events journal")?;
-        self.events = Some(events);
-        self.states
-            .as_mut()
-            .expect("DKG states storage is available")
-            .retain(|&key, _| key >= up_to_epoch.get());
-        self.states = Some(
-            self.states
-                .take()
-                .expect("DKG states storage is available")
-                .sync()
-                .await
-                .wrap_err("unable to prune events metadata")?,
-        );
+        self.events = events;
+        self.states.retain(|&key, _| key >= up_to_epoch.get());
+        self.states = self
+            .states
+            .sync()
+            .await
+            .wrap_err("unable to prune events metadata")?;
         self.cache.retain(|&epoch, _| epoch >= up_to_epoch);
-        Ok(())
+        Ok(self)
     }
 }
 
@@ -637,8 +595,8 @@ impl Builder {
         );
         Ok(Unverified {
             storage: Storage {
-                states: Some(states),
-                events: Some(events),
+                states,
+                events,
                 current,
                 cache,
             },
@@ -1005,36 +963,40 @@ impl Dealer {
     /// Handle an incoming ack from a player.
     ///
     /// If the ack is valid and new, persists it to storage.
-    /// Returns true if the ack was successfully processed.
+    /// Returns whether the ack was accepted. Rejected protocol messages retain
+    /// storage; only persistence failures return an error and consume it.
     pub(super) async fn receive_ack<TContext>(
         &mut self,
-        storage: &mut Storage<TContext>,
+        storage: Storage<TContext>,
         epoch: Epoch,
         player: PublicKey,
         ack: PlayerAck<PublicKey>,
-    ) -> eyre::Result<()>
+    ) -> eyre::Result<(Storage<TContext>, bool)>
     where
         TContext: BufferPooler + commonware_runtime::Storage + Clock + Metrics,
     {
         if !self.unsent.contains_key(&player) {
-            bail!("already received an ack from `{player}`");
+            warn!(%player, "already received an ack");
+            return Ok((storage, false));
         }
         match &mut self.dealer {
             Some(dealer) => {
-                dealer
-                    .receive_player_ack(player.clone(), ack.clone())
-                    .wrap_err("unable to receive player ack")?;
-                self.unsent.remove(&player);
-                storage
-                    .append_ack(epoch, player.clone(), ack.clone())
+                if let Err(error) = dealer.receive_player_ack(player.clone(), ack.clone()) {
+                    warn!(%player, %error, "unable to receive player ack");
+                    return Ok((storage, false));
+                }
+                let storage = storage
+                    .append_ack(epoch, player.clone(), ack)
                     .await
                     .wrap_err("unable to append ack to journal")?;
+                self.unsent.remove(&player);
+                Ok((storage, true))
             }
             None => {
-                bail!("dealer was already finalized, dropping ack of player `{player}`");
+                warn!(%player, "dealer was already finalized, dropping ack");
+                Ok((storage, false))
             }
         }
-        Ok(())
     }
 
     /// Finalize the dealer and produce a signed log for inclusion in a block.
@@ -1154,34 +1116,46 @@ impl Player {
     /// Handle an incoming dealer message.
     ///
     /// If this is a new valid dealer message, persists it to storage before returning.
+    /// Rejected protocol messages return no ack and retain storage. Persistence
+    /// failures consume storage and must terminate the round.
     pub(super) async fn receive_dealing<TContext>(
         &mut self,
-        storage: &mut Storage<TContext>,
+        storage: Storage<TContext>,
         epoch: Epoch,
         dealer: PublicKey,
         pub_msg: DealerPubMsg<MinSig>,
         priv_msg: DealerPrivMsg,
-    ) -> eyre::Result<PlayerAck<PublicKey>>
+    ) -> eyre::Result<(Storage<TContext>, Option<PlayerAck<PublicKey>>)>
     where
         TContext: BufferPooler + commonware_runtime::Storage + Clock + Metrics,
     {
         // If we've already generated an ack, return the cached version
         if let Some(ack) = self.acks.get(&dealer) {
-            return Ok(ack.clone());
+            return Ok((storage, Some(ack.clone())));
         }
 
         // Otherwise generate a new ack
-        let ack = self
-            .player
-            .dealer_message::<N3f1>(dealer.clone(), pub_msg.clone(), priv_msg.clone())
-            .wrap_err("applying dealer message to player instance failed")?
-            .ok_or_eyre("dealer message was already processed without a cached acknowledgement")?;
-        storage
+        let ack = match self.player.dealer_message::<N3f1>(
+            dealer.clone(),
+            pub_msg.clone(),
+            priv_msg.clone(),
+        ) {
+            Ok(Some(ack)) => ack,
+            Ok(None) => {
+                warn!(%dealer, "dealer message was already processed without a cached acknowledgement");
+                return Ok((storage, None));
+            }
+            Err(error) => {
+                warn!(%dealer, %error, "applying dealer message to player instance failed");
+                return Ok((storage, None));
+            }
+        };
+        let storage = storage
             .append_dealing(epoch, dealer.clone(), pub_msg, priv_msg)
             .await
             .wrap_err("unable to append dealing to journal")?;
         self.acks.insert(dealer, ack.clone());
-        Ok(ack)
+        Ok((storage, Some(ack)))
     }
 
     /// Replay an already-persisted dealer message (updates in-memory state only).
@@ -1423,8 +1397,6 @@ mod tests {
             let (events, _, _) = unverified
                 .storage
                 .events
-                .take()
-                .expect("DKG events storage is available")
                 .append(
                     0,
                     &Event::Finalized {
@@ -1435,7 +1407,7 @@ mod tests {
                 )
                 .await
                 .unwrap();
-            unverified.storage.events = Some(events.sync(0).await.unwrap());
+            unverified.storage.events = events.sync(0).await.unwrap();
             drop(unverified);
 
             let result = builder()
