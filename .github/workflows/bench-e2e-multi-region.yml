@@ -39,6 +39,16 @@ on:
         type: string
         required: false
         default: ""
+      instance-type:
+        description: Instance type for validators and snapshot builder. Empty uses the cloud default.
+        type: string
+        required: false
+        default: ""
+      local-ssd-count:
+        description: GCP Local SSD count. Empty uses the machine requirement or bloat-tier default.
+        type: string
+        required: false
+        default: ""
       tps:
         type: string
         required: false
@@ -280,8 +290,8 @@ jobs:
       BENCH_INPUT_BLOAT: ${{ inputs.bloat || '100' }}
       BENCH_INPUT_VALIDATOR_COUNT: ${{ inputs['validator-count'] || (github.event_name == 'pull_request' && '1') || '10' }}
       BENCH_INPUT_REGIONS: ${{ inputs.regions || '' }}
-      BENCH_INPUT_INSTANCE_TYPE: ${{ (inputs.cloud || 'aws') == 'gcp' && 'n2-standard-8' || 'c6id.8xlarge' }}
-      BENCH_INPUT_LOCAL_SSD_COUNT: ${{ (inputs.cloud || 'aws') == 'gcp' && ((inputs.bloat || '100') == '100' && '4' || '1') || '4' }}
+      BENCH_INPUT_INSTANCE_TYPE: ${{ inputs['instance-type'] || '' }}
+      BENCH_INPUT_LOCAL_SSD_COUNT: ${{ inputs['local-ssd-count'] || '' }}
       BENCH_INPUT_TPS: ${{ inputs.tps || (github.event_name == 'pull_request' && '100') || '50000' }}
       BENCH_INPUT_ACCOUNTS: ${{ inputs.accounts || '1000' }}
       BENCH_INPUT_MAX_CONCURRENT_REQUESTS: ${{ inputs['max-concurrent-requests'] || (github.event_name == 'pull_request' && '10') || '5000' }}
