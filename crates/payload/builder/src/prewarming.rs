@@ -1,13 +1,16 @@
-use std::sync::{
-    Arc,
-    atomic::{AtomicBool, Ordering},
-    mpsc::{self, Receiver, Sender},
+use std::{
+    sync::{
+        Arc,
+        atomic::{AtomicBool, Ordering},
+        mpsc::{self, Receiver, Sender},
+    },
+    time::{Duration, Instant},
 };
 
 use alloy_primitives::B256;
 use reth_engine_tree::tree::{CachedStateProvider, SavedCache};
 use reth_evm::{Evm, EvmEnvFor};
-use reth_revm::database::StateProviderDatabase;
+use reth_revm::{cancelled::CancelOnDrop, database::StateProviderDatabase};
 use reth_storage_api::{StateProviderBox, StateProviderFactory};
 use reth_tasks::{TaskExecutor, WorkerPool};
 use reth_transaction_pool::{
@@ -23,13 +26,15 @@ pub(crate) type PrewarmEvmState = Option<TempoEvm<StateProviderDatabase<StatePro
 /// lookahead, prewarms buffered transactions in parallel, and produces a new
 /// [`BestTransactions`] iterator with the source order and invalidations triggered
 /// by [`Self::mark_invalid`] preserved.
-pub(crate) struct BestTransactionsPrewarming {
+pub(crate) struct BestTransactionsPrewarming<'a> {
     transactions_rx: Receiver<Option<PrewarmedTransaction>>,
     commands_tx: Sender<BestTransactionsCommand>,
     stop: Arc<AtomicBool>,
+    cancel: Option<&'a CancelOnDrop>,
+    deadline: Option<Instant>,
 }
 
-impl BestTransactionsPrewarming {
+impl<'a> BestTransactionsPrewarming<'a> {
     /// Spawns prewarming for `best_txs` and returns a new [`BestTransactions`] iterator.
     pub(crate) fn new<Txs, Provider>(
         prewarm: PrewarmingExecutionContext<Provider>,
@@ -45,6 +50,8 @@ impl BestTransactionsPrewarming {
             transactions_rx,
             commands_tx: commands_tx.clone(),
             stop: prewarm.stop.clone(),
+            cancel: None,
+            deadline: None,
         };
 
         let prewarm_executor = prewarm.executor();
@@ -65,6 +72,18 @@ impl BestTransactionsPrewarming {
             });
 
         this
+    }
+
+    /// Bound coordinator waits by the proposal deadline and observe builder cancellation.
+    /// Borrow the cancellation token: dropping a clone would cancel the whole build.
+    pub(crate) fn with_build_limits(
+        mut self,
+        cancel: &'a CancelOnDrop,
+        deadline: Option<Instant>,
+    ) -> Self {
+        self.cancel = Some(cancel);
+        self.deadline = deadline;
+        self
     }
 
     /// Runs the coordinator side of prewarming for a payload build.
@@ -246,7 +265,7 @@ impl BestTransactionsPrewarming {
     }
 }
 
-impl Drop for BestTransactionsPrewarming {
+impl Drop for BestTransactionsPrewarming<'_> {
     fn drop(&mut self) {
         self.stop.store(true, Ordering::Relaxed);
         // Move buffered transaction cleanup to the prewarm coordinator instead of this builder thread.
@@ -258,7 +277,7 @@ impl Drop for BestTransactionsPrewarming {
     }
 }
 
-impl Iterator for BestTransactionsPrewarming {
+impl Iterator for BestTransactionsPrewarming<'_> {
     type Item = PrewarmedTransaction;
 
     fn next(&mut self) -> Option<Self::Item> {
@@ -268,11 +287,32 @@ impl Iterator for BestTransactionsPrewarming {
         self.commands_tx
             .send(BestTransactionsCommand::Advance)
             .ok()?;
-        self.transactions_rx.recv().ok().flatten()
+        if self.cancel.is_none() && self.deadline.is_none() {
+            return self.transactions_rx.recv().ok().flatten();
+        }
+
+        loop {
+            if self.cancel.is_some_and(CancelOnDrop::is_cancelled) {
+                return None;
+            }
+            let timeout = self.deadline.map_or(Duration::from_millis(1), |deadline| {
+                deadline
+                    .saturating_duration_since(Instant::now())
+                    .min(Duration::from_millis(1))
+            });
+            if timeout.is_zero() {
+                return None;
+            }
+            match self.transactions_rx.recv_timeout(timeout) {
+                Ok(tx) => return tx,
+                Err(mpsc::RecvTimeoutError::Timeout) => {}
+                Err(mpsc::RecvTimeoutError::Disconnected) => return None,
+            }
+        }
     }
 }
 
-impl BestTransactions for BestTransactionsPrewarming {
+impl BestTransactions for BestTransactionsPrewarming<'_> {
     fn mark_invalid(&mut self, transaction: &Self::Item, kind: InvalidPoolTransactionError) {
         let (new_tx, new_rx) = mpsc::channel();
         let old_rx = core::mem::replace(&mut self.transactions_rx, new_rx);
@@ -620,7 +660,7 @@ mod tests {
     }
 
     struct TestPrewarming {
-        prewarming: Option<BestTransactionsPrewarming>,
+        prewarming: Option<BestTransactionsPrewarming<'static>>,
         executor: TaskExecutor,
     }
 
@@ -634,7 +674,7 @@ mod tests {
     }
 
     impl std::ops::Deref for TestPrewarming {
-        type Target = BestTransactionsPrewarming;
+        type Target = BestTransactionsPrewarming<'static>;
 
         fn deref(&self) -> &Self::Target {
             self.prewarming.as_ref().expect("prewarming exists")
@@ -726,6 +766,64 @@ mod tests {
             thread::sleep(Duration::from_millis(5));
         }
         assert!(condition(), "condition did not become true before timeout");
+    }
+
+    /// Keep the producer connected without servicing its Advance command. This models a
+    /// coordinator stalled in source iteration, provider setup, or invalidation cleanup.
+    fn assert_stalled_wait_finishes(cancel_wait: bool) {
+        let cancel = CancelOnDrop::default();
+        let mut signal = Some(cancel.clone());
+        let (transactions_tx, transactions_rx) = mpsc::channel();
+        let (commands_tx, commands_rx) = mpsc::channel();
+        let deadline = (!cancel_wait).then(|| Instant::now() + Duration::from_millis(10));
+        let mut prewarming = BestTransactionsPrewarming {
+            transactions_rx,
+            commands_tx,
+            stop: Arc::default(),
+            cancel: None,
+            deadline: None,
+        }
+        .with_build_limits(&cancel, deadline);
+
+        thread::scope(|scope| {
+            let (done_tx, done_rx) = mpsc::channel();
+            let waiter = scope.spawn(move || {
+                done_tx.send(prewarming.next().is_none()).unwrap();
+            });
+            assert!(matches!(
+                commands_rx.recv_timeout(Duration::from_secs(1)).unwrap(),
+                BestTransactionsCommand::Advance
+            ));
+            if cancel_wait {
+                drop(signal.take());
+            }
+            let result = done_rx.recv_timeout(Duration::from_secs(1));
+            // Always release an unbounded waiter before asserting, so the negative control
+            // fails instead of hanging the test process.
+            let _ = transactions_tx.send(None);
+            waiter.join().unwrap();
+            assert_eq!(
+                result,
+                Ok(true),
+                "stalled coordinator must not hold the builder"
+            );
+        });
+        if !cancel_wait {
+            assert!(
+                !cancel.is_cancelled(),
+                "dropping the iterator must not cancel the build"
+            );
+        }
+    }
+
+    #[test]
+    fn proposal_deadline_bounds_stalled_coordinator_wait() {
+        assert_stalled_wait_finishes(false);
+    }
+
+    #[test]
+    fn cancellation_interrupts_stalled_coordinator_wait() {
+        assert_stalled_wait_finishes(true);
     }
 
     #[test]
