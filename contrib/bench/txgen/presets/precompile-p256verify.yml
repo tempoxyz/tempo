@@ -1,0 +1,24 @@
+include:
+- ../gas-calibration/crypto-base.yml
+merge:
+  setup:
+    steps:
+    - id: fixture
+      deploy:
+        type: eip1559
+        from:
+          pool: users
+          select:
+            index: 0
+        artifact: PrecompileCalibration
+        gas_limit: 10000000
+        constructor_args:
+        - - '0x0000000000000000000000000000000000000100'
+        - - '0xf86c3e35c3aebded93f78292979b843b636d9463c4169fda447d94ae3b7a80cd892df0e828f44274a66d2d3ca533c20817c4cde7aab7ab9256ce826924dd03ed0185ce1dd970b3b3f3b52213a0def4f3925ac978026a8cb3ca2e0f69724e5ecd7135fa4fd93a09dce98bbf681b4bfcf50e7c0d6354e62afb0bff2a3429617865ed4c1f02ddb9023ee56a557e515d6a9dc66c11f220960de594334df588776724'
+        - - '0x0000000000000000000000000000000000000000000000000000000000000001'
+  templates:
+    precompile:
+      call:
+        args:
+        - '0x0000000000000000000000000000000000000100'
+        - '0xf86c3e35c3aebded93f78292979b843b636d9463c4169fda447d94ae3b7a80cd892df0e828f44274a66d2d3ca533c20817c4cde7aab7ab9256ce826924dd03ed0185ce1dd970b3b3f3b52213a0def4f3925ac978026a8cb3ca2e0f69724e5ecd7135fa4fd93a09dce98bbf681b4bfcf50e7c0d6354e62afb0bff2a3429617865ed4c1f02ddb9023ee56a557e515d6a9dc66c11f220960de594334df588776724'

@@ -1,0 +1,8 @@
+include:
+  - ../gas-calibration/base.yml
+merge:
+  templates:
+    calibration:
+      call:
+        function: branch
+        args: [{ uniform: [1, 1000000] }]

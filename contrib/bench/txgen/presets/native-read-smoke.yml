@@ -1,0 +1,260 @@
+include:
+- ../gas-calibration/native-base.yml
+merge:
+  templates:
+    tip20:
+      type: tempo
+      from:
+        pool: users
+        select: random
+      gas_limit: 300000
+      fee_token: '0x20c0000000000000000000000000000000000000'
+      expiring_nonce: true
+      valid_for_secs: 10
+      call:
+        to:
+          var: setup.native_reads.address
+        abi: NativeReadCalibration
+        args: []
+        function: tokenBalance
+    factory:
+      type: tempo
+      from:
+        pool: users
+        select: random
+      gas_limit: 300000
+      fee_token: '0x20c0000000000000000000000000000000000000'
+      expiring_nonce: true
+      valid_for_secs: 10
+      call:
+        to:
+          var: setup.native_reads.address
+        abi: NativeReadCalibration
+        args: []
+        function: factoryTokenCheck
+    policy:
+      type: tempo
+      from:
+        pool: users
+        select: random
+      gas_limit: 300000
+      fee_token: '0x20c0000000000000000000000000000000000000'
+      expiring_nonce: true
+      valid_for_secs: 10
+      call:
+        to:
+          var: setup.native_reads.address
+        abi: NativeReadCalibration
+        args: []
+        function: policyCounter
+    fee:
+      type: tempo
+      from:
+        pool: users
+        select: random
+      gas_limit: 300000
+      fee_token: '0x20c0000000000000000000000000000000000000'
+      expiring_nonce: true
+      valid_for_secs: 10
+      call:
+        to:
+          var: setup.native_reads.address
+        abi: NativeReadCalibration
+        args: []
+        function: feeToken
+    dex:
+      type: tempo
+      from:
+        pool: users
+        select: random
+      gas_limit: 300000
+      fee_token: '0x20c0000000000000000000000000000000000000'
+      expiring_nonce: true
+      valid_for_secs: 10
+      call:
+        to:
+          var: setup.native_reads.address
+        abi: NativeReadCalibration
+        args: []
+        function: dexBalance
+    nonce:
+      type: tempo
+      from:
+        pool: users
+        select: random
+      gas_limit: 300000
+      fee_token: '0x20c0000000000000000000000000000000000000'
+      expiring_nonce: true
+      valid_for_secs: 10
+      call:
+        to:
+          var: setup.native_reads.address
+        abi: NativeReadCalibration
+        args: []
+        function: nonceValue
+    validator_v1:
+      type: tempo
+      from:
+        pool: users
+        select: random
+      gas_limit: 300000
+      fee_token: '0x20c0000000000000000000000000000000000000'
+      expiring_nonce: true
+      valid_for_secs: 10
+      call:
+        to:
+          var: setup.native_reads.address
+        abi: NativeReadCalibration
+        args: []
+        function: legacyValidatorCount
+    validator_v2:
+      type: tempo
+      from:
+        pool: users
+        select: random
+      gas_limit: 300000
+      fee_token: '0x20c0000000000000000000000000000000000000'
+      expiring_nonce: true
+      valid_for_secs: 10
+      call:
+        to:
+          var: setup.native_reads.address
+        abi: NativeReadCalibration
+        args: []
+        function: validatorCount
+    keychain:
+      type: tempo
+      from:
+        pool: users
+        select: random
+      gas_limit: 300000
+      fee_token: '0x20c0000000000000000000000000000000000000'
+      expiring_nonce: true
+      valid_for_secs: 10
+      call:
+        to:
+          var: setup.native_reads.address
+        abi: NativeReadCalibration
+        args: []
+        function: adminKeyCheck
+    address:
+      type: tempo
+      from:
+        pool: users
+        select: random
+      gas_limit: 300000
+      fee_token: '0x20c0000000000000000000000000000000000000'
+      expiring_nonce: true
+      valid_for_secs: 10
+      call:
+        to:
+          var: setup.native_reads.address
+        abi: NativeReadCalibration
+        args: []
+        function: resolveRecipient
+    channel:
+      type: tempo
+      from:
+        pool: users
+        select: random
+      gas_limit: 300000
+      fee_token: '0x20c0000000000000000000000000000000000000'
+      expiring_nonce: true
+      valid_for_secs: 10
+      call:
+        to:
+          var: setup.native_reads.address
+        abi: NativeReadCalibration
+        args: []
+        function: channelCredits
+    guard:
+      type: tempo
+      from:
+        pool: users
+        select: random
+      gas_limit: 300000
+      fee_token: '0x20c0000000000000000000000000000000000000'
+      expiring_nonce: true
+      valid_for_secs: 10
+      call:
+        to:
+          var: setup.native_reads.address
+        abi: NativeReadCalibration
+        args: []
+        function: guardBalance
+    credits:
+      type: tempo
+      from:
+        pool: users
+        select: random
+      gas_limit: 300000
+      fee_token: '0x20c0000000000000000000000000000000000000'
+      expiring_nonce: true
+      valid_for_secs: 10
+      call:
+        to:
+          var: setup.native_reads.address
+        abi: NativeReadCalibration
+        args: []
+        function: storageCredits
+    committee:
+      type: tempo
+      from:
+        pool: users
+        select: random
+      gas_limit: 300000
+      fee_token: '0x20c0000000000000000000000000000000000000'
+      expiring_nonce: true
+      valid_for_secs: 10
+      call:
+        to:
+          var: setup.native_reads.address
+        abi: NativeReadCalibration
+        args: []
+        function: committee
+    zone:
+      type: tempo
+      from:
+        pool: users
+        select: random
+      gas_limit: 300000
+      fee_token: '0x20c0000000000000000000000000000000000000'
+      expiring_nonce: true
+      valid_for_secs: 10
+      call:
+        to:
+          var: setup.native_reads.address
+        abi: NativeReadCalibration
+        args: []
+        function: zoneOwner
+  mix:
+  - template: tip20
+    weight: 1
+  - template: factory
+    weight: 1
+  - template: policy
+    weight: 1
+  - template: fee
+    weight: 1
+  - template: dex
+    weight: 1
+  - template: nonce
+    weight: 1
+  - template: validator_v1
+    weight: 1
+  - template: validator_v2
+    weight: 1
+  - template: keychain
+    weight: 1
+  - template: address
+    weight: 1
+  - template: channel
+    weight: 1
+  - template: guard
+    weight: 1
+  - template: credits
+    weight: 1
+  - template: committee
+    weight: 1
+  - template: zone
+    weight: 1

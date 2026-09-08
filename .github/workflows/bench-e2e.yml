@@ -30,7 +30,7 @@ on:
         required: false
         default: ""
       preset:
-        description: Benchmark preset or scenario, e.g. default or tip20:recipient=existing,auth=keychain.
+        description: Preset/scenario, or gas-compare:gas-hash-control-256,gas-sha256-256 for matched workload calibration.
         type: string
         required: true
         default: default
@@ -613,6 +613,12 @@ jobs:
         with:
           node-version: 24
 
+      - name: Validate paired-workload harness
+        if: startsWith(env.BENCH_PRESET, 'gas-compare:')
+        run: |
+          nu contrib/bench/tests/calibration-pair.nu
+          node --test .github/scripts/bench-e2e-workload.test.cjs
+
       - name: Install txgen
         run: |
           CARGO_BIN_DIR="${CARGO_HOME:-$HOME/.cargo}/bin"
@@ -1030,6 +1036,14 @@ jobs:
           nu bench-e2e.nu summarize "$RESULTS_DIR"
           echo "path=$RESULTS_DIR" >> "$GITHUB_OUTPUT"
           echo "Results directory: $RESULTS_DIR"
+
+      - name: Validate calibration receipt outcomes
+        if: success() && (startsWith(env.BENCH_PRESET, 'gas-') || startsWith(env.BENCH_PRESET, 'precompile-') || startsWith(env.BENCH_PRESET, 'native-read-'))
+        env:
+          GAS_STUDY_RESULTS: ${{ steps.results-dir.outputs.path }}
+        run: |
+          set -euo pipefail
+          node contrib/bench/gas-study-audit.mjs "$GAS_STUDY_RESULTS" | tee "$GAS_STUDY_RESULTS/gas-study-audit.json"
 
       - name: Publish ValScope static reports
         id: publish-valscope-static

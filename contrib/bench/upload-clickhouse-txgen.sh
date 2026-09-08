@@ -44,8 +44,8 @@ for label in baseline-1 feature-1 feature-2 baseline-2; do
   echo "  Processing: $label"
 
   # Generate SQL statements via python (one statement per line, no internal newlines)
-  QUERIES=$(REPORT_PATH="$REPORT" BENCH_RUN_LABEL="$label" python3 << 'PYEOF'
-import json, uuid, os
+  QUERIES=$(REPORT_PATH="$REPORT" BENCH_RUN_LABEL="$label" uv run python << 'PYEOF'
+import json, uuid, os, sys
 
 report = json.load(open(os.environ["REPORT_PATH"]))
 meta = report.get("metadata") or {}
@@ -65,12 +65,23 @@ def normalized_blocks(report):
     normalized = []
     for b in report.get("blocks") or []:
         tx_count = as_int(b.get("tx_count"))
+        ok_count = b.get("ok_count")
+        err_count = b.get("err_count")
+        if tx_count == 0 and ok_count is None and err_count is None:
+            ok_count = err_count = 0
+        if (type(ok_count) is not int or type(err_count) is not int
+                or ok_count < 0 or err_count < 0
+                or ok_count + err_count != tx_count):
+            # Legacy ClickHouse columns cannot represent unknown outcomes.
+            # Skip the whole report before producing any INSERT statements.
+            print("  Skipping report: receipt outcomes are unknown or inconsistent", file=sys.stderr)
+            raise SystemExit(0)
         normalized.append({
             "number": as_int(b.get("number")),
             "timestamp": as_int(b.get("timestamp", b.get("timestamp_ms"))),
             "tx_count": tx_count,
-            "ok_count": tx_count,
-            "err_count": 0,
+            "ok_count": ok_count,
+            "err_count": err_count,
             "gas_used": as_int(b.get("gas_used")),
             "latency_ms": b.get("block_time_ms"),
         })
@@ -156,6 +167,10 @@ if blocks:
     )
 PYEOF
   )
+
+  if [ -z "$QUERIES" ]; then
+    continue
+  fi
 
   echo "$QUERIES" | while IFS= read -r query; do
     [ -z "$query" ] && continue

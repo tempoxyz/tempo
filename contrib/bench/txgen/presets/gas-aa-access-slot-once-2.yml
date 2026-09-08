@@ -1,0 +1,27 @@
+include:
+- ../gas-calibration/access-base.yml
+merge:
+  templates:
+    aa_access:
+      type: tempo
+      from:
+        pool: users
+        select: random
+      gas_limit: 300000
+      fee_token: '0x20c0000000000000000000000000000000000000'
+      expiring_nonce: true
+      valid_for_secs: 10
+      calls:
+      - to:
+          var: setup.access.address
+        abi: AccessCalibration
+        args: []
+        function: slotOnce
+      - to:
+          var: setup.access.address
+        abi: AccessCalibration
+        args: []
+        function: slotOnce
+  mix:
+  - template: aa_access
+    weight: 1

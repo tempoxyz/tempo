@@ -142,6 +142,13 @@ function axisChange(axis, summary, baselineRuns, featureRuns, rand) {
   const base = summary.results.baseline[axis];
   const feature = summary.results.feature[axis];
   const changePct = pct(base, feature);
+  if (summary.config?.comparison_kind === 'workload') {
+    return {
+      pct: Number.isFinite(base) && Number.isFinite(feature) && base > 0 ? Number(changePct.toFixed(4)) : null,
+      ci_pct: null, floor_pct: null, sig: 'neutral', informational: true,
+      informational_reason: 'different workloads; not a code improvement or pricing verdict',
+    };
+  }
   const baseline = baselineRuns.map(r => r[axis]).filter(Number.isFinite);
   const featureValues = featureRuns.map(r => r[axis]).filter(Number.isFinite);
   const ciPct = bootstrapCiPct(baseline, featureValues, base, rand);
@@ -231,17 +238,23 @@ function buildMarkdown(summary) {
   const runSide = summary.config?.run_side || 'comparison';
   const featureOnly = runSide === 'feature';
   const baselineOnly = runSide === 'baseline';
+  const workloadComparison = summary.config?.comparison_kind === 'workload';
   const lines = [
     featureOnly ? `# ${c.emoji} Feature Bench: ${c.label}` : baselineOnly ? `# ${c.emoji} Baseline Bench: ${c.label}` : `# ${c.emoji} Bench Comparison: ${c.label}`,
     '',
     `**Refs:** ${summary.baseline_ref} vs ${summary.feature_ref}`,
-    featureOnly ? `**Criteria:** Feature-only run; baseline columns are intentionally empty.` : baselineOnly ? `**Criteria:** Baseline-only run; feature columns are intentionally empty.` : `**Criteria:** 95% run-bootstrap CI must clear floor; cells show delta (+/-CI/floor).`,
+    workloadComparison ? '**Criteria:** Different workloads on matched node settings; deltas are descriptive, not code improvements or pricing verdicts.' : featureOnly ? `**Criteria:** Feature-only run; baseline columns are intentionally empty.` : baselineOnly ? `**Criteria:** Baseline-only run; feature columns are intentionally empty.` : `**Criteria:** 95% run-bootstrap CI must clear floor; cells show delta (+/-CI/floor).`,
     '',
     '## Configuration',
     ...(derekCommand ? [`- Derek command: \`${derekCommand}\``] : []),
     `- Bloat: ${summary.config.bloat} MiB`,
     `- Token count: ${summary.config.token_count ?? 4}`,
     `- Preset: ${summary.config.preset}`,
+    ...(workloadComparison ? [
+      `- Baseline workload: ${summary.config.baseline_preset}`,
+      `- Feature workload: ${summary.config.feature_preset}`,
+      '- Whole-transaction costs include wrapper, authentication, fee handling and storage; marginal operation pricing needs separate analysis.',
+    ] : []),
     `- Target TPS: ${summary.config.tps}`,
     `- Duration: ${summary.config.duration}s`,
     `- Run pairs: ${summary.config.run_pairs}`,
@@ -287,7 +300,10 @@ function main(resultsDir = process.argv[2]) {
   }
 
   summary.results.changes = changes;
-  summary.classification = {
+  summary.classification = summary.config?.comparison_kind === 'workload' ? {
+    emoji: '⚪', slack_emoji: ':white_circle:', label: 'Workload Comparison - Unpriced',
+    method: 'descriptive-workload-comparison', pricing_ready: false,
+  } : {
     ...verdict(changes),
     method: 'run-cluster-bootstrap',
     confidence: 0.95,

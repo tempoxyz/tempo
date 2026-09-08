@@ -1,0 +1,7 @@
+include:
+- ../gas-calibration/access-base.yml
+merge:
+  templates:
+    access:
+      call:
+        function: callOnce

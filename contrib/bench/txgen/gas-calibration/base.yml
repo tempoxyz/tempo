@@ -1,0 +1,43 @@
+# solc 0.8.30, optimizer 200, Cancun bytecode; node fork pinned by bench-e2e.
+merge:
+  chain_id: 1337
+  gas:
+    max_fee_per_gas: 100000000000
+    max_priority_fee_per_gas: 100000000000
+  accounts:
+    users:
+      mnemonic: "test test test test test test test test test test test junk"
+      range: [0, ${TXGEN_ACCOUNTS}]
+  artifacts:
+    GasCalibration:
+      abi: ./GasCalibration.json
+      bytecode: ./GasCalibration.json
+  setup:
+    steps:
+      - id: calibration
+        deploy:
+          type: eip1559
+          from: { pool: users, select: { index: 0 } }
+          artifact: GasCalibration
+          gas_limit: 10000000
+          constructor_args:
+            - "0x01010101010101010101010101010101010101010101010101010101010101010101010101010101010101010101010101010101010101010101010101010101010101010101010101010101010101010101010101010101010101010101010101010101010101010101010101010101010101010101010101010101010101010101010101010101010101010101010101010101010101010101010101010101010101010101010101010101010101010101010101010101010101010101010101010101010101010101010101010101010101010101010101010101010101010101010101010101010101010101010101010101010101010101010101010101"
+            - "0x10c18b0ffc7f89e6da317ea664365820b9f7f954fa9f03733072f5ccd0826818"
+            - "0x2661920f2409dd6c8adeb0c44972959f232b6429afa913845d0fd95e7e768234"
+            - "0xe571a1ca5b780aa52bafdb9ec852544ffca418ba000000000000000000000000"
+  templates:
+    calibration:
+      type: tempo
+      from: { pool: users, select: random }
+      gas_limit: 300000
+      fee_token: "0x20c0000000000000000000000000000000000000"
+      expiring_nonce: true
+      valid_for_secs: 10
+      call:
+        to: { var: setup.calibration.address }
+        abi: GasCalibration
+        function: hashControl
+        args: [{ random_bytes: 32 }]
+  mix:
+    - template: calibration
+      weight: 100
