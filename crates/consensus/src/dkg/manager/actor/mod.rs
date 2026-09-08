@@ -929,19 +929,29 @@ where
         for (player, pub_msg, priv_msg) in dealer_state.shares_to_distribute().collect::<Vec<_>>() {
             if player == me {
                 if let Some(player_state) = player_state {
-                    let ack = player_state
-                        .receive_dealing(storage, epoch, me.clone(), pub_msg, priv_msg)
-                        .await
-                        .wrap_err("failed to store our own dealing")?;
-                    self.metrics.shares_distributed.metric().inc();
-                    self.metrics.shares_received.metric().inc();
-                    dealer_state
-                        .receive_ack(storage, epoch, me.clone(), ack)
-                        .await
-                        .wrap_err("failed to store our own ACK")?;
-                    self.metrics.acks_received.metric().inc();
-                    self.metrics.acks_sent.metric().inc();
-                    info!("stored our own ACK and share");
+                    let result: eyre::Result<()> = async {
+                        let ack = player_state
+                            .receive_dealing(storage, epoch, me.clone(), pub_msg, priv_msg)
+                            .await
+                            .wrap_err("failed to store our own dealing")?;
+                        self.metrics.shares_distributed.metric().inc();
+                        self.metrics.shares_received.metric().inc();
+                        dealer_state
+                            .receive_ack(storage, epoch, me.clone(), ack)
+                            .await
+                            .wrap_err("failed to store our own ACK")?;
+                        self.metrics.acks_received.metric().inc();
+                        self.metrics.acks_sent.metric().inc();
+                        info!("stored our own ACK and share");
+                        Ok(())
+                    }
+                    .await;
+                    if let Err(error) = result {
+                        if storage.is_poisoned() {
+                            return Err(error);
+                        }
+                        warn!(%error, "failed to process our own dealing or ACK");
+                    }
                 }
             } else {
                 // Send to remote player
