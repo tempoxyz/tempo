@@ -134,6 +134,21 @@ pub(crate) mod marshal {
         .await
         .wrap_err("failed to initialize finalizations by height archive")?;
 
+        let first = finalizations_by_height.first_index();
+        let contiguous_end = first.and_then(|first| finalizations_by_height.next_gap(first).0);
+        info!(
+            finalizations_archive.empty = first.is_none(),
+            finalizations_archive.first_block = first,
+            finalizations_archive.last_block = finalizations_by_height.last_index(),
+            finalizations_archive.first_contiguous_end = contiguous_end,
+            execution_layer.finalized_height = ?execution_node
+                .provider
+                .canonical_in_memory_state()
+                .get_finalized_num_hash()
+                .map(|block| block.number),
+            "restored consensus startup state"
+        );
+
         let FinalizationRange {
             floor: finalized_floor,
             tip: finalized_tip,
@@ -215,8 +230,9 @@ pub(crate) mod marshal {
 
         info!(
             marshal_stored = ?marshal_stored_height,
-            selected_floor = %startup_floor_height,
-            "setting marshal sync floor"
+            archive_floor = %startup_floor_height,
+            selected_floor = %last_finalized_height,
+            "selected marshal finalized floor"
         );
 
         Ok(Initialized {
