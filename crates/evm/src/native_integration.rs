@@ -519,7 +519,7 @@ fn native_commitment_persisted_storage_trie_resume_and_proof() {
     }
     proof.verify(expected_root).unwrap();
     // Verification must bind the fifth account field, not merely the ordinary account fields.
-    let mut wrong_commitment = proof.clone();
+    let mut wrong_commitment = proof;
     wrong_commitment.info.as_mut().unwrap().extension =
         tempo_primitives::account::encode_config_commitment(B256::repeat_byte(0x99)).into();
     assert!(wrong_commitment.verify(expected_root).is_err());
