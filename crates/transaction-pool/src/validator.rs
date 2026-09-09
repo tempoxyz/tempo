@@ -115,6 +115,8 @@ pub struct TempoTransactionValidator<Client, EvmConfig = TempoEvmConfig> {
     /// Cached here so hot paths can resolve the active hardfork with a single atomic load
     /// instead of walking the chain spec's fork schedule.
     active_hardfork: AtomicU8,
+    /// Serializes coherent header snapshots and insertion against processed head callbacks.
+    pub(crate) generation: RwLock<u64>,
 }
 
 impl<Client, EvmConfig> TempoTransactionValidator<Client, EvmConfig>
@@ -152,6 +154,7 @@ where
             cached_evm_env: parking_lot::RwLock::new(evm_env),
             cached_state: RwLock::new((latest_header.hash(), Arc::new(StateCache::default()))),
             active_hardfork,
+            generation: RwLock::new(0),
         }
     }
 
@@ -349,6 +352,8 @@ where
         &self,
         state_provider: P,
         cached_state: Arc<StateCache>,
+        evm_env: EvmEnv<TempoHardfork, TempoBlockEnv>,
+        generation: u64,
         transactions: impl IntoIterator<Item = (TransactionOrigin, TempoPooledTransaction)>,
     ) -> Vec<TransactionValidationOutcome<TempoPooledTransaction>> {
         let db = StateCacheDb::new(
@@ -357,7 +362,6 @@ where
                 (&state_provider as &dyn StateProvider).into_evm_state_provider(),
             ),
         );
-        let evm_env = self.cached_evm_env.read().clone();
 
         // Create one throwaway EVM through the configured factory for the whole batch. The
         // capability hook owns all pool-only configuration and per-transaction cleanup while the
@@ -366,30 +370,32 @@ where
 
         transactions
             .into_iter()
-            .map(|(origin, transaction)| self.validate_one_with_evm(origin, transaction, &mut evm))
+            .map(|(origin, transaction)| {
+                transaction.set_validation_generation(generation);
+                self.validate_one_with_evm(origin, transaction, &mut evm)
+            })
             .collect()
     }
 
-    /// Returns the latest state provider and a state cache valid for the provider's tip.
-    fn latest_state_provider_and_cache(
+    /// Snapshots state, cache, and EVM environment at the last processed canonical head.
+    /// The generation guard is released before any transaction validation work.
+    fn anchored_state_provider_and_cache(
         &self,
-    ) -> ProviderResult<(StateProviderBox, Arc<StateCache>)> {
-        let state_provider = self.inner.client().latest()?;
-        let latest_hash = self.inner.client().chain_info()?.best_hash;
-        Ok((state_provider, self.state_cache_for_tip(latest_hash)))
+        state_by_hash: impl FnOnce(B256) -> ProviderResult<StateProviderBox>,
+    ) -> ProviderResult<(StateProviderBox, Arc<StateCache>, EvmEnvFor<EvmConfig>, u64)> {
+        let generation = self.generation.read();
+        let (hash, cache) = self.cached_state.read().clone();
+        let state_provider = state_by_hash(hash)?;
+        Ok((
+            state_provider,
+            cache,
+            self.cached_evm_env.read().clone(),
+            *generation,
+        ))
     }
 
-    /// Returns the shared cache if it matches `tip_hash`, otherwise an empty ephemeral cache.
-    ///
-    /// A mismatch can happen when `.latest()` observes state for a newer canonical tip before
-    /// `on_new_head_block` has refreshed the validator's cached state for that tip.
-    fn state_cache_for_tip(&self, tip_hash: B256) -> Arc<StateCache> {
-        let (cached_tip_hash, cached_state) = self.cached_state.read().clone();
-        if cached_tip_hash == tip_hash {
-            cached_state
-        } else {
-            Arc::new(StateCache::default())
-        }
+    pub(crate) fn processed_head(&self) -> B256 {
+        self.cached_state.read().0
     }
 
     /// Validates one transaction with the given throwaway EVM.
@@ -697,20 +703,10 @@ where
         origin: TransactionOrigin,
         transaction: Self::Transaction,
     ) -> TransactionValidationOutcome<Self::Transaction> {
-        let (state_provider, cached_state) = match self.latest_state_provider_and_cache() {
-            Ok(provider_and_cache) => provider_and_cache,
-            Err(err) => {
-                return TransactionValidationOutcome::Error(*transaction.hash(), Box::new(err));
-            }
-        };
-
-        self.validate_batch(
-            state_provider,
-            cached_state,
-            core::iter::once((origin, transaction)),
-        )
-        .pop()
-        .expect("validate_batch returns one outcome per transaction")
+        self.validate_transactions(core::iter::once((origin, transaction)))
+            .await
+            .pop()
+            .expect("validate_batch returns one outcome per transaction")
     }
 
     async fn validate_transactions(
@@ -718,7 +714,9 @@ where
         transactions: impl IntoIterator<Item = (TransactionOrigin, Self::Transaction), IntoIter: Send>
         + Send,
     ) -> Vec<TransactionValidationOutcome<Self::Transaction>> {
-        let (state_provider, cached_state) = match self.latest_state_provider_and_cache() {
+        let (state_provider, cached_state, evm_env, generation) = match self
+            .anchored_state_provider_and_cache(|hash| self.inner.client().state_by_block_hash(hash))
+        {
             Ok(provider_and_cache) => provider_and_cache,
             Err(err) => {
                 return transactions
@@ -730,7 +728,13 @@ where
             }
         };
 
-        self.validate_batch(state_provider, cached_state, transactions)
+        self.validate_batch(
+            state_provider,
+            cached_state,
+            evm_env,
+            generation,
+            transactions,
+        )
     }
 
     async fn validate_transactions_with_origin(
@@ -738,26 +742,17 @@ where
         origin: TransactionOrigin,
         transactions: impl IntoIterator<Item = Self::Transaction> + Send,
     ) -> Vec<TransactionValidationOutcome<Self::Transaction>> {
-        let (state_provider, cached_state) = match self.latest_state_provider_and_cache() {
-            Ok(provider_and_cache) => provider_and_cache,
-            Err(err) => {
-                return transactions
-                    .into_iter()
-                    .map(|tx| {
-                        TransactionValidationOutcome::Error(*tx.hash(), Box::new(err.clone()))
-                    })
-                    .collect();
-            }
-        };
-
-        self.validate_batch(
-            state_provider,
-            cached_state,
-            transactions.into_iter().map(|tx| (origin, tx)),
+        self.validate_transactions(
+            transactions
+                .into_iter()
+                .map(|tx| (origin, tx))
+                .collect::<Vec<_>>(),
         )
+        .await
     }
 
     fn on_new_head_block(&self, new_tip_block: &SealedBlock<Self::Block>) {
+        let mut generation = self.generation.write();
         self.inner.on_new_head_block(new_tip_block);
 
         // Cache the EVM environment for the new tip block.
@@ -772,6 +767,7 @@ where
 
         // State changed, drop all cached reads and anchor the new cache to this tip.
         *self.cached_state.write() = (new_tip_block.hash(), Arc::new(StateCache::default()));
+        *generation = generation.wrapping_add(1);
     }
 }
 
@@ -861,17 +857,23 @@ where
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::{test_utils::TxBuilder, transaction::TempoPoolTransactionError};
+    use crate::{
+        AA2dPool, TempoTransactionPool, maintain::MaintenancePermit, ordering::TempoTipOrdering,
+        test_utils::TxBuilder, transaction::TempoPoolTransactionError,
+    };
     use alloy_consensus::{Header, Signed, Transaction, TxLegacy};
     use alloy_primitives::{Address, B256, Bytes, TxKind, U256, address, uint};
     use alloy_signer::Signature;
+    use futures::FutureExt;
     use reth_chainspec::EthChainSpec;
     use reth_primitives_traits::{Account, AccountExtension, Bytecode, SignedTransaction};
     use reth_provider::test_utils::{ExtendedAccount, MockEthProvider};
     use reth_revm::cached::CachedReads;
     use reth_storage_api::{AccountReader, BlockNumReader, BytecodeReader};
     use reth_transaction_pool::{
-        PoolTransaction, blobstore::InMemoryBlobStore, validate::EthTransactionValidatorBuilder,
+        Pool, PoolConfig, PoolTransaction, TransactionPool, TransactionValidationTaskExecutor,
+        blobstore::InMemoryBlobStore, error::PoolErrorKind,
+        validate::EthTransactionValidatorBuilder,
     };
     use revm::{DatabaseRef, context::result::InvalidTransaction};
     use std::sync::{
@@ -1002,6 +1004,8 @@ mod tests {
         SealedBlock::seal_slow(block)
     }
 
+    mod configurable;
+
     /// Helper function to create an AA transaction with the given `valid_after` and `valid_before`
     /// timestamps
     fn create_aa_transaction(
@@ -1129,24 +1133,6 @@ mod tests {
         }
     }
 
-    #[test]
-    fn state_cache_for_tip_reuses_only_matching_tip_cache() {
-        let tx = TxBuilder::eip1559(Address::random()).build_eip1559();
-        let validator = setup_validator(&tx, 1);
-        let (shared_tip_hash, shared_cache) = validator.cached_state.read().clone();
-
-        let matching_cache = validator.state_cache_for_tip(shared_tip_hash);
-        assert!(Arc::ptr_eq(&matching_cache, &shared_cache));
-
-        let mismatched_tip_hash = if shared_tip_hash == B256::repeat_byte(0x42) {
-            B256::repeat_byte(0x43)
-        } else {
-            B256::repeat_byte(0x42)
-        };
-        let ephemeral_cache = validator.state_cache_for_tip(mismatched_tip_hash);
-        assert!(!Arc::ptr_eq(&ephemeral_cache, &shared_cache));
-    }
-
     #[tokio::test]
     async fn address_filter_checks_later_tempo_calls_during_admission() {
         let checked_address = Address::with_last_byte(0x42);
@@ -1184,21 +1170,122 @@ mod tests {
     }
 
     #[test]
-    fn latest_state_provider_uses_ephemeral_cache_when_tip_hash_mismatches_latest() {
+    fn validation_snapshot_keeps_fork_state_cache_and_environment_together() {
         let tx = TxBuilder::eip1559(Address::random()).build_eip1559();
         let validator = setup_validator(&tx, 1);
-        let latest_hash = validator.client().chain_info().unwrap().best_hash;
-        let mismatched_tip_hash = if latest_hash == B256::repeat_byte(0x42) {
-            B256::repeat_byte(0x43)
-        } else {
-            B256::repeat_byte(0x42)
+        let old = create_mock_block(1);
+        let new = create_mock_block(2);
+        let old_state = MockEthProvider::<TempoPrimitives>::new();
+        let new_state = MockEthProvider::<TempoPrimitives>::new();
+        old_state.add_account(tx.sender(), ExtendedAccount::new(1, U256::ZERO));
+        new_state.add_account(tx.sender(), ExtendedAccount::new(2, U256::ZERO));
+        // Unlike MockEthProvider's factory, this supplier distinguishes fork hashes and can
+        // lose an orphan while a previously acquired provider remains usable.
+        let load = |hash: B256, orphan_available| -> ProviderResult<StateProviderBox> {
+            if hash == old.hash() && orphan_available {
+                Ok(Box::new(old_state.clone()))
+            } else if hash == new.hash() {
+                Ok(Box::new(new_state.clone()))
+            } else {
+                Err(ProviderError::HeaderNotFound(hash.into()))
+            }
         };
-        let shared_cache = Arc::new(StateCache::default());
-        *validator.cached_state.write() = (mismatched_tip_hash, shared_cache.clone());
+        let (state, cache, env, generation) = validator
+            .anchored_state_provider_and_cache(|hash| load(hash, true))
+            .unwrap();
+        assert_eq!(state.basic_account(&tx.sender()).unwrap().unwrap().nonce, 1);
+        assert_eq!(env.block_env.timestamp, U256::from(1));
+        let (_, same_cache, _, _) = validator
+            .anchored_state_provider_and_cache(|hash| load(hash, true))
+            .unwrap();
+        assert!(Arc::ptr_eq(&cache, &same_cache));
+        assert!(
+            validator
+                .anchored_state_provider_and_cache(|hash| load(hash, false))
+                .is_err()
+        );
+        validator.on_new_head_block(&new);
+        let (fresh, new_cache, env, new_generation) = validator
+            .anchored_state_provider_and_cache(|hash| load(hash, false))
+            .unwrap();
+        assert_eq!(fresh.basic_account(&tx.sender()).unwrap().unwrap().nonce, 2);
+        assert_eq!(env.block_env.timestamp, U256::from(2));
+        assert!(!Arc::ptr_eq(&cache, &new_cache));
+        assert_ne!(generation, new_generation);
+        assert_eq!(state.basic_account(&tx.sender()).unwrap().unwrap().nonce, 1);
+    }
 
-        let (_, validation_cache) = validator.latest_state_provider_and_cache().unwrap();
+    #[tokio::test]
+    async fn queued_validation_reports_its_acquired_generation() {
+        for gas_limit in [0, 500_000] {
+            let transaction = TxBuilder::aa(Address::random())
+                .gas_limit(gas_limit)
+                .build();
+            let validator = setup_validator(&transaction, 1).with_disable_fee_amm_check(true);
+            let (executor, task) = TransactionValidationTaskExecutor::new(validator);
+            let attempt = transaction.with_discarded_caches();
+            let mut validation = Box::pin(
+                executor.validate_transaction(TransactionOrigin::External, attempt.clone()),
+            );
+            assert!(validation.as_mut().now_or_never().is_none());
+            assert_eq!(attempt.validation_generation(), None);
+            let old_generation = *executor.validator().generation.read();
+            executor
+                .validator()
+                .on_new_head_block(&create_mock_block(2));
+            let generation = *executor.validator().generation.read();
+            assert_ne!(old_generation, generation);
+            let service = tokio::spawn(task.run());
+            let outcome = validation.await;
+            assert_eq!(attempt.validation_generation(), Some(generation));
+            assert_eq!(
+                matches!(outcome, TransactionValidationOutcome::Valid { .. }),
+                gas_limit != 0,
+                "{outcome:?}"
+            );
+            assert_eq!(
+                attempt.with_discarded_caches().validation_generation(),
+                None
+            );
+            service.abort();
+        }
+    }
 
-        assert!(!Arc::ptr_eq(&validation_cache, &shared_cache));
+    #[tokio::test]
+    async fn mined_maintenance_permit_vetoes_queued_insertion() {
+        let transaction = TxBuilder::aa(Address::random()).build();
+        let hash = *transaction.hash();
+        let validator = setup_validator(&transaction, 1).with_disable_fee_amm_check(true);
+        let (executor, task) = TransactionValidationTaskExecutor::new(validator);
+        let pool = TempoTransactionPool::new(
+            Pool::new(
+                executor,
+                TempoTipOrdering::default(),
+                InMemoryBlobStore::default(),
+                PoolConfig::default(),
+            ),
+            AA2dPool::default(),
+        );
+        let permit = MaintenancePermit::new(None);
+        let mut insertion = Box::pin(pool.add_fresh_transaction_with_permit(
+            TransactionOrigin::External,
+            transaction.clone(),
+            Some(&permit),
+        ));
+        assert!(insertion.as_mut().now_or_never().is_none());
+        permit.cancel();
+        let service = tokio::spawn(task.run());
+        let error = insertion.await.unwrap_err();
+        assert!(matches!(error.kind, PoolErrorKind::Other(_)));
+        assert!(!pool.contains(&hash));
+        pool.add_transaction(TransactionOrigin::External, transaction)
+            .await
+            .unwrap();
+        assert!(
+            pool.contains(&hash),
+            "the same transaction succeeds without cancellation"
+        );
+        service.abort();
     }
 
     #[tokio::test]
