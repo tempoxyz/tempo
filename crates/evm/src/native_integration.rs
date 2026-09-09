@@ -554,7 +554,14 @@ fn native_first_call_registration_and_retry() {
         .transact(TempoTxEnv::from_recovered_tx(&failed, f.account))
         .unwrap();
     assert!(!output.result.is_success());
-    assert!(output.state[&f.account].info.extension.is_empty());
+    assert_eq!(
+        tempo_primitives::account::decode_config_commitment(
+            &output.state[&f.account].info.extension,
+            true,
+        )
+        .unwrap(),
+        f.config.commitment().unwrap()
+    );
     f.evm.db_mut().commit(output.state);
     let tx = f.signed(4, vec![f.getter()]);
     let output = f
@@ -926,7 +933,7 @@ fn native_signed_parent_delegate_case(outcome: GrantOutcome, gas_price: u128) {
             for (account, expected) in [
                 (
                     f.account,
-                    if parent_native && outcome == GrantOutcome::Success {
+                    if parent_native {
                         f.config.commitment().unwrap()
                     } else {
                         B256::ZERO
@@ -934,7 +941,7 @@ fn native_signed_parent_delegate_case(outcome: GrantOutcome, gas_price: u128) {
                 ),
                 (
                     delegate,
-                    if delegate_native && outcome == GrantOutcome::Success {
+                    if delegate_native {
                         config.commitment().unwrap()
                     } else {
                         B256::ZERO
@@ -1019,7 +1026,14 @@ fn native_signed_parent_delegate_case(outcome: GrantOutcome, gas_price: u128) {
                 total_fees += charged_fee(output.result.tx_gas_used());
                 f.evm.db_mut().commit(output.state);
                 assert_grant(&mut f, total_fees, transferred, nonce + 1);
-                assert_eq!(f.commitment(), B256::ZERO);
+                assert_eq!(
+                    f.commitment(),
+                    if parent_native {
+                        f.config.commitment().unwrap()
+                    } else {
+                        B256::ZERO
+                    }
+                );
                 let delegate_info = f.evm.db_mut().basic(delegate).unwrap().unwrap_or_default();
                 assert_eq!(
                     tempo_primitives::account::decode_config_commitment(
@@ -1184,14 +1198,37 @@ fn native_rotation_authorizes_next_transaction_in_same_block() {
 
 #[test]
 fn native_batch_rotation_writes_and_events_revert_together() {
+    native_batch_rotation_failure(true, false);
+}
+
+#[test]
+fn native_batch_rotation_writes_and_events_halt_together() {
+    native_batch_rotation_failure(true, true);
+}
+
+#[test]
+fn native_first_rotation_revert_preserves_registration() {
+    native_batch_rotation_failure(false, false);
+}
+
+#[test]
+fn native_first_rotation_halt_preserves_registration() {
+    native_batch_rotation_failure(false, true);
+}
+
+fn native_batch_rotation_failure(registered: bool, halt: bool) {
     let mut f = Fixture::new();
-    let register = f.signed(3, vec![f.getter()]);
-    let output = f
-        .evm
-        .transact(TempoTxEnv::from_recovered_tx(&register, f.account))
-        .unwrap();
-    assert!(output.result.is_success());
-    f.evm.db_mut().commit(output.state);
+    let mut nonce = 3;
+    if registered {
+        let register = f.signed(nonce, vec![f.getter()]);
+        let output = f
+            .evm
+            .transact(TempoTxEnv::from_recovered_tx(&register, f.account))
+            .unwrap();
+        assert!(output.result.is_success());
+        f.evm.db_mut().commit(output.state);
+        nonce += 1;
+    }
     let v1 = MultisigConfig {
         version: 1,
         owners: vec![MultisigOwner {
@@ -1214,7 +1251,11 @@ fn native_batch_rotation_writes_and_events_revert_together() {
     };
     let revert = f.install_contract(
         Address::repeat_byte(0x55),
-        alloy_primitives::bytes!("60006000fd").to_vec(),
+        if halt {
+            alloy_primitives::bytes!("fe").to_vec()
+        } else {
+            alloy_primitives::bytes!("60006000fd").to_vec()
+        },
     );
     let rotations = vec![
         Fixture::rotation(&f.config, &v1),
@@ -1222,19 +1263,30 @@ fn native_batch_rotation_writes_and_events_revert_together() {
     ];
     let mut calls = rotations.clone();
     calls.push(revert);
-    let tx = f.signed(4, calls);
+    let tx = f.signed(nonce, calls);
     let output = f
         .evm
         .transact(TempoTxEnv::from_recovered_tx(&tx, f.account))
         .unwrap();
-    assert!(!output.result.is_success());
+    assert_eq!(output.result.is_halt(), halt);
+    assert_eq!(
+        matches!(
+            &output.result,
+            revm::context::result::ExecutionResult::Revert { .. }
+        ),
+        !halt
+    );
     assert!(output.result.logs().is_empty());
     f.evm.db_mut().commit(output.state);
     assert_eq!(f.commitment(), f.config.commitment().unwrap());
-    assert_eq!(f.evm.db_mut().basic(f.account).unwrap().unwrap().nonce, 5);
+    nonce += 1;
+    assert_eq!(
+        f.evm.db_mut().basic(f.account).unwrap().unwrap().nonce,
+        nonce
+    );
     // The original witness remains valid. Each successful update must read the
     // previous call's journaled commitment, not the transaction-start leaf.
-    let retry = f.signed(5, rotations);
+    let retry = f.signed(nonce, rotations);
     let output = f
         .evm
         .transact(TempoTxEnv::from_recovered_tx(&retry, f.account))

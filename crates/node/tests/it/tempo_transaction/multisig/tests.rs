@@ -45,7 +45,21 @@ async fn native_rpc_registration_revert_retry_and_rotation() -> eyre::Result<()>
     );
     let signature = account.sign(&tx)?;
     account.submit(&mut env, tx, signature, false).await?;
-    assert_eq!(commitment(&env, account.address).await?, B256::ZERO);
+    assert_eq!(
+        commitment(&env, account.address).await?,
+        account.config.commitment().unwrap()
+    );
+    let registered_estimate: U256 = env
+        .provider()
+        .raw_request(
+            "eth_estimateGas".into(),
+            (account.simulation_request(), "latest"),
+        )
+        .await?;
+    assert!(
+        registered_estimate < estimate,
+        "registered version zero avoids initial registration gas"
+    );
     assert_eq!(
         env.provider()
             .get_transaction_count(account.address)
