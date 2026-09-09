@@ -83,6 +83,14 @@ pub struct TempoNodeArgs {
     )]
     pub txpool_filter: Option<AddressFilter>,
 
+    /// UNSAFE benchmark experiment: accept expiring transactions without pool validation.
+    #[arg(
+        long = "txpool.bench-bypass-validation",
+        default_value_t = false,
+        hide = true
+    )]
+    pub bench_bypass_validation: bool,
+
     /// Enable state provider metrics for the payload builder.
     #[arg(long = "builder.state-provider-metrics", default_value_t = false)]
     pub builder_state_provider_metrics: bool,
@@ -124,6 +132,7 @@ impl Default for TempoNodeArgs {
             aa_valid_after_max_secs: DEFAULT_AA_VALID_AFTER_MAX_SECS,
             max_tempo_authorizations: DEFAULT_MAX_TEMPO_AUTHORIZATIONS,
             txpool_filter: None,
+            bench_bypass_validation: false,
             builder_state_provider_metrics: false,
             builder_disable_prewarming: false,
             builder_enable_prewarming: true,
@@ -137,10 +146,14 @@ impl Default for TempoNodeArgs {
 impl TempoNodeArgs {
     /// Returns a [`TempoPoolBuilder`] configured from these args.
     pub fn pool_builder(&self) -> TempoPoolBuilder {
+        if self.bench_bypass_validation {
+            warn!("UNSAFE benchmark: expiring transactions bypass pool validation");
+        }
         TempoPoolBuilder {
             aa_valid_after_max_secs: self.aa_valid_after_max_secs,
             max_tempo_authorizations: self.max_tempo_authorizations,
             address_filter: self.txpool_filter.clone().unwrap_or_default(),
+            bench_bypass_validation: self.bench_bypass_validation,
             ..Default::default()
         }
     }
@@ -594,6 +607,8 @@ pub struct TempoPoolBuilder {
     pub max_tempo_authorizations: usize,
     /// Whether to skip the FeeAMM liquidity check during pool admission.
     pub disable_fee_amm_check: bool,
+    /// UNSAFE benchmark-only pool validation bypass.
+    pub bench_bypass_validation: bool,
     /// Addresses checked against transaction senders and direct call targets.
     pub address_filter: AddressFilter,
     /// Optional additional stateless validation check forwarded to the inner ETH validator.
@@ -702,6 +717,7 @@ impl core::fmt::Debug for TempoPoolBuilder {
             .field("aa_valid_after_max_secs", &self.aa_valid_after_max_secs)
             .field("max_tempo_authorizations", &self.max_tempo_authorizations)
             .field("disable_fee_amm_check", &self.disable_fee_amm_check)
+            .field("bench_bypass_validation", &self.bench_bypass_validation)
             .field("address_filter", &self.address_filter)
             .field(
                 "additional_stateless_validation",
@@ -721,6 +737,7 @@ impl Default for TempoPoolBuilder {
             aa_valid_after_max_secs: DEFAULT_AA_VALID_AFTER_MAX_SECS,
             max_tempo_authorizations: DEFAULT_MAX_TEMPO_AUTHORIZATIONS,
             disable_fee_amm_check: false,
+            bench_bypass_validation: false,
             address_filter: AddressFilter::default(),
             additional_stateless_validation: None,
             additional_stateful_validation: None,
@@ -771,6 +788,7 @@ where
             aa_valid_after_max_secs,
             max_tempo_authorizations,
             disable_fee_amm_check,
+            bench_bypass_validation,
             address_filter,
             additional_stateless_validation,
             additional_stateful_validation,
@@ -784,6 +802,7 @@ where
                 max_tempo_authorizations,
                 amm_liquidity_cache.clone(),
             )
+            .with_bench_bypass_validation(bench_bypass_validation)
             .with_disable_fee_amm_check(disable_fee_amm_check)
             .with_address_filter(address_filter.clone())
         });

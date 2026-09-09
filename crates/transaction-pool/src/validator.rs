@@ -7,7 +7,7 @@ use crate::{
 
 use alloy_consensus::constants::KECCAK_EMPTY;
 use alloy_evm::{Database, EvmEnv};
-use alloy_primitives::{Address, B256};
+use alloy_primitives::{Address, B256, U256};
 use parking_lot::RwLock;
 use reth_chainspec::{ChainSpecProvider, EthChainSpec};
 use reth_evm::{ConfigureEvm, EvmEnvFor, EvmFactory, EvmFor, block::BlockExecutorFactory};
@@ -22,7 +22,7 @@ use reth_storage_api::{
 };
 use reth_transaction_pool::{
     EthTransactionValidator, PoolTransaction, TransactionOrigin, TransactionValidationOutcome,
-    TransactionValidator, error::InvalidPoolTransactionError,
+    TransactionValidator, error::InvalidPoolTransactionError, validate::ValidTransaction,
 };
 use revm::{
     DatabaseRef,
@@ -98,6 +98,8 @@ pub struct TempoTransactionValidator<Client, EvmConfig = TempoEvmConfig> {
     pub(crate) amm_liquidity_cache: AmmLiquidityCache,
     /// Whether to skip the FeeAMM liquidity check during pool admission.
     pub(crate) disable_fee_amm_check: bool,
+    /// UNSAFE benchmark-only bypass, disabled by default.
+    bench_bypass_validation: bool,
     /// Addresses checked against transaction senders and direct call targets.
     address_filter: AddressFilter,
     /// Cached EVM environment from the latest tip block, updated on each `on_new_head_block`.
@@ -144,10 +146,49 @@ where
             max_tempo_authorizations,
             amm_liquidity_cache,
             disable_fee_amm_check: false,
+            bench_bypass_validation: false,
             address_filter: AddressFilter::default(),
             cached_evm_env: parking_lot::RwLock::new(evm_env),
             cached_state: RwLock::new((latest_header.hash(), Arc::new(StateCache::default()))),
             active_hardfork,
+        }
+    }
+
+    /// Enables the unsafe benchmark-only bypass for expiring transactions with explicit fees.
+    pub const fn with_bench_bypass_validation(mut self, enabled: bool) -> Self {
+        self.bench_bypass_validation = enabled;
+        self
+    }
+
+    fn bench_can_bypass(&self, tx: &TempoPooledTransaction) -> bool {
+        self.bench_bypass_validation
+            && tx.inner().nonce_key() == Some(TEMPO_EXPIRING_NONCE_KEY)
+            && tx.inner().fee_token().is_some()
+    }
+
+    fn bench_accept(
+        &self,
+        origin: TransactionOrigin,
+        transaction: TempoPooledTransaction,
+    ) -> TransactionValidationOutcome<TempoPooledTransaction> {
+        // Only the benchmark workload is bypassed; funding/setup transactions retain validation.
+        // Synthetic account data avoids opening a state provider or constructing a validation EVM.
+        transaction.set_resolved_fee_token(transaction.inner().fee_token().unwrap());
+        TransactionValidationOutcome::Valid {
+            balance: U256::MAX,
+            state_nonce: 0,
+            bytecode_hash: None,
+            transaction: ValidTransaction::new(transaction, None),
+            propagate: match origin {
+                TransactionOrigin::External => true,
+                TransactionOrigin::Local => {
+                    self.inner
+                        .local_transactions_config()
+                        .propagate_local_transactions
+                }
+                TransactionOrigin::Private => false,
+            },
+            authorities: None,
         }
     }
 
@@ -399,6 +440,10 @@ where
         EV: TempoPoolValidationEvm,
         EV::DB: Database<Error = ProviderError> + DatabaseRef<Error = ProviderError>,
     {
+        if self.bench_can_bypass(&transaction) {
+            return self.bench_accept(origin, transaction);
+        }
+
         // Get the hardfork active at the current tip
         let spec = self.active_hardfork();
 
@@ -678,6 +723,9 @@ where
         origin: TransactionOrigin,
         transaction: Self::Transaction,
     ) -> TransactionValidationOutcome<Self::Transaction> {
+        if self.bench_can_bypass(&transaction) {
+            return self.bench_accept(origin, transaction);
+        }
         let (state_provider, cached_state) = match self.latest_state_provider_and_cache() {
             Ok(provider_and_cache) => provider_and_cache,
             Err(err) => {
@@ -699,6 +747,15 @@ where
         transactions: impl IntoIterator<Item = (TransactionOrigin, Self::Transaction), IntoIter: Send>
         + Send,
     ) -> Vec<TransactionValidationOutcome<Self::Transaction>> {
+        let transactions = transactions.into_iter().collect::<Vec<_>>();
+        if self.bench_bypass_validation
+            && transactions.iter().all(|(_, tx)| self.bench_can_bypass(tx))
+        {
+            return transactions
+                .into_iter()
+                .map(|(origin, tx)| self.bench_accept(origin, tx))
+                .collect();
+        }
         let (state_provider, cached_state) = match self.latest_state_provider_and_cache() {
             Ok(provider_and_cache) => provider_and_cache,
             Err(err) => {
@@ -719,6 +776,13 @@ where
         origin: TransactionOrigin,
         transactions: impl IntoIterator<Item = Self::Transaction> + Send,
     ) -> Vec<TransactionValidationOutcome<Self::Transaction>> {
+        let transactions = transactions.into_iter().collect::<Vec<_>>();
+        if self.bench_bypass_validation && transactions.iter().all(|tx| self.bench_can_bypass(tx)) {
+            return transactions
+                .into_iter()
+                .map(|tx| self.bench_accept(origin, tx))
+                .collect();
+        }
         let (state_provider, cached_state) = match self.latest_state_provider_and_cache() {
             Ok(provider_and_cache) => provider_and_cache,
             Err(err) => {
