@@ -156,17 +156,18 @@ fn native_contexts_fail_closed_and_simulation_is_explicit() {
     verify(&tx).unwrap();
 }
 
-#[test]
-fn native_eight_approvals_reject_invalid_final_signature() {
+#[test_case::test_case(8; "invalid_final_signature")]
+#[test_case::test_case(1; "excess_valid_approval")]
+fn native_approvals_reject_invalid_quorums(threshold: u8) {
     let factory = Address::repeat_byte(0x71);
-    let mut owners = (0..8)
+    let mut owners = (0..if threshold == 1 { 2 } else { 8 })
         .map(|_| PrivateKeySigner::random())
         .collect::<Vec<_>>();
     owners.sort_by_key(|signer| signer.address());
     let config = MultisigConfig {
         salt: B256::ZERO,
         version: 0,
-        threshold: 8,
+        threshold,
         owners: owners
             .iter()
             .map(|signer| MultisigOwner {
@@ -182,22 +183,45 @@ fn native_eight_approvals_reject_invalid_final_signature() {
         .iter()
         .map(|signer| PrimitiveSignature::Secp256k1(signer.sign_hash_sync(&digest).unwrap()))
         .collect::<Vec<_>>();
-    let signature =
-        MultisigSignature::try_new(account, config.clone(), signatures.clone()).unwrap();
+    let signature = MultisigSignature::try_new(
+        account,
+        config.clone(),
+        signatures[..threshold as usize].to_vec(),
+    )
+    .unwrap();
     NativeAuthorization {
         signature: &signature,
         inner_digest,
     }
     .verify()
     .unwrap();
-    signatures[7] = PrimitiveSignature::Secp256k1(owners[7].sign_hash_sync(&B256::ZERO).unwrap());
-    let signature = MultisigSignature::try_new(account, config, signatures).unwrap();
-    assert!(
-        NativeAuthorization {
-            signature: &signature,
-            inner_digest
+    if threshold == 1 {
+        // Both approvals recover ordered configured owners; only the extra
+        // approval after the first owner's quorum makes this witness invalid.
+        for (approval, owner) in signatures.iter().zip(&owners) {
+            assert_eq!(approval.recover_signer(&digest).unwrap(), owner.address());
         }
-        .verify()
-        .is_err()
-    );
+    } else {
+        signatures[7] =
+            PrimitiveSignature::Secp256k1(owners[7].sign_hash_sync(&B256::ZERO).unwrap());
+    }
+    let signature = MultisigSignature::try_new(account, config, signatures).unwrap();
+    let result = NativeAuthorization {
+        signature: &signature,
+        inner_digest,
+    }
+    .verify();
+    if threshold == 1 {
+        assert!(
+            matches!(
+                result,
+                Err(NativeMultisigError::Quorum(
+                    MultisigQuorumError::ExcessSignatures
+                ))
+            ),
+            "{result:?}"
+        );
+    } else {
+        assert!(result.is_err(), "{result:?}");
+    }
 }
