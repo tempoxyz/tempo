@@ -1773,6 +1773,7 @@ mod tests {
         for configurable_parent in [false, true] {
             for signature_type in [SignatureType::Secp256k1, SignatureType::Multisig] {
                 let mut storage = HashMapStorageProvider::new_with_spec(1, TempoHardfork::T12);
+                storage.set_timestamp(U256::from(1_000));
                 let parent = Address::repeat_byte(0x11);
                 let delegate = Address::repeat_byte(0x22);
                 StorageCtx::enter(&mut storage, || -> eyre::Result<()> {
