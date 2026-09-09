@@ -75,6 +75,8 @@ impl Fixture {
             ),
         );
         StorageCtx::enter_ctx(evm.ctx_mut(), StorageActions::disabled(), || {
+            tempo_precompiles::tip403_registry::TIP403Registry::new().initialize()?;
+            tempo_precompiles::account_keychain::AccountKeychain::new().initialize()?;
             TIP20Setup::path_usd(owner.address()).apply()
         })
         .unwrap();
@@ -701,12 +703,38 @@ fn native_grant_recipient_code_change_rejects_stale_replay() {
     );
 }
 
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum GrantOutcome {
+    Success,
+    RevertAndRetry,
+    ScopeRejectionAndRetry,
+}
+
 #[test]
 fn native_signed_parent_delegate_combinations() {
+    native_signed_parent_delegate_case(GrantOutcome::Success);
+}
+
+#[test]
+fn native_signed_parent_delegate_revert_and_retry() {
+    native_signed_parent_delegate_case(GrantOutcome::RevertAndRetry);
+}
+
+#[test]
+fn native_signed_parent_delegate_scope_rejection_and_retry() {
+    native_signed_parent_delegate_case(GrantOutcome::ScopeRejectionAndRetry);
+}
+
+fn native_signed_parent_delegate_case(outcome: GrantOutcome) {
+    use tempo_contracts::precompiles::{
+        AccountKeychainError, PATH_USD_ADDRESS, account_keychain::IAccountKeychain, tip20::ITIP20,
+    };
+    use tempo_precompiles::account_keychain::AccountKeychain;
     use tempo_primitives::{
         SignatureType,
         transaction::{
-            AccessKeySignature, KeyAuthorization, KeychainSignature, SignedKeyAuthorization,
+            AccessKeySignature, CallScope, KeyAuthorization, KeychainSignature,
+            SignedKeyAuthorization, TokenLimit,
         },
     };
     for parent_native in [false, true] {
@@ -727,6 +755,23 @@ fn native_signed_parent_delegate_combinations() {
             } else {
                 signer.address()
             };
+            let parent = f.account;
+            let reverter = Address::repeat_byte(0x55);
+            let revert =
+                f.install_contract(reverter, alloy_primitives::bytes!("60006000fd").to_vec());
+            StorageCtx::enter_ctx(f.evm.ctx_mut(), StorageActions::disabled(), || {
+                TIP20Setup::path_usd(f.owner.address())
+                    .with_issuer(f.owner.address())
+                    .with_mint(parent, U256::from(1000))
+                    .apply()
+            })
+            .unwrap();
+            let state = f.evm.ctx_mut().journaled_state.finalize();
+            f.evm.db_mut().commit(state);
+            let mut targets = vec![NATIVE_MULTISIG_ADDRESS, PATH_USD_ADDRESS];
+            if outcome != GrantOutcome::ScopeRejectionAndRetry {
+                targets.push(reverter);
+            }
             let authorization = KeyAuthorization::unrestricted(
                 1,
                 if delegate_native {
@@ -735,6 +780,21 @@ fn native_signed_parent_delegate_combinations() {
                     SignatureType::Secp256k1
                 },
                 delegate,
+            )
+            .with_expiry(1000)
+            .with_limits(vec![TokenLimit {
+                token: PATH_USD_ADDRESS,
+                limit: U256::from(100),
+                period: 0,
+            }])
+            .with_allowed_calls(
+                targets
+                    .iter()
+                    .map(|&target| CallScope {
+                        target,
+                        selector_rules: vec![],
+                    })
+                    .collect(),
             );
             let grant_signature = if parent_native {
                 TempoSignature::Multisig(
@@ -760,53 +820,87 @@ fn native_signed_parent_delegate_combinations() {
                         .unwrap(),
                 ))
             };
-            let tx = TempoTransaction {
+            let transfer = Call {
+                to: TxKind::Call(PATH_USD_ADDRESS),
+                value: U256::ZERO,
+                input: ITIP20::transferCall {
+                    to: Address::repeat_byte(0x66),
+                    amount: U256::from(10),
+                }
+                .abi_encode()
+                .into(),
+            };
+            let mut tx = TempoTransaction {
                 chain_id: 1,
                 nonce: 3,
-                gas_limit: 1_000_000,
-                calls: vec![f.getter()],
+                gas_limit: 5_000_000,
+                calls: if outcome == GrantOutcome::Success {
+                    vec![f.getter()]
+                } else {
+                    vec![transfer.clone(), revert]
+                },
                 key_authorization: Some(SignedKeyAuthorization::new(
                     authorization,
                     grant_signature,
                 )),
                 ..Default::default()
             };
-            let digest = KeychainSignature::signing_hash(tx.signature_hash(), f.account);
-            let signature = if delegate_native {
-                AccessKeySignature::Multisig(
-                    MultisigSignature::try_new(
-                        delegate,
-                        config.clone(),
-                        vec![PrimitiveSignature::Secp256k1(
-                            signer
-                                .sign_hash_sync(&multisig_digest(digest, delegate, 0))
-                                .unwrap(),
-                        )],
+            let sign = |tx: &TempoTransaction| {
+                let digest = KeychainSignature::signing_hash(tx.signature_hash(), parent);
+                let signature = if delegate_native {
+                    AccessKeySignature::Multisig(
+                        MultisigSignature::try_new(
+                            delegate,
+                            config.clone(),
+                            vec![PrimitiveSignature::Secp256k1(
+                                signer
+                                    .sign_hash_sync(&multisig_digest(digest, delegate, 0))
+                                    .unwrap(),
+                            )],
+                        )
+                        .unwrap(),
                     )
-                    .unwrap(),
-                )
-            } else {
-                AccessKeySignature::Primitive(PrimitiveSignature::Secp256k1(
-                    signer.sign_hash_sync(&digest).unwrap(),
-                ))
+                } else {
+                    AccessKeySignature::Primitive(PrimitiveSignature::Secp256k1(
+                        signer.sign_hash_sync(&digest).unwrap(),
+                    ))
+                };
+                tx.clone()
+                    .into_signed(TempoSignature::Keychain(KeychainSignature::new(
+                        parent, signature,
+                    )))
             };
-            let tx = tx.into_signed(TempoSignature::Keychain(KeychainSignature::new(
-                f.account, signature,
-            )));
-            assert!(!crate::supports_storage_action_replay(&tx.clone().into()));
+            let signed = sign(&tx);
+            assert!(!crate::supports_storage_action_replay(
+                &signed.clone().into()
+            ));
             let output = f
                 .evm
-                .transact(TempoTxEnv::from_recovered_tx(&tx, f.account))
+                .transact(TempoTxEnv::from_recovered_tx(&signed, parent))
                 .unwrap();
-            assert!(
+            assert_eq!(
                 output.result.is_success(),
-                "parent={parent_native} delegate={delegate_native}: {:?}",
+                outcome == GrantOutcome::Success,
+                "{outcome:?}, parent={parent_native} delegate={delegate_native}: {:?}",
                 output.result
             );
+            if outcome != GrantOutcome::Success {
+                let revm::context::result::ExecutionResult::Revert { output, .. } = &output.result
+                else {
+                    panic!("expected included revert, got {:?}", output.result);
+                };
+                let expected = if outcome == GrantOutcome::ScopeRejectionAndRetry {
+                    use alloy_sol_types::SolError;
+                    IAccountKeychain::CallNotAllowed {}.abi_encode()
+                } else {
+                    vec![]
+                };
+                assert_eq!(output.as_ref(), expected.as_slice());
+            }
             for (account, expected) in [
                 (
                     f.account,
-                    if parent_native {
+                    if parent_native && outcome == GrantOutcome::Success {
                         f.config.commitment().unwrap()
                     } else {
                         B256::ZERO
@@ -814,7 +908,7 @@ fn native_signed_parent_delegate_combinations() {
                 ),
                 (
                     delegate,
-                    if delegate_native {
+                    if delegate_native && outcome == GrantOutcome::Success {
                         config.commitment().unwrap()
                     } else {
                         B256::ZERO
@@ -834,6 +928,94 @@ fn native_signed_parent_delegate_combinations() {
                     .unwrap_or_default();
                 assert_eq!(commitment, expected);
             }
+            f.evm.db_mut().commit(output.state);
+            let assert_grant = |f: &mut Fixture, remaining: u64| {
+                let (key, limit, scopes) =
+                    StorageCtx::enter_ctx(f.evm.ctx_mut(), StorageActions::disabled(), || {
+                        let keychain = AccountKeychain::new();
+                        Ok::<_, tempo_precompiles::error::TempoPrecompileError>((
+                            keychain.get_key(IAccountKeychain::getKeyCall {
+                                account: parent,
+                                keyId: delegate,
+                            })?,
+                            keychain.get_remaining_limit(
+                                IAccountKeychain::getRemainingLimitCall {
+                                    account: parent,
+                                    keyId: delegate,
+                                    token: PATH_USD_ADDRESS,
+                                },
+                            )?,
+                            keychain.get_allowed_calls(IAccountKeychain::getAllowedCallsCall {
+                                account: parent,
+                                keyId: delegate,
+                            })?,
+                        ))
+                    })
+                    .unwrap();
+                assert_eq!(key.keyId, delegate);
+                assert_eq!(key.expiry, 1000);
+                assert!(key.enforceLimits && !key.isRevoked);
+                assert_eq!(key.signatureType as u8, if delegate_native { 3 } else { 0 });
+                assert_eq!(limit, U256::from(remaining));
+                assert!(scopes.isScoped);
+                assert_eq!(scopes.scopes.len(), targets.len());
+                for scope in scopes.scopes {
+                    assert!(targets.contains(&scope.target));
+                    assert!(scope.selectorRules.is_empty());
+                }
+                f.evm.ctx_mut().journaled_state.finalize();
+            };
+            // The failed transfer spends nothing, but the pre-execution grant survives.
+            assert_grant(&mut f, 100);
+            if outcome == GrantOutcome::Success {
+                continue;
+            }
+            let accepted_grant = tx.key_authorization.take();
+            tx.calls = vec![transfer];
+            // Re-sign without the immutable grant. Two uses prove counters do not reset.
+            for (nonce, remaining) in [(4, 90), (5, 80)] {
+                tx.nonce = nonce;
+                let output = f
+                    .evm
+                    .transact(TempoTxEnv::from_recovered_tx(&sign(&tx), parent))
+                    .unwrap();
+                assert!(output.result.is_success(), "{:?}", output.result);
+                f.evm.db_mut().commit(output.state);
+                assert_grant(&mut f, remaining);
+                assert_eq!(f.commitment(), B256::ZERO);
+                let delegate_info = f.evm.db_mut().basic(delegate).unwrap().unwrap_or_default();
+                assert_eq!(
+                    tempo_primitives::account::decode_config_commitment(
+                        &delegate_info.extension,
+                        true,
+                    )
+                    .unwrap(),
+                    if delegate_native {
+                        config.commitment().unwrap()
+                    } else {
+                        B256::ZERO
+                    },
+                );
+            }
+            tx.nonce = 6;
+            tx.key_authorization = accepted_grant;
+            let error = f
+                .evm
+                .transact(TempoTxEnv::from_recovered_tx(&sign(&tx), parent))
+                .unwrap_err();
+            let revm::context::result::EVMError::Transaction(
+                tempo_revm::TempoInvalidTransaction::KeychainPrecompileError { reason },
+            ) = error
+            else {
+                panic!("expected duplicate-grant validation error, got {error}");
+            };
+            assert_eq!(
+                reason,
+                tempo_precompiles::error::TempoPrecompileError::from(
+                    AccountKeychainError::key_already_exists(),
+                )
+                .to_string()
+            );
         }
     }
 }
