@@ -60,6 +60,7 @@ serde = [
     "tempo-hardfork/serde",
     "alloy-eips/serde",
     "alloy-primitives/serde",
+    "tempo-contracts/serde",
     "tempo-primitives/serde"
 ]
 evm = ["dep:alloy-evm", "tempo-hardfork/evm", "tempo-primitives/evm"]
