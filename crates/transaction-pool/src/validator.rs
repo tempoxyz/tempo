@@ -4,7 +4,6 @@ use crate::{
     transaction::{TempoPoolTransactionError, TempoPooledTransaction},
 };
 
-use alloy_consensus::constants::KECCAK_EMPTY;
 use alloy_evm::{Database, EvmEnv};
 use alloy_primitives::{Address, B256};
 use parking_lot::RwLock;
@@ -762,11 +761,7 @@ where
     DB: DatabaseRef<Error = ProviderError>,
 {
     fn basic_account(&self, address: &Address) -> ProviderResult<Option<Account>> {
-        Ok(self.db.basic_ref(*address)?.map(|account| Account {
-            nonce: account.nonce,
-            balance: account.balance,
-            bytecode_hash: (account.code_hash != KECCAK_EMPTY).then_some(account.code_hash),
-        }))
+        Ok(self.db.basic_ref(*address)?.map(Account::from))
     }
 }
 

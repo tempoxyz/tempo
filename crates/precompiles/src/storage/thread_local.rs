@@ -384,7 +384,7 @@ impl<'evm> StorageCtx {
         journal: &'evm mut J,
         block_env: &'evm TempoBlockEnv,
         cfg: &CfgEnv<TempoHardfork>,
-        tx_env: &'evm impl Transaction,
+        tx_env: &'evm (impl Transaction + 'static),
         actions: StorageActions,
         f: impl FnOnce() -> R,
     ) -> R
@@ -408,7 +408,7 @@ impl<'evm> StorageCtx {
         journal: &'evm mut J,
         block_env: &'evm TempoBlockEnv,
         cfg: &CfgEnv<TempoHardfork>,
-        tx_env: &'evm impl Transaction,
+        tx_env: &'evm (impl Transaction + 'static),
         actions: StorageActions,
         f: impl FnOnce() -> R,
     ) -> R
@@ -432,6 +432,7 @@ impl<'evm> StorageCtx {
                 Cfg = CfgEnv<TempoHardfork>,
                 Journal: Debug,
                 Db: Database,
+                Tx: 'static,
             >,
     {
         let (tx, block, cfg, journal) = ctx.tx_block_cfg_journal_mut();
@@ -453,6 +454,7 @@ impl<'evm> StorageCtx {
                 Cfg = CfgEnv<TempoHardfork>,
                 Journal: Debug,
                 Db: Database,
+                Tx: 'static,
             >,
     {
         let (tx, block, cfg, journal) = ctx.tx_block_cfg_journal_mut();
@@ -470,7 +472,7 @@ impl<'evm> StorageCtx {
         journal: &'evm mut J,
         block_env: &'evm TempoBlockEnv,
         cfg: &CfgEnv<TempoHardfork>,
-        tx_env: &'evm impl Transaction,
+        tx_env: &'evm (impl Transaction + 'static),
         actions: StorageActions,
         f: impl FnOnce(P) -> R,
     ) -> R

@@ -246,6 +246,22 @@ impl TempoChainSpec {
         // Create base chainspec from genesis (already has ordered Ethereum hardforks)
         let mut base_spec = ChainSpec::from_genesis(genesis);
 
+        // Benchmark snapshots can contain state imported separately from genesis alloc.
+        #[cfg(feature = "account-ext")]
+        if let Some(value) = base_spec
+            .genesis
+            .config
+            .extra_fields
+            .get("benchmarkStateRoot")
+        {
+            let root: B256 = serde_json::from_value(value.clone())
+                .expect("benchmarkStateRoot must be a 32-byte hash");
+            base_spec = base_spec.map_header(|mut header| {
+                header.state_root = root;
+                header
+            });
+        }
+
         let tempo_forks = TempoHardfork::VARIANTS.iter().filter_map(|&fork| {
             info.fork_time(fork)
                 .map(|time| (fork, ForkCondition::Timestamp(time)))

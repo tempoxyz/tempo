@@ -959,6 +959,16 @@ where
         transactions
     }
 
+    fn all_transactions_by_sender(
+        &self,
+        sender: Address,
+    ) -> AllPoolTransactions<Self::Transaction> {
+        let mut transactions = self.all_transactions();
+        transactions.pending.retain(|tx| tx.sender() == sender);
+        transactions.queued.retain(|tx| tx.sender() == sender);
+        transactions
+    }
+
     fn all_transaction_hashes(&self) -> Vec<B256> {
         let mut hashes = self.protocol_pool.all_transaction_hashes();
         hashes.extend(self.aa_2d_pool.read().all_transaction_hashes_iter());
@@ -1242,7 +1252,7 @@ where
     fn get_blobs_for_versioned_hashes_v4(
         &self,
         versioned_hashes: &[B256],
-        indices_bitarray: alloy_primitives::B128,
+        indices_bitarray: alloy_eips::eip7594::BlobCellMask,
     ) -> Result<
         Vec<Option<alloy_eips::eip4844::BlobCellsAndProofsV1>>,
         reth_transaction_pool::blobstore::BlobStoreError,

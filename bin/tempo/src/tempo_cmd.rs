@@ -80,6 +80,10 @@ pub enum TempoSubcommand {
     /// Patch a virgin block-0 database to use a new genesis header.
     Regenesis(Box<regenesis::Regenesis<TempoChainSpecParser>>),
 
+    /// Fill benchmark accounts with extensions and rebuild the account trie.
+    #[cfg(feature = "account-ext")]
+    PrepareAccountExtensions(Box<crate::account_ext::PrepareAccountExtensions>),
+
     /// Install an extension (e.g., `tempo add wallet`).
     #[command(
         override_usage = "tempo add <EXT> [VERSION]",
@@ -119,6 +123,12 @@ impl ExtendedCommand for TempoSubcommand {
                 runner.run_blocking_until_ctrl_c(
                     cmd.execute::<tempo_node::node::TempoNode>(runtime),
                 )?;
+                Ok(())
+            }
+            #[cfg(feature = "account-ext")]
+            Self::PrepareAccountExtensions(cmd) => {
+                let runtime = runner.runtime();
+                runner.run_blocking_until_ctrl_c(cmd.execute(runtime))?;
                 Ok(())
             }
             Self::Regenesis(cmd) => {

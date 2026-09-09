@@ -111,6 +111,7 @@ impl TempoPooledTransaction {
         let fee_token_cost = cost - value;
         Self {
             inner: EthPooledTransaction {
+                in_memory_size: transaction.size(),
                 transaction,
                 cost,
                 encoded_length,

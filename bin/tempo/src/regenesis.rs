@@ -24,7 +24,7 @@ use reth_db::{
     static_file::{AccountChangesetMask, StaticFileCursor, StorageChangesetMask},
 };
 use reth_db_api::{
-    cursor::{DbCursorRO, DbCursorRW, DbDupCursorRW},
+    cursor::{DbCursorRO, DbCursorRW, DbDupCursorRO, DbDupCursorRW},
     models::{
         AccountBeforeTx, ShardedKey, StorageBeforeTx, storage_sharded_key::StorageShardedKey,
     },
@@ -234,7 +234,24 @@ where
         .map(|replacement| replacement.address)
         .collect::<BTreeSet<_>>();
 
-    let hashed_state = replacement_hashed_post_state(&replacements);
+    let mut hashed_state = replacement_hashed_post_state(&replacements);
+    // Reth represents storage deletion with explicit zero-valued slots.
+    let mut cursor = provider_rw
+        .tx_ref()
+        .cursor_dup_read::<tables::HashedStorages>()?;
+    for replacement in &replacements {
+        let storage = &mut hashed_state
+            .storages
+            .get_mut(&replacement.hashed_address)
+            .unwrap()
+            .storage;
+        let mut entry = cursor.seek_exact(replacement.hashed_address)?;
+        while let Some((_, old)) = entry {
+            storage.entry(old.key).or_insert(U256::ZERO);
+            entry = cursor.next_dup()?;
+        }
+    }
+    drop(cursor);
     let (state_root, trie_updates) = {
         let latest = LatestStateProviderRef::new(provider_rw);
         latest.state_root_with_updates(hashed_state)?
@@ -342,6 +359,7 @@ fn genesis_account_replacement(
         nonce: genesis_account.nonce.unwrap_or_default(),
         balance: genesis_account.balance,
         bytecode_hash: bytecode.as_ref().map(|(hash, _)| *hash),
+        ..Account::from(genesis_account)
     };
     let storage = genesis_storage_entries(genesis_account);
     let mut hashed_storage = storage
@@ -365,14 +383,14 @@ fn genesis_account_replacement(
 
 fn replacement_hashed_post_state(replacements: &[GenesisAccountReplacement]) -> HashedPostState {
     HashedPostState::default()
-        .with_accounts(
-            replacements
-                .iter()
-                .map(|replacement| (replacement.hashed_address, Some(replacement.account))),
-        )
+        .with_accounts(replacements.iter().map(|replacement| {
+            (
+                replacement.hashed_address,
+                Some(replacement.account.clone()),
+            )
+        }))
         .with_storages(replacements.iter().map(|replacement| {
             let storage = HashedStorage {
-                wiped: true,
                 storage: replacement
                     .hashed_storage
                     .iter()
@@ -841,7 +859,7 @@ where
         if let Some((hash, bytecode)) = &replacement.bytecode {
             tx.put::<tables::Bytecodes>(*hash, bytecode.clone())?;
         }
-        tx.put::<tables::HashedAccounts>(replacement.hashed_address, replacement.account)?;
+        tx.put::<tables::HashedAccounts>(replacement.hashed_address, replacement.account.clone())?;
     }
 
     Ok(())

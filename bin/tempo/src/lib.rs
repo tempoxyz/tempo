@@ -25,6 +25,8 @@ use tracy_client as _;
 #[cfg(feature = "otlp")]
 use opentelemetry_otlp as _;
 
+#[cfg(feature = "account-ext")]
+pub mod account_ext;
 pub mod cli;
 mod defaults;
 mod follow;
