@@ -333,6 +333,67 @@ impl super::types::TestEnv for Localnet {
 }
 
 #[tokio::test(flavor = "multi_thread")]
+async fn test_fill_uses_fee_token_gas_allowance() -> eyre::Result<()> {
+    use super::types::TestEnv;
+    use reth_provider::{AccountReader, StateProviderFactory};
+
+    let mut env = Localnet::new().await?;
+    let signer = PrivateKeySigner::random();
+    env.fund_account(signer.address()).await?;
+    // eth_getBalance returns a wallet-compatibility placeholder; inspect real state.
+    let account = env
+        .setup
+        .node
+        .inner
+        .provider
+        .latest()?
+        .basic_account(&signer.address())?;
+    assert!(account.is_none_or(|account| account.balance.is_zero()));
+    assert!(
+        ITIP20::new(DEFAULT_FEE_TOKEN, &env.provider)
+            .balanceOf(signer.address())
+            .call()
+            .await?
+            > U256::ZERO
+    );
+
+    let request = tempo_node::rpc::TempoTransactionRequest {
+        inner: alloy::rpc::types::TransactionRequest {
+            from: Some(signer.address()),
+            max_fee_per_gas: Some(u128::from(TEMPO_T1_BASE_FEE) * 2),
+            max_priority_fee_per_gas: Some(u128::from(TEMPO_T1_BASE_FEE)),
+            ..Default::default()
+        },
+        calls: vec![create_transfer_call(
+            DEFAULT_FEE_TOKEN,
+            Address::random(),
+            U256::from(1),
+        )],
+        key_type: Some(tempo_primitives::SignatureType::Secp256k1),
+        fee_token: Some(DEFAULT_FEE_TOKEN),
+        ..Default::default()
+    };
+    let filled: serde_json::Value = env
+        .provider
+        .raw_request("eth_fillTransaction".into(), (&request,))
+        .await?;
+    let tx = parse_filled_tx(&filled)?;
+    assert!(tx.gas_limit > 21_000);
+    assert_eq!(tx.nonce, 0);
+    assert_eq!(tx.fee_token, Some(DEFAULT_FEE_TOKEN));
+
+    // Ordinary fill must retain explicitly supplied gas, even when it is too low to execute.
+    let mut explicit = request;
+    explicit.inner.gas = Some(1);
+    let filled: serde_json::Value = env
+        .provider
+        .raw_request("eth_fillTransaction".into(), (&explicit,))
+        .await?;
+    assert_eq!(parse_filled_tx(&filled)?.gas_limit, 1);
+    Ok(())
+}
+
+#[tokio::test(flavor = "multi_thread")]
 async fn test_aa_2d_nonce_pool_comprehensive() -> eyre::Result<()> {
     let localnet = Localnet::new().await?;
     let Localnet {

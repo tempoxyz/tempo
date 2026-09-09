@@ -3,19 +3,23 @@ pub mod consensus;
 pub mod error;
 pub mod eth_ext;
 pub mod fork_schedule;
+mod native_multisig;
 pub mod operator;
 pub mod simulate;
 pub mod token;
 
 pub use admin::{TempoAdminApi, TempoAdminApiServer};
+use alloy_eips::{BlockId, eip2718::Encodable2718};
 use alloy_primitives::B256;
-use alloy_rpc_types_eth::{Log, ReceiptWithBloom};
+use alloy_rpc_types_eth::{Log, ReceiptWithBloom, state::EvmOverrides};
 pub use consensus::{TempoConsensusApiServer, TempoConsensusRpc};
 pub use eth_ext::{TempoEthExt, TempoEthExtApiServer};
 pub use fork_schedule::{TempoForkScheduleApiServer, TempoForkScheduleRpc};
 use futures::TryFutureExt;
 pub use operator::{TempoOperatorApiServer, TempoOperatorRpc};
-use reth_primitives_traits::{HeaderTy, SealedHeaderFor, TransactionMeta, WithEncoded};
+use reth_primitives_traits::{
+    HeaderTy, NodePrimitives, SealedHeaderFor, TransactionMeta, TxTy, WithEncoded,
+};
 use reth_rpc_eth_api::{FromEthApiError, IntoEthApiError, RpcTxReq};
 use reth_transaction_pool::{PoolTransaction, PoolTx, TransactionOrigin, TransactionPool};
 pub use simulate::{TempoSimulate, TempoSimulateApiServer, TempoSimulateV1Response};
@@ -48,7 +52,7 @@ use reth_node_builder::rpc::{EthApiBuilder, EthApiCtx};
 use reth_provider::{ChainSpecProvider, ProviderError};
 use reth_rpc::{DynRpcConverter, eth::EthApi};
 use reth_rpc_eth_api::{
-    EthApiTypes, RpcConverter, RpcNodeCore, RpcNodeCoreExt,
+    EthApiTypes, FullEthApiTypes, RpcConverter, RpcNodeCore, RpcNodeCoreExt,
     helpers::{
         Call, EthApiSpec, EthBlocks, EthCall, EthFees, EthState, EthSubscriptions, EthTransactions,
         LoadBlock, LoadFee, LoadPendingBlock, LoadReceipt, LoadState, LoadTransaction,
@@ -61,8 +65,8 @@ use reth_rpc_eth_api::{
     transaction::{ConvertReceiptInput, ReceiptConverter},
 };
 use reth_rpc_eth_types::{
-    EthApiError, EthStateCache, FeeHistoryCache, GasPriceOracle, PendingBlock, SignError,
-    builder::config::PendingBlockKind, receipt::EthReceiptConverter,
+    EthApiError, EthStateCache, FeeHistoryCache, FillTransaction, GasPriceOracle, PendingBlock,
+    SignError, builder::config::PendingBlockKind, receipt::EthReceiptConverter,
 };
 use tempo_alloy::{TempoNetwork, rpc::TempoTransactionReceipt};
 use tempo_evm::{TempoBlockEnv, TempoInvalidTransaction};
@@ -414,6 +418,13 @@ where
         mut request: TempoTransactionRequest,
         mut db: impl Database<Error: Into<EthApiError>>,
     ) -> Result<TxEnvFor<Self::Evm>, Self::Error> {
+        native_multisig::prepare_native_multisig_simulation(
+            &mut request,
+            evm_env.cfg_env.spec,
+            &evm_env.block_env,
+            &mut db,
+        )
+        .map_err(Self::Error::from_eth_err)?;
         if let Some(nonce_key) = request.nonce_key
             && !nonce_key.is_zero()
             && request.nonce.is_none()
@@ -445,7 +456,67 @@ impl<N> LoadTransaction for TempoEthApi<N> where N: TempoEthApiBounds {}
 impl<N> EthTransactions for TempoEthApi<N>
 where
     N: TempoEthApiBounds,
+    Self: EthApiTypes<NetworkTypes = TempoNetwork> + FullEthApiTypes + RpcNodeCore<Pool = N::Pool>,
+    <Self as RpcNodeCore>::Primitives: NodePrimitives<SignedTx = TempoTxEnvelope>,
 {
+    fn fill_transaction(
+        &self,
+        mut request: RpcTxReq<Self::NetworkTypes>,
+    ) -> impl Future<Output = Result<FillTransaction<TxTy<Self::Primitives>>, Self::Error>> + Send
+    where
+        Self: EthApiSpec + LoadBlock + EstimateCall + LoadFee,
+    {
+        let this = self.clone();
+        async move {
+            let configurable = request.has_configurable_simulation();
+            if request.key_authorization_simulation.is_some() {
+                return Err(Self::Error::from_eth_err(EthApiError::InvalidParams(
+                    "fillTransaction requires a real signed grant; use keyAuthorizationSimulation only for call and estimateGas".into()
+                )));
+            }
+            request.inner.value.get_or_insert_default();
+            if request.inner.nonce.is_none() {
+                request.inner.nonce = Some(this.next_available_nonce_for(&request).await?);
+            }
+            let chain_id = this.chain_id().to::<u64>();
+            if let Some(actual) = request.inner.chain_id
+                && actual != chain_id
+            {
+                return Err(Self::Error::from_eth_err(EthApiError::InvalidParams(
+                    format!("chain ID mismatch: expected {chain_id}, actual {actual}"),
+                )));
+            }
+            request.inner.chain_id = Some(chain_id);
+            // Preserve Tempo's nonce and fee-token allowance hooks before delegating
+            // fee defaults/encoding. Native hints need validation even with explicit gas.
+            if configurable || request.inner.gas.is_none() {
+                let estimated_gas = EstimateCall::estimate_gas_at(
+                    &this,
+                    request.clone(),
+                    BlockId::pending(),
+                    EvmOverrides::default(),
+                )
+                .await?;
+                request.inner.gas.get_or_insert(estimated_gas.to());
+            }
+            if !configurable {
+                return EthTransactions::fill_transaction(&this.inner, request)
+                    .await
+                    .map_err(Self::Error::from_eth_err);
+            }
+            let authorization = native_multisig::prepare_fill_output(&mut request)
+                .map_err(Self::Error::from_eth_err)?;
+            let filled = EthTransactions::fill_transaction(&this.inner, request)
+                .await
+                .map_err(Self::Error::from_eth_err)?;
+            let tx = native_multisig::restore_fill_authorization(filled.tx, authorization)
+                .map_err(Self::Error::from_eth_err)?;
+            Ok(FillTransaction {
+                raw: tx.encoded_2718().into(),
+                tx,
+            })
+        }
+    }
     fn signers(&self) -> &SignersForRpc<Self::Provider, Self::NetworkTypes> {
         self.inner.signers()
     }

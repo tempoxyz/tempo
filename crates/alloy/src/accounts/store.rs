@@ -325,15 +325,10 @@ impl TempoAccessKey {
                 "chain ID does not match the selected key",
             ));
         }
-        if authorization
-            .account
-            .is_some_and(|account| account != self.account)
-        {
-            return Err(TempoAccessKeyError::InvalidAuthorization(
-                "account does not match the selected key",
-            ));
-        }
+        validate_authorization_for_account(self.account, authorization)
+            .map_err(TempoAccessKeyError::AuthorizationAccount)?;
         if authorization.account.is_none()
+            && matches!(authorization.signature, TempoSignature::Primitive(_))
             && authorization.recover_signer().ok() != Some(self.account)
         {
             return Err(TempoAccessKeyError::InvalidAuthorization(
@@ -675,6 +670,8 @@ enum TempoAccessKeyError {
     AuthorizationMismatch,
     #[error("invalid pending Tempo key authorization: {0}")]
     InvalidAuthorization(&'static str),
+    #[error("invalid pending Tempo key authorization: {0}")]
+    AuthorizationAccount(String),
     #[error(
         "Tempo key authorization for {key_id} on account {account} and chain {chain_id} is already in flight"
     )]
@@ -747,6 +744,9 @@ pub enum TempoAccountsError {
     /// A supplied authorization did not describe the access key being stored.
     #[error("invalid Tempo Accounts access-key authorization: {0}")]
     InvalidAuthorization(&'static str),
+    /// An authorization names another parent account.
+    #[error("invalid Tempo Accounts access-key authorization: {0}")]
+    AuthorizationAccount(String),
     /// The active account selector was missing or invalid.
     #[error("Tempo Accounts active account is missing or invalid")]
     ActiveAccount,
@@ -1798,7 +1798,14 @@ struct PersistedSignedKeyAuthorization {
     account: Option<Address>,
     #[serde(rename = "type")]
     key_type: PersistedKeyType,
-    signature: PersistedPrimitiveSignature,
+    signature: PersistedAuthorizationSignature,
+}
+
+#[derive(Clone, Deserialize)]
+#[serde(untagged)]
+enum PersistedAuthorizationSignature {
+    Primitive(PersistedPrimitiveSignature),
+    Multisig(tempo_primitives::transaction::MultisigSignature),
 }
 
 #[derive(Clone, Deserialize)]
@@ -1996,10 +2003,15 @@ impl TryFrom<PersistedSignedKeyAuthorization> for SignedKeyAuthorization {
             is_admin,
             account,
         };
-        Ok(Self::new(
-            authorization,
-            PrimitiveSignature::try_from(signature)?,
-        ))
+        let signature = match signature {
+            PersistedAuthorizationSignature::Primitive(signature) => {
+                TempoSignature::Primitive(PrimitiveSignature::try_from(signature)?)
+            }
+            PersistedAuthorizationSignature::Multisig(signature) => {
+                TempoSignature::Multisig(signature)
+            }
+        };
+        Ok(Self::new(authorization, signature))
     }
 }
 
@@ -2278,9 +2290,6 @@ fn stored_access_key(key: &PersistedAccessKey) -> Result<TempoStoredAccessKey, T
         authorization.key_id != key.address
             || authorization.chain_id != key.chain_id
             || authorization.key_type != key_type
-            || authorization
-                .account
-                .is_some_and(|account| account != key.access)
     }) {
         return Err(TempoAccountsError::InvalidAccessKey {
             address: key.address,
@@ -2288,6 +2297,14 @@ fn stored_access_key(key: &PersistedAccessKey) -> Result<TempoStoredAccessKey, T
         });
     }
 
+    if let Some(authorization) = &key_authorization {
+        validate_authorization_for_account(key.access, authorization).map_err(|reason| {
+            TempoAccountsError::InvalidAccessKey {
+                address: key.address,
+                reason,
+            }
+        })?;
+    }
     let allowed_calls =
         effective_allowed_calls(key, key_authorization.as_ref()).map_err(|error| {
             TempoAccountsError::InvalidAccessKey {
@@ -2341,15 +2358,34 @@ fn validate_stored_authorization(
             "the authorization key ID does not match the local signer",
         ));
     }
-    if authorization
-        .account
-        .is_some_and(|authorized| authorized != account)
+    validate_authorization_for_account(account, authorization)
+        .map_err(TempoAccountsError::AuthorizationAccount)
+}
+
+/// Checks explicit parent metadata and the named multisig account.
+/// Does not verify signatures or on-chain authority.
+fn validate_authorization_for_account(
+    account: Address,
+    authorization: &SignedKeyAuthorization,
+) -> Result<(), String> {
+    if let Some(actual) = authorization.account
+        && actual != account
     {
-        return Err(TempoAccountsError::InvalidAuthorization(
-            "the authorization targets a different account",
+        return Err(format!(
+            "authorization account mismatch: expected {account}, actual {actual}"
         ));
     }
-    Ok(())
+    match &authorization.signature {
+        TempoSignature::Primitive(_) => Ok(()),
+        TempoSignature::Multisig(signature) if signature.account() == account => Ok(()),
+        TempoSignature::Multisig(signature) => Err(format!(
+            "multisig signature account mismatch: expected {account}, actual {}",
+            signature.account()
+        )),
+        TempoSignature::Keychain(_) => {
+            Err("key authorization signatures cannot use keychain encoding".into())
+        }
+    }
 }
 
 struct EditableTempoCliStore {
@@ -2433,7 +2469,14 @@ struct WritableSignedKeyAuthorization {
     account: Option<Address>,
     #[serde(rename = "type")]
     key_type: &'static str,
-    signature: WritablePrimitiveSignature,
+    signature: WritableAuthorizationSignature,
+}
+
+#[derive(Serialize)]
+#[serde(untagged)]
+enum WritableAuthorizationSignature {
+    Primitive(WritablePrimitiveSignature),
+    Multisig(tempo_primitives::transaction::MultisigSignature),
 }
 
 #[derive(Serialize)]
@@ -2496,13 +2539,19 @@ fn writable_b256(value: B256) -> String {
 
 fn writable_signature(
     signature: &TempoSignature,
-) -> Result<WritablePrimitiveSignature, TempoAccountsError> {
-    let TempoSignature::Primitive(signature) = signature else {
-        return Err(TempoAccountsError::InvalidAuthorization(
-            "the Accounts store does not support nonprimitive authorization signatures",
-        ));
+) -> Result<WritableAuthorizationSignature, TempoAccountsError> {
+    let signature = match signature {
+        TempoSignature::Primitive(signature) => signature,
+        TempoSignature::Multisig(signature) => {
+            return Ok(WritableAuthorizationSignature::Multisig(signature.clone()));
+        }
+        TempoSignature::Keychain(_) => {
+            return Err(TempoAccountsError::InvalidAuthorization(
+                "key authorization signatures cannot use keychain encoding",
+            ));
+        }
     };
-    Ok(match signature {
+    Ok(WritableAuthorizationSignature::Primitive(match signature {
         PrimitiveSignature::Secp256k1(signature) => WritablePrimitiveSignature::Secp256k1 {
             signature: WritableSecpSignature {
                 r: writable_bigint(signature.r()),
@@ -2559,7 +2608,7 @@ fn writable_signature(
                 },
             }
         }
-    })
+    }))
 }
 
 fn writable_scopes(authorization: &SignedKeyAuthorization) -> Option<Vec<WritableScope>> {
@@ -3017,7 +3066,10 @@ fn select_access_key(
             continue;
         }
         if key_authorization.as_ref().is_some_and(|authorization| {
-            authorization.account.is_none() && authorization.recover_signer().ok() != Some(account)
+            validate_authorization_for_account(account, authorization).is_err()
+                || (authorization.account.is_none()
+                    && matches!(authorization.signature, TempoSignature::Primitive(_))
+                    && authorization.recover_signer().ok() != Some(account))
         }) {
             continue;
         }
@@ -3266,7 +3318,10 @@ mod tests {
     use alloy_network::{NetworkWallet, TransactionBuilder};
     use alloy_provider::{ProviderBuilder, SendableTx, fillers::TxFiller, mock::Asserter};
     use alloy_rpc_types_eth::{TransactionInput, TransactionRequest};
-    use tempo_primitives::{TempoTxEnvelope, transaction::TempoSignature};
+    use tempo_primitives::{
+        TempoTxEnvelope,
+        transaction::{MultisigConfig, MultisigOwner, MultisigSignature, TempoSignature},
+    };
 
     use super::*;
 
@@ -4921,5 +4976,83 @@ mod tests {
             },
         });
         fs::write(path, serde_json::to_vec(&value).unwrap()).unwrap();
+    }
+
+    fn configurable_authorization(
+        account: Address,
+        signer: &PrivateKeySigner,
+    ) -> SignedKeyAuthorization {
+        let config = MultisigConfig {
+            salt: B256::ZERO,
+            version: 1,
+            threshold: 1,
+            owners: vec![MultisigOwner {
+                owner: Address::repeat_byte(1),
+                weight: 1,
+            }],
+        };
+        KeyAuthorization::unrestricted(4217, SignatureType::Secp256k1, signer.address())
+            .into_signed(TempoSignature::Multisig(
+                MultisigSignature::try_new(
+                    account,
+                    config,
+                    vec![PrimitiveSignature::Secp256k1(Signature::test_signature())],
+                )
+                .unwrap(),
+            ))
+    }
+
+    #[test]
+    fn configurable_parent_authorization_persists_complete_signature() {
+        let account = Address::repeat_byte(2);
+        let signer = PrivateKeySigner::random();
+        let authorization = configurable_authorization(account, &signer);
+        let writable = writable_access_key(account, &signer, &authorization).unwrap();
+        let value = serde_json::to_value(writable).unwrap();
+        assert!(value["keyAuthorization"]["signature"].is_string());
+        let persisted: PersistedSignedKeyAuthorization =
+            serde_json::from_value(value["keyAuthorization"].clone()).unwrap();
+        let decoded = SignedKeyAuthorization::try_from(persisted).unwrap();
+        assert_eq!(decoded, authorization);
+        assert!(validate_authorization_for_account(account, &decoded).is_ok());
+    }
+
+    #[test_case::test_case(false; "primitive")]
+    #[test_case::test_case(true; "multisig")]
+    fn explicit_wrong_account_metadata_is_rejected(multisig: bool) {
+        let account = Address::repeat_byte(2);
+        let signer = PrivateKeySigner::random();
+        let mut authorization = if multisig {
+            configurable_authorization(account, &signer)
+        } else {
+            KeyAuthorization::unrestricted(4217, SignatureType::Secp256k1, signer.address())
+                .into_signed(PrimitiveSignature::default())
+        };
+        authorization.authorization.account = Some(Address::repeat_byte(3));
+        let error = validate_authorization_for_account(account, &authorization).unwrap_err();
+        assert!(error.contains(&format!("expected {account}")));
+        assert!(error.contains(&format!("actual {}", Address::repeat_byte(3))));
+        assert!(validate_stored_authorization(account, &signer, &authorization).is_err());
+    }
+
+    #[test]
+    fn named_parent_mismatch_and_keychain_authorization_are_rejected() {
+        let account = Address::repeat_byte(2);
+        let signer = PrivateKeySigner::random();
+        assert!(
+            validate_authorization_for_account(
+                Address::repeat_byte(3),
+                &configurable_authorization(account, &signer)
+            )
+            .is_err()
+        );
+        let authorization =
+            KeyAuthorization::unrestricted(4217, SignatureType::Secp256k1, signer.address())
+                .into_signed(TempoSignature::Keychain(KeychainSignature::new(
+                    account,
+                    PrimitiveSignature::default(),
+                )));
+        assert!(validate_authorization_for_account(account, &authorization).is_err());
+        assert!(writable_signature(&authorization.signature).is_err());
     }
 }
