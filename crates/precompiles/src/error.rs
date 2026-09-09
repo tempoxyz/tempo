@@ -119,6 +119,10 @@ pub enum TempoPrecompileError {
     #[error("Gas limit exceeded")]
     OutOfGas,
 
+    /// A commitment write is zero, predates T12, or occurs in a read-only context.
+    #[error("invalid account commitment write")]
+    InvalidConfigCommitmentWrite,
+
     /// The calldata's 4-byte selector does not match any known precompile function.
     #[error("Unknown function selector: {0:?}")]
     UnknownFunctionSelector([u8; 4]),
@@ -182,7 +186,7 @@ impl TempoPrecompileError {
             Self::ZoneFactoryError(e) => e.selector(),
             Self::UnknownFunctionSelector(selector) => *selector,
             Self::Panic(_) | Self::StorageDeltaUnderflow(_) => Panic::SELECTOR,
-            Self::OutOfGas | Self::Fatal(_) => [0, 0, 0, 0],
+            Self::OutOfGas | Self::Fatal(_) | Self::InvalidConfigCommitmentWrite => [0, 0, 0, 0],
         }
         .into()
     }
@@ -212,7 +216,8 @@ impl TempoPrecompileError {
             | Self::StorageCreditsError(_)
             | Self::CurrentCommitteeError(_)
             | Self::ZoneFactoryError(_)
-            | Self::UnknownFunctionSelector(_) => false,
+            | Self::UnknownFunctionSelector(_)
+            | Self::InvalidConfigCommitmentWrite => false,
         }
     }
 
@@ -286,6 +291,7 @@ impl TempoPrecompileError {
             Self::Fatal(msg) => {
                 return Err(PrecompileError::Fatal(msg));
             }
+            Self::InvalidConfigCommitmentWrite => Default::default(),
         };
         Ok(PrecompileOutput::revert(gas, bytes, reservoir))
     }

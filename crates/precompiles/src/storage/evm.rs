@@ -393,6 +393,31 @@ impl<'a> PrecompileStorageProvider for EvmPrecompileStorageProvider<'a> {
         })
     }
 
+    fn set_config_commitment(
+        &mut self,
+        address: Address,
+        commitment: B256,
+        gas: super::ConfigCommitmentWriteGas,
+    ) -> Result<(), TempoPrecompileError> {
+        if !self.spec.is_t12() || self.is_static || commitment.is_zero() {
+            return Err(TempoPrecompileError::InvalidConfigCommitmentWrite);
+        }
+        // The authorization read already charged account access (or was intrinsic).
+        let previous = {
+            let account = self.internals.load_account_mut(address)?;
+            tempo_primitives::account::decode_config_commitment(
+                &account.data.account().info.extension,
+                true,
+            )
+            .map_err(|e| TempoPrecompileError::Fatal(e.to_string()))?
+        };
+        self.deduct_gas(gas.cost(previous))?;
+        self.internals
+            .load_account_mut(address)?
+            .set_extension(tempo_primitives::account::encode_config_commitment(commitment).into());
+        Ok(())
+    }
+
     #[inline]
     fn sstore(
         &mut self,
@@ -745,6 +770,60 @@ mod tests {
     use tempo_chainspec::hardfork::TempoHardfork;
     use tempo_evm::{TempoEvmFactory, evm::TempoEvm};
     use tempo_revm::gas_params::tempo_gas_params_with_amsterdam;
+
+    #[test]
+    fn commitment_nested_journal_rollback() {
+        let mut evm = TestEvm::new(TempoHardfork::T12);
+        super::super::tests::exercise_rollback(&mut evm.provider_max_gas());
+    }
+
+    #[test]
+    fn commitment_intrinsic_write_and_static_rejection() {
+        use crate::storage::ConfigCommitmentWriteGas as WriteGas;
+
+        let mut evm = TestEvm::new(TempoHardfork::T12);
+        let mut provider = evm.provider_max_gas();
+        let address = Address::repeat_byte(1);
+        let commitment = B256::repeat_byte(2);
+        provider
+            .set_config_commitment(address, commitment, WriteGas::Intrinsic)
+            .unwrap();
+        assert_eq!(provider.gas_used(), 0);
+        assert_eq!(provider.state_gas_used(), 0);
+        {
+            let mut account = provider.internals.load_account_mut(address).unwrap();
+            account.set_balance(U256::from(7));
+            account.bump_nonce();
+        }
+        assert_eq!(provider.config_commitment(address).unwrap(), commitment);
+        let after_read = provider.gas_used();
+        provider
+            .set_config_commitment(address, commitment, WriteGas::Precompile)
+            .unwrap();
+        assert_eq!(provider.gas_used() - after_read, 5_000);
+        let fresh = Address::repeat_byte(4);
+        assert_eq!(provider.config_commitment(fresh).unwrap(), B256::ZERO);
+        let after_read = provider.gas_used();
+        provider
+            .set_config_commitment(fresh, commitment, WriteGas::Precompile)
+            .unwrap();
+        assert_eq!(provider.gas_used() - after_read, 20_000);
+        assert_eq!(provider.state_gas_used(), 0);
+        assert_eq!(provider.gas_refunded(), 0);
+        provider.is_static = true;
+        let error = provider
+            .set_config_commitment(address, commitment, WriteGas::Precompile)
+            .unwrap_err();
+        assert_eq!(error, TempoPrecompileError::InvalidConfigCommitmentWrite);
+        assert!(!error.is_system_error());
+        assert!(
+            error
+                .into_precompile_result(0, 0)
+                .unwrap()
+                .status
+                .is_revert()
+        );
+    }
 
     struct TestEvm(TempoEvm<CacheDB<EmptyDB>>);
 

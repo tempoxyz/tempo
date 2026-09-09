@@ -4,6 +4,8 @@
 //! including persistent (SLOAD/SSTORE) and transient (TLOAD/TSTORE) operations.
 
 pub mod actions;
+#[cfg(test)]
+mod tests;
 pub use actions::{StorageAction, StorageActions};
 
 pub mod evm;
@@ -32,6 +34,25 @@ use tempo_primitives::TempoBlockEnv;
 
 use crate::error::{Result, TempoPrecompileError};
 
+/// Determines where TIP-1108's field-write charge is paid.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ConfigCommitmentWriteGas {
+    /// Registration was charged once in transaction intrinsic gas.
+    Intrinsic,
+    /// Charge the explicit precompile operation here.
+    Precompile,
+}
+
+impl ConfigCommitmentWriteGas {
+    fn cost(self, previous: B256) -> u64 {
+        match self {
+            Self::Intrinsic => 0,
+            Self::Precompile if previous.is_zero() => 20_000,
+            Self::Precompile => 5_000,
+        }
+    }
+}
+
 /// Low-level storage provider for interacting with the EVM.
 ///
 /// # Implementations
@@ -58,6 +79,29 @@ pub trait PrecompileStorageProvider {
         &mut self,
         address: Address,
         f: &mut dyn FnMut(&AccountInfo),
+    ) -> Result<()>;
+
+    /// Reads the commitment with normal account-access gas. Already-loaded authorization
+    /// code should decode its account info directly instead.
+    fn config_commitment(&mut self, address: Address) -> Result<B256> {
+        let active = self.spec().is_t12();
+        let mut result = Ok(B256::ZERO);
+        self.with_account_info(address, &mut |info| {
+            result = tempo_primitives::account::decode_config_commitment(&info.extension, active)
+                .map_err(|e| TempoPrecompileError::Fatal(e.to_string()));
+        })?;
+        result
+    }
+
+    /// Writes an authorized nonzero commitment through the account journal.
+    /// Callers must validate registration, rotation, or migration authority first.
+    /// Account-access gas belongs to that authorization read; this method charges
+    /// only the field write, or nothing when registration was charged intrinsically.
+    fn set_config_commitment(
+        &mut self,
+        address: Address,
+        commitment: B256,
+        gas: ConfigCommitmentWriteGas,
     ) -> Result<()>;
 
     /// Returns `EXTCODEHASH(address)` and the account's runtime bytecode.

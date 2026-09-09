@@ -396,6 +396,15 @@ where
     }
 
     // Write operations are not supported in read-only context
+    fn set_config_commitment(
+        &mut self,
+        _: Address,
+        _: B256,
+        _: tempo_precompiles::storage::ConfigCommitmentWriteGas,
+    ) -> TempoResult<()> {
+        Err(TempoPrecompileError::InvalidConfigCommitmentWrite)
+    }
+
     fn sstore(&mut self, _: Address, _: U256, _: U256) -> TempoResult<()> {
         unreachable!("'sstore' not supported in read-only context")
     }
