@@ -54,7 +54,7 @@ use reth_storage_api::{HashedPostStateProvider, StateProviderFactory, StateRootP
 use reth_tasks::TaskExecutor;
 use reth_transaction_pool::{
     BestTransactions, BestTransactionsAttributes, PoolTransaction, TransactionPool,
-    ValidPoolTransaction, error::InvalidPoolTransactionError,
+    error::InvalidPoolTransactionError,
 };
 use std::{
     sync::{
@@ -75,9 +75,8 @@ use tempo_payload_types::{
 use tempo_precompiles::{storage::StorageActions, validator_config_v2::ValidatorConfigV2};
 use tempo_primitives::{TempoHeader, TempoReceipt, TempoTxEnvelope};
 use tempo_transaction_pool::{
-    StateAwareBestTransactions, TempoTransactionPool,
-    best::BestTransaction,
-    transaction::{TempoPoolTransactionError, TempoPooledTransaction},
+    StateAwareBestTransactions, TempoTransactionPool, best::BestTransaction,
+    transaction::TempoPoolTransactionError,
 };
 use tokio::sync::oneshot;
 use tracing::{Level, debug, debug_span, info, instrument, trace, warn};
@@ -294,9 +293,7 @@ where
         best_txs: impl FnOnce(BestTransactionsAttributes) -> Txs,
     ) -> Result<BuildOutcome<TempoBuiltPayload>, PayloadBuilderError>
     where
-        Txs: BestTransactions<Item = Arc<ValidPoolTransaction<TempoPooledTransaction>>>
-            + Send
-            + 'static,
+        Txs: BestTransactions<Item = BestTransaction> + Send + 'static,
     {
         let BuildArguments {
             cached_reads,
@@ -730,7 +727,7 @@ where
             if !receipt.success {
                 reverted_transactions += 1;
             }
-            let _ = roots_tx.send((BuilderTx::Pooled(tx), receipt));
+            let _ = roots_tx.send((tx, receipt));
         };
 
         // cancel pre-warming, if any, by dropping the iter
@@ -1089,11 +1086,11 @@ where
     fn spawn_roots_task(
         &self,
     ) -> (
-        Sender<(BuilderTx, TempoReceipt)>,
+        Sender<(BestTransaction, TempoReceipt)>,
         oneshot::Receiver<RootsTaskResult>,
     ) {
         let (transactions_tx, transactions_rx) =
-            crossbeam_channel::unbounded::<(BuilderTx, TempoReceipt)>();
+            crossbeam_channel::unbounded::<(BestTransaction, TempoReceipt)>();
         let (result_tx, result_rx) = oneshot::channel();
 
         self.executor
@@ -1109,7 +1106,7 @@ where
                 let mut buf = Vec::new();
 
                 for (tx, receipt) in transactions_rx.into_iter() {
-                    let (tx, sender) = tx.into_parts();
+                    let (tx, sender) = tx.transaction.inner().clone().into_parts();
                     buf.clear();
                     tx.encode_2718(&mut buf);
                     transactions_root.push_next(&buf);
@@ -1252,19 +1249,6 @@ fn maybe_override_fee_recipient<DB: Database>(
         Ok(None) => {}
         Err(err) => {
             warn!(%err, "failed resolving fee recipient from contract; using fallback");
-        }
-    }
-}
-
-#[derive(Debug)]
-enum BuilderTx {
-    Pooled(Arc<ValidPoolTransaction<TempoPooledTransaction>>),
-}
-
-impl BuilderTx {
-    fn into_parts(self) -> (TempoTxEnvelope, Address) {
-        match self {
-            Self::Pooled(tx) => tx.transaction.inner().clone().into_parts(),
         }
     }
 }
