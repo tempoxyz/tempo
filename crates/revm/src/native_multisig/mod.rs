@@ -320,12 +320,7 @@ pub fn verify(tx: &TempoTxEnv) -> Result<(), TempoInvalidTransaction> {
             ));
         }
         if key_id == Some(auth.key_id)
-            && keychain.is_some_and(|key| {
-                key.signature
-                    .signature_type()
-                    .unwrap_or(tempo_primitives::transaction::SignatureType::Multisig)
-                    != auth.key_type
-            })
+            && keychain.is_some_and(|key| key.signature.key_type() != auth.key_type)
         {
             return Err(reject(
                 "key authorization key_type does not match the keychain signature type",

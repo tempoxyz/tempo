@@ -1358,11 +1358,7 @@ where
                         // type to authenticate as a key registered with a different type.
                         // Only validate signature type on T1+ to maintain backward compatibility
                         // with historical blocks during re-execution.
-                        let tx_sig_type = keychain_sig
-                            .signature
-                            .signature_type()
-                            .unwrap_or(SignatureType::Multisig)
-                            .into();
+                        let tx_sig_type = keychain_sig.signature.key_type().into();
                         let sig_type = (key_auth.is_some() || spec.is_t1()).then_some(tx_sig_type);
 
                         let key = keychain
@@ -1928,11 +1924,7 @@ where
 
                     if same_tx_auth_use
                         && cfg.spec.is_t3()
-                        && key_auth.key_type
-                            != keychain_sig
-                                .signature
-                                .signature_type()
-                                .unwrap_or(SignatureType::Multisig)
+                        && key_auth.key_type != keychain_sig.signature.key_type()
                     {
                         return Err(TempoInvalidTransaction::KeychainValidationFailed {
                                 reason: "key authorization key_type does not match the keychain signature type"
