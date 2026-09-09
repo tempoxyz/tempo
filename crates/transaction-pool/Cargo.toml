@@ -79,5 +79,5 @@ alloy-signer.workspace = true
 alloy-signer-local.workspace = true
 proptest.workspace = true
 proptest-arbitrary-interop.workspace = true
-tokio.workspace = true
+tokio = { workspace = true, features = ["test-util"] }
 test-case.workspace = true
