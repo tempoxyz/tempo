@@ -54,6 +54,7 @@ use tempo_transaction_pool::{
     amm::AmmLiquidityCache,
     ordering::TempoTipOrdering,
     transaction::TempoPooledTransaction,
+    tt_2d_pool::DEFAULT_MAX_TXS_PER_LANE,
     validator::{
         DEFAULT_AA_VALID_AFTER_MAX_SECS, DEFAULT_MAX_TEMPO_AUTHORIZATIONS,
         TempoTransactionValidator,
@@ -73,6 +74,11 @@ pub struct TempoNodeArgs {
     /// Maximum number of authorizations allowed in an AA transaction.
     #[arg(long = "txpool.max-tempo-authorizations", default_value_t = DEFAULT_MAX_TEMPO_AUTHORIZATIONS)]
     pub max_tempo_authorizations: usize,
+
+    /// Maximum pending and queued transactions per regular 2D nonce lane (sender, nonce key).
+    /// The current on-chain nonce is admitted even at capacity to allow gap filling.
+    #[arg(long = "txpool.max-txs-per-lane", default_value_t = DEFAULT_MAX_TXS_PER_LANE)]
+    pub max_txs_per_lane: usize,
 
     /// Comma-separated addresses or a file containing comma/newline-separated addresses used for
     /// transaction sender and direct call target checks.
@@ -123,6 +129,7 @@ impl Default for TempoNodeArgs {
         Self {
             aa_valid_after_max_secs: DEFAULT_AA_VALID_AFTER_MAX_SECS,
             max_tempo_authorizations: DEFAULT_MAX_TEMPO_AUTHORIZATIONS,
+            max_txs_per_lane: DEFAULT_MAX_TXS_PER_LANE,
             txpool_filter: None,
             builder_state_provider_metrics: false,
             builder_disable_prewarming: false,
@@ -140,6 +147,7 @@ impl TempoNodeArgs {
         TempoPoolBuilder {
             aa_valid_after_max_secs: self.aa_valid_after_max_secs,
             max_tempo_authorizations: self.max_tempo_authorizations,
+            max_txs_per_lane: self.max_txs_per_lane,
             address_filter: self.txpool_filter.clone().unwrap_or_default(),
             ..Default::default()
         }
@@ -592,6 +600,8 @@ pub struct TempoPoolBuilder {
     pub aa_valid_after_max_secs: u64,
     /// Maximum number of authorizations allowed in an AA transaction.
     pub max_tempo_authorizations: usize,
+    /// Maximum pending and queued transactions per regular 2D nonce lane.
+    pub max_txs_per_lane: usize,
     /// Whether to skip the FeeAMM liquidity check during pool admission.
     pub disable_fee_amm_check: bool,
     /// Addresses checked against transaction senders and direct call targets.
@@ -603,6 +613,12 @@ pub struct TempoPoolBuilder {
 }
 
 impl TempoPoolBuilder {
+    /// Sets the maximum number of transactions per regular 2D nonce lane.
+    pub const fn with_max_txs_per_lane(mut self, max: usize) -> Self {
+        self.max_txs_per_lane = max;
+        self
+    }
+
     /// Sets the maximum allowed `valid_after` offset for AA txs.
     pub const fn with_aa_tx_valid_after_max_secs(mut self, secs: u64) -> Self {
         self.aa_valid_after_max_secs = secs;
@@ -701,6 +717,7 @@ impl core::fmt::Debug for TempoPoolBuilder {
         f.debug_struct("TempoPoolBuilder")
             .field("aa_valid_after_max_secs", &self.aa_valid_after_max_secs)
             .field("max_tempo_authorizations", &self.max_tempo_authorizations)
+            .field("max_txs_per_lane", &self.max_txs_per_lane)
             .field("disable_fee_amm_check", &self.disable_fee_amm_check)
             .field("address_filter", &self.address_filter)
             .field(
@@ -720,6 +737,7 @@ impl Default for TempoPoolBuilder {
         Self {
             aa_valid_after_max_secs: DEFAULT_AA_VALID_AFTER_MAX_SECS,
             max_tempo_authorizations: DEFAULT_MAX_TEMPO_AUTHORIZATIONS,
+            max_txs_per_lane: DEFAULT_MAX_TXS_PER_LANE,
             disable_fee_amm_check: false,
             address_filter: AddressFilter::default(),
             additional_stateless_validation: None,
@@ -763,6 +781,7 @@ where
             pending_limit: pool_config.pending_limit,
             queued_limit: pool_config.queued_limit,
             max_txs_per_sender: pool_config.max_account_slots,
+            max_txs_per_lane: self.max_txs_per_lane,
         };
         let aa_2d_pool = AA2dPool::new(aa_2d_config);
         let amm_liquidity_cache = AmmLiquidityCache::new(ctx.provider())?;
@@ -770,6 +789,7 @@ where
         let Self {
             aa_valid_after_max_secs,
             max_tempo_authorizations,
+            max_txs_per_lane: _,
             disable_fee_amm_check,
             address_filter,
             additional_stateless_validation,
@@ -903,6 +923,30 @@ mod tests {
         AddressFilter, TempoNode, TempoNodeArgs, TempoPayloadBuilderBuilder, TempoPoolBuilder,
     };
     use alloy_primitives::Address;
+
+    #[test]
+    fn lane_limit_cli_reaches_pool_builder() {
+        use clap::Parser;
+        #[derive(Parser)]
+        struct Args {
+            #[command(flatten)]
+            node: TempoNodeArgs,
+        }
+        let defaults = Args::try_parse_from(["tempo"]).unwrap();
+        assert_eq!(
+            defaults.node.max_txs_per_lane,
+            super::DEFAULT_MAX_TXS_PER_LANE
+        );
+        let args = Args::try_parse_from(["tempo", "--txpool.max-txs-per-lane", "64"]).unwrap();
+        assert_eq!(args.node.pool_builder().max_txs_per_lane, 64);
+        assert_eq!(
+            args.node
+                .pool_builder()
+                .with_max_txs_per_lane(32)
+                .max_txs_per_lane,
+            32
+        );
+    }
 
     #[test]
     fn tempo_node_maps_pool_builder() {
