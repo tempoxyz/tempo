@@ -712,24 +712,34 @@ enum GrantOutcome {
 
 #[test]
 fn native_signed_parent_delegate_combinations() {
-    native_signed_parent_delegate_case(GrantOutcome::Success);
+    native_signed_parent_delegate_case(GrantOutcome::Success, 0);
 }
 
 #[test]
 fn native_signed_parent_delegate_revert_and_retry() {
-    native_signed_parent_delegate_case(GrantOutcome::RevertAndRetry);
+    native_signed_parent_delegate_case(GrantOutcome::RevertAndRetry, 0);
 }
 
 #[test]
 fn native_signed_parent_delegate_scope_rejection_and_retry() {
-    native_signed_parent_delegate_case(GrantOutcome::ScopeRejectionAndRetry);
+    native_signed_parent_delegate_case(GrantOutcome::ScopeRejectionAndRetry, 0);
 }
 
-fn native_signed_parent_delegate_case(outcome: GrantOutcome) {
+#[test]
+fn native_signed_parent_delegate_revert_preserves_fees() {
+    native_signed_parent_delegate_case(GrantOutcome::RevertAndRetry, 1_000_000_000_000);
+}
+
+#[test]
+fn native_signed_parent_delegate_scope_rejection_preserves_fees() {
+    native_signed_parent_delegate_case(GrantOutcome::ScopeRejectionAndRetry, 1_000_000_000_000);
+}
+
+fn native_signed_parent_delegate_case(outcome: GrantOutcome, gas_price: u128) {
     use tempo_contracts::precompiles::{
         AccountKeychainError, PATH_USD_ADDRESS, account_keychain::IAccountKeychain, tip20::ITIP20,
     };
-    use tempo_precompiles::account_keychain::AccountKeychain;
+    use tempo_precompiles::{account_keychain::AccountKeychain, tip20::TIP20Token};
     use tempo_primitives::{
         SignatureType,
         transaction::{
@@ -756,13 +766,17 @@ fn native_signed_parent_delegate_case(outcome: GrantOutcome) {
                 signer.address()
             };
             let parent = f.account;
+            // One microdollar per gas in fee cases; fund all three executions up front.
+            let fee_budget = if gas_price == 0 { 0 } else { 50_000_000 };
+            let initial_balance = 1000 + fee_budget;
+            let initial_limit = 100 + fee_budget;
             let reverter = Address::repeat_byte(0x55);
             let revert =
                 f.install_contract(reverter, alloy_primitives::bytes!("60006000fd").to_vec());
             StorageCtx::enter_ctx(f.evm.ctx_mut(), StorageActions::disabled(), || {
                 TIP20Setup::path_usd(f.owner.address())
                     .with_issuer(f.owner.address())
-                    .with_mint(parent, U256::from(1000))
+                    .with_mint(parent, U256::from(initial_balance))
                     .apply()
             })
             .unwrap();
@@ -784,7 +798,7 @@ fn native_signed_parent_delegate_case(outcome: GrantOutcome) {
             .with_expiry(1000)
             .with_limits(vec![TokenLimit {
                 token: PATH_USD_ADDRESS,
-                limit: U256::from(100),
+                limit: U256::from(initial_limit),
                 period: 0,
             }])
             .with_allowed_calls(
@@ -834,6 +848,8 @@ fn native_signed_parent_delegate_case(outcome: GrantOutcome) {
                 chain_id: 1,
                 nonce: 3,
                 gas_limit: 5_000_000,
+                max_fee_per_gas: gas_price,
+                max_priority_fee_per_gas: gas_price,
                 calls: if outcome == GrantOutcome::Success {
                     vec![f.getter()]
                 } else {
@@ -884,6 +900,16 @@ fn native_signed_parent_delegate_case(outcome: GrantOutcome) {
                 "{outcome:?}, parent={parent_native} delegate={delegate_native}: {:?}",
                 output.result
             );
+            let charged_fee = |gas_used| {
+                let fee =
+                    tempo_primitives::transaction::calc_gas_balance_spending(gas_used, gas_price)
+                        .to::<u64>();
+                if gas_price != 0 {
+                    assert!(fee > 0 && fee < tx.gas_limit, "unused gas must be refunded");
+                }
+                fee
+            };
+            let mut total_fees = charged_fee(output.result.tx_gas_used());
             if outcome != GrantOutcome::Success {
                 let revm::context::result::ExecutionResult::Revert { output, .. } = &output.result
                 else {
@@ -929,8 +955,8 @@ fn native_signed_parent_delegate_case(outcome: GrantOutcome) {
                 assert_eq!(commitment, expected);
             }
             f.evm.db_mut().commit(output.state);
-            let assert_grant = |f: &mut Fixture, remaining: u64| {
-                let (key, limit, scopes) =
+            let assert_grant = |f: &mut Fixture, fees: u64, transferred: u64, nonce: u64| {
+                let (key, limit, scopes, balance, recipient_balance) =
                     StorageCtx::enter_ctx(f.evm.ctx_mut(), StorageActions::disabled(), || {
                         let keychain = AccountKeychain::new();
                         Ok::<_, tempo_precompiles::error::TempoPrecompileError>((
@@ -949,6 +975,13 @@ fn native_signed_parent_delegate_case(outcome: GrantOutcome) {
                                 account: parent,
                                 keyId: delegate,
                             })?,
+                            TIP20Token::from_address(PATH_USD_ADDRESS)?
+                                .balance_of(ITIP20::balanceOfCall { account: parent })?,
+                            TIP20Token::from_address(PATH_USD_ADDRESS)?.balance_of(
+                                ITIP20::balanceOfCall {
+                                    account: Address::repeat_byte(0x66),
+                                },
+                            )?,
                         ))
                     })
                     .unwrap();
@@ -956,7 +989,9 @@ fn native_signed_parent_delegate_case(outcome: GrantOutcome) {
                 assert_eq!(key.expiry, 1000);
                 assert!(key.enforceLimits && !key.isRevoked);
                 assert_eq!(key.signatureType as u8, if delegate_native { 3 } else { 0 });
-                assert_eq!(limit, U256::from(remaining));
+                assert_eq!(limit, U256::from(initial_limit - fees - transferred));
+                assert_eq!(balance, U256::from(initial_balance - fees - transferred));
+                assert_eq!(recipient_balance, U256::from(transferred));
                 assert!(scopes.isScoped);
                 assert_eq!(scopes.scopes.len(), targets.len());
                 for scope in scopes.scopes {
@@ -964,24 +999,26 @@ fn native_signed_parent_delegate_case(outcome: GrantOutcome) {
                     assert!(scope.selectorRules.is_empty());
                 }
                 f.evm.ctx_mut().journaled_state.finalize();
+                assert_eq!(f.evm.db_mut().basic(parent).unwrap().unwrap().nonce, nonce);
             };
-            // The failed transfer spends nothing, but the pre-execution grant survives.
-            assert_grant(&mut f, 100);
+            // Calls roll back, but the grant, actual fees and transaction nonce survive.
+            assert_grant(&mut f, total_fees, 0, 4);
             if outcome == GrantOutcome::Success {
                 continue;
             }
             let accepted_grant = tx.key_authorization.take();
             tx.calls = vec![transfer];
             // Re-sign without the immutable grant. Two uses prove counters do not reset.
-            for (nonce, remaining) in [(4, 90), (5, 80)] {
+            for (nonce, transferred) in [(4, 10), (5, 20)] {
                 tx.nonce = nonce;
                 let output = f
                     .evm
                     .transact(TempoTxEnv::from_recovered_tx(&sign(&tx), parent))
                     .unwrap();
                 assert!(output.result.is_success(), "{:?}", output.result);
+                total_fees += charged_fee(output.result.tx_gas_used());
                 f.evm.db_mut().commit(output.state);
-                assert_grant(&mut f, remaining);
+                assert_grant(&mut f, total_fees, transferred, nonce + 1);
                 assert_eq!(f.commitment(), B256::ZERO);
                 let delegate_info = f.evm.db_mut().basic(delegate).unwrap().unwrap_or_default();
                 assert_eq!(
