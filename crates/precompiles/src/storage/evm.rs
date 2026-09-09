@@ -393,6 +393,28 @@ impl<'a> PrecompileStorageProvider for EvmPrecompileStorageProvider<'a> {
         })
     }
 
+    fn with_warm_caller_info(
+        &mut self,
+        address: Address,
+        f: &mut dyn FnMut(&AccountInfo),
+    ) -> Result<(), TempoPrecompileError> {
+        if address != self.internals.tx_origin() {
+            return Err(TempoPrecompileError::Fatal(
+                "unmetered metadata read requires transaction caller".into(),
+            ));
+        }
+        let account = self
+            .internals
+            .load_account_mut_skip_cold_load(address, true)
+            .map_err(|error| {
+                TempoPrecompileError::Fatal(format!(
+                    "caller account must already be warm: {error:?}"
+                ))
+            })?;
+        f(&account.data.account().info);
+        Ok(())
+    }
+
     fn set_config_commitment(
         &mut self,
         address: Address,
@@ -775,6 +797,24 @@ mod tests {
     fn commitment_nested_journal_rollback() {
         let mut evm = TestEvm::new(TempoHardfork::T12);
         super::super::tests::exercise_rollback(&mut evm.provider_max_gas());
+    }
+
+    #[test]
+    fn warm_caller_metadata_is_free_and_checks_caller() {
+        let mut evm = TestEvm::new(TempoHardfork::T12);
+        let caller = Address::repeat_byte(0x12);
+        evm.0.ctx_mut().tx.caller = caller;
+        let mut provider = evm.provider_max_gas();
+        assert!(provider.with_warm_caller_info(caller, &mut |_| {}).is_err());
+        provider.internals.load_account_mut(caller).unwrap();
+        let other = Address::repeat_byte(0x13);
+        provider.internals.load_account_mut(other).unwrap();
+        assert!(provider.with_warm_caller_info(other, &mut |_| {}).is_err());
+        let before = provider.gas_used();
+        provider
+            .with_warm_caller_info(caller, &mut |info| assert!(info.extension.is_empty()))
+            .unwrap();
+        assert_eq!(provider.gas_used(), before);
     }
 
     #[test]

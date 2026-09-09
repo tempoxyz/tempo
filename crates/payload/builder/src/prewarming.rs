@@ -465,6 +465,9 @@ fn is_invalidated_buffered_transaction(
 
 /// Returns true if the transaction is a candidate for parallel prewarming.
 fn is_parallel_candidate(tx: &BestTransaction) -> bool {
+    if !tempo_evm::supports_storage_action_replay(tx.transaction.inner()) {
+        return false;
+    }
     // Payment lane transactions
     tx.transaction.is_payment()
         // 2D or expiring nonces, no protocol nonces
@@ -617,6 +620,40 @@ mod tests {
             origin: TransactionOrigin::External,
             authority_ids: None,
         })
+    }
+
+    #[test]
+    fn configurable_grant_recipient_disables_parallel_replay() {
+        use tempo_primitives::{SignatureType, transaction::KeyAuthorization};
+        let sender = Address::repeat_byte(0x11);
+        let payment = test_payment_tx(sender, 500_000);
+        assert!(is_parallel_candidate(&payment));
+        for key_type in [SignatureType::Secp256k1, SignatureType::Multisig] {
+            let mut tx = payment.transaction.inner().as_aa().unwrap().tx().clone();
+            tx.key_authorization = Some(
+                KeyAuthorization::unrestricted(42431, key_type, Address::repeat_byte(0x22))
+                    .into_signed(Signature::test_signature()),
+            );
+            let envelope = TempoTxEnvelope::AA(tx.into_signed(Signature::test_signature().into()));
+            let candidate = ValidPoolTransaction {
+                transaction: TempoPooledTransaction::new(Recovered::new_unchecked(
+                    envelope, sender,
+                )),
+                transaction_id: payment.transaction_id,
+                propagate: payment.propagate,
+                timestamp: payment.timestamp,
+                origin: payment.origin,
+                authority_ids: None,
+            };
+            assert!(
+                candidate.transaction.is_payment(),
+                "grant must reach the replay classifier"
+            );
+            assert_eq!(
+                is_parallel_candidate(&Arc::new(candidate)),
+                key_type != SignatureType::Multisig
+            );
+        }
     }
 
     struct TestPrewarming {

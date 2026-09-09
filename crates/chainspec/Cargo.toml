@@ -18,6 +18,7 @@ workspace = true
 
 [dependencies]
 tempo-hardfork.workspace = true
+tempo-contracts.workspace = true
 tempo-primitives.workspace = true
 
 reth-cli = { workspace = true, optional = true }

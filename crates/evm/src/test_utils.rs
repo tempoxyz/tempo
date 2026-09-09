@@ -133,6 +133,7 @@ impl TestExecutorBuilder {
             EvmEnv {
                 cfg_env,
                 block_env: TempoBlockEnv {
+                    multisig_recovery_factory: chainspec.info.multisig_recovery_factory(),
                     inner: BlockEnv {
                         number: U256::from(self.block_number),
                         basefee: 1,

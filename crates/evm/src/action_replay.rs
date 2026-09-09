@@ -26,6 +26,23 @@ use tempo_precompiles::{
 };
 use tempo_revm::evm::TempoContext;
 
+/// Storage actions do not represent configurable account reads/writes or keychain
+/// parent or named grant-recipient eligibility. Such authorizations must execute through the handler.
+pub fn supports_storage_action_replay(tx: &tempo_primitives::TempoTxEnvelope) -> bool {
+    tx.as_aa().is_none_or(|aa| {
+        matches!(
+            aa.signature(),
+            tempo_primitives::TempoSignature::Primitive(_)
+        ) && aa.tx().key_authorization.as_ref().is_none_or(|grant| {
+            grant.key_type != tempo_primitives::SignatureType::Multisig
+                && !matches!(
+                    grant.signature,
+                    tempo_primitives::TempoSignature::Multisig(_)
+                )
+        })
+    })
+}
+
 impl<'a, DB, I> TempoBlockExecutor<'a, &'a mut State<DB>, I>
 where
     DB: Database,
@@ -42,6 +59,9 @@ where
         commit_reads: bool,
     ) -> Result<(), BlockExecutionError> {
         let (tx_env, recovered) = tx.into_parts();
+        if !supports_storage_action_replay(recovered.tx()) {
+            return Err(StorageActionReplayError::UnsupportedAuthorization.into());
+        }
 
         let StorageActionReplay {
             result,
@@ -342,6 +362,8 @@ pub struct ExpiringNonceReplay {
 /// Reason a precomputed storage-action replay cannot be used.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, thiserror::Error)]
 pub enum StorageActionReplayError {
+    #[error("authorization requires account-state execution")]
+    UnsupportedAuthorization,
     #[error("transaction execution failed")]
     TransactionExecutionFailed,
     #[error("storage action conflict")]

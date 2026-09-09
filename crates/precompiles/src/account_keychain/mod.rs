@@ -265,6 +265,19 @@ impl AccountKeychain {
     ) -> Result<()> {
         let config = &config;
         self.ensure_admin_caller(msg_sender)?;
+        if self.storage.spec().is_t12() {
+            let invalid_parent = self.storage.with_warm_caller_info(msg_sender, |info| {
+                let commitment =
+                    tempo_primitives::account::decode_config_commitment(&info.extension, true)
+                        .map_err(|error| {
+                            crate::error::TempoPrecompileError::Fatal(error.to_string())
+                        })?;
+                Ok(!commitment.is_zero() && !info.is_empty_code_hash())
+            })?;
+            if invalid_parent {
+                return Err(AccountKeychainError::invalid_key_id().into());
+            }
+        }
         let is_t3 = self.storage.spec().is_t3();
 
         // Validate inputs
@@ -1944,6 +1957,65 @@ mod tests {
                         Ok(())
                     })?;
                 }
+            }
+        }
+        Ok(())
+    }
+
+    #[test]
+    fn test_multisig_parent_code_grant_guards() -> eyre::Result<()> {
+        #[derive(Clone, Copy, Debug)]
+        enum ParentCode {
+            Empty,
+            Bytecode,
+            Delegation,
+        }
+        for committed in [false, true] {
+            for code_kind in [
+                ParentCode::Empty,
+                ParentCode::Bytecode,
+                ParentCode::Delegation,
+            ] {
+                let mut storage = HashMapStorageProvider::new_with_spec(1, TempoHardfork::T12);
+                StorageCtx::enter(&mut storage, || -> eyre::Result<()> {
+                    let parent = Address::repeat_byte(0x11);
+                    let mut keychain = AccountKeychain::new();
+                    keychain.initialize()?;
+                    keychain.set_tx_origin(parent)?;
+                    if committed {
+                        keychain.storage.set_config_commitment(
+                            parent,
+                            B256::repeat_byte(1),
+                            crate::storage::ConfigCommitmentWriteGas::Intrinsic,
+                        )?;
+                    }
+                    if !matches!(code_kind, ParentCode::Empty) {
+                        let code = match code_kind {
+                            ParentCode::Bytecode => vec![0x00],
+                            ParentCode::Delegation => {
+                                [vec![0xef, 0x01, 0x00], Address::repeat_byte(0x33).to_vec()]
+                                    .concat()
+                            }
+                            ParentCode::Empty => unreachable!(),
+                        };
+                        keychain
+                            .storage
+                            .set_code(parent, Bytecode::new_raw(code.into()))?;
+                    }
+                    let result = keychain.authorize_key(
+                        parent,
+                        Address::repeat_byte(0x22),
+                        SignatureType::Secp256k1,
+                        unrestricted_restrictions(),
+                        None,
+                    );
+                    assert_eq!(
+                        result.is_ok(),
+                        !committed || matches!(code_kind, ParentCode::Empty),
+                        "registered={committed}, parent_code={code_kind:?}: {result:?}"
+                    );
+                    Ok(())
+                })?;
             }
         }
         Ok(())
