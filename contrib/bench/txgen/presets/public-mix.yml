@@ -5,7 +5,6 @@
 # Uses the native MPP open-only preset with txgen main.
 # Transfers and mints target prepopulated state-bloat accounts; requires nonzero bloat.
 # The helper combines fixture setup and expands per-user/portal templates.
-# Ordinary nonces keep transactions ordered after setup without expiry under load.
 include:
   - mpp.yml
   - vault/base.yml
@@ -34,6 +33,8 @@ templates:
     from: {pool: users, select: random}
     gas_limit: 300000
     fee_token: "0x20c0000000000000000000000000000000000000"
+    expiring_nonce: true
+    valid_for_secs: 25
     call:
       to:
         choice: ${TXGEN_TIP20_TOKENS}
@@ -47,6 +48,8 @@ templates:
     from: {pool: users, select: random}
     gas_limit: 300000
     fee_token: "0x20c0000000000000000000000000000000000000"
+    expiring_nonce: true
+    valid_for_secs: 25
     call:
       to:
         choice: ${TXGEN_TIP20_TOKENS}
@@ -62,6 +65,8 @@ templates:
     from: {pool: users, select: {index: 0}}
     gas_limit: 300000
     fee_token: "0x20c0000000000000000000000000000000000000"
+    expiring_nonce: true
+    valid_for_secs: 25
     call:
       to: "0x20c0000000000000000000000000000000000000"
       abi: ERC20
@@ -69,13 +74,6 @@ templates:
       args:
         - {address_pool: {pool: existing_recipients, select: random}}
         - 1
-
-# The helper copies mpp_open without expiry into public_mpp_open.
-sequences:
-  mpp_open_only:
-    steps:
-      - name: open
-        template: public_mpp_open
 
 # Each selection emits one transaction, including MPP.
 # Zone operations include synthetic settlement through the existing dummy verifier.

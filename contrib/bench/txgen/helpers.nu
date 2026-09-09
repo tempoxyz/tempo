@@ -689,7 +689,6 @@ def txgen-prepare-public-mix-preset [spec_path: string, count: int, accounts: in
     let withdrawals = (open (txgen-prepare-vault-preset ($presets | path join vault-withdraw.yml) $accounts $chain_id))
     let zone_spec = (open (txgen-prepare-zones-preset ($presets | path join zones.yml) $count $accounts $zones mixed))
     let vault_setup = (open ($presets | path join vault setup.yml)).setup.steps
-    let mpp = ((open ($presets | path join mpp.yml)).templates.mpp_open | reject expiring_nonce valid_for_secs)
     # Seed withdrawal shares and retain equally deep pathUSD balances for deposits.
     let users = ($withdrawals.append.setup.steps | each { |step|
         $step | update tx.calls.0.args.1 "2000000000000000000000000"
@@ -714,7 +713,7 @@ def txgen-prepare-public-mix-preset [spec_path: string, count: int, accounts: in
     let output = ($output_dir | path join public-mix.yml)
     {include: $spec_path,
         setup: {steps: ($vault_setup | append $users | append $zone_spec.setup.steps)},
-        templates: ($deposits.templates | merge $withdrawals.templates | merge $zone_spec.templates | insert public_mpp_open $mpp),
+        templates: ($deposits.templates | merge $withdrawals.templates | merge $zone_spec.templates),
         mix: $mix} | to yaml | save -f $output
     $output
 }
@@ -784,8 +783,7 @@ def txgen-run-preset-pipeline [
         # This is a configurable sizing window, not a claimed mainnet settlement cadence.
         let window_ms = ($env.TXGEN_ZONE_SETTLEMENT_WINDOW_MS? | default "3000" | into int)
         if $window_ms < 1 { error make { msg: "TXGEN_ZONE_SETTLEMENT_WINDOW_MS must be positive" } }
-        let zone_share = if $is_public_mix { 0.09 } else { 1.0 }
-        let automatic_zones = ([1 (($tps * $zone_share * $window_ms / 210000) | math ceil | into int)] | math max)
+        let automatic_zones = ([1 (($tps * $window_ms / 210000) | math ceil | into int)] | math max)
         let zones = ($env.TXGEN_ZONE_COUNT? | default $automatic_zones | into int)
         if $zones < 1 { error make { msg: "TXGEN_ZONE_COUNT must be positive" } }
         $zone_metadata = ["-m" $"zone_count=($zones)" "-m" $"zone_sizing_window_ms=($window_ms)"]
@@ -801,8 +799,7 @@ def txgen-run-preset-pipeline [
     if $is_vault {
         $spec_path = (txgen-prepare-vault-preset $spec_path $accounts $chain_id)
     }
-    let has_vault = $is_vault or $is_public_mix
-    if $has_vault {
+    if $is_vault or $is_public_mix {
         # The checked-in deployments use fixed nonces and transfer policy 2.
         # Check before funding or submitting any setup transactions.
         let deployer_nonce = (txgen-rpc-call $generate_rpc_url '{"jsonrpc":"2.0","id":1,"method":"eth_getTransactionCount","params":["0xd7932ce865275be97001a0574441d79b143820ec","pending"]}')
@@ -832,7 +829,7 @@ def txgen-run-preset-pipeline [
         "-n" $tx_count
         "--seed" $TXGEN_HELPER_DEFAULT_SEED
         "--rpc" $generate_rpc_url
-    ] | append (if $has_vault or $preset_name == "zones" { [] } else { ["--duration" $txgen_duration] })
+    ] | append (if $is_vault or $preset_name == "zones" { [] } else { ["--duration" $txgen_duration] })
     # Zones and vaults generate the full count: setup must not consume workload duration.
     let txgen_setup_cmd = [
         $txgen_tempo_bin
@@ -899,7 +896,7 @@ def txgen-run-preset-pipeline [
     let use_two_phase_setup = $is_vault or (txgen-spec-has-keychain-setup $spec_path)
     let txgen_cmd_str = (txgen-shell-join ($txgen_cmd | append $txgen_extra_args))
     let bench_cmd = if $use_two_phase_setup { $bench_cmd | append "--skip-setup" } else { $bench_cmd }
-    let bench_cmd = if $has_vault { $bench_cmd | append ["--drain-timeout" "300"] } else { $bench_cmd }
+    let bench_cmd = if $is_vault { $bench_cmd | append ["--drain-timeout" "300"] } else { $bench_cmd }
     let bench_cmd_str = (txgen-shell-join $bench_cmd)
     let pipeline = $"set -euo pipefail; ($bench_env_export)ulimit -Sn unlimited && ($txgen_cmd_str) | ($bench_cmd_str)"
 
@@ -926,18 +923,12 @@ def txgen-run-preset-pipeline [
         }
     }
 
-    if $has_vault or $preset_name == "zones" {
+    if $is_vault or $preset_name == "zones" {
         print $"  Streaming ($tx_count) ($preset_name) transactions at target ($tps) TPS into bench send..."
     } else {
         print $"  Streaming up to ($tx_count) txgen transaction\(s\) over ($txgen_duration) into bench send..."
     }
-    # Public mix emits setup and workload together so dynamic zone addresses remain
-    # available. bench send drains setup before starting workload measurement.
-    let setup_count = if $is_public_mix {
-        (open $spec_path).setup.steps | where { |step| ($step | get -o tx.type) == "tempo" } | length
-    } else { 0 }
-    let expected_receipts = $tx_count + $setup_count
-    let vault_start_block = if $has_vault {
+    let vault_start_block = if $is_vault {
         (txgen-rpc-call $generate_rpc_url '{"jsonrpc":"2.0","id":1,"method":"eth_blockNumber","params":[]}').result | into int
     } else { 0 }
     let result = (bash -lc $pipeline | complete)
@@ -952,18 +943,18 @@ def txgen-run-preset-pipeline [
         return { ok: false, exit_code: 1, report_path: $report_path }
     }
 
-    if ($has_vault or $preset_name == "zones") and (open $report_path).failed > 0 {
+    if $preset_name in ["zones" "vault-deposit" "vault-withdraw"] and (open $report_path).failed > 0 {
         print $"ERROR: ($preset_name) workload contains sender failures; see ($report_path)"
         return { ok: false, exit_code: 1, report_path: $report_path }
     }
-    if $has_vault {
+    if $is_vault {
         # Check block receipts after bench drains the pool, without polling every transaction.
         let report = (open $report_path)
         let deadline = (date now) + 60sec
         mut next_block = $vault_start_block + 1
         mut included = 0
         mut reverted = 0
-        while $included < $expected_receipts and (date now) < $deadline {
+        while $included < $tx_count and (date now) < $deadline {
             let last = (txgen-rpc-call $generate_rpc_url '{"jsonrpc":"2.0","id":1,"method":"eth_blockNumber","params":[]}').result | into int
             while $next_block <= $last {
                 let block = ($next_block | format number | get lowerhex)
@@ -974,11 +965,11 @@ def txgen-run-preset-pipeline [
                 $next_block = $next_block + 1
             }
             # An empty pool can precede canonical inclusion of the last built block.
-            if $included < $expected_receipts { sleep 200ms }
+            if $included < $tx_count { sleep 200ms }
         }
-        print $"  Fixture receipts: ($included) included, ($reverted) reverted, ($report.sent) workload submitted, ($setup_count) setup expected"
-        if $included != $expected_receipts or $reverted != 0 {
-            error make { msg: "Fixture workload did not include the full transaction count successfully" }
+        print $"  Vault receipts: ($included) included, ($reverted) reverted, ($report.sent) submitted"
+        if $included != $tx_count or $reverted != 0 {
+            error make { msg: "Vault workload did not include the full transaction count successfully" }
         }
     }
     print $"  Report saved: ($report_path)"
