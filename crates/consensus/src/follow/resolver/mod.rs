@@ -328,24 +328,9 @@ where
     fn get_block(&self, digest: Digest) -> impl Future<Output = Option<Block>> + Send + 'static {
         let client = self.clone();
         async move {
-            #[cfg(not(feature = "bal"))]
-            return Block::try_from_execution_block(client.get_full_block(digest.0).await, None)
+            Block::try_from_execution_block(client.get_full_block(digest.0).await, None)
                 .inspect_err(|error| warn!(%error, %digest, "devp2p block failed validation"))
-                .ok();
-
-            #[cfg(feature = "bal")]
-            let (block, block_access_list) = client
-                .get_full_block_with_access_lists(digest.0)
-                .await
-                .split();
-
-            #[cfg(feature = "bal")]
-            Block::try_from_execution_block(
-                block,
-                block_access_list.map(|block_access_list| block_access_list.into_raw()),
-            )
-            .inspect_err(|error| warn!(%error, %digest, "devp2p block failed validation"))
-            .ok()
+                .ok()
         }
     }
 }

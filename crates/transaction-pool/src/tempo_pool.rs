@@ -978,6 +978,23 @@ where
         hashes
     }
 
+    fn all_transactions_by_sender(
+        &self,
+        sender: Address,
+    ) -> AllPoolTransactions<Self::Transaction> {
+        let mut transactions = self.protocol_pool.all_transactions_by_sender(sender);
+        let pool = self.aa_2d_pool.read();
+        transactions.pending.extend(
+            pool.pending_transactions()
+                .filter(|tx| tx.sender() == sender),
+        );
+        transactions.queued.extend(
+            pool.queued_transactions()
+                .filter(|tx| tx.sender() == sender),
+        );
+        transactions
+    }
+
     fn remove_transactions(
         &self,
         hashes: Vec<B256>,

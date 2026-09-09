@@ -55,5 +55,4 @@ tokio.workspace = true
 proptest.workspace = true
 
 [features]
-bal = []
 trie-debug = ["reth-engine-tree/trie-debug"]

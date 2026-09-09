@@ -24,8 +24,13 @@ impl ConfigureEngineEvm<TempoExecutionData> for TempoEvmConfig {
     ) -> Result<ExecutionCtxFor<'a, Self>, Self::Error> {
         let TempoExecutionData {
             block,
-            block_access_list: _,
+            block_access_list,
         } = payload;
+        if block_access_list.is_some() {
+            return Err(crate::error::TempoEvmError::InvalidEvmConfig(
+                "BAL execution is unsupported with configurable account extensions".into(),
+            ));
+        }
         self.context_for_block(block)
     }
 

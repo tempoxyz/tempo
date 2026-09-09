@@ -93,6 +93,12 @@ const DEFAULT_DEV_ZONE_FACTORY_OWNER: Address =
     alloy_primitives::address!("0xf39Fd6e51aad88F6F4ce6aB8827279cffFb92266");
 
 fn apply_tempo_cli_overrides(cli: &mut TempoCli) -> eyre::Result<()> {
+    if let Commands::Node(node_cmd) = &mut cli.command {
+        // BAL execution and state roots cannot preserve opaque account extensions.
+        node_cmd.engine.bal_parallel_execution_disabled = true;
+        node_cmd.engine.bal_parallel_state_root_disabled = true;
+        node_cmd.engine.disable_bal_batch_io = true;
+    }
     if let Commands::Node(node_cmd) = &mut cli.command
         && node_cmd
             .ext
@@ -1118,6 +1124,9 @@ mod tests {
                 .engine_disable_execution_cache_sharing_with_builder
         );
         assert!(!node_cmd.engine.share_execution_cache_with_payload_builder);
+        assert!(node_cmd.engine.bal_parallel_execution_disabled);
+        assert!(node_cmd.engine.bal_parallel_state_root_disabled);
+        assert!(node_cmd.engine.disable_bal_batch_io);
 
         let cli = TempoCli::try_parse_from([
             "tempo",

@@ -112,6 +112,7 @@ impl TempoPooledTransaction {
         let in_memory_size = transaction.size();
         Self {
             inner: EthPooledTransaction {
+                in_memory_size: transaction.size(),
                 transaction,
                 cost,
                 encoded_length,
