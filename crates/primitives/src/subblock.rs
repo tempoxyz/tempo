@@ -1,4 +1,4 @@
-use alloy_primitives::{Address, B256, Bytes, U256, wrap_fixed_bytes};
+use alloy_primitives::{Address, B256, Bytes, U256};
 use alloy_rlp::{BufMut, Decodable, Encodable, RlpDecodable, RlpEncodable};
 
 /// Nonce key prefix marking a subblock transaction.
@@ -8,18 +8,6 @@ pub const TEMPO_SUBBLOCK_NONCE_KEY_PREFIX: u8 = 0x5b;
 #[inline]
 pub fn has_sub_block_nonce_key_prefix(nonce_key: &U256) -> bool {
     nonce_key.byte(31) == TEMPO_SUBBLOCK_NONCE_KEY_PREFIX
-}
-
-wrap_fixed_bytes! {
-    /// Partial validator public key encoded inside the nonce key.
-    pub struct PartialValidatorKey<15>;
-}
-
-impl PartialValidatorKey {
-    /// Returns whether this partial public key matches the given validator public key.
-    pub fn matches(&self, validator: impl AsRef<[u8]>) -> bool {
-        validator.as_ref().starts_with(self.as_slice())
-    }
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
@@ -98,63 +86,6 @@ mod tests {
         assert!(!has_sub_block_nonce_key_prefix(&U256::from(
             TEMPO_SUBBLOCK_NONCE_KEY_PREFIX
         )));
-    }
-
-    #[test]
-    fn test_partial_validator_key_matches() {
-        // Create a 15-byte partial key
-        let partial =
-            PartialValidatorKey::from([1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15]);
-
-        // Full key that starts with the partial
-        let matching_key = [
-            1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18,
-        ];
-        assert!(
-            partial.matches(matching_key),
-            "Should match when validator starts with partial"
-        );
-
-        // Exactly the partial key length
-        let exact_match: [u8; 15] = [1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15];
-        assert!(partial.matches(exact_match), "Should match exact length");
-
-        // Different first byte
-        let non_matching = [
-            0, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18,
-        ];
-        assert!(
-            !partial.matches(non_matching),
-            "Should not match with different first byte"
-        );
-
-        // Different last byte of partial
-        let partial_mismatch = [
-            1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 99, 16, 17, 18,
-        ];
-        assert!(
-            !partial.matches(partial_mismatch),
-            "Should not match with different byte in partial range"
-        );
-
-        // Shorter than partial (should not match)
-        let too_short: [u8; 10] = [1, 2, 3, 4, 5, 6, 7, 8, 9, 10];
-        assert!(
-            !partial.matches(too_short),
-            "Should not match if validator is shorter than partial"
-        );
-
-        // Empty key
-        let empty: [u8; 0] = [];
-        assert!(!partial.matches(empty), "Should not match empty validator");
-
-        // Zero partial key matches any key starting with zeros
-        let zero_partial = PartialValidatorKey::ZERO;
-        let zeros = [0u8; 20];
-        assert!(
-            zero_partial.matches(zeros),
-            "Zero partial should match zeros"
-        );
     }
 
     #[test]

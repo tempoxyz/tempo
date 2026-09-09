@@ -1,7 +1,7 @@
-use std::{collections::HashMap, num::NonZeroU64, sync::Arc};
+use std::{num::NonZeroU64, sync::Arc};
 
 use alloy_evm::{Database, EvmEnv};
-use alloy_primitives::{Address, B256, Bytes};
+use alloy_primitives::{B256, Bytes};
 use reth_chainspec::EthChainSpec;
 use reth_evm::block::StateDB;
 use reth_revm::context::BlockEnv;
@@ -12,7 +12,6 @@ use tempo_revm::TempoBlockEnv;
 use crate::{TempoBlockExecutionCtx, block::TempoBlockExecutor, evm::TempoEvm};
 use alloy_evm::eth::EthBlockExecutionCtx;
 use alloy_primitives::U256;
-use tempo_primitives::subblock::PartialValidatorKey;
 
 pub(crate) fn test_chainspec() -> Arc<TempoChainSpec> {
     Arc::new(TempoChainSpec::from_genesis(MODERATO.genesis().clone()))
@@ -51,14 +50,12 @@ pub(crate) struct TestExecutorBuilder {
     pub(crate) general_gas_limit: u64,
     pub(crate) shared_gas_limit: u64,
     pub(crate) parent_beacon_block_root: Option<B256>,
-    pub(crate) subblock_fee_recipients: HashMap<PartialValidatorKey, Address>,
     /// Sets `cfg_env.enable_amsterdam_eip8037` to gate TIP-1016 behavior in tests.
     pub(crate) amsterdam_eip8037_enabled: bool,
     pub(crate) spec: TempoHardfork,
     pub(crate) extra_data: Bytes,
     // Test state to seed into the executor after creation
     pub(crate) initial_section: Option<BlockSection>,
-    pub(crate) initial_seen_subblocks: Vec<PartialValidatorKey>,
 }
 
 impl Default for TestExecutorBuilder {
@@ -70,12 +67,10 @@ impl Default for TestExecutorBuilder {
             general_gas_limit: 10_000_000,
             shared_gas_limit: 10_000_000,
             parent_beacon_block_root: None,
-            subblock_fee_recipients: HashMap::new(),
             amsterdam_eip8037_enabled: false,
             spec: TempoHardfork::default(),
             extra_data: Bytes::new(),
             initial_section: None,
-            initial_seen_subblocks: Vec::new(),
         }
     }
 }
@@ -124,12 +119,6 @@ impl TestExecutorBuilder {
         self
     }
 
-    /// Add a seen proposer to the executor for testing historical subblock ordering.
-    pub(crate) fn with_seen_subblock(mut self, proposer: PartialValidatorKey) -> Self {
-        self.initial_seen_subblocks.push(proposer);
-        self
-    }
-
     pub(crate) fn build<'a, DB: StateDB>(
         self,
         db: DB,
@@ -169,7 +158,6 @@ impl TestExecutorBuilder {
             general_gas_limit: self.general_gas_limit,
             shared_gas_limit: self.shared_gas_limit,
             consensus_context: None,
-            subblock_fee_recipients: self.subblock_fee_recipients,
         };
 
         let mut executor = TempoBlockExecutor::new(evm, ctx, chainspec);
@@ -177,9 +165,6 @@ impl TestExecutorBuilder {
         // Apply test-specific initial state
         if let Some(section) = self.initial_section {
             executor.set_section_for_test(section);
-        }
-        for proposer in self.initial_seen_subblocks {
-            executor.add_seen_subblock_for_test(proposer);
         }
 
         executor

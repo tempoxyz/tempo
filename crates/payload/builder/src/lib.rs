@@ -242,11 +242,9 @@ where
         &self,
         args: BuildArguments<Self::Attributes, Self::BuiltPayload>,
     ) -> Result<BuildOutcome<Self::BuiltPayload>, PayloadBuilderError> {
-        self.build_payload(
-            args,
-            |attributes| self.pool.best_transactions_with_attributes(attributes),
-            false,
-        )
+        self.build_payload(args, |attributes| {
+            self.pool.best_transactions_with_attributes(attributes)
+        })
     }
 
     fn on_missing_payload(
@@ -270,7 +268,6 @@ where
                 Default::default(),
             ),
             |_| core::iter::empty(),
-            true,
         )?
         .into_payload()
         .ok_or_else(|| PayloadBuilderError::MissingPayload)
@@ -295,7 +292,6 @@ where
         &self,
         args: BuildArguments<TempoPayloadAttributes, TempoBuiltPayload>,
         best_txs: impl FnOnce(BestTransactionsAttributes) -> Txs,
-        _empty: bool,
     ) -> Result<BuildOutcome<TempoBuiltPayload>, PayloadBuilderError>
     where
         Txs: BestTransactions<Item = Arc<ValidPoolTransaction<TempoPooledTransaction>>>
@@ -370,15 +366,8 @@ where
         let block_gas_limit = self
             .config
             .gas_limit_with_target(parent_header.gas_limit(), attributes.target_gas_limit);
-        let shared_gas_limit =
-            chain_spec.shared_gas_limit_at(attributes.timestamp, block_gas_limit);
-        // Preserve the legacy shared gas field in the header while filling only from the pool.
-        let non_shared_gas_limit = block_gas_limit - shared_gas_limit;
-        let general_gas_limit = chain_spec.general_gas_limit_at(
-            attributes.timestamp,
-            block_gas_limit,
-            shared_gas_limit,
-        );
+        let general_gas_limit =
+            chain_spec.general_gas_limit_at(attributes.timestamp, block_gas_limit, 0);
         let hardfork = chain_spec.tempo_hardfork_at(attributes.timestamp);
 
         let mut cumulative_gas_used = 0;
@@ -410,7 +399,7 @@ where
                 slot_number: attributes.slot_number,
             },
             general_gas_limit,
-            shared_gas_limit,
+            shared_gas_limit: 0,
             timestamp_millis_part: attributes.timestamp_millis_part(),
             consensus_context: attributes.consensus_context(),
         };
@@ -562,12 +551,12 @@ where
             }
 
             let Some(mut pool_tx) = best_txs.next() else {
-                if payload_build_budget.is_some() && cumulative_gas_used < non_shared_gas_limit {
+                if payload_build_budget.is_some() && cumulative_gas_used < block_gas_limit {
                     std::thread::sleep(Duration::from_millis(1));
                     normal_transaction_fill_idle_elapsed += Duration::from_millis(1);
                     continue;
                 }
-                let stop_reason = if cumulative_gas_used >= non_shared_gas_limit {
+                let stop_reason = if cumulative_gas_used >= block_gas_limit {
                     BlockBuildStopReason::GasLimit
                 } else if skipped_oversized_block {
                     BlockBuildStopReason::RlpBlockSizeLimit
@@ -584,20 +573,18 @@ where
                 executor.evm().cfg.tx_gas_limit_cap.unwrap_or(u64::MAX),
             );
 
-            // Ensure we still have capacity for this transaction within the legacy non-shared
-            // gas limit.
-            if cumulative_gas_used + max_regular_gas_used > non_shared_gas_limit {
+            // Ensure we still have capacity for this transaction within the block gas limit.
+            if cumulative_gas_used + max_regular_gas_used > block_gas_limit {
                 // Mark this transaction as invalid since it doesn't fit
                 // The iterator will handle lane switching internally when appropriate
                 best_txs.mark_invalid(
                     &pool_tx,
                     InvalidPoolTransactionError::ExceedsGasLimit(
                         tx.gas_limit(),
-                        non_shared_gas_limit - cumulative_gas_used,
+                        block_gas_limit - cumulative_gas_used,
                     ),
                 );
-                self.metrics
-                    .inc_pool_tx_skipped("exceeds_non_shared_gas_limit");
+                self.metrics.inc_pool_tx_skipped("exceeds_block_gas_limit");
                 continue;
             }
 
@@ -963,7 +950,7 @@ where
             .set(general_gas_limit as f64);
         self.metrics
             .payment_gas_limit_last
-            .set(non_shared_gas_limit as f64 - general_gas_limit as f64);
+            .set(block_gas_limit as f64 - general_gas_limit as f64);
         let requests = chain_spec
             .is_prague_active_at_timestamp(attributes.timestamp)
             .then(|| execution_result.requests.clone());

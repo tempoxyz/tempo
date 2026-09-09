@@ -1,9 +1,6 @@
-use std::collections::HashMap;
-
 use alloy_evm::eth::EthBlockExecutionCtx;
-use alloy_primitives::Address;
 use reth_evm::NextBlockEnvAttributes;
-use tempo_primitives::{TempoConsensusContext, subblock::PartialValidatorKey};
+use tempo_primitives::TempoConsensusContext;
 
 /// Execution context for Tempo block.
 #[derive(Debug, Clone, derive_more::Deref)]
@@ -17,10 +14,6 @@ pub struct TempoBlockExecutionCtx<'a> {
     pub shared_gas_limit: u64,
     /// Consensus metadata for the block. `None` for pre-fork blocks.
     pub consensus_context: Option<TempoConsensusContext>,
-    /// Mapping from a subblock validator public key to the fee recipient configured.
-    ///
-    /// Used to provide EVM with the fee recipient context when executing subblock transactions.
-    pub subblock_fee_recipients: HashMap<PartialValidatorKey, Address>,
 }
 
 /// Context required for next block environment.

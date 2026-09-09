@@ -21,7 +21,6 @@ use reth_revm::{
     context::result::{ExecutionResult, ResultAndState},
     state::{Account, Bytecode, EvmState, EvmStorageSlot, TransactionId},
 };
-use std::collections::HashMap;
 use tempo_chainspec::{TempoChainSpec, hardfork::TempoHardforks};
 use tempo_contracts::precompiles::{
     ADDRESS_REGISTRY_ADDRESS, CURRENT_COMMITTEE_ADDRESS, ICurrentCommittee, INITIAL_FACTORY_OWNER,
@@ -29,9 +28,7 @@ use tempo_contracts::precompiles::{
     STORAGE_CREDITS_ADDRESS, TIP20_CHANNEL_RESERVE_ADDRESS, VALIDATOR_CONFIG_V2_ADDRESS,
     initial_zone_factory_state, t13_zone_factory_state,
 };
-use tempo_primitives::{
-    SubBlockMetadata, TempoReceipt, TempoTxEnvelope, TempoTxType, subblock::PartialValidatorKey,
-};
+use tempo_primitives::{SubBlockMetadata, TempoReceipt, TempoTxEnvelope, TempoTxType};
 use tempo_revm::{ExecutionContext, TempoHaltReason, evm::TempoContext};
 use tracing::trace;
 
@@ -43,8 +40,6 @@ pub(crate) enum BlockSection {
     ///
     /// Must use at most `non_shared_gas_left` gas.
     NonShared,
-    /// Subblock authored by the given validator.
-    SubBlock { proposer: PartialValidatorKey },
     /// Gas incentive transaction.
     GasIncentive,
     /// End of block system transactions.
@@ -161,15 +156,13 @@ impl TxResult for TempoTxResult {
 /// Block executor for Tempo.
 ///
 /// Wraps an inner [`EthBlockExecutor`] and layers Tempo-specific block execution
-/// logic on top: section-based transaction ordering (`BlockSection`), subblock
+/// logic on top: section-based transaction ordering (`BlockSection`), system transaction
 /// validation, shared/non-shared gas accounting, and gas incentive tracking.
 pub struct TempoBlockExecutor<'a, DB: Database, I> {
     pub(crate) inner:
         EthBlockExecutor<'a, TempoEvm<DB, I>, &'a TempoChainSpec, TempoReceiptBuilder>,
 
     section: BlockSection,
-    seen_subblocks: Vec<PartialValidatorKey>,
-    subblock_fee_recipients: HashMap<PartialValidatorKey, Address>,
     extra_data: Bytes,
 
     pub(crate) replay_state: StorageActionReplayState,
@@ -202,8 +195,6 @@ where
                 TempoReceiptBuilder::default(),
             ),
             section: BlockSection::StartOfBlock,
-            seen_subblocks: Vec::new(),
-            subblock_fee_recipients: ctx.subblock_fee_recipients,
             replay_state: StorageActionReplayState::default(),
         }
     }
@@ -411,15 +402,18 @@ where
 
     /// Pre-validate a transaction before execution.
     ///
-    /// This is only done for system transaction as they are effectively bypassing
-    /// the regular block gas limit checks and we need to make sure that they
-    /// only perform explicitly allowed actions.
+    /// Reject reserved subblock nonces and restrict system transactions to explicitly
+    /// allowed actions, since they bypass regular block gas limit checks.
     pub(crate) fn validate_tx_pre_execution(
         &self,
         tx: &TempoTxEnvelope,
     ) -> Result<Option<BlockSection>, BlockValidationError> {
         if tx.is_system_tx() {
             self.validate_system_tx(tx).map(Some)
+        } else if tx.has_sub_block_nonce_key_prefix() {
+            Err(BlockValidationError::msg(
+                "subblock transactions are not supported",
+            ))
         } else {
             Ok(None)
         }
@@ -448,46 +442,22 @@ where
         // Start with processing of transaction kinds that require specific sections.
         if tx.is_system_tx() {
             self.validate_system_tx(tx)
-        } else if let Some(tx_proposer) = tx.subblock_proposer() {
-            match self.section {
-                BlockSection::GasIncentive | BlockSection::System { .. } => {
-                    Err(BlockValidationError::msg("subblock section already passed"))
-                }
-                BlockSection::StartOfBlock | BlockSection::NonShared => {
-                    Ok(BlockSection::SubBlock {
-                        proposer: tx_proposer,
-                    })
-                }
-                BlockSection::SubBlock { proposer } => {
-                    if proposer == tx_proposer || !self.seen_subblocks.contains(&tx_proposer) {
-                        Ok(BlockSection::SubBlock {
-                            proposer: tx_proposer,
-                        })
-                    } else {
-                        Err(BlockValidationError::msg(
-                            "proposer's subblock already processed",
-                        ))
-                    }
-                }
-            }
+        } else if tx.has_sub_block_nonce_key_prefix() {
+            Err(BlockValidationError::msg(
+                "subblock transactions are not supported",
+            ))
         } else {
             match self.section {
                 BlockSection::StartOfBlock | BlockSection::NonShared => {
                     if gas_used > self.non_shared_gas_left
                         || (!self.is_payment(tx) && gas_used > self.non_payment_gas_left)
                     {
-                        // Assume that this transaction wants to make use of gas incentive section
-                        //
-                        // This would only be possible if no non-empty subblocks were included.
+                        // Historical blocks can use the gas incentive section after
+                        // exhausting the non-shared or general gas budget.
                         Ok(BlockSection::GasIncentive)
                     } else {
                         Ok(BlockSection::NonShared)
                     }
-                }
-                BlockSection::SubBlock { .. } => {
-                    // If we were just processing a subblock, assume that this transaction wants to make
-                    // use of gas incentive section, thus concluding subblocks execution.
-                    Ok(BlockSection::GasIncentive)
                 }
                 BlockSection::GasIncentive => Ok(BlockSection::GasIncentive),
                 BlockSection::System { .. } => {
@@ -571,23 +541,9 @@ where
         }
         let next_section = self.validate_tx_pre_execution(recovered.tx())?;
 
-        let beneficiary = self.evm_mut().ctx_mut().block.beneficiary;
-        // If we are dealing with a subblock transaction, configure the fee recipient context.
-        if let Some(validator) = recovered.tx().subblock_proposer() {
-            let fee_recipient = *self
-                .subblock_fee_recipients
-                .get(&validator)
-                .ok_or_else(|| BlockValidationError::msg("invalid subblock transaction"))?;
-
-            self.evm_mut().ctx_mut().block.beneficiary = fee_recipient;
-        }
-        let result = self
+        let inner = self
             .inner
-            .execute_transaction_without_commit((tx_env, &recovered));
-
-        self.evm_mut().ctx_mut().block.beneficiary = beneficiary;
-
-        let inner = result?;
+            .execute_transaction_without_commit((tx_env, &recovered))?;
 
         // TIP-1016 enabled: use block_regular_gas_used (excludes state gas) for section
         // validation, matching block gas limit semantics. TIP-1016 disabled: use tx_gas_used.
@@ -637,11 +593,6 @@ where
                 self.non_shared_gas_left -= block_gas_used;
                 if !is_payment {
                     self.non_payment_gas_left -= block_gas_used;
-                }
-            }
-            BlockSection::SubBlock { proposer } => {
-                if self.seen_subblocks.last() != Some(&proposer) {
-                    self.seen_subblocks.push(proposer);
                 }
             }
             BlockSection::GasIncentive => {
@@ -709,11 +660,6 @@ where
     /// Set the block section for testing section transition logic.
     pub(crate) fn set_section_for_test(&mut self, section: BlockSection) {
         self.section = section;
-    }
-
-    /// Add a seen proposer for testing historical subblock ordering.
-    pub(crate) fn add_seen_subblock_for_test(&mut self, proposer: PartialValidatorKey) {
-        self.seen_subblocks.push(proposer);
     }
 
     /// Get the current section for assertions.
@@ -1068,10 +1014,10 @@ mod tests {
         assert_eq!(result.unwrap(), BlockSection::NonShared);
     }
 
-    fn create_subblock_tx(proposer: &PartialValidatorKey) -> TempoTxEnvelope {
+    fn create_subblock_tx() -> TempoTxEnvelope {
         let mut nonce_bytes = [0u8; 32];
         nonce_bytes[0] = TEMPO_SUBBLOCK_NONCE_KEY_PREFIX;
-        nonce_bytes[1..16].copy_from_slice(proposer.as_slice());
+        nonce_bytes[1..16].fill(0xff);
 
         let tx = TempoTransaction {
             chain_id: 1,
@@ -1092,90 +1038,27 @@ mod tests {
     }
 
     #[test]
-    fn test_execute_transaction_t4_subblock_nonce_returns_validation_error() {
+    fn test_subblock_nonce_rejected_before_execution_and_commit() {
         let chainspec = DEV.clone();
-        let mut db = State::builder().with_bundle_update().build();
-        let mut executor = TestExecutorBuilder::default()
-            .with_spec(TempoHardfork::T11)
-            .build(&mut db, &chainspec);
-
-        let proposer = PartialValidatorKey::from_slice(&[0xff; 15]);
-        let subblock_tx = create_subblock_tx(&proposer);
-        let recovered = Recovered::new_unchecked(subblock_tx, Address::ZERO);
-
-        let err = executor.execute_transaction(&recovered).unwrap_err();
-        assert!(
-            matches!(&err, BlockExecutionError::Validation(_)),
-            "unexpected error: {err:?}"
-        );
-        assert_eq!(err.to_string(), "invalid subblock transaction");
-    }
-
-    #[test]
-    fn test_validate_tx_subblock_section_already_passed() {
-        let chainspec = test_chainspec();
-        let mut db = State::builder().with_bundle_update().build();
-        let signer = PrivateKey::from_seed(0);
-        let validator_key = B256::from_slice(&signer.public_key());
-        let proposer = PartialValidatorKey::from_slice(&validator_key[..15]);
-
-        // Test with GasIncentive section
-        let executor = TestExecutorBuilder::default()
-            .with_section(BlockSection::GasIncentive)
-            .build(&mut db, &chainspec);
-
-        let subblock_tx = create_subblock_tx(&proposer);
-        let result = executor.validate_tx(&subblock_tx, 21000);
-        assert!(result.is_err());
-        assert_eq!(
-            result.unwrap_err().to_string(),
-            "subblock section already passed"
-        );
-
-        // Also test with System section
-        let mut db2 = State::builder().with_bundle_update().build();
-        let executor2 = TestExecutorBuilder::default()
-            .with_section(BlockSection::System {
-                seen_subblocks_signatures: false,
-            })
-            .build(&mut db2, &chainspec);
-
-        let result = executor2.validate_tx(&subblock_tx, 21000);
-        assert!(result.is_err());
-        assert_eq!(
-            result.unwrap_err().to_string(),
-            "subblock section already passed"
-        );
-    }
-
-    #[test]
-    fn test_validate_tx_proposer_subblock_already_processed() {
-        let chainspec = test_chainspec();
-        let mut db = State::builder().with_bundle_update().build();
-        let signer1 = PrivateKey::from_seed(0);
-        let validator_key1 = B256::from_slice(&signer1.public_key());
-        let proposer1 = PartialValidatorKey::from_slice(&validator_key1[..15]);
-
-        let signer2 = PrivateKey::from_seed(1);
-        let validator_key2 = B256::from_slice(&signer2.public_key());
-        let proposer2 = PartialValidatorKey::from_slice(&validator_key2[..15]);
-
-        // Set section to SubBlock with a different proposer, and mark proposer1 as already seen
-        let executor = TestExecutorBuilder::default()
-            .with_section(BlockSection::SubBlock {
-                proposer: proposer2,
-            })
-            .with_seen_subblock(proposer1)
-            .build(&mut db, &chainspec);
-
-        // Try to submit a tx for proposer1 (already processed)
-        let subblock_tx = create_subblock_tx(&proposer1);
-        let result = executor.validate_tx(&subblock_tx, 21000);
-        assert!(result.is_err());
-        assert_eq!(
-            result.unwrap_err().to_string(),
-            "proposer's subblock already processed"
-        );
+        for spec in [TempoHardfork::T3, TempoHardfork::T4, TempoHardfork::T11] {
+            let mut db = State::builder().with_bundle_update().build();
+            let mut executor = TestExecutorBuilder::default()
+                .with_spec(spec)
+                .build(&mut db, &chainspec);
+            let tx = create_subblock_tx();
+            // Precomputed execution results must pass the same transaction-kind validation.
+            assert_eq!(
+                executor.validate_tx(&tx, 21_000).unwrap_err().to_string(),
+                "subblock transactions are not supported"
+            );
+            let recovered = Recovered::new_unchecked(tx, Address::ZERO);
+            let err = executor.execute_transaction(&recovered).unwrap_err();
+            assert!(
+                matches!(&err, BlockExecutionError::Validation(_)),
+                "{err:?}"
+            );
+            assert_eq!(err.to_string(), "subblock transactions are not supported");
+        }
     }
 
     #[test]
@@ -1240,45 +1123,6 @@ mod tests {
 
         assert_eq!(gas_output.tx_gas_used(), 21000);
         assert_eq!(executor.section(), BlockSection::NonShared);
-    }
-
-    #[test]
-    fn test_commit_subblocks_preserves_proposer_ordering() {
-        let chainspec = test_chainspec();
-        let mut db = State::builder().with_bundle_update().build();
-        let mut executor = TestExecutorBuilder::default().build(&mut db, &chainspec);
-        let first = PartialValidatorKey::from([1; 15]);
-        let second = PartialValidatorKey::from([2; 15]);
-
-        // Consecutive transactions share a proposer; a later subblock may not return to it.
-        for proposer in [first, first, second] {
-            let tx = create_subblock_tx(&proposer);
-            let section = executor.validate_tx(&tx, 21_000).unwrap();
-            executor.commit_transaction(TempoTxResult::new_precomputed(
-                &tx,
-                ExecutionContext::Transaction {
-                    tx_hash: *tx.tx_hash(),
-                },
-                ExecutionResult::Revert {
-                    logs: vec![],
-                    gas: ResultGas::default().with_total_gas_spent(21_000),
-                    output: Bytes::new(),
-                },
-                Default::default(),
-                section,
-                false,
-                21_000,
-                U256::ZERO,
-            ));
-        }
-        assert_eq!(executor.seen_subblocks, vec![first, second]);
-        assert_eq!(
-            executor
-                .validate_tx(&create_subblock_tx(&first), 21_000)
-                .unwrap_err()
-                .to_string(),
-            "proposer's subblock already processed"
-        );
     }
 
     #[test]

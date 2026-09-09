@@ -266,7 +266,6 @@ mod tests {
         // Verify context fields
         assert_eq!(context.general_gas_limit, 10_000_000);
         assert_eq!(context.shared_gas_limit, 3_000_000);
-        assert!(context.subblock_fee_recipients.is_empty());
     }
 
     #[test]

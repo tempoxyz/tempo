@@ -90,9 +90,9 @@ pub enum TempoInvalidTransaction {
     #[error("expiring nonce transaction must have nonce == 0")]
     ExpiringNonceNonceNotZero,
 
-    /// Subblock transaction must have zero fee.
-    #[error("subblock transaction must have zero fee")]
-    SubblockTransactionMustHaveZeroFee,
+    /// The nonce key uses the reserved subblock prefix.
+    #[error("subblock transactions are not supported")]
+    SubblockTransactionsDisabled,
 
     /// Invalid fee token fallback.
     #[error("invalid fee token: {0}")]
@@ -232,10 +232,6 @@ pub enum TempoInvalidTransaction {
     #[error("V2 keychain signature (type 0x04) is not valid before T1C activation")]
     V2KeychainBeforeActivation,
 
-    /// Keychain operations are not supported in subblock transactions.
-    #[error("keychain operations are not supported in subblock transactions")]
-    KeychainOpInSubblockTransaction,
-
     /// Fee payment error.
     #[error(transparent)]
     CollectFeePreTx(#[from] FeePaymentError),
@@ -310,8 +306,7 @@ impl TempoInvalidTransaction {
             | Self::ExpiringNonceMissingTxEnv
             | Self::ExpiringNonceMissingValidBefore
             | Self::ExpiringNonceNonceNotZero
-            | Self::SubblockTransactionMustHaveZeroFee
-            | Self::KeychainOpInSubblockTransaction
+            | Self::SubblockTransactionsDisabled
             | Self::LegacyKeychainSignature
             | Self::CallsValidation(_) => true,
 
@@ -432,14 +427,12 @@ fn liquidity_pair_msg(user_token: &Option<Address>, validator_token: &Option<Add
 
 /// Tempo-specific halt reason.
 ///
-/// Used to extend basic [`HaltReason`] with an edge case of a subblock transaction fee payment error.
+/// Halt reason for Tempo transaction execution.
 #[derive(Debug, Clone, PartialEq, Eq, Hash, derive_more::From)]
 pub enum TempoHaltReason {
     /// Basic Ethereum halt reason.
     #[from]
     Ethereum(HaltReason),
-    /// Subblock transaction failed to pay fees.
-    SubblockTxFeePayment,
 }
 
 #[cfg(feature = "rpc")]
@@ -449,9 +442,6 @@ impl reth_rpc_eth_types::error::api::FromEvmHalt<TempoHaltReason>
     fn from_evm_halt(halt_reason: TempoHaltReason, gas_limit: u64) -> Self {
         match halt_reason {
             TempoHaltReason::Ethereum(halt_reason) => Self::from_evm_halt(halt_reason, gas_limit),
-            TempoHaltReason::SubblockTxFeePayment => {
-                Self::EvmCustom("subblock transaction failed to pay fees".to_string())
-            }
         }
     }
 }
