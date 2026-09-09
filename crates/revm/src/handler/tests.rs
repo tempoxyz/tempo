@@ -1,7 +1,9 @@
 use super::*;
 use crate::{
     FeeTokenResolver, ProtocolFeeManager, TempoBlockEnv, TempoFeeManager, TempoTxEnv,
-    evm::TempoEvm, gas_params::tempo_gas_params, signature_gas::P256_VERIFY_GAS,
+    evm::TempoEvm,
+    gas_params::tempo_gas_params,
+    signature_gas::{P256_VERIFY_GAS, primitive_signature_verification_gas},
     tx::TempoBatchCallEnv,
 };
 use alloy_primitives::{Address, B256, Bytes, TxKind, U256};
@@ -33,6 +35,124 @@ use tempo_primitives::transaction::{
 fn create_test_journal() -> Journal<CacheDB<EmptyDB>> {
     let db = CacheDB::new(EmptyDB::default());
     Journal::new(db)
+}
+
+#[test]
+fn unsupported_multisig_roles_fail_closed() {
+    use tempo_primitives::transaction::{
+        KeyAuthorization, KeychainSignature, MultisigConfig, MultisigOwner, MultisigSignature,
+    };
+    #[derive(Clone, Copy, Debug, PartialEq, Eq)]
+    enum Role {
+        Primitive,
+        Direct,
+        Delegate,
+        Grant,
+        GrantRecipient,
+        AuthorizationList,
+        DelegatedAuthorizationList,
+        KeychainGrant,
+    }
+    let account = Address::repeat_byte(0x22);
+    let native = TempoSignature::Multisig(
+        MultisigSignature::try_new(
+            account,
+            MultisigConfig {
+                salt: B256::ZERO,
+                version: 0,
+                threshold: 1,
+                owners: vec![MultisigOwner {
+                    owner: Address::repeat_byte(0x33),
+                    weight: 1,
+                }],
+            },
+            vec![PrimitiveSignature::default()],
+        )
+        .unwrap(),
+    );
+    let delegated = TempoSignature::Keychain(KeychainSignature::new(
+        account,
+        native.as_multisig().unwrap().clone(),
+    ));
+    for simulation in [false, true] {
+        for role in [
+            Role::Primitive,
+            Role::Direct,
+            Role::Delegate,
+            Role::Grant,
+            Role::GrantRecipient,
+            Role::AuthorizationList,
+            Role::DelegatedAuthorizationList,
+            Role::KeychainGrant,
+        ] {
+            let mut aa = TempoBatchCallEnv {
+                aa_calls: vec![Call {
+                    to: TxKind::Call(Address::repeat_byte(0x44)),
+                    value: U256::ZERO,
+                    input: Bytes::new(),
+                }],
+                override_key_id: simulation.then_some(account),
+                ..Default::default()
+            };
+            match role {
+                Role::Direct => aa.signature = native.clone(),
+                Role::Delegate => aa.signature = delegated.clone(),
+                Role::Grant | Role::GrantRecipient | Role::KeychainGrant => {
+                    aa.key_authorization = Some(
+                        KeyAuthorization::unrestricted(
+                            1,
+                            if role == Role::GrantRecipient {
+                                SignatureType::Multisig
+                            } else {
+                                SignatureType::Secp256k1
+                            },
+                            account,
+                        )
+                        .into_signed(if role == Role::Grant {
+                            native.clone()
+                        } else if role == Role::KeychainGrant {
+                            delegated.clone()
+                        } else {
+                            TempoSignature::default()
+                        }),
+                    );
+                }
+                Role::AuthorizationList | Role::DelegatedAuthorizationList => aa
+                    .tempo_authorization_list
+                    .push(RecoveredTempoAuthorization::new(
+                        TempoSignedAuthorization::new_unchecked(
+                            alloy_eips::eip7702::Authorization {
+                                chain_id: U256::ONE,
+                                address: account,
+                                nonce: 0,
+                            },
+                            if role == Role::AuthorizationList {
+                                native.clone()
+                            } else {
+                                delegated.clone()
+                            },
+                        ),
+                    )),
+                Role::Primitive => {}
+            }
+            let mut test =
+                TestHandlerEvm::aa(TempoHardfork::T12, aa, |tx| tx.gas_limit = 1_000_000);
+            let result = test.handler.validate_env(&mut test.evm);
+            if role == Role::Primitive {
+                result.unwrap();
+            } else {
+                assert!(
+                    matches!(
+                        result,
+                        Err(EVMError::Transaction(
+                            TempoInvalidTransaction::KeychainValidationFailed { .. }
+                        ))
+                    ),
+                    "{role:?}, simulation={simulation}: {result:?}"
+                );
+            }
+        }
+    }
 }
 
 #[test_case::test_case(TempoHardfork::T1A; "historical")]
@@ -1309,7 +1429,7 @@ fn test_t4_key_authorization_matches_tip1016_sstore_regular_cost() {
     // TIP-1016 is opt-in via amsterdam_eip8037; manually enable for this test.
     let gas_params = crate::gas_params::tempo_gas_params_with_amsterdam(TempoHardfork::T4, true);
 
-    let sig_gas = ECRECOVER_GAS + primitive_signature_verification_gas(&key_auth.signature);
+    let sig_gas = ECRECOVER_GAS + tempo_signature_verification_gas(&key_auth.signature);
     let sload = gas_params.warm_storage_read_cost() + gas_params.cold_storage_additional_cost();
     let scope_extra_gas = call_scope_extra_gas(&key_auth.authorization);
     let (regular_gas, state_gas) =
@@ -1331,7 +1451,7 @@ fn test_t7_key_authorization_intrinsic_includes_storage_credit_value() {
         ));
 
     let gas_params = crate::gas_params::tempo_gas_params(TempoHardfork::T7);
-    let sig_gas = ECRECOVER_GAS + primitive_signature_verification_gas(&key_auth.signature);
+    let sig_gas = ECRECOVER_GAS + tempo_signature_verification_gas(&key_auth.signature);
     let sload = gas_params.warm_storage_read_cost() + gas_params.cold_storage_additional_cost();
     let scope_extra_gas = call_scope_extra_gas(&key_auth.authorization);
     let (regular_gas, state_gas) =
