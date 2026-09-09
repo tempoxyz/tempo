@@ -216,7 +216,10 @@ fn prepares_independent_delegate_and_parent_roles(version: u64) {
     let tx = request
         .try_into_tempo_tx_env(tempo_revm::TempoTxEnv::default(), true)
         .unwrap();
-    let roles = tempo_revm::native_multisig::authorizations(&tx);
+    let roles = tempo_revm::native_multisig::authorizations(&tx)
+        .into_iter()
+        .flatten()
+        .collect::<Vec<_>>();
     assert_eq!(roles.len(), 2);
     assert_eq!(roles[0].signature.account(), delegate);
     assert_eq!(roles[1].signature.account(), parent);
