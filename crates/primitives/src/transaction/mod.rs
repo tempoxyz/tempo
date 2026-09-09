@@ -1,5 +1,8 @@
 pub mod envelope;
 pub mod key_authorization;
+pub mod multisig;
+pub use multisig::*;
+pub use tt_signature::AccessKeySignature;
 pub mod tempo_transaction;
 pub mod tt_authorization;
 pub mod tt_signature;
