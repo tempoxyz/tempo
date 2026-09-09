@@ -3645,7 +3645,9 @@ mod tests {
                 .as_slice()
             )
         );
-        let PrimitiveSignature::WebAuthn(signature) = &authorization.signature else {
+        let TempoSignature::Primitive(PrimitiveSignature::WebAuthn(signature)) =
+            &authorization.signature
+        else {
             panic!("expected WebAuthn root signature")
         };
         assert_eq!(signature.webauthn_data.as_ref(), webauthn_data);
