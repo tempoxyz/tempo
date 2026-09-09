@@ -349,6 +349,15 @@ jobs:
             fi
           done
 
+      - name: Require ClickHouse for TCP validation
+        run: |
+          for name in CLICKHOUSE_URL CLICKHOUSE_USER CLICKHOUSE_PASSWORD; do
+            if [[ -z "${!name:-}" ]]; then
+              echo "::error::$name is required for this TCP validation run"
+              exit 1
+            fi
+          done
+
       - name: Fetch ClickHouse metric allowlist
         uses: actions/github-script@3a2844b7e9c422d3c10d287c895573f7108da1b3 # v9.0.0
         with:
@@ -375,7 +384,7 @@ jobs:
         uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
         with:
           repository: tempoxyz/tempo-multi-region-benchmark
-          ref: ${{ github.repository == 'tempoxyz/tempo-multi-region-benchmark' && github.sha || 'main' }}
+          ref: 7aeaf92f2b830eb3e96caa708d2495d4323b9acd # Exact revision from benchmark run 34266259583
           path: ${{ env.BENCH_REPO_DIR }}
           token: ${{ steps.github-sts.outputs.token }}
           persist-credentials: false
