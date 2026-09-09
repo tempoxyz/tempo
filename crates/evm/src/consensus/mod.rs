@@ -61,8 +61,16 @@ where
         Self::new_with_bal_hashes(chain_spec, false)
     }
 
-    /// Creates a new [`TempoConsensus`] with optional pre-Amsterdam BAL hash support.
+    /// Creates a new [`TempoConsensus`], rejecting unsupported BAL hash configuration.
+    ///
+    /// # Panics
+    ///
+    /// Panics if `allow_bal_hashes` is true: BALs do not support configurable account extensions.
     pub fn new_with_bal_hashes(chain_spec: Arc<C>, allow_bal_hashes: bool) -> Self {
+        assert!(
+            !allow_bal_hashes,
+            "BAL hashes are unsupported with configurable account extensions"
+        );
         Self {
             inner: EthBeaconConsensus::new(chain_spec)
                 .with_max_extra_data_size(TEMPO_MAXIMUM_EXTRA_DATA_SIZE)
@@ -95,6 +103,9 @@ where
         header: &SealedHeader<TempoHeader>,
         present_timestamp_millis: u64,
     ) -> Result<(), ConsensusError> {
+        if header.inner.block_access_list_hash.is_some() {
+            return Err(TempoConsensusError::UnsupportedBlockAccessList.into());
+        }
         self.inner.validate_header(header)?;
 
         // Validate the timestamp milliseconds part
@@ -473,6 +484,23 @@ mod tests {
         let sealed = SealedHeader::seal_slow(header);
 
         assert!(consensus.validate_header(&sealed).is_ok());
+    }
+
+    #[test]
+    fn test_reject_bal_with_account_extensions() {
+        let consensus = TempoConsensus::new(MODERATO.clone());
+        let mut header = TestHeaderBuilder::default().build();
+        header.inner.block_access_list_hash = Some(B256::ZERO);
+        let error = consensus
+            .validate_header(&SealedHeader::seal_slow(header))
+            .unwrap_err();
+        assert!(error.to_string().contains("BAL is unsupported"));
+    }
+
+    #[test]
+    #[should_panic(expected = "BAL hashes are unsupported")]
+    fn test_reject_bal_configuration() {
+        TempoConsensus::new_with_bal_hashes(MODERATO.clone(), true);
     }
 
     #[test]
