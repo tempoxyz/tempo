@@ -1,7 +1,10 @@
 use revm::interpreter::gas::{
     COLD_SLOAD_COST, STANDARD_TOKEN_COST, get_tokens_in_calldata_istanbul,
 };
-use tempo_primitives::transaction::{AccessKeySignature, PrimitiveSignature, TempoSignature};
+use tempo_primitives::transaction::{
+    AccessKeySignature, MultisigSignature, PrimitiveSignature, TempoSignature,
+    multisig::MULTISIG_SIGNATURE_DOMAIN,
+};
 
 /// Additional gas for P256 signature verification.
 ///
@@ -39,16 +42,36 @@ pub(crate) fn tempo_signature_verification_gas(signature: &TempoSignature) -> u6
     match signature {
         TempoSignature::Primitive(prim_sig) => primitive_signature_verification_gas(prim_sig),
         TempoSignature::Keychain(keychain_sig) => {
-            match &keychain_sig.signature {
+            (match &keychain_sig.signature {
                 AccessKeySignature::Primitive(signature) => {
-                    primitive_signature_verification_gas(signature) + KEYCHAIN_VALIDATION_GAS
+                    primitive_signature_verification_gas(signature)
                 }
-                // Native pricing is unavailable here. validate_env rejects these signatures
-                // before gas calculation, so zero is unreachable for accepted transactions.
-                AccessKeySignature::Multisig(_) => 0,
-            }
+                AccessKeySignature::Multisig(signature) => {
+                    multisig_verification_gas(signature).saturating_sub(3_000)
+                }
+            }) + KEYCHAIN_VALIDATION_GAS
         }
-        // The same validate_env rejection applies to direct native signatures.
-        TempoSignature::Multisig(_) => 0,
+        TempoSignature::Multisig(signature) => {
+            multisig_verification_gas(signature).saturating_sub(3_000)
+        }
     }
+}
+
+/// Registered-state V cost. Initial derivation and per-account registration are added after
+/// reading the account leaf. Each role pays this cost independently.
+pub(crate) fn multisig_verification_gas(signature: &MultisigSignature) -> u64 {
+    let mut witness = alloy_rlp::encode(signature.account());
+    witness.extend_from_slice(&alloy_rlp::encode(signature.config()));
+    get_tokens_in_calldata_istanbul(&witness) * STANDARD_TOKEN_COST
+        + tempo_precompiles::native_multisig::keccak_cost(
+            signature.config().commitment_preimage_len(),
+        )
+        + tempo_precompiles::native_multisig::keccak_cost(
+            MULTISIG_SIGNATURE_DOMAIN.len() + 32 + 20 + 8,
+        )
+        + signature
+            .signatures()
+            .iter()
+            .map(|signature| 3_000 + primitive_signature_verification_gas(signature))
+            .sum::<u64>()
 }

@@ -404,6 +404,16 @@ impl<DB: alloy_evm::Database, I> TempoEvmHandler<DB, I> {
             || {
                 let mut keychain = AccountKeychain::new();
                 keychain.set_tx_origin(ctx.tx.caller())?;
+                if ctx.cfg.spec.is_t12() {
+                    let direct = ctx
+                        .tx
+                        .tempo_tx_env
+                        .as_ref()
+                        .and_then(|aa| aa.signature.as_multisig())
+                        .map_or(Address::ZERO, |signature| signature.account());
+                    tempo_precompiles::native_multisig::NativeMultisig::new()
+                        .set_authority(ctx.tx.caller(), direct)?;
+                }
 
                 if let Some(channel_open_context_hash) = channel_open_context_hash {
                     let mut channel_reserve = TIP20ChannelReserve::new();
@@ -601,6 +611,34 @@ where
     {
         // Create checkpoint for atomic execution - captures state before any calls
         let checkpoint = evm.ctx().journal_mut().checkpoint();
+        {
+            let ctx = evm.ctx_mut();
+            StorageCtx::enter_evm(
+                &mut ctx.journaled_state,
+                &ctx.block,
+                &ctx.cfg,
+                &ctx.tx,
+                StorageActions::disabled(),
+                || {
+                    let mut seen = Vec::new();
+                    for role in crate::native_multisig::authorizations(&ctx.tx) {
+                        let account = role.signature.account();
+                        if !seen.contains(&account)
+                            && StorageCtx.config_commitment(account)?.is_zero()
+                        {
+                            StorageCtx.set_config_commitment(
+                                account,
+                                role.signature.config_commitment(),
+                                tempo_precompiles::storage::ConfigCommitmentWriteGas::Intrinsic,
+                            )?;
+                        }
+                        seen.push(account);
+                    }
+                    Ok::<(), TempoPrecompileError>(())
+                },
+            )
+            .map_err(|error| EVMError::Custom(error.to_string()))?;
+        }
         let mut accumulated_gas_refund = 0i64;
         let mut accumulated_state_gas_spent = 0i64;
 
@@ -621,6 +659,7 @@ where
         if let Some(mut frame_result) =
             self.prevalidate_keychain_call_scopes(evm, &calls, &mut remaining_gas, reservoir)?
         {
+            evm.ctx().journal_mut().checkpoint_revert(checkpoint);
             // This path only runs for keychain batches that already passed the structural CREATE
             // rejection in validation, so there is no first-call CREATE nonce to preserve here.
             normalize_failed_batch_result_gas(
@@ -1230,6 +1269,7 @@ where
         // doing max to avoid underflow as new_balance can be more than account
         // balance if `cfg.is_balance_check_disabled()` is true.
         let gas_balance_spending = core::cmp::max(account_balance, new_balance) - new_balance;
+        crate::native_multisig::verify(tx)?;
 
         // Note: Signature verification happens during recover_signer() before entering the pool
         // Note: Transaction parameter validation (priority fee, time window) happens in validate_env()
@@ -1314,7 +1354,11 @@ where
                         // type to authenticate as a key registered with a different type.
                         // Only validate signature type on T1+ to maintain backward compatibility
                         // with historical blocks during re-execution.
-                        let tx_sig_type = keychain_sig.signature.key_type().into();
+                        let tx_sig_type = keychain_sig
+                            .signature
+                            .signature_type()
+                            .unwrap_or(SignatureType::Multisig)
+                            .into();
                         let sig_type = (key_auth.is_some() || spec.is_t1()).then_some(tx_sig_type);
 
                         let key = keychain
@@ -1363,16 +1407,14 @@ where
             && let Some(key_auth) = tempo_tx_env.key_authorization.as_ref()
         {
             let auth_signer = key_auth
-                .recover_signer()
+                .recover_account()
                 .map_err(|_| TempoInvalidTransaction::KeyAuthorizationSignatureRecoveryFailed)?;
 
             if auth_signer != tx.caller {
                 let key_auth_sig_type: u8 = key_auth
                     .signature
                     .signature_type()
-                    .ok_or_else(|| TempoInvalidTransaction::KeychainValidationFailed {
-                        reason: "multisig signatures are not supported".into(),
-                    })?
+                    .unwrap_or(SignatureType::Multisig)
                     .into();
                 let signer_is_admin = match loaded_tx_access_key {
                     Some(loaded_key)
@@ -1799,30 +1841,18 @@ where
             if tempo_primitives::subblock::has_sub_block_nonce_key_prefix(&aa_env.nonce_key) {
                 return Err(TempoInvalidTransaction::SubblockTransactionsDisabled.into());
             }
-            // Naming a native account is not owner authentication. Until native
-            // execution is available, reject every such role, including simulations.
-            let native = |signature: &tempo_primitives::transaction::TempoSignature| {
-                signature.as_multisig().is_some()
-                    || signature
-                        .as_keychain()
-                        .is_some_and(|key| key.signature.as_multisig().is_some())
-            };
-            if native(&aa_env.signature)
+            if aa_env
+                .tempo_authorization_list
+                .iter()
+                .any(|auth| auth.signature().as_multisig().is_some())
                 || aa_env
-                    .tempo_authorization_list
-                    .iter()
-                    .any(|auth| native(auth.signature()))
-                || aa_env.key_authorization.as_ref().is_some_and(|auth| {
-                    auth.key_type == SignatureType::Multisig
-                        || !matches!(
-                            auth.signature,
-                            tempo_primitives::transaction::TempoSignature::Primitive(_)
-                        )
-                })
+                    .key_authorization
+                    .as_ref()
+                    .is_some_and(|auth| auth.signature.is_keychain())
             {
-                return Err(TempoInvalidTransaction::KeychainValidationFailed {
-                    reason: "multisig signatures are not supported".into(),
-                }
+                return Err(TempoInvalidTransaction::NativeMultisig(
+                    crate::native_multisig::NativeMultisigError::UnsupportedContext,
+                )
                 .into());
             }
             // Validate AA transaction structure (calls list, CREATE rules)
@@ -1861,10 +1891,18 @@ where
             }
 
             if let Some(key_auth) = &aa_env.key_authorization {
+                if key_auth.key_type == SignatureType::Multisig && !cfg.spec.is_t12() {
+                    return Err(TempoInvalidTransaction::NativeMultisig(
+                        crate::native_multisig::NativeMultisigError::UnsupportedContext,
+                    )
+                    .into());
+                }
                 // Check if this TX is using a Keychain signature (access key). Non-admin access
                 // keys cannot authorize other keys; T6 admin keys can.
                 let mut same_tx_auth_use = false;
-                if let Some(keychain_sig) = aa_env.signature.as_keychain() {
+                if let Some(keychain_sig) = aa_env.signature.as_keychain()
+                    && crate::native_multisig::authorizations(tx).is_empty()
+                {
                     // Use override_key_id if provided (for gas estimation), otherwise recover from signature
                     let access_key_addr = if let Some(override_key_id) = aa_env.override_key_id {
                         override_key_id
@@ -1884,7 +1922,11 @@ where
 
                     if same_tx_auth_use
                         && cfg.spec.is_t3()
-                        && key_auth.key_type != keychain_sig.signature.key_type()
+                        && key_auth.key_type
+                            != keychain_sig
+                                .signature
+                                .signature_type()
+                                .unwrap_or(SignatureType::Multisig)
                     {
                         return Err(TempoInvalidTransaction::KeychainValidationFailed {
                                 reason: "key authorization key_type does not match the keychain signature type"
@@ -1978,7 +2020,7 @@ where
                     }
                 }
 
-                if cfg.spec.is_t6() {
+                if cfg.spec.is_t6() && crate::native_multisig::authorizations(tx).is_empty() {
                     let auth_signer = key_auth.recover_signer().map_err(|_| {
                         TempoInvalidTransaction::KeyAuthorizationSignatureRecoveryFailed
                     })?;
@@ -2082,6 +2124,22 @@ where
         &self,
         evm: &mut Self::Evm,
     ) -> Result<InitialAndFloorGas, Self::Error> {
+        if crate::native_multisig::has_account_access(evm.ctx_ref().tx()) {
+            // Native intrinsic validation loads additional accounts before normal pre-execution.
+            // Install transaction warmth first so access-listed/beneficiary accounts are priced
+            // correctly. Upstream repeats this idempotent setup before applying authorizations.
+            self.load_accounts(evm)?;
+        }
+        let native_gas = {
+            let ctx = evm.ctx_mut();
+            crate::native_multisig::validate_state(
+                &mut ctx.journaled_state,
+                &ctx.tx,
+                &ctx.block,
+                ctx.cfg.spec,
+                &ctx.cfg.gas_params,
+            )?
+        };
         let tx = evm.ctx_ref().tx();
         let spec = evm.ctx_ref().cfg().spec();
         let gas_params = evm.ctx_ref().cfg().gas_params();
@@ -2156,6 +2214,16 @@ where
             init_gas
         };
 
+        init_gas.initial_regular_gas += native_gas;
+        // Recheck only newly added native costs: the AA helper deliberately adds
+        // Genesis 2D nonce gas after its historical sufficiency validation.
+        if native_gas != 0 && gas_limit < init_gas.initial_total_gas() {
+            return Err(InvalidTransaction::CallGasCostMoreThanGasLimit {
+                gas_limit,
+                initial_gas: init_gas.initial_total_gas(),
+            }
+            .into());
+        }
         if evm.ctx.cfg.is_eip7623_disabled() {
             init_gas.floor_gas = 0u64;
         }

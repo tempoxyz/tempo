@@ -68,13 +68,15 @@ pub struct TempoBatchCallEnv {
 /// transaction hash because request normalization and signing can change the eventual transaction.
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
 pub enum ExecutionContext {
+    /// Callers must explicitly identify execution before using native authorization.
+    #[default]
+    Unspecified,
     /// Execution or validation of a signed transaction.
     Transaction {
         /// Canonical hash of the signed transaction.
         tx_hash: B256,
     },
     /// Non-committing execution of an RPC transaction request.
-    #[default]
     Simulation,
 }
 
@@ -454,7 +456,8 @@ impl TempoTxEnv {
     /// Real signed transactions always have a non-empty EIP-2718 encoding. Reth uses an empty
     /// encoding only for block simulations so execution layers can omit envelope-derived costs.
     fn maybe_mark_rpc_block_simulation(&mut self, encoded: &Bytes) {
-        if encoded.is_empty() {
+        // Native cryptography may only be disabled by an explicit simulation caller.
+        if encoded.is_empty() && crate::native_multisig::authorizations(self).is_empty() {
             self.execution_context = ExecutionContext::Simulation;
         }
     }
@@ -731,7 +734,7 @@ mod tests {
         assert!(tx_env.inner.access_list.is_empty());
         assert!(tx_env.fee_token.is_none());
         assert!(!tx_env.is_system_tx);
-        assert_eq!(tx_env.execution_context(), ExecutionContext::Simulation);
+        assert_eq!(tx_env.execution_context(), ExecutionContext::Unspecified);
         assert!(tx_env.fee_payer.is_none());
         assert!(tx_env.tempo_tx_env.is_none());
     }

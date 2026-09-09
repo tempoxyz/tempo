@@ -11,6 +11,9 @@ use tempo_primitives::transaction::{KeyAuthorizationChainIdError, KeychainVersio
 /// validation errors that occur during transaction processing.
 #[derive(Debug, Clone, PartialEq, Eq, Hash, thiserror::Error)]
 pub enum TempoInvalidTransaction {
+    /// Native account authorization failure.
+    #[error(transparent)]
+    NativeMultisig(#[from] crate::native_multisig::NativeMultisigError),
     /// Standard Ethereum transaction validation error.
     #[error(transparent)]
     EthInvalidTransaction(#[from] InvalidTransaction),
@@ -251,6 +254,11 @@ impl TempoInvalidTransaction {
     /// that may resolve as state advances.
     pub fn is_bad_transaction(&self) -> bool {
         match self {
+            Self::NativeMultisig(error) => matches!(
+                error,
+                crate::native_multisig::NativeMultisigError::OwnerSignatureRecoveryFailed { .. }
+                    | crate::native_multisig::NativeMultisigError::Quorum(_)
+            ),
             Self::EthInvalidTransaction(eth) => match eth {
                 InvalidTransaction::PriorityFeeGreaterThanMaxFee
                 | InvalidTransaction::CallGasCostMoreThanGasLimit { .. }
