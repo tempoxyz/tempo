@@ -378,16 +378,7 @@ where
                 fetch_timeout: self.config.time_for_peer_response,
                 view_retention: self.config.views_to_track,
                 skip: simplex::config::SkipPolicy::Enabled {
-                    timeout: self
-                        .config
-                        .time_to_collect_notarizations
-                        .max(self.config.time_to_retry_nullify_broadcast)
-                        .saturating_add(
-                            self.config.time_to_propose.saturating_mul(
-                                u32::try_from(self.config.views_until_leader_skip.get())
-                                    .unwrap_or(u32::MAX),
-                            ),
-                        ),
+                    timeout: self.config.inactive_time_before_leader_skip,
                     budget: simplex::config::SkipBudget::Participants,
                 },
 

@@ -329,7 +329,8 @@ where
             time_to_retry_nullify_broadcast: Duration::from_secs(10),
             time_for_peer_response: Duration::from_secs(2),
             views_to_track: 10,
-            views_until_leader_skip: 5,
+            // Floor (10s nullify rebroadcast) plus one 2s proposal wait.
+            inactive_time_before_leader_skip: Duration::from_secs(12),
             proposal_return_budget: self.proposal_return_budget,
             time_to_build_subblock: Duration::from_millis(100),
             subblock_broadcast_interval: Duration::from_millis(50),

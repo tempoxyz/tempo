@@ -142,14 +142,24 @@ pub struct Args {
     #[arg(long = "consensus.views-to-track", default_value_t = 256)]
     pub views_to_track: u64,
 
-    /// The number of views (voting rounds) a validator is allowed to be
-    /// inactive until it is immediately skipped should leader selection pick it
-    /// as a proposer. Also called a skip timeout.
+    /// Deprecated compatibility flag. Leader skipping is now driven by wall-clock
+    /// inactivity (see `--consensus.inactive-time-before-leader-skip`), so this value is ignored.
     #[arg(
         long = "consensus.inactive-views-until-leader-skip",
-        default_value_t = 32
+        value_name = "COUNT",
+        help = "Deprecated: ignored; use --consensus.inactive-time-before-leader-skip."
     )]
-    pub inactive_views_until_leader_skip: u64,
+    pub inactive_views_until_leader_skip: Option<u64>,
+
+    /// How long the selected leader must have been silent, while a quorum of
+    /// validators was active, before its view is skipped without waiting for
+    /// the proposal and notarization timeouts.
+    ///
+    /// Must exceed both `--consensus.wait-for-notarizations` and
+    /// `--consensus.wait-to-rebroadcast-nullify`. Defaults to the larger of the
+    /// two plus `--consensus.wait-for-proposal`.
+    #[arg(long = "consensus.inactive-time-before-leader-skip")]
+    pub inactive_time_before_leader_skip: Option<PositiveDuration>,
 
     /// Time reserved for proposal propagation before the target block boundary.
     ///
@@ -404,6 +414,52 @@ impl FromStr for PositiveDuration {
 }
 
 impl Args {
+    /// Rejects Simplex timing values that Commonware's `simplex::Config::assert`
+    /// would panic on when the first epoch is entered, so a misconfiguration
+    /// fails at startup with a descriptive error instead.
+    pub fn validate_simplex_timing(&self) -> eyre::Result<()> {
+        let wait_for_proposal = self.wait_for_proposal.into_duration();
+        let wait_for_notarizations = self.wait_for_notarizations.into_duration();
+        eyre::ensure!(
+            wait_for_notarizations > wait_for_proposal,
+            "`--consensus.wait-for-notarizations` ({wait_for_notarizations:?}) must be greater \
+             than `--consensus.wait-for-proposal` ({wait_for_proposal:?})",
+        );
+        eyre::ensure!(
+            self.views_to_track > 0,
+            "`--consensus.views-to-track` must be greater than zero",
+        );
+        let inactive_time_before_leader_skip = self.inactive_time_before_leader_skip();
+        let wait_to_rebroadcast_nullify = self.wait_to_rebroadcast_nullify.into_duration();
+        eyre::ensure!(
+            inactive_time_before_leader_skip > wait_for_notarizations,
+            "`--consensus.inactive-time-before-leader-skip` ({inactive_time_before_leader_skip:?}) must be greater than \
+             `--consensus.wait-for-notarizations` ({wait_for_notarizations:?})",
+        );
+        eyre::ensure!(
+            inactive_time_before_leader_skip > wait_to_rebroadcast_nullify,
+            "`--consensus.inactive-time-before-leader-skip` ({inactive_time_before_leader_skip:?}) must be greater than \
+             `--consensus.wait-to-rebroadcast-nullify` ({wait_to_rebroadcast_nullify:?})",
+        );
+        Ok(())
+    }
+
+    /// The leader inactivity window after which a view is skipped early.
+    ///
+    /// Defaults to the larger of the notarization and nullify-rebroadcast waits
+    /// plus one proposal wait, the smallest value Commonware accepts with one
+    /// proposal window of margin.
+    pub fn inactive_time_before_leader_skip(&self) -> Duration {
+        self.inactive_time_before_leader_skip
+            .map(PositiveDuration::into_duration)
+            .unwrap_or_else(|| {
+                self.wait_for_notarizations
+                    .into_duration()
+                    .max(self.wait_to_rebroadcast_nullify.into_duration())
+                    .saturating_add(self.wait_for_proposal.into_duration())
+            })
+    }
+
     /// Transport settings for `tempo/1`.
     ///
     /// Ingest is enabled only for a certified follower because other modes have
@@ -588,6 +644,111 @@ mod tests {
         ] {
             parse(&["--dev", flag, "1ms"]);
         }
+    }
+
+    #[test]
+    fn simplex_timing_defaults_validate() {
+        parse(&["--dev"])
+            .consensus
+            .validate_simplex_timing()
+            .unwrap();
+    }
+
+    #[test]
+    fn simplex_timing_requires_notarization_wait_above_proposal_wait() {
+        // Equal values were accepted by Commonware 2026.7.1 and now panic at
+        // epoch entry; the default proposal wait is 1200ms.
+        for notarizations in ["1200ms", "1s"] {
+            let err = parse(&["--dev", "--consensus.wait-for-notarizations", notarizations])
+                .consensus
+                .validate_simplex_timing()
+                .unwrap_err();
+            assert!(err.to_string().contains("wait-for-notarizations"), "{err}");
+        }
+        parse(&[
+            "--dev",
+            "--consensus.wait-for-proposal",
+            "1999ms",
+            "--consensus.wait-for-notarizations",
+            "2s",
+        ])
+        .consensus
+        .validate_simplex_timing()
+        .unwrap();
+    }
+
+    #[test]
+    fn simplex_timing_rejects_zero_views_to_track() {
+        let err = parse(&["--dev", "--consensus.views-to-track", "0"])
+            .consensus
+            .validate_simplex_timing()
+            .unwrap_err();
+        assert!(err.to_string().contains("views-to-track"), "{err}");
+    }
+
+    #[test]
+    fn inactive_time_before_leader_skip_defaults_to_floor_plus_one_proposal_wait() {
+        // max(2s notarizations, 10s nullify rebroadcast) + 1200ms proposal wait.
+        let args = parse(&["--dev"]).consensus;
+        assert_eq!(
+            args.inactive_time_before_leader_skip(),
+            Duration::from_millis(11_200)
+        );
+        assert_eq!(args.inactive_views_until_leader_skip, None);
+
+        let args = parse(&["--dev", "--consensus.wait-to-rebroadcast-nullify", "500ms"]).consensus;
+        assert_eq!(
+            args.inactive_time_before_leader_skip(),
+            Duration::from_millis(3_200)
+        );
+        args.validate_simplex_timing().unwrap();
+    }
+
+    #[test]
+    fn inactive_time_before_leader_skip_must_exceed_notarization_and_rebroadcast_waits() {
+        // Commonware asserts strict inequality against both at epoch entry.
+        for (value, offending) in [
+            ("10s", "wait-to-rebroadcast-nullify"),
+            ("5s", "wait-to-rebroadcast-nullify"),
+            ("2s", "wait-for-notarizations"),
+        ] {
+            let err = parse(&[
+                "--dev",
+                "--consensus.inactive-time-before-leader-skip",
+                value,
+            ])
+            .consensus
+            .validate_simplex_timing()
+            .unwrap_err();
+            let msg = err.to_string();
+            assert!(msg.contains("inactive-time-before-leader-skip"), "{msg}");
+            assert!(msg.contains(offending), "{msg}");
+        }
+        let args = parse(&[
+            "--dev",
+            "--consensus.inactive-time-before-leader-skip",
+            "10001ms",
+        ])
+        .consensus;
+        assert_eq!(
+            args.inactive_time_before_leader_skip(),
+            Duration::from_millis(10_001)
+        );
+        args.validate_simplex_timing().unwrap();
+    }
+
+    #[test]
+    fn deprecated_inactive_views_flag_still_parses() {
+        assert_eq!(
+            parse(&[
+                "--dev",
+                "--consensus.inactive-views-until-leader-skip",
+                "32"
+            ])
+            .consensus
+            .inactive_views_until_leader_skip,
+            Some(32),
+        );
     }
 
     #[test]

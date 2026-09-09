@@ -468,6 +468,13 @@ pub fn tempo_main_with(mut overrides: TempoOverrides) -> eyre::Result<()> {
                 "deprecated flag ignored; P2P queue capacities are derived from peer-set limits and channel quotas"
             );
         }
+        if let Some(value) = args.consensus.inactive_views_until_leader_skip {
+            warn!(
+                flag = "--consensus.inactive-views-until-leader-skip",
+                value,
+                "deprecated flag ignored; leader skipping is driven by --consensus.inactive-time-before-leader-skip"
+            );
+        }
 
         // Register before launch because each RLPx session negotiates its
         // subprotocols during the handshake. The startup channel passes the

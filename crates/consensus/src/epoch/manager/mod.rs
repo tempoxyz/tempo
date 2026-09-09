@@ -33,7 +33,7 @@ pub(crate) struct Config<TBlocker> {
     pub(crate) time_to_retry_nullify_broadcast: Duration,
     pub(crate) partition_prefix: String,
     pub(crate) views_to_track: ViewDelta,
-    pub(crate) views_until_leader_skip: ViewDelta,
+    pub(crate) inactive_time_before_leader_skip: Duration,
 }
 
 pub(crate) fn init<TContext, TBlocker>(
