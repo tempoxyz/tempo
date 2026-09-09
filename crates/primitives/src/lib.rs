@@ -6,6 +6,8 @@
 
 pub use alloy_consensus::Header;
 
+pub mod account;
+
 mod address;
 pub use address::{MasterId, TempoAddressExt, UserTag, is_tip20_prefix};
 pub mod ed25519;
