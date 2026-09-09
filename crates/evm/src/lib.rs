@@ -8,7 +8,7 @@ mod assemble;
 mod pool;
 pub use action_replay::{
     ExpiringNonceReplay, StorageActionReplay, StorageActionReplayError, StorageActionReplayOutcome,
-    StorageActionReplayState,
+    StorageActionReplayState, supports_storage_action_replay,
 };
 use alloy_consensus::BlockHeader as _;
 pub use assemble::TempoBlockAssembler;
@@ -194,8 +194,7 @@ impl ConfigureEvm for TempoEvmConfig {
         Ok(EvmEnv {
             cfg_env,
             block_env: TempoBlockEnv {
-                // TODO: #7581 wires the recovery factory from the chain spec.
-                multisig_recovery_factory: None,
+                multisig_recovery_factory: self.chain_spec().info.multisig_recovery_factory(),
                 inner: block_env,
                 timestamp_millis_part: header.timestamp_millis_part,
                 epoch_length: self
@@ -251,8 +250,7 @@ impl ConfigureEvm for TempoEvmConfig {
         Ok(EvmEnv {
             cfg_env,
             block_env: TempoBlockEnv {
-                // TODO: #7581 wires the recovery factory from the chain spec.
-                multisig_recovery_factory: None,
+                multisig_recovery_factory: self.chain_spec().info.multisig_recovery_factory(),
                 inner: block_env,
                 timestamp_millis_part: attributes.timestamp_millis_part,
                 epoch_length: self
@@ -430,7 +428,13 @@ mod tests {
 
     #[test]
     fn test_next_evm_env() {
-        let evm_config = TempoEvmConfig::new(test_chainspec());
+        let factory = Address::repeat_byte(0x71);
+        let mut genesis = test_chainspec().genesis().clone();
+        genesis
+            .config
+            .extra_fields
+            .insert("multisigRecoveryFactory".into(), serde_json::json!(factory));
+        let evm_config = TempoEvmConfig::new(Arc::new(TempoChainSpec::from_genesis(genesis)));
 
         let parent = TempoHeader {
             inner: alloy_consensus::Header {
@@ -467,6 +471,15 @@ mod tests {
         assert!(result.is_ok());
 
         let evm_env = result.unwrap();
+        assert_eq!(evm_env.block_env.multisig_recovery_factory, Some(factory));
+        assert_eq!(
+            evm_config
+                .evm_env(&parent)
+                .unwrap()
+                .block_env
+                .multisig_recovery_factory,
+            Some(factory)
+        );
 
         // Verify block env uses attributes
         // parent + 1
