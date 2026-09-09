@@ -34,6 +34,26 @@ impl TempoTransactionRequest {
             return Err(ValueError::new(self, "empty calls list"));
         }
 
+        let mock_signature = if is_aa {
+            match create_mock_tempo_sig(
+                &self.key_type.unwrap_or(SignatureType::Secp256k1),
+                self.key_data.as_ref(),
+                self.key_id,
+                caller_addr,
+                is_t1c,
+            ) {
+                Some(signature) => Some(signature),
+                None => {
+                    return Err(ValueError::new(
+                        self,
+                        "multisig simulation requires a configuration witness",
+                    ));
+                }
+            }
+        } else {
+            None
+        };
+
         let fee_payer = if self.fee_payer_signature.is_some() {
             // Try to recover the fee payer address from the signature. A dummy or incomplete
             // simulation request retains the failed recovery for normal validation downstream.
@@ -51,8 +71,8 @@ impl TempoTransactionRequest {
             inner,
             fee_token,
             calls,
-            key_type,
-            key_data,
+            key_type: _,
+            key_data: _,
             key_id,
             tempo_authorization_list,
             nonce_key,
@@ -68,10 +88,6 @@ impl TempoTransactionRequest {
         tx_env.unique_tx_identifier = Some(RPC_SIMULATION_UNIQUE_TX_IDENTIFIER);
         tx_env.fee_payer = fee_payer;
         tx_env.tempo_tx_env = if is_aa {
-            let key_type = key_type.unwrap_or(SignatureType::Secp256k1);
-            let mock_signature =
-                create_mock_tempo_sig(&key_type, key_data.as_ref(), key_id, caller_addr, is_t1c);
-
             let mut calls = calls;
             if let Some(to) = &inner.to {
                 calls.push(Call {
@@ -83,7 +99,8 @@ impl TempoTransactionRequest {
 
             Some(Box::new(TempoBatchCallEnv {
                 aa_calls: calls,
-                signature: mock_signature,
+                signature: mock_signature
+                    .expect("AA mock signature validated before consuming request"),
                 tempo_authorization_list: tempo_authorization_list
                     .into_iter()
                     .map(RecoveredTempoAuthorization::new)
@@ -112,10 +129,10 @@ pub(super) fn create_mock_tempo_sig(
     key_id: Option<Address>,
     caller_addr: Address,
     is_t1c: bool,
-) -> TempoSignature {
+) -> Option<TempoSignature> {
     use tempo_primitives::transaction::tt_signature::{KeychainSignature, TempoSignature};
 
-    let inner_sig = create_mock_primitive_signature(key_type, key_data.cloned());
+    let inner_sig = create_mock_primitive_signature(key_type, key_data.cloned())?;
 
     if key_id.is_some() {
         let keychain_sig = if is_t1c {
@@ -123,9 +140,9 @@ pub(super) fn create_mock_tempo_sig(
         } else {
             KeychainSignature::new_v1(caller_addr, inner_sig)
         };
-        TempoSignature::Keychain(keychain_sig)
+        Some(TempoSignature::Keychain(keychain_sig))
     } else {
-        TempoSignature::Primitive(inner_sig)
+        Some(TempoSignature::Primitive(inner_sig))
     }
 }
 
@@ -133,12 +150,13 @@ pub(super) fn create_mock_tempo_sig(
 pub(super) fn create_mock_primitive_signature(
     sig_type: &SignatureType,
     key_data: Option<Bytes>,
-) -> tempo_primitives::transaction::tt_signature::PrimitiveSignature {
+) -> Option<tempo_primitives::transaction::tt_signature::PrimitiveSignature> {
     use tempo_primitives::transaction::tt_signature::{
         P256SignatureWithPreHash, PrimitiveSignature, WebAuthnSignature,
     };
 
-    match sig_type {
+    Some(match sig_type {
+        SignatureType::Multisig => return None,
         SignatureType::Secp256k1 => PrimitiveSignature::Secp256k1(Signature::new(
             alloy_primitives::U256::ZERO,
             alloy_primitives::U256::ZERO,
@@ -191,7 +209,7 @@ pub(super) fn create_mock_primitive_signature(
                 pub_key_y: B256::ZERO,
             })
         }
-    }
+    })
 }
 
 #[cfg(test)]
@@ -199,6 +217,23 @@ mod tests {
     use super::*;
     use alloy_primitives::{TxKind, address};
     use alloy_rpc_types_eth::TransactionRequest;
+
+    #[test]
+    fn multisig_key_type_cannot_fabricate_a_primitive_simulation_signature() {
+        assert!(create_mock_primitive_signature(&SignatureType::Multisig, None).is_none());
+        let request = TempoTransactionRequest {
+            inner: TransactionRequest {
+                to: Some(TxKind::Call(Address::repeat_byte(1))),
+                ..Default::default()
+            },
+            key_type: Some(SignatureType::Multisig),
+            ..Default::default()
+        };
+        let error = request
+            .try_into_tempo_tx_env(TempoTxEnv::default(), true)
+            .unwrap_err();
+        assert!(error.to_string().contains("configuration witness"));
+    }
 
     #[test]
     fn access_key_request_populates_typed_simulation_env() {

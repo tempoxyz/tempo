@@ -612,7 +612,8 @@ pub(super) async fn run_estimate_gas_matrix<E: TestEnv>(
                     signer
                         .sign_hash_sync(&auth.authorization.signature_hash())
                         .expect("signing should succeed"),
-                );
+                )
+                .into();
                 request.key_authorization = Some(auth);
             }
         }

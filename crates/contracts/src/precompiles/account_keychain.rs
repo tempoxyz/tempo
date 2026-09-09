@@ -25,6 +25,7 @@ crate::sol! {
             Secp256k1,
             P256,
             WebAuthn,
+            Multisig,
         }
 
         /// Legacy token spending limit structure used before T3.
