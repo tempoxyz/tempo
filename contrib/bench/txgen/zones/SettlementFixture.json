@@ -1,41 +1,41 @@
 {
   "abi": [
     {
+      "type": "constructor",
       "inputs": [],
-      "stateMutability": "nonpayable",
-      "type": "constructor"
+      "stateMutability": "nonpayable"
     },
     {
-      "stateMutability": "nonpayable",
-      "type": "fallback"
+      "type": "fallback",
+      "stateMutability": "nonpayable"
     },
     {
+      "type": "function",
+      "name": "settle",
       "inputs": [
         {
-          "internalType": "contract IPortal",
           "name": "portal",
-          "type": "address"
+          "type": "address",
+          "internalType": "contract IPortal"
         },
         {
-          "internalType": "address",
           "name": "token",
-          "type": "address"
+          "type": "address",
+          "internalType": "address"
         },
         {
-          "internalType": "address",
           "name": "recipient",
-          "type": "address"
+          "type": "address",
+          "internalType": "address"
         },
         {
-          "internalType": "bool",
           "name": "withdraw",
-          "type": "bool"
+          "type": "bool",
+          "internalType": "bool"
         }
       ],
-      "name": "settle",
       "outputs": [],
-      "stateMutability": "nonpayable",
-      "type": "function"
+      "stateMutability": "nonpayable"
     }
   ],
   "bytecode": {

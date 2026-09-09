@@ -598,6 +598,59 @@ def txgen-fund-accounts [txgen_bin: string, spec_path: string, rpc_url: string] 
     txgen-wait-for-txpool-drain $rpc_url $TXGEN_HELPER_FUND_DRAIN_TIMEOUT_SECS
 }
 
+def txgen-prepare-zones-preset [spec_path: string, count: int, accounts: int, zones: int, mode: string] {
+    if $mode not-in [mixed deposit withdraw] { error make {msg: "TXGEN_ZONE_MODE must be mixed, deposit, or withdraw"} }
+    let spec = (open $spec_path)
+    let token = "0x20c0000000000000000000000000000000000000"
+    mut steps = [$spec.setup.steps.0]
+    for zone in 0..<$zones {
+        $steps = ($steps | append ($spec.setup.steps.1
+            | update id $"portal_($zone)"
+            | update deploy.constructor_args.0 {var: setup.settlement.sender}))
+    }
+    for zone in 0..<$zones {
+        $steps = ($steps | append ($spec.setup.steps.2 | update id $"fund_($zone)"
+            | update tx.calls.0.args [{var: $"setup.portal_($zone).address"} $count]))
+    }
+    let pairs = ([$accounts $zones] | math max)
+    let minimum_per_zone = ($pairs // $zones)
+    mut templates = {}
+    mut mix = []
+    for pair in 0..<$pairs {
+        let user = $pair mod $accounts
+        let zone = $pair mod $zones
+        let portal = {var: $"setup.portal_($zone).address"}
+        let account = {pool: users, select: {index: $user}}
+        let recipient = {pool: $account}
+        if $mode != withdraw {
+            $steps = ($steps | append ($spec.setup.steps.2 | update id $"approve_($pair)"
+                | update tx.from $account
+                | update tx.calls [{to: $token, abi: ERC20, function: approve,
+                    args: [$portal "0xffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff"]}]))
+        }
+        let per_zone = $minimum_per_zone + (if $zone < ($pairs mod $zones) { 1 } else { 0 })
+        let weight = $minimum_per_zone * ($minimum_per_zone + 1) // $per_zone
+        for kind in (if $mode == mixed { [deposit withdraw] } else { [$mode] }) {
+            let name = $"zone_($kind)_($pair)"
+            mut template = ($spec.templates | get $"zone_($kind)" | update from $account)
+            if $kind == deposit {
+                $template = ($template | update calls.0.to $portal | update calls.0.args.4 $recipient)
+            }
+            let settlement_index = if $kind == deposit { 1 } else { 0 }
+            let call = ($template.calls | get $settlement_index | update args [$portal $token $recipient ($kind == withdraw)])
+            $template = ($template | update calls ($template.calls | update $settlement_index $call))
+            $templates = ($templates | insert $name $template)
+            $mix = ($mix | append {template: $name, weight: $weight})
+        }
+    }
+    let output_dir = ([ (txgen-repo-root) $TXGEN_HELPER_DEFAULT_RENDERED_SPECS_DIR (random uuid) ] | path join)
+    mkdir $output_dir
+    let output = ($output_dir | path join zones.yml)
+    {include: $spec_path, accounts: {users: {range: [0 $accounts]}},
+        setup: {steps: $steps}, templates: $templates, mix: $mix} | to yaml | save -f $output
+    $output
+}
+
 def txgen-run-preset-pipeline [
     --txgen-tempo-bin: string
     --txgen-bench-bin: string
@@ -657,9 +710,6 @@ def txgen-run-preset-pipeline [
         if $nonce_response.result != $latest_nonce.result {
             error make { msg: "zone fixture deployer has pending transactions; drain its nonce lane before setup" }
         }
-        let nonce = ($nonce_response.result | into int)
-        let rendered = ([ (txgen-repo-root) $TXGEN_HELPER_DEFAULT_RENDERED_SPECS_DIR (random uuid) "zones.yml" ] | path join)
-        let renderer = ([ (txgen-repo-root) "contrib/bench/txgen/zones/render.py" ] | path join)
         let mode = ($env.TXGEN_ZONE_MODE? | default "mixed")
         # TIP-1096 allows 230 outstanding deposits, reserving 20 for bounce-backs.
         # This is a configurable sizing window, not a claimed mainnet settlement cadence.
@@ -670,11 +720,7 @@ def txgen-run-preset-pipeline [
         if $zones < 1 { error make { msg: "TXGEN_ZONE_COUNT must be positive" } }
         $zone_metadata = ["-m" $"zone_count=($zones)" "-m" $"zone_sizing_window_ms=($window_ms)"]
         print $"  Zones: ($zones), users: ($accounts), sizing window: ($window_ms)ms, capacity: 210 deposits/portal"
-        ^uv run $renderer --source $spec_path --output $rendered --count $tx_count --nonce $nonce --mode $mode --accounts $accounts --zones $zones
-        if $env.LAST_EXIT_CODE != 0 {
-            error make { msg: "failed to render zone workload" }
-        }
-        $spec_path = $rendered
+        $spec_path = (txgen-prepare-zones-preset $spec_path $tx_count $accounts $zones $mode)
     }
     let skip_faucet_funding = $skip_funding and ($preset_name not-in $TXGEN_HELPER_ALWAYS_FUND_PRESETS)
     let existing_recipient_start = ($env | get --optional TXGEN_EXISTING_RECIPIENTS_START | default "0" | into int)

@@ -1,4 +1,4 @@
-# The helper prepares portals and encrypted payloads with zones/render.py.
+# The helper expands portal setup and user templates. Payloads are synthetic.
 chain_id: 1337
 gas:
   max_fee_per_gas: 100000000000
@@ -51,7 +51,15 @@ templates:
       - to: {var: setup.portal.address}
         abi: ZonePortal
         function: deposit
-        args: []
+        # Valid point and payload length; no zone decrypts this synthetic ciphertext.
+        args:
+          - "0x20c0000000000000000000000000000000000000"
+          - 1
+          - 0
+          - ["0x79be667ef9dcbbac55a06295ce870b07029bfcdb2dce28d959f2815b16f81798", 2,
+             "0x11111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111",
+             "0x111111111111111111111111", "0x11111111111111111111111111111111"]
+          - null
       - to: {var: setup.settlement.address}
         abi: SettlementFixture
         function: settle

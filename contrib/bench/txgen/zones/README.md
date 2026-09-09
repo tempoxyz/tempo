@@ -2,14 +2,14 @@
 
 Run `bench-txgen.nu run --preset zones --accounts 1000 --tps 10000`. The default mix uses equal
 weights for deposits and withdrawals. Set `TXGEN_ZONE_MODE=deposit` or `withdraw`
-to measure either path alone. Requires `uv`, chain ID 1337, and the shared Zone
+to measure either path alone. Requires chain ID 1337 and the shared Zone
 runtimes (T10 or later).
 
 `--accounts` controls users independently of portals. Setup deploys portals with
 the production ERC-1167 proxy runtime and a shared local
 settlement fixture. Each workload transaction uses Tempo multicalls:
 
-- **Deposit:** call `deposit` with an encrypted recipient, then submit a batch
+- **Deposit:** call `deposit` with a synthetic encrypted payload, then submit a batch
   advancing the processed-deposit cursor.
 - **Withdrawal:** submit a batch committing one withdrawal, then the registered batch submitter calls
   `processWithdrawals` with that item and an empty remaining queue.
@@ -31,9 +31,10 @@ never hold real funds.
 
 Each operation transfers one pathUSD base unit. Setup funds withdrawal escrow
 for the requested transaction count and approves deposits. Fees and bounce-back
-reserves are zero; withdrawals have no callbacks. The existing renderer only
-prepares fixture arguments and a deterministic encrypted payload bound to the
-predicted portal and sender. Users are distributed across portals with equal
+reserves are zero; withdrawals have no callbacks. The fixed synthetic payload has
+a valid public key and ciphertext length, but is not intended for decryption by a
+zone. Txgen resolves account and deployed contract addresses; the existing Nushell
+helper expands setup and templates. Users are distributed across portals with equal
 aggregate weight per portal, including when there are more portals than users. All keys are public test material. The portal's
 per-block deposit cap still applies; start at 100 TPS. Withdrawal success is
 reported by `WithdrawalProcessed(success=true)`, not merely receipt status.
@@ -63,9 +64,17 @@ planning also needs actual settlement latency and workload composition.
 The artifacts use solc 0.8.30, optimizer 200 runs, Cancun EVM:
 
 ```sh
-zone_tools=$(mktemp -d)
-npm install --prefix "$zone_tools" solc@0.8.30
-NODE_PATH="$zone_tools/node_modules" node contrib/bench/txgen/zones/build.cjs
+forge build --root contrib/bench/txgen/zones --contracts . \
+  --out "$PWD/.bench-tmp/zones-out" --cache-path "$PWD/.bench-tmp/zones-cache" \
+  --use 0.8.30 --evm-version cancun --optimize --optimizer-runs 200
+for contract in PortalFixture SettlementFixture; do
+  jq '{abi, bytecode: {object: .bytecode.object}}' \
+    ".bench-tmp/zones-out/PortalFixture.sol/$contract.json" \
+    > "contrib/bench/txgen/zones/$contract.json"
+done
+jq '.abi | map(select(.name == "deposit" or .name == "processWithdrawals"))' \
+  .bench-tmp/zones-out/PortalFixture.sol/IPortal.json \
+  > contrib/bench/txgen/zones/portal.abi.json
 ```
 
 Keep fixture storage aligned with `crates/precompiles/src/zone_factory/portal.rs`.
