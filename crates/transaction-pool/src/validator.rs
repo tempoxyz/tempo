@@ -5,7 +5,7 @@ use crate::{
     transaction::{TempoPoolTransactionError, TempoPooledTransaction},
 };
 
-use alloy_consensus::{Transaction, constants::KECCAK_EMPTY};
+use alloy_consensus::Transaction;
 use alloy_evm::{Database, EvmEnv};
 use alloy_primitives::{Address, B256};
 use parking_lot::RwLock;
@@ -789,11 +789,7 @@ where
     DB: DatabaseRef<Error = ProviderError>,
 {
     fn basic_account(&self, address: &Address) -> ProviderResult<Option<Account>> {
-        Ok(self.db.basic_ref(*address)?.map(|account| Account {
-            nonce: account.nonce,
-            balance: account.balance,
-            bytecode_hash: (account.code_hash != KECCAK_EMPTY).then_some(account.code_hash),
-        }))
+        Ok(self.db.basic_ref(*address)?.map(Account::from))
     }
 }
 
@@ -859,7 +855,7 @@ mod tests {
     use alloy_primitives::{Address, B256, Bytes, TxKind, U256, address, uint};
     use alloy_signer::Signature;
     use reth_chainspec::EthChainSpec;
-    use reth_primitives_traits::{Account, Bytecode, SignedTransaction};
+    use reth_primitives_traits::{Account, AccountExtension, Bytecode, SignedTransaction};
     use reth_provider::test_utils::{ExtendedAccount, MockEthProvider};
     use reth_revm::cached::CachedReads;
     use reth_storage_api::{AccountReader, BlockNumReader, BytecodeReader};
@@ -942,6 +938,7 @@ mod tests {
             nonce: 7,
             balance: U256::from(42),
             bytecode_hash: Some(code_hash),
+            extension: AccountExtension::copy_from_slice(&[0x42; 32]),
         };
         let bytecode = revm::bytecode::Bytecode::default();
         let account_reads = Arc::new(AtomicUsize::new(0));
@@ -949,12 +946,7 @@ mod tests {
         let provider = CountingDatabaseRef {
             address,
             code_hash,
-            account: revm::state::AccountInfo::new(
-                account.balance,
-                account.nonce,
-                code_hash,
-                bytecode.clone(),
-            ),
+            account: account.clone().into(),
             bytecode: bytecode.clone(),
             account_reads: account_reads.clone(),
             bytecode_reads: bytecode_reads.clone(),
@@ -962,7 +954,10 @@ mod tests {
         let mut cached_reads = CachedReads::default();
         let cached = CachedAccountInfoReader::new(cached_reads.as_db(provider));
 
-        assert_eq!(cached.basic_account(&address).unwrap(), Some(account));
+        assert_eq!(
+            cached.basic_account(&address).unwrap(),
+            Some(account.clone())
+        );
         assert_eq!(cached.basic_account(&address).unwrap(), Some(account));
         assert_eq!(account_reads.load(Ordering::Relaxed), 1);
 

@@ -15,7 +15,7 @@ use alloy_signer_local::{MnemonicBuilder, PrivateKeySigner};
 use reth_execution_cache::{
     CachedStateMetrics, CachedStateMetricsSource, CachedStateProvider, ExecutionCache,
 };
-use reth_primitives_traits::{Account as RethAccount, Bytecode as RethBytecode};
+use reth_primitives_traits::{Account as RethAccount, AccountExtension, Bytecode as RethBytecode};
 use reth_revm::{State, database::StateProviderDatabase};
 use reth_storage_api::{
     AccountReader, BlockHashReader, BytecodeReader, HashedPostStateProvider, StateProofProvider,
@@ -112,7 +112,7 @@ impl ExecutionFixture {
 
 impl AccountReader for InMemoryStateProvider {
     fn basic_account(&self, address: &Address) -> ProviderResult<Option<RethAccount>> {
-        Ok(self.accounts.get(address).copied())
+        Ok(self.accounts.get(address).cloned())
     }
 }
 impl StateProvider for InMemoryStateProvider {
@@ -378,8 +378,9 @@ fn insert_account(
         nonce: info.nonce,
         balance: info.balance,
         bytecode_hash: Some(bytecode_hash),
+        extension: AccountExtension::from_shared(info.extension.into_shared()),
     };
-    cache.insert_account(address, Some(account));
+    cache.insert_account(address, Some(account.clone()));
     accounts.insert(address, account);
 }
 
