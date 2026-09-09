@@ -504,6 +504,14 @@ where
         Ok(())
     }
 
+    fn with_warm_caller_info(
+        &mut self,
+        address: Address,
+        f: &mut dyn FnMut(&AccountInfo),
+    ) -> Result<(), TempoPrecompileError> {
+        self.with_account_info(address, f)
+    }
+
     fn set_config_commitment(
         &mut self,
         _address: Address,
