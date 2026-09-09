@@ -115,7 +115,6 @@ vergen-git2.workspace = true
 
 [features]
 default = []
-bal = ["tempo-payload-builder/bal"]
 asm-keccak = [
 	"alloy/asm-keccak",
 	"alloy-evm/asm-keccak",
