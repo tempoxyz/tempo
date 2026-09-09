@@ -1,4 +1,4 @@
-use crate::TempoEvmConfig;
+use crate::{TempoEvmConfig, error::TempoEvmError};
 use alloy_consensus::crypto::RecoveryError;
 use alloy_primitives::Address;
 use reth_evm::{
@@ -24,8 +24,13 @@ impl ConfigureEngineEvm<TempoExecutionData> for TempoEvmConfig {
     ) -> Result<ExecutionCtxFor<'a, Self>, Self::Error> {
         let TempoExecutionData {
             block,
-            block_access_list: _,
+            block_access_list,
         } = payload;
+        if block_access_list.is_some() {
+            return Err(TempoEvmError::InvalidEvmConfig(
+                "BAL execution is unsupported with configurable account extensions".into(),
+            ));
+        }
         self.context_for_block(block)
     }
 

@@ -361,7 +361,7 @@ impl<C: reth_cli::chainspec::ChainSpecParser<ChainSpec: EthChainSpec + EthereumH
         provider_rw.insert_account_for_hashing(
             accounts_seen
                 .iter()
-                .map(|(addr, account)| (*addr, Some(*account))),
+                .map(|(addr, account)| (*addr, Some(account.clone()))),
         )?;
 
         storage_changeset_worker
