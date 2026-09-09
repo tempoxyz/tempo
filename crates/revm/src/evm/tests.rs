@@ -36,7 +36,8 @@ use tempo_precompiles::{
 use tempo_primitives::{
     TempoTransaction,
     transaction::{
-        KeyAuthorization, KeychainSignature, SignatureType, TempoSignedAuthorization,
+        AccessKeySignature, KeyAuthorization, KeychainSignature, SignatureType,
+        TempoSignedAuthorization,
         tempo_transaction::Call,
         tt_signature::{
             PrimitiveSignature, TempoSignature, WebAuthnSignature, derive_p256_address,
@@ -943,7 +944,7 @@ fn test_tempo_tx() -> eyre::Result<()> {
     // Verify the inner signature is WebAuthn
     assert!(matches!(
         keychain_sig.signature,
-        PrimitiveSignature::WebAuthn(_)
+        AccessKeySignature::Primitive(PrimitiveSignature::WebAuthn(_))
     ));
 
     // Verify key_id recovery works correctly using the transaction signature hash
