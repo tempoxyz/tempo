@@ -110,6 +110,9 @@ pub struct TempoTransactionValidator<Client, EvmConfig = TempoEvmConfig> {
     /// Cached here so hot paths can resolve the active hardfork with a single atomic load
     /// instead of walking the chain spec's fork schedule.
     active_hardfork: AtomicU8,
+    /// Serializes coherent header snapshots and insertion against processed head callbacks.
+    pub(crate) generation: RwLock<u64>,
+    pub(crate) head_changed: tokio::sync::Notify,
 }
 
 impl<Client, EvmConfig> TempoTransactionValidator<Client, EvmConfig>
@@ -147,6 +150,8 @@ where
             cached_evm_env: parking_lot::RwLock::new(evm_env),
             cached_state: RwLock::new((latest_header.hash(), Arc::new(StateCache::default()))),
             active_hardfork,
+            generation: RwLock::new(0),
+            head_changed: tokio::sync::Notify::new(),
         }
     }
 
@@ -344,13 +349,13 @@ where
         &self,
         state_provider: P,
         cached_state: Arc<StateCache>,
+        evm_env: EvmEnv<TempoHardfork, TempoBlockEnv>,
         transactions: impl IntoIterator<Item = (TransactionOrigin, TempoPooledTransaction)>,
     ) -> Vec<TransactionValidationOutcome<TempoPooledTransaction>> {
         let db = StateCacheDb::new(
             &cached_state,
             StateProviderDatabase::new(&state_provider as &dyn StateProvider),
         );
-        let evm_env = self.cached_evm_env.read().clone();
 
         // Create one throwaway EVM through the configured factory for the whole batch. The
         // capability hook owns all pool-only configuration and per-transaction cleanup while the
@@ -363,26 +368,23 @@ where
             .collect()
     }
 
-    /// Returns the latest state provider and a state cache valid for the provider's tip.
-    fn latest_state_provider_and_cache(
+    /// Snapshots state, cache, and EVM environment at the last processed canonical head.
+    /// The generation guard is released before any transaction validation work.
+    fn anchored_state_provider_and_cache(
         &self,
-    ) -> ProviderResult<(StateProviderBox, Arc<StateCache>)> {
-        let state_provider = self.inner.client().latest()?;
-        let latest_hash = self.inner.client().chain_info()?.best_hash;
-        Ok((state_provider, self.state_cache_for_tip(latest_hash)))
+    ) -> ProviderResult<(
+        StateProviderBox,
+        Arc<StateCache>,
+        EvmEnv<TempoHardfork, TempoBlockEnv>,
+    )> {
+        let _generation = self.generation.read();
+        let (hash, cache) = self.cached_state.read().clone();
+        let state_provider = self.inner.client().state_by_block_hash(hash)?;
+        Ok((state_provider, cache, self.cached_evm_env.read().clone()))
     }
 
-    /// Returns the shared cache if it matches `tip_hash`, otherwise an empty ephemeral cache.
-    ///
-    /// A mismatch can happen when `.latest()` observes state for a newer canonical tip before
-    /// `on_new_head_block` has refreshed the validator's cached state for that tip.
-    fn state_cache_for_tip(&self, tip_hash: B256) -> Arc<StateCache> {
-        let (cached_tip_hash, cached_state) = self.cached_state.read().clone();
-        if cached_tip_hash == tip_hash {
-            cached_state
-        } else {
-            Arc::new(StateCache::default())
-        }
+    pub(crate) fn processed_head(&self) -> B256 {
+        self.cached_state.read().0
     }
 
     /// Validates one transaction with the given throwaway EVM.
@@ -677,7 +679,8 @@ where
         origin: TransactionOrigin,
         transaction: Self::Transaction,
     ) -> TransactionValidationOutcome<Self::Transaction> {
-        let (state_provider, cached_state) = match self.latest_state_provider_and_cache() {
+        let (state_provider, cached_state, evm_env) = match self.anchored_state_provider_and_cache()
+        {
             Ok(provider_and_cache) => provider_and_cache,
             Err(err) => {
                 return TransactionValidationOutcome::Error(*transaction.hash(), Box::new(err));
@@ -687,6 +690,7 @@ where
         self.validate_batch(
             state_provider,
             cached_state,
+            evm_env,
             core::iter::once((origin, transaction)),
         )
         .pop()
@@ -698,7 +702,8 @@ where
         transactions: impl IntoIterator<Item = (TransactionOrigin, Self::Transaction), IntoIter: Send>
         + Send,
     ) -> Vec<TransactionValidationOutcome<Self::Transaction>> {
-        let (state_provider, cached_state) = match self.latest_state_provider_and_cache() {
+        let (state_provider, cached_state, evm_env) = match self.anchored_state_provider_and_cache()
+        {
             Ok(provider_and_cache) => provider_and_cache,
             Err(err) => {
                 return transactions
@@ -710,7 +715,7 @@ where
             }
         };
 
-        self.validate_batch(state_provider, cached_state, transactions)
+        self.validate_batch(state_provider, cached_state, evm_env, transactions)
     }
 
     async fn validate_transactions_with_origin(
@@ -718,7 +723,8 @@ where
         origin: TransactionOrigin,
         transactions: impl IntoIterator<Item = Self::Transaction> + Send,
     ) -> Vec<TransactionValidationOutcome<Self::Transaction>> {
-        let (state_provider, cached_state) = match self.latest_state_provider_and_cache() {
+        let (state_provider, cached_state, evm_env) = match self.anchored_state_provider_and_cache()
+        {
             Ok(provider_and_cache) => provider_and_cache,
             Err(err) => {
                 return transactions
@@ -733,11 +739,13 @@ where
         self.validate_batch(
             state_provider,
             cached_state,
+            evm_env,
             transactions.into_iter().map(|tx| (origin, tx)),
         )
     }
 
     fn on_new_head_block(&self, new_tip_block: &SealedBlock<Self::Block>) {
+        let mut generation = self.generation.write();
         self.inner.on_new_head_block(new_tip_block);
 
         // Cache the EVM environment for the new tip block.
@@ -752,6 +760,8 @@ where
 
         // State changed, drop all cached reads and anchor the new cache to this tip.
         *self.cached_state.write() = (new_tip_block.hash(), Arc::new(StateCache::default()));
+        *generation = generation.wrapping_add(1);
+        self.head_changed.notify_waiters();
     }
 }
 
@@ -974,6 +984,231 @@ mod tests {
         SealedBlock::seal_slow(block)
     }
 
+    #[tokio::test]
+    async fn configurable_same_commitment_reorg_retains_entry_and_refreshes_metadata() {
+        configurable_canonical_pool_case(ConfigurablePoolScenario::RetainOnReorg).await;
+    }
+
+    #[tokio::test]
+    async fn configurable_reorg_resurrects_absent_transaction() {
+        configurable_canonical_pool_case(ConfigurablePoolScenario::ResurrectOnReorg).await;
+    }
+
+    #[tokio::test]
+    async fn configurable_grant_recipient_code_change_invalidates_from_canonical_event() {
+        configurable_canonical_pool_case(ConfigurablePoolScenario::InvalidateGrantRecipient).await;
+    }
+
+    #[derive(Clone, Copy, PartialEq, Eq)]
+    enum ConfigurablePoolScenario {
+        RetainOnReorg,
+        ResurrectOnReorg,
+        InvalidateGrantRecipient,
+    }
+
+    async fn configurable_canonical_pool_case(scenario: ConfigurablePoolScenario) {
+        use alloy_signer::SignerSync;
+        use alloy_signer_local::PrivateKeySigner;
+        use reth_primitives_traits::{Recovered, RecoveredBlock};
+        use reth_transaction_pool::{
+            Pool, PoolConfig, TransactionPool, TransactionPoolExt,
+            TransactionValidationTaskExecutor,
+        };
+        use tempo_primitives::transaction::{
+            MultisigConfig, MultisigOwner, MultisigSignature, multisig_digest,
+        };
+        let owner = PrivateKeySigner::random();
+        let factory = Address::repeat_byte(0x71);
+        let config = MultisigConfig {
+            salt: B256::ZERO,
+            version: 0,
+            threshold: 1,
+            owners: vec![MultisigOwner {
+                owner: owner.address(),
+                weight: 1,
+            }],
+        };
+        let account = config.derive_account(factory).unwrap();
+        let commitment = config.commitment().unwrap();
+        let transaction = if scenario == ConfigurablePoolScenario::InvalidateGrantRecipient {
+            let grant = tempo_primitives::transaction::KeyAuthorization::unrestricted(
+                42431,
+                tempo_primitives::SignatureType::Multisig,
+                account,
+            );
+            let approval = owner.sign_hash_sync(&grant.signature_hash()).unwrap();
+            TxBuilder::aa(owner.address())
+                .key_authorization(grant.into_signed(approval))
+                .build()
+        } else {
+            let template = TxBuilder::aa(account).nonce_key(U256::from(1)).build();
+            let tx = template.inner().as_aa().unwrap().tx().clone();
+            let approval = owner
+                .sign_hash_sync(&multisig_digest(tx.signature_hash(), account, 0))
+                .unwrap();
+            let signature = MultisigSignature::try_new(
+                account,
+                config,
+                vec![PrimitiveSignature::Secp256k1(approval)],
+            )
+            .unwrap();
+            TempoPooledTransaction::new(Recovered::new_unchecked(
+                TempoTxEnvelope::AA(AASigned::new_unhashed(
+                    tx,
+                    TempoSignature::Multisig(signature),
+                )),
+                account,
+            ))
+        };
+        let account = transaction.sender();
+        let validator = setup_validator(&transaction, 1).with_disable_fee_amm_check(true);
+        let provider = validator.client().clone();
+        if scenario != ConfigurablePoolScenario::InvalidateGrantRecipient {
+            provider.add_account(
+                account,
+                ExtendedAccount::new(0, U256::ZERO).with_extension(
+                    reth_primitives_traits::AccountExtension::copy_from_slice(
+                        &tempo_primitives::account::encode_config_commitment(commitment),
+                    ),
+                ),
+            );
+        }
+        let mut block = create_mock_block(1).clone_block();
+        block.header.inner.number = 1;
+        let sealed = SealedBlock::seal_slow(block.clone());
+        provider.add_block(sealed.hash(), block.clone());
+        validator.on_new_head_block(&sealed);
+        validator
+            .active_hardfork
+            .store(TempoHardfork::T12.variant_index(), Ordering::Relaxed);
+        {
+            let mut env = validator.cached_evm_env.write();
+            env.cfg_env = env.cfg_env.clone().with_spec_and_gas_params(
+                TempoHardfork::T12,
+                tempo_revm::gas_params::tempo_gas_params(TempoHardfork::T12),
+            );
+            env.block_env.multisig_recovery_factory = Some(factory);
+        }
+        let (executor, task) = TransactionValidationTaskExecutor::new(validator);
+        let validation_handle = executor.clone();
+        let service = tokio::spawn(task.run());
+        let pool = crate::TempoTransactionPool::new(
+            Pool::new(
+                executor,
+                crate::ordering::TempoTipOrdering::default(),
+                InMemoryBlobStore::default(),
+                PoolConfig::default(),
+            ),
+            crate::AA2dPool::default(),
+        );
+        let hash = *transaction.hash();
+        let orphaned_transaction = transaction.inner().inner().clone();
+        pool.add_transaction(TransactionOrigin::External, transaction)
+            .await
+            .unwrap();
+        let entry = pool.get(&hash).unwrap();
+        entry.transaction.set_key_expiry(Some(12345));
+        let mut outcome = reth_provider::ExecutionOutcome::default();
+        if scenario == ConfigurablePoolScenario::InvalidateGrantRecipient {
+            use revm::{
+                database::{AccountStatus, BundleAccount},
+                state::AccountInfo,
+            };
+            let recipient = entry.transaction.configurable_grant_recipient().unwrap();
+            let code = Bytes::from_static(&[0x00]);
+            provider.add_account(
+                recipient,
+                ExtendedAccount::new(0, U256::ZERO).with_bytecode(code.clone()),
+            );
+            outcome.bundle.state.insert(
+                recipient,
+                BundleAccount::new(
+                    Some(AccountInfo::default()),
+                    Some(AccountInfo {
+                        code_hash: alloy_primitives::keccak256(&code),
+                        ..Default::default()
+                    }),
+                    Default::default(),
+                    AccountStatus::Changed,
+                ),
+            );
+            block.header.inner.number += 1;
+            let new_tip = SealedBlock::seal_slow(block.clone());
+            provider.add_block(new_tip.hash(), block.clone());
+            // A real head callback resets the anchored validation cache before maintenance.
+            pool.on_canonical_state_change(reth_transaction_pool::CanonicalStateUpdate {
+                new_tip: &new_tip,
+                pending_block_base_fee: TEMPO_T0_BASE_FEE,
+                pending_block_blob_fee: None,
+                changed_accounts: Vec::new(),
+                mined_transactions: Vec::new(),
+                update_kind: reth_transaction_pool::PoolUpdateKind::Commit,
+            });
+            // This mock chain uses a pre-T12 schedule; keep the explicit test fork active.
+            let validator = validation_handle.validator();
+            validator
+                .active_hardfork
+                .store(TempoHardfork::T12.variant_index(), Ordering::Relaxed);
+            let mut env = validator.cached_evm_env.write();
+            env.cfg_env = env.cfg_env.clone().with_spec_and_gas_params(
+                TempoHardfork::T12,
+                tempo_revm::gas_params::tempo_gas_params(TempoHardfork::T12),
+            );
+            env.block_env.multisig_recovery_factory = Some(factory);
+        }
+        let chain = |block: Block, outcome| {
+            let senders = vec![account; block.body.transactions.len()];
+            Arc::new(reth_provider::Chain::new(
+                vec![RecoveredBlock::new_unhashed(block, senders)],
+                outcome,
+                Default::default(),
+            ))
+        };
+        let mut old = block.clone();
+        old.header.inner.extra_data = alloy_primitives::Bytes::from_static(b"orphan");
+        if scenario == ConfigurablePoolScenario::ResurrectOnReorg {
+            old.body.transactions.push(orphaned_transaction);
+            pool.remove_transactions(vec![hash]);
+            assert!(!pool.contains(&hash));
+        }
+        let event = if scenario == ConfigurablePoolScenario::InvalidateGrantRecipient {
+            reth_provider::CanonStateNotification::Commit {
+                new: chain(block, outcome),
+            }
+        } else {
+            reth_provider::CanonStateNotification::Reorg {
+                old: chain(old, Default::default()),
+                new: chain(block, outcome),
+            }
+        };
+        crate::maintain::maintain_tempo_pool_with_events(
+            pool.clone(),
+            futures::stream::iter([event]),
+        )
+        .await;
+        if scenario == ConfigurablePoolScenario::InvalidateGrantRecipient {
+            assert!(
+                !pool.contains(&hash),
+                "recipient-only code change must revalidate a grant without a quorum witness"
+            );
+            service.abort();
+            return;
+        }
+        let retained = pool
+            .get(&hash)
+            .expect("same commitment remains valid after reorg");
+        assert_eq!(
+            Arc::ptr_eq(&entry, &retained),
+            scenario == ConfigurablePoolScenario::RetainOnReorg
+        );
+        assert_eq!(
+            retained.transaction.key_expiry(),
+            None,
+            "successful revalidation refreshes metadata in place"
+        );
+        service.abort();
+    }
+
     /// Helper function to create an AA transaction with the given `valid_after` and `valid_before`
     /// timestamps
     fn create_aa_transaction(
@@ -1062,24 +1297,6 @@ mod tests {
         validator
     }
 
-    #[test]
-    fn state_cache_for_tip_reuses_only_matching_tip_cache() {
-        let tx = TxBuilder::eip1559(Address::random()).build_eip1559();
-        let validator = setup_validator(&tx, 1);
-        let (shared_tip_hash, shared_cache) = validator.cached_state.read().clone();
-
-        let matching_cache = validator.state_cache_for_tip(shared_tip_hash);
-        assert!(Arc::ptr_eq(&matching_cache, &shared_cache));
-
-        let mismatched_tip_hash = if shared_tip_hash == B256::repeat_byte(0x42) {
-            B256::repeat_byte(0x43)
-        } else {
-            B256::repeat_byte(0x42)
-        };
-        let ephemeral_cache = validator.state_cache_for_tip(mismatched_tip_hash);
-        assert!(!Arc::ptr_eq(&ephemeral_cache, &shared_cache));
-    }
-
     #[tokio::test]
     async fn address_filter_checks_later_tempo_calls_during_admission() {
         let checked_address = Address::with_last_byte(0x42);
@@ -1117,7 +1334,7 @@ mod tests {
     }
 
     #[test]
-    fn latest_state_provider_uses_ephemeral_cache_when_tip_hash_mismatches_latest() {
+    fn validation_state_remains_pinned_until_processed_head_changes() {
         let tx = TxBuilder::eip1559(Address::random()).build_eip1559();
         let validator = setup_validator(&tx, 1);
         let latest_hash = validator.client().chain_info().unwrap().best_hash;
@@ -1129,9 +1346,9 @@ mod tests {
         let shared_cache = Arc::new(StateCache::default());
         *validator.cached_state.write() = (mismatched_tip_hash, shared_cache.clone());
 
-        let (_, validation_cache) = validator.latest_state_provider_and_cache().unwrap();
+        let (_, validation_cache, _) = validator.anchored_state_provider_and_cache().unwrap();
 
-        assert!(!Arc::ptr_eq(&validation_cache, &shared_cache));
+        assert!(Arc::ptr_eq(&validation_cache, &shared_cache));
     }
 
     #[tokio::test]

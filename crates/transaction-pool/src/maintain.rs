@@ -4,6 +4,7 @@ use crate::{
     RevokedKeys, SpendingLimitUpdates, TempoTransactionPool, metrics::TempoPoolMaintenanceMetrics,
     transaction::TempoPooledTransaction, validator::ConfigureTempoPoolEvm,
 };
+use alloy_consensus::transaction::TxHashRef;
 use alloy_primitives::{
     Address, B256, Log, TxHash,
     map::{AddressMap, AddressSet, B256Set},
@@ -15,7 +16,7 @@ use reth_chainspec::{ChainSpecProvider, EthChainSpec};
 use reth_primitives_traits::AlloyBlockHeader;
 use reth_provider::{CanonStateNotification, CanonStateSubscriptions, Chain, HeaderProvider};
 use reth_storage_api::StateProviderFactory;
-use reth_transaction_pool::{AllPoolTransactions, TransactionPool};
+use reth_transaction_pool::{AllPoolTransactions, PoolTransaction, TransactionPool};
 use std::time::Instant;
 use tempo_chainspec::hardfork::TempoHardforks;
 use tempo_contracts::precompiles::{IAccountKeychain, IFeeManager, ITIP20, ITIP403Registry};
@@ -28,6 +29,25 @@ use tracing::{debug, error};
 /// Evict transactions this many seconds before they expire to reduce propagation
 /// of near-expiry transactions that are likely to fail validation on peers.
 const EVICTION_BUFFER_SECS: u64 = 3;
+
+/// Authentication-relevant leaf changes, independent of receipt events.
+fn configurable_account_changes(state: &AddressMap<revm::database::BundleAccount>) -> AddressSet {
+    state
+        .iter()
+        .filter_map(|(address, account)| {
+            let auth = |info: &revm::state::AccountInfo| {
+                (
+                    tempo_primitives::account::decode_config_commitment(&info.extension, true),
+                    info.code_hash,
+                )
+            };
+            let old = account.original_info.as_ref().map(auth);
+            let new = account.info.as_ref().map(auth);
+            // Malformed extension payloads must also force stateful revalidation.
+            (old != new || new.as_ref().is_some_and(|(hash, _)| hash.is_err())).then_some(*address)
+        })
+        .collect()
+}
 
 /// Aggregated block-level invalidation events for the transaction pool.
 ///
@@ -482,18 +502,40 @@ where
         + CanonStateSubscriptions<Primitives = TempoPrimitives>
         + 'static,
 {
-    let mut pending_staleness = PendingStalenessTracker::default();
-    let metrics = TempoPoolMaintenanceMetrics::default();
+    let chain_events = pool.client().canonical_state_stream();
+    maintain_tempo_pool_with_events(pool, chain_events).await;
+}
 
-    // Subscribe to canonical chain events.
-    let mut chain_events = pool.client().canonical_state_stream();
+pub(crate) async fn maintain_tempo_pool_with_events<Client, EvmConfig>(
+    pool: TempoTransactionPool<Client, EvmConfig>,
+    mut chain_events: impl futures::Stream<Item = CanonStateNotification<TempoPrimitives>> + Unpin,
+) where
+    EvmConfig: ConfigureTempoPoolEvm,
+    Client: StateProviderFactory
+        + HeaderProvider<Header = TempoHeader>
+        + ChainSpecProvider<ChainSpec: EthChainSpec<Header = TempoHeader> + TempoHardforks>
+        + 'static,
+{
+    let mut pending_staleness = PendingStalenessTracker::default();
+    let mut pending_revalidation = B256Set::default();
+    let mut pending_resurrection = alloy_primitives::map::B256Map::default();
+    let metrics = TempoPoolMaintenanceMetrics::default();
 
     let amm_cache = pool.amm_liquidity_cache();
 
     // Process all maintenance operations on new block commit or reorg.
     while let Some(event) = chain_events.next().await {
+        let reorg = matches!(&event, CanonStateNotification::Reorg { .. });
         let new = match event {
-            CanonStateNotification::Reorg { old: _, new } => {
+            CanonStateNotification::Reorg { old, new } => {
+                let mined: B256Set = new.transaction_hashes().copied().collect();
+                pending_resurrection.extend(
+                    old.transactions_recovered_iter()
+                        .filter(|tx| !mined.contains(tx.tx_hash()))
+                        .map(|tx| TempoPooledTransaction::new(tx.cloned()))
+                        .filter(|tx| tx.has_configurable_dependencies())
+                        .map(|tx| (*tx.hash(), tx)),
+                );
                 // Repopulate AMM liquidity cache from the new canonical chain
                 // to invalidate stale entries from orphaned blocks.
                 if let Err(err) = amm_cache.repopulate(pool.client()) {
@@ -545,12 +587,41 @@ where
         // Reth's canonical-update handling may not have pruned mined transactions yet.
         // Exclude them from every snapshot-based maintenance phase so they follow the
         // normal mined path rather than being discarded from the pool.
-        let mut removed_this_iteration: B256Set = tip.transaction_hashes().copied().collect();
+        let removed_this_iteration: B256Set = tip.transaction_hashes().copied().collect();
 
+        // Registration has no event. Inspect authenticated account deltas, including code changes.
+        let changed = configurable_account_changes(bundle_state);
+        let code_changed: AddressSet = bundle_state
+            .iter()
+            .filter_map(|(address, account)| {
+                (account.original_info.as_ref().map(|info| info.code_hash)
+                    != account.info.as_ref().map(|info| info.code_hash))
+                .then_some(*address)
+            })
+            .collect();
+        pending_revalidation.extend(
+            pool.all_transactions()
+                .iter()
+                .filter(|tx| !removed_this_iteration.contains(tx.hash()))
+                .filter(|tx| {
+                    let accounts = tx.transaction.configurable_signers();
+                    (reorg && tx.transaction.has_configurable_dependencies())
+                        || accounts.iter().any(|account| changed.contains(account))
+                        || tx
+                            .transaction
+                            .keychain_parent()
+                            .into_iter()
+                            .chain(tx.transaction.configurable_grant_recipient())
+                            .any(|account| code_changed.contains(&account))
+                })
+                .map(|tx| *tx.hash()),
+        );
+        pending_revalidation.retain(|hash| !removed_this_iteration.contains(hash));
+        pending_resurrection.retain(|hash, _| !removed_this_iteration.contains(hash));
         // 4. Handle potentially invalidating updates
         // When a cached value changes of a token (transfer policy, or quote token) changes,
-        // pending transactions using that token may become invalid. We need to remove them
-        // and re-add so they go through full validation against the updated state.
+        // pending transactions using that token may become invalid. Revalidate in place so
+        // transient errors do not lose candidates or their listener registrations.
         for (updated, counter, reason) in [
             (
                 &updates.transfer_policy_updates,
@@ -581,32 +652,46 @@ where
                     .collect()
             };
             if !hashes.is_empty() {
-                let removed_txs = pool.remove_transactions(hashes);
-                let count = removed_txs.len();
+                counter.increment(hashes.len() as u64);
+                debug!(target: "txpool", count = hashes.len(), reason, "Revalidating retained transactions");
+                pending_revalidation.extend(hashes);
+            }
+        }
 
-                for tx in &removed_txs {
-                    removed_this_iteration.insert(*tx.hash());
+        if !pending_revalidation.is_empty() || !pending_resurrection.is_empty() {
+            match tokio::time::timeout(
+                std::time::Duration::from_secs(2),
+                pool.wait_for_processed_head(),
+            )
+            .await
+            {
+                Ok(Ok(())) => {
+                    pool.revalidate_pending_transactions(&mut pending_revalidation)
+                        .await;
+                    // Await validated resurrection in this loop; never detach an orphan reinsertion.
+                    for (hash, tx) in pending_resurrection.clone() {
+                        if pool.contains(&hash) {
+                            pending_resurrection.remove(&hash);
+                            continue;
+                        }
+                        match pool
+                            .add_transaction(reth_transaction_pool::TransactionOrigin::External, tx)
+                            .await
+                        {
+                            Err(err)
+                                if matches!(
+                                    err.kind,
+                                    reth_transaction_pool::error::PoolErrorKind::Other(_)
+                                ) => {}
+                            _ => {
+                                pending_resurrection.remove(&hash);
+                            }
+                        }
+                    }
                 }
-
-                counter.increment(count as u64);
-
-                let pool_clone = pool.clone();
-                tokio::spawn(async move {
-                    let txs: Vec<_> = removed_txs
-                        .into_iter()
-                        .map(|tx| (tx.origin, tx.transaction.with_discarded_caches()))
-                        .collect();
-
-                    let results = pool_clone.add_transactions_with_origins(txs).await;
-                    let success = results.iter().filter(|r| r.is_ok()).count();
-                    debug!(
-                        target: "txpool",
-                        total = count,
-                        success,
-                        reason,
-                        "Re-validated transactions"
-                    );
-                });
+                other => {
+                    error!(target: "txpool", ?other, "Unable to anchor configurable pool revalidation; retaining candidates")
+                }
             }
         }
 
@@ -687,6 +772,47 @@ mod tests {
     use reth_primitives_traits::RecoveredBlock;
     use std::sync::Arc;
     use tempo_primitives::{Block, BlockBody, TempoHeader, TempoTxEnvelope};
+
+    #[test]
+    fn configurable_leaf_changes_include_eventless_registration_and_code() {
+        use revm::{
+            database::{AccountStatus, BundleAccount},
+            state::{AccountExtension, AccountInfo},
+        };
+        let address = Address::repeat_byte(0x22);
+        let original = AccountInfo::default();
+        let mut registered = original.clone();
+        registered.extension = AccountExtension::copy_from_slice(
+            &tempo_primitives::account::encode_config_commitment(B256::repeat_byte(0x42)),
+        );
+        for (old, new, changed) in [
+            (original.clone(), registered.clone(), true),
+            (registered.clone(), original, true),
+            (registered.clone(), registered.clone(), false),
+            (
+                registered.clone(),
+                AccountInfo {
+                    code_hash: B256::repeat_byte(0x55),
+                    ..registered
+                },
+                true,
+            ),
+        ] {
+            let state = AddressMap::from_iter([(
+                address,
+                BundleAccount::new(
+                    Some(old),
+                    Some(new),
+                    Default::default(),
+                    AccountStatus::Changed,
+                ),
+            )]);
+            assert_eq!(
+                configurable_account_changes(&state).contains(&address),
+                changed
+            );
+        }
+    }
 
     mod pending_staleness_tracker_tests {
         use super::*;
