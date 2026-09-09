@@ -3,11 +3,6 @@ name: bench-e2e-multi-region
 on:
   workflow_call:
     inputs:
-      skip-receipt-wait:
-        description: Skip workload receipt waits; setup still confirms receipts.
-        type: boolean
-        required: false
-        default: false
       skip-metrics:
         description: Skip benchmark scraping, latency samples, and metric exports.
         type: boolean
@@ -241,7 +236,7 @@ on:
         required: true
         default: false
       bench-args:
-        description: Extra generator args; accepts --skip-receipt-wait and --skip-metrics independently.
+        description: Extra generator args; accepts --skip-metrics to disable benchmark metrics collection.
         type: string
         required: false
         default: ""
@@ -298,7 +293,6 @@ jobs:
       BENCH_INPUT_TXGEN_REF: ${{ inputs['txgen-ref'] || '' }}
       BENCH_INPUT_TOKEN_COUNT: ${{ inputs['token-count'] || '4' }}
       BENCH_INPUT_PROFILING: ${{ inputs.profiling || 'off' }}
-      BENCH_INPUT_SKIP_RECEIPT_WAIT: ${{ inputs['skip-receipt-wait'] && 'true' || 'false' }}
       BENCH_INPUT_SKIP_METRICS: ${{ inputs['skip-metrics'] && 'true' || 'false' }}
       BENCH_INPUT_OTLP: ${{ format('{0}', github.event_name != 'workflow_dispatch' || inputs.otlp) }}
       BENCH_INPUT_VALSCOPE: ${{ (inputs.valscope == true || inputs.valscope == 'true') && 'true' || 'false' }}
@@ -550,7 +544,6 @@ jobs:
             --profiling "$BENCH_INPUT_PROFILING" \
             --otlp "$BENCH_INPUT_OTLP" \
             --valscope "$BENCH_INPUT_VALSCOPE" \
-            --skip-receipt-wait "$BENCH_INPUT_SKIP_RECEIPT_WAIT" \
             --skip-metrics "$BENCH_INPUT_SKIP_METRICS" \
             --baseline-args "$BENCH_INPUT_BASELINE_ARGS" \
             --feature-args "$BENCH_INPUT_FEATURE_ARGS" \
@@ -606,7 +599,6 @@ jobs:
             --profiling "$BENCH_INPUT_PROFILING" \
             --otlp "$BENCH_INPUT_OTLP" \
             --valscope "$BENCH_INPUT_VALSCOPE" \
-            --skip-receipt-wait "$BENCH_INPUT_SKIP_RECEIPT_WAIT" \
             --skip-metrics "$BENCH_INPUT_SKIP_METRICS" \
             --baseline-args "$BENCH_INPUT_BASELINE_ARGS" \
             --feature-args "$BENCH_INPUT_FEATURE_ARGS" \
@@ -655,7 +647,6 @@ jobs:
             --profiling "$BENCH_INPUT_PROFILING" \
             --otlp "$BENCH_INPUT_OTLP" \
             --valscope "$BENCH_INPUT_VALSCOPE" \
-            --skip-receipt-wait "$BENCH_INPUT_SKIP_RECEIPT_WAIT" \
             --skip-metrics "$BENCH_INPUT_SKIP_METRICS" \
             --baseline-args "$BENCH_INPUT_BASELINE_ARGS" \
             --feature-args "$BENCH_INPUT_FEATURE_ARGS" \
@@ -704,7 +695,6 @@ jobs:
             --profiling "$BENCH_INPUT_PROFILING" \
             --otlp "$BENCH_INPUT_OTLP" \
             --valscope "$BENCH_INPUT_VALSCOPE" \
-            --skip-receipt-wait "$BENCH_INPUT_SKIP_RECEIPT_WAIT" \
             --skip-metrics "$BENCH_INPUT_SKIP_METRICS" \
             --baseline-args "$BENCH_INPUT_BASELINE_ARGS" \
             --feature-args "$BENCH_INPUT_FEATURE_ARGS" \

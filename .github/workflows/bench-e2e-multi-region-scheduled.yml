@@ -11,11 +11,6 @@ on:
     - cron: "0 2 * * *"
   workflow_dispatch:
     inputs:
-      skip-receipt-wait:
-        description: Skip workload receipt waits; setup still confirms receipts.
-        type: boolean
-        required: false
-        default: false
       skip-metrics:
         description: Skip benchmark scraping, latency samples, and metric exports.
         type: boolean
@@ -180,7 +175,6 @@ jobs:
       max-concurrent-requests: ${{ inputs['max-concurrent-requests'] || '5000' }}
       run-pairs: ${{ inputs['run-pairs'] || '3' }}
       clickhouse-run: feature-1
-      skip-receipt-wait: ${{ inputs['skip-receipt-wait'] || false }}
       skip-metrics: ${{ inputs['skip-metrics'] || false }}
       otlp: true
       valscope: true
