@@ -594,6 +594,7 @@ where
     /// This checkpoint only covers user-call execution. Inline key authorization attached to the
     /// transaction is applied earlier during validation/pre-execution and intentionally remains
     /// persisted if scope prevalidation fails here or if a later user call reverts the batch.
+    /// Initial configurable-account registration likewise survives execution failure.
     fn execute_multi_call_with<F>(
         &mut self,
         evm: &mut TempoEvm<DB, I>,
@@ -609,8 +610,8 @@ where
             &mut GasTracker,
         ) -> Result<FrameResult, EVMError<DB::Error, TempoInvalidTransaction>>,
     {
-        // Create checkpoint for atomic execution - captures state before any calls
-        let checkpoint = evm.ctx().journal_mut().checkpoint();
+        // Validation, authorization and fee collection have succeeded. Initial registration
+        // persists on execution failure; later owner updates remain inside the call checkpoint.
         {
             let ctx = evm.ctx_mut();
             StorageCtx::enter_evm(
@@ -642,6 +643,7 @@ where
             )
             .map_err(|error| EVMError::Custom(error.to_string()))?;
         }
+        let checkpoint = evm.ctx().journal_mut().checkpoint();
         let mut accumulated_gas_refund = 0i64;
         let mut accumulated_state_gas_spent = 0i64;
 

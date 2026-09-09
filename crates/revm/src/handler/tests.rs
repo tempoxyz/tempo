@@ -217,8 +217,9 @@ fn native_fixture() -> TestHandlerEvm {
     test
 }
 
-#[test]
-fn native_registration_first_call_revert_and_retry() {
+#[test_case::test_case(InstructionResult::Revert; "revert")]
+#[test_case::test_case(InstructionResult::OutOfGas; "halt")]
+fn native_registration_first_call_failure_and_retry(failure: InstructionResult) {
     let mut test = native_fixture();
     let account = test.evm.ctx.tx.caller;
     let expected = crate::native_multisig::authorizations(&test.evm.ctx.tx)[0]
@@ -259,7 +260,7 @@ fn native_registration_first_call_revert_and_retry() {
                         if succeed {
                             InstructionResult::Stop
                         } else {
-                            InstructionResult::Revert
+                            failure
                         },
                         Bytes::new(),
                         Gas::new(gas.remaining()),
@@ -283,9 +284,70 @@ fn native_registration_first_call_revert_and_retry() {
                 true
             )
             .unwrap(),
-            if succeed { expected } else { B256::ZERO }
+            expected
         );
     }
+}
+
+#[test]
+fn native_invalid_intrinsic_gas_does_not_register() {
+    let mut test = native_fixture();
+    let account = test.evm.ctx.tx.caller;
+    test.evm.ctx.tx.gas_limit = 1;
+    let error = test.handler.run(&mut test.evm).unwrap_err();
+    assert!(
+        matches!(
+            error,
+            EVMError::Transaction(TempoInvalidTransaction::EthInvalidTransaction(
+                InvalidTransaction::CallGasCostMoreThanGasLimit { .. }
+            ))
+        ),
+        "{error:?}"
+    );
+    assert!(
+        test.evm
+            .ctx
+            .journaled_state
+            .state
+            .get(&account)
+            .is_none_or(|account| account.info.extension.is_empty())
+    );
+}
+
+#[test]
+fn native_failed_fee_collection_does_not_register() -> eyre::Result<()> {
+    let mut test = native_fixture().with_fee_manager(ValidatorTokenLookupFailsFeeManager);
+    let account = test.evm.ctx.tx.caller;
+    let price = 1_000_000_000_000;
+    test.evm.ctx.tx.gas_price = price;
+    let fee = calc_gas_balance_spending(test.evm.ctx.tx.gas_limit, price);
+    let token = StorageCtx::enter_ctx(&mut test.evm.ctx, StorageActions::disabled(), || {
+        TIP20Setup::create("UserToken", "UTK", account)
+            .with_issuer(account)
+            .with_mint(account, fee)
+            .apply()
+            .map(|token| token.address())
+    })?;
+    test.evm.ctx.tx.fee_token = Some(token);
+    let error = test.handler.run(&mut test.evm).unwrap_err();
+    assert!(
+        matches!(
+            error,
+            EVMError::Transaction(TempoInvalidTransaction::CollectFeePreTx(
+                FeePaymentError::InsufficientAmmLiquidity { .. }
+            ))
+        ),
+        "{error:?}"
+    );
+    assert!(
+        test.evm
+            .ctx
+            .journaled_state
+            .state
+            .get(&account)
+            .is_none_or(|account| account.info.extension.is_empty())
+    );
+    Ok(())
 }
 
 #[test]
