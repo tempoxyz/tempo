@@ -961,6 +961,17 @@ where
         transactions
     }
 
+    fn all_transactions_by_sender(
+        &self,
+        sender: Address,
+    ) -> AllPoolTransactions<Self::Transaction> {
+        let mut transactions = self.protocol_pool.all_transactions_by_sender(sender);
+        self.aa_2d_pool
+            .read()
+            .append_all_transactions_by_sender(sender, &mut transactions);
+        transactions
+    }
+
     fn all_transaction_hashes(&self) -> Vec<B256> {
         let mut hashes = self.protocol_pool.all_transaction_hashes();
         hashes.extend(self.aa_2d_pool.read().all_transaction_hashes_iter());
@@ -1244,13 +1255,13 @@ where
     fn get_blobs_for_versioned_hashes_v4(
         &self,
         versioned_hashes: &[B256],
-        indices_bitarray: alloy_primitives::B128,
+        cell_mask: alloy_eips::eip7594::BlobCellMask,
     ) -> Result<
         Vec<Option<alloy_eips::eip4844::BlobCellsAndProofsV1>>,
         reth_transaction_pool::blobstore::BlobStoreError,
     > {
         self.protocol_pool
-            .get_blobs_for_versioned_hashes_v4(versioned_hashes, indices_bitarray)
+            .get_blobs_for_versioned_hashes_v4(versioned_hashes, cell_mask)
     }
 
     fn blob_store(&self) -> Box<dyn reth_transaction_pool::BlobStore> {

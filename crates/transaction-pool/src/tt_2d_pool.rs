@@ -694,6 +694,32 @@ impl AA2dPool {
         );
     }
 
+    /// Appends all transactions from `sender` to the provided collection.
+    pub(crate) fn append_all_transactions_by_sender(
+        &self,
+        sender: Address,
+        transactions: &mut AllPoolTransactions<TempoPooledTransaction>,
+    ) {
+        for tx in self.by_id.values() {
+            if tx.inner.transaction.sender() != sender {
+                continue;
+            }
+
+            if tx.is_pending() {
+                transactions.pending.push(tx.inner.transaction.clone());
+            } else {
+                transactions.queued.push(tx.inner.transaction.clone());
+            }
+        }
+
+        transactions.pending.extend(
+            self.expiring_nonce_txs
+                .values()
+                .filter(|tx| tx.transaction.sender() == sender)
+                .map(|tx| tx.transaction.clone()),
+        );
+    }
+
     /// Returns the best, executable transactions for this sub-pool
     pub(crate) fn best_transactions(&self) -> BestAA2dTransactions {
         self.best_transactions_with_base_fee(self.base_fee)
@@ -4183,6 +4209,40 @@ mod tests {
 
         assert_eq!(pending_hashes, expected_pending);
         assert_eq!(queued_hashes, expected_queued);
+    }
+
+    #[test]
+    fn test_append_all_transactions_by_sender() {
+        let mut pool = AA2dPool::default();
+        let sender = Address::random();
+        let other_sender = Address::random();
+
+        let pending_tx = TxBuilder::aa(sender).build();
+        let queued_tx = TxBuilder::aa(sender).nonce(2).build();
+        let expiring_tx = TxBuilder::aa(sender).nonce_key(U256::MAX).build();
+        let other_tx = TxBuilder::aa(other_sender).build();
+
+        let pending_hash = *pending_tx.hash();
+        let queued_hash = *queued_tx.hash();
+        let expiring_hash = *expiring_tx.hash();
+
+        for tx in [pending_tx, queued_tx, expiring_tx, other_tx] {
+            pool.add_transaction(
+                Arc::new(wrap_valid_tx(tx, TransactionOrigin::Local)),
+                0,
+                TempoHardfork::T1,
+            )
+            .unwrap();
+        }
+
+        let mut transactions = AllPoolTransactions::default();
+        pool.append_all_transactions_by_sender(sender, &mut transactions);
+
+        let pending_hashes: HashSet<_> = transactions.pending.iter().map(|tx| *tx.hash()).collect();
+        let queued_hashes: HashSet<_> = transactions.queued.iter().map(|tx| *tx.hash()).collect();
+
+        assert_eq!(pending_hashes, HashSet::from([pending_hash, expiring_hash]));
+        assert_eq!(queued_hashes, HashSet::from([queued_hash]));
     }
 
     #[test]

@@ -11,7 +11,7 @@ accounts:
     mnemonic: "test test test test test test test test test test test junk"
     index: 100001
 artifacts:
-  ERC20: ../erc20.abi.json
+  ERC20: ../tip20.abi.json
   PortalFixture: ../zones/PortalFixture.json
   SettlementFixture: ../zones/SettlementFixture.json
   ZonePortal: ../zones/portal.abi.json
