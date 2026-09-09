@@ -4,6 +4,7 @@
 //! which spins up an in-process node with direct pool/block access, plus tests
 //! that require pool introspection or controlled block mining.
 
+use super::types::TestEnv;
 use crate::utils::{ForkSchedule, SingleNodeSetup, TEST_MNEMONIC, TestNodeBuilder};
 use alloy::{
     consensus::{BlockHeader, Transaction},
@@ -20,6 +21,7 @@ use alloy_eips::Encodable2718;
 use reth_ethereum::network::{NetworkSyncUpdater, SyncState};
 use reth_node_api::BuiltPayload;
 use reth_primitives_traits::transaction::TxHashRef;
+use reth_provider::{AccountReader, StateProviderFactory};
 use reth_transaction_pool::TransactionPool;
 use tempo_alloy::{TempoNetwork, provider::TempoProviderBuilderExt};
 use tempo_chainspec::{hardfork::TempoHardfork, spec::TEMPO_T1_BASE_FEE};
@@ -36,7 +38,7 @@ use tempo_precompiles::{
     tip20::ITIP20::{self},
 };
 use tempo_primitives::{
-    TempoTransaction, TempoTxEnvelope,
+    SignatureType, TempoTransaction, TempoTxEnvelope,
     transaction::{
         KeyAuthorization, SignedKeyAuthorization,
         tempo_transaction::Call,
@@ -331,6 +333,64 @@ impl super::types::TestEnv for Localnet {
         .await
         .map_err(|_| eyre::eyre!("eth_sendRawTransactionSync timed out"))?
     }
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn test_fill_uses_fee_token_gas_allowance() -> eyre::Result<()> {
+    let mut env = Localnet::new().await?;
+    let signer = PrivateKeySigner::random();
+    env.fund_account(signer.address()).await?;
+    // eth_getBalance returns a wallet-compatibility placeholder; inspect real state.
+    let account = env
+        .setup
+        .node
+        .inner
+        .provider
+        .latest()?
+        .basic_account(&signer.address())?;
+    assert!(account.is_none_or(|account| account.balance.is_zero()));
+    assert!(
+        ITIP20::new(DEFAULT_FEE_TOKEN, &env.provider)
+            .balanceOf(signer.address())
+            .call()
+            .await?
+            > U256::ZERO
+    );
+
+    let request = tempo_node::rpc::TempoTransactionRequest {
+        inner: alloy::rpc::types::TransactionRequest {
+            from: Some(signer.address()),
+            max_fee_per_gas: Some(u128::from(TEMPO_T1_BASE_FEE) * 2),
+            max_priority_fee_per_gas: Some(u128::from(TEMPO_T1_BASE_FEE)),
+            ..Default::default()
+        },
+        calls: vec![create_transfer_call(
+            DEFAULT_FEE_TOKEN,
+            Address::random(),
+            U256::from(1),
+        )],
+        key_type: Some(SignatureType::Secp256k1),
+        fee_token: Some(DEFAULT_FEE_TOKEN),
+        ..Default::default()
+    };
+    let filled: serde_json::Value = env
+        .provider
+        .raw_request("eth_fillTransaction".into(), (&request,))
+        .await?;
+    let tx = parse_filled_tx(&filled)?;
+    assert!(tx.gas_limit > 21_000);
+    assert_eq!(tx.nonce, 0);
+    assert_eq!(tx.fee_token, Some(DEFAULT_FEE_TOKEN));
+
+    // Ordinary fill must retain explicitly supplied gas, even when it is too low to execute.
+    let mut explicit = request;
+    explicit.inner.gas = Some(1);
+    let filled: serde_json::Value = env
+        .provider
+        .raw_request("eth_fillTransaction".into(), (&explicit,))
+        .await?;
+    assert_eq!(parse_filled_tx(&filled)?.gas_limit, 1);
+    Ok(())
 }
 
 #[tokio::test(flavor = "multi_thread")]
