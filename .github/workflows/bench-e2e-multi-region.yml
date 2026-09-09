@@ -305,6 +305,27 @@ jobs:
       VALSCOPE_INTERNAL_TOKEN: ${{ secrets.VALSCOPE_INTERNAL_TOKEN }}
 
     steps:
+      - name: Wait for active regional benchmark
+        uses: actions/github-script@3a2844b7e9c422d3c10d287c895573f7108da1b3 # v9.0.0
+        with:
+          script: |
+            const runId = 34342937939;
+            const deadline = Date.now() + 4 * 60 * 60 * 1000;
+            while (Date.now() < deadline) {
+              const { data: run } = await github.rest.actions.getWorkflowRun({
+                owner: context.repo.owner,
+                repo: context.repo.repo,
+                run_id: runId,
+              });
+              if (run.status === 'completed') {
+                core.info(`Regional benchmark ${runId} completed; starting TCP validation.`);
+                return;
+              }
+              core.info(`Waiting for regional benchmark ${runId}: ${run.status}`);
+              await new Promise(resolve => setTimeout(resolve, 30000));
+            }
+            core.setFailed(`Regional benchmark ${runId} is still active; no test infrastructure was provisioned.`);
+
       - name: Fetch GitHub token via STS
         id: github-sts
         uses: tempoxyz/gh-actions/actions/github-sts@c0292122e255def866c64c55e5844d1e7d5fe7ad
