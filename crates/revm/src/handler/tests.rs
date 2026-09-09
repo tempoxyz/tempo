@@ -1,12 +1,14 @@
 use super::*;
 use crate::{
-    FeeTokenResolver, ProtocolFeeManager, TempoBlockEnv, TempoFeeManager, TempoTxEnv,
+    ExecutionContext, FeeTokenResolver, ProtocolFeeManager, TempoBlockEnv, TempoFeeManager,
+    TempoTxEnv,
     evm::TempoEvm,
     gas_params::tempo_gas_params,
     signature_gas::{P256_VERIFY_GAS, primitive_signature_verification_gas},
     tx::TempoBatchCallEnv,
 };
-use alloy_primitives::{Address, B256, Bytes, TxKind, U256};
+use alloy_primitives::{Address, B256, Bytes, Signature, TxKind, U256};
+use alloy_sol_types::SolCall;
 use proptest::prelude::*;
 use reth_evm::EvmError;
 use revm::{
@@ -21,15 +23,20 @@ use revm::{
     primitives::hardfork::SpecId,
 };
 use tempo_chainspec::hardfork::TempoHardfork;
-use tempo_contracts::precompiles::{DEFAULT_FEE_TOKEN, ITIPFeeAMM};
+use tempo_contracts::precompiles::{
+    DEFAULT_FEE_TOKEN, INativeMultisig, ITIPFeeAMM, NATIVE_MULTISIG_ADDRESS,
+};
 use tempo_precompiles::{
     PATH_USD_ADDRESS, TIP_FEE_MANAGER_ADDRESS, storage::ContractStorage, test_util::TIP20Setup,
     tip_fee_manager::TipFeeManager,
 };
-use tempo_primitives::transaction::{
-    Call, PrimitiveSignature, RecoveredTempoAuthorization, TempoSignature,
-    TempoSignedAuthorization,
-    tt_signature::{P256SignatureWithPreHash, WebAuthnSignature},
+use tempo_primitives::{
+    account::decode_config_commitment,
+    transaction::{
+        Call, MultisigConfig, MultisigOwner, MultisigSignature, PrimitiveSignature,
+        RecoveredTempoAuthorization, TempoSignature, TempoSignedAuthorization,
+        tt_signature::{P256SignatureWithPreHash, WebAuthnSignature},
+    },
 };
 
 fn create_test_journal() -> Journal<CacheDB<EmptyDB>> {
@@ -53,6 +60,205 @@ fn system_call_clears_previous_intrinsic_oog(spec: TempoHardfork) {
         );
         assert!(!test.evm.intrinsic_gas_exceeds_limit);
     }
+}
+
+mod native_access;
+
+fn native_fixture() -> TestHandlerEvm {
+    let factory = Address::repeat_byte(0x71);
+    let config = MultisigConfig {
+        salt: B256::ZERO,
+        version: 0,
+        threshold: 1,
+        owners: vec![MultisigOwner {
+            owner: Address::repeat_byte(0x22),
+            weight: 1,
+        }],
+    };
+    let account = config.derive_account(factory).unwrap();
+    let signature = MultisigSignature::try_new(
+        account,
+        config,
+        vec![PrimitiveSignature::Secp256k1(Signature::test_signature())],
+    )
+    .unwrap();
+    let mut test = TestHandlerEvm::aa(
+        TempoHardfork::T12,
+        TempoBatchCallEnv {
+            signature: TempoSignature::Multisig(signature),
+            aa_calls: vec![Call {
+                to: TxKind::Call(Address::repeat_byte(0x33)),
+                value: U256::ZERO,
+                input: Bytes::new(),
+            }],
+            ..Default::default()
+        },
+        |tx| {
+            tx.caller = account;
+            tx.gas_limit = 1_000_000;
+            tx.execution_context = ExecutionContext::Simulation;
+        },
+    );
+    test.evm.ctx.block.multisig_recovery_factory = Some(factory);
+    test
+}
+
+#[test_case::test_case(InstructionResult::Revert; "revert")]
+#[test_case::test_case(InstructionResult::OutOfGas; "halt")]
+fn native_registration_first_call_failure_and_retry(failure: InstructionResult) {
+    let mut test = native_fixture();
+    let account = test.evm.ctx.tx.caller;
+    let expected = crate::native_multisig::authorizations(&test.evm.ctx.tx)[0]
+        .as_ref()
+        .unwrap()
+        .signature
+        .config_commitment();
+    test.validate_initial_tx_gas();
+    for succeed in [false, true] {
+        let calls = test
+            .evm
+            .ctx
+            .tx
+            .tempo_tx_env
+            .as_ref()
+            .unwrap()
+            .aa_calls
+            .clone();
+        let result = test
+            .handler
+            .execute_multi_call_with(&mut test.evm, 600_000, 0, calls, |_handler, evm, gas| {
+                assert_eq!(
+                    decode_config_commitment(
+                        &evm.ctx
+                            .journaled_state
+                            .state
+                            .get(&account)
+                            .unwrap()
+                            .info
+                            .extension,
+                        true
+                    )
+                    .unwrap(),
+                    expected
+                );
+                Ok(FrameResult::Call(CallOutcome::new(
+                    InterpreterResult::new(
+                        if succeed {
+                            InstructionResult::Stop
+                        } else {
+                            failure
+                        },
+                        Bytes::new(),
+                        Gas::new(gas.remaining()),
+                    ),
+                    0..0,
+                )))
+            })
+            .unwrap();
+        assert_eq!(result.instruction_result().is_ok(), succeed);
+        assert_eq!(
+            decode_config_commitment(
+                &test
+                    .evm
+                    .ctx
+                    .journaled_state
+                    .state
+                    .get(&account)
+                    .unwrap()
+                    .info
+                    .extension,
+                true
+            )
+            .unwrap(),
+            expected
+        );
+    }
+}
+
+#[test]
+fn native_invalid_intrinsic_gas_does_not_register() {
+    let mut test = native_fixture();
+    let account = test.evm.ctx.tx.caller;
+    test.evm.ctx.tx.gas_limit = 1;
+    let error = test.handler.run(&mut test.evm).unwrap_err();
+    assert!(
+        matches!(
+            error,
+            EVMError::Transaction(TempoInvalidTransaction::EthInvalidTransaction(
+                InvalidTransaction::CallGasCostMoreThanGasLimit { .. }
+            ))
+        ),
+        "{error:?}"
+    );
+    assert!(
+        test.evm
+            .ctx
+            .journaled_state
+            .state
+            .get(&account)
+            .is_none_or(|account| account.info.extension.is_empty())
+    );
+}
+
+#[test]
+fn native_failed_fee_collection_does_not_register() -> eyre::Result<()> {
+    let mut test = native_fixture().with_fee_manager(ValidatorTokenLookupFailsFeeManager);
+    let account = test.evm.ctx.tx.caller;
+    let price = 1_000_000_000_000;
+    test.evm.ctx.tx.gas_price = price;
+    let fee = calc_gas_balance_spending(test.evm.ctx.tx.gas_limit, price);
+    let token = StorageCtx::enter_ctx(&mut test.evm.ctx, StorageActions::disabled(), || {
+        TIP20Setup::create("UserToken", "UTK", account)
+            .with_issuer(account)
+            .with_mint(account, fee)
+            .apply()
+            .map(|token| token.address())
+    })?;
+    test.evm.ctx.tx.fee_token = Some(token);
+    let error = test.handler.run(&mut test.evm).unwrap_err();
+    assert!(
+        matches!(
+            error,
+            EVMError::Transaction(TempoInvalidTransaction::CollectFeePreTx(
+                FeePaymentError::InsufficientAmmLiquidity { .. }
+            ))
+        ),
+        "{error:?}"
+    );
+    assert!(
+        test.evm
+            .ctx
+            .journaled_state
+            .state
+            .get(&account)
+            .is_none_or(|account| account.info.extension.is_empty())
+    );
+    Ok(())
+}
+
+#[test]
+fn native_getter_observes_first_registration_during_execution() {
+    let mut test = native_fixture();
+    let account = test.evm.ctx.tx.caller;
+    let expected = crate::native_multisig::authorizations(&test.evm.ctx.tx)[0]
+        .as_ref()
+        .unwrap()
+        .signature
+        .config_commitment();
+    test.evm.ctx.tx.tempo_tx_env.as_mut().unwrap().aa_calls = vec![Call {
+        to: TxKind::Call(NATIVE_MULTISIG_ADDRESS),
+        value: U256::ZERO,
+        input: INativeMultisig::getConfigCommitmentCall { account }
+            .abi_encode()
+            .into(),
+    }];
+    let gas = test.validate_initial_tx_gas();
+    test.handler
+        .seed_precompile_tx_context(&mut test.evm)
+        .unwrap();
+    let result = test.execute(&gas);
+    assert!(result.instruction_result().is_ok(), "{result:?}");
+    assert_eq!(result.output().data().as_ref(), expected.as_slice());
 }
 
 type TestHandlerEvmResult<T> =
@@ -1311,7 +1517,7 @@ fn test_t4_key_authorization_matches_tip1016_sstore_regular_cost() {
     // TIP-1016 is opt-in via amsterdam_eip8037; manually enable for this test.
     let gas_params = crate::gas_params::tempo_gas_params_with_amsterdam(TempoHardfork::T4, true);
 
-    let sig_gas = ECRECOVER_GAS + account_signature_verification_gas(&key_auth.signature);
+    let sig_gas = ECRECOVER_GAS + tempo_signature_verification_gas(&key_auth.signature);
     let sload = gas_params.warm_storage_read_cost() + gas_params.cold_storage_additional_cost();
     let scope_extra_gas = call_scope_extra_gas(&key_auth.authorization);
     let (regular_gas, state_gas) =
@@ -1333,7 +1539,7 @@ fn test_t7_key_authorization_intrinsic_includes_storage_credit_value() {
         ));
 
     let gas_params = crate::gas_params::tempo_gas_params(TempoHardfork::T7);
-    let sig_gas = ECRECOVER_GAS + account_signature_verification_gas(&key_auth.signature);
+    let sig_gas = ECRECOVER_GAS + tempo_signature_verification_gas(&key_auth.signature);
     let sload = gas_params.warm_storage_read_cost() + gas_params.cold_storage_additional_cost();
     let scope_extra_gas = call_scope_extra_gas(&key_auth.authorization);
     let (regular_gas, state_gas) =
@@ -1658,7 +1864,7 @@ fn test_2d_nonce_gas_limit_validation() {
             if should_succeed {
                 assert!(
                     result.is_ok(),
-                    "{spec:?}: gas_limit={gas_limit}, nonce={nonce}: expected success but got error"
+                    "{spec:?}: gas_limit={gas_limit}, nonce={nonce}: expected success, got {result:?}"
                 );
             } else {
                 let err = result.expect_err(&format!(
