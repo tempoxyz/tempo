@@ -9,7 +9,7 @@ use std::{
 use alloy_primitives::B256;
 use clap::{ArgMatches, FromArgMatches, Parser};
 use commonware_runtime::Runner as _;
-use eyre::{Context as _, OptionExt, bail, ensure};
+use eyre::{Context as _, OptionExt, ensure};
 use reth_chainspec::EthChainSpec as _;
 use reth_cli_commands::download::{
     manifest::{OutputFileChecksum, SingleArchive, SnapshotManifest},
@@ -234,11 +234,11 @@ fn ensure_consensus_storage_not_held(consensus_dir: &Path) -> eyre::Result<()> {
     match file.try_lock() {
         // Released when `file` drops, before the source runtime acquires it.
         Ok(()) => Ok(()),
-        Err(fs::TryLockError::WouldBlock) => bail!(
+        Err(fs::TryLockError::WouldBlock) => Err(eyre::eyre!(
             "consensus storage at `{}` is held by another process; stop the node before \
              creating a snapshot",
             consensus_dir.display()
-        ),
+        )),
         Err(fs::TryLockError::Error(err)) => {
             Err(err).wrap_err_with(|| format!("failed to probe lock on {}", hold.display()))
         }
