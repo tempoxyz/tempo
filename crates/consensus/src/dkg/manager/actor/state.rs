@@ -51,6 +51,16 @@ pub(super) fn builder() -> Builder {
     Builder::default()
 }
 
+/// A fatal persistence failure. The actor must exit and reopen storage before
+/// processing more work; protocol errors do not carry this type.
+#[derive(Debug, thiserror::Error)]
+pub(super) enum StorageWriteError {
+    #[error(transparent)]
+    Write(#[from] eyre::Report),
+    #[error("DKG storage must be reopened after a failed or cancelled write")]
+    Unavailable,
+}
+
 pub(super) struct Storage<TContext>
 where
     TContext: BufferPooler + commonware_runtime::Storage + Clock + Metrics,
@@ -85,13 +95,16 @@ where
         self.storage.current.as_ref()
     }
 
-    pub(super) async fn init_verified(self, state: State) -> eyre::Result<Storage<TContext>> {
+    pub(super) async fn init_verified(
+        self,
+        state: State,
+    ) -> Result<Storage<TContext>, StorageWriteError> {
         let Self { mut storage } = self;
         storage.states = Some(
             storage
                 .states
                 .take()
-                .expect("DKG states storage is available")
+                .ok_or(StorageWriteError::Unavailable)?
                 .put_sync(state.epoch.get(), state.clone())
                 .await
                 .wrap_err("unable to write initial state to metadata")?,
@@ -105,8 +118,13 @@ impl<TContext> Storage<TContext>
 where
     TContext: BufferPooler + commonware_runtime::Storage + Clock + Metrics,
 {
-    pub(super) fn is_poisoned(&self) -> bool {
-        self.states.is_none() || self.events.is_none()
+    // A cancelled write cannot return an error. Reject subsequent writes here,
+    // including cache hits, rather than exposing handle state to the actor.
+    fn ensure_available(&self) -> Result<(), StorageWriteError> {
+        if self.states.is_none() || self.events.is_none() {
+            return Err(StorageWriteError::Unavailable);
+        }
+        Ok(())
     }
 
     /// Returns all player acknowledgments received during the given epoch.
@@ -148,18 +166,16 @@ where
     }
 
     /// Persists the outcome of a DKG ceremony to state
-    pub(super) async fn set_state(&mut self, state: State) -> eyre::Result<()> {
-        let states = self
-            .states
-            .as_mut()
-            .expect("DKG states storage is available");
+    pub(super) async fn set_state(&mut self, state: State) -> Result<(), StorageWriteError> {
+        self.ensure_available()?;
+        let states = self.states.as_mut().ok_or(StorageWriteError::Unavailable)?;
         if let Some(old) = states.put(state.epoch.get(), state.clone()) {
             warn!(epoch = %old.epoch, "overwriting existing state");
         }
         self.states = Some(
             self.states
                 .take()
-                .expect("DKG states storage is available")
+                .ok_or(StorageWriteError::Unavailable)?
                 .sync()
                 .await
                 .wrap_err("failed writing state")?,
@@ -182,7 +198,8 @@ where
         epoch: Epoch,
         player: PublicKey,
         ack: PlayerAck<PublicKey>,
-    ) -> eyre::Result<()> {
+    ) -> Result<(), StorageWriteError> {
+        self.ensure_available()?;
         if self
             .cache
             .get(&epoch)
@@ -196,7 +213,7 @@ where
         let (events, _, _) = self
             .events
             .take()
-            .expect("DKG events storage is available")
+            .ok_or(StorageWriteError::Unavailable)?
             .append(
                 section,
                 &Event::Ack {
@@ -237,7 +254,8 @@ where
         dealer: PublicKey,
         pub_msg: DealerPubMsg<MinSig>,
         priv_msg: DealerPrivMsg,
-    ) -> eyre::Result<()> {
+    ) -> Result<(), StorageWriteError> {
+        self.ensure_available()?;
         if self
             .cache
             .get(&epoch)
@@ -251,7 +269,7 @@ where
         let (events, _, _) = self
             .events
             .take()
-            .expect("DKG events storage is available")
+            .ok_or(StorageWriteError::Unavailable)?
             .append(
                 section,
                 &Event::Dealing {
@@ -284,7 +302,8 @@ where
         epoch: Epoch,
         dealer: PublicKey,
         log: dkg::DealerLog<MinSig, PublicKey>,
-    ) -> eyre::Result<()> {
+    ) -> Result<(), StorageWriteError> {
+        self.ensure_available()?;
         if self
             .cache
             .get(&epoch)
@@ -302,7 +321,7 @@ where
         let (events, _, _) = self
             .events
             .take()
-            .expect("DKG events storage is available")
+            .ok_or(StorageWriteError::Unavailable)?
             .append(
                 section,
                 &Event::Log {
@@ -329,7 +348,8 @@ where
         &mut self,
         epoch: Epoch,
         header: TempoHeader,
-    ) -> eyre::Result<()> {
+    ) -> Result<(), StorageWriteError> {
+        self.ensure_available()?;
         let height = Height::new(header.number());
         let digest = Digest(header.hash_slow());
         let parent = Digest(header.parent_hash());
@@ -351,7 +371,7 @@ where
         let (events, _, _) = self
             .events
             .take()
-            .expect("DKG events storage is available")
+            .ok_or(StorageWriteError::Unavailable)?
             .append(
                 section,
                 &Event::Finalized {
@@ -528,23 +548,24 @@ where
     }
 
     #[instrument(skip_all, fields(%up_to_epoch), err)]
-    pub(super) async fn prune(&mut self, up_to_epoch: Epoch) -> eyre::Result<()> {
+    pub(super) async fn prune(&mut self, up_to_epoch: Epoch) -> Result<(), StorageWriteError> {
+        self.ensure_available()?;
         let (events, _) = self
             .events
             .take()
-            .expect("DKG events storage is available")
+            .ok_or(StorageWriteError::Unavailable)?
             .prune(up_to_epoch.get())
             .await
             .wrap_err("unable to prune events journal")?;
         self.events = Some(events);
         self.states
             .as_mut()
-            .expect("DKG states storage is available")
+            .ok_or(StorageWriteError::Unavailable)?
             .retain(|&key, _| key >= up_to_epoch.get());
         self.states = Some(
             self.states
                 .take()
-                .expect("DKG states storage is available")
+                .ok_or(StorageWriteError::Unavailable)?
                 .sync()
                 .await
                 .wrap_err("unable to prune events metadata")?,
@@ -1408,6 +1429,97 @@ mod tests {
                 "storage with an initial state must reopen with it"
             );
         });
+    }
+
+    #[test]
+    fn initial_state_write_failure_is_typed() {
+        deterministic::Runner::default().start(|mut context| async move {
+            let unverified = builder()
+                .partition_prefix("initial_state_write_failure")
+                .init_unverified(context.child("storage"))
+                .await
+                .unwrap();
+            let state = make_test_state(&mut context, 0);
+            context.storage_fault_config().write().sync_rate =
+                Some(commonware_utils::probability!(1.0));
+            let Err(error) = unverified.init_verified(state).await else {
+                panic!("initial state sync must fail");
+            };
+            assert!(matches!(error, StorageWriteError::Write(_)));
+            let error = eyre::Report::new(error).wrap_err("failed healing storage");
+            assert!(error.is::<StorageWriteError>());
+        });
+    }
+
+    #[test]
+    fn write_failures_remain_typed_and_prevent_reuse() {
+        // Network dealing and ACK failures are exercised by the actor tests.
+        // Cover metadata, headers, dealer logs and pruning at the storage boundary.
+        for operation in [
+            "set_state",
+            "append_finalized_header",
+            "append_dealer_log",
+            "prune",
+        ] {
+            deterministic::Runner::default().start(|mut context| async move {
+                let mut state = make_test_state(&mut context, 0);
+                state.is_full_dkg = true;
+                let mut storage = builder()
+                    .partition_prefix(operation)
+                    .init_unverified(context.child("storage"))
+                    .await
+                    .unwrap()
+                    .init_verified(state.clone())
+                    .await
+                    .unwrap();
+                let header = TempoHeader::default();
+                storage
+                    .append_finalized_header(state.epoch, header.clone())
+                    .await
+                    .unwrap();
+                let faults = context.storage_fault_config();
+                faults.write().sync_rate = Some(commonware_utils::probability!(1.0));
+                let error = match operation {
+                    "set_state" => storage.set_state(state.clone()).await,
+                    "append_finalized_header" => {
+                        storage
+                            .append_finalized_header(state.epoch.next(), header.clone())
+                            .await
+                    }
+                    "append_dealer_log" => {
+                        let round = Round::from_state(&state, crate::config::NAMESPACE);
+                        let (dealer, _, _) = dkg::Dealer::start::<N3f1>(
+                            &mut context,
+                            round.info().clone(),
+                            PrivateKey::from_seed(0),
+                            None,
+                        )
+                        .unwrap();
+                        let (dealer, log) = dealer.finalize::<N3f1>().check(round.info()).unwrap();
+                        storage.append_dealer_log(state.epoch, dealer, log).await
+                    }
+                    "prune" => storage.prune(state.epoch.next()).await,
+                    _ => unreachable!(),
+                }
+                .unwrap_err();
+                assert!(matches!(error, StorageWriteError::Write(_)));
+                let error = eyre::Report::new(error)
+                    .wrap_err("storage operation")
+                    .wrap_err("actor handler");
+                assert!(error.is::<StorageWriteError>(), "{error:?}");
+
+                *faults.write() = deterministic::FaultConfig::default();
+                // Even a cache hit or a write to the other journal must fail.
+                assert!(matches!(
+                    storage.append_finalized_header(state.epoch, header).await,
+                    Err(StorageWriteError::Unavailable)
+                ));
+                assert!(matches!(
+                    storage.set_state(state).await,
+                    Err(StorageWriteError::Unavailable)
+                ));
+            });
+        }
     }
 
     #[test]

@@ -236,10 +236,6 @@ where
         TSender: Sender<PublicKey = PublicKey>,
         TReceiver: Receiver<PublicKey = PublicKey>,
     {
-        ensure!(
-            !storage.is_poisoned(),
-            "DKG storage must be reopened after a failed or cancelled mutation"
-        );
         let state = storage.current();
 
         self.metrics.reset();
@@ -309,6 +305,8 @@ where
             )
         });
 
+        // Await writes inside the selected branch, never as competing select
+        // futures. Cancelling this actor drops storage along with the write.
         loop {
             let mut shutdown = self.context.stopped().fuse();
             select!(
@@ -374,13 +372,13 @@ where
                                 sender,
                                 message,
                             ).await;
-                            // Malformed messages and send failures are recoverable,
-                            // but a failed storage mutation consumes its handle.
-                            // Exit with the original I/O error before another message
-                            // can access the poisoned storage.
-                            if storage.is_poisoned() {
-                                result.wrap_err("DKG storage invalidated while handling a network message")?;
-                                bail!("DKG storage invalidated without a reported error");
+                            // Malformed messages and send failures are recoverable.
+                            // Persistence failures must exit before another message
+                            // can be processed or acknowledged.
+                            if let Err(error) = result
+                                && error.is::<state::StorageWriteError>()
+                            {
+                                return Err(error).wrap_err("failed persisting DKG network message");
                             }
                         }
                         Err(err) => {
@@ -952,7 +950,7 @@ where
                     }
                     .await;
                     if let Err(error) = result {
-                        if storage.is_poisoned() {
+                        if error.is::<state::StorageWriteError>() {
                             return Err(error);
                         }
                         warn!(%error, "failed to process our own dealing or ACK");
