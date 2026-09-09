@@ -156,10 +156,13 @@ pub struct Args {
     /// the proposal and notarization timeouts.
     ///
     /// Must exceed both `--consensus.wait-for-notarizations` and
-    /// `--consensus.wait-to-rebroadcast-nullify`. Defaults to the larger of the
-    /// two plus `--consensus.wait-for-proposal`.
-    #[arg(long = "consensus.inactive-time-before-leader-skip")]
-    pub inactive_time_before_leader_skip: Option<PositiveDuration>,
+    /// `--consensus.wait-to-rebroadcast-nullify`. The default is the larger of
+    /// their defaults plus the default `--consensus.wait-for-proposal`.
+    #[arg(
+        long = "consensus.inactive-time-before-leader-skip",
+        default_value = "11200ms"
+    )]
+    pub inactive_time_before_leader_skip: PositiveDuration,
 
     /// Time reserved for proposal propagation before the target block boundary.
     ///
@@ -429,7 +432,8 @@ impl Args {
             self.views_to_track > 0,
             "`--consensus.views-to-track` must be greater than zero",
         );
-        let inactive_time_before_leader_skip = self.inactive_time_before_leader_skip();
+        let inactive_time_before_leader_skip =
+            self.inactive_time_before_leader_skip.into_duration();
         let wait_to_rebroadcast_nullify = self.wait_to_rebroadcast_nullify.into_duration();
         eyre::ensure!(
             inactive_time_before_leader_skip > wait_for_notarizations,
@@ -442,22 +446,6 @@ impl Args {
              `--consensus.wait-to-rebroadcast-nullify` ({wait_to_rebroadcast_nullify:?})",
         );
         Ok(())
-    }
-
-    /// The leader inactivity window after which a view is skipped early.
-    ///
-    /// Defaults to the larger of the notarization and nullify-rebroadcast waits
-    /// plus one proposal wait, the smallest value Commonware accepts with one
-    /// proposal window of margin.
-    pub fn inactive_time_before_leader_skip(&self) -> Duration {
-        self.inactive_time_before_leader_skip
-            .map(PositiveDuration::into_duration)
-            .unwrap_or_else(|| {
-                self.wait_for_notarizations
-                    .into_duration()
-                    .max(self.wait_to_rebroadcast_nullify.into_duration())
-                    .saturating_add(self.wait_for_proposal.into_duration())
-            })
     }
 
     /// Transport settings for `tempo/1`.
@@ -687,21 +675,14 @@ mod tests {
     }
 
     #[test]
-    fn inactive_time_before_leader_skip_defaults_to_floor_plus_one_proposal_wait() {
+    fn inactive_time_before_leader_skip_default_is_floor_plus_one_proposal_wait() {
         // max(2s notarizations, 10s nullify rebroadcast) + 1200ms proposal wait.
         let args = parse(&["--dev"]).consensus;
         assert_eq!(
-            args.inactive_time_before_leader_skip(),
+            args.inactive_time_before_leader_skip.into_duration(),
             Duration::from_millis(11_200)
         );
         assert_eq!(args.inactive_views_until_leader_skip, None);
-
-        let args = parse(&["--dev", "--consensus.wait-to-rebroadcast-nullify", "500ms"]).consensus;
-        assert_eq!(
-            args.inactive_time_before_leader_skip(),
-            Duration::from_millis(3_200)
-        );
-        args.validate_simplex_timing().unwrap();
     }
 
     #[test]
@@ -731,7 +712,7 @@ mod tests {
         ])
         .consensus;
         assert_eq!(
-            args.inactive_time_before_leader_skip(),
+            args.inactive_time_before_leader_skip.into_duration(),
             Duration::from_millis(10_001)
         );
         args.validate_simplex_timing().unwrap();

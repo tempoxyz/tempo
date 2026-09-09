@@ -126,7 +126,7 @@ pub async fn run_consensus_stack(
         time_to_retry_nullify_broadcast: config.wait_to_rebroadcast_nullify.into_duration(),
         time_for_peer_response: config.wait_for_peer_response.into_duration(),
         views_to_track: config.views_to_track,
-        inactive_time_before_leader_skip: config.inactive_time_before_leader_skip(),
+        inactive_time_before_leader_skip: config.inactive_time_before_leader_skip.into_duration(),
         proposal_return_budget,
         time_to_build_subblock: config.time_to_build_subblock.into_duration(),
         subblock_broadcast_interval: config.subblock_broadcast_interval.into_duration(),
