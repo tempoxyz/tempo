@@ -9,9 +9,8 @@ use tempo_precompiles::native_multisig::{keccak_cost, valid_account};
 use tempo_primitives::{
     TempoBlockEnv,
     transaction::{
-        AccessKeySignature, KeychainSignature, MultisigQuorumError, MultisigSignature,
-        MultisigWeightAccumulator, SignatureType, TempoSignature,
-        multisig::MULTISIG_ACCOUNT_CREATE2_PREIMAGE_LEN,
+        KeychainSignature, MultisigQuorumError, MultisigSignature, MultisigWeightAccumulator,
+        SignatureType, TempoSignature, multisig::MULTISIG_ACCOUNT_CREATE2_PREIMAGE_LEN,
     },
 };
 
@@ -70,38 +69,37 @@ impl NativeAuthorization<'_> {
     }
 }
 
-pub fn authorizations(tx: &TempoTxEnv) -> Vec<NativeAuthorization<'_>> {
+/// Outer (direct or delegated) role, then inline grant role; either slot may be absent.
+pub fn authorizations(tx: &TempoTxEnv) -> [Option<NativeAuthorization<'_>>; 2] {
     let Some(aa) = tx.tempo_tx_env.as_ref() else {
-        return Vec::new();
+        return [None, None];
     };
-    let mut roles = Vec::with_capacity(2);
-    match &aa.signature {
-        TempoSignature::Multisig(signature) => roles.push(NativeAuthorization {
+    let outer = match &aa.signature {
+        TempoSignature::Multisig(signature) => Some(NativeAuthorization {
             signature,
             inner_digest: aa.signature_hash,
         }),
         TempoSignature::Keychain(keychain) => {
-            if let AccessKeySignature::Multisig(signature) = &keychain.signature {
-                roles.push(NativeAuthorization {
+            keychain
+                .signature
+                .as_multisig()
+                .map(|signature| NativeAuthorization {
                     signature,
                     inner_digest: KeychainSignature::signing_hash(
                         aa.signature_hash,
                         keychain.user_address,
                     ),
-                });
-            }
+                })
         }
-        TempoSignature::Primitive(_) => {}
-    }
-    if let Some(auth) = &aa.key_authorization
-        && let TempoSignature::Multisig(signature) = &auth.signature
-    {
-        roles.push(NativeAuthorization {
-            signature,
+        TempoSignature::Primitive(_) => None,
+    };
+    let grant = aa.key_authorization.as_ref().and_then(|auth| {
+        Some(NativeAuthorization {
+            signature: auth.signature.as_multisig()?,
             inner_digest: auth.signature_hash(),
-        });
-    }
-    roles
+        })
+    });
+    [outer, grant]
 }
 
 /// Includes a separately named grant recipient, which need not sign this transaction.
@@ -184,7 +182,7 @@ pub fn validate_state<J: JournalTr>(
             ));
         }
     }
-    if roles.is_empty() {
+    if roles.iter().all(Option::is_none) {
         return grant_delegate_access_gas(journal, tx, spec, gas, &[]);
     }
     let invalid = |error| EVMError::Transaction(TempoInvalidTransaction::NativeMultisig(error));
@@ -221,7 +219,7 @@ pub fn validate_state<J: JournalTr>(
     }
     let mut accounts = Vec::with_capacity(2);
     let mut extra_gas = 0;
-    for role in roles {
+    for role in roles.into_iter().flatten() {
         let signature = role.signature;
         let address = signature.account();
         if !valid_account(address, spec) {
@@ -274,12 +272,12 @@ pub fn validate_state<J: JournalTr>(
 /// before constructing its mock witness; this function skips quorum recovery only in that mode.
 pub fn verify(tx: &TempoTxEnv) -> Result<(), TempoInvalidTransaction> {
     let roles = authorizations(tx);
-    if roles.is_empty() {
+    if roles.iter().all(Option::is_none) {
         return Ok(());
     }
     match tx.execution_context {
         ExecutionContext::Transaction { .. } => {
-            for role in roles {
+            for role in roles.into_iter().flatten() {
                 role.verify()?;
             }
         }

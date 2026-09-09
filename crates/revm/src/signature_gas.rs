@@ -1,3 +1,4 @@
+use alloy_rlp::Encodable;
 use revm::interpreter::gas::{
     COLD_SLOAD_COST, STANDARD_TOKEN_COST, get_tokens_in_calldata_istanbul,
 };
@@ -60,8 +61,10 @@ pub(crate) fn tempo_signature_verification_gas(signature: &TempoSignature) -> u6
 /// Registered-state V cost. Initial derivation and per-account registration are added after
 /// reading the account leaf. Each role pays this cost independently.
 pub(crate) fn multisig_verification_gas(signature: &MultisigSignature) -> u64 {
-    let mut witness = alloy_rlp::encode(signature.account());
-    witness.extend_from_slice(&alloy_rlp::encode(signature.config()));
+    let mut witness =
+        Vec::with_capacity(signature.account().length() + signature.config().length());
+    signature.account().encode(&mut witness);
+    signature.config().encode(&mut witness);
     get_tokens_in_calldata_istanbul(&witness) * STANDARD_TOKEN_COST
         + tempo_precompiles::native_multisig::keccak_cost(
             signature.config().commitment_preimage_len(),

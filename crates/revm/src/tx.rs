@@ -457,7 +457,11 @@ impl TempoTxEnv {
     /// encoding only for block simulations so execution layers can omit envelope-derived costs.
     fn maybe_mark_rpc_block_simulation(&mut self, encoded: &Bytes) {
         // Native cryptography may only be disabled by an explicit simulation caller.
-        if encoded.is_empty() && crate::native_multisig::authorizations(self).is_empty() {
+        if encoded.is_empty()
+            && crate::native_multisig::authorizations(self)
+                .iter()
+                .all(Option::is_none)
+        {
             self.execution_context = ExecutionContext::Simulation;
         }
     }

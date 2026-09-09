@@ -621,7 +621,10 @@ where
                 StorageActions::disabled(),
                 || {
                     let mut seen = Vec::new();
-                    for role in crate::native_multisig::authorizations(&ctx.tx) {
+                    for role in crate::native_multisig::authorizations(&ctx.tx)
+                        .into_iter()
+                        .flatten()
+                    {
                         let account = role.signature.account();
                         if !seen.contains(&account)
                             && StorageCtx.config_commitment(account)?.is_zero()
@@ -1271,7 +1274,8 @@ where
         let gas_balance_spending = core::cmp::max(account_balance, new_balance) - new_balance;
         crate::native_multisig::verify(tx)?;
 
-        // Note: Signature verification happens during recover_signer() before entering the pool
+        // Primitive signer recovery precedes pool admission; native owner quorums are verified
+        // here after affordability.
         // Note: Transaction parameter validation (priority fee, time window) happens in validate_env()
 
         // For Keychain signatures, validate the acting access key before fee collection when it
@@ -1901,7 +1905,9 @@ where
                 // keys cannot authorize other keys; T6 admin keys can.
                 let mut same_tx_auth_use = false;
                 if let Some(keychain_sig) = aa_env.signature.as_keychain()
-                    && crate::native_multisig::authorizations(tx).is_empty()
+                    && crate::native_multisig::authorizations(tx)
+                        .iter()
+                        .all(Option::is_none)
                 {
                     // Use override_key_id if provided (for gas estimation), otherwise recover from signature
                     let access_key_addr = if let Some(override_key_id) = aa_env.override_key_id {
@@ -2020,7 +2026,11 @@ where
                     }
                 }
 
-                if cfg.spec.is_t6() && crate::native_multisig::authorizations(tx).is_empty() {
+                if cfg.spec.is_t6()
+                    && crate::native_multisig::authorizations(tx)
+                        .iter()
+                        .all(Option::is_none)
+                {
                     let auth_signer = key_auth.recover_signer().map_err(|_| {
                         TempoInvalidTransaction::KeyAuthorizationSignatureRecoveryFailed
                     })?;

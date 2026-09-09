@@ -222,6 +222,8 @@ fn native_registration_first_call_revert_and_retry() {
     let mut test = native_fixture();
     let account = test.evm.ctx.tx.caller;
     let expected = crate::native_multisig::authorizations(&test.evm.ctx.tx)[0]
+        .as_ref()
+        .unwrap()
         .signature
         .config_commitment();
     test.validate_initial_tx_gas();
@@ -293,6 +295,8 @@ fn native_getter_observes_first_registration_during_execution() {
     let mut test = native_fixture();
     let account = test.evm.ctx.tx.caller;
     let expected = crate::native_multisig::authorizations(&test.evm.ctx.tx)[0]
+        .as_ref()
+        .unwrap()
         .signature
         .config_commitment();
     test.evm.ctx.tx.tempo_tx_env.as_mut().unwrap().aa_calls = vec![Call {

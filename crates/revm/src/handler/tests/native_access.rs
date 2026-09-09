@@ -287,7 +287,10 @@ fn native_handler_binds_grant_roles(case: GrantBindingCase) {
     );
     // All quorums are genuinely signed over this transaction, including the
     // changed grant. Failures below must be role binding, not bad cryptography.
-    for role in crate::native_multisig::authorizations(&test.evm.ctx.tx) {
+    for role in crate::native_multisig::authorizations(&test.evm.ctx.tx)
+        .into_iter()
+        .flatten()
+    {
         role.verify().unwrap();
     }
     let result = test.handler.run(&mut test.evm);
@@ -341,7 +344,7 @@ fn native_delegate_access_is_intrinsic_once(case: GrantCase) {
         let roles = crate::native_multisig::authorizations(&test.evm.ctx.tx);
         let mut registered = Vec::new();
         let mut expected = access;
-        for role in roles {
+        for role in roles.into_iter().flatten() {
             expected += tempo_precompiles::native_multisig::keccak_cost(
                 role.signature.config().account_salt_preimage_len(),
             ) + tempo_precompiles::native_multisig::keccak_cost(85);

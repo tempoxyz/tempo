@@ -13,10 +13,12 @@ use tempo_primitives::transaction::{MultisigConfig, MultisigOwner, PrimitiveSign
 #[test]
 fn native_hash_gas_layout_matches_all_owner_counts() {
     use tempo_primitives::transaction::{MAX_MULTISIG_OWNERS, MULTISIG_SIGNATURE_DOMAIN};
-    for count in 1..=MAX_MULTISIG_OWNERS {
+    for (count, version) in (1..=MAX_MULTISIG_OWNERS)
+        .flat_map(|count| [0, 127, 128, 255, 256, u64::MAX].map(|version| (count, version)))
+    {
         let config = MultisigConfig {
             salt: B256::ZERO,
-            version: 0,
+            version,
             threshold: 1,
             owners: (1..=count)
                 .map(|index| MultisigOwner {
@@ -109,6 +111,48 @@ fn fixture() -> (TempoTxEnv, TempoBlockEnv) {
 }
 
 #[test]
+fn native_authorization_roles_preserve_order_and_duplicate_accounts() {
+    use tempo_primitives::transaction::{AccessKeySignature, KeyAuthorization};
+    assert!(
+        authorizations(&TempoTxEnv::default())
+            .iter()
+            .all(Option::is_none)
+    );
+    let (mut tx, _) = fixture();
+    assert!(authorizations(&tx)[0].is_some());
+    assert!(authorizations(&tx)[1].is_none());
+    let caller = tx.caller;
+    let aa = tx.tempo_tx_env.as_mut().unwrap();
+    let native = aa.signature.as_multisig().unwrap().clone();
+    let outer_digest = aa.signature_hash;
+    let grant = KeyAuthorization::unrestricted(1, SignatureType::Multisig, caller);
+    let grant_digest = grant.signature_hash();
+    aa.key_authorization = Some(grant.into_signed(TempoSignature::Multisig(native.clone())));
+    let roles = authorizations(&tx);
+    let outer = roles[0].as_ref().unwrap();
+    let grant = roles[1].as_ref().unwrap();
+    assert_eq!(outer.signature.account(), grant.signature.account());
+    assert_eq!(outer.inner_digest, outer_digest);
+    assert_eq!(grant.inner_digest, grant_digest);
+    assert_ne!(outer.inner_digest, grant.inner_digest);
+
+    tx.tempo_tx_env.as_mut().unwrap().signature = TempoSignature::Keychain(KeychainSignature::new(
+        tx.caller,
+        AccessKeySignature::Multisig(native),
+    ));
+    assert_eq!(
+        authorizations(&tx)[0].as_ref().unwrap().inner_digest,
+        KeychainSignature::signing_hash(outer_digest, tx.caller)
+    );
+    let aa = tx.tempo_tx_env.as_mut().unwrap();
+    aa.signature = TempoSignature::default();
+    assert!(authorizations(&tx)[0].is_none());
+    assert!(authorizations(&tx)[1].is_some());
+    tx.tempo_tx_env.as_mut().unwrap().key_authorization = None;
+    assert!(authorizations(&tx).iter().all(Option::is_none));
+}
+
+#[test]
 fn native_state_registration_gas_and_registered_v0() {
     let (tx, block) = fixture();
     let mut journal: Journal<CacheDB<EmptyDB>> = Journal::new(CacheDB::new(EmptyDB::default()));
@@ -118,7 +162,11 @@ fn native_state_registration_gas_and_registered_v0() {
         20_000 + keccak_cost(77) + keccak_cost(85)
     );
     verify(&tx).unwrap();
-    let hash = authorizations(&tx)[0].signature.config_commitment();
+    let hash = authorizations(&tx)[0]
+        .as_ref()
+        .unwrap()
+        .signature
+        .config_commitment();
     journal.state.get_mut(&tx.caller).unwrap().info.extension =
         tempo_primitives::account::encode_config_commitment(hash).into();
     assert_eq!(
