@@ -202,6 +202,8 @@ where
         // AMM liquidity check after EVM validation.
         self.inner.skip_valid_after_check = true;
         self.inner.skip_liquidity_check = true;
+        // Benchmark experiment: isolate expiring-nonce validation from block persistence.
+        self.inner.skip_expiring_nonce_check = true;
         self.ctx_mut().cfg.disable_nonce_check = true;
     }
 

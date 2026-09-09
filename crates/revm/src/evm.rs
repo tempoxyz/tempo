@@ -53,6 +53,9 @@ pub struct TempoEvm<DB: Database, I> {
     /// The transaction pool sets this because it performs its own liquidity
     /// validation against a cached view of the AMM state.
     pub skip_liquidity_check: bool,
+    /// Experimental: skip expiring-nonce validation and replay-state access in the pool.
+    /// Defaults to false so block execution still checks and records expiring nonces.
+    pub skip_expiring_nonce_check: bool,
     /// Set when the intrinsic gas ended up above the transaction gas limit.
     ///
     /// `validate_against_state_and_deduct_caller` can raise the intrinsic gas
@@ -114,6 +117,7 @@ impl<DB: Database, I> TempoEvm<DB, I> {
             key_expiry,
             skip_valid_after_check,
             skip_liquidity_check,
+            skip_expiring_nonce_check,
             intrinsic_gas_exceeds_limit,
             actions,
             non_creditable_slots,
@@ -128,6 +132,7 @@ impl<DB: Database, I> TempoEvm<DB, I> {
             key_expiry,
             skip_valid_after_check,
             skip_liquidity_check,
+            skip_expiring_nonce_check,
             intrinsic_gas_exceeds_limit,
             actions,
             non_creditable_slots,
@@ -158,6 +163,7 @@ impl<DB: Database, I> TempoEvm<DB, I> {
             key_expiry: None,
             skip_valid_after_check: false,
             skip_liquidity_check: false,
+            skip_expiring_nonce_check: false,
             intrinsic_gas_exceeds_limit: false,
             actions,
             non_creditable_slots,

@@ -1074,7 +1074,7 @@ where
             }
         }
 
-        if is_expiring_nonce {
+        if is_expiring_nonce && !evm.skip_expiring_nonce_check {
             let max_expiry_secs = spec.expiring_nonce_max_expiry_secs();
             let capacity = spec.expiring_nonce_set_capacity();
             // Expiring nonce transaction replay protection:
@@ -1163,7 +1163,7 @@ where
                     Ok::<_, EVMError<DB::Error, TempoInvalidTransaction>>(())
                 },
             )?;
-        } else if !nonce_key.is_zero() {
+        } else if !is_expiring_nonce && !nonce_key.is_zero() {
             // 2D nonce transaction
             StorageCtx::enter_evm_without_tip1060_accounting(
                 journal,
@@ -1219,7 +1219,7 @@ where
                     Ok::<_, EVMError<DB::Error, TempoInvalidTransaction>>(())
                 },
             )?;
-        } else {
+        } else if nonce_key.is_zero() {
             // Protocol nonce (nonce_key == 0)
             // Bump the nonce for calls. Nonce for CREATE will be bumped in `make_create_frame`.
             // This applies uniformly to both standard and AA transactions - we only bump here
