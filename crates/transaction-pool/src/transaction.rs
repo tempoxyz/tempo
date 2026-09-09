@@ -1024,11 +1024,13 @@ mod tests {
         let delegate = Address::repeat_byte(0x33);
         let signature = crate::test_utils::configurable_signature;
         let pooled = |outer: TempoSignature, grant: Option<Address>| {
-            let mut tx = TempoTransaction::default();
-            tx.key_authorization = grant.map(|account| {
-                KeyAuthorization::unrestricted(1, SignatureType::Secp256k1, delegate)
-                    .into_signed(TempoSignature::Multisig(signature(account)))
-            });
+            let tx = TempoTransaction {
+                key_authorization: grant.map(|account| {
+                    KeyAuthorization::unrestricted(1, SignatureType::Secp256k1, delegate)
+                        .into_signed(TempoSignature::Multisig(signature(account)))
+                }),
+                ..Default::default()
+            };
             TempoPooledTransaction::new(Recovered::new_unchecked(
                 TempoTxEnvelope::AA(AASigned::new_unhashed(tx, outer)),
                 parent,
