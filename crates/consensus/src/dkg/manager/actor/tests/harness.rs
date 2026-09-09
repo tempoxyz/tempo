@@ -197,9 +197,9 @@ impl Harness {
             .expect("DKG storage is not open while the actor is running")
     }
 
-    pub(super) fn storage_mut(&mut self) -> &mut state::Storage<Context> {
+    pub(super) fn take_storage(&mut self) -> state::Storage<Context> {
         self.storage
-            .as_mut()
+            .take()
             .expect("DKG storage is not open while the actor is running")
     }
 
