@@ -5028,7 +5028,30 @@ mod tests {
             KeyAuthorization::unrestricted(4217, SignatureType::Secp256k1, signer.address())
                 .into_signed(PrimitiveSignature::default())
         };
-        authorization.authorization.account = Some(Address::repeat_byte(3));
+        let mut record =
+            serde_json::to_value(writable_access_key(account, &signer, &authorization).unwrap())
+                .unwrap();
+        let path = write_store(serde_json::json!([record]));
+        let store = TempoAccountsStore::open(&path).unwrap();
+        assert_eq!(
+            store.access_keys().unwrap()[0].key_authorization(),
+            Some(&authorization)
+        );
+        let wrong = Address::repeat_byte(3);
+        record["keyAuthorization"]["account"] = serde_json::json!(wrong);
+        overwrite_store(&path, serde_json::json!([record]));
+        let Err(TempoAccountsError::InvalidAccessKey { address, reason }) = store.access_keys()
+        else {
+            panic!("expected persisted account metadata rejection")
+        };
+        assert_eq!(address, signer.address());
+        assert_eq!(
+            reason,
+            format!("authorization account mismatch: expected {account}, actual {wrong}")
+        );
+        fs::remove_file(path).unwrap();
+
+        authorization.authorization.account = Some(wrong);
         let error = validate_authorization_for_account(account, &authorization).unwrap_err();
         assert!(error.contains(&format!("expected {account}")));
         assert!(error.contains(&format!("actual {}", Address::repeat_byte(3))));

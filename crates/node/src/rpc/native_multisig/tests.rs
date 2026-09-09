@@ -1,5 +1,6 @@
 use super::*;
-use alloy_primitives::{B256, U256};
+use alloy::signers::{SignerSync, local::PrivateKeySigner};
+use alloy_primitives::{B256, Signature, U256};
 use reth_evm::revm::{bytecode::Bytecode, state::AccountInfo};
 use std::collections::HashMap;
 use tempo_alloy::rpc::{MultisigSimulationApproval, MultisigSimulationSpec};
@@ -57,6 +58,71 @@ fn block() -> TempoBlockEnv {
     TempoBlockEnv {
         multisig_recovery_factory: Some(FACTORY),
         ..Default::default()
+    }
+}
+
+#[test]
+fn real_grant_checks_state_before_cryptography() {
+    let signer = PrivateKeySigner::from_slice(&[1; 32]).unwrap();
+    let (parent, mut spec) = spec(1, 1);
+    spec.config.owners[0].owner = signer.address();
+    let authorization =
+        KeyAuthorization::unrestricted(4217, SignatureType::Secp256k1, Address::repeat_byte(8));
+    let digest = tempo_primitives::transaction::multisig::multisig_digest(
+        authorization.signature_hash(),
+        parent,
+        spec.config.version,
+    );
+    let valid = signer.sign_hash_sync(&digest).unwrap();
+    let invalid = Signature::new(U256::ZERO, U256::ZERO, false);
+    let commitment = spec.config.commitment().unwrap();
+    let stale = B256::repeat_byte(7);
+    let state_error = format!(
+        "{} for {parent} at the requested state",
+        NativeMultisigError::ConfigurationCommitmentMismatch {
+            expected: stale,
+            actual: commitment,
+        }
+    );
+    let crypto_error =
+        NativeMultisigError::OwnerSignatureRecoveryFailed { approval_index: 0 }.to_string();
+    for (stored, approval, expected) in [
+        (stale, invalid, Some(state_error.clone())),
+        (stale, valid, Some(state_error)),
+        (commitment, invalid, Some(crypto_error)),
+        (commitment, valid, None),
+    ] {
+        let mut db = AccountDb::default();
+        db.insert_commitment(parent, stored);
+        let signature = MultisigSignature::try_new(
+            parent,
+            spec.config.clone(),
+            vec![PrimitiveSignature::Secp256k1(approval)],
+        )
+        .unwrap();
+        let mut request = TempoTransactionRequest {
+            inner: alloy_rpc_types_eth::TransactionRequest {
+                from: Some(parent),
+                ..Default::default()
+            },
+            key_authorization: Some(
+                authorization
+                    .clone()
+                    .into_signed(TempoSignature::Multisig(signature)),
+            ),
+            ..Default::default()
+        };
+        let result =
+            prepare_native_multisig_simulation(&mut request, TempoHardfork::T12, &block(), &mut db);
+        match expected {
+            Some(expected) => {
+                let Err(EthApiError::InvalidParams(message)) = result else {
+                    panic!("expected {expected}")
+                };
+                assert_eq!(message, expected);
+            }
+            None => result.unwrap(),
+        }
     }
 }
 

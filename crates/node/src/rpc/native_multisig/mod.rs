@@ -99,6 +99,7 @@ pub(super) fn prepare_native_multisig_simulation(
                 signature.account()
             )));
         }
+        validate_witness(signature, factory, hardfork, db)?;
         if !request.multisig_simulation_prepared {
             NativeAuthorization {
                 signature,
@@ -107,7 +108,6 @@ pub(super) fn prepare_native_multisig_simulation(
             .verify()
             .map_err(|error| EthApiError::InvalidParams(error.to_string()))?;
         }
-        validate_witness(signature, factory, hardfork, db)?;
     }
     request.multisig_simulation_prepared = true;
     Ok(())
