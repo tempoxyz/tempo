@@ -13963,7 +13963,6 @@ dependencies = [
  "p256 0.13.2",
  "proptest",
  "reth-evm",
- "reth-rpc-eth-types",
  "reth-storage-api",
  "revm",
  "sha2 0.10.9",

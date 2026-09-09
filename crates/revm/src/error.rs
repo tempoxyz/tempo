@@ -21,7 +21,7 @@ pub enum TempoInvalidTransaction {
 
     /// System transaction execution failed.
     #[error("system transaction execution failed, result: {_0:?}")]
-    SystemTransactionFailed(Box<ExecutionResult<TempoHaltReason>>),
+    SystemTransactionFailed(Box<ExecutionResult<HaltReason>>),
 
     /// Fee payer signature recovery failed.
     ///
@@ -423,27 +423,6 @@ fn liquidity_pair_msg(user_token: &Option<Address>, validator_token: &Option<Add
         return format!(" for user token {user_token}");
     }
     String::new()
-}
-
-/// Tempo-specific halt reason.
-///
-/// Halt reason for Tempo transaction execution.
-#[derive(Debug, Clone, PartialEq, Eq, Hash, derive_more::From)]
-pub enum TempoHaltReason {
-    /// Basic Ethereum halt reason.
-    #[from]
-    Ethereum(HaltReason),
-}
-
-#[cfg(feature = "rpc")]
-impl reth_rpc_eth_types::error::api::FromEvmHalt<TempoHaltReason>
-    for reth_rpc_eth_types::EthApiError
-{
-    fn from_evm_halt(halt_reason: TempoHaltReason, gas_limit: u64) -> Self {
-        match halt_reason {
-            TempoHaltReason::Ethereum(halt_reason) => Self::from_evm_halt(halt_reason, gas_limit),
-        }
-    }
 }
 
 #[cfg(test)]

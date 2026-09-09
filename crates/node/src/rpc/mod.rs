@@ -37,7 +37,11 @@ use reth_ethereum::tasks::{
 };
 use reth_evm::{
     ConfigureEvm, EvmEnvFor, TxEnvFor,
-    revm::{Database, context::result::EVMError, database_interface::bal::EvmDatabaseError},
+    revm::{
+        Database,
+        context::result::{EVMError, HaltReason},
+        database_interface::bal::EvmDatabaseError,
+    },
 };
 use reth_node_api::{FullNodeComponents, FullNodeTypes, NodeTypes};
 use reth_node_builder::rpc::{EthApiBuilder, EthApiCtx};
@@ -61,7 +65,7 @@ use reth_rpc_eth_types::{
     builder::config::PendingBlockKind, receipt::EthReceiptConverter,
 };
 use tempo_alloy::{TempoNetwork, rpc::TempoTransactionReceipt};
-use tempo_evm::{TempoBlockEnv, TempoHaltReason, TempoInvalidTransaction};
+use tempo_evm::{TempoBlockEnv, TempoInvalidTransaction};
 use tempo_primitives::{
     TEMPO_GAS_PRICE_SCALING_FACTOR, TempoHeader, TempoPrimitives, TempoReceipt, TempoTxEnvelope,
 };
@@ -89,7 +93,7 @@ pub trait TempoEthApiBounds:
                     Tx = TempoTxEnv,
                     Spec = TempoHardfork,
                     BlockEnv = TempoBlockEnv,
-                    HaltReason = TempoHaltReason,
+                    HaltReason = HaltReason,
                     Error<EvmDatabaseError<ProviderError>> = EVMError<
                         EvmDatabaseError<ProviderError>,
                         TempoInvalidTransaction,
@@ -112,7 +116,7 @@ impl<N> TempoEthApiBounds for N where
                         Tx = TempoTxEnv,
                         Spec = TempoHardfork,
                         BlockEnv = TempoBlockEnv,
-                        HaltReason = TempoHaltReason,
+                        HaltReason = HaltReason,
                         Error<EvmDatabaseError<ProviderError>> = EVMError<
                             EvmDatabaseError<ProviderError>,
                             TempoInvalidTransaction,

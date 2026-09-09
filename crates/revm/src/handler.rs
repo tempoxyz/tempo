@@ -13,7 +13,7 @@ use revm::{
     context::{
         Block, Cfg, ContextTr, JournalTr, Transaction, TransactionType,
         journaled_state::account::JournaledAccountTr,
-        result::{EVMError, ExecutionResult, InvalidTransaction, ResultGas},
+        result::{EVMError, ExecutionResult, HaltReason, InvalidTransaction, ResultGas},
         transaction::{AccessListItem, AccessListItemTr},
     },
     context_interface::{
@@ -61,7 +61,7 @@ use tempo_primitives::{
 
 use crate::{
     ProtocolFeeContext, TempoBatchCallEnv, TempoEvm, TempoInvalidTransaction,
-    error::{FeePaymentError, TempoHaltReason},
+    error::FeePaymentError,
     evm::TempoContext,
     gas_credits,
     signature_gas::{primitive_signature_verification_gas, tempo_signature_verification_gas},
@@ -803,7 +803,7 @@ where
 {
     type Evm = TempoEvm<DB, I>;
     type Error = EVMError<DB::Error, TempoInvalidTransaction>;
-    type HaltReason = TempoHaltReason;
+    type HaltReason = HaltReason;
 
     /// Overridden transaction-level gas builder that reproduces the pre-T0
     /// behavior when the initial gas spending exceeds the gas limit.
@@ -923,9 +923,7 @@ where
     ) -> Result<ExecutionResult<Self::HaltReason>, Self::Error> {
         evm.clear();
 
-        MainnetHandler::default()
-            .execution_result(evm, result, result_gas)
-            .map(|result| result.map_haltreason(Into::into))
+        MainnetHandler::default().execution_result(evm, result, result_gas)
     }
 
     /// Override apply_eip7702_auth_list to support AA transactions with authorization lists.
@@ -2161,9 +2159,7 @@ where
         error: Self::Error,
     ) -> Result<ExecutionResult<Self::HaltReason>, Self::Error> {
         evm.clear();
-        MainnetHandler::default()
-            .catch_error(evm, error)
-            .map(|result| result.map_haltreason(Into::into))
+        MainnetHandler::default().catch_error(evm, error)
     }
 }
 

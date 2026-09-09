@@ -52,7 +52,7 @@ use tempo_revm::{TempoTxEnv, evm::TempoContext, gas_params::tempo_gas_params_wit
 
 pub use tempo_revm::{
     FeeTokenResolver, ProtocolFeeContext, ProtocolFeeManager, TempoBlockEnv, TempoFeeManager,
-    TempoHaltReason, TempoInvalidTransaction, TempoStateAccess,
+    TempoInvalidTransaction, TempoStateAccess,
 };
 
 #[cfg(test)]

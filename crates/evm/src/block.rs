@@ -18,7 +18,7 @@ use commonware_codec::ReadExt;
 use reth_evm::block::StateDB;
 use reth_revm::{
     Inspector,
-    context::result::{ExecutionResult, ResultAndState},
+    context::result::{ExecutionResult, HaltReason, ResultAndState},
     state::{Account, Bytecode, EvmState, EvmStorageSlot, TransactionId},
 };
 use tempo_chainspec::{TempoChainSpec, hardfork::TempoHardforks};
@@ -29,7 +29,7 @@ use tempo_contracts::precompiles::{
     initial_zone_factory_state, t13_zone_factory_state,
 };
 use tempo_primitives::{SubBlockMetadata, TempoReceipt, TempoTxEnvelope, TempoTxType};
-use tempo_revm::{ExecutionContext, TempoHaltReason, evm::TempoContext};
+use tempo_revm::{ExecutionContext, evm::TempoContext};
 use tracing::trace;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
@@ -79,7 +79,7 @@ impl ReceiptBuilder for TempoReceiptBuilder {
 #[derive(Debug)]
 pub struct TempoTxResult {
     /// Inner transaction execution result.
-    inner: EthTxResult<TempoHaltReason, TempoTxType>,
+    inner: EthTxResult<HaltReason, TempoTxType>,
     /// Execution provenance used to exempt RPC simulations from block gas validation.
     execution_context: ExecutionContext,
     /// Next section of the block.
@@ -104,7 +104,7 @@ impl TempoTxResult {
     pub(crate) fn new_precomputed(
         tx: &TempoTxEnvelope,
         execution_context: ExecutionContext,
-        result: ExecutionResult<TempoHaltReason>,
+        result: ExecutionResult<HaltReason>,
         state: EvmState,
         next_section: BlockSection,
         is_payment: bool,
@@ -142,7 +142,7 @@ impl TempoTxResult {
 }
 
 impl TxResult for TempoTxResult {
-    type HaltReason = TempoHaltReason;
+    type HaltReason = HaltReason;
 
     fn result(&self) -> &ResultAndState<Self::HaltReason> {
         self.inner.result()
@@ -711,7 +711,6 @@ mod tests {
         subblock::{SubBlockVersion, TEMPO_SUBBLOCK_NONCE_KEY_PREFIX},
         transaction::{Call, envelope::TEMPO_SYSTEM_TX_SIGNATURE},
     };
-    use tempo_revm::TempoHaltReason;
 
     fn create_legacy_tx() -> TempoTxEnvelope {
         let tx = TxLegacy {
@@ -804,7 +803,7 @@ mod tests {
             vec![B256::ZERO],
             Bytes::new(),
         )];
-        let result: ExecutionResult<TempoHaltReason> = ExecutionResult::Success {
+        let result: ExecutionResult<HaltReason> = ExecutionResult::Success {
             reason: revm::context::result::SuccessReason::Return,
             gas: ResultGas::default().with_total_gas_spent(21000),
             logs,
