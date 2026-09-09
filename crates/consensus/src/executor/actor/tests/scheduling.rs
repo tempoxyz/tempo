@@ -1,6 +1,6 @@
 //! Scenario tests for the actor's scheduling invariants: one execution-layer
-//! task at a time, consensus requests before convergence before
-//! finalization, the FCU heartbeat, and shutdown.
+//! task at a time, consensus requests before finality work before notarized
+//! convergence, the FCU heartbeat, and shutdown.
 
 use std::time::Duration;
 
@@ -49,50 +49,6 @@ fn slow_marshal_fetch_does_not_block_validation() {
             h.marshal.open_subscriptions(),
             vec![(pending_digest, round(1))],
             "validation must not cancel or consume the independent body fetch",
-        );
-    });
-}
-
-#[test_traced]
-fn slow_marshal_fetch_does_not_block_building() {
-    deterministic::Runner::default().start(|context| async move {
-        let h = Harness::start_at_genesis(&context);
-
-        // Leave the missing pending head's marshal subscription unresolved.
-        let pending = make_block(1, 1, GENESIS);
-        let pending_digest = pending.digest();
-        h.report_pending_head(2, 1, pending_digest);
-        h.wait_until(|| h.marshal.open_subscriptions() == vec![(pending_digest, round(1))])
-            .await;
-
-        // A proposal build on the known local head must be registered and
-        // delivered independently of the pending body fetch.
-        let proposal = make_block(3, 1, GENESIS);
-        let proposal_digest = proposal.digest();
-        h.execution.script_built_payload(built_payload(&proposal));
-        let build = h.build(round(3), GENESIS);
-        futures::pin_mut!(build);
-        let deadline = h.run_for(Duration::from_millis(100));
-        futures::pin_mut!(deadline);
-        let payload = match futures::future::select(build, deadline).await {
-            Either::Left((payload, _deadline)) => {
-                payload.expect("build should complete while the fetch is pending")
-            }
-            Either::Right(((), _build)) => {
-                panic!("the pending marshal fetch blocked building")
-            }
-        };
-
-        let (block, _) = payload.into_execution_payload();
-        assert_eq!(block.hash(), proposal_digest.0);
-        assert!(
-            h.execution.fcus().contains(&(GENESIS, GENESIS, true)),
-            "the attribute-carrying build FCU must reach the execution layer",
-        );
-        assert_eq!(
-            h.marshal.open_subscriptions(),
-            vec![(pending_digest, round(1))],
-            "building must not cancel or consume the independent body fetch",
         );
     });
 }
@@ -280,15 +236,14 @@ fn one_execution_task_at_a_time_and_consensus_requests_win_the_next_slot() {
             vec![
                 STARTUP_FCU_CALL,
                 ElCall::NewPayload(d1),
-                ElCall::Fcu {
-                    head: d1,
-                    finalized: d1,
-                    with_attrs: false
-                },
-                // The validation of b2 runs before b2's finalization: its
-                // new-payload probe is not followed by a forkchoice update.
+                // The validation of b2 runs before b2's finalization and
+                // before the forkchoice update finalizing b1: its
+                // new-payload probe wins the slot as soon as it is free.
                 ElCall::NewPayload(d2),
+                // b2 was pruned from the tree by the tip covering it, so its
+                // finalization delivers it again ...
                 ElCall::NewPayload(d2),
+                // ... and one forkchoice update finalizes both blocks.
                 ElCall::Fcu {
                     head: d2,
                     finalized: d2,
@@ -354,14 +309,16 @@ fn consensus_work_takes_priority_over_ready_convergence() {
             vec![
                 STARTUP_FCU_CALL,
                 ElCall::NewPayload(d1),
+                // Both operations were ready when the delivery of b1
+                // released the slot, but latency-critical consensus work
+                // ran first. Finality is locked in next, before notarized
+                // convergence delivers b2 and moves the head onto it.
+                ElCall::NewPayload(candidate_digest),
                 ElCall::Fcu {
                     head: d1,
                     finalized: d1,
                     with_attrs: false,
                 },
-                // Both operations were ready when finalization released the
-                // slot, but latency-critical consensus work ran first.
-                ElCall::NewPayload(candidate_digest),
                 ElCall::NewPayload(d2),
                 ElCall::Fcu {
                     head: d2,
@@ -374,65 +331,58 @@ fn consensus_work_takes_priority_over_ready_convergence() {
 }
 
 #[test_traced]
-fn convergence_takes_priority_over_queued_finalization() {
+fn finality_is_locked_in_before_notarized_convergence() {
     deterministic::Runner::default().start(|context| async move {
         let mut h = Harness::start_at_genesis(&context);
 
         let b1 = make_block(1, 1, GENESIS);
-        let d1 = b1.digest();
+        let b2 = make_block(2, 2, b1.digest());
+        let (d1, d2) = (b1.digest(), b2.digest());
         let release_finalization = h
             .execution
             .script_delayed_new_payload(d1, Ok(PayloadStatusEnum::Valid));
-        h.execution
-            .script_new_payload(d1, Ok(PayloadStatusEnum::Valid));
-        h.deliver_tip(round(1), 1, d1);
-        let first_finalization = h.deliver_finalized(b1.clone());
+        h.deliver_tip(round(2), 2, d2);
+        let w1 = h.deliver_finalized(b1);
         h.wait_until(|| h.execution.new_payloads() == vec![d1])
             .await;
 
-        // Make convergence onto b2 ready above the finalized boundary.
-        let b2 = make_block(2, 2, d1);
-        let d2 = b2.digest();
-        h.report_pending_head(3, 2, d2);
-        h.wait_until(|| h.marshal.fulfill_subscription(d2, b2.clone()))
+        // Make convergence onto the notarized n3 ready above the finalized
+        // boundary while the first finalized delivery still owns the slot,
+        // and queue the second finalized block behind it.
+        let n3 = make_block(3, 3, d2);
+        let d3 = n3.digest();
+        h.report_pending_head(4, 3, d3);
+        h.wait_until(|| h.marshal.fulfill_subscription(d3, n3.clone()))
             .await;
         h.run_for(Duration::from_millis(10)).await;
-
-        // Queue a valid finalization redelivery. Once the first delivery
-        // advances local finality to b1, this and convergence are both ready.
-        let redelivery = h.deliver_finalized(b1);
+        let w2 = h.deliver_finalized(b2);
         h.run_for(Duration::from_millis(10)).await;
 
         release_finalization
             .send(())
             .expect("finalization should still be gated");
-        first_finalization
-            .await
-            .expect("first delivery should be acknowledged");
-        redelivery.await.expect("redelivery should be acknowledged");
+        w1.await.expect("first block should be acknowledged");
+        w2.await.expect("second block should be acknowledged");
+        h.wait_until(|| h.execution.head() == d3).await;
 
         assert_eq!(
             h.execution.calls(),
             vec![
                 STARTUP_FCU_CALL,
                 ElCall::NewPayload(d1),
-                ElCall::Fcu {
-                    head: d1,
-                    finalized: d1,
-                    with_attrs: false,
-                },
-                // Convergence wins the newly available slot.
+                // The queued finalized range is drained and locked in with
+                // one forkchoice update before the notarized block is
+                // delivered, even though n3 was ready first.
                 ElCall::NewPayload(d2),
                 ElCall::Fcu {
                     head: d2,
-                    finalized: d1,
+                    finalized: d2,
                     with_attrs: false,
                 },
-                // Only then is the queued finalization redelivery handled.
-                ElCall::NewPayload(d1),
+                ElCall::NewPayload(d3),
                 ElCall::Fcu {
-                    head: d2,
-                    finalized: d1,
+                    head: d3,
+                    finalized: d2,
                     with_attrs: false,
                 },
             ],
@@ -536,7 +486,7 @@ fn heartbeat_timer_is_rearmed_after_work_finishes() {
 }
 
 #[test_traced]
-fn idle_actor_sends_forkchoice_heartbeats_and_survives_their_failure() {
+fn idle_actor_sends_forkchoice_heartbeats() {
     deterministic::Runner::default().start(|context| async move {
         let h = Harness::builder()
             .harness_options(HarnessOptions {
@@ -559,23 +509,37 @@ fn idle_actor_sends_forkchoice_heartbeats_and_survives_their_failure() {
                 .all(|fcu| *fcu == (GENESIS, GENESIS, false)),
             "heartbeats re-affirm the tracked state",
         );
-
-        // Failing heartbeats are logged, not fatal.
-        h.execution.reject_all_fcus(true);
-        h.run_for(Duration::from_secs(1)).await;
-        h.execution.reject_all_fcus(false);
-
-        let b1 = make_block(1, 1, GENESIS);
-        let verdict = h
-            .verify(round(1), b1)
-            .await
-            .expect("the actor must still be serving requests");
-        assert!(verdict.is_some());
     });
 }
 
 #[test_traced]
-fn idle_actor_survives_heartbeat_transport_error() {
+fn rejected_heartbeat_is_fatal() {
+    deterministic::Runner::default().start(|context| async move {
+        let h = Harness::builder()
+            .harness_options(HarnessOptions {
+                fcu_heartbeat_interval: Duration::from_millis(300),
+                ..Default::default()
+            })
+            .start(&context);
+
+        // A heartbeat re-affirms the state the execution layer last
+        // accepted. Rejecting it means the execution layer no longer agrees
+        // with the executor about its own state. (The startup readiness
+        // probe must pass first.)
+        h.wait_until(|| h.execution.fcus().len() == 1).await;
+        h.execution.reject_all_fcus(true);
+        h.actor
+            .await
+            .expect("actor should shut down cleanly on a rejected heartbeat");
+        assert_eq!(
+            h.execution.fcus(),
+            vec![STARTUP_FCU, (GENESIS, GENESIS, false)]
+        );
+    });
+}
+
+#[test_traced]
+fn heartbeat_transport_error_is_fatal() {
     deterministic::Runner::default().start(|context| async move {
         let h = Harness::builder()
             .harness_options(HarnessOptions {
@@ -585,25 +549,14 @@ fn idle_actor_survives_heartbeat_transport_error() {
             .start(&context);
         let state = ForkchoiceState::from_finalized_head(GENESIS, GENESIS);
         h.execution.script_fcu(state, Err("connection closed"));
-        h.execution.script_fcu(state, Ok(PayloadStatusEnum::Valid));
 
-        h.wait_until(|| h.execution.fcus().len() == 3).await;
+        h.actor
+            .await
+            .expect("actor should shut down cleanly on a heartbeat transport error");
         assert_eq!(
             h.execution.fcus(),
-            vec![
-                STARTUP_FCU,
-                (GENESIS, GENESIS, false),
-                (GENESIS, GENESIS, false),
-            ],
-            "a failed heartbeat must not stop the explicitly accepted next heartbeat",
+            vec![STARTUP_FCU, (GENESIS, GENESIS, false)]
         );
-
-        let b1 = make_block(1, 1, GENESIS);
-        let verdict = h
-            .verify(round(1), b1)
-            .await
-            .expect("actor must keep serving after a heartbeat transport error");
-        assert!(verdict.is_some());
     });
 }
 

@@ -11,7 +11,8 @@ use tempo_payload_types::TempoPayloadAttributes;
 use tempo_primitives::TempoConsensusContext;
 
 use super::harness::{
-    ElCall, ForkchoiceStateExt as _, GENESIS, Harness, built_payload, make_block, round,
+    ElCall, ForkchoiceStateExt as _, GENESIS, Harness, STARTUP_FCU, built_payload, make_block,
+    round,
 };
 use crate::consensus::Digest;
 
@@ -175,6 +176,69 @@ fn build_on_an_unknown_parent_is_dropped() {
 }
 
 #[test_traced]
+fn build_on_a_known_block_off_the_pending_head_path_is_dropped() {
+    deterministic::Runner::default().start(|context| async move {
+        let h = Harness::start_at_genesis(&context);
+
+        // a1 is known to the execution layer through its validation, but
+        // consensus never reports it as the pending head: a build on top of
+        // it is not what consensus builds on.
+        let a1 = make_block(1, 1, GENESIS);
+        let da1 = a1.digest();
+        h.verify(round(1), a1)
+            .await
+            .expect("verification should complete")
+            .expect("block should be valid");
+
+        let rx = h.build(round(2), da1);
+        rx.await
+            .expect_err("a build whose parent the head will not reach must fail");
+        assert!(
+            !h.execution.fcus().iter().any(|(.., attrs)| *attrs),
+            "no build may be registered off the pending head's path",
+        );
+    });
+}
+
+#[test_traced]
+fn build_on_a_head_the_network_finalized_past_is_dropped() {
+    deterministic::Runner::default().start(|context| async move {
+        let mut h = Harness::start_at_genesis(&context);
+
+        // The head sits on notarized a1.
+        let a1 = make_block(1, 1, GENESIS);
+        let da1 = a1.digest();
+        h.verify(round(1), a1)
+            .await
+            .expect("a1 should validate")
+            .expect("a1 should be valid");
+        h.report_pending_head(2, 1, da1);
+        h.wait_until(|| h.execution.head() == da1).await;
+
+        // The network finalizes b1 on another branch. The tip report alone
+        // re-anchors the pending head onto the tip, so a1 is no longer what
+        // consensus builds on: the build is dropped before the finalized
+        // block is even delivered, and no payload is registered on the
+        // abandoned head.
+        let b1 = make_block(3, 1, GENESIS);
+        let db1 = b1.digest();
+        h.deliver_tip(round(3), 1, db1);
+        h.build(round(4), da1)
+            .await
+            .expect_err("the build on the abandoned head must fail");
+        assert!(
+            !h.execution.fcus().iter().any(|(.., attrs)| *attrs),
+            "no payload may be registered on the abandoned head",
+        );
+
+        h.deliver_finalized(b1)
+            .await
+            .expect("b1 should be acknowledged");
+        assert_eq!(h.execution.head(), db1);
+    });
+}
+
+#[test_traced]
 fn queued_build_is_dropped_when_finality_advances_past_its_parent() {
     deterministic::Runner::default().start(|context| async move {
         let mut h = Harness::start_at_genesis(&context);
@@ -221,20 +285,13 @@ fn build_canceled_while_queued_still_reaffirms_the_head() {
         h.deliver_finalized(b1)
             .await
             .expect("finalized block should be acknowledged");
-        h.wait_until(|| {
-            h.execution
-                .fcus()
-                .iter()
-                .filter(|(head, ..)| *head == d1)
-                .count()
-                >= 2
-        })
-        .await;
 
-        assert!(
-            !h.execution.fcus().iter().any(|(.., attrs)| *attrs),
-            "the canceled build must not submit attributes; the FCU degrades \
-            to a bare head re-affirmation",
+        h.wait_until(|| h.execution.fcus().len() == 3).await;
+        assert_eq!(
+            h.execution.fcus(),
+            vec![STARTUP_FCU, (d1, d1, false), (d1, d1, false)],
+            "the canceled build must not submit attributes; its FCU degrades \
+            to a bare re-affirmation of the head",
         );
         assert!(h.execution.pending_payload_jobs().is_empty());
     });
@@ -344,10 +401,12 @@ fn aborted_payload_job_fails_the_build_without_shutdown() {
 }
 
 #[test_traced]
-fn rejected_build_forkchoice_update_fails_the_build_without_shutdown() {
+fn rejected_build_forkchoice_update_is_fatal() {
     deterministic::Runner::default().start(|context| async move {
         let h = Harness::start_at_genesis(&context);
 
+        // The build re-affirms the tracked state; a rejection means the
+        // execution layer disagrees with the executor about that state.
         h.execution.script_fcu(
             ForkchoiceState::from_finalized_head(GENESIS, GENESIS),
             Ok(PayloadStatusEnum::Invalid {
@@ -357,18 +416,15 @@ fn rejected_build_forkchoice_update_fails_the_build_without_shutdown() {
         let rx = h.build(round(1), GENESIS);
         rx.await.expect_err("the failed FCU must fail the build");
 
-        // Build failures are not fatal for the executor.
-        let b1 = make_block(1, 1, GENESIS);
-        let verdict = h
-            .verify(round(2), b1)
+        h.actor
             .await
-            .expect("verification should complete");
-        assert!(verdict.is_some());
+            .expect("actor should shut down cleanly on a rejected build forkchoice update");
+        assert!(h.execution.pending_payload_jobs().is_empty());
     });
 }
 
 #[test_traced]
-fn forkchoice_update_transport_error_fails_the_build_without_shutdown() {
+fn build_forkchoice_update_transport_error_is_fatal() {
     deterministic::Runner::default().start(|context| async move {
         let h = Harness::start_at_genesis(&context);
 
@@ -380,14 +436,10 @@ fn forkchoice_update_transport_error_fails_the_build_without_shutdown() {
         rx.await
             .expect_err("an FCU transport error must fail the build");
 
-        // Build transport failures are request-local. The actor remains
-        // available for later consensus work.
-        let b1 = make_block(1, 1, GENESIS);
-        let verdict = h
-            .verify(round(2), b1)
+        h.actor
             .await
-            .expect("verification should complete after the FCU transport error");
-        assert!(verdict.is_some());
+            .expect("actor should shut down cleanly on a build forkchoice transport error");
+        assert!(h.execution.pending_payload_jobs().is_empty());
     });
 }
 
