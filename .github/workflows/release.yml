@@ -314,7 +314,7 @@ jobs:
           set -euo pipefail
 
           cargo_version="${VERSION#v}"
-          branch="release/bump-cargo-${VERSION}"
+          branch="automation/bump-cargo-${VERSION}"
           current_version=$(cargo metadata --locked --no-deps --format-version 1 | jq -r '.packages[] | select(.name == "tempo").version')
 
           if [ "$current_version" = "$cargo_version" ]; then
