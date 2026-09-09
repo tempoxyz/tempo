@@ -584,7 +584,7 @@ def txgen-wait-for-txpool-drain [rpc_url: string, timeout_secs: int = $TXGEN_HEL
 def txgen-fund-accounts [txgen_bin: string, spec_path: string, rpc_url: string] {
     let result = (^$txgen_bin addresses -s $spec_path -f shell | complete)
     if $result.exit_code != 0 {
-        error make { msg: $"failed to list txgen addresses for ($spec_path)" }
+        error make { msg: $"failed to list txgen addresses for ($spec_path): ($result.stderr | str trim)" }
     }
 
     let addresses = ($result.stdout | str trim | split row " " | where { |addr| $addr != "" })
@@ -711,7 +711,7 @@ def txgen-prepare-public-mix-preset [spec_path: string, count: int, accounts: in
     let output_dir = ([ (txgen-repo-root) $TXGEN_HELPER_DEFAULT_RENDERED_SPECS_DIR (random uuid) ] | path join)
     mkdir $output_dir
     let output = ($output_dir | path join public-mix.yml)
-    {include: $spec_path,
+    {include: $spec_path, accounts: {users: {range: [0 $accounts]}},
         setup: {steps: ($vault_setup | append $users | append $zone_spec.setup.steps)},
         templates: ($deposits.templates | merge $withdrawals.templates | merge $zone_spec.templates),
         mix: $mix} | to yaml | save -f $output
