@@ -33,6 +33,18 @@ def log-filter-args [loud: bool] {
     if $loud { [] } else { ["--log.stdout.filter" "info"] }
 }
 
+# Keep benchmark OTLP logs useful without emitting high-volume HTTP transport internals.
+def benchmark-otlp-args [endpoint: string] {
+    if $endpoint == "" {
+        []
+    } else {
+        [
+            $"--tracing-otlp=($endpoint)"
+            "--logs-otlp.filter=debug,h2=off,hyper=off,hyper_util=off"
+        ]
+    }
+}
+
 def prepare-localnet-consensus-secret-fifo [node_dir: string] {
     let secret_path = $"($node_dir)/consensus-secret.fifo"
     rm -f $secret_path
@@ -676,7 +688,7 @@ def run-bench-single [
         | append (build-dev-args)
         | append (log-filter-args $loud)
         | append (if $tracy != "off" { ["--log.tracy" "--log.tracy.filter" $tracy_filter] } else { [] })
-        | append (if $tracing_otlp != "" { [$"--tracing-otlp=($tracing_otlp)"] } else { [] })
+        | append (benchmark-otlp-args $tracing_otlp)
     let args = (dedup-args $base_args $extra_args)
 
     # Tracy environment variables

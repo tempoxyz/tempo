@@ -1,5 +1,16 @@
 # Changelog
 
+## `tempo-chainspec@1.11.0`
+
+### Minor Changes
+
+- Added the T10 hardfork and moved TIP-1091 activation (ZoneFactory precompile and shared Zone runtime installation) from T9 to T10, so the ZonePortal runtime can still change after the audit without reopening T9. (by @HamdiAllam, [#7244](https://github.com/tempoxyz/tempo/pull/7244))
+- Implemented TIP-1091 with a native permissioned ZoneFactory, deterministic ZonePortal proxy accounts, and owner-managed runtimes copied from verified source deployments. Activates at T10. (by @HamdiAllam, [#7244](https://github.com/tempoxyz/tempo/pull/7244))
+
+### Patch Changes
+
+- Added the canonical EIP-2935 history storage account to the built-in development genesis. (by @HamdiAllam, [#7244](https://github.com/tempoxyz/tempo/pull/7244))
+
 ## `tempo-chainspec@1.10.1`
 
 

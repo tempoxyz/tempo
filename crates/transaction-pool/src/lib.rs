@@ -6,6 +6,9 @@
 pub mod transaction;
 pub mod validator;
 
+mod address_filter;
+pub use address_filter::AddressFilter;
+
 pub use transaction::{KeychainSubject, RevokedKeys, SpendingLimitUpdates};
 
 // Tempo pool module with 2D nonce support
@@ -19,7 +22,6 @@ pub mod best;
 pub mod maintain;
 pub mod metrics;
 pub mod ordering;
-pub mod paused;
 pub(crate) mod state_cache;
 pub mod tt_2d_pool;
 

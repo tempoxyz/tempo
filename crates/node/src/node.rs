@@ -1,6 +1,7 @@
 use crate::{
     TempoPayloadTypes,
     engine::TempoEngineValidator,
+    gossip::GossipProtocol,
     rpc::{
         TempoAdminApi, TempoAdminApiServer, TempoEthApi, TempoEthApiBuilder, TempoEthExt,
         TempoEthExtApiServer, TempoForkScheduleApiServer, TempoForkScheduleRpc,
@@ -9,23 +10,23 @@ use crate::{
     },
 };
 use alloy_primitives::B256;
-use reth_chainspec::{ChainKind, EthChainSpec, NamedChain};
+use reth_chainspec::{ChainKind, EthChainSpec, Hardforks, NamedChain};
+use reth_ethereum::network::{NetworkHandle, PeersInfo as _, primitives::BasicNetworkPrimitives};
 use reth_node_api::{
     AddOnsContext, FullNodeComponents, FullNodeTypes, NodeAddOns, NodeTypes,
-    PayloadAttributesBuilder, PayloadTypes,
+    PayloadAttributesBuilder, PayloadTypes, PrimitivesTy, TxTy,
 };
 use reth_node_builder::{
     BuilderContext, DebugNode, Node, NodeAdapter, PayloadBuilderConfig,
     components::{
         BasicPayloadServiceBuilder, ComponentsBuilder, ConsensusBuilder, ExecutorBuilder,
-        PayloadBuilderBuilder, PoolBuilder, spawn_maintenance_tasks,
+        NetworkBuilder, PayloadBuilderBuilder, PoolBuilder, spawn_maintenance_tasks,
     },
     rpc::{
         BasicEngineValidatorBuilder, EngineValidatorAddOn, NoopEngineApiBuilder,
         PayloadValidatorBuilder, RethRpcAddOns, RpcAddOns, RpcHandle, RpcHooks,
     },
 };
-use reth_node_ethereum::EthereumNetworkBuilder;
 use reth_primitives_traits::SealedHeader;
 use reth_provider::providers::ProviderFactoryBuilder;
 use reth_rpc_builder::{Identity, RethRpcModule};
@@ -36,12 +37,12 @@ use reth_rpc_eth_api::{
 use reth_storage_api::{AccountInfoReader, EmptyBodyStorage};
 use reth_tracing::tracing::{debug, info, warn};
 use reth_transaction_pool::{
-    Pool, StatefulValidationFn, StatelessValidationFn, TransactionOrigin,
-    TransactionValidationTaskExecutor, blobstore::InMemoryBlobStore,
-    error::InvalidPoolTransactionError,
+    Pool, PoolPooledTx, PoolTransaction, StatefulValidationFn, StatelessValidationFn,
+    TransactionOrigin, TransactionPool, TransactionValidationTaskExecutor,
+    blobstore::InMemoryBlobStore, error::InvalidPoolTransactionError,
 };
 use std::sync::Arc;
-use tempo_chainspec::spec::TempoChainSpec;
+use tempo_chainspec::{TempoConsensusSpec, spec::TempoChainSpec};
 use tempo_evm::{TempoEvmConfig, consensus::TempoConsensus};
 use tempo_payload_builder::{
     DEFAULT_BUILD_TIME_MULTIPLIER, TempoPayloadBuilder, TempoPayloadBuilderConfig,
@@ -49,7 +50,7 @@ use tempo_payload_builder::{
 use tempo_payload_types::TempoPayloadAttributes;
 use tempo_primitives::{TempoHeader, TempoPrimitives, TempoTxEnvelope, TempoTxType};
 use tempo_transaction_pool::{
-    AA2dPool, AA2dPoolConfig, TempoTransactionPool,
+    AA2dPool, AA2dPoolConfig, AddressFilter, TempoTransactionPool,
     amm::AmmLiquidityCache,
     ordering::TempoTipOrdering,
     transaction::TempoPooledTransaction,
@@ -63,7 +64,7 @@ use tempo_transaction_pool::{
 pub const BLOCK_GAS_LIMIT_500M: u64 = 500_000_000;
 
 /// Tempo node CLI arguments.
-#[derive(Debug, Clone, Copy, PartialEq, clap::Args)]
+#[derive(Debug, Clone, PartialEq, clap::Args)]
 pub struct TempoNodeArgs {
     /// Maximum allowed `valid_after` offset for AA txs.
     #[arg(long = "txpool.aa-valid-after-max-secs", default_value_t = DEFAULT_AA_VALID_AFTER_MAX_SECS)]
@@ -72,6 +73,15 @@ pub struct TempoNodeArgs {
     /// Maximum number of authorizations allowed in an AA transaction.
     #[arg(long = "txpool.max-tempo-authorizations", default_value_t = DEFAULT_MAX_TEMPO_AUTHORIZATIONS)]
     pub max_tempo_authorizations: usize,
+
+    /// Comma-separated addresses or a file containing comma/newline-separated addresses used for
+    /// transaction sender and direct call target checks.
+    #[arg(
+        long = "txpool.filter",
+        value_name = "ADDRESSES_OR_FILE",
+        value_parser = parse_address_filter
+    )]
+    pub txpool_filter: Option<AddressFilter>,
 
     /// Enable state provider metrics for the payload builder.
     #[arg(long = "builder.state-provider-metrics", default_value_t = false)]
@@ -113,6 +123,7 @@ impl Default for TempoNodeArgs {
         Self {
             aa_valid_after_max_secs: DEFAULT_AA_VALID_AFTER_MAX_SECS,
             max_tempo_authorizations: DEFAULT_MAX_TEMPO_AUTHORIZATIONS,
+            txpool_filter: None,
             builder_state_provider_metrics: false,
             builder_disable_prewarming: false,
             builder_enable_prewarming: true,
@@ -129,6 +140,7 @@ impl TempoNodeArgs {
         TempoPoolBuilder {
             aa_valid_after_max_secs: self.aa_valid_after_max_secs,
             max_tempo_authorizations: self.max_tempo_authorizations,
+            address_filter: self.txpool_filter.clone().unwrap_or_default(),
             ..Default::default()
         }
     }
@@ -148,6 +160,61 @@ impl TempoNodeArgs {
     }
 }
 
+/// Builds the node's network and announces `tempo/1`.
+///
+/// The protocol must be registered before the network starts. `RLPx`
+/// capabilities are negotiated when a session opens, so existing sessions do
+/// not learn about protocols added later. On a small network, this could leave
+/// a follower with no gossip peer.
+///
+/// All other behavior comes from the standard Ethereum network builder. The
+/// provider used by the `eth` request handler does not change.
+#[derive(Debug, Default, Clone)]
+pub struct TempoNetworkBuilder {
+    gossip: Option<GossipProtocol>,
+}
+
+impl TempoNetworkBuilder {
+    /// Announces `tempo/1` on every session this node establishes.
+    pub fn with_finalization_cert_gossip(gossip: GossipProtocol) -> Self {
+        Self {
+            gossip: Some(gossip),
+        }
+    }
+}
+
+impl<Node, Pool> NetworkBuilder<Node, Pool> for TempoNetworkBuilder
+where
+    Node: FullNodeTypes<Types: NodeTypes<ChainSpec: Hardforks>>,
+    Pool: TransactionPool<Transaction: PoolTransaction<Consensus = TxTy<Node::Types>>>
+        + Unpin
+        + 'static,
+{
+    type Network =
+        NetworkHandle<BasicNetworkPrimitives<PrimitivesTy<Node::Types>, PoolPooledTx<Pool>>>;
+
+    async fn build_network(
+        self,
+        ctx: &BuilderContext<Node>,
+        pool: Pool,
+    ) -> eyre::Result<Self::Network> {
+        let mut network = ctx.network_builder().await?;
+        if let Some(gossip) = self.gossip {
+            let gossip = gossip.install();
+            network.network_mut().add_rlpx_sub_protocol(gossip);
+        }
+
+        let handle = ctx.start_network(network, pool);
+        reth_tracing::tracing::info!(
+            target: "reth::cli",
+            enode = %handle.local_node_record(),
+            "P2P networking initialized",
+        );
+
+        Ok(handle)
+    }
+}
+
 /// Type configuration for a regular Ethereum node.
 #[derive(Debug, Default, Clone)]
 #[non_exhaustive]
@@ -158,6 +225,8 @@ pub struct TempoNode {
     payload_builder_builder: TempoPayloadBuilderBuilder,
     /// Validator public key for `admin_validatorKey` RPC method.
     validator_key: Option<B256>,
+    /// Network builder with optional `tempo/1` support.
+    network_builder: TempoNetworkBuilder,
 }
 
 impl TempoNode {
@@ -167,18 +236,30 @@ impl TempoNode {
             pool_builder: args.pool_builder(),
             payload_builder_builder: args.payload_builder_builder(),
             validator_key,
+            network_builder: TempoNetworkBuilder::default(),
         }
+    }
+
+    /// Announces `tempo/1` for finalization certificate gossip on every session.
+    ///
+    /// Call this before the node starts. `RLPx` capabilities are negotiated
+    /// during the handshake, so existing sessions do not learn about protocols
+    /// added later.
+    pub fn with_finalization_cert_gossip(mut self, gossip: crate::gossip::GossipProtocol) -> Self {
+        self.network_builder = TempoNetworkBuilder::with_finalization_cert_gossip(gossip);
+        self
     }
 
     /// Returns a [`ComponentsBuilder`] configured for a regular Tempo node.
     pub fn components<Node>(
         pool_builder: TempoPoolBuilder,
         payload_builder_builder: TempoPayloadBuilderBuilder,
+        network_builder: TempoNetworkBuilder,
     ) -> ComponentsBuilder<
         Node,
         TempoPoolBuilder,
         BasicPayloadServiceBuilder<TempoPayloadBuilderBuilder>,
-        EthereumNetworkBuilder,
+        TempoNetworkBuilder,
         TempoExecutorBuilder,
         TempoConsensusBuilder,
     >
@@ -194,7 +275,7 @@ impl TempoNode {
                     // we can disable basic parent state caching because tempo builder always uses execution cache
                     .with_pre_cache_state(false),
             )
-            .network(EthereumNetworkBuilder::default())
+            .network(network_builder)
             .consensus(TempoConsensusBuilder::default())
     }
 
@@ -360,7 +441,7 @@ where
         N,
         TempoPoolBuilder,
         BasicPayloadServiceBuilder<TempoPayloadBuilderBuilder>,
-        EthereumNetworkBuilder,
+        TempoNetworkBuilder,
         TempoExecutorBuilder,
         TempoConsensusBuilder,
     >;
@@ -368,7 +449,11 @@ where
     type AddOns = TempoAddOns<N>;
 
     fn components_builder(&self) -> Self::ComponentsBuilder {
-        Self::components(self.pool_builder.clone(), self.payload_builder_builder)
+        Self::components(
+            self.pool_builder.clone(),
+            self.payload_builder_builder,
+            self.network_builder.clone(),
+        )
     }
 
     fn add_ons(&self) -> Self::AddOns {
@@ -463,9 +548,11 @@ impl Default for TempoConsensusBuilder {
 
 impl<Node> ConsensusBuilder<Node> for TempoConsensusBuilder
 where
-    Node: FullNodeTypes<Types = TempoNode>,
+    Node: FullNodeTypes<
+        Types: NodeTypes<ChainSpec: TempoConsensusSpec + Clone, Primitives = TempoPrimitives>,
+    >,
 {
-    type Consensus = TempoConsensus;
+    type Consensus = TempoConsensus<<Node::Types as NodeTypes>::ChainSpec>;
 
     async fn build_consensus(self, ctx: &BuilderContext<Node>) -> eyre::Result<Self::Consensus> {
         Ok(TempoConsensus::new_with_bal_hashes(
@@ -504,6 +591,8 @@ pub struct TempoPoolBuilder {
     pub max_tempo_authorizations: usize,
     /// Whether to skip the FeeAMM liquidity check during pool admission.
     pub disable_fee_amm_check: bool,
+    /// Addresses checked against transaction senders and direct call targets.
+    pub address_filter: AddressFilter,
     /// Optional additional stateless validation check forwarded to the inner ETH validator.
     pub additional_stateless_validation: Option<StatelessValidationFn<TempoPooledTransaction>>,
     /// Optional additional stateful validation check forwarded to the inner ETH validator.
@@ -526,6 +615,12 @@ impl TempoPoolBuilder {
     /// Configures whether to disable the FeeAMM liquidity check during pool admission.
     pub const fn with_disable_fee_amm_check(mut self, disable: bool) -> Self {
         self.disable_fee_amm_check = disable;
+        self
+    }
+
+    /// Configures transaction sender and direct call target checks.
+    pub fn with_address_filter(mut self, address_filter: AddressFilter) -> Self {
+        self.address_filter = address_filter;
         self
     }
 
@@ -604,6 +699,7 @@ impl core::fmt::Debug for TempoPoolBuilder {
             .field("aa_valid_after_max_secs", &self.aa_valid_after_max_secs)
             .field("max_tempo_authorizations", &self.max_tempo_authorizations)
             .field("disable_fee_amm_check", &self.disable_fee_amm_check)
+            .field("address_filter", &self.address_filter)
             .field(
                 "additional_stateless_validation",
                 &self.additional_stateless_validation.as_ref().map(|_| "..."),
@@ -622,6 +718,7 @@ impl Default for TempoPoolBuilder {
             aa_valid_after_max_secs: DEFAULT_AA_VALID_AFTER_MAX_SECS,
             max_tempo_authorizations: DEFAULT_MAX_TEMPO_AUTHORIZATIONS,
             disable_fee_amm_check: false,
+            address_filter: AddressFilter::default(),
             additional_stateless_validation: None,
             additional_stateful_validation: None,
         }
@@ -671,6 +768,7 @@ where
             aa_valid_after_max_secs,
             max_tempo_authorizations,
             disable_fee_amm_check,
+            address_filter,
             additional_stateless_validation,
             additional_stateful_validation,
         } = self;
@@ -684,6 +782,7 @@ where
                 amm_liquidity_cache.clone(),
             )
             .with_disable_fee_amm_check(disable_fee_amm_check)
+            .with_address_filter(address_filter.clone())
         });
         let protocol_pool = Pool::new(
             validator,
@@ -777,9 +876,30 @@ where
     }
 }
 
+/// Parses `value` as an address list, falling back to reading it as a file.
+fn parse_address_filter(value: &str) -> Result<AddressFilter, String> {
+    match value.parse::<AddressFilter>() {
+        Ok(filter) => Ok(filter),
+        Err(list_error) => {
+            let contents = std::fs::read_to_string(value).map_err(|file_error| {
+                format!(
+                    "invalid address list ({list_error}); failed to read `{value}` as a file: {file_error}"
+                )
+            })?;
+
+            contents
+                .parse::<AddressFilter>()
+                .map_err(|error| format!("invalid address list in `{value}`: {error}"))
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
-    use super::{TempoNode, TempoNodeArgs, TempoPayloadBuilderBuilder, TempoPoolBuilder};
+    use super::{
+        AddressFilter, TempoNode, TempoNodeArgs, TempoPayloadBuilderBuilder, TempoPoolBuilder,
+    };
+    use alloy_primitives::Address;
 
     #[test]
     fn tempo_node_maps_pool_builder() {
@@ -802,6 +922,21 @@ mod tests {
             TempoNode::default().map_pool_builder(|pool| pool.with_disable_fee_amm_check(true));
 
         assert!(node.pool_builder.disable_fee_amm_check);
+    }
+
+    #[test]
+    fn tempo_node_configures_address_filter() {
+        let address = Address::with_last_byte(1);
+        let node = TempoNode::new(
+            &TempoNodeArgs {
+                txpool_filter: Some(AddressFilter::new([address])),
+                ..Default::default()
+            },
+            None,
+        );
+
+        assert_eq!(node.pool_builder.address_filter.len(), 1);
+        assert!(node.pool_builder.address_filter.contains(&address));
     }
 
     #[test]

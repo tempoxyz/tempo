@@ -55,7 +55,7 @@ fn joins_from_snapshot() {
         let mut replacement = {
             let idx = validators
                 .iter()
-                .position(|node| node.consensus_config().share.is_none())
+                .position(|node| node.is_verifier())
                 .expect("at least one node must be a verifier, i.e. not have a share");
             validators.remove(idx)
         };
@@ -173,7 +173,7 @@ fn joins_from_snapshot() {
         // This works by assigning the replacement validator's fields to the
         // old validator's. This way, the old validator "donates" its database
         // to the replacement. This is to simulate a snapshot.
-        let target_partition_prefix = replacement.consensus_config.partition_prefix.clone();
+        let target_partition_prefix = replacement.partition_prefix.clone();
         write_consensus_snapshot(
             &context,
             &donor,
@@ -240,7 +240,7 @@ fn can_restart_after_joining_from_snapshot() {
         let mut replacement = {
             let idx = validators
                 .iter()
-                .position(|node| node.consensus_config().share.is_none())
+                .position(|node| node.is_verifier())
                 .expect("at least one node must be a verifier, i.e. not have a share");
             validators.remove(idx)
         };
@@ -360,7 +360,7 @@ fn can_restart_after_joining_from_snapshot() {
         // This works by assigning the replacement validator's fields to the
         // old validator's. This way, the old validator "donates" its database
         // to the replacement. This is to simulate a snapshot.
-        let target_partition_prefix = replacement.consensus_config.partition_prefix.clone();
+        let target_partition_prefix = replacement.partition_prefix.clone();
         write_consensus_snapshot(
             &context,
             &donor,

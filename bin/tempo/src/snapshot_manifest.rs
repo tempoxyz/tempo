@@ -53,7 +53,7 @@ pub(crate) struct Args {
     /// Skip encoding consensus state. This will pass-through directly to Reth.
     #[arg(
         long,
-        default_value_t = true,
+        default_value_t = false,
         default_missing_value = "true",
         hide = true,
         num_args = 0..=1,
@@ -396,7 +396,7 @@ mod tests {
     }
 
     #[test]
-    fn args_defaults_to_skip_consensus() {
+    fn args_defaults_to_include_consensus() {
         let args = Args::try_parse_from([
             "tempo",
             "--source-datadir",
@@ -406,7 +406,7 @@ mod tests {
         ])
         .unwrap();
 
-        assert!(args.skip_consensus);
+        assert!(!args.skip_consensus);
     }
 
     #[test]

@@ -68,7 +68,7 @@ pub(in crate::storage) fn make_block(height: u64, parent_hash: B256) -> Block {
     };
     let body = BlockBody::default();
     let inner = TempoBlock { header, body };
-    Block::from_execution_block(SealedBlock::seal_slow(inner), None)
+    Block::try_from_execution_block(SealedBlock::seal_slow(inner), None)
         .expect("test block should not carry BAL side data")
 }
 

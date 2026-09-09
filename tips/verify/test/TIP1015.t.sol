@@ -162,19 +162,13 @@ contract TIP1015Test is TempoTest {
 
         vm.startPrank(admin);
 
-        vm.expectRevert(
-            abi.encodeWithSelector(ITIP403Registry.PolicyNotFound.selector, nonExistentPolicy)
-        );
+        vm.expectRevert(ITIP403Registry.PolicyNotFound.selector);
         this.createCompoundPolicyExternal(nonExistentPolicy, whitelistPolicy, whitelistPolicy);
 
-        vm.expectRevert(
-            abi.encodeWithSelector(ITIP403Registry.PolicyNotFound.selector, nonExistentPolicy)
-        );
+        vm.expectRevert(ITIP403Registry.PolicyNotFound.selector);
         this.createCompoundPolicyExternal(whitelistPolicy, nonExistentPolicy, whitelistPolicy);
 
-        vm.expectRevert(
-            abi.encodeWithSelector(ITIP403Registry.PolicyNotFound.selector, nonExistentPolicy)
-        );
+        vm.expectRevert(ITIP403Registry.PolicyNotFound.selector);
         this.createCompoundPolicyExternal(whitelistPolicy, whitelistPolicy, nonExistentPolicy);
 
         vm.stopPrank();

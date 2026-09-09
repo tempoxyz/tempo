@@ -74,16 +74,17 @@ impl AmmLiquidityCache {
             let inner = self.inner.read();
             hardfork = inner.hardfork;
 
+            // Validators always accept fees in their own token, and this is the common case, so
+            // answer it before doing any swap math.
+            if inner.unique_tokens.contains(&user_token) {
+                return Ok(true);
+            }
+
             let calc_swap = |input| compute_amount_out(input).map_err(ProviderError::other);
             let out1 = calc_swap(fee)?;
             let out2 = hardfork.is_t5().then(|| calc_swap(out1)).transpose()?;
 
             for &validator_token in &inner.unique_tokens {
-                // Validators always accept fees in their own token.
-                if validator_token == user_token {
-                    return Ok(true);
-                }
-
                 let direct = inner
                     .pool_cache
                     .get(&(user_token, validator_token))
@@ -431,6 +432,36 @@ mod tests {
             result.unwrap(),
             "Should return true when user token matches validator token"
         );
+    }
+
+    #[test]
+    fn test_has_enough_liquidity_overflow_only_rejected_when_swap_needed() {
+        let user_token = address!("1111111111111111111111111111111111111111");
+        let other_token = address!("2222222222222222222222222222222222222222");
+        let provider = create_mock_provider();
+        let state = provider.latest().unwrap();
+
+        for hardfork in [TempoHardfork::T4, TempoHardfork::T5] {
+            for validator_token in [user_token, other_token] {
+                let cache = AmmLiquidityCache {
+                    inner: Arc::new(RwLock::new(AmmLiquidityCacheInner {
+                        hardfork,
+                        unique_tokens: vec![validator_token],
+                        ..Default::default()
+                    })),
+                };
+
+                let result = cache.has_enough_liquidity(user_token, U256::MAX, &state);
+                if validator_token == user_token {
+                    assert!(result.unwrap(), "same-token fees need no swap arithmetic");
+                } else {
+                    assert!(
+                        result.is_err(),
+                        "swap arithmetic must still reject overflow"
+                    );
+                }
+            }
+        }
     }
 
     #[test]

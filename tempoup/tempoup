@@ -6,7 +6,7 @@ set -e
 
 # NOTE: if you make modifications to this script, please increment the version number.
 # WARNING: the SemVer pattern: major.minor.patch must be followed as we use it to determine if the script is up to date.
-TEMPOUP_INSTALLER_VERSION="0.0.14"
+TEMPOUP_INSTALLER_VERSION="0.0.15"
 
 REPO="tempoxyz/tempo"
 # GPG key fingerprint for release signing verification
@@ -433,7 +433,14 @@ get_latest_version() {
     # Prefer authenticated gh to avoid the 60 req/hr anonymous rate-limit.
     local version
     if gh_authenticated; then
-        version=$(gh release list --repo "$REPO" --limit 100 --json tagName --jq '.[].tagName' 2>/dev/null | \
+        # Authenticated users can see draft releases, but their assets are not
+        # available through the public download URLs used below. Exclude drafts
+        # explicitly, and retain the JSON filter as a defense against changes in
+        # gh's flag behavior.
+        version=$(gh release list --repo "$REPO" --limit 100 \
+            --exclude-drafts --exclude-pre-releases \
+            --json tagName,isDraft,isPrerelease \
+            --jq '.[] | select(.isDraft == false and .isPrerelease == false) | .tagName' 2>/dev/null | \
             grep '^v[0-9]*\.[0-9]*\.[0-9]*$' | head -n 1)
     else
         local api_url="https://api.github.com/repos/$REPO/releases?per_page=100"
@@ -447,6 +454,33 @@ get_latest_version() {
     fi
 
     echo "$version"
+}
+
+# Fail with an actionable error before downloading when an authenticated GitHub
+# lookup can prove that a release is private or missing required assets.
+validate_release_assets() {
+    local tag="$1"
+    shift
+
+    gh_authenticated || return 0
+
+    local release_info
+    if ! release_info=$(gh release view "$tag" --repo "$REPO" \
+            --json isDraft,assets \
+            --jq '["draft=" + (.isDraft | tostring), (.assets[].name)] | .[]' 2>/dev/null); then
+        error "Release $tag was not found on GitHub. Choose a published release with 'tempoup -i <VERSION>'."
+    fi
+
+    if [[ "$(printf '%s\n' "$release_info" | head -n 1)" == "draft=true" ]]; then
+        error "Release $tag is still a draft and cannot be installed. Choose the latest published release with 'tempoup -i <VERSION>'."
+    fi
+
+    local asset
+    for asset in "$@"; do
+        if ! printf '%s\n' "$release_info" | tail -n +2 | grep -Fxq "$asset"; then
+            error "Release $tag does not contain required asset $asset. Choose a compatible published release with 'tempoup -i <VERSION>'."
+        fi
+    done
 }
 
 # Main installation logic
@@ -487,6 +521,8 @@ main() {
     fi
 
     ARCHIVE_NAME="tempo-${VERSION_TAG}-${TARGET}.${ARCHIVE_EXT}"
+
+    validate_release_assets "$VERSION_TAG" "$ARCHIVE_NAME" "${ARCHIVE_NAME}.sha256"
 
     # Create temporary directory
     TMP_DIR=$(mktemp -d)

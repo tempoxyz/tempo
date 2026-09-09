@@ -1,9 +1,13 @@
 //! Follower finalization driver.
 //!
-//! Validates finalized blocks received from upstream and reports them to marshal.
-//! Marshal's finalized tip updates independently drive the consensus feed.
+//! Validates finalized blocks received from upstream and certificates received
+//! through gossip, then reports verified finalizations to marshal. Marshal
+//! resolves any block it is missing, and its finalized-tip updates drive both
+//! the consensus feed and the execution layer's forkchoice. The driver never
+//! addresses the executor itself, so no forkchoice can name a block that has
+//! not been persisted alongside its certificate.
 
-use std::future::Future;
+use std::{future::Future, sync::LazyLock};
 
 use commonware_consensus::{
     simplex::{scheme::bls12381_threshold::vrf::Scheme, types::Activity},
@@ -41,6 +45,12 @@ pub(super) use ingress::Mailbox;
 
 type ConsensusActivity = Activity<Scheme<PublicKey, MinSig>, Digest>;
 
+// Follow mode uses an opaque resolver that ignores peer targets, but Commonware
+// requires a non-empty target list. Reusing one placeholder lets overflow
+// coalesce repeated hints without accumulating random public keys.
+static FOLLOW_HINT_TARGET: LazyLock<PublicKey> =
+    LazyLock::new(|| PrivateKey::random(rand::rng()).public_key());
+
 pub(super) struct Config<P, M> {
     pub(super) execution_provider: P,
     pub(super) scheme_provider: SchemeProvider,
@@ -53,10 +63,13 @@ pub(super) struct Config<P, M> {
     pub(super) epoch_strategy: FixedEpocher,
 }
 
+/// A driver and its mailbox.
+pub(super) type Initialized<TContext, P, M> = (Driver<TContext, P, M>, Mailbox);
+
 pub(super) fn try_init<TContext, P, M>(
     context: TContext,
     config: Config<P, M>,
-) -> eyre::Result<(Driver<TContext, P, M>, Mailbox)>
+) -> eyre::Result<Initialized<TContext, P, M>>
 where
     TContext: Clock + Spawner,
     P: ExecutionProvider + 'static,
@@ -102,8 +115,7 @@ impl Marshal for crate::alias::marshal::Mailbox {
     fn hint_finalized(&self, height: Height) -> impl Future<Output = ()> + Send {
         let mailbox = self.clone();
         async move {
-            // Stub out a random target
-            let target = PrivateKey::random(rand::rng()).public_key();
+            let target = (*FOLLOW_HINT_TARGET).clone();
             mailbox.hint_finalized(height, NonEmptyVec::new(target));
         }
     }

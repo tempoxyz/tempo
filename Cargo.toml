@@ -1,5 +1,5 @@
 [workspace.package]
-version = "1.13.0"
+version = "1.14.0"
 edition = "2024"
 rust-version = "1.95.0"
 authors = ["Tempo Contributors"]
@@ -43,20 +43,20 @@ resolver = "3"
 
 [workspace.lints]
 [workspace.lints.clippy]
-dbg-macro = "warn"
-manual-string-new = "warn"
-uninlined-format-args = "warn"
-use-self = "warn"
-redundant-clone = "warn"
-cast-lossless = "deny"
-default-constructed-unit-structs = "allow"
+dbg_macro = "warn"
+manual_string_new = "warn"
+uninlined_format_args = "warn"
+use_self = "warn"
+redundant_clone = "warn"
+cast_lossless = "deny"
+default_constructed_unit_structs = "allow"
 
 [workspace.lints.rust]
-rust-2018-idioms = "warn"
-unreachable-pub = "warn"
-unused-must-use = "warn"
-redundant-lifetimes = "warn"
-unnameable-types = "warn"
+rust_2018_idioms = "warn"
+unreachable_pub = "warn"
+unused_must_use = "warn"
+redundant_lifetimes = "warn"
+unnameable_types = "warn"
 
 [workspace.lints.rustdoc]
 all = "warn"
@@ -174,6 +174,7 @@ reth-evm = { git = "https://github.com/paradigmxyz/reth", rev = "4020f1ab47d37c6
 reth-evm-ethereum = { git = "https://github.com/paradigmxyz/reth", rev = "4020f1ab47d37c60779cd4ce36377b86143d0fe6" }
 reth-metrics = { git = "https://github.com/paradigmxyz/reth", rev = "4020f1ab47d37c60779cd4ce36377b86143d0fe6" }
 reth-network-api = { git = "https://github.com/paradigmxyz/reth", rev = "4020f1ab47d37c60779cd4ce36377b86143d0fe6" }
+reth-network-p2p = { git = "https://github.com/paradigmxyz/reth", rev = "4020f1ab47d37c60779cd4ce36377b86143d0fe6" }
 reth-network-peers = { git = "https://github.com/paradigmxyz/reth", rev = "4020f1ab47d37c60779cd4ce36377b86143d0fe6", default-features = false }
 reth-nippy-jar = { git = "https://github.com/paradigmxyz/reth", rev = "4020f1ab47d37c60779cd4ce36377b86143d0fe6" }
 reth-node-api = { git = "https://github.com/paradigmxyz/reth", rev = "4020f1ab47d37c60779cd4ce36377b86143d0fe6" }
@@ -206,49 +207,49 @@ reth-trie = { git = "https://github.com/paradigmxyz/reth", rev = "4020f1ab47d37c
 reth-trie-common = { git = "https://github.com/paradigmxyz/reth", rev = "4020f1ab47d37c60779cd4ce36377b86143d0fe6" }
 reth-trie-db = { git = "https://github.com/paradigmxyz/reth", rev = "4020f1ab47d37c60779cd4ce36377b86143d0fe6" }
 
-alloy-json-abi = { version = "1.6.1", default-features = false }
-alloy-primitives = { version = "1.6.1", default-features = false }
-alloy-sol-types = { version = "1.6.1", default-features = false }
+alloy-json-abi = { version = "1.7.2", default-features = false }
+alloy-primitives = { version = "1.7.2", default-features = false }
+alloy-sol-types = { version = "1.7.2", default-features = false }
 
-alloy = { version = "2.3.0", default-features = false }
-alloy-consensus = { version = "2.3.0", default-features = false }
-alloy-contract = { version = "2.3.0", default-features = false }
-alloy-eip7928 = { version = "0.4.5", default-features = false }
-alloy-eips = { version = "2.3.0", default-features = false }
+alloy = { version = "2.4.2", default-features = false }
+alloy-consensus = { version = "2.4.2", default-features = false }
+alloy-contract = { version = "2.4.2", default-features = false }
+alloy-eip7928 = { version = "0.4.9", default-features = false }
+alloy-eips = { version = "2.4.2", default-features = false }
 evm2 = { git = "https://github.com/alloy-rs/evm2", rev = "a614d8e05f4cc8b29541216cd89a862cd015deaf", default-features = false }
 evm2-macros = { git = "https://github.com/alloy-rs/evm2", rev = "a614d8e05f4cc8b29541216cd89a862cd015deaf" }
-alloy-genesis = { version = "2.3.0", default-features = false }
-alloy-hardforks = "0.4.7"
-alloy-json-rpc = "2.3.0"
-alloy-network = { version = "2.3.0", default-features = false }
-alloy-provider = { version = "2.3.0", default-features = false }
+alloy-genesis = { version = "2.4.2", default-features = false }
+alloy-hardforks = "0.4.8"
+alloy-json-rpc = "2.4.2"
+alloy-network = { version = "2.4.2", default-features = false }
+alloy-provider = { version = "2.4.2", default-features = false }
 alloy-rlp = { version = "0.3.16", default-features = false }
-alloy-rpc-client = { version = "2.3.0", default-features = false }
-alloy-rpc-types-admin = "2.3.0"
-alloy-rpc-types-engine = "2.3.0"
-alloy-rpc-types-eth = { version = "2.3.0" }
-alloy-serde = { version = "2.3.0", default-features = false }
-alloy-signer = "2.3.0"
-alloy-signer-aws = "2.3.0"
-alloy-signer-gcp = "2.3.0"
-alloy-signer-ledger = "2.3.0"
-alloy-signer-local = "2.3.0"
-alloy-signer-trezor = "2.3.0"
-alloy-transport = "2.3.0"
+alloy-rpc-client = { version = "2.4.2", default-features = false }
+alloy-rpc-types-admin = "2.4.2"
+alloy-rpc-types-engine = "2.4.2"
+alloy-rpc-types-eth = { version = "2.4.2" }
+alloy-serde = { version = "2.4.2", default-features = false }
+alloy-signer = "2.4.2"
+alloy-signer-aws = "2.4.2"
+alloy-signer-gcp = "2.4.2"
+alloy-signer-ledger = "2.4.2"
+alloy-signer-local = "2.4.2"
+alloy-signer-trezor = "2.4.2"
+alloy-transport = "2.4.2"
 
-commonware-actor = "2026.7.0"
-commonware-broadcast = "2026.7.0"
-commonware-codec = "2026.7.0"
-commonware-consensus = "2026.7.0"
-commonware-cryptography = { version = "2026.7.0", default-features = false }
-commonware-macros = "2026.7.0"
-commonware-math = "2026.7.0"
-commonware-p2p = "2026.7.0"
-commonware-parallel = "2026.7.0"
-commonware-resolver = "2026.7.0"
-commonware-runtime = "2026.7.0"
-commonware-storage = "2026.7.0"
-commonware-utils = "2026.7.0"
+commonware-actor = "2026.7.1"
+commonware-broadcast = "2026.7.1"
+commonware-codec = "2026.7.1"
+commonware-consensus = "2026.7.1"
+commonware-cryptography = { version = "2026.7.1", default-features = false }
+commonware-macros = "2026.7.1"
+commonware-math = "2026.7.1"
+commonware-p2p = "2026.7.1"
+commonware-parallel = "2026.7.1"
+commonware-resolver = "2026.7.1"
+commonware-runtime = "2026.7.1"
+commonware-storage = "2026.7.1"
+commonware-utils = "2026.7.1"
 
 arbitrary = { version = "1.4", features = ["derive"] }
 async-lock = "3.4.2"

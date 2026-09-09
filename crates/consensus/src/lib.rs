@@ -14,6 +14,7 @@ pub mod feed;
 pub mod finalization_verifier;
 pub mod finalized_header_stream;
 pub mod follow;
+pub mod gossip;
 pub mod metrics;
 mod network;
 pub(crate) mod network_identity;
@@ -54,6 +55,7 @@ pub async fn run_consensus_stack(
     config: Args,
     execution_node: Arc<TempoFullNode>,
     feed_state: feed::FeedStateHandle,
+    gossip_transport: Option<tempo_node::gossip::TransportHandle>,
 ) -> eyre::Result<()> {
     let share = config
         .signing_share
@@ -110,6 +112,10 @@ pub async fn run_consensus_stack(
 
     let consensus_engine = crate::consensus::engine::Builder {
         execution_node: Some(execution_node),
+        gossip: gossip_transport.map(|transport| gossip::Config {
+            transport,
+            verify_rate: config.gossip_verify_rate,
+        }),
         blocker: oracle.clone(),
         peer_manager: oracle.clone(),
 
@@ -179,6 +185,7 @@ pub async fn run_follow_stack(
     upstream_request_timeout: std::time::Duration,
     execution_node: Arc<TempoFullNode>,
     feed_state: feed::FeedStateHandle,
+    gossip_transport: Option<tempo_node::gossip::TransportHandle>,
 ) -> eyre::Result<()> {
     let chain_spec = execution_node.chain_spec();
 
@@ -204,8 +211,12 @@ pub async fn run_follow_stack(
     )
     .wrap_err("failed to initialize client to upstream node")?;
 
-    let config = follow::Config {
+    let follow_engine = follow::Config {
         execution_node,
+        gossip: gossip_transport.map(|transport| gossip::Config {
+            transport,
+            verify_rate: config.gossip_verify_rate,
+        }),
         feed_state,
         upstream,
         upstream_mailbox,
@@ -218,7 +229,7 @@ pub async fn run_follow_stack(
         finalized_blocks_retention: config.finalized_blocks_retention,
     };
 
-    let ret = config
+    let ret = follow_engine
         .try_init(context.child("engine"))
         .await
         .wrap_err("failed initializing follow engine")?

@@ -8,6 +8,7 @@ use alloy_primitives::{Address, B256, Bytes, Signature, TxKind};
 pub use evm2::ethereum::RecoveredTxEnvelope;
 use evm2::ethereum::{LazyTxEip7702, TxEnvelope as EthTxEnvelope};
 use reth_evm::{FromRecoveredTx, FromTxWithEncoded};
+use reth_primitives_traits::WithEncoded;
 use std::{borrow::Borrow, boxed::Box, ops::Deref};
 use tempo_primitives::{AASigned, TempoTxEnvelope};
 
@@ -579,7 +580,16 @@ impl FromRecoveredTx<TempoTxEnvelope> for TempoTxEnv {
     }
 }
 
-impl FromTxWithEncoded<TempoTxEnvelope> for TempoTxEnv {}
+impl FromTxWithEncoded<TempoTxEnvelope> for TempoTxEnv {
+    fn from_tx_with_encoded(tx: WithEncoded<Recovered<TempoTxEnvelope>>) -> Self {
+        let is_simulation = tx.encoded_bytes().is_empty();
+        let mut tx_env = Self::from_recovered_tx(tx.1);
+        if is_simulation {
+            tx_env.execution_context = ExecutionContext::Simulation;
+        }
+        tx_env
+    }
+}
 
 #[cfg(test)]
 mod tests {
@@ -681,6 +691,47 @@ mod tests {
         assert_eq!(recovered.signer(), SIGNER);
         assert_eq!(recovered.inner(), &signed);
         assert_ne!(*recovered.inner().hash(), B256::ZERO);
+    }
+
+    #[test]
+    fn empty_encoded_transaction_marks_simulation_and_preserves_identity() {
+        let make_recovered = |nonce| {
+            Recovered::new_unchecked(
+                TempoTxEnvelope::AA(AASigned::new_unhashed(
+                    TempoTransaction {
+                        nonce,
+                        ..Default::default()
+                    },
+                    TempoSignature::default(),
+                )),
+                SIGNER,
+            )
+        };
+        let recovered = make_recovered(0);
+        let identity = recovered.inner().unique_tx_identifier(SIGNER);
+        let simulation =
+            TempoTxEnv::from_tx_with_encoded(WithEncoded::new(Bytes::new(), recovered.clone()));
+        assert_eq!(simulation.execution_context(), ExecutionContext::Simulation);
+        assert_eq!(simulation.channel_open_context_hash(), identity);
+
+        let next =
+            TempoTxEnv::from_tx_with_encoded(WithEncoded::new(Bytes::new(), make_recovered(1)));
+        assert_ne!(
+            simulation.channel_open_context_hash(),
+            next.channel_open_context_hash()
+        );
+
+        let transaction = TempoTxEnv::from_tx_with_encoded(WithEncoded::new(
+            Bytes::from_static(b"signed transaction"),
+            recovered.clone(),
+        ));
+        assert_eq!(
+            transaction.execution_context(),
+            ExecutionContext::Transaction {
+                tx_hash: *recovered.inner().tx_hash(),
+            }
+        );
+        assert_eq!(transaction.channel_open_context_hash(), identity);
     }
 
     #[test]

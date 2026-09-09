@@ -28,6 +28,7 @@ use tempo_primitives::TempoAddressExt;
 use crate::{
     ACCOUNT_KEYCHAIN_ADDRESS,
     error::Result,
+    has_duplicates_metered,
     storage::{Handler, Mapping, Set},
     tip20_factory::TIP20Factory,
 };
@@ -991,7 +992,19 @@ impl AccountKeychain {
     }
 
     /// Validates a list of [`CallScope`]s.
-    fn validate_call_scopes(&self, scopes: &[CallScope]) -> Result<()> {
+    fn validate_call_scopes(&mut self, scopes: &[CallScope]) -> Result<()> {
+        // Preserve the incremental pre-T11 validation order for historical reexecution.
+        if self.storage.spec().is_t11() {
+            if has_duplicates_metered(&mut self.storage, scopes.iter().map(|scope| scope.target))? {
+                return Err(AccountKeychainError::invalid_call_scope().into());
+            }
+
+            for scope in scopes {
+                self.validate_call_scope(scope)?;
+            }
+            return Ok(());
+        }
+
         let mut seen_targets = HashSet::new();
         for scope in scopes {
             if !seen_targets.insert(scope.target) {
@@ -1007,7 +1020,7 @@ impl AccountKeychain {
     }
 
     /// Validates a single [`CallScope`].
-    fn validate_call_scope(&self, scope: &CallScope) -> Result<()> {
+    fn validate_call_scope(&mut self, scope: &CallScope) -> Result<()> {
         // The public API uses the absence of a target to block it, so persisting address(0) as a
         // real target is always confusing and serves no useful purpose.
         if scope.target.is_zero() {
@@ -1026,13 +1039,16 @@ impl AccountKeychain {
     /// `recipients = []` is an explicit allow-all sentinel at the selector level. To deny a
     /// selector entirely, omit it from `selectorRules` or remove the target scope instead of
     /// leaving behind an empty child set via incremental mutation.
-    fn validate_selector_rules(&self, target: Address, rules: &[SelectorRule]) -> Result<()> {
+    fn validate_selector_rules(&mut self, target: Address, rules: &[SelectorRule]) -> Result<()> {
+        let spec = self.storage.spec();
+        let sort_selectors = spec.is_t11();
+
         let mut cached_is_tip20: Option<bool> = None;
         let mut is_tip20 = || -> Result<bool> {
             match cached_is_tip20 {
                 Some(v) => Ok(v),
                 None => Ok(*cached_is_tip20.insert({
-                    if !self.storage.spec().is_t4() {
+                    if !spec.is_t4() {
                         // Pre-T4: validate that TIP-20 is initialized
                         TIP20Factory::new().is_tip20(target)?
                     } else {
@@ -1043,9 +1059,15 @@ impl AccountKeychain {
             }
         };
 
+        if sort_selectors
+            && has_duplicates_metered(&mut self.storage, rules.iter().map(|rule| rule.selector))?
+        {
+            return Err(AccountKeychainError::invalid_call_scope().into());
+        }
+
         let mut selectors = HashSet::new();
         for rule in rules {
-            if !selectors.insert(rule.selector) {
+            if !sort_selectors && !selectors.insert(rule.selector) {
                 return Err(AccountKeychainError::invalid_call_scope().into());
             }
 
@@ -1057,11 +1079,10 @@ impl AccountKeychain {
                 return Err(AccountKeychainError::invalid_call_scope().into());
             }
 
-            let mut unique_recipients = HashSet::new();
-            for recipient in &rule.recipients {
-                if recipient.is_zero() || !unique_recipients.insert(*recipient) {
-                    return Err(AccountKeychainError::invalid_call_scope().into());
-                }
+            if rule.recipients.iter().any(|recipient| recipient.is_zero())
+                || has_duplicates_metered(&mut self.storage, rule.recipients.iter().copied())?
+            {
+                return Err(AccountKeychainError::invalid_call_scope().into());
             }
         }
 
@@ -1662,6 +1683,59 @@ mod tests {
             }
             _ => panic!("Expected AccountKeychainError, got: {error:?}"),
         }
+    }
+
+    #[test]
+    fn test_t11_sorted_scope_validation_rejects_duplicates() -> eyre::Result<()> {
+        let mut storage = HashMapStorageProvider::new_with_spec(1, TempoHardfork::T11);
+        StorageCtx::enter(&mut storage, || -> eyre::Result<()> {
+            let mut keychain = AccountKeychain::new();
+            let target = Address::repeat_byte(0x11);
+            let recipient = Address::repeat_byte(0x22);
+
+            let error = keychain
+                .validate_call_scopes(&[
+                    CallScope {
+                        target,
+                        selectorRules: vec![],
+                    },
+                    CallScope {
+                        target,
+                        selectorRules: vec![],
+                    },
+                ])
+                .expect_err("duplicate targets must be rejected");
+            assert_invalid_call_scope(error);
+
+            let mut selector_rules = (0u32..4_096)
+                .map(|selector| SelectorRule {
+                    selector: selector.to_be_bytes().into(),
+                    recipients: vec![],
+                })
+                .collect::<Vec<_>>();
+            selector_rules.push(selector_rules[0].clone());
+
+            let error = keychain
+                .validate_call_scopes(&[CallScope {
+                    target,
+                    selectorRules: selector_rules,
+                }])
+                .expect_err("a duplicate selector at the tail must be rejected");
+            assert_invalid_call_scope(error);
+
+            let error = keychain
+                .validate_call_scopes(&[CallScope {
+                    target: DEFAULT_FEE_TOKEN,
+                    selectorRules: vec![SelectorRule {
+                        selector: TIP20_TRANSFER_SELECTOR.into(),
+                        recipients: vec![recipient, recipient],
+                    }],
+                }])
+                .expect_err("duplicate recipients must be rejected");
+            assert_invalid_call_scope(error);
+
+            Ok(())
+        })
     }
 
     fn unrestricted_restrictions() -> KeyRestrictions {

@@ -33,7 +33,7 @@ use crate::{
     test_utils::make_certificate,
 };
 
-pub(crate) use crate::test_utils::dkg_fixture;
+pub(crate) use crate::test_utils::{DkgFixture, dkg_fixture};
 
 type ConsensusActivity = Activity<Scheme<PublicKey, MinSig>, Digest>;
 
@@ -70,7 +70,7 @@ fn make_block_with_parent(
         body: BlockBody::default(),
     };
 
-    Block::from_execution_block(SealedBlock::seal_slow(inner), None)
+    Block::try_from_execution_block(SealedBlock::seal_slow(inner), None)
         .expect("test block should not contain BAL side data")
 }
 
