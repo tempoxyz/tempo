@@ -207,7 +207,7 @@ jobs:
           upload-release-assets: false
 
       - name: Attest SBOM
-        uses: actions/attest@59d89421af93a897026c735860bf21b6eb4f7b26 # v4.1.0
+        uses: actions/attest@1e69f48acb82d1966a394da916b4c1698aa569d6 # v4.2.2
         with:
           # Attest both the archive and the bare binary so consumers can verify
           # provenance whether they hold the .tar.gz or the unpacked ELF
@@ -219,7 +219,7 @@ jobs:
           sbom-path: ${{ steps.prepare.outputs.archive_name }}.spdx.json
 
       - name: Attest build provenance (SLSA v1)
-        uses: actions/attest@59d89421af93a897026c735860bf21b6eb4f7b26 # v4.1.0
+        uses: actions/attest@1e69f48acb82d1966a394da916b4c1698aa569d6 # v4.2.2
         with:
           # No `sbom-path` / `predicate-*` → actions/attest auto-emits a SLSA
           # build provenance predicate.
