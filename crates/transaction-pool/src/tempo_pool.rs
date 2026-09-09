@@ -1741,7 +1741,7 @@ mod tests {
             tx.has_configurable_dependencies(),
             "grant-only batch admission must use the freshness barrier"
         );
-        assert!(tx.configurable_signers().is_empty());
+        assert!(tx.configurable_signers().next().is_none());
         let hash = *tx.hash();
         let generation = *pool.protocol_pool.validator().validator().generation.read();
         let block = reth_primitives_traits::SealedBlock::seal_slow(Block::default());

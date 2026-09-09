@@ -192,29 +192,30 @@ impl TempoPooledTransaction {
 
     /// Accounts whose configuration and code authorize this transaction (at most two roles).
     /// An ordinary access-key use depends on the delegate, not its parent's owner quorum.
-    pub(crate) fn configurable_signers(&self) -> Vec<Address> {
-        let Some(tx) = self.inner().as_aa() else {
-            return Vec::new();
-        };
-        let mut accounts = Vec::with_capacity(2);
-        let signature = tx.signature();
-        if let Some(multisig) = signature.as_multisig().or_else(|| {
+    /// Yields the transaction signer before the grant signer, with duplicate accounts omitted.
+    pub(crate) fn configurable_signers(&self) -> impl Iterator<Item = Address> {
+        let tx = self.inner().as_aa();
+        let signer = tx.and_then(|tx| {
+            let signature = tx.signature();
             signature
-                .as_keychain()
-                .and_then(|key| key.signature.as_multisig())
-        }) {
-            accounts.push(multisig.account());
-        }
-        if let Some(multisig) = tx
-            .tx()
-            .key_authorization
-            .as_ref()
-            .and_then(|grant| grant.signature.as_multisig())
-            && !accounts.contains(&multisig.account())
-        {
-            accounts.push(multisig.account());
-        }
-        accounts
+                .as_multisig()
+                .or_else(|| {
+                    signature
+                        .as_keychain()
+                        .and_then(|key| key.signature.as_multisig())
+                })
+                .map(|multisig| multisig.account())
+        });
+        let grant_signer = tx
+            .and_then(|tx| {
+                tx.tx()
+                    .key_authorization
+                    .as_ref()
+                    .and_then(|grant| grant.signature.as_multisig())
+                    .map(|multisig| multisig.account())
+            })
+            .filter(|account| Some(*account) != signer);
+        [signer, grant_signer].into_iter().flatten()
     }
 
     /// Returns whether this is a payment transaction according to the T5+ builder criteria.
@@ -1054,20 +1055,47 @@ mod tests {
             assert!(pooled(outer, grant).has_configurable_dependencies());
         }
         assert!(!pooled(TempoSignature::default(), None).has_configurable_dependencies());
+        assert!(
+            TxBuilder::eip1559(parent)
+                .build()
+                .configurable_signers()
+                .next()
+                .is_none()
+        );
         assert_eq!(
-            pooled(direct.clone(), None).configurable_signers(),
+            pooled(direct.clone(), None)
+                .configurable_signers()
+                .collect::<Vec<_>>(),
             vec![parent]
         );
         assert_eq!(
-            pooled(delegated.clone(), None).configurable_signers(),
+            pooled(delegated.clone(), None)
+                .configurable_signers()
+                .collect::<Vec<_>>(),
             vec![delegate]
         );
         assert_eq!(
-            pooled(delegated, Some(parent)).configurable_signers(),
+            pooled(delegated, Some(parent))
+                .configurable_signers()
+                .collect::<Vec<_>>(),
             vec![delegate, parent]
         );
         assert_eq!(
-            pooled(direct, Some(parent)).configurable_signers(),
+            pooled(direct, Some(parent))
+                .configurable_signers()
+                .collect::<Vec<_>>(),
+            vec![parent]
+        );
+        assert!(
+            pooled(TempoSignature::default(), None)
+                .configurable_signers()
+                .next()
+                .is_none()
+        );
+        assert_eq!(
+            pooled(TempoSignature::default(), Some(parent))
+                .configurable_signers()
+                .collect::<Vec<_>>(),
             vec![parent]
         );
     }
@@ -1102,7 +1130,7 @@ mod tests {
                 configurable.then_some(delegate)
             );
             assert_eq!(transaction.has_configurable_dependencies(), configurable);
-            assert!(transaction.configurable_signers().is_empty());
+            assert!(transaction.configurable_signers().next().is_none());
             assert_eq!(transaction.keychain_parent(), None);
         }
     }

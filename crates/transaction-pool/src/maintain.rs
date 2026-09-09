@@ -604,9 +604,11 @@ pub(crate) async fn maintain_tempo_pool_with_events<Client, EvmConfig>(
                 .iter()
                 .filter(|tx| !removed_this_iteration.contains(tx.hash()))
                 .filter(|tx| {
-                    let accounts = tx.transaction.configurable_signers();
                     (reorg && tx.transaction.has_configurable_dependencies())
-                        || accounts.iter().any(|account| changed.contains(account))
+                        || tx
+                            .transaction
+                            .configurable_signers()
+                            .any(|account| changed.contains(&account))
                         || tx
                             .transaction
                             .keychain_parent()
