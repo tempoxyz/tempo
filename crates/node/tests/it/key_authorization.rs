@@ -6,6 +6,7 @@ use alloy::{
 };
 use alloy_eips::Encodable2718;
 use alloy_primitives::TxKind;
+use reth_node_api::PayloadKind;
 use tempo_chainspec::spec::TEMPO_T1_BASE_FEE;
 use tempo_contracts::precompiles::{DEFAULT_FEE_TOKEN, ITIP20};
 use tempo_primitives::{
@@ -216,10 +217,10 @@ async fn test_pre_t1b_keyauth_oog_replay() -> eyre::Result<()> {
     Ok(())
 }
 
-/// Pre-T1B single poisoned tx: the poisoned KeyAuth CREATE tx is the only
-/// user tx in the block. The block still produces (the builder skips the
-/// invalid tx or handles the OOG gracefully), but the protocol nonce is
-/// NOT bumped — the signed tx remains valid in the pool indefinitely.
+/// Pre-T1B single poisoned tx: when the poisoned KeyAuth CREATE tx is the
+/// only user tx, its OOG state also makes the seal-block system transaction
+/// run out of gas, so the builder cannot produce a payload. The protocol nonce
+/// is not bumped and the signed tx remains valid in the pool indefinitely.
 #[tokio::test(flavor = "multi_thread")]
 async fn test_pre_t1b_keyauth_oog_single_tx_nonce_not_bumped() -> eyre::Result<()> {
     reth_tracing::init_test_tracing();
@@ -247,10 +248,32 @@ async fn test_pre_t1b_keyauth_oog_single_tx_nonce_not_bumped() -> eyre::Result<(
 
     let _ = provider.send_raw_transaction(&encoded).await?;
 
-    // Block is produced — the builder handles the poisoned tx gracefully.
-    setup.node.advance_block().await?;
+    let attributes = setup.node.payload.next_attributes();
+    let payload_id = setup
+        .node
+        .inner
+        .add_ons_handle
+        .beacon_engine_handle
+        .fork_choice_updated(
+            setup.node.current_forkchoice_state()?,
+            Some(attributes.clone()),
+        )
+        .await?
+        .payload_id
+        .expect("forkchoice update should start a payload job");
+    setup.node.payload.expect_attr_event(attributes).await?;
 
-    // Protocol nonce NOT bumped — CREATE frame was never reached.
+    let payload_result = setup
+        .node
+        .inner
+        .payload_builder_handle
+        .resolve_kind(payload_id, PayloadKind::WaitForPending)
+        .await
+        .expect("payload job should exist");
+    let err = payload_result.expect_err("the poisoned tx should prevent payload construction");
+    assert_eq!(err.to_string(), "missing payload");
+
+    // Protocol nonce NOT bumped — no payload was committed and CREATE was never reached.
     let nonce_after = provider.get_transaction_count(signer_addr).await?;
     assert_eq!(
         nonce_after, nonce,
