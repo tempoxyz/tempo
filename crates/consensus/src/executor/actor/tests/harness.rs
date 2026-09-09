@@ -159,6 +159,9 @@ impl ForkchoiceStateExt for ForkchoiceState {
 struct ElState {
     /// Blocks known to the execution layer: hash -> (height, parent hash).
     blocks: HashMap<B256, (u64, B256)>,
+    /// Disconnected payloads. Accepting their missing ancestor connects them,
+    /// like Reth's engine tree, without another newPayload for each descendant.
+    buffered: HashMap<B256, (u64, B256)>,
     /// The canonical index: height -> hash, derived from accepted
     /// forkchoice updates (plus seeded history).
     canonical: BTreeMap<u64, B256>,
@@ -247,7 +250,7 @@ struct FakeExecutionInner {
     /// Complete FCU outcome sequences keyed by forkchoice state. An absent
     /// state uses the fake's stateful default; a present state must not receive
     /// more calls than scripted.
-    fcu_overrides: ScriptedResults<ForkchoiceState, Result<PayloadStatusEnum, &'static str>>,
+    fcu_overrides: ScriptedResults<ForkchoiceState, ScriptedResult<PayloadStatusEnum>>,
     /// Scripted canonical-hash lookup outcomes keyed by height.
     canonical_hash_overrides: ScriptedResults<u64, Result<Option<B256>, &'static str>>,
     /// Scripted block lookup outcomes keyed by digest.
@@ -308,6 +311,7 @@ impl FakeExecution {
                 genesis,
                 state: Mutex::new(ElState {
                     blocks: HashMap::from([(genesis, (0, B256::ZERO))]),
+                    buffered: HashMap::new(),
                     canonical: BTreeMap::from([(0, genesis)]),
                     head: genesis,
                     finalized: None,
@@ -327,7 +331,13 @@ impl FakeExecution {
                 payload_receivers: Mutex::new(HashMap::new()),
                 canceled_payload_jobs: Mutex::new(Vec::new()),
                 scripted_builds: Mutex::new(VecDeque::new()),
-                bodies: Mutex::new(HashMap::new()),
+                bodies: Mutex::new(HashMap::from([(
+                    genesis,
+                    Block::from_execution_block_unchecked(
+                        SealedBlock::new_unchecked(TempoBlock::default(), genesis),
+                        None,
+                    ),
+                )])),
             }),
         }
     }
@@ -336,6 +346,7 @@ impl FakeExecution {
 
     /// Seeds `block` as known and canonical, moving the head onto it.
     pub(super) fn seed_canonical_block(&self, block: &Block) {
+        self.add_body(block.clone());
         let mut state = self.inner.state.lock();
         let (height, digest, parent) = (
             block.height().get(),
@@ -362,8 +373,8 @@ impl FakeExecution {
     /// Requests consume responses in FIFO order; a request beyond the supplied
     /// responses fails the test instead of falling back to default behavior.
     ///
-    /// A digest without a script uses the stateful default: `Valid` if its
-    /// parent is known to the fake execution layer, otherwise `Syncing`.
+    /// A digest without a script uses the stateful default: `Valid` if the
+    /// block or its parent is known to the fake execution layer, otherwise `Syncing`.
     /// `Ok(PayloadStatusEnum::Invalid)` models a successfully delivered Engine
     /// API response that rejects the payload, while `Err` models a request or
     /// transport failure before the execution layer returns any payload status.
@@ -407,7 +418,22 @@ impl FakeExecution {
         state: ForkchoiceState,
         response: Result<PayloadStatusEnum, &'static str>,
     ) {
-        self.inner.fcu_overrides.push(state, response);
+        self.inner
+            .fcu_overrides
+            .push(state, ScriptedResult::Immediate(response));
+    }
+
+    /// Holds an FCU response until the test releases it.
+    pub(super) fn script_delayed_fcu(
+        &self,
+        state: ForkchoiceState,
+        response: Result<PayloadStatusEnum, &'static str>,
+    ) -> oneshot::Sender<()> {
+        let (sender, release) = oneshot::channel();
+        self.inner
+            .fcu_overrides
+            .push(state, ScriptedResult::Delayed { response, release });
+        sender
     }
 
     /// Scripts the outcome of the next canonical block lookup at `height`.
@@ -651,11 +677,17 @@ impl ExecutionLayer for FakeExecution {
         async move {
             let outcome = match scripted_result {
                 Some(result) => result.resolve().await,
-                None => Ok(if inner.state.lock().blocks.contains_key(&parent) {
-                    PayloadStatusEnum::Valid
-                } else {
-                    PayloadStatusEnum::Syncing
-                }),
+                None => {
+                    let state = inner.state.lock();
+                    Ok(
+                        if state.blocks.contains_key(&digest) || state.blocks.contains_key(&parent)
+                        {
+                            PayloadStatusEnum::Valid
+                        } else {
+                            PayloadStatusEnum::Syncing
+                        },
+                    )
+                }
             };
             let status = outcome.map_err(Report::msg).wrap_err_with(|| {
                 format!(
@@ -664,7 +696,21 @@ impl ExecutionLayer for FakeExecution {
                 )
             })?;
             if status == PayloadStatusEnum::Valid {
-                inner.state.lock().blocks.insert(digest, (height, parent));
+                inner.bodies.lock().insert(digest, block);
+                let mut state = inner.state.lock();
+                state.buffered.remove(&digest);
+                state.blocks.insert(digest, (height, parent));
+                while let Some((hash, block)) = state
+                    .buffered
+                    .iter()
+                    .find(|(_, (_, parent))| state.blocks.contains_key(parent))
+                    .map(|(hash, block)| (*hash, *block))
+                {
+                    state.buffered.remove(&hash);
+                    state.blocks.insert(hash, block);
+                }
+            } else if status == PayloadStatusEnum::Syncing {
+                inner.state.lock().buffered.insert(digest, (height, parent));
             }
             Ok(PayloadStatus::from_status(status))
         }
@@ -687,71 +733,80 @@ impl ExecutionLayer for FakeExecution {
                 .push(attributes.clone());
         }
 
-        let outcome = if self.inner.reject_all_fcus.load(Ordering::SeqCst) {
-            Ok(PayloadStatusEnum::Invalid {
-                validation_error: "rejected by test".into(),
-            })
-        } else {
-            match self.inner.fcu_overrides.next_scripted(&state) {
-                NextScriptedResult::Scripted(Ok(PayloadStatusEnum::Valid)) => {
-                    let applied = self.apply_forkchoice(&state);
-                    assert_eq!(
-                        applied,
-                        PayloadStatusEnum::Valid,
-                        "scripted VALID FCU could not be applied to the fake state: {state:?}",
-                    );
-                    Ok(PayloadStatusEnum::Valid)
-                }
-                NextScriptedResult::Scripted(outcome) => outcome,
-                NextScriptedResult::Unscripted => Ok(self.apply_forkchoice(&state)),
-                NextScriptedResult::Exhausted => {
-                    panic!("FCU request exceeded its scripted outcome sequence: {state:?}")
-                }
-            }
-        };
-
-        let outcome = outcome.map_err(Report::msg).wrap_err_with(|| {
-            format!(
-                "scripted forkchoice update failed for head `{}`",
-                Digest(state.head_block_hash)
-            )
-        });
-        let result = match outcome {
-            Ok(status) => {
-                let mut response = ForkchoiceUpdated::from_status(status);
-                if response.is_valid()
-                    && attributes.is_some()
-                    && !self.inner.suppress_payload_ids.load(Ordering::SeqCst)
-                {
-                    let payload_id = PayloadId::new(
-                        self.inner
-                            .next_payload_id
-                            .fetch_add(1, Ordering::SeqCst)
-                            .to_be_bytes(),
-                    );
-                    if !self.inner.omit_payload_job.load(Ordering::SeqCst) {
-                        let (sender, receiver) = oneshot::channel();
-                        match self.inner.scripted_builds.lock().pop_front() {
-                            Some(payload) => {
-                                let _ = sender.send(payload);
-                            }
-                            None => {
-                                self.inner.payload_senders.lock().insert(payload_id, sender);
-                            }
+        let execution = self.clone();
+        async move {
+            let outcome = if execution.inner.reject_all_fcus.load(Ordering::SeqCst) {
+                Ok(PayloadStatusEnum::Invalid {
+                    validation_error: "rejected by test".into(),
+                })
+            } else {
+                match execution.inner.fcu_overrides.next_scripted(&state) {
+                    NextScriptedResult::Scripted(outcome) => {
+                        let outcome = outcome.resolve().await;
+                        if matches!(outcome, Ok(PayloadStatusEnum::Valid)) {
+                            let applied = execution.apply_forkchoice(&state);
+                            assert_eq!(
+                                applied,
+                                PayloadStatusEnum::Valid,
+                                "scripted VALID FCU could not be applied to the fake state: {state:?}",
+                            );
                         }
-                        self.inner
-                            .payload_receivers
-                            .lock()
-                            .insert(payload_id, receiver);
+                        outcome
                     }
-                    response = response.with_payload_id(payload_id);
+                    NextScriptedResult::Unscripted => Ok(execution.apply_forkchoice(&state)),
+                    NextScriptedResult::Exhausted => {
+                        panic!("FCU request exceeded its scripted outcome sequence: {state:?}")
+                    }
                 }
-                Ok(response)
-            }
-            Err(error) => Err(error),
-        };
+            };
 
-        async move { result }
+            let outcome = outcome.map_err(Report::msg).wrap_err_with(|| {
+                format!(
+                    "scripted forkchoice update failed for head `{}`",
+                    Digest(state.head_block_hash)
+                )
+            });
+            match outcome {
+                Ok(status) => {
+                    let mut response = ForkchoiceUpdated::from_status(status);
+                    if response.is_valid()
+                        && attributes.is_some()
+                        && !execution.inner.suppress_payload_ids.load(Ordering::SeqCst)
+                    {
+                        let payload_id = PayloadId::new(
+                            execution
+                                .inner
+                                .next_payload_id
+                                .fetch_add(1, Ordering::SeqCst)
+                                .to_be_bytes(),
+                        );
+                        if !execution.inner.omit_payload_job.load(Ordering::SeqCst) {
+                            let (sender, receiver) = oneshot::channel();
+                            match execution.inner.scripted_builds.lock().pop_front() {
+                                Some(payload) => {
+                                    let _ = sender.send(payload);
+                                }
+                                None => {
+                                    execution
+                                        .inner
+                                        .payload_senders
+                                        .lock()
+                                        .insert(payload_id, sender);
+                                }
+                            }
+                            execution
+                                .inner
+                                .payload_receivers
+                                .lock()
+                                .insert(payload_id, receiver);
+                        }
+                        response = response.with_payload_id(payload_id);
+                    }
+                    Ok(response)
+                }
+                Err(error) => Err(error),
+            }
+        }
     }
 
     fn resolve_payload(
@@ -815,9 +870,9 @@ impl MarshalSubscriptions {
             .collect()
     }
 
-    fn fulfill(&self, digest: Digest, block: Block) -> bool {
+    fn fulfill(&self, digest: Digest, block: Arc<Block>) -> bool {
         self.take(digest)
-            .is_some_and(|subscription| subscription.sender.send(Arc::new(block)).is_ok())
+            .is_some_and(|subscription| subscription.sender.send(block).is_ok())
     }
 
     fn discard(&self, digest: Digest) -> bool {
@@ -895,8 +950,12 @@ impl FakeMarshal {
     /// Fulfills the open subscription for `digest` with `block`.
     ///
     /// Returns false if no subscription for the digest is open.
-    pub(super) fn fulfill_subscription(&self, digest: Digest, block: Block) -> bool {
-        self.inner.subscriptions.fulfill(digest, block)
+    pub(super) fn fulfill_subscription(
+        &self,
+        digest: Digest,
+        block: impl Into<Arc<Block>>,
+    ) -> bool {
+        self.inner.subscriptions.fulfill(digest, block.into())
     }
 
     /// Drops the open subscription for `digest`, simulating marshal giving
