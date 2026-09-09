@@ -653,6 +653,14 @@ impl AccessKeySignature {
         }
     }
 
+    /// Returns the stored access-key type, including multisig.
+    pub fn key_type(&self) -> SignatureType {
+        match self {
+            Self::Primitive(signature) => signature.signature_type(),
+            Self::Multisig(_) => SignatureType::Multisig,
+        }
+    }
+
     /// Returns the primitive algorithm, when applicable.
     pub fn signature_type(&self) -> Option<SignatureType> {
         match self {
@@ -2277,7 +2285,7 @@ mod tests {
     }
 
     #[test]
-    fn test_signature_type_is_none_for_multisig() {
+    fn test_access_key_signature_types() {
         let config = MultisigConfig {
             salt: B256::ZERO,
             version: 1,
@@ -2297,6 +2305,44 @@ mod tests {
         );
 
         assert_eq!(signature.signature_type(), None);
+        let TempoSignature::Multisig(multisig) = signature else {
+            unreachable!()
+        };
+        for (signature, key_type, primitive_type) in [
+            (
+                AccessKeySignature::Primitive(PrimitiveSignature::default()),
+                SignatureType::Secp256k1,
+                Some(SignatureType::Secp256k1),
+            ),
+            (
+                PrimitiveSignature::P256(P256SignatureWithPreHash {
+                    r: B256::ZERO,
+                    s: B256::ZERO,
+                    pub_key_x: B256::ZERO,
+                    pub_key_y: B256::ZERO,
+                    pre_hash: false,
+                })
+                .into(),
+                SignatureType::P256,
+                Some(SignatureType::P256),
+            ),
+            (
+                PrimitiveSignature::WebAuthn(WebAuthnSignature {
+                    r: B256::ZERO,
+                    s: B256::ZERO,
+                    pub_key_x: B256::ZERO,
+                    pub_key_y: B256::ZERO,
+                    webauthn_data: Bytes::new(),
+                })
+                .into(),
+                SignatureType::WebAuthn,
+                Some(SignatureType::WebAuthn),
+            ),
+            (multisig.into(), SignatureType::Multisig, None),
+        ] {
+            assert_eq!(signature.key_type(), key_type);
+            assert_eq!(signature.signature_type(), primitive_type);
+        }
     }
 
     #[test]
