@@ -1004,11 +1004,25 @@ mod tests {
         RetainOnReorg,
         ResurrectOnReorg,
         InvalidateGrantRecipient,
+        RegistrationRollback,
+        MixedBatch,
+        MixedOrigins,
+        UnprocessedHeadRetry,
+    }
+
+    #[test_case::test_case(ConfigurablePoolScenario::RegistrationRollback; "registration_rollback")]
+    #[test_case::test_case(ConfigurablePoolScenario::MixedBatch; "mixed_batch")]
+    #[test_case::test_case(ConfigurablePoolScenario::MixedOrigins; "mixed_origins")]
+    #[test_case::test_case(ConfigurablePoolScenario::UnprocessedHeadRetry; "unprocessed_head_retry")]
+    #[tokio::test]
+    async fn configurable_pool_boundaries(scenario: ConfigurablePoolScenario) {
+        configurable_canonical_pool_case(scenario).await;
     }
 
     async fn configurable_canonical_pool_case(scenario: ConfigurablePoolScenario) {
         use alloy_signer::SignerSync;
         use alloy_signer_local::PrivateKeySigner;
+        use futures::{FutureExt, StreamExt};
         use reth_primitives_traits::{Recovered, RecoveredBlock};
         use reth_transaction_pool::{
             Pool, PoolConfig, TransactionPool, TransactionPoolExt,
@@ -1041,17 +1055,52 @@ mod tests {
                 .key_authorization(grant.into_signed(approval))
                 .build()
         } else {
-            let template = TxBuilder::aa(account).nonce_key(U256::from(1)).build();
-            let tx = template.inner().as_aa().unwrap().tx().clone();
+            let template = TxBuilder::aa(account)
+                .nonce_key(
+                    if scenario == ConfigurablePoolScenario::UnprocessedHeadRetry {
+                        U256::ZERO
+                    } else {
+                        U256::from(1)
+                    },
+                )
+                .build();
+            let mut tx = template.inner().as_aa().unwrap().tx().clone();
             let approval = owner
                 .sign_hash_sync(&multisig_digest(tx.signature_hash(), account, 0))
                 .unwrap();
-            let signature = MultisigSignature::try_new(
+            let mut signature = MultisigSignature::try_new(
                 account,
-                config,
+                config.clone(),
                 vec![PrimitiveSignature::Secp256k1(approval)],
             )
             .unwrap();
+            if scenario == ConfigurablePoolScenario::RegistrationRollback {
+                use alloy_evm::FromRecoveredTx;
+                let signed =
+                    AASigned::new_unhashed(tx.clone(), TempoSignature::Multisig(signature));
+                let env = tempo_revm::TempoTxEnv::from_recovered_tx(&signed, account);
+                let gas = tempo_revm::gas_params::tempo_gas_params(TempoHardfork::T12);
+                let base = tempo_revm::handler::calculate_aa_batch_intrinsic_gas(
+                    env.tempo_tx_env.as_ref().unwrap(),
+                    &gas,
+                    None::<std::iter::Empty<&alloy_eips::eip2930::AccessListItem>>,
+                    TempoHardfork::T12,
+                )
+                .unwrap()
+                .initial_total_gas();
+                // Nonce zero pays the existing new-account intrinsic increment.
+                tx.gas_limit =
+                    base + gas.get(revm::context_interface::cfg::GasId::new_account_cost());
+                let approval = owner
+                    .sign_hash_sync(&multisig_digest(tx.signature_hash(), account, 0))
+                    .unwrap();
+                signature = MultisigSignature::try_new(
+                    account,
+                    config,
+                    vec![PrimitiveSignature::Secp256k1(approval)],
+                )
+                .unwrap();
+            }
             TempoPooledTransaction::new(Recovered::new_unchecked(
                 TempoTxEnvelope::AA(AASigned::new_unhashed(
                     tx,
@@ -1103,12 +1152,67 @@ mod tests {
         );
         let hash = *transaction.hash();
         let orphaned_transaction = transaction.inner().inner().clone();
-        pool.add_transaction(TransactionOrigin::External, transaction)
-            .await
-            .unwrap();
+        if matches!(
+            scenario,
+            ConfigurablePoolScenario::MixedBatch | ConfigurablePoolScenario::MixedOrigins
+        ) {
+            let ordinary = TxBuilder::aa(account).nonce(1).build();
+            let ordinary_hash = *ordinary.hash();
+            let results = if scenario == ConfigurablePoolScenario::MixedBatch {
+                pool.add_transactions(TransactionOrigin::External, vec![ordinary, transaction])
+                    .await
+            } else {
+                pool.add_transactions_with_origins(vec![
+                    (TransactionOrigin::Local, ordinary),
+                    (TransactionOrigin::External, transaction),
+                ])
+                .await
+            };
+            for result in results {
+                result.unwrap();
+            }
+            assert!(pool.contains(&ordinary_hash));
+            assert!(pool.contains(&hash));
+        } else {
+            pool.add_transaction(TransactionOrigin::External, transaction)
+                .await
+                .unwrap();
+        }
         let entry = pool.get(&hash).unwrap();
         entry.transaction.set_key_expiry(Some(12345));
         let mut outcome = reth_provider::ExecutionOutcome::default();
+        if scenario == ConfigurablePoolScenario::RegistrationRollback {
+            provider.add_account(account, ExtendedAccount::new(0, U256::ZERO));
+            // Refresh only the state cache; preserve the explicit T12 fixture environment.
+            validation_handle.validator().cached_state.write().1 = Arc::new(StateCache::default());
+            let result = validation_handle
+                .validate_transaction(
+                    TransactionOrigin::External,
+                    entry.transaction.with_discarded_caches(),
+                )
+                .await;
+            let TransactionValidationOutcome::Invalid(_, error) = result else {
+                panic!("expected registration gas rejection: {result:?}")
+            };
+            let Some(TempoPoolTransactionError::Evm(
+                TempoInvalidTransaction::EthInvalidTransaction(
+                    InvalidTransaction::CallGasCostMoreThanGasLimit {
+                        gas_limit,
+                        initial_gas,
+                    },
+                ),
+            )) = error.downcast_other_ref::<TempoPoolTransactionError>()
+            else {
+                panic!("wrong rejection: {error:?}")
+            };
+            assert_eq!(*gas_limit, entry.transaction.gas_limit());
+            assert_eq!(
+                initial_gas - gas_limit,
+                20_000
+                    + tempo_precompiles::native_multisig::keccak_cost(77)
+                    + tempo_precompiles::native_multisig::keccak_cost(85)
+            );
+        }
         if scenario == ConfigurablePoolScenario::InvalidateGrantRecipient {
             use revm::{
                 database::{AccountStatus, BundleAccount},
@@ -1181,15 +1285,45 @@ mod tests {
                 new: chain(block, outcome),
             }
         };
-        crate::maintain::maintain_tempo_pool_with_events(
-            pool.clone(),
-            futures::stream::iter([event]),
-        )
-        .await;
-        if scenario == ConfigurablePoolScenario::InvalidateGrantRecipient {
+        let retry = scenario == ConfigurablePoolScenario::UnprocessedHeadRetry;
+        let mut listener = retry.then(|| pool.transaction_event_listener(hash).unwrap());
+        let processed = validation_handle.validator().processed_head();
+        if retry {
+            validation_handle.validator().cached_state.write().0 = B256::repeat_byte(0x88);
+        }
+        let events = futures::stream::iter(if retry {
+            vec![event.clone(), event]
+        } else {
+            vec![event]
+        })
+        .enumerate()
+        .map(|(index, event)| {
+            if retry && index == 1 {
+                assert!(pool.contains(&hash), "timeout must retain the candidate");
+                assert_eq!(
+                    entry.transaction.key_expiry(),
+                    Some(12345),
+                    "first event did not revalidate"
+                );
+                assert!(
+                    futures::StreamExt::next(listener.as_mut().unwrap())
+                        .now_or_never()
+                        .is_none(),
+                    "timeout must retain listener without removal"
+                );
+                validation_handle.validator().cached_state.write().0 = processed;
+            }
+            event
+        });
+        crate::maintain::maintain_tempo_pool_with_events(pool.clone(), events).await;
+        if matches!(
+            scenario,
+            ConfigurablePoolScenario::InvalidateGrantRecipient
+                | ConfigurablePoolScenario::RegistrationRollback
+        ) {
             assert!(
                 !pool.contains(&hash),
-                "recipient-only code change must revalidate a grant without a quorum witness"
+                "canonical code or registration change must evict a freshly invalid transaction"
             );
             service.abort();
             return;
@@ -1199,7 +1333,7 @@ mod tests {
             .expect("same commitment remains valid after reorg");
         assert_eq!(
             Arc::ptr_eq(&entry, &retained),
-            scenario == ConfigurablePoolScenario::RetainOnReorg
+            scenario != ConfigurablePoolScenario::ResurrectOnReorg
         );
         assert_eq!(
             retained.transaction.key_expiry(),
