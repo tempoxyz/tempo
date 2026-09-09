@@ -161,6 +161,7 @@ jobs:
       baseline-name: ${{ needs.resolve-refs.outputs.baseline-name }}
       feature: ${{ needs.resolve-refs.outputs.feature-ref }}
       feature-name: ${{ needs.resolve-refs.outputs.feature-name }}
+      preset: public-mix
       duration: ${{ inputs.duration || '90' }}
       bloat: ${{ inputs.bloat || '100' }}
       validator-count: ${{ inputs['validator-count'] || '10' }}

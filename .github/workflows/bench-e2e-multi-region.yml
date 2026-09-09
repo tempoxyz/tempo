@@ -23,6 +23,10 @@ on:
         type: string
         required: false
         default: ""
+      preset:
+        type: string
+        required: false
+        default: "tip20_existing_recipients"
       duration:
         type: string
         required: false
