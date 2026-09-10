@@ -72,16 +72,12 @@ fn missing_ancestor_bodies_are_fetched_and_forwarded_bottom_up() {
         assert_eq!(
             h.execution.new_payloads(),
             vec![d1, d2, d3],
-            "blocks are forwarded bottom-up",
+            "blocks are delivered bottom-up",
         );
         assert_eq!(
             h.execution.fcus(),
-            vec![
-                STARTUP_FCU,
-                (d1, GENESIS, false),
-                (d2, GENESIS, false),
-                (d3, GENESIS, false)
-            ],
+            vec![STARTUP_FCU, (d3, GENESIS, false)],
+            "one forkchoice update moves the head across the whole delivered run",
         );
     });
 }
@@ -224,9 +220,8 @@ fn rejected_notarized_fcu_is_fatal() {
         let h = Harness::start_at_genesis(&context);
 
         // The forkchoice update names a block the execution layer accepted
-        // through its new-payload request. A rejection means the executor's
-        // view of the execution layer has diverged from it: the node shuts
-        // down.
+        // through its delivery. A rejection means the executor's view of the
+        // execution layer has diverged from it: the node shuts down.
         let b1 = make_block(1, 1, GENESIS);
         let d1 = b1.digest();
         h.execution.script_fcu(
@@ -494,7 +489,10 @@ fn branch_flip_flop_reconverges_from_resident_bodies() {
         let fetches = h.marshal.subscribe_log().len();
 
         // Flip back to branch B: both bodies are still resident, so the
-        // re-convergence must not fetch anything.
+        // re-convergence must not fetch anything. The execution layer
+        // already knows the branch, so the head is repointed onto it with a
+        // bare forkchoice update.
+        let payloads_before = h.execution.new_payloads();
         h.report_pending_head(5, 2, d2);
         h.wait_until(|| h.execution.head() == d2).await;
         assert_eq!(
@@ -502,7 +500,12 @@ fn branch_flip_flop_reconverges_from_resident_bodies() {
             fetches,
             "flip-flopping between branches must reuse resident bodies",
         );
-        assert_eq!(h.execution.new_payloads().last(), Some(&d2));
+        assert_eq!(
+            h.execution.new_payloads(),
+            payloads_before,
+            "a branch the execution layer knows is not delivered again",
+        );
+        assert_eq!(h.execution.fcus().last(), Some(&(d2, GENESIS, false)));
     });
 }
 
