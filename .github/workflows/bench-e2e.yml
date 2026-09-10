@@ -74,16 +74,11 @@ on:
         type: string
         required: true
         default: "4"
-      profiling:
-        description: Profiling.
-        type: choice
+      metrics:
+        description: Export benchmark metrics to VictoriaMetrics.
+        type: boolean
         required: true
-        default: "off"
-        options:
-          - "off"
-          - samply
-          - tracy
-          - both
+        default: false
       otlp:
         description: Export OTLP traces and logs.
         type: boolean
@@ -139,11 +134,15 @@ on:
         type: string
         required: true
         default: "3"
-      clickhouse-run:
-        description: Benchmark phase that may use the direct ClickHouse reporter.
-        type: string
-        required: false
-        default: "feature-1"
+      run-side:
+        description: Benchmark phases to run.
+        type: choice
+        required: true
+        default: comparison
+        options:
+          - comparison
+          - feature
+          - baseline
   workflow_call:
     inputs:
       pr:
