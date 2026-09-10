@@ -1,10 +1,20 @@
 # Forward-looking public workload, weighted by submitted transactions (not gas).
-# Relative transaction shares: plain transfer 25, memo transfer 40, mint 1, MPP 15.
-# Normalized: approximately 30.86%, 49.38%, 1.23%, and 18.52%, respectively.
+# Transaction shares: plain transfer 25%, memo transfer 40%, mint 1%, MPP 15%,
+# zone deposit 5%, zone withdrawal 4%, vault deposit 6%, vault withdrawal 4%.
 # These are benchmark assumptions, not a replay of mainnet activity.
 # Uses the native MPP open-only preset with txgen main.
 # Transfers and mints target prepopulated state-bloat accounts; requires nonzero bloat.
-include: mpp.yml
+# The helper combines fixture setup and expands per-user/portal templates.
+include:
+  - mpp.yml
+  - vault/base.yml
+  - zones.yml
+
+accounts:
+  # Vault deployments pin nonces 0..11 on deployers[0] (index 100001).
+  # A separate zone deployer avoids sharing that explicit-nonce lane.
+  deployer:
+    index: 100002
 
 address_pools:
   existing_recipients:
@@ -66,7 +76,7 @@ templates:
         - 1
 
 # Each selection emits one transaction, including MPP.
-# Preserve the relative allocations of the four retained workloads.
+# Zone operations include synthetic settlement through the existing dummy verifier.
 mix:
   - template: public_transfer
     weight: 25
@@ -76,3 +86,11 @@ mix:
     weight: 1
   - sequence: mpp_open_only
     weight: 15
+  - template: zone_deposit
+    weight: 5
+  - template: zone_withdraw
+    weight: 4
+  - template: vault_deposit
+    weight: 6
+  - template: vault_withdraw
+    weight: 4

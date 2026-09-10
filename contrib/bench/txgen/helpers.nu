@@ -10,6 +10,7 @@ const TXGEN_HELPER_ALWAYS_FUND_PRESETS = [
     "neobank-deposit"
     "neobank-swap"
     "neobank-withdraw"
+    "public-mix"
     "vault-deposit"
     "vault-withdraw"
 ]
@@ -583,7 +584,7 @@ def txgen-wait-for-txpool-drain [rpc_url: string, timeout_secs: int = $TXGEN_HEL
 def txgen-fund-accounts [txgen_bin: string, spec_path: string, rpc_url: string] {
     let result = (^$txgen_bin addresses -s $spec_path -f shell | complete)
     if $result.exit_code != 0 {
-        error make { msg: $"failed to list txgen addresses for ($spec_path)" }
+        error make { msg: $"failed to list txgen addresses for ($spec_path): ($result.stderr | str trim)" }
     }
 
     let addresses = ($result.stdout | str trim | split row " " | where { |addr| $addr != "" })
@@ -678,6 +679,45 @@ def txgen-prepare-vault-preset [spec_path: string, accounts: int, chain_id: int]
     $output
 }
 
+# Reuse the standalone renderers, preserving aggregate transaction shares even
+# when users and portals have different counts. Vault deployments must come first:
+# their addresses are fixed, while zone deployments resolve their addresses dynamically.
+def txgen-prepare-public-mix-preset [spec_path: string, count: int, accounts: int, zones: int, chain_id: int] {
+    if $zones < 1 { error make {msg: "Public mix requires at least one zone"} }
+    let presets = ($spec_path | path dirname)
+    let deposits = (open (txgen-prepare-vault-preset ($presets | path join vault-deposit.yml) $accounts $chain_id))
+    let withdrawals = (open (txgen-prepare-vault-preset ($presets | path join vault-withdraw.yml) $accounts $chain_id))
+    let zone_spec = (open (txgen-prepare-zones-preset ($presets | path join zones.yml) $count $accounts $zones mixed))
+    let vault_setup = (open ($presets | path join vault setup.yml)).setup.steps
+    # Seed withdrawal shares and retain equally deep pathUSD balances for deposits.
+    let users = ($withdrawals.append.setup.steps | each { |step|
+        $step | update tx.calls.0.args.1 "2000000000000000000000000"
+    })
+    let zone_weight = ($zone_spec.mix | where { |entry| $entry.template | str starts-with "zone_deposit_" } | get weight | math sum)
+    let scale = $accounts * $zone_weight
+    mut mix = []
+    for entry in (open $spec_path).mix {
+        let name = ($entry | get -o template | default "")
+        if $name in [vault_deposit vault_withdraw] {
+            let entries = if $name == vault_deposit { $deposits.mix } else { $withdrawals.mix }
+            $mix = ($mix | append ($entries | each { |item| $item | update weight ($entry.weight * $zone_weight) }))
+        } else if $name in [zone_deposit zone_withdraw] {
+            let entries = ($zone_spec.mix | where { |item| $item.template | str starts-with $"($name)_" })
+            $mix = ($mix | append ($entries | each { |item| $item | update weight ($item.weight * $entry.weight * $accounts) }))
+        } else {
+            $mix = ($mix | append ($entry | update weight ($entry.weight * $scale)))
+        }
+    }
+    let output_dir = ([ (txgen-repo-root) $TXGEN_HELPER_DEFAULT_RENDERED_SPECS_DIR (random uuid) ] | path join)
+    mkdir $output_dir
+    let output = ($output_dir | path join public-mix.yml)
+    {include: $spec_path, accounts: {users: {range: [0 $accounts]}},
+        setup: {steps: ($vault_setup | append $users | append $zone_spec.setup.steps)},
+        templates: ($deposits.templates | merge $withdrawals.templates | merge $zone_spec.templates),
+        mix: $mix} | to yaml | save -f $output
+    $output
+}
+
 def txgen-run-preset-pipeline [
     --txgen-tempo-bin: string
     --txgen-bench-bin: string
@@ -722,9 +762,10 @@ def txgen-run-preset-pipeline [
     txgen-configure-existing-recipients-env $spec_path $bloat_mib $bloat_token_count
     txgen-configure-fee-amm-env $spec_path
     let preset_name = ($spec_path | path basename | str replace --regex '\.yml$' '')
+    let is_public_mix = $preset_name == "public-mix"
     let tx_count = [($tps * $duration) 1] | math max
     mut zone_metadata = []
-    if $preset_name == "zones" {
+    if $preset_name == "zones" or $is_public_mix {
         if $chain_id != 1337 or $accounts < 1 or $accounts > 100000 {
             error make { msg: "zones requires local chain 1337 and 1–100000 accounts" }
         }
@@ -747,12 +788,18 @@ def txgen-run-preset-pipeline [
         if $zones < 1 { error make { msg: "TXGEN_ZONE_COUNT must be positive" } }
         $zone_metadata = ["-m" $"zone_count=($zones)" "-m" $"zone_sizing_window_ms=($window_ms)"]
         print $"  Zones: ($zones), users: ($accounts), sizing window: ($window_ms)ms, capacity: 210 deposits/portal"
-        $spec_path = (txgen-prepare-zones-preset $spec_path $tx_count $accounts $zones $mode)
+        $spec_path = if $is_public_mix {
+            txgen-prepare-public-mix-preset $spec_path $tx_count $accounts $zones $chain_id
+        } else {
+            txgen-prepare-zones-preset $spec_path $tx_count $accounts $zones $mode
+        }
     }
     let skip_faucet_funding = $skip_funding and ($preset_name not-in $TXGEN_HELPER_ALWAYS_FUND_PRESETS)
     let is_vault = $preset_name in ["vault-deposit" "vault-withdraw"]
     if $is_vault {
         $spec_path = (txgen-prepare-vault-preset $spec_path $accounts $chain_id)
+    }
+    if $is_vault or $is_public_mix {
         # The checked-in deployments use fixed nonces and transfer policy 2.
         # Check before funding or submitting any setup transactions.
         let deployer_nonce = (txgen-rpc-call $generate_rpc_url '{"jsonrpc":"2.0","id":1,"method":"eth_getTransactionCount","params":["0xd7932ce865275be97001a0574441d79b143820ec","pending"]}')
