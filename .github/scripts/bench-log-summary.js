@@ -6,7 +6,7 @@ const readline = require('node:readline');
 const { stripVTControlCharacters } = require('node:util');
 
 // Node file logs use tracing's JSON formatter. Support terminal output as well
-// for txgen, profiling tools, and results collected before JSON logging.
+// for node console fallback and results collected before JSON logging.
 function parseLine(raw) {
   const line = stripVTControlCharacters(raw).trim();
   if (line.startsWith('{')) {
@@ -59,11 +59,6 @@ async function scanLogs(resultsDir, mode) {
       const consoleLog = path.join(resultsDir, label, 'node.log');
       if (fs.existsSync(consoleLog)) files.push(consoleLog);
     }
-    files.push(...filesUnder(mode === 'e2e'
-      ? path.join(resultsDir, `txgen-logs-${label}`)
-      : path.join(resultsDir, label, 'txgen-logs')));
-    const captureLog = path.join(resultsDir, `tracy-capture-${label}.log`);
-    if (mode === 'e2e' && fs.existsSync(captureLog)) files.push(captureLog);
     const run = { label, side, total: 0, files: files.map(f => path.relative(resultsDir, f)),
       missing_node_logs: missing.map(f => path.relative(resultsDir, f)) };
     for (const filename of files) {
@@ -98,7 +93,7 @@ function buildMarkdown(report) {
   const total = side => report.runs.some(r => r.side === side)
     ? report.runs.filter(r => r.side === side).reduce((sum, r) => sum + r.total, 0) : '—';
   const lines = ['', '## Non-INFO/DEBUG logs', '',
-    'Counts include all collected run logs, including setup, warmup, and shutdown. Annotated key/value fields are excluded; repeated messages are counted, not deduplicated. Unlevelled output is ignored.', '',
+    'Counts include only Tempo node logs across each run, including startup, warmup, and shutdown. Annotated key/value fields are excluded; repeated messages are counted, not deduplicated. Unlevelled output is ignored.', '',
     '| Run type | Total lines |', '|----------|------------:|',
     `| Baseline | ${total('baseline')} |`, `| Feature | ${total('feature')} |`, ''];
   if (report.runs.some(r => r.missing_node_logs.length)) {

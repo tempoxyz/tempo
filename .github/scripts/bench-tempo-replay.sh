@@ -239,7 +239,6 @@ run_single() {
 
   echo "=== Starting run: $label ==="
   mkdir -p "$output_dir"
-  mkdir -p "$output_dir/txgen-logs"
   local log="$output_dir/node.log"
 
   # Recover snapshot
@@ -415,11 +414,10 @@ run_single() {
   if [ "$WARMUP" -gt 0 ]; then
     local warmup_to=$(( from_block + WARMUP - 1 ))
     echo "Running warmup ($WARMUP blocks: $from_block..$warmup_to)..."
-    { "$TXGEN_TEMPO_BIN" extract --rpc "$REPLAY_RPC_URL" --from "$from_block" --to "$warmup_to" \
+    "$TXGEN_TEMPO_BIN" extract --rpc "$REPLAY_RPC_URL" --from "$from_block" --to "$warmup_to" \
       | "$TXGEN_BENCH_BIN" send-blocks \
         --engine http://127.0.0.1:8551 \
-        --jwt-secret "$DATADIR/jwt.hex";
-    } 2>&1 | tee "$output_dir/txgen-logs/warmup.log" | sed -u "s/^/[bench] /"
+        --jwt-secret "$DATADIR/jwt.hex" 2>&1 | sed -u "s/^/[bench] /"
     from_block=$(( warmup_to + 1 ))
   fi
 
@@ -435,7 +433,7 @@ run_single() {
     victoriametrics_report=(--report "victoriametrics:$BENCH_VICTORIAMETRICS_URL")
   fi
 
-  { "$TXGEN_TEMPO_BIN" extract --rpc "$REPLAY_RPC_URL" --from "$from_block" --to "$bench_to" \
+  "$TXGEN_TEMPO_BIN" extract --rpc "$REPLAY_RPC_URL" --from "$from_block" --to "$bench_to" \
     | "$TXGEN_BENCH_BIN" send-blocks \
       --engine http://127.0.0.1:8551 \
       --jwt-secret "$DATADIR/jwt.hex" \
@@ -451,8 +449,7 @@ run_single() {
       -m "benchmark_id=$BENCHMARK_ID" \
       -m "benchmark_run=$label" \
       -m "run_type=$run_type" \
-      -m "blocks=$BLOCKS";
-  } 2>&1 | tee "$output_dir/txgen-logs/sender.log" | sed -u "s/^/[bench] /"
+      -m "blocks=$BLOCKS" 2>&1 | sed -u "s/^/[bench] /"
 
   # Cleanup (runs via EXIT trap; call explicitly for the success log line)
   cleanup_run

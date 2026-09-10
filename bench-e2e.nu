@@ -1047,7 +1047,6 @@ def run-local-e2e-phase [run: record, ctx: record] {
         $"($ctx.results_dir)/tracy-capture-($phase).log"
         $"($ctx.results_dir)/logs-($phase)-a"
         $"($ctx.results_dir)/logs-($phase)-b"
-        $"($ctx.results_dir)/txgen-logs-($phase)"
     ] {
         if ($stale | path exists) { rm -rf $stale }
     }
@@ -1153,7 +1152,6 @@ def run-local-e2e-phase [run: record, ctx: record] {
                 --submit-rpc-url $submit_rpc_url
                 --metrics-url $metrics_urls
                 --report-path $"($ctx.results_dir)/report-($phase).json"
-                --log-dir $"($ctx.results_dir)/txgen-logs-($phase)"
                 --tps $ctx.tps
                 --duration $ctx.duration
                 --accounts $ctx.accounts

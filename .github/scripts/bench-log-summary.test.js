@@ -36,7 +36,7 @@ test('terminal output strips ANSI, target and structured fields', () => {
   assert.equal(parseLine('compiling crate; WARN is not a log level here'), null);
 });
 
-test('E2E scans every node and rotated file plus sender/setup/capture logs across runs', async t => {
+test('E2E scans every node and rotated file across runs, ignoring txgen and profiler logs', async t => {
   const dir = fixture(t, {
     'run-order.txt': 'feature-1\nbaseline-1\nbaseline-2\n',
     'logs-feature-1-a/tempo.log': json('ERROR', 'Peer failed', { peer: 1 }),
@@ -54,7 +54,9 @@ test('E2E scans every node and rotated file plus sender/setup/capture logs acros
   });
   await main(dir, 'e2e', 'summary.md');
   const report = JSON.parse(fs.readFileSync(path.join(dir, 'log-summary.json')));
-  assert.deepEqual(report.runs.map(r => r.total), [5, 2, 2]);
+  assert.deepEqual(report.runs.map(r => r.total), [1, 2, 2]);
+  assert.ok(report.runs.flatMap(r => r.files).every(file => file.startsWith('logs-')));
+  assert.deepEqual(report.messages.map(r => r.message), ['Peer failed', 'Trace event']);
   assert.deepEqual(report.messages.find(r => r.message === 'Peer failed'), {
     message: 'Peer failed', baseline: 3, feature: 1,
     per_run: { 'feature-1': 1, 'baseline-1': 2, 'baseline-2': 1 },
@@ -62,12 +64,12 @@ test('E2E scans every node and rotated file plus sender/setup/capture logs acros
   const markdown = fs.readFileSync(path.join(dir, 'summary.md'), 'utf8');
   assert.match(markdown, /^# Existing metrics/);
   assert.match(markdown, /\| Baseline \| 4 \|/);
-  assert.match(markdown, /\| Feature \| 5 \|/);
+  assert.match(markdown, /\| Feature \| 1 \|/);
   assert.match(markdown, /\| Peer failed \| 3 \| 1 \|/);
   assert.doesNotMatch(markdown, /peer=|stale run|incomplete/);
 });
 
-test('replay avoids duplicate node console logs and includes warmup and sender output', async t => {
+test('replay scans only node logs, avoiding console duplicates and txgen output', async t => {
   const dir = fixture(t, {
     'run-order.txt': 'baseline-1\nfeature-1',
     'baseline-1/tempo-logs/tempo.log': json('WARN', 'Repeated'),
@@ -79,8 +81,13 @@ test('replay avoids duplicate node console logs and includes warmup and sender o
   });
   await main(dir, 'replay', 'comment.md');
   const markdown = fs.readFileSync(path.join(dir, 'comment.md'), 'utf8');
-  assert.match(markdown, /\| Repeated \| 2 \| 0 \|/);
-  assert.match(markdown, /\| Failed \| 0 \| 1 \|/);
+  assert.match(markdown, /\| Repeated \| 1 \| 0 \|/);
+  assert.doesNotMatch(markdown, /Failed/);
+  assert.match(markdown, /\| Feature \| 0 \|/);
+  const report = JSON.parse(fs.readFileSync(path.join(dir, 'log-summary.json')));
+  assert.deepEqual(report.runs.flatMap(r => r.files), [
+    'baseline-1/tempo-logs/tempo.log', 'feature-1/tempo-logs/tempo.log',
+  ]);
   assert.match(markdown, /^# Replay metrics/);
 });
 

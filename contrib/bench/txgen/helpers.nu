@@ -606,7 +606,6 @@ def txgen-run-preset-pipeline [
     --submit-rpc-url: string
     --metrics-url: list<string>
     --report-path: string
-    --log-dir: string = ""                          # Retain setup and sender output for benchmark summaries
     --tps: int
     --duration: int
     --accounts: int
@@ -740,11 +739,6 @@ def txgen-run-preset-pipeline [
 
         print "  Streaming keychain setup transactions into bench send..."
         let setup_result = (bash -lc $setup_pipeline | complete)
-        if $log_dir != "" {
-            mkdir $log_dir
-            $setup_result.stdout | save -f ($log_dir | path join "setup-stdout.log")
-            $setup_result.stderr | save -f ($log_dir | path join "setup-stderr.log")
-        }
         if $setup_result.stdout != "" { print $setup_result.stdout }
         if $setup_result.stderr != "" { print $setup_result.stderr }
 
@@ -755,11 +749,6 @@ def txgen-run-preset-pipeline [
 
     print $"  Streaming up to ($tx_count) txgen transaction\(s\) over ($txgen_duration) into bench send..."
     let result = (bash -lc $pipeline | complete)
-    if $log_dir != "" {
-        mkdir $log_dir
-        $result.stdout | save -f ($log_dir | path join "sender-stdout.log")
-        $result.stderr | save -f ($log_dir | path join "sender-stderr.log")
-    }
     if $result.stdout != "" { print $result.stdout }
     if $result.stderr != "" { print $result.stderr }
 
