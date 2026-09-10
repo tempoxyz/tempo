@@ -136,6 +136,12 @@ pub(crate) struct Actor<TContext, TExecutionLayer, TMarshal> {
     /// last forkchoice update, see [`DELIVERIES_PER_FORKCHOICE_UPDATE`].
     deliveries_since_forkchoice: usize,
 
+    /// The round of the newest consensus context whose parent was recorded
+    /// as the pending head. Reports come from concurrently running proposal
+    /// and verification handlers and can arrive out of order; an older
+    /// round's report must not supersede a newer one.
+    pending_head_reported_in: Round,
+
     /// The latest not-yet-started consensus request - validating a proposed
     /// block or building one - keyed by its round. The two kinds share one
     /// slot because a node either verifies or proposes in a round, never
@@ -332,6 +338,7 @@ where
             pending_finalizations: VecDeque::new(),
             pending_acknowledgements: VecDeque::new(),
             deliveries_since_forkchoice: 0,
+            pending_head_reported_in: finalized_tip.0,
             pending_consensus_request: None,
 
             execution_task: OptionFuture::none(),
@@ -1009,6 +1016,15 @@ where
         fields(digest = %context.parent.1),
     )]
     fn record_pending_head(&mut self, context: Context<Digest, PublicKey>) {
+        if context.round < self.pending_head_reported_in {
+            debug!(
+                round = %context.round,
+                newest = %self.pending_head_reported_in,
+                "ignoring pending head report from an older round",
+            );
+            return;
+        }
+        self.pending_head_reported_in = context.round;
         self.notarized_tree.set_pending_head(
             Round::new(context.round.epoch(), context.parent.0),
             context.parent.1,
@@ -1132,11 +1148,17 @@ where
                 self.pending_consensus_request = Some((round, ConsensusRequest::Verify(request)));
             }
             Some((round, ConsensusRequest::Build { cause, build })) => {
-                // Builds are registered via a forkchoice update naming the
-                // parent as the head, so the build runs once the execution
-                // layer's head is there, waits while convergence is about to
-                // get there, and is dropped otherwise.
-                if self.notarized_tree.is_local_head(build.digest) {
+                // Consensus builds on the pending head it reported. The build
+                // runs once the execution layer's head is there, waits while
+                // convergence is about to get there, and is dropped otherwise.
+                let pending_head = self.notarized_tree.pending_head();
+                if build.digest != pending_head {
+                    info!(
+                        %pending_head,
+                        build.parent = %build.digest,
+                        "build is not on the pending head, dropping it",
+                    );
+                } else if self.notarized_tree.is_local_head(pending_head) {
                     let target = self.notarized_tree.local_state();
                     let fut = execute_forkchoice(
                         self.execution_node.clone(),
@@ -1146,7 +1168,7 @@ where
                     );
                     self.set_execution_task(ExecutionTask::new(ExecutionTaskType::Build, fut));
                     return Ok(());
-                } else if self.is_convergence_target(build.digest) {
+                } else if self.is_convergence_target(pending_head) {
                     // Reschedules the request; the actor will not spin on
                     // `start_next_execution_request` as long as it remains
                     // scheduled before the select! in the select-loop (some

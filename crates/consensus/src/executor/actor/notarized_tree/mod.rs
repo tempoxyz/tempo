@@ -444,6 +444,11 @@ impl NotarizedTree {
 /// What the execution layer has, and the two walks that follow from it:
 /// the next block to deliver and the next block to make the head.
 impl NotarizedTree {
+    /// The block consensus reported building on: the convergence target.
+    pub(super) fn pending_head(&self) -> Digest {
+        self.pending_head.digest
+    }
+
     /// The highest finalized block the execution layer accepted: the
     /// finalized target of the next forkchoice update.
     pub(super) fn delivered_finalized(&self) -> (Height, Digest) {

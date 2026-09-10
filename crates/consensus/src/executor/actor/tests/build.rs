@@ -176,6 +176,100 @@ fn build_on_an_unknown_parent_is_dropped() {
 }
 
 #[test_traced]
+fn build_on_a_known_block_off_the_pending_head_path_is_dropped() {
+    deterministic::Runner::default().start(|context| async move {
+        let h = Harness::start_at_genesis(&context);
+
+        // a1 is known to the execution layer through its validation, but
+        // consensus never reports it as the pending head: a build on top of
+        // it is not what consensus builds on.
+        let a1 = make_block(1, 1, GENESIS);
+        let da1 = a1.digest();
+        h.verify(round(1), a1)
+            .await
+            .expect("verification should complete")
+            .expect("block should be valid");
+
+        let rx = h.build(round(2), da1);
+        rx.await
+            .expect_err("a build whose parent the head will not reach must fail");
+        assert!(
+            !h.execution.fcus().iter().any(|(.., attrs)| *attrs),
+            "no build may be registered off the pending head's path",
+        );
+    });
+}
+
+#[test_traced]
+fn build_on_a_head_the_network_finalized_past_is_dropped() {
+    deterministic::Runner::default().start(|context| async move {
+        let mut h = Harness::start_at_genesis(&context);
+
+        // The head sits on notarized a1.
+        let a1 = make_block(1, 1, GENESIS);
+        let da1 = a1.digest();
+        h.verify(round(1), a1)
+            .await
+            .expect("a1 should validate")
+            .expect("a1 should be valid");
+        h.report_pending_head(2, 1, da1);
+        h.wait_until(|| h.execution.head() == da1).await;
+
+        // The network finalizes b1 on another branch. The tip report alone
+        // re-anchors the pending head onto the tip, so a1 is no longer what
+        // consensus builds on: the build is dropped before the finalized
+        // block is even delivered, and no payload is registered on the
+        // abandoned head.
+        let b1 = make_block(3, 1, GENESIS);
+        let db1 = b1.digest();
+        h.deliver_tip(round(3), 1, db1);
+        h.build(round(4), da1)
+            .await
+            .expect_err("the build on the abandoned head must fail");
+        assert!(
+            !h.execution.fcus().iter().any(|(.., attrs)| *attrs),
+            "no payload may be registered on the abandoned head",
+        );
+
+        h.deliver_finalized(b1)
+            .await
+            .expect("b1 should be acknowledged");
+        assert_eq!(h.execution.head(), db1);
+    });
+}
+
+#[test_traced]
+fn late_pending_head_report_from_an_older_round_is_ignored() {
+    deterministic::Runner::default().start(|context| async move {
+        let h = Harness::start_at_genesis(&context);
+
+        // Two validated siblings; consensus moves on to build on b1.
+        let a1 = make_block(1, 1, GENESIS);
+        let b1 = make_block(2, 1, GENESIS);
+        let (da1, db1) = (a1.digest(), b1.digest());
+        for (view, block) in [(1, a1), (2, b1)] {
+            h.verify(round(view), block)
+                .await
+                .expect("verification should complete")
+                .expect("block should be valid");
+        }
+        h.report_pending_head(4, 2, db1);
+        h.wait_until(|| h.execution.head() == db1).await;
+
+        // A report from an older context arrives late (the handlers run
+        // concurrently). It must not move the pending head back onto a1
+        // and cost the node its proposal on b1.
+        h.report_pending_head(3, 1, da1);
+        let proposal = make_block(5, 2, db1);
+        h.execution.script_built_payload(built_payload(&proposal));
+        h.build(round(5), db1)
+            .await
+            .expect("the build on the current pending head must complete");
+        assert_eq!(h.execution.head(), db1);
+    });
+}
+
+#[test_traced]
 fn queued_build_is_dropped_when_finality_advances_past_its_parent() {
     deterministic::Runner::default().start(|context| async move {
         let mut h = Harness::start_at_genesis(&context);
