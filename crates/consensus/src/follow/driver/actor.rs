@@ -6,7 +6,7 @@ use commonware_consensus::{
 };
 use commonware_runtime::{Clock, ContextCell, Spawner, spawn_cell};
 use commonware_utils::Acknowledgement as _;
-use eyre::{OptionExt as _, Report, WrapErr as _, ensure};
+use eyre::{OptionExt as _, Report, WrapErr as _};
 use rand_core::{CryptoRng, Rng};
 use tempo_node::rpc::consensus::{CertifiedBlock, Event};
 use tokio::{select, sync::mpsc};
@@ -79,17 +79,6 @@ where
                 "the last boundary (`{startup_execution_boundary}`) block header did not contain a DKG outcome"
             )
         })?;
-
-    let network_identity = verifier.network_identity();
-    if onchain_outcome.epoch.get() == network_identity.from_epoch {
-        ensure!(
-            *onchain_outcome.network_identity() == network_identity.identity,
-            "network identity mismatch entering epoch {}: expected {}, found {}",
-            onchain_outcome.epoch,
-            network_identity.identity,
-            onchain_outcome.network_identity(),
-        );
-    }
 
     let current_epoch = onchain_outcome.epoch;
 
@@ -213,17 +202,6 @@ where
                         contained no or a malformed DKG outcome"
                     )
                 })?;
-
-            let network_identity = self.verifier.network_identity();
-            if onchain_outcome.epoch.get() == network_identity.from_epoch {
-                ensure!(
-                    *onchain_outcome.network_identity() == network_identity.identity,
-                    "network identity mismatch entering epoch {}: expected {}, found {}",
-                    onchain_outcome.epoch,
-                    network_identity.identity,
-                    onchain_outcome.network_identity(),
-                );
-            }
 
             self.current_epoch = self.current_epoch.max(onchain_outcome.epoch);
         } else {
@@ -398,17 +376,6 @@ where
             let onchain_outcome = self
                 .verifier
                 .decode_dkg_outcome_and_register_boundary(block.header().extra_data().as_ref())?;
-
-            let network_identity = self.verifier.network_identity();
-            if onchain_outcome.epoch.get() == network_identity.from_epoch {
-                ensure!(
-                    *onchain_outcome.network_identity() == network_identity.identity,
-                    "network identity mismatch entering epoch {}: expected {}, found {}",
-                    onchain_outcome.epoch,
-                    network_identity.identity,
-                    onchain_outcome.network_identity(),
-                );
-            }
 
             self.current_epoch = self.current_epoch.max(onchain_outcome.epoch);
 

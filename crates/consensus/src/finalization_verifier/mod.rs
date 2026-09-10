@@ -13,6 +13,7 @@ use commonware_cryptography::{
     bls12381::primitives::variant::MinSig, certificate::Provider as _, ed25519::PublicKey,
 };
 use commonware_parallel::Sequential;
+use eyre::ensure;
 use rand_core::CryptoRng;
 use reth_consensus::ConsensusError;
 use tempo_chainspec::NetworkIdentity;
@@ -66,14 +67,25 @@ impl FinalizationVerifier {
     }
 
     /// Install the identity encoded in a finalized epoch-boundary block.
+    /// Reject a mismatch with the configured identity at its activation epoch.
     ///
     /// The caller is responsible for ensuring `extra_data` came from a boundary block on a chain
     /// authenticated by a previously verified finalization.
     pub(crate) fn decode_dkg_outcome_and_register_boundary(
         &self,
         mut extra_data: &[u8],
-    ) -> Result<OnchainDkgOutcome, commonware_codec::Error> {
+    ) -> eyre::Result<OnchainDkgOutcome> {
         let outcome = OnchainDkgOutcome::read(&mut extra_data)?;
+        if outcome.epoch.get() == self.network_identity.from_epoch {
+            ensure!(
+                *outcome.network_identity() == self.network_identity.identity,
+                "network identity mismatch entering epoch {}: expected {}, found {}",
+                outcome.epoch,
+                self.network_identity.identity,
+                outcome.network_identity(),
+            );
+        }
+
         self.scheme_provider.register(
             outcome.epoch,
             Scheme::certificate_verifier(NAMESPACE, *outcome.network_identity()),
