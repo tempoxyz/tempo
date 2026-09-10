@@ -1,6 +1,5 @@
 # Forward-looking public workload, weighted by submitted transactions (not gas).
-# Relative transaction shares: plain transfer 65, mint 1, MPP 15.
-# Normalized: approximately 80.25%, 1.23%, and 18.52%, respectively.
+# Transaction shares: plain transfer 80%, mint 2%, MPP 18%.
 # These are benchmark assumptions, not a replay of mainnet activity.
 # Uses the native MPP open-only preset with txgen main.
 # Transfers and mints target prepopulated state-bloat accounts; requires nonzero bloat.
@@ -52,8 +51,8 @@ templates:
 # Each selection emits one transaction, including MPP.
 mix:
   - template: public_transfer
-    weight: 65
+    weight: 80
   - template: public_mint
-    weight: 1
+    weight: 2
   - sequence: mpp_open_only
-    weight: 15
+    weight: 18
