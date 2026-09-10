@@ -143,8 +143,7 @@ impl HarnessBuilder {
                     .await
                     .unwrap()
                     .init_verified(state)
-                    .await
-                    .unwrap(),
+                    .await,
             )
         } else {
             None
@@ -280,6 +279,15 @@ impl Harness {
         self.mailbox.take();
     }
 
+    pub(super) async fn wait_for_actor_panic(&mut self) {
+        let handle = self.handle.take().expect("DKG actor is not running");
+        assert!(matches!(
+            handle.await,
+            Err(commonware_runtime::Error::Exited)
+        ));
+        self.mailbox.take();
+    }
+
     async fn reopen_storage(&mut self) {
         let unverified = state::builder()
             .partition_prefix(&self.partition_prefix)
@@ -287,7 +295,7 @@ impl Harness {
             .await
             .unwrap();
         self.storage = if let Some(state) = unverified.state().cloned() {
-            Some(unverified.init_verified(state).await.unwrap())
+            Some(unverified.init_verified(state).await)
         } else {
             None
         };

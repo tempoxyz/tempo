@@ -25,14 +25,17 @@ use harness::{
 };
 
 #[test]
-fn network_storage_failures_stop_actor_and_allow_recovery() {
+fn network_storage_failures_panic_and_allow_recovery() {
     use commonware_runtime::deterministic::FaultConfig;
     use commonware_utils::probability;
 
     // Exercise both failure while appending to a new journal section and
     // failure while syncing an appended dealing.
     for fail_open in [true, false] {
-        Runner::default().start(|mut context| async move {
+        let runner = Runner::new(
+            commonware_runtime::deterministic::Config::default().with_catch_panics(true),
+        );
+        runner.start(|mut context| async move {
             let (state, keys, _) = dkg_state(&mut context, Epoch::new(1), 2, true);
             let round = Round::from_state(&state, crate::config::NAMESPACE);
             let (_, public, private) = dkg::Dealer::start::<commonware_utils::N3f1>(
@@ -47,6 +50,29 @@ fn network_storage_failures_stop_actor_and_allow_recovery() {
                 .find(|(player, _)| player == &keys[0].public_key())
                 .unwrap()
                 .1;
+            let (_, other_public, _) = dkg::Dealer::start::<commonware_utils::N3f1>(
+                &mut context,
+                round.info().clone(),
+                keys[1].clone(),
+                None,
+            )
+            .unwrap();
+            let ack = dkg::Player::new(round.info().clone(), keys[0].clone())
+                .unwrap()
+                .dealer_message::<commonware_utils::N3f1>(
+                    keys[1].public_key(),
+                    public.clone(),
+                    private.clone(),
+                )
+                .unwrap()
+                .unwrap();
+            let invalid_messages = [
+                vec![u8::MAX].into(),
+                // The commitment belongs to a different polynomial.
+                Message::Dealer(other_public, private.clone()).encode(),
+                // This ACK was signed by keys[0], but arrives from keys[1].
+                Message::Ack(ack).encode(),
+            ];
             let message = Message::Dealer(public, private).encode();
             let network = TestNetwork::default();
             let (sender, mut receiver) = network.register(keys[1].public_key());
@@ -66,6 +92,23 @@ fn network_storage_failures_stop_actor_and_allow_recovery() {
             } else {
                 faults.write().sync_rate = Some(probability!(1.0));
             }
+            // Rejected protocol messages must not attempt a write or stop the
+            // actor, even when every storage operation would fail.
+            for invalid in invalid_messages {
+                assert!(
+                    sender
+                        .send(
+                            state.epoch.get(),
+                            Recipients::One(keys[0].public_key()),
+                            invalid,
+                            true,
+                        )
+                        .accepted()
+                );
+                context.sleep(Duration::from_millis(1)).await;
+                assert!(!harness.has_dealer_log(state.epoch).await);
+                assert!(receiver.recv().now_or_never().is_none());
+            }
             assert!(
                 sender
                     .send(
@@ -77,15 +120,18 @@ fn network_storage_failures_stop_actor_and_allow_recovery() {
                     .accepted()
             );
 
-            // No second message should be needed to discover the missing handle,
-            // and the actor must return normally rather than panic on an expect.
+            // The failed write must panic immediately without another message.
             let mut harness = context
                 .timeout(Duration::from_secs(1), async move {
-                    harness.wait_for_actor_exit().await;
+                    harness.wait_for_actor_panic().await;
                     harness
                 })
                 .await
-                .expect("a network storage failure must terminate the actor immediately");
+                .expect("a network storage failure must panic immediately");
+            assert!(
+                receiver.recv().now_or_never().is_none(),
+                "a dealing must be persisted before its ACK is sent",
+            );
 
             *faults.write() = FaultConfig::default();
             harness.stop().await;
@@ -136,7 +182,7 @@ fn network_storage_failures_stop_actor_and_allow_recovery() {
 }
 
 #[test]
-fn local_share_storage_failures_stop_actor_and_allow_recovery() {
+fn local_share_storage_failures_panic_and_allow_recovery() {
     use commonware_consensus::Reporter as _;
     use commonware_runtime::deterministic::FaultConfig;
     use commonware_utils::probability;
@@ -144,7 +190,10 @@ fn local_share_storage_failures_stop_actor_and_allow_recovery() {
     // Fail opening the dealing's journal section, syncing the dealing, or
     // syncing the ACK after the dealing has already been persisted.
     for (fail_open, seed_dealing) in [(true, false), (false, false), (false, true)] {
-        Runner::default().start(|mut context| async move {
+        let runner = Runner::new(
+            commonware_runtime::deterministic::Config::default().with_catch_panics(true),
+        );
+        runner.start(|mut context| async move {
             let (state, keys, _) = dkg_state(&mut context, Epoch::new(1), 2, true);
             let identity = keys[0].clone();
             let mut harness = Harness::builder(context.child("actor"), "local_storage_failure")
@@ -200,11 +249,11 @@ fn local_share_storage_failures_stop_actor_and_allow_recovery() {
             );
             let mut harness = context
                 .timeout(Duration::from_secs(1), async move {
-                    harness.wait_for_actor_exit().await;
+                    harness.wait_for_actor_panic().await;
                     harness
                 })
                 .await
-                .expect("a local storage failure must terminate the actor without panicking");
+                .expect("a local storage failure must panic immediately");
             assert!(
                 waiter.await.is_err(),
                 "the failed block must not be acknowledged"
