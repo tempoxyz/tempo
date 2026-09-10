@@ -16,11 +16,12 @@ use commonware_cryptography::{
 use commonware_runtime::{Runner as _, Supervisor as _, deterministic::Runner};
 use commonware_utils::{TryFromIterator as _, ordered, ordered::Quorum as _};
 use futures::channel::oneshot;
+use rand::{SeedableRng as _, rngs::StdRng};
 
 use super::*;
 use harness::{
     EpochEvent, Harness, StubExecutionProvider, TestNetwork, block, dkg_state, header,
-    outcome_header, reshare_logs_with_two_reveals, revealed_recovery_fixture,
+    outcome_header, revealed_recovery_fixture, signed_dealer_logs,
 };
 
 #[test]
@@ -753,6 +754,16 @@ fn finalized_blocks_preserve_legacy_revealed_share_calculation() {
         state.players =
             ordered::Set::try_from_iter(players.iter().map(|k| k.public_key())).unwrap();
         let revealed_player = players[6].public_key();
+        // Two of the three selected dealers withhold the revealed player's ACK.
+        let dealer_inputs = dealers
+            .iter()
+            .map(|(key, share)| (key.clone(), Some(share.clone())))
+            .collect::<Vec<_>>();
+        let withholding_dealers = dealers
+            .iter()
+            .take(2)
+            .map(|(key, _)| key.public_key())
+            .collect::<Vec<_>>();
 
         // Resharing from 4 to 7 players selects 3 dealer commitments. V0 needs
         // f_new + 1 = 3 reveals; V1 needs quorum_old - f_old = 3 - 1 = 2.
@@ -769,7 +780,29 @@ fn finalized_blocks_preserve_legacy_revealed_share_calculation() {
                 state.players().clone(),
             )
             .unwrap();
-            let signed = reshare_logs_with_two_reveals(&info, &dealers, &players, &revealed_player);
+            // Reuse each dealer's polynomial randomness across both rounds:
+            // V1 binds ACK signatures to a different transcript, so the logs
+            // must be regenerated per mode from the same dealings.
+            let signed = signed_dealer_logs(
+                &info,
+                &dealer_inputs,
+                &players,
+                |index| StdRng::seed_from_u64(index as u64),
+                |dealer, player| withholding_dealers.contains(dealer) && *player == revealed_player,
+            );
+            for (index, signed) in signed.iter().enumerate() {
+                let (_, log) = signed.clone().check(&info).unwrap();
+                let dkg::DealerLogSummary::Ok { acks, reveals } = log.summary() else {
+                    panic!("fixture must contain usable dealer logs");
+                };
+                let expected_reveals = if index < 2 {
+                    ordered::Set::try_from_iter([revealed_player.clone()]).unwrap()
+                } else {
+                    ordered::Set::default()
+                };
+                assert_eq!(reveals, expected_reveals);
+                assert_eq!(acks.len() + reveals.len(), players.len());
+            }
             let mut logs = Logs::<MinSig, PublicKey, N3f1>::new(info.clone());
             for signed in &signed {
                 let (dealer, log) = signed.clone().check(&info).unwrap();

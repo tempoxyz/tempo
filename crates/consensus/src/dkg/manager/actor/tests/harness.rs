@@ -723,54 +723,51 @@ pub(super) struct RevealedRecoveryFixture {
     recovered_state: State,
 }
 
-/// Produce matching reshare commitments for either reveal mode, with two of
-/// the first three (selected) dealers revealing the same player's dealing.
-pub(super) fn reshare_logs_with_two_reveals(
+/// Run a dealer round offline and return each dealer's signed log, checked
+/// against `info`.
+///
+/// `dealer_rng(i)` seeds dealer `i`, so callers can reuse polynomial randomness
+/// across rounds. `withhold(dealer, player)` skips that player's ACK, forcing
+/// the dealer to reveal the dealing.
+pub(super) fn signed_dealer_logs<R: CryptoRng>(
     info: &dkg::Info<MinSig, PublicKey>,
-    dealers: &[(PrivateKey, Share)],
+    dealers: &[(PrivateKey, Option<Share>)],
     players: &[PrivateKey],
-    revealed_player: &PublicKey,
+    mut dealer_rng: impl FnMut(usize) -> R,
+    withhold: impl Fn(&PublicKey, &PublicKey) -> bool,
 ) -> Vec<SignedDealerLog<MinSig, PrivateKey>> {
     dealers
         .iter()
         .enumerate()
         .map(|(index, (key, share))| {
-            // V1 binds signatures to a different transcript. Reuse the same
-            // polynomial randomness, but generate valid ACKs/logs for each mode.
+            let dealer_public_key = key.public_key();
             let (mut dealer, public, private) = dkg::Dealer::start::<N3f1>(
-                StdRng::seed_from_u64(index as u64),
+                dealer_rng(index),
                 info.clone(),
                 key.clone(),
-                Some(share.clone()),
+                share.clone(),
             )
             .unwrap();
             for (player, private) in private {
-                if index < 2 && &player == revealed_player {
+                if withhold(&dealer_public_key, &player) {
                     continue;
                 }
-                let key_for_player = players
+                let player_key = players
                     .iter()
                     .find(|key| key.public_key() == player)
                     .unwrap();
-                let ack = dkg::Player::new(info.clone(), key_for_player.clone())
+                let ack = dkg::Player::new(info.clone(), player_key.clone())
                     .unwrap()
-                    .dealer_message::<N3f1>(key.public_key(), public.clone(), private)
-                    .unwrap()
-                    .unwrap();
+                    .dealer_message::<N3f1>(dealer_public_key.clone(), public.clone(), private)
+                    .expect("test dealing must be valid")
+                    .expect("test dealing must be new");
                 dealer.receive_player_ack(player, ack).unwrap();
             }
             let signed = dealer.finalize::<N3f1>();
-            let (_, log) = signed.clone().check(info).unwrap();
-            let dkg::DealerLogSummary::Ok { acks, reveals } = log.summary() else {
-                panic!("fixture must contain usable dealer logs");
-            };
-            let expected_reveals = if index < 2 {
-                ordered::Set::try_from_iter([revealed_player.clone()]).unwrap()
-            } else {
-                ordered::Set::default()
-            };
-            assert_eq!(reveals, expected_reveals);
-            assert_eq!(acks.len() + reveals.len(), players.len());
+            signed
+                .clone()
+                .check(info)
+                .expect("test dealer log must verify");
             signed
         })
         .collect()
@@ -783,42 +780,23 @@ pub(super) fn revealed_recovery_fixture(
     let (ceremony_state, keys, _) = dkg_state(rng, ceremony_epoch, 4, true);
     let round = Round::from_state(&ceremony_state, crate::config::NAMESPACE);
     let identity = keys[0].clone();
+    // The recovering player sends no ACK, so each dealer log reveals its dealing for it.
+    let dealers = keys
+        .iter()
+        .take(3)
+        .map(|key| (key.clone(), None))
+        .collect::<Vec<_>>();
+    let signed_logs = signed_dealer_logs(
+        round.info(),
+        &dealers,
+        &keys,
+        |_| StdRng::from_rng(&mut *rng),
+        |_, player| *player == identity.public_key(),
+    );
     let mut logs = Logs::<MinSig, PublicKey, N3f1>::new(round.info().clone());
-    let mut signed_logs = Vec::new();
-    for dealer_key in keys.iter().take(3) {
-        let dealer_public_key = dealer_key.public_key();
-        let (mut dealer, public_message, private_messages) =
-            dkg::Dealer::start::<N3f1>(&mut *rng, round.info().clone(), dealer_key.clone(), None)
-                .unwrap();
-
-        for (player_public_key, private_message) in private_messages {
-            if player_public_key == identity.public_key() {
-                continue;
-            }
-            let player_key = keys
-                .iter()
-                .find(|key| key.public_key() == player_public_key)
-                .unwrap();
-            let mut player = dkg::Player::new(round.info().clone(), player_key.clone()).unwrap();
-            let ack = player
-                .dealer_message::<N3f1>(
-                    dealer_public_key.clone(),
-                    public_message.clone(),
-                    private_message,
-                )
-                .expect("test dealing must be valid")
-                .expect("test dealing must be new");
-            dealer.receive_player_ack(player_public_key, ack).unwrap();
-        }
-
-        // The recovering player sends no ACK, so each dealer log reveals its dealing for it.
-        let signed_log: SignedDealerLog<MinSig, PrivateKey> = dealer.finalize::<N3f1>();
-        let (dealer, log) = signed_log
-            .clone()
-            .check(round.info())
-            .expect("test dealer log must verify");
+    for signed in &signed_logs {
+        let (dealer, log) = signed.clone().check(round.info()).unwrap();
         logs.record(dealer, log);
-        signed_logs.push(signed_log);
     }
 
     let player = dkg::Player::new(round.info().clone(), identity.clone()).unwrap();
