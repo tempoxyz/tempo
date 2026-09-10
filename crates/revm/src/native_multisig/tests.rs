@@ -192,8 +192,40 @@ fn native_contexts_fail_closed_and_simulation_is_explicit() {
     let gas = crate::gas_params::tempo_gas_params(TempoHardfork::T12);
     assert!(validate_state(&mut journal, &tx, &block, TempoHardfork::T11, &gas).is_err());
     block.multisig_recovery_factory = None;
-    assert!(validate_state(&mut journal, &tx, &block, TempoHardfork::T12, &gas).is_err());
+    let caller = tx.caller;
+    tx.caller = Address::repeat_byte(0x99);
+    assert!(matches!(
+        validate_state(&mut journal, &tx, &block, TempoHardfork::T12, &gas),
+        Err(EVMError::Transaction(TempoInvalidTransaction::NativeMultisig(
+            NativeMultisigError::AccountMismatch { expected, actual }
+        ))) if expected == tx.caller && actual == caller
+    ));
+    tx.caller = caller;
+    assert!(matches!(
+        validate_state(&mut journal, &tx, &block, TempoHardfork::T12, &gas),
+        Err(EVMError::Transaction(
+            TempoInvalidTransaction::NativeMultisig(NativeMultisigError::FactoryNotConfigured)
+        ))
+    ));
     tx.execution_context = ExecutionContext::Unspecified;
+    assert!(matches!(
+        validate_state(&mut journal, &tx, &block, TempoHardfork::T12, &gas),
+        Err(EVMError::Transaction(
+            TempoInvalidTransaction::NativeMultisig(NativeMultisigError::UnsupportedContext)
+        ))
+    ));
+    tx.tempo_tx_env.as_mut().unwrap().subblock_transaction = true;
+    assert!(matches!(
+        validate_state(&mut journal, &tx, &block, TempoHardfork::T12, &gas),
+        Err(EVMError::Transaction(
+            TempoInvalidTransaction::NativeMultisig(NativeMultisigError::InvalidSignatureContext)
+        ))
+    ));
+    assert!(
+        journal.state.is_empty(),
+        "context checks must precede account reads"
+    );
+    tx.tempo_tx_env.as_mut().unwrap().subblock_transaction = false;
     assert!(verify(&tx).is_err());
     tx.execution_context = ExecutionContext::Transaction {
         tx_hash: B256::ZERO,
@@ -202,6 +234,41 @@ fn native_contexts_fail_closed_and_simulation_is_explicit() {
     assert!(verify(&tx).is_err());
     tx.execution_context = ExecutionContext::Simulation;
     verify(&tx).unwrap();
+}
+
+#[test]
+fn native_error_classification_preserves_state_dependent_errors() {
+    let address = Address::repeat_byte(0x22);
+    for (error, bad) in [
+        (
+            NativeMultisigError::AccountMismatch {
+                expected: address,
+                actual: Address::ZERO,
+            },
+            true,
+        ),
+        (NativeMultisigError::InvalidSignatureContext, true),
+        (
+            NativeMultisigError::OwnerSignatureRecoveryFailed { approval_index: 0 },
+            true,
+        ),
+        (NativeMultisigError::UnsupportedContext, false),
+        (NativeMultisigError::FactoryNotConfigured, false),
+        (
+            NativeMultisigError::InvalidAccount { account: address },
+            false,
+        ),
+        (
+            NativeMultisigError::ConfigurationCommitmentMismatch {
+                expected: B256::ZERO,
+                actual: B256::repeat_byte(1),
+            },
+            false,
+        ),
+    ] {
+        let error = TempoInvalidTransaction::NativeMultisig(error);
+        assert_eq!(error.is_bad_transaction(), bad, "{error}");
+    }
 }
 
 #[test_case::test_case(8; "invalid_final_signature")]

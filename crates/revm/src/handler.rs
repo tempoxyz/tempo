@@ -1853,7 +1853,7 @@ where
                     .is_some_and(|auth| auth.signature.is_keychain())
             {
                 return Err(TempoInvalidTransaction::NativeMultisig(
-                    crate::native_multisig::NativeMultisigError::UnsupportedContext,
+                    crate::native_multisig::NativeMultisigError::InvalidSignatureContext,
                 )
                 .into());
             }

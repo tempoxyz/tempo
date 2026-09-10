@@ -18,6 +18,8 @@ use tempo_primitives::{
 pub enum NativeMultisigError {
     #[error("native multisig is unavailable in this execution context")]
     UnsupportedContext,
+    #[error("native multisig signature is forbidden in this transaction role")]
+    InvalidSignatureContext,
     #[error("native multisig recovery factory is not configured")]
     FactoryNotConfigured,
     #[error("invalid multisig account {account}")]
@@ -164,6 +166,22 @@ pub fn validate_state<J: JournalTr>(
     gas: &GasParams,
 ) -> Result<u64, EVMError<<J::Database as revm::Database>::Error, TempoInvalidTransaction>> {
     let roles = authorizations(tx);
+    let invalid = |error| EVMError::Transaction(TempoInvalidTransaction::NativeMultisig(error));
+    // Context rejection must not depend on factory configuration or account reads.
+    if roles.iter().any(Option::is_some) {
+        let aa = tx.tempo_tx_env.as_ref().expect("roles require AA");
+        if aa.subblock_transaction
+            || aa
+                .signature
+                .as_keychain()
+                .is_some_and(|key| key.is_legacy())
+        {
+            return Err(invalid(NativeMultisigError::InvalidSignatureContext));
+        }
+        if !spec.is_t12() || matches!(tx.execution_context, ExecutionContext::Unspecified) {
+            return Err(invalid(NativeMultisigError::UnsupportedContext));
+        }
+    }
     if spec.is_t12()
         && tx
             .tempo_tx_env
@@ -185,22 +203,7 @@ pub fn validate_state<J: JournalTr>(
     if roles.iter().all(Option::is_none) {
         return grant_delegate_access_gas(journal, tx, spec, gas, &[]);
     }
-    let invalid = |error| EVMError::Transaction(TempoInvalidTransaction::NativeMultisig(error));
-    let factory = block
-        .multisig_recovery_factory
-        .filter(|factory| !factory.is_zero())
-        .ok_or_else(|| invalid(NativeMultisigError::FactoryNotConfigured))?;
     let aa = tx.tempo_tx_env.as_ref().expect("roles require AA");
-    if !spec.is_t12()
-        || aa.subblock_transaction
-        || matches!(tx.execution_context, ExecutionContext::Unspecified)
-        || aa
-            .signature
-            .as_keychain()
-            .is_some_and(|key| key.is_legacy())
-    {
-        return Err(invalid(NativeMultisigError::UnsupportedContext));
-    }
     for signature in [
         aa.signature.as_multisig(),
         aa.key_authorization
@@ -217,6 +220,10 @@ pub fn validate_state<J: JournalTr>(
             }));
         }
     }
+    let factory = block
+        .multisig_recovery_factory
+        .filter(|factory| !factory.is_zero())
+        .ok_or_else(|| invalid(NativeMultisigError::FactoryNotConfigured))?;
     let mut accounts = Vec::with_capacity(2);
     let mut extra_gas = 0;
     for role in roles.into_iter().flatten() {

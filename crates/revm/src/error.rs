@@ -257,6 +257,8 @@ impl TempoInvalidTransaction {
             Self::NativeMultisig(error) => matches!(
                 error,
                 crate::native_multisig::NativeMultisigError::OwnerSignatureRecoveryFailed { .. }
+                    | crate::native_multisig::NativeMultisigError::AccountMismatch { .. }
+                    | crate::native_multisig::NativeMultisigError::InvalidSignatureContext
                     | crate::native_multisig::NativeMultisigError::Quorum(_)
             ),
             Self::EthInvalidTransaction(eth) => match eth {
