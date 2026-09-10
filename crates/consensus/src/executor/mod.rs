@@ -2,19 +2,24 @@
 use std::{future::Future, sync::Arc};
 
 use alloy_primitives::B256;
-use alloy_rpc_types_engine::{ForkchoiceState, ForkchoiceUpdated, PayloadId, PayloadStatus};
+use alloy_rpc_types_engine::{
+    ForkchoiceState, ForkchoiceUpdateError, ForkchoiceUpdated, PayloadId, PayloadStatus,
+    PayloadStatusEnum,
+};
 use commonware_consensus::{
     marshal::core::DigestFallback,
     types::{Height, Round},
 };
 use commonware_cryptography::ed25519::PublicKey;
 use commonware_runtime::{Clock, Metrics, Spawner};
+use reth_engine_primitives::BeaconForkChoiceUpdateError;
 use reth_ethereum::{chainspec::EthChainSpec as _, rpc::eth::primitives::BlockNumHash};
 use reth_node_builder::PayloadKind;
 use reth_provider::{BlockHashReader as _, BlockReader as _, BlockSource};
 use tempo_node::{TempoExecutionData, TempoFullNode};
 use tempo_payload_types::{TempoBuiltPayload, TempoPayloadAttributes};
 use tokio::sync::oneshot;
+use tracing::warn;
 
 mod actor;
 mod ingress;
@@ -90,7 +95,9 @@ pub(crate) trait ExecutionLayer: Clone + Send + Sync + 'static {
     ) -> impl Future<Output = eyre::Result<PayloadStatus>> + Send + 'static;
 
     /// Updates the execution layer's head and finalized blocks, optionally
-    /// registering a payload build.
+    /// registering a payload build. Payload attributes rejected after the
+    /// state was applied come back as `VALID` without a payload id: the
+    /// update succeeded, the build did not start.
     fn fork_choice_updated(
         &self,
         state: ForkchoiceState,
@@ -189,10 +196,26 @@ impl ExecutionLayer for Arc<TempoFullNode> {
     ) -> impl Future<Output = eyre::Result<ForkchoiceUpdated>> + Send + 'static {
         let engine = self.add_ons_handle.beacon_engine_handle.clone();
         async move {
-            engine
-                .fork_choice_updated(state, attributes)
-                .await
-                .map_err(Into::into)
+            match engine.fork_choice_updated(state, attributes).await {
+                Ok(response) => Ok(response),
+                // The engine applies the forkchoice state before it validates
+                // the payload attributes, so this error means the state is
+                // in place and only the build was refused.
+                Err(BeaconForkChoiceUpdateError::ForkchoiceUpdateError(
+                    ForkchoiceUpdateError::UpdatedInvalidPayloadAttributes,
+                )) => {
+                    warn!(
+                        head_block_hash = %state.head_block_hash,
+                        "execution layer applied the forkchoice state but rejected the \
+                        payload attributes; the build is lost",
+                    );
+                    Ok(ForkchoiceUpdated::new(PayloadStatus::new(
+                        PayloadStatusEnum::Valid,
+                        Some(state.head_block_hash),
+                    )))
+                }
+                Err(error) => Err(error.into()),
+            }
         }
     }
 
