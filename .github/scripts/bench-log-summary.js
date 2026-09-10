@@ -92,8 +92,7 @@ function escapeCell(value) {
 function buildMarkdown(report) {
   const total = side => report.runs.some(r => r.side === side)
     ? report.runs.filter(r => r.side === side).reduce((sum, r) => sum + r.total, 0) : '—';
-  const lines = ['', '## Non-INFO/DEBUG logs', '',
-    'Counts include only Tempo node logs across each run, including startup, warmup, and shutdown. Annotated key/value fields are excluded, except that JSON logs without a message use the error field. Repeated messages are counted, not deduplicated. Unlevelled output is ignored.', '',
+  const lines = ['', '### Warn/Error Logs', '',
     '| Run type | Total lines |', '|----------|------------:|',
     `| Baseline | ${total('baseline')} |`, `| Feature | ${total('feature')} |`, ''];
   if (report.runs.some(r => r.missing_node_logs.length)) {
@@ -124,7 +123,7 @@ function buildMarkdown(report) {
 async function main(resultsDir, mode, markdownName) {
   const report = await scanLogs(resultsDir, mode);
   fs.writeFileSync(path.join(resultsDir, 'log-summary.json'), `${JSON.stringify(report, null, 2)}\n`);
-  fs.appendFileSync(path.join(resultsDir, markdownName), buildMarkdown(report));
+  fs.appendFileSync(path.join(resultsDir, markdownName), `\n## Observability\n${buildMarkdown(report)}`);
 }
 
 if (require.main === module) {
