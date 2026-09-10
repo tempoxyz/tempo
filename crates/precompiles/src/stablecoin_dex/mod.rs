@@ -6153,7 +6153,7 @@ mod tests {
 
                 // Pause the base token
                 let mut base_tip20 = TIP20Token::from_address(base_token)?;
-                base_tip20.grant_role_internal(admin, *PAUSE_ROLE)?;
+                base_tip20.grant_role_internal(admin, PAUSE_ROLE)?;
                 base_tip20.pause(admin, ITIP20::pauseCall {})?;
 
                 let res_in =
@@ -6215,7 +6215,7 @@ mod tests {
                     non_escrow_token
                 };
                 let mut tip20 = TIP20Token::from_address(token_to_pause)?;
-                tip20.grant_role_internal(admin, *PAUSE_ROLE)?;
+                tip20.grant_role_internal(admin, PAUSE_ROLE)?;
                 tip20.pause(admin, ITIP20::pauseCall {})?;
 
                 let next_order_id_before = exchange.next_order_id()?;
@@ -6399,7 +6399,7 @@ mod tests {
 
                 // Pause pathUSD (the intermediate token)
                 let mut path_usd_tip20 = TIP20Token::from_address(path_usd.address())?;
-                path_usd_tip20.grant_role_internal(admin, *PAUSE_ROLE)?;
+                path_usd_tip20.grant_role_internal(admin, PAUSE_ROLE)?;
                 path_usd_tip20.pause(admin, ITIP20::pauseCall {})?;
 
                 // Bob tries multi-hop swap: USDC -> pathUSD -> EURC

@@ -233,7 +233,7 @@ impl TIP20Setup {
 
     /// Grant ISSUER_ROLE to an account.
     pub fn with_issuer(self, account: Address) -> Self {
-        self.with_role(account, *tip20::ISSUER_ROLE)
+        self.with_role(account, tip20::ISSUER_ROLE)
     }
 
     /// Grant an arbitrary role to an account.

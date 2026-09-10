@@ -21,7 +21,7 @@ impl Precompile for TIP20ChannelReserve {
                     CLOSE_GRACE_PERIOD(_) => metadata::<ITIP20ChannelReserve::CLOSE_GRACE_PERIODCall>(|| {
                         Ok(CLOSE_GRACE_PERIOD)
                     }),
-                    VOUCHER_TYPEHASH(_) => metadata::<ITIP20ChannelReserve::VOUCHER_TYPEHASHCall>(|| Ok(*VOUCHER_TYPEHASH)),
+                    VOUCHER_TYPEHASH(_) => metadata::<ITIP20ChannelReserve::VOUCHER_TYPEHASHCall>(|| Ok(VOUCHER_TYPEHASH)),
                     open(call) => mutate(call, msg_sender, |sender, c| {
                         preserve_storage_credits(self.address)?;
                         self.open(sender, c)
