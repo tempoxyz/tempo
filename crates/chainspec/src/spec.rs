@@ -22,7 +22,7 @@ use reth_network_peers::NodeRecord;
 #[cfg(feature = "std")]
 use std::sync::LazyLock;
 use tempo_hardfork::TempoHardfork;
-use tempo_primitives::TempoHeader;
+use tempo_primitives::{TempoAddressExt, TempoHeader};
 
 // End-of-block system transactions
 pub const SYSTEM_TX_COUNT: usize = 1;
@@ -265,6 +265,18 @@ impl TempoChainSpec {
     /// with `0xEF` and raises its nonce to at least one, preserving its balance and storage.
     /// These protocol reservations are applied before computing the genesis state root.
     pub fn try_from_genesis(mut genesis: Genesis) -> Result<Self, serde_json::Error> {
+        // Reservations use the T12 address space even when activation is scheduled later.
+        // Ethereum precompiles are separate from TempoAddressExt's Tempo-only categories.
+        let valid_native_address = |address: Address| {
+            !address.is_zero()
+                && !address.is_virtual()
+                && !address.is_precompile(TempoHardfork::T12)
+                && address.zone_portal_id().is_none()
+                && !alloy_evm::revm::precompile::Precompiles::new(
+                    alloy_evm::revm::precompile::PrecompileSpecId::OSAKA,
+                )
+                .contains(&address)
+        };
         // Extract Tempo genesis info from extra_fields
         let mut info = TempoGenesisInfo::extract_from(&genesis);
         // Parse this field separately so the legacy fallback for unrelated extras cannot
@@ -278,21 +290,13 @@ impl TempoChainSpec {
             .flatten();
         if info
             .multisig_recovery_factory
-            .is_some_and(|address| address.is_zero())
+            .is_some_and(|address| !valid_native_address(address))
         {
             return Err(serde::de::Error::custom(
-                "multisigRecoveryFactory must be nonzero",
+                "multisigRecoveryFactory must be a nonzero, non-reserved address",
             ));
         }
         let t12_active = info.t12_time.is_some_and(|time| time <= genesis.timestamp);
-        for (address, account) in &genesis.alloc {
-            tempo_primitives::account::decode_config_commitment(&account.extension, t12_active)
-                .map_err(|error| {
-                    <serde_json::Error as serde::de::Error>::custom(alloc::format!(
-                        "invalid account extension for {address}: {error}"
-                    ))
-                })?;
-        }
         if t12_active {
             let marker = genesis
                 .alloc
@@ -305,6 +309,27 @@ impl TempoChainSpec {
                 let account = genesis.alloc.entry(factory).or_default();
                 account.code = Some(alloy_primitives::bytes!("ef"));
                 account.nonce = Some(account.nonce.unwrap_or_default().max(1));
+            }
+        }
+
+        // Check the final alloc: reservations above can install code on an account
+        // whose original extension was valid. A hash alone cannot prove its derivation.
+        for (address, account) in &genesis.alloc {
+            let commitment =
+                tempo_primitives::account::decode_config_commitment(&account.extension, t12_active)
+                    .map_err(|error| {
+                        <serde_json::Error as serde::de::Error>::custom(alloc::format!(
+                            "invalid account extension for {address}: {error}"
+                        ))
+                    })?;
+            if !commitment.is_zero()
+                && (!valid_native_address(*address)
+                    || account.code.as_ref().is_some_and(|code| !code.is_empty())
+                    || Some(*address) == info.multisig_recovery_factory)
+            {
+                return Err(serde::de::Error::custom(alloc::format!(
+                    "invalid committed genesis account {address}: code or reserved address"
+                )));
             }
         }
 
@@ -620,12 +645,112 @@ mod tests {
             .extra_fields
             .insert("t12Time".into(), serde_json::json!(genesis.timestamp));
         let payload = tempo_primitives::account::encode_config_commitment(B256::repeat_byte(1));
+        genesis.alloc.entry(address).or_default();
+        let empty_root = TempoChainSpec::try_from_genesis(genesis.clone())
+            .unwrap()
+            .genesis_header()
+            .inner
+            .state_root;
         genesis.alloc.entry(address).or_default().extension = payload.clone().into();
-        let spec = TempoChainSpec::try_from_genesis(genesis).unwrap();
+        let spec = TempoChainSpec::try_from_genesis(genesis.clone()).unwrap();
         assert_eq!(
             spec.genesis().alloc[&address].extension.as_ref(),
             payload.as_ref()
         );
+        genesis.alloc.entry(address).or_default().extension =
+            tempo_primitives::account::encode_config_commitment(B256::repeat_byte(2)).into();
+        let changed_root = TempoChainSpec::try_from_genesis(genesis)
+            .unwrap()
+            .genesis_header()
+            .inner
+            .state_root;
+        assert_ne!(empty_root, spec.genesis_header().inner.state_root);
+        assert_ne!(changed_root, spec.genesis_header().inner.state_root);
+    }
+
+    #[test]
+    fn genesis_rejects_reserved_native_accounts_and_factories() {
+        use super::*;
+        let mut genesis = DEV.genesis().clone();
+        genesis
+            .config
+            .extra_fields
+            .insert("t12Time".into(), serde_json::json!(0));
+        for address in [
+            Address::ZERO,
+            Address::from_word(U256::from(1).into()),
+            Address::from_word(U256::from(256).into()),
+            tempo_contracts::precompiles::NATIVE_MULTISIG_ADDRESS,
+            tempo_contracts::precompiles::PATH_USD_ADDRESS,
+            Address::new_virtual(Default::default(), Default::default()),
+            alloy_primitives::address!("5ad0000000000000000000000000000000000001"),
+        ] {
+            let mut committed = genesis.clone();
+            committed.alloc.entry(address).or_default().extension =
+                tempo_primitives::account::encode_config_commitment(B256::repeat_byte(1)).into();
+            let error = TempoChainSpec::try_from_genesis(committed).unwrap_err();
+            assert!(
+                error
+                    .to_string()
+                    .contains("invalid committed genesis account"),
+                "{address}: {error}"
+            );
+            let mut factory = genesis.clone();
+            factory
+                .config
+                .extra_fields
+                .insert("multisigRecoveryFactory".into(), serde_json::json!(address));
+            let error = TempoChainSpec::try_from_genesis(factory).unwrap_err();
+            assert!(
+                error
+                    .to_string()
+                    .contains("multisigRecoveryFactory must be"),
+                "{address}: {error}"
+            );
+        }
+    }
+
+    #[test]
+    fn genesis_rejects_code_after_native_normalization() {
+        use super::*;
+        let address = Address::repeat_byte(0x33);
+        let mut genesis = DEV.genesis().clone();
+        genesis
+            .config
+            .extra_fields
+            .insert("t12Time".into(), serde_json::json!(0));
+        genesis.alloc.entry(address).or_default().extension =
+            tempo_primitives::account::encode_config_commitment(B256::repeat_byte(1)).into();
+        // Empty code remains valid, but existing bytecode and factory-installed code do not.
+        genesis.alloc.get_mut(&address).unwrap().code = Some(Default::default());
+        TempoChainSpec::try_from_genesis(genesis.clone()).unwrap();
+        for (case, code) in [
+            ("bytecode", Some(alloy_primitives::bytes!("00"))),
+            (
+                "eip7702",
+                Some(alloy_primitives::bytes!(
+                    "ef01003333333333333333333333333333333333333333"
+                )),
+            ),
+            ("factory normalization", None),
+        ] {
+            let mut invalid = genesis.clone();
+            if let Some(code) = code {
+                invalid.alloc.get_mut(&address).unwrap().code = Some(code);
+            } else {
+                invalid
+                    .config
+                    .extra_fields
+                    .insert("multisigRecoveryFactory".into(), serde_json::json!(address));
+            }
+            let error = TempoChainSpec::try_from_genesis(invalid).unwrap_err();
+            assert!(
+                error
+                    .to_string()
+                    .contains("invalid committed genesis account"),
+                "{case}: {error}"
+            );
+        }
     }
 
     #[cfg(feature = "cli")]

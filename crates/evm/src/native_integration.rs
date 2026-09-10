@@ -609,6 +609,11 @@ fn native_replay_rejects_account_authorization() {
         signed.signature().clone(),
     ));
     assert!(!crate::supports_storage_action_replay(
+        &tx.clone().into_signed(primitive.clone()).into()
+    ));
+    // Even a primitive-signed primitive grant reads parent metadata at T12.
+    tx.key_authorization.as_mut().unwrap().signature = primitive.clone();
+    assert!(!crate::supports_storage_action_replay(
         &tx.into_signed(primitive).into()
     ));
     let output = f

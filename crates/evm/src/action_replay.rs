@@ -28,18 +28,14 @@ use tempo_revm::evm::TempoContext;
 
 /// Storage actions do not represent configurable account reads/writes or keychain
 /// parent or named grant-recipient eligibility. Such authorizations must execute through the handler.
+/// Inline grants are conservatively excluded even before T12; this only disables the
+/// replay optimization, not historical transaction execution.
 pub fn supports_storage_action_replay(tx: &tempo_primitives::TempoTxEnvelope) -> bool {
     tx.as_aa().is_none_or(|aa| {
         matches!(
             aa.signature(),
             tempo_primitives::TempoSignature::Primitive(_)
-        ) && aa.tx().key_authorization.as_ref().is_none_or(|grant| {
-            grant.key_type != tempo_primitives::SignatureType::Multisig
-                && !matches!(
-                    grant.signature,
-                    tempo_primitives::TempoSignature::Multisig(_)
-                )
-        })
+        ) && aa.tx().key_authorization.is_none()
     })
 }
 
