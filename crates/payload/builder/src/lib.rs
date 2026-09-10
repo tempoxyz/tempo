@@ -394,6 +394,7 @@ where
         check_cancel!();
 
         let start = Instant::now();
+        let payload_build_budget = attributes.payload_build_budget(start);
 
         let block_time_millis =
             (attributes.timestamp_millis() - parent_header.timestamp_millis()) as f64;
@@ -634,7 +635,6 @@ where
         // Consensus builds carry a remaining proposal budget. When present, the
         // builder stops pool tx execution before projected proposer and validator
         // work would consume that window.
-        let payload_build_budget = attributes.payload_build_budget();
         let build_time_multiplier = self.build_time_multiplier();
         let marshal_persist = marshal_persist_estimate();
         let validation_latency = attributes.validation_latency_estimate();
@@ -1264,6 +1264,7 @@ where
             subblock_transactions,
             total_transactions,
             ?elapsed,
+            ?payload_build_budget,
             ?validation_work_duration,
             ?validation_latency_duration,
             ?normal_transaction_fill_elapsed,
