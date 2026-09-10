@@ -540,6 +540,8 @@ impl MaintenanceItem {
 struct MaintenanceQueue {
     items: std::collections::VecDeque<MaintenanceItem>,
     hashes: B256Set,
+    /// Failed work waits for the next timer tick or canonical event, not another job's completion.
+    deferred: B256Set,
     in_flight: alloy_primitives::map::B256Map<std::sync::Arc<MaintenancePermit>>,
     resurrection_count: usize,
     resurrection_bytes: usize,
@@ -547,6 +549,7 @@ struct MaintenanceQueue {
 
 impl MaintenanceQueue {
     fn revalidate(&mut self, hash: B256) {
+        self.deferred.remove(&hash);
         if self.hashes.insert(hash) {
             self.items.push_back(MaintenanceItem::Revalidate(hash));
         }
@@ -597,6 +600,7 @@ impl MaintenanceQueue {
                 true
             } else {
                 self.hashes.remove(&item.hash());
+                self.deferred.remove(&item.hash());
                 if let MaintenanceItem::Resurrect { transaction, .. } = item {
                     self.resurrection_count -= 1;
                     self.resurrection_bytes -= transaction.encoded_length();
@@ -627,6 +631,7 @@ impl MaintenanceQueue {
 
     fn remove(&mut self, item: &MaintenanceItem) {
         self.hashes.remove(&item.hash());
+        self.deferred.remove(&item.hash());
         if let MaintenanceItem::Resurrect { transaction, .. } = item {
             self.resurrection_count -= 1;
             self.resurrection_bytes -= transaction.encoded_length();
@@ -643,6 +648,7 @@ impl MaintenanceQueue {
             && !item.expired(Instant::now())
             && self.hashes.insert(item.hash())
         {
+            self.deferred.insert(item.hash());
             self.items.push_back(item);
         } else {
             // A queued followup can carry an orphan payload while an earlier revalidation runs.
@@ -654,10 +660,9 @@ impl MaintenanceQueue {
     }
 
     fn next(&mut self) -> Option<(MaintenanceItem, std::sync::Arc<MaintenancePermit>)> {
-        let index = self
-            .items
-            .iter()
-            .position(|item| !self.in_flight.contains_key(&item.hash()))?;
+        let index = self.items.iter().position(|item| {
+            !self.in_flight.contains_key(&item.hash()) && !self.deferred.contains(&item.hash())
+        })?;
         let item = self.items.remove(index)?;
         self.hashes.remove(&item.hash());
         let permit = std::sync::Arc::new(MaintenancePermit::new(match &item {
@@ -761,6 +766,7 @@ pub(crate) async fn maintain_tempo_pool_with_events<Client, EvmConfig>(
     wakeup.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
     let mut rescan_all = false;
     let mut dispatch = false;
+    let mut refresh_pending = false;
     let mut closed = false;
     let mut previous_tip = None;
     let mut mined_pending = B256Set::default();
@@ -772,8 +778,11 @@ pub(crate) async fn maintain_tempo_pool_with_events<Client, EvmConfig>(
     loop {
         if dispatch {
             dispatch = false;
-            mined_pending.retain(|hash| pool.contains(hash));
-            pending.refresh(|hash| pool.contains(hash), Instant::now());
+            if refresh_pending {
+                refresh_pending = false;
+                mined_pending.retain(|hash| pool.contains(hash));
+                pending.refresh(|hash| pool.contains(hash), Instant::now());
+            }
             if pool.processed_head_is_current().unwrap_or(false) {
                 if rescan_all {
                     // A missed/early event can affect ordinary token-policy transactions too.
@@ -802,15 +811,28 @@ pub(crate) async fn maintain_tempo_pool_with_events<Client, EvmConfig>(
         let event = tokio::select! {
             event = chain_events.next(), if !closed => match event {
                 Some(event) => event,
-                None => { closed = true; dispatch = true; continue; }
+                None => {
+                    closed = true;
+                    pending.deferred.clear();
+                    refresh_pending = true;
+                    dispatch = true;
+                    continue;
+                }
             },
             Some((item, retry)) = jobs.next(), if !jobs.is_empty() => {
                 pending.complete(item, retry && !closed);
-                dispatch |= closed;
+                dispatch = true;
                 continue;
             },
-            _ = wakeup.tick() => { dispatch = true; continue; }
+            _ = wakeup.tick() => {
+                pending.deferred.clear();
+                refresh_pending = true;
+                dispatch = true;
+                continue;
+            }
         };
+        pending.deferred.clear();
+        refresh_pending = true;
         let reorg = matches!(&event, CanonStateNotification::Reorg { .. });
         let new = match event {
             CanonStateNotification::Reorg { old, new } => {
@@ -914,30 +936,29 @@ pub(crate) async fn maintain_tempo_pool_with_events<Client, EvmConfig>(
                 .then_some(*address)
             })
             .collect();
-        for hash in pool
-            .all_transactions()
-            .iter()
-            .filter(|tx| !removed_this_iteration.contains(tx.hash()))
-            .filter(|tx| {
-                (reorg && tx.transaction.has_configurable_dependencies())
-                    || tx
-                        .transaction
-                        .configurable_signers()
-                        .any(|account| changed.contains(&account))
-                    || tx
-                        .transaction
-                        .authorization_parent()
-                        .into_iter()
-                        .any(|account| changed.contains(&account))
-                    || tx
-                        .transaction
-                        .configurable_grant_recipient()
-                        .into_iter()
-                        .any(|account| code_changed.contains(&account))
-            })
-            .map(|tx| *tx.hash())
-        {
-            pending.revalidate(hash);
+        if reorg || !changed.is_empty() || !code_changed.is_empty() {
+            for tx in all_txs
+                .get_or_insert_with(|| pool.all_transactions())
+                .iter()
+            {
+                if !removed_this_iteration.contains(tx.hash())
+                    && ((reorg && tx.transaction.has_configurable_dependencies())
+                        || tx
+                            .transaction
+                            .configurable_signers()
+                            .any(|account| changed.contains(&account))
+                        || tx
+                            .transaction
+                            .authorization_parent()
+                            .is_some_and(|account| changed.contains(&account))
+                        || tx
+                            .transaction
+                            .configurable_grant_recipient()
+                            .is_some_and(|account| code_changed.contains(&account)))
+                {
+                    pending.revalidate(*tx.hash());
+                }
+            }
         }
         // 4. Handle potentially invalidating updates
         // When a cached value changes of a token (transfer policy, or quote token) changes,
@@ -1141,6 +1162,11 @@ mod tests {
         let (running, _) = queue.next().unwrap();
         assert_eq!(running.hash(), first);
         queue.complete(running, false);
+        assert!(
+            queue.next().is_none(),
+            "completion must not wake failed work"
+        );
+        queue.deferred.clear();
         assert_eq!(queue.next().unwrap().0.hash(), second);
     }
 

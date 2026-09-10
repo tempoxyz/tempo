@@ -629,6 +629,59 @@ where
         ))
     }
 
+    /// Shares validation setup across a batch, retrying only outcomes invalidated by a new head.
+    /// Results retain input order and origins, including provider errors without a generation.
+    async fn add_fresh_transactions(
+        &self,
+        transactions: Vec<(TransactionOrigin, TempoPooledTransaction)>,
+    ) -> Vec<PoolResult<AddedTransactionOutcome>> {
+        let mut results: Vec<_> = (0..transactions.len()).map(|_| None).collect();
+        let mut pending: Vec<_> = transactions.into_iter().enumerate().collect();
+        for _ in 0..3 {
+            let attempts: Vec<_> = pending
+                .into_iter()
+                .map(|(index, (origin, tx))| (index, origin, tx.with_discarded_caches()))
+                .collect();
+            let outcomes = self
+                .protocol_pool
+                .validator()
+                .validate_transactions(
+                    attempts
+                        .iter()
+                        .map(|(_, origin, tx)| (*origin, tx.clone()))
+                        .collect::<Vec<_>>(),
+                )
+                .await;
+            pending = Vec::new();
+            for ((index, origin, attempt), outcome) in attempts.into_iter().zip(outcomes) {
+                let result = match attempt.validation_generation() {
+                    Some(generation) => {
+                        self.add_validated_at_generation(generation, origin, outcome)
+                    }
+                    None => Some(self.add_validated_transaction(origin, outcome)),
+                };
+                if let Some(result) = result {
+                    results[index] = Some(result);
+                } else {
+                    pending.push((index, (origin, attempt)));
+                }
+            }
+            if pending.is_empty() {
+                break;
+            }
+        }
+        for (index, (_, transaction)) in pending {
+            results[index] = Some(Err(PoolError::other(
+                *transaction.hash(),
+                "canonical head changed during validation; retry transaction",
+            )));
+        }
+        results
+            .into_iter()
+            .map(|result| result.expect("every input has a result"))
+            .collect()
+    }
+
     fn add_validated_at_generation(
         &self,
         generation: u64,
@@ -828,12 +881,8 @@ where
                 .map(|outcome| self.add_validated_transaction(origin, outcome))
                 .collect();
         }
-        futures::future::join_all(
-            transactions
-                .into_iter()
-                .map(|tx| self.add_fresh_transaction(origin, tx)),
-        )
-        .await
+        self.add_fresh_transactions(transactions.into_iter().map(|tx| (origin, tx)).collect())
+            .await
     }
 
     async fn add_transactions_with_origins(
@@ -870,12 +919,7 @@ where
                 .map(|(outcome, origin)| self.add_validated_transaction(origin, outcome))
                 .collect();
         }
-        futures::future::join_all(
-            transactions
-                .into_iter()
-                .map(|(origin, tx)| self.add_fresh_transaction(origin, tx)),
-        )
-        .await
+        self.add_fresh_transactions(transactions).await
     }
 
     fn transaction_event_listener(&self, tx_hash: B256) -> Option<TransactionEvents> {

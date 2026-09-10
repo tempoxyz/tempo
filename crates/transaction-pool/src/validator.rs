@@ -1029,7 +1029,7 @@ mod tests {
     #[test_case::test_case(ConfigurablePoolScenario::UnprocessedHeadRetry; "unprocessed_head_retry")]
     #[test_case::test_case(ConfigurablePoolScenario::LateInsertion; "pre_barrier_insertion")]
     #[test_case::test_case(ConfigurablePoolScenario::IdleRetry; "idle_rescan_without_new_event")]
-    #[test_case::test_case(ConfigurablePoolScenario::ManyPending; "bounded_work_drains_all")]
+    #[test_case::test_case(ConfigurablePoolScenario::ManyPending; "open_stream_refills_workers")]
     #[tokio::test]
     async fn configurable_pool_boundaries(scenario: ConfigurablePoolScenario) {
         configurable_canonical_pool_case(scenario).await;
@@ -1179,19 +1179,36 @@ mod tests {
         ) {
             let ordinary = TxBuilder::aa(account).nonce(1).build();
             let ordinary_hash = *ordinary.hash();
+            let invalid = TxBuilder::aa(account).nonce(2).gas_limit(0).build();
+            let invalid_hash = *invalid.hash();
             let results = if scenario == ConfigurablePoolScenario::MixedBatch {
-                pool.add_transactions(TransactionOrigin::External, vec![ordinary, transaction])
-                    .await
+                pool.add_transactions(
+                    TransactionOrigin::External,
+                    vec![ordinary, invalid, transaction],
+                )
+                .await
             } else {
                 pool.add_transactions_with_origins(vec![
                     (TransactionOrigin::Local, ordinary),
+                    (TransactionOrigin::External, invalid),
                     (TransactionOrigin::External, transaction),
                 ])
                 .await
             };
-            for result in results {
-                result.unwrap();
-            }
+            assert_eq!(results.len(), 3);
+            assert_eq!(results[0].as_ref().unwrap().hash, ordinary_hash);
+            assert_eq!(results[1].as_ref().unwrap_err().hash, invalid_hash);
+            assert_eq!(results[2].as_ref().unwrap().hash, hash);
+            assert!(!pool.contains(&invalid_hash));
+            assert_eq!(pool.get(&hash).unwrap().origin, TransactionOrigin::External);
+            assert_eq!(
+                pool.get(&ordinary_hash).unwrap().origin,
+                if scenario == ConfigurablePoolScenario::MixedOrigins {
+                    TransactionOrigin::Local
+                } else {
+                    TransactionOrigin::External
+                }
+            );
             assert!(pool.contains(&ordinary_hash));
             assert!(pool.contains(&hash));
         } else {
@@ -1438,7 +1455,29 @@ mod tests {
             }
         })
         .buffered(1);
-        crate::maintain::maintain_tempo_pool_with_events(pool.clone(), events).await;
+        if scenario == ConfigurablePoolScenario::ManyPending {
+            // Keep the stream open and the retry clock frozen: successful work must refill
+            // available slots without relying on shutdown draining or a timer tick.
+            tokio::time::pause();
+            let mut maintenance = Box::pin(crate::maintain::maintain_tempo_pool_with_events(
+                pool.clone(),
+                events.chain(futures::stream::pending()),
+            ));
+            let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
+            while extra_hashes
+                .iter()
+                .any(|hash| pool.get(hash).unwrap().transaction.key_expiry().is_some())
+            {
+                assert!(futures::poll!(maintenance.as_mut()).is_pending());
+                assert!(
+                    std::time::Instant::now() < deadline,
+                    "idle workers must refill"
+                );
+                tokio::task::yield_now().await;
+            }
+        } else {
+            crate::maintain::maintain_tempo_pool_with_events(pool.clone(), events).await;
+        }
         if retry {
             assert_eq!(
                 pool.get(&ordinary_hash).unwrap().transaction.key_expiry(),
