@@ -1259,7 +1259,7 @@ where
     fn get_blobs_for_versioned_hashes_v4(
         &self,
         versioned_hashes: &[B256],
-        cell_mask: alloy_eips::eip7594::BlobCellMask,
+        cell_mask: alloy_primitives::B128,
     ) -> Result<
         Vec<Option<alloy_eips::eip4844::BlobCellsAndProofsV1>>,
         reth_transaction_pool::blobstore::BlobStoreError,
