@@ -17,8 +17,19 @@ use self::attestation::{AWS_NITRO_ROOT_DER, AttestationError, verify_attestation
 const CONFIG_V1: &[u8] = &[1];
 const MAX_FUTURE_SKEW_MILLIS: u64 = 300_000;
 
-/// Production measurements remain deliberately unset until the reproducible T11 EIF is finalized.
-const APPROVED_PCRS: Option<[[u8; 48]; 3]> = None;
+/// Measurements for the T11 EIF built from `tempoxyz/zones` at commit
+/// `bd86014dc25dcea25fc58eaeb8ffd9159c6ecb46`.
+const APPROVED_PCRS: Option<[[u8; 48]; 3]> = Some([
+    alloy::primitives::hex!(
+        "ee094bde864846edf5abe1e1427556af0479bf7d23b09c9f84fb780bebdc34ca81474ef09ade8a3139d38214746bbc4c"
+    ),
+    alloy::primitives::hex!(
+        "baa774ff6af9362bc5c4ecafa99c98c371d3d1e1e040e99890b9ba13d81ded18408fa2a65affa148ee2aaafa09142c81"
+    ),
+    alloy::primitives::hex!(
+        "59da1004e379fa7cc1c831f3a0779234f22fb2c2a2f90e1146c1edf51ad145b422be2036032620b7375243f163e17ab5"
+    ),
+]);
 
 const BATCH_ATTESTATION_TYPE: &str = "NitroBatchAttestation(uint256 parentChainId,address verifier,address portal,uint32 zoneId,uint64 tempoBlockNumber,uint64 anchorBlockNumber,bytes32 anchorBlockHash,uint64 expectedWithdrawalBatchIndex,bytes32 prevBlockHash,bytes32 nextBlockHash,bytes32 prevProcessedHash,bytes32 nextProcessedHash,uint64 prevDepositNumber,uint64 nextDepositNumber,uint64 prevProcessedTokenCount,uint64 nextProcessedTokenCount,bytes32 withdrawalQueueHash,bytes32 verifierConfigHash)";
 
@@ -159,11 +170,7 @@ mod tests {
             ))
         );
         assert_eq!(
-            batch_commitment(
-                42_431,
-                Address::from([0x11; 20]),
-                &call(),
-            ),
+            batch_commitment(42_431, Address::from([0x11; 20]), &call(),),
             B256::from(alloy::primitives::hex!(
                 "764c1f24b00b253ae1a06fe31ba8858a2352e9350e09a6c6028bea47233c0cb9"
             ))
