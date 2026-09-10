@@ -819,7 +819,7 @@ fn create_path_usd_token(
             // Initialize pathUSD directly (not via factory) since it's at a reserved address.
             let mut token = TIP20Token::from_address(PATH_USD_ADDRESS)
                 .expect("Could not create pathUSD token instance");
-            token.grant_role_internal(admin, *ISSUER_ROLE)?;
+            token.grant_role_internal(admin, ISSUER_ROLE)?;
 
             // Mint to all recipients
             for recipient in recipients.iter().progress() {
@@ -901,7 +901,7 @@ fn create_and_mint_token(
 
             let mut token =
                 TIP20Token::from_address(token_address).expect("Could not create token instance");
-            token.grant_role_internal(admin, *ISSUER_ROLE)?;
+            token.grant_role_internal(admin, ISSUER_ROLE)?;
 
             let result = token.set_supply_cap(
                 admin,

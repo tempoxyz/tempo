@@ -6525,6 +6525,12 @@ dependencies = [
 ]
 
 [[package]]
+name = "keccak-const"
+version = "0.2.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "57d8d8ce877200136358e0bbff3a77965875db3af755a11e1fa6b1b3e2df13ea"
+
+[[package]]
 name = "konst"
 version = "0.2.20"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -13881,6 +13887,7 @@ dependencies = [
  "derive_more",
  "eyre",
  "itertools 0.14.0",
+ "keccak-const",
  "p256 0.13.2",
  "paste",
  "proptest",
