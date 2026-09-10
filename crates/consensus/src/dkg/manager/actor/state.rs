@@ -1102,7 +1102,11 @@ impl Round {
                 state.epoch.get(),
                 previous_output,
                 Mode::NonZeroCounter,
-                #[allow(deprecated)]
+                #[expect(
+                    deprecated,
+                    reason = "switching the revealed-share calculation to V1 changes the round \
+                              summary and requires a coordinated protocol change"
+                )]
                 Reveal::V0,
                 dealers.clone(),
                 players.clone(),
