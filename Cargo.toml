@@ -216,9 +216,9 @@ reth-revm = { git = "https://github.com/paradigmxyz/reth", rev = "8e55cc5", feat
 revm = { version = "43.0.2", features = ["optional_fee_charge"], default-features = false }
 revm-inspectors = "0.43.0"
 
-alloy-json-abi = { version = "1.7.2", default-features = false }
-alloy-primitives = { version = "1.7.2", default-features = false }
-alloy-sol-types = { version = "1.7.2", default-features = false }
+alloy-json-abi = { version = "1.7.3", default-features = false }
+alloy-primitives = { version = "1.7.3", default-features = false }
+alloy-sol-types = { version = "1.7.3", default-features = false }
 
 alloy = { version = "2.4.2", default-features = false }
 alloy-consensus = { version = "2.4.2", default-features = false }
@@ -410,15 +410,3 @@ vergen-git2 = "10.0.1"
 # reth-trie-db = { path = "../reth/crates/trie/db" }
 # reth-trie-parallel = { path = "../reth/crates/trie/parallel" }
 # reth-trie-sparse = { path = "../reth/crates/trie/sparse" }
-
-[patch.crates-io]
-
-# Alloy strict decoding with trailing bytes: https://github.com/alloy-rs/core/pull/1186.
-alloy-json-abi = { git = "https://github.com/decofe/core", rev = "abef344e72089ac7e1ed1bfeb557483acbfca895" }
-alloy-primitives = { git = "https://github.com/decofe/core", rev = "abef344e72089ac7e1ed1bfeb557483acbfca895" }
-alloy-sol-types = { git = "https://github.com/decofe/core", rev = "abef344e72089ac7e1ed1bfeb557483acbfca895" }
-alloy-sol-macro = { git = "https://github.com/decofe/core", rev = "abef344e72089ac7e1ed1bfeb557483acbfca895" }
-alloy-sol-macro-expander = { git = "https://github.com/decofe/core", rev = "abef344e72089ac7e1ed1bfeb557483acbfca895" }
-alloy-sol-macro-input = { git = "https://github.com/decofe/core", rev = "abef344e72089ac7e1ed1bfeb557483acbfca895" }
-alloy-sol-type-parser = { git = "https://github.com/decofe/core", rev = "abef344e72089ac7e1ed1bfeb557483acbfca895" }
-syn-solidity = { git = "https://github.com/decofe/core", rev = "abef344e72089ac7e1ed1bfeb557483acbfca895" }
