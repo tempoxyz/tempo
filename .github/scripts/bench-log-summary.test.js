@@ -24,7 +24,37 @@ test('JSON excludes annotations but preserves key=value inside the actual messag
     'failed with status=503');
   assert.equal(parseLine(json('TRACE', 'trace event')), 'trace event');
   for (const level of ['INFO', 'DEBUG']) assert.equal(parseLine(json(level, 'ignored')), null);
-  assert.equal(parseLine('{"level":"ERROR","fields":{"error":"boom"}}'), '(no message)');
+  assert.equal(parseLine('{"level":"ERROR","fields":{"peer":42}}'), '(no message)');
+});
+
+test('JSON falls back to error only when message is absent', () => {
+  assert.equal(parseLine(json('WARN', undefined, { error: 'proposal aborted', peer: 42 })), 'proposal aborted');
+  assert.equal(parseLine('{"level":"ERROR","error":"top-level error"}'), 'top-level error');
+  assert.equal(parseLine('{"level":"WARN","message":"explicit message","fields":{"error":"ignored"}}'), 'explicit message');
+  assert.equal(parseLine(json('WARN', 'explicit message', { error: 'ignored' })), 'explicit message');
+  for (const level of ['INFO', 'DEBUG']) {
+    assert.equal(parseLine(json(level, undefined, { error: 'ignored' })), null);
+  }
+});
+
+test('message-less proposal warnings group by error with baseline and feature counts', async t => {
+  const error = 'proposal return channel was closed by consensus engine before block could be proposed; aborting';
+  const dir = fixture(t, {
+    'run-order.txt': 'baseline-1\nfeature-1\n',
+    'logs-baseline-1-a/tempo.log': json('WARN', undefined, { error, view: 162 }),
+    'logs-baseline-1-b/tempo.log': [121, 138, 161].map(view => json('WARN', undefined, { error, view })).join(''),
+    'logs-feature-1-a/tempo.log': json('INFO', 'normal'),
+    'logs-feature-1-b/tempo.log': [45, 167].map(view => json('WARN', undefined, { error, view })).join(''),
+    'summary.md': '# Metrics\n',
+  });
+  await main(dir, 'e2e', 'summary.md');
+  const report = JSON.parse(fs.readFileSync(path.join(dir, 'log-summary.json')));
+  assert.deepEqual(report.messages, [{
+    message: error, baseline: 4, feature: 2, per_run: { 'baseline-1': 4, 'feature-1': 2 },
+  }]);
+  const markdown = fs.readFileSync(path.join(dir, 'summary.md'), 'utf8');
+  assert.ok(markdown.includes(`| ${error} | 4 | 2 |`));
+  assert.doesNotMatch(markdown, /\(no message\)|view=/);
 });
 
 test('terminal output strips ANSI, target and structured fields', () => {

@@ -15,7 +15,7 @@ function parseLine(raw) {
       if (!entry.level) return null;
       const level = entry.level.toUpperCase();
       if (level === 'INFO' || level === 'DEBUG') return null;
-      return String(entry.fields?.message ?? entry.message ?? '(no message)');
+      return String(entry.fields?.message ?? entry.message ?? entry.fields?.error ?? entry.error ?? '(no message)');
     } catch {
       return null;
     }
@@ -93,7 +93,7 @@ function buildMarkdown(report) {
   const total = side => report.runs.some(r => r.side === side)
     ? report.runs.filter(r => r.side === side).reduce((sum, r) => sum + r.total, 0) : '—';
   const lines = ['', '## Non-INFO/DEBUG logs', '',
-    'Counts include only Tempo node logs across each run, including startup, warmup, and shutdown. Annotated key/value fields are excluded; repeated messages are counted, not deduplicated. Unlevelled output is ignored.', '',
+    'Counts include only Tempo node logs across each run, including startup, warmup, and shutdown. Annotated key/value fields are excluded, except that JSON logs without a message use the error field. Repeated messages are counted, not deduplicated. Unlevelled output is ignored.', '',
     '| Run type | Total lines |', '|----------|------------:|',
     `| Baseline | ${total('baseline')} |`, `| Feature | ${total('feature')} |`, ''];
   if (report.runs.some(r => r.missing_node_logs.length)) {
