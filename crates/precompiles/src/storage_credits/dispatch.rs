@@ -39,10 +39,8 @@ mod tests {
         storage::{StorageCtx, hashmap::HashMapStorageProvider},
         test_util::{assert_full_coverage, check_selector_coverage},
     };
-    use alloy::sol_types::{SolCall, SolInterface};
-    use tempo_contracts::precompiles::{
-        IStorageCredits, IStorageCredits::IStorageCreditsCalls, StorageCreditsError,
-    };
+    use alloy::sol_types::SolCall;
+    use tempo_contracts::precompiles::{IStorageCredits, IStorageCredits::IStorageCreditsCalls};
 
     #[test]
     fn test_storage_credits_selector_coverage() -> eyre::Result<()> {
@@ -136,10 +134,8 @@ mod tests {
 
             let output = storage_credits_precompile.call(&calldata, caller)?;
             assert!(output.is_revert());
-            assert_eq!(
-                &output.bytes[..4],
-                StorageCreditsError::invalid_mode().selector().as_slice()
-            );
+            // Strict ABI validation rejects the enum before entering set_mode.
+            assert!(output.bytes.is_empty());
 
             Ok(())
         })
