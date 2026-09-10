@@ -412,6 +412,17 @@ vergen-git2 = "10.0.1"
 
 [patch.crates-io]
 
+# Alloy strict decoding with trailing bytes: https://github.com/alloy-rs/core/pull/1186.
+alloy-dyn-abi = { git = "https://github.com/decofe/core", rev = "abef344e72089ac7e1ed1bfeb557483acbfca895" }
+alloy-json-abi = { git = "https://github.com/decofe/core", rev = "abef344e72089ac7e1ed1bfeb557483acbfca895" }
+alloy-primitives = { git = "https://github.com/decofe/core", rev = "abef344e72089ac7e1ed1bfeb557483acbfca895" }
+alloy-sol-types = { git = "https://github.com/decofe/core", rev = "abef344e72089ac7e1ed1bfeb557483acbfca895" }
+alloy-sol-macro = { git = "https://github.com/decofe/core", rev = "abef344e72089ac7e1ed1bfeb557483acbfca895" }
+alloy-sol-macro-expander = { git = "https://github.com/decofe/core", rev = "abef344e72089ac7e1ed1bfeb557483acbfca895" }
+alloy-sol-macro-input = { git = "https://github.com/decofe/core", rev = "abef344e72089ac7e1ed1bfeb557483acbfca895" }
+alloy-sol-type-parser = { git = "https://github.com/decofe/core", rev = "abef344e72089ac7e1ed1bfeb557483acbfca895" }
+syn-solidity = { git = "https://github.com/decofe/core", rev = "abef344e72089ac7e1ed1bfeb557483acbfca895" }
+
 # Commonware v2026.7.0
 # commonware-actor = { git = "https://github.com/commonwarexyz/monorepo", rev = "5950bf7179bb0650a57ed58b9e0478822944b335" }
 # commonware-broadcast = { git = "https://github.com/commonwarexyz/monorepo", rev = "5950bf7179bb0650a57ed58b9e0478822944b335" }

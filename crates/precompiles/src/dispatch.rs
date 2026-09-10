@@ -19,14 +19,17 @@ sol! {
 /// Maximum memory the ABI decoder may allocate for a precompile call.
 pub const ABI_DECODER_MEMORY_LIMIT: usize = 16 * 1024 * 1024;
 
-/// Returns the hardfork-aware ABI decoder configuration used to dispatch precompile calls.
+/// Returns the ABI decoder configuration used to dispatch precompile calls.
+///
+/// Strict validation permits trailing calldata bytes at every hardfork.
 #[inline]
 pub const fn abi_decoder_config_for_spec(
-    spec: TempoHardfork,
+    _spec: TempoHardfork,
 ) -> alloy::sol_types::abi::AbiDecoderConfig {
     alloy::sol_types::abi::AbiDecoderConfig::new()
         .memory_limit(ABI_DECODER_MEMORY_LIMIT)
-        .strict(spec.is_t11())
+        .strict(true)
+        .validate_allow_trailing_bytes(true)
 }
 
 pub mod typed {
@@ -352,6 +355,39 @@ mod tests {
     enum CustomError {
         Typed(CustomTypedError),
         Tempo(TempoPrecompileError),
+    }
+
+    #[test]
+    fn strict_abi_allows_trailing_bytes_before_and_after_t11() {
+        let call = ITestMemoryDispatch::setValuesCall {
+            values: vec![U256::from(42)],
+        };
+        let canonical = call.abi_encode();
+        let mut trailing = canonical.clone();
+        trailing.extend_from_slice(&[0xaa, 0xbb, 0xcc]);
+        let mut gapped = canonical;
+        gapped[35] = 64;
+        gapped.splice(36..36, [0; 32]);
+
+        for spec in [
+            TempoHardfork::Genesis,
+            TempoHardfork::T10,
+            TempoHardfork::T11,
+        ] {
+            let config = abi_decoder_config_for_spec(spec);
+            assert!(config.get_strict());
+            assert!(config.get_validate());
+            assert!(config.get_validate_allow_trailing_bytes());
+            assert_eq!(config.get_memory_limit(), ABI_DECODER_MEMORY_LIMIT);
+            let decoded =
+                ITestMemoryDispatch::setValuesCall::abi_decode_with_config(&trailing, config)
+                    .expect("canonical calldata with a suffix should decode");
+            assert_eq!(decoded.values, call.values);
+            assert!(
+                ITestMemoryDispatch::setValuesCall::abi_decode_with_config(&gapped, config)
+                    .is_err()
+            );
+        }
     }
 
     impl IntoPrecompileResult for CustomError {
