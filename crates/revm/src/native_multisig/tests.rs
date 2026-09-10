@@ -214,18 +214,10 @@ fn native_contexts_fail_closed_and_simulation_is_explicit() {
             TempoInvalidTransaction::NativeMultisig(NativeMultisigError::UnsupportedContext)
         ))
     ));
-    tx.tempo_tx_env.as_mut().unwrap().subblock_transaction = true;
-    assert!(matches!(
-        validate_state(&mut journal, &tx, &block, TempoHardfork::T12, &gas),
-        Err(EVMError::Transaction(
-            TempoInvalidTransaction::NativeMultisig(NativeMultisigError::InvalidSignatureContext)
-        ))
-    ));
     assert!(
         journal.state.is_empty(),
         "context checks must precede account reads"
     );
-    tx.tempo_tx_env.as_mut().unwrap().subblock_transaction = false;
     assert!(verify(&tx).is_err());
     tx.execution_context = ExecutionContext::Transaction {
         tx_hash: B256::ZERO,

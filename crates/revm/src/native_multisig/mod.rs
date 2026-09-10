@@ -170,11 +170,10 @@ pub fn validate_state<J: JournalTr>(
     // Context rejection must not depend on factory configuration or account reads.
     if roles.iter().any(Option::is_some) {
         let aa = tx.tempo_tx_env.as_ref().expect("roles require AA");
-        if aa.subblock_transaction
-            || aa
-                .signature
-                .as_keychain()
-                .is_some_and(|key| key.is_legacy())
+        if aa
+            .signature
+            .as_keychain()
+            .is_some_and(|key| key.is_legacy())
         {
             return Err(invalid(NativeMultisigError::InvalidSignatureContext));
         }
