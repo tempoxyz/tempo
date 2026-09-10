@@ -102,6 +102,30 @@ pub(crate) fn build_call_tx(
         .into()
 }
 
+/// Builds and encodes a signed EIP-1559 CREATE transaction.
+pub(crate) fn build_create_tx(
+    signer: &PrivateKeySigner,
+    chain_id: u64,
+    nonce: u64,
+    gas_limit: u64,
+    initcode: Bytes,
+) -> Bytes {
+    let mut tx = TxEip1559 {
+        chain_id,
+        nonce,
+        gas_limit,
+        to: alloy::primitives::TxKind::Create,
+        max_fee_per_gas: TEMPO_T1_BASE_FEE as u128,
+        max_priority_fee_per_gas: TEMPO_T1_BASE_FEE as u128,
+        input: initcode,
+        ..Default::default()
+    };
+    let signature = signer.sign_transaction_sync(&mut tx).unwrap();
+    TxEnvelope::Eip1559(tx.into_signed(signature))
+        .encoded_2718()
+        .into()
+}
+
 pub(crate) struct TempoTxSender<P> {
     pub(crate) provider: P,
     pub(crate) chain_id: u64,
