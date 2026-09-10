@@ -71,7 +71,9 @@ pub struct Builder<TBlocker, TPeerManager> {
     pub time_to_retry_nullify_broadcast: Duration,
     pub time_for_peer_response: Duration,
     pub views_to_track: u64,
-    pub views_until_leader_skip: u64,
+    /// Leader inactivity window after which a view is skipped early. Must
+    /// exceed `time_to_collect_notarizations` and `time_to_retry_nullify_broadcast`.
+    pub inactive_time_before_leader_skip: Duration,
     /// Local proposal return budget after reserving network propagation time.
     ///
     /// The leader uses this window for payload building, local marshal
@@ -209,7 +211,6 @@ where
             peer_provider: peer_manager_mailbox.clone(),
             mailbox_size: self.mailbox_size,
             blocker: self.blocker.clone(),
-            initial: Duration::from_secs(1),
             timeout: Duration::from_secs(2),
             fetch_retry_timeout: Duration::from_millis(100),
             priority_requests: false,
@@ -272,7 +273,7 @@ where
                 time_to_retry_nullify_broadcast: self.time_to_retry_nullify_broadcast,
                 partition_prefix: format!("{}_epoch_manager", self.partition_prefix),
                 views_to_track: ViewDelta::new(self.views_to_track),
-                views_until_leader_skip: ViewDelta::new(self.views_until_leader_skip),
+                inactive_time_before_leader_skip: self.inactive_time_before_leader_skip,
             },
         );
 

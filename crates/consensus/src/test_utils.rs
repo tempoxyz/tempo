@@ -15,7 +15,10 @@ use commonware_consensus::{
 };
 use commonware_cryptography::{
     Signer as _,
-    bls12381::{dkg::feldman_desmedt as dkg, primitives::variant::MinSig},
+    bls12381::{
+        dkg::feldman_desmedt as dkg,
+        primitives::{sharing::Mode, variant::MinSig},
+    },
     ed25519::{PrivateKey, PublicKey},
 };
 use commonware_math::algebra::Random as _;
@@ -44,7 +47,7 @@ pub(crate) fn dkg_fixture(rng: &mut impl CryptoRng, epoch: Epoch) -> DkgFixture 
     .expect("test players should be unique");
 
     let (output, shares) =
-        dkg::deal::<_, _, N3f1>(&mut *rng, Default::default(), players).expect("test DKG");
+        dkg::deal::<_, _, N3f1>(&mut *rng, Mode::NonZeroCounter, players).expect("test DKG");
 
     let schemes = shares
         .into_iter()
@@ -82,6 +85,10 @@ pub(crate) fn make_certificate(
         .map(|scheme| Finalize::sign(scheme, proposal.clone()).expect("signer should sign"))
         .collect::<Vec<_>>();
 
-    Finalization::from_finalizes(&schemes[0], &votes, &Sequential)
-        .expect("all test signers form a quorum")
+    Finalization::from_finalizes(
+        &schemes[0],
+        commonware_utils::non_empty![@&votes],
+        &Sequential,
+    )
+    .expect("all test signers form a quorum")
 }

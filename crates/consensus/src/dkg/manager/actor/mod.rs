@@ -236,6 +236,10 @@ where
         TSender: Sender<PublicKey = PublicKey>,
         TReceiver: Receiver<PublicKey = PublicKey>,
     {
+        ensure!(
+            !storage.is_poisoned(),
+            "DKG storage must be reopened after a failed or cancelled mutation"
+        );
         let state = storage.current();
 
         self.metrics.reset();
@@ -361,7 +365,7 @@ where
                     match network_msg {
                         Ok((sender, message)) => {
                             // Produces an error event.
-                            let _ = self.handle_network_msg(
+                            let result = self.handle_network_msg(
                                 &round,
                                 &mut round_sender,
                                 storage,
@@ -370,6 +374,14 @@ where
                                 sender,
                                 message,
                             ).await;
+                            // Malformed messages and send failures are recoverable,
+                            // but a failed storage mutation consumes its handle.
+                            // Exit with the original I/O error before another message
+                            // can access the poisoned storage.
+                            if storage.is_poisoned() {
+                                result.wrap_err("DKG storage invalidated while handling a network message")?;
+                                bail!("DKG storage invalidated without a reported error");
+                            }
                         }
                         Err(err) => {
                             break Err(err).wrap_err("network p2p subchannel closed")
@@ -779,7 +791,8 @@ where
                         player_state,
                         round_channel,
                     )
-                    .await;
+                    .await
+                    .wrap_err("failed distributing shares")?;
                 }
             }
             EpochPhase::Midpoint | EpochPhase::Late => {
@@ -804,65 +817,70 @@ where
 
         info!("reading validator from contract");
 
-        let (local_output, mut share) = if let Some((outcome, share)) =
-            storage.get_dkg_outcome(&state.epoch, &parent_digest)
-        {
-            debug!("using cached DKG outcome");
-            (outcome.clone(), share.clone())
-        } else {
-            let mut logs = Logs::<MinSig, PublicKey, N3f1>::new(round.info().clone());
-            for (k, v) in storage.logs_for_epoch(round.epoch()) {
-                logs.record(k.clone(), v.clone());
-            }
+        let (local_output, mut share) =
+            if let Some((outcome, share)) = storage.get_dkg_outcome(&state.epoch, &parent_digest) {
+                debug!("using cached DKG outcome");
+                (outcome.clone(), share.clone())
+            } else {
+                let mut logs = Logs::<MinSig, PublicKey, N3f1>::new(round.info().clone());
+                for (k, v) in storage.logs_for_epoch(round.epoch()) {
+                    logs.record(k.clone(), v.clone());
+                }
 
-            let ctx_mut = self.context.as_present_mut();
-            let player_outcome = if let Some(player) = player_state.take() {
-                info!("we were a player in the ceremony; finalizing share");
-                match player.finalize(ctx_mut, logs.clone(), &Sequential) {
-                    Ok((new_output, new_share)) => {
-                        info!("local DKG ceremony was a success");
-                        Some((new_output, ShareState::Plaintext(Some(new_share))))
+                let ctx_mut = self.context.as_present_mut();
+                let player_outcome = if let Some(player) = player_state.take() {
+                    info!("we were a player in the ceremony; finalizing share");
+                    match player.finalize(ctx_mut, logs.clone(), &Sequential) {
+                        Ok((new_output, new_share)) => {
+                            info!("local DKG ceremony was a success");
+                            Some((new_output, ShareState::Plaintext(Some(new_share))))
+                        }
+                        // `FinalizeError::Error` means our local player state is
+                        // unusable (missing or invalid persisted dealings) while the
+                        // round itself may have succeeded; `observe` still yields the
+                        // public output, so continue as an observer.
+                        Err(dkg::FinalizeError::Error(reason)) => {
+                            warn!(
+                                reason = %Report::new(reason),
+                                "local DKG state cannot reconstruct a share in this epoch; has \
+                                consensus state been deleted or corrupted, or a node with the same \
+                                identity started without consensus state? Finalizing the current \
+                                round as an observer and will not have a share in the next epoch"
+                            );
+                            None
+                        }
+                        // `FinalizeError::Failure` means the agreed dealer logs cannot
+                        // produce an output for anyone; keep the previous epoch's output.
+                        Err(dkg::FinalizeError::Failure(failure)) => {
+                            warn!(
+                                failure = %Report::new(failure),
+                                "local DKG ceremony was a failure",
+                            );
+                            Some((state.output.clone(), state.share.clone()))
+                        }
                     }
-                    Err(reason @ dkg::Error::MissingPlayerDealing) => {
-                        warn!(
-                            reason = %Report::new(reason),
-                            "missing critical DKG state to reconstruct a share in this epoch; has \
-                            consensus state been deleted or a node with the same identity started \
-                            without consensus state? Finalizing the current round as an observer \
-                            and will not have a share in the next epoch"
-                        );
-                        None
-                    }
-                    Err(error) => {
-                        warn!(
-                            error = %Report::new(error),
-                            "local DKG ceremony was a failure",
-                        );
-                        Some((state.output.clone(), state.share.clone()))
+                } else {
+                    None
+                };
+
+                if let Some(outcome) = player_outcome {
+                    outcome
+                } else {
+                    match observe::<_, _, N3f1, Batch>(ctx_mut, logs, &Sequential) {
+                        Ok(output) => {
+                            info!("local DKG ceremony was a success");
+                            (output, ShareState::Plaintext(None))
+                        }
+                        Err(error) => {
+                            warn!(
+                                error = %Report::new(error),
+                                "local DKG ceremony was a failure",
+                            );
+                            (state.output.clone(), state.share.clone())
+                        }
                     }
                 }
-            } else {
-                None
             };
-
-            if let Some(outcome) = player_outcome {
-                outcome
-            } else {
-                match observe::<_, _, N3f1, Batch>(ctx_mut, logs, &Sequential) {
-                    Ok(output) => {
-                        info!("local DKG ceremony was a success");
-                        (output, ShareState::Plaintext(None))
-                    }
-                    Err(error) => {
-                        warn!(
-                            error = %Report::new(error),
-                            "local DKG ceremony was a failure",
-                        );
-                        (state.output.clone(), state.share.clone())
-                    }
-                }
-            }
-        };
 
         if local_output != onchain_outcome.output {
             let am_player = onchain_outcome
@@ -907,30 +925,38 @@ where
         dealer_state: &mut Dealer,
         player_state: &mut Option<Player>,
         round_channel: &mut TSender,
-    ) where
+    ) -> eyre::Result<()>
+    where
         TStorageContext: BufferPooler + commonware_runtime::Metrics + Clock + Storage,
         TSender: Sender<PublicKey = PublicKey>,
     {
         let me = self.config.me.public_key();
         for (player, pub_msg, priv_msg) in dealer_state.shares_to_distribute().collect::<Vec<_>>() {
             if player == me {
-                if let Some(player_state) = player_state
-                    && let Ok(ack) = player_state
-                        .receive_dealing(storage, epoch, me.clone(), pub_msg, priv_msg)
-                        .await
-                        .inspect(|_| {
-                            self.metrics.shares_distributed.metric().inc();
-                            self.metrics.shares_received.metric().inc();
-                        })
-                        .inspect_err(|error| warn!(%error, "failed to store our own dealing"))
-                    && let Ok(()) = dealer_state
-                        .receive_ack(storage, epoch, me.clone(), ack)
-                        .await
-                        .inspect_err(|error| warn!(%error, "failed to store our own ACK"))
-                {
-                    self.metrics.acks_received.metric().inc();
-                    self.metrics.acks_sent.metric().inc();
-                    info!("stored our own ACK and share");
+                if let Some(player_state) = player_state {
+                    let result: eyre::Result<()> = async {
+                        let ack = player_state
+                            .receive_dealing(storage, epoch, me.clone(), pub_msg, priv_msg)
+                            .await
+                            .wrap_err("failed to store our own dealing")?;
+                        self.metrics.shares_distributed.metric().inc();
+                        self.metrics.shares_received.metric().inc();
+                        dealer_state
+                            .receive_ack(storage, epoch, me.clone(), ack)
+                            .await
+                            .wrap_err("failed to store our own ACK")?;
+                        self.metrics.acks_received.metric().inc();
+                        self.metrics.acks_sent.metric().inc();
+                        info!("stored our own ACK and share");
+                        Ok(())
+                    }
+                    .await;
+                    if let Err(error) = result {
+                        if storage.is_poisoned() {
+                            return Err(error);
+                        }
+                        warn!(%error, "failed to process our own dealing or ACK");
+                    }
                 }
             } else {
                 // Send to remote player
@@ -942,6 +968,7 @@ where
                 }
             }
         }
+        Ok(())
     }
 
     #[instrument(
@@ -1146,19 +1173,22 @@ where
                             info!("local DKG ceremony was a success");
                             Some((new_output, ShareState::Plaintext(Some(new_share))))
                         }
-                        Err(reason @ dkg::Error::MissingPlayerDealing) => {
+                        // See the early-finalization match above: local-state
+                        // errors fall through to `observe`, protocol failures
+                        // keep the previous output.
+                        Err(dkg::FinalizeError::Error(reason)) => {
                             warn!(
                                 reason = %Report::new(reason),
-                                "missing critical DKG state to reconstruct a share in this epoch; has \
-                                consensus state been deleted or a node with the same identity started \
-                                without consensus state? Finalizing the current round as an observer \
-                                and will not have a share in the next epoch"
+                                "local DKG state cannot reconstruct a share in this epoch; has \
+                                consensus state been deleted or corrupted, or a node with the same \
+                                identity started without consensus state? Finalizing the current \
+                                round as an observer and will not have a share in the next epoch"
                             );
                             None
                         }
-                        Err(error) => {
+                        Err(dkg::FinalizeError::Failure(failure)) => {
                             warn!(
-                                error = %Report::new(error),
+                                failure = %Report::new(failure),
                                 "local DKG ceremony was a failure",
                             );
                             Some((state.output.clone(), state.share.clone()))
@@ -1437,7 +1467,7 @@ where
         let (recovered_output, share) = match player.finalize(&mut self.context, logs, &Sequential)
         {
             Ok(recovered) => recovered,
-            Err(dkg::Error::MissingPlayerDealing) => return Ok(None),
+            Err(dkg::FinalizeError::Error(dkg::Error::MissingPlayerDealing)) => return Ok(None),
             Err(error) => {
                 return Err(eyre::Report::new(error))
                     .wrap_err("failed finalizing revealed share from dealer logs");
