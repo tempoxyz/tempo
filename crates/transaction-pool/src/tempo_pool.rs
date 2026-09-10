@@ -99,6 +99,21 @@ where
         self.protocol_pool.validator().validator().client()
     }
 
+    /// Returns all transactions from `sender`, grouped by pending and queued status.
+    // The transaction fetcher branch does not expose this method on `TransactionPool` yet.
+    pub fn all_transactions_by_sender(
+        &self,
+        sender: Address,
+    ) -> AllPoolTransactions<TempoPooledTransaction> {
+        let mut transactions = self.protocol_pool.all_transactions();
+        transactions.pending.retain(|tx| tx.sender() == sender);
+        transactions.queued.retain(|tx| tx.sender() == sender);
+        self.aa_2d_pool
+            .read()
+            .append_all_transactions_by_sender(sender, &mut transactions);
+        transactions
+    }
+
     /// Updates the 2d nonce pool with the given state changes.
     ///
     /// Returns mined AA transactions.
@@ -958,17 +973,6 @@ where
         self.aa_2d_pool
             .read()
             .append_all_transactions(&mut transactions);
-        transactions
-    }
-
-    fn all_transactions_by_sender(
-        &self,
-        sender: Address,
-    ) -> AllPoolTransactions<Self::Transaction> {
-        let mut transactions = self.protocol_pool.all_transactions_by_sender(sender);
-        self.aa_2d_pool
-            .read()
-            .append_all_transactions_by_sender(sender, &mut transactions);
         transactions
     }
 
