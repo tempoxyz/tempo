@@ -296,6 +296,9 @@ where
     /// - Eviction tracks the EL's progress monotonically. Once the EL
     ///   finalizes height `H`, the cache may drop everything below
     ///   `H - retention_blocks + 1` on the next put.
+    ///
+    /// Consumes `self`; on error the archive handle is gone and the store is
+    /// dropped. No retry: marshal treats the failed `put` as fatal.
     async fn evict_below_execution_finalized_floor(mut self) -> Result<Self, archive::Error> {
         // Reth hasn't finalized anything yet (fresh chain) — nothing is
         // safe to evict.
