@@ -1987,8 +1987,13 @@ impl TryFrom<PersistedSignedKeyAuthorization> for SignedKeyAuthorization {
             // Ox 0.14 uses an empty RLP list as the positional limits
             // placeholder when scopes follow it. Preserve that exact signed
             // wire shape. Newer TIP-1053 fields switched skipped fields to the
-            // canonical optional null placeholder.
-            None if has_scopes && !has_tip1053_fields => Some(Vec::new()),
+            // canonical optional null placeholder. Native signatures never used this legacy form.
+            None if has_scopes
+                && !has_tip1053_fields
+                && matches!(&signature, PersistedAuthorizationSignature::Primitive(_)) =>
+            {
+                Some(Vec::new())
+            }
             None => None,
         };
         let allowed_calls = scopes.map(persisted_scopes_to_call_scopes).transpose()?;
@@ -5002,11 +5007,18 @@ mod tests {
             ))
     }
 
-    #[test]
-    fn configurable_parent_authorization_persists_complete_signature() {
+    #[test_case::test_case(false; "unscoped")]
+    #[test_case::test_case(true; "scoped_without_limits")]
+    fn configurable_parent_authorization_persists_complete_signature(scoped: bool) {
         let account = Address::repeat_byte(2);
         let signer = PrivateKeySigner::random();
-        let authorization = configurable_authorization(account, &signer);
+        let mut authorization = configurable_authorization(account, &signer);
+        if scoped {
+            authorization.authorization.allowed_calls = Some(vec![CallScope {
+                target: Address::repeat_byte(3),
+                selector_rules: Vec::new(),
+            }]);
+        }
         let writable = writable_access_key(account, &signer, &authorization).unwrap();
         let value = serde_json::to_value(writable).unwrap();
         assert!(value["keyAuthorization"]["signature"].is_string());
@@ -5014,6 +5026,8 @@ mod tests {
             serde_json::from_value(value["keyAuthorization"].clone()).unwrap();
         let decoded = SignedKeyAuthorization::try_from(persisted).unwrap();
         assert_eq!(decoded, authorization);
+        assert_eq!(decoded.signature_hash(), authorization.signature_hash());
+        assert_eq!(decoded.limits, None);
         assert!(validate_authorization_for_account(account, &decoded).is_ok());
     }
 

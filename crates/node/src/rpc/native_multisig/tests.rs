@@ -121,7 +121,25 @@ fn real_grant_checks_state_before_cryptography() {
                 };
                 assert_eq!(message, expected);
             }
-            None => result.unwrap(),
+            None => {
+                result.unwrap();
+                request
+                    .key_authorization
+                    .as_mut()
+                    .unwrap()
+                    .authorization
+                    .chain_id += 1;
+                assert!(
+                    prepare_native_multisig_simulation(
+                        &mut request,
+                        TempoHardfork::T12,
+                        &block(),
+                        &mut db
+                    )
+                    .is_err(),
+                    "prepared real grant must be reverified after digest mutation"
+                );
+            }
         }
     }
 }
@@ -183,10 +201,13 @@ fn prepares_independent_delegate_and_parent_roles(version: u64) {
         .authorization
         .account = Some(wrong);
     let mut wrong_signer = request.clone();
+    wrong_signer.key_authorization_simulation = None;
     wrong_signer.key_authorization.as_mut().unwrap().signature =
         TempoSignature::Multisig(request.multisig_simulation_signature.clone().unwrap());
     let mut wrong_delegate = request.clone();
-    wrong_delegate.key_id = Some(wrong);
+    wrong_delegate.key_id = Some(parent);
+    let mut missing_witness = request.clone();
+    missing_witness.multisig_simulation = None;
     for (mut invalid, expected) in [
         (
             wrong_metadata,
@@ -198,9 +219,11 @@ fn prepares_independent_delegate_and_parent_roles(version: u64) {
         ),
         (
             wrong_delegate,
-            format!(
-                "multisig simulation signature account mismatch: expected {wrong}, actual {delegate}"
-            ),
+            "a configurable delegate cannot be its own parent".into(),
+        ),
+        (
+            missing_witness,
+            "multisig simulation signature requires its source witness".into(),
         ),
     ] {
         let Err(EthApiError::InvalidParams(message)) =
@@ -209,6 +232,7 @@ fn prepares_independent_delegate_and_parent_roles(version: u64) {
             panic!("expected {expected}")
         };
         assert_eq!(message, expected);
+        assert!(!invalid.multisig_simulation_prepared);
     }
     // Repeated preparation must retain both valid roles after the rejected alternatives.
     prepare_native_multisig_simulation(&mut request, TempoHardfork::T12, &block(), &mut db)

@@ -30,7 +30,16 @@ impl TempoTransactionRequest {
         let caller_addr = self.inner.from.unwrap_or_default();
         let is_aa = self.has_aa_fields();
 
-        if self.has_configurable_simulation() && !self.multisig_simulation_prepared {
+        if self.has_configurable_simulation()
+            && (!self.multisig_simulation_prepared
+                || (self.multisig_simulation.is_some()
+                    && self.multisig_simulation_signature.is_none())
+                || (self.key_authorization_simulation.is_some()
+                    && !self
+                        .key_authorization
+                        .as_ref()
+                        .is_some_and(|grant| grant.signature.is_multisig())))
+        {
             return Err(ValueError::new(
                 self,
                 "native multisig simulation requires a configuration witness and state-aware preprocessing",

@@ -12,7 +12,7 @@ use tempo_primitives::{
 
 /// One independently signed configurable role in a simulation.
 #[derive(Clone, Debug, PartialEq, Eq, Hash, Serialize, Deserialize)]
-#[serde(rename_all = "camelCase")]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct MultisigSimulationSpec {
     /// Full configuration at the requested state, encoded as RLP bytes.
     #[serde(with = "serde_multisig_config")]
@@ -36,6 +36,13 @@ impl MultisigSimulationSpec {
         let mut weight = MultisigWeightAccumulator::new(self.config.threshold)
             .map_err(|error| error.to_string())?;
         for approval in &self.approvals {
+            if approval
+                .key_data
+                .as_ref()
+                .is_some_and(|hint| !matches!(hint.len(), 1 | 2 | 4))
+            {
+                return Err("keyData must contain a 1-, 2-, or 4-byte length hint".into());
+            }
             if approval.key_type == Some(SignatureType::Multisig) {
                 return Err("multisig owners must use primitive signatures".into());
             }

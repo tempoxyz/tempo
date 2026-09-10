@@ -16,6 +16,7 @@ pub(super) fn prepare_native_multisig_simulation(
     block: &TempoBlockEnv,
     db: &mut impl Database<Error: Into<EthApiError>>,
 ) -> Result<(), EthApiError> {
+    request.multisig_simulation_prepared = false;
     if !request.has_configurable_simulation() {
         return Ok(());
     }
@@ -35,29 +36,23 @@ pub(super) fn prepare_native_multisig_simulation(
         .inner
         .from
         .ok_or_else(|| invalid("native multisig simulation requires from"))?;
+    if request.key_id == Some(parent)
+        && (request.multisig_simulation.is_some()
+            || request.multisig_simulation_signature.is_some())
+    {
+        return Err(invalid("a configurable delegate cannot be its own parent"));
+    }
     if let Some(spec) = request.multisig_simulation.as_ref() {
         let account = request.key_id.unwrap_or(parent);
-        if request.key_id == Some(parent) {
-            return Err(invalid("a configurable delegate cannot be its own parent"));
-        }
         let signature = create_mock_native_multisig_signature(account, spec)
             .map_err(EthApiError::InvalidParams)?;
         validate_witness(&signature, factory, hardfork, db)?;
         request.multisig_simulation_signature = Some(signature);
-        request.multisig_simulation = None;
-    } else if let Some(signature) = &request.multisig_simulation_signature {
-        // Internal callers may preserve a prepared mock through repeated estimation passes.
-        if !request.multisig_simulation_prepared {
-            return Err(invalid("unprepared multisig simulation signature"));
-        }
-        if signature.account() != request.key_id.unwrap_or(parent) {
-            return Err(EthApiError::InvalidParams(format!(
-                "multisig simulation signature account mismatch: expected {}, actual {}",
-                request.key_id.unwrap_or(parent),
-                signature.account()
-            )));
-        }
-        validate_witness(signature, factory, hardfork, db)?;
+        // Retain the source witness so every estimation pass rebuilds and checks its mock.
+    } else if request.multisig_simulation_signature.is_some() {
+        return Err(invalid(
+            "multisig simulation signature requires its source witness",
+        ));
     }
     if let Some(spec) = request.key_authorization_simulation.as_ref() {
         let authorization = request
@@ -82,7 +77,6 @@ pub(super) fn prepare_native_multisig_simulation(
                 .clone()
                 .into_signed(TempoSignature::Multisig(signature)),
         );
-        request.key_authorization_simulation = None;
     } else if let Some(authorization) = &request.key_authorization
         && let TempoSignature::Multisig(signature) = &authorization.signature
     {
@@ -100,14 +94,12 @@ pub(super) fn prepare_native_multisig_simulation(
             )));
         }
         validate_witness(signature, factory, hardfork, db)?;
-        if !request.multisig_simulation_prepared {
-            NativeAuthorization {
-                signature,
-                inner_digest: authorization.signature_hash(),
-            }
-            .verify()
-            .map_err(|error| EthApiError::InvalidParams(error.to_string()))?;
+        NativeAuthorization {
+            signature,
+            inner_digest: authorization.signature_hash(),
         }
+        .verify()
+        .map_err(|error| EthApiError::InvalidParams(error.to_string()))?;
     }
     request.multisig_simulation_prepared = true;
     Ok(())

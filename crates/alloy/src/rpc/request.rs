@@ -59,7 +59,8 @@ pub struct TempoTransactionRequest {
     ///
     /// For an explicit WebAuthn key type, 1-, 2-, or 4-byte big-endian unsigned integers
     /// select the modeled data length, excluding the signature and public-key fields.
-    /// Omission or any other byte length defaults to 800. The length is clamped to the
+    /// Omission defaults to 800. Ordinary requests also default unsupported byte lengths;
+    /// native owner approvals reject lengths other than 1, 2, or 4. The length is clamped to the
     /// generated authenticator/client-data template minimum and a maximum of 8192 bytes
     /// for ordinary requests, or 1920 bytes for native multisig owner approvals.
     /// Other algorithms ignore this hint. A native owner approval with an omitted
@@ -102,7 +103,7 @@ pub struct TempoTransactionRequest {
     #[serde(skip)]
     pub multisig_simulation_signature: Option<MultisigSignature>,
 
-    /// Configurable roles have been checked against the requested state.
+    /// Routing marker set after state-aware preprocessing; never authorizes skipping grant crypto.
     #[doc(hidden)]
     #[serde(skip)]
     pub multisig_simulation_prepared: bool,

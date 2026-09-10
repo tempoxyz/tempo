@@ -44,6 +44,22 @@ fn simulation_spec_roundtrips_config_as_rlp_bytes() {
     );
 }
 
+#[test]
+fn simulation_spec_rejects_unknown_fields_and_malformed_hints() {
+    let mut json = serde_json::to_value(spec()).unwrap();
+    json["aprovals"] = serde_json::json!([]);
+    assert!(serde_json::from_value::<MultisigSimulationSpec>(json).is_err());
+    for len in [0, 1, 2, 3, 4, 5, 8192] {
+        let mut spec = spec();
+        spec.approvals[0].key_data = Some(Bytes::from(vec![0; len]));
+        assert_eq!(
+            spec.validate_owners(Address::repeat_byte(9)).is_ok(),
+            matches!(len, 1 | 2 | 4),
+            "hint length {len}"
+        );
+    }
+}
+
 #[test_case::test_case(vec![]; "empty")]
 #[test_case::test_case(vec![1]; "insufficient")]
 #[test_case::test_case(vec![2,1]; "unsorted")]
