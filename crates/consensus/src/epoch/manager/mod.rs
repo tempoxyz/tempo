@@ -15,7 +15,7 @@ use commonware_runtime::{
 use rand_core::{CryptoRng, Rng};
 use tempo_node::TempoFullNode;
 
-use crate::epoch::scheme_provider::SchemeProvider;
+use crate::epoch::SchemeProvider;
 
 pub(crate) struct Config<TBlocker> {
     pub(crate) application: crate::consensus::application::Mailbox,
@@ -28,6 +28,7 @@ pub(crate) struct Config<TBlocker> {
     pub(crate) mailbox_size: NonZeroUsize,
     pub(crate) marshal: crate::alias::marshal::Mailbox,
     pub(crate) scheme_provider: SchemeProvider,
+    pub(crate) network_identity: tempo_chainspec::NetworkIdentity,
     pub(crate) time_to_collect_notarizations: Duration,
     pub(crate) time_to_retry_nullify_broadcast: Duration,
     pub(crate) partition_prefix: String,

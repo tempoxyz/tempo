@@ -228,6 +228,17 @@ where
                     let cause = msg.cause;
                     match msg.content {
                         Content::Enter(enter) => {
+                            let network_identity = &self.config.network_identity;
+                            if enter.epoch.get() == network_identity.from_epoch
+                                && *enter.public.public() != network_identity.identity
+                            {
+                                error!(epoch = %enter.epoch, expected = %network_identity.identity,
+                                    actual = %enter.public.public(),
+                                    "network identity mismatch; refusing to enter epoch and shutting down consensus");
+
+                                return;
+                            }
+
                             let _: Result<_, _> = self
                                 .enter(
                                     cause,

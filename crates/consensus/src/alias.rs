@@ -78,6 +78,9 @@ pub(crate) mod marshal {
         /// verify finalizations. The same instance is shared with the rest of
         /// the engine, so the caller passes it in.
         pub scheme_provider: SchemeProvider,
+
+        /// Identity that finalized chain state must match from its configured epoch.
+        pub network_identity: tempo_chainspec::NetworkIdentity,
     }
 
     /// Marshal actor + mailbox + the height marshal will resume from,
@@ -161,6 +164,17 @@ pub(crate) mod marshal {
         .await
         .wrap_err("failed to initialize hybrid finalized blocks store")?;
 
+        verify_finalized_tip(
+            &mut context,
+            &config.epoch_strategy,
+            &config.network_identity,
+            &read_header(&execution_node, &finalized_blocks, finalized_tip.1).await?,
+            finalizations_by_height
+                .get(Identifier::Index(finalized_tip.1.get()))
+                .await?
+                .as_ref(),
+        )?;
+
         if let marshal::Start::Floor(finalization) = &start {
             register_scheme(
                 &mut context,
@@ -225,6 +239,60 @@ pub(crate) mod marshal {
             finalized_floor: last_finalized_height,
             finalized_tip,
         })
+    }
+
+    fn verify_finalized_tip(
+        rng: &mut impl CryptoRng,
+        epoch_strategy: &FixedEpocher,
+        network_identity: &tempo_chainspec::NetworkIdentity,
+        header: &TempoHeader,
+        certificate: Option<&Finalization<Scheme<PublicKey, MinSig>, Digest>>,
+    ) -> eyre::Result<()> {
+        let epoch = epoch_strategy
+            .containing(Height::new(header.number()))
+            .expect("strategy valid for all heights");
+        if epoch.epoch().get() < network_identity.from_epoch {
+            warn!(
+                height = header.number(),
+                epoch = %epoch.epoch(),
+                identity = %network_identity.identity,
+                identity_from_epoch = network_identity.from_epoch,
+                "cannot verify finalized chain state against the configured network identity; syncing will trust local execution state until the network identity's activation epoch"
+            );
+            return Ok(());
+        }
+
+        if header.number() == 0 {
+            let outcome = OnchainDkgOutcome::read(&mut header.extra_data().as_ref())
+                .wrap_err("genesis did not contain a DKG outcome")?;
+            ensure!(
+                *outcome.network_identity() == network_identity.identity,
+                "network identity mismatch with genesis: configured {} found {}; update the binary or --consensus.network-identity and --consensus.network-identity-from-epoch",
+                network_identity.identity,
+                outcome.network_identity(),
+            );
+
+            return Ok(());
+        }
+
+        let scheme: Scheme<PublicKey, MinSig> =
+            Scheme::certificate_verifier(crate::config::NAMESPACE, network_identity.identity);
+        let certificate =
+            certificate.ok_or_eyre("finalized tip certificate missing from archive")?;
+
+        ensure!(
+            header.hash_slow() == certificate.proposal.payload.0,
+            "finalized tip execution and certificate digest mismatch"
+        );
+        ensure!(
+            certificate.verify(rng, &scheme, &Sequential),
+            "finalized chain tip at epoch {} failed verification against configured network identity {} from epoch {}; update the binary or --consensus.network-identity and --consensus.network-identity-from-epoch",
+            certificate.epoch(),
+            network_identity.identity,
+            network_identity.from_epoch,
+        );
+
+        Ok(())
     }
 
     struct FinalizationRange {
@@ -481,5 +549,126 @@ pub(crate) mod marshal {
                     Digest(execution_node.chain_spec().genesis_hash()),
                 )
             })
+    }
+    #[cfg(test)]
+    mod tests {
+        use super::*;
+        use crate::follow::test_utils::{EPOCH_LENGTH, dkg_fixture, make_block, make_finalization};
+        use commonware_runtime::{Runner as _, deterministic};
+
+        #[test]
+        fn snapshot_tip_rejects_stale_identity_even_if_old_boundary_matched() {
+            deterministic::Runner::default().start(|mut context| async move {
+                let old = dkg_fixture(&mut context, Epoch::zero());
+                let rotated = dkg_fixture(&mut context, Epoch::new(2));
+                let strategy = FixedEpocher::new(EPOCH_LENGTH);
+                let block = make_block(21, None);
+                let certificate = make_finalization(&block, Epoch::new(2), &rotated.schemes);
+                let stale = tempo_chainspec::NetworkIdentity {
+                    identity: *old.outcome.network_identity(),
+                    from_epoch: 0,
+                };
+                assert!(
+                    verify_finalized_tip(
+                        &mut context,
+                        &strategy,
+                        &stale,
+                        block.header(),
+                        Some(&certificate),
+                    )
+                    .is_err()
+                );
+                let updated = tempo_chainspec::NetworkIdentity {
+                    identity: *rotated.outcome.network_identity(),
+                    from_epoch: 2,
+                };
+                verify_finalized_tip(
+                    &mut context,
+                    &strategy,
+                    &updated,
+                    block.header(),
+                    Some(&certificate),
+                )
+                .unwrap();
+            });
+        }
+
+        #[test]
+        fn boundary_tip_is_verified_with_outgoing_epoch_identity() {
+            deterministic::Runner::default().start(|mut context| async move {
+                let old = dkg_fixture(&mut context, Epoch::new(1));
+                let rotated = dkg_fixture(&mut context, Epoch::new(2));
+                let strategy = FixedEpocher::new(EPOCH_LENGTH);
+                let block = make_block(19, Some(&rotated.outcome));
+                let certificate = make_finalization(&block, Epoch::new(1), &old.schemes);
+                let stale = tempo_chainspec::NetworkIdentity {
+                    identity: *old.outcome.network_identity(),
+                    from_epoch: 0,
+                };
+                verify_finalized_tip(
+                    &mut context,
+                    &strategy,
+                    &stale,
+                    block.header(),
+                    Some(&certificate),
+                )
+                .unwrap();
+                let updated = tempo_chainspec::NetworkIdentity {
+                    identity: *rotated.outcome.network_identity(),
+                    from_epoch: 2,
+                };
+                verify_finalized_tip(
+                    &mut context,
+                    &strategy,
+                    &updated,
+                    block.header(),
+                    Some(&certificate),
+                )
+                .unwrap();
+            });
+        }
+
+        #[test]
+        fn snapshot_identity_matrix() {
+            deterministic::Runner::default().start(|mut context| async move {
+                let old = dkg_fixture(&mut context, Epoch::zero());
+                let rotated = dkg_fixture(&mut context, Epoch::new(2));
+                for fixture in [&old, &rotated] {
+                    let outcome = &fixture.outcome;
+                    for (identity, from_epoch) in [
+                        (old.outcome.network_identity(), 0),
+                        (rotated.outcome.network_identity(), 2),
+                    ] {
+                        let configured = tempo_chainspec::NetworkIdentity {
+                            identity: *identity,
+                            from_epoch,
+                        };
+                        let strategy = FixedEpocher::new(EPOCH_LENGTH);
+                        let block = if outcome.epoch == Epoch::zero() {
+                            make_block(0, Some(outcome))
+                        } else {
+                            make_block(outcome.epoch.get() * EPOCH_LENGTH.get() + 1, None)
+                        };
+                        let certificate = (outcome.epoch != Epoch::zero())
+                            .then(|| make_finalization(&block, outcome.epoch, &fixture.schemes));
+                        let result = verify_finalized_tip(
+                            &mut context,
+                            &strategy,
+                            &configured,
+                            block.header(),
+                            certificate.as_ref(),
+                        );
+                        let should_pass = outcome.epoch.get() < from_epoch
+                            || outcome.network_identity() == identity;
+                        assert_eq!(
+                            result.is_ok(),
+                            should_pass,
+                            "epoch {}, configured from {from_epoch}",
+                            outcome.epoch
+                        );
+                    }
+                }
+            });
+        }
     }
 }

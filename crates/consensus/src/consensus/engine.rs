@@ -21,18 +21,14 @@ use commonware_runtime::{
 };
 use commonware_utils::NZUsize;
 use eyre::{OptionExt as _, WrapErr as _};
-use futures::future::try_join_all;
+use futures::{StreamExt as _, stream::FuturesUnordered};
 use rand_core::{CryptoRng, Rng};
 use tempo_node::TempoFullNode;
 use tracing::info;
 
 use crate::{
-    alias, config,
-    consensus::application,
-    dkg,
-    epoch::{self, SchemeProvider},
-    network::limit_channel,
-    peer_manager, storage,
+    alias, config, consensus::application, dkg, epoch, epoch::SchemeProvider,
+    network::limit_channel, peer_manager, storage,
 };
 
 use super::block::Block;
@@ -51,6 +47,7 @@ const MAX_PENDING_ACKS: NonZeroUsize = NZUsize!(1);
 // because there doesn't really seem to be a point putting it into an extra initializer.
 pub struct Builder<TBlocker, TPeerManager> {
     pub execution_node: Option<Arc<TempoFullNode>>,
+    pub network_identity: tempo_chainspec::NetworkIdentity,
 
     pub blocker: TBlocker,
     pub peer_manager: TPeerManager,
@@ -160,6 +157,7 @@ where
                 finalized_blocks_retention: self.finalized_blocks_retention,
                 epoch_strategy: epoch_strategy.clone(),
                 scheme_provider: scheme_provider.clone(),
+                network_identity: self.network_identity.clone(),
             },
         )
         .await
@@ -268,6 +266,7 @@ where
                 mailbox_size: self.mailbox_size,
                 marshal: marshal_mailbox.clone(),
                 scheme_provider: scheme_provider.clone(),
+                network_identity: self.network_identity,
                 time_to_collect_notarizations: self.time_to_collect_notarizations,
                 time_to_retry_nullify_broadcast: self.time_to_retry_nullify_broadcast,
                 partition_prefix: format!("{}_epoch_manager", self.partition_prefix),
@@ -564,11 +563,14 @@ where
             tasks.push(gossip_task);
         }
 
-        try_join_all(tasks)
-            .await
-            .map(|_| ())
-            // TODO: look into adding error context so that we know which
-            // component failed.
-            .wrap_err("one of the consensus engine's actors failed")
+        // An actor can return normally after a fatal identity check. Waiting for
+        // every actor would leave consensus running after that failure.
+        if let Some(result) = FuturesUnordered::from_iter(tasks).next().await {
+            result.wrap_err("one of the consensus engine's actors failed")?;
+            return Err(eyre::eyre!(
+                "one of the consensus engine's critical actors exited"
+            ));
+        }
+        Ok(())
     }
 }

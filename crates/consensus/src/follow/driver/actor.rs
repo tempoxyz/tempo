@@ -6,7 +6,7 @@ use commonware_consensus::{
 };
 use commonware_runtime::{Clock, ContextCell, Spawner, spawn_cell};
 use commonware_utils::Acknowledgement as _;
-use eyre::{OptionExt as _, Report, WrapErr as _};
+use eyre::{OptionExt as _, Report, WrapErr as _, ensure};
 use rand_core::{CryptoRng, Rng};
 use tempo_node::rpc::consensus::{CertifiedBlock, Event};
 use tokio::{select, sync::mpsc};
@@ -139,7 +139,9 @@ where
                             let _: Result<_, _> = self.process_event(certified).await;
                         }
                         Message::Finalized(update) => {
-                            self.process_update(update).await;
+                            if self.process_update(update).await.is_err() {
+                                return;
+                            }
                         }
                         Message::Certificate { certificate, response } => {
                             let result = self.process_certificate(*certificate).await;
@@ -352,14 +354,14 @@ where
         self.config.marshal.hint_finalized(boundary_height).await;
     }
 
-    #[instrument(skip_all)]
-    async fn process_update(&mut self, update: marshal::Update<Block>) {
+    #[instrument(skip_all, err(Display))]
+    async fn process_update(&mut self, update: marshal::Update<Block>) -> eyre::Result<()> {
         // Marshal sends its startup tip and each finalization it stores. These
         // durable tips recover the latest verified round and provide later progress.
         let (block, ack) = match update {
             marshal::Update::Tip(round, _, _) => {
                 self.latest_verified_round = self.latest_verified_round.max(round);
-                return;
+                return Ok(());
             }
             marshal::Update::Block(block, ack) => (block, ack),
         };
@@ -373,19 +375,16 @@ where
         if epoch_info.last() == block.height() {
             let onchain_outcome = self
                 .verifier
-                .decode_dkg_outcome_and_register_boundary(block.header().extra_data().as_ref())
-                .expect("boundary blocks must contain DKG outcomes");
+                .decode_dkg_outcome_and_register_boundary(block.header().extra_data().as_ref())?;
 
             let network_identity = self.verifier.network_identity();
-            if onchain_outcome.epoch.get() >= network_identity.from_epoch
-                && network_identity.identity != *onchain_outcome.network_identity()
-            {
-                warn!(
-                    compiled_from_epoch = network_identity.from_epoch,
-                    onchain_epoch = %onchain_outcome.epoch,
-                    compiled_network_identity = %network_identity.identity,
-                    onchain_network_identity = %onchain_outcome.network_identity(),
-                    "Network identity differs from the onchain DKG outcome!!! Update the binary with the latest network identity"
+            if onchain_outcome.epoch.get() == network_identity.from_epoch {
+                ensure!(
+                    *onchain_outcome.network_identity() == network_identity.identity,
+                    "network identity mismatch entering epoch {}: expected {}, found {}",
+                    onchain_outcome.epoch,
+                    network_identity.identity,
+                    onchain_outcome.network_identity(),
                 );
             }
 
@@ -407,5 +406,6 @@ where
         // sends the next update. Dropping the acknowledgement means shutdown,
         // so an early return would stop block delivery.
         ack.acknowledge();
+        Ok(())
     }
 }

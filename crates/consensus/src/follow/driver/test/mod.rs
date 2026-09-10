@@ -1095,3 +1095,145 @@ fn non_finalized_events_are_ignored() {
         assert!(marshal.hints().is_empty());
     });
 }
+
+#[test_traced]
+fn configured_identity_is_enforced_before_acknowledging_rotation_boundary() {
+    deterministic::Runner::default().start(|mut context| async move {
+        let old = dkg_fixture(&mut context, Epoch::zero());
+        let rotated = dkg_fixture(&mut context, Epoch::new(1));
+        for matches in [false, true] {
+            let schemes = SchemeProvider::new();
+            let provider = StubExecutionProvider::default();
+            provider.add_header(&make_block(0, Some(&old.outcome)));
+            let (actor, mailbox) = try_init(
+                context.child(if matches { "matching" } else { "mismatching" }),
+                Config {
+                    execution_provider: provider,
+                    last_finalized_height: Height::zero(),
+                    scheme_provider: schemes.clone(),
+                    network_identity: NetworkIdentity {
+                        from_epoch: 1,
+                        identity: *rotated.outcome.network_identity(),
+                    },
+                    marshal: StubMarshal::default(),
+                    epoch_strategy: FixedEpocher::new(EPOCH_LENGTH),
+                },
+            )
+            .expect("driver should initialize");
+            let task = actor.start();
+            let mut outcome = if matches {
+                rotated.outcome.clone()
+            } else {
+                old.outcome.clone()
+            };
+            outcome.epoch = Epoch::new(1);
+            let block = make_block(EPOCH_LENGTH.get() - 1, Some(&outcome));
+            let (ack, processed) = Exact::handle();
+            assert!(
+                mailbox
+                    .to_marshal_reporter()
+                    .report(Update::Block(block.into(), ack))
+                    .accepted()
+            );
+            assert_eq!(processed.await.is_ok(), matches);
+            if matches {
+                // After matching the configured epoch, an authenticated rotation is allowed.
+                let mut next = old.outcome.clone();
+                next.epoch = Epoch::new(2);
+                let (ack, processed) = Exact::handle();
+                assert!(
+                    mailbox
+                        .to_marshal_reporter()
+                        .report(Update::Block(
+                            make_block(2 * EPOCH_LENGTH.get() - 1, Some(&next)).into(),
+                            ack,
+                        ))
+                        .accepted()
+                );
+                processed
+                    .await
+                    .expect("later authenticated rotation should be accepted");
+                assert!(schemes.scoped(Epoch::new(2)).is_some());
+
+                // Replaying the configured epoch must still match its identity.
+                next.epoch = Epoch::new(1);
+                let (ack, processed) = Exact::handle();
+                assert!(
+                    mailbox
+                        .to_marshal_reporter()
+                        .report(Update::Block(
+                            make_block(EPOCH_LENGTH.get() - 1, Some(&next)).into(),
+                            ack,
+                        ))
+                        .accepted()
+                );
+                assert!(processed.await.is_err());
+            }
+            task.await
+                .expect("identity mismatch should terminate the driver");
+        }
+    });
+}
+
+#[test_traced]
+fn network_identity_certificate_allows_following_subsequent_rotation() {
+    deterministic::Runner::default().start(|mut context| async move {
+        let old = dkg_fixture(&mut context, Epoch::zero());
+        let anchor = dkg_fixture(&mut context, Epoch::new(2));
+        let next = dkg_fixture(&mut context, Epoch::new(3));
+        for via_rpc in [false, true] {
+            let schemes = SchemeProvider::new();
+            let provider = StubExecutionProvider::default();
+            provider.add_header(&make_block(0, Some(&old.outcome)));
+            let (actor, mailbox) = try_init(
+                context.child(if via_rpc { "rpc" } else { "gossip" }),
+                Config {
+                    execution_provider: provider,
+                    last_finalized_height: Height::zero(),
+                    scheme_provider: schemes.clone(),
+                    network_identity: NetworkIdentity {
+                        from_epoch: 2,
+                        identity: *anchor.outcome.network_identity(),
+                    },
+                    marshal: StubMarshal::default(),
+                    epoch_strategy: FixedEpocher::new(EPOCH_LENGTH),
+                },
+            )
+            .expect("driver should initialize");
+            let task = actor.start();
+            let block = make_block(21, None);
+            let certificate = make_finalization(&block, Epoch::new(2), &anchor.schemes);
+            if via_rpc {
+                assert!(
+                    mailbox
+                        .to_event_reporter()
+                        .report(Event::Finalized {
+                            block: make_certified_block(block, &certificate),
+                            seen: 0,
+                        })
+                        .accepted()
+                );
+            } else {
+                assert_eq!(
+                    mailbox.process_certificate(certificate).await.unwrap(),
+                    Ok(())
+                );
+            }
+            let (ack, processed) = Exact::handle();
+            assert!(
+                mailbox
+                    .to_marshal_reporter()
+                    .report(Update::Block(
+                        make_block(29, Some(&next.outcome)).into(),
+                        ack,
+                    ))
+                    .accepted()
+            );
+            processed
+                .await
+                .expect("verified anchor should permit the subsequent rotation");
+            assert!(schemes.scoped(Epoch::new(3)).is_some());
+            task.abort();
+        }
+    });
+}

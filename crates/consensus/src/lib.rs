@@ -55,6 +55,8 @@ pub async fn run_consensus_stack(
     feed_state: feed::FeedStateHandle,
     gossip_transport: Option<tempo_node::gossip::TransportHandle>,
 ) -> eyre::Result<()> {
+    let network_identity = resolve_network_identity(&config, &execution_node)?;
+
     let share = config
         .signing_share
         .as_ref()
@@ -105,6 +107,7 @@ pub async fn run_consensus_stack(
 
     let consensus_engine = crate::consensus::engine::Builder {
         execution_node: Some(execution_node),
+        network_identity,
         gossip: gossip_transport.map(|transport| gossip::Config {
             transport,
             verify_rate: config.gossip_verify_rate,
@@ -176,16 +179,7 @@ pub async fn run_follow_stack(
         .epoch_length()
         .ok_or_eyre("chainspec did not contain epochLength")?;
 
-    let chain_spec_network_identity = chain_spec
-        .network_identity
-        .clone()
-        .ok_or_eyre("chainspec has no dkg outcome in genesis header")?;
-
-    let network_identity = config
-        .network_identity()
-        .unwrap_or(chain_spec_network_identity);
-
-    info!(%network_identity.from_epoch, %network_identity.identity, "registered network identity");
+    let network_identity = resolve_network_identity(&config, &execution_node)?;
 
     let (upstream, upstream_mailbox) = crate::follow::upstream::init(
         context.child("upstream"),
@@ -221,6 +215,18 @@ pub async fn run_follow_stack(
     ret.map_err(eyre::Report::from)
         .and_then(|ret| ret.and_then(|()| Err(eyre!("exited unexpectedly"))))
         .wrap_err("follow engine task failed")
+}
+
+fn resolve_network_identity(
+    config: &Args,
+    execution_node: &TempoFullNode,
+) -> eyre::Result<tempo_chainspec::NetworkIdentity> {
+    let identity = config
+        .network_identity()
+        .or_else(|| execution_node.chain_spec().network_identity.clone())
+        .ok_or_eyre("chainspec has no dkg outcome in genesis header")?;
+    info!(%identity.from_epoch, %identity.identity, "registered network identity");
+    Ok(identity)
 }
 
 async fn instantiate_network(
