@@ -8,6 +8,33 @@ use revm::precompile::PrecompileStatus;
 use tempo_chainspec::hardfork::TempoHardfork;
 
 #[test]
+fn account_namespace_excludes_reserved_addresses() {
+    use alloy::primitives::address;
+
+    for spec in [TempoHardfork::T12, TempoHardfork::T13] {
+        for (account, expected) in [
+            (Address::ZERO, false),
+            (address!("0000000000000000000000000000000000000001"), false),
+            (address!("0000000000000000000000000000000000000100"), false),
+            (NATIVE_MULTISIG_ADDRESS, false),
+            (address!("20c0000000000000000000000000000000000001"), false),
+            (
+                Address::new_virtual(Default::default(), Default::default()),
+                false,
+            ),
+            (address!("5ad0000000000000000000000000000000000001"), false),
+            (Address::repeat_byte(0x71), true),
+        ] {
+            assert_eq!(
+                valid_account(account, spec),
+                expected,
+                "{account} at {spec:?}"
+            );
+        }
+    }
+}
+
+#[test]
 fn native_rotation_requires_registered_current_leaf_and_direct_authority() {
     let mut storage = HashMapStorageProvider::new_with_spec(1, TempoHardfork::T12)
         .with_multisig_recovery_factory(Address::repeat_byte(0x71));

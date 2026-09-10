@@ -122,6 +122,10 @@ pub fn valid_account(account: Address, spec: tempo_chainspec::hardfork::TempoHar
     !account.is_zero()
         && !account.is_virtual()
         && !account.is_precompile(spec)
+        && !revm::precompile::Precompiles::new(revm::precompile::PrecompileSpecId::from_spec_id(
+            spec.into(),
+        ))
+        .contains(&account)
         && account.zone_portal_id().is_none()
 }
 
