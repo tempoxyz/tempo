@@ -32,7 +32,10 @@ fn network_storage_failures_stop_actor_and_allow_recovery() {
     // Exercise both failure while appending to a new journal section and
     // failure while syncing an appended dealing.
     for fail_open in [true, false] {
-        Runner::default().start(|mut context| async move {
+        let runner = Runner::new(
+            commonware_runtime::deterministic::Config::default().with_catch_panics(true),
+        );
+        runner.start(|mut context| async move {
             let (state, keys, _) = dkg_state(&mut context, Epoch::new(1), 2, true);
             let round = Round::from_state(&state, crate::config::NAMESPACE);
             let (_, public, private) = dkg::Dealer::start::<commonware_utils::N3f1>(
@@ -78,10 +81,10 @@ fn network_storage_failures_stop_actor_and_allow_recovery() {
             );
 
             // No second message should be needed to discover the missing handle,
-            // and the actor must return normally rather than panic on an expect.
+            // and the failed task handle must notify the engine supervisor.
             let mut harness = context
                 .timeout(Duration::from_secs(1), async move {
-                    harness.wait_for_actor_exit().await;
+                    harness.wait_for_actor_failure().await;
                     harness
                 })
                 .await
@@ -144,7 +147,10 @@ fn local_share_storage_failures_stop_actor_and_allow_recovery() {
     // Fail opening the dealing's journal section, syncing the dealing, or
     // syncing the ACK after the dealing has already been persisted.
     for (fail_open, seed_dealing) in [(true, false), (false, false), (false, true)] {
-        Runner::default().start(|mut context| async move {
+        let runner = Runner::new(
+            commonware_runtime::deterministic::Config::default().with_catch_panics(true),
+        );
+        runner.start(|mut context| async move {
             let (state, keys, _) = dkg_state(&mut context, Epoch::new(1), 2, true);
             let identity = keys[0].clone();
             let mut harness = Harness::builder(context.child("actor"), "local_storage_failure")
@@ -200,11 +206,11 @@ fn local_share_storage_failures_stop_actor_and_allow_recovery() {
             );
             let mut harness = context
                 .timeout(Duration::from_secs(1), async move {
-                    harness.wait_for_actor_exit().await;
+                    harness.wait_for_actor_failure().await;
                     harness
                 })
                 .await
-                .expect("a local storage failure must terminate the actor without panicking");
+                .expect("a local storage failure must terminate the actor immediately");
             assert!(
                 waiter.await.is_err(),
                 "the failed block must not be acknowledged"

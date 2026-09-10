@@ -236,10 +236,6 @@ where
         TSender: Sender<PublicKey = PublicKey>,
         TReceiver: Receiver<PublicKey = PublicKey>,
     {
-        ensure!(
-            !storage.is_poisoned(),
-            "DKG storage must be reopened after a failed or cancelled mutation"
-        );
         let state = storage.current();
 
         self.metrics.reset();
@@ -253,10 +249,7 @@ where
             .set(state.players().len() as i64);
 
         if let Some(previous) = state.epoch.previous() {
-            // NOTE: State::prune emits an error event.
-            storage.prune(previous).await.wrap_err_with(|| {
-                format!("unable to prune storage before up until epoch `{previous}`",)
-            })?;
+            storage.prune(previous).await;
         }
 
         self.enter_epoch(&state)
@@ -309,6 +302,8 @@ where
             )
         });
 
+        // Await writes inside the selected branch, never as competing select
+        // futures. Cancelling this actor drops storage along with the write.
         loop {
             let mut shutdown = self.context.stopped().fuse();
             select!(
@@ -341,13 +336,7 @@ where
                                 )
                             });
 
-                            if let Err(err) = storage
-                                .set_state(new_state)
-                                .await
-                                .wrap_err("failed appending new state to journal")
-                            {
-                                break Err(err);
-                            }
+                            storage.set_state(new_state).await;
                             // Emits an error event.
                             let _ = self.exit_epoch(&state);
 
@@ -364,8 +353,9 @@ where
                 network_msg = round_receiver.recv().fuse() => {
                     match network_msg {
                         Ok((sender, message)) => {
-                            // Produces an error event.
-                            let result = self.handle_network_msg(
+                            // Protocol and send errors are logged and recoverable;
+                            // persistence failures panic inside storage.
+                            let _ = self.handle_network_msg(
                                 &round,
                                 &mut round_sender,
                                 storage,
@@ -374,14 +364,6 @@ where
                                 sender,
                                 message,
                             ).await;
-                            // Malformed messages and send failures are recoverable,
-                            // but a failed storage mutation consumes its handle.
-                            // Exit with the original I/O error before another message
-                            // can access the poisoned storage.
-                            if storage.is_poisoned() {
-                                result.wrap_err("DKG storage invalidated while handling a network message")?;
-                                bail!("DKG storage invalidated without a reported error");
-                            }
                         }
                         Err(err) => {
                             break Err(err).wrap_err("network p2p subchannel closed")
@@ -541,10 +523,7 @@ where
                 share_candidate = state.share.clone();
             } else {
                 let state = state.clone();
-                return storage
-                    .init_verified(state)
-                    .await
-                    .wrap_err("failed writing initial state back to storage");
+                return Ok(storage.init_verified(state).await);
             }
         };
         let initial_state = self
@@ -552,10 +531,7 @@ where
             .await
             .wrap_err("failed constructing initial state")?;
 
-        storage
-            .init_verified(initial_state)
-            .await
-            .wrap_err("failed setting initial state")
+        Ok(storage.init_verified(initial_state).await)
     }
 
     #[instrument(skip_all, err)]
@@ -638,8 +614,7 @@ where
                 };
                 storage
                     .append_dealer_log(round.epoch(), dealer.clone(), log)
-                    .await
-                    .wrap_err("failed to append dealer log from finalized header")?;
+                    .await;
                 if self.config.me.public_key() == dealer
                     && let Some(dealer_state) = dealer_state
                 {
@@ -652,10 +627,8 @@ where
             }
         }
 
-        storage
-            .append_finalized_header(round.epoch(), header)
-            .await
-            .wrap_err("failed to append finalized header")
+        storage.append_finalized_header(round.epoch(), header).await;
+        Ok(())
     }
 
     fn handle_verify_dealer_log(
@@ -952,9 +925,6 @@ where
                     }
                     .await;
                     if let Err(error) = result {
-                        if storage.is_poisoned() {
-                            return Err(error);
-                        }
                         warn!(%error, "failed to process our own dealing or ACK");
                     }
                 }
