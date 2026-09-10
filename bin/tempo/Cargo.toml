@@ -130,6 +130,7 @@ path = "src/localnet.rs"
 required-features = ["localnet"]
 
 [features]
+account-ext = ["reth-ethereum/account-ext", "tempo-chainspec/account-ext"]
 default = ["asm-keccak", "jemalloc", "otlp", "keccak-cache-global"]
 
 localnet = ["dep:nix"]
