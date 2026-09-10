@@ -224,7 +224,7 @@ fn put_trims_prunable_archive_to_retention() {
         // `highest - RETENTION + 1`. With PER_HEIGHT_SECTION there is no
         // section overshoot, so the cache snaps to that floor.
         provider.set_reth_finalized(highest);
-        let trigger = make_block(highest + 1, blocks.last().unwrap().block_hash());
+        let trigger = make_block(highest + 1, blocks.last().unwrap().digest().0);
         hybrid = hybrid.put(trigger).await.expect("put trigger");
 
         // The newest `RETENTION` seeded blocks plus the trigger must
@@ -497,7 +497,7 @@ fn put_below_retention_silently_succeeds_when_reth_covers_the_height() {
         // exactly the requested floor (no section overshoot), so heights
         // <5 are dropped.
         provider.set_reth_finalized(6);
-        let trigger = make_block(7, blocks.last().unwrap().block_hash());
+        let trigger = make_block(7, blocks.last().unwrap().digest().0);
         hybrid = hybrid.put(trigger).await.expect("put trigger");
 
         // Phase 3: model "reth has the evicted height" by seeding the
@@ -548,7 +548,7 @@ fn prune_respects_section_boundary() {
         // Trigger eviction with one more put. After this, sections
         // [0, 7] are dropped and the cache holds heights 8..=31.
         provider.set_reth_finalized(23);
-        let next31 = make_block(31, blocks.last().unwrap().block_hash());
+        let next31 = make_block(31, blocks.last().unwrap().digest().0);
         hybrid = hybrid.put(next31.clone()).await.expect("put 31");
 
         for height in 8..=31 {
@@ -592,7 +592,7 @@ fn prune_respects_section_boundary() {
         // Section [8, 15] is dropped after we trigger eviction; the
         // cache snaps to heights 16..=32.
         provider.set_reth_finalized(31);
-        let next32 = make_block(32, next31.block_hash());
+        let next32 = make_block(32, next31.digest().0);
         hybrid = hybrid.put(next32).await.expect("put 32");
 
         for height in 16..=32 {
@@ -648,7 +648,7 @@ fn mid_section_prune_floor_keeps_live_tail_in_cache() {
         // inside section [4, 7]. Archive rounds 6 down to 4 and drops
         // only section [0, 3]. Trigger eviction with one more put.
         provider.set_reth_finalized(10);
-        let trigger = make_block(11, blocks.last().unwrap().block_hash());
+        let trigger = make_block(11, blocks.last().unwrap().digest().0);
         hybrid = hybrid.put(trigger).await.expect("put trigger");
 
         // Make the reth fallback fail loudly so we can distinguish
@@ -707,7 +707,7 @@ fn mid_section_silent_no_op_floor_is_section_aligned_not_requested() {
             hybrid = hybrid.put(block.clone()).await.expect("put");
         }
         provider.set_reth_finalized(10);
-        let trigger = make_block(11, blocks.last().unwrap().block_hash());
+        let trigger = make_block(11, blocks.last().unwrap().digest().0);
         hybrid = hybrid.put(trigger).await.expect("put trigger");
 
         // Heights 1..=3 sit below the section-aligned `oldest_allowed`
@@ -762,7 +762,7 @@ fn eviction_no_op_when_advancing_reth_within_same_section() {
         // Phase 1: reth=10 → rounded floor = 4 → drop section [0, 3].
         // Trigger eviction with put at 16; cache now spans 4..=16.
         provider.set_reth_finalized(10);
-        let next16 = make_block(16, blocks.last().unwrap().block_hash());
+        let next16 = make_block(16, blocks.last().unwrap().digest().0);
         hybrid = hybrid.put(next16.clone()).await.expect("put 16");
         for height in 4..=16 {
             assert!(
@@ -779,7 +779,7 @@ fn eviction_no_op_when_advancing_reth_within_same_section() {
         // no further eviction. Trigger with put at 17; section [4, 7]
         // must still be in the cache.
         provider.set_reth_finalized(11);
-        let next17 = make_block(17, next16.block_hash());
+        let next17 = make_block(17, next16.digest().0);
         hybrid = hybrid.put(next17.clone()).await.expect("put 17");
         for height in 4..=17 {
             assert!(
@@ -795,7 +795,7 @@ fn eviction_no_op_when_advancing_reth_within_same_section() {
         // Phase 3: reth=12 → rounded floor = 8 → drop section [4, 7].
         // Trigger with put at 18; cache snaps to 8..=18.
         provider.set_reth_finalized(12);
-        let next18 = make_block(18, next17.block_hash());
+        let next18 = make_block(18, next17.digest().0);
         hybrid = hybrid.put(next18).await.expect("put 18");
         for height in 8..=18 {
             assert!(

@@ -6,6 +6,7 @@ use crate::{
 };
 use alloy_primitives::{Address, B256, Bytes, TxKind, U256};
 use proptest::prelude::*;
+use reth_evm::EvmError;
 use revm::{
     Context, Journal, MainContext,
     context::CfgEnv,
@@ -392,6 +393,27 @@ fn test_collect_fee_pre_tx_insufficient_liquidity_falls_back_when_pair_lookup_fa
     );
 
     Ok(())
+}
+
+#[test]
+fn test_reserved_subblock_nonce_rejected() {
+    for spec in [TempoHardfork::T3, TempoHardfork::T4, TempoHardfork::T11] {
+        let mut test = TestHandlerEvm::aa(
+            spec,
+            TempoBatchCallEnv {
+                nonce_key: U256::from(tempo_primitives::subblock::TEMPO_SUBBLOCK_NONCE_KEY_PREFIX)
+                    << 248,
+                ..Default::default()
+            },
+            |_| {},
+        );
+        assert!(matches!(
+            test.validate_env(),
+            Err(EVMError::Transaction(
+                TempoInvalidTransaction::SubblockTransactionsDisabled
+            ))
+        ));
+    }
 }
 
 #[test]
@@ -3473,6 +3495,50 @@ mod keychain {
     }
 
     #[test]
+    fn test_v1_keychain_cross_account_replay_pre_t1c() {
+        let (access_key_signer, access_key) = generate_keypair();
+        let signature_hash = B256::ZERO;
+        let inner_signature = PrimitiveSignature::Secp256k1(
+            access_key_signer
+                .sign_hash_sync(&signature_hash)
+                .expect("access key signs transaction hash"),
+        );
+
+        for user in [Address::repeat_byte(0x11), Address::repeat_byte(0x22)] {
+            let signature =
+                TempoSignature::Keychain(KeychainSignature::new_v1(user, inner_signature.clone()));
+            let (mut evm, h) = make_evm(
+                user,
+                access_key,
+                None,
+                TempoHardfork::T1B,
+                Some(signature),
+                true,
+            );
+
+            // Exercise actual V1 key recovery instead of the estimation-only override.
+            evm.tx
+                .tempo_tx_env
+                .as_mut()
+                .expect("keychain transaction environment")
+                .override_key_id = None;
+
+            let env_result = h.validate_env(&mut evm);
+            assert!(
+                env_result.is_ok(),
+                "V1 replay should pass pre-T1C stateless validation for {user}: {env_result:?}"
+            );
+
+            let state_result =
+                h.validate_against_state_and_deduct_caller(&mut evm, &mut Default::default());
+            assert!(
+                state_result.is_ok(),
+                "V1 replay should use the shared authorized key for {user}: {state_result:?}"
+            );
+        }
+    }
+
+    #[test]
     fn test_keychain_version_rejection() {
         let caller = Address::random();
 
@@ -3846,125 +3912,6 @@ fn test_state_gas_tx_gas_limit_above_cap_rejected_pre_t4() {
         result.is_err(),
         "With enable_amsterdam_eip8037=false, tx gas limit above cap should be rejected"
     );
-}
-
-/// TIP-1016 regression: subblock fee-payment halt must not exceed the gas cap.
-#[test]
-fn test_subblock_fee_payment_halt_clamps_to_gas_cap_t4() {
-    const CAP: u64 = 30_000_000;
-    const TX_GAS_LIMIT: u64 = 60_000_000;
-
-    let aa_env = TempoBatchCallEnv {
-        subblock_transaction: true,
-        ..Default::default()
-    };
-    let tx_env = TempoTxEnv {
-        inner: revm::context::TxEnv {
-            gas_limit: TX_GAS_LIMIT,
-            kind: TxKind::Call(Address::random()),
-            ..Default::default()
-        },
-        tempo_tx_env: Some(Box::new(aa_env)),
-        ..Default::default()
-    };
-
-    let mut test = TestHandlerEvm::with_cfg(TempoHardfork::T4, tx_env, |cfg| {
-        cfg.tx_gas_limit_cap = Some(CAP);
-        cfg.enable_amsterdam_eip8037 = true;
-        cfg.gas_params =
-            crate::gas_params::tempo_gas_params_with_amsterdam(TempoHardfork::T4, true);
-    });
-
-    // Sanity: T4 must actually have the cap-skip enabled so tx_gas_limit > cap is legal.
-    assert!(
-        test.cfg().enable_amsterdam_eip8037,
-        "T4 must enable enable_amsterdam_eip8037 for this regression to apply"
-    );
-
-    let err = EVMError::Transaction(TempoInvalidTransaction::EthInvalidTransaction(
-        InvalidTransaction::LackOfFundForMaxFee {
-            fee: Box::new(U256::ZERO),
-            balance: Box::new(U256::ZERO),
-        },
-    ));
-
-    let result = test
-        .handler
-        .catch_error(&mut test.evm, err)
-        .expect("subblock fee-payment failure must be converted to a halt, not a hard error");
-
-    match result {
-        ExecutionResult::Halt { reason, gas, .. } => {
-            assert!(
-                matches!(reason, TempoHaltReason::SubblockTxFeePayment),
-                "expected SubblockTxFeePayment halt, got {reason:?}"
-            );
-            assert_eq!(
-                gas.total_gas_spent(),
-                CAP,
-                "regular gas charged on subblock fee-payment halt must be clamped to \
-                     tx_gas_limit_cap (got {} for tx.gas_limit={} cap={})",
-                gas.total_gas_spent(),
-                TX_GAS_LIMIT,
-                CAP,
-            );
-            assert_eq!(
-                gas.state_gas_spent_final(),
-                0,
-                "halt reports zero state gas"
-            );
-        }
-        other => panic!("expected ExecutionResult::Halt, got {other:?}"),
-    }
-}
-
-#[test]
-fn test_subblock_paused_fee_token_halts_as_fee_payment_failure() {
-    let aa_env = TempoBatchCallEnv {
-        subblock_transaction: true,
-        ..Default::default()
-    };
-    let tx_env = TempoTxEnv {
-        inner: revm::context::TxEnv {
-            gas_limit: 100_000,
-            kind: TxKind::Call(Address::random()),
-            ..Default::default()
-        },
-        tempo_tx_env: Some(Box::new(aa_env)),
-        ..Default::default()
-    };
-
-    let mut test = TestHandlerEvm::with_cfg(TempoHardfork::T4, tx_env, |cfg| {
-        cfg.tx_gas_limit_cap = Some(30_000_000);
-        cfg.enable_amsterdam_eip8037 = true;
-        cfg.gas_params =
-            crate::gas_params::tempo_gas_params_with_amsterdam(TempoHardfork::T4, true);
-    });
-
-    let err = EVMError::Transaction(TempoInvalidTransaction::FeeTokenPaused {
-        address: PATH_USD_ADDRESS,
-    });
-
-    let result = test
-        .handler
-        .catch_error(&mut test.evm, err)
-        .expect("subblock paused fee-token failure must be converted to a halt");
-
-    match result {
-        ExecutionResult::Halt { reason, gas, .. } => {
-            assert!(
-                matches!(reason, TempoHaltReason::SubblockTxFeePayment),
-                "expected SubblockTxFeePayment halt, got {reason:?}"
-            );
-            assert_eq!(gas.total_gas_spent(), 100_000);
-            assert_eq!(
-                gas.state_gas_spent_final(),
-                0,
-                "halt reports zero state gas"
-            );
-        }
-        other => panic!("expected ExecutionResult::Halt, got {other:?}"),
-    }
 }
 
 /// TIP-1016: Pre-T4 behavior unchanged - initial_state_gas is still populated

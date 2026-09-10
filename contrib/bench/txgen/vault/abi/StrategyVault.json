@@ -1,0 +1,48 @@
+[
+  {
+    "type": "constructor",
+    "stateMutability": "nonpayable",
+    "inputs": [
+      {
+        "name": "arg0",
+        "type": "address"
+      },
+      {
+        "name": "arg1",
+        "type": "string"
+      },
+      {
+        "name": "arg2",
+        "type": "string"
+      },
+      {
+        "name": "arg3",
+        "type": "uint8"
+      }
+    ]
+  },
+  {
+    "type": "function",
+    "name": "setAuthority",
+    "stateMutability": "nonpayable",
+    "inputs": [
+      {
+        "name": "arg0",
+        "type": "address"
+      }
+    ],
+    "outputs": []
+  },
+  {
+    "type": "function",
+    "name": "setBeforeTransferHook",
+    "stateMutability": "nonpayable",
+    "inputs": [
+      {
+        "name": "arg0",
+        "type": "address"
+      }
+    ],
+    "outputs": []
+  }
+]

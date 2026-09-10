@@ -20,7 +20,6 @@ mod network;
 pub(crate) mod network_identity;
 pub(crate) mod peer_manager;
 pub mod storage;
-pub(crate) mod subblocks;
 #[cfg(test)]
 pub(crate) mod test_utils;
 pub(crate) mod utils;
@@ -40,8 +39,7 @@ use tracing::info;
 pub use crate::config::{
     BROADCASTER_CHANNEL_IDENT, BROADCASTER_LIMIT, CERTIFICATES_CHANNEL_IDENT, CERTIFICATES_LIMIT,
     DKG_CHANNEL_IDENT, DKG_LIMIT, MARSHAL_CHANNEL_IDENT, MARSHAL_LIMIT, NAMESPACE,
-    RESOLVER_CHANNEL_IDENT, RESOLVER_LIMIT, SUBBLOCKS_CHANNEL_IDENT, SUBBLOCKS_LIMIT,
-    VOTES_CHANNEL_IDENT, VOTES_LIMIT,
+    RESOLVER_CHANNEL_IDENT, RESOLVER_LIMIT, VOTES_CHANNEL_IDENT, VOTES_LIMIT,
 };
 
 pub use args::{Args, PositiveDuration};
@@ -91,11 +89,6 @@ pub async fn run_consensus_stack(
     let broadcaster = network.register(BROADCASTER_CHANNEL_IDENT, BROADCASTER_LIMIT);
     let marshal = network.register(MARSHAL_CHANNEL_IDENT, backfill_quota);
     let dkg = network.register(DKG_CHANNEL_IDENT, DKG_LIMIT);
-    // We create the subblocks channel even though it might not be used to make
-    // sure that we don't ban peers that activate subblocks and send messages
-    // through this subchannel.
-    let subblocks = network.register(SUBBLOCKS_CHANNEL_IDENT, SUBBLOCKS_LIMIT);
-
     let target_block_time = config.target_block_time.into_duration();
     // Consensus owns the end-to-end local proposal window. The network budget
     // is reserved for propagation, and the remaining time is passed down to
@@ -128,10 +121,7 @@ pub async fn run_consensus_stack(
         views_to_track: config.views_to_track,
         inactive_time_before_leader_skip: config.inactive_time_before_leader_skip.into_duration(),
         proposal_return_budget,
-        time_to_build_subblock: config.time_to_build_subblock.into_duration(),
-        subblock_broadcast_interval: config.subblock_broadcast_interval.into_duration(),
         fcu_heartbeat_interval: config.fcu_heartbeat_interval.into_duration(),
-        with_subblocks: false,
 
         feed_state,
 
@@ -143,15 +133,7 @@ pub async fn run_consensus_stack(
 
     let (network, consensus_engine) = (
         network.start(),
-        consensus_engine.start(
-            votes,
-            certificates,
-            resolver,
-            broadcaster,
-            marshal,
-            dkg,
-            subblocks,
-        ),
+        consensus_engine.start(votes, certificates, resolver, broadcaster, marshal, dkg),
     );
 
     tokio::select! {

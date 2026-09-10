@@ -1,0 +1,78 @@
+# Forward-looking public workload, weighted by submitted transactions (not gas).
+# Relative transaction shares: plain transfer 25, memo transfer 40, mint 1, MPP 15.
+# Normalized: approximately 30.86%, 49.38%, 1.23%, and 18.52%, respectively.
+# These are benchmark assumptions, not a replay of mainnet activity.
+# Uses the native MPP open-only preset with txgen main.
+# Transfers and mints target prepopulated state-bloat accounts; requires nonzero bloat.
+include: mpp.yml
+
+address_pools:
+  existing_recipients:
+    fast:
+      seed: "test test test test test test test test test test test junk"
+      range:
+        - ${TXGEN_EXISTING_RECIPIENTS_START}
+        - ${TXGEN_EXISTING_RECIPIENTS_END}
+
+artifacts:
+  ERC20: ../tip20.abi.json
+
+templates:
+  public_transfer:
+    type: tempo
+    from: {pool: users, select: random}
+    gas_limit: 300000
+    fee_token: "0x20c0000000000000000000000000000000000000"
+    expiring_nonce: true
+    valid_for_secs: 25
+    call:
+      to:
+        choice: ${TXGEN_TIP20_TOKENS}
+      abi: ERC20
+      function: transfer
+      args:
+        - {address_pool: {pool: existing_recipients, select: random}}
+        - 1
+  public_transfer_memo:
+    type: tempo
+    from: {pool: users, select: random}
+    gas_limit: 300000
+    fee_token: "0x20c0000000000000000000000000000000000000"
+    expiring_nonce: true
+    valid_for_secs: 25
+    call:
+      to:
+        choice: ${TXGEN_TIP20_TOKENS}
+      abi: ERC20
+      function: transferWithMemo
+      args:
+        - {address_pool: {pool: existing_recipients, select: random}}
+        - 1
+        - {random_bytes: 32}
+  public_mint:
+    type: tempo
+    # Dev genesis grants the pathUSD issuer role to users[0].
+    from: {pool: users, select: {index: 0}}
+    gas_limit: 300000
+    fee_token: "0x20c0000000000000000000000000000000000000"
+    expiring_nonce: true
+    valid_for_secs: 25
+    call:
+      to: "0x20c0000000000000000000000000000000000000"
+      abi: ERC20
+      function: mint
+      args:
+        - {address_pool: {pool: existing_recipients, select: random}}
+        - 1
+
+# Each selection emits one transaction, including MPP.
+# Preserve the relative allocations of the four retained workloads.
+mix:
+  - template: public_transfer
+    weight: 25
+  - template: public_transfer_memo
+    weight: 40
+  - template: public_mint
+    weight: 1
+  - sequence: mpp_open_only
+    weight: 15

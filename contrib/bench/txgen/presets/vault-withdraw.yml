@@ -1,0 +1,4 @@
+include: vault/base.yml
+mix:
+- template: vault_withdraw
+  weight: 100
