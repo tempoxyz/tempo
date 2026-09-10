@@ -107,22 +107,6 @@ where
             == self.client().chain_info()?.best_hash)
     }
 
-    /// Waits for the real Reth head callback rather than applying an out-of-order event ourselves.
-    pub(crate) async fn wait_for_processed_head(
-        &self,
-    ) -> reth_storage_api::errors::ProviderResult<()> {
-        let validator = self.protocol_pool.validator().validator();
-        loop {
-            let changed = validator.head_changed.notified();
-            tokio::pin!(changed);
-            changed.as_mut().enable();
-            if self.processed_head_is_current()? {
-                return Ok(());
-            }
-            changed.await;
-        }
-    }
-
     /// Retains candidates until a fresh validation conclusively rejects them.
     /// Valid transactions keep their original pool entry and listeners; provider errors retry later.
     pub(crate) async fn revalidate_pending_transactions(
@@ -1820,16 +1804,15 @@ mod tests {
         assert!(pending.contains(&hash));
     }
 
-    #[tokio::test]
-    async fn processed_head_notification_before_wait_is_not_lost() {
+    #[test]
+    fn processed_head_predicate_tracks_callback() {
         let provider = create_provider_with_tip();
         let pool = create_test_pool(provider.clone());
         let mut block = Block::default();
         block.header.inner.number = 1;
         let block = reth_primitives_traits::SealedBlock::seal_slow(block);
         provider.add_block(block.hash(), block.clone_block());
-        // The real callback fires before the waiter registers, so correctness cannot rely on
-        // Notify retaining a permit: the already-updated predicate must complete the wait.
+        assert!(!pool.processed_head_is_current().unwrap());
         pool.on_canonical_state_change(CanonicalStateUpdate {
             new_tip: &block,
             pending_block_base_fee: 0,
@@ -1838,17 +1821,11 @@ mod tests {
             mined_transactions: Vec::new(),
             update_kind: reth_transaction_pool::PoolUpdateKind::Commit,
         });
-        tokio::time::timeout(
-            std::time::Duration::from_secs(1),
-            pool.wait_for_processed_head(),
-        )
-        .await
-        .unwrap()
-        .unwrap();
+        assert!(pool.processed_head_is_current().unwrap());
     }
 
-    #[tokio::test]
-    async fn processed_head_wait_follows_superseding_callback() {
+    #[test]
+    fn processed_head_predicate_follows_superseding_callback() {
         let provider = create_provider_with_tip();
         let pool = create_test_pool(provider.clone());
         let mut intermediate = Block::default();
@@ -1859,25 +1836,18 @@ mod tests {
         latest.header.inner.number = 2;
         let latest = reth_primitives_traits::SealedBlock::seal_slow(latest);
 
-        let wait = pool.wait_for_processed_head();
-        let advance = async {
-            tokio::task::yield_now().await;
-            provider.add_block(latest.hash(), latest.clone_block());
-            pool.on_canonical_state_change(CanonicalStateUpdate {
-                new_tip: &latest,
-                pending_block_base_fee: 0,
-                pending_block_blob_fee: None,
-                changed_accounts: Vec::new(),
-                mined_transactions: Vec::new(),
-                update_kind: reth_transaction_pool::PoolUpdateKind::Commit,
-            });
-        };
-        let (result, ()) = tokio::time::timeout(std::time::Duration::from_secs(1), async {
-            tokio::join!(wait, advance)
-        })
-        .await
-        .unwrap();
-        result.unwrap();
+        assert!(!pool.processed_head_is_current().unwrap());
+        provider.add_block(latest.hash(), latest.clone_block());
+        assert!(!pool.processed_head_is_current().unwrap());
+        pool.on_canonical_state_change(CanonicalStateUpdate {
+            new_tip: &latest,
+            pending_block_base_fee: 0,
+            pending_block_blob_fee: None,
+            changed_accounts: Vec::new(),
+            mined_transactions: Vec::new(),
+            update_kind: reth_transaction_pool::PoolUpdateKind::Commit,
+        });
+        assert!(pool.processed_head_is_current().unwrap());
     }
 
     fn create_provider_with_tip() -> MockEthProvider<TempoPrimitives, TempoChainSpec> {

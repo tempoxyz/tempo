@@ -112,7 +112,6 @@ pub struct TempoTransactionValidator<Client, EvmConfig = TempoEvmConfig> {
     active_hardfork: AtomicU8,
     /// Serializes coherent header snapshots and insertion against processed head callbacks.
     pub(crate) generation: RwLock<u64>,
-    pub(crate) head_changed: tokio::sync::Notify,
 }
 
 impl<Client, EvmConfig> TempoTransactionValidator<Client, EvmConfig>
@@ -151,7 +150,6 @@ where
             cached_state: RwLock::new((latest_header.hash(), Arc::new(StateCache::default()))),
             active_hardfork,
             generation: RwLock::new(0),
-            head_changed: tokio::sync::Notify::new(),
         }
     }
 
@@ -779,7 +777,6 @@ where
         // State changed, drop all cached reads and anchor the new cache to this tip.
         *self.cached_state.write() = (new_tip_block.hash(), Arc::new(StateCache::default()));
         *generation = generation.wrapping_add(1);
-        self.head_changed.notify_waiters();
     }
 }
 
