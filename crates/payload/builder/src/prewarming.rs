@@ -623,7 +623,7 @@ mod tests {
     }
 
     #[test]
-    fn configurable_grant_recipient_disables_parallel_replay() {
+    fn inline_grants_disable_parallel_replay() {
         use tempo_primitives::{SignatureType, transaction::KeyAuthorization};
         let sender = Address::repeat_byte(0x11);
         let payment = test_payment_tx(sender, 500_000);
@@ -649,9 +649,9 @@ mod tests {
                 candidate.transaction.is_payment(),
                 "grant must reach the replay classifier"
             );
-            assert_eq!(
-                is_parallel_candidate(&Arc::new(candidate)),
-                key_type != SignatureType::Multisig
+            assert!(
+                !is_parallel_candidate(&Arc::new(candidate)),
+                "inline {key_type:?} grant must execute through the handler"
             );
         }
     }
