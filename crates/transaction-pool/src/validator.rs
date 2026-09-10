@@ -374,12 +374,7 @@ where
     /// The generation guard is released before any transaction validation work.
     fn anchored_state_provider_and_cache(
         &self,
-    ) -> ProviderResult<(
-        StateProviderBox,
-        Arc<StateCache>,
-        EvmEnv<TempoHardfork, TempoBlockEnv>,
-        u64,
-    )> {
+    ) -> ProviderResult<(StateProviderBox, Arc<StateCache>, EvmEnvFor<EvmConfig>, u64)> {
         let generation = self.generation.read();
         let (hash, cache) = self.cached_state.read().clone();
         let state_provider = self.inner.client().state_by_block_hash(hash)?;
