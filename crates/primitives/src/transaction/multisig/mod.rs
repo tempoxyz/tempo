@@ -380,12 +380,12 @@ impl MultisigSignature {
     /// Returns a heuristic for the in-memory size of the signature.
     pub fn size(&self) -> usize {
         size_of::<Self>()
-            + self.config.size()
+            + self.config.owners.capacity() * size_of::<MultisigOwner>()
             + self.signatures.capacity() * size_of::<PrimitiveSignature>()
             + self
                 .signatures
                 .iter()
-                .map(PrimitiveSignature::size)
+                .map(|signature| signature.size() - size_of::<PrimitiveSignature>())
                 .sum::<usize>()
     }
 

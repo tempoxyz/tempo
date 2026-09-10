@@ -16,6 +16,36 @@ use sha2::{Digest, Sha256};
 const TEST_FACTORY: Address = Address::repeat_byte(0x99);
 
 #[test]
+fn signature_size_counts_each_allocation_once() {
+    for count in [1, MAX_MULTISIG_SIGNATURES] {
+        for data_len in [0, 64] {
+            let mut signature = initial_multisig_signature();
+            let primitive = if data_len == 0 {
+                valid_owner_signature()
+            } else {
+                PrimitiveSignature::WebAuthn(WebAuthnSignature {
+                    webauthn_data: vec![0xff; data_len].into(),
+                    r: B256::ZERO,
+                    s: B256::ZERO,
+                    pub_key_x: B256::ZERO,
+                    pub_key_y: B256::ZERO,
+                })
+            };
+            signature.signatures = vec![primitive; count];
+            signature.signatures.reserve(1);
+            signature.config.owners.reserve(1);
+            assert_eq!(
+                signature.size(),
+                size_of::<MultisigSignature>()
+                    + signature.config.owners.capacity() * size_of::<MultisigOwner>()
+                    + signature.signatures.capacity() * size_of::<PrimitiveSignature>()
+                    + count * data_len,
+            );
+        }
+    }
+}
+
+#[test]
 fn arbitrary_bounded_approvals() {
     use arbitrary::{Arbitrary, Unstructured};
     let mut primitive_types = [false; 3];
