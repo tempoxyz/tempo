@@ -1237,3 +1237,82 @@ fn network_identity_certificate_allows_following_subsequent_rotation() {
         }
     });
 }
+
+#[test_traced]
+fn startup_checks_identity_from_execution_and_consensus_boundaries() {
+    deterministic::Runner::default().start(|mut context| async move {
+        let genesis = dkg_fixture(&mut context, Epoch::zero());
+        let rotation = dkg_fixture(&mut context, Epoch::new(2));
+        let boundary_height = 2 * EPOCH_LENGTH.get() - 1;
+        for recover_from_marshal in [false, true] {
+            for matches in [false, true] {
+                let provider = StubExecutionProvider::default();
+                let marshal = StubMarshal::default();
+                let boundary = make_block(boundary_height, Some(&rotation.outcome));
+                if recover_from_marshal {
+                    provider.add_header(&make_block(0, Some(&genesis.outcome)));
+                    marshal.add_block(boundary);
+                } else {
+                    provider.set_finalized(boundary_height);
+                    provider.add_header(&boundary);
+                }
+                let result = try_init(
+                    context.child(match (recover_from_marshal, matches) {
+                        (false, false) => "execution_mismatch",
+                        (false, true) => "execution_match",
+                        (true, false) => "recovery_mismatch",
+                        (true, true) => "recovery_match",
+                    }),
+                    Config {
+                        execution_provider: provider,
+                        scheme_provider: SchemeProvider::new(),
+                        network_identity: NetworkIdentity {
+                            from_epoch: 2,
+                            identity: *if matches {
+                                rotation.outcome.network_identity()
+                            } else {
+                                genesis.outcome.network_identity()
+                            },
+                        },
+                        last_finalized_height: Height::new(if recover_from_marshal {
+                            boundary_height + 1
+                        } else {
+                            boundary_height
+                        }),
+                        marshal,
+                        epoch_strategy: FixedEpocher::new(EPOCH_LENGTH),
+                    },
+                );
+                if !recover_from_marshal && !matches {
+                    assert!(
+                        result.is_err(),
+                        "execution boundary mismatch must reject startup"
+                    );
+                    continue;
+                }
+                let (actor, mailbox) = result.expect("driver should initialize");
+                let (ack, processed) = Exact::handle();
+                assert!(
+                    mailbox
+                        .to_marshal_reporter()
+                        .report(Update::Block(
+                            make_block(boundary_height + 2, None).into(),
+                            ack,
+                        ))
+                        .accepted()
+                );
+                let task = actor.start();
+                assert_eq!(
+                    processed.await.is_ok(),
+                    matches,
+                    "startup must reject a mismatching recovered identity before processing updates"
+                );
+                if matches {
+                    task.abort();
+                } else {
+                    task.await.expect("recovery mismatch must terminate driver");
+                }
+            }
+        }
+    });
+}

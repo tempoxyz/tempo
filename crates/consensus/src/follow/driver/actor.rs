@@ -80,6 +80,17 @@ where
             )
         })?;
 
+    let network_identity = verifier.network_identity();
+    if onchain_outcome.epoch.get() == network_identity.from_epoch {
+        ensure!(
+            *onchain_outcome.network_identity() == network_identity.identity,
+            "network identity mismatch entering epoch {}: expected {}, found {}",
+            onchain_outcome.epoch,
+            network_identity.identity,
+            onchain_outcome.network_identity(),
+        );
+    }
+
     let current_epoch = onchain_outcome.epoch;
 
     let actor = Driver {
@@ -202,6 +213,17 @@ where
                         contained no or a malformed DKG outcome"
                     )
                 })?;
+
+            let network_identity = self.verifier.network_identity();
+            if onchain_outcome.epoch.get() == network_identity.from_epoch {
+                ensure!(
+                    *onchain_outcome.network_identity() == network_identity.identity,
+                    "network identity mismatch entering epoch {}: expected {}, found {}",
+                    onchain_outcome.epoch,
+                    network_identity.identity,
+                    onchain_outcome.network_identity(),
+                );
+            }
 
             self.current_epoch = self.current_epoch.max(onchain_outcome.epoch);
         } else {
