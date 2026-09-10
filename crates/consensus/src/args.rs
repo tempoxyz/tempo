@@ -171,11 +171,6 @@ pub struct Args {
     )]
     pub minimum_time_before_propose: Option<PositiveDuration>,
 
-    /// The amount of time this node will use to construct a subblock before
-    /// sending it to the next proposer.
-    #[arg(long = "consensus.time-to-build-subblock", default_value = "100ms")]
-    pub time_to_build_subblock: PositiveDuration,
-
     /// Use defaults optimized for local network environments.
     /// Only enable in non-production network nodes.
     #[arg(long = "consensus.use-local-defaults", default_value_t = false)]
@@ -283,14 +278,6 @@ pub struct Args {
     /// Rate limit when backfilling blocks (requests per second).
     #[arg(long = "consensus.backfill-frequency", default_value = "8")]
     pub backfill_frequency: std::num::NonZeroU32,
-
-    /// The interval at which to broadcast subblocks to the next proposer.
-    /// Each built subblock is immediately broadcasted to the next proposer (if it's known).
-    /// We broadcast subblock every `subblock-broadcast-interval` to ensure the next
-    /// proposer is aware of the subblock even if they were slightly behind the chain
-    /// once we sent it in the first time.
-    #[arg(long = "consensus.subblock-broadcast-interval", default_value = "50ms")]
-    pub subblock_broadcast_interval: PositiveDuration,
 
     /// The interval at which to send a forkchoice update heartbeat to the
     /// execution layer. This is sent periodically even when there are no new

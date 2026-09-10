@@ -603,14 +603,8 @@ where
                         );
                     }
 
-                    // Check if T1 hardfork is active for expiring nonce handling
-                    let current_time = self.inner.fork_tracker().tip_timestamp();
-                    let is_t1_active = self
-                        .inner
-                        .chain_spec()
-                        .is_t1_active_at_timestamp(current_time);
-
-                    if is_t1_active && nonce_key == TEMPO_EXPIRING_NONCE_KEY {
+                    // Expiring nonces are only recognized once T1 is active at the tip.
+                    if spec.is_t1() && nonce_key == TEMPO_EXPIRING_NONCE_KEY {
                         // Expiring nonce transactions are validated by the EVM
                     } else {
                         // This is a 2D nonce transaction - validate against 2D nonce

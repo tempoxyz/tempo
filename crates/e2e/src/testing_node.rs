@@ -35,8 +35,7 @@ use std::{
 use tempo_consensus::{
     BROADCASTER_CHANNEL_IDENT, BROADCASTER_LIMIT, CERTIFICATES_CHANNEL_IDENT, CERTIFICATES_LIMIT,
     DKG_CHANNEL_IDENT, DKG_LIMIT, MARSHAL_CHANNEL_IDENT, MARSHAL_LIMIT, RESOLVER_CHANNEL_IDENT,
-    RESOLVER_LIMIT, SUBBLOCKS_CHANNEL_IDENT, SUBBLOCKS_LIMIT, VOTES_CHANNEL_IDENT, VOTES_LIMIT,
-    consensus, feed::FeedStateHandle,
+    RESOLVER_LIMIT, VOTES_CHANNEL_IDENT, VOTES_LIMIT, consensus, feed::FeedStateHandle,
 };
 use tempo_evm::TempoEvmConfig;
 use tempo_node::node::TempoNode;
@@ -90,9 +89,6 @@ where
     pub feed_state: FeedStateHandle,
     /// Local proposal work budget used whenever the consensus engine starts.
     pub proposal_return_budget: Duration,
-    /// Whether the consensus engine starts with subblock production enabled.
-    pub with_subblocks: bool,
-
     n_starts: u32,
 }
 
@@ -112,7 +108,6 @@ where
         share: Option<Share>,
         feed_state: FeedStateHandle,
         proposal_return_budget: Duration,
-        with_subblocks: bool,
         execution_runtime: ExecutionRuntimeHandle,
         execution_config: ExecutionNodeConfig,
         network_address: SocketAddr,
@@ -132,7 +127,6 @@ where
             share,
             feed_state,
             proposal_return_budget,
-            with_subblocks,
             consensus_handle: None,
             execution_node: None,
             execution_node_datadir,
@@ -184,7 +178,6 @@ where
         self.share = identity_source.share;
         self.feed_state = identity_source.feed_state;
         self.proposal_return_budget = identity_source.proposal_return_budget;
-        self.with_subblocks = identity_source.with_subblocks;
         self.network_address = identity_source.network_address;
         self.chain_address = identity_source.chain_address;
     }
@@ -331,10 +324,7 @@ where
             views_to_track: 10,
             views_until_leader_skip: 5,
             proposal_return_budget: self.proposal_return_budget,
-            time_to_build_subblock: Duration::from_millis(100),
-            subblock_broadcast_interval: Duration::from_millis(50),
             fcu_heartbeat_interval: Duration::from_secs(3),
-            with_subblocks: self.with_subblocks,
             feed_state: self.feed_state.clone(),
             // Plenty of headroom for any test; the marshal will fall back to
             // reth past this depth via the hybrid finalized blocks store.
@@ -381,22 +371,7 @@ where
             .register(DKG_CHANNEL_IDENT, DKG_LIMIT)
             .await
             .unwrap();
-        let subblocks = self
-            .oracle
-            .control(self.public_key())
-            .register(SUBBLOCKS_CHANNEL_IDENT, SUBBLOCKS_LIMIT)
-            .await
-            .unwrap();
-
-        let consensus_handle = engine.start(
-            votes,
-            certificates,
-            resolver,
-            broadcast,
-            marshal,
-            dkg,
-            subblocks,
-        );
+        let consensus_handle = engine.start(votes, certificates, resolver, broadcast, marshal, dkg);
 
         self.consensus_handle = Some(consensus_handle);
         debug!(%self.uid, "started consensus for testing node");
