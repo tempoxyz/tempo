@@ -159,18 +159,17 @@ impl TempoPooledTransaction {
     }
 
     /// Parent eligibility is distinct from a configurable signer's owner witness.
-    pub(crate) fn keychain_parent(&self) -> Option<Address> {
-        Some(
-            self.inner()
-                .as_aa()?
-                .signature()
-                .as_keychain()?
-                .user_address,
-        )
+    pub(crate) fn authorization_parent(&self) -> Option<Address> {
+        let aa = self.inner().as_aa()?;
+        if let Some(keychain) = aa.signature().as_keychain() {
+            Some(keychain.user_address)
+        } else {
+            aa.tx().key_authorization.as_ref().map(|_| self.sender())
+        }
     }
 
     pub(crate) fn has_configurable_dependencies(&self) -> bool {
-        self.keychain_parent().is_some()
+        self.authorization_parent().is_some()
             || self.configurable_grant_recipient().is_some()
             || self.inner().as_aa().is_some_and(|tx| {
                 tx.signature().as_multisig().is_some()
@@ -444,6 +443,14 @@ impl TempoPooledTransaction {
         *self.validation_metadata.write() = metadata;
     }
 
+    pub(crate) fn set_validation_generation(&self, generation: u64) {
+        self.validation_metadata.write().generation = Some(generation);
+    }
+
+    pub(crate) fn validation_generation(&self) -> Option<u64> {
+        self.validation_metadata.read().generation
+    }
+
     /// Returns the fee token cached during transaction validation, if available.
     ///
     /// This is `None` for transactions that have not completed validation through
@@ -568,6 +575,7 @@ impl TempoPooledTransaction {
 
 #[derive(Debug, Clone, Default)]
 struct ValidationMetadata {
+    generation: Option<u64>,
     key_expiry: Option<u64>,
     resolved_fee_token: Option<Address>,
 }
@@ -1129,9 +1137,9 @@ mod tests {
                 transaction.configurable_grant_recipient(),
                 configurable.then_some(delegate)
             );
-            assert_eq!(transaction.has_configurable_dependencies(), configurable);
+            assert!(transaction.has_configurable_dependencies());
             assert!(transaction.configurable_signers().next().is_none());
-            assert_eq!(transaction.keychain_parent(), None);
+            assert_eq!(transaction.authorization_parent(), Some(parent));
         }
     }
 

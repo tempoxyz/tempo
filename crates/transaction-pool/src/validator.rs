@@ -350,6 +350,7 @@ where
         state_provider: P,
         cached_state: Arc<StateCache>,
         evm_env: EvmEnv<TempoHardfork, TempoBlockEnv>,
+        generation: u64,
         transactions: impl IntoIterator<Item = (TransactionOrigin, TempoPooledTransaction)>,
     ) -> Vec<TransactionValidationOutcome<TempoPooledTransaction>> {
         let db = StateCacheDb::new(
@@ -364,7 +365,10 @@ where
 
         transactions
             .into_iter()
-            .map(|(origin, transaction)| self.validate_one_with_evm(origin, transaction, &mut evm))
+            .map(|(origin, transaction)| {
+                transaction.set_validation_generation(generation);
+                self.validate_one_with_evm(origin, transaction, &mut evm)
+            })
             .collect()
     }
 
@@ -376,11 +380,17 @@ where
         StateProviderBox,
         Arc<StateCache>,
         EvmEnv<TempoHardfork, TempoBlockEnv>,
+        u64,
     )> {
-        let _generation = self.generation.read();
+        let generation = self.generation.read();
         let (hash, cache) = self.cached_state.read().clone();
         let state_provider = self.inner.client().state_by_block_hash(hash)?;
-        Ok((state_provider, cache, self.cached_evm_env.read().clone()))
+        Ok((
+            state_provider,
+            cache,
+            self.cached_evm_env.read().clone(),
+            *generation,
+        ))
     }
 
     pub(crate) fn processed_head(&self) -> B256 {
@@ -679,18 +689,19 @@ where
         origin: TransactionOrigin,
         transaction: Self::Transaction,
     ) -> TransactionValidationOutcome<Self::Transaction> {
-        let (state_provider, cached_state, evm_env) = match self.anchored_state_provider_and_cache()
-        {
-            Ok(provider_and_cache) => provider_and_cache,
-            Err(err) => {
-                return TransactionValidationOutcome::Error(*transaction.hash(), Box::new(err));
-            }
-        };
+        let (state_provider, cached_state, evm_env, generation) =
+            match self.anchored_state_provider_and_cache() {
+                Ok(provider_and_cache) => provider_and_cache,
+                Err(err) => {
+                    return TransactionValidationOutcome::Error(*transaction.hash(), Box::new(err));
+                }
+            };
 
         self.validate_batch(
             state_provider,
             cached_state,
             evm_env,
+            generation,
             core::iter::once((origin, transaction)),
         )
         .pop()
@@ -702,20 +713,26 @@ where
         transactions: impl IntoIterator<Item = (TransactionOrigin, Self::Transaction), IntoIter: Send>
         + Send,
     ) -> Vec<TransactionValidationOutcome<Self::Transaction>> {
-        let (state_provider, cached_state, evm_env) = match self.anchored_state_provider_and_cache()
-        {
-            Ok(provider_and_cache) => provider_and_cache,
-            Err(err) => {
-                return transactions
-                    .into_iter()
-                    .map(|(_, tx)| {
-                        TransactionValidationOutcome::Error(*tx.hash(), Box::new(err.clone()))
-                    })
-                    .collect();
-            }
-        };
+        let (state_provider, cached_state, evm_env, generation) =
+            match self.anchored_state_provider_and_cache() {
+                Ok(provider_and_cache) => provider_and_cache,
+                Err(err) => {
+                    return transactions
+                        .into_iter()
+                        .map(|(_, tx)| {
+                            TransactionValidationOutcome::Error(*tx.hash(), Box::new(err.clone()))
+                        })
+                        .collect();
+                }
+            };
 
-        self.validate_batch(state_provider, cached_state, evm_env, transactions)
+        self.validate_batch(
+            state_provider,
+            cached_state,
+            evm_env,
+            generation,
+            transactions,
+        )
     }
 
     async fn validate_transactions_with_origin(
@@ -723,23 +740,24 @@ where
         origin: TransactionOrigin,
         transactions: impl IntoIterator<Item = Self::Transaction> + Send,
     ) -> Vec<TransactionValidationOutcome<Self::Transaction>> {
-        let (state_provider, cached_state, evm_env) = match self.anchored_state_provider_and_cache()
-        {
-            Ok(provider_and_cache) => provider_and_cache,
-            Err(err) => {
-                return transactions
-                    .into_iter()
-                    .map(|tx| {
-                        TransactionValidationOutcome::Error(*tx.hash(), Box::new(err.clone()))
-                    })
-                    .collect();
-            }
-        };
+        let (state_provider, cached_state, evm_env, generation) =
+            match self.anchored_state_provider_and_cache() {
+                Ok(provider_and_cache) => provider_and_cache,
+                Err(err) => {
+                    return transactions
+                        .into_iter()
+                        .map(|tx| {
+                            TransactionValidationOutcome::Error(*tx.hash(), Box::new(err.clone()))
+                        })
+                        .collect();
+                }
+            };
 
         self.validate_batch(
             state_provider,
             cached_state,
             evm_env,
+            generation,
             transactions.into_iter().map(|tx| (origin, tx)),
         )
     }
@@ -1008,12 +1026,18 @@ mod tests {
         MixedBatch,
         MixedOrigins,
         UnprocessedHeadRetry,
+        LateInsertion,
+        IdleRetry,
+        ManyPending,
     }
 
     #[test_case::test_case(ConfigurablePoolScenario::RegistrationRollback; "registration_rollback")]
     #[test_case::test_case(ConfigurablePoolScenario::MixedBatch; "mixed_batch")]
     #[test_case::test_case(ConfigurablePoolScenario::MixedOrigins; "mixed_origins")]
     #[test_case::test_case(ConfigurablePoolScenario::UnprocessedHeadRetry; "unprocessed_head_retry")]
+    #[test_case::test_case(ConfigurablePoolScenario::LateInsertion; "pre_barrier_insertion")]
+    #[test_case::test_case(ConfigurablePoolScenario::IdleRetry; "idle_rescan_without_new_event")]
+    #[test_case::test_case(ConfigurablePoolScenario::ManyPending; "bounded_work_drains_all")]
     #[tokio::test]
     async fn configurable_pool_boundaries(scenario: ConfigurablePoolScenario) {
         configurable_canonical_pool_case(scenario).await;
@@ -1057,7 +1081,12 @@ mod tests {
         } else {
             let template = TxBuilder::aa(account)
                 .nonce_key(
-                    if scenario == ConfigurablePoolScenario::UnprocessedHeadRetry {
+                    if matches!(
+                        scenario,
+                        ConfigurablePoolScenario::UnprocessedHeadRetry
+                            | ConfigurablePoolScenario::LateInsertion
+                            | ConfigurablePoolScenario::IdleRetry
+                    ) {
                         U256::ZERO
                     } else {
                         U256::from(1)
@@ -1180,6 +1209,39 @@ mod tests {
         }
         let entry = pool.get(&hash).unwrap();
         entry.transaction.set_key_expiry(Some(12345));
+        let mut extra_hashes = Vec::new();
+        if scenario == ConfigurablePoolScenario::ManyPending {
+            let aa = entry.transaction.inner().as_aa().unwrap();
+            for nonce_key in 2..14 {
+                let mut tx = aa.tx().clone();
+                tx.nonce_key = U256::from(nonce_key);
+                let approval = owner
+                    .sign_hash_sync(&multisig_digest(tx.signature_hash(), account, 0))
+                    .unwrap();
+                let signature = MultisigSignature::try_new(
+                    account,
+                    aa.signature().as_multisig().unwrap().config().clone(),
+                    vec![PrimitiveSignature::Secp256k1(approval)],
+                )
+                .unwrap();
+                let transaction = TempoPooledTransaction::new(Recovered::new_unchecked(
+                    TempoTxEnvelope::AA(AASigned::new_unhashed(
+                        tx,
+                        TempoSignature::Multisig(signature),
+                    )),
+                    account,
+                ));
+                let hash = *transaction.hash();
+                pool.add_transaction(TransactionOrigin::External, transaction)
+                    .await
+                    .unwrap();
+                pool.get(&hash)
+                    .unwrap()
+                    .transaction
+                    .set_key_expiry(Some(12345));
+                extra_hashes.push(hash);
+            }
+        }
         let mut outcome = reth_provider::ExecutionOutcome::default();
         if scenario == ConfigurablePoolScenario::RegistrationRollback {
             provider.add_account(account, ExtendedAccount::new(0, U256::ZERO));
@@ -1270,10 +1332,15 @@ mod tests {
         };
         let mut old = block.clone();
         old.header.inner.extra_data = alloy_primitives::Bytes::from_static(b"orphan");
-        if scenario == ConfigurablePoolScenario::ResurrectOnReorg {
+        if matches!(
+            scenario,
+            ConfigurablePoolScenario::ResurrectOnReorg | ConfigurablePoolScenario::RetainOnReorg
+        ) {
             old.body.transactions.push(orphaned_transaction);
-            pool.remove_transactions(vec![hash]);
-            assert!(!pool.contains(&hash));
+            if scenario == ConfigurablePoolScenario::ResurrectOnReorg {
+                pool.remove_transactions(vec![hash]);
+                assert!(!pool.contains(&hash));
+            }
         }
         let event = if scenario == ConfigurablePoolScenario::InvalidateGrantRecipient {
             reth_provider::CanonStateNotification::Commit {
@@ -1285,37 +1352,115 @@ mod tests {
                 new: chain(block, outcome),
             }
         };
-        let retry = scenario == ConfigurablePoolScenario::UnprocessedHeadRetry;
+        let late_insertion = scenario == ConfigurablePoolScenario::LateInsertion;
+        let retry = matches!(
+            scenario,
+            ConfigurablePoolScenario::UnprocessedHeadRetry
+                | ConfigurablePoolScenario::LateInsertion
+                | ConfigurablePoolScenario::IdleRetry
+        );
         let mut listener = retry.then(|| pool.transaction_event_listener(hash).unwrap());
         let processed = validation_handle.validator().processed_head();
         if retry {
             validation_handle.validator().cached_state.write().0 = B256::repeat_byte(0x88);
         }
+        if late_insertion {
+            pool.remove_transactions(vec![hash]);
+        }
+        let resumed_event = match &event {
+            reth_provider::CanonStateNotification::Reorg { new, .. }
+            | reth_provider::CanonStateNotification::Commit { new } => {
+                reth_provider::CanonStateNotification::Commit { new: new.clone() }
+            }
+        };
+        let ordinary = TxBuilder::aa(account).nonce(1).build();
+        let ordinary_hash = *ordinary.hash();
         let events = futures::stream::iter(if retry {
-            vec![event.clone(), event]
+            vec![event, resumed_event]
         } else {
             vec![event]
         })
         .enumerate()
         .map(|(index, event)| {
             if retry && index == 1 {
-                assert!(pool.contains(&hash), "timeout must retain the candidate");
+                assert_eq!(
+                    pool.contains(&hash),
+                    !late_insertion,
+                    "unsynchronized event must not alter the candidate"
+                );
                 assert_eq!(
                     entry.transaction.key_expiry(),
                     Some(12345),
                     "first event did not revalidate"
                 );
                 assert!(
-                    futures::StreamExt::next(listener.as_mut().unwrap())
-                        .now_or_never()
-                        .is_none(),
+                    late_insertion
+                        || futures::StreamExt::next(listener.as_mut().unwrap())
+                            .now_or_never()
+                            .is_none(),
                     "timeout must retain listener without removal"
                 );
-                validation_handle.validator().cached_state.write().0 = processed;
             }
-            event
-        });
+            let pool = pool.clone();
+            let validation_handle = validation_handle.clone();
+            let transaction = entry.transaction.with_discarded_caches();
+            let ordinary = ordinary.clone();
+            async move {
+                if retry && index == 1 {
+                    if late_insertion {
+                        // This H-validated insertion lands after the first event, before its callback.
+                        pool.add_transaction(TransactionOrigin::External, transaction)
+                            .await
+                            .unwrap();
+                        pool.get(&hash)
+                            .unwrap()
+                            .transaction
+                            .set_key_expiry(Some(12345));
+                    }
+                    pool.add_transaction(TransactionOrigin::External, ordinary)
+                        .await
+                        .unwrap();
+                    pool.get(&ordinary_hash)
+                        .unwrap()
+                        .transaction
+                        .set_key_expiry(Some(12345));
+                    validation_handle.validator().cached_state.write().0 = processed;
+                    if scenario == ConfigurablePoolScenario::IdleRetry {
+                        // Hold the next event pending: only the maintenance wakeup can rescan.
+                        tokio::time::timeout(std::time::Duration::from_secs(3), async {
+                            while pool
+                                .get(&ordinary_hash)
+                                .unwrap()
+                                .transaction
+                                .key_expiry()
+                                .is_some()
+                            {
+                                tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+                            }
+                        })
+                        .await
+                        .expect("idle maintenance must rescan without another canonical event");
+                    }
+                }
+                event
+            }
+        })
+        .buffered(1);
         crate::maintain::maintain_tempo_pool_with_events(pool.clone(), events).await;
+        if retry {
+            assert_eq!(
+                pool.get(&ordinary_hash).unwrap().transaction.key_expiry(),
+                None,
+                "full rescan must include ordinary transactions"
+            );
+        }
+        for hash in extra_hashes {
+            assert_eq!(
+                pool.get(&hash).unwrap().transaction.key_expiry(),
+                None,
+                "bounded work must drain beyond the first four entries"
+            );
+        }
         if matches!(
             scenario,
             ConfigurablePoolScenario::InvalidateGrantRecipient
@@ -1333,7 +1478,11 @@ mod tests {
             .expect("same commitment remains valid after reorg");
         assert_eq!(
             Arc::ptr_eq(&entry, &retained),
-            scenario != ConfigurablePoolScenario::ResurrectOnReorg
+            !matches!(
+                scenario,
+                ConfigurablePoolScenario::ResurrectOnReorg
+                    | ConfigurablePoolScenario::LateInsertion
+            )
         );
         assert_eq!(
             retained.transaction.key_expiry(),
@@ -1480,9 +1629,93 @@ mod tests {
         let shared_cache = Arc::new(StateCache::default());
         *validator.cached_state.write() = (mismatched_tip_hash, shared_cache.clone());
 
-        let (_, validation_cache, _) = validator.anchored_state_provider_and_cache().unwrap();
+        let (_, validation_cache, _, _) = validator.anchored_state_provider_and_cache().unwrap();
 
         assert!(Arc::ptr_eq(&validation_cache, &shared_cache));
+    }
+
+    #[tokio::test]
+    async fn queued_validation_reports_its_acquired_generation() {
+        use futures::FutureExt;
+        use reth_transaction_pool::TransactionValidationTaskExecutor;
+
+        for gas_limit in [0, 500_000] {
+            let transaction = TxBuilder::aa(Address::random())
+                .gas_limit(gas_limit)
+                .build();
+            let validator = setup_validator(&transaction, 1).with_disable_fee_amm_check(true);
+            let (executor, task) = TransactionValidationTaskExecutor::new(validator);
+            let attempt = transaction.with_discarded_caches();
+            let mut validation = Box::pin(
+                executor.validate_transaction(TransactionOrigin::External, attempt.clone()),
+            );
+            assert!(validation.as_mut().now_or_never().is_none());
+            assert_eq!(attempt.validation_generation(), None);
+            let old_generation = *executor.validator().generation.read();
+            executor
+                .validator()
+                .on_new_head_block(&create_mock_block(2));
+            let generation = *executor.validator().generation.read();
+            assert_ne!(old_generation, generation);
+            let service = tokio::spawn(task.run());
+            let outcome = validation.await;
+            assert_eq!(attempt.validation_generation(), Some(generation));
+            assert_eq!(
+                matches!(outcome, TransactionValidationOutcome::Valid { .. }),
+                gas_limit != 0,
+                "{outcome:?}"
+            );
+            assert_eq!(
+                attempt.with_discarded_caches().validation_generation(),
+                None
+            );
+            service.abort();
+        }
+    }
+
+    #[tokio::test]
+    async fn mined_maintenance_permit_vetoes_queued_insertion() {
+        use futures::FutureExt;
+        use reth_transaction_pool::{
+            Pool, PoolConfig, TransactionPool, TransactionValidationTaskExecutor,
+        };
+
+        let transaction = TxBuilder::aa(Address::random()).build();
+        let hash = *transaction.hash();
+        let validator = setup_validator(&transaction, 1).with_disable_fee_amm_check(true);
+        let (executor, task) = TransactionValidationTaskExecutor::new(validator);
+        let pool = crate::TempoTransactionPool::new(
+            Pool::new(
+                executor,
+                crate::ordering::TempoTipOrdering::default(),
+                InMemoryBlobStore::default(),
+                PoolConfig::default(),
+            ),
+            crate::AA2dPool::default(),
+        );
+        let permit = crate::maintain::MaintenancePermit::new(None);
+        let mut insertion = Box::pin(pool.add_fresh_transaction_with_permit(
+            TransactionOrigin::External,
+            transaction.clone(),
+            Some(&permit),
+        ));
+        assert!(insertion.as_mut().now_or_never().is_none());
+        permit.cancel();
+        let service = tokio::spawn(task.run());
+        let error = insertion.await.unwrap_err();
+        assert!(matches!(
+            error.kind,
+            reth_transaction_pool::error::PoolErrorKind::Other(_)
+        ));
+        assert!(!pool.contains(&hash));
+        pool.add_transaction(TransactionOrigin::External, transaction)
+            .await
+            .unwrap();
+        assert!(
+            pool.contains(&hash),
+            "the same transaction succeeds without cancellation"
+        );
+        service.abort();
     }
 
     #[tokio::test]

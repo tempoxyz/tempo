@@ -99,6 +99,14 @@ where
         self.protocol_pool.validator().validator().client()
     }
 
+    /// Whether the real head callback has caught up to the provider.
+    pub(crate) fn processed_head_is_current(
+        &self,
+    ) -> reth_storage_api::errors::ProviderResult<bool> {
+        Ok(self.protocol_pool.validator().validator().processed_head()
+            == self.client().chain_info()?.best_hash)
+    }
+
     /// Waits for the real Reth head callback rather than applying an out-of-order event ourselves.
     pub(crate) async fn wait_for_processed_head(
         &self,
@@ -108,7 +116,7 @@ where
             let changed = validator.head_changed.notified();
             tokio::pin!(changed);
             changed.as_mut().enable();
-            if validator.processed_head() == self.client().chain_info()?.best_hash {
+            if self.processed_head_is_current()? {
                 return Ok(());
             }
             changed.await;
@@ -120,18 +128,29 @@ where
     pub(crate) async fn revalidate_pending_transactions(
         &self,
         hashes: &mut alloy_primitives::map::B256Set,
+        permit: Option<&crate::maintain::MaintenancePermit>,
     ) {
         let validator = self.protocol_pool.validator().validator();
         let candidates = self.get_all(hashes.iter().copied().collect());
         for tx in candidates {
-            let generation = *validator.generation.read();
+            let attempt = tx.transaction.with_discarded_caches();
             let outcome = self
                 .protocol_pool
                 .validator()
-                .validate_transaction(tx.origin, tx.transaction.with_discarded_caches())
+                .validate_transaction(tx.origin, attempt.clone())
                 .await;
             let current = validator.generation.read();
-            if *current != generation {
+            if permit.is_some_and(|permit| !permit.is_valid()) {
+                hashes.remove(tx.hash());
+                continue;
+            }
+            if Some(*current) != attempt.validation_generation() {
+                continue;
+            }
+            if self
+                .get(tx.hash())
+                .is_none_or(|entry| !Arc::ptr_eq(&entry, &tx))
+            {
                 continue;
             }
             match outcome {
@@ -589,14 +608,33 @@ where
         origin: TransactionOrigin,
         transaction: TempoPooledTransaction,
     ) -> PoolResult<AddedTransactionOutcome> {
-        let validator = self.protocol_pool.validator().validator();
+        self.add_fresh_transaction_with_permit(origin, transaction, None)
+            .await
+    }
+
+    pub(crate) async fn add_fresh_transaction_with_permit(
+        &self,
+        origin: TransactionOrigin,
+        transaction: TempoPooledTransaction,
+        permit: Option<&crate::maintain::MaintenancePermit>,
+    ) -> PoolResult<AddedTransactionOutcome> {
         for _ in 0..3 {
-            let generation = *validator.generation.read();
+            let attempt = transaction.with_discarded_caches();
             let outcome = self
                 .protocol_pool
                 .validator()
-                .validate_transaction(origin, transaction.with_discarded_caches())
+                .validate_transaction(origin, attempt.clone())
                 .await;
+            if permit.is_some_and(|permit| !permit.is_valid()) {
+                return Err(PoolError::other(
+                    *transaction.hash(),
+                    "canonical maintenance request expired or was mined",
+                ));
+            }
+            let Some(generation) = attempt.validation_generation() else {
+                // No state was acquired: preserve the service/provider error, not a default epoch.
+                return self.add_validated_transaction(origin, outcome);
+            };
             if let Some(result) = self.add_validated_at_generation(generation, origin, outcome) {
                 return result;
             }
@@ -1776,7 +1814,8 @@ mod tests {
         let hash = *tx.hash();
         add_validated(&pool, tx);
         let mut pending = alloy_primitives::map::B256Set::from_iter([hash]);
-        pool.revalidate_pending_transactions(&mut pending).await;
+        pool.revalidate_pending_transactions(&mut pending, None)
+            .await;
         assert!(pool.contains(&hash));
         assert!(pending.contains(&hash));
     }
