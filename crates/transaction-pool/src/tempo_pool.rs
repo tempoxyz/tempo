@@ -99,6 +99,21 @@ where
         self.protocol_pool.validator().validator().client()
     }
 
+    /// Returns all transactions from `sender`, grouped by pending and queued status.
+    // The transaction fetcher branch does not expose this method on `TransactionPool` yet.
+    pub fn all_transactions_by_sender(
+        &self,
+        sender: Address,
+    ) -> AllPoolTransactions<TempoPooledTransaction> {
+        let mut transactions = self.protocol_pool.all_transactions();
+        transactions.pending.retain(|tx| tx.sender() == sender);
+        transactions.queued.retain(|tx| tx.sender() == sender);
+        self.aa_2d_pool
+            .read()
+            .append_all_transactions_by_sender(sender, &mut transactions);
+        transactions
+    }
+
     /// Updates the 2d nonce pool with the given state changes.
     ///
     /// Returns mined AA transactions.
@@ -961,17 +976,6 @@ where
         transactions
     }
 
-    fn all_transactions_by_sender(
-        &self,
-        sender: Address,
-    ) -> AllPoolTransactions<Self::Transaction> {
-        let mut transactions = self.protocol_pool.all_transactions_by_sender(sender);
-        self.aa_2d_pool
-            .read()
-            .append_all_transactions_by_sender(sender, &mut transactions);
-        transactions
-    }
-
     fn all_transaction_hashes(&self) -> Vec<B256> {
         let mut hashes = self.protocol_pool.all_transaction_hashes();
         hashes.extend(self.aa_2d_pool.read().all_transaction_hashes_iter());
@@ -1255,7 +1259,7 @@ where
     fn get_blobs_for_versioned_hashes_v4(
         &self,
         versioned_hashes: &[B256],
-        cell_mask: alloy_eips::eip7594::BlobCellMask,
+        cell_mask: alloy_primitives::B128,
     ) -> Result<
         Vec<Option<alloy_eips::eip4844::BlobCellsAndProofsV1>>,
         reth_transaction_pool::blobstore::BlobStoreError,
