@@ -1,0 +1,48 @@
+{
+  "schema_version": 1,
+  "run_id": "tempo-shadow-example",
+  "chain_id": 4217,
+  "tempo_revision": "731535b9808eda12e81ab6459703602554eaee5a",
+  "reth_revision": "8e55cc5",
+  "bootstrap_artifact_digest": "sha256:REPLACE_WITH_NATIVE_MANIFEST_FILE_SHA256",
+  "binary_sha256": "sha256:REPLACE_WITH_DEPLOYED_NODE_BINARY_SHA256",
+  "chainspec_sha256": "sha256:REPLACE_WITH_DEPLOYED_CHAINSPEC_SHA256",
+  "isolated_network": false,
+  "exclusive_workload": false,
+  "fork_rules_match_source": false,
+  "fee_token_and_amm_parity": false,
+  "validity_buffer_seconds": 3,
+  "source_capture_p99_ms": 0,
+  "measured_rpc_p99_ms": 0,
+  "measured_sustained_tps": 0.0,
+  "validators": [
+    {
+      "id": "shadow-a",
+      "public_key": "REPLACE_WITH_VALIDATOR_A_PUBLIC_KEY",
+      "rpc_http": "https://shadow-a.example.invalid",
+      "max_sender_slots": 16,
+      "pending_count": 10000,
+      "queued_count": 10000,
+      "pending_bytes": 20971520,
+      "queued_bytes": 20971520,
+      "pool_fixed_overhead_bytes": 0,
+      "pool_raw_size_multiplier": 0,
+      "future_nonce_types": [],
+      "pool_observation": "conservative_retained_reservations"
+    },
+    {
+      "id": "shadow-b",
+      "public_key": "REPLACE_WITH_VALIDATOR_B_PUBLIC_KEY",
+      "rpc_http": "https://shadow-b.example.invalid",
+      "max_sender_slots": 16,
+      "pending_count": 10000,
+      "queued_count": 10000,
+      "pending_bytes": 20971520,
+      "queued_bytes": 20971520,
+      "pool_fixed_overhead_bytes": 0,
+      "pool_raw_size_multiplier": 0,
+      "future_nonce_types": [],
+      "pool_observation": "conservative_retained_reservations"
+    }
+  ]
+}

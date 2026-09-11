@@ -13,6 +13,7 @@ publish = false
 [workspace]
 members = [
   "bin/tempo",
+  "bin/tempo-replay",
   "bin/tempo-sidecar",
   "crates/alloy",
   "crates/chainspec",
