@@ -8,8 +8,7 @@ fn commitment_roundtrip_and_historical_gate() {
     }
     let hash = B256::repeat_byte(7);
     let payload = encode_config_commitment(hash);
-    assert_eq!(payload.len(), 33);
-    assert_eq!(payload[0], 0xa0);
+    assert_eq!(payload.as_ref(), hash.as_slice());
     assert_eq!(decode_config_commitment(&payload, true), Ok(hash));
     assert!(decode_config_commitment(&payload, false).is_err());
 }
@@ -18,16 +17,14 @@ fn commitment_roundtrip_and_historical_gate() {
 fn rejects_malformed_and_noncanonical_extensions() {
     let mut trailing = encode_config_commitment(B256::repeat_byte(7)).to_vec();
     trailing.push(0x80);
-    let mut noncanonical = vec![0xb8, 32];
-    noncanonical.extend([7; 32]);
     for payload in [
-        alloy_rlp::encode(B256::ZERO),
-        alloy_rlp::encode(&[7u8; 31][..]),
-        alloy_rlp::encode(&[7u8; 33][..]),
+        vec![0; 32],
+        vec![7; 31],
+        vec![7; 33],
         vec![0xc0],
         vec![0xa0, 7],
         trailing,
-        noncanonical,
+        alloy_rlp::encode(B256::repeat_byte(7)),
     ] {
         assert!(
             decode_config_commitment(&payload, true).is_err(),
@@ -55,6 +52,27 @@ fn commitment_survives_account_representations() {
     assert!(rest.is_empty());
     assert_eq!(decoded, account);
     let trie = decoded.into_trie_account(B256::repeat_byte(4));
+    // The opaque payload is raw, but the consensus leaf contains exactly one RLP string.
+    let encoded = alloy_rlp::encode(&trie);
+    let mut fields = encoded.as_slice();
+    let header = alloy_rlp::Header::decode(&mut fields).unwrap();
+    assert!(header.list);
+    assert_eq!(header.payload_length, fields.len());
+    for _ in 0..4 {
+        alloy_rlp::Header::decode_bytes(&mut fields, false).unwrap();
+    }
+    assert_eq!(fields, alloy_rlp::encode(commitment));
+    let mut legacy = trie.clone();
+    legacy.extension = Default::default();
+    let legacy = alloy_rlp::encode(&legacy);
+    let mut fields = legacy.as_slice();
+    let header = alloy_rlp::Header::decode(&mut fields).unwrap();
+    assert!(header.list);
+    assert_eq!(header.payload_length, fields.len());
+    for _ in 0..4 {
+        alloy_rlp::Header::decode_bytes(&mut fields, false).unwrap();
+    }
+    assert!(fields.is_empty());
     assert_eq!(
         decode_config_commitment(&trie.extension, true),
         Ok(commitment)
