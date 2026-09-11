@@ -356,10 +356,18 @@ pub fn tempo_main_with(mut overrides: TempoOverrides) -> eyre::Result<()> {
             )
         });
 
+        #[expect(
+            deprecated,
+            reason = "Maintain backward compatibility until all nodes have been updated; \
+                      V1 blob creation will be enabled in a followup."
+        )]
         let runtime_config = commonware_runtime::tokio::Config::default()
             .with_tcp_nodelay(Some(true))
             .with_worker_threads(args.consensus.worker_threads)
             .with_storage_directory(consensus_storage)
+            .with_storage_blob_layouts(
+                commonware_runtime::BlobLayout::V0..=commonware_runtime::BlobLayout::V0,
+            )
             .with_catch_panics(true);
 
         let runner = commonware_runtime::tokio::Runner::new(runtime_config);
@@ -453,6 +461,21 @@ pub fn tempo_main_with(mut overrides: TempoOverrides) -> eyre::Result<()> {
         |spec: Arc<TempoChainSpec>| (TempoEvmConfig::new(spec.clone()), TempoConsensus::new(spec));
 
     cli.run_with_components::<TempoNode>(components, async move |builder, args| {
+        if let Some(value) = args.consensus.message_backlog {
+            warn!(
+                flag = "--consensus.message-backlog",
+                value,
+                "deprecated flag ignored; P2P queue capacities are derived from peer-set limits and channel quotas"
+            );
+        }
+        if let Some(value) = args.consensus.inactive_views_until_leader_skip {
+            warn!(
+                flag = "--consensus.inactive-views-until-leader-skip",
+                value,
+                "deprecated flag ignored; leader skipping is driven by --consensus.inactive-time-before-leader-skip"
+            );
+        }
+
         // Register before launch because each RLPx session negotiates its
         // subprotocols during the handshake. The startup channel passes the
         // consensus half of the transport to the consensus thread.

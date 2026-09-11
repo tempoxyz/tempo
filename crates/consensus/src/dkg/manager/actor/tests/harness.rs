@@ -23,7 +23,11 @@ use commonware_cryptography::{
     Signer as _,
     bls12381::{
         dkg::feldman_desmedt::{self as dkg, Logs, Output, SignedDealerLog},
-        primitives::{group::Share, sharing::Sharing, variant::MinSig},
+        primitives::{
+            group::Share,
+            sharing::{Mode, Sharing},
+            variant::MinSig,
+        },
     },
     ed25519::{Batch, PrivateKey, PublicKey},
     transcript::Summary,
@@ -39,6 +43,7 @@ use commonware_utils::{
     Acknowledgement as _, N3f1, TryFromIterator as _, acknowledgement::Exact, ordered,
 };
 use futures::{StreamExt as _, channel::mpsc};
+use rand::{SeedableRng as _, rngs::StdRng};
 use rand_core::CryptoRng;
 use reth_node_core::primitives::SealedBlock;
 use tempo_dkg_onchain_artifacts::OnchainDkgOutcome;
@@ -138,8 +143,7 @@ impl HarnessBuilder {
                     .await
                     .unwrap()
                     .init_verified(state)
-                    .await
-                    .unwrap(),
+                    .await,
             )
         } else {
             None
@@ -189,6 +193,12 @@ impl Harness {
     pub(super) fn storage(&self) -> &state::Storage<Context> {
         self.storage
             .as_ref()
+            .expect("DKG storage is not open while the actor is running")
+    }
+
+    pub(super) fn storage_mut(&mut self) -> &mut state::Storage<Context> {
+        self.storage
+            .as_mut()
             .expect("DKG storage is not open while the actor is running")
     }
 
@@ -259,10 +269,23 @@ impl Harness {
     }
 
     pub(super) async fn wait_for_exit(&mut self) {
+        self.wait_for_actor_exit().await;
+        self.reopen_storage().await;
+    }
+
+    pub(super) async fn wait_for_actor_exit(&mut self) {
         let handle = self.handle.take().expect("DKG actor is not running");
         handle.await.expect("DKG actor should stop");
         self.mailbox.take();
-        self.reopen_storage().await;
+    }
+
+    pub(super) async fn wait_for_actor_panic(&mut self) {
+        let handle = self.handle.take().expect("DKG actor is not running");
+        assert!(matches!(
+            handle.await,
+            Err(commonware_runtime::Error::Exited)
+        ));
+        self.mailbox.take();
     }
 
     async fn reopen_storage(&mut self) {
@@ -272,7 +295,7 @@ impl Harness {
             .await
             .unwrap();
         self.storage = if let Some(state) = unverified.state().cloned() {
-            Some(unverified.init_verified(state).await.unwrap())
+            Some(unverified.init_verified(state).await)
         } else {
             None
         };
@@ -678,7 +701,7 @@ pub(super) fn dkg_state(
     let players = ordered::Set::try_from_iter(keys.iter().map(|key| key.public_key()))
         .expect("test players should be unique");
     let (output, shares) =
-        dkg::deal::<MinSig, _, N3f1>(&mut *rng, Default::default(), players.clone())
+        dkg::deal::<MinSig, _, N3f1>(&mut *rng, Mode::NonZeroCounter, players.clone())
             .expect("test DKG");
     let shares = keys
         .iter()
@@ -708,6 +731,56 @@ pub(super) struct RevealedRecoveryFixture {
     recovered_state: State,
 }
 
+/// Run a dealer round offline and return each dealer's signed log, checked
+/// against `info`.
+///
+/// `dealer_rng(i)` seeds dealer `i`, so callers can reuse polynomial randomness
+/// across rounds. `withhold(dealer, player)` skips that player's ACK, forcing
+/// the dealer to reveal the dealing.
+pub(super) fn signed_dealer_logs<R: CryptoRng>(
+    info: &dkg::Info<MinSig, PublicKey>,
+    dealers: &[(PrivateKey, Option<Share>)],
+    players: &[PrivateKey],
+    mut dealer_rng: impl FnMut(usize) -> R,
+    withhold: impl Fn(&PublicKey, &PublicKey) -> bool,
+) -> Vec<SignedDealerLog<MinSig, PrivateKey>> {
+    dealers
+        .iter()
+        .enumerate()
+        .map(|(index, (key, share))| {
+            let dealer_public_key = key.public_key();
+            let (mut dealer, public, private) = dkg::Dealer::start::<N3f1>(
+                dealer_rng(index),
+                info.clone(),
+                key.clone(),
+                share.clone(),
+            )
+            .unwrap();
+            for (player, private) in private {
+                if withhold(&dealer_public_key, &player) {
+                    continue;
+                }
+                let player_key = players
+                    .iter()
+                    .find(|key| key.public_key() == player)
+                    .unwrap();
+                let ack = dkg::Player::new(info.clone(), player_key.clone())
+                    .unwrap()
+                    .dealer_message::<N3f1>(dealer_public_key.clone(), public.clone(), private)
+                    .expect("test dealing must be valid")
+                    .expect("test dealing must be new");
+                dealer.receive_player_ack(player, ack).unwrap();
+            }
+            let signed = dealer.finalize::<N3f1>();
+            signed
+                .clone()
+                .check(info)
+                .expect("test dealer log must verify");
+            signed
+        })
+        .collect()
+}
+
 pub(super) fn revealed_recovery_fixture(
     rng: &mut impl CryptoRng,
     ceremony_epoch: Epoch,
@@ -715,41 +788,23 @@ pub(super) fn revealed_recovery_fixture(
     let (ceremony_state, keys, _) = dkg_state(rng, ceremony_epoch, 4, true);
     let round = Round::from_state(&ceremony_state, crate::config::NAMESPACE);
     let identity = keys[0].clone();
+    // The recovering player sends no ACK, so each dealer log reveals its dealing for it.
+    let dealers = keys
+        .iter()
+        .take(3)
+        .map(|key| (key.clone(), None))
+        .collect::<Vec<_>>();
+    let signed_logs = signed_dealer_logs(
+        round.info(),
+        &dealers,
+        &keys,
+        |_| StdRng::from_rng(&mut *rng),
+        |_, player| *player == identity.public_key(),
+    );
     let mut logs = Logs::<MinSig, PublicKey, N3f1>::new(round.info().clone());
-    let mut signed_logs = Vec::new();
-    for dealer_key in keys.iter().take(3) {
-        let dealer_public_key = dealer_key.public_key();
-        let (mut dealer, public_message, private_messages) =
-            dkg::Dealer::start::<N3f1>(&mut *rng, round.info().clone(), dealer_key.clone(), None)
-                .unwrap();
-
-        for (player_public_key, private_message) in private_messages {
-            if player_public_key == identity.public_key() {
-                continue;
-            }
-            let player_key = keys
-                .iter()
-                .find(|key| key.public_key() == player_public_key)
-                .unwrap();
-            let mut player = dkg::Player::new(round.info().clone(), player_key.clone()).unwrap();
-            let dkg::Verdict::Valid(ack) = player.dealer_message::<N3f1>(
-                dealer_public_key.clone(),
-                public_message.clone(),
-                private_message,
-            ) else {
-                panic!("test dealing must be valid");
-            };
-            dealer.receive_player_ack(player_public_key, ack).unwrap();
-        }
-
-        // The recovering player sends no ACK, so each dealer log reveals its dealing for it.
-        let signed_log: SignedDealerLog<MinSig, PrivateKey> = dealer.finalize::<N3f1>();
-        let (dealer, log) = signed_log
-            .clone()
-            .check(round.info())
-            .expect("test dealer log must verify");
+    for signed in &signed_logs {
+        let (dealer, log) = signed.clone().check(round.info()).unwrap();
         logs.record(dealer, log);
-        signed_logs.push(signed_log);
     }
 
     let player = dkg::Player::new(round.info().clone(), identity.clone()).unwrap();
