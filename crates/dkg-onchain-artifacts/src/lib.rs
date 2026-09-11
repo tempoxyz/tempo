@@ -3,8 +3,7 @@
 use std::num::NonZeroU32;
 
 use bytes::{Buf, BufMut};
-use commonware_codec::{EncodeSize, RangeCfg, Read, ReadExt, Write};
-use commonware_consensus::types::Epoch;
+use commonware_codec::{EncodeSize, RangeCfg, Read, ReadExt, Write, varint::UInt};
 use commonware_cryptography::{
     bls12381::{
         dkg::feldman_desmedt::Output,
@@ -26,8 +25,8 @@ const MAX_VALIDATORS: NonZeroU32 = NZU32!(u16::MAX as u32);
 /// is likely out of reach.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct OnchainDkgOutcome {
-    /// The epoch for which this outcome is used.
-    pub epoch: Epoch,
+    /// The epoch for which this outcome is used, encoded as an unsigned varint.
+    pub epoch: u64,
 
     /// The output of the DKG ceremony. Contains the shared public polynomial,
     /// and the players in the ceremony (which will be the dealers for the
@@ -67,7 +66,7 @@ impl OnchainDkgOutcome {
 
 impl Write for OnchainDkgOutcome {
     fn write(&self, buf: &mut impl BufMut) {
-        self.epoch.write(buf);
+        UInt(self.epoch).write(buf);
         self.output.write(buf);
         self.next_players.write(buf);
         self.is_next_full_dkg.write(buf);
@@ -78,7 +77,7 @@ impl Read for OnchainDkgOutcome {
     type Cfg = ();
 
     fn read_cfg(buf: &mut impl Buf, _cfg: &Self::Cfg) -> Result<Self, commonware_codec::Error> {
-        let epoch = ReadExt::read(buf)?;
+        let epoch = UInt::<u64>::read(buf)?.into();
         let output = Read::read_cfg(buf, &(MAX_VALIDATORS, ModeVersion::v0()))?;
         let next_players = Read::read_cfg(
             buf,
@@ -96,7 +95,7 @@ impl Read for OnchainDkgOutcome {
 
 impl EncodeSize for OnchainDkgOutcome {
     fn encode_size(&self) -> usize {
-        self.epoch.encode_size()
+        UInt(self.epoch).encode_size()
             + self.output.encode_size()
             + self.next_players.encode_size()
             + self.is_next_full_dkg.encode_size()
@@ -107,8 +106,7 @@ impl EncodeSize for OnchainDkgOutcome {
 mod tests {
     use std::iter::repeat_with;
 
-    use commonware_codec::{Encode as _, ReadExt as _};
-    use commonware_consensus::types::Epoch;
+    use commonware_codec::{Encode as _, EncodeSize as _, ReadExt as _};
     use commonware_cryptography::{
         Signer as _,
         bls12381::{dkg::feldman_desmedt as dkg, primitives::sharing::Mode},
@@ -135,8 +133,8 @@ mod tests {
         )
         .unwrap();
 
-        let on_chain = OnchainDkgOutcome {
-            epoch: Epoch::new(42),
+        let mut on_chain = OnchainDkgOutcome {
+            epoch: 42,
             output,
             next_players: ordered::Set::try_from_iter(
                 player_keys.iter().map(|key| key.public_key()),
@@ -144,10 +142,28 @@ mod tests {
             .unwrap(),
             is_next_full_dkg: false,
         };
-        let bytes = on_chain.encode();
-        assert_eq!(
-            OnchainDkgOutcome::read(&mut bytes.as_ref()).unwrap(),
-            on_chain,
-        );
+        // Preserve Commonware Epoch's wire encoding, including varint boundaries.
+        let payload = on_chain.encode()[1..].to_vec();
+        for (epoch, prefix) in [
+            (0, &[0][..]),
+            (127, &[127][..]),
+            (128, &[128, 1][..]),
+            (16383, &[255, 127][..]),
+            (16384, &[128, 128, 1][..]),
+            (
+                u64::MAX,
+                &[255, 255, 255, 255, 255, 255, 255, 255, 255, 1][..],
+            ),
+        ] {
+            on_chain.epoch = epoch;
+            let bytes = on_chain.encode();
+            assert_eq!(&bytes[..prefix.len()], prefix);
+            assert_eq!(&bytes[prefix.len()..], payload);
+            assert_eq!(bytes.len(), on_chain.encode_size());
+            assert_eq!(
+                OnchainDkgOutcome::read(&mut bytes.as_ref()).unwrap(),
+                on_chain
+            );
+        }
     }
 }

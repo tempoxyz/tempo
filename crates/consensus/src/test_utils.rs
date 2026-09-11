@@ -63,7 +63,7 @@ pub(crate) fn dkg_fixture(rng: &mut impl CryptoRng, epoch: Epoch) -> DkgFixture 
         .collect();
 
     let outcome = OnchainDkgOutcome {
-        epoch,
+        epoch: epoch.get(),
         next_players: output.players().clone(),
         output,
         is_next_full_dkg: false,

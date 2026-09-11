@@ -500,7 +500,7 @@ where
             )
             .expect("boundary blocks must contain DKG outcomes");
             self.config.scheme_provider.register(
-                onchain_outcome.epoch,
+                Epoch::new(onchain_outcome.epoch),
                 Scheme::verifier(
                     crate::config::NAMESPACE,
                     onchain_outcome.players().clone(),
@@ -508,7 +508,7 @@ where
                 ),
             );
             self.confirmed_latest_network_epoch
-                .replace(onchain_outcome.epoch);
+                .replace(Epoch::new(onchain_outcome.epoch));
             debug!(
                 next_epoch = %onchain_outcome.epoch,
                 "read DKG outcome from boundary and registered scheme",

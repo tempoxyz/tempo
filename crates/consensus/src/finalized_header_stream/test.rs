@@ -150,8 +150,11 @@ async fn uses_authoritative_identity_for_initial_backfill() {
     }
 
     let tip = blocks.last().expect("tip was inserted");
-    let tip_finalization =
-        make_finalization(tip, authoritative.outcome.epoch, &authoritative.schemes);
+    let tip_finalization = make_finalization(
+        tip,
+        Epoch::new(authoritative.outcome.epoch),
+        &authoritative.schemes,
+    );
     let certified = make_certified_block(tip.clone(), &tip_finalization);
     let asserter = Asserter::new();
     push_header(&asserter, &blocks[0]);
@@ -161,7 +164,7 @@ async fn uses_authoritative_identity_for_initial_backfill() {
 
     let genesis = &blocks[0];
     let network_identity = NetworkIdentity {
-        from_epoch: authoritative.outcome.epoch.get(),
+        from_epoch: authoritative.outcome.epoch,
         identity: *authoritative.outcome.network_identity(),
     };
     let mut config = Config::new(genesis.digest().0, Some(network_identity), EPOCH_LENGTH);
@@ -214,7 +217,7 @@ async fn falls_back_to_identity_anchored_by_start() {
     push_header(&asserter, &tip);
 
     let stale_identity = NetworkIdentity {
-        from_epoch: old.outcome.epoch.get(),
+        from_epoch: old.outcome.epoch,
         identity: *old.outcome.network_identity(),
     };
     let mut stream = FinalizedHeaderStream::init(
@@ -251,7 +254,7 @@ async fn applies_transition_from_start_boundary() {
     push_header(&asserter, &tip);
 
     let network_identity = NetworkIdentity {
-        from_epoch: current.outcome.epoch.get(),
+        from_epoch: current.outcome.epoch,
         identity: *current.outcome.network_identity(),
     };
     let mut stream = FinalizedHeaderStream::init(
@@ -283,7 +286,7 @@ async fn does_not_resolve_start_identity_when_caught_up() {
     asserter.push_success(&certified);
 
     let network_identity = NetworkIdentity {
-        from_epoch: fixture.outcome.epoch.get(),
+        from_epoch: fixture.outcome.epoch,
         identity: *fixture.outcome.network_identity(),
     };
     FinalizedHeaderStream::init(
@@ -307,7 +310,7 @@ async fn rejects_mismatched_start_header() {
     push_header(&asserter, &start);
 
     let network_identity = NetworkIdentity {
-        from_epoch: fixture.outcome.epoch.get(),
+        from_epoch: fixture.outcome.epoch,
         identity: *fixture.outcome.network_identity(),
     };
     let error = FinalizedHeaderStream::init(
