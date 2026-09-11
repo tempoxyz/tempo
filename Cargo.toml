@@ -14,6 +14,7 @@ publish = false
 members = [
   "bin/tempo",
   "bin/tempo-sidecar",
+  "bin/tempo-multiversion",
   "crates/alloy",
   "crates/chainspec",
   "crates/consensus",
@@ -24,6 +25,7 @@ members = [
   "crates/ext",
   "crates/evm",
   "crates/hardfork",
+  "crates/multiversion",
   "crates/e2e",
   "crates/faucet",
   "crates/node",

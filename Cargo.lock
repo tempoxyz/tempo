@@ -13727,6 +13727,25 @@ dependencies = [
 ]
 
 [[package]]
+name = "tempo-multiversion"
+version = "1.13.2"
+dependencies = [
+ "sha2 0.10.9",
+ "tempo-hardfork",
+]
+
+[[package]]
+name = "tempo-multiversion-cli"
+version = "1.13.2"
+dependencies = [
+ "clap",
+ "rustix",
+ "tempfile",
+ "tempo-hardfork",
+ "tempo-multiversion",
+]
+
+[[package]]
 name = "tempo-node"
 version = "1.13.2"
 dependencies = [
