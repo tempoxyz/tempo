@@ -1842,7 +1842,7 @@ mod tests {
                         keychain.storage.set_config_commitment(
                             account,
                             B256::repeat_byte(2),
-                            ConfigCommitmentWriteGas::Intrinsic,
+                            ConfigCommitmentWriteGas::Precompile,
                         )?;
                     }
                     assert_eq!(keychain.keys[parent][delegate].read()?, row);

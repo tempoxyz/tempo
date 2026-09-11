@@ -5,6 +5,14 @@ Implemented in [PR #7506](https://github.com/tempoxyz/tempo/pull/7506), stacked 
 This supersedes the earlier analytical tree design. V1 remains for compatibility and
 comparison. This is not an activation decision or completed security/hardware review.
 
+Rebase validation (2026-09-11): replayed on configurable-account activation
+[`83f3ccd`](https://github.com/tempoxyz/tempo/commit/83f3ccd147344d0f249f356f3374ef3c86ae8968).
+All 1,704 library tests passed, as did the eight root tests including receipt generators
+and three baseline generators. The rerun exactly matches the committed 3,456 root matrix,
+32 edge and 18 failure rows, plus all 1,728 stored/V1 baseline rows excluding diagnostic
+`execution_us`. Receipt gas and the cap-priced plots are unchanged. Nightly formatting,
+clippy and the transaction-pool build passed; clippy retains unrelated existing warnings.
+
 ## Commitment and encoding
 
 The account's existing 32-byte extension contains R, not separate authority/policy slots:
@@ -119,6 +127,10 @@ Use configurable-account prices: 20k extension registration, 5k nonzero update. 
 grant-and-use pays both; this is not a single cheap update. One root replacement is prepaid
 per carried transaction. Transient work, hashing/parsing, signatures, events and execution
 are additional. Certificate bytes retain 4/16 gas pricing; no blanket calldata discount.
+On the latest configurable-account base, `Intrinsic` remains registration-only. The V2
+handler separately registers a previously empty authority before installing the first leaf;
+later root writes use the explicit `PrepaidTreeUpdate` path, which rejects empty accounts.
+The account extension is the raw 32-byte payload; trie encoding supplies its RLP framing.
 
 Nonrecursive self-paid settlement prepays a conservative full-width record allowance:
 

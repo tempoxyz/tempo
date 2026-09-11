@@ -39,6 +39,9 @@ use crate::error::{Result, TempoPrecompileError};
 pub enum ConfigCommitmentWriteGas {
     /// First registration was charged once in transaction intrinsic gas.
     Intrinsic,
+    /// TIP-1086's validated tree transaction prepaid its 5,000-gas update in the handler.
+    /// Only replaces an existing commitment; never substitutes for registration.
+    PrepaidTreeUpdate,
     /// Charge the explicit precompile operation here.
     Precompile,
 }
@@ -48,6 +51,8 @@ impl ConfigCommitmentWriteGas {
         match self {
             Self::Intrinsic if previous.is_zero() => Ok(0),
             Self::Intrinsic => Err(TempoPrecompileError::InvalidConfigCommitmentWrite),
+            Self::PrepaidTreeUpdate if !previous.is_zero() => Ok(0),
+            Self::PrepaidTreeUpdate => Err(TempoPrecompileError::InvalidConfigCommitmentWrite),
             Self::Precompile if previous.is_zero() => Ok(20_000),
             Self::Precompile => Ok(5_000),
         }
@@ -106,7 +111,7 @@ pub trait PrecompileStorageProvider {
     /// Writes an authorized nonzero commitment through the account journal.
     /// Callers must validate registration, rotation, or migration authority first.
     /// Account-access gas belongs to that authorization read; this method charges
-    /// only the field write, or nothing when registration was charged intrinsically.
+    /// only the field write, or nothing when registration/tree-update gas was prepaid.
     fn set_config_commitment(
         &mut self,
         address: Address,

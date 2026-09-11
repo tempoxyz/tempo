@@ -1412,6 +1412,17 @@ where
             .with_actions(actions.clone());
             provider.set_tip1060_storage_credits(false);
             StorageCtx::enter(&mut provider, || {
+                if let Some(tree) = &auth.tree
+                    && current.is_zero()
+                {
+                    // Native validation has authenticated the initial configuration and
+                    // charged registration. Keep it distinct from the prepaid tree update.
+                    StorageCtx.set_config_commitment(
+                        tx.caller,
+                        tree.witness.opening.authority,
+                        tempo_precompiles::storage::ConfigCommitmentWriteGas::Intrinsic,
+                    )?;
+                }
                 let mut keychain = AccountKeychain::default();
                 keychain.install_carried(tx.caller, auth, issuer)?;
                 if fee_payer == tx.caller {

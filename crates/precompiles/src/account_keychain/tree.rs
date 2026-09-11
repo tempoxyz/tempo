@@ -99,7 +99,7 @@ pub fn save(account: Address, tree: &mut WorkingTree) -> Result<()> {
     StorageCtx.set_config_commitment(
         account,
         tree.opening.commitment(),
-        crate::storage::ConfigCommitmentWriteGas::Intrinsic,
+        crate::storage::ConfigCommitmentWriteGas::PrepaidTreeUpdate,
     )
 }
 
@@ -229,7 +229,16 @@ mod tests {
                     1,
                     tempo_chainspec::hardfork::TempoHardfork::T12,
                 );
-                StorageCtx::enter(&mut storage, || save(account, &mut working).unwrap());
+                StorageCtx::enter(&mut storage, || {
+                    StorageCtx
+                        .set_config_commitment(
+                            account,
+                            working.opening.authority,
+                            crate::storage::ConfigCommitmentWriteGas::Intrinsic,
+                        )
+                        .unwrap();
+                    save(account, &mut working).unwrap();
+                });
                 let before = storage.gas_used();
                 StorageCtx::enter(&mut storage, || {
                     let mut tree = load(account).unwrap().unwrap();

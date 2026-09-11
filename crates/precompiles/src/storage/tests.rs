@@ -11,6 +11,11 @@ pub(super) fn exercise_rollback(provider: &mut impl PrecompileStorageProvider) {
     let initial = B256::repeat_byte(2);
     let rotated = B256::repeat_byte(3);
     let outer = provider.checkpoint();
+    assert!(
+        provider
+            .set_config_commitment(address, initial, WriteGas::PrepaidTreeUpdate)
+            .is_err()
+    );
     provider
         .set_config_commitment(address, initial, WriteGas::Intrinsic)
         .unwrap();
@@ -21,6 +26,13 @@ pub(super) fn exercise_rollback(provider: &mut impl PrecompileStorageProvider) {
         ));
         assert_eq!(provider.config_commitment(address).unwrap(), initial);
     }
+    let inner = provider.checkpoint();
+    provider
+        .set_config_commitment(address, rotated, WriteGas::PrepaidTreeUpdate)
+        .unwrap();
+    assert_eq!(provider.config_commitment(address).unwrap(), rotated);
+    provider.checkpoint_revert(inner);
+    assert_eq!(provider.config_commitment(address).unwrap(), initial);
     let inner = provider.checkpoint();
     provider
         .set_config_commitment(address, rotated, WriteGas::Precompile)
