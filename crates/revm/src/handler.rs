@@ -826,13 +826,6 @@ where
         GasTracker::new(tx_gas_limit, remaining, reservoir)
     }
 
-    fn system_call_gas(&self, evm: &mut Self::Evm) -> GasTracker {
-        // REVM 43 no longer calls `tx_gas` for system calls. Clear the previous
-        // transaction's intrinsic-OOG flag while retaining REVM's system-call gas budget.
-        evm.intrinsic_gas_exceeds_limit = false;
-        MainnetHandler::<Self::Evm, Self::Error, _>::default().system_call_gas(evm)
-    }
-
     /// Overridden execution method that handles AA vs standard transactions.
     ///
     /// Dispatches based on transaction type:
