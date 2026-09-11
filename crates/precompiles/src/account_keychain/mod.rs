@@ -81,6 +81,7 @@ pub enum StoredSignatureType {
     Secp256k1,
     P256,
     WebAuthn,
+    Multisig,
 }
 
 impl TryFrom<SignatureType> for StoredSignatureType {
@@ -91,6 +92,7 @@ impl TryFrom<SignatureType> for StoredSignatureType {
             SignatureType::Secp256k1 => Ok(Self::Secp256k1),
             SignatureType::P256 => Ok(Self::P256),
             SignatureType::WebAuthn => Ok(Self::WebAuthn),
+            SignatureType::Multisig => Ok(Self::Multisig),
             _ => Err(AccountKeychainError::invalid_signature_type().into()),
         }
     }
@@ -102,6 +104,7 @@ impl From<StoredSignatureType> for SignatureType {
             StoredSignatureType::Secp256k1 => Self::Secp256k1,
             StoredSignatureType::P256 => Self::P256,
             StoredSignatureType::WebAuthn => Self::WebAuthn,
+            StoredSignatureType::Multisig => Self::Multisig,
         }
     }
 }
@@ -239,7 +242,7 @@ impl AccountKeychain {
     /// - `ExpiryInPast` — expiry must be in the future (enforced since T0)
     /// - `KeyAlreadyExists` — a key with this ID is already registered
     /// - `KeyAlreadyRevoked` — revoked keys cannot be re-authorized
-    /// - `InvalidSignatureType` — must be Secp256k1, P256, or WebAuthn
+    /// - `InvalidSignatureType` — unsupported type, including Multisig before T12
     pub fn authorize_key(
         &mut self,
         msg_sender: Address,
@@ -271,6 +274,22 @@ impl AccountKeychain {
         // Admin keys are explicit access-key rows; the root key remains implicit.
         if is_admin && key_id == msg_sender {
             return Err(AccountKeychainError::invalid_key_id().into());
+        }
+        if signature_type == SignatureType::Multisig {
+            if !self.storage.spec().is_t12() {
+                return Err(AccountKeychainError::invalid_signature_type().into());
+            }
+            if key_id == msg_sender {
+                return Err(AccountKeychainError::invalid_key_id().into());
+            }
+            // Naming a delegate does not register it or require a configuration witness.
+            // Its direct owner quorum is checked when the grant is used.
+            if self
+                .storage
+                .with_account_info(key_id, |info| Ok(!info.is_empty_code_hash()))?
+            {
+                return Err(AccountKeychainError::invalid_key_id().into());
+            }
         }
 
         // T0+: Expiry must be in the future (also catches expiry == 0 which means "key doesn't exist")
@@ -1204,6 +1223,10 @@ impl AccountKeychain {
             return Err(AccountKeychainError::key_expired().into());
         }
 
+        if key.signature_type == StoredSignatureType::Multisig && !self.storage.spec().is_t12() {
+            return Err(AccountKeychainError::invalid_signature_type().into());
+        }
+
         Ok(key)
     }
 
@@ -1214,7 +1237,7 @@ impl AccountKeychain {
     /// * `key_id` - The key identifier to validate
     /// * `current_timestamp` - Current block timestamp for expiry check
     /// * `expected_sig_type` - The signature type from the actual signature (0=Secp256k1, 1=P256,
-    ///   2=WebAuthn). Pass `None` to skip validation (for backward compatibility pre-T1).
+    ///   2=WebAuthn, 3=Multisig). Pass `None` to skip validation (for backward compatibility pre-T1).
     ///
     /// # Errors
     /// - `KeyAlreadyRevoked` — the key has been permanently revoked
@@ -1741,6 +1764,216 @@ mod tests {
 
     fn unrestricted_restrictions() -> KeyRestrictions {
         tempo_alloy::provider::keychain::KeyRestrictions::default().into()
+    }
+
+    #[test]
+    fn test_t12_delegate_types_and_rotation_preserve_grants() -> eyre::Result<()> {
+        use crate::storage::ConfigCommitmentWriteGas;
+
+        for configurable_parent in [false, true] {
+            for signature_type in [SignatureType::Secp256k1, SignatureType::Multisig] {
+                let mut storage = HashMapStorageProvider::new_with_spec(1, TempoHardfork::T12);
+                storage.set_timestamp(U256::from(1_000));
+                let parent = Address::repeat_byte(0x11);
+                let delegate = Address::repeat_byte(0x22);
+                StorageCtx::enter(&mut storage, || -> eyre::Result<()> {
+                    let mut keychain = AccountKeychain::new();
+                    keychain.initialize()?;
+                    keychain.set_tx_origin(parent)?;
+                    if configurable_parent {
+                        keychain.storage.set_config_commitment(
+                            parent,
+                            B256::repeat_byte(1),
+                            ConfigCommitmentWriteGas::Intrinsic,
+                        )?;
+                    }
+                    let mut restrictions = unrestricted_restrictions();
+                    restrictions.expiry = 100_000;
+                    restrictions.allowAnyCalls = false;
+                    restrictions.allowedCalls = vec![CallScope {
+                        target: DEFAULT_FEE_TOKEN,
+                        selectorRules: vec![],
+                    }];
+                    restrictions.enforceLimits = true;
+                    restrictions.limits = vec![TokenLimit {
+                        token: DEFAULT_FEE_TOKEN,
+                        amount: U256::from(100),
+                        period: 86400,
+                    }];
+                    keychain.authorize_key(parent, delegate, signature_type, restrictions, None)?;
+                    // A grant alone must not register its configurable delegate.
+                    assert_eq!(keychain.storage.config_commitment(delegate)?, B256::ZERO);
+                    keychain.verify_and_update_spending(
+                        parent,
+                        delegate,
+                        DEFAULT_FEE_TOKEN,
+                        U256::from(30),
+                    )?;
+                    let row = keychain.keys[parent][delegate].read()?;
+                    let admin = Address::repeat_byte(0x33);
+                    keychain.authorize_admin_key(parent, admin, signature_type, None)?;
+                    let admin_row = keychain.keys[parent][admin].read()?;
+                    let limit_key = AccountKeychain::spending_limit_key(parent, delegate);
+                    let limits = keychain.spending_limits[limit_key][DEFAULT_FEE_TOKEN].read()?;
+                    for account in [parent, delegate, admin] {
+                        keychain.storage.set_config_commitment(
+                            account,
+                            B256::repeat_byte(2),
+                            ConfigCommitmentWriteGas::Intrinsic,
+                        )?;
+                    }
+                    assert_eq!(keychain.keys[parent][delegate].read()?, row);
+                    assert_eq!(keychain.keys[parent][admin].read()?, admin_row);
+                    assert!(keychain.is_admin_key(parent, admin)?);
+                    let calls = keychain.get_allowed_calls(getAllowedCallsCall {
+                        account: parent,
+                        keyId: delegate,
+                    })?;
+                    assert!(calls.isScoped);
+                    assert_eq!(calls.scopes.len(), 1);
+                    assert_eq!(calls.scopes[0].target, DEFAULT_FEE_TOKEN);
+                    assert_eq!(
+                        keychain.spending_limits[limit_key][DEFAULT_FEE_TOKEN].read()?,
+                        limits
+                    );
+                    // T12 retains primitive delegate authority even with a commitment.
+                    keychain.verify_and_update_spending(
+                        parent,
+                        delegate,
+                        DEFAULT_FEE_TOKEN,
+                        U256::from(70),
+                    )?;
+                    assert!(
+                        keychain
+                            .verify_and_update_spending(
+                                parent,
+                                delegate,
+                                DEFAULT_FEE_TOKEN,
+                                U256::from(1)
+                            )
+                            .is_err()
+                    );
+                    Ok(())
+                })?;
+            }
+        }
+        Ok(())
+    }
+
+    #[test]
+    fn test_multisig_delegate_grant_guards() -> eyre::Result<()> {
+        use crate::Precompile;
+
+        #[derive(Clone, Copy, Debug)]
+        enum Selector {
+            Authorize,
+            WithWitness,
+            Admin,
+        }
+        #[derive(Clone, Copy, Debug, PartialEq, Eq)]
+        enum Delegate {
+            CodeFree,
+            SelfGrant,
+            Bytecode,
+            Delegation,
+        }
+        for spec in [TempoHardfork::T11, TempoHardfork::T12] {
+            for selector in [Selector::Authorize, Selector::WithWitness, Selector::Admin] {
+                for delegate_case in [
+                    Delegate::CodeFree,
+                    Delegate::SelfGrant,
+                    Delegate::Bytecode,
+                    Delegate::Delegation,
+                ] {
+                    let mut storage = HashMapStorageProvider::new_with_spec(1, spec);
+                    let parent = Address::repeat_byte(0x11);
+                    let delegate = if delegate_case == Delegate::SelfGrant {
+                        parent
+                    } else {
+                        Address::repeat_byte(0x22)
+                    };
+                    StorageCtx::enter(&mut storage, || -> eyre::Result<()> {
+                        let mut keychain = AccountKeychain::new();
+                        keychain.initialize()?;
+                        keychain.set_tx_origin(parent)?;
+                        if matches!(delegate_case, Delegate::Bytecode | Delegate::Delegation) {
+                            let code = if delegate_case == Delegate::Bytecode {
+                                vec![0x60, 0x00]
+                            } else {
+                                [vec![0xef, 0x01, 0x00], Address::repeat_byte(0x33).to_vec()]
+                                    .concat()
+                            };
+                            keychain
+                                .storage
+                                .set_code(delegate, Bytecode::new_raw(code.into()))?;
+                        }
+                        let calldata = match selector {
+                            Selector::Authorize => authorizeKeyCall {
+                                keyId: delegate,
+                                signatureType: SignatureType::Multisig,
+                                config: unrestricted_restrictions(),
+                            }
+                            .abi_encode(),
+                            Selector::WithWitness => authorizeKeyWithWitnessCall {
+                                keyId: delegate,
+                                signatureType: SignatureType::Multisig,
+                                config: unrestricted_restrictions(),
+                                witness: B256::ZERO,
+                            }
+                            .abi_encode(),
+                            Selector::Admin => IAccountKeychain::authorizeAdminKeyCall {
+                                keyId: delegate,
+                                signatureType: SignatureType::Multisig,
+                                witness: B256::ZERO,
+                            }
+                            .abi_encode(),
+                        };
+                        let result = keychain.call(&calldata, parent)?;
+                        assert_eq!(
+                            !result.is_revert(),
+                            spec.is_t12() && delegate_case == Delegate::CodeFree,
+                            "{spec:?}, {selector:?}, {delegate_case:?}: {result:?}"
+                        );
+                        if result.is_revert() {
+                            assert_eq!(
+                                keychain.keys[parent][delegate].read()?.expiry,
+                                0,
+                                "{spec:?}, {selector:?}, {delegate_case:?}"
+                            );
+                        }
+                        Ok(())
+                    })?;
+                }
+            }
+        }
+        Ok(())
+    }
+
+    #[test]
+    fn test_multisig_delegate_use_checks_type_and_fork() -> eyre::Result<()> {
+        for spec in [TempoHardfork::T11, TempoHardfork::T12] {
+            let mut storage = HashMapStorageProvider::new_with_spec(1, spec);
+            StorageCtx::enter(&mut storage, || -> eyre::Result<()> {
+                let mut keychain = AccountKeychain::new();
+                let parent = Address::repeat_byte(1);
+                let delegate = Address::repeat_byte(2);
+                keychain.keys[parent][delegate].write(AuthorizedKey {
+                    signature_type: StoredSignatureType::Multisig,
+                    expiry: u64::MAX,
+                    ..Default::default()
+                })?;
+                for expected in [None, Some(0), Some(3)] {
+                    assert_eq!(
+                        keychain
+                            .validate_keychain_authorization(parent, delegate, 0, expected)
+                            .is_ok(),
+                        spec.is_t12() && expected != Some(0),
+                    );
+                }
+                Ok(())
+            })?;
+        }
+        Ok(())
     }
 
     #[test]
