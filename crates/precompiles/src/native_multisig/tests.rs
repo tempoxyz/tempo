@@ -6,6 +6,7 @@ use crate::{
 use alloy::sol_types::{SolCall, SolInterface};
 use revm::precompile::PrecompileStatus;
 use tempo_chainspec::hardfork::TempoHardfork;
+use tempo_primitives::TempoAddressExt;
 
 #[test]
 fn account_namespace_excludes_reserved_addresses() {

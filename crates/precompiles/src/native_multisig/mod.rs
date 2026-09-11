@@ -8,16 +8,14 @@ use crate::{
     storage::{ConfigCommitmentWriteGas, Handler},
 };
 use alloy::primitives::{Address, B256};
+pub use tempo_chainspec::is_valid_native_account as valid_account;
 use tempo_contracts::precompiles::{
     INativeMultisig, NATIVE_MULTISIG_ADDRESS, NativeMultisigError, NativeMultisigEvent,
 };
 use tempo_precompiles_macros::contract;
-use tempo_primitives::{
-    TempoAddressExt,
-    transaction::{
-        MultisigConfig, MultisigConfigError, MultisigOwner,
-        multisig::MULTISIG_ACCOUNT_CREATE2_PREIMAGE_LEN,
-    },
+use tempo_primitives::transaction::{
+    MultisigConfig, MultisigConfigError, MultisigOwner,
+    multisig::MULTISIG_ACCOUNT_CREATE2_PREIMAGE_LEN,
 };
 
 #[contract(addr = NATIVE_MULTISIG_ADDRESS)]
@@ -116,17 +114,6 @@ impl NativeMultisig {
             .filter(|factory| !factory.is_zero())
             .ok_or_else(|| NativeMultisigError::invalid_config().into())
     }
-}
-
-pub fn valid_account(account: Address, spec: tempo_chainspec::hardfork::TempoHardfork) -> bool {
-    !account.is_zero()
-        && !account.is_virtual()
-        && !account.is_precompile(spec)
-        && !revm::precompile::Precompiles::new(revm::precompile::PrecompileSpecId::from_spec_id(
-            spec.into(),
-        ))
-        .contains(&account)
-        && account.zone_portal_id().is_none()
 }
 
 pub const fn keccak_cost(bytes: usize) -> u64 {
