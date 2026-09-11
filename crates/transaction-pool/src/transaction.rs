@@ -58,25 +58,10 @@ pub struct TempoPooledTransaction {
     expiring_nonce_slot: OnceLock<Option<U256>>,
     /// Cached prepared [`TempoTxEnv`] for payload building.
     tx_env: OnceLock<TempoTxEnv>,
-    /// Keychain key expiry timestamp (set during validation for keychain-signed txs).
-    ///
-    /// `Some(expiry)` for keychain transactions where expiry < u64::MAX (finite expiry).
-    /// `None` for non-keychain transactions or keys that never expire.
-    key_expiry: OnceLock<Option<u64>>,
-    /// Resolved fee token cached at validation time.
-    ///
-    /// Used by `keychain_subject()` so pool maintenance matches against the same token
-    /// that was validated without requiring state access.
-    resolved_fee_token: OnceLock<Address>,
-    /// Cached keychain subject for the signer of an inline `KeyAuthorization`.
-    key_authorization_signer_subject: OnceLock<Option<KeychainSubject>>,
+    /// Refreshed in place after canonical revalidation, preserving the pool entry.
+    validation_metadata: Arc<parking_lot::RwLock<ValidationMetadata>>,
     /// Cached target key of an inline `KeyAuthorization`.
     key_authorization_target_subject: OnceLock<Option<KeyAuthorizationTargetSubject>>,
-    /// Cached TIP20 balance storage slot for the fee payer.
-    ///
-    /// Stores `(fee_token, balance_slot)` so the payload builder's state-aware iterator
-    /// can check if the fee payer's balance was modified without recomputing the keccak.
-    fee_balance_slot: OnceLock<Option<(Address, U256)>>,
 }
 
 impl TempoPooledTransaction {
@@ -125,11 +110,8 @@ impl TempoPooledTransaction {
             nonce_key_slot: OnceLock::new(),
             expiring_nonce_slot: OnceLock::new(),
             tx_env: OnceLock::new(),
-            key_expiry: OnceLock::new(),
-            resolved_fee_token: OnceLock::new(),
-            key_authorization_signer_subject: OnceLock::new(),
+            validation_metadata: Default::default(),
             key_authorization_target_subject: OnceLock::new(),
-            fee_balance_slot: OnceLock::new(),
         }
     }
 
@@ -174,6 +156,65 @@ impl TempoPooledTransaction {
             let slot = NonceManager::new().nonces[sender][nonce_key].slot();
             Some(slot)
         })
+    }
+
+    /// Parent eligibility is distinct from a configurable signer's owner witness.
+    pub(crate) fn authorization_parent(&self) -> Option<Address> {
+        let aa = self.inner().as_aa()?;
+        if let Some(keychain) = aa.signature().as_keychain() {
+            Some(keychain.user_address)
+        } else {
+            aa.tx().key_authorization.as_ref().map(|_| self.sender())
+        }
+    }
+
+    pub(crate) fn has_configurable_dependencies(&self) -> bool {
+        self.authorization_parent().is_some()
+            || self.configurable_grant_recipient().is_some()
+            || self.inner().as_aa().is_some_and(|tx| {
+                tx.signature().as_multisig().is_some()
+                    || tx
+                        .tx()
+                        .key_authorization
+                        .as_ref()
+                        .is_some_and(|grant| grant.signature.as_multisig().is_some())
+            })
+    }
+
+    /// A named configurable grant recipient must remain code-free, but need not be registered
+    /// or provide an owner witness until it actually signs a transaction.
+    pub(crate) fn configurable_grant_recipient(&self) -> Option<Address> {
+        let grant = self.inner().as_aa()?.tx().key_authorization.as_ref()?;
+        (grant.key_type == tempo_primitives::transaction::SignatureType::Multisig)
+            .then_some(grant.key_id)
+    }
+
+    /// Accounts whose configuration and code authorize this transaction (at most two roles).
+    /// An ordinary access-key use depends on the delegate, not its parent's owner quorum.
+    /// Yields the transaction signer before the grant signer, with duplicate accounts omitted.
+    pub(crate) fn configurable_signers(&self) -> impl Iterator<Item = Address> {
+        let tx = self.inner().as_aa();
+        let signer = tx.and_then(|tx| {
+            let signature = tx.signature();
+            signature
+                .as_multisig()
+                .or_else(|| {
+                    signature
+                        .as_keychain()
+                        .and_then(|key| key.signature.as_multisig())
+                })
+                .map(|multisig| multisig.account())
+        });
+        let grant_signer = tx
+            .and_then(|tx| {
+                tx.tx()
+                    .key_authorization
+                    .as_ref()
+                    .and_then(|grant| grant.signature.as_multisig())
+                    .map(|multisig| multisig.account())
+            })
+            .filter(|account| Some(*account) != signer);
+        [signer, grant_signer].into_iter().flatten()
     }
 
     /// Returns whether this is a payment transaction according to the T5+ builder criteria.
@@ -221,20 +262,18 @@ impl TempoPooledTransaction {
     /// Used for revocation matching: if the access key that signed an inline authorization is
     /// revoked while the transaction is still in the pool, the transaction must be revalidated.
     pub fn key_authorization_signer_subject(&self) -> Option<KeychainSubject> {
-        *self.key_authorization_signer_subject.get_or_init(|| {
-            let aa_tx = self.inner().as_aa()?;
-            let key_authorization = aa_tx.tx().key_authorization.as_ref()?;
-            let key_id = key_authorization.recover_signer().ok()?;
-            let account = key_authorization
-                .authorization
-                .account
-                .unwrap_or(*self.sender_ref());
-            let fee_token = self.effective_fee_token();
-            Some(KeychainSubject {
-                account,
-                key_id,
-                fee_token,
-            })
+        let aa_tx = self.inner().as_aa()?;
+        let key_authorization = aa_tx.tx().key_authorization.as_ref()?;
+        let key_id = key_authorization.recover_signer().ok()?;
+        let account = key_authorization
+            .authorization
+            .account
+            .unwrap_or(*self.sender_ref());
+        let fee_token = self.effective_fee_token();
+        Some(KeychainSubject {
+            account,
+            key_id,
+            fee_token,
         })
     }
 
@@ -351,7 +390,7 @@ impl TempoPooledTransaction {
     /// Pass `Some(expiry)` for keys with finite expiry, `None` for non-keychain txs
     /// or keys that never expire.
     pub fn set_key_expiry(&self, expiry: Option<u64>) {
-        let _ = self.key_expiry.set(expiry);
+        self.validation_metadata.write().key_expiry = expiry;
     }
 
     /// Returns the keychain key expiry timestamp, if set during validation.
@@ -359,7 +398,7 @@ impl TempoPooledTransaction {
     /// Returns `Some(expiry)` for keychain transactions with finite expiry.
     /// Returns `None` if not a keychain tx, key never expires, or not yet validated.
     pub fn key_expiry(&self) -> Option<u64> {
-        self.key_expiry.get().copied().flatten()
+        self.validation_metadata.read().key_expiry
     }
 
     /// Returns whether the transaction or its signing key expires by `cutoff`.
@@ -377,7 +416,7 @@ impl TempoPooledTransaction {
     /// transaction's explicit `fee_token` field or from fee-manager state. Pool
     /// maintenance code should not call this directly.
     pub fn set_resolved_fee_token(&self, fee_token: Address) {
-        let _ = self.resolved_fee_token.set(fee_token);
+        self.validation_metadata.write().resolved_fee_token = Some(fee_token);
     }
 
     /// Clones this transaction while discarding validation-derived caches.
@@ -395,11 +434,21 @@ impl TempoPooledTransaction {
             tx_env: self.tx_env.clone(),
             key_authorization_target_subject: self.key_authorization_target_subject.clone(),
             // Discard state-dependent caches before revalidation.
-            fee_balance_slot: OnceLock::new(),
-            key_expiry: OnceLock::new(),
-            resolved_fee_token: OnceLock::new(),
-            key_authorization_signer_subject: OnceLock::new(),
+            validation_metadata: Default::default(),
         }
+    }
+
+    pub(crate) fn refresh_validation_metadata(&self, validated: &Self) {
+        let metadata = validated.validation_metadata.read().clone();
+        *self.validation_metadata.write() = metadata;
+    }
+
+    pub(crate) fn set_validation_generation(&self, generation: u64) {
+        self.validation_metadata.write().generation = Some(generation);
+    }
+
+    pub(crate) fn validation_generation(&self) -> Option<u64> {
+        self.validation_metadata.read().generation
     }
 
     /// Returns the fee token cached during transaction validation, if available.
@@ -408,7 +457,7 @@ impl TempoPooledTransaction {
     /// the pool validator. Prefer [`Self::effective_fee_token`] in maintenance code
     /// that needs the token a transaction will actually use to pay fees.
     pub fn resolved_fee_token(&self) -> Option<Address> {
-        self.resolved_fee_token.get().copied()
+        self.validation_metadata.read().resolved_fee_token
     }
 
     /// Returns the effective fee token for pool maintenance and accounting.
@@ -425,16 +474,12 @@ impl TempoPooledTransaction {
     }
 
     /// Returns the `(fee_token, balance_slot)` pair for this transaction's fee payer,
-    /// lazily computed and cached on first access.
+    /// recomputed from the current validated fee token after revalidation.
     pub fn fee_balance_slot(&self) -> Option<(Address, U256)> {
-        *self.fee_balance_slot.get_or_init(|| {
-            let fee_token = self
-                .resolved_fee_token()
-                .unwrap_or_else(|| self.inner().fee_token().unwrap_or(DEFAULT_FEE_TOKEN));
-            let fee_payer = self.fee_payer().ok()?;
-            let slot = TIP20Token::from_address_unchecked(fee_token).balances[fee_payer].slot();
-            Some((fee_token, slot))
-        })
+        let fee_token = self.effective_fee_token();
+        let fee_payer = self.fee_payer().ok()?;
+        let slot = TIP20Token::from_address_unchecked(fee_token).balances[fee_payer].slot();
+        Some((fee_token, slot))
     }
 
     /// Returns true when the transaction fee is paid by the transaction sender.
@@ -526,6 +571,13 @@ impl TempoPooledTransaction {
             }
         }
     }
+}
+
+#[derive(Debug, Clone, Default)]
+struct ValidationMetadata {
+    generation: Option<u64>,
+    key_expiry: Option<u64>,
+    resolved_fee_token: Option<Address>,
 }
 
 /// Tempo-specific transaction pool rejection reasons.
@@ -974,6 +1026,88 @@ mod tests {
 
     const TEMPO_TRANSACTION_ARBITRARY_SIZE: usize = 4096;
 
+    #[test]
+    fn configurable_dependencies_follow_authorization_roles() {
+        use tempo_primitives::transaction::{KeyAuthorization, KeychainSignature, SignatureType};
+        let parent = Address::repeat_byte(0x22);
+        let delegate = Address::repeat_byte(0x33);
+        let signature = crate::test_utils::configurable_signature;
+        let pooled = |outer: TempoSignature, grant: Option<Address>| {
+            let tx = TempoTransaction {
+                key_authorization: grant.map(|account| {
+                    KeyAuthorization::unrestricted(1, SignatureType::Secp256k1, delegate)
+                        .into_signed(TempoSignature::Multisig(signature(account)))
+                }),
+                ..Default::default()
+            };
+            TempoPooledTransaction::new(Recovered::new_unchecked(
+                TempoTxEnvelope::AA(AASigned::new_unhashed(tx, outer)),
+                parent,
+            ))
+        };
+        let direct = TempoSignature::Multisig(signature(parent));
+        let delegated =
+            TempoSignature::Keychain(KeychainSignature::new(parent, signature(delegate)));
+        for (outer, grant) in [
+            (direct.clone(), None),
+            (delegated.clone(), None),
+            (TempoSignature::default(), Some(parent)),
+            (
+                TempoSignature::Keychain(KeychainSignature::new(
+                    parent,
+                    PrimitiveSignature::default(),
+                )),
+                None,
+            ),
+        ] {
+            assert!(pooled(outer, grant).has_configurable_dependencies());
+        }
+        assert!(!pooled(TempoSignature::default(), None).has_configurable_dependencies());
+        assert!(
+            TxBuilder::eip1559(parent)
+                .build()
+                .configurable_signers()
+                .next()
+                .is_none()
+        );
+        assert_eq!(
+            pooled(direct.clone(), None)
+                .configurable_signers()
+                .collect::<Vec<_>>(),
+            vec![parent]
+        );
+        assert_eq!(
+            pooled(delegated.clone(), None)
+                .configurable_signers()
+                .collect::<Vec<_>>(),
+            vec![delegate]
+        );
+        assert_eq!(
+            pooled(delegated, Some(parent))
+                .configurable_signers()
+                .collect::<Vec<_>>(),
+            vec![delegate, parent]
+        );
+        assert_eq!(
+            pooled(direct, Some(parent))
+                .configurable_signers()
+                .collect::<Vec<_>>(),
+            vec![parent]
+        );
+        assert!(
+            pooled(TempoSignature::default(), None)
+                .configurable_signers()
+                .next()
+                .is_none()
+        );
+        assert_eq!(
+            pooled(TempoSignature::default(), Some(parent))
+                .configurable_signers()
+                .collect::<Vec<_>>(),
+            vec![parent]
+        );
+    }
+
     fn signed_aa_envelope(tx: TempoTransaction) -> (TempoTxEnvelope, Address) {
         let signer = PrivateKeySigner::from_bytes(&B256::with_last_byte(1)).unwrap();
         let signature = signer
@@ -984,6 +1118,29 @@ mod tests {
             TempoSignature::Primitive(PrimitiveSignature::Secp256k1(signature)),
         );
         (signed.into(), signer.address())
+    }
+
+    #[test]
+    fn configurable_grant_recipient_is_eligibility_not_quorum_dependency() {
+        use tempo_primitives::transaction::{KeyAuthorization, SignatureType};
+        let parent = Address::repeat_byte(0x22);
+        let delegate = Address::repeat_byte(0x33);
+        for key_type in [SignatureType::Secp256k1, SignatureType::Multisig] {
+            let transaction = TxBuilder::aa(parent)
+                .key_authorization(
+                    KeyAuthorization::unrestricted(1, key_type, delegate)
+                        .into_signed(alloy_primitives::Signature::test_signature()),
+                )
+                .build();
+            let configurable = key_type == SignatureType::Multisig;
+            assert_eq!(
+                transaction.configurable_grant_recipient(),
+                configurable.then_some(delegate)
+            );
+            assert!(transaction.has_configurable_dependencies());
+            assert!(transaction.configurable_signers().next().is_none());
+            assert_eq!(transaction.authorization_parent(), Some(parent));
+        }
     }
 
     fn raw_pooled_transaction(
