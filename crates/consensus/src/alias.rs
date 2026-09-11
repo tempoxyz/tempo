@@ -126,6 +126,16 @@ pub(crate) mod marshal {
         TContext:
             Clock + Metrics + Spawner + Storage + BufferPooler + Rng + CryptoRng + Send + 'static,
     {
+        let execution_finalized = execution_node
+            .provider
+            .canonical_in_memory_state()
+            .get_finalized_num_hash();
+        info!(
+            execution_layer.finalized_height = ?execution_finalized.map(|point| point.number),
+            execution_layer.finalized_hash = ?execution_finalized.map(|point| point.hash),
+            "execution layer finalized watermark at consensus startup"
+        );
+
         let finalizations_by_height = storage::init_finalizations_archive(
             &context,
             &config.partition_prefix,
@@ -218,6 +228,7 @@ pub(crate) mod marshal {
         info!(
             marshal_stored = ?marshal_floor,
             selected_floor = %startup_floor_height,
+            finalized_floor = %last_finalized_height,
             "setting marshal sync floor"
         );
 
