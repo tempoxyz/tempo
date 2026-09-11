@@ -198,7 +198,9 @@ where
         ctx: &BuilderContext<Node>,
         pool: Pool,
     ) -> eyre::Result<Self::Network> {
-        let mut network = ctx.network_builder().await?;
+        // Account extensions are not represented by the snap wire protocol.
+        let config = ctx.build_network_config(ctx.network_config_builder()?.with_snap(false));
+        let mut network = reth_ethereum::network::NetworkManager::builder(config).await?;
         if let Some(gossip) = self.gossip {
             let gossip = gossip.install();
             network.network_mut().add_rlpx_sub_protocol(gossip);
@@ -535,7 +537,8 @@ where
 #[derive(Debug, Clone, Copy)]
 #[non_exhaustive]
 pub struct TempoConsensusBuilder {
-    /// Whether to allow BAL hashes before Amsterdam activation.
+    /// Must be false. Building consensus rejects BAL hashes because BALs do not support
+    /// configurable account extensions.
     pub allow_bal_hashes: bool,
 }
 
@@ -543,7 +546,7 @@ pub struct TempoConsensusBuilder {
 impl Default for TempoConsensusBuilder {
     fn default() -> Self {
         Self {
-            allow_bal_hashes: cfg!(feature = "bal"),
+            allow_bal_hashes: false,
         }
     }
 }
@@ -557,6 +560,10 @@ where
     type Consensus = TempoConsensus<<Node::Types as NodeTypes>::ChainSpec>;
 
     async fn build_consensus(self, ctx: &BuilderContext<Node>) -> eyre::Result<Self::Consensus> {
+        eyre::ensure!(
+            !self.allow_bal_hashes,
+            "BAL hashes are unsupported with configurable account extensions"
+        );
         Ok(TempoConsensus::new_with_bal_hashes(
             ctx.chain_spec(),
             self.allow_bal_hashes,

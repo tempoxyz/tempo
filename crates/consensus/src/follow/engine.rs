@@ -150,7 +150,7 @@ impl<TUpstream> Config<TUpstream> {
             network_client,
             Arc::new(TempoConsensus::new_with_bal_hashes(
                 self.execution_node.chain_spec(),
-                cfg!(feature = "bal"),
+                false,
             )),
         );
 

@@ -35,6 +35,24 @@ fn create_test_journal() -> Journal<CacheDB<EmptyDB>> {
     Journal::new(db)
 }
 
+#[test_case::test_case(TempoHardfork::T1A; "historical")]
+#[test_case::test_case(TempoHardfork::T4; "state_gas")]
+fn system_call_clears_previous_intrinsic_oog(spec: TempoHardfork) {
+    for stale_oog in [false, true] {
+        let mut test = TestHandlerEvm::tx(spec, |tx| {
+            tx.gas_limit = 250_000_000;
+            tx.kind = TxKind::Call(Address::repeat_byte(0x42));
+        });
+        test.evm.intrinsic_gas_exceeds_limit = stale_oog;
+        let result = test.handler.run_system_call(&mut test.evm).unwrap();
+        assert!(
+            result.is_success(),
+            "{spec:?}, stale={stale_oog}: {result:?}"
+        );
+        assert!(!test.evm.intrinsic_gas_exceeds_limit);
+    }
+}
+
 type TestHandlerEvmResult<T> =
     Result<T, EVMError<<CacheDB<EmptyDB> as revm::Database>::Error, TempoInvalidTransaction>>;
 
