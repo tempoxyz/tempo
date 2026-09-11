@@ -11,6 +11,7 @@ Use --input-dir with CSVs from another execution, or --output-dir for scratch ou
 
 import argparse
 import csv
+import re
 from itertools import product
 from pathlib import Path
 
@@ -21,7 +22,10 @@ import matplotlib.pyplot as plt
 from matplotlib.backends.backend_pdf import PdfPages
 from matplotlib.ticker import FuncFormatter
 
-PRICE = 600_000_000  # attodollars / gas, the fixture price, not a live quote
+FLOOR = 600_000_000
+CAP = 12_000_000_000  # TIP-1067, crates/hardfork/src/constants.rs
+PRICE = CAP  # default: cap, zero priority fee; not a live quote
+PRICE_NAME = "TIP-1067 cap"
 SIGNATURE_MICRO = 1_000  # advertised Privy enterprise reference, not every plan
 POLICIES = ["Unlimited", "Lifetime cap", "Periodic cap", "2 caps + 2 targets"]
 ACTORS = [
@@ -32,9 +36,9 @@ ACTORS = [
 STORED, CARRIED, VENDOR = "#667085", "#087f8c", "#bd441b"
 
 
-def fee_micro(gas):
+def fee_micro(gas, price=None):
     """Round each transaction up to one token micro-unit, as the protocol does."""
-    return (gas * PRICE + 10**12 - 1) // 10**12
+    return (gas * (PRICE if price is None else price) + 10**12 - 1) // 10**12
 
 
 def strict_break_even(stored_first, carried_first, stored_repeat, carried_repeat):
@@ -152,6 +156,7 @@ def comparisons(matrix):
                 "delegate": delegate,
                 "sponsored": sponsored,
                 "policy": policy,
+                "modeled_price_attodollars_per_gas": PRICE,
                 "stored_first_gas": sf,
                 "carried_first_gas": cf,
                 "stored_repeat_gas": sr,
@@ -171,6 +176,12 @@ def comparisons(matrix):
                 "stored_cheaper_from_use_rounded_fee": fee_break or no_crossing,
                 "carried_first_micro_pathusd": rounded[1],
                 "carried_repeat_micro_pathusd": rounded[3],
+                "stored_first_micro_pathusd": rounded[0],
+                "stored_repeat_micro_pathusd": rounded[2],
+                "carried_first_floor_micro_pathusd": fee_micro(cf, FLOOR),
+                "carried_first_cap_micro_pathusd": fee_micro(cf, CAP),
+                "carried_repeat_floor_micro_pathusd": fee_micro(cr, FLOOR),
+                "carried_repeat_cap_micro_pathusd": fee_micro(cr, CAP),
                 "first_fee_headroom_to_1000_micro": SIGNATURE_MICRO - rounded[1],
             }
         )
@@ -187,7 +198,7 @@ def footer(fig):
     fig.text(
         0.04,
         0.015,
-        "Fixture price: 600,000,000 attodollars/gas; per-transaction micro-unit rounding. "
+        f"{PRICE_NAME}: {PRICE:,} attodollars/gas; zero priority fee; per-transaction micro-unit rounding. "
         "pathUSD treated as $1.\n"
         "Privy: advertised $0.001/signature reference, excludes chain fees; free tier/contract terms differ. "
         "No relay, custody, or production-throughput measurement.",
@@ -231,8 +242,19 @@ def overview(matrix, rows):
             title=f"First transaction · {title}",
             xticks=x,
             xticklabels=POLICIES,
-            ylim=(0, 0.00195),
-            ylabel="Chain fee at fixture price",
+            ylim=(
+                0,
+                max(
+                    0.0011,
+                    max(
+                        fee_micro(gas(matrix, m, p, 0, native)) / 1e6
+                        for m in ["stored", "carried"]
+                        for p in x
+                    )
+                    * 1.18,
+                ),
+            ),
+            ylabel=f"Chain fee at {PRICE_NAME}",
         )
         axis.tick_params(axis="x", labelsize=9)
         dollar_axis(axis)
@@ -287,7 +309,18 @@ def overview(matrix, rows):
     axis.set(
         xlabel="Scenario rank (sorted separately for each phase)",
         ylabel="Carried chain fee",
-        ylim=(0, 0.0011),
+        ylim=(
+            0,
+            max(
+                0.0011,
+                max(
+                    fee_micro(int(r["gas"])) / 1e6
+                    for r in rows
+                    if r["mode"] == "carried"
+                )
+                * 1.1,
+            ),
+        ),
         title="All 288 carried scenarios × 3 phases",
     )
     dollar_axis(axis)
@@ -351,7 +384,7 @@ def boundary_plot(edges, failures):
             yticks=range(len(names)),
             yticklabels=names,
             title="Sponsor pays" if sponsored == "true" else "Sender pays",
-            xlabel="Chain fee at fixture price",
+            xlabel=f"Chain fee at {PRICE_NAME}",
         )
         axis.invert_yaxis()
         axis.xaxis.set_major_formatter(FuncFormatter(lambda value, _: f"${value:.4f}"))
@@ -407,7 +440,15 @@ def boundary_plot(edges, failures):
 
 def write_report(path, matrix, rows, edges, table):
     carried = [int(r["gas"]) for r in rows if r["mode"] == "carried"]
-    maximum = max(carried + [int(r["gas"]) for r in edges if r["mode"] == "carried"])
+    carried_edges = [
+        int(r["gas"])
+        for r in edges
+        if r["mode"] == "carried" and r["status"] == "success"
+    ]
+    maximum = max(carried + carried_edges)
+    below_main = sum(fee_micro(g) < SIGNATURE_MICRO for g in carried)
+    below_edges = sum(fee_micro(g) < SIGNATURE_MICRO for g in carried_edges)
+    budget_gas = (SIGNATURE_MICRO - 1) * 10**12 // PRICE
     sample = next(
         r
         for r in table
@@ -417,6 +458,16 @@ def write_report(path, matrix, rows, edges, table):
     )
     first_fee = sample["carried_first_micro_pathusd"]
     repeat_fee = sample["carried_repeat_micro_pathusd"]
+
+    # Compare total carried fees (+ optional issuance) with N paid signatures.
+    # Vendor chain fees are deliberately excluded, so this is a sufficient target.
+    def vendor_crossing(issuance):
+        if repeat_fee >= SIGNATURE_MICRO:
+            return "not reached under this repeat model"
+        return max(
+            1, (first_fee + issuance - repeat_fee) // (SIGNATURE_MICRO - repeat_fee) + 1
+        )
+
     sponsor_repeat = gas(matrix, "carried", 3, 1, sponsored="true")
     batch_gas = int(
         next(
@@ -432,7 +483,24 @@ def write_report(path, matrix, rows, edges, table):
         "",
         (
             "Generated by `uv run scripts/plot-tip-1086.py` from the committed receipt CSVs. "
-            "This is a fee analysis of the draft, not a new execution or a throughput benchmark."
+            "This is fixed-gas repricing of the draft, not a new execution at the cap or a throughput benchmark."
+        ),
+        "",
+        "## Fee basis",
+        "",
+        (
+            f"Selected model: **{PRICE_NAME}, {PRICE:,} attodollars/gas**, zero priority fee, pathUSD treated as $1. "
+            "[TIP-1067](../../tips/tip-1067.md) and [the protocol constants](../../crates/hardfork/src/constants.rs) "
+            "set the basefee floor to 600,000,000 and cap to 12,000,000,000 attodollars/gas. "
+            "The previous fixture model used the floor: the cap is 20× higher before token rounding. "
+            "This models the protocol cap, not the current live block basefee or an all-in fee ceiling; priority fees are extra."
+        ),
+        "",
+        (
+            "Every modeled receipt uses `ceil(gas × price / 10^12) / 10^6` pathUSD. "
+            "Gas, transaction outcome, budgets, and state paths are held fixed; the original receipt CSVs retain their measured fixture gas. "
+            "[All 1,784 rows repriced at floor and cap](tip-1086-repriced.csv) include failures and leave the two rejected setups unpriced. "
+            "Use `--base-fee floor` to regenerate the earlier pricing basis in a separate `--output-dir`."
         ),
         "",
         "![First use and lifecycle](tip-1086-costs.png)",
@@ -452,10 +520,20 @@ def write_report(path, matrix, rows, edges, table):
         ),
         "",
         (
-            f"All **{len(carried)} carried main-matrix receipts and 16 carried boundary receipts** have chain fees "
-            f"below $0.001 at the fixture price, treating pathUSD as $1. The largest is **{maximum:,} gas / "
+            f"**{below_main}/{len(carried)} carried main-matrix receipts and {below_edges}/{len(carried_edges)} carried boundary receipts** have chain fees "
+            f"strictly below $0.001 at {PRICE_NAME}. The largest is **{maximum:,} gas / "
             f"{fee_micro(maximum) / 1e6:.6f} pathUSD**. Invalid transactions are not zero-cost alternatives."
         ),
+        "",
+        (
+            f"The strict sub-$0.001 target permits at most **{budget_gas:,} gas** after micro-unit rounding "
+            f"at the modeled price. The representative limited first use needs **{sample['carried_first_gas'] - budget_gas:,} gas "
+            f"({100 * (1 - budget_gas / sample['carried_first_gas']):.1f}%)** removed to meet it. "
+            "At the cap, a 250,000-gas new storage word alone costs $0.003; optimizing certificate verification "
+            "alone cannot bring that initialization below $0.001. Unlimited grants avoid that counter but have a different policy."
+        )
+        if PRICE == CAP
+        else "The cap analysis is the default output; this alternate run uses floor pricing.",
         "",
         (
             "These are full chain fees compared with a signature-service fee alone. Privy-backed transactions "
@@ -473,6 +551,12 @@ def write_report(path, matrix, rows, edges, table):
             "retains its per-transaction charge."
         ),
         "",
+        (
+            f"Under the representative identical-repeat model, cumulative carried chain fees become strictly lower "
+            f"than $0.001 per vendor signature from use **{vendor_crossing(0)}**, or use **{vendor_crossing(SIGNATURE_MICRO)}** "
+            "including one paid certificate-issuance signature. These thresholds exclude vendor chain fees and all relay charges."
+        ),
+        "",
         "## Choose the mode before issuing the grant",
         "",
         (
@@ -484,7 +568,7 @@ def write_report(path, matrix, rows, edges, table):
         (
             f"For primitive sender-paid two-cap/two-target grants, the gas crossover is use "
             f"**{sample['stored_cheaper_from_use_gas']}**, while the rounded-fee crossover is use "
-            f"**{sample['stored_cheaper_from_use_rounded_fee']}** at this fixture price."
+            f"**{sample['stored_cheaper_from_use_rounded_fee']}** at {PRICE_NAME}."
         ),
         "",
         "| Policy | Fee payer | Carried first (pathUSD) | Carried repeat (pathUSD) | Stored cheaper from use (gas / fee) |",
@@ -521,8 +605,10 @@ def write_report(path, matrix, rows, edges, table):
         "",
         (
             f"The measured 32-call carried batch uses {batch_gas:,} gas total ({batch_gas / 32:,.1f} gas per transfer on average). "
+            f"At the modeled price that is ${fee_micro(batch_gas) / 1e6:.6f} per batch, or ${fee_micro(batch_gas) / 1e6 / 32:.6f} per transfer. "
             "That amortizes one certificate, signature, and initial counter over a batch; independent "
-            "transactions have different atomicity and latency, and batch-size scaling has not been measured here."
+            "transactions have different atomicity and latency, and batch-size scaling has not been measured here. "
+            "A vendor can also sign one batch: per-transfer amortization is not a like-for-like advantage over one vendor signature per batch."
         ),
         "",
         (
@@ -559,13 +645,62 @@ def write_report(path, matrix, rows, edges, table):
 
 
 def main():
+    global PRICE, PRICE_NAME
     default = Path(__file__).resolve().parents[1] / "docs" / "benchmarks"
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--input-dir", type=Path, default=default)
     parser.add_argument("--output-dir", type=Path, default=default)
+    parser.add_argument("--base-fee", choices=["cap", "floor"], default="cap")
     args = parser.parse_args()
+    constants = (
+        Path(__file__).resolve().parents[1] / "crates/hardfork/src/constants.rs"
+    ).read_text()
+    cap = re.search(r"pub const TEMPO_T7_BASE_FEE_CAP: u64 = ([0-9_]+);", constants)
+    assert cap and int(cap[1].replace("_", "")) == CAP, (
+        "Update model to match protocol cap"
+    )
+    assert "TEMPO_T7_BASE_FEE_FLOOR: u64 = TEMPO_T7_BASE_FEE_CAP / 20;" in constants
+    assert FLOOR == CAP // 20
+    PRICE = CAP if args.base_fee == "cap" else FLOOR
+    PRICE_NAME = f"TIP-1067 {args.base_fee}"
+    assert fee_micro(83_250, CAP) == 999 and fee_micro(83_251, CAP) == 1000
+    assert fee_micro(0, CAP) == 0 and fee_micro(1, CAP) == 1
     args.output_dir.mkdir(parents=True, exist_ok=True)
     matrix, rows, edges, failures = load_data(args.input_dir)
+    repriced = []
+    for kind, source in [("matrix", rows), ("boundary", edges), ("failure", failures)]:
+        for row in source:
+            rejected = kind == "boundary" and row["status"] != "success"
+            repriced.append(
+                {
+                    "kind": kind,
+                    **{
+                        key: row.get(key, "")
+                        for key in [
+                            "mode",
+                            "parent",
+                            "delegate",
+                            "configurable",
+                            "sponsored",
+                            "policy",
+                            "phase",
+                            "edge",
+                            "failure",
+                        ]
+                    },
+                    "status": "rejected"
+                    if rejected
+                    else ("failed-execution" if kind == "failure" else "success"),
+                    "gas": row["gas"],
+                    "floor_micro_pathusd": ""
+                    if rejected
+                    else fee_micro(int(row["gas"]), FLOOR),
+                    "cap_micro_pathusd": ""
+                    if rejected
+                    else fee_micro(int(row["gas"]), CAP),
+                }
+            )
+    write_csv(args.output_dir / "tip-1086-repriced.csv", repriced)
     table = comparisons(matrix)
     assert len(table) == 288
     assert all(float(r["first_saving_percent"]) > 0 for r in table)
