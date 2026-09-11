@@ -13,8 +13,8 @@ use crate::{
     ACCOUNT_KEYCHAIN_ADDRESS, STORAGE_CREDITS_ADDRESS,
     account_keychain::AccountKeychain,
     error::{Result, TempoPrecompileError},
-    storage::{Handler, LayoutCtx, StorableType, StorageCtx},
-    tip20::TIP20Token,
+    storage::{Handler, LayoutCtx, StorableType, StorageCtx, StorageKey},
+    tip20::tip20_slots,
 };
 use alloy::primitives::{Address, U256};
 use std::{cell::OnceCell, collections::BTreeMap};
@@ -321,9 +321,9 @@ impl NonCreditableSlots {
 
     #[inline]
     fn fee_balance_slot(&self) -> U256 {
-        *self.fee_balance_slot.get_or_init(|| {
-            TIP20Token::from_address_unchecked(self.fee_token).balances[self.fee_payer].slot()
-        })
+        *self
+            .fee_balance_slot
+            .get_or_init(|| self.fee_payer.mapping_slot(tip20_slots::BALANCES))
     }
 
     #[inline]
@@ -374,7 +374,10 @@ impl StorageCreditDeltas {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::storage::{StorageCtx, hashmap::HashMapStorageProvider};
+    use crate::{
+        storage::{StorageCtx, hashmap::HashMapStorageProvider},
+        tip20::TIP20Token,
+    };
 
     #[test]
     fn test_set_mode_budget_semantics() -> eyre::Result<()> {
