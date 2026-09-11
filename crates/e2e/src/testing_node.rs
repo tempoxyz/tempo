@@ -330,7 +330,8 @@ where
             time_to_retry_nullify_broadcast: Duration::from_secs(10),
             time_for_peer_response: Duration::from_secs(2),
             views_to_track: 10,
-            views_until_leader_skip: 5,
+            // Floor (10s nullify rebroadcast) plus one 2s proposal wait.
+            inactive_time_before_leader_skip: Duration::from_secs(12),
             proposal_return_budget: self.proposal_return_budget,
             fcu_heartbeat_interval: Duration::from_secs(3),
             feed_state: self.feed_state.clone(),
@@ -673,7 +674,7 @@ mod tests {
                     .linkage(Link {
                         latency: Duration::from_millis(10),
                         jitter: Duration::from_millis(1),
-                        success_rate: 1.0,
+                        success_rate: commonware_utils::probability!(1.0),
                     })
                     .epoch_length(100);
 

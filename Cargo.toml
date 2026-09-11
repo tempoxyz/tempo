@@ -216,9 +216,9 @@ reth-revm = { git = "https://github.com/paradigmxyz/reth", rev = "8e55cc5", feat
 revm = { version = "43.0.2", features = ["optional_fee_charge"], default-features = false }
 revm-inspectors = "0.43.0"
 
-alloy-json-abi = { version = "1.7.2", default-features = false }
-alloy-primitives = { version = "1.7.2", default-features = false }
-alloy-sol-types = { version = "1.7.2", default-features = false }
+alloy-json-abi = { version = "1.7.3", default-features = false }
+alloy-primitives = { version = "1.7.3", default-features = false }
+alloy-sol-types = { version = "1.7.3", default-features = false }
 
 alloy = { version = "2.4.2", default-features = false }
 alloy-consensus = { version = "2.4.2", default-features = false }
@@ -245,19 +245,19 @@ alloy-signer-local = "2.4.2"
 alloy-signer-trezor = "2.4.2"
 alloy-transport = "2.4.2"
 
-commonware-actor = "2026.7.1"
-commonware-broadcast = "2026.7.1"
-commonware-codec = "2026.7.1"
-commonware-consensus = "2026.7.1"
-commonware-cryptography = { version = "2026.7.1", default-features = false }
-commonware-macros = "2026.7.1"
-commonware-math = "2026.7.1"
-commonware-p2p = "2026.7.1"
-commonware-parallel = "2026.7.1"
-commonware-resolver = "2026.7.1"
-commonware-runtime = "2026.7.1"
-commonware-storage = "2026.7.1"
-commonware-utils = "2026.7.1"
+commonware-actor = "2026.9.0"
+commonware-broadcast = "2026.9.0"
+commonware-codec = "2026.9.0"
+commonware-consensus = "2026.9.0"
+commonware-cryptography = { version = "2026.9.0", default-features = false }
+commonware-macros = "2026.9.0"
+commonware-math = "2026.9.0"
+commonware-p2p = "2026.9.0"
+commonware-parallel = "2026.9.0"
+commonware-resolver = "2026.9.0"
+commonware-runtime = "2026.9.0"
+commonware-storage = "2026.9.0"
+commonware-utils = "2026.9.0"
 
 arbitrary = { version = "1.4", features = ["derive"] }
 async-lock = "3.4.2"
@@ -294,7 +294,7 @@ minisign-verify = "0.2"
 once_cell = { version = "1.19", default-features = false, features = ["critical-section"] }
 p256 = { version = "0.13", default-features = false }
 parking_lot = "0.12.5"
-prometheus-client = "0.24.0"
+prometheus-client = "0.25.1"
 sysinfo = { version = "0.38.4", default-features = false, features = ["disk", "system"] }
 proptest = "1.9"
 proptest-arbitrary-interop = "0.1.0"
@@ -410,20 +410,3 @@ vergen-git2 = "10.0.1"
 # reth-trie-db = { path = "../reth/crates/trie/db" }
 # reth-trie-parallel = { path = "../reth/crates/trie/parallel" }
 # reth-trie-sparse = { path = "../reth/crates/trie/sparse" }
-
-[patch.crates-io]
-
-# Commonware v2026.7.0
-# commonware-actor = { git = "https://github.com/commonwarexyz/monorepo", rev = "5950bf7179bb0650a57ed58b9e0478822944b335" }
-# commonware-broadcast = { git = "https://github.com/commonwarexyz/monorepo", rev = "5950bf7179bb0650a57ed58b9e0478822944b335" }
-# commonware-codec = { git = "https://github.com/commonwarexyz/monorepo", rev = "5950bf7179bb0650a57ed58b9e0478822944b335" }
-# commonware-consensus = { git = "https://github.com/commonwarexyz/monorepo", rev = "5950bf7179bb0650a57ed58b9e0478822944b335" }
-# commonware-cryptography = { git = "https://github.com/commonwarexyz/monorepo", rev = "5950bf7179bb0650a57ed58b9e0478822944b335" }
-# commonware-macros = { git = "https://github.com/commonwarexyz/monorepo", rev = "5950bf7179bb0650a57ed58b9e0478822944b335" }
-# commonware-math = { git = "https://github.com/commonwarexyz/monorepo", rev = "5950bf7179bb0650a57ed58b9e0478822944b335" }
-# commonware-p2p = { git = "https://github.com/commonwarexyz/monorepo", rev = "5950bf7179bb0650a57ed58b9e0478822944b335" }
-# commonware-parallel = { git = "https://github.com/commonwarexyz/monorepo", rev = "5950bf7179bb0650a57ed58b9e0478822944b335" }
-# commonware-resolver = { git = "https://github.com/commonwarexyz/monorepo", rev = "5950bf7179bb0650a57ed58b9e0478822944b335" }
-# commonware-runtime = { git = "https://github.com/commonwarexyz/monorepo", rev = "5950bf7179bb0650a57ed58b9e0478822944b335" }
-# commonware-storage = { git = "https://github.com/commonwarexyz/monorepo", rev = "5950bf7179bb0650a57ed58b9e0478822944b335" }
-# commonware-utils = { git = "https://github.com/commonwarexyz/monorepo", rev = "5950bf7179bb0650a57ed58b9e0478822944b335" }
