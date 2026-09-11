@@ -1,0 +1,79 @@
+[
+  {
+    "type": "constructor",
+    "stateMutability": "nonpayable",
+    "inputs": [
+      {
+        "name": "arg0",
+        "type": "address"
+      },
+      {
+        "name": "arg1",
+        "type": "address"
+      },
+      {
+        "name": "arg2",
+        "type": "address"
+      },
+      {
+        "name": "arg3",
+        "type": "address"
+      },
+      {
+        "name": "arg4",
+        "type": "address"
+      },
+      {
+        "name": "arg5",
+        "type": "address"
+      },
+      {
+        "name": "arg6",
+        "type": "uint256"
+      },
+      {
+        "name": "arg7",
+        "type": "uint256"
+      }
+    ]
+  },
+  {
+    "type": "function",
+    "name": "setRecipientAllowed",
+    "stateMutability": "nonpayable",
+    "inputs": [
+      {
+        "name": "arg0",
+        "type": "address"
+      },
+      {
+        "name": "arg1",
+        "type": "bool"
+      }
+    ],
+    "outputs": []
+  },
+  {
+    "type": "function",
+    "name": "setTakerAllowed",
+    "stateMutability": "nonpayable",
+    "inputs": [
+      {
+        "name": "arg0",
+        "type": "address"
+      },
+      {
+        "name": "arg1",
+        "type": "bool"
+      }
+    ],
+    "outputs": []
+  },
+  {
+    "type": "function",
+    "name": "unpause",
+    "stateMutability": "nonpayable",
+    "inputs": [],
+    "outputs": []
+  }
+]

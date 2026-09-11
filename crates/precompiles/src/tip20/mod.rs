@@ -32,10 +32,10 @@ use crate::{
     tip403_registry::{ALLOW_ALL_POLICY_ID, AuthRole, ITIP403Registry, TIP403Registry},
 };
 use alloy::{
-    primitives::{Address, B256, U256, keccak256, uint},
+    primitives::{Address, B256, U256, uint},
     sol_types::SolValue,
 };
-use std::sync::LazyLock;
+use keccak_const::Keccak256;
 use tempo_chainspec::hardfork::TempoHardfork;
 use tempo_contracts::precompiles::{
     DECIMALS as TIP20_DECIMALS, ReceivePolicyGuardError, STABLECOIN_DEX_ADDRESS,
@@ -110,26 +110,35 @@ pub struct TIP20Token {
 }
 
 /// EIP-712 Permit typehash: keccak256("Permit(address owner,address spender,uint256 value,uint256 nonce,uint256 deadline)")
-pub static PERMIT_TYPEHASH: LazyLock<B256> = LazyLock::new(|| {
-    keccak256(b"Permit(address owner,address spender,uint256 value,uint256 nonce,uint256 deadline)")
-});
+pub const PERMIT_TYPEHASH: B256 = B256::new(
+    Keccak256::new()
+        .update(
+            b"Permit(address owner,address spender,uint256 value,uint256 nonce,uint256 deadline)",
+        )
+        .finalize(),
+);
 
 /// EIP-712 domain separator typehash
-pub static EIP712_DOMAIN_TYPEHASH: LazyLock<B256> = LazyLock::new(|| {
-    keccak256(b"EIP712Domain(string name,string version,uint256 chainId,address verifyingContract)")
-});
+pub const EIP712_DOMAIN_TYPEHASH: B256 = B256::new(
+    Keccak256::new()
+        .update(
+            b"EIP712Domain(string name,string version,uint256 chainId,address verifyingContract)",
+        )
+        .finalize(),
+);
 
 /// EIP-712 version hash: keccak256("1")
-pub static VERSION_HASH: LazyLock<B256> = LazyLock::new(|| keccak256(b"1"));
+pub const VERSION_HASH: B256 = B256::new(Keccak256::new().update(b"1").finalize());
 
 /// Role hash for pausing token transfers.
-pub static PAUSE_ROLE: LazyLock<B256> = LazyLock::new(|| keccak256(b"PAUSE_ROLE"));
+pub const PAUSE_ROLE: B256 = B256::new(Keccak256::new().update(b"PAUSE_ROLE").finalize());
 /// Role hash for unpausing token transfers.
-pub static UNPAUSE_ROLE: LazyLock<B256> = LazyLock::new(|| keccak256(b"UNPAUSE_ROLE"));
+pub const UNPAUSE_ROLE: B256 = B256::new(Keccak256::new().update(b"UNPAUSE_ROLE").finalize());
 /// Role hash for minting new tokens.
-pub static ISSUER_ROLE: LazyLock<B256> = LazyLock::new(|| keccak256(b"ISSUER_ROLE"));
+pub const ISSUER_ROLE: B256 = B256::new(Keccak256::new().update(b"ISSUER_ROLE").finalize());
 /// Role hash that authorizes burning tokens from blocked accounts.
-pub static BURN_BLOCKED_ROLE: LazyLock<B256> = LazyLock::new(|| keccak256(b"BURN_BLOCKED_ROLE"));
+pub const BURN_BLOCKED_ROLE: B256 =
+    B256::new(Keccak256::new().update(b"BURN_BLOCKED_ROLE").finalize());
 
 #[rustfmt::skip]
 /// System custody addresses added to burn-blocked protection at each hardfork.
@@ -219,7 +228,7 @@ impl TIP20Token {
     /// This role identifier grants permission to pause the token contract.
     /// The role is computed as `keccak256("PAUSE_ROLE")`.
     pub fn pause_role() -> B256 {
-        *PAUSE_ROLE
+        PAUSE_ROLE
     }
 
     /// Returns the UNPAUSE_ROLE constant
@@ -227,7 +236,7 @@ impl TIP20Token {
     /// This role identifier grants permission to unpause the token contract.
     /// The role is computed as `keccak256("UNPAUSE_ROLE")`.
     pub fn unpause_role() -> B256 {
-        *UNPAUSE_ROLE
+        UNPAUSE_ROLE
     }
 
     /// Returns the ISSUER_ROLE constant
@@ -235,7 +244,7 @@ impl TIP20Token {
     /// This role identifier grants permission to mint and burn tokens.
     /// The role is computed as `keccak256("ISSUER_ROLE")`.
     pub fn issuer_role() -> B256 {
-        *ISSUER_ROLE
+        ISSUER_ROLE
     }
 
     /// Returns the BURN_BLOCKED_ROLE constant
@@ -243,7 +252,7 @@ impl TIP20Token {
     /// This role identifier grants permission to burn tokens from blocked accounts.
     /// The role is computed as `keccak256("BURN_BLOCKED_ROLE")`.
     pub fn burn_blocked_role() -> B256 {
-        *BURN_BLOCKED_ROLE
+        BURN_BLOCKED_ROLE
     }
 
     /// Returns the token balance of `account`.
@@ -401,7 +410,7 @@ impl TIP20Token {
     /// # Errors
     /// - `Unauthorized` — caller does not hold `PAUSE_ROLE`
     pub fn pause(&mut self, msg_sender: Address, _call: ITIP20::pauseCall) -> Result<()> {
-        self.check_role(msg_sender, *PAUSE_ROLE)?;
+        self.check_role(msg_sender, PAUSE_ROLE)?;
         self.paused.write(true)?;
 
         self.emit_event(TIP20Event::pause_state_update(msg_sender, true))
@@ -412,7 +421,7 @@ impl TIP20Token {
     /// # Errors
     /// - `Unauthorized` — caller does not hold `UNPAUSE_ROLE`
     pub fn unpause(&mut self, msg_sender: Address, _call: ITIP20::unpauseCall) -> Result<()> {
-        self.check_role(msg_sender, *UNPAUSE_ROLE)?;
+        self.check_role(msg_sender, UNPAUSE_ROLE)?;
         self.paused.write(false)?;
 
         self.emit_event(TIP20Event::pause_state_update(msg_sender, false))
@@ -615,7 +624,7 @@ impl TIP20Token {
         if hardfork.is_t3() {
             self.check_not_paused()?;
         }
-        self.check_role(msg_sender, *BURN_BLOCKED_ROLE)?;
+        self.check_role(msg_sender, BURN_BLOCKED_ROLE)?;
 
         if check_protected {
             // Prevent burning from system custody addresses to protect accounting invariants.
@@ -661,7 +670,7 @@ impl TIP20Token {
         if self.storage.spec().is_t3() {
             self.check_not_paused()?;
         }
-        self.check_role(msg_sender, *ISSUER_ROLE)?;
+        self.check_role(msg_sender, ISSUER_ROLE)?;
 
         self._transfer(msg_sender, &Recipient::direct(Address::ZERO), amount)?;
 
@@ -714,9 +723,9 @@ impl TIP20Token {
         let chain_id = U256::from(self.storage.chain_id());
 
         let encoded = (
-            *EIP712_DOMAIN_TYPEHASH,
+            EIP712_DOMAIN_TYPEHASH,
             name_hash,
-            *VERSION_HASH,
+            VERSION_HASH,
             chain_id,
             self.address,
         )
@@ -743,7 +752,7 @@ impl TIP20Token {
         let nonce = self.permit_nonces[call.owner].read()?;
         let struct_hash = self.storage.keccak256(
             &(
-                *PERMIT_TYPEHASH,
+                PERMIT_TYPEHASH,
                 call.owner,
                 call.spender,
                 call.value,
@@ -1112,7 +1121,7 @@ impl TIP20Token {
         memo: B256,
     ) -> Result<Option<(U256, Recipient)>> {
         let to = Recipient::resolve(to)?;
-        self.check_role(msg_sender, *ISSUER_ROLE)?;
+        self.check_role(msg_sender, ISSUER_ROLE)?;
         let total_supply = self.total_supply()?;
 
         if self.storage.spec().is_t3() {
@@ -1598,7 +1607,7 @@ pub(crate) mod tests {
         test_util::{TIP20Setup, VIRTUAL_MASTER, register_virtual_master, setup_storage},
         tip403_registry::{ALLOW_ALL_POLICY_ID, REJECT_ALL_POLICY_ID},
     };
-    use alloy::primitives::{Address, FixedBytes, IntoLogData, U256, hex};
+    use alloy::primitives::{Address, FixedBytes, IntoLogData, U256, hex, keccak256};
     use rand_08::{Rng, distributions::Alphanumeric, thread_rng};
     use tempo_chainspec::hardfork::TempoHardfork;
     use tempo_contracts::precompiles::{
@@ -2375,7 +2384,7 @@ pub(crate) mod tests {
         StorageCtx::enter(&mut storage, || {
             let mut token = TIP20Setup::create("Test", "TST", admin)
                 .with_issuer(admin)
-                .with_role(admin, *PAUSE_ROLE)
+                .with_role(admin, PAUSE_ROLE)
                 .with_mint(user, amount)
                 .apply()?;
 
@@ -3350,7 +3359,7 @@ pub(crate) mod tests {
         StorageCtx::enter(&mut storage, || {
             let mut token = TIP20Setup::create("Token", "TKN", admin)
                 .with_issuer(admin)
-                .with_role(burner, *BURN_BLOCKED_ROLE)
+                .with_role(burner, BURN_BLOCKED_ROLE)
                 .with_mint(TIP_FEE_MANAGER_ADDRESS, amount)
                 .with_mint(STABLECOIN_DEX_ADDRESS, amount)
                 .with_mint(TIP20_CHANNEL_RESERVE_ADDRESS, amount)
@@ -3381,7 +3390,7 @@ pub(crate) mod tests {
         StorageCtx::enter(&mut storage, || {
             let mut token = TIP20Setup::create("Token", "TKN", admin)
                 .with_issuer(admin)
-                .with_role(burner, *BURN_BLOCKED_ROLE)
+                .with_role(burner, BURN_BLOCKED_ROLE)
                 .apply()?;
 
             for protected in [
@@ -3419,7 +3428,7 @@ pub(crate) mod tests {
         StorageCtx::enter(&mut storage, || {
             let mut token = TIP20Setup::create("Token", "TKN", admin)
                 .with_issuer(admin)
-                .with_role(burner, *BURN_BLOCKED_ROLE)
+                .with_role(burner, BURN_BLOCKED_ROLE)
                 .with_mint(TIP20_CHANNEL_RESERVE_ADDRESS, amount)
                 .apply()?;
 
@@ -4176,7 +4185,7 @@ pub(crate) mod tests {
             let domain_separator = compute_domain_separator(token_name, token_address);
             let struct_hash = keccak256(
                 (
-                    *PERMIT_TYPEHASH,
+                    PERMIT_TYPEHASH,
                     signer.address(),
                     spender,
                     value,
@@ -4204,9 +4213,9 @@ pub(crate) mod tests {
         fn compute_domain_separator(token_name: &str, token_address: Address) -> B256 {
             keccak256(
                 (
-                    *EIP712_DOMAIN_TYPEHASH,
+                    EIP712_DOMAIN_TYPEHASH,
                     keccak256(token_name.as_bytes()),
-                    *VERSION_HASH,
+                    VERSION_HASH,
                     U256::from(CHAIN_ID),
                     token_address,
                 )
@@ -4471,7 +4480,7 @@ pub(crate) mod tests {
 
             StorageCtx::enter(&mut storage, || {
                 let mut token = TIP20Setup::create("Test", "TST", admin)
-                    .with_role(admin, *PAUSE_ROLE)
+                    .with_role(admin, PAUSE_ROLE)
                     .apply()?;
 
                 // Pause the token
@@ -4692,7 +4701,7 @@ pub(crate) mod tests {
         StorageCtx::enter(&mut storage, || {
             let mut token = TIP20Setup::create("Test", "TST", admin)
                 .with_issuer(admin)
-                .with_role(admin, *PAUSE_ROLE)
+                .with_role(admin, PAUSE_ROLE)
                 .apply()?;
             token.pause(admin, ITIP20::pauseCall {})?;
 
@@ -4725,7 +4734,7 @@ pub(crate) mod tests {
             StorageCtx::enter(&mut storage, || {
                 let mut token = TIP20Setup::create("Test", "TST", admin)
                     .with_issuer(admin)
-                    .with_role(admin, *PAUSE_ROLE)
+                    .with_role(admin, PAUSE_ROLE)
                     .apply()?;
 
                 token.pause(admin, ITIP20::pauseCall {})?;
@@ -4761,7 +4770,7 @@ pub(crate) mod tests {
             StorageCtx::enter(&mut storage, || {
                 let mut token = TIP20Setup::create("Test", "TST", admin)
                     .with_issuer(admin)
-                    .with_role(admin, *PAUSE_ROLE)
+                    .with_role(admin, PAUSE_ROLE)
                     .with_mint(admin, amount * U256::from(2))
                     .apply()?;
 
@@ -4817,8 +4826,8 @@ pub(crate) mod tests {
 
                 let mut token = TIP20Setup::create("Test", "TST", admin)
                     .with_issuer(admin)
-                    .with_role(admin, *PAUSE_ROLE)
-                    .with_role(admin, *BURN_BLOCKED_ROLE)
+                    .with_role(admin, PAUSE_ROLE)
+                    .with_role(admin, BURN_BLOCKED_ROLE)
                     .with_mint(blocked, amount)
                     .apply()?;
 

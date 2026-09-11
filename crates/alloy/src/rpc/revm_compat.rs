@@ -94,7 +94,6 @@ impl TempoTransactionRequest {
                 tx_hash: B256::ZERO,
                 valid_before: valid_before.map(NonZeroU64::get),
                 valid_after: valid_after.map(NonZeroU64::get),
-                subblock_transaction: false,
                 override_key_id: key_id,
                 expiring_nonce_idx: None,
             }))

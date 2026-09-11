@@ -110,7 +110,9 @@ mod tests {
     use commonware_codec::{Encode as _, ReadExt as _};
     use commonware_consensus::types::Epoch;
     use commonware_cryptography::{
-        Signer as _, bls12381::dkg::feldman_desmedt as dkg, ed25519::PrivateKey,
+        Signer as _,
+        bls12381::{dkg::feldman_desmedt as dkg, primitives::sharing::Mode},
+        ed25519::PrivateKey,
     };
     use commonware_math::algebra::Random as _;
     use commonware_utils::{N3f1, TryFromIterator as _, ordered};
@@ -128,7 +130,7 @@ mod tests {
         player_keys.sort_by_key(|key| key.public_key());
         let (output, _shares) = dkg::deal::<_, _, N3f1>(
             &mut rng,
-            Default::default(),
+            Mode::NonZeroCounter,
             ordered::Set::try_from_iter(player_keys.iter().map(|key| key.public_key())).unwrap(),
         )
         .unwrap();

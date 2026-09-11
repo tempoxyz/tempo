@@ -283,7 +283,7 @@ impl<N: Network<TransactionRequest = TempoTransactionRequest>> TxFiller<N> for N
 
         if *nonce == NONCE_NOT_FETCHED || !self.cache_enabled {
             *nonce = if nonce_key.is_zero() {
-                provider.get_transaction_count(from).await?
+                provider.get_transaction_count(from).pending().await?
             } else {
                 let contract = INonce::new(NONCE_PRECOMPILE_ADDRESS, provider);
                 contract
@@ -314,12 +314,19 @@ impl<N: Network<TransactionRequest = TempoTransactionRequest>> TxFiller<N> for N
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::{TempoNetwork, fillers::Random2DNonceFiller, rpc::TempoTransactionRequest};
+    use crate::{
+        TempoNetwork, fillers::Random2DNonceFiller, provider::TempoProviderExt,
+        rpc::TempoTransactionRequest,
+    };
     use alloy::sol_types::SolCall;
+    use alloy_json_rpc::RequestPacket;
     use alloy_network::TransactionBuilder;
     use alloy_primitives::{Bytes, ruint::aliases::U256};
     use alloy_provider::{ProviderBuilder, mock::Asserter};
+    use alloy_rpc_client::RpcClient;
+    use alloy_transport::mock::MockTransport;
     use eyre;
+    use tower::ServiceExt;
 
     #[tokio::test]
     async fn test_random_2d_nonce_filler() -> eyre::Result<()> {
@@ -412,6 +419,49 @@ mod tests {
 
         assert_eq!(first, 10);
         assert_eq!(second, 42);
+
+        Ok(())
+    }
+
+    fn pending_nonce_provider(account: Address) -> impl Provider<TempoNetwork> {
+        let asserter = Asserter::new();
+        asserter.push_success(&"0x5");
+        let transport = MockTransport::new(asserter).map_request(move |packet: RequestPacket| {
+            let request = packet.as_single().expect("expected a single nonce request");
+            assert_eq!(request.method(), "eth_getTransactionCount");
+            assert_eq!(
+                serde_json::from_str::<serde_json::Value>(request.params().unwrap().get()).unwrap(),
+                serde_json::json!([account, "pending"])
+            );
+            packet
+        });
+        ProviderBuilder::<_, _, TempoNetwork>::default()
+            .connect_client(RpcClient::new(transport, true))
+    }
+
+    #[tokio::test]
+    async fn protocol_nonce_filler_uses_pending_transaction_count() -> eyre::Result<()> {
+        let filler = NonceKeyFiller::default();
+        let account = Address::repeat_byte(0x11);
+        let provider = pending_nonce_provider(account);
+        let mut request = TempoTransactionRequest::default().with_nonce_key(U256::ZERO);
+        request.set_from(account);
+
+        let nonce = TxFiller::<TempoNetwork>::prepare(&filler, &provider, &request).await?;
+        assert_eq!(nonce, 5);
+
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn protocol_nonce_key_query_uses_pending_transaction_count() -> eyre::Result<()> {
+        let account = Address::repeat_byte(0x11);
+        let provider = pending_nonce_provider(account);
+
+        let nonce = provider
+            .get_transaction_count_with_nonce_key(account, U256::ZERO)
+            .await?;
+        assert_eq!(nonce, 5);
 
         Ok(())
     }

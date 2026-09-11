@@ -41,7 +41,7 @@ fn many_bad_links() {
     let link = Link {
         latency: Duration::from_millis(200),
         jitter: Duration::from_millis(150),
-        success_rate: 0.75,
+        success_rate: commonware_utils::probability!(0.75),
     };
 
     // FIXME(janis): figure out how to run this test in a loop.
@@ -83,7 +83,7 @@ fn reach_height_20_with_a_few_bad_links() {
     let link = Link {
         latency: Duration::from_millis(80),
         jitter: Duration::from_millis(10),
-        success_rate: 0.98,
+        success_rate: commonware_utils::probability!(0.98),
     };
 
     let setup = Setup::new()

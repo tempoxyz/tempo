@@ -109,11 +109,13 @@ impl TempoPooledTransaction {
             calc_gas_balance_spending(transaction.gas_limit(), transaction.max_fee_per_gas())
                 .saturating_add(value);
         let fee_token_cost = cost - value;
+        let in_memory_size = transaction.size();
         Self {
             inner: EthPooledTransaction {
                 transaction,
                 cost,
                 encoded_length,
+                in_memory_size,
                 blob_sidecar: EthBlobTransactionSidecar::None,
                 blob_cell_availability: None,
             },

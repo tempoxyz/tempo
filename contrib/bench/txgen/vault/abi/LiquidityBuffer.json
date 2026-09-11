@@ -1,0 +1,24 @@
+[
+  {
+    "type": "constructor",
+    "stateMutability": "nonpayable",
+    "inputs": [
+      {
+        "name": "arg0",
+        "type": "address"
+      },
+      {
+        "name": "arg1",
+        "type": "address"
+      },
+      {
+        "name": "arg2",
+        "type": "bytes32"
+      },
+      {
+        "name": "arg3",
+        "type": "uint16"
+      }
+    ]
+  }
+]

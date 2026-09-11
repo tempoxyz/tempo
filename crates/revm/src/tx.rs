@@ -42,9 +42,6 @@ pub struct TempoBatchCallEnv {
     /// Nonce key for 2D nonce system
     pub nonce_key: U256,
 
-    /// Whether the transaction is a subblock transaction.
-    pub subblock_transaction: bool,
-
     /// Optional key authorization for provisioning access keys
     pub key_authorization: Option<SignedKeyAuthorization>,
 
@@ -127,13 +124,6 @@ impl TempoTxEnv {
     /// Returns true if transaction carries a fee payer signature.
     pub fn has_fee_payer_signature(&self) -> bool {
         self.fee_payer.is_some()
-    }
-
-    /// Returns true if the transaction is a subblock transaction.
-    pub fn is_subblock_transaction(&self) -> bool {
-        self.tempo_tx_env
-            .as_ref()
-            .is_some_and(|aa| aa.subblock_transaction)
     }
 
     /// Returns the semantic execution context.
@@ -387,7 +377,6 @@ impl FromRecoveredTx<AASigned> for TempoTxEnv {
                     .map(|auth| RecoveredTempoAuthorization::recover(auth.clone()))
                     .collect(),
                 nonce_key: *nonce_key,
-                subblock_transaction: aa_signed.tx().subblock_proposer().is_some(),
                 key_authorization: key_authorization.clone(),
                 signature_hash: aa_signed.signature_hash(),
                 tx_hash: *aa_signed.hash(),
