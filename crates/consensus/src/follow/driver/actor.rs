@@ -10,7 +10,7 @@ use eyre::{OptionExt as _, Report, WrapErr as _};
 use rand_core::{CryptoRng, Rng};
 use tempo_node::rpc::consensus::{CertifiedBlock, Event};
 use tokio::{select, sync::mpsc};
-use tracing::{debug, instrument, warn};
+use tracing::{debug, error, error_span, instrument, warn};
 
 use super::{Config, ExecutionProvider, Mailbox, Marshal, ingress::Message};
 use crate::{
@@ -121,11 +121,14 @@ where
             return;
         }
 
-        loop {
+        let reason = loop {
             select!(
                 biased;
 
-                Some(message) = self.mailbox.recv() => {
+                message = self.mailbox.recv() => {
+                    let Some(message) = message else {
+                        break "mailbox closed";
+                    };
                     match message {
                         Message::Event(event) => {
                             let Event::Finalized {
@@ -148,7 +151,9 @@ where
                     }
                 }
             );
-        }
+        };
+
+        error_span!("shutdown").in_scope(|| error!(%reason, "follow driver actor exited"));
     }
 
     /// Fills in the missing scheme if the execution layer did not persist.

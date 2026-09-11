@@ -43,6 +43,31 @@ fn digest(byte: u8) -> Digest {
 }
 
 #[test_traced]
+fn exits_when_mailbox_closes() {
+    deterministic::Runner::default().start(|context| async move {
+        let provider = StubExecutionProvider::default();
+        let (actor, mailbox) = init(
+            context.child("follower_executor"),
+            Config {
+                execution_provider: provider.clone(),
+                execution_engine: provider,
+                marshal: StubMarshal::default(),
+                epoch_strategy: FixedEpocher::new(EPOCH_LENGTH),
+                floor: Height::zero(),
+                fcu_heartbeat_interval: HEARTBEAT_INTERVAL,
+            },
+        );
+        let handle = actor.start();
+        drop(mailbox);
+
+        tokio::select! {
+            result = handle => result.expect("actor should exit without panicking"),
+            _ = context.sleep(Duration::from_secs(1)) => panic!("actor did not exit"),
+        }
+    });
+}
+
+#[test_traced]
 fn block_is_executed_canonicalized_acknowledged_and_advances_floor_to_deep_candidate() {
     deterministic::Runner::default().start(|context| async move {
         let finalized_height = EPOCH_LENGTH.get() * 2;

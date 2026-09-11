@@ -19,7 +19,7 @@ use tokio::{
     select,
     sync::{mpsc, oneshot},
 };
-use tracing::{debug, debug_span, instrument, warn, warn_span};
+use tracing::{debug, debug_span, error, error_span, instrument, warn, warn_span};
 use url::Url;
 
 use crate::{
@@ -103,7 +103,7 @@ where
     }
 
     async fn run(mut self, mut reporter: impl Reporter<Activity = Event>) {
-        loop {
+        let reason = loop {
             self.reconnect_or_resubscribe();
             self.drain_waiters();
 
@@ -180,12 +180,14 @@ where
 
                 request = self.mailbox.recv() => {
                     let Some(request) = request else {
-                        return;
+                        break "mailbox closed";
                     };
                     self.waiters.push(request);
                 }
             );
-        }
+        };
+
+        error_span!("shutdown").in_scope(|| error!(%reason, "upstream actor exited"));
     }
 
     #[instrument(skip_all)]

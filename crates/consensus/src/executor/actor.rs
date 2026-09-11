@@ -344,7 +344,7 @@ where
             );
         });
 
-        loop {
+        let reason = loop {
             // The tree is pruned to the advancing finalized tip here,
             // before the scheduling decisions below read it. The select
             // branches only record primary state. Metrics observe the same
@@ -361,12 +361,9 @@ where
 
                 finished = &mut self.execution_task => {
                     if let Err(error) = self.handle_execution_task_finished(finished) {
-                        error_span!("shutdown").in_scope(|| error!(
-                            %error,
-                            "executor encountered fatal execution-layer update error; \
-                            shutting down to prevent consensus-execution divergence"
-                        ));
-                        break;
+                        break error.wrap_err(
+                            "fatal execution-layer update error; shutting down to prevent consensus-execution divergence"
+                        );
                     }
                 }
 
@@ -385,14 +382,13 @@ where
                 }
 
                 msg = self.mailbox.next() => {
-                    let Some(msg) = msg else { break; };
+                    let Some(msg) = msg else {
+                        break eyre::eyre!("mailbox closed");
+                    };
                     if let Err(error) = self.handle_message(msg) {
-                        error_span!("shutdown").in_scope(|| error!(
-                            %error,
-                            "executor failed handling message; \
-                            shutting down to prevent consensus-execution divergence"
-                        ));
-                        break;
+                        break error.wrap_err(
+                            "failed handling message; shutting down to prevent consensus-execution divergence"
+                        );
                     }
                 },
 
@@ -400,7 +396,10 @@ where
                     self.send_forkchoice_update_heartbeat();
                 },
             }
-        }
+        };
+
+        error_span!("shutdown")
+            .in_scope(|| error!(reason = %format_args!("{reason:#}"), "executor actor exited"));
     }
 
     #[instrument(

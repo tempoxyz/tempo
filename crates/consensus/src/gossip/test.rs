@@ -170,6 +170,7 @@ impl PeerControl for StubPeerControl {
 }
 
 struct Rig {
+    handle: commonware_runtime::Handle<()>,
     control: mpsc::UnboundedSender<PeerEvent>,
     frames: mpsc::Sender<Frame>,
     mailbox: super::Mailbox,
@@ -311,9 +312,10 @@ fn start_with(context: &mut deterministic::Context, verify_rate: NonZeroU32) -> 
             marshal: marshal.clone(),
         },
     );
-    actor.start();
+    let handle = actor.start();
 
     Rig {
+        handle,
         control: control_tx,
         frames: frames_tx,
         mailbox,
@@ -324,6 +326,71 @@ fn start_with(context: &mut deterministic::Context, verify_rate: NonZeroU32) -> 
         outbound: HashMap::new(),
         seen: HashMap::new(),
         fixture,
+    }
+}
+
+#[test_traced]
+fn exits_when_an_input_channel_closes() {
+    for (closed_channel, expected_reason) in [
+        ("control", "peer control channel closed"),
+        ("mailbox", "mailbox closed"),
+        ("frames", "peer frames channel closed"),
+    ] {
+        let log = tempfile::NamedTempFile::new().expect("create log file");
+        let subscriber = tracing_subscriber::fmt()
+            .without_time()
+            .with_ansi(false)
+            .with_writer(log.reopen().expect("open log writer"))
+            .finish();
+        tracing::subscriber::with_default(subscriber, || {
+            deterministic::Runner::default().start(|mut context| async move {
+                let Rig {
+                    handle,
+                    control,
+                    frames,
+                    mailbox,
+                    ..
+                } = start(&mut context);
+
+                // Keep the other inputs open so each closure must independently
+                // terminate the actor, even while its optional futures are idle.
+                let _remaining_inputs = match closed_channel {
+                    "control" => {
+                        drop(control);
+                        (None, Some(mailbox), Some(frames))
+                    }
+                    "mailbox" => {
+                        drop(mailbox);
+                        (Some(control), None, Some(frames))
+                    }
+                    "frames" => {
+                        drop(frames);
+                        (Some(control), Some(mailbox), None)
+                    }
+                    _ => unreachable!(),
+                };
+
+                tokio::select! {
+                    result = handle => result.expect("actor should exit without panicking"),
+                    _ = context.sleep(Duration::from_secs(1)) => {
+                        panic!("actor did not exit after {closed_channel} closed");
+                    }
+                }
+            });
+        });
+
+        let output = std::fs::read_to_string(log.path()).expect("read actor logs");
+        let shutdowns = output
+            .lines()
+            .filter(|line| line.contains("gossip actor exited"))
+            .collect::<Vec<_>>();
+        assert_eq!(
+            shutdowns.len(),
+            1,
+            "actor should log its exit once: {output}"
+        );
+        assert!(shutdowns[0].contains("shutdown"), "{output}");
+        assert!(shutdowns[0].contains(expected_reason), "{output}");
     }
 }
 
