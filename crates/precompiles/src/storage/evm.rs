@@ -411,7 +411,7 @@ impl<'a> PrecompileStorageProvider for EvmPrecompileStorageProvider<'a> {
             )
             .map_err(|e| TempoPrecompileError::Fatal(e.to_string()))?
         };
-        self.deduct_gas(gas.cost(previous))?;
+        self.deduct_gas(gas.cost(previous)?)?;
         self.internals
             .load_account_mut(address)?
             .set_extension(tempo_primitives::account::encode_config_commitment(commitment).into());

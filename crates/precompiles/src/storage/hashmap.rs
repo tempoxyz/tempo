@@ -118,7 +118,7 @@ impl PrecompileStorageProvider for HashMapStorageProvider {
             return Err(TempoPrecompileError::InvalidConfigCommitmentWrite);
         }
         let previous = self.config_commitment(address)?;
-        self.deduct_gas(gas.cost(previous))?;
+        self.deduct_gas(gas.cost(previous)?)?;
         self.accounts
             .entry(address)
             .or_default()

@@ -37,18 +37,19 @@ use crate::error::{Result, TempoPrecompileError};
 /// Determines where TIP-1108's field-write charge is paid.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ConfigCommitmentWriteGas {
-    /// Registration was charged once in transaction intrinsic gas.
+    /// First registration was charged once in transaction intrinsic gas.
     Intrinsic,
     /// Charge the explicit precompile operation here.
     Precompile,
 }
 
 impl ConfigCommitmentWriteGas {
-    fn cost(self, previous: B256) -> u64 {
+    fn cost(self, previous: B256) -> Result<u64> {
         match self {
-            Self::Intrinsic => 0,
-            Self::Precompile if previous.is_zero() => 20_000,
-            Self::Precompile => 5_000,
+            Self::Intrinsic if previous.is_zero() => Ok(0),
+            Self::Intrinsic => Err(TempoPrecompileError::InvalidConfigCommitmentWrite),
+            Self::Precompile if previous.is_zero() => Ok(20_000),
+            Self::Precompile => Ok(5_000),
         }
     }
 }

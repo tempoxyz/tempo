@@ -14,6 +14,13 @@ pub(super) fn exercise_rollback(provider: &mut impl PrecompileStorageProvider) {
     provider
         .set_config_commitment(address, initial, WriteGas::Intrinsic)
         .unwrap();
+    for commitment in [initial, rotated] {
+        assert!(matches!(
+            provider.set_config_commitment(address, commitment, WriteGas::Intrinsic),
+            Err(crate::error::TempoPrecompileError::InvalidConfigCommitmentWrite)
+        ));
+        assert_eq!(provider.config_commitment(address).unwrap(), initial);
+    }
     let inner = provider.checkpoint();
     provider
         .set_config_commitment(address, rotated, WriteGas::Precompile)
@@ -51,9 +58,10 @@ fn commitment_write_validation() {
     provider
         .set_config_commitment(address, hash, WriteGas::Precompile)
         .unwrap();
-    provider
-        .set_config_commitment(address, hash, WriteGas::Intrinsic)
-        .unwrap();
+    assert!(matches!(
+        provider.set_config_commitment(address, hash, WriteGas::Intrinsic),
+        Err(crate::error::TempoPrecompileError::InvalidConfigCommitmentWrite)
+    ));
     assert!(
         provider
             .set_config_commitment(address, B256::ZERO, WriteGas::Intrinsic)
