@@ -19,7 +19,7 @@ use commonware_cryptography::{
         primitives::{
             group::Share,
             sharing::{Mode, ModeVersion},
-            variant::MinSig,
+            variant::{MinSig, Variant},
         },
     },
     ed25519::{PrivateKey, PublicKey},
@@ -58,6 +58,8 @@ where
     // Rebind consuming commonware mutations through these slots. Write failures
     // panic, so an invalidated handle is never reused by the actor.
     states: Option<metadata::Metadata<TContext, u64, State>>,
+    // Only runtime transitions populate this map; snapshot healing never does.
+    observed_identities: Option<metadata::Metadata<TContext, u64, <MinSig as Variant>::Public>>,
     events: Option<segmented::variable::Journal<TContext, Event>>,
 
     current: Option<State>,
@@ -84,7 +86,23 @@ where
         self.storage.current.as_ref()
     }
 
+    pub(super) fn observed_identity(&self, epoch: Epoch) -> Option<<MinSig as Variant>::Public> {
+        self.storage
+            .observed_identities
+            .as_ref()
+            .unwrap()
+            .get(&epoch.get())
+            .copied()
+    }
+
     pub(super) async fn init_verified(self, state: State) -> Storage<TContext> {
+        if let Some(identity) = self.observed_identity(state.epoch) {
+            assert_eq!(
+                identity,
+                *state.output.public().public(),
+                "network identity mismatch while healing a runtime-observed DKG epoch",
+            );
+        }
         let Self { mut storage } = self;
         rebind(&mut storage.states, |states| {
             states.put_sync(state.epoch.get(), state.clone())
@@ -140,6 +158,18 @@ where
 
     /// Persists the outcome of a DKG ceremony, panicking on write failure.
     pub(super) async fn set_state(&mut self, state: State) {
+        let identity = *state.output.public().public();
+        if let Some(existing) = self
+            .observed_identities
+            .as_ref()
+            .unwrap()
+            .get(&state.epoch.get())
+        {
+            assert_eq!(
+                *existing, identity,
+                "network identity mismatch in persisted DKG epoch"
+            );
+        }
         rebind(&mut self.states, |mut states| async {
             if let Some(old) = states.put(state.epoch.get(), state.clone()) {
                 warn!(epoch = %old.epoch, "overwriting existing state");
@@ -148,6 +178,12 @@ where
         })
         .await
         .expect("failed to persist DKG state");
+        rebind(&mut self.observed_identities, |mut identities| async {
+            identities.put(state.epoch.get(), identity);
+            identities.sync().await
+        })
+        .await
+        .expect("failed to persist runtime-observed DKG identity");
         self.current = Some(state);
     }
 
@@ -467,6 +503,12 @@ where
         })
         .await
         .expect("failed to prune DKG state metadata");
+        rebind(&mut self.observed_identities, |mut identities| async move {
+            identities.retain(|&key, _| key >= up_to_epoch.get());
+            identities.sync().await
+        })
+        .await
+        .expect("failed to prune runtime-observed DKG identities");
         self.cache.retain(|&epoch, _| epoch >= up_to_epoch);
     }
 }
@@ -507,6 +549,18 @@ impl Builder {
         )
         .await
         .wrap_err("unable to initialize DKG states metadata")?;
+
+        // Legacy storage has no provenance marker, so it falls back to the configured
+        // identity until a runtime transition is observed; do not infer trust from states.
+        let observed_identities = metadata::Metadata::init(
+            context.child("observed_identities"),
+            metadata::Config {
+                partition: format!("{partition_prefix}_observed_identities"),
+                codec_config: (),
+            },
+        )
+        .await
+        .wrap_err("unable to initialize runtime-observed DKG identities")?;
 
         let current = states.keys().max().map(|epoch| {
             states
@@ -555,6 +609,7 @@ impl Builder {
         Ok(Unverified {
             storage: Storage {
                 states: Some(states),
+                observed_identities: Some(observed_identities),
                 events: Some(events),
                 current,
                 cache,
@@ -1314,6 +1369,49 @@ mod tests {
                 Some(&state),
                 "storage with an initial state must reopen with it"
             );
+        });
+    }
+
+    #[test]
+    fn healing_does_not_mark_identities_as_runtime_observed() {
+        deterministic::Runner::default().start(|mut context| async move {
+            let initial = make_test_state(&mut context, 1);
+            let runtime = make_test_state(&mut context, 2);
+            let healed = make_test_state(&mut context, 3);
+            let mut storage = builder()
+                .partition_prefix("identity_provenance")
+                .init_unverified(context.child("initial"))
+                .await
+                .unwrap()
+                .init_verified(initial.clone())
+                .await;
+            storage.set_state(runtime.clone()).await;
+            drop(storage);
+
+            let opened = builder()
+                .partition_prefix("identity_provenance")
+                .init_unverified(context.child("reopen"))
+                .await
+                .unwrap();
+            assert_eq!(opened.observed_identity(initial.epoch), None);
+            assert_eq!(
+                opened.observed_identity(runtime.epoch),
+                Some(*runtime.output.public().public())
+            );
+            let mut storage = opened.init_verified(healed.clone()).await;
+            storage.prune(runtime.epoch).await;
+            drop(storage);
+
+            let opened = builder()
+                .partition_prefix("identity_provenance")
+                .init_unverified(context.child("after_healing"))
+                .await
+                .unwrap();
+            assert_eq!(
+                opened.observed_identity(runtime.epoch),
+                Some(*runtime.output.public().public())
+            );
+            assert_eq!(opened.observed_identity(healed.epoch), None);
         });
     }
 

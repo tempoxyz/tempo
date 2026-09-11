@@ -144,6 +144,7 @@ where
             mailbox: marshal_mailbox,
             finalized_floor,
             finalized_tip,
+            finalized_tip_evidence,
         } = alias::marshal::init(
             context.child("marshal"),
             page_cache_ref.clone(),
@@ -159,7 +160,6 @@ where
                 finalized_blocks_retention: self.finalized_blocks_retention,
                 epoch_strategy: epoch_strategy.clone(),
                 scheme_provider: scheme_provider.clone(),
-                network_identity: self.network_identity.clone(),
             },
         )
         .await
@@ -267,7 +267,7 @@ where
                 mailbox_size: self.mailbox_size,
                 marshal: marshal_mailbox.clone(),
                 scheme_provider: scheme_provider.clone(),
-                network_identity: self.network_identity,
+                network_identity: self.network_identity.clone(),
                 time_to_collect_notarizations: self.time_to_collect_notarizations,
                 time_to_retry_nullify_broadcast: self.time_to_retry_nullify_broadcast,
                 partition_prefix: format!("{}_epoch_manager", self.partition_prefix),
@@ -284,6 +284,8 @@ where
                 execution_node,
                 initial_share: self.share.clone(),
                 last_finalized_height: finalized_floor,
+                finalized_tip: finalized_tip_evidence,
+                network_identity: self.network_identity,
                 mailbox_size: self.mailbox_size,
                 marshal: marshal_mailbox,
                 namespace: crate::config::NAMESPACE.to_vec(),

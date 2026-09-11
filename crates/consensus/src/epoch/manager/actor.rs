@@ -106,6 +106,13 @@ where
         context: TContext,
         mailbox: mpsc::UnboundedReceiver<Message>,
     ) -> Self {
+        config.scheme_provider.register(
+            Epoch::new(config.network_identity.from_epoch),
+            Scheme::certificate_verifier(
+                crate::config::NAMESPACE,
+                config.network_identity.identity,
+            ),
+        );
         let active_epochs = context.gauge(
             "active_epochs",
             "the number of epochs currently managed by the epoch manager",

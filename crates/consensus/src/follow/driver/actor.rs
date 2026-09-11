@@ -33,6 +33,14 @@ where
     let (tx, rx) = mpsc::unbounded_channel();
     let mailbox = Mailbox(tx);
 
+    config.scheme_provider.register(
+        Epoch::new(config.network_identity.from_epoch),
+        commonware_consensus::simplex::scheme::bls12381_threshold::vrf::Scheme::certificate_verifier(
+            crate::config::NAMESPACE,
+            config.network_identity.identity,
+        ),
+    );
+
     // Use the last boundary block available in the execution layer as the
     // trusted starting point.
     //
