@@ -7021,11 +7021,17 @@ checksum = "1db0d8f1fc9e62caebd0319e11eaec5822b0186c171568f0480b46a0137f9108"
 dependencies = [
  "base64 0.22.1",
  "evmap",
+ "http-body-util",
+ "hyper",
+ "hyper-util",
  "indexmap 2.14.0",
+ "ipnet",
  "metrics",
  "metrics-util",
  "quanta",
  "thiserror 2.0.18",
+ "tokio",
+ "tracing",
 ]
 
 [[package]]
@@ -14078,35 +14084,29 @@ dependencies = [
 name = "tempo-replay"
 version = "1.14.0"
 dependencies = [
- "alloy-consensus",
- "alloy-eips",
- "alloy-primitives",
- "alloy-rlp",
+ "alloy",
  "anyhow",
- "axum",
- "base64 0.22.1",
+ "bincode",
  "clap",
  "fs4",
  "futures-util",
- "hex",
- "httpdate",
- "k256",
- "p256 0.13.2",
+ "metrics",
+ "metrics-exporter-prometheus",
  "reqwest 0.13.3",
+ "reth-primitives-traits",
  "rocksdb",
- "rustls",
  "serde",
  "serde_json",
- "sha2 0.10.9",
  "tempfile",
+ "tempo-alloy",
+ "tempo-chainspec",
+ "tempo-consensus",
  "tempo-primitives",
  "tokio",
- "tokio-tungstenite",
  "tokio-util",
  "toml 1.1.5+spec-1.1.0",
  "tracing",
  "tracing-subscriber",
- "url",
 ]
 
 [[package]]
