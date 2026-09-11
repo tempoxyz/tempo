@@ -62,11 +62,11 @@ use commonware_runtime::{
     telemetry::metrics::{Counter, Gauge, GaugeExt as _, MetricsExt as _},
 };
 use commonware_utils::{Acknowledgement as _, NZUsize, vec::NonEmptyVec};
-use eyre::{ensure, eyre};
+use eyre::eyre;
 use futures::{StreamExt as _, channel::mpsc};
 use rand_core::{CryptoRng, Rng};
 use reth_ethereum::chainspec::EthChainSpec;
-use tracing::{Level, Span, debug, error, error_span, info, instrument, warn, warn_span};
+use tracing::{Span, debug, error, error_span, info, instrument, warn, warn_span};
 
 use crate::{
     consensus::Digest,
@@ -228,7 +228,7 @@ where
                     let cause = msg.cause;
                     match msg.content {
                         Content::Enter(enter) => {
-                            if self
+                            self
                                 .enter(
                                     cause,
                                     enter,
@@ -236,11 +236,7 @@ where
                                     &mut certificate_mux,
                                     &mut resolver_mux,
                                 )
-                                .await
-                                .is_err()
-                            {
-                                return;
-                            }
+                                .await;
                         }
                         Content::Exit(exit) => self.exit(cause, exit),
                         Content::Update(update) => {
@@ -267,7 +263,6 @@ where
             network_identity = %public.public(),
             ?participants,
         ),
-        err(level = Level::ERROR)
     )]
     async fn enter(
         &mut self,
@@ -290,16 +285,15 @@ where
             impl Sender<PublicKey = PublicKey>,
             impl Receiver<PublicKey = PublicKey>,
         >,
-    ) -> eyre::Result<()> {
+    ) {
         let network_identity = &self.config.network_identity;
-        ensure!(
-            epoch.get() != network_identity.from_epoch
-                || *public.public() == network_identity.identity,
-            "network identity mismatch in epoch `{epoch}`: expected `{}`, got `{}`; \
-            refusing to enter epoch and shutting down consensus",
-            network_identity.identity,
-            public.public(),
-        );
+        if epoch.get() == network_identity.from_epoch {
+            assert_eq!(
+                *public.public(),
+                network_identity.identity,
+                "network identity mismatch in epoch `{epoch}`; refusing to enter epoch",
+            );
+        }
 
         if let Some(latest) = self.active_epochs.last_key_value().map(|(k, _)| *k)
             && epoch <= latest
@@ -308,7 +302,7 @@ where
                 "requested to start an epoch `{epoch}` older than the latest \
                 running, `{latest}`; refusing",
             );
-            return Ok(());
+            return;
         }
 
         let n_participants = participants.len();
@@ -324,9 +318,7 @@ where
             Scheme::verifier(crate::config::NAMESPACE, participants, public)
         };
 
-        self.config
-            .scheme_provider
-            .register(epoch, scheme.clone())?;
+        self.config.scheme_provider.register(epoch, scheme.clone());
 
         let floor = match epoch.previous().map(|prev| {
             self.config
@@ -342,7 +334,7 @@ where
                         finalized block of its boundary height \
                         `{boundary_height}`"
                     );
-                    return Ok(());
+                    return;
                 };
 
                 Floor::Genesis(digest)
@@ -430,8 +422,6 @@ where
             .how_often_verifier
             .metric()
             .inc_by(u64::from(!is_signer));
-
-        Ok(())
     }
 
     #[instrument(parent = &cause, skip_all, fields(epoch))]
@@ -520,7 +510,7 @@ where
                     onchain_outcome.players().clone(),
                     onchain_outcome.sharing().clone(),
                 ),
-            )?;
+            );
             self.confirmed_latest_network_epoch
                 .replace(onchain_outcome.epoch);
             debug!(

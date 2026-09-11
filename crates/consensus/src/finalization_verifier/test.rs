@@ -113,7 +113,7 @@ fn rejects_block_body_that_does_not_match_header() {
 }
 
 #[test_traced]
-fn rejects_activation_identity_mismatch_without_registering_scheme() {
+fn panics_on_activation_identity_mismatch_without_registering_scheme() {
     deterministic::Runner::default().start(|mut context| async move {
         let configured = dkg_fixture(&mut context, Epoch::new(1));
         let other = dkg_fixture(&mut context, Epoch::new(1));
@@ -125,12 +125,15 @@ fn rejects_activation_identity_mismatch_without_registering_scheme() {
             FixedEpocher::new(EPOCH_LENGTH),
         );
         let boundary = make_block(EPOCH_LENGTH.get() - 1, Some(&other.outcome));
-        let result = verifier
-            .decode_dkg_outcome_and_register_boundary(boundary.header().extra_data().as_ref());
+        let result = std::panic::catch_unwind(|| {
+            verifier
+                .decode_dkg_outcome_and_register_boundary(boundary.header().extra_data().as_ref())
+        });
         assert!(
             result
                 .unwrap_err()
-                .to_string()
+                .downcast_ref::<String>()
+                .expect("identity assertion should panic with a diagnostic")
                 .contains("network identity mismatch")
         );
         assert!(verifier.scheme_provider.scheme(Epoch::new(1)).is_none());
@@ -144,9 +147,12 @@ fn rejects_activation_identity_mismatch_without_registering_scheme() {
         // A rejected outcome must also leave an existing valid scheme intact.
         let boundary = make_block(EPOCH_LENGTH.get() - 1, Some(&other.outcome));
         assert!(
-            verifier
-                .decode_dkg_outcome_and_register_boundary(boundary.header().extra_data().as_ref(),)
-                .is_err()
+            std::panic::catch_unwind(|| {
+                verifier.decode_dkg_outcome_and_register_boundary(
+                    boundary.header().extra_data().as_ref(),
+                )
+            })
+            .is_err()
         );
         let block = make_block(EPOCH_LENGTH.get(), None);
         let finalization = make_finalization(&block, Epoch::new(1), &configured.schemes);

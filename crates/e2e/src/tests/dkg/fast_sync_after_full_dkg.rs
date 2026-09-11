@@ -35,7 +35,8 @@ fn validator_can_fast_sync_with_updated_network_identity() {
 }
 
 #[test_traced]
-fn validator_exits_when_rotation_does_not_match_network_identity() {
+#[should_panic(expected = "network identity mismatch")]
+fn validator_panics_when_rotation_does_not_match_network_identity() {
     run_fast_sync(Some(false));
 }
 
@@ -134,16 +135,7 @@ fn run_fast_sync(updated_identity_matches: Option<bool>) {
         );
 
         if updated_identity_matches == Some(false) {
-            let result = late_validator
-                .consensus_handle
-                .take()
-                .unwrap()
-                .await
-                .expect("consensus should exit normally with an error");
-            assert!(
-                result.is_err(),
-                "mismatched identity must stop the consensus stack"
-            );
+            let _ = late_validator.consensus_handle.take().unwrap().await;
             return;
         }
 

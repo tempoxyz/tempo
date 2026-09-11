@@ -135,7 +135,7 @@ pub(crate) mod marshal {
                 crate::config::NAMESPACE,
                 config.network_identity.identity,
             ),
-        )?;
+        );
 
         let finalizations_by_height = storage::init_finalizations_archive(
             &context,
@@ -488,7 +488,7 @@ pub(crate) mod marshal {
             "finalized floor failed verification"
         );
 
-        scheme_provider.register(epoch, scheme)?;
+        scheme_provider.register(epoch, scheme);
         Ok(())
     }
 
