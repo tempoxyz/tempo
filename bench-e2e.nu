@@ -35,6 +35,10 @@ const E2E_LOCAL_RETH_ARGS = [
     "--txpool.pending-max-count" "200000"
     "--txpool.basefee-max-count" "200000"
     "--txpool.queued-max-count" "200000"
+    # Keep byte limits above the benchmark working set now that AA pools enforce them.
+    "--txpool.pending-max-size" "1024"
+    "--txpool.basefee-max-size" "1024"
+    "--txpool.queued-max-size" "1024"
     "--txpool.max-pending-txns" "200000"
     "--txpool.max-new-txns" "200000"
     "--txpool.max-batch-size" "200000"
