@@ -295,6 +295,9 @@ fn calculate_key_authorization_gas(
     gas_params: &GasParams,
     spec: tempo_chainspec::hardfork::TempoHardfork,
 ) -> (u64, u64) {
+    if key_auth.carried.is_some() {
+        return (crate::carried_authorization::intrinsic(key_auth), 0);
+    }
     // All signature types pay ECRECOVER_GAS (3k) as the baseline since
     // primitive_signature_verification_gas assumes ecrecover is already in base 21k.
     // For KeyAuthorization, we're doing an additional signature verification.
@@ -413,6 +416,16 @@ impl<DB: alloy_evm::Database, I> TempoEvmHandler<DB, I> {
                         .map_or(Address::ZERO, |signature| signature.account());
                     tempo_precompiles::native_multisig::NativeMultisig::new()
                         .set_authority(ctx.tx.caller(), direct)?;
+                    if let Some(opening) = ctx
+                        .tx
+                        .tempo_tx_env
+                        .as_ref()
+                        .and_then(|aa| aa.signature.as_multisig())
+                        .and_then(|s| s.account_opening.as_ref())
+                    {
+                        tempo_precompiles::native_multisig::NativeMultisig::new()
+                            .set_tree_opening(opening)?;
+                    }
                 }
 
                 if let Some(channel_open_context_hash) = channel_open_context_hash {
@@ -478,6 +491,14 @@ where
         };
 
         // It's fine to set reservoir to 0 because this won't create any state.
+        let carried_auth = evm
+            .ctx_ref()
+            .tx()
+            .tempo_tx_env
+            .as_ref()
+            .and_then(|aa| aa.key_authorization.as_ref())
+            .filter(|auth| auth.carried.is_some())
+            .cloned();
         let actions = evm.actions.clone();
         let (validation, gas_used) = StorageCtx::enter_ctx_with_gas_limit(
             evm.ctx_mut(),
@@ -485,6 +506,20 @@ where
             reservoir,
             actions,
             || {
+                if let Some(auth) = &carried_auth {
+                    let carried = auth.carried.as_ref().expect("filtered carried");
+                    let (_, entries) = carried.entries(&auth.authorization);
+                    StorageCtx.deduct_gas(20 * calls.len() as u64 * (1 + entries))?;
+                    if calls.iter().any(|call| {
+                        !carried.allows_call(&auth.authorization, &call.to, call.input.as_ref())
+                    }) {
+                        return Err(
+                            tempo_contracts::precompiles::AccountKeychainError::call_not_allowed()
+                                .into(),
+                        );
+                    }
+                    return Ok(());
+                }
                 let keychain = AccountKeychain::default();
                 for call in calls {
                     keychain.validate_call_scope_for_transaction(
@@ -632,7 +667,10 @@ where
                         {
                             StorageCtx.set_config_commitment(
                                 account,
-                                role.signature.config_commitment(),
+                                role.signature.account_opening.as_ref().map_or_else(
+                                    || role.signature.config_commitment(),
+                                    |opening| opening.commitment(),
+                                ),
                                 tempo_precompiles::storage::ConfigCommitmentWriteGas::Intrinsic,
                             )?;
                         }
@@ -1287,8 +1325,150 @@ where
         // Access key whose fee-token spending limit was debited during fee collection, if any.
         let mut keychain_fee_key = None;
         let mut same_tx_key_authorization_use = false;
+        let carried_auth = tx
+            .tempo_tx_env
+            .as_ref()
+            .and_then(|aa| aa.key_authorization.as_ref())
+            .filter(|auth| auth.carried.is_some());
+        if let Some(auth) = carried_auth {
+            let carried = auth.carried.as_ref().expect("filtered carried");
+            let loaded = journal.load_account(tx.caller)?;
+            if !loaded.data.info.is_empty_code_hash() {
+                return Err(
+                    crate::carried_authorization::invalid("carried account has code").into(),
+                );
+            }
+            let current = tempo_primitives::account::decode_config_commitment(
+                &loaded.data.info.extension,
+                true,
+            )
+            .map_err(|error| EVMError::Custom(error.to_string()))?;
+            let expected = if current.is_zero() {
+                auth.signature
+                    .as_multisig()
+                    .map_or(current, |signature| signature.config_commitment())
+            } else {
+                current
+            };
+            let expected = if let Some(tree) = &auth.tree {
+                let opening = &tree.witness.opening;
+                if current != opening.commitment()
+                    && !(current == opening.authority
+                        && *opening
+                            == tempo_primitives::account::tree::AccountOpening::empty(
+                                opening.authority,
+                            ))
+                    && !(current.is_zero()
+                        && *opening
+                            == tempo_primitives::account::tree::AccountOpening::empty(expected))
+                {
+                    return Err(crate::carried_authorization::invalid(
+                        "account tree root mismatch",
+                    )
+                    .into());
+                }
+                opening.authority
+            } else {
+                expected
+            };
+            if carried.authority_config != expected {
+                return Err(crate::carried_authorization::invalid(
+                    "carried parent configuration changed",
+                )
+                .into());
+            }
+            let issuer = auth
+                .recover_account()
+                .map_err(|_| TempoInvalidTransaction::KeyAuthorizationSignatureRecoveryFailed)?;
+            if auth.tree.is_some() {
+                if issuer != tx.caller {
+                    return Err(crate::carried_authorization::invalid(
+                        "tree issuer must be account authority",
+                    )
+                    .into());
+                }
+                // Nonzero account field replacement, never per-policy SSTORE creation.
+                init_gas.initial_regular_gas += 5_000;
+            }
+            let internals = EvmInternals::new(journal, block, cfg, tx);
+            let mut gas_params = cfg.gas_params.clone();
+            // Fee bookkeeping excludes storage credits, but actual counter creation must still
+            // pay the creditable portion removed from the T7 SSTORE table.
+            if !cfg.enable_amsterdam_eip8037 {
+                gas_params.override_gas([(
+                    GasId::sstore_set_without_load_cost(),
+                    gas_params.get(GasId::sstore_set_without_load_cost()) + STORAGE_CREDIT_VALUE,
+                )]);
+            }
+            let mut provider = EvmPrecompileStorageProvider::new(
+                internals,
+                u64::MAX,
+                0,
+                *spec,
+                cfg.enable_amsterdam_eip8037,
+                false,
+                gas_params,
+            )
+            .with_actions(actions.clone());
+            provider.set_tip1060_storage_credits(false);
+            StorageCtx::enter(&mut provider, || {
+                if let Some(tree) = &auth.tree
+                    && current.is_zero()
+                {
+                    // Native validation has authenticated the initial configuration and
+                    // charged registration. Keep it distinct from the prepaid tree update.
+                    StorageCtx.set_config_commitment(
+                        tx.caller,
+                        tree.witness.opening.authority,
+                        tempo_precompiles::storage::ConfigCommitmentWriteGas::Intrinsic,
+                    )?;
+                }
+                let mut keychain = AccountKeychain::default();
+                keychain.install_carried(tx.caller, auth, issuer)?;
+                if fee_payer == tx.caller {
+                    keychain.debit_carried(
+                        tx.caller,
+                        auth.key_id,
+                        fee_token,
+                        gas_balance_spending,
+                        false,
+                    )?;
+                }
+                Ok::<_, TempoPrecompileError>(())
+            })
+            .map_err(|error| match error {
+                TempoPrecompileError::Fatal(error) => EVMError::Custom(error),
+                error => {
+                    EVMError::Transaction(crate::carried_authorization::invalid(error.to_string()))
+                }
+            })?;
+            init_gas.initial_regular_gas += provider.gas_used() - provider.state_gas_spilled();
+            init_gas.initial_state_gas += provider.state_gas_used();
+            drop(provider);
+            // Bounded warm counter refund, transient key activation, and final spend log.
+            // Fee bookkeeping must not recursively charge another fee for its own settlement.
+            if fee_payer == tx.caller && !gas_balance_spending.is_zero() && auth.limits.is_some() {
+                init_gas.initial_regular_gas += if let Some(tree) = &auth.tree {
+                    tempo_precompiles::account_keychain::tree::settlement_gas(
+                        auth.limits.as_ref().map_or(0, Vec::len),
+                        tree.witness.siblings.len(),
+                    )
+                } else {
+                    10_000
+                };
+            }
+            if tx.gas_limit() < init_gas.initial_total_gas() {
+                return Err(InvalidTransaction::CallGasCostMoreThanGasLimit {
+                    gas_limit: tx.gas_limit(),
+                    initial_gas: init_gas.initial_total_gas(),
+                }
+                .into());
+            }
+            evm.key_expiry = auth.expiry.map(|expiry| expiry.get());
+        }
         if let Some(tempo_tx_env) = tx.tempo_tx_env.as_ref()
             && let Some(keychain_sig) = tempo_tx_env.signature.as_keychain()
+            && carried_auth.is_none()
         {
             // The user_address is the root account this transaction is being executed for.
             // This should match tx.caller (which comes from recover_signer on the outer signature).
@@ -1407,6 +1587,7 @@ where
         if cfg.spec.is_t6()
             && let Some(tempo_tx_env) = tx.tempo_tx_env.as_ref()
             && let Some(key_auth) = tempo_tx_env.key_authorization.as_ref()
+            && key_auth.carried.is_none()
         {
             let auth_signer = key_auth
                 .recover_account()
@@ -1528,12 +1709,25 @@ where
             evm.collected_fee = gas_balance_spending;
         }
 
+        if let Some(auth) = carried_auth {
+            StorageCtx::enter_precompile(
+                journal,
+                block,
+                cfg,
+                tx,
+                actions.clone(),
+                |mut keychain: AccountKeychain| keychain.set_transaction_key(auth.key_id),
+            )
+            .map_err(|error| EVMError::Custom(error.to_string()))?;
+        }
+
         // If the transaction includes a KeyAuthorization, validate and authorize the key
         // only after fee collection has succeeded. This pre-execution write is deliberately
         // outside the later user-call batch checkpoint, so same-transaction authorize-and-use
         // keeps the newly registered key even if scoped-call prevalidation or execution fails.
         if let Some(tempo_tx_env) = tx.tempo_tx_env.as_ref()
             && let Some(key_auth) = &tempo_tx_env.key_authorization
+            && key_auth.carried.is_none()
         {
             let keychain_checkpoint = if spec.is_t1() {
                 Some(journal.checkpoint())
@@ -1892,7 +2086,17 @@ where
                     .map_err(TempoInvalidTransaction::from)?;
             }
 
-            if let Some(key_auth) = &aa_env.key_authorization {
+            crate::carried_authorization::validate(
+                tx,
+                cfg.spec,
+                cfg.chain_id(),
+                evm.inner.ctx.block.timestamp.saturating_to(),
+            )?;
+            if let Some(key_auth) = aa_env
+                .key_authorization
+                .as_ref()
+                .filter(|auth| auth.carried.is_none())
+            {
                 if key_auth.key_type == SignatureType::Multisig && !cfg.spec.is_t12() {
                     return Err(TempoInvalidTransaction::NativeMultisig(
                         crate::native_multisig::NativeMultisigError::UnsupportedContext,
@@ -2335,6 +2539,9 @@ pub fn calculate_aa_batch_intrinsic_gas<'a>(
 
     // 2. Signature verification gas
     gas.initial_regular_gas += tempo_signature_verification_gas(signature);
+    if key_authorization.is_some_and(|auth| auth.carried.is_some()) && signature.is_keychain() {
+        gas.initial_regular_gas -= crate::signature_gas::KEYCHAIN_VALIDATION_GAS;
+    }
 
     let cold_account_cost =
         gas_params.warm_storage_read_cost() + gas_params.cold_account_additional_cost();

@@ -415,8 +415,9 @@ impl TempoTransaction {
     ///
     /// This hash is signed by the fee payer to sponsor the transaction
     pub fn fee_payer_signature_hash(&self, sender: Address) -> B256 {
+        let view = self.signing_view();
         // Use helper functions for consistent encoding
-        let payload_length = self.rlp_encoded_fields_length(|_| sender.length(), false);
+        let payload_length = view.rlp_encoded_fields_length(|_| sender.length(), false);
 
         let mut buf = Vec::with_capacity(1 + rlp_header(payload_length).length_with_payload());
 
@@ -427,7 +428,7 @@ impl TempoTransaction {
         rlp_header(payload_length).encode(&mut buf);
 
         // Encode fields using helper (skip_fee_token = false, so fee_token IS included)
-        self.rlp_encode_fields(
+        view.rlp_encode_fields(
             &mut buf,
             |_, out| {
                 // Encode sender address instead of fee_payer_signature
@@ -437,6 +438,22 @@ impl TempoTransaction {
         );
 
         keccak256(&buf)
+    }
+
+    fn signing_view(&self) -> alloc::borrow::Cow<'_, Self> {
+        if let Some(auth) = &self.key_authorization
+            && (auth.tree.is_some()
+                || auth
+                    .signature
+                    .as_multisig()
+                    .is_some_and(|s| s.account_opening.is_some()))
+        {
+            let mut view = self.clone();
+            view.key_authorization = Some(auth.without_tree_witness());
+            alloc::borrow::Cow::Owned(view)
+        } else {
+            alloc::borrow::Cow::Borrowed(self)
+        }
     }
 
     /// Returns `true` if the fee payer signature is the [`FEE_PAYER_SIGNATURE_MARKER`]
@@ -788,6 +805,7 @@ impl SignableTransaction<Signature> for TempoTransaction {
     }
 
     fn encode_for_signing(&self, out: &mut dyn alloy_rlp::BufMut) {
+        let view = self.signing_view();
         // Skip fee_token if fee_payer_signature is present to ensure user doesn't commit to a specific fee token
         let skip_fee_token = self.fee_payer_signature.is_some();
 
@@ -795,12 +813,12 @@ impl SignableTransaction<Signature> for TempoTransaction {
         out.put_u8(Self::tx_type());
 
         // Compute payload length using helper
-        let payload_length = self.rlp_encoded_fields_length(|_| 1, skip_fee_token);
+        let payload_length = view.rlp_encoded_fields_length(|_| 1, skip_fee_token);
 
         rlp_header(payload_length).encode(out);
 
         // Encode fields using helper
-        self.rlp_encode_fields(
+        view.rlp_encode_fields(
             out,
             |signature, out| {
                 if signature.is_some() {
@@ -814,8 +832,9 @@ impl SignableTransaction<Signature> for TempoTransaction {
     }
 
     fn payload_len_for_signature(&self) -> usize {
+        let view = self.signing_view();
         let skip_fee_token = self.fee_payer_signature.is_some();
-        let payload_length = self.rlp_encoded_fields_length(|_| 1, skip_fee_token);
+        let payload_length = view.rlp_encoded_fields_length(|_| 1, skip_fee_token);
 
         1 + rlp_header(payload_length).length_with_payload()
     }

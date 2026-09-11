@@ -320,6 +320,8 @@ impl alloy_rlp::Decodable for MultisigConfig {
 #[derive(Clone, Debug, PartialEq, Eq, Hash)]
 #[cfg_attr(test, reth_codecs::add_arbitrary_tests(rlp))]
 pub struct MultisigSignature {
+    /// Optional V2 opening of the account commitment. Not an owner approval.
+    pub account_opening: Option<crate::account::tree::AccountOpening>,
     /// Native multisig account authorized by this signature.
     ///
     /// This is explicit because a versioned configuration cannot derive the account's stable
@@ -344,6 +346,7 @@ impl MultisigSignature {
         signatures: Vec<PrimitiveSignature>,
     ) -> Result<Self, MultisigSignatureError> {
         let signature = Self {
+            account_opening: None,
             account,
             config,
             signatures,
@@ -458,19 +461,37 @@ impl MultisigSignature {
             signatures
                 .push(PrimitiveSignature::from_bytes(bytes).map_err(alloy_rlp::Error::Custom)?);
         }
-        if !sig_rest.is_empty() {
+        let mut remainder = sig_rest;
+        let account_opening = if remainder.is_empty() {
+            None
+        } else {
+            Some(
+                <crate::account::tree::AccountOpening as alloy_rlp::Decodable>::decode(
+                    &mut remainder,
+                )?,
+            )
+        };
+        if !remainder.is_empty() {
             return Err(alloy_rlp::Error::Custom(
                 "unexpected trailing native multisig signature fields",
             ));
         }
 
         *buf = rest;
-        Self::try_new(account, config, signatures)
-            .map_err(|error| alloy_rlp::Error::Custom(error.as_str()))
+        let mut result = Self::try_new(account, config, signatures)
+            .map_err(|error| alloy_rlp::Error::Custom(error.as_str()))?;
+        result.account_opening = account_opening;
+        Ok(result)
     }
 
     fn rlp_payload_length(&self) -> usize {
-        self.account.length() + self.config.length() + self.signatures.length()
+        self.account.length()
+            + self.config.length()
+            + self.signatures.length()
+            + self
+                .account_opening
+                .as_ref()
+                .map_or(0, alloy_rlp::Encodable::length)
     }
 }
 
@@ -514,6 +535,9 @@ impl alloy_rlp::Encodable for MultisigSignature {
         self.account.encode(out);
         self.config.encode(out);
         self.signatures.encode(out);
+        if let Some(opening) = &self.account_opening {
+            opening.encode(out);
+        }
     }
 
     fn length(&self) -> usize {

@@ -14,7 +14,7 @@ use tempo_primitives::transaction::{
 pub(crate) const P256_VERIFY_GAS: u64 = 5_000;
 
 /// Additional gas for keychain signatures (key validation overhead: cold SLOAD + processing).
-const KEYCHAIN_VALIDATION_GAS: u64 = COLD_SLOAD_COST + 900;
+pub(crate) const KEYCHAIN_VALIDATION_GAS: u64 = COLD_SLOAD_COST + 900;
 
 /// Calculates the gas cost for verifying a primitive signature.
 ///
@@ -65,7 +65,15 @@ pub(crate) fn multisig_verification_gas(signature: &MultisigSignature) -> u64 {
         Vec::with_capacity(signature.account().length() + signature.config().length());
     signature.account().encode(&mut witness);
     signature.config().encode(&mut witness);
+    if let Some(opening) = &signature.account_opening {
+        opening.encode(&mut witness);
+    }
     get_tokens_in_calldata_istanbul(&witness) * STANDARD_TOKEN_COST
+        + if signature.account_opening.is_some() {
+            1_000
+        } else {
+            0
+        }
         + tempo_precompiles::native_multisig::keccak_cost(
             signature.config().commitment_preimage_len(),
         )

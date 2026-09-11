@@ -1,4 +1,6 @@
+pub mod carried_authorization;
 pub mod envelope;
+pub use carried_authorization::CarriedAuthorization;
 pub mod key_authorization;
 pub mod multisig;
 pub use multisig::*;

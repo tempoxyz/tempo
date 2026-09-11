@@ -1799,6 +1799,10 @@ struct PersistedSignedKeyAuthorization {
     #[serde(rename = "type")]
     key_type: PersistedKeyType,
     signature: PersistedAuthorizationSignature,
+    #[serde(default)]
+    carried: Option<tempo_primitives::transaction::CarriedAuthorization>,
+    #[serde(default)]
+    tree: Option<tempo_primitives::account::tree::TreeAuthorization>,
 }
 
 #[derive(Clone, Deserialize)]
@@ -1974,6 +1978,8 @@ impl TryFrom<PersistedSignedKeyAuthorization> for SignedKeyAuthorization {
             account,
             key_type,
             signature,
+            carried,
+            tree,
         } = value;
         let expiry = expiry
             .map(|expiry| {
@@ -2016,7 +2022,18 @@ impl TryFrom<PersistedSignedKeyAuthorization> for SignedKeyAuthorization {
                 TempoSignature::Multisig(signature)
             }
         };
-        Ok(Self::new(authorization, signature))
+        let mut result = match carried {
+            Some(carried) => Self::new_carried(authorization, carried, signature)
+                .map_err(PersistedKeyError::InvalidCarriedAuthorization),
+            None => Ok(Self::new(authorization, signature)),
+        }?;
+        if tree.is_some() && result.carried.is_none() {
+            return Err(PersistedKeyError::InvalidCarriedAuthorization(
+                "tree requires carried policy",
+            ));
+        }
+        result.tree = tree;
+        Ok(result)
     }
 }
 
@@ -2248,6 +2265,8 @@ enum PersistedKeyError {
     UnsupportedAuthorizationSignature,
     #[error("invalid RLP key authorization")]
     InvalidAuthorizationRlp,
+    #[error("invalid carried authorization: {0}")]
+    InvalidCarriedAuthorization(&'static str),
     #[error("key authorization address and key ID do not match")]
     AuthorizationAddressMismatch,
     #[error("key-authorization expiry must be non-zero")]
@@ -2475,6 +2494,10 @@ struct WritableSignedKeyAuthorization {
     #[serde(rename = "type")]
     key_type: &'static str,
     signature: WritableAuthorizationSignature,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    carried: Option<tempo_primitives::transaction::CarriedAuthorization>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    tree: Option<tempo_primitives::account::tree::TreeAuthorization>,
 }
 
 #[derive(Serialize)]
@@ -2677,6 +2700,8 @@ fn writable_access_key(
             account: authorization.account,
             key_type: "secp256k1",
             signature: writable_signature(&authorization.signature)?,
+            carried: authorization.carried.clone(),
+            tree: authorization.tree.clone(),
         },
     })
 }
@@ -5029,6 +5054,63 @@ mod tests {
         assert_eq!(decoded.signature_hash(), authorization.signature_hash());
         assert_eq!(decoded.limits, None);
         assert!(validate_authorization_for_account(account, &decoded).is_ok());
+    }
+
+    #[test_case::test_case(false; "primitive")]
+    #[test_case::test_case(true; "configurable")]
+    fn carried_authorization_persists_complete_policy(configurable: bool) {
+        let account = Address::repeat_byte(2);
+        let signer = PrivateKeySigner::random();
+        let mut signed = if configurable {
+            configurable_authorization(account, &signer)
+        } else {
+            test_process_authorization(&signer)
+        };
+        signed.authorization.account = Some(account);
+        signed.authorization.witness = Some(B256::repeat_byte(3));
+        signed.authorization.expiry = NonZeroU64::new(10_000);
+        let authority_config = signed
+            .signature
+            .as_multisig()
+            .map_or(B256::ZERO, |signature| signature.config_commitment());
+        let mut signed = SignedKeyAuthorization::new_carried(
+            signed.authorization,
+            tempo_primitives::transaction::CarriedAuthorization {
+                valid_after: 100,
+                authority_config,
+            },
+            signed.signature,
+        )
+        .unwrap();
+        let value =
+            serde_json::to_value(writable_access_key(account, &signer, &signed).unwrap()).unwrap();
+        let persisted: PersistedSignedKeyAuthorization =
+            serde_json::from_value(value["keyAuthorization"].clone()).unwrap();
+        let decoded = SignedKeyAuthorization::try_from(persisted).unwrap();
+        assert_eq!(decoded, signed);
+        assert_eq!(alloy_rlp::encode(&decoded), alloy_rlp::encode(&signed));
+        assert_eq!(decoded.signature_hash(), signed.signature_hash());
+        if configurable {
+            signed.tree = Some(tempo_primitives::account::tree::TreeAuthorization {
+                epoch: 0,
+                grant_id: 0,
+                witness: tempo_primitives::account::tree::TreeWitness {
+                    opening: tempo_primitives::account::tree::AccountOpening::empty(
+                        authority_config,
+                    ),
+                    usage: vec![Default::default(); signed.limits.as_ref().map_or(0, Vec::len)],
+                    ..Default::default()
+                },
+            });
+            let value =
+                serde_json::to_value(writable_access_key(account, &signer, &signed).unwrap())
+                    .unwrap();
+            let persisted: PersistedSignedKeyAuthorization =
+                serde_json::from_value(value["keyAuthorization"].clone()).unwrap();
+            let decoded = SignedKeyAuthorization::try_from(persisted).unwrap();
+            assert_eq!(decoded, signed);
+            assert_eq!(alloy_rlp::encode(&decoded), alloy_rlp::encode(&signed));
+        }
     }
 
     #[test_case::test_case(false; "primitive")]

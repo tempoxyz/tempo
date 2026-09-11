@@ -248,7 +248,37 @@ pub fn validate_state<J: JournalTr>(
         }
         accounts.push(address);
         let actual = signature.config_commitment();
-        if actual.is_zero() || (!commitment.is_zero() && commitment != actual) {
+        let opening = signature.account_opening.as_ref().or_else(|| {
+            aa.key_authorization
+                .as_ref()
+                .filter(|a| a.account == Some(address))
+                .and_then(|a| a.tree.as_ref())
+                .map(|t| &t.witness.opening)
+        });
+        let expected = if let Some(opening) = opening {
+            opening.validate().map_err(|reason| {
+                EVMError::Transaction(crate::carried_authorization::invalid(reason))
+            })?;
+            if opening.authority != actual {
+                return Err(invalid(
+                    NativeMultisigError::ConfigurationCommitmentMismatch {
+                        expected: opening.authority,
+                        actual,
+                    },
+                ));
+            }
+            // An empty V2 tree may be initialized over an existing V1 authority.
+            if commitment == actual
+                && *opening == tempo_primitives::account::tree::AccountOpening::empty(actual)
+            {
+                actual
+            } else {
+                opening.commitment()
+            }
+        } else {
+            actual
+        };
+        if actual.is_zero() || (!commitment.is_zero() && commitment != expected) {
             return Err(invalid(
                 NativeMultisigError::ConfigurationCommitmentMismatch {
                     expected: commitment,
@@ -257,6 +287,13 @@ pub fn validate_state<J: JournalTr>(
             ));
         }
         if commitment.is_zero() {
+            if opening.is_some_and(|o| {
+                *o != tempo_primitives::account::tree::AccountOpening::empty(actual)
+            }) {
+                return Err(EVMError::Transaction(
+                    crate::carried_authorization::invalid("nonempty initial account tree"),
+                ));
+            }
             if signature.config().version != 0
                 || signature.config().derive_account(factory).ok() != Some(address)
             {

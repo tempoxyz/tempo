@@ -22,9 +22,107 @@ use tempo_primitives::transaction::{
 pub struct NativeMultisig {
     tx_origin: Address,
     directly_authorized_account: Address,
+    tree_authority: B256,
+    tree_epoch: u64,
+    tree_next_id: u64,
+    tree_count: u16,
+    tree_policies: B256,
 }
 
 impl NativeMultisig {
+    pub fn set_tree_opening(
+        &mut self,
+        opening: &tempo_primitives::account::tree::AccountOpening,
+    ) -> Result<()> {
+        self.tree_authority.t_write(opening.authority)?;
+        self.tree_epoch.t_write(opening.epoch)?;
+        self.tree_next_id.t_write(opening.next_id)?;
+        self.tree_count.t_write(opening.count)?;
+        self.tree_policies.t_write(opening.policies)
+    }
+
+    fn tree_opening(
+        &mut self,
+        sender: Address,
+    ) -> Result<tempo_primitives::account::tree::AccountOpening> {
+        use tempo_primitives::account::tree::AccountOpening;
+        if sender.is_zero()
+            || self.tx_origin.t_read()? != sender
+            || self.directly_authorized_account.t_read()? != sender
+        {
+            return Err(NativeMultisigError::unauthorized_multisig_caller().into());
+        }
+        let opening = AccountOpening {
+            authority: self.tree_authority.t_read()?,
+            epoch: self.tree_epoch.t_read()?,
+            next_id: self.tree_next_id.t_read()?,
+            count: self.tree_count.t_read()?,
+            policies: self.tree_policies.t_read()?,
+        };
+        opening
+            .validate()
+            .map_err(|_| NativeMultisigError::invalid_config())?;
+        let current = self.storage.config_commitment(sender)?;
+        if current != opening.commitment()
+            && !(current == opening.authority
+                && opening == AccountOpening::empty(opening.authority))
+        {
+            return Err(NativeMultisigError::invalid_config().into());
+        }
+        self.storage.deduct_gas(500)?;
+        Ok(opening)
+    }
+
+    fn write_tree(
+        &mut self,
+        sender: Address,
+        opening: &tempo_primitives::account::tree::AccountOpening,
+    ) -> Result<()> {
+        self.storage.deduct_gas(500)?;
+        self.storage.set_config_commitment(
+            sender,
+            opening.commitment(),
+            ConfigCommitmentWriteGas::Precompile,
+        )?;
+        self.set_tree_opening(opening)?;
+        self.emit_event(NativeMultisigEvent::account_tree_root_updated(
+            sender,
+            alloy_rlp::encode(opening).into(),
+        ))
+    }
+
+    pub fn remove_policy(
+        &mut self,
+        sender: Address,
+        mut leaves: Vec<B256>,
+        index: u16,
+    ) -> Result<()> {
+        let mut opening = self.tree_opening(sender)?;
+        if leaves.len() != opening.count as usize || index >= opening.count {
+            return Err(NativeMultisigError::invalid_config().into());
+        }
+        self.storage.deduct_gas(200 * leaves.len() as u64)?;
+        if tempo_primitives::account::tree::root(&leaves)
+            .map_err(|_| NativeMultisigError::invalid_config())?
+            != opening.policies
+        {
+            return Err(NativeMultisigError::invalid_config().into());
+        }
+        leaves.swap_remove(index as usize);
+        opening.count -= 1;
+        opening.policies = tempo_primitives::account::tree::root(&leaves)
+            .map_err(|_| NativeMultisigError::invalid_config())?;
+        self.write_tree(sender, &opening)
+    }
+
+    pub fn cancel_policy_approvals(&mut self, sender: Address, next_id: u64) -> Result<()> {
+        let mut opening = self.tree_opening(sender)?;
+        if next_id <= opening.next_id {
+            return Err(NativeMultisigError::invalid_config().into());
+        }
+        opening.next_id = next_id;
+        self.write_tree(sender, &opening)
+    }
     /// Seeds only the direct outer owner-quorum authority, never a delegate or sponsor.
     pub fn set_authority(&mut self, origin: Address, directly_authorized: Address) -> Result<()> {
         self.tx_origin.t_write(origin)?;
@@ -85,7 +183,12 @@ impl NativeMultisig {
         let hash = self
             .storage
             .keccak256(&current.commitment_preimage().map_err(map_config_error)?)?;
-        if stored.is_zero() || stored != hash {
+        let opening = if stored != hash {
+            Some(self.tree_opening(sender)?)
+        } else {
+            None
+        };
+        if stored.is_zero() || opening.as_ref().map_or(stored, |o| o.authority) != hash {
             return Err(NativeMultisigError::invalid_config().into());
         }
         let version = current
@@ -101,8 +204,22 @@ impl NativeMultisig {
         if hash.is_zero() {
             return Err(NativeMultisigError::invalid_config().into());
         }
-        self.storage
-            .set_config_commitment(sender, hash, ConfigCommitmentWriteGas::Precompile)?;
+        if let Some(mut opening) = opening {
+            opening.authority = hash;
+            opening.epoch = opening
+                .epoch
+                .checked_add(1)
+                .ok_or_else(NativeMultisigError::invalid_config)?;
+            opening.count = 0;
+            opening.policies = tempo_primitives::account::tree::empty();
+            self.write_tree(sender, &opening)?;
+        } else {
+            self.storage.set_config_commitment(
+                sender,
+                hash,
+                ConfigCommitmentWriteGas::Precompile,
+            )?;
+        }
         self.emit_event(NativeMultisigEvent::multisig_config_updated(
             sender, next.salt, version, threshold, owners,
         ))

@@ -106,6 +106,8 @@ pub struct TempoPoolUpdates {
     /// with the runtime's actual spending-limit decrements instead of inferring them from
     /// the mined transaction body.
     pub spending_limit_spends: SpendingLimitUpdates,
+    /// Carried budgets changed by committed user debits or fee settlement.
+    pub carried_spends: AddressMap<B256Set>,
     /// TIP-1053 key-authorization witness burns.
     ///
     /// Pending AA transactions carrying the same `(account, witness)` key authorization are no
@@ -133,6 +135,7 @@ impl TempoPoolUpdates {
             && self.quote_token_updates.is_empty()
             && self.fee_balance_changes.is_empty()
             && self.spending_limit_spends.is_empty()
+            && self.carried_spends.is_empty()
             && self.key_authorization_witness_burns.is_empty()
     }
 
@@ -213,6 +216,13 @@ impl TempoPoolUpdates {
                             Some(event.token),
                         );
                     }
+                    Some(AccountKeychainPoolEvent::CarriedAccessKeySpend(event)) => {
+                        updates
+                            .carried_spends
+                            .entry(event.account)
+                            .or_default()
+                            .insert(event.authorizationId);
+                    }
                     Some(AccountKeychainPoolEvent::KeyAuthorizationWitnessBurned(event)) => {
                         updates
                             .key_authorization_witness_burns
@@ -291,6 +301,8 @@ enum AccountKeychainPoolEvent {
     SpendingLimitUpdated(IAccountKeychain::SpendingLimitUpdated),
     /// [`IAccountKeychain::AccessKeySpend`] log.
     AccessKeySpend(IAccountKeychain::AccessKeySpend),
+    /// [`IAccountKeychain::CarriedAccessKeySpend`] log.
+    CarriedAccessKeySpend(IAccountKeychain::CarriedAccessKeySpend),
     /// [`IAccountKeychain::KeyAuthorizationWitnessBurned`] log.
     KeyAuthorizationWitnessBurned(IAccountKeychain::KeyAuthorizationWitnessBurned),
 }
@@ -311,6 +323,9 @@ impl AccountKeychainPoolEvent {
             }
             IAccountKeychain::AccessKeySpend::SIGNATURE_HASH => {
                 decode_event(log).map(Self::AccessKeySpend)
+            }
+            IAccountKeychain::CarriedAccessKeySpend::SIGNATURE_HASH => {
+                decode_event(log).map(Self::CarriedAccessKeySpend)
             }
             IAccountKeychain::KeyAuthorizationWitnessBurned::SIGNATURE_HASH => {
                 decode_event(log).map(Self::KeyAuthorizationWitnessBurned)
@@ -936,13 +951,26 @@ pub(crate) async fn maintain_tempo_pool_with_events<Client, EvmConfig>(
                 .then_some(*address)
             })
             .collect();
-        if reorg || !changed.is_empty() || !code_changed.is_empty() {
+        if reorg
+            || !changed.is_empty()
+            || !code_changed.is_empty()
+            || !updates.carried_spends.is_empty()
+        {
             for tx in all_txs
                 .get_or_insert_with(|| pool.all_transactions())
                 .iter()
             {
                 if !removed_this_iteration.contains(tx.hash())
                     && ((reorg && tx.transaction.has_configurable_dependencies())
+                        || tx
+                            .transaction
+                            .carried_budget()
+                            .is_some_and(|(account, id)| {
+                                updates
+                                    .carried_spends
+                                    .get(&account)
+                                    .is_some_and(|ids| ids.contains(&id))
+                            })
                         || tx
                             .transaction
                             .configurable_signers()
@@ -1602,6 +1630,42 @@ mod tests {
         use alloy_primitives::{IntoLogData, Log, U256};
         use alloy_signer_local::PrivateKeySigner;
         use tempo_primitives::{TempoReceipt, TempoTxType};
+
+        #[test]
+        fn extracts_carried_budget_identity_for_revalidation() {
+            let account = Address::repeat_byte(1);
+            let signer = PrivateKeySigner::random();
+            let tx = TxBuilder::aa(account).build_keychain(account, &signer);
+            let id = B256::repeat_byte(2);
+            let log = alloy_primitives::Log::new_from_event_unchecked(
+                ACCOUNT_KEYCHAIN_ADDRESS,
+                IAccountKeychain::CarriedAccessKeySpend {
+                    account,
+                    authorizationId: id,
+                    token: Address::repeat_byte(3),
+                    keyId: signer.address(),
+                    amount: U256::from(5),
+                    remaining: U256::from(10),
+                    windowIndex: 0,
+                },
+            )
+            .reserialize();
+            let receipt = TempoReceipt {
+                tx_type: TempoTxType::AA,
+                success: true,
+                cumulative_gas_used: 1,
+                logs: vec![log],
+            };
+            let block = create_block_with_txs(1, vec![extract_envelope(&tx)], vec![account]);
+            let chain = create_test_chain_with_receipts(vec![block], vec![vec![receipt]]);
+            let updates = TempoPoolUpdates::from_chain(&chain);
+            assert!(updates.carried_spends.get(&account).unwrap().contains(&id));
+            assert!(
+                updates.spending_limit_spends.is_empty(),
+                "carried budgets must not use stored-key remaining-limit getters"
+            );
+            assert!(!updates.is_empty());
+        }
 
         /// Verify from_chain uses AccessKeySpend logs so it can track the actually spent token
         /// even when it differs from the mined tx's fee token.

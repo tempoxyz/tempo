@@ -13,6 +13,8 @@ impl Precompile for NativeMultisig {
             INativeMultisig::INativeMultisigCalls {
                 deriveAccount(call) => view(call, |c| self.derive_account(c.salt, c.threshold, c.owners)),
                 getConfigCommitment(call) => view(call, |c| self.get_config_commitment(c.account)),
+                removePolicy(call) => mutate_void(call, sender, |sender, c| self.remove_policy(sender, c.leaves, c.index)),
+                cancelPolicyApprovals(call) => mutate_void(call, sender, |sender, c| self.cancel_policy_approvals(sender, c.nextId)),
                 updateConfig(call) => mutate_void(call, sender, |sender, c| self.update_config(sender, c.current, c.threshold, c.owners)),
             }
         })

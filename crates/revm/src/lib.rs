@@ -7,6 +7,7 @@
 #[cfg(not(test))]
 use tracing as _;
 
+mod carried_authorization;
 mod common;
 pub use common::{TempoStateAccess, TempoTx};
 pub mod error;
