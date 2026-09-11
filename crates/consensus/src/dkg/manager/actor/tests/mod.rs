@@ -40,7 +40,7 @@ fn startup_uses_runtime_observed_tip_identity_before_healing() {
                 let next = dkg_fixture(&mut context, Epoch::new(3));
                 let make_state = |outcome: &OnchainDkgOutcome| State {
                     epoch: outcome.epoch,
-                    seed: Summary::random(&mut StdRng::seed_from_u64(1)),
+                    seed: Summary::random(StdRng::seed_from_u64(1)),
                     output: outcome.output.clone(),
                     share: ShareState::unset_plaintext(),
                     players: outcome.next_players.clone(),
