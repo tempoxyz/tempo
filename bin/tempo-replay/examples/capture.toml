@@ -1,0 +1,26 @@
+[run]
+schema_version = 2
+id = "tempo-shadow-example"
+mode = "finalized_bursts"
+chain_id = 4217
+tempo_revision = "731535b9808eda12e81ab6459703602554eaee5a"
+reth_revision = "8e55cc5"
+
+[source]
+consensus_ws = "wss://source-reader.example.invalid"
+rpc_http = "https://source-reader.example.invalid"
+finality = "finalized"
+fallback = "verified_execution_layer"
+raw_blocks = "prefer_if_verified"
+recovery_horizon_blocks = 200000
+history_probe_blocks = 16385
+
+[journal]
+path = "./data"
+sync_writes = true
+group_commit_max_ms = 5
+max_bytes = 100000000000
+min_free_bytes = 1000000000
+
+[metrics]
+listen = "127.0.0.1:9090"

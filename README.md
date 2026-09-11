@@ -94,6 +94,8 @@ We provide three different installation paths: installing a pre-built binary, bu
 
 See the [Tempo documentation](https://docs.tempo.xyz/guide/node) for instructions on how to install and run Tempo.
 
+For live transaction traffic on an independent shadow fork, use [Tempo Replay](bin/tempo-replay/README.md).
+
 ### As a developer
 
 Tempo has several SDKs to help you get started building on Tempo:

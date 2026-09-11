@@ -4855,6 +4855,16 @@ dependencies = [
 ]
 
 [[package]]
+name = "fs4"
+version = "0.13.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "8640e34b88f7652208ce9e88b1a37a2ae95227d84abec377ccd3c5cfeb141ed4"
+dependencies = [
+ "rustix",
+ "windows-sys 0.59.0",
+]
+
+[[package]]
 name = "fs_extra"
 version = "1.3.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -14062,6 +14072,41 @@ dependencies = [
  "sha2 0.10.9",
  "tempo-contracts",
  "tracing-subscriber",
+]
+
+[[package]]
+name = "tempo-replay"
+version = "1.14.0"
+dependencies = [
+ "alloy-consensus",
+ "alloy-eips",
+ "alloy-primitives",
+ "alloy-rlp",
+ "anyhow",
+ "axum",
+ "base64 0.22.1",
+ "clap",
+ "fs4",
+ "futures-util",
+ "hex",
+ "httpdate",
+ "k256",
+ "p256 0.13.2",
+ "reqwest 0.13.3",
+ "rocksdb",
+ "rustls",
+ "serde",
+ "serde_json",
+ "sha2 0.10.9",
+ "tempfile",
+ "tempo-primitives",
+ "tokio",
+ "tokio-tungstenite",
+ "tokio-util",
+ "toml 1.1.5+spec-1.1.0",
+ "tracing",
+ "tracing-subscriber",
+ "url",
 ]
 
 [[package]]
