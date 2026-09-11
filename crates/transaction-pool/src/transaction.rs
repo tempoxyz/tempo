@@ -34,7 +34,7 @@ use tempo_precompiles::{
     tip403_registry::tip403_registry_slots,
 };
 use tempo_primitives::{
-    TempoTxEnvelope,
+    AASigned, TempoTxEnvelope,
     transaction::{InvalidValidAfter, InvalidValidBefore, calc_gas_balance_spending},
 };
 use tempo_revm::{TempoInvalidTransaction, TempoTxEnv};
@@ -90,6 +90,27 @@ impl TempoPooledTransaction {
         });
         let encoded_length = transaction.encode_2718_len();
         Self::new_with(transaction, expiring_nonce_hash, encoded_length)
+    }
+
+    /// Returns a copy whose AA nonce is safe for Reth's EIP-2681 stateless validation.
+    ///
+    /// T12 expiring nonces treat `u64::MAX` as an opaque discriminator, while Reth rejects that
+    /// value for protocol nonces. The original encoded length is retained so all other stateless
+    /// checks run against the real transaction's size.
+    pub(crate) fn eip2681_validation_proxy(&self) -> Option<Self> {
+        let (envelope, signer) = self.inner.transaction.clone().into_parts();
+        let TempoTxEnvelope::AA(signed) = envelope else {
+            return None;
+        };
+        let (mut tx, signature, _) = signed.into_parts();
+        tx.nonce = 0;
+
+        let mut proxy = Self::new(Recovered::new_unchecked(
+            TempoTxEnvelope::AA(AASigned::new_unhashed(tx, signature)),
+            signer,
+        ));
+        proxy.inner.encoded_length = self.inner.encoded_length;
+        Some(proxy)
     }
 
     /// Create a new pooled transaction with optional precomputed transaction metadata.

@@ -23,7 +23,7 @@ use reth_ethereum::network::{NetworkSyncUpdater, SyncState};
 use reth_node_api::BuiltPayload;
 use reth_primitives_traits::transaction::TxHashRef;
 use reth_transaction_pool::TransactionPool;
-use tempo_alloy::TempoNetwork;
+use tempo_alloy::{TempoNetwork, provider::TempoProviderBuilderExt};
 use tempo_chainspec::{hardfork::TempoHardfork, spec::TEMPO_T1_BASE_FEE};
 use tempo_contracts::precompiles::{
     DEFAULT_FEE_TOKEN,
@@ -32,6 +32,7 @@ use tempo_contracts::precompiles::{
         revokeKeyCall,
     },
 };
+use tempo_node::rpc::TempoTransactionRequest;
 use tempo_precompiles::{
     ACCOUNT_KEYCHAIN_ADDRESS,
     tip20::ITIP20::{self},
@@ -1939,11 +1940,71 @@ async fn test_aa_keychain_revocation_toctou_dos() -> eyre::Result<()> {
 // Expiring Nonce Tests
 // ============================================================================
 
+#[test_case::test_case(TempoHardfork::T11, [true, false, false] ; "t11")]
+#[test_case::test_case(TempoHardfork::T12, [true, true, true] ; "t12")]
+#[tokio::test(flavor = "multi_thread")]
+async fn test_expiring_nonce_discriminators_across_t12(
+    hardfork: TempoHardfork,
+    expected_admission: [bool; 3],
+) -> eyre::Result<()> {
+    let mut localnet = Localnet::with_schedule(ForkSchedule::DevnetAt(hardfork)).await?;
+    let valid_before = super::types::TestEnv::current_block_timestamp(&mut localnet).await?
+        + localnet.setup.hardfork.expiring_nonce_max_expiry_secs();
+    let Localnet {
+        mut setup,
+        provider,
+        chain_id,
+        funder_signer,
+        funder_addr,
+    } = localnet;
+    let recipient = Address::random();
+    let protocol_nonce = provider.get_transaction_count(funder_addr).await?;
+    let tempo_provider = ProviderBuilder::new_with_network::<TempoNetwork>()
+        .with_expiring_nonces()
+        .wallet(funder_signer)
+        .connect_http(setup.node.rpc_url());
+    let mut accepted_hashes = Vec::new();
+
+    for (discriminator, should_accept) in [0, 1, u64::MAX].into_iter().zip(expected_admission) {
+        let mut tx = create_expiring_nonce_tx(chain_id, valid_before, recipient);
+        tx.nonce = discriminator;
+        let mut request = TempoTransactionRequest::from(tx);
+        request.inner.from = Some(funder_addr);
+        // Estimation skips nonce validity checks but still exercises request conversion.
+        estimate_gas(&provider, &request).await?;
+
+        let submission = tempo_provider.send_transaction(request).await;
+        if should_accept {
+            accepted_hashes.push(*submission?.tx_hash());
+        } else {
+            assert!(
+                submission.is_err(),
+                "{hardfork:?} admitted discriminator {discriminator}"
+            );
+        }
+    }
+
+    assert!(
+        accepted_hashes
+            .iter()
+            .all(|hash| setup.node.inner.pool.contains(hash)),
+        "{hardfork:?} accepted discriminators must coexist in the pool"
+    );
+    setup.node.advance_block().await?;
+    for hash in accepted_hashes {
+        assert_receipt_status(&provider, hash, true).await?;
+    }
+    assert_eq!(
+        provider.get_transaction_count(funder_addr).await?,
+        protocol_nonce,
+        "expiring nonce discriminators must not change the protocol nonce"
+    );
+    Ok(())
+}
+
 /// Test expiring nonce replay protection - same tx hash should be rejected
 #[tokio::test(flavor = "multi_thread")]
 async fn test_aa_expiring_nonce_replay_protection() -> eyre::Result<()> {
-    println!("\n=== Testing Expiring Nonce Replay Protection ===\n");
-
     let Localnet {
         mut setup,
         provider,
@@ -1952,51 +2013,32 @@ async fn test_aa_expiring_nonce_replay_protection() -> eyre::Result<()> {
         ..
     } = Localnet::new().await?;
 
-    let recipient = Address::random();
-
-    // Advance a few blocks to get a meaningful timestamp
     for _ in 0..3 {
         setup.node.advance_block().await?;
     }
-
-    // Get current block timestamp
     let block = provider
         .get_block_by_number(Default::default())
         .await?
         .unwrap();
     let current_timestamp = block.header.timestamp();
-
-    // Create expiring nonce transaction
     let valid_before = current_timestamp + setup.hardfork.expiring_nonce_max_expiry_secs();
 
-    let tx = create_expiring_nonce_tx(chain_id, valid_before, recipient);
+    for discriminator in [0, 1, u64::MAX] {
+        let mut tx = create_expiring_nonce_tx(chain_id, valid_before, Address::random());
+        tx.nonce = discriminator;
+        let signature = sign_aa_tx_secp256k1(&tx, &alice_signer)?;
+        let envelope: TempoTxEnvelope = tx.into_signed(signature).into();
+        let tx_hash = *envelope.tx_hash();
+        let encoded = envelope.encoded_2718();
 
-    let aa_signature = sign_aa_tx_secp256k1(&tx, &alice_signer)?;
-    let envelope: TempoTxEnvelope = tx.into_signed(aa_signature).into();
-    let tx_hash = *envelope.tx_hash();
-    let encoded = envelope.encoded_2718();
-
-    println!("First submission - tx hash: {tx_hash}");
-
-    // First submission should succeed
-    setup.node.rpc.inject_tx(encoded.clone().into()).await?;
-    setup.node.advance_block().await?;
-
-    assert_receipt_status(&provider, tx_hash, true).await?;
-    println!("✓ First submission succeeded");
-
-    // Second submission with SAME encoded tx (same hash) should fail
-    println!("\nSecond submission - attempting replay with same tx hash...");
-
-    // Try to inject the same transaction again - should be rejected at pool level
-    let replay_result = setup.node.rpc.inject_tx(encoded.clone().into()).await;
-
-    // The replay MUST be rejected at pool validation (we check seen[tx_hash] in validator)
-    assert!(
-        replay_result.is_err(),
-        "Replay should be rejected at transaction pool level"
-    );
-    println!("✓ Replay rejected at transaction pool level");
+        setup.node.rpc.inject_tx(encoded.clone().into()).await?;
+        setup.node.advance_block().await?;
+        assert_receipt_status(&provider, tx_hash, true).await?;
+        assert!(
+            setup.node.rpc.inject_tx(encoded.into()).await.is_err(),
+            "replayed discriminator {discriminator} was admitted"
+        );
+    }
 
     Ok(())
 }
