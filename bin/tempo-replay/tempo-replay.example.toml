@@ -1,96 +1,36 @@
-# Implemented schema, revision 2. See README.md for deployment qualification.
-# Paths/identities are placeholders. Start with: tempo-replay run --config tempo-replay.toml --from-block N
-# N is inclusive and must equal checkpoint.source_height + 1. No end height is needed.
-
-[run]
-schema_version = 2
-id = "tempo-shadow-example"
-mode = "finalized_bursts"
 chain_id = 4217
-tempo_revision = "731535b9808eda12e81ab6459703602554eaee5a"
-reth_revision = "8e55cc5" # verified dependency of the inspected Tempo revision
-# Optional for live run; required for the separate exhaustive verify command.
-# workload_profile = "/etc/tempo-replay/workload-profile.json"
 
 [source]
-consensus_ws = "wss://source-reader.example.invalid"
-rpc_http = "https://source-reader.example.invalid"
-finality = "finalized"
-fallback = "verified_execution_layer" # live startup probes the adapter; capture verifies each range
-raw_blocks = "prefer_if_verified"
-recovery_horizon_blocks = 200000 # illustrative; source must retain the chosen horizon
-history_probe_blocks = 16385 # used by exhaustive verify, not the live-start history probe
+url = "https://source-reader.example.invalid"
+# credential_env = "TEMPO_REPLAY_SOURCE_CREDENTIAL"
+# ca_file = "/etc/tempo-replay/source-ca.pem"
+
+[target]
+url = "https://shadow-ingress.example.invalid"
+credential_env = "TEMPO_REPLAY_TARGET_CREDENTIAL"
+ca_file = "/etc/tempo-replay/shadow-ca.pem"
 
 [checkpoint]
-manifest = "/etc/tempo-replay/shadowfork-manifest.json"
-# Read the actual boundary from the generated manifest; these pin expected values.
-source_height = 0 # REPLACE with actual finalized donor tip H
-source_hash = "REPLACE_WITH_SOURCE_BLOCK_HASH"
-shadow_hash = "REPLACE_WITH_PATCHED_SHADOW_BOUNDARY_HASH"
-bootstrap_artifact_digest = "sha256:REPLACE_WITH_NATIVE_MANIFEST_FILE_SHA256"
+height = 0
+source_hash = "0x0000000000000000000000000000000000000000000000000000000000000001"
+target_hash = "0x0000000000000000000000000000000000000000000000000000000000000002"
 
-[shadow]
-deployment_manifest = "/etc/tempo-replay/shadow-deployment.json"
-ingress_policy = "sticky_sender"
-ca_file = "/etc/tempo-replay/shadow-ca.pem"
-identity_check_interval_ms = 30000
-# Manifest records all participating validators, effective limits and fee settings.
-# These entries are direct ingress endpoints; no custom gateway is required.
+[run]
+state = "/var/lib/tempo-replay/mirror"
+metrics = "127.0.0.1:9090"
+concurrency = 64
+retries = 2
+retry_delay_ms = 250
+retain_completed_blocks = 10000
+max_bytes = 53687091200
+min_free_bytes = 5368709120
 
-[[shadow.validators]]
-id = "shadow-a"
-rpc_http = "https://shadow-a.example.invalid"
-consensus_ws = "wss://shadow-a.example.invalid"
-credential_env = "TEMPO_REPLAY_SHADOW_A_CREDENTIAL"
-expected_validator_public_key = "REPLACE_WITH_VALIDATOR_A_PUBLIC_KEY"
-
-[[shadow.validators]]
-id = "shadow-b"
-rpc_http = "https://shadow-b.example.invalid"
-consensus_ws = "wss://shadow-b.example.invalid"
-credential_env = "TEMPO_REPLAY_SHADOW_B_CREDENTIAL"
-expected_validator_public_key = "REPLACE_WITH_VALIDATOR_B_PUBLIC_KEY"
-
-[timing]
-live_speed = 1.0
-max_catch_up_speed = 4.0
-target_lag_ms = 2000 # qualify against measured source latency and target capacity
-guard_ms = 100
-slip_warn_ms = 1000
-slip_window_blocks = 20
-on_sustained_slip = "enter_catch_up"
-target_progress_timeout_ms = 30000
-expected_inclusion_latency_ms = 1000 # replace with measured estimate
-expiry_safety_margin_ms = 1000
-
-[delivery]
-on_permanent_gap = "record_gap_and_continue"
-first_attempt = "all_routable_unblocked" # includes expected expiry; no repeated futile retries
-nonce_dependency_gap = "block_lane"
-unknown_transaction = "pause_dispatch"
-subblock_transaction = "pause_dispatch"
-system_transaction = "record_generated_by_shadow"
-ambiguous_resend_limit = 1 # same bytes; keep reconciliation and existing reservation
-dependency_wait_timeout_ms = 30000
-
-[limits]
-max_inflight_rpc = 128
-max_inflight_per_lane = 8 # clamped by verified queuing support and available credits
-pool_budget_fraction = 0.8 # network-wide minimum effective sender/count/byte limits
-max_buffered_bytes = 268435456
-max_blocks_ahead = 64
-rpc_timeout_ms = 2000
-max_retry_attempts = 5 # transport exhaustion -> recovery; capacity failures stay deferred
-
-[journal]
-path = "/var/lib/tempo-replay"
-sync_writes = true
-group_commit_max_ms = 5 # no deliberate batching wait; submission intents share a sync batch
-max_bytes = 1000000000000
-min_free_bytes = 100000000000
-
-[metrics]
-listen = "127.0.0.1:9090"
-coverage_denominator = "all_user_occurrences"
-gap_warn_fraction = 0.01 # first gap also raises coverage_degraded immediately
-gap_window_blocks = 100
+[audit]
+state = "/var/lib/tempo-replay/audit"
+metrics = "127.0.0.1:9091"
+missing_after_blocks = 64
+missing_after_seconds = 120
+retain_included_blocks = 10000
+finality_stall_seconds = 30
+max_bytes = 53687091200
+min_free_bytes = 5368709120
