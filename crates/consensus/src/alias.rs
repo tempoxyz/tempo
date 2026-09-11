@@ -164,16 +164,32 @@ pub(crate) mod marshal {
         .await
         .wrap_err("failed to initialize hybrid finalized blocks store")?;
 
+        let tip_height = finalized_tip.1;
+        // Certificates are only archived with a matching block, so the tip's
+        // header must be recoverable from execution or finalized-block storage.
+        let tip_header = read_header(&execution_node, &finalized_blocks, tip_height)
+            .await
+            .wrap_err_with(|| {
+                format!(
+                    "failed to read finalized tip header at height `{tip_height}`; finalization \
+                    certificates are only archived with a matching block, so its header must \
+                    be available in execution or finalized-block storage"
+                )
+            })?;
+        let tip_certificate = finalizations_by_height
+            .get(Identifier::Index(tip_height.get()))
+            .await
+            .wrap_err_with(|| {
+                format!("failed to read finalized tip certificate at height `{tip_height}`")
+            })?;
+
         verify_finalized_tip(
             &mut context,
             &config.epoch_strategy,
             &config.network_identity,
-            &execution_node,
-            &finalized_blocks,
-            &finalizations_by_height,
-            finalized_tip.1,
-        )
-        .await?;
+            &tip_header,
+            tip_certificate.as_ref(),
+        )?;
 
         if let marshal::Start::Floor(finalization) = &start {
             register_scheme(
@@ -243,58 +259,7 @@ pub(crate) mod marshal {
         })
     }
 
-    /// Verify the stored finalized tip against the configured network identity.
-    ///
-    /// Finalization certificates are only archived once a matching block is present.
-    /// Its header must therefore be recoverable from execution or the finalized-blocks
-    /// store. A missing or mismatching header indicates inconsistent local storage,
-    /// rather than a block that still needs to be downloaded.
-    #[instrument(skip_all, fields(%height), err)]
-    async fn verify_finalized_tip<TContext>(
-        context: &mut TContext,
-        epoch_strategy: &FixedEpocher,
-        network_identity: &tempo_chainspec::NetworkIdentity,
-        execution_node: &TempoFullNode,
-        finalized_blocks: &Hybrid<
-            TContext,
-            BlockchainProvider<NodeTypesWithDBAdapter<TempoNode, DatabaseEnv>>,
-        >,
-        finalizations_by_height: &immutable::Archive<
-            TContext,
-            Digest,
-            Finalization<Scheme<PublicKey, MinSig>, Digest>,
-        >,
-        height: Height,
-    ) -> eyre::Result<()>
-    where
-        TContext: Clock + Metrics + Spawner + Storage + BufferPooler + CryptoRng + Send + 'static,
-    {
-        let header = read_header(execution_node, finalized_blocks, height)
-            .await
-            .wrap_err_with(|| {
-                format!(
-                    "failed to read finalized tip header at height `{height}`; finalization \
-                    certificates are only archived with a matching block, so its header must \
-                    be available in execution or finalized-block storage"
-                )
-            })?;
-        let certificate = finalizations_by_height
-            .get(Identifier::Index(height.get()))
-            .await
-            .wrap_err_with(|| {
-                format!("failed to read finalized tip certificate at height `{height}`")
-            })?;
-
-        verify_finalized_tip_identity(
-            context,
-            epoch_strategy,
-            network_identity,
-            &header,
-            certificate.as_ref(),
-        )
-    }
-
-    fn verify_finalized_tip_identity(
+    fn verify_finalized_tip(
         rng: &mut impl CryptoRng,
         epoch_strategy: &FixedEpocher,
         network_identity: &tempo_chainspec::NetworkIdentity,
@@ -330,8 +295,13 @@ pub(crate) mod marshal {
 
         let scheme: Scheme<PublicKey, MinSig> =
             Scheme::certificate_verifier(crate::config::NAMESPACE, network_identity.identity);
-        let certificate =
-            certificate.ok_or_eyre("finalized tip certificate missing from archive")?;
+        let certificate = certificate.ok_or_else(|| {
+            eyre!(
+                "finalized tip certificate missing from archive at height `{}`; \
+                a non-genesis finalized tip must have an archived certificate",
+                header.number(),
+            )
+        })?;
 
         ensure!(
             header.hash_slow() == certificate.proposal.payload.0,
@@ -623,7 +593,7 @@ pub(crate) mod marshal {
                     from_epoch: 0,
                 };
                 assert!(
-                    verify_finalized_tip_identity(
+                    verify_finalized_tip(
                         &mut context,
                         &strategy,
                         &stale,
@@ -636,7 +606,7 @@ pub(crate) mod marshal {
                     identity: *rotated.outcome.network_identity(),
                     from_epoch: 2,
                 };
-                verify_finalized_tip_identity(
+                verify_finalized_tip(
                     &mut context,
                     &strategy,
                     &updated,
@@ -659,7 +629,7 @@ pub(crate) mod marshal {
                     identity: *old.outcome.network_identity(),
                     from_epoch: 0,
                 };
-                verify_finalized_tip_identity(
+                verify_finalized_tip(
                     &mut context,
                     &strategy,
                     &stale,
@@ -671,7 +641,7 @@ pub(crate) mod marshal {
                     identity: *rotated.outcome.network_identity(),
                     from_epoch: 2,
                 };
-                verify_finalized_tip_identity(
+                verify_finalized_tip(
                     &mut context,
                     &strategy,
                     &updated,
@@ -705,7 +675,7 @@ pub(crate) mod marshal {
                         };
                         let certificate = (outcome.epoch != Epoch::zero())
                             .then(|| make_finalization(&block, outcome.epoch, &fixture.schemes));
-                        let result = verify_finalized_tip_identity(
+                        let result = verify_finalized_tip(
                             &mut context,
                             &strategy,
                             &configured,
