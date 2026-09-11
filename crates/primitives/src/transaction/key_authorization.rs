@@ -436,6 +436,14 @@ pub struct SignedKeyAuthorization {
     #[cfg_attr(any(test, feature = "arbitrary"), arbitrary(default))]
     pub carried: Option<super::CarriedAuthorization>,
 
+    /// V2 account-tree grant. Only its witness is excluded from signing domains.
+    #[cfg_attr(
+        feature = "serde",
+        serde(default, skip_serializing_if = "Option::is_none")
+    )]
+    #[cfg_attr(any(test, feature = "arbitrary"), arbitrary(default))]
+    pub tree: Option<crate::account::tree::TreeAuthorization>,
+
     /// Cached signer recovered from `signature`.
     ///
     /// Excluded from encoding, equality, hashing, and arbitrary generation.
@@ -451,6 +459,7 @@ impl SignedKeyAuthorization {
             authorization,
             signature: signature.into(),
             carried: None,
+            tree: None,
             signer: OnceLock::new(),
         }
     }
@@ -497,14 +506,34 @@ impl SignedKeyAuthorization {
         self.authorization.size()
             + self.signature.size()
             + size_of::<Option<super::CarriedAuthorization>>()
+            + size_of::<Option<crate::account::tree::TreeAuthorization>>()
+            + self.tree.as_ref().map_or(0, |tree| {
+                tree.witness.usage.capacity() * size_of::<crate::account::tree::Usage>()
+                    + tree.witness.siblings.capacity() * size_of::<B256>()
+            })
     }
 
     /// Digest signed by the issuer; also the carried grant's persistent budget identity.
     pub fn signature_hash(&self) -> B256 {
-        self.carried.as_ref().map_or_else(
+        let policy = self.carried.as_ref().map_or_else(
             || self.authorization.signature_hash(),
             |carried| carried.signature_hash(&self.authorization),
-        )
+        );
+        self.tree
+            .as_ref()
+            .map_or(policy, |tree| tree.digest(policy))
+    }
+
+    /// Canonical signed intent; refreshed witnesses still change the full wire hash.
+    pub fn without_tree_witness(&self) -> Self {
+        let mut result = self.clone();
+        if let Some(tree) = &mut result.tree {
+            tree.witness = Default::default();
+        }
+        if let TempoSignature::Multisig(sig) = &mut result.signature {
+            sig.account_opening = None;
+        }
+        result
     }
 
     /// Constructs a carried certificate. This only validates immutable policy and encoding size.
@@ -528,7 +557,19 @@ impl SignedKeyAuthorization {
 
 impl Encodable for SignedKeyAuthorization {
     fn encode(&self, out: &mut dyn alloy_rlp::BufMut) {
-        if let Some(carried) = &self.carried {
+        if let (Some(tree), Some(carried)) = (&self.tree, &self.carried) {
+            let mut fields = Vec::new();
+            b"tempo-account-key-v2".as_slice().encode(&mut fields);
+            fields.extend(carried.encode_fields(&self.authorization));
+            self.signature.encode(&mut fields);
+            tree.encode(&mut fields);
+            alloy_rlp::Header {
+                list: true,
+                payload_length: fields.len(),
+            }
+            .encode(out);
+            out.put_slice(&fields);
+        } else if let Some(carried) = &self.carried {
             out.put_slice(&carried.encode_signed(&self.authorization, &self.signature));
         } else {
             alloy_rlp::Header {
@@ -542,7 +583,11 @@ impl Encodable for SignedKeyAuthorization {
     }
 
     fn length(&self) -> usize {
-        if let Some(carried) = &self.carried {
+        if self.tree.is_some() {
+            let mut bytes = Vec::new();
+            self.encode(&mut bytes);
+            bytes.len()
+        } else if let Some(carried) = &self.carried {
             carried
                 .encode_signed(&self.authorization, &self.signature)
                 .len()
@@ -580,18 +625,27 @@ impl alloy_rlp::Decodable for SignedKeyAuthorization {
                 ));
             }
             let tag = alloy_primitives::Bytes::decode(&mut fields)?;
-            if tag.as_ref() != CARRIED_AUTHORIZATION_TAG {
+            let is_tree = tag.as_ref() == b"tempo-account-key-v2";
+            if tag.as_ref() != CARRIED_AUTHORIZATION_TAG && !is_tree {
                 return Err(alloy_rlp::Error::Custom(
                     "unknown carried authorization version",
                 ));
             }
             let (carried, authorization) = super::CarriedAuthorization::decode_fields(&mut fields)?;
             let signature = TempoSignature::decode(&mut fields)?;
+            let tree = if is_tree {
+                Some(crate::account::tree::TreeAuthorization::decode(
+                    &mut fields,
+                )?)
+            } else {
+                None
+            };
             if !fields.is_empty() {
                 return Err(alloy_rlp::Error::UnexpectedLength);
             }
-            let signed = Self::new_carried(authorization, carried, signature)
+            let mut signed = Self::new_carried(authorization, carried, signature)
                 .map_err(alloy_rlp::Error::Custom)?;
+            signed.tree = tree;
             if alloy_rlp::encode(&signed) != original[..consumed] {
                 return Err(alloy_rlp::Error::Custom(
                     "noncanonical carried authorization",
@@ -622,6 +676,7 @@ impl PartialEq for SignedKeyAuthorization {
         self.authorization == other.authorization
             && self.signature == other.signature
             && self.carried == other.carried
+            && self.tree == other.tree
     }
 }
 
@@ -632,6 +687,7 @@ impl Hash for SignedKeyAuthorization {
         self.authorization.hash(state);
         self.signature.hash(state);
         self.carried.hash(state);
+        self.tree.hash(state);
     }
 }
 

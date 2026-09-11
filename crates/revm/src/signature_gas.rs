@@ -65,7 +65,15 @@ pub(crate) fn multisig_verification_gas(signature: &MultisigSignature) -> u64 {
         Vec::with_capacity(signature.account().length() + signature.config().length());
     signature.account().encode(&mut witness);
     signature.config().encode(&mut witness);
+    if let Some(opening) = &signature.account_opening {
+        opening.encode(&mut witness);
+    }
     get_tokens_in_calldata_istanbul(&witness) * STANDARD_TOKEN_COST
+        + if signature.account_opening.is_some() {
+            1_000
+        } else {
+            0
+        }
         + tempo_precompiles::native_multisig::keccak_cost(
             signature.config().commitment_preimage_len(),
         )

@@ -26,7 +26,7 @@ pub fn counter_slot(window: bool, account: Address, id: B256, token: Address) ->
 }
 
 impl AccountKeychain {
-    fn carried_read(&self, field: u8, token: Address) -> Result<U256> {
+    pub(super) fn carried_read(&self, field: u8, token: Address) -> Result<U256> {
         self.storage
             .tload(ACCOUNT_KEYCHAIN_ADDRESS, context_slot(field, token))
     }
@@ -63,15 +63,22 @@ impl AccountKeychain {
         if !self.storage.spec().is_t12() || auth.account != Some(account) {
             return Err(AccountKeychainError::unauthorized_caller().into());
         }
-        let key = self.keys[account][auth.key_id].read()?;
-        if key != AuthorizedKey::default() {
-            return Err(AccountKeychainError::key_already_exists().into());
+        if auth.tree.is_none() {
+            let key = self.keys[account][auth.key_id].read()?;
+            if key != AuthorizedKey::default() {
+                return Err(AccountKeychainError::key_already_exists().into());
+            }
+            self.ensure_key_authorization_witness_not_burned(
+                account,
+                auth.witness.unwrap_or_default(),
+            )?;
         }
-        self.ensure_key_authorization_witness_not_burned(
-            account,
-            auth.witness.unwrap_or_default(),
-        )?;
+        // V2 revocation is authenticated by membership/allocator/epoch under the root.
+        // Legacy key and witness tombstones are a separate authorization namespace.
         if issuer != account {
+            if auth.tree.is_some() {
+                return Err(AccountKeychainError::unauthorized_caller().into());
+            }
             let key = self.validate_keychain_authorization(
                 account,
                 issuer,
@@ -101,6 +108,9 @@ impl AccountKeychain {
                 // period + 1 distinguishes an absent token from a zero cap or lifetime limit.
                 self.carried_write(6, limit.token, U256::from(limit.period) + U256::from(1))?;
             }
+        }
+        if auth.tree.is_some() {
+            self.install_tree(account, auth)?;
         }
         Ok(())
     }
@@ -157,6 +167,9 @@ impl AccountKeychain {
         if amount.is_zero() || self.carried_read(4, Address::ZERO)?.is_zero() {
             return Ok(());
         }
+        if let Some(tree) = super::tree::load(account)? {
+            return self.debit_tree(account, token, amount, emit, tree);
+        }
         let (id, cap, spent, period, index) = self.carried_counter(account, token)?;
         let remaining = cap
             .checked_sub(spent)
@@ -189,6 +202,17 @@ impl AccountKeychain {
         if amount.is_zero() || self.carried_read(4, Address::ZERO)?.is_zero() {
             return Ok(());
         }
+        if let Some(mut tree) = super::tree::load(account)? {
+            let i = tree
+                .tokens
+                .binary_search_by_key(&token, |t| t.token)
+                .map_err(|_| AccountKeychainError::spending_limit_exceeded())?;
+            tree.leaf.usage[i].spent = tree.leaf.usage[i]
+                .spent
+                .checked_sub(amount)
+                .ok_or_else(AccountKeychainError::spending_limit_exceeded)?;
+            return super::tree::save(account, &mut tree);
+        }
         let (id, _, spent, _, _) = self.carried_counter(account, token)?;
         let remaining = spent
             .checked_sub(amount)
@@ -213,6 +237,9 @@ impl AccountKeychain {
             || self.carried_read(4, Address::ZERO)?.is_zero()
         {
             return Ok(());
+        }
+        if let Some(tree) = super::tree::load(account)? {
+            return super::tree::emit(account, &tree);
         }
         let (id, cap, spent, _, index) = self.carried_counter(account, token)?;
         let remaining = cap

@@ -32,6 +32,9 @@ crate::sol! {
             pure
             returns (address account);
         function getConfigCommitment(address account) external view returns (bytes32 commitment);
+        function removePolicy(bytes32[] calldata leaves, uint16 index) external;
+        function cancelPolicyApprovals(uint64 nextId) external;
+        event AccountTreeRootUpdated(address indexed account, bytes opening);
         function updateConfig(
             MultisigConfig calldata current,
             uint8 threshold,

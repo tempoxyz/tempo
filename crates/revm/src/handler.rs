@@ -416,6 +416,16 @@ impl<DB: alloy_evm::Database, I> TempoEvmHandler<DB, I> {
                         .map_or(Address::ZERO, |signature| signature.account());
                     tempo_precompiles::native_multisig::NativeMultisig::new()
                         .set_authority(ctx.tx.caller(), direct)?;
+                    if let Some(opening) = ctx
+                        .tx
+                        .tempo_tx_env
+                        .as_ref()
+                        .and_then(|aa| aa.signature.as_multisig())
+                        .and_then(|s| s.account_opening.as_ref())
+                    {
+                        tempo_precompiles::native_multisig::NativeMultisig::new()
+                            .set_tree_opening(opening)?;
+                    }
                 }
 
                 if let Some(channel_open_context_hash) = channel_open_context_hash {
@@ -657,7 +667,10 @@ where
                         {
                             StorageCtx.set_config_commitment(
                                 account,
-                                role.signature.config_commitment(),
+                                role.signature.account_opening.as_ref().map_or_else(
+                                    || role.signature.config_commitment(),
+                                    |opening| opening.commitment(),
+                                ),
                                 tempo_precompiles::storage::ConfigCommitmentWriteGas::Intrinsic,
                             )?;
                         }
@@ -1337,6 +1350,27 @@ where
             } else {
                 current
             };
+            let expected = if let Some(tree) = &auth.tree {
+                let opening = &tree.witness.opening;
+                if current != opening.commitment()
+                    && !(current == opening.authority
+                        && *opening
+                            == tempo_primitives::account::tree::AccountOpening::empty(
+                                opening.authority,
+                            ))
+                    && !(current.is_zero()
+                        && *opening
+                            == tempo_primitives::account::tree::AccountOpening::empty(expected))
+                {
+                    return Err(crate::carried_authorization::invalid(
+                        "account tree root mismatch",
+                    )
+                    .into());
+                }
+                opening.authority
+            } else {
+                expected
+            };
             if carried.authority_config != expected {
                 return Err(crate::carried_authorization::invalid(
                     "carried parent configuration changed",
@@ -1346,6 +1380,16 @@ where
             let issuer = auth
                 .recover_account()
                 .map_err(|_| TempoInvalidTransaction::KeyAuthorizationSignatureRecoveryFailed)?;
+            if auth.tree.is_some() {
+                if issuer != tx.caller {
+                    return Err(crate::carried_authorization::invalid(
+                        "tree issuer must be account authority",
+                    )
+                    .into());
+                }
+                // Nonzero account field replacement, never per-policy SSTORE creation.
+                init_gas.initial_regular_gas += 5_000;
+            }
             let internals = EvmInternals::new(journal, block, cfg, tx);
             let mut gas_params = cfg.gas_params.clone();
             // Fee bookkeeping excludes storage credits, but actual counter creation must still
@@ -1393,7 +1437,14 @@ where
             // Bounded warm counter refund, transient key activation, and final spend log.
             // Fee bookkeeping must not recursively charge another fee for its own settlement.
             if fee_payer == tx.caller && !gas_balance_spending.is_zero() && auth.limits.is_some() {
-                init_gas.initial_regular_gas += 10_000;
+                init_gas.initial_regular_gas += if let Some(tree) = &auth.tree {
+                    tempo_precompiles::account_keychain::tree::settlement_gas(
+                        auth.limits.as_ref().map_or(0, Vec::len),
+                        tree.witness.siblings.len(),
+                    )
+                } else {
+                    10_000
+                };
             }
             if tx.gas_limit() < init_gas.initial_total_gas() {
                 return Err(InvalidTransaction::CallGasCostMoreThanGasLimit {

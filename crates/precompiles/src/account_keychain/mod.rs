@@ -8,6 +8,7 @@
 
 pub mod carried;
 pub mod dispatch;
+pub mod tree;
 
 use std::collections::HashSet;
 

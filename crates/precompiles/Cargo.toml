@@ -26,6 +26,7 @@ alloy-json-abi = { workspace = true, optional = true }
 itertools = { workspace = true, optional = true }
 alloy-evm = { workspace = true, features = ["std"] }
 alloy-primitives = { workspace = true, features = ["map-foldhash"] }
+alloy-rlp.workspace = true
 revm.workspace = true
 paste.workspace = true
 bitflags.workspace = true

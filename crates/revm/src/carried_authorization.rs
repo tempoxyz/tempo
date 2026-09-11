@@ -26,6 +26,9 @@ pub(crate) fn validate(
         return Ok(());
     };
     let Some(carried) = &auth.carried else {
+        if auth.tree.is_some() {
+            return Err(invalid("tree requires carried policy"));
+        }
         return Ok(());
     };
     if !spec.is_t12() {
@@ -37,6 +40,18 @@ pub(crate) fn validate(
     carried
         .validate_policy(&auth.authorization)
         .map_err(invalid)?;
+    if let Some(tree) = &auth.tree {
+        if carried.authority_config.is_zero()
+            || tree.witness.opening.authority != carried.authority_config
+        {
+            return Err(invalid("tree requires configurable parent authority"));
+        }
+        tree.open(
+            auth.signature_hash(),
+            auth.limits.as_ref().map_or(0, Vec::len),
+        )
+        .map_err(invalid)?;
+    }
     if auth.chain_id != chain || auth.account != Some(tx.caller) {
         return Err(invalid("carried account or chain mismatch"));
     }

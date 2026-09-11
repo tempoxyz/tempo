@@ -18,6 +18,9 @@ use tempo_primitives::transaction::{
 const FACTORY: Address = Address::repeat_byte(0x71);
 const RECIPIENT: Address = Address::repeat_byte(0x77);
 
+#[path = "carried_tree.rs"]
+mod account_tree;
+
 #[derive(Clone, Copy, Debug)]
 enum Curve {
     Secp,
@@ -288,7 +291,7 @@ impl Fixture {
             chain_id: 1,
             nonce: self.nonce,
             gas_limit: 15_000_000,
-            max_fee_per_gas: 600_000_000,
+            max_fee_per_gas: self.test.evm.ctx.block.basefee as u128,
             fee_token: Some(PATH_USD_ADDRESS),
             calls: vec![Call {
                 to: TxKind::Call(if fail_scope {
@@ -735,6 +738,7 @@ fn carried_cost_failures() {
 #[test]
 #[ignore = "emits receipt gas matrix; run --ignored --nocapture"]
 fn carried_cost_matrix() {
+    println!("BASELINE_BASEFEE,12000000000");
     println!(
         "mode,parent,delegate,sponsored,policy,phase,authorization_bytes,gas,keychain_words_created,execution_us"
     );
@@ -761,6 +765,8 @@ fn carried_cost_matrix() {
                                 };
                                 let mut f =
                                     Fixture::new(parent, delegate, carried, sponsored, policy);
+                                // Fresh comparison run at the same TIP-1067 cap as V2.
+                                f.test.evm.ctx.block.basefee = 12_000_000_000;
                                 for phase in 0..3 {
                                     if phase == 2 {
                                         f.test.evm.ctx.block.timestamp = U256::from(200);

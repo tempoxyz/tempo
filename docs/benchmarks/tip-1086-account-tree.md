@@ -1,4 +1,10 @@
-# One account commitment for authority and active policies
+# Historical design: one account commitment for authority and active policies
+
+**Superseded by the [implemented V2 draft](tip-1086-tree-implementation.md) and
+[executed results](tip-1086-tree-results.md).** The text below is the earlier analytical
+proposal, not the current wire format. In particular, the implementation retains a 4KB
+complete certificate bound, carries the full opening, uses full-vector owner removal,
+and does not implement permissionless cleanup or a witness service.
 
 Design proposal for [TIP-1086](../../tips/tip-1086.md), co-designed with
 [TIP-1108](../../tips/tip-1108.md) and [TIP-1114](../../tips/tip-1114.md).

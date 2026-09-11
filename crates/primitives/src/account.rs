@@ -3,6 +3,8 @@
 use alloy_primitives::{B256, Bytes};
 use alloy_rlp::Error;
 
+pub mod tree;
+
 /// Returns the raw fifth-field payload; the trie adds RLP framing. Zero omits the field.
 pub fn encode_config_commitment(hash: B256) -> Bytes {
     if hash.is_zero() {
