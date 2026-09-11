@@ -285,8 +285,8 @@ jobs:
       BENCH_INPUT_BLOAT: ${{ inputs.bloat || '100' }}
       BENCH_INPUT_VALIDATOR_COUNT: ${{ inputs['validator-count'] || (github.event_name == 'pull_request' && '1') || '10' }}
       BENCH_INPUT_REGIONS: ${{ inputs.regions || '' }}
-      BENCH_INPUT_INSTANCE_TYPE: ${{ (inputs.cloud || 'aws') == 'gcp' && 'n2-standard-8' || 'c6id.8xlarge' }}
-      BENCH_INPUT_LOCAL_SSD_COUNT: ${{ (inputs.cloud || 'aws') == 'gcp' && ((inputs.bloat || '100') == '100' && '4' || '1') || '4' }}
+      BENCH_INPUT_INSTANCE_TYPE: ${{ (inputs.cloud || 'aws') == 'gcp' && 'c4d-standard-48-lssd' || 'c6id.8xlarge' }}
+      BENCH_INPUT_LOCAL_SSD_COUNT: '4'
       BENCH_INPUT_TPS: ${{ inputs.tps || (github.event_name == 'pull_request' && '100') || '50000' }}
       BENCH_INPUT_ACCOUNTS: ${{ inputs.accounts || '1000' }}
       BENCH_INPUT_MAX_CONCURRENT_REQUESTS: ${{ inputs['max-concurrent-requests'] || (github.event_name == 'pull_request' && '10') || '5000' }}
