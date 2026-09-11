@@ -2468,6 +2468,7 @@ mod tests {
     use crate::test_utils::{TxBuilder, wrap_valid_tx};
     use alloy_eips::eip2930::AccessList;
     use alloy_primitives::{Address, Bytes, Signature, TxKind, U256};
+    use proptest::prelude::*;
     use reth_primitives_traits::Recovered;
     use reth_transaction_pool::PoolTransaction;
     use std::collections::HashSet;
@@ -6888,6 +6889,75 @@ mod tests {
         assert_eq!(pool.expiring_nonce_txs.len(), 1);
         assert_expiring_eviction_index_len(&pool, 1);
         pool.assert_invariants();
+    }
+
+    fn expiring_nonce_discriminator() -> impl Strategy<Value = u64> {
+        prop_oneof![any::<u64>(), Just(0), Just(1), Just(u64::MAX)]
+    }
+
+    proptest! {
+        #[test]
+        fn expiring_nonce_discriminators_coexist_and_are_removed_independently(
+            (first_nonce, second_nonce) in (
+                expiring_nonce_discriminator(),
+                expiring_nonce_discriminator(),
+            ).prop_filter("discriminators must differ", |(first, second)| first != second)
+        ) {
+            use revm::database::{AccountStatus, BundleAccount, states::StorageSlot};
+
+            let mut pool = AA2dPool::default();
+            let sender = Address::random();
+            let base = TxBuilder::aa(sender)
+                .nonce_key(U256::MAX)
+                .valid_before(123)
+                .max_fee(30_000_000_000);
+            let first = base.clone().nonce(first_nonce).build();
+            let second = base.nonce(second_nonce).build();
+            let first_hash = *first.hash();
+            let second_hash = *second.hash();
+            let first_slot = first
+                .expiring_nonce_slot()
+                .expect("expiring nonce transaction has a replay slot");
+
+            pool.add_transaction(
+                Arc::new(wrap_valid_tx(first, TransactionOrigin::Local)),
+                0,
+                TempoHardfork::T12,
+            )
+            .unwrap();
+            pool.add_transaction(
+                Arc::new(wrap_valid_tx(second, TransactionOrigin::Local)),
+                0,
+                TempoHardfork::T12,
+            )
+            .unwrap();
+
+            let best = pool
+                .best_transactions()
+                .map(|tx| *tx.hash())
+                .collect::<HashSet<_>>();
+            prop_assert_eq!(best, HashSet::from([first_hash, second_hash]));
+
+            let mut storage = HashMap::default();
+            storage.insert(
+                first_slot,
+                StorageSlot::new_changed(U256::ZERO, U256::from(123_u64)),
+            );
+            let mut state = AddressMap::default();
+            state.insert(
+                NONCE_PRECOMPILE_ADDRESS,
+                BundleAccount::new(None, None, storage, AccountStatus::Changed),
+            );
+
+            let (_, mined, _) = pool.on_state_updates(&state);
+            prop_assert_eq!(mined.len(), 1);
+            prop_assert_eq!(mined[0].hash(), &first_hash);
+            prop_assert!(!pool.contains(&first_hash));
+            prop_assert!(pool.contains(&second_hash));
+            let remaining_hash = *pool.best_transactions().next().unwrap().hash();
+            prop_assert_eq!(remaining_hash, second_hash);
+            pool.assert_invariants();
+        }
     }
 
     /// Verifies that removing an expiring nonce tx by hash correctly cleans up

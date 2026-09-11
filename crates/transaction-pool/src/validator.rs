@@ -5,7 +5,7 @@ use crate::{
     transaction::{TempoPoolTransactionError, TempoPooledTransaction},
 };
 
-use alloy_consensus::constants::KECCAK_EMPTY;
+use alloy_consensus::{Transaction, constants::KECCAK_EMPTY};
 use alloy_evm::{Database, EvmEnv};
 use alloy_primitives::{Address, B256};
 use parking_lot::RwLock;
@@ -557,8 +557,27 @@ where
         // the Valid outcome with state_nonce and balance for pool ordering.
         let inner_validation = {
             let cached_state_provider = CachedAccountInfoReader::new(evm.db());
-            self.inner
-                .validate_one_with_state_provider(origin, transaction, &cached_state_provider)
+            let accepts_max_expiring_nonce = spec.is_t12()
+                && transaction.nonce() == u64::MAX
+                && transaction.nonce_key() == Some(TEMPO_EXPIRING_NONCE_KEY);
+            if accepts_max_expiring_nonce {
+                let proxy = transaction
+                    .eip2681_validation_proxy()
+                    .expect("expiring nonce transaction must be AA");
+                match self.inner.validate_stateless(origin, &proxy) {
+                    Ok(()) => {
+                        self.inner
+                            .validate_stateful(origin, transaction, &cached_state_provider)
+                    }
+                    Err(err) => TransactionValidationOutcome::Invalid(transaction, err),
+                }
+            } else {
+                self.inner.validate_one_with_state_provider(
+                    origin,
+                    transaction,
+                    &cached_state_provider,
+                )
+            }
         };
 
         match inner_validation {
