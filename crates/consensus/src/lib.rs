@@ -217,7 +217,7 @@ fn resolve_network_identity(
     config
         .network_identity()
         .or_else(|| execution_node.chain_spec().network_identity.clone())
-        .ok_or_eyre("chainspec has no dkg outcome in genesis header")
+        .ok_or_eyre("cannot determine network identity")
 }
 
 async fn instantiate_network(
