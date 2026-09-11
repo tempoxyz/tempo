@@ -7,7 +7,7 @@ use commonware_consensus::Heightable as _;
 
 use super::{
     ConsensusRequest, ExecutionTask, ExecutionTaskOutcome, ExecutionTaskType, PendingVerification,
-    VerificationRequest,
+    WalkOwner,
 };
 use crate::consensus::Digest;
 
@@ -29,9 +29,10 @@ use harness::{FakeExecution, FakeMarshal, GENESIS, make_block, round};
 fn execution_task_finishes_with_an_outcome() {
     let mut task = ExecutionTask::new(
         ExecutionTaskType::Verify,
-        futures::future::ready(ExecutionTaskOutcome::VerificationDelivered {
-            round: round(1),
+        futures::future::ready(ExecutionTaskOutcome::Delivered {
+            owner: WalkOwner::Verification(round(1)),
             digest: make_block(1, 1, GENESIS).digest(),
+            finalized_round: round(0),
             status: Err(eyre::eyre!("delivery failed")),
         }),
     );
@@ -41,7 +42,7 @@ fn execution_task_finishes_with_an_outcome() {
     assert!(matches!(finished.task_type, ExecutionTaskType::Verify));
     assert!(matches!(
         finished.outcome,
-        ExecutionTaskOutcome::VerificationDelivered { .. }
+        ExecutionTaskOutcome::Delivered { .. }
     ));
 }
 
@@ -49,17 +50,16 @@ fn execution_task_finishes_with_an_outcome() {
 fn consensus_requests_from_stale_rounds_are_dropped() {
     fn validate_request(view: u64, height: u64) -> ConsensusRequest {
         let (response, _rx) = futures::channel::oneshot::channel();
-        ConsensusRequest::Verify(PendingVerification::new(VerificationRequest {
-            parent_round: round(view.saturating_sub(1)),
-            cause: tracing::Span::none(),
-            block: make_block(view, height, Digest(B256::ZERO)).into(),
-            response: Some(response),
-        }))
+        ConsensusRequest::Verify(PendingVerification::new(
+            tracing::Span::none(),
+            make_block(view, height, Digest(B256::ZERO)).into(),
+            response,
+        ))
     }
 
     fn queued_height(slot: &Option<(Round, ConsensusRequest)>) -> Option<u64> {
         slot.as_ref().map(|(_, request)| match request {
-            ConsensusRequest::Verify(pending) => pending.request.block.height().get(),
+            ConsensusRequest::Verify(pending) => pending.candidate().height().get(),
             ConsensusRequest::Build { .. } => unreachable!("test only queues validations"),
         })
     }
