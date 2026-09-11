@@ -1,23 +1,40 @@
-use std::sync::{
-    Arc,
-    atomic::{AtomicBool, Ordering},
-    mpsc::{self, Receiver, Sender},
+use std::{
+    cell::RefCell,
+    sync::{
+        Arc, OnceLock,
+        atomic::{AtomicBool, Ordering},
+        mpsc::{self, Receiver, Sender},
+    },
 };
 
-use alloy_primitives::B256;
+use alloy_primitives::{B256, U256};
 use reth_engine_tree::tree::{CachedStateProvider, SavedCache};
-use reth_evm::{Evm, EvmEnvFor};
-use reth_revm::database::StateProviderDatabase;
+use reth_evm::{Database, Evm, EvmEnvFor};
+use reth_revm::{State, database::StateProviderDatabase};
 use reth_storage_api::{StateProviderBox, StateProviderFactory};
-use reth_tasks::{TaskExecutor, WorkerPool};
+use reth_tasks::TaskExecutor;
 use reth_transaction_pool::{
     BestTransactions, PoolTransaction, error::InvalidPoolTransactionError,
 };
 use tempo_evm::{ExpiringNonceReplay, StorageActionReplay, TempoEvmConfig, evm::TempoEvm};
+use tempo_precompiles::NONCE_PRECOMPILE_ADDRESS;
 use tempo_transaction_pool::{StateAwarePoolTransaction, best::BestTransaction};
 use tracing::{instrument, trace};
 
 pub(crate) type PrewarmEvmState = Option<TempoEvm<StateProviderDatabase<StateProviderBox>>>;
+
+type PrewarmedNonceStorage = Arc<OnceLock<Vec<(U256, U256)>>>;
+
+struct WorkerPrewarmEvm {
+    build: Arc<AtomicBool>,
+    evm: PrewarmEvmState,
+}
+
+thread_local! {
+    // Engine prewarming owns the pool's generic worker-state slot. Forwarded
+    // nonce reads must come from this build's parent, never a previous build.
+    static BUILDER_PREWARM_EVM: RefCell<Option<WorkerPrewarmEvm>> = const { RefCell::new(None) };
+}
 
 /// Prewarming orchestrator that consumes source [`BestTransactions`] with bounded
 /// lookahead, prewarms buffered transactions in parallel, and produces a new
@@ -80,11 +97,6 @@ impl BestTransactionsPrewarming {
         let pool = executor.prewarming_pool();
 
         pool.in_place_scope(|scope| {
-            let prewarm = ctx.prewarm.clone();
-            scope.spawn(move |_| {
-                pool.init::<PrewarmEvmState>(|_| prewarm.evm_for_ctx());
-            });
-
             let advance = |ctx: &mut BestTransactionsPrewarmingContext<Txs, Provider>| {
                 let Some(tx) = ctx.best_txs.next() else {
                     let _ = ctx.transactions_tx.send(None);
@@ -102,15 +114,24 @@ impl BestTransactionsPrewarming {
                 let prewarm = ctx.prewarm.clone();
                 let commands_tx = ctx.commands_tx.clone();
                 let transactions_tx = ctx.transactions_tx.clone();
+                let nonce_storage = (!parallel && expiring_nonce_offset.is_some())
+                    .then(|| Arc::new(OnceLock::new()));
 
                 if !parallel {
-                    let _ = ctx
-                        .transactions_tx
-                        .send(Some(PrewarmedTransaction::without_replay(tx.clone())));
+                    let _ = ctx.transactions_tx.send(Some(PrewarmedTransaction {
+                        tx: tx.clone(),
+                        replay: None,
+                        nonce_storage: nonce_storage.clone(),
+                    }));
                 }
 
                 scope.spawn(move |_| {
-                    let tx = Self::prewarm_transaction(prewarm, tx, expiring_nonce_offset);
+                    let tx = Self::prewarm_transaction(
+                        prewarm,
+                        tx,
+                        expiring_nonce_offset,
+                        nonce_storage,
+                    );
                     if parallel {
                         let _ = transactions_tx.send(Some(tx));
                     }
@@ -161,7 +182,9 @@ impl BestTransactionsPrewarming {
             }
         });
 
-        pool.clear();
+        pool.broadcast(pool.current_num_threads(), |_| {
+            ctx.prewarm.clear_worker_evm()
+        });
     }
 
     /// Prewarms a transaction by executing it on top of the latest state.
@@ -173,20 +196,16 @@ impl BestTransactionsPrewarming {
         prewarm: PrewarmingExecutionContext<Provider>,
         tx: BestTransaction,
         expiring_nonce_offset: Option<usize>,
+        nonce_storage: Option<PrewarmedNonceStorage>,
     ) -> PrewarmedTransaction
     where
         Provider: StateProviderFactory + Clone + 'static,
     {
-        let replay = WorkerPool::with_worker_mut(|worker| {
-            if prewarm.parallel && !is_parallel_candidate(&tx) {
-                return None;
-            }
-
-            let evm = worker.get_or_init(|| prewarm.evm_for_ctx()).as_mut()?;
-
-            if prewarm.is_stopped() {
-                return None;
-            }
+        if prewarm.is_stopped() || (prewarm.parallel && !is_parallel_candidate(&tx)) {
+            return PrewarmedTransaction::without_replay(tx);
+        }
+        let replay = prewarm.with_worker_evm(|state| {
+            let evm = state.as_mut()?;
 
             let mut tx_env = tx.transaction.clone_tx_env();
             if let Some(tempo_tx_env) = tx_env.tempo_tx_env.as_mut() {
@@ -194,7 +213,7 @@ impl BestTransactionsPrewarming {
             }
 
             let result = match evm.transact_raw(tx_env) {
-                Ok(result) => result.result,
+                Ok(result) => result,
                 Err(err) => {
                     // Discard actions recorded by the failed transaction before reusing this worker.
                     evm.clear_actions();
@@ -211,6 +230,18 @@ impl BestTransactionsPrewarming {
             trace!(target: "payload_builder", "Prewarmed transaction");
 
             if !prewarm.parallel {
+                if let Some(storage) = &nonce_storage
+                    && let Some(account) = result.state.get(&NONCE_PRECOMPILE_ADDRESS)
+                {
+                    // Only forward the parent-state values, never speculative writes.
+                    let _ = storage.set(
+                        account
+                            .storage
+                            .iter()
+                            .map(|(&slot, value)| (slot, value.original_value()))
+                            .collect(),
+                    );
+                }
                 return None;
             }
 
@@ -235,14 +266,18 @@ impl BestTransactionsPrewarming {
             );
 
             Some(Box::new(StorageActionReplay {
-                result,
+                result: result.result,
                 actions,
                 validator_fee: evm.validator_fee(),
                 expiring_nonce,
             }))
         });
 
-        PrewarmedTransaction { tx, replay }
+        PrewarmedTransaction {
+            tx,
+            replay,
+            nonce_storage,
+        }
     }
 }
 
@@ -312,11 +347,41 @@ struct BestTransactionsPrewarmingContext<Txs, Provider> {
 pub(crate) struct PrewarmedTransaction {
     pub(crate) tx: BestTransaction,
     pub(crate) replay: Option<Box<StorageActionReplay>>,
+    nonce_storage: Option<PrewarmedNonceStorage>,
 }
 
 impl PrewarmedTransaction {
     pub(crate) fn without_replay(tx: BestTransaction) -> Self {
-        Self { tx, replay: None }
+        Self {
+            tx,
+            replay: None,
+            nonce_storage: None,
+        }
+    }
+
+    /// Copies ready parent-state nonce reads into the block's database cache.
+    /// Does not wait for prewarming, overwrite executed state, or warm EVM gas slots.
+    pub(crate) fn seed_nonce_storage<DB: Database>(&self, db: &mut State<DB>) {
+        let Some(storage) = self
+            .nonce_storage
+            .as_ref()
+            .and_then(|storage| storage.get())
+        else {
+            return;
+        };
+        let Some(cached) = db.cache.accounts.get_mut(&NONCE_PRECOMPILE_ADDRESS) else {
+            return;
+        };
+        // Created/destroyed accounts have fully known storage. Parent-state values
+        // must not resurrect slots cleared by execution in this block.
+        if cached.status.is_storage_known() {
+            return;
+        }
+        if let Some(account) = &mut cached.account {
+            for &(slot, value) in storage {
+                account.storage.entry(slot).or_insert(value);
+            }
+        }
     }
 }
 
@@ -404,6 +469,32 @@ where
     pub(crate) fn executor(&self) -> TaskExecutor {
         self.executor.clone()
     }
+
+    fn with_worker_evm<R>(&self, f: impl FnOnce(&mut PrewarmEvmState) -> R) -> R {
+        BUILDER_PREWARM_EVM.with_borrow_mut(|state| {
+            if state
+                .as_ref()
+                .is_none_or(|cached| !Arc::ptr_eq(&cached.build, &self.stop))
+            {
+                *state = Some(WorkerPrewarmEvm {
+                    build: self.stop.clone(),
+                    evm: self.evm_for_ctx(),
+                });
+            }
+            f(&mut state.as_mut().expect("worker EVM initialized").evm)
+        })
+    }
+
+    fn clear_worker_evm(&self) {
+        BUILDER_PREWARM_EVM.with_borrow_mut(|state| {
+            if state
+                .as_ref()
+                .is_some_and(|cached| Arc::ptr_eq(&cached.build, &self.stop))
+            {
+                *state = None;
+            }
+        });
+    }
 }
 
 impl<Provider> PrewarmingExecutionContext<Provider> {
@@ -483,7 +574,13 @@ mod tests {
     use reth_primitives_traits::{
         Recovered, SealedHeader, transaction::error::InvalidTransactionError,
     };
+    use reth_revm::{
+        Database as _,
+        db::{CacheDB, EmptyDB, states::account_status::AccountStatus},
+        state::AccountInfo,
+    };
     use reth_storage_api::noop::NoopProvider;
+    use reth_tasks::WorkerPool;
     use reth_transaction_pool::{
         TransactionOrigin, ValidPoolTransaction, identifier::TransactionId,
     };
@@ -588,6 +685,14 @@ mod tests {
     }
 
     fn test_payment_tx(sender: Address, gas_limit: u64) -> BestTransaction {
+        test_payment_tx_with_nonce_key(sender, gas_limit, U256::ONE)
+    }
+
+    fn test_payment_tx_with_nonce_key(
+        sender: Address,
+        gas_limit: u64,
+        nonce_key: U256,
+    ) -> BestTransaction {
         let mut token = [0u8; 20];
         token[..2].copy_from_slice(&[0x20, 0xc0]);
         let token = Address::from(token);
@@ -604,7 +709,8 @@ mod tests {
                 value: U256::ZERO,
                 input: input.into(),
             }],
-            nonce_key: U256::ONE,
+            nonce_key,
+            valid_before: (nonce_key == U256::MAX).then(|| std::num::NonZeroU64::new(300).unwrap()),
             ..Default::default()
         };
         let envelope = TempoTxEnvelope::AA(tx.into_signed(Signature::test_signature().into()));
@@ -834,9 +940,240 @@ mod tests {
 
         assert!(prewarming.next().is_some());
 
+        drop(prewarming);
+
         pool.broadcast(pool.current_num_threads(), |worker| {
             assert_eq!(*worker.get::<usize>(), 1);
         });
+    }
+
+    #[test]
+    fn expiring_nonce_prewarm_forwards_original_values_and_preserves_execution() {
+        let executor = TaskExecutor::test();
+        let mut context = prewarming_context(executor, false);
+        context.evm_env.block_env.basefee = 0;
+        context.evm_env.cfg_env.spec = tempo_chainspec::hardfork::TempoHardfork::T11;
+        let pool = WorkerPool::new(1, "nonce-read-handoff-test");
+        pool.install_fn(|| {
+            let tx = test_payment_tx_with_nonce_key(Address::random(), 500_000, U256::MAX);
+            // Reuse the worker after a speculative execution of the same transaction.
+            // Its writes must not become the parent values forwarded below.
+            let first_reads = Arc::new(OnceLock::new());
+            BestTransactionsPrewarming::prewarm_transaction(
+                context.clone(),
+                tx.clone(),
+                Some(7),
+                Some(first_reads.clone()),
+            );
+            assert!(first_reads.get().is_some());
+
+            let reads = Arc::new(OnceLock::new());
+            let warmed = BestTransactionsPrewarming::prewarm_transaction(
+                context.clone(),
+                tx.clone(),
+                Some(7),
+                Some(reads.clone()),
+            );
+            let storage = reads
+                .get()
+                .expect("successful prewarm publishes nonce reads");
+            assert!(storage.len() >= 3);
+            assert!(storage.iter().all(|(_, value)| value.is_zero()));
+            assert!(storage.contains(&(U256::from(3), U256::ZERO)));
+
+            let mut backing = CacheDB::new(EmptyDB::default());
+            backing.insert_account_info(
+                NONCE_PRECOMPILE_ADDRESS,
+                AccountInfo {
+                    nonce: 1,
+                    ..Default::default()
+                },
+            );
+            let baseline = State::builder().with_database(backing.clone()).build();
+            let mut seeded = State::builder().with_database(backing).build();
+            seeded.basic(NONCE_PRECOMPILE_ADDRESS).unwrap();
+            warmed.seed_nonce_storage(&mut seeded);
+            assert!(
+                !seeded.cache.accounts[&NONCE_PRECOMPILE_ADDRESS]
+                    .account
+                    .as_ref()
+                    .unwrap()
+                    .storage
+                    .is_empty()
+            );
+
+            let mut env = context.evm_env.clone();
+            env.cfg_env.disable_nonce_check = true;
+            env.cfg_env.disable_balance_check = true;
+            let mut baseline = TempoEvm::new(baseline, env.clone());
+            let mut seeded = TempoEvm::new(seeded, env);
+            let tx_env = tx.transaction.clone_tx_env();
+            let expected = baseline.transact_raw(tx_env.clone()).unwrap();
+            let actual = seeded.transact_raw(tx_env).unwrap();
+            assert_eq!(actual.result, expected.result);
+            assert_eq!(actual.state, expected.state);
+        });
+    }
+
+    #[test]
+    fn nonce_prewarm_preserves_nonzero_eviction_results() {
+        use tempo_precompiles::nonce::NonceManager;
+
+        let capacity = tempo_chainspec::hardfork::TempoHardfork::T11.expiring_nonce_set_capacity();
+        for ptr in [0, capacity - 1] {
+            let mut context = prewarming_context(TaskExecutor::test(), false);
+            context.evm_env.block_env.basefee = 0;
+            context.evm_env.cfg_env.spec = tempo_chainspec::hardfork::TempoHardfork::T11;
+            context.evm_env.cfg_env.disable_nonce_check = true;
+            context.evm_env.cfg_env.disable_balance_check = true;
+            let nonce = NonceManager::new();
+            let old_hash = B256::repeat_byte(0x42);
+            let ring_slot = nonce.expiring_nonce_ring.at_uncached(&ptr).slot();
+            let old_seen_slot = nonce.expiring_nonce_seen.at_uncached(&old_hash).slot();
+            let parent_values = vec![
+                (nonce.expiring_nonce_ring_ptr.slot(), U256::from(ptr)),
+                (ring_slot, U256::from_be_bytes(old_hash.0)),
+                (old_seen_slot, U256::ONE),
+            ];
+            let mut backing = CacheDB::new(EmptyDB::default());
+            backing.insert_account_info(
+                NONCE_PRECOMPILE_ADDRESS,
+                AccountInfo {
+                    nonce: 1,
+                    ..Default::default()
+                },
+            );
+            for &(slot, value) in &parent_values {
+                backing
+                    .insert_account_storage(NONCE_PRECOMPILE_ADDRESS, slot, value)
+                    .unwrap();
+            }
+            let tx = test_payment_tx_with_nonce_key(Address::random(), 500_000, U256::MAX);
+            let mut warmed = PrewarmedTransaction::without_replay(tx.clone());
+            warmed.nonce_storage = Some(Arc::new(OnceLock::from(parent_values)));
+            let baseline = State::builder().with_database(backing.clone()).build();
+            let mut seeded = State::builder().with_database(backing).build();
+            seeded.basic(NONCE_PRECOMPILE_ADDRESS).unwrap();
+            warmed.seed_nonce_storage(&mut seeded);
+            let mut baseline = TempoEvm::new(baseline, context.evm_env.clone());
+            let mut seeded = TempoEvm::new(seeded, context.evm_env);
+            let tx_env = tx.transaction.clone_tx_env();
+            let expected = baseline.transact_raw(tx_env.clone()).unwrap();
+            let actual = seeded.transact_raw(tx_env).unwrap();
+            assert_eq!(actual.result, expected.result);
+            assert_eq!(actual.state, expected.state);
+            let evicted = &actual.state[&NONCE_PRECOMPILE_ADDRESS].storage[&old_seen_slot];
+            assert_eq!(evicted.original_value(), U256::ONE);
+            assert_eq!(evicted.present_value(), U256::ZERO);
+            assert_eq!(
+                actual.state[&NONCE_PRECOMPILE_ADDRESS].storage
+                    [&nonce.expiring_nonce_ring_ptr.slot()]
+                    .present_value(),
+                U256::from((ptr + 1) % capacity),
+            );
+        }
+    }
+
+    #[test]
+    fn nonce_prewarm_seeds_missing_slots_without_overwriting_execution() {
+        let mut backing = CacheDB::new(EmptyDB::default());
+        backing.insert_account_info(
+            NONCE_PRECOMPILE_ADDRESS,
+            AccountInfo {
+                nonce: 1,
+                ..Default::default()
+            },
+        );
+        let mut db = State::builder().with_database(backing).build();
+        db.basic(NONCE_PRECOMPILE_ADDRESS).unwrap();
+        let existing = U256::from(1);
+        let cleared = U256::from(2);
+        let missing = U256::from(3);
+        let account = db
+            .cache
+            .accounts
+            .get_mut(&NONCE_PRECOMPILE_ADDRESS)
+            .unwrap();
+        let storage = &mut account.account.as_mut().unwrap().storage;
+        storage.insert(existing, U256::from(99));
+        storage.insert(cleared, U256::ZERO);
+        let status = account.status;
+
+        let mut tx = PrewarmedTransaction::without_replay(test_tx(Address::random(), 0));
+        tx.nonce_storage = Some(Arc::new(OnceLock::from(vec![
+            (existing, U256::from(11)),
+            (cleared, U256::from(22)),
+            (missing, U256::from(33)),
+        ])));
+        tx.seed_nonce_storage(&mut db);
+        assert_eq!(
+            db.storage(NONCE_PRECOMPILE_ADDRESS, existing).unwrap(),
+            U256::from(99)
+        );
+        assert_eq!(
+            db.storage(NONCE_PRECOMPILE_ADDRESS, cleared).unwrap(),
+            U256::ZERO
+        );
+        assert_eq!(
+            db.storage(NONCE_PRECOMPILE_ADDRESS, missing).unwrap(),
+            U256::from(33)
+        );
+        assert_eq!(db.cache.accounts[&NONCE_PRECOMPILE_ADDRESS].status, status);
+    }
+
+    #[test]
+    fn nonce_prewarm_does_not_resurrect_known_storage() {
+        let mut tx = PrewarmedTransaction::without_replay(test_tx(Address::random(), 0));
+        let slot = U256::from(42);
+        tx.nonce_storage = Some(Arc::new(OnceLock::from(vec![(slot, U256::from(7))])));
+        for status in [
+            AccountStatus::LoadedNotExisting,
+            AccountStatus::InMemoryChange,
+            AccountStatus::Destroyed,
+            AccountStatus::DestroyedChanged,
+            AccountStatus::DestroyedAgain,
+        ] {
+            let mut db = State::builder().with_database(EmptyDB::default()).build();
+            db.insert_account_with_storage(
+                NONCE_PRECOMPILE_ADDRESS,
+                AccountInfo {
+                    nonce: 1,
+                    ..Default::default()
+                },
+                Default::default(),
+            );
+            db.cache
+                .accounts
+                .get_mut(&NONCE_PRECOMPILE_ADDRESS)
+                .unwrap()
+                .status = status;
+            tx.seed_nonce_storage(&mut db);
+            assert_eq!(
+                db.storage(NONCE_PRECOMPILE_ADDRESS, slot).unwrap(),
+                U256::ZERO
+            );
+            assert_eq!(db.cache.accounts[&NONCE_PRECOMPILE_ADDRESS].status, status);
+        }
+    }
+
+    #[test]
+    fn nonce_prewarm_is_nonblocking_and_does_not_load_accounts() {
+        let mut tx = PrewarmedTransaction::without_replay(test_tx(Address::random(), 0));
+        let ready = Arc::new(OnceLock::new());
+        tx.nonce_storage = Some(ready.clone());
+        let mut db = State::builder().with_database(EmptyDB::default()).build();
+        tx.seed_nonce_storage(&mut db);
+        assert!(db.cache.accounts.is_empty());
+        ready.set(vec![(U256::ONE, U256::ONE)]).unwrap();
+        tx.seed_nonce_storage(&mut db);
+        assert!(db.cache.accounts.is_empty());
+        db.basic(NONCE_PRECOMPILE_ADDRESS).unwrap();
+        tx.seed_nonce_storage(&mut db);
+        assert!(
+            db.cache.accounts[&NONCE_PRECOMPILE_ADDRESS]
+                .account
+                .is_none()
+        );
     }
 
     #[test]
@@ -846,7 +1183,6 @@ mod tests {
         context.evm_env.block_env.basefee = 0;
 
         let pool = WorkerPool::new(1, "prewarm-actions-test");
-        pool.init::<PrewarmEvmState>(|_| context.evm_for_ctx());
 
         pool.install_fn(|| {
             let failed_action = StorageAction::Sstore(
@@ -855,11 +1191,8 @@ mod tests {
                 U256::from(2),
                 U256::from(3),
             );
-            WorkerPool::with_worker_mut(|worker| {
-                let evm = worker
-                    .get_mut::<PrewarmEvmState>()
-                    .as_mut()
-                    .expect("prewarm EVM");
+            context.with_worker_evm(|state| {
+                let evm = state.as_mut().expect("prewarm EVM");
                 // Model an action recorded before the failed execution returned an error.
                 assert_eq!(evm.replace_actions(vec![failed_action]), Some(Vec::new()));
             });
@@ -869,13 +1202,11 @@ mod tests {
                 context.clone(),
                 test_payment_tx(sender, 0),
                 None,
+                None,
             );
             assert!(failed.replay.is_none());
-            WorkerPool::with_worker_mut(|worker| {
-                let evm = worker
-                    .get_mut::<PrewarmEvmState>()
-                    .as_mut()
-                    .expect("prewarm EVM");
+            context.with_worker_evm(|state| {
+                let evm = state.as_mut().expect("prewarm EVM");
                 assert_eq!(evm.take_actions(), Some(Vec::new()));
             });
 
@@ -883,12 +1214,33 @@ mod tests {
                 context,
                 test_payment_tx(sender, 500_000),
                 None,
+                None,
             );
             let replay = successful.replay.expect("successful prewarm replay");
             assert!(!replay.actions.is_empty());
             assert!(!replay.actions.contains(&failed_action));
         });
+    }
 
-        pool.clear();
+    #[test]
+    fn nonce_read_worker_is_scoped_to_its_build() {
+        let executor = TaskExecutor::test();
+        let first = prewarming_context(executor.clone(), true);
+        let second = prewarming_context(executor, true);
+        let pool = WorkerPool::new(1, "nonce-read-build-test");
+        pool.install_fn(|| {
+            first.with_worker_evm(|state| {
+                assert!(state.is_some());
+                *state = None;
+            });
+            first.with_worker_evm(|state| assert!(state.is_none()));
+            second.with_worker_evm(|state| assert!(state.is_some()));
+            first.clear_worker_evm();
+            BUILDER_PREWARM_EVM.with_borrow(|state| {
+                assert!(Arc::ptr_eq(&state.as_ref().unwrap().build, &second.stop));
+            });
+            second.clear_worker_evm();
+            BUILDER_PREWARM_EVM.with_borrow(|state| assert!(state.is_none()));
+        });
     }
 }
