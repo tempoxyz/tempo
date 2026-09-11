@@ -102,7 +102,7 @@ where
 
     let roles = IRolesAuth::new(*token.address(), provider);
     let receipt = roles
-        .grantRole(*ISSUER_ROLE, caller)
+        .grantRole(ISSUER_ROLE, caller)
         .gas(1_000_000)
         .send()
         .await?

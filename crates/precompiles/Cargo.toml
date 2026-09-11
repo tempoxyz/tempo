@@ -20,13 +20,13 @@ workspace = true
 tempo-contracts.workspace = true
 tempo-chainspec = { workspace = true, features = ["evm"] }
 tempo-primitives = { workspace = true, features = ["evm"] }
-alloy-rlp.workspace = true
 tempo-precompiles-macros.workspace = true
 alloy = { workspace = true, features = ["sol-types", "consensus"] }
 alloy-json-abi = { workspace = true, optional = true }
 itertools = { workspace = true, optional = true }
 alloy-evm = { workspace = true, features = ["std"] }
 alloy-primitives = { workspace = true, features = ["map-foldhash"] }
+keccak-const.workspace = true
 revm.workspace = true
 paste.workspace = true
 bitflags.workspace = true

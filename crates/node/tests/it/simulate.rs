@@ -84,3 +84,52 @@ async fn test_tempo_simulate_v1() -> eyre::Result<()> {
 
     Ok(())
 }
+
+#[tokio::test(flavor = "multi_thread")]
+async fn test_simulate_block_gas_override_exceeds_general_limit() -> eyre::Result<()> {
+    let mut genesis: serde_json::Value =
+        serde_json::from_str(include_str!("../assets/test-genesis.json"))?;
+    genesis["config"]["generalGasLimit"] = json!(100_000);
+    let setup = TestNodeBuilder::new()
+        .with_genesis(serde_json::to_string(&genesis)?)
+        .with_gas_limit("0xf4240") // 1,000,000
+        .build_http_only()
+        .await?;
+    let provider = ProviderBuilder::new().connect_http(setup.http_url.clone());
+    let target = Address::repeat_byte(0x42);
+    // An infinite loop consumes the call's full gas allowance.
+    let payload = json!({
+        "blockStateCalls": [{
+            "blockOverrides": { "gasLimit": "0x1e8480" },
+            "stateOverrides": { format!("{target:#x}"): { "code": "0x5b600056" } },
+            "calls": [{
+                "from": format!("{:#x}", Address::ZERO),
+                "to": format!("{target:#x}"),
+                "gas": "0x16e360"
+            }]
+        }],
+        "validation": false
+    });
+    for method in ["eth_simulateV1", "tempo_simulateV1"] {
+        for trace_transfers in [false, true] {
+            let mut payload = payload.clone();
+            payload["traceTransfers"] = json!(trace_transfers);
+            let response: serde_json::Value =
+                provider.raw_request(method.into(), (payload,)).await?;
+            let blocks = if method == "tempo_simulateV1" {
+                &response["blocks"]
+            } else {
+                &response
+            };
+            let gas_used = U256::from_str_radix(
+                blocks[0]["gasUsed"]
+                    .as_str()
+                    .expect("simulated block gas used")
+                    .trim_start_matches("0x"),
+                16,
+            )?;
+            assert!(gas_used > U256::from(1_000_000), "{method}: {response}");
+        }
+    }
+    Ok(())
+}

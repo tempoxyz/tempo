@@ -216,11 +216,6 @@ impl Block {
         )
     }
 
-    /// Returns the (eth) hash of the wrapped block.
-    pub(crate) fn block_hash(&self) -> B256 {
-        self.execution_block.hash()
-    }
-
     /// Returns the hash of the wrapped block as a commonware [`Digest`].
     pub(crate) fn digest(&self) -> Digest {
         Digest(self.execution_block.hash())

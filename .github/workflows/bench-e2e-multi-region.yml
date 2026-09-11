@@ -23,6 +23,10 @@ on:
         type: string
         required: false
         default: ""
+      preset:
+        type: string
+        required: false
+        default: "tip20_existing_recipients"
       duration:
         type: string
         required: false
@@ -58,7 +62,7 @@ on:
       run-pairs:
         type: string
         required: false
-        default: "3"
+        default: "1"
       clickhouse-run:
         type: string
         required: false
@@ -139,6 +143,7 @@ on:
           - tip20_key_authorization
           - mpp
           - mix
+          - public-mix
           - dex
       duration:
         description: Benchmark duration in seconds.
@@ -239,7 +244,7 @@ on:
         description: Number of baseline/feature run pairs.
         type: string
         required: true
-        default: "3"
+        default: "1"
       clickhouse-run:
         description: Benchmark phase that may use the direct ClickHouse reporter.
         type: string
@@ -296,7 +301,7 @@ jobs:
       BENCH_INPUT_GENERAL_GAS_LIMIT: ${{ inputs['general-gas-limit'] || '' }}
       BENCH_INPUT_NO_CACHE: ${{ github.event_name == 'workflow_dispatch' && (inputs['no-cache'] == true || inputs['no-cache'] == 'true') && 'true' || 'false' }}
       BENCH_INPUT_BENCH_ARGS: ${{ inputs['bench-args'] || '' }}
-      BENCH_INPUT_RUN_PAIRS: ${{ inputs['run-pairs'] || (github.event_name == 'pull_request' && '1') || '3' }}
+      BENCH_INPUT_RUN_PAIRS: ${{ inputs['run-pairs'] || '1' }}
       BENCH_INPUT_CLICKHOUSE_RUN: ${{ inputs['clickhouse-run'] || 'feature-1' }}
       CLICKHOUSE_URL: ${{ secrets.CLICKHOUSE_URL }}
       CLICKHOUSE_USER: ${{ secrets.CLICKHOUSE_USER }}
@@ -307,7 +312,7 @@ jobs:
     steps:
       - name: Fetch GitHub token via STS
         id: github-sts
-        uses: tempoxyz/gh-actions/actions/github-sts@8819cf80bdcb39c36c34700e3f2ecc08bde54f23
+        uses: tempoxyz/gh-actions/actions/github-sts@c0292122e255def866c64c55e5844d1e7d5fe7ad
         with:
           scope: tempoxyz/tempo-multi-region-benchmark
           policy: bench-e2e-multi-region
@@ -466,13 +471,13 @@ jobs:
           version: 1.14.7
 
       - name: Setup Rust
-        uses: dtolnay/rust-toolchain@6c977a6ca4077a0ceb28ffbe03f59d46e9ac8772 # master
+        uses: tempoxyz/gh-actions/vendor/dtolnay/rust-toolchain@3626124474a987bc74b41fc7ae65b2e23f8e4e4e
         with:
           toolchain: stable
 
       - name: Configure AWS credentials
         if: env.BENCH_INPUT_CLOUD == 'aws'
-        uses: aws-actions/configure-aws-credentials@254c19bd240aabef8777f48595e9d2d7b972184b # v6.2.1
+        uses: tempoxyz/gh-actions/vendor/aws-actions/configure-aws-credentials@3626124474a987bc74b41fc7ae65b2e23f8e4e4e
         with:
           role-to-assume: arn:aws:iam::934822761402:role/benchmark-runner
           aws-region: us-east-1
@@ -500,14 +505,14 @@ jobs:
 
       - name: Authenticate to Google Cloud
         if: env.BENCH_INPUT_CLOUD == 'gcp'
-        uses: google-github-actions/auth@7c6bc770dae815cd3e89ee6cdf493a5fab2cc093 # v3
+        uses: tempoxyz/gh-actions/vendor/google-github-actions/auth@3626124474a987bc74b41fc7ae65b2e23f8e4e4e
         with:
           workload_identity_provider: ${{ env.BENCH_GCP_WIF_PROVIDER }}
           service_account: ${{ env.BENCH_GCP_SERVICE_ACCOUNT }}
 
       - name: Setup Google Cloud CLI
         if: env.BENCH_INPUT_CLOUD == 'gcp'
-        uses: google-github-actions/setup-gcloud@aa5489c8933f4cc7a4f7d45035b3b1440c9c10db # v3
+        uses: tempoxyz/gh-actions/vendor/google-github-actions/setup-gcloud@487be2d19b0ba9ae1903143016444ab752c3e939
         with:
           project_id: ${{ env.BENCH_GCP_PROJECT_ID }}
 

@@ -373,7 +373,7 @@ mod tests {
         },
     };
 
-    use crate::{TempoBlockEnv, TempoEvm, TempoHaltReason, TempoInvalidTransaction, TempoTxEnv};
+    use crate::{TempoBlockEnv, TempoEvm, TempoInvalidTransaction, TempoTxEnv};
     use revm::context::result::InvalidTransaction;
 
     // ==================== Test Constants ====================
@@ -922,7 +922,7 @@ mod tests {
             assert!(matches!(
                 result,
                 ExecutionResult::Halt {
-                    reason: TempoHaltReason::Ethereum(HaltReason::OpcodeNotFound),
+                    reason: HaltReason::OpcodeNotFound,
                     ..
                 }
             ));
@@ -4585,6 +4585,7 @@ mod tests {
 
             let mut evm = TempoEvm::new(ctx, ());
             fund_account(&mut evm, caller);
+            evm.block.basefee = 100_000_000_000;
 
             let block = TempoBlockEnv::default();
             {
@@ -4614,11 +4615,45 @@ mod tests {
                 .create(&[0x60, 0x00, 0x60, 0x00, 0xF3])
                 .key_authorization(signed_key_auth)
                 .gas_limit(gas_limit)
+                .with_max_fee_per_gas(100_000_000_000)
                 .build();
 
             let signed_tx = key_pair.sign_tx(tx)?;
             let tx_env = TempoTxEnv::from_recovered_tx(&signed_tx, caller);
-            let _result = evm.transact_commit(tx_env);
+            // Replay the same signed transaction directly: live payload building
+            // only supports T4+, but historical execution must retain this bug.
+            let pre_t1b = spec < TempoHardfork::T1B;
+            let mut balance_before = U256::from(100_000_000);
+            for _ in 0..if pre_t1b { 2 } else { 1 } {
+                let result = evm.transact_commit(tx_env.clone())?;
+                if pre_t1b {
+                    assert!(matches!(
+                        result,
+                        ExecutionResult::Halt {
+                            reason: HaltReason::OutOfGas(_),
+                            ..
+                        }
+                    ));
+                    assert_eq!(result.tx_gas_used(), gas_limit);
+                    assert_eq!(evm.ctx.db().basic_ref(caller)?.unwrap().nonce, 0);
+                } else {
+                    assert!(result.is_success());
+                }
+
+                let ctx = &mut evm.ctx;
+                let internals =
+                    EvmInternals::new(&mut ctx.journaled_state, &block, &ctx.cfg, &ctx.tx);
+                let mut provider =
+                    EvmPrecompileStorageProvider::new_max_gas(internals, &Default::default());
+                let balance_after = StorageCtx::enter(&mut provider, || {
+                    TIP20Token::from_address(PATH_USD_ADDRESS)?.balances[caller].read()
+                })?;
+                assert!(
+                    balance_after < balance_before,
+                    "each execution must charge fees"
+                );
+                balance_before = balance_after;
+            }
 
             let nonce = evm
                 .ctx
@@ -4645,10 +4680,9 @@ mod tests {
         }
 
         // --- T1: demonstrate the bug ---
-        // T1 intrinsic gas for this tx is ~560k (21k base + 500k CREATE + 35k
-        // KeyAuth heuristic). Gas limit 780k leaves ~220k for the precompile,
-        // which is below the 250k SSTORE cost → OOG → nonce NOT bumped.
-        let (t1_nonce, t1_key_expiry) = run_create_with_key_auth(TempoHardfork::T1, 780_000)?;
+        // The gas limit passes intrinsic validation but leaves less than the
+        // 250k SSTORE cost for the keychain precompile → OOG → nonce NOT bumped.
+        let (t1_nonce, t1_key_expiry) = run_create_with_key_auth(TempoHardfork::T1, 1_050_000)?;
         assert_eq!(
             t1_nonce, 0,
             "T1 bug: nonce must NOT be bumped when keychain OOGs"
@@ -4657,6 +4691,11 @@ mod tests {
             t1_key_expiry, 0,
             "T1 bug: key must NOT be authorized when keychain OOGs"
         );
+
+        // T1A must preserve the same replay behavior.
+        let (t1a_nonce, t1a_key_expiry) = run_create_with_key_auth(TempoHardfork::T1A, 1_050_000)?;
+        assert_eq!(t1a_nonce, 0);
+        assert_eq!(t1a_key_expiry, 0);
 
         // --- T1B: verify the fix ---
         // T1B intrinsic gas is ~1.04M (21k base + 500k CREATE + 260k KeyAuth

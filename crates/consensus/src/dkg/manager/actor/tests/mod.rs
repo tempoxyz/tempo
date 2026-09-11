@@ -7,18 +7,284 @@ use std::time::Duration;
 use alloy_primitives::B256;
 use commonware_consensus::types::{Epoch, Height};
 use commonware_cryptography::{
-    bls12381::primitives::group::{Private, Share},
+    bls12381::primitives::{
+        group::{Private, Share},
+        sharing::Mode,
+    },
     ed25519::PrivateKey,
 };
 use commonware_runtime::{Runner as _, Supervisor as _, deterministic::Runner};
-use commonware_utils::ordered::Quorum as _;
+use commonware_utils::{TryFromIterator as _, ordered, ordered::Quorum as _};
 use futures::channel::oneshot;
+use rand::{SeedableRng as _, rngs::StdRng};
 
 use super::*;
 use harness::{
     EpochEvent, Harness, StubExecutionProvider, TestNetwork, block, dkg_state, header,
-    outcome_header, revealed_recovery_fixture,
+    outcome_header, revealed_recovery_fixture, signed_dealer_logs,
 };
+
+#[test]
+fn network_storage_failures_panic_and_allow_recovery() {
+    use commonware_runtime::deterministic::FaultConfig;
+    use commonware_utils::probability;
+
+    // Exercise both failure while appending to a new journal section and
+    // failure while syncing an appended dealing.
+    for fail_open in [true, false] {
+        let runner = Runner::new(
+            commonware_runtime::deterministic::Config::default().with_catch_panics(true),
+        );
+        runner.start(|mut context| async move {
+            let (state, keys, _) = dkg_state(&mut context, Epoch::new(1), 2, true);
+            let round = Round::from_state(&state, crate::config::NAMESPACE);
+            let (_, public, private) = dkg::Dealer::start::<commonware_utils::N3f1>(
+                &mut context,
+                round.info().clone(),
+                keys[1].clone(),
+                None,
+            )
+            .unwrap();
+            let private = private
+                .into_iter()
+                .find(|(player, _)| player == &keys[0].public_key())
+                .unwrap()
+                .1;
+            let (_, other_public, _) = dkg::Dealer::start::<commonware_utils::N3f1>(
+                &mut context,
+                round.info().clone(),
+                keys[1].clone(),
+                None,
+            )
+            .unwrap();
+            let ack = dkg::Player::new(round.info().clone(), keys[0].clone())
+                .unwrap()
+                .dealer_message::<commonware_utils::N3f1>(
+                    keys[1].public_key(),
+                    public.clone(),
+                    private.clone(),
+                )
+                .unwrap()
+                .unwrap();
+            let invalid_messages = [
+                vec![u8::MAX].into(),
+                // The commitment belongs to a different polynomial.
+                Message::Dealer(other_public, private.clone()).encode(),
+                // This ACK was signed by keys[0], but arrives from keys[1].
+                Message::Ack(ack).encode(),
+            ];
+            let message = Message::Dealer(public, private).encode();
+            let network = TestNetwork::default();
+            let (sender, mut receiver) = network.register(keys[1].public_key());
+            let mut sender = mux::GlobalSender::new(sender);
+            let mut harness = Harness::builder(context.child("actor"), "network_storage_failure")
+                .initial_state(state.clone())
+                .identity(keys[0].clone())
+                .network(network)
+                .build()
+                .await;
+            harness.start().await;
+            assert!(!harness.has_dealer_log(state.epoch).await);
+
+            let faults = context.storage_fault_config();
+            if fail_open {
+                faults.write().open_rate = Some(probability!(1.0));
+            } else {
+                faults.write().sync_rate = Some(probability!(1.0));
+            }
+            // Rejected protocol messages must not attempt a write or stop the
+            // actor, even when every storage operation would fail.
+            for invalid in invalid_messages {
+                assert!(
+                    sender
+                        .send(
+                            state.epoch.get(),
+                            Recipients::One(keys[0].public_key()),
+                            invalid,
+                            true,
+                        )
+                        .accepted()
+                );
+                context.sleep(Duration::from_millis(1)).await;
+                assert!(!harness.has_dealer_log(state.epoch).await);
+                assert!(receiver.recv().now_or_never().is_none());
+            }
+            assert!(
+                sender
+                    .send(
+                        state.epoch.get(),
+                        Recipients::One(keys[0].public_key()),
+                        message.clone(),
+                        true,
+                    )
+                    .accepted()
+            );
+
+            // The failed write must panic immediately without another message.
+            let mut harness = context
+                .timeout(Duration::from_secs(1), async move {
+                    harness.wait_for_actor_panic().await;
+                    harness
+                })
+                .await
+                .expect("a network storage failure must panic immediately");
+            assert!(
+                receiver.recv().now_or_never().is_none(),
+                "a dealing must be persisted before its ACK is sent",
+            );
+
+            *faults.write() = FaultConfig::default();
+            harness.stop().await;
+            assert_eq!(harness.storage().current(), state);
+            harness.start().await;
+            assert!(!harness.has_dealer_log(state.epoch).await);
+
+            // Invalid peer input must remain recoverable: send a malformed message
+            // before retrying the valid dealing and require its acknowledgement.
+            assert!(
+                sender
+                    .send(
+                        state.epoch.get(),
+                        Recipients::One(keys[0].public_key()),
+                        vec![u8::MAX],
+                        true,
+                    )
+                    .accepted()
+            );
+            // Let the mux deliver the malformed message before filling its
+            // single-slot subchannel again.
+            context.sleep(Duration::from_millis(1)).await;
+            assert!(!harness.has_dealer_log(state.epoch).await);
+            assert!(
+                sender
+                    .send(
+                        state.epoch.get(),
+                        Recipients::One(keys[0].public_key()),
+                        message,
+                        true,
+                    )
+                    .accepted()
+            );
+            let (_, ack) = context
+                .timeout(Duration::from_secs(1), async move { receiver.recv().await })
+                .await
+                .expect("reopened storage must accept the retried dealing")
+                .unwrap();
+            let (epoch, mut ack) = mux::parse(ack).unwrap();
+            assert_eq!(epoch, state.epoch.get());
+            assert!(matches!(
+                Message::read_cfg(&mut ack, &NZU32!(2)).unwrap(),
+                Message::Ack(_)
+            ));
+            harness.stop().await;
+        });
+    }
+}
+
+#[test]
+fn local_share_storage_failures_panic_and_allow_recovery() {
+    use commonware_consensus::Reporter as _;
+    use commonware_runtime::deterministic::FaultConfig;
+    use commonware_utils::probability;
+
+    // Fail opening the dealing's journal section, syncing the dealing, or
+    // syncing the ACK after the dealing has already been persisted.
+    for (fail_open, seed_dealing) in [(true, false), (false, false), (false, true)] {
+        let runner = Runner::new(
+            commonware_runtime::deterministic::Config::default().with_catch_panics(true),
+        );
+        runner.start(|mut context| async move {
+            let (state, keys, _) = dkg_state(&mut context, Epoch::new(1), 2, true);
+            let identity = keys[0].clone();
+            let mut harness = Harness::builder(context.child("actor"), "local_storage_failure")
+                .initial_state(state.clone())
+                .identity(identity.clone())
+                .build()
+                .await;
+
+            if seed_dealing {
+                let round = Round::from_state(&state, crate::config::NAMESPACE);
+                let storage = harness.storage_mut();
+                let dealer = storage
+                    .create_dealer_for_round(
+                        identity.clone(),
+                        round.clone(),
+                        state.share.clone(),
+                        state.seed,
+                    )
+                    .unwrap()
+                    .unwrap();
+                let mut player = storage
+                    .create_player_for_round(identity.clone(), &round)
+                    .unwrap()
+                    .unwrap();
+                let (_, public, private) = dealer
+                    .shares_to_distribute()
+                    .find(|(recipient, _, _)| *recipient == identity.public_key())
+                    .unwrap();
+                player
+                    .receive_dealing(storage, state.epoch, identity.public_key(), public, private)
+                    .await
+                    .unwrap();
+            }
+
+            harness.start().await;
+            assert!(!harness.has_dealer_log(state.epoch).await);
+            let faults = context.storage_fault_config();
+            if fail_open {
+                faults.write().open_rate = Some(probability!(1.0));
+            } else {
+                faults.write().sync_rate = Some(probability!(1.0));
+            }
+
+            // An early finalized block triggers delivery of our own dealing and
+            // ACK before the block's header is persisted.
+            let (ack, waiter) = Exact::handle();
+            assert!(
+                harness
+                    .mailbox()
+                    .clone()
+                    .report(Update::Block(Arc::new(block(header(Height::new(10)))), ack))
+                    .accepted()
+            );
+            let mut harness = context
+                .timeout(Duration::from_secs(1), async move {
+                    harness.wait_for_actor_panic().await;
+                    harness
+                })
+                .await
+                .expect("a local storage failure must panic immediately");
+            assert!(
+                waiter.await.is_err(),
+                "the failed block must not be acknowledged"
+            );
+
+            *faults.write() = FaultConfig::default();
+            harness.stop().await;
+            assert_eq!(harness.storage().current(), state);
+            assert!(
+                harness
+                    .storage()
+                    .get_latest_finalized_block_for_epoch(&state.epoch)
+                    .is_none()
+            );
+            harness.start().await;
+            assert!(!harness.has_dealer_log(state.epoch).await);
+            harness
+                .report_finalized_header(header(Height::new(10)))
+                .await;
+            harness.stop().await;
+            assert_eq!(
+                *harness
+                    .storage()
+                    .get_latest_finalized_block_for_epoch(&state.epoch)
+                    .unwrap()
+                    .0,
+                Height::new(10)
+            );
+        });
+    }
+}
 
 #[test]
 fn exhausted_ancestry_releases_pending_outcome_request() {
@@ -524,6 +790,144 @@ fn epoch_shares_only_distributed_in_the_first_half() {
                 },
             ]
         );
+    });
+}
+
+#[test]
+fn finalized_blocks_preserve_legacy_revealed_share_calculation() {
+    Runner::default().start(|mut context| async move {
+        let (mut state, keys, shares) = dkg_state(&mut context, Epoch::new(1), 4, false);
+        let mut dealers = keys.into_iter().zip(shares).collect::<Vec<_>>();
+        dealers.sort_by_key(|(key, _)| key.public_key());
+        let players = (0..7).map(PrivateKey::from_seed).collect::<Vec<_>>();
+        state.players =
+            ordered::Set::try_from_iter(players.iter().map(|k| k.public_key())).unwrap();
+        let revealed_player = players[6].public_key();
+        // Two of the three selected dealers withhold the revealed player's ACK.
+        let dealer_inputs = dealers
+            .iter()
+            .map(|(key, share)| (key.clone(), Some(share.clone())))
+            .collect::<Vec<_>>();
+        let withholding_dealers = dealers
+            .iter()
+            .take(2)
+            .map(|(key, _)| key.public_key())
+            .collect::<Vec<_>>();
+
+        // Resharing from 4 to 7 players selects 3 dealer commitments. V0 needs
+        // f_new + 1 = 3 reveals; V1 needs quorum_old - f_old = 3 - 1 = 2.
+        // Construct both reference rounds independently of Round::from_state,
+        // so changing the actor's version cannot also change the expectation.
+        let mut reference = |reveal| {
+            let info = dkg::Info::new::<N3f1>(
+                crate::config::NAMESPACE,
+                state.epoch.get(),
+                Some(state.output.clone()),
+                Mode::NonZeroCounter,
+                reveal,
+                state.dealers().clone(),
+                state.players().clone(),
+            )
+            .unwrap();
+            // Reuse each dealer's polynomial randomness across both rounds:
+            // V1 binds ACK signatures to a different transcript, so the logs
+            // must be regenerated per mode from the same dealings.
+            let signed = signed_dealer_logs(
+                &info,
+                &dealer_inputs,
+                &players,
+                |index| StdRng::seed_from_u64(index as u64),
+                |dealer, player| withholding_dealers.contains(dealer) && *player == revealed_player,
+            );
+            for (index, signed) in signed.iter().enumerate() {
+                let (_, log) = signed.clone().check(&info).unwrap();
+                let dkg::DealerLogSummary::Ok { acks, reveals } = log.summary() else {
+                    panic!("fixture must contain usable dealer logs");
+                };
+                let expected_reveals = if index < 2 {
+                    ordered::Set::try_from_iter([revealed_player.clone()]).unwrap()
+                } else {
+                    ordered::Set::default()
+                };
+                assert_eq!(reveals, expected_reveals);
+                assert_eq!(acks.len() + reveals.len(), players.len());
+            }
+            let mut logs = Logs::<MinSig, PublicKey, N3f1>::new(info.clone());
+            for signed in &signed {
+                let (dealer, log) = signed.clone().check(&info).unwrap();
+                logs.record(dealer, log);
+            }
+            let output = observe::<_, _, N3f1, Batch>(&mut context, logs, &Sequential).unwrap();
+            let outcome = OnchainDkgOutcome {
+                epoch: state.epoch.next(),
+                output,
+                next_players: state.players().clone(),
+                is_next_full_dkg: false,
+            };
+            (signed, outcome)
+        };
+        let (_, new_outcome) = reference(dkg::Reveal::V1);
+        #[expect(deprecated, reason = "pin the pre-upgrade revealed-share calculation")]
+        let (legacy_logs, legacy_outcome) = reference(dkg::Reveal::V0);
+
+        assert!(legacy_outcome.output.revealed().is_empty());
+        assert_eq!(
+            new_outcome.output.revealed(),
+            &ordered::Set::try_from_iter([revealed_player]).unwrap()
+        );
+        assert_eq!(legacy_outcome.output.public(), new_outcome.output.public());
+        assert_eq!(
+            legacy_outcome.output.players(),
+            new_outcome.output.players()
+        );
+        assert_eq!(
+            legacy_outcome.output.dealers(),
+            new_outcome.output.dealers()
+        );
+        assert_eq!(
+            legacy_outcome.output.dealers(),
+            &ordered::Set::try_from_iter(dealers.iter().take(3).map(|(k, _)| k.public_key()))
+                .unwrap()
+        );
+
+        // Run the real actor as an observer, using only finalized block input.
+        let mut harness = Harness::builder(context.child("test"), "legacy_reveals")
+            .identity(PrivateKey::from_seed(100))
+            .build()
+            .await;
+        harness.execution.set_next_players(state.players().clone());
+        let mut previous = outcome_header(Height::new(9), &state);
+        harness.execution.add_header(previous.clone());
+        harness.start().await;
+
+        // A contiguous epoch prefix with signed dealer logs (including their
+        // ACKs and reveals) in all four post-midpoint, non-boundary blocks.
+        let mut legacy_logs = legacy_logs.into_iter();
+        for height in 10..=18 {
+            let mut next = header(Height::new(height));
+            next.inner.parent_hash = previous.hash_slow();
+            if height >= 15 {
+                next.inner.extra_data = legacy_logs.next().unwrap().encode().into();
+            }
+            harness.marshal.add_block(block(next.clone()));
+            harness.report_finalized_header(next.clone()).await;
+            previous = next;
+        }
+        assert!(legacy_logs.next().is_none());
+        let actual = harness
+            .mailbox()
+            .get_dkg_outcome(Digest(previous.hash_slow()), Height::new(18))
+            .await
+            .unwrap();
+
+        // Full equality pins V0's transcript as well as its revealed set. The
+        // explicit set comparison catches the calculation change itself.
+        assert_eq!(actual, legacy_outcome);
+        assert_ne!(actual.output.revealed(), new_outcome.output.revealed());
+        assert_ne!(actual.encode(), new_outcome.encode());
+        assert!(harness.marshal.ancestry_reads().is_empty());
+        harness.stop().await;
+        assert_eq!(harness.storage().logs_for_epoch(state.epoch).count(), 4);
     });
 }
 

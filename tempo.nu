@@ -1988,6 +1988,7 @@ def build-base-args [genesis_path: string, datadir: string, log_dir: string, bin
         "--ws.addr" $bind_ip
         "--ws.port" $"($http_port)"
         "--ws.api" "all"
+        "--rpc-cache.max-cached-tx-hashes" "3000000"
         "--metrics" $"($bind_ip):($reth_metrics_port)"
         "--ipcpath" $ipc_path
         "--log.file.directory" $log_dir

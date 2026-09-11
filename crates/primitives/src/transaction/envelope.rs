@@ -3,7 +3,7 @@ use super::{
     tt_signed::AASigned,
     unique_tx_identifier_from_signable,
 };
-use crate::{TempoAddressExt, TempoTransaction, subblock::PartialValidatorKey};
+use crate::{TempoAddressExt, TempoTransaction};
 use alloy_consensus::{
     EthereumTxEnvelope, SignableTransaction, Signed, Transaction, TxEip1559, TxEip2930, TxEip7702,
     TxLegacy, TxType, TypedTransaction,
@@ -159,6 +159,18 @@ impl TempoTxEnvelope {
         }
     }
 
+    /// Returns `true` if this is an AA transaction whose fee payer signature is the
+    /// [`FEE_PAYER_SIGNATURE_MARKER`](super::FEE_PAYER_SIGNATURE_MARKER) placeholder,
+    /// indicating it still needs to be signed by a fee payer.
+    ///
+    /// Other transaction types do not carry a fee payer signature.
+    pub fn has_fee_payer_signature_marker(&self) -> bool {
+        match self {
+            Self::AA(tx) => tx.tx().has_fee_payer_signature_marker(),
+            _ => false,
+        }
+    }
+
     /// Returns the sender-scoped transaction identifier used for replay-sensitive features.
     pub fn unique_tx_identifier(&self, sender: Address) -> B256 {
         match self {
@@ -287,10 +299,10 @@ impl TempoTxEnvelope {
         }
     }
 
-    /// Returns the proposer of the subblock if this is a subblock transaction.
-    pub fn subblock_proposer(&self) -> Option<PartialValidatorKey> {
-        let Self::AA(tx) = &self else { return None };
-        tx.tx().subblock_proposer()
+    /// Returns whether this transaction uses the reserved subblock nonce prefix.
+    pub fn has_sub_block_nonce_key_prefix(&self) -> bool {
+        self.as_aa()
+            .is_some_and(|tx| tx.tx().has_sub_block_nonce_key_prefix())
     }
 
     /// Returns the [`AASigned`] transaction if this is a Tempo transaction.
@@ -1324,8 +1336,8 @@ mod tests {
         assert_eq!(calls.len(), 1);
         assert_eq!(calls[0].0, TxKind::Call(Address::ZERO));
 
-        // subblock_proposer() returns None for non-subblock tx
-        assert!(system_tx.subblock_proposer().is_none());
+        // System transactions do not use the reserved subblock nonce prefix
+        assert!(!system_tx.has_sub_block_nonce_key_prefix());
 
         // AA-specific methods
         let aa_envelope = create_aa_envelope(Call {

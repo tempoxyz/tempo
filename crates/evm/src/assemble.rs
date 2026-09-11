@@ -37,9 +37,7 @@ impl TempoBlockAssembler {
                     inner,
                     general_gas_limit,
                     shared_gas_limit,
-                    validator_set: _,
                     consensus_context,
-                    subblock_fee_recipients: _,
                 },
             parent,
             transactions,
@@ -107,7 +105,6 @@ mod tests {
     use reth_primitives_traits::SealedHeader;
     use reth_storage_api::noop::NoopProvider;
     use revm::{context::BlockEnv, database::BundleState};
-    use std::collections::HashMap;
     use tempo_chainspec::spec::MODERATO;
     use tempo_primitives::{
         TempoHeader, TempoPrimitives, TempoReceipt, TempoTxEnvelope, TempoTxType,
@@ -190,9 +187,7 @@ mod tests {
             },
             general_gas_limit,
             shared_gas_limit,
-            validator_set: None,
             consensus_context: None,
-            subblock_fee_recipients: HashMap::new(),
         };
 
         let tx = create_legacy_tx();
@@ -301,9 +296,7 @@ mod tests {
             },
             general_gas_limit,
             shared_gas_limit,
-            validator_set: None,
             consensus_context: Some(ctx),
-            subblock_fee_recipients: HashMap::new(),
         };
 
         let transactions = vec![create_legacy_tx()];
@@ -383,9 +376,7 @@ mod tests {
             },
             general_gas_limit,
             shared_gas_limit,
-            validator_set: None,
             consensus_context: None,
-            subblock_fee_recipients: HashMap::new(),
         };
 
         let transactions = vec![create_legacy_tx()];

@@ -13,7 +13,7 @@ merge:
         - ${TXGEN_ACCOUNTS}
 
   artifacts:
-    ERC20: "../../erc20.abi.json"
+    ERC20: "../../tip20.abi.json"
 
   templates:
     tip20_transfer:
