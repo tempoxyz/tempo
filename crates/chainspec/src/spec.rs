@@ -22,7 +22,7 @@ use reth_network_peers::NodeRecord;
 #[cfg(feature = "std")]
 use std::sync::LazyLock;
 use tempo_hardfork::TempoHardfork;
-use tempo_primitives::{TempoAddressExt, TempoHeader};
+use tempo_primitives::TempoHeader;
 
 // End-of-block system transactions
 pub const SYSTEM_TX_COUNT: usize = 1;
@@ -266,17 +266,8 @@ impl TempoChainSpec {
     /// These protocol reservations are applied before computing the genesis state root.
     pub fn try_from_genesis(mut genesis: Genesis) -> Result<Self, serde_json::Error> {
         // Reservations use the T12 address space even when activation is scheduled later.
-        // Ethereum precompiles are separate from TempoAddressExt's Tempo-only categories.
-        let valid_native_address = |address: Address| {
-            !address.is_zero()
-                && !address.is_virtual()
-                && !address.is_precompile(TempoHardfork::T12)
-                && address.zone_portal_id().is_none()
-                && !alloy_evm::revm::precompile::Precompiles::new(
-                    alloy_evm::revm::precompile::PrecompileSpecId::OSAKA,
-                )
-                .contains(&address)
-        };
+        let valid_native_address =
+            |address| crate::is_valid_native_account(address, TempoHardfork::T12);
         // Extract Tempo genesis info from extra_fields
         let mut info = TempoGenesisInfo::extract_from(&genesis);
         // Parse this field separately so the legacy fallback for unrelated extras cannot
@@ -594,6 +585,8 @@ impl TempoConsensusSpec for TempoChainSpec {
 
 #[cfg(test)]
 mod tests {
+    use tempo_primitives::TempoAddressExt;
+
     #[test]
     fn genesis_rejects_malformed_config_commitments() {
         use super::*;
