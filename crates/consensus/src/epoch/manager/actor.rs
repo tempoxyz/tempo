@@ -324,7 +324,9 @@ where
             Scheme::verifier(crate::config::NAMESPACE, participants, public)
         };
 
-        self.config.scheme_provider.register(epoch, scheme.clone());
+        self.config
+            .scheme_provider
+            .register(epoch, scheme.clone())?;
 
         let floor = match epoch.previous().map(|prev| {
             self.config
@@ -518,7 +520,7 @@ where
                     onchain_outcome.players().clone(),
                     onchain_outcome.sharing().clone(),
                 ),
-            );
+            )?;
             self.confirmed_latest_network_epoch
                 .replace(onchain_outcome.epoch);
             debug!(

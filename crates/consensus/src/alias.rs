@@ -129,6 +129,14 @@ pub(crate) mod marshal {
         TContext:
             Clock + Metrics + Spawner + Storage + BufferPooler + Rng + CryptoRng + Send + 'static,
     {
+        config.scheme_provider.register(
+            Epoch::new(config.network_identity.from_epoch),
+            Scheme::certificate_verifier(
+                crate::config::NAMESPACE,
+                config.network_identity.identity,
+            ),
+        )?;
+
         let finalizations_by_height = storage::init_finalizations_archive(
             &context,
             &config.partition_prefix,
@@ -480,7 +488,7 @@ pub(crate) mod marshal {
             "finalized floor failed verification"
         );
 
-        scheme_provider.register(epoch, scheme);
+        scheme_provider.register(epoch, scheme)?;
         Ok(())
     }
 

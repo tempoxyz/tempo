@@ -89,7 +89,7 @@ impl FinalizationVerifier {
         self.scheme_provider.register(
             outcome.epoch,
             Scheme::certificate_verifier(NAMESPACE, *outcome.network_identity()),
-        );
+        )?;
         Ok(outcome)
     }
 
@@ -164,7 +164,9 @@ impl FinalizationVerifier {
         // Marshal verifies the certificate again while installing a floor, so retain a
         // successfully used network-identity fallback under the certificate's epoch.
         if used_network_identity {
-            self.scheme_provider.register(epoch, (*scheme).clone());
+            self.scheme_provider
+                .register(epoch, (*scheme).clone())
+                .map_err(|_| CertificateVerificationError::Invalid)?;
         }
 
         Ok(())
