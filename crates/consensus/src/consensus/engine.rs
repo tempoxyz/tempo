@@ -21,7 +21,7 @@ use commonware_runtime::{
 };
 use commonware_utils::NZUsize;
 use eyre::{OptionExt as _, WrapErr as _};
-use futures::{StreamExt as _, stream::FuturesUnordered};
+use futures::future::try_join_all;
 use rand_core::{CryptoRng, Rng};
 use tempo_node::TempoFullNode;
 use tracing::info;
@@ -564,14 +564,11 @@ where
             tasks.push(gossip_task);
         }
 
-        // An actor can return normally after a fatal identity check. Waiting for
-        // every actor would leave consensus running after that failure.
-        if let Some(result) = FuturesUnordered::from_iter(tasks).next().await {
-            result.wrap_err("one of the consensus engine's actors failed")?;
-            return Err(eyre::eyre!(
-                "one of the consensus engine's critical actors exited"
-            ));
-        }
-        Ok(())
+        try_join_all(tasks)
+            .await
+            .map(|_| ())
+            // TODO: look into adding error context so that we know which
+            // component failed.
+            .wrap_err("one of the consensus engine's actors failed")
     }
 }
