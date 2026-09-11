@@ -74,11 +74,26 @@ impl EncodedBlockTransactionList {
     }
 }
 
+/// Maximum encoded length of an RLP list header: one prefix byte plus up to eight length bytes.
+const MAX_LIST_HEADER_LEN: usize = 9;
+
 /// Incrementally builds the RLP transaction-list bytes used inside the execution block body.
-#[derive(Debug, Default)]
+///
+/// The buffer reserves room for the list header in front of the payload so [`Self::finish`] can
+/// write the header in place instead of copying the whole payload into a new buffer.
+#[derive(Debug)]
 pub(crate) struct EncodedBlockTransactionsBuilder {
     transaction_count: usize,
     payload: Vec<u8>,
+}
+
+impl Default for EncodedBlockTransactionsBuilder {
+    fn default() -> Self {
+        Self {
+            transaction_count: 0,
+            payload: vec![0; MAX_LIST_HEADER_LEN],
+        }
+    }
 }
 
 impl EncodedBlockTransactionsBuilder {
@@ -98,17 +113,21 @@ impl EncodedBlockTransactionsBuilder {
         self.payload.extend_from_slice(encoded_2718);
     }
 
-    pub(crate) fn finish(self) -> EncodedBlockTransactionList {
+    pub(crate) fn finish(mut self) -> EncodedBlockTransactionList {
         let header = alloy_rlp::Header {
             list: true,
-            payload_length: self.payload.len(),
+            payload_length: self.payload.len() - MAX_LIST_HEADER_LEN,
         };
-        let mut rlp = Vec::with_capacity(header.length_with_payload());
-        header.encode(&mut rlp);
-        rlp.extend_from_slice(&self.payload);
+        let header_len = header.length();
+        let start = MAX_LIST_HEADER_LEN - header_len;
+
+        // Write the header into the reserved prefix, right-aligned against the payload.
+        let mut header_slot = &mut self.payload[start..MAX_LIST_HEADER_LEN];
+        header.encode(&mut header_slot);
+
         EncodedBlockTransactionList {
             transaction_count: self.transaction_count,
-            rlp: rlp.into(),
+            rlp: Bytes::from(self.payload).slice(start..),
         }
     }
 }
