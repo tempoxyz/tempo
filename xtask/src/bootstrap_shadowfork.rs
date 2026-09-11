@@ -504,6 +504,15 @@ where
         Ok(())
     }
 
+    fn set_config_commitment(
+        &mut self,
+        _address: Address,
+        _commitment: B256,
+        _gas: tempo_precompiles::storage::ConfigCommitmentWriteGas,
+    ) -> Result<(), TempoPrecompileError> {
+        Err(TempoPrecompileError::InvalidConfigCommitmentWrite)
+    }
+
     fn account_code(
         &mut self,
         _address: Address,

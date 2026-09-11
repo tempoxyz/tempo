@@ -44,6 +44,7 @@ pub struct HashMapStorageProvider {
 ///
 /// PERF: naive cloning strategy due to its limited usage.
 struct Snapshot {
+    accounts: HashMap<Address, AccountInfo>,
     internals: HashMap<(Address, U256), U256>,
     transient: HashMap<(Address, U256), U256>,
     events: HashMap<Address, Vec<LogData>>,
@@ -107,6 +108,24 @@ impl HashMapStorageProvider {
 }
 
 impl PrecompileStorageProvider for HashMapStorageProvider {
+    fn set_config_commitment(
+        &mut self,
+        address: Address,
+        commitment: B256,
+        gas: super::ConfigCommitmentWriteGas,
+    ) -> Result<(), TempoPrecompileError> {
+        if !self.spec.is_t12() || self.is_static || commitment.is_zero() {
+            return Err(TempoPrecompileError::InvalidConfigCommitmentWrite);
+        }
+        let previous = self.config_commitment(address)?;
+        self.deduct_gas(gas.cost(previous)?)?;
+        self.accounts
+            .entry(address)
+            .or_default()
+            .set_extension(tempo_primitives::account::encode_config_commitment(commitment).into());
+        Ok(())
+    }
+
     fn chain_id(&self) -> u64 {
         self.chain_id
     }
@@ -251,6 +270,7 @@ impl PrecompileStorageProvider for HashMapStorageProvider {
     fn checkpoint(&mut self) -> JournalCheckpoint {
         let idx = self.snapshots.len();
         self.snapshots.push(Snapshot {
+            accounts: self.accounts.clone(),
             internals: self.internals.clone(),
             transient: self.transient.clone(),
             events: self.events.clone(),
@@ -278,6 +298,7 @@ impl PrecompileStorageProvider for HashMapStorageProvider {
             "out-of-order checkpoint revert (expected top of stack)"
         );
         if let Some(snapshot) = self.snapshots.drain(checkpoint.journal_i..).next() {
+            self.accounts = snapshot.accounts;
             self.internals = snapshot.internals;
             self.transient = snapshot.transient;
             self.events = snapshot.events;

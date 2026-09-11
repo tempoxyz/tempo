@@ -39,6 +39,21 @@ scoped_thread_local!(static STORAGE: RefCell<&mut dyn PrecompileStorageProvider>
 pub struct StorageCtx;
 
 impl StorageCtx {
+    /// Reads the account commitment with normal account-access gas.
+    pub fn config_commitment(&self, address: Address) -> Result<B256> {
+        Self::try_with_storage(|s| s.config_commitment(address))
+    }
+
+    /// Writes an authorized commitment using the provider's account journal.
+    pub fn set_config_commitment(
+        &mut self,
+        address: Address,
+        commitment: B256,
+        gas: super::ConfigCommitmentWriteGas,
+    ) -> Result<()> {
+        Self::try_with_storage(|s| s.set_config_commitment(address, commitment, gas))
+    }
+
     /// Enter storage context. All storage operations must happen within the closure.
     ///
     /// # IMPORTANT
