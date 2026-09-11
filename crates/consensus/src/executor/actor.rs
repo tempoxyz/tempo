@@ -35,9 +35,7 @@
 
 use std::{
     collections::{HashMap, VecDeque},
-    pin::Pin,
     sync::Arc,
-    task::Poll,
     time::{Duration, Instant},
 };
 
@@ -59,7 +57,7 @@ use futures::{
         mpsc::{self, UnboundedReceiver},
         oneshot,
     },
-    future::{BoxFuture, FusedFuture as _, MaybeDone, maybe_done},
+    future::BoxFuture,
     stream::FuturesUnordered,
 };
 use prometheus_client::metrics::{counter::Counter, gauge::Gauge};
@@ -143,22 +141,24 @@ pub(crate) struct Actor<TContext, TExecutionLayer, TMarshal> {
     /// of request cancellation and completion.
     latest_consensus_round: Round,
 
-    /// The latest consensus request, keyed by its round. Verification stays
-    /// here while its next block is fetched or executed; builds leave the slot
-    /// when scheduled. A newer request replaces the slot.
+    /// The latest consensus request, keyed by its round. A verification stays
+    /// here while its walk runs; builds leave the slot when scheduled. A newer
+    /// request replaces the slot.
     pending_consensus_request: Option<(Round, ConsensusRequest)>,
 
-    /// Independently delivers the selected pending head through the same walk.
-    convergence: Option<ConvergenceWalk>,
+    /// The walk that delivers the pending head so that a forkchoice update can
+    /// select it as HEAD. Starts once the pending head's body is known and is
+    /// dropped when the pending head changes or no longer needs delivery.
+    convergence: Option<AncestryWalk>,
+    /// Wakes a convergence walk paused in [`WalkStep::Backoff`].
     convergence_retry: OptionFuture<BoxFuture<'static, ()>>,
+    /// Fetches the pending head's body before its walk exists. Ancestor
+    /// fetches live inside the walks.
+    pending_head_fetch: OptionFuture<PendingNotarizedBlock>,
 
     /// The single execution task. A build owns the slot from fetching its parent
     /// through delivery and the forkchoice update that starts the payload job.
     execution_task: OptionFuture<ExecutionTask>,
-
-    /// The pending head's body, or an ancestor requested by its delivery walk.
-    /// Verification has its own fetch so either walk can wait independently.
-    pending_convergence_block: OptionFuture<PendingNotarizedBlock>,
 
     /// Payload build jobs currently being driven to completion.
     ///
@@ -329,9 +329,9 @@ where
             pending_consensus_request: None,
             convergence: None,
             convergence_retry: OptionFuture::none(),
+            pending_head_fetch: OptionFuture::none(),
 
             execution_task: OptionFuture::none(),
-            pending_convergence_block: OptionFuture::none(),
             payload_jobs: FuturesUnordered::new(),
 
             local_state,
@@ -388,7 +388,6 @@ where
                 self.network_finalized_tip.1,
                 self.pending_head.height,
             );
-            self.prepare_convergence();
 
             self.start_next_execution_task();
             self.update_block_fetches();
@@ -408,28 +407,31 @@ where
                     }
                 }
 
-                canceled = async {
-                    if let Some((_, ConsensusRequest::Verify(pending))) = &mut self.pending_consensus_request {
-                        select! {
-                            () = pending.request.cancellation() => true,
-                            () = async {
-                                match &mut pending.step {
-                                    VerificationStep::FetchAncestor { fetch, .. }
-                                        if !fetch.is_terminated() => fetch.await,
-                                    _ => std::future::pending().await,
-                                }
-                            } => false,
-                        }
-                    } else {
-                        std::future::pending().await
+                wake = async {
+                    match &mut self.pending_consensus_request {
+                        Some((_, ConsensusRequest::Verify(pending))) => pending.wake().await,
+                        _ => std::future::pending().await,
                     }
                 } => {
-                    if canceled {
-                        self.pending_consensus_request = None;
+                    match wake {
+                        VerificationWake::Canceled => self.pending_consensus_request = None,
+                        VerificationWake::Fetched(block) => self.handle_verification_fetched(block),
                     }
                 }
+
+                (_, _, block) = async {
+                    match &mut self.convergence {
+                        Some(walk) => (&mut walk.fetch).await,
+                        None => std::future::pending().await,
+                    }
+                } => {
+                    self.handle_convergence_fetched(block);
+                }
+
                 () = &mut self.convergence_retry => {
-                    if let Some(walk) = self.convergence.as_mut() {
+                    if let Some(walk) = &mut self.convergence
+                        && walk.step == WalkStep::Backoff
+                    {
                         walk.reprobe();
                     }
                 }
@@ -444,8 +446,8 @@ where
                     }
                 }
 
-                (digest, round, block) = &mut self.pending_convergence_block => {
-                    self.handle_fetched_convergence_block(digest, round, block);
+                (digest, round, block) = &mut self.pending_head_fetch => {
+                    self.handle_pending_head_fetched(digest, round, block);
                 }
 
                 msg = self.mailbox.next() => {
@@ -499,24 +501,32 @@ where
         );
         let ExecutionTaskFinished { outcome, .. } = finished;
         match outcome {
-            ExecutionTaskOutcome::VerificationDelivered {
-                round,
+            ExecutionTaskOutcome::Delivered {
+                owner,
                 digest,
-                status,
-            } => {
-                let _logged = self.handle_verification_delivered(round, digest, status);
-            }
-            ExecutionTaskOutcome::ConvergenceDelivered {
-                walk,
                 finalized_round,
                 status,
             } => {
-                // Failed convergence deliveries are logged and retried.
-                let _logged = self.handle_convergence_delivered(walk, finalized_round, status);
+                // SYNCING blocks may execute later as their missing ancestors
+                // arrive, so every delivery counts toward the next update.
+                self.deliveries_since_forkchoice += 1;
+                // Failures are logged by the handlers. A failed verification
+                // delivery ends the request; a failed convergence delivery is
+                // retried after a pause.
+                let _logged = match owner {
+                    WalkOwner::Verification(round) => {
+                        self.handle_verification_delivered(round, digest, status)
+                    }
+                    WalkOwner::Convergence => self.handle_convergence_delivered(
+                        digest,
+                        finalized_round,
+                        status.map(|(status, _)| status),
+                    ),
+                };
             }
             ExecutionTaskOutcome::FinalizedDelivered { request, status } => {
                 self.handle_finalized_delivered(request, status)?;
-                self.retry_convergence();
+                self.restart_walks_covered_by_finality();
             }
             ExecutionTaskOutcome::Build {
                 delivery_attempted,
@@ -558,7 +568,9 @@ where
         Ok(())
     }
 
-    /// Advances only the verification that expected this execution result.
+    /// Applies an engine answer to the verification that expects it. Answers
+    /// for a replaced request, or for a block the current walk is not waiting
+    /// on, are ignored.
     #[instrument(skip_all, fields(%round, %digest), err(level = Level::WARN))]
     fn handle_verification_delivered(
         &mut self,
@@ -566,22 +578,12 @@ where
         digest: Digest,
         status: eyre::Result<(PayloadStatusEnum, Duration)>,
     ) -> eyre::Result<()> {
-        self.deliveries_since_forkchoice += 1;
         let Some((active_round, ConsensusRequest::Verify(pending))) =
             &mut self.pending_consensus_request
         else {
             return Ok(());
         };
-        let VerificationStep::Submit {
-            digest: expected,
-            parent_round,
-            parent_digest,
-            parent_height,
-        } = pending.step
-        else {
-            return Ok(());
-        };
-        if *active_round != round || expected != digest {
+        if *active_round != round || !pending.walk.awaits(digest) {
             return Ok(());
         }
         let (status, duration) = match status {
@@ -592,71 +594,24 @@ where
             }
         };
         pending.duration += duration;
-        let verdict = match status {
-            PayloadStatusEnum::Valid => {
-                if pending.is_candidate(digest) {
-                    Some(pending.duration)
-                } else {
-                    pending.step = VerificationStep::Start;
-                    return Ok(());
-                }
+        let finalized = (self.network_finalized_tip.1, self.network_finalized_tip.2);
+        let verdict = match pending
+            .walk
+            .on_status(status, finalized, self.delivered_finalized.0)
+        {
+            WalkOutcome::Continue => return Ok(()),
+            WalkOutcome::RetryFromTarget => {
+                pending.walk.reprobe();
+                return Ok(());
             }
-            PayloadStatusEnum::Invalid { validation_error } => {
-                info!(
-                    validation_error,
-                    "execution layer rejected the verification block"
-                );
-                if pending.is_candidate(digest) {
-                    None
-                } else {
-                    pending.step = VerificationStep::Start;
-                    return Ok(());
-                }
-            }
-            PayloadStatusEnum::Syncing => {
-                if parent_height <= self.network_finalized_tip.1 {
-                    if parent_digest == self.network_finalized_tip.2 {
-                        if self.delivered_finalized.0 >= self.network_finalized_tip.1 {
-                            pending.step = VerificationStep::Start;
-                        } else {
-                            pending.step = VerificationStep::WaitForFinalization {
-                                height: self.network_finalized_tip.1,
-                            };
-                        }
-                        return Ok(());
-                    } else {
-                        info!(
-                            %parent_digest,
-                            %parent_height,
-                            finalized_digest = %self.network_finalized_tip.2,
-                            finalized_height = %self.network_finalized_tip.1,
-                            "verification ancestry does not reach the finalized tip"
-                        );
-                        None
-                    }
-                } else {
-                    pending.step = VerificationStep::FetchAncestor {
-                        height: parent_height,
-                        fetch: maybe_done(
-                            fetch_block(
-                                self.execution_node.clone(),
-                                self.marshal.clone(),
-                                parent_digest,
-                                parent_round,
-                            )
-                            .boxed(),
-                        ),
-                    };
-                    return Ok(());
-                }
-            }
-            PayloadStatusEnum::Accepted => {
+            WalkOutcome::TargetValid => Some(pending.duration),
+            WalkOutcome::TargetInvalid | WalkOutcome::ConflictsWithFinality => None,
+            WalkOutcome::Accepted => {
                 self.pending_consensus_request = None;
                 bail!("payload was accepted without execution while verifying block");
             }
         };
         if pending
-            .request
             .response
             .take()
             .expect("verification has a subscriber")
@@ -669,101 +624,76 @@ where
         Ok(())
     }
 
-    /// Advances delivery toward the pending head, retrying rejected targets.
-    #[instrument(skip_all, err(level = Level::WARN))]
+    /// Applies an engine answer to the convergence walk, if it still waits on
+    /// the block. A VALID target under the current network finalized tip makes
+    /// the pending head eligible for HEAD and ends the walk. Anything else
+    /// that stops the walk pauses it for a retry.
+    #[instrument(skip_all, fields(%digest), err(level = Level::WARN))]
     fn handle_convergence_delivered(
         &mut self,
-        mut walk: ConvergenceWalk,
+        digest: Digest,
         finalized_round: Round,
         status: eyre::Result<PayloadStatusEnum>,
     ) -> eyre::Result<()> {
-        // SYNCING blocks may execute later as their missing ancestors arrive.
-        self.deliveries_since_forkchoice += 1;
+        let Some(walk) = &mut self.convergence else {
+            return Ok(());
+        };
+        if !walk.awaits(digest) {
+            return Ok(());
+        }
         let status = match status {
-            Ok(result) => result,
+            Ok(status) => status,
             Err(error) => {
-                self.pause_convergence(walk);
+                self.pause_convergence(CONVERGENCE_RETRY_INTERVAL);
                 return Err(error.wrap_err("failed delivering convergence block"));
             }
         };
-        let digest = walk.cursor.digest();
-        match status {
-            PayloadStatusEnum::Valid => {
-                self.record_executed_convergence_target(
-                    (walk.cursor.height(), digest),
-                    finalized_round,
-                );
-                if !walk.is_target() {
-                    walk.reprobe();
-                    self.retain_convergence(walk);
-                }
+        if status == PayloadStatusEnum::Syncing && digest == self.pending_head.digest {
+            self.pending_head.executed = None;
+        }
+        let height = walk.cursor.height();
+        let finalized = (self.network_finalized_tip.1, self.network_finalized_tip.2);
+        match walk.on_status(status, finalized, self.delivered_finalized.0) {
+            WalkOutcome::Continue => {}
+            WalkOutcome::TargetValid => {
+                self.convergence = None;
+                self.record_executed_convergence_target((height, digest), finalized_round);
             }
-            PayloadStatusEnum::Invalid { validation_error } => {
-                info!(%digest, validation_error, "execution layer rejected the block");
-                if walk.is_target() {
-                    self.pause_convergence(walk);
-                } else {
-                    walk.reprobe();
-                    self.retain_convergence(walk);
-                }
+            WalkOutcome::TargetInvalid => self.pause_convergence(CONVERGENCE_RETRY_INTERVAL),
+            WalkOutcome::RetryFromTarget | WalkOutcome::ConflictsWithFinality => {
+                self.pause_convergence(CONVERGENCE_BOUNDARY_RETRY_INTERVAL);
             }
-            PayloadStatusEnum::Syncing => {
-                if digest == self.pending_head.digest {
-                    self.pending_head.executed = None;
-                }
-                walk.step = ConvergenceStep::Parent;
-                self.retain_convergence(walk);
-            }
-            PayloadStatusEnum::Accepted => {
-                self.pause_convergence(walk);
+            WalkOutcome::Accepted => {
+                self.pause_convergence(CONVERGENCE_RETRY_INTERVAL);
                 bail!("payload was accepted without execution while delivering block");
             }
-        };
+        }
         Ok(())
     }
 
-    fn retain_convergence(&mut self, walk: ConvergenceWalk) {
-        if walk.target.digest() == self.pending_head.digest {
-            self.convergence = Some(walk);
-        }
-    }
-
-    fn pause_convergence(&mut self, mut walk: ConvergenceWalk) {
-        walk.step = ConvergenceStep::Retry;
-        if walk.target.digest() == self.pending_head.digest {
-            self.convergence = Some(walk);
-            self.convergence_retry
-                .replace(self.context.sleep(CONVERGENCE_RETRY_INTERVAL).boxed());
-        }
-    }
-
-    /// Only SYNCING asks for an ancestor. Finalized history is delivered by the
-    /// finalization pipeline, even when its boundary advances during a fetch.
-    fn prepare_convergence(&mut self) {
+    /// Pauses the convergence walk for `delay`. The timer, or an earlier
+    /// finalized delivery, restarts it at the target.
+    fn pause_convergence(&mut self, delay: Duration) {
         if let Some(walk) = &mut self.convergence {
-            if walk.step == ConvergenceStep::Parent
-                && (walk.parent().1 == self.network_finalized_tip.2
-                    || walk.cursor.height().get().saturating_sub(1)
-                        <= self.network_finalized_tip.1.get())
-            {
-                walk.step = ConvergenceStep::Retry;
-            }
-            if walk.step == ConvergenceStep::Retry && self.convergence_retry.is_none() {
-                self.convergence_retry.replace(
-                    self.context
-                        .sleep(CONVERGENCE_BOUNDARY_RETRY_INTERVAL)
-                        .boxed(),
-                );
-            }
+            walk.pause();
+            self.convergence_retry
+                .replace(self.context.sleep(delay).boxed());
         }
     }
 
-    fn retry_convergence(&mut self) {
-        if let Some(walk) = &mut self.convergence
-            && walk.step == ConvergenceStep::Retry
-        {
-            walk.reprobe();
-            self.convergence_retry = OptionFuture::none();
+    /// Finalization delivered blocks. A walk that was about to deliver or
+    /// fetch one of them restarts at its target, and so does a paused
+    /// convergence walk.
+    fn restart_walks_covered_by_finality(&mut self) {
+        let delivered = self.delivered_finalized.0;
+        if let Some((_, ConsensusRequest::Verify(pending))) = &mut self.pending_consensus_request {
+            pending.walk.on_finalized_delivered(delivered);
+        }
+        if let Some(walk) = &mut self.convergence {
+            walk.on_finalized_delivered(delivered);
+            if walk.step == WalkStep::Probe {
+                self.convergence_retry = OptionFuture::none();
+            }
         }
     }
 
@@ -1163,12 +1093,7 @@ where
                 self.record_convergence_target(context.round, context.parent);
                 self.queue_consensus_request(
                     context.round,
-                    ConsensusRequest::Verify(PendingVerification::new(VerificationRequest {
-                        parent_round: Round::new(context.round.epoch(), context.parent.0),
-                        cause,
-                        block,
-                        response: Some(response),
-                    })),
+                    ConsensusRequest::Verify(PendingVerification::new(cause, block, response)),
                 );
             }
         }
@@ -1226,28 +1151,33 @@ where
         }
     }
 
-    /// Maintains the independent pending-head fetch. Verification fetches live
-    /// in the consensus slot and are scheduled by their execution outcomes.
+    /// Starts the fetches the walks ask for.
+    ///
+    /// A verification fetches its ancestors right away. Convergence yields:
+    /// it does not fetch while a build is queued or running, and it does not
+    /// start its walk while a verification probes or fetches on the same
+    /// branch, so that the two walks do not fetch the same body twice. A walk
+    /// that already exists keeps fetching through such a verification.
     fn update_block_fetches(&mut self) {
-        let delivering = self
+        let mut verification_has_priority = self
             .execution_task
             .as_ref()
-            .is_some_and(|task| matches!(task.task_type, ExecutionTaskType::Deliver));
-
-        // Give verification its first probe and avoid starting a second walk
-        // for its candidate or parent while its ancestor fetch is pending.
-        let verification_has_priority = self
-            .execution_task
-            .as_ref()
-            .is_some_and(|task| matches!(task.task_type, ExecutionTaskType::Verify))
-            || matches!(
-                &self.pending_consensus_request,
-                Some((_, ConsensusRequest::Verify(pending)))
-                    if matches!(pending.step, VerificationStep::Start)
-                        || (matches!(pending.step, VerificationStep::FetchAncestor { .. })
-                            && (pending.request.block.digest() == self.pending_head.digest
-                                || pending.request.block.parent_digest() == self.pending_head.digest))
-            );
+            .is_some_and(|task| matches!(task.task_type, ExecutionTaskType::Verify));
+        if let Some((_, ConsensusRequest::Verify(pending))) = &mut self.pending_consensus_request {
+            pending
+                .walk
+                .start_parent_fetch(&self.execution_node, &self.marshal);
+            let candidate = pending.candidate();
+            verification_has_priority |= match pending.walk.step {
+                WalkStep::InFlight => true,
+                WalkStep::Probe if pending.walk.at_target() => true,
+                WalkStep::Probe | WalkStep::FetchParent => {
+                    candidate.digest() == self.pending_head.digest
+                        || candidate.parent_digest() == self.pending_head.digest
+                }
+                WalkStep::WaitForFinalized { .. } | WalkStep::Backoff => false,
+            };
+        }
         let building = self
             .execution_task
             .as_ref()
@@ -1256,70 +1186,106 @@ where
                 self.pending_consensus_request,
                 Some((_, ConsensusRequest::Build { .. }))
             );
-        let needs_parent = !building
-            && !delivering
+        let converging = !building
             && self.needs_head_delivery()
             && (!verification_has_priority || self.convergence.is_some());
-        if needs_parent
-            && self.convergence.is_none()
+        if !converging {
+            self.pending_head_fetch = OptionFuture::none();
+            if let Some(walk) = &mut self.convergence {
+                walk.fetch = OptionFuture::none();
+            }
+            return;
+        }
+        if self.convergence.is_none()
             && let Some(block) = self.built_blocks.get(&self.pending_head.digest)
         {
-            self.pending_head.height = Some(block.height());
-            self.convergence = Some(ConvergenceWalk::new(block.clone()));
+            // The pending head is a block this node built. The execution
+            // layer produced the payload and does not hold it in its block
+            // tree, so the block still needs a newPayload delivery before a
+            // forkchoice update can select it as HEAD. The body is retained
+            // here, which saves the marshal fetch.
+            //
+            // The walk normally ends at its first probe. The build delivered
+            // the parent and received VALID for it, so the probe of the
+            // built block answers VALID at once and no ancestor is fetched.
+            // Any other answer follows the usual walk.
+            self.start_convergence(block.clone());
         }
-        let next = if needs_parent {
-            match &self.convergence {
-                Some(walk) if walk.step == ConvergenceStep::Parent => Some(walk.parent()),
-                Some(_) => None,
-                None => Some((self.pending_head.round, self.pending_head.digest)),
+        match &mut self.convergence {
+            Some(walk) => {
+                self.pending_head_fetch = OptionFuture::none();
+                walk.start_parent_fetch(&self.execution_node, &self.marshal);
             }
-        } else {
-            None
-        };
-        update_block_fetch(
-            &self.execution_node,
-            &self.marshal,
-            &mut self.pending_convergence_block,
-            next,
-        );
-    }
-
-    #[instrument(skip_all, fields(%digest, %round))]
-    fn handle_fetched_parent(
-        walk: &mut Option<ConvergenceWalk>,
-        digest: Digest,
-        round: Round,
-        block: Option<Arc<Block>>,
-    ) {
-        if let Some(active) = walk {
-            match block {
-                Some(block) => {
-                    active.cursor = block;
-                    active.step = ConvergenceStep::Probe;
-                }
-                None => warn!("marshal dropped the ancestor subscription; retrying the fetch"),
-            }
+            None => self.fetch_pending_head(),
         }
     }
 
+    /// Fetches the pending head's body. A fetch for a previous pending head
+    /// is dropped: nobody is required to serve a forked-out block, so it
+    /// might never resolve.
+    fn fetch_pending_head(&mut self) {
+        let (round, digest) = (self.pending_head.round, self.pending_head.digest);
+        if self
+            .pending_head_fetch
+            .as_ref()
+            .is_some_and(|fetch| fetch.digest != digest)
+        {
+            self.pending_head_fetch = OptionFuture::none();
+        }
+        if self.pending_head_fetch.is_none() {
+            self.pending_head_fetch.replace(PendingNotarizedBlock::new(
+                &self.execution_node,
+                &self.marshal,
+                round,
+                digest,
+            ));
+        }
+    }
+
+    fn start_convergence(&mut self, block: Arc<Block>) {
+        self.pending_head.height = Some(block.height());
+        self.convergence = Some(AncestryWalk::new(Span::current(), block));
+    }
+
     #[instrument(skip_all, fields(%digest, %round))]
-    fn handle_fetched_convergence_block(
+    fn handle_pending_head_fetched(
         &mut self,
         digest: Digest,
         round: Round,
         block: Option<Arc<Block>>,
     ) {
-        if self.convergence.is_some() {
-            Self::handle_fetched_parent(&mut self.convergence, digest, round, block);
-        } else if let Some(block) = block {
-            if block.height() > self.network_finalized_tip.1 {
-                self.pending_head.height = Some(block.height());
-                self.convergence = Some(ConvergenceWalk::new(block));
-            } else {
-                self.pending_head = PendingHead::finalized(self.network_finalized_tip);
+        match block {
+            Some(block) if block.height() > self.network_finalized_tip.1 => {
+                self.start_convergence(block);
             }
-        } else {
-            warn!("marshal dropped the convergence target subscription; retrying the fetch");
+            Some(_) => self.pending_head = PendingHead::finalized(self.network_finalized_tip),
+            None => warn!("marshal dropped the pending head subscription; retrying the fetch"),
+        }
+    }
+
+    fn handle_convergence_fetched(&mut self, block: Option<Arc<Block>>) {
+        let Some(walk) = &mut self.convergence else {
+            return;
+        };
+        match block {
+            Some(block) => walk.on_fetched(block),
+            None => warn!("marshal dropped the ancestor subscription; retrying the fetch"),
+        }
+    }
+
+    fn handle_verification_fetched(&mut self, block: Option<Arc<Block>>) {
+        let Some((_, ConsensusRequest::Verify(pending))) = &mut self.pending_consensus_request
+        else {
+            return;
+        };
+        match block {
+            Some(block) => pending.walk.on_fetched(block),
+            None => {
+                warn!(
+                    "marshal dropped the verification ancestor subscription; failing the request"
+                );
+                self.pending_consensus_request = None;
+            }
         }
     }
 
@@ -1355,34 +1321,19 @@ where
 
         match self.pending_consensus_request.as_mut() {
             Some((round, ConsensusRequest::Verify(pending))) => {
-                match pending.next_block(self.delivered_finalized.0) {
-                    Poll::Ready(Some(block)) => {
-                        let parent_round = if pending.is_candidate(block.digest()) {
-                            pending.request.parent_round
-                        } else {
-                            let context = block.context();
-                            Round::new(context.round.epoch(), context.parent.0)
-                        };
-                        pending.step = VerificationStep::Submit {
-                            digest: block.digest(),
-                            parent_round,
-                            parent_digest: block.parent_digest(),
-                            parent_height: Height::new(block.height().get().saturating_sub(1)),
-                        };
-                        let fut = execute_verification_delivery(
-                            self.execution_node.clone(),
-                            *round,
-                            pending.request.cause.clone(),
-                            block,
-                        );
-                        self.set_execution_task(ExecutionTask::new(ExecutionTaskType::Verify, fut));
-                        return;
-                    }
-                    Poll::Pending => {}
-                    Poll::Ready(None) => {
-                        warn!("verification parent fetch was dropped");
-                        self.pending_consensus_request = None;
-                    }
+                // The event loop drops a canceled request; do not spend the
+                // slot on it in the meantime.
+                if pending.walk.step == WalkStep::Probe && !pending.is_canceled() {
+                    let block = pending.walk.probe();
+                    let fut = execute_delivery(
+                        self.execution_node.clone(),
+                        WalkOwner::Verification(*round),
+                        pending.walk.cause.clone(),
+                        block,
+                        self.network_finalized_tip.0,
+                    );
+                    self.set_execution_task(ExecutionTask::new(ExecutionTaskType::Verify, fut));
+                    return;
                 }
             }
             Some((_, ConsensusRequest::Build { .. })) => {
@@ -1425,15 +1376,15 @@ where
             None => {}
         }
 
-        if self
-            .convergence
-            .as_ref()
-            .is_some_and(|walk| walk.step == ConvergenceStep::Probe)
+        if let Some(walk) = &mut self.convergence
+            && walk.step == WalkStep::Probe
         {
-            let walk = self.convergence.take().expect("convergence walk is ready");
-            let fut = execute_convergence_delivery(
+            let block = walk.probe();
+            let fut = execute_delivery(
                 self.execution_node.clone(),
-                walk,
+                WalkOwner::Convergence,
+                walk.cause.clone(),
+                block,
                 self.network_finalized_tip.0,
             );
             self.set_execution_task(ExecutionTask::new(ExecutionTaskType::Deliver, fut));
@@ -1586,138 +1537,274 @@ enum ConsensusRequest {
     Build { cause: Span, build: Box<Build> },
 }
 
-/// Verification stays in the consensus slot while one block is fetched or executed.
+/// A verification request and its ancestry walk. Stays in the consensus slot
+/// until the candidate has a verdict, the request fails, or a newer request
+/// replaces it.
 struct PendingVerification {
-    /// Retains the original candidate throughout the walk.
-    request: VerificationRequest,
-    step: VerificationStep,
+    /// The walk toward the candidate, which is its target.
+    walk: AncestryWalk,
+    /// Delivers the verdict: `Some(duration)` when the execution layer
+    /// accepted the candidate, `None` when it rejected it. Dropped without a
+    /// value when verification was not possible or the request was
+    /// superseded.
+    response: Option<oneshot::Sender<Option<Duration>>>,
+    /// Time spent in engine calls across the whole walk.
     duration: Duration,
 }
 
-enum VerificationStep {
-    /// The retained candidate is ready to forward.
-    Start,
-    FetchAncestor {
-        height: Height,
-        fetch: MaybeDone<BoxFuture<'static, Option<Arc<Block>>>>,
-    },
-    /// Retains only metadata needed to continue after the EL response.
-    Submit {
-        digest: Digest,
-        parent_round: Round,
-        parent_digest: Digest,
-        parent_height: Height,
-    },
-    /// Finalized history must be delivered before re-probing the candidate.
-    WaitForFinalization { height: Height },
+/// Why the event loop woke up for a verification.
+enum VerificationWake {
+    Canceled,
+    /// The ancestor fetch resolved; `None` if the marshal actor dropped it.
+    Fetched(Option<Arc<Block>>),
 }
 
 impl PendingVerification {
-    fn new(request: VerificationRequest) -> Self {
+    fn new(cause: Span, block: Arc<Block>, response: oneshot::Sender<Option<Duration>>) -> Self {
         Self {
-            request,
-            step: VerificationStep::Start,
+            walk: AncestryWalk::new(cause, block),
+            response: Some(response),
             duration: Duration::ZERO,
         }
     }
 
-    fn is_candidate(&self, digest: Digest) -> bool {
-        self.request.block.digest() == digest
+    fn candidate(&self) -> &Arc<Block> {
+        &self.walk.target
     }
 
-    /// Reconciles delivered finality and returns the next block ready to forward.
-    fn next_block(&mut self, delivered_finalized: Height) -> Poll<Option<Arc<Block>>> {
-        if matches!(
-            self.step,
-            VerificationStep::FetchAncestor { height, .. }
-                | VerificationStep::WaitForFinalization { height }
-                if height <= delivered_finalized
-        ) {
-            self.step = VerificationStep::Start;
-        }
-        if self
-            .request
-            .response
+    fn is_canceled(&self) -> bool {
+        self.response
             .as_ref()
             .is_some_and(|response| response.is_canceled())
-        {
-            Poll::Pending
-        } else {
-            match &mut self.step {
-                VerificationStep::Start => Poll::Ready(Some(self.request.block.clone())),
-                VerificationStep::FetchAncestor { fetch, .. } => Pin::new(&mut *fetch)
-                    .now_or_never()
-                    .and_then(|()| Pin::new(fetch).take_output())
-                    .map_or(Poll::Pending, Poll::Ready),
-                VerificationStep::Submit { .. } | VerificationStep::WaitForFinalization { .. } => {
-                    Poll::Pending
+    }
+
+    /// Resolves when the requester cancels or the ancestor fetch completes.
+    async fn wake(&mut self) -> VerificationWake {
+        let Self { walk, response, .. } = self;
+        select! {
+            biased;
+
+            () = async {
+                match response {
+                    Some(response) => response.cancellation().await,
+                    None => std::future::pending().await,
                 }
-            }
+            } => VerificationWake::Canceled,
+            (_, _, block) = &mut walk.fetch => VerificationWake::Fetched(block),
         }
     }
 }
 
-/// A consensus verification request retained throughout its ancestry walk.
-struct VerificationRequest {
-    parent_round: Round,
-    cause: Span,
-    block: Arc<Block>,
-    /// Delivers the validation result: `Some(duration)` when the execution
-    /// layer accepted the block, `None` when it rejected it. Dropped without
-    /// a value when validation was not possible or the request was
-    /// superseded.
-    response: Option<oneshot::Sender<Option<Duration>>>,
-}
-
-impl VerificationRequest {
-    async fn cancellation(&mut self) {
-        match self.response.as_mut() {
-            Some(response) => response.cancellation().await,
-            None => std::future::pending().await,
-        }
-    }
-}
-
-/// Pending-head delivery retains its target and current cursor between engine calls.
-/// Advancing drops the previous ancestor.
-struct ConvergenceWalk {
+/// One ancestry walk, shared by verification and pending-head convergence.
+///
+/// The walk probes its target with a bare `newPayload`. SYNCING means the
+/// execution layer lacks the parent, so the walk fetches the parent and
+/// probes it next, one block at a time down the chain. A VALID or INVALID
+/// answer for an ancestor restarts the walk at the target: the execution
+/// layer connects buffered descendants itself once the gap is closed. The
+/// walk stops at the finalized tip and lets the finalization pipeline
+/// deliver finalized history.
+///
+/// Answers for the target, and answers that stop the walk, are reported to
+/// the owner as a [`WalkOutcome`]. The owner then ends, restarts, or pauses
+/// the walk. Ancestor answers and gaps above the finalized tip are handled
+/// inside.
+///
+/// Only the target and the current cursor are retained. Advancing to a
+/// parent drops the previous cursor.
+struct AncestryWalk {
     cause: Span,
     target: Arc<Block>,
-    /// The target or ancestor currently being probed.
+    /// The block the walk probes next, or probed last.
     cursor: Arc<Block>,
-    step: ConvergenceStep,
+    step: WalkStep,
+    /// The parent fetch while in [`WalkStep::FetchParent`]. Started by the
+    /// actor, which owns the execution layer and marshal handles.
+    fetch: OptionFuture<PendingNotarizedBlock>,
 }
 
-#[derive(Clone, Copy, PartialEq, Eq)]
-enum ConvergenceStep {
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum WalkStep {
+    /// The cursor is ready for `newPayload`.
     Probe,
-    Parent,
-    Retry,
+    /// The cursor is the current execution task.
+    InFlight,
+    /// The cursor returned SYNCING and its parent is above the finalized
+    /// tip. The parent is being fetched.
+    FetchParent,
+    /// The cursor's parent is the finalized tip at `height`, which the
+    /// finalization pipeline has not delivered yet.
+    WaitForFinalized { height: Height },
+    /// The owner paused the walk. Its timer restarts the walk at the target.
+    Backoff,
 }
 
-impl ConvergenceWalk {
-    fn new(block: Arc<Block>) -> Self {
+/// What the owner must decide after an engine answer. Every outcome other
+/// than `Continue` leaves the walk in [`WalkStep::InFlight`] for the owner
+/// to end, restart, or pause it.
+enum WalkOutcome {
+    /// The walk moved on by itself.
+    Continue,
+    TargetValid,
+    TargetInvalid,
+    /// The cursor's parent is the finalized tip and was delivered already,
+    /// yet the execution layer still says SYNCING. Only a retry can help.
+    RetryFromTarget,
+    /// The ancestry meets finality on another branch. The target can never
+    /// become canonical.
+    ConflictsWithFinality,
+    /// The execution layer accepted the block without executing it.
+    Accepted,
+}
+
+/// Which walk a delivery belongs to.
+#[derive(Clone, Copy, Debug)]
+enum WalkOwner {
+    /// The verification queued under this round.
+    Verification(Round),
+    Convergence,
+}
+
+impl AncestryWalk {
+    fn new(cause: Span, target: Arc<Block>) -> Self {
         Self {
-            cause: Span::current(),
-            target: block.clone(),
-            cursor: block,
-            step: ConvergenceStep::Probe,
+            cause,
+            cursor: target.clone(),
+            target,
+            step: WalkStep::Probe,
+            fetch: OptionFuture::none(),
         }
     }
 
-    fn is_target(&self) -> bool {
+    fn at_target(&self) -> bool {
         self.cursor.digest() == self.target.digest()
     }
 
+    /// Whether the walk waits for the engine's answer on `digest`.
+    fn awaits(&self, digest: Digest) -> bool {
+        self.step == WalkStep::InFlight && self.cursor.digest() == digest
+    }
+
+    /// The cursor's parent and the round it was notarized in, the fetch hint
+    /// for the marshal actor.
     fn parent(&self) -> (Round, Digest) {
         let context = self.cursor.context();
         let round = Round::new(context.round.epoch(), context.parent.0);
         (round, self.cursor.parent_digest())
     }
 
+    fn parent_height(&self) -> Height {
+        self.cursor.height().previous().unwrap_or(Height::zero())
+    }
+
+    /// Marks the cursor as in flight and returns it for delivery.
+    fn probe(&mut self) -> Arc<Block> {
+        self.step = WalkStep::InFlight;
+        self.cursor.clone()
+    }
+
     fn reprobe(&mut self) {
         self.cursor = self.target.clone();
-        self.step = ConvergenceStep::Probe;
+        self.step = WalkStep::Probe;
+        self.fetch = OptionFuture::none();
+    }
+
+    fn pause(&mut self) {
+        self.step = WalkStep::Backoff;
+        self.fetch = OptionFuture::none();
+    }
+
+    /// Interprets the engine's answer for the cursor. `finalized` is the
+    /// network's finalized tip and `delivered` the highest finalized height
+    /// the execution layer has accepted.
+    fn on_status(
+        &mut self,
+        status: PayloadStatusEnum,
+        finalized: (Height, Digest),
+        delivered: Height,
+    ) -> WalkOutcome {
+        match status {
+            PayloadStatusEnum::Valid if self.at_target() => WalkOutcome::TargetValid,
+            PayloadStatusEnum::Valid => {
+                self.reprobe();
+                WalkOutcome::Continue
+            }
+            PayloadStatusEnum::Invalid { validation_error } => {
+                info!(
+                    digest = %self.cursor.digest(),
+                    validation_error,
+                    "execution layer rejected the block",
+                );
+                if self.at_target() {
+                    WalkOutcome::TargetInvalid
+                } else {
+                    self.reprobe();
+                    WalkOutcome::Continue
+                }
+            }
+            PayloadStatusEnum::Syncing => {
+                let parent_height = self.parent_height();
+                let parent_digest = self.cursor.parent_digest();
+                if parent_height > finalized.0 {
+                    self.step = WalkStep::FetchParent;
+                    WalkOutcome::Continue
+                } else if parent_digest == finalized.1 {
+                    if delivered >= finalized.0 {
+                        WalkOutcome::RetryFromTarget
+                    } else {
+                        self.step = WalkStep::WaitForFinalized {
+                            height: finalized.0,
+                        };
+                        WalkOutcome::Continue
+                    }
+                } else {
+                    info!(
+                        %parent_digest,
+                        %parent_height,
+                        finalized_digest = %finalized.1,
+                        finalized_height = %finalized.0,
+                        "ancestry does not reach the finalized tip",
+                    );
+                    WalkOutcome::ConflictsWithFinality
+                }
+            }
+            PayloadStatusEnum::Accepted => WalkOutcome::Accepted,
+        }
+    }
+
+    /// Starts the parent fetch asked for by [`WalkStep::FetchParent`], unless
+    /// one is running.
+    fn start_parent_fetch(&mut self, execution_node: &impl ExecutionLayer, marshal: &impl Marshal) {
+        if self.step == WalkStep::FetchParent && self.fetch.is_none() {
+            let (round, digest) = self.parent();
+            self.fetch.replace(PendingNotarizedBlock::new(
+                execution_node,
+                marshal,
+                round,
+                digest,
+            ));
+        }
+    }
+
+    /// Makes the fetched parent the cursor.
+    fn on_fetched(&mut self, block: Arc<Block>) {
+        self.cursor = block;
+        self.step = WalkStep::Probe;
+    }
+
+    /// Restarts at the target once finalization delivered the block the walk
+    /// was about to deliver or fetch itself. A paused walk restarts as well.
+    fn on_finalized_delivered(&mut self, delivered: Height) {
+        let restart = match self.step {
+            WalkStep::Probe => !self.at_target() && self.cursor.height() <= delivered,
+            WalkStep::FetchParent => self.parent_height() <= delivered,
+            WalkStep::WaitForFinalized { height } => height <= delivered,
+            WalkStep::Backoff => true,
+            WalkStep::InFlight => false,
+        };
+        if restart {
+            self.reprobe();
+        }
     }
 }
 
@@ -1779,8 +1866,7 @@ impl ExecutionTaskFinished {
             ExecutionTaskOutcome::Build { result, .. } => {
                 result.as_ref().ok().map(|forkchoice| forkchoice.target)
             }
-            ExecutionTaskOutcome::VerificationDelivered { .. }
-            | ExecutionTaskOutcome::ConvergenceDelivered { .. }
+            ExecutionTaskOutcome::Delivered { .. }
             | ExecutionTaskOutcome::FinalizedDelivered { .. } => None,
         }
     }
@@ -1813,16 +1899,13 @@ impl Future for ExecutionTask {
 /// scheduled. It travels with the result so a late `VALID` cannot restore
 /// HEAD eligibility after a newer network finalized tip cleared it.
 enum ExecutionTaskOutcome {
-    VerificationDelivered {
-        round: Round,
+    /// A walk's cursor was delivered. The status carries the time the engine
+    /// call took.
+    Delivered {
+        owner: WalkOwner,
         digest: Digest,
-        status: eyre::Result<(PayloadStatusEnum, Duration)>,
-    },
-    /// The convergence walk travels back with the EL's answer.
-    ConvergenceDelivered {
-        walk: ConvergenceWalk,
         finalized_round: Round,
-        status: eyre::Result<PayloadStatusEnum>,
+        status: eyre::Result<(PayloadStatusEnum, Duration)>,
     },
     /// The request travels back for its acknowledgement.
     FinalizedDelivered {
@@ -1848,8 +1931,7 @@ struct ForkchoiceOutcome {
 impl ExecutionTaskOutcome {
     fn name(&self) -> &'static str {
         match self {
-            Self::VerificationDelivered { .. } => "verification-delivered",
-            Self::ConvergenceDelivered { .. } => "convergence-delivered",
+            Self::Delivered { .. } => "delivered",
             Self::FinalizedDelivered { .. } => "finalized-delivered",
             Self::Build { .. } => "build",
             Self::Forkchoice(_) => "forkchoice",
@@ -1977,46 +2059,32 @@ async fn execute_finalization(
     ExecutionTaskOutcome::FinalizedDelivered { request, status }
 }
 
-#[instrument(skip_all, parent = &cause, fields(%round, digest = %block.digest()))]
-async fn execute_verification_delivery(
+/// Delivers a walk's cursor through a bare new-payload request.
+#[instrument(
+    skip_all,
+    parent = &cause,
+    fields(
+        owner = ?owner,
+        block.digest = %block.digest(),
+        block.height = %block.height(),
+        block.parent_digest = %block.parent_digest(),
+    ),
+)]
+async fn execute_delivery(
     execution_node: impl ExecutionLayer,
-    round: Round,
+    owner: WalkOwner,
     cause: Span,
     block: Arc<Block>,
+    finalized_round: Round,
 ) -> ExecutionTaskOutcome {
     let digest = block.digest();
     let started = Instant::now();
     let status = deliver_block(&execution_node, block)
         .await
         .map(|status| (status, started.elapsed()));
-    ExecutionTaskOutcome::VerificationDelivered {
-        round,
+    ExecutionTaskOutcome::Delivered {
+        owner,
         digest,
-        status,
-    }
-}
-
-/// Delivers one block and returns the walk with the EL's answer.
-#[instrument(
-    skip_all,
-    parent = &walk.cause,
-    fields(
-        block.digest = %walk.cursor.digest(),
-        block.height = %walk.cursor.height(),
-        block.parent_digest = %walk.cursor.parent_digest(),
-    ),
-)]
-async fn execute_convergence_delivery(
-    execution_node: impl ExecutionLayer,
-    walk: ConvergenceWalk,
-    finalized_round: Round,
-) -> ExecutionTaskOutcome {
-    let status = deliver_block(&execution_node, walk.cursor.clone())
-        .await
-        .wrap_err("failed sending new-payload request for head convergence");
-
-    ExecutionTaskOutcome::ConvergenceDelivered {
-        walk,
         finalized_round,
         status,
     }
@@ -2281,29 +2349,5 @@ impl PendingHead {
             height: Some(height),
             executed: None,
         }
-    }
-}
-
-fn update_block_fetch(
-    execution_node: &impl ExecutionLayer,
-    marshal: &impl Marshal,
-    pending: &mut OptionFuture<PendingNotarizedBlock>,
-    next: Option<(Round, Digest)>,
-) {
-    if pending
-        .as_ref()
-        .is_some_and(|pending| next.map(|(_, digest)| digest) != Some(pending.digest))
-    {
-        *pending = OptionFuture::none();
-    }
-    if pending.is_none()
-        && let Some((round, digest)) = next
-    {
-        pending.replace(PendingNotarizedBlock::new(
-            execution_node,
-            marshal,
-            round,
-            digest,
-        ));
     }
 }
