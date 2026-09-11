@@ -165,8 +165,6 @@ pub(crate) mod marshal {
         .wrap_err("failed to initialize hybrid finalized blocks store")?;
 
         let tip_height = finalized_tip.1;
-        // Certificates are only archived with a matching block, so the tip's
-        // header must be recoverable from execution or finalized-block storage.
         let tip_header = read_header(&execution_node, &finalized_blocks, tip_height)
             .await
             .wrap_err_with(|| {
