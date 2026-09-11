@@ -65,7 +65,7 @@ fn startup_uses_runtime_observed_tip_identity_before_healing() {
                 }
                 drop(storage);
 
-                for attempt in 0..2 {
+                for attempt in ["attempt_0", "attempt_1"] {
                     let block = if boundary_tip {
                         make_block(29, Some(&next.outcome))
                     } else {
@@ -76,7 +76,7 @@ fn startup_uses_runtime_observed_tip_identity_before_healing() {
                     let marshal = StubMarshal::default();
                     let epochs = StubEpochManager::default();
                     let result = super::super::init(
-                        context.child(&format!("attempt_{attempt}")),
+                        context.child(attempt),
                         super::super::Config {
                             epoch_strategy: FixedEpocher::new(
                                 std::num::NonZeroU64::new(10).unwrap(),
