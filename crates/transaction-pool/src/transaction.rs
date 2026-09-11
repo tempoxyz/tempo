@@ -180,7 +180,7 @@ impl TempoPooledTransaction {
         self.inner().is_aa()
     }
 
-    /// Returns the nonce key of this transaction if it's an [`AASigned`](tempo_primitives::AASigned) transaction.
+    /// Returns the nonce key of this transaction if it's an [`AASigned`] transaction.
     pub fn nonce_key(&self) -> Option<U256> {
         self.inner.transaction.nonce_key()
     }
