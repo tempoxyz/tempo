@@ -1365,6 +1365,10 @@ impl TIP20Token {
             actual_spending,
         ))?;
 
+        // Carried fees emit their actual debit even when no reservation is refunded.
+        if self.storage.spec().is_t12() && refund.is_zero() {
+            AccountKeychain::new().emit_carried_fee(to, self.address, actual_spending)?;
+        }
         // Exit early if there is no refund
         if refund.is_zero() {
             return Ok(());
@@ -1372,6 +1376,9 @@ impl TIP20Token {
 
         if self.storage.spec().is_t1c() {
             AccountKeychain::new().refund_spending_limit(to, self.address, refund)?;
+        }
+        if self.storage.spec().is_t12() {
+            AccountKeychain::new().emit_carried_fee(to, self.address, actual_spending)?;
         }
 
         // Update rewards for the recipient and get their reward recipient

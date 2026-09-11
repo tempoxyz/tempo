@@ -55,6 +55,7 @@ fn system_call_clears_previous_intrinsic_oog(spec: TempoHardfork) {
     }
 }
 
+mod carried;
 mod native_access;
 
 fn native_fixture() -> TestHandlerEvm {

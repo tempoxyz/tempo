@@ -14,7 +14,7 @@ use tempo_primitives::transaction::{
 pub(crate) const P256_VERIFY_GAS: u64 = 5_000;
 
 /// Additional gas for keychain signatures (key validation overhead: cold SLOAD + processing).
-const KEYCHAIN_VALIDATION_GAS: u64 = COLD_SLOAD_COST + 900;
+pub(crate) const KEYCHAIN_VALIDATION_GAS: u64 = COLD_SLOAD_COST + 900;
 
 /// Calculates the gas cost for verifying a primitive signature.
 ///

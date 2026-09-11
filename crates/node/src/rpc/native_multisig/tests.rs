@@ -11,6 +11,47 @@ use tempo_primitives::{
 };
 
 const FACTORY: Address = Address::repeat_byte(0x99);
+
+#[test]
+fn carried_native_simulation_preserves_certificate_fields() {
+    let (parent, simulation) = spec(1, 0);
+    let carried = tempo_primitives::transaction::CarriedAuthorization {
+        valid_after: 1,
+        authority_config: simulation.config.commitment().unwrap(),
+    };
+    let mut grant =
+        KeyAuthorization::unrestricted(1, SignatureType::Secp256k1, Address::repeat_byte(2))
+            .with_account(parent)
+            .with_witness(B256::ZERO);
+    grant.expiry = core::num::NonZeroU64::new(1_000);
+    let auth = tempo_primitives::transaction::SignedKeyAuthorization::new_carried(
+        grant,
+        carried.clone(),
+        PrimitiveSignature::Secp256k1(Signature::test_signature()),
+    )
+    .unwrap();
+    let digest = auth.signature_hash();
+    let mut request = TempoTransactionRequest {
+        inner: alloy_rpc_types_eth::TransactionRequest {
+            from: Some(parent),
+            ..Default::default()
+        },
+        key_authorization: Some(auth),
+        key_authorization_simulation: Some(simulation),
+        ..Default::default()
+    };
+    prepare_native_multisig_simulation(
+        &mut request,
+        TempoHardfork::T12,
+        &block(),
+        &mut AccountDb::default(),
+    )
+    .unwrap();
+    let auth = request.key_authorization.unwrap();
+    assert_eq!(auth.carried, Some(carried));
+    assert_eq!(auth.signature_hash(), digest);
+    assert!(auth.signature.as_multisig().is_some());
+}
 #[derive(Default)]
 struct AccountDb(HashMap<Address, AccountInfo>);
 impl AccountDb {

@@ -66,6 +66,10 @@ impl Precompile for AccountKeychain {
                         self.burn_key_authorization_witness(sender, c)
                     }),
                     revokeKey(call) => mutate_void(call, msg_sender, |sender, c| self.revoke_key(sender, c)),
+                    #[schedule(since = T12)]
+                    revokeCarriedKey(call) => mutate_void(call, msg_sender, |sender, c| self.revoke_carried_key(sender, c.keyId)),
+                    #[schedule(since = T12)]
+                    getCarriedSpending(call) => view(call, |c| self.get_carried_spending(c)),
                     updateSpendingLimit(call) => mutate_void(call, msg_sender, |sender, c| {
                         self.update_spending_limit(sender, c)
                     }),
@@ -115,7 +119,7 @@ mod tests {
 
     #[test]
     fn test_account_keychain_selector_coverage() -> eyre::Result<()> {
-        let mut storage = HashMapStorageProvider::new_with_spec(1, TempoHardfork::T6);
+        let mut storage = HashMapStorageProvider::new_with_spec(1, TempoHardfork::T12);
         StorageCtx::enter(&mut storage, || {
             let mut fee_manager = AccountKeychain::new();
             let selectors: Vec<_> = IAccountKeychainCalls::SELECTORS

@@ -311,6 +311,13 @@ impl TempoPooledTransaction {
         })
     }
 
+    /// Exact TIP-1086 budget dependency, including for sponsored user debits.
+    pub(crate) fn carried_budget(&self) -> Option<(Address, B256)> {
+        let auth = self.inner().as_aa()?.tx().key_authorization.as_ref()?;
+        auth.carried.as_ref()?;
+        Some((self.sender(), auth.signature_hash()))
+    }
+
     /// Returns the unique identifier for this AA transaction.
     pub fn aa_transaction_id(&self) -> Option<AA2dTransactionId> {
         let nonce_key = self.nonce_key()?;

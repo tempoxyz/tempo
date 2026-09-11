@@ -97,6 +97,16 @@ crate::sol! {
             uint256 remainingLimit
         );
 
+        event CarriedAccessKeySpend(address indexed account, bytes32 indexed authorizationId,
+            address indexed token, address keyId, uint256 amount, uint256 remaining, uint64 windowIndex);
+
+        /// Permanently revoke a carried key, including before its first use (T12).
+        function revokeCarriedKey(address keyId) external;
+
+        /// Raw budget counters; not a certificate validity or remaining allowance query (T12).
+        function getCarriedSpending(address account, bytes32 authorizationId, address token)
+            external view returns (uint256 spent, uint64 windowIndex);
+
         /// Emitted when a key authorization carries a TIP-1053 witness.
         event KeyAuthorizationWitness(address indexed account, bytes32 indexed witness);
 

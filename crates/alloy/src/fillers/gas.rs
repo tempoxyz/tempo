@@ -142,6 +142,13 @@ where
         ));
     }
 
+    // A carried grant is mandatory on every use. In particular, observing a stored key must
+    // never silently switch this transaction to that key's potentially different permissions.
+    // The node validates occupancy, revocation, configuration, and the grant's budget.
+    if authorization.carried.is_some() {
+        return Ok(Some(Some(authorization.clone())));
+    }
+
     let key = provider
         .get_keychain_key(account, key_id)
         .await
@@ -380,6 +387,46 @@ mod tests {
             .unwrap();
 
         assert_eq!(resolved, Some(Some(authorization)));
+    }
+
+    #[tokio::test]
+    async fn preserves_carried_authorization_on_every_use_without_an_rpc() {
+        let provider = ProviderBuilder::new_with_network::<TempoNetwork>()
+            .connect_mocked_client(Default::default());
+        let account = Address::repeat_byte(0x11);
+        let key = Address::repeat_byte(0x22);
+        let mut grant = KeyAuthorization::unrestricted(4217, SignatureType::Secp256k1, key);
+        grant.account = Some(account);
+        grant.expiry = core::num::NonZeroU64::new(u64::MAX);
+        grant.witness = Some(Default::default());
+        let authorization = SignedKeyAuthorization::new_carried(
+            grant,
+            tempo_primitives::transaction::CarriedAuthorization {
+                valid_after: 100,
+                authority_config: Default::default(),
+            },
+            PrimitiveSignature::Secp256k1(Signature::test_signature()),
+        )
+        .unwrap();
+        let request = TempoTransactionRequest {
+            inner: TransactionRequest {
+                from: Some(account),
+                chain_id: Some(4217),
+                ..Default::default()
+            },
+            key_id: Some(key),
+            key_type: Some(SignatureType::Secp256k1),
+            key_authorization: Some(authorization.clone()),
+            ..Default::default()
+        };
+        for _ in 0..2 {
+            assert_eq!(
+                resolve_key_authorization(&provider, &request)
+                    .await
+                    .unwrap(),
+                Some(Some(authorization.clone()))
+            );
+        }
     }
 
     #[tokio::test]

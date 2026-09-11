@@ -6,6 +6,7 @@
 //!
 //! [Account keychain]: <https://docs.tempo.xyz/protocol/transactions/AccountKeychain>
 
+pub mod carried;
 pub mod dispatch;
 
 use std::collections::HashSet;
@@ -1398,6 +1399,10 @@ impl AccountKeychain {
             return Ok(());
         }
 
+        if self.is_carried(account, key_id)? {
+            return self.debit_carried(account, key_id, token, amount, true);
+        }
+
         // Check key is valid (exists and not revoked)
         let current_timestamp = self.storage.timestamp().saturating_to::<u64>();
         let key = self.load_active_key(account, key_id, current_timestamp)?;
@@ -1491,6 +1496,10 @@ impl AccountKeychain {
         let tx_origin = self.tx_origin.t_read()?;
         if account != tx_origin {
             return Ok(());
+        }
+
+        if self.is_carried(account, transaction_key)? {
+            return self.refund_carried(account, token, amount);
         }
 
         // Silently skip refund if the key was revoked or expired — the fee was already
