@@ -833,6 +833,61 @@ mod tests {
     }
 
     #[test]
+    fn test_non_virtual_recipient_resolution_has_no_state_access_or_gas() -> eyre::Result<()> {
+        use crate::{address_registry::AddressRegistry, storage::StorageCtx, tip20::Recipient};
+        use tempo_primitives::{MasterId, TempoAddressExt, UserTag};
+
+        let mut recipients = vec![
+            Address::repeat_byte(0x11),
+            Address::ZERO,
+            crate::PATH_USD_ADDRESS,
+        ];
+        // Exercise every byte of the virtual-address marker, including near matches.
+        let virtual_addr = Address::new_virtual(MasterId::ZERO, UserTag::ZERO);
+        for index in 4..14 {
+            let mut bytes = virtual_addr.into_array();
+            bytes[index] ^= 1;
+            recipients.push(Address::new(bytes));
+        }
+
+        for spec in [
+            TempoHardfork::T2,
+            TempoHardfork::T3,
+            TempoHardfork::default(),
+        ] {
+            for &addr in &recipients {
+                assert!(!addr.is_virtual());
+                // Use a fresh EVM for each path so one cannot hide the other's account warming.
+                for through_registry in [false, true] {
+                    let mut evm = TestEvm::new(spec);
+                    {
+                        let mut provider = evm
+                            .provider_max_gas()
+                            .with_actions(StorageActions::enabled());
+                        let recipient = StorageCtx::enter(&mut provider, || {
+                            if through_registry {
+                                AddressRegistry::new()
+                                    .resolve_recipient(addr)
+                                    .map(Recipient::direct)
+                            } else {
+                                Recipient::resolve(addr)
+                            }
+                        })?;
+
+                        assert_eq!(recipient, Recipient::direct(addr));
+                        assert_eq!(provider.take_actions(), Some(vec![]));
+                        assert_eq!(provider.gas_used(), 0);
+                        assert_eq!(provider.state_gas_used(), 0);
+                        assert_eq!(provider.gas_refunded(), 0);
+                    }
+                    assert!(evm.ctx_mut().journaled_state.state.is_empty());
+                }
+            }
+        }
+        Ok(())
+    }
+
+    #[test]
     fn test_sstore_sload_actions_recording() -> eyre::Result<()> {
         let mut evm = TestEvm::default();
         let addr = Address::random();
