@@ -3,6 +3,11 @@ name: bench-e2e-multi-region
 on:
   workflow_call:
     inputs:
+      skip-metrics:
+        description: Skip benchmark scraping, latency samples, and metric exports.
+        type: boolean
+        required: false
+        default: false
       cloud:
         type: string
         required: false
@@ -236,7 +241,7 @@ on:
         required: true
         default: false
       bench-args:
-        description: Extra bench args.
+        description: Extra generator args; accepts --skip-metrics to disable benchmark metrics collection.
         type: string
         required: false
         default: ""
@@ -293,6 +298,7 @@ jobs:
       BENCH_INPUT_TXGEN_REF: ${{ inputs['txgen-ref'] || '' }}
       BENCH_INPUT_TOKEN_COUNT: ${{ inputs['token-count'] || '4' }}
       BENCH_INPUT_PROFILING: ${{ inputs.profiling || 'off' }}
+      BENCH_INPUT_SKIP_METRICS: ${{ inputs['skip-metrics'] && 'true' || 'false' }}
       BENCH_INPUT_OTLP: ${{ format('{0}', github.event_name != 'workflow_dispatch' || inputs.otlp) }}
       BENCH_INPUT_VALSCOPE: ${{ (inputs.valscope == true || inputs.valscope == 'true') && 'true' || 'false' }}
       BENCH_INPUT_BASELINE_ARGS: ${{ inputs['baseline-args'] || '' }}
@@ -543,6 +549,7 @@ jobs:
             --profiling "$BENCH_INPUT_PROFILING" \
             --otlp "$BENCH_INPUT_OTLP" \
             --valscope "$BENCH_INPUT_VALSCOPE" \
+            --skip-metrics "$BENCH_INPUT_SKIP_METRICS" \
             --baseline-args "$BENCH_INPUT_BASELINE_ARGS" \
             --feature-args "$BENCH_INPUT_FEATURE_ARGS" \
             --gas-limit "$BENCH_INPUT_GAS_LIMIT" \
@@ -597,6 +604,7 @@ jobs:
             --profiling "$BENCH_INPUT_PROFILING" \
             --otlp "$BENCH_INPUT_OTLP" \
             --valscope "$BENCH_INPUT_VALSCOPE" \
+            --skip-metrics "$BENCH_INPUT_SKIP_METRICS" \
             --baseline-args "$BENCH_INPUT_BASELINE_ARGS" \
             --feature-args "$BENCH_INPUT_FEATURE_ARGS" \
             --gas-limit "$BENCH_INPUT_GAS_LIMIT" \
@@ -644,6 +652,7 @@ jobs:
             --profiling "$BENCH_INPUT_PROFILING" \
             --otlp "$BENCH_INPUT_OTLP" \
             --valscope "$BENCH_INPUT_VALSCOPE" \
+            --skip-metrics "$BENCH_INPUT_SKIP_METRICS" \
             --baseline-args "$BENCH_INPUT_BASELINE_ARGS" \
             --feature-args "$BENCH_INPUT_FEATURE_ARGS" \
             --gas-limit "$BENCH_INPUT_GAS_LIMIT" \
@@ -691,6 +700,7 @@ jobs:
             --profiling "$BENCH_INPUT_PROFILING" \
             --otlp "$BENCH_INPUT_OTLP" \
             --valscope "$BENCH_INPUT_VALSCOPE" \
+            --skip-metrics "$BENCH_INPUT_SKIP_METRICS" \
             --baseline-args "$BENCH_INPUT_BASELINE_ARGS" \
             --feature-args "$BENCH_INPUT_FEATURE_ARGS" \
             --gas-limit "$BENCH_INPUT_GAS_LIMIT" \

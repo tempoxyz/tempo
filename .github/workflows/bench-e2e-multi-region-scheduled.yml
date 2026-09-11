@@ -11,6 +11,11 @@ on:
     - cron: "0 2 * * *"
   workflow_dispatch:
     inputs:
+      skip-metrics:
+        description: Skip benchmark scraping, latency samples, and metric exports.
+        type: boolean
+        required: false
+        default: false
       cloud:
         description: Cloud provider used for disposable benchmark infrastructure.
         type: choice
@@ -171,6 +176,7 @@ jobs:
       max-concurrent-requests: ${{ inputs['max-concurrent-requests'] || '5000' }}
       run-pairs: ${{ inputs['run-pairs'] || '1' }}
       clickhouse-run: feature-1
+      skip-metrics: ${{ inputs['skip-metrics'] || false }}
       otlp: true
       valscope: true
     secrets:
