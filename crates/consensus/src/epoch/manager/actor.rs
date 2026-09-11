@@ -46,7 +46,6 @@ use std::{collections::BTreeMap, num::NonZeroUsize};
 use alloy_consensus::BlockHeader as _;
 use commonware_codec::ReadExt as _;
 use commonware_consensus::{
-    Reporters,
     marshal::{Update, core::DigestFallback},
     simplex::{self, config::Floor, elector, scheme::bls12381_threshold::vrf::Scheme},
     types::{Epoch, EpochDelta, Epocher as _, Height},
@@ -343,13 +342,16 @@ where
                 epoch,
                 floor,
                 scheme,
-                elector: elector::Random,
+                #[expect(
+                    deprecated,
+                    reason = "switching random leader election from V0 to V1 requires a hardfork"
+                )]
+                elector: elector::Random::<commonware_cryptography::Sha256>::new(
+                    elector::RandomVersion::V0,
+                ),
                 strategy: Sequential,
 
-                reporter: Reporters::<_, crate::subblocks::Mailbox, _>::from((
-                    self.config.subblocks.clone(),
-                    self.config.marshal.clone(),
-                )),
+                reporter: self.config.marshal.clone(),
                 partition: format!(
                     "{partition_prefix}_consensus_epoch_{epoch}",
                     partition_prefix = self.config.partition_prefix
@@ -366,12 +368,15 @@ where
                 certification_timeout: self.config.time_to_collect_notarizations,
                 timeout_retry: self.config.time_to_retry_nullify_broadcast,
                 fetch_timeout: self.config.time_for_peer_response,
-                activity_timeout: self.config.views_to_track,
-                skip_timeout: self.config.views_until_leader_skip,
+                view_retention: self.config.views_to_track,
+                skip: simplex::config::SkipPolicy::Enabled {
+                    timeout: self.config.inactive_time_before_leader_skip,
+                    budget: simplex::config::SkipBudget::Participants,
+                },
 
                 mailbox_size: self.config.mailbox_size,
-                fetch_concurrent: crate::config::NUMBER_CONCURRENT_FETCHES,
-                forwarding: commonware_consensus::simplex::config::ForwardingPolicy::Disabled,
+                forward: commonware_consensus::simplex::config::ForwardPolicy::Disabled,
+                track_historical_votes: true,
             },
         );
 

@@ -1,0 +1,108 @@
+[
+  {
+    "type": "constructor",
+    "stateMutability": "nonpayable",
+    "inputs": [
+      {
+        "name": "arg0",
+        "type": "address"
+      },
+      {
+        "name": "arg1",
+        "type": "address"
+      },
+      {
+        "name": "arg2",
+        "type": "address"
+      },
+      {
+        "name": "arg3",
+        "type": "address"
+      }
+    ]
+  },
+  {
+    "type": "function",
+    "name": "allowBufferHelper",
+    "stateMutability": "nonpayable",
+    "inputs": [
+      {
+        "name": "arg0",
+        "type": "address"
+      },
+      {
+        "name": "arg1",
+        "type": "address"
+      }
+    ],
+    "outputs": []
+  },
+  {
+    "type": "function",
+    "name": "setAuthority",
+    "stateMutability": "nonpayable",
+    "inputs": [
+      {
+        "name": "arg0",
+        "type": "address"
+      }
+    ],
+    "outputs": []
+  },
+  {
+    "type": "function",
+    "name": "setDepositBufferHelper",
+    "stateMutability": "nonpayable",
+    "inputs": [
+      {
+        "name": "arg0",
+        "type": "address"
+      },
+      {
+        "name": "arg1",
+        "type": "address"
+      }
+    ],
+    "outputs": []
+  },
+  {
+    "type": "function",
+    "name": "setWithdrawBufferHelper",
+    "stateMutability": "nonpayable",
+    "inputs": [
+      {
+        "name": "arg0",
+        "type": "address"
+      },
+      {
+        "name": "arg1",
+        "type": "address"
+      }
+    ],
+    "outputs": []
+  },
+  {
+    "type": "function",
+    "name": "updateAssetData",
+    "stateMutability": "nonpayable",
+    "inputs": [
+      {
+        "name": "arg0",
+        "type": "address"
+      },
+      {
+        "name": "arg1",
+        "type": "bool"
+      },
+      {
+        "name": "arg2",
+        "type": "bool"
+      },
+      {
+        "name": "arg3",
+        "type": "uint16"
+      }
+    ],
+    "outputs": []
+  }
+]

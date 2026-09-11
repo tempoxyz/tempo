@@ -231,7 +231,7 @@ impl Builder {
 pub struct ExecutionNodeConfig {
     /// Network secret key for the node's identity.
     pub secret_key: B256,
-    /// Validator public key for filtering subblock transactions.
+    /// Validator public key exposed through the admin RPC API.
     pub validator_key: Option<B256>,
     /// Feed state handle for consensus RPC (if validator).
     pub feed_state: Option<FeedStateHandle>,

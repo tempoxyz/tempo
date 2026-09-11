@@ -106,7 +106,7 @@ fn block_is_executed_canonicalized_acknowledged_and_advances_floor_to_deep_candi
         }
 
         let block = make_block_at_round(block_height, B256::with_last_byte(20), round(1));
-        let block_hash = block.block_hash();
+        let block_hash = block.digest().0;
         let (ack, waiter) = Exact::handle();
         assert!(mailbox.report(Update::Block(block.into(), ack)).accepted());
         waiter.await.expect("valid payload should be acknowledged");
@@ -471,7 +471,7 @@ fn delayed_tip_does_not_regress_newer_block_forkchoice() {
         actor.start();
 
         let block = make_block_at_round(101, current.0, round(13));
-        let newest = Digest(block.block_hash());
+        let newest = block.digest();
         let (ack, waiter) = Exact::handle();
         let _ = mailbox.report(Update::Block(block.into(), ack));
         wait_until(&context, || {

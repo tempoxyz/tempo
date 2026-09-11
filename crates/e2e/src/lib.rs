@@ -141,9 +141,6 @@ pub struct Setup {
     /// Local proposal return budget, excluding the network propagation allowance.
     pub proposal_return_budget: Duration,
 
-    /// Whether to activate subblocks building.
-    pub with_subblocks: bool,
-
     /// The fee recipient written into the V2 contract for each validator.
     pub fee_recipient: Address,
 
@@ -161,11 +158,10 @@ impl Setup {
             linkage: Link {
                 latency: Duration::from_millis(10),
                 jitter: Duration::from_millis(1),
-                success_rate: 1.0,
+                success_rate: commonware_utils::probability!(1.0),
             },
             epoch_length: 20,
             proposal_return_budget: Duration::from_millis(300),
-            with_subblocks: false,
             fee_recipient: Address::ZERO,
             with_gossip: false,
         }
@@ -207,13 +203,6 @@ impl Setup {
         }
     }
 
-    pub fn subblocks(self, with_subblocks: bool) -> Self {
-        Self {
-            with_subblocks,
-            ..self
-        }
-    }
-
     pub fn fee_recipient(self, fee_recipient: Address) -> Self {
         Self {
             fee_recipient,
@@ -251,7 +240,6 @@ pub async fn setup_validators(
         how_many_verifiers,
         linkage,
         proposal_return_budget,
-        with_subblocks,
         fee_recipient,
         with_gossip,
         ..
@@ -262,7 +250,13 @@ pub async fn setup_validators(
         simulated::Config {
             max_size: MAX_MESSAGE_SIZE,
             disconnect_on_block: true,
-            tracked_peer_sets: commonware_utils::NZUsize!(3),
+            // Mirror production (`PEERSETS_TO_TRACK`): peers that leave the
+            // registered set are disconnected at the boundary.
+            tracked_peer_sets: commonware_utils::NZUsize!(1),
+            max_peers_per_set: std::num::NonZeroUsize::new(
+                (how_many_signers + how_many_verifiers).max(1) as usize,
+            )
+            .expect("maximum peers per set is non-zero"),
         },
     );
     network.start();
@@ -314,7 +308,6 @@ pub async fn setup_validators(
             share,
             feed_state,
             proposal_return_budget,
-            with_subblocks,
             execution_runtime.handle(),
             execution_config,
             ingress,

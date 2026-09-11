@@ -1,0 +1,81 @@
+# The helper expands portal setup and user templates. Payloads are synthetic.
+chain_id: 1337
+gas:
+  max_fee_per_gas: 100000000000
+  max_priority_fee_per_gas: 100000000000
+accounts:
+  users:
+    mnemonic: "test test test test test test test test test test test junk"
+    range: [0, "${TXGEN_ACCOUNTS}"]
+  deployer:
+    mnemonic: "test test test test test test test test test test test junk"
+    index: 100001
+artifacts:
+  ERC20: ../tip20.abi.json
+  PortalFixture: ../zones/PortalFixture.json
+  SettlementFixture: ../zones/SettlementFixture.json
+  ZonePortal: ../zones/portal.abi.json
+setup:
+  steps:
+    - id: settlement
+      deploy:
+        type: eip1559
+        from: {pool: deployer, select: {index: 0}}
+        artifact: SettlementFixture
+        gas_limit: 5000000
+    - id: portal
+      deploy:
+        type: eip1559
+        from: {pool: deployer, select: {index: 0}}
+        artifact: PortalFixture
+        gas_limit: 10000000
+        constructor_args: [null, "0x20c0000000000000000000000000000000000000", {var: setup.settlement.address}]
+    - id: fund_and_approve
+      tx:
+        type: tempo
+        from: {pool: deployer, select: {index: 0}}
+        gas_limit: 5000000
+        fee_token: "0x20c0000000000000000000000000000000000000"
+        calls:
+          - to: "0x20c0000000000000000000000000000000000000"
+            abi: ERC20
+            function: transfer
+            args: [{var: setup.portal.address}, 0]
+templates:
+  zone_deposit:
+    type: tempo
+    from: {pool: users, select: {index: 0}}
+    gas_limit: 5000000
+    fee_token: "0x20c0000000000000000000000000000000000000"
+    calls:
+      - to: {var: setup.portal.address}
+        abi: ZonePortal
+        function: deposit
+        # Valid point and payload length; no zone decrypts this synthetic ciphertext.
+        args:
+          - "0x20c0000000000000000000000000000000000000"
+          - 1
+          - 0
+          - ["0x79be667ef9dcbbac55a06295ce870b07029bfcdb2dce28d959f2815b16f81798", 2,
+             "0x11111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111",
+             "0x111111111111111111111111", "0x11111111111111111111111111111111"]
+          - null
+      - to: {var: setup.settlement.address}
+        abi: SettlementFixture
+        function: settle
+        args: [{var: setup.portal.address}, "0x20c0000000000000000000000000000000000000", null, false]
+  zone_withdraw:
+    type: tempo
+    from: {pool: users, select: {index: 0}}
+    gas_limit: 5000000
+    fee_token: "0x20c0000000000000000000000000000000000000"
+    calls:
+      - to: {var: setup.settlement.address}
+        abi: SettlementFixture
+        function: settle
+        args: [{var: setup.portal.address}, "0x20c0000000000000000000000000000000000000", null, true]
+mix:
+  - template: zone_deposit
+    weight: 50
+  - template: zone_withdraw
+    weight: 50
