@@ -34,7 +34,7 @@ use commonware_runtime::Supervisor as _;
 use eyre::{OptionExt, WrapErr as _, eyre};
 use tempo_consensus_config::SigningShare;
 use tempo_node::TempoFullNode;
-use tracing::info;
+use tracing::instrument;
 
 pub use crate::config::{
     BROADCASTER_CHANNEL_IDENT, BROADCASTER_LIMIT, CERTIFICATES_CHANNEL_IDENT, CERTIFICATES_LIMIT,
@@ -209,16 +209,15 @@ pub async fn run_follow_stack(
         .wrap_err("follow engine task failed")
 }
 
+#[instrument(skip_all, ret(Display), err)]
 fn resolve_network_identity(
     config: &Args,
     execution_node: &TempoFullNode,
 ) -> eyre::Result<tempo_chainspec::NetworkIdentity> {
-    let identity = config
+    config
         .network_identity()
         .or_else(|| execution_node.chain_spec().network_identity.clone())
-        .ok_or_eyre("chainspec has no dkg outcome in genesis header")?;
-    info!(%identity.from_epoch, %identity.identity, "registered network identity");
-    Ok(identity)
+        .ok_or_eyre("chainspec has no dkg outcome in genesis header")
 }
 
 async fn instantiate_network(
