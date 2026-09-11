@@ -130,7 +130,7 @@ mod tests {
                 ),
                 _ => rotated.schemes[0].clone(),
             };
-            provider.clone().register(epoch, candidate);
+            provider.register(epoch, candidate);
         });
     }
 
