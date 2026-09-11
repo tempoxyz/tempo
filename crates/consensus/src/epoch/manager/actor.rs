@@ -41,7 +41,7 @@
 //!
 //! This process is repeated until the node catches up to the current network
 //! epoch.
-use std::{collections::BTreeMap, num::NonZeroUsize, ops::ControlFlow};
+use std::{collections::BTreeMap, num::NonZeroUsize};
 
 use alloy_consensus::BlockHeader as _;
 use commonware_codec::ReadExt as _;
@@ -228,7 +228,7 @@ where
                     let cause = msg.cause;
                     match msg.content {
                         Content::Enter(enter) => {
-                            if let Ok(ControlFlow::Break(())) = self
+                            if self
                                 .enter(
                                     cause,
                                     enter,
@@ -237,6 +237,7 @@ where
                                     &mut resolver_mux,
                                 )
                                 .await
+                                .is_err()
                             {
                                 return;
                             }
@@ -266,7 +267,7 @@ where
             network_identity = %public.public(),
             ?participants,
         ),
-        err(level = Level::WARN)
+        err(level = Level::ERROR)
     )]
     async fn enter(
         &mut self,
@@ -289,24 +290,25 @@ where
             impl Sender<PublicKey = PublicKey>,
             impl Receiver<PublicKey = PublicKey>,
         >,
-    ) -> eyre::Result<ControlFlow<()>> {
+    ) -> eyre::Result<()> {
         let network_identity = &self.config.network_identity;
-        if epoch.get() == network_identity.from_epoch
-            && *public.public() != network_identity.identity
+        ensure!(
+            epoch.get() != network_identity.from_epoch
+                || *public.public() == network_identity.identity,
+            "network identity mismatch in epoch `{epoch}`: expected `{}`, got `{}`; \
+            refusing to enter epoch and shutting down consensus",
+            network_identity.identity,
+            public.public(),
+        );
+
+        if let Some(latest) = self.active_epochs.last_key_value().map(|(k, _)| *k)
+            && epoch <= latest
         {
-            error!(%epoch, expected = %network_identity.identity,
-                actual = %public.public(),
-                "network identity mismatch; refusing to enter epoch and shutting down consensus");
-
-            return Ok(ControlFlow::Break(()));
-        }
-
-        if let Some(latest) = self.active_epochs.last_key_value().map(|(k, _)| *k) {
-            ensure!(
-                epoch > latest,
+            info!(
                 "requested to start an epoch `{epoch}` older than the latest \
                 running, `{latest}`; refusing",
             );
+            return Ok(());
         }
 
         let n_participants = participants.len();
@@ -331,19 +333,15 @@ where
                 .expect("epoch strategy valid for all epochs and heights")
         }) {
             Some(boundary_height) => {
-                let (_, digest) = self
-                    .config
-                    .marshal
-                    .get_info(boundary_height)
-                    .await
-                    .ok_or_else(|| {
-                        eyre!(
-                            "cannot start a consensus for epoch `{epoch}`, \
-                            because we do not have information on the \
-                            finalized block of its boundary height \
-                            `{boundary_height}`"
-                        )
-                    })?;
+                let Some((_, digest)) = self.config.marshal.get_info(boundary_height).await else {
+                    info!(
+                        "cannot start a consensus for epoch `{epoch}`, \
+                        because we do not have information on the \
+                        finalized block of its boundary height \
+                        `{boundary_height}`"
+                    );
+                    return Ok(());
+                };
 
                 Floor::Genesis(digest)
             }
@@ -431,7 +429,7 @@ where
             .metric()
             .inc_by(u64::from(!is_signer));
 
-        Ok(ControlFlow::Continue(()))
+        Ok(())
     }
 
     #[instrument(parent = &cause, skip_all, fields(epoch))]
