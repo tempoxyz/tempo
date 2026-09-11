@@ -42,6 +42,8 @@ pub enum SignatureType {
     Secp256k1 = 0,
     P256 = 1,
     WebAuthn = 2,
+    /// A configurable delegate authenticated by its primitive owner quorum (T12).
+    Multisig = 3,
 }
 
 impl From<SignatureType> for u8 {
@@ -50,6 +52,7 @@ impl From<SignatureType> for u8 {
             SignatureType::Secp256k1 => 0,
             SignatureType::P256 => 1,
             SignatureType::WebAuthn => 2,
+            SignatureType::Multisig => 3,
         }
     }
 }
@@ -62,6 +65,7 @@ impl From<SignatureType> for AbiSignatureType {
             SignatureType::Secp256k1 => Self::Secp256k1,
             SignatureType::P256 => Self::P256,
             SignatureType::WebAuthn => Self::WebAuthn,
+            SignatureType::Multisig => Self::Multisig,
         }
     }
 }
@@ -74,6 +78,7 @@ impl TryFrom<AbiSignatureType> for SignatureType {
             AbiSignatureType::Secp256k1 => Ok(Self::Secp256k1),
             AbiSignatureType::P256 => Ok(Self::P256),
             AbiSignatureType::WebAuthn => Ok(Self::WebAuthn),
+            AbiSignatureType::Multisig => Ok(Self::Multisig),
             _ => Err(sig_type as u8),
         }
     }
@@ -96,6 +101,7 @@ impl alloy_rlp::Decodable for SignatureType {
             0 => Ok(Self::Secp256k1),
             1 => Ok(Self::P256),
             2 => Ok(Self::WebAuthn),
+            3 => Ok(Self::Multisig),
             _ => Err(alloy_rlp::Error::Custom("Invalid signature type")),
         }
     }
@@ -902,14 +908,15 @@ impl<'a> arbitrary::Arbitrary<'a> for TempoTransaction {
         let fee_payer_signature = u.arbitrary()?;
 
         // Ensure valid_before > valid_after if both are set.
-        let valid_after: Option<NonZeroU64> = u.arbitrary()?;
+        // Exhausted input zero-fills integers; zero represents an absent validity bound.
+        let valid_after = u.arbitrary::<Option<u64>>()?.and_then(NonZeroU64::new);
         let valid_before: Option<NonZeroU64> = match valid_after {
             Some(after) => {
                 // Generate a value greater than valid_after
                 let offset: u64 = u.int_in_range(1..=1000)?;
                 Some(NonZeroU64::new(after.get().saturating_add(offset)).unwrap())
             }
-            None => u.arbitrary()?,
+            None => u.arbitrary::<Option<u64>>()?.and_then(NonZeroU64::new),
         };
 
         Ok(Self {
@@ -1031,6 +1038,35 @@ mod tests {
     use alloy_eips::{Decodable2718, Encodable2718, eip7702::Authorization};
     use alloy_primitives::{Address, Bytes, Signature, TxKind, U256, address, bytes, hex};
     use alloy_rlp::{Decodable, EMPTY_LIST_CODE, Encodable, Header as RlpHeader};
+    use arbitrary::{Arbitrary, Unstructured};
+
+    #[test]
+    fn arbitrary_exhausted_validity_bounds() {
+        // These trailing Some selectors previously rejected the zero-filled NonZeroU64.
+        for len in [98, 99] {
+            let mut input = vec![0; len];
+            input[len - 1] = 1;
+            let tx = TempoTransaction::arbitrary(&mut Unstructured::new(&input)).unwrap();
+            assert_eq!(tx.valid_after, None);
+            assert_eq!(tx.valid_before, None);
+        }
+    }
+
+    #[test]
+    fn arbitrary_envelope_exhausted_validity_regression() {
+        // Captured at case 2412 of a xorshift64 stream seeded with 1 (256 bytes per case).
+        let mut state = 1u64;
+        let mut input = [0; 256];
+        for _ in 0..=2412 {
+            for byte in &mut input {
+                state ^= state << 13;
+                state ^= state >> 7;
+                state ^= state << 17;
+                *byte = state as u8;
+            }
+        }
+        TempoTxEnvelope::arbitrary(&mut Unstructured::new(&input)).unwrap();
+    }
 
     fn nz(value: u64) -> NonZeroU64 {
         NonZeroU64::new(value).expect("test timestamp must be non-zero")
@@ -1187,19 +1223,19 @@ mod tests {
         // Secp256k1 (detected by 65-byte length, no type identifier)
         let sig1_bytes = vec![0u8; SECP256K1_SIGNATURE_LENGTH];
         let sig1 = TempoSignature::from_bytes(&sig1_bytes).unwrap();
-        assert_eq!(sig1.signature_type(), SignatureType::Secp256k1);
+        assert_eq!(sig1.signature_type(), Some(SignatureType::Secp256k1));
 
         // P256
         let mut sig2_bytes = vec![SIGNATURE_TYPE_P256];
         sig2_bytes.extend_from_slice(&[0u8; P256_SIGNATURE_LENGTH]);
         let sig2 = TempoSignature::from_bytes(&sig2_bytes).unwrap();
-        assert_eq!(sig2.signature_type(), SignatureType::P256);
+        assert_eq!(sig2.signature_type(), Some(SignatureType::P256));
 
         // WebAuthn
         let mut sig3_bytes = vec![SIGNATURE_TYPE_WEBAUTHN];
         sig3_bytes.extend_from_slice(&[0u8; 200]);
         let sig3 = TempoSignature::from_bytes(&sig3_bytes).unwrap();
-        assert_eq!(sig3.signature_type(), SignatureType::WebAuthn);
+        assert_eq!(sig3.signature_type(), Some(SignatureType::WebAuthn));
     }
 
     #[test]
@@ -2423,6 +2459,7 @@ mod compact_tests {
             (SignatureType::Secp256k1, 0x00u8),
             (SignatureType::P256, 0x01),
             (SignatureType::WebAuthn, 0x02),
+            (SignatureType::Multisig, 0x03),
         ] {
             let mut buf = vec![];
             let len = variant.to_compact(&mut buf);

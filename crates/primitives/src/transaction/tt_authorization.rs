@@ -81,6 +81,9 @@ impl TempoSignedAuthorization {
     ///
     /// Implementers should check that the authority has no code.
     pub fn recover_authority(&self) -> Result<Address, alloy_consensus::crypto::RecoveryError> {
+        if self.signature.is_multisig() {
+            return Err(alloy_consensus::crypto::RecoveryError::new());
+        }
         let sig_hash = self.signature_hash();
         self.signature.recover_signer(&sig_hash)
     }

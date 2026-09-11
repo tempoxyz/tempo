@@ -4,9 +4,8 @@ use crate::{SIGNATURE_VERIFIER_ADDRESS, account_keychain::AccountKeychain, error
 use alloy::primitives::{Address, B256, Bytes};
 use tempo_contracts::precompiles::SignatureVerifierError;
 use tempo_precompiles_macros::contract;
-use tempo_primitives::transaction::{
-    SignatureType,
-    tt_signature::{KeychainSignature, PrimitiveSignature, TempoSignature},
+use tempo_primitives::transaction::tt_signature::{
+    KeychainSignature, PrimitiveSignature, TempoSignature,
 };
 
 /// Gas cost for secp256k1 signature verification.
@@ -32,10 +31,10 @@ impl SignatureVerifier {
             .map_err(|_| SignatureVerifierError::invalid_format())?;
 
         // Charge verification gas before performing verification.
-        let verify_gas = match sig.signature_type() {
-            SignatureType::Secp256k1 => SECP256K1_VERIFY_GAS,
-            SignatureType::P256 => P256_VERIFY_GAS,
-            SignatureType::WebAuthn => WEBAUTHN_VERIFY_GAS,
+        let verify_gas = match &sig {
+            PrimitiveSignature::Secp256k1(_) => SECP256K1_VERIFY_GAS,
+            PrimitiveSignature::P256(_) => P256_VERIFY_GAS,
+            PrimitiveSignature::WebAuthn(_) => WEBAUTHN_VERIFY_GAS,
         };
         self.storage.deduct_gas(verify_gas)?;
 

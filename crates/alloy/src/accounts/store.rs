@@ -1847,7 +1847,10 @@ impl TryFrom<AccountsRpcKeyAuthorization> for SignedKeyAuthorization {
             is_admin: false,
             account: None,
         };
-        Ok(Self::new(authorization, value.signature.try_into()?))
+        Ok(Self::new(
+            authorization,
+            PrimitiveSignature::try_from(value.signature)?,
+        ))
     }
 }
 
@@ -1993,7 +1996,10 @@ impl TryFrom<PersistedSignedKeyAuthorization> for SignedKeyAuthorization {
             is_admin,
             account,
         };
-        Ok(Self::new(authorization, signature.try_into()?))
+        Ok(Self::new(
+            authorization,
+            PrimitiveSignature::try_from(signature)?,
+        ))
     }
 }
 
@@ -2489,8 +2495,13 @@ fn writable_b256(value: B256) -> String {
 }
 
 fn writable_signature(
-    signature: &PrimitiveSignature,
+    signature: &TempoSignature,
 ) -> Result<WritablePrimitiveSignature, TempoAccountsError> {
+    let TempoSignature::Primitive(signature) = signature else {
+        return Err(TempoAccountsError::InvalidAuthorization(
+            "the Accounts store does not support nonprimitive authorization signatures",
+        ));
+    };
     Ok(match signature {
         PrimitiveSignature::Secp256k1(signature) => WritablePrimitiveSignature::Secp256k1 {
             signature: WritableSecpSignature {
@@ -3634,7 +3645,9 @@ mod tests {
                 .as_slice()
             )
         );
-        let PrimitiveSignature::WebAuthn(signature) = &authorization.signature else {
+        let TempoSignature::Primitive(PrimitiveSignature::WebAuthn(signature)) =
+            &authorization.signature
+        else {
             panic!("expected WebAuthn root signature")
         };
         assert_eq!(signature.webauthn_data.as_ref(), webauthn_data);
