@@ -9,11 +9,12 @@ use serde::{Deserialize, Serialize};
 use tempo_primitives::{
     AASigned, SignatureType, TempoTransaction, TempoTxEnvelope,
     transaction::{
-        Call, SignedKeyAuthorization, TempoSignedAuthorization, TempoTypedTransaction,
-        key_authorization::serde_nonzero_quantity_opt,
+        Call, MultisigSignature, SignedKeyAuthorization, TempoSignedAuthorization,
+        TempoTypedTransaction, key_authorization::serde_nonzero_quantity_opt,
     },
 };
 
+use super::MultisigSimulationSpec;
 use crate::TempoNetwork;
 
 /// An Ethereum [`TransactionRequest`] extended with Tempo-specific fields.
@@ -54,8 +55,17 @@ pub struct TempoTransactionRequest {
     #[serde(default)]
     pub key_type: Option<SignatureType>,
 
-    /// Optional key-specific data for gas estimation (e.g., webauthn authenticator data).
-    /// Required when key_type is WebAuthn to calculate calldata gas costs.
+    /// Optional WebAuthn data-length hint for gas estimation, not authenticator bytes.
+    ///
+    /// For an explicit WebAuthn key type, 1-, 2-, or 4-byte big-endian unsigned integers
+    /// select the modeled data length, excluding the signature and public-key fields.
+    /// Omission defaults to 800. Ordinary requests also default unsupported byte lengths;
+    /// native owner approvals reject lengths other than 1, 2, or 4. The length is clamped to the
+    /// generated authenticator/client-data template minimum and a maximum of 8192 bytes
+    /// for ordinary requests, or 1920 bytes for native multisig owner approvals.
+    /// Other algorithms ignore this hint. A native owner approval with an omitted
+    /// [`key_type`](super::MultisigSimulationApproval::key_type) also ignores it and
+    /// conservatively models maximum-size WebAuthn data instead.
     #[serde(default)]
     pub key_data: Option<Bytes>,
 
@@ -79,6 +89,24 @@ pub struct TempoTransactionRequest {
     /// Provide a signed KeyAuthorization when the transaction provisions an access key.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub key_authorization: Option<SignedKeyAuthorization>,
+
+    /// Quorum for the outer sender, or the delegate named by keyId when using an access key.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub multisig_simulation: Option<MultisigSimulationSpec>,
+
+    /// Independent parent quorum authorizing the attached keyAuthorization.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub key_authorization_simulation: Option<MultisigSimulationSpec>,
+
+    /// Dummy outer approval installed by state-aware RPC preprocessing.
+    #[doc(hidden)]
+    #[serde(skip)]
+    pub multisig_simulation_signature: Option<MultisigSignature>,
+
+    /// Routing marker set after state-aware preprocessing; never authorizes skipping grant crypto.
+    #[doc(hidden)]
+    #[serde(skip)]
+    pub multisig_simulation_prepared: bool,
 
     /// Transaction valid before timestamp in seconds (for expiring nonces, [TIP-1009]).
     /// Transaction can only be included in a block before this timestamp.
@@ -109,6 +137,17 @@ pub struct TempoTransactionRequest {
 }
 
 impl TempoTransactionRequest {
+    /// Whether block simulation would need configurable authorization at each evolving position.
+    pub fn has_configurable_simulation(&self) -> bool {
+        self.key_type == Some(SignatureType::Multisig)
+            || self.multisig_simulation.is_some()
+            || self.key_authorization_simulation.is_some()
+            || self.multisig_simulation_signature.is_some()
+            || self
+                .key_authorization
+                .as_ref()
+                .is_some_and(|auth| auth.signature.is_multisig())
+    }
     /// Returns whether this request contains fields that require Tempo AA transaction semantics.
     pub(crate) fn has_aa_fields(&self) -> bool {
         !self.calls.is_empty()
@@ -119,6 +158,9 @@ impl TempoTransactionRequest {
             || self.key_id.is_some()
             || self.key_type.is_some()
             || self.key_data.is_some()
+            || self.multisig_simulation.is_some()
+            || self.key_authorization_simulation.is_some()
+            || self.multisig_simulation_signature.is_some()
             || self.valid_before.is_some()
             || self.valid_after.is_some()
             || self.fee_payer_signature.is_some()
@@ -461,6 +503,10 @@ impl From<TempoTransaction> for TempoTransactionRequest {
             key_id: None,
             nonce_key: Some(tx.nonce_key),
             key_authorization: tx.key_authorization,
+            multisig_simulation: None,
+            key_authorization_simulation: None,
+            multisig_simulation_signature: None,
+            multisig_simulation_prepared: false,
             valid_before: tx.valid_before,
             valid_after: tx.valid_after,
             fee_payer_signature: tx.fee_payer_signature,
