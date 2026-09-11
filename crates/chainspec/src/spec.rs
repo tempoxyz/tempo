@@ -601,7 +601,8 @@ mod tests {
         trailing.push(0);
         for payload in [
             vec![0x80],
-            vec![0xa0; 32],
+            vec![0; 32],
+            vec![0xa0; 31],
             vec![0xa0].into_iter().chain([0; 32]).collect(),
             trailing,
         ] {
