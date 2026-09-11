@@ -18,6 +18,7 @@ workspace = true
 
 [dependencies]
 tempo-hardfork.workspace = true
+tempo-contracts.workspace = true
 tempo-primitives.workspace = true
 
 reth-cli = { workspace = true, optional = true }
@@ -53,12 +54,14 @@ std = [
     "reth-network-peers?/std",
     "serde/std",
     "serde_json/std",
+    "tempo-contracts/std",
     "tempo-primitives/std",
 ]
 serde = [
     "tempo-hardfork/serde",
     "alloy-eips/serde",
     "alloy-primitives/serde",
+    "tempo-contracts/serde",
     "tempo-primitives/serde"
 ]
 evm = ["dep:alloy-evm", "tempo-hardfork/evm", "tempo-primitives/evm"]

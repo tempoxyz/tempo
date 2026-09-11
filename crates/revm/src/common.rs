@@ -396,6 +396,14 @@ where
     }
 
     // Write operations are not supported in read-only context
+    fn with_warm_caller_info(
+        &mut self,
+        address: Address,
+        f: &mut dyn FnMut(&AccountInfo),
+    ) -> TempoResult<()> {
+        self.with_account_info(address, f)
+    }
+
     fn set_config_commitment(
         &mut self,
         _: Address,

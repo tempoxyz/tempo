@@ -234,6 +234,26 @@ where
         Ok(())
     }
 
+    /// Reserves the configured recovery address before native transactions can execute.
+    fn reserve_multisig_factory(&mut self, address: Address) -> Result<(), BlockExecutionError> {
+        let db = self.inner.evm.db_mut();
+        let info = db
+            .basic(address)
+            .map_err(BlockExecutionError::other)?
+            .unwrap_or_default();
+        let marker = Bytecode::new_legacy([0xef].into());
+        if info.code_hash == marker.hash_slow() && info.nonce >= 1 {
+            return Ok(());
+        }
+        let mut account = Account::from(info);
+        account.info.nonce = account.info.nonce.max(1);
+        account.info.code_hash = marker.hash_slow();
+        account.info.code = Some(marker);
+        account.mark_touch();
+        db.commit(EvmState::from_iter([(address, account)]));
+        Ok(())
+    }
+
     /// Installs and initializes the complete TIP-1091 state when T10 first becomes active.
     fn deploy_zone_factory_at_boundary(&mut self) -> Result<(), BlockExecutionError> {
         let [factory, portal, verifier, messenger] =
@@ -517,6 +537,15 @@ where
         }
         if self.inner.spec.is_t10_active_at_timestamp(timestamp) {
             self.deploy_zone_factory_at_boundary()?;
+        }
+        if self.inner.spec.is_t12_active_at_timestamp(timestamp) {
+            self.deploy_precompile_at_boundary(
+                tempo_contracts::precompiles::NATIVE_MULTISIG_ADDRESS,
+                &[],
+            )?;
+            if let Some(factory) = self.evm().block().multisig_recovery_factory {
+                self.reserve_multisig_factory(factory)?;
+            }
         }
         if self.inner.spec.is_t13_active_at_timestamp(timestamp) {
             self.upgrade_zone_runtimes_at_boundary()?;
@@ -1567,6 +1596,59 @@ mod tests {
         let acc = db.load_cache_account(VALIDATOR_CONFIG_V2_ADDRESS).unwrap();
         let info = acc.account_info().unwrap();
         assert!(!info.is_empty_code_hash());
+    }
+
+    #[test]
+    fn multisig_factory_activation_preserves_state() {
+        use revm::Database;
+        let factory = Address::repeat_byte(0x71);
+        let commitment = tempo_primitives::account::encode_config_commitment(B256::repeat_byte(9));
+        let mut genesis = DEV.genesis().clone();
+        genesis
+            .config
+            .extra_fields
+            .insert("t12Time".into(), serde_json::json!(10));
+        genesis
+            .config
+            .extra_fields
+            .insert("t13Time".into(), serde_json::json!(u64::MAX));
+        genesis
+            .config
+            .extra_fields
+            .insert("multisigRecoveryFactory".into(), serde_json::json!(factory));
+        let chainspec = Arc::new(TempoChainSpec::from_genesis(genesis));
+        let mut db = State::builder().with_bundle_update().build();
+        db.insert_account(
+            factory,
+            AccountInfo {
+                nonce: 7,
+                balance: U256::from(42),
+                ..Default::default()
+            }
+            .with_extension(commitment.clone()),
+        );
+        let mut executor = TestExecutorBuilder::default()
+            .with_parent_beacon_block_root(B256::ZERO)
+            .with_spec(tempo_chainspec::TempoHardfork::T12)
+            .build(&mut db, &chainspec);
+        executor.evm_mut().ctx_mut().block.timestamp = U256::from(9);
+        executor.apply_pre_execution_changes().unwrap();
+        assert!(
+            executor
+                .evm_mut()
+                .db_mut()
+                .basic(factory)
+                .unwrap()
+                .unwrap()
+                .is_empty_code_hash()
+        );
+        executor.evm_mut().ctx_mut().block.timestamp = U256::from(10);
+        executor.apply_pre_execution_changes().unwrap();
+        let info = executor.evm_mut().db_mut().basic(factory).unwrap().unwrap();
+        assert_eq!(info.nonce, 7);
+        assert_eq!(info.balance, U256::from(42));
+        assert_eq!(info.extension.as_ref(), commitment.as_ref());
+        assert_eq!(info.code.unwrap().original_bytes().as_ref(), &[0xef]);
     }
 
     #[test]
