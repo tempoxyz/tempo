@@ -44,7 +44,7 @@ use tempo_primitives::{
     RecoveredSubBlock, SignedSubBlock, SubBlock, SubBlockVersion, TempoTxEnvelope,
 };
 use tokio::sync::broadcast;
-use tracing::{Instrument, Level, Span, debug, error, instrument, warn};
+use tracing::{Instrument, Level, Span, debug, error, error_span, instrument, warn};
 
 /// Maximum number of stored subblock transactions. Used to prevent DOS attacks.
 ///
@@ -156,7 +156,7 @@ impl<TContext: Spawner + Metrics + Pacer> Actor<TContext> {
             impl Receiver<PublicKey = PublicKey>,
         ),
     ) {
-        loop {
+        let reason = loop {
             let (subblock_task, broadcast_interval) = match &mut self.our_subblock {
                 PendingSubblock::None => (None, None),
                 PendingSubblock::Task(task) => (Some(task), None),
@@ -167,7 +167,10 @@ impl<TContext: Spawner + Metrics + Pacer> Actor<TContext> {
                 biased;
 
                 // Handle messages from consensus engine and service handle.
-                Some(action) = self.actions_rx.next() => {
+                action = self.actions_rx.next() => {
+                    let Some(action) = action else {
+                        break eyre::eyre!("mailbox closed");
+                    };
                     self.on_new_message(action);
                 },
                 // Handle new subblock transactions.
@@ -184,13 +187,16 @@ impl<TContext: Spawner + Metrics + Pacer> Actor<TContext> {
                             );
                         }
                         Err(broadcast::error::RecvError::Closed) => {
-                            error!("subblock transactions channel closed unexpectedly");
-                            break;
+                            break eyre::eyre!("subblock transactions channel closed unexpectedly");
                         }
                     }
                 },
                 // Handle messages from the network.
-                Ok((sender, message)) = network_rx.recv() => {
+                message = network_rx.recv() => {
+                    let (sender, message) = match message {
+                        Ok(message) => message,
+                        Err(error) => break eyre::eyre!(error).wrap_err("network receiver failed"),
+                    };
                     let _ = self.on_network_message(sender, message, &mut network_tx).await;
                 },
                 // Handle built subblocks.
@@ -211,7 +217,10 @@ impl<TContext: Spawner + Metrics + Pacer> Actor<TContext> {
                     self.broadcast_built_subblock(&mut network_tx).await;
                 }
             }
-        }
+        };
+
+        error_span!("shutdown")
+            .in_scope(|| error!(reason = %format_args!("{reason:#}"), "subblocks actor exited"));
     }
 
     /// Returns the current consensus tip.

@@ -20,7 +20,7 @@ use tokio::{
     sync::{mpsc, oneshot},
 };
 use tokio_stream::wrappers::errors::BroadcastStreamRecvError;
-use tracing::{debug, debug_span, info, instrument};
+use tracing::{debug, debug_span, error, error_span, info, instrument};
 
 use crate::{
     consensus::{Block, Digest},
@@ -86,7 +86,7 @@ where
             .boxed(),
         );
         let mut connected = false;
-        loop {
+        let reason = loop {
             select!(
                 biased;
 
@@ -97,7 +97,10 @@ where
                     connected = true;
                 }
 
-                Some(event) = self.event_stream.next() => {
+                event = self.event_stream.next(), if connected => {
+                    let Some(event) = event else {
+                        break "consensus event stream closed";
+                    };
                     debug_span!("consensus_event").in_scope(|| debug!(
                         ?event, "received consensus event, forwarding to reporter"
                     ));
@@ -114,7 +117,10 @@ where
                     }
                 }
 
-                Some(request) = self.mailbox.recv() => {
+                request = self.mailbox.recv() => {
+                    let Some(request) = request else {
+                        break "mailbox closed";
+                    };
                     self.waiters.push(request);
                 }
             );
@@ -136,7 +142,9 @@ where
                     }
                 }
             }
-        }
+        };
+
+        error_span!("shutdown").in_scope(|| error!(%reason, "in-process upstream actor exited"));
     }
 }
 

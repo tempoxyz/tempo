@@ -67,7 +67,7 @@ use eyre::{ensure, eyre};
 use futures::{StreamExt as _, channel::mpsc};
 use rand_core::{CryptoRng, Rng};
 use reth_ethereum::chainspec::EthChainSpec;
-use tracing::{Level, Span, debug, error, error_span, info, instrument, warn, warn_span};
+use tracing::{Level, Span, debug, error, error_span, info, instrument, warn};
 
 use crate::{
     consensus::Digest,
@@ -204,14 +204,11 @@ where
         );
         mux.start();
 
-        loop {
+        let reason = loop {
             select!(
                 message = vote_backup.recv() => {
                     let Some((their_epoch, (from, _))) = message else {
-                        error_span!("mux channel closed").in_scope(||
-                            error!("vote p2p mux channel closed; exiting actor")
-                        );
-                        break;
+                        break "vote p2p mux channel closed";
                     };
                     self.handle_msg_for_unregistered_epoch(
                         Epoch::new(their_epoch),
@@ -221,10 +218,7 @@ where
 
                 msg = self.mailbox.next() => {
                     let Some(msg) = msg else {
-                        warn_span!("mailboxes dropped").in_scope(||
-                             warn!("all mailboxes dropped; exiting actor"
-                        ));
-                        break;
+                        break "all mailboxes dropped";
                     };
                     let cause = msg.cause;
                     match msg.content {
@@ -253,7 +247,9 @@ where
                     }
                 },
             )
-        }
+        };
+
+        error_span!("shutdown").in_scope(|| error!(%reason, "epoch manager actor exited"));
     }
 
     #[instrument(

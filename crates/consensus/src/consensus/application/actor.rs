@@ -47,7 +47,7 @@ use tempo_payload_types::{
     marshal_persist_estimate, observe_marshal_persist,
 };
 use tempo_primitives::TempoConsensusContext;
-use tracing::{Level, debug, info, instrument, warn};
+use tracing::{Level, debug, error, error_span, info, instrument, warn};
 
 use super::{
     Mailbox,
@@ -180,9 +180,14 @@ where
         + commonware_runtime::Metrics,
 {
     async fn run_until_stopped(mut self) {
-        while let Some(msg) = self.mailbox.recv().await {
+        let reason = loop {
+            let Some(msg) = self.mailbox.recv().await else {
+                break "mailbox closed";
+            };
             self.handle_message(msg);
-        }
+        };
+
+        error_span!("shutdown").in_scope(|| error!(%reason, "application actor exited"));
     }
 
     fn handle_message(&mut self, msg: Message) {
