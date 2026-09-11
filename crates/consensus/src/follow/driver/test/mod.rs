@@ -208,17 +208,18 @@ fn network_identity_verifies_finalization_when_epoch_scheme_is_missing() {
         .expect("driver should initialize");
 
         assert!(
-            schemes.scoped(network_fixture.outcome.epoch).is_none(),
+            schemes.scoped(network_fixture.outcome.epoch).is_some(),
+            "the configured activation epoch must be pinned at startup",
+        );
+        let epoch = network_fixture.outcome.epoch.next();
+        assert!(
+            schemes.scoped(epoch).is_none(),
             "network identity fallback requires the epoch scheme to be missing",
         );
         actor.start();
 
-        let block = make_block(EPOCH_LENGTH.get() * 2 + 1, None);
-        let finalization = make_finalization(
-            &block,
-            network_fixture.outcome.epoch,
-            &network_fixture.schemes,
-        );
+        let block = make_block(EPOCH_LENGTH.get() * epoch.get() + 1, None);
+        let finalization = make_finalization(&block, epoch, &network_fixture.schemes);
         let certified = make_certified_block(block, &finalization);
         let event = Event::Finalized {
             block: certified,
@@ -265,14 +266,11 @@ fn gossiped_certificate_is_admitted_and_reported_only_to_marshal() {
 
         actor.start();
 
-        let block = make_block(EPOCH_LENGTH.get() * 2 + 1, None);
-        let finalization = make_finalization(
-            &block,
-            network_fixture.outcome.epoch,
-            &network_fixture.schemes,
-        );
+        let epoch = network_fixture.outcome.epoch.next();
+        let block = make_block(EPOCH_LENGTH.get() * epoch.get() + 1, None);
+        let finalization = make_finalization(&block, epoch, &network_fixture.schemes);
         assert!(
-            schemes.scoped(network_fixture.outcome.epoch).is_none(),
+            schemes.scoped(epoch).is_none(),
             "the certificate must require the network identity fallback",
         );
 
@@ -282,7 +280,7 @@ fn gossiped_certificate_is_admitted_and_reported_only_to_marshal() {
             .expect("driver should answer");
         assert_eq!(result, Ok(()));
         assert!(
-            schemes.scoped(network_fixture.outcome.epoch).is_some(),
+            schemes.scoped(epoch).is_some(),
             "marshal needs the successful fallback to re-verify the resolved block",
         );
         // The driver reports only the certificate to marshal.
@@ -291,8 +289,8 @@ fn gossiped_certificate_is_admitted_and_reported_only_to_marshal() {
 
         // The first offer became the latest verified round, so a repeat is stale.
         let repeat = make_finalization(
-            &make_block(EPOCH_LENGTH.get() * 2 + 1, None),
-            network_fixture.outcome.epoch,
+            &make_block(EPOCH_LENGTH.get() * epoch.get() + 1, None),
+            epoch,
             &network_fixture.schemes,
         );
         let result = mailbox
