@@ -1098,7 +1098,9 @@ fn non_finalized_events_are_ignored() {
 
 #[test_traced]
 fn configured_identity_is_enforced_before_acknowledging_rotation_boundary() {
-    deterministic::Runner::default().start(|mut context| async move {
+    let runner =
+        deterministic::Runner::from(deterministic::Config::default().with_catch_panics(true));
+    runner.start(|mut context| async move {
         let old = dkg_fixture(&mut context, Epoch::zero());
         let rotated = dkg_fixture(&mut context, Epoch::new(1));
         for matches in [false, true] {
@@ -1169,8 +1171,10 @@ fn configured_identity_is_enforced_before_acknowledging_rotation_boundary() {
                 );
                 assert!(processed.await.is_err());
             }
-            task.await
-                .expect("identity mismatch should terminate the driver");
+            assert!(
+                matches!(task.await, Err(commonware_runtime::Error::Exited)),
+                "identity mismatch should panic in the driver"
+            );
         }
     });
 }
@@ -1240,7 +1244,9 @@ fn network_identity_certificate_allows_following_subsequent_rotation() {
 
 #[test_traced]
 fn startup_checks_identity_from_execution_and_consensus_boundaries() {
-    deterministic::Runner::default().start(|mut context| async move {
+    let runner =
+        deterministic::Runner::from(deterministic::Config::default().with_catch_panics(true));
+    runner.start(|mut context| async move {
         let genesis = dkg_fixture(&mut context, Epoch::zero());
         let rotation = dkg_fixture(&mut context, Epoch::new(2));
         let boundary_height = 2 * EPOCH_LENGTH.get() - 1;
@@ -1256,41 +1262,45 @@ fn startup_checks_identity_from_execution_and_consensus_boundaries() {
                     provider.set_finalized(boundary_height);
                     provider.add_header(&boundary);
                 }
-                let result = try_init(
-                    context.child(match (recover_from_marshal, matches) {
-                        (false, false) => "execution_mismatch",
-                        (false, true) => "execution_match",
-                        (true, false) => "recovery_mismatch",
-                        (true, true) => "recovery_match",
-                    }),
-                    Config {
-                        execution_provider: provider,
-                        scheme_provider: SchemeProvider::new(),
-                        network_identity: NetworkIdentity {
-                            from_epoch: 2,
-                            identity: *if matches {
-                                rotation.outcome.network_identity()
-                            } else {
-                                genesis.outcome.network_identity()
-                            },
-                        },
-                        last_finalized_height: Height::new(if recover_from_marshal {
-                            boundary_height + 1
-                        } else {
-                            boundary_height
+                let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+                    try_init(
+                        context.child(match (recover_from_marshal, matches) {
+                            (false, false) => "execution_mismatch",
+                            (false, true) => "execution_match",
+                            (true, false) => "recovery_mismatch",
+                            (true, true) => "recovery_match",
                         }),
-                        marshal,
-                        epoch_strategy: FixedEpocher::new(EPOCH_LENGTH),
-                    },
-                );
+                        Config {
+                            execution_provider: provider,
+                            scheme_provider: SchemeProvider::new(),
+                            network_identity: NetworkIdentity {
+                                from_epoch: 2,
+                                identity: *if matches {
+                                    rotation.outcome.network_identity()
+                                } else {
+                                    genesis.outcome.network_identity()
+                                },
+                            },
+                            last_finalized_height: Height::new(if recover_from_marshal {
+                                boundary_height + 1
+                            } else {
+                                boundary_height
+                            }),
+                            marshal,
+                            epoch_strategy: FixedEpocher::new(EPOCH_LENGTH),
+                        },
+                    )
+                }));
                 if !recover_from_marshal && !matches {
                     assert!(
                         result.is_err(),
-                        "execution boundary mismatch must reject startup"
+                        "execution boundary mismatch must panic during startup"
                     );
                     continue;
                 }
-                let (actor, mailbox) = result.expect("driver should initialize");
+                let (actor, mailbox) = result
+                    .expect("matching startup must not panic")
+                    .expect("driver should initialize");
                 let (ack, processed) = Exact::handle();
                 assert!(
                     mailbox
@@ -1310,7 +1320,10 @@ fn startup_checks_identity_from_execution_and_consensus_boundaries() {
                 if matches {
                     task.abort();
                 } else {
-                    task.await.expect("recovery mismatch must terminate driver");
+                    assert!(
+                        matches!(task.await, Err(commonware_runtime::Error::Exited)),
+                        "recovery mismatch must panic in the driver"
+                    );
                 }
             }
         }
