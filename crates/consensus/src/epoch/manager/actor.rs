@@ -41,7 +41,7 @@
 //!
 //! This process is repeated until the node catches up to the current network
 //! epoch.
-use std::{collections::BTreeMap, num::NonZeroUsize};
+use std::{collections::BTreeMap, num::NonZeroUsize, ops::ControlFlow};
 
 use alloy_consensus::BlockHeader as _;
 use commonware_codec::ReadExt as _;
@@ -228,18 +228,7 @@ where
                     let cause = msg.cause;
                     match msg.content {
                         Content::Enter(enter) => {
-                            let network_identity = &self.config.network_identity;
-                            if enter.epoch.get() == network_identity.from_epoch
-                                && *enter.public.public() != network_identity.identity
-                            {
-                                error!(epoch = %enter.epoch, expected = %network_identity.identity,
-                                    actual = %enter.public.public(),
-                                    "network identity mismatch; refusing to enter epoch and shutting down consensus");
-
-                                return;
-                            }
-
-                            let _: Result<_, _> = self
+                            if let Ok(ControlFlow::Break(())) = self
                                 .enter(
                                     cause,
                                     enter,
@@ -247,7 +236,10 @@ where
                                     &mut certificate_mux,
                                     &mut resolver_mux,
                                 )
-                                .await;
+                                .await
+                            {
+                                return;
+                            }
                         }
                         Content::Exit(exit) => self.exit(cause, exit),
                         Content::Update(update) => {
@@ -297,7 +289,18 @@ where
             impl Sender<PublicKey = PublicKey>,
             impl Receiver<PublicKey = PublicKey>,
         >,
-    ) -> eyre::Result<()> {
+    ) -> eyre::Result<ControlFlow<()>> {
+        let network_identity = &self.config.network_identity;
+        if epoch.get() == network_identity.from_epoch
+            && *public.public() != network_identity.identity
+        {
+            error!(%epoch, expected = %network_identity.identity,
+                actual = %public.public(),
+                "network identity mismatch; refusing to enter epoch and shutting down consensus");
+
+            return Ok(ControlFlow::Break(()));
+        }
+
         if let Some(latest) = self.active_epochs.last_key_value().map(|(k, _)| *k) {
             ensure!(
                 epoch > latest,
@@ -428,7 +431,7 @@ where
             .metric()
             .inc_by(u64::from(!is_signer));
 
-        Ok(())
+        Ok(ControlFlow::Continue(()))
     }
 
     #[instrument(parent = &cause, skip_all, fields(epoch))]
