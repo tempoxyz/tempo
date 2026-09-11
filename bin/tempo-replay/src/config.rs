@@ -208,7 +208,6 @@ impl Audit {
 
 /// RocksDB path and disk bounds shared by long-running commands.
 #[derive(Clone, Debug, Deserialize)]
-#[serde(deny_unknown_fields)]
 pub struct StoreConfig {
     pub state: PathBuf,
     max_bytes: Option<u64>,

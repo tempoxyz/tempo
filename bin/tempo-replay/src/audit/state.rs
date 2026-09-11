@@ -17,7 +17,7 @@ const OCCURRENCES: &str = "occurrences";
 const INDEXES: &str = "indexes";
 const INCIDENTS: &str = "incidents";
 const COLUMNS: &[&str] = &[OCCURRENCES, INDEXES, INCIDENTS];
-const SCHEMA: u32 = 2;
+const SCHEMA: u32 = 3;
 const STATE_KEY: &[u8] = b"state/audit";
 const TX_TAG: u8 = 0;
 const PENDING_TAG: u8 = 1;
@@ -35,6 +35,8 @@ pub struct AuditSummary {
     pub missing_after_window: u64,
     pub archived_included: u64,
     pub consensus_incidents: u64,
+    pub finality_stalls: u64,
+    pub observation_failures: u64,
     pub system_txs: u64,
     pub system_failures: u64,
     pub incident_records: u64,
@@ -346,16 +348,17 @@ impl AuditStore {
         };
         let mut batch = WriteBatch::default();
         self.put_incident(&mut batch, Incident::FinalityStall(evidence))?;
-        self.state.summary.consensus_incidents += 1;
+        self.state.summary.finality_stalls += 1;
         self.state.stall_open = true;
         Store::put_default(&mut batch, STATE_KEY, &self.state);
         self.store.commit(batch)
     }
 
-    pub(super) fn record_finality_failure(
+    pub(super) fn record_history_failure(
         &mut self,
         side: ObservationSide,
         message: String,
+        consensus: bool,
     ) -> Result<()> {
         let now = now_ms();
         let evidence = FailureEvidence {
@@ -371,7 +374,11 @@ impl AuditStore {
             ObservationSide::Target => Incident::TargetFailure(evidence),
         };
         self.put_incident(&mut batch, incident)?;
-        self.state.summary.consensus_incidents += 1;
+        if consensus {
+            self.state.summary.consensus_incidents += 1;
+        } else {
+            self.state.summary.observation_failures += 1;
+        }
         Store::put_default(&mut batch, STATE_KEY, &self.state);
         self.store.commit(batch)
     }
@@ -798,7 +805,8 @@ mod tests {
         store.check_stall(Duration::from_millis(1)).unwrap();
         store.check_stall(Duration::from_millis(1)).unwrap();
         assert!(store.state.stall_open);
-        assert_eq!(store.summary().consensus_incidents, 1);
+        assert_eq!(store.summary().finality_stalls, 1);
+        assert_eq!(store.summary().consensus_incidents, 0);
         drop(store);
         let mut store = AuditStore::open(directory.path(), identity(), u64::MAX, 0).unwrap();
         assert!(store.state.stall_open);
@@ -857,6 +865,21 @@ mod tests {
             store.store.get::<Expectation>(OCCURRENCES, &id.key()).unwrap().unwrap().finding,
             Finding::Included(location) if location.block == target
         ));
+    }
+
+    #[test]
+    fn observation_failures_are_not_consensus_incidents() {
+        let directory = tempfile::tempdir().unwrap();
+        let mut store = AuditStore::open(directory.path(), identity(), u64::MAX, 0).unwrap();
+        store
+            .record_history_failure(ObservationSide::Source, "HTTP 503".into(), false)
+            .unwrap();
+        assert_eq!(store.summary().observation_failures, 1);
+        assert_eq!(store.summary().consensus_incidents, 0);
+        store
+            .record_history_failure(ObservationSide::Target, "skipped block".into(), true)
+            .unwrap();
+        assert_eq!(store.summary().consensus_incidents, 1);
     }
 
     #[test]

@@ -13,7 +13,7 @@ use std::{collections::BTreeSet, path::Path};
 const OCCURRENCES: &str = "occurrences";
 const TX_INDEX: &str = "tx_index";
 const COLUMNS: &[&str] = &[OCCURRENCES, TX_INDEX];
-const SCHEMA: u32 = 1;
+const SCHEMA: u32 = 2;
 const SUMMARY_KEY: &[u8] = b"summary/submissions";
 const PRUNE_CURSOR_KEY: &[u8] = b"retention/prune_cursor";
 
@@ -23,6 +23,7 @@ pub struct MirrorState {
     pub accepted: u64,
     pub already_known: u64,
     pub rejected: u64,
+    pub possibly_included: u64,
     pub ambiguous: u64,
     pub source_cursor: BlockCursor,
 }
@@ -44,6 +45,7 @@ pub enum SubmissionDisposition {
     Accepted,
     AlreadyKnown,
     Rejected,
+    PossiblyIncluded,
     Ambiguous,
 }
 
@@ -89,6 +91,14 @@ pub(super) struct CompletedSubmission {
     pub raw_on_failure: Option<Vec<u8>>,
 }
 
+/// An ambiguous occurrence whose exact bytes are still available for bounded recovery.
+pub(super) struct RecoverableSubmission {
+    pub id: OccurrenceId,
+    pub transaction_hash: B256,
+    pub raw: Vec<u8>,
+    pub started_at_ms: u64,
+}
+
 /// Single-writer mirror evidence database.
 pub struct MirrorStore {
     store: Store,
@@ -121,9 +131,10 @@ impl MirrorStore {
     pub(super) fn prepare_block(
         &self,
         records: Vec<(OccurrenceId, MirrorOccurrence)>,
-    ) -> Result<()> {
+    ) -> Result<BTreeSet<OccurrenceId>> {
         self.store.check_disk()?;
         let mut batch = WriteBatch::default();
+        let mut restarted = BTreeSet::new();
         for (id, mut record) in records {
             ensure!(
                 id.source_height == self.state.source_cursor.height.saturating_add(1),
@@ -135,6 +146,7 @@ impl MirrorStore {
                     "terminal occurrence exists beyond mirror cursor"
                 );
                 record.restart_ambiguities = previous.restart_ambiguities.saturating_add(1);
+                restarted.insert(id);
             }
             self.store
                 .put(&mut batch, OCCURRENCES, &id.key(), &record)?;
@@ -145,6 +157,82 @@ impl MirrorStore {
                 &[],
             )?;
         }
+        self.store.commit(batch)?;
+        Ok(restarted)
+    }
+
+    pub(super) fn recoverable_ambiguous(
+        &self,
+        retain_blocks: u64,
+    ) -> Result<Vec<RecoverableSubmission>> {
+        if retain_blocks == 0 || self.state.source_cursor.height == 0 {
+            return Ok(Vec::new());
+        }
+        let floor = self
+            .state
+            .source_cursor
+            .height
+            .saturating_sub(retain_blocks.saturating_sub(1));
+        let start = OccurrenceId {
+            source_height: floor,
+            source_index: 0,
+        }
+        .key();
+        let end = OccurrenceId {
+            source_height: self.state.source_cursor.height,
+            source_index: u32::MAX,
+        }
+        .key();
+        let mut recoverable = Vec::new();
+        for (key, value) in self
+            .store
+            .raw_range(OCCURRENCES, &start, &end, usize::MAX)?
+        {
+            let id = OccurrenceId::decode(&key).context("invalid mirror occurrence key")?;
+            let occurrence: MirrorOccurrence = crate::store::decode(&value)?;
+            if occurrence.submission.disposition != SubmissionDisposition::Ambiguous {
+                continue;
+            }
+            recoverable.push(RecoverableSubmission {
+                id,
+                transaction_hash: occurrence.transaction_hash,
+                raw: occurrence
+                    .raw_on_failure
+                    .context("ambiguous occurrence has no exact bytes")?,
+                started_at_ms: occurrence.submission.started_at_ms,
+            });
+        }
+        Ok(recoverable)
+    }
+
+    pub(super) fn complete_recovery(&mut self, completed: Vec<CompletedSubmission>) -> Result<()> {
+        if completed.is_empty() {
+            return Ok(());
+        }
+        let mut batch = WriteBatch::default();
+        for result in completed {
+            let mut occurrence = self
+                .store
+                .get::<MirrorOccurrence>(OCCURRENCES, &result.id.key())?
+                .context("ambiguous mirror occurrence missing")?;
+            ensure!(
+                occurrence.submission.disposition == SubmissionDisposition::Ambiguous,
+                "mirror recovery result is no longer ambiguous"
+            );
+            self.state.ambiguous = self.state.ambiguous.saturating_sub(1);
+            occurrence.submission.completed_at_ms = Some(result.completed_at_ms);
+            occurrence.submission.attempts = occurrence
+                .submission
+                .attempts
+                .saturating_add(u64::from(result.attempts));
+            occurrence.submission.disposition = result.disposition;
+            occurrence.submission.failure = result.failure;
+            occurrence.raw_on_failure = result.raw_on_failure;
+            increment_outcome(&mut self.state, result.disposition)?;
+            self.store
+                .put(&mut batch, OCCURRENCES, &result.id.key(), &occurrence)?;
+        }
+        Store::put_default(&mut batch, SUMMARY_KEY, &self.state);
         self.store.commit(batch)
     }
 
@@ -188,15 +276,7 @@ impl MirrorStore {
             occurrence.submission.disposition = result.disposition;
             occurrence.submission.failure = result.failure;
             occurrence.raw_on_failure = result.raw_on_failure;
-            match result.disposition {
-                SubmissionDisposition::Accepted => self.state.accepted += 1,
-                SubmissionDisposition::AlreadyKnown => self.state.already_known += 1,
-                SubmissionDisposition::Rejected => self.state.rejected += 1,
-                SubmissionDisposition::Ambiguous => self.state.ambiguous += 1,
-                SubmissionDisposition::Intent => {
-                    anyhow::bail!("pending result cannot complete a block")
-                }
-            }
+            increment_outcome(&mut self.state, result.disposition)?;
             self.store
                 .put(&mut batch, OCCURRENCES, &result.id.key(), &occurrence)?;
         }
@@ -261,6 +341,18 @@ impl MirrorStore {
     pub(super) fn flush(&self) -> Result<()> {
         self.store.flush()
     }
+}
+
+fn increment_outcome(state: &mut MirrorState, disposition: SubmissionDisposition) -> Result<()> {
+    match disposition {
+        SubmissionDisposition::Accepted => state.accepted += 1,
+        SubmissionDisposition::AlreadyKnown => state.already_known += 1,
+        SubmissionDisposition::Rejected => state.rejected += 1,
+        SubmissionDisposition::PossiblyIncluded => state.possibly_included += 1,
+        SubmissionDisposition::Ambiguous => state.ambiguous += 1,
+        SubmissionDisposition::Intent => anyhow::bail!("pending result cannot complete a block"),
+    }
+    Ok(())
 }
 
 /// Stable live-secondary view used by one inspection request.
@@ -358,6 +450,56 @@ mod tests {
         let mut other = identity();
         other.target_hash = B256::repeat_byte(3);
         assert!(MirrorStore::open(directory.path(), other, u64::MAX, 0).is_err());
+    }
+
+    #[test]
+    fn ambiguous_outcome_is_recovered_from_exact_bytes() {
+        let directory = tempfile::tempdir().unwrap();
+        let id = OccurrenceId {
+            source_height: 11,
+            source_index: 0,
+        };
+        let hash = B256::repeat_byte(5);
+        let mut store = MirrorStore::open(directory.path(), identity(), u64::MAX, 0).unwrap();
+        store.prepare_block(vec![(id, occurrence(hash))]).unwrap();
+        store
+            .complete_block(
+                BlockCursor {
+                    height: 11,
+                    hash: B256::repeat_byte(3),
+                },
+                vec![CompletedSubmission {
+                    id,
+                    disposition: SubmissionDisposition::Ambiguous,
+                    attempts: 3,
+                    completed_at_ms: 2,
+                    failure: None,
+                    raw_on_failure: Some(vec![1, 2, 3]),
+                }],
+            )
+            .unwrap();
+        let recoverable = store.recoverable_ambiguous(64).unwrap();
+        assert_eq!(recoverable.len(), 1);
+        assert_eq!(recoverable[0].raw, vec![1, 2, 3]);
+        store
+            .complete_recovery(vec![CompletedSubmission {
+                id,
+                disposition: SubmissionDisposition::AlreadyKnown,
+                attempts: 1,
+                completed_at_ms: 3,
+                failure: None,
+                raw_on_failure: None,
+            }])
+            .unwrap();
+        assert_eq!(store.state().ambiguous, 0);
+        assert_eq!(store.state().already_known, 1);
+        let occurrence = store
+            .store
+            .get::<MirrorOccurrence>(OCCURRENCES, &id.key())
+            .unwrap()
+            .unwrap();
+        assert_eq!(occurrence.submission.attempts, 4);
+        assert!(occurrence.raw_on_failure.is_none());
     }
 
     #[test]

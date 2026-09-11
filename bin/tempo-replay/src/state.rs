@@ -53,11 +53,13 @@ impl OccurrenceId {
     }
 
     pub fn decode(key: &[u8]) -> Option<Self> {
+        if key.len() != 12 {
+            return None;
+        }
         Some(Self {
-            source_height: u64::from_be_bytes(key.get(..8)?.try_into().ok()?),
-            source_index: u32::from_be_bytes(key.get(8..12)?.try_into().ok()?),
+            source_height: u64::from_be_bytes(key[..8].try_into().ok()?),
+            source_index: u32::from_be_bytes(key[8..].try_into().ok()?),
         })
-        .filter(|_| key.len() == 12)
     }
 }
 

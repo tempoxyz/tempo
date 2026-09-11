@@ -33,7 +33,9 @@ use tempo_chainspec::{
     TempoHardforks,
     spec::{SYSTEM_TX_ADDRESSES, SYSTEM_TX_COUNT, chainspec_from_chain_id},
 };
-use tempo_consensus::finalized_header_stream::FinalizedHeaderStream;
+use tempo_consensus::finalized_header_stream::{
+    Error as FinalizedStreamError, FinalizedHeaderStream,
+};
 use tempo_primitives::TempoTxEnvelope;
 use tokio_util::sync::CancellationToken;
 
@@ -76,33 +78,33 @@ impl Auditor {
                 source = self.source_finalized.next(), if self.source_to_block.is_none_or(|end| source_cursor.height < end) => {
                     let header = match source {
                         Some(Ok(header)) => header,
-                        Some(Err(error)) => return self.finality_error(ObservationSide::Source, error, "source finalized history failed").await,
-                        None => return self.finality_message(ObservationSide::Source, "source finalized stream ended").await,
+                        Some(Err(error)) => return self.stream_error(ObservationSide::Source, error, "source finalized history failed").await,
+                        None => return self.history_message(ObservationSide::Source, "source finalized stream ended", false).await,
                     };
                     if header.number() != source_cursor.height.saturating_add(1)
                         || header.parent_hash() != source_cursor.hash
                     {
-                        return self.finality_message(ObservationSide::Source, "source audit history is not contiguous").await;
+                        return self.history_message(ObservationSide::Source, "source audit history is not contiguous", true).await;
                     }
                     source_cursor = match self.observe_source(header).await {
                         Ok(cursor) => cursor,
-                        Err(error) => return self.finality_error(ObservationSide::Source, error, "source audit observation failed").await,
+                        Err(error) => return self.history_error(ObservationSide::Source, error, "source audit observation failed", false).await,
                     };
                 }
                 target = self.target_finalized.next() => {
                     let header = match target {
                         Some(Ok(header)) => header,
-                        Some(Err(error)) => return self.finality_error(ObservationSide::Target, error, "target finalized history failed").await,
-                        None => return self.finality_message(ObservationSide::Target, "target finalized stream ended").await,
+                        Some(Err(error)) => return self.stream_error(ObservationSide::Target, error, "target finalized history failed").await,
+                        None => return self.history_message(ObservationSide::Target, "target finalized stream ended", false).await,
                     };
                     if header.number() != target_cursor.height.saturating_add(1)
                         || header.parent_hash() != target_cursor.hash
                     {
-                        return self.finality_message(ObservationSide::Target, "target audit history is not contiguous").await;
+                        return self.history_message(ObservationSide::Target, "target audit history is not contiguous", true).await;
                     }
                     target_cursor = match self.observe_target(header).await {
                         Ok(cursor) => cursor,
-                        Err(error) => return self.finality_error(ObservationSide::Target, error, "target audit observation failed").await,
+                        Err(error) => return self.history_error(ObservationSide::Target, error, "target audit observation failed", false).await,
                     };
                 }
                 _ = tokio::time::sleep(Duration::from_secs(1)) => {
@@ -225,22 +227,49 @@ impl Auditor {
         Ok(cursor)
     }
 
-    async fn finality_error<E: std::fmt::Display>(
+    async fn stream_error(
+        &self,
+        side: ObservationSide,
+        error: FinalizedStreamError,
+        context: &str,
+    ) -> Result<AuditSummary> {
+        let message = format!("{context}: {error}");
+        let consensus = !matches!(
+            error,
+            FinalizedStreamError::Rpc(_)
+                | FinalizedStreamError::MissingHeader(_)
+                | FinalizedStreamError::MissingTransitionCertificate { .. }
+        );
+        self.history_message(side, &message, consensus).await
+    }
+
+    async fn history_error<E: std::fmt::Display>(
         &self,
         side: ObservationSide,
         error: E,
         context: &str,
+        consensus: bool,
     ) -> Result<AuditSummary> {
-        self.finality_message(side, &format!("{context}: {error}"))
+        self.history_message(side, &format!("{context}: {error}"), consensus)
             .await
     }
 
-    async fn finality_message(&self, side: ObservationSide, message: &str) -> Result<AuditSummary> {
+    async fn history_message(
+        &self,
+        side: ObservationSide,
+        message: &str,
+        consensus: bool,
+    ) -> Result<AuditSummary> {
         let message = bounded_error(message);
         let store = self.store.clone();
-        tokio::task::spawn_blocking(move || lock(&store)?.record_finality_failure(side, message))
-            .await??;
-        anyhow::bail!("finalized history observation failed")
+        tokio::task::spawn_blocking(move || {
+            lock(&store)?.record_history_failure(side, message, consensus)
+        })
+        .await??;
+        if consensus {
+            anyhow::bail!("authenticated finalized history is not contiguous")
+        }
+        anyhow::bail!("finalized history observation failed; restart under a supervisor")
     }
 }
 
@@ -321,15 +350,24 @@ async fn fetch_receipt_summaries(
         receipts.len(),
         block.transactions.len()
     );
-    receipts.iter().map(receipt_summary).collect()
+    Ok(receipts.iter().map(receipt_summary).collect())
 }
 
-fn receipt_summary(receipt: &tempo_alloy::rpc::TempoTransactionReceipt) -> Result<ReceiptSummary> {
-    Ok(ReceiptSummary {
+fn receipt_summary(receipt: &tempo_alloy::rpc::TempoTransactionReceipt) -> ReceiptSummary {
+    ReceiptSummary {
         status: receipt.status(),
         gas_used: receipt.gas_used(),
-        logs_hash: keccak256(serde_json::to_vec(receipt.logs())?),
-    })
+        logs_hash: consensus_logs_hash(receipt.logs()),
+    }
+}
+
+fn consensus_logs_hash(logs: &[alloy::rpc::types::Log]) -> alloy::primitives::B256 {
+    let mut encoded = Vec::new();
+    alloy::rlp::encode_iter::<_, _, alloy::primitives::Log>(
+        logs.iter().map(|log| &log.inner),
+        &mut encoded,
+    );
+    keccak256(encoded)
 }
 
 fn lock(store: &Mutex<AuditStore>) -> Result<std::sync::MutexGuard<'_, AuditStore>> {
@@ -412,5 +450,49 @@ mod tests {
             },
         );
         assert!(matches!(expectation.finding, Finding::ExecutionDrift(_)));
+    }
+
+    #[test]
+    fn receipt_log_hash_ignores_rpc_location_metadata() {
+        let receipt = |block_byte: u8, block_number: u64| {
+            let block_hash = B256::repeat_byte(block_byte);
+            serde_json::from_value::<tempo_alloy::rpc::TempoTransactionReceipt>(serde_json::json!({
+                "type": "0x2",
+                "status": "0x1",
+                "cumulativeGasUsed": "0x5208",
+                "logsBloom": format!("0x{}", "00".repeat(256)),
+                "logs": [{
+                    "address": "0x1111111111111111111111111111111111111111",
+                    "topics": [format!("{:#x}", B256::repeat_byte(0x22))],
+                    "data": "0x010203",
+                    "blockHash": format!("{block_hash:#x}"),
+                    "blockNumber": format!("0x{block_number:x}"),
+                    "blockTimestamp": "0x1234",
+                    "transactionHash": format!("{:#x}", B256::repeat_byte(0x33)),
+                    "transactionIndex": "0x1",
+                    "logIndex": "0x2",
+                    "removed": false
+                }],
+                "transactionHash": format!("{:#x}", B256::repeat_byte(0x33)),
+                "transactionIndex": "0x1",
+                "blockHash": format!("{block_hash:#x}"),
+                "blockNumber": format!("0x{block_number:x}"),
+                "gasUsed": "0x5208",
+                "effectiveGasPrice": "0x1",
+                "from": "0x4444444444444444444444444444444444444444",
+                "to": "0x5555555555555555555555555555555555555555",
+                "contractAddress": null,
+                "feePayer": "0x4444444444444444444444444444444444444444"
+            }))
+            .unwrap()
+        };
+
+        let source = receipt(0xaa, 10);
+        let target = receipt(0xbb, 11);
+        assert_ne!(
+            serde_json::to_vec(source.logs()).unwrap(),
+            serde_json::to_vec(target.logs()).unwrap()
+        );
+        assert_eq!(receipt_summary(&source), receipt_summary(&target));
     }
 }

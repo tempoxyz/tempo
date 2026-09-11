@@ -23,12 +23,13 @@ See [README.md](README.md) for CLI behavior and operational usage.
 - Operational state uses ordered binary keys and bounded, varint bincode values in separate mirror/audit RocksDBs. JSON is only an export format.
 - Active RocksDB levels use LZ4 and the bottommost level uses Zstd. WAL sync is the crash-durability boundary; graceful flush is additional cleanup.
 - Successful audit detail is pruned with its hash index after the retention horizon. Failure, ambiguity, drift, liveness, and system-failure evidence is retained by default; successful system traffic is aggregated.
+- Ambiguous exact-byte submissions are retried from a bounded recent-block window without introducing audit-to-mirror feedback.
 - The target Tempo pool, not the mirror, owns nonce queues, admission, memory accounting, and eviction.
-- Profile percentiles use fixed log2 buckets, so reported quantiles are bounded approximations rather than exact values.
+- Long-running commands intentionally use supervisor restart as their process-level response to a failed RPC observation or ended authenticated stream.
 
 ## Failure evidence
 
-Mirror records distinguish accepted, already-known, explicit rejection, and ambiguous delivery. RPC codes and bounded sanitized messages are retained where available. The independent auditor distinguishes missing-after-window, receipt drift, finality incidents, and system behavior, so absence is never treated as proof that submission failed.
+Mirror records distinguish accepted, already-known, explicit rejection, possibly-included restart responses, and ambiguous delivery. RPC codes and bounded sanitized messages are retained where available. The independent auditor distinguishes missing-after-window, receipt drift, finality stalls, RPC observation failures, authenticated-history contiguity incidents, and system behavior, so absence is never treated as proof that submission failed.
 
 The inspector joins both databases by exact source `(height, index)` and transaction hash. Separate secondary snapshots have independent cursor boundaries, which are included in output.
 
@@ -38,4 +39,4 @@ Source system and reserved subblock transactions are never submitted to the targ
 
 ## Deliberately absent
 
-There is no deployment `verify`/`qualify` subsystem, deployment evidence manifest, external pool-credit model, receipt comparison in dispatch, state-diff comparison, or custom JSON-RPC/WebSocket/Prometheus implementation.
+There is no deployment `verify`/`qualify` subsystem, deployment evidence manifest, external pool-credit model, receipt comparison in dispatch, state-diff comparison, multi-ingress routing, catch-up pacing, audit-to-mirror reconciliation, or custom JSON-RPC/WebSocket/Prometheus implementation. Mirroring uses one target ingress and drains source blocks serially at configured submission concurrency.

@@ -7,7 +7,7 @@ pub use state::{
     SubmissionEvidence,
 };
 
-use self::state::CompletedSubmission;
+use self::state::{CompletedSubmission, RecoverableSubmission};
 use crate::{
     now_ms,
     source::{TempoProvider, TxMetadata, fetch_finalized_block},
@@ -49,6 +49,7 @@ impl Mirror {
         );
         let mut cursor = blocking_state(self.store.clone()).await?.source_cursor;
         gauge!("tempo_replay_processed_height").set(cursor.height as f64);
+        self.recover_ambiguous().await?;
 
         loop {
             let header = tokio::select! {
@@ -113,26 +114,26 @@ impl Mirror {
                     expected: metadata.hash,
                     raw,
                     started_at_ms,
+                    restarted: false,
                 });
             }
 
             let store = self.store.clone();
-            tokio::task::spawn_blocking(move || lock(&store)?.prepare_block(records)).await??;
+            let restarted =
+                tokio::task::spawn_blocking(move || lock(&store)?.prepare_block(records)).await??;
+            for queued in &mut queued {
+                queued.restarted = restarted.contains(&queued.id);
+            }
             gauge!("tempo_replay_queue_depth").set(queued.len() as f64);
 
-            let target = self.target.clone();
-            let retries = self.retries;
-            let delay = self.retry_delay;
-            let mut submissions = stream::iter(queued.into_iter().map(|queued| {
-                let target = target.clone();
-                async move { submit(&target, queued, retries, delay).await }
-            }))
-            .buffered(self.concurrency);
-            let mut completed = Vec::new();
-            while let Some(result) = submissions.next().await {
-                completed.push(result);
-                gauge!("tempo_replay_queue_depth").decrement(1.0);
-            }
+            let completed = submit_all(
+                self.target.clone(),
+                queued,
+                self.concurrency,
+                self.retries,
+                self.retry_delay,
+            )
+            .await;
 
             let store = self.store.clone();
             let next = block.cursor;
@@ -146,6 +147,7 @@ impl Mirror {
             cursor = block.cursor;
             gauge!("tempo_replay_processed_height").set(cursor.height as f64);
             gauge!("tempo_replay_queue_depth").set(0.0);
+            self.recover_ambiguous().await?;
             if stop.is_cancelled() || self.to_block == Some(cursor.height) {
                 break;
             }
@@ -156,6 +158,36 @@ impl Mirror {
         tokio::task::spawn_blocking(move || lock(&store)?.flush()).await??;
         Ok(state)
     }
+
+    async fn recover_ambiguous(&self) -> Result<()> {
+        let store = self.store.clone();
+        let retain = AMBIGUOUS_RESUBMIT_BLOCKS;
+        let recoverable =
+            tokio::task::spawn_blocking(move || lock(&store)?.recoverable_ambiguous(retain))
+                .await??;
+        if recoverable.is_empty() {
+            return Ok(());
+        }
+        tracing::info!(
+            count = recoverable.len(),
+            retain_blocks = retain,
+            "re-submitting ambiguous transactions"
+        );
+        let queued: Vec<_> = recoverable.into_iter().map(Queued::from).collect();
+        gauge!("tempo_replay_queue_depth").set(queued.len() as f64);
+        let completed = submit_all(
+            self.target.clone(),
+            queued,
+            self.concurrency,
+            self.retries,
+            self.retry_delay,
+        )
+        .await;
+        let store = self.store.clone();
+        tokio::task::spawn_blocking(move || lock(&store)?.complete_recovery(completed)).await??;
+        gauge!("tempo_replay_queue_depth").set(0.0);
+        Ok(())
+    }
 }
 
 struct Queued {
@@ -163,8 +195,42 @@ struct Queued {
     expected: B256,
     raw: Vec<u8>,
     started_at_ms: u64,
+    restarted: bool,
 }
 
+impl From<RecoverableSubmission> for Queued {
+    fn from(recoverable: RecoverableSubmission) -> Self {
+        Self {
+            id: recoverable.id,
+            expected: recoverable.transaction_hash,
+            raw: recoverable.raw,
+            started_at_ms: recoverable.started_at_ms,
+            restarted: true,
+        }
+    }
+}
+
+async fn submit_all(
+    target: TempoProvider,
+    queued: Vec<Queued>,
+    concurrency: usize,
+    retries: u32,
+    retry_delay: Duration,
+) -> Vec<CompletedSubmission> {
+    let mut submissions = stream::iter(queued.into_iter().map(|queued| {
+        let target = target.clone();
+        async move { submit(&target, queued, retries, retry_delay).await }
+    }))
+    .buffered(concurrency);
+    let mut completed = Vec::new();
+    while let Some(result) = submissions.next().await {
+        completed.push(result);
+        gauge!("tempo_replay_queue_depth").decrement(1.0);
+    }
+    completed
+}
+
+const AMBIGUOUS_RESUBMIT_BLOCKS: u64 = 64;
 const MAX_RETRY_BACKOFF_SHIFT: u32 = 8;
 
 async fn submit(
@@ -201,7 +267,7 @@ async fn submit(
             }
             Err(error) => {
                 let message = rpc_message(&error);
-                if is_already_known(&message) {
+                if error.as_error_resp().is_some() && is_already_known(&message) {
                     counter!("tempo_replay_submissions_total", "outcome" => "already_known")
                         .increment(1);
                     return completed(
@@ -211,19 +277,25 @@ async fn submit(
                         None,
                     );
                 }
-                let evidence = rpc_evidence(&error, &message, queued.started_at_ms);
-                if is_deterministic_rejection(&message) {
-                    counter!("tempo_replay_submissions_total", "outcome" => "rejected")
-                        .increment(1);
-                    tracing::warn!(%expected, error = %message, "shadow rejected source transaction");
-                    return completed(
-                        queued,
-                        SubmissionDisposition::Rejected,
-                        attempt + 1,
-                        Some(evidence),
-                    );
+                if error.as_error_resp().is_some() {
+                    let restarted_nonce = queued.restarted && is_nonce_too_low(&message);
+                    let disposition = if restarted_nonce {
+                        SubmissionDisposition::PossiblyIncluded
+                    } else {
+                        SubmissionDisposition::Rejected
+                    };
+                    let evidence =
+                        rpc_evidence(&error, &message, queued.started_at_ms, restarted_nonce);
+                    let outcome = if restarted_nonce {
+                        "possibly_included"
+                    } else {
+                        "rejected"
+                    };
+                    counter!("tempo_replay_submissions_total", "outcome" => outcome).increment(1);
+                    tracing::warn!(%expected, error = %message, %outcome, "shadow rejected source transaction");
+                    return completed(queued, disposition, attempt + 1, Some(evidence));
                 }
-                last_error = Some(evidence);
+                last_error = Some(rpc_evidence(&error, &message, queued.started_at_ms, false));
                 if attempt < retries {
                     counter!("tempo_replay_retries_total").increment(1);
                     tokio::time::sleep(
@@ -253,7 +325,9 @@ fn completed(
 ) -> CompletedSubmission {
     let retain_raw = matches!(
         disposition,
-        SubmissionDisposition::Rejected | SubmissionDisposition::Ambiguous
+        SubmissionDisposition::Rejected
+            | SubmissionDisposition::PossiblyIncluded
+            | SubmissionDisposition::Ambiguous
     );
     CompletedSubmission {
         id: queued.id,
@@ -271,10 +345,15 @@ fn rpc_message(error: &TransportError) -> String {
         .map_or_else(|| error.to_string(), |payload| payload.message.to_string())
 }
 
-fn rpc_evidence(error: &TransportError, message: &str, first_observed_ms: u64) -> FailureEvidence {
+fn rpc_evidence(
+    error: &TransportError,
+    message: &str,
+    first_observed_ms: u64,
+    inferred: bool,
+) -> FailureEvidence {
     let response = error.as_error_resp();
     FailureEvidence {
-        level: if is_deterministic_rejection(message) {
+        level: if inferred {
             EvidenceLevel::Inferred
         } else if response.is_some() {
             EvidenceLevel::RpcReported
@@ -295,19 +374,8 @@ fn is_already_known(message: &str) -> bool {
         || message.contains("known transaction")
 }
 
-fn is_deterministic_rejection(message: &str) -> bool {
-    let message = message.to_ascii_lowercase();
-    [
-        "invalid transaction",
-        "invalid signature",
-        "nonce too low",
-        "expired",
-        "insufficient funds",
-        "unsupported transaction",
-        "chain id",
-    ]
-    .iter()
-    .any(|needle| message.contains(needle))
+fn is_nonce_too_low(message: &str) -> bool {
+    message.to_ascii_lowercase().contains("nonce too low")
 }
 
 fn lock(store: &Mutex<MirrorStore>) -> Result<std::sync::MutexGuard<'_, MirrorStore>> {
@@ -324,10 +392,43 @@ async fn blocking_state(store: Arc<Mutex<MirrorStore>>) -> Result<MirrorState> {
 mod tests {
     use super::*;
 
-    #[test]
-    fn submission_error_categories_are_small_and_explicit() {
-        assert!(is_already_known("transaction already known"));
-        assert!(is_deterministic_rejection("nonce too low"));
-        assert!(!is_deterministic_rejection("connection reset"));
+    fn queued(restarted: bool) -> Queued {
+        Queued {
+            id: OccurrenceId {
+                source_height: 11,
+                source_index: 0,
+            },
+            expected: B256::repeat_byte(1),
+            raw: vec![0x02, 0x01],
+            started_at_ms: 1,
+            restarted,
+        }
+    }
+
+    #[tokio::test]
+    async fn structured_pool_rejections_are_not_retried_as_transport_errors() {
+        let responses = alloy::transports::mock::Asserter::new();
+        responses.push_failure_msg("transaction underpriced");
+        let provider = alloy::providers::builder::<tempo_alloy::TempoNetwork>()
+            .connect_mocked_client(responses);
+        let completed = submit(&provider, queued(false), 2, Duration::ZERO).await;
+        assert_eq!(completed.disposition, SubmissionDisposition::Rejected);
+        assert_eq!(completed.attempts, 1);
+        assert_eq!(completed.failure.unwrap().level, EvidenceLevel::RpcReported);
+    }
+
+    #[tokio::test]
+    async fn restarted_nonce_too_low_is_possibly_included() {
+        let responses = alloy::transports::mock::Asserter::new();
+        responses.push_failure_msg("nonce too low");
+        let provider = alloy::providers::builder::<tempo_alloy::TempoNetwork>()
+            .connect_mocked_client(responses);
+        let completed = submit(&provider, queued(true), 2, Duration::ZERO).await;
+        assert_eq!(
+            completed.disposition,
+            SubmissionDisposition::PossiblyIncluded
+        );
+        assert_eq!(completed.attempts, 1);
+        assert_eq!(completed.failure.unwrap().level, EvidenceLevel::Inferred);
     }
 }

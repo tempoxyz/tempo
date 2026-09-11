@@ -14090,6 +14090,7 @@ dependencies = [
  "clap",
  "fs4",
  "futures-util",
+ "k256",
  "metrics",
  "metrics-exporter-prometheus",
  "reqwest 0.13.3",

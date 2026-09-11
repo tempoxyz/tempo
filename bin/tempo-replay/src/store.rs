@@ -289,17 +289,14 @@ fn codec() -> impl bincode::Options {
 
 pub fn bounded_error(message: impl AsRef<str>) -> String {
     let message = message.as_ref();
-    let end = message
-        .char_indices()
-        .map(|(index, _)| index)
-        .take_while(|index| *index <= MAX_ERROR_BYTES)
-        .last()
-        .unwrap_or(0);
     if message.len() <= MAX_ERROR_BYTES {
-        message.to_owned()
-    } else {
-        message[..end].to_owned()
+        return message.to_owned();
     }
+    let end = (0..=MAX_ERROR_BYTES)
+        .rev()
+        .find(|index| message.is_char_boundary(*index))
+        .unwrap_or(0);
+    message[..end].to_owned()
 }
 
 fn open_db(path: &Path, required: &[&str], secondary: Option<&Path>) -> Result<DB> {
@@ -433,6 +430,14 @@ mod tests {
         let mut encoded = encode(&value).unwrap();
         encoded.push(0);
         assert!(decode::<Value>(&encoded).is_err());
+    }
+
+    #[test]
+    fn bounded_errors_end_on_a_utf8_boundary() {
+        let message = format!("{}é", "a".repeat(MAX_ERROR_BYTES - 1));
+        let bounded = bounded_error(&message);
+        assert_eq!(bounded.len(), MAX_ERROR_BYTES - 1);
+        assert!(message.starts_with(&bounded));
     }
 
     #[test]
