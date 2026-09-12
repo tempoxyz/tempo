@@ -34,7 +34,7 @@ use reth_primitives_traits::{Account, StorageEntry};
 use reth_provider::{
     BlockNumReader, DBProvider, DatabaseProviderFactory, HashingWriter, RocksDBProviderFactory,
     StaticFileProviderFactory, StaticFileSegment, StorageChangeSetReader, StorageSettingsCache,
-    TrieWriter,
+    TrieWriter, providers::RocksDBProvider,
 };
 use reth_trie::{IntermediateStateRootState, StateRootProgress};
 use reth_trie_db::DatabaseStateRoot;
@@ -320,9 +320,9 @@ impl<C: reth_cli::chainspec::ChainSpecParser<ChainSpec: EthChainSpec + EthereumH
             write_storage_changesets(storage_changeset_factory, storage_changeset_collector)
         });
 
-        let storage_history_factory = provider_factory;
+        let storage_history_rocksdb = provider_factory.rocksdb_provider();
         let storage_history_worker = thread::spawn(move || {
-            write_storage_history(storage_history_factory, storage_history_collector)
+            write_storage_history(&storage_history_rocksdb, storage_history_collector)
         });
 
         // Load sorted entries from each ETL collector into its database table.
@@ -478,16 +478,17 @@ where
     Ok(())
 }
 
-fn write_storage_history<P>(
-    provider: P,
+/// Marks every slot in `collector` as last changed at block 0.
+///
+/// Puts without looking the entry up first: at block 0 there is no other history
+/// to keep, and once compaction merges the loaded keys with the genesis entries
+/// sorting after them, every lookup reads an index block too big to stay cached.
+fn write_storage_history(
+    rocksdb: &RocksDBProvider,
     mut collector: Collector<Vec<u8>, CompactU256>,
-) -> eyre::Result<()>
-where
-    P: RocksDBProviderFactory + Send + 'static,
-{
+) -> eyre::Result<()> {
     info!(target: "tempo::cli", "Writing storage history...");
 
-    let rocksdb = provider.rocksdb_provider();
     let mut batch = rocksdb.batch_with_auto_commit();
     let block_zero_history =
         tables::BlockNumberList::new([0]).expect("single block is always sorted");
@@ -497,13 +498,10 @@ where
         total,
         "storage history",
         |address, key, _| {
-            let history_key = StorageShardedKey::last(address, key);
-            if batch
-                .get::<tables::StoragesHistory>(history_key.clone())?
-                .is_none()
-            {
-                batch.put::<tables::StoragesHistory>(history_key, &block_zero_history)?;
-            }
+            batch.put::<tables::StoragesHistory>(
+                StorageShardedKey::last(address, key),
+                &block_zero_history,
+            )?;
             Ok(())
         },
     )?;
@@ -632,5 +630,142 @@ fn log_collection_progress(
             "Collecting storage"
         );
         *last_log = Instant::now();
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::sync::{
+        Arc,
+        atomic::{AtomicU64, Ordering},
+    };
+
+    use alloy_primitives::Address;
+    use reth_db_api::table::Table;
+    use reth_metrics::metrics::{
+        self, Counter, Gauge, Histogram, Key, KeyName, Metadata, Recorder, SharedString, Unit,
+    };
+
+    /// Counts gets on the history table and ignores every other metric.
+    #[derive(Default)]
+    struct HistoryGets(Arc<AtomicU64>);
+
+    impl Recorder for HistoryGets {
+        fn describe_counter(&self, _: KeyName, _: Option<Unit>, _: SharedString) {}
+        fn describe_gauge(&self, _: KeyName, _: Option<Unit>, _: SharedString) {}
+        fn describe_histogram(&self, _: KeyName, _: Option<Unit>, _: SharedString) {}
+
+        fn register_counter(&self, key: &Key, _: &Metadata<'_>) -> Counter {
+            let labels: Vec<_> = key.labels().map(|l| (l.key(), l.value())).collect();
+            if key.name() == "rocksdb.provider.calls_total"
+                && labels.contains(&("table", tables::StoragesHistory::NAME))
+                && labels.contains(&("operation", "get"))
+            {
+                Counter::from_arc(self.0.clone())
+            } else {
+                Counter::noop()
+            }
+        }
+
+        fn register_gauge(&self, _: &Key, _: &Metadata<'_>) -> Gauge {
+            Gauge::noop()
+        }
+
+        fn register_histogram(&self, _: &Key, _: &Metadata<'_>) -> Histogram {
+            Histogram::noop()
+        }
+    }
+
+    /// A history-only `RocksDB` in a temporary directory, with a count of its gets.
+    fn history_db() -> (tempfile::TempDir, RocksDBProvider, HistoryGets) {
+        let dir = tempfile::tempdir().unwrap();
+        let gets = HistoryGets::default();
+        // Metric handles come from the recorder current at build time.
+        let rocksdb = metrics::with_local_recorder(&gets, || {
+            RocksDBProvider::builder(dir.path())
+                .with_table::<tables::StoragesHistory>()
+                .with_metrics()
+                .build()
+                .unwrap()
+        });
+        (dir, rocksdb, gets)
+    }
+
+    fn collector_of(
+        slots: impl IntoIterator<Item = (Address, B256)>,
+    ) -> Collector<Vec<u8>, CompactU256> {
+        let mut collector = Collector::new(ETL_FILE_SIZE, None);
+        for (address, slot) in slots {
+            collector
+                .insert(
+                    raw_storage_key(address, slot),
+                    CompactU256::from(U256::ZERO),
+                )
+                .unwrap();
+        }
+        collector
+    }
+
+    /// Every slot ends at block 0 without a get, including one already there and one
+    /// handed over twice. A get would change only the time, not the result, so the
+    /// gets are counted.
+    #[test]
+    fn every_slot_is_marked_at_block_zero_without_a_read() {
+        let (_dir, rocksdb, gets) = history_db();
+        let block_zero = tables::BlockNumberList::new([0]).unwrap();
+        let (a, b) = (Address::repeat_byte(0x11), Address::repeat_byte(0x22));
+        let existing = (a, B256::repeat_byte(1));
+        let twice = (a, B256::repeat_byte(2));
+        let fresh = (b, B256::repeat_byte(1));
+
+        rocksdb
+            .put::<tables::StoragesHistory>(
+                StorageShardedKey::last(existing.0, existing.1),
+                &block_zero,
+            )
+            .unwrap();
+        write_storage_history(&rocksdb, collector_of([existing, twice, twice, fresh])).unwrap();
+
+        // Before the checks below, which do gets of their own.
+        let reads = gets.0.load(Ordering::Relaxed);
+        assert_eq!(reads, 0, "the history write read {reads} times");
+        for (address, slot) in [existing, twice, fresh] {
+            let history = rocksdb
+                .get::<tables::StoragesHistory>(StorageShardedKey::last(address, slot))
+                .unwrap();
+            assert_eq!(history.as_ref(), Some(&block_zero), "{address} {slot}");
+        }
+    }
+
+    /// Times the history write over `TEMPO_HISTORY_BENCH_SLOTS` slots (default 32M).
+    /// Cost per slot should stay flat as it grows. Run with
+    /// `--release -- --ignored --nocapture`.
+    #[test]
+    #[ignore = "benchmark; run with --ignored --nocapture"]
+    fn storage_history_throughput() {
+        let slots: u64 = std::env::var("TEMPO_HISTORY_BENCH_SLOTS")
+            .ok()
+            .and_then(|n| n.parse().ok())
+            .unwrap_or(32_000_000);
+        let (_dir, rocksdb, _) = history_db();
+        let address = Address::repeat_byte(0xac);
+        let collector = collector_of((0..slots).map(|i| (address, B256::from(U256::from(i)))));
+        // Stands in for genesis storage, which sorts after a loaded account.
+        rocksdb
+            .put::<tables::StoragesHistory>(
+                StorageShardedKey::last(Address::repeat_byte(0xff), B256::ZERO),
+                &tables::BlockNumberList::new([0]).unwrap(),
+            )
+            .unwrap();
+
+        let began = Instant::now();
+        write_storage_history(&rocksdb, collector).unwrap();
+        let took = began.elapsed();
+
+        println!(
+            "{slots} slots in {took:.2?}, {:.2} µs a slot",
+            took.as_secs_f64() * 1e6 / slots as f64
+        );
     }
 }
