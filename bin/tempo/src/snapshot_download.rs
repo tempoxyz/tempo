@@ -152,6 +152,11 @@ fn load_consensus_manifest(manifest: &SnapshotManifest) -> eyre::Result<LoadedCo
         .wrap_err("failed to parse TempoConsensusManifest extension")?
         .ok_or_eyre("missing consensus in manifest")?;
 
+    ensure!(
+        consensus_manifest.consensus_archive.blake3.is_some(),
+        "consensus archive manifest is missing a required blake3 checksum",
+    );
+
     let archive_source = resolve_consensus_archive_source(
         manifest
             .base_url
@@ -205,13 +210,19 @@ async fn install_consensus_archive(
     let (archive_file, actual_archive_hash) =
         write_consensus_archive_to_temp(&loaded.archive_source).await?;
 
-    if let Some(expected) = &loaded.manifest.consensus_archive.blake3 {
-        let actual_archive_hash = actual_archive_hash.to_hex().to_string();
-        ensure!(
-            &actual_archive_hash == expected,
-            "consensus archive checksum mismatch: expected {expected}, got {actual_archive_hash}",
-        );
-    }
+    // snapshot_manifest.rs always writes this value, and load_consensus_manifest already
+    // rejects a manifest that's missing it.
+    let expected = loaded
+        .manifest
+        .consensus_archive
+        .blake3
+        .as_deref()
+        .expect("blake3 presence is checked in load_consensus_manifest");
+    let actual_archive_hash = actual_archive_hash.to_hex().to_string();
+    ensure!(
+        actual_archive_hash == expected,
+        "consensus archive checksum mismatch: expected {expected}, got {actual_archive_hash}",
+    );
 
     prepare_consensus_directory(consensus_dir, force).wrap_err_with(|| {
         format!(
@@ -538,6 +549,7 @@ mod tests {
                 "consensus_archive": {
                     "file": "consensus.tar.zst",
                     "size": 0,
+                    "blake3": "abc123",
                     "output_files": []
                 }
             }
@@ -564,6 +576,43 @@ mod tests {
             }
             ConsensusArchiveSource::Url(_) => panic!("local manifest must resolve local archive"),
         }
+    }
+
+    #[test]
+    fn load_consensus_manifest_rejects_missing_blake3() {
+        let dir = tempfile::tempdir().unwrap();
+        let bytes = br#"{
+            "block": 42,
+            "chain_id": 1,
+            "storage_version": 2,
+            "timestamp": 0,
+            "components": {},
+            "consensus": {
+                "execution_finalized_height": 40,
+                "execution_finalized_digest": "0x0000000000000000000000000000000000000000000000000000000000000028",
+                "tip_finalization_height": 42,
+                "tip_finalization_digest": "0x000000000000000000000000000000000000000000000000000000000000002a",
+                "anchor_finalization_height": 41,
+                "anchor_finalization_digest": "0x0000000000000000000000000000000000000000000000000000000000000029",
+                "consensus_archive": {
+                    "file": "consensus.tar.zst",
+                    "size": 0,
+                    "output_files": []
+                }
+            }
+        }"#;
+
+        let mut prepared: SnapshotManifest = serde_json::from_slice(bytes).unwrap();
+        prepared.base_url = Some(Url::from_directory_path(dir.path()).unwrap().to_string());
+
+        let err = match load_consensus_manifest(&prepared) {
+            Err(e) => e,
+            Ok(_) => panic!("expected missing blake3 checksum to be rejected"),
+        };
+        assert!(
+            err.to_string()
+                .contains("missing a required blake3 checksum")
+        );
     }
 
     #[test]
