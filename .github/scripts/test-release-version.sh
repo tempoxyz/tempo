@@ -30,5 +30,13 @@ done
 check 0 v1.14.0-rc.1 1.14.0-rc.1
 check 1 v1.14.0-rc.10 1.14.0-rc.1
 check 0 v1.14.0+build.1 1.14.0+build.1
+check 1 v1.14.0-rc.1-rc.2 1.14.0-rc.1
+check 1 v1.14.0+build.1-rc.1 1.14.0+build.1
+
+# Missing metadata must never turn into a successful comparison.
+check 1 '' ''
+check 1 v ''
+check 1 v1.14.0 ''
+check 1 '' 1.14.0
 
 printf 'Passed %s release version checks\n' "$checks"

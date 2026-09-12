@@ -70,7 +70,7 @@ jobs:
         env:
           TAG: ${{ needs.get-version.outputs.version }}
         run: |
-          cargo_ver=$(cargo metadata --no-deps --format-version 1 | jq -r '.packages[] | select(.name == "tempo").version')
+          cargo_ver=$(cargo metadata --no-deps --format-version 1 | jq -er '.packages[] | select(.name == "tempo").version')
           bash .github/scripts/check-release-version.sh "$TAG" "$cargo_ver"
 
   build-release:

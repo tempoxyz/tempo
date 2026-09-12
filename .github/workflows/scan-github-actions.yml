@@ -17,6 +17,7 @@ permissions: {}
 
 jobs:
   release-version-tests:
+    if: ${{ github.event_name != 'schedule' || github.repository == 'tempoxyz/tempo' }}
     runs-on: ubuntu-latest
     timeout-minutes: 5
     permissions:
