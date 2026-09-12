@@ -208,17 +208,18 @@ fn network_identity_verifies_finalization_when_epoch_scheme_is_missing() {
         .expect("driver should initialize");
 
         assert!(
-            schemes.scoped(network_fixture.outcome.epoch).is_none(),
+            schemes.scoped(network_fixture.outcome.epoch).is_some(),
+            "the configured activation epoch must be pinned at startup",
+        );
+        let epoch = network_fixture.outcome.epoch.next();
+        assert!(
+            schemes.scoped(epoch).is_none(),
             "network identity fallback requires the epoch scheme to be missing",
         );
         actor.start();
 
-        let block = make_block(EPOCH_LENGTH.get() * 2 + 1, None);
-        let finalization = make_finalization(
-            &block,
-            network_fixture.outcome.epoch,
-            &network_fixture.schemes,
-        );
+        let block = make_block(EPOCH_LENGTH.get() * epoch.get() + 1, None);
+        let finalization = make_finalization(&block, epoch, &network_fixture.schemes);
         let certified = make_certified_block(block, &finalization);
         let event = Event::Finalized {
             block: certified,
@@ -265,14 +266,11 @@ fn gossiped_certificate_is_admitted_and_reported_only_to_marshal() {
 
         actor.start();
 
-        let block = make_block(EPOCH_LENGTH.get() * 2 + 1, None);
-        let finalization = make_finalization(
-            &block,
-            network_fixture.outcome.epoch,
-            &network_fixture.schemes,
-        );
+        let epoch = network_fixture.outcome.epoch.next();
+        let block = make_block(EPOCH_LENGTH.get() * epoch.get() + 1, None);
+        let finalization = make_finalization(&block, epoch, &network_fixture.schemes);
         assert!(
-            schemes.scoped(network_fixture.outcome.epoch).is_none(),
+            schemes.scoped(epoch).is_none(),
             "the certificate must require the network identity fallback",
         );
 
@@ -282,7 +280,7 @@ fn gossiped_certificate_is_admitted_and_reported_only_to_marshal() {
             .expect("driver should answer");
         assert_eq!(result, Ok(()));
         assert!(
-            schemes.scoped(network_fixture.outcome.epoch).is_some(),
+            schemes.scoped(epoch).is_some(),
             "marshal needs the successful fallback to re-verify the resolved block",
         );
         // The driver reports only the certificate to marshal.
@@ -291,8 +289,8 @@ fn gossiped_certificate_is_admitted_and_reported_only_to_marshal() {
 
         // The first offer became the latest verified round, so a repeat is stale.
         let repeat = make_finalization(
-            &make_block(EPOCH_LENGTH.get() * 2 + 1, None),
-            network_fixture.outcome.epoch,
+            &make_block(EPOCH_LENGTH.get() * epoch.get() + 1, None),
+            epoch,
             &network_fixture.schemes,
         );
         let result = mailbox
@@ -1093,5 +1091,239 @@ fn non_finalized_events_are_ignored() {
         assert!(marshal.certified().is_empty());
         assert_eq!(marshal.report_count(), 0);
         assert!(marshal.hints().is_empty());
+    });
+}
+
+#[test_traced]
+fn configured_identity_is_enforced_before_acknowledging_rotation_boundary() {
+    let runner =
+        deterministic::Runner::from(deterministic::Config::default().with_catch_panics(true));
+    runner.start(|mut context| async move {
+        let old = dkg_fixture(&mut context, Epoch::zero());
+        let rotated = dkg_fixture(&mut context, Epoch::new(1));
+        for matches in [false, true] {
+            let schemes = SchemeProvider::new();
+            let provider = StubExecutionProvider::default();
+            provider.add_header(&make_block(0, Some(&old.outcome)));
+            let (actor, mailbox) = try_init(
+                context.child(if matches { "matching" } else { "mismatching" }),
+                Config {
+                    execution_provider: provider,
+                    last_finalized_height: Height::zero(),
+                    scheme_provider: schemes.clone(),
+                    network_identity: NetworkIdentity {
+                        from_epoch: 1,
+                        identity: *rotated.outcome.network_identity(),
+                    },
+                    marshal: StubMarshal::default(),
+                    epoch_strategy: FixedEpocher::new(EPOCH_LENGTH),
+                },
+            )
+            .expect("driver should initialize");
+            let task = actor.start();
+            let mut outcome = if matches {
+                rotated.outcome.clone()
+            } else {
+                old.outcome.clone()
+            };
+            outcome.epoch = Epoch::new(1);
+            let block = make_block(EPOCH_LENGTH.get() - 1, Some(&outcome));
+            let (ack, processed) = Exact::handle();
+            assert!(
+                mailbox
+                    .to_marshal_reporter()
+                    .report(Update::Block(block.into(), ack))
+                    .accepted()
+            );
+            assert_eq!(processed.await.is_ok(), matches);
+            if matches {
+                // After matching the configured epoch, an authenticated rotation is allowed.
+                let mut next = old.outcome.clone();
+                next.epoch = Epoch::new(2);
+                let (ack, processed) = Exact::handle();
+                assert!(
+                    mailbox
+                        .to_marshal_reporter()
+                        .report(Update::Block(
+                            make_block(2 * EPOCH_LENGTH.get() - 1, Some(&next)).into(),
+                            ack,
+                        ))
+                        .accepted()
+                );
+                processed
+                    .await
+                    .expect("later authenticated rotation should be accepted");
+                assert!(schemes.scoped(Epoch::new(2)).is_some());
+
+                // Replaying the configured epoch must still match its identity.
+                next.epoch = Epoch::new(1);
+                let (ack, processed) = Exact::handle();
+                assert!(
+                    mailbox
+                        .to_marshal_reporter()
+                        .report(Update::Block(
+                            make_block(EPOCH_LENGTH.get() - 1, Some(&next)).into(),
+                            ack,
+                        ))
+                        .accepted()
+                );
+                assert!(processed.await.is_err());
+            }
+            assert!(
+                matches!(task.await, Err(commonware_runtime::Error::Exited)),
+                "identity mismatch should panic in the driver"
+            );
+        }
+    });
+}
+
+#[test_traced]
+fn network_identity_certificate_allows_following_subsequent_rotation() {
+    deterministic::Runner::default().start(|mut context| async move {
+        let old = dkg_fixture(&mut context, Epoch::zero());
+        let anchor = dkg_fixture(&mut context, Epoch::new(2));
+        let next = dkg_fixture(&mut context, Epoch::new(3));
+        for via_rpc in [false, true] {
+            let schemes = SchemeProvider::new();
+            let provider = StubExecutionProvider::default();
+            provider.add_header(&make_block(0, Some(&old.outcome)));
+            let (actor, mailbox) = try_init(
+                context.child(if via_rpc { "rpc" } else { "gossip" }),
+                Config {
+                    execution_provider: provider,
+                    last_finalized_height: Height::zero(),
+                    scheme_provider: schemes.clone(),
+                    network_identity: NetworkIdentity {
+                        from_epoch: 2,
+                        identity: *anchor.outcome.network_identity(),
+                    },
+                    marshal: StubMarshal::default(),
+                    epoch_strategy: FixedEpocher::new(EPOCH_LENGTH),
+                },
+            )
+            .expect("driver should initialize");
+            let task = actor.start();
+            let block = make_block(21, None);
+            let certificate = make_finalization(&block, Epoch::new(2), &anchor.schemes);
+            if via_rpc {
+                assert!(
+                    mailbox
+                        .to_event_reporter()
+                        .report(Event::Finalized {
+                            block: make_certified_block(block, &certificate),
+                            seen: 0,
+                        })
+                        .accepted()
+                );
+            } else {
+                assert_eq!(
+                    mailbox.process_certificate(certificate).await.unwrap(),
+                    Ok(())
+                );
+            }
+            let (ack, processed) = Exact::handle();
+            assert!(
+                mailbox
+                    .to_marshal_reporter()
+                    .report(Update::Block(
+                        make_block(29, Some(&next.outcome)).into(),
+                        ack,
+                    ))
+                    .accepted()
+            );
+            processed
+                .await
+                .expect("verified anchor should permit the subsequent rotation");
+            assert!(schemes.scoped(Epoch::new(3)).is_some());
+            task.abort();
+        }
+    });
+}
+
+#[test_traced]
+fn startup_checks_identity_from_execution_and_consensus_boundaries() {
+    let runner =
+        deterministic::Runner::from(deterministic::Config::default().with_catch_panics(true));
+    runner.start(|mut context| async move {
+        let genesis = dkg_fixture(&mut context, Epoch::zero());
+        let rotation = dkg_fixture(&mut context, Epoch::new(2));
+        let boundary_height = 2 * EPOCH_LENGTH.get() - 1;
+        for recover_from_marshal in [false, true] {
+            for matches in [false, true] {
+                let provider = StubExecutionProvider::default();
+                let marshal = StubMarshal::default();
+                let boundary = make_block(boundary_height, Some(&rotation.outcome));
+                if recover_from_marshal {
+                    provider.add_header(&make_block(0, Some(&genesis.outcome)));
+                    marshal.add_block(boundary);
+                } else {
+                    provider.set_finalized(boundary_height);
+                    provider.add_header(&boundary);
+                }
+                let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+                    try_init(
+                        context.child(match (recover_from_marshal, matches) {
+                            (false, false) => "execution_mismatch",
+                            (false, true) => "execution_match",
+                            (true, false) => "recovery_mismatch",
+                            (true, true) => "recovery_match",
+                        }),
+                        Config {
+                            execution_provider: provider,
+                            scheme_provider: SchemeProvider::new(),
+                            network_identity: NetworkIdentity {
+                                from_epoch: 2,
+                                identity: *if matches {
+                                    rotation.outcome.network_identity()
+                                } else {
+                                    genesis.outcome.network_identity()
+                                },
+                            },
+                            last_finalized_height: Height::new(if recover_from_marshal {
+                                boundary_height + 1
+                            } else {
+                                boundary_height
+                            }),
+                            marshal,
+                            epoch_strategy: FixedEpocher::new(EPOCH_LENGTH),
+                        },
+                    )
+                }));
+                if !recover_from_marshal && !matches {
+                    assert!(
+                        result.is_err(),
+                        "execution boundary mismatch must panic during startup"
+                    );
+                    continue;
+                }
+                let (actor, mailbox) = result
+                    .expect("matching startup must not panic")
+                    .expect("driver should initialize");
+                let (ack, processed) = Exact::handle();
+                assert!(
+                    mailbox
+                        .to_marshal_reporter()
+                        .report(Update::Block(
+                            make_block(boundary_height + 2, None).into(),
+                            ack,
+                        ))
+                        .accepted()
+                );
+                let task = actor.start();
+                assert_eq!(
+                    processed.await.is_ok(),
+                    matches,
+                    "startup must reject a mismatching recovered identity before processing updates"
+                );
+                if matches {
+                    task.abort();
+                } else {
+                    assert!(
+                        matches!(task.await, Err(commonware_runtime::Error::Exited)),
+                        "recovery mismatch must panic in the driver"
+                    );
+                }
+            }
+        }
     });
 }

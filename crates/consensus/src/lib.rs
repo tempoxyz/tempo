@@ -34,7 +34,7 @@ use commonware_runtime::Supervisor as _;
 use eyre::{OptionExt, WrapErr as _, eyre};
 use tempo_consensus_config::SigningShare;
 use tempo_node::TempoFullNode;
-use tracing::info;
+use tracing::instrument;
 
 pub use crate::config::{
     BROADCASTER_CHANNEL_IDENT, BROADCASTER_LIMIT, CERTIFICATES_CHANNEL_IDENT, CERTIFICATES_LIMIT,
@@ -56,6 +56,7 @@ pub async fn run_consensus_stack(
     gossip_transport: Option<tempo_node::gossip::TransportHandle>,
 ) -> eyre::Result<()> {
     config.validate_simplex_timing()?;
+    let network_identity = resolve_network_identity(&config, &execution_node)?;
 
     let share = config
         .signing_share
@@ -98,6 +99,7 @@ pub async fn run_consensus_stack(
 
     let consensus_engine = crate::consensus::engine::Builder {
         execution_node: Some(execution_node),
+        network_identity,
         gossip: gossip_transport.map(|transport| gossip::Config {
             transport,
             verify_rate: config.gossip_verify_rate,
@@ -169,16 +171,7 @@ pub async fn run_follow_stack(
         .epoch_length()
         .ok_or_eyre("chainspec did not contain epochLength")?;
 
-    let chain_spec_network_identity = chain_spec
-        .network_identity
-        .clone()
-        .ok_or_eyre("chainspec has no dkg outcome in genesis header")?;
-
-    let network_identity = config
-        .network_identity()
-        .unwrap_or(chain_spec_network_identity);
-
-    info!(%network_identity.from_epoch, %network_identity.identity, "registered network identity");
+    let network_identity = resolve_network_identity(&config, &execution_node)?;
 
     let (upstream, upstream_mailbox) = crate::follow::upstream::init(
         context.child("upstream"),
@@ -214,6 +207,17 @@ pub async fn run_follow_stack(
     ret.map_err(eyre::Report::from)
         .and_then(|ret| ret.and_then(|()| Err(eyre!("exited unexpectedly"))))
         .wrap_err("follow engine task failed")
+}
+
+#[instrument(skip_all, ret(Display), err)]
+fn resolve_network_identity(
+    config: &Args,
+    execution_node: &TempoFullNode,
+) -> eyre::Result<tempo_chainspec::NetworkIdentity> {
+    config
+        .network_identity()
+        .or_else(|| execution_node.chain_spec().network_identity.clone())
+        .ok_or_eyre("cannot determine network identity")
 }
 
 async fn instantiate_network(

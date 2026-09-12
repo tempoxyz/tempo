@@ -134,6 +134,9 @@ pub(crate) struct Actor<
     /// runtime.
     metrics: Metrics,
 
+    /// Opened and checked against the startup tip before any snapshot healing.
+    startup_storage: Option<state::Unverified<TContext>>,
+
     /// Queue of finalized blocks if marshal is configured to send out multiple
     /// blocks at a time.
     pending_finalized_blocks: FuturesOrdered<Ready<(Span, Block, Exact)>>,
@@ -152,14 +155,41 @@ where
         context: TContext,
         mailbox: mpsc::UnboundedReceiver<super::ingress::Message>,
     ) -> eyre::Result<Self> {
-        let context = ContextCell::new(context);
+        let mut context = ContextCell::new(context);
         let metrics = Metrics::init(context.as_present());
+
+        let storage = state::builder()
+            .partition_prefix(&config.partition_prefix)
+            .init_unverified(context.child("state"))
+            .await?;
+        if let Some(identity) =
+            storage.observed_identity(Epoch::new(config.network_identity.from_epoch))
+        {
+            assert_eq!(
+                identity, config.network_identity.identity,
+                "network identity mismatch at configured activation epoch"
+            );
+        }
+        let tip_epoch = config
+            .epoch_strategy
+            .containing(Height::new(config.finalized_tip.header.number()))
+            .expect("epoch strategy covers all heights")
+            .epoch();
+        crate::network_identity::verify_finalized_tip(
+            context.as_present_mut(),
+            &config.epoch_strategy,
+            &config.network_identity,
+            storage.observed_identity(tip_epoch),
+            &config.finalized_tip.header,
+            config.finalized_tip.certificate.as_ref(),
+        )?;
 
         Ok(Self {
             config,
             context,
             mailbox,
             metrics,
+            startup_storage: Some(storage),
             pending_finalized_blocks: FuturesOrdered::new(),
         })
     }
@@ -183,13 +213,10 @@ where
     ) {
         // NOTE: The instrumented fns emits on error events
 
-        let Ok(opened) = state::builder()
-            .partition_prefix(&self.config.partition_prefix)
-            .init_unverified(self.context.child("state"))
-            .await
-        else {
-            return;
-        };
+        let opened = self
+            .startup_storage
+            .take()
+            .expect("startup storage is present");
 
         let Ok(mut storage) = self.heal(opened).await else {
             return;
@@ -334,6 +361,7 @@ where
                                 )
                             });
 
+                            self.check_network_identity(&new_state);
                             storage.set_state(new_state).await;
                             // Emits an error event.
                             let _ = self.exit_epoch(&state);
@@ -780,6 +808,13 @@ where
         let onchain_outcome = OnchainDkgOutcome::read(&mut header.extra_data().as_ref())
             .expect("the last block of an epoch must contain the DKG outcome");
 
+        ensure!(
+            onchain_outcome.epoch == epoch_info.epoch().next(),
+            "boundary DKG outcome epoch `{}` does not match expected next epoch `{}`",
+            onchain_outcome.epoch,
+            epoch_info.epoch().next(),
+        );
+
         info!("reading validator from contract");
 
         let (local_output, mut share) =
@@ -1222,6 +1257,7 @@ where
 
     #[instrument(skip_all, fields(epoch = %state.epoch), err(level = Level::WARN))]
     fn enter_epoch(&mut self, state: &State) -> eyre::Result<()> {
+        self.check_network_identity(state);
         self.config
             .epoch_manager
             .enter(
@@ -1231,6 +1267,16 @@ where
                 state.dealers().clone(),
             )
             .wrap_err("could not instruct epoch manager to enter epoch")
+    }
+
+    fn check_network_identity(&self, state: &State) {
+        if state.epoch.get() == self.config.network_identity.from_epoch {
+            assert_eq!(
+                *state.output.public().public(),
+                self.config.network_identity.identity,
+                "network identity mismatch at configured activation epoch",
+            );
+        }
     }
 
     #[instrument(skip_all, fields(epoch = %state.epoch), err(level = Level::WARN))]

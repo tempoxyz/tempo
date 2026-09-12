@@ -617,6 +617,15 @@ fn follower_bootstraps_from_follower() {
 
 #[test_traced]
 fn follower_starts_from_validator_archives() {
+    assert_follower_starts_from_validator_archives(false);
+}
+
+#[test_traced]
+fn follower_starts_from_validator_archives_with_execution_behind() {
+    assert_follower_starts_from_validator_archives(true);
+}
+
+fn assert_follower_starts_from_validator_archives(unwind_execution: bool) {
     let _ = tempo_eyre::install();
     let target_height = 15;
     let follower_target_height = target_height + 5;
@@ -637,6 +646,11 @@ fn follower_starts_from_validator_archives() {
         // to the follower. Block production continues with 3/4 validators.
         let mut donor = validators.remove(0);
         donor.stop().await;
+        if unwind_execution {
+            // Keep the consensus snapshot across an epoch boundary while EL returns to genesis.
+            let (_, execution_height) = donor.unwind(u64::MAX);
+            assert_eq!(execution_height, 0);
+        }
 
         let follower = Follower::builder()
             .runtime(execution_runtime.handle())

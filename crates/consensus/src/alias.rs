@@ -100,6 +100,9 @@ pub(crate) mod marshal {
         /// together with the round it was finalized in (the zero round for
         /// genesis, which is not finalized in any round).
         pub finalized_tip: (Round, Height, Digest),
+
+        /// Header and certificate to validate before starting the engine's actors.
+        pub finalized_tip_evidence: crate::network_identity::FinalizedTip,
     }
 
     /// Initialize the marshal actor and its backing finalized-blocks store
@@ -160,6 +163,23 @@ pub(crate) mod marshal {
         )
         .await
         .wrap_err("failed to initialize hybrid finalized blocks store")?;
+
+        let tip_height = finalized_tip.1;
+        let tip_header = read_header(&execution_node, &finalized_blocks, tip_height)
+            .await
+            .wrap_err_with(|| {
+                format!(
+                    "failed to read finalized tip header at height `{tip_height}`; finalization \
+                    certificates are only archived with a matching block, so its header must \
+                    be available in execution or finalized-block storage"
+                )
+            })?;
+        let tip_certificate = finalizations_by_height
+            .get(Identifier::Index(tip_height.get()))
+            .await
+            .wrap_err_with(|| {
+                format!("failed to read finalized tip certificate at height `{tip_height}`")
+            })?;
 
         if let marshal::Start::Floor(finalization) = &start {
             register_scheme(
@@ -226,6 +246,10 @@ pub(crate) mod marshal {
             mailbox,
             finalized_floor: last_finalized_height,
             finalized_tip,
+            finalized_tip_evidence: crate::network_identity::FinalizedTip {
+                header: tip_header,
+                certificate: tip_certificate,
+            },
         })
     }
 

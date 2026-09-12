@@ -25,6 +25,97 @@ use harness::{
 };
 
 #[test]
+fn startup_uses_runtime_observed_tip_identity_before_healing() {
+    use crate::{
+        follow::test_utils::{dkg_fixture, make_block, make_finalization},
+        network_identity::FinalizedTip,
+    };
+    use harness::{StubEpochManager, StubMarshal};
+
+    for observed in [false, true] {
+        for boundary_tip in [false, true] {
+            Runner::default().start(|mut context| async move {
+                let genesis = dkg_fixture(&mut context, Epoch::zero());
+                let rotated = dkg_fixture(&mut context, Epoch::new(2));
+                let next = dkg_fixture(&mut context, Epoch::new(3));
+                let make_state = |outcome: &OnchainDkgOutcome| State {
+                    epoch: outcome.epoch,
+                    seed: Summary::random(StdRng::seed_from_u64(1)),
+                    output: outcome.output.clone(),
+                    share: ShareState::unset_plaintext(),
+                    players: outcome.next_players.clone(),
+                    is_full_dkg: outcome.is_next_full_dkg,
+                };
+                let mut storage = state::builder()
+                    .partition_prefix("startup_identity")
+                    .init_unverified(context.child("seed"))
+                    .await
+                    .unwrap()
+                    .init_verified(make_state(&rotated.outcome))
+                    .await;
+                if observed {
+                    storage.set_state(make_state(&rotated.outcome)).await;
+                }
+                if boundary_tip {
+                    // DKG may have advanced while the archived tip is still signed by epoch 2.
+                    if observed {
+                        storage.set_state(make_state(&next.outcome)).await;
+                    }
+                    storage.prune(Epoch::new(2)).await;
+                }
+                drop(storage);
+
+                for attempt in ["attempt_0", "attempt_1"] {
+                    let block = if boundary_tip {
+                        make_block(29, Some(&next.outcome))
+                    } else {
+                        make_block(21, None)
+                    };
+                    let certificate = make_finalization(&block, Epoch::new(2), &rotated.schemes);
+                    let execution = StubExecutionProvider::default();
+                    let marshal = StubMarshal::default();
+                    let epochs = StubEpochManager::default();
+                    let result = super::super::init(
+                        context.child(attempt),
+                        super::super::Config {
+                            epoch_strategy: FixedEpocher::new(
+                                std::num::NonZeroU64::new(10).unwrap(),
+                            ),
+                            epoch_manager: epochs.clone(),
+                            namespace: crate::config::NAMESPACE.to_vec(),
+                            me: PrivateKey::from_seed(0),
+                            mailbox_size: std::num::NonZeroUsize::new(1).unwrap(),
+                            marshal: marshal.clone(),
+                            last_finalized_height: Height::new(block.header().number()),
+                            finalized_tip: FinalizedTip {
+                                header: block.header().clone(),
+                                certificate: Some(certificate),
+                            },
+                            network_identity: tempo_chainspec::NetworkIdentity {
+                                from_epoch: 0,
+                                identity: *genesis.outcome.network_identity(),
+                            },
+                            partition_prefix: "startup_identity".into(),
+                            execution_node: execution.clone(),
+                            initial_share: None,
+                        },
+                    )
+                    .await;
+                    assert_eq!(result.is_ok(), observed);
+                    if let Err(error) = &result {
+                        assert!(format!("{error:#}").contains("failed verification"));
+                    }
+                    assert!(execution.reads().is_empty());
+                    assert!(marshal.reads().is_empty());
+                    assert!(epochs.events().is_empty());
+                    drop(result);
+                }
+            });
+        }
+    }
+}
+
+#[test]
 fn network_storage_failures_panic_and_allow_recovery() {
     use commonware_runtime::deterministic::FaultConfig;
     use commonware_utils::probability;

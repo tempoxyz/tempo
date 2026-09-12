@@ -26,6 +26,22 @@ use crate::{
 /// 4. The late validator continues progressing after sync
 #[test_traced]
 fn validator_can_fast_sync_after_full_dkg() {
+    run_fast_sync(None);
+}
+
+#[test_traced]
+fn validator_can_fast_sync_with_updated_network_identity() {
+    run_fast_sync(Some(true));
+}
+
+#[test_traced]
+#[should_panic(expected = "network identity mismatch")]
+fn validator_panics_when_rotation_does_not_match_network_identity() {
+    run_fast_sync(Some(false));
+}
+
+// None uses the genesis anchor; Some selects a matching or mismatching future anchor.
+fn run_fast_sync(updated_identity_matches: Option<bool>) {
     let _ = tempo_eyre::install();
 
     let how_many_signers = 4;
@@ -93,6 +109,17 @@ fn validator_can_fast_sync_after_full_dkg() {
             context.sleep(Duration::from_secs(1)).await;
         }
 
+        if let Some(matches) = updated_identity_matches {
+            late_validator.network_identity = Some(tempo_chainspec::NetworkIdentity {
+                from_epoch: outcome_after.epoch.get(),
+                identity: *if matches {
+                    outcome_after.network_identity()
+                } else {
+                    outcome_before.network_identity()
+                },
+            });
+        }
+
         // start late validator
         late_validator.start(&context).await;
         connect_execution_to_peers(&late_validator, &validators).await;
@@ -106,6 +133,11 @@ fn validator_can_fast_sync_after_full_dkg() {
             0,
             "Late validator should start at block 0"
         );
+
+        if updated_identity_matches == Some(false) {
+            let _ = late_validator.consensus_handle.take().unwrap().await;
+            return;
+        }
 
         // wait for late validator to catch up
         while late_validator

@@ -87,7 +87,7 @@ impl<TUpstream> Config<TUpstream> {
     /// Initialize all components and return an [`Engine`] ready to start.
     pub async fn try_init<TContext>(
         self,
-        context: TContext,
+        mut context: TContext,
     ) -> eyre::Result<Engine<TContext, TUpstream>>
     where
         TContext: Clock
@@ -115,6 +115,7 @@ impl<TUpstream> Config<TUpstream> {
             actor: marshal_actor,
             mailbox: marshal_mailbox,
             finalized_floor: last_finalized_height,
+            finalized_tip_evidence,
             ..
         } = alias::marshal::init(
             context.child("marshal"),
@@ -132,6 +133,16 @@ impl<TUpstream> Config<TUpstream> {
         )
         .await
         .wrap_err("failed to initialize marshal")?;
+
+        // Follow mode has no DKG manager or runtime-observed DKG state.
+        crate::network_identity::verify_finalized_tip(
+            &mut context,
+            &epoch_strategy,
+            &self.network_identity,
+            None,
+            &finalized_tip_evidence.header,
+            finalized_tip_evidence.certificate.as_ref(),
+        )?;
 
         info_span!("follow_engine").in_scope(|| {
             info!(

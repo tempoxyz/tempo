@@ -1,5 +1,6 @@
 use alloy_consensus::{BlockHeader as _, Header};
 use commonware_consensus::types::{Epoch, FixedEpocher};
+use commonware_cryptography::certificate::Provider as _;
 use commonware_macros::test_traced;
 use commonware_runtime::{Runner as _, deterministic};
 use reth_node_core::primitives::SealedBlock;
@@ -108,5 +109,55 @@ fn rejects_block_body_that_does_not_match_header() {
             verifier.decode_and_verify(&mut context, &certified),
             Err(Error::BlockBodyMismatch(_))
         ));
+    });
+}
+
+#[test_traced]
+fn panics_on_activation_identity_mismatch_without_registering_scheme() {
+    deterministic::Runner::default().start(|mut context| async move {
+        let configured = dkg_fixture(&mut context, Epoch::new(1));
+        let other = dkg_fixture(&mut context, Epoch::new(1));
+        let verifier = FinalizationVerifier::new(
+            NetworkIdentity {
+                from_epoch: 1,
+                identity: *configured.outcome.network_identity(),
+            },
+            FixedEpocher::new(EPOCH_LENGTH),
+        );
+        let boundary = make_block(EPOCH_LENGTH.get() - 1, Some(&other.outcome));
+        let result = std::panic::catch_unwind(|| {
+            verifier
+                .decode_dkg_outcome_and_register_boundary(boundary.header().extra_data().as_ref())
+        });
+        assert!(
+            result
+                .unwrap_err()
+                .downcast_ref::<String>()
+                .expect("identity assertion should panic with a diagnostic")
+                .contains("network identity mismatch")
+        );
+        assert!(verifier.scheme_provider.scheme(Epoch::new(1)).is_none());
+
+        let boundary = make_block(EPOCH_LENGTH.get() - 1, Some(&configured.outcome));
+        verifier
+            .decode_dkg_outcome_and_register_boundary(boundary.header().extra_data().as_ref())
+            .expect("matching identity should register");
+        assert!(verifier.scheme_provider.scheme(Epoch::new(1)).is_some());
+
+        // A rejected outcome must also leave an existing valid scheme intact.
+        let boundary = make_block(EPOCH_LENGTH.get() - 1, Some(&other.outcome));
+        assert!(
+            std::panic::catch_unwind(|| {
+                verifier.decode_dkg_outcome_and_register_boundary(
+                    boundary.header().extra_data().as_ref(),
+                )
+            })
+            .is_err()
+        );
+        let block = make_block(EPOCH_LENGTH.get(), None);
+        let finalization = make_finalization(&block, Epoch::new(1), &configured.schemes);
+        verifier
+            .decode_and_verify(&mut context, &make_certified_block(block, &finalization))
+            .expect("rejected identity must not replace the valid scheme");
     });
 }
