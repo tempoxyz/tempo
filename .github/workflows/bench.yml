@@ -710,7 +710,7 @@ jobs:
       pr-head-sha: ${{ needs.tempo-bench-ack.outputs.pr-head-sha }}
       pr-head-ref: ${{ needs.tempo-bench-ack.outputs.pr-head-ref }}
     secrets:
-      DEREK_TOKEN: ${{ secrets.DEREK_TOKEN }}
+      DEREK_UPDATE_RETH_TOKEN: ${{ secrets.DEREK_UPDATE_RETH_TOKEN }}
       TEMPO_TELEMETRY_URL: ${{ secrets.TEMPO_TELEMETRY_URL }}
       GRAFANA_TEMPO: ${{ secrets.GRAFANA_TEMPO }}
       BENCH_VICTORIAMETRICS_URL: ${{ secrets.BENCH_VICTORIAMETRICS_URL }}

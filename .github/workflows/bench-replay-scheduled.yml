@@ -1,4 +1,6 @@
 # Scheduled replay regression benchmarks.
+# State is stored in branch-isolated Actions artifacts for 90 days. Missing or
+# expired state uses the existing first-run baseline rules; no state PAT is needed.
 #
 # Runs nightly per chain: mainnet at 00:00 UTC and testnet at 00:01 UTC.
 # The benchmark compares the latest successful nightly Docker commit against
@@ -138,7 +140,6 @@ jobs:
         id: refs
         env:
           GH_TOKEN: ${{ github.token }}
-          DEREK_TOKEN: ${{ secrets.DEREK_TOKEN }}
           GITHUB_REPOSITORY: ${{ github.repository }}
           INPUT_FORCE: ${{ inputs.force || 'false' }}
           BENCH_REPLAY_CHAIN: ${{ steps.config.outputs.chain }}
@@ -240,7 +241,7 @@ jobs:
       slack: ${{ github.event_name == 'workflow_dispatch' && inputs.slack || 'always' }}
       run-label: ${{ github.event_name == 'schedule' && 'Replay Nightly' || 'Replay Bench' }}
     secrets:
-      DEREK_TOKEN: ${{ secrets.DEREK_TOKEN }}
+      DEREK_UPDATE_RETH_TOKEN: ${{ secrets.DEREK_UPDATE_RETH_TOKEN }}
       TEMPO_TELEMETRY_URL: ${{ secrets.TEMPO_TELEMETRY_URL }}
       GRAFANA_TEMPO: ${{ secrets.GRAFANA_TEMPO }}
       BENCH_MAINNET_RPC_URL: ${{ secrets.BENCH_MAINNET_RPC_URL }}
@@ -256,29 +257,21 @@ jobs:
     if: success()
     name: save-state
     runs-on: ubuntu-latest
+    permissions: {}
     steps:
-      - name: Push state to charts repo
+      - name: Prepare benchmark state
         env:
-          DEREK_TOKEN: ${{ secrets.DEREK_TOKEN }}
           FEATURE_REF: ${{ needs.resolve-refs.outputs.feature-ref }}
-          BENCH_REPLAY_CHAIN: ${{ needs.resolve-refs.outputs.chain }}
         run: |
-          CHARTS_REPO="https://x-access-token:${DEREK_TOKEN}@github.com/decofe/tempo-bench-charts.git"
-          TMP_DIR=$(mktemp -d)
-          STATE_FILE="replay-nightly-${BENCH_REPLAY_CHAIN}-last-feature-ref"
+          [[ "$FEATURE_REF" =~ ^[0-9a-f]{40}$ ]] || exit 1
+          mkdir -p "$RUNNER_TEMP/bench-state"
+          printf '%s\n' "$FEATURE_REF" > "$RUNNER_TEMP/bench-state/feature-ref"
 
-          if git clone --depth 1 --branch state "${CHARTS_REPO}" "${TMP_DIR}" 2>/dev/null; then
-            true
-          else
-            git init "${TMP_DIR}"
-            git -C "${TMP_DIR}" remote add origin "${CHARTS_REPO}"
-          fi
-
-          mkdir -p "${TMP_DIR}/state"
-          echo "${FEATURE_REF}" > "${TMP_DIR}/state/${STATE_FILE}"
-          git -C "${TMP_DIR}" add state/
-          git -C "${TMP_DIR}" diff --cached --quiet && echo "No state change" && exit 0
-          git -C "${TMP_DIR}" -c user.name="github-actions" -c user.email="github-actions@github.com" \
-            commit -m "bench: update ${BENCH_REPLAY_CHAIN} replay nightly state to ${FEATURE_REF}"
-          git -C "${TMP_DIR}" push origin HEAD:state
-          rm -rf "${TMP_DIR}"
+      - name: Save benchmark state
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: bench-state-replay-${{ needs.resolve-refs.outputs.chain }}
+          path: ${{ runner.temp }}/bench-state/feature-ref
+          retention-days: 90
+          if-no-files-found: error
+          overwrite: true

@@ -150,7 +150,7 @@ on:
         required: false
         default: "Replay Bench"
     secrets:
-      DEREK_TOKEN:
+      DEREK_UPDATE_RETH_TOKEN:
         required: false
       TEMPO_TELEMETRY_URL:
         required: false
@@ -334,6 +334,9 @@ jobs:
       - name: Resolve job URL and update status
         if: env.BENCH_COMMENT_ID
         uses: actions/github-script@ed597411d8f924073f98dfc5c65a23a2325f34cd # v8
+        env:
+          INPUT_BASELINE_NAME: ${{ inputs.baseline-name || inputs.baseline || 'merge-base' }}
+          INPUT_FEATURE_NAME: ${{ inputs.feature-name || inputs.feature || inputs.pr-head-ref || github.ref_name }}
         with:
           github-token: ${{ steps.github-sts.outputs.token }}
           script: |
@@ -372,6 +375,13 @@ jobs:
       - uses: tempoxyz/gh-actions/vendor/dtolnay/rust-toolchain@3626124474a987bc74b41fc7ae65b2e23f8e4e4e
       - uses: tempoxyz/gh-actions/vendor/mozilla-actions/sccache-action@3626124474a987bc74b41fc7ae65b2e23f8e4e4e
         continue-on-error: true
+
+      - name: Install GitHub CLI
+        run: |
+          if ! command -v gh >/dev/null; then
+            sudo apt-get update -qq
+            sudo apt-get install -y --no-install-recommends gh
+          fi
 
       - name: Install uv
         run: curl -LsSf https://astral.sh/uv/install.sh | env UV_INSTALL_DIR="$HOME/.local/bin" sh
@@ -556,61 +566,16 @@ jobs:
           name: tempo-bench-replay-${{ inputs.chain || 'mainnet' }}-results
           path: ${{ env.BENCH_WORK_DIR }}/
 
-      - name: Push charts
-        id: push-charts
+      - name: Upload chart attachments
+        id: upload-charts
         if: success()
-        run: |
-          RUN_ID=${{ github.run_id }}
-          if [ -n "${BENCH_PR:-}" ]; then
-            CHART_DIR="pr/${BENCH_PR}/${RUN_ID}/${BENCH_CHAIN}"
-          else
-            CHART_DIR="replay/${BENCH_CHAIN}/${RUN_ID}"
-          fi
-          CHARTS_REPO="https://x-access-token:${{ secrets.DEREK_TOKEN }}@github.com/decofe/tempo-bench-charts.git"
-
-          TMP_DIR=""
-          prepare_charts() {
-            if [ -n "${TMP_DIR}" ]; then
-              rm -rf "${TMP_DIR}"
-            fi
-
-            TMP_DIR=$(mktemp -d)
-            if git clone --depth 1 "${CHARTS_REPO}" "${TMP_DIR}" 2>/dev/null; then
-              true
-            else
-              git init "${TMP_DIR}"
-              git -C "${TMP_DIR}" remote add origin "${CHARTS_REPO}"
-            fi
-
-            mkdir -p "${TMP_DIR}/${CHART_DIR}"
-            cp "$BENCH_WORK_DIR"/charts/*.png "${TMP_DIR}/${CHART_DIR}/"
-            git -C "${TMP_DIR}" add "${CHART_DIR}"
-          }
-
-          for attempt in 1 2 3 4 5; do
-            prepare_charts
-            git -C "${TMP_DIR}" -c user.name="github-actions" -c user.email="github-actions@github.com" \
-              commit -m "bench replay charts for ${BENCH_CHAIN} run ${RUN_ID}"
-            if git -C "${TMP_DIR}" push origin HEAD:main; then
-              break
-            fi
-            if [ "$attempt" -eq 5 ]; then
-              echo "::error::Failed to push charts after ${attempt} attempts"
-              rm -rf "${TMP_DIR}"
-              exit 1
-            fi
-            sleep "$attempt"
-          done
-          echo "sha=$(git -C "${TMP_DIR}" rev-parse HEAD)" >> "$GITHUB_OUTPUT"
-          echo "path=${CHART_DIR}" >> "$GITHUB_OUTPUT"
-          rm -rf "${TMP_DIR}"
+        env:
+          GH_TOKEN: ${{ secrets.DEREK_UPDATE_RETH_TOKEN }}
+        run: bash .github/scripts/bench-upload-charts.sh "$GITHUB_REPOSITORY" "$BENCH_WORK_DIR/charts" > "$BENCH_WORK_DIR/charts.md"
 
       - name: Compare & comment
         if: success() && env.BENCH_COMMENT_ID
         uses: actions/github-script@ed597411d8f924073f98dfc5c65a23a2325f34cd # v8
-        env:
-          PUSH_CHARTS_SHA: ${{ steps.push-charts.outputs.sha }}
-          PUSH_CHARTS_PATH: ${{ steps.push-charts.outputs.path }}
         with:
           github-token: ${{ steps.github-sts.outputs.token }}
           script: |
@@ -623,24 +588,7 @@ jobs:
               comment = '⚠️ Replay benchmark completed but failed to generate comparison.';
             }
 
-            const sha = process.env.PUSH_CHARTS_SHA;
-            const chartPath = process.env.PUSH_CHARTS_PATH;
-
-            if (sha && chartPath) {
-              const baseUrl = `https://raw.githubusercontent.com/decofe/tempo-bench-charts/${sha}/${chartPath}`;
-              const charts = [
-                { file: 'latency_throughput.png', label: 'Latency, Throughput & Diff' },
-                { file: 'wait_breakdown.png', label: 'Wait Time Breakdown' },
-                { file: 'gas_vs_latency.png', label: 'Gas vs Latency' },
-              ];
-              let chartMarkdown = '\n\n### Charts\n\n';
-              for (const chart of charts) {
-                chartMarkdown += `<details><summary>${chart.label}</summary>\n\n`;
-                chartMarkdown += `![${chart.label}](${baseUrl}/${chart.file})\n\n`;
-                chartMarkdown += `</details>\n\n`;
-              }
-              comment += chartMarkdown;
-            }
+            comment += fs.readFileSync(process.env.BENCH_WORK_DIR + '/charts.md', 'utf8');
 
             const jobUrl = process.env.BENCH_JOB_URL || `${context.serverUrl}/${context.repo.owner}/${context.repo.repo}/actions/runs/${context.runId}`;
             const chain = process.env.BENCH_CHAIN || 'mainnet';
@@ -658,9 +606,6 @@ jobs:
 
       - name: Write job summary
         if: success()
-        env:
-          PUSH_CHARTS_SHA: ${{ steps.push-charts.outputs.sha }}
-          PUSH_CHARTS_PATH: ${{ steps.push-charts.outputs.path }}
         run: |
           {
             echo "Chain: \`${BENCH_CHAIN:-mainnet}\`"
@@ -672,33 +617,7 @@ jobs:
           if [ -f "$BENCH_WORK_DIR/comment.md" ]; then
             cat "$BENCH_WORK_DIR/comment.md" >> "$GITHUB_STEP_SUMMARY"
           fi
-          CHART_SHA="${PUSH_CHARTS_SHA}"
-          CHART_PATH="${PUSH_CHARTS_PATH}"
-          if [ -n "$CHART_SHA" ] && [ -n "$CHART_PATH" ]; then
-            BASE_URL="https://raw.githubusercontent.com/decofe/tempo-bench-charts/${CHART_SHA}/${CHART_PATH}"
-            {
-              echo
-              echo "### Charts"
-              echo
-              echo "<details><summary>Latency, Throughput & Diff</summary>"
-              echo
-              echo "![Latency, Throughput & Diff](${BASE_URL}/latency_throughput.png)"
-              echo
-              echo "</details>"
-              echo
-              echo "<details><summary>Wait Time Breakdown</summary>"
-              echo
-              echo "![Wait Time Breakdown](${BASE_URL}/wait_breakdown.png)"
-              echo
-              echo "</details>"
-              echo
-              echo "<details><summary>Gas vs Latency</summary>"
-              echo
-              echo "![Gas vs Latency](${BASE_URL}/gas_vs_latency.png)"
-              echo
-              echo "</details>"
-            } >> "$GITHUB_STEP_SUMMARY"
-          fi
+          cat "$BENCH_WORK_DIR/charts.md" >> "$GITHUB_STEP_SUMMARY"
 
       - name: Send Slack notification (success)
         if: success() && (env.BENCH_SLACK == 'always' || env.BENCH_SLACK == 'on-win')
@@ -738,7 +657,7 @@ jobs:
           STEP_RESULTS_OUTCOME: ${{ steps.results.outcome }}
           STEP_CHARTS_OUTCOME: ${{ steps.charts.outcome }}
           STEP_UPLOAD_RESULTS_OUTCOME: ${{ steps.upload-results.outcome }}
-          STEP_PUSH_CHARTS_OUTCOME: ${{ steps.push-charts.outcome }}
+          STEP_UPLOAD_CHARTS_OUTCOME: ${{ steps.upload-charts.outcome }}
         with:
           script: |
             const stepsStatus = [
@@ -749,7 +668,7 @@ jobs:
               ['parsing results', process.env.STEP_RESULTS_OUTCOME],
               ['generating charts', process.env.STEP_CHARTS_OUTCOME],
               ['uploading results', process.env.STEP_UPLOAD_RESULTS_OUTCOME],
-              ['pushing charts', process.env.STEP_PUSH_CHARTS_OUTCOME],
+              ['uploading chart attachments', process.env.STEP_UPLOAD_CHARTS_OUTCOME],
             ];
             const failed = stepsStatus.find(([, outcome]) => outcome === 'failure');
             const failedStep = failed ? failed[0] : 'unknown step';
