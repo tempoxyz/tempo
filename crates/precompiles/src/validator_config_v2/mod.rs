@@ -699,8 +699,6 @@ impl ValidatorConfigV2 {
             .require_owner_or_validator(sender, v.validator_address)?;
         self.require_new_pubkey(call.publicKey)?;
         Self::validate_endpoints(&call.ingress, &call.egress)?;
-
-        self.require_unique_ingress(&call.ingress)?;
         self.verify_validator_signature(
             SignatureKind::Rotate,
             &call.publicKey,
@@ -2646,7 +2644,7 @@ mod tests {
     }
 
     #[test]
-    fn test_rotate_validator_rejects_same_ingress() -> eyre::Result<()> {
+    fn test_rotate_validator_allows_same_ingress_key_rotation() -> eyre::Result<()> {
         let mut storage = HashMapStorageProvider::new(1);
         let owner = Address::random();
         let validator = Address::random();
@@ -2684,7 +2682,7 @@ mod tests {
                         signature: new_sig.into(),
                     },
                 )
-                .is_err()
+                .is_ok()
             );
             Ok(())
         })
