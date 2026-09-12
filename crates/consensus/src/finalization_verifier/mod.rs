@@ -7,7 +7,7 @@ use commonware_codec::{DecodeExt as _, ReadExt as _};
 use commonware_consensus::{
     Epochable as _,
     simplex::{scheme::bls12381_threshold::vrf::Scheme, types::Finalization},
-    types::{Epocher as _, FixedEpocher, Height},
+    types::{Epoch, Epocher as _, FixedEpocher, Height},
 };
 use commonware_cryptography::{
     bls12381::primitives::variant::MinSig, certificate::Provider as _, ed25519::PublicKey,
@@ -75,7 +75,7 @@ impl FinalizationVerifier {
     ) -> Result<OnchainDkgOutcome, commonware_codec::Error> {
         let outcome = OnchainDkgOutcome::read(&mut extra_data)?;
         self.scheme_provider.register(
-            outcome.epoch,
+            Epoch::new(outcome.epoch),
             Scheme::certificate_verifier(NAMESPACE, *outcome.network_identity()),
         );
         Ok(outcome)

@@ -13678,7 +13678,6 @@ version = "1.14.0"
 dependencies = [
  "bytes",
  "commonware-codec",
- "commonware-consensus",
  "commonware-cryptography",
  "commonware-math",
  "commonware-utils",
@@ -13754,7 +13753,6 @@ dependencies = [
  "alloy-sol-types",
  "codspeed-criterion-compat",
  "commonware-codec",
- "commonware-consensus",
  "commonware-cryptography",
  "commonware-math",
  "commonware-utils",

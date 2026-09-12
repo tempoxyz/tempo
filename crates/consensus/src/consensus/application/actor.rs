@@ -23,7 +23,7 @@ use commonware_consensus::{
     Heightable as _,
     marshal::core::DigestFallback,
     simplex::{Plan, types::Context},
-    types::{Epocher as _, FixedEpocher, HeightDelta, Round, View},
+    types::{Epoch, Epocher as _, FixedEpocher, HeightDelta, Round, View},
 };
 use commonware_cryptography::ed25519::PublicKey;
 use commonware_macros::select;
@@ -512,7 +512,7 @@ impl Inner<Init> {
                 .await
                 .wrap_err("failed getting public dkg ceremony outcome")?;
             ensure!(
-                round.epoch().next() == outcome.epoch,
+                round.epoch().next() == Epoch::new(outcome.epoch),
                 "outcome is for epoch `{}`, but we are trying to include the \
                 outcome for epoch `{}`",
                 outcome.epoch,

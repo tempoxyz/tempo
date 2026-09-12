@@ -32,7 +32,7 @@ fn current_committee_matches_boundary_dkg_outcome() {
         join_all(validators.iter_mut().map(|v| v.start(&context))).await;
 
         let outcome = wait_for_outcome(&context, &validators, 0, epoch_length).await;
-        wait_for_validators_to_reach_epoch(&context, outcome.epoch.get(), how_many_signers).await;
+        wait_for_validators_to_reach_epoch(&context, outcome.epoch, how_many_signers).await;
         context.to_metrics().assert_no_dkg_failures();
 
         let provider = validators[0].execution_provider();
@@ -68,7 +68,7 @@ fn current_committee_matches_boundary_dkg_outcome() {
             .map(|key| B256::from_slice(key.as_ref()))
             .collect::<Vec<_>>();
 
-        assert_eq!(epoch, outcome.epoch.get());
+        assert_eq!(epoch, outcome.epoch);
         assert_eq!(public_keys, expected_public_keys);
     });
 }

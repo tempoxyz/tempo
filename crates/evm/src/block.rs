@@ -309,7 +309,7 @@ where
                         "failed decoding boundary block extra data as DKG outcome: {err}"
                     ))
                 })?;
-        let epoch = outcome.epoch.get();
+        let epoch = outcome.epoch;
         let public_keys = outcome
             .players()
             .iter()
@@ -677,7 +677,6 @@ mod tests {
     use alloy_primitives::{Bytes, Log, Signature, TxKind, address, bytes::BytesMut};
     use alloy_rlp::Encodable;
     use commonware_codec::Encode as _;
-    use commonware_consensus::types::Epoch;
     use commonware_cryptography::{
         Signer,
         bls12381::{dkg::feldman_desmedt as dkg, primitives::sharing::Mode},
@@ -753,7 +752,7 @@ mod tests {
             dkg::deal::<_, _, N3f1>(&mut rng, Mode::NonZeroCounter, player_set).unwrap();
 
         OnchainDkgOutcome {
-            epoch: Epoch::new(epoch),
+            epoch,
             output,
             next_players: shares.keys().clone(),
             is_next_full_dkg: false,
@@ -1150,7 +1149,7 @@ mod tests {
         executor.apply_current_committee_system_call().unwrap();
 
         let committee = read_current_committee(&mut executor);
-        assert_eq!(committee.epoch, outcome.epoch.get());
+        assert_eq!(committee.epoch, outcome.epoch);
         assert_eq!(committee.publicKeys, expected_public_keys);
     }
 

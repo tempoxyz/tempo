@@ -80,7 +80,7 @@ where
             )
         })?;
 
-    let current_epoch = onchain_outcome.epoch;
+    let current_epoch = Epoch::new(onchain_outcome.epoch);
 
     let actor = Driver {
         context: ContextCell::new(context),
@@ -201,7 +201,7 @@ where
                     )
                 })?;
 
-            self.current_epoch = self.current_epoch.max(onchain_outcome.epoch);
+            self.current_epoch = self.current_epoch.max(Epoch::new(onchain_outcome.epoch));
         } else {
             debug!("no gap detected");
         }
@@ -377,7 +377,7 @@ where
                 .expect("boundary blocks must contain DKG outcomes");
 
             let network_identity = self.verifier.network_identity();
-            if onchain_outcome.epoch.get() >= network_identity.from_epoch
+            if onchain_outcome.epoch >= network_identity.from_epoch
                 && network_identity.identity != *onchain_outcome.network_identity()
             {
                 warn!(
@@ -389,7 +389,7 @@ where
                 );
             }
 
-            self.current_epoch = self.current_epoch.max(onchain_outcome.epoch);
+            self.current_epoch = self.current_epoch.max(Epoch::new(onchain_outcome.epoch));
 
             if self
                 .epoch_sync_target
