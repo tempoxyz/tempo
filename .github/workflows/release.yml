@@ -57,7 +57,6 @@ jobs:
     name: check version
     runs-on: ubuntu-latest
     needs: get-version
-    if: ${{ !startsWith(github.ref, 'refs/heads/rc/') && github.event.inputs.dry_run != 'true' }}
     permissions:
       contents: read
     steps:
@@ -66,19 +65,17 @@ jobs:
           persist-credentials: false
       - uses: tempoxyz/gh-actions/vendor/dtolnay/rust-toolchain@3626124474a987bc74b41fc7ae65b2e23f8e4e4e
       - name: Verify crate version matches tag
-        # Check that the Cargo version starts with the tag,
-        # so that Cargo version 1.4.8 can be matched against both v1.4.8 and v1.4.8-rc.1
+        # Skip the step, not the job, so RC and dry-run builds still satisfy needs.
+        if: ${{ !startsWith(github.ref, 'refs/heads/rc/') && inputs.dry_run != true }}
         env:
           TAG: ${{ needs.get-version.outputs.version }}
         run: |
-          tag="$TAG"
-          tag=${tag#v}
           cargo_ver=$(cargo metadata --no-deps --format-version 1 | jq -r '.packages[] | select(.name == "tempo").version')
-          [[ "$tag" == "$cargo_ver"* ]] || { echo "Tag $tag doesn't match the Cargo version $cargo_ver"; exit 1; }
+          bash .github/scripts/check-release-version.sh "$TAG" "$cargo_ver"
 
   build-release:
     name: Build Release Binaries
-    needs: get-version
+    needs: [get-version, check-version]
     environment: release
     runs-on: ${{ matrix.platform.os }}
     permissions:

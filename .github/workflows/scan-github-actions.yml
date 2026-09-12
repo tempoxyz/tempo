@@ -16,6 +16,17 @@ on:
 permissions: {}
 
 jobs:
+  release-version-tests:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+        with:
+          persist-credentials: false
+      - run: bash .github/scripts/test-release-version.sh
+
   scan:
     if: ${{ github.event_name != 'schedule' || github.repository == 'tempoxyz/tempo' }}
     uses: tempoxyz/gh-actions/.github/workflows/scan-github-actions.yml@5d3a903b51ce8d1f6d363d1c59d7243ecf80f026
