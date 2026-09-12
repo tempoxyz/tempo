@@ -520,12 +520,19 @@ jobs:
               exit 1
             fi
             echo "Polling CI checks..."
+            HEAD_SHA=$(git rev-parse HEAD)
             WAIT_START=$SECONDS
             while true; do
-              STATUS=$(gh pr checks "$PR_BRANCH" --json bucket,name,state 2>&1) || true
-              # gh pr checks may return non-JSON (e.g. "no checks reported") before CI starts
-              if ! echo "$STATUS" | jq empty 2>/dev/null; then
-                echo "Waiting for CI to start (gh pr checks returned non-JSON)..."
+              if [ "$SECONDS" -ge "$CI_FIX_DEADLINE" ]; then
+                echo "::error::Timed out waiting for CI on $HEAD_SHA"
+                exit 1
+              fi
+
+              STATUS=$(bash scripts/reth-ci-status.sh "$HEAD_SHA") || STATUS=""
+              # A push can precede both the PR head refresh and check registration.
+              # Empty checks or an API failure are not a successful CI result.
+              if ! echo "$STATUS" | jq -e 'type == "array" and length > 0' >/dev/null 2>&1; then
+                echo "Waiting for CI checks on $HEAD_SHA..."
                 sleep 60
                 continue
               fi
@@ -568,8 +575,7 @@ jobs:
                 echo "CI checks stuck for ${ELAPSED}m — investigating with Amp..."
                 STUCK_NAMES=$(echo "$STATUS" | jq -r '[.[] | select((.state == "PENDING" or .state == "QUEUED" or .state == "IN_PROGRESS") and .name != "Review" and .name != "Cyclops audit run")] | map(.name) | join(", ")')
 
-                # Fetch logs from in-progress runs for the current HEAD commit
-                HEAD_SHA=$(gh pr view "$PR_BRANCH" --json headRefOid --jq '.headRefOid')
+                # Fetch logs for the same commit whose checks were evaluated above.
                 {
                   echo "Some CI jobs on this PR have been running for over ${CI_TIMEOUT_MINUTES} minutes and appear stuck."
                   echo "Investigate why these tests might be hanging. Look at the logs below for clues — common causes include"
@@ -618,8 +624,7 @@ jobs:
             FAILED_NAMES=$(echo "$STATUS" | jq -r '[.[] | select(.state == "FAILURE" or .state == "ERROR")] | map(.name) | join(", ")')
             echo "Failed checks: $FAILED_NAMES"
 
-            # Fetch logs from failed runs for the current HEAD commit
-            HEAD_SHA=$(gh pr view "$PR_BRANCH" --json headRefOid --jq '.headRefOid')
+            # Fetch logs for the same commit whose checks were evaluated above.
             {
               echo "The CI checks on this PR are failing. Please fix the issues."
               echo "You may also bump non-reth dependency versions in Cargo.toml files if needed (e.g. revm, alloy),"
