@@ -3,6 +3,7 @@
 # Tempo local utilities
 
 source contrib/bench/txgen/helpers.nu
+source contrib/bench/receipt-outcomes.nu
 
 const BENCH_DIR = "contrib/bench"
 const LOCALNET_DIR = "localnet"
@@ -1219,8 +1220,8 @@ def generate-summary [
                 number: ($b | get number)
                 timestamp: $timestamp
                 tx_count: $tx_count
-                ok_count: ($b | get -o ok_count | default $tx_count)
-                err_count: ($b | get -o err_count | default 0)
+                ok_count: ($b | get -o ok_count)
+                err_count: ($b | get -o err_count)
                 gas_used: ($b | get gas_used)
                 block_time_ms: ($b | get -o block_time_ms | default null)
             }
@@ -1345,8 +1346,7 @@ def generate-summary [
         }
 
         let total_tx = ($blocks | get tx_count | math sum)
-        let total_ok = ($blocks | get ok_count | math sum)
-        let total_err = ($blocks | get err_count | math sum)
+        let outcomes = (receipt-outcomes $blocks)
         let total_gas = ($blocks | get gas_used | math sum)
         let block_time_mean = if ($block_intervals | length) > 0 { $block_intervals | math avg | math round --precision 1 } else { 0.0 }
         let num_blocks = ($blocks | length)
@@ -1369,17 +1369,16 @@ def generate-summary [
         let gas_per_sec = ($total_gas / $time_span_s)
         let mgas_per_sec = ($gas_per_sec / 1_000_000) | math round --precision 1
 
-        let success_rate = if $total_tx > 0 {
-            (($total_ok / $total_tx) * 100) | math round --precision 1
-        } else { 0 }
-
         $run_data = ($run_data | append [{
             label: $label
             summary_warmup_blocks: $warmup_blocks
             blocks: $num_blocks
             total_tx: $total_tx
-            ok: $total_ok
-            err: $total_err
+            ok: $outcomes.ok
+            err: $outcomes.err
+            receipt_outcomes_complete: $outcomes.receipt_outcomes_complete
+            receipt_known_tx: $outcomes.receipt_known_tx
+            receipt_unknown_tx: $outcomes.receipt_unknown_tx
             total_gas: $total_gas
             block_time_mean: $block_time_mean
             builder_latency_p50: $run_builder.p50
@@ -1402,7 +1401,7 @@ def generate-summary [
             validation_latency_p90: $run_validation.p90
             validation_latency_p99: $run_validation.p99
             validation_gas_s: $run_validation_gas
-            success_rate: $success_rate
+            success_rate: $outcomes.success_rate
         }])
     }
 
@@ -1582,6 +1581,13 @@ def generate-summary [
     }
     if $feature_hardfork != "" {
         $config_lines = ($config_lines | append $"- Feature hardfork: ($feature_hardfork)")
+    }
+    let unknown_receipt_runs = ($run_data | where receipt_outcomes_complete == false | get label)
+    if ($unknown_receipt_runs | length) > 0 {
+        $config_lines = ($config_lines | append [
+            ""
+            $"Receipt outcomes are unknown or incomplete for: ($unknown_receipt_runs | str join ', '). Success rates are unavailable; throughput includes transactions with unverified outcomes."
+        ])
     }
 
     let summary_lines = ($config_lines | append [
