@@ -686,7 +686,9 @@ impl Read for State {
     ) -> Result<Self, commonware_codec::Error> {
         let epoch = ReadExt::read(buf)?;
         let seed = ReadExt::read(buf)?;
-        let output = Read::read_cfg(buf, &(*cfg, ModeVersion::v0()))?;
+        // Stored outputs carry their sharing mode. V1 accepts both the legacy
+        // nonzero-counter mode and roots of unity without changing the layout.
+        let output = Read::read_cfg(buf, &(*cfg, ModeVersion::v1()))?;
         let share = ReadExt::read(buf)?;
         let players = Read::read_cfg(buf, &(RangeCfg::from(1..=(u16::MAX as usize)), ()))?;
 
@@ -1197,6 +1199,14 @@ mod tests {
     use commonware_utils::TryFromIterator as _;
 
     fn make_test_state(rng: &mut impl rand_core::CryptoRng, epoch: u64) -> State {
+        make_test_state_and_share(rng, epoch, Mode::NonZeroCounter).0
+    }
+
+    fn make_test_state_and_share(
+        rng: &mut impl rand_core::CryptoRng,
+        epoch: u64,
+        mode: Mode,
+    ) -> (State, Share) {
         let mut keys: Vec<_> = (0..3)
             .map(|i| PrivateKey::from_seed(i + epoch * 100))
             .collect();
@@ -1205,27 +1215,82 @@ mod tests {
 
         let pubkeys = ordered::Set::try_from_iter(keys.iter().map(|k| k.public_key())).unwrap();
 
-        let (output, _shares) =
-            dkg::deal::<_, _, N3f1>(&mut *rng, Mode::NonZeroCounter, pubkeys.clone()).unwrap();
+        let (output, shares) = dkg::deal::<_, _, N3f1>(&mut *rng, mode, pubkeys.clone()).unwrap();
 
-        State {
+        let state = State {
             epoch: Epoch::new(epoch),
             seed: Summary::random(rng),
             output,
             share: ShareState::Plaintext(None),
             players: pubkeys,
             is_full_dkg: false,
-        }
+        };
+        (state, shares.into_iter().next().unwrap().1)
     }
 
     #[test]
     fn state_codec_round_trip() {
         let executor = deterministic::Runner::default();
         executor.start(|mut context| async move {
-            let state = make_test_state(&mut context, 0);
-            let mut bytes = state.encode();
-            let decoded = State::read_cfg(&mut bytes, &NZU32!(u32::MAX)).unwrap();
-            assert_eq!(state, decoded);
+            for mode in [Mode::NonZeroCounter, Mode::RootsOfUnity] {
+                let (mut state, share) = make_test_state_and_share(&mut context, 0, mode);
+                for share in [None, Some(share)] {
+                    state.share = ShareState::Plaintext(share);
+                    let mut bytes = state.encode();
+                    assert_eq!(bytes.len(), state.encode_size());
+                    let decoded = State::read_cfg(&mut bytes, &MAXIMUM_VALIDATORS).unwrap();
+                    assert_eq!(state, decoded);
+                    assert!(bytes.is_empty());
+                }
+            }
+        });
+    }
+
+    #[test]
+    fn storage_reopens_mixed_output_modes() {
+        deterministic::Runner::default().start(|mut context| async move {
+            let legacy = make_test_state(&mut context, 0);
+            let (mut v1, share) = make_test_state_and_share(&mut context, 1, Mode::RootsOfUnity);
+            v1.share = ShareState::Plaintext(Some(share));
+            let mut storage = builder()
+                .partition_prefix("mixed_output_modes")
+                .init_unverified(context.child("initial"))
+                .await
+                .unwrap()
+                .init_verified(legacy.clone())
+                .await;
+            storage.set_state(v1.clone()).await;
+            drop(storage);
+
+            let reopened = builder()
+                .partition_prefix("mixed_output_modes")
+                .init_unverified(context.child("reopened"))
+                .await
+                .unwrap();
+            assert_eq!(reopened.state(), Some(&v1));
+            let states = reopened.storage.states.as_ref().unwrap();
+            assert_eq!(states.get(&legacy.epoch.get()), Some(&legacy));
+            assert_eq!(states.get(&v1.epoch.get()), Some(&v1));
+
+            let mut storage = reopened.init_verified(v1.clone()).await;
+            storage.prune(v1.epoch).await;
+            drop(storage);
+
+            let reopened = builder()
+                .partition_prefix("mixed_output_modes")
+                .init_unverified(context.child("after_prune"))
+                .await
+                .unwrap();
+            assert_eq!(reopened.state(), Some(&v1));
+            assert!(
+                reopened
+                    .storage
+                    .states
+                    .as_ref()
+                    .unwrap()
+                    .get(&legacy.epoch.get())
+                    .is_none()
+            );
         });
     }
 
