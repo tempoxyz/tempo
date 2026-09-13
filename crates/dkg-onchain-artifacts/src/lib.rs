@@ -107,6 +107,7 @@ mod tests {
     use std::iter::repeat_with;
 
     use commonware_codec::{Encode as _, EncodeSize as _, ReadExt as _};
+    use commonware_consensus::types::Epoch;
     use commonware_cryptography::{
         Signer as _,
         bls12381::{dkg::feldman_desmedt as dkg, primitives::sharing::Mode},
@@ -143,21 +144,12 @@ mod tests {
             is_next_full_dkg: false,
         };
         // Preserve Commonware Epoch's wire encoding, including varint boundaries.
-        let payload = on_chain.encode()[1..].to_vec();
-        for (epoch, prefix) in [
-            (0, &[0][..]),
-            (127, &[127][..]),
-            (128, &[128, 1][..]),
-            (16383, &[255, 127][..]),
-            (16384, &[128, 128, 1][..]),
-            (
-                u64::MAX,
-                &[255, 255, 255, 255, 255, 255, 255, 255, 255, 1][..],
-            ),
-        ] {
+        let payload = on_chain.encode()[Epoch::new(on_chain.epoch).encode_size()..].to_vec();
+        for epoch in [0, 127, 128, 16383, 16384, u64::MAX] {
+            let prefix = Epoch::new(epoch).encode();
             on_chain.epoch = epoch;
             let bytes = on_chain.encode();
-            assert_eq!(&bytes[..prefix.len()], prefix);
+            assert_eq!(&bytes[..prefix.len()], prefix.as_ref());
             assert_eq!(&bytes[prefix.len()..], payload);
             assert_eq!(bytes.len(), on_chain.encode_size());
             assert_eq!(
