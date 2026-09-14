@@ -19,22 +19,22 @@ use crate::{alias::marshal::FinalizedTip, config::NAMESPACE};
 pub(super) fn verify_finalized_tip(
     rng: &mut impl CryptoRng,
     epoch_strategy: &FixedEpocher,
-    binary: &NetworkIdentity,
+    configured_identity: &NetworkIdentity,
     persisted: Option<&State>,
     tip: Option<&FinalizedTip>,
     finalized_floor: Height,
 ) -> eyre::Result<()> {
-    let mut trusted = binary.clone();
+    let mut trusted = configured_identity.clone();
     if let Some(state) = persisted {
         let identity = *state.output.public().public();
-        if state.epoch.get() == binary.from_epoch {
+        if state.epoch.get() == configured_identity.from_epoch {
             assert_eq!(
-                identity, binary.identity,
-                "persisted DKG network identity differs from the binary in epoch `{}`",
+                identity, configured_identity.identity,
+                "persisted DKG network identity differs from the configured identity in epoch `{}`",
                 state.epoch,
             );
         }
-        if state.epoch.get() > binary.from_epoch {
+        if state.epoch.get() > configured_identity.from_epoch {
             trusted = NetworkIdentity {
                 from_epoch: state.epoch.get(),
                 identity,
@@ -71,7 +71,7 @@ pub(super) fn verify_finalized_tip(
     if epoch.get() < trusted.from_epoch {
         // A rotation's outgoing boundary certificate can precede the latest
         // persisted DKG identity. Historical bootstrap remains allowed; the
-        // binary and persisted identities stay pinned when their epochs start.
+        // configured and persisted identities stay pinned when their epochs start.
         info!(
             tip_height = %tip.height(),
             tip_epoch = %epoch,

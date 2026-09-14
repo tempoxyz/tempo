@@ -1,4 +1,4 @@
-//! Startup authentication uses only the binary and the latest persisted DKG state.
+//! Startup authentication uses only the configured identity and the latest persisted DKG state.
 
 use alloy_consensus::{BlockHeader as _, Sealable as _};
 use commonware_consensus::types::{Epoch, FixedEpocher, Height};
@@ -69,8 +69,8 @@ fn startup_uses_the_newest_trusted_identity_without_falling_back() {
         let new_tip = tip(&new, 3);
         let reshared_tip = tip(&new, 4);
         let strategy = FixedEpocher::new(commonware_utils::NZU64!(10));
-        for (name, binary, state, tip, accepted) in [
-            ("binary identity", identity(&new), None, &new_tip, true),
+        for (name, configured_identity, state, tip, accepted) in [
+            ("configured identity", identity(&new), None, &new_tip, true),
             (
                 "same key in a later epoch",
                 identity(&old),
@@ -93,14 +93,14 @@ fn startup_uses_the_newest_trusted_identity_without_falling_back() {
                 true,
             ),
             (
-                "newer binary",
+                "newer configured identity",
                 identity(&new),
                 Some(&old_state),
                 &new_tip,
                 true,
             ),
             (
-                "matching binary and local state",
+                "matching configured identity and local state",
                 identity(&new),
                 Some(&new_state),
                 &new_tip,
@@ -114,7 +114,7 @@ fn startup_uses_the_newest_trusted_identity_without_falling_back() {
                 false,
             ),
             (
-                "no fallback to old binary",
+                "no fallback to old configured identity",
                 identity(&old),
                 Some(&new_state),
                 &old_tip,
@@ -138,7 +138,7 @@ fn startup_uses_the_newest_trusted_identity_without_falling_back() {
             let result = verify_finalized_tip(
                 &mut context,
                 &strategy,
-                &binary,
+                &configured_identity,
                 state,
                 Some(tip),
                 Height::zero(),
@@ -158,7 +158,7 @@ fn historical_tips_and_genesis_remain_allowed() {
         // state already holds the identity for epoch 3.
         let boundary_tip = tip_for_header(&old, &header(Height::new(29)));
         let strategy = FixedEpocher::new(commonware_utils::NZU64!(10));
-        for (binary, local) in [
+        for (configured_identity, local) in [
             (identity(&new), None),
             (identity(&old), Some(&state)),
             (identity(&new), Some(&state)),
@@ -166,7 +166,7 @@ fn historical_tips_and_genesis_remain_allowed() {
             verify_finalized_tip(
                 &mut context,
                 &strategy,
-                &binary,
+                &configured_identity,
                 local,
                 Some(&boundary_tip),
                 Height::new(29),
@@ -175,7 +175,7 @@ fn historical_tips_and_genesis_remain_allowed() {
             verify_finalized_tip(
                 &mut context,
                 &strategy,
-                &binary,
+                &configured_identity,
                 local,
                 None,
                 Height::zero(),
@@ -189,7 +189,7 @@ fn historical_tips_and_genesis_remain_allowed() {
 fn startup_rejects_malformed_or_invalid_tip_certificates() {
     Runner::default().start(|mut context| async move {
         let fixture = dkg_fixture(&mut context, Epoch::new(0));
-        let binary = identity(&fixture);
+        let configured_identity = identity(&fixture);
         let strategy = FixedEpocher::new(commonware_utils::NZU64!(10));
         let valid = tip(&fixture, 1);
         let mut altered_header = header(valid.height());
@@ -217,7 +217,7 @@ fn startup_rejects_malformed_or_invalid_tip_certificates() {
                 verify_finalized_tip(
                     &mut context,
                     &strategy,
-                    &binary,
+                    &configured_identity,
                     None,
                     Some(&tip),
                     Height::zero()
@@ -226,14 +226,21 @@ fn startup_rejects_malformed_or_invalid_tip_certificates() {
             );
         }
         assert!(
-            verify_finalized_tip(&mut context, &strategy, &binary, None, None, Height::new(1))
-                .is_err()
+            verify_finalized_tip(
+                &mut context,
+                &strategy,
+                &configured_identity,
+                None,
+                None,
+                Height::new(1)
+            )
+            .is_err()
         );
         assert!(
             verify_finalized_tip(
                 &mut context,
                 &strategy,
-                &binary,
+                &configured_identity,
                 None,
                 Some(&tip(&fixture, 1)),
                 Height::new(13)
@@ -244,17 +251,17 @@ fn startup_rejects_malformed_or_invalid_tip_certificates() {
 }
 
 #[test]
-#[should_panic(expected = "persisted DKG network identity differs from the binary")]
+#[should_panic(expected = "persisted DKG network identity differs from the configured identity")]
 fn startup_rejects_conflicting_persisted_identity_even_for_a_historical_tip() {
     Runner::default().start(|mut context| async move {
-        let binary = dkg_fixture(&mut context, Epoch::new(3));
+        let configured_fixture = dkg_fixture(&mut context, Epoch::new(3));
         let local = dkg_fixture(&mut context, Epoch::new(3));
         let state = persisted(&local, &mut context);
         let strategy = FixedEpocher::new(commonware_utils::NZU64!(10));
         let _ = verify_finalized_tip(
             &mut context,
             &strategy,
-            &identity(&binary),
+            &identity(&configured_fixture),
             Some(&state),
             None,
             Height::zero(),
@@ -319,7 +326,7 @@ fn authenticated_tip_allows_healing_from_an_older_floor() {
             ))
             .finalized_floor(Height::new(19))
             // The floor is still in epoch 1, but the actual tip is in epoch 2
-            // and must be verified with the updated binary identity.
+            // and must be verified with the updated configured identity.
             .startup(identity(&current), Some(tip(&current, 2)))
             .build()
             .await;
