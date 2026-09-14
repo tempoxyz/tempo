@@ -4,6 +4,8 @@ use std::num::NonZeroU32;
 
 use bytes::{Buf, BufMut};
 use commonware_codec::{EncodeSize, RangeCfg, Read, ReadExt, Write, varint::UInt};
+#[cfg(feature = "commonware-consensus")]
+use commonware_consensus::types::Epoch;
 use commonware_cryptography::{
     bls12381::{
         dkg::feldman_desmedt::Output,
@@ -43,6 +45,12 @@ pub struct OnchainDkgOutcome {
 }
 
 impl OnchainDkgOutcome {
+    /// Returns the epoch for which this outcome is used.
+    #[cfg(feature = "commonware-consensus")]
+    pub fn epoch(&self) -> Epoch {
+        Epoch::new(self.epoch)
+    }
+
     pub fn dealers(&self) -> &ordered::Set<PublicKey> {
         self.output.dealers()
     }
@@ -148,6 +156,8 @@ mod tests {
         for epoch in [0, 127, 128, 16383, 16384, u64::MAX] {
             let prefix = Epoch::new(epoch).encode();
             on_chain.epoch = epoch;
+            #[cfg(feature = "commonware-consensus")]
+            assert_eq!(on_chain.epoch(), Epoch::new(epoch));
             let bytes = on_chain.encode();
             assert_eq!(&bytes[..prefix.len()], prefix.as_ref());
             assert_eq!(&bytes[prefix.len()..], payload);

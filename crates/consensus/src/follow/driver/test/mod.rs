@@ -208,9 +208,7 @@ fn network_identity_verifies_finalization_when_epoch_scheme_is_missing() {
         .expect("driver should initialize");
 
         assert!(
-            schemes
-                .scoped(Epoch::new(network_fixture.outcome.epoch))
-                .is_none(),
+            schemes.scoped(network_fixture.outcome.epoch()).is_none(),
             "network identity fallback requires the epoch scheme to be missing",
         );
         actor.start();
@@ -218,7 +216,7 @@ fn network_identity_verifies_finalization_when_epoch_scheme_is_missing() {
         let block = make_block(EPOCH_LENGTH.get() * 2 + 1, None);
         let finalization = make_finalization(
             &block,
-            Epoch::new(network_fixture.outcome.epoch),
+            network_fixture.outcome.epoch(),
             &network_fixture.schemes,
         );
         let certified = make_certified_block(block, &finalization);
@@ -270,13 +268,11 @@ fn gossiped_certificate_is_admitted_and_reported_only_to_marshal() {
         let block = make_block(EPOCH_LENGTH.get() * 2 + 1, None);
         let finalization = make_finalization(
             &block,
-            Epoch::new(network_fixture.outcome.epoch),
+            network_fixture.outcome.epoch(),
             &network_fixture.schemes,
         );
         assert!(
-            schemes
-                .scoped(Epoch::new(network_fixture.outcome.epoch))
-                .is_none(),
+            schemes.scoped(network_fixture.outcome.epoch()).is_none(),
             "the certificate must require the network identity fallback",
         );
 
@@ -286,9 +282,7 @@ fn gossiped_certificate_is_admitted_and_reported_only_to_marshal() {
             .expect("driver should answer");
         assert_eq!(result, Ok(()));
         assert!(
-            schemes
-                .scoped(Epoch::new(network_fixture.outcome.epoch))
-                .is_some(),
+            schemes.scoped(network_fixture.outcome.epoch()).is_some(),
             "marshal needs the successful fallback to re-verify the resolved block",
         );
         // The driver reports only the certificate to marshal.
@@ -298,7 +292,7 @@ fn gossiped_certificate_is_admitted_and_reported_only_to_marshal() {
         // The first offer became the latest verified round, so a repeat is stale.
         let repeat = make_finalization(
             &make_block(EPOCH_LENGTH.get() * 2 + 1, None),
-            Epoch::new(network_fixture.outcome.epoch),
+            network_fixture.outcome.epoch(),
             &network_fixture.schemes,
         );
         let result = mailbox
@@ -842,17 +836,13 @@ fn scheme_before_network_identity_epoch_is_required() {
         )
         .expect("driver should initialize");
 
-        assert!(
-            schemes
-                .scoped(Epoch::new(missing_fixture.outcome.epoch))
-                .is_none()
-        );
+        assert!(schemes.scoped(missing_fixture.outcome.epoch()).is_none());
         actor.start();
 
         let block = make_block(EPOCH_LENGTH.get() + 1, None);
         let finalization = make_finalization(
             &block,
-            Epoch::new(missing_fixture.outcome.epoch),
+            missing_fixture.outcome.epoch(),
             &missing_fixture.schemes,
         );
 
@@ -903,7 +893,7 @@ fn gossiped_certificate_without_a_usable_identity_needs_scheme() {
         let block = make_block(EPOCH_LENGTH.get() + 1, None);
         let certificate = make_finalization(
             &block,
-            Epoch::new(missing_fixture.outcome.epoch),
+            missing_fixture.outcome.epoch(),
             &missing_fixture.schemes,
         );
         let result = mailbox
@@ -914,7 +904,7 @@ fn gossiped_certificate_without_a_usable_identity_needs_scheme() {
         assert_eq!(
             result,
             Err(CertificateError::NeedsScheme {
-                epoch: Epoch::new(missing_fixture.outcome.epoch),
+                epoch: missing_fixture.outcome.epoch(),
             })
         );
         assert_eq!(marshal.report_count(), 0);
@@ -1056,9 +1046,7 @@ fn startup_installs_missing_consensus_epoch_scheme_from_marshal() {
 
         actor.start();
         wait_until(&context, || {
-            schemes
-                .scoped(Epoch::new(recovered_fixture.outcome.epoch))
-                .is_some()
+            schemes.scoped(recovered_fixture.outcome.epoch()).is_some()
         })
         .await;
 

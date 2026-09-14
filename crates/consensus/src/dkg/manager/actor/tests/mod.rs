@@ -510,18 +510,14 @@ fn failed_dkg_outcomes_carry_share_forward() {
             .get_dkg_outcome(first_digest, Height::new(10))
             .await
             .unwrap();
-        assert_eq!(Epoch::new(first_outcome.epoch), state.epoch.next());
+        assert_eq!(first_outcome.epoch(), state.epoch.next());
         assert_eq!(first_outcome.output, state.output);
 
         let mut first_boundary = header(Height::new(19));
         first_boundary.inner.parent_hash = first_digest.0;
         first_boundary.inner.extra_data = first_outcome.encode().into();
         harness.report_finalized_header(first_boundary).await;
-        assert!(
-            !harness
-                .has_dealer_log(Epoch::new(first_outcome.epoch))
-                .await
-        );
+        assert!(!harness.has_dealer_log(first_outcome.epoch()).await);
 
         harness
             .report_finalized_header(header(Height::new(20)))
@@ -536,21 +532,14 @@ fn failed_dkg_outcomes_carry_share_forward() {
             .get_dkg_outcome(second_digest, Height::new(20))
             .await
             .unwrap();
-        assert_eq!(
-            Epoch::new(second_outcome.epoch),
-            Epoch::new(first_outcome.epoch).next()
-        );
+        assert_eq!(second_outcome.epoch(), first_outcome.epoch().next());
         assert_eq!(second_outcome.output, state.output);
 
         let mut second_boundary = header(Height::new(29));
         second_boundary.inner.parent_hash = second_digest.0;
         second_boundary.inner.extra_data = second_outcome.encode().into();
         harness.report_finalized_header(second_boundary).await;
-        assert!(
-            !harness
-                .has_dealer_log(Epoch::new(second_outcome.epoch))
-                .await
-        );
+        assert!(!harness.has_dealer_log(second_outcome.epoch()).await);
 
         assert_eq!(
             harness.epoch_manager.events(),
@@ -563,14 +552,14 @@ fn failed_dkg_outcomes_carry_share_forward() {
                 },
                 EpochEvent::Exit(state.epoch),
                 EpochEvent::Enter {
-                    epoch: Epoch::new(first_outcome.epoch),
+                    epoch: first_outcome.epoch(),
                     public: state.output.public().clone(),
                     share: Some(share.clone()),
                     participants: state.dealers().clone(),
                 },
-                EpochEvent::Exit(Epoch::new(first_outcome.epoch)),
+                EpochEvent::Exit(first_outcome.epoch()),
                 EpochEvent::Enter {
-                    epoch: Epoch::new(second_outcome.epoch),
+                    epoch: second_outcome.epoch(),
                     public: state.output.public().clone(),
                     share: Some(share),
                     participants: state.dealers().clone(),
@@ -1151,16 +1140,8 @@ fn reshare_produces_new_shares() {
             .await;
 
         second_harness.report_finalized_header(boundary).await;
-        assert!(
-            !first_harness
-                .has_dealer_log(Epoch::new(first_outcome.epoch))
-                .await
-        );
-        assert!(
-            !second_harness
-                .has_dealer_log(Epoch::new(first_outcome.epoch))
-                .await
-        );
+        assert!(!first_harness.has_dealer_log(first_outcome.epoch()).await);
+        assert!(!second_harness.has_dealer_log(first_outcome.epoch()).await);
 
         let first_events = first_harness.epoch_manager.events();
         let EpochEvent::Enter {
@@ -1359,7 +1340,7 @@ fn outcome_requests_use_reshare_fallback_and_require_next_players() {
             .await
             .unwrap();
 
-        assert_eq!(Epoch::new(outcome.epoch), state.epoch.next());
+        assert_eq!(outcome.epoch(), state.epoch.next());
 
         // The incomplete ceremony fails forward by carrying the prior output
         // into the next epoch.

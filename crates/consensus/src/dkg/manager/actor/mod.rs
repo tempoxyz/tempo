@@ -873,7 +873,7 @@ where
         }
 
         Ok(Some(State {
-            epoch: Epoch::new(onchain_outcome.epoch),
+            epoch: onchain_outcome.epoch(),
             seed: Summary::random(self.context.as_present_mut()),
             output: onchain_outcome.output.clone(),
             share,
@@ -1302,7 +1302,7 @@ where
         }
 
         let mut state = State {
-            epoch: Epoch::new(onchain_outcome.epoch),
+            epoch: onchain_outcome.epoch(),
             seed: Summary::random(&mut self.context),
             output: onchain_outcome.output.clone(),
             share: state::ShareState::Plaintext(share),
@@ -1352,7 +1352,7 @@ where
         .wrap_err("failed reading outcome for ceremony boundary")?;
 
         ensure!(
-            Epoch::new(ceremony_outcome.epoch) == ceremony_epoch,
+            ceremony_outcome.epoch() == ceremony_epoch,
             "boundary outcome is for epoch `{}`, expected ceremony epoch `{ceremony_epoch}`",
             ceremony_outcome.epoch,
         );
@@ -1365,7 +1365,7 @@ where
         }
 
         let ceremony_state = State {
-            epoch: Epoch::new(ceremony_outcome.epoch),
+            epoch: ceremony_outcome.epoch(),
             seed: state.seed,
             output: ceremony_outcome.output,
             share: state::ShareState::Plaintext(None),

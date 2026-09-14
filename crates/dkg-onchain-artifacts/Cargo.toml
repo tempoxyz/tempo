@@ -14,6 +14,7 @@ publish.workspace = true
 [dependencies]
 bytes.workspace = true
 commonware-codec.workspace = true
+commonware-consensus = { workspace = true, optional = true }
 commonware-cryptography = { workspace = true, features = ["bls12381", "std"] }
 commonware-utils.workspace = true
 modular-bitfield = { version = "0.13.1", optional = true }

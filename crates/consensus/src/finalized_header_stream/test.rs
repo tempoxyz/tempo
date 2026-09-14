@@ -150,11 +150,8 @@ async fn uses_authoritative_identity_for_initial_backfill() {
     }
 
     let tip = blocks.last().expect("tip was inserted");
-    let tip_finalization = make_finalization(
-        tip,
-        Epoch::new(authoritative.outcome.epoch),
-        &authoritative.schemes,
-    );
+    let tip_finalization =
+        make_finalization(tip, authoritative.outcome.epoch(), &authoritative.schemes);
     let certified = make_certified_block(tip.clone(), &tip_finalization);
     let asserter = Asserter::new();
     push_header(&asserter, &blocks[0]);
