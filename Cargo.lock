@@ -13771,7 +13771,7 @@ dependencies = [
 
 [[package]]
 name = "tempo-nitro-attestation"
-version = "1.13.2"
+version = "1.14.0"
 dependencies = [
  "minicbor",
  "sha2 0.10.9",

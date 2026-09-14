@@ -159,11 +159,7 @@ mod tests {
             ))
         );
         assert_eq!(
-            batch_commitment(
-                42_431,
-                Address::from([0x11; 20]),
-                &call(),
-            ),
+            batch_commitment(42_431, Address::from([0x11; 20]), &call(),),
             B256::from(alloy::primitives::hex!(
                 "764c1f24b00b253ae1a06fe31ba8858a2352e9350e09a6c6028bea47233c0cb9"
             ))
