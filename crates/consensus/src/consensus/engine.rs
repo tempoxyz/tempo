@@ -300,7 +300,7 @@ where
         let (dkg_manager, dkg_manager_mailbox) = dkg::manager::init(
             context.child("dkg_manager"),
             dkg::manager::Config {
-                epoch_manager: epoch_manager_mailbox.clone(),
+                epoch_manager: epoch_manager_mailbox,
                 epoch_strategy: epoch_strategy.clone(),
                 execution_node,
                 initial_share: self.share.clone(),
@@ -336,7 +336,6 @@ where
             marshal,
 
             epoch_manager,
-            epoch_manager_mailbox,
 
             peer_manager,
             peer_manager_mailbox,
@@ -393,7 +392,6 @@ where
     marshal: crate::alias::marshal::Actor<TContext>,
 
     epoch_manager: epoch::manager::Actor<TContext, TBlocker>,
-    epoch_manager_mailbox: epoch::manager::Mailbox,
 
     peer_manager: peer_manager::Actor<TContext, TPeerManager>,
     peer_manager_mailbox: peer_manager::Mailbox,
@@ -544,17 +542,14 @@ where
 
         let marshal = self.marshal.start(
             Reporters::from((
-                self.epoch_manager_mailbox,
+                self.executor_mailbox,
                 Reporters::from((
-                    self.executor_mailbox,
+                    self.dkg_manager_mailbox.clone(),
                     Reporters::from((
-                        self.dkg_manager_mailbox.clone(),
-                        Reporters::from((
-                            self.peer_manager_mailbox,
-                            Reporters::<_, crate::feed::Mailbox, crate::gossip::Mailbox>::from((
-                                self.feed_mailbox,
-                                self.gossip_mailbox,
-                            )),
+                        self.peer_manager_mailbox,
+                        Reporters::<_, crate::feed::Mailbox, crate::gossip::Mailbox>::from((
+                            self.feed_mailbox,
+                            self.gossip_mailbox,
                         )),
                     )),
                 )),
