@@ -29,8 +29,8 @@ jobs:
       contents: read
       pull-requests: read
     outputs:
-      should_run: ${{ steps.filter.outputs.specs }}
-      foundry_smoke: ${{ steps.filter.outputs.foundry_smoke }}
+      should_run: ${{ contains(fromJSON(steps.filter.outputs.changes), 'specs') }}
+      foundry_smoke: ${{ contains(fromJSON(steps.filter.outputs.changes), 'foundry_smoke') }}
     steps:
       - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
         with:
