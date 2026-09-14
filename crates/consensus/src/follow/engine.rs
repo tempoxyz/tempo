@@ -141,7 +141,7 @@ impl<TUpstream> Config<TUpstream> {
             &self.network_identity,
             None,
             &finalized_tip_header,
-            finalized_tip.3.as_ref(),
+            finalized_tip.as_ref(),
         )?;
 
         info_span!("follow_engine").in_scope(|| {

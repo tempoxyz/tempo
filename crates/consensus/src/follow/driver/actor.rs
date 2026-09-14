@@ -81,7 +81,7 @@ where
             )
         })?;
     let onchain_outcome = verifier
-        .decode_dkg_outcome_and_register_boundary(boundary_header.extra_data().as_ref())
+        .decode_dkg_outcome_and_register_boundary(&boundary_header)
         .wrap_err_with(|| {
             format!(
                 "the last boundary (`{startup_execution_boundary}`) block header did not contain a DKG outcome"
@@ -201,9 +201,7 @@ where
 
             let onchain_outcome = self
                 .verifier
-                .decode_dkg_outcome_and_register_boundary(
-                    boundary_block.header().extra_data().as_ref(),
-                )
+                .decode_dkg_outcome_and_register_boundary(boundary_block.header())
                 .wrap_err_with(|| {
                     format!(
                         "the boundary block at height `{last_consensus_boundary}` \
@@ -383,7 +381,7 @@ where
         if epoch_info.last() == block.height() {
             let onchain_outcome = self
                 .verifier
-                .decode_dkg_outcome_and_register_boundary(block.header().extra_data().as_ref())?;
+                .decode_dkg_outcome_and_register_boundary(block.header())?;
 
             self.current_epoch = self.current_epoch.max(onchain_outcome.epoch());
 

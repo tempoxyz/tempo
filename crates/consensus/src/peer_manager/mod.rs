@@ -35,8 +35,6 @@ use commonware_runtime::{Clock, Metrics, Spawner};
 use futures::channel::mpsc;
 use tempo_node::TempoFullNode;
 
-use crate::consensus::Digest;
-
 mod actor;
 mod ingress;
 
@@ -58,8 +56,8 @@ pub(crate) struct Config<TOracle> {
     pub(crate) finalized_floor: Height,
     /// Highest finalized tip observed from consensus at startup.
     /// Execution-layer-derived reads must not advance beyond this tip until
-    /// marshal reports a newer finalized tip.
-    pub(crate) finalized_tip: (Height, Digest),
+    /// marshal reports a newer finalized tip. `None` means startup is at genesis.
+    pub(crate) finalized_tip: Option<crate::alias::marshal::FinalizedTip>,
 }
 
 /// Initializes a peer manager actor from a `config` with runtime `context`.

@@ -111,7 +111,7 @@ fn run_fast_sync(updated_identity_matches: Option<bool>) {
 
         if let Some(matches) = updated_identity_matches {
             late_validator.network_identity = Some(tempo_chainspec::NetworkIdentity {
-                from_epoch: outcome_after.epoch.get(),
+                from_epoch: outcome_after.epoch,
                 identity: *if matches {
                     outcome_after.network_identity()
                 } else {

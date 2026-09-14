@@ -1,4 +1,4 @@
-use alloy_consensus::{BlockHeader as _, Header};
+use alloy_consensus::Header;
 use commonware_consensus::types::{Epoch, FixedEpocher};
 use commonware_cryptography::certificate::Provider as _;
 use commonware_macros::test_traced;
@@ -33,7 +33,7 @@ fn tracks_boundary_identity() {
             .expect("current identity should verify the boundary");
 
         verifier
-            .decode_dkg_outcome_and_register_boundary(boundary.header().extra_data().as_ref())
+            .decode_dkg_outcome_and_register_boundary(boundary.header())
             .expect("boundary should install the next identity");
 
         let block = make_block(EPOCH_LENGTH.get(), None);
@@ -42,6 +42,89 @@ fn tracks_boundary_identity() {
         verifier
             .decode_and_verify(&mut context, &certified)
             .expect("installed identity should verify the next epoch");
+    });
+}
+
+#[test_traced]
+fn rejects_boundary_epoch_that_skips_activation_without_registering_scheme() {
+    deterministic::Runner::default().start(|mut context| async move {
+        let configured = dkg_fixture(&mut context, Epoch::new(1));
+        let forged = dkg_fixture(&mut context, Epoch::new(2));
+        let verifier = FinalizationVerifier::new(
+            NetworkIdentity {
+                from_epoch: 1,
+                identity: *configured.outcome.network_identity(),
+            },
+            FixedEpocher::new(EPOCH_LENGTH),
+        );
+
+        // The epoch-zero boundary must activate epoch one, even if its payload claims
+        // an epoch after the configured checkpoint.
+        let boundary = make_block(EPOCH_LENGTH.get() - 1, Some(&forged.outcome));
+        let error = verifier
+            .decode_dkg_outcome_and_register_boundary(boundary.header())
+            .unwrap_err();
+        assert!(error.to_string().contains("height-derived epoch `1`"));
+        assert!(verifier.scheme_provider.scheme(Epoch::new(1)).is_none());
+        assert!(verifier.scheme_provider.scheme(Epoch::new(2)).is_none());
+
+        let block = make_block(2 * EPOCH_LENGTH.get(), None);
+        let forged_certificate = make_finalization(&block, Epoch::new(2), &forged.schemes);
+        assert!(
+            verifier
+                .verify_certificate(&mut context, &forged_certificate)
+                .is_err()
+        );
+        let configured_certificate = make_finalization(&block, Epoch::new(2), &configured.schemes);
+        verifier
+            .verify_certificate(&mut context, &configured_certificate)
+            .expect("rejected outcome must leave the configured fallback usable");
+    });
+}
+
+#[test_traced]
+fn boundary_outcomes_require_genesis_or_the_previous_epoch_boundary() {
+    deterministic::Runner::default().start(|mut context| async move {
+        let genesis = dkg_fixture(&mut context, Epoch::zero());
+        let next = dkg_fixture(&mut context, Epoch::new(1));
+        let verifier = FinalizationVerifier::new(
+            NetworkIdentity {
+                from_epoch: 0,
+                identity: *genesis.outcome.network_identity(),
+            },
+            FixedEpocher::new(EPOCH_LENGTH),
+        );
+
+        let block = make_block(0, Some(&next.outcome));
+        assert!(
+            verifier
+                .decode_dkg_outcome_and_register_boundary(block.header())
+                .unwrap_err()
+                .to_string()
+                .contains("height-derived epoch `0`")
+        );
+        let block = make_block(EPOCH_LENGTH.get(), Some(&next.outcome));
+        assert!(
+            verifier
+                .decode_dkg_outcome_and_register_boundary(block.header())
+                .unwrap_err()
+                .to_string()
+                .contains("not at an epoch boundary")
+        );
+        assert!(verifier.scheme_provider.scheme(Epoch::new(1)).is_none());
+
+        let block = make_block(0, Some(&genesis.outcome));
+        verifier
+            .decode_dkg_outcome_and_register_boundary(block.header())
+            .expect("genesis activates epoch zero");
+        assert_eq!(
+            verifier
+                .scheme_provider
+                .scheme(Epoch::zero())
+                .unwrap()
+                .identity(),
+            genesis.outcome.network_identity(),
+        );
     });
 }
 
@@ -126,8 +209,7 @@ fn panics_on_activation_identity_mismatch_without_registering_scheme() {
         );
         let boundary = make_block(EPOCH_LENGTH.get() - 1, Some(&other.outcome));
         let result = std::panic::catch_unwind(|| {
-            verifier
-                .decode_dkg_outcome_and_register_boundary(boundary.header().extra_data().as_ref())
+            verifier.decode_dkg_outcome_and_register_boundary(boundary.header())
         });
         assert!(
             result
@@ -140,7 +222,7 @@ fn panics_on_activation_identity_mismatch_without_registering_scheme() {
 
         let boundary = make_block(EPOCH_LENGTH.get() - 1, Some(&configured.outcome));
         verifier
-            .decode_dkg_outcome_and_register_boundary(boundary.header().extra_data().as_ref())
+            .decode_dkg_outcome_and_register_boundary(boundary.header())
             .expect("matching identity should register");
         assert!(verifier.scheme_provider.scheme(Epoch::new(1)).is_some());
 
@@ -148,9 +230,7 @@ fn panics_on_activation_identity_mismatch_without_registering_scheme() {
         let boundary = make_block(EPOCH_LENGTH.get() - 1, Some(&other.outcome));
         assert!(
             std::panic::catch_unwind(|| {
-                verifier.decode_dkg_outcome_and_register_boundary(
-                    boundary.header().extra_data().as_ref(),
-                )
+                verifier.decode_dkg_outcome_and_register_boundary(boundary.header())
             })
             .is_err()
         );

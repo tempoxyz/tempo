@@ -43,8 +43,6 @@
 //! epoch.
 use std::{collections::BTreeMap, num::NonZeroUsize};
 
-use alloy_consensus::BlockHeader as _;
-use commonware_codec::ReadExt as _;
 use commonware_consensus::{
     marshal::{Update, core::DigestFallback},
     simplex::{self, config::Floor, elector, scheme::bls12381_threshold::vrf::Scheme},
@@ -506,10 +504,10 @@ where
                 .subscribe_by_digest(digest, DigestFallback::Wait)
                 .await
                 .map_err(|_| eyre!("marshal never returned the block"))?;
-            let onchain_outcome = tempo_dkg_onchain_artifacts::OnchainDkgOutcome::read(
-                &mut block.header().extra_data().as_ref(),
-            )
-            .expect("boundary blocks must contain DKG outcomes");
+            let onchain_outcome = crate::network_identity::decode_boundary_outcome(
+                &self.config.epoch_strategy,
+                block.header(),
+            )?;
             self.config.scheme_provider.register(
                 onchain_outcome.epoch(),
                 Scheme::verifier(

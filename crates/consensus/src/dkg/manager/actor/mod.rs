@@ -158,6 +158,15 @@ where
         let mut context = ContextCell::new(context);
         let metrics = Metrics::init(context.as_present());
 
+        ensure!(
+            config
+                .finalized_tip
+                .as_ref()
+                .map_or(Height::zero(), |tip| tip.height)
+                >= config.last_finalized_height,
+            "finalized tip is below the finalized floor",
+        );
+
         let storage = state::builder()
             .partition_prefix(&config.partition_prefix)
             .init_unverified(context.child("state"))
@@ -172,7 +181,7 @@ where
         }
         let tip_epoch = config
             .epoch_strategy
-            .containing(Height::new(config.finalized_tip.header.number()))
+            .containing(Height::new(config.finalized_tip_header.number()))
             .expect("epoch strategy covers all heights")
             .epoch();
         crate::network_identity::verify_finalized_tip(
@@ -180,8 +189,8 @@ where
             &config.epoch_strategy,
             &config.network_identity,
             storage.observed_identity(tip_epoch),
-            &config.finalized_tip.header,
-            config.finalized_tip.certificate.as_ref(),
+            &config.finalized_tip_header,
+            config.finalized_tip.as_ref(),
         )?;
 
         Ok(Self {

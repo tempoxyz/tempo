@@ -27,8 +27,8 @@ use harness::{
 #[test]
 fn startup_uses_runtime_observed_tip_identity_before_healing() {
     use crate::{
+        alias::marshal::FinalizedTip,
         follow::test_utils::{dkg_fixture, make_block, make_finalization},
-        network_identity::FinalizedTip,
     };
     use harness::{StubEpochManager, StubMarshal};
 
@@ -87,10 +87,11 @@ fn startup_uses_runtime_observed_tip_identity_before_healing() {
                             mailbox_size: std::num::NonZeroUsize::new(1).unwrap(),
                             marshal: marshal.clone(),
                             last_finalized_height: Height::new(block.header().number()),
-                            finalized_tip: FinalizedTip {
-                                header: block.header().clone(),
-                                certificate: Some(certificate),
-                            },
+                            finalized_tip: Some(FinalizedTip {
+                                height: Height::new(block.header().number()),
+                                certificate,
+                            }),
+                            finalized_tip_header: block.header().clone(),
                             network_identity: tempo_chainspec::NetworkIdentity {
                                 from_epoch: 0,
                                 identity: *genesis.outcome.network_identity(),

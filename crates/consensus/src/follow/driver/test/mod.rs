@@ -1004,7 +1004,6 @@ fn non_boundary_update_is_acknowledged_without_registering_a_scheme() {
 fn startup_installs_missing_consensus_epoch_scheme_from_marshal() {
     deterministic::Runner::default().start(|mut context| async move {
         let fixture = dkg_fixture(&mut context, Epoch::zero());
-        let recovered_fixture = dkg_fixture(&mut context, Epoch::new(2));
         let startup_block = make_block(0, Some(&fixture.outcome));
         let provider = StubExecutionProvider::default();
         provider.add_header(&startup_block);
@@ -1017,6 +1016,7 @@ fn startup_installs_missing_consensus_epoch_scheme_from_marshal() {
             .containing(last_finalized_height)
             .expect("height belongs to an epoch")
             .epoch();
+        let recovered_fixture = dkg_fixture(&mut context, current_epoch);
 
         let previous_epoch = current_epoch.previous().expect("epoch has a predecessor");
         let boundary = strategy

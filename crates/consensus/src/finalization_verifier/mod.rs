@@ -3,7 +3,7 @@
 use std::sync::Arc;
 
 use alloy_consensus::BlockHeader as _;
-use commonware_codec::{DecodeExt as _, ReadExt as _};
+use commonware_codec::DecodeExt as _;
 use commonware_consensus::{
     Epochable as _,
     simplex::{scheme::bls12381_threshold::vrf::Scheme, types::Finalization},
@@ -19,6 +19,7 @@ use tempo_chainspec::NetworkIdentity;
 use tempo_dkg_onchain_artifacts::OnchainDkgOutcome;
 use tempo_evm::consensus::validate_body_against_header;
 use tempo_node::rpc::consensus::CertifiedBlock;
+use tempo_primitives::TempoHeader;
 
 use crate::{config::NAMESPACE, consensus::Digest, epoch::SchemeProvider};
 
@@ -68,13 +69,14 @@ impl FinalizationVerifier {
     /// Install the identity encoded in a finalized epoch-boundary block.
     /// Panic on a mismatch with the configured identity at its activation epoch.
     ///
-    /// The caller is responsible for ensuring `extra_data` came from a boundary block on a chain
+    /// The caller is responsible for ensuring `header` came from a boundary block on a chain
     /// authenticated by a previously verified finalization.
     pub(crate) fn decode_dkg_outcome_and_register_boundary(
         &self,
-        mut extra_data: &[u8],
+        header: &TempoHeader,
     ) -> eyre::Result<OnchainDkgOutcome> {
-        let outcome = OnchainDkgOutcome::read(&mut extra_data)?;
+        let outcome =
+            crate::network_identity::decode_boundary_outcome(&self.epoch_strategy, header)?;
         if outcome.epoch == self.network_identity.from_epoch {
             assert_eq!(
                 *outcome.network_identity(),

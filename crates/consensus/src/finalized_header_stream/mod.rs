@@ -265,7 +265,7 @@ where
             }
             let onchain_outcome = self
                 .verifier
-                .decode_dkg_outcome_and_register_boundary(header.extra_data().as_ref())
+                .decode_dkg_outcome_and_register_boundary(header)
                 .map_err(|error| Error::MalformedBoundary {
                     height: header.number(),
                     reason: error.to_string(),

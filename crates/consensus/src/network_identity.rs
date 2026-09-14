@@ -5,21 +5,21 @@ use alloy_primitives::{FixedBytes, hex};
 use commonware_codec::ReadExt as _;
 use commonware_consensus::{
     Epochable as _,
-    simplex::{scheme::bls12381_threshold::vrf::Scheme, types::Finalization},
-    types::{Epocher as _, FixedEpocher, Height},
+    simplex::scheme::bls12381_threshold::vrf::Scheme,
+    types::{Epoch, Epocher as _, FixedEpocher, Height},
 };
 use commonware_cryptography::{
     bls12381::primitives::variant::{MinSig, Variant},
     ed25519::PublicKey,
 };
 use commonware_parallel::Sequential;
-use eyre::{WrapErr as _, ensure, eyre};
+use eyre::{WrapErr as _, ensure};
 use rand_core::CryptoRng;
 use tempo_dkg_onchain_artifacts::OnchainDkgOutcome;
 use tempo_primitives::TempoHeader;
 use tracing::warn;
 
-use crate::consensus::Digest;
+use crate::alias::marshal::FinalizedTip;
 
 #[derive(Debug, Clone, Copy)]
 pub(crate) struct NetworkIdentity(pub <MinSig as Variant>::Public);
@@ -45,30 +45,57 @@ impl FromStr for NetworkIdentity {
     }
 }
 
-/// Startup evidence read before marshal takes ownership of its archives.
-pub(crate) struct FinalizedTip {
-    pub(crate) header: TempoHeader,
-    pub(crate) certificate: Option<Finalization<Scheme<PublicKey, MinSig>, Digest>>,
+/// Decode an epoch's DKG outcome only from the boundary that activates it.
+pub(crate) fn decode_boundary_outcome(
+    epoch_strategy: &FixedEpocher,
+    header: &TempoHeader,
+) -> eyre::Result<OnchainDkgOutcome> {
+    let height = Height::new(header.number());
+    let epoch_info = epoch_strategy
+        .containing(height)
+        .expect("strategy valid for all heights");
+    let expected_epoch = if height.is_zero() {
+        Epoch::zero()
+    } else {
+        ensure!(
+            height == epoch_info.last(),
+            "DKG outcome at height `{height}` is not at an epoch boundary"
+        );
+        epoch_info.epoch().next()
+    };
+    let outcome = OnchainDkgOutcome::read(&mut header.extra_data().as_ref())
+        .wrap_err("boundary block did not contain a DKG outcome")?;
+    ensure!(
+        outcome.epoch() == expected_epoch,
+        "boundary DKG outcome epoch `{}` does not match height-derived epoch `{expected_epoch}` at height `{height}`",
+        outcome.epoch,
+    );
+    Ok(outcome)
 }
 
 /// Prefer only an identity persisted after a runtime DKG transition for this exact epoch.
 /// A failed check against an observed identity must not fall back to the configured identity.
+/// `tip` is `None` only when `header` is the genesis header.
 pub(crate) fn verify_finalized_tip(
     rng: &mut impl CryptoRng,
     epoch_strategy: &FixedEpocher,
     network_identity: &tempo_chainspec::NetworkIdentity,
     observed_identity: Option<<MinSig as Variant>::Public>,
     header: &TempoHeader,
-    certificate: Option<&Finalization<Scheme<PublicKey, MinSig>, Digest>>,
+    tip: Option<&FinalizedTip>,
 ) -> eyre::Result<()> {
     let epoch = epoch_strategy
         .containing(Height::new(header.number()))
         .expect("strategy valid for all heights");
     // Check storage consistency even when the configured identity is newer than the tip.
-    if header.number() != 0 {
-        let certificate = certificate.ok_or_else(|| {
-            eyre!("finalized tip certificate missing from archive at height `{}`; a non-genesis finalized tip must have an archived certificate", header.number())
-        })?;
+    if let Some(tip) = tip {
+        ensure!(
+            !tip.height.is_zero() && tip.height.get() == header.number(),
+            "finalized tip must match a non-genesis header: tip height `{}`, header height `{}`",
+            tip.height,
+            header.number(),
+        );
+        let certificate = &tip.certificate;
         ensure!(
             header.hash_slow() == certificate.proposal.payload.0,
             "finalized tip header and certificate digest mismatch: inconsistent local storage; finalization certificates are only archived with a matching block"
@@ -78,6 +105,12 @@ pub(crate) fn verify_finalized_tip(
             "finalized tip certificate epoch `{}` does not match height-derived epoch `{}`",
             certificate.epoch(),
             epoch.epoch()
+        );
+    } else {
+        ensure!(
+            header.number() == 0,
+            "finalized tip missing for non-genesis header at height `{}`",
+            header.number(),
         );
     }
     if epoch.epoch().get() == network_identity.from_epoch
@@ -100,7 +133,7 @@ pub(crate) fn verify_finalized_tip(
     }
 
     let identity = observed_identity.unwrap_or(network_identity.identity);
-    if header.number() == 0 {
+    let Some(tip) = tip else {
         let outcome = OnchainDkgOutcome::read(&mut header.extra_data().as_ref())
             .wrap_err("genesis did not contain a DKG outcome")?;
         ensure!(
@@ -111,11 +144,11 @@ pub(crate) fn verify_finalized_tip(
         );
 
         return Ok(());
-    }
+    };
 
     let scheme: Scheme<PublicKey, MinSig> =
         Scheme::certificate_verifier(crate::config::NAMESPACE, identity);
-    let certificate = certificate.expect("non-genesis certificate checked above");
+    let certificate = &tip.certificate;
 
     ensure!(
         certificate.verify(rng, &scheme, &Sequential),
@@ -142,7 +175,10 @@ mod tests {
             let rotated = dkg_fixture(&mut context, Epoch::new(2));
             let strategy = FixedEpocher::new(EPOCH_LENGTH);
             let block = make_block(21, None);
-            let certificate = make_finalization(&block, Epoch::new(2), &rotated.schemes);
+            let tip = FinalizedTip {
+                height: Height::new(block.header().number()),
+                certificate: make_finalization(&block, Epoch::new(2), &rotated.schemes),
+            };
             let stale = tempo_chainspec::NetworkIdentity {
                 identity: *old.outcome.network_identity(),
                 from_epoch: 0,
@@ -154,7 +190,7 @@ mod tests {
                     &stale,
                     None,
                     block.header(),
-                    Some(&certificate),
+                    Some(&tip),
                 )
                 .is_err()
             );
@@ -168,7 +204,7 @@ mod tests {
                 &updated,
                 None,
                 block.header(),
-                Some(&certificate),
+                Some(&tip),
             )
             .unwrap();
         });
@@ -181,7 +217,10 @@ mod tests {
             let rotated = dkg_fixture(&mut context, Epoch::new(2));
             let strategy = FixedEpocher::new(EPOCH_LENGTH);
             let block = make_block(19, Some(&rotated.outcome));
-            let certificate = make_finalization(&block, Epoch::new(1), &old.schemes);
+            let tip = FinalizedTip {
+                height: Height::new(block.header().number()),
+                certificate: make_finalization(&block, Epoch::new(1), &old.schemes),
+            };
             let stale = tempo_chainspec::NetworkIdentity {
                 identity: *old.outcome.network_identity(),
                 from_epoch: 0,
@@ -192,7 +231,7 @@ mod tests {
                 &stale,
                 None,
                 block.header(),
-                Some(&certificate),
+                Some(&tip),
             )
             .unwrap();
             let updated = tempo_chainspec::NetworkIdentity {
@@ -205,7 +244,7 @@ mod tests {
                 &updated,
                 None,
                 block.header(),
-                Some(&certificate),
+                Some(&tip),
             )
             .unwrap();
         });
@@ -232,15 +271,17 @@ mod tests {
                     } else {
                         make_block(outcome.epoch * EPOCH_LENGTH.get() + 1, None)
                     };
-                    let certificate = (outcome.epoch != 0)
-                        .then(|| make_finalization(&block, outcome.epoch(), &fixture.schemes));
+                    let tip = (outcome.epoch != 0).then(|| FinalizedTip {
+                        height: Height::new(block.header().number()),
+                        certificate: make_finalization(&block, outcome.epoch(), &fixture.schemes),
+                    });
                     let result = verify_finalized_tip(
                         &mut context,
                         &strategy,
                         &configured,
                         None,
                         block.header(),
-                        certificate.as_ref(),
+                        tip.as_ref(),
                     );
                     let should_pass =
                         outcome.epoch < from_epoch || outcome.network_identity() == identity;
@@ -261,7 +302,10 @@ mod tests {
             let configured = dkg_fixture(&mut context, Epoch::zero());
             let observed = dkg_fixture(&mut context, Epoch::new(2));
             let block = make_block(21, None);
-            let certificate = make_finalization(&block, Epoch::new(2), &configured.schemes);
+            let tip = FinalizedTip {
+                height: Height::new(block.header().number()),
+                certificate: make_finalization(&block, Epoch::new(2), &configured.schemes),
+            };
             let result = verify_finalized_tip(
                 &mut context,
                 &FixedEpocher::new(EPOCH_LENGTH),
@@ -271,13 +315,53 @@ mod tests {
                 },
                 Some(*observed.outcome.network_identity()),
                 block.header(),
-                Some(&certificate),
+                Some(&tip),
             );
             assert!(
                 result
                     .unwrap_err()
                     .to_string()
                     .contains("failed verification")
+            );
+        });
+    }
+
+    #[test]
+    fn genesis_requires_an_absent_finalized_tip() {
+        deterministic::Runner::default().start(|mut context| async move {
+            let fixture = dkg_fixture(&mut context, Epoch::zero());
+            let genesis = make_block(0, Some(&fixture.outcome));
+            let configured = tempo_chainspec::NetworkIdentity {
+                from_epoch: 0,
+                identity: *fixture.outcome.network_identity(),
+            };
+            let strategy = FixedEpocher::new(EPOCH_LENGTH);
+            verify_finalized_tip(
+                &mut context,
+                &strategy,
+                &configured,
+                None,
+                genesis.header(),
+                None,
+            )
+            .unwrap();
+
+            let tip = FinalizedTip {
+                height: Height::zero(),
+                certificate: make_finalization(&genesis, Epoch::zero(), &fixture.schemes),
+            };
+            assert!(
+                verify_finalized_tip(
+                    &mut context,
+                    &strategy,
+                    &configured,
+                    None,
+                    genesis.header(),
+                    Some(&tip),
+                )
+                .unwrap_err()
+                .to_string()
+                .contains("non-genesis header")
             );
         });
     }
@@ -303,9 +387,12 @@ mod tests {
                 )
                 .unwrap_err()
                 .to_string()
-                .contains("certificate missing")
+                .contains("tip missing")
             );
-            let certificate = make_finalization(&block, Epoch::zero(), &fixture.schemes);
+            let tip = FinalizedTip {
+                height: Height::new(block.header().number()),
+                certificate: make_finalization(&block, Epoch::zero(), &fixture.schemes),
+            };
             assert!(
                 verify_finalized_tip(
                     &mut context,
@@ -313,7 +400,7 @@ mod tests {
                     &configured,
                     None,
                     block.header(),
-                    Some(&certificate)
+                    Some(&tip)
                 )
                 .unwrap_err()
                 .to_string()

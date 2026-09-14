@@ -48,6 +48,23 @@ pub(crate) mod marshal {
 
     pub(crate) type Mailbox = core::Mailbox<Scheme<PublicKey, MinSig>, Standard<Block>>;
 
+    /// A non-genesis finalized block and its archived certificate.
+    #[derive(Clone, Debug)]
+    pub(crate) struct FinalizedTip {
+        pub height: Height,
+        pub certificate: Finalization<Scheme<PublicKey, MinSig>, Digest>,
+    }
+
+    impl FinalizedTip {
+        pub(crate) fn round(&self) -> Round {
+            self.certificate.proposal.round
+        }
+
+        pub(crate) fn digest(&self) -> Digest {
+            self.certificate.proposal.payload
+        }
+    }
+
     /// Settings shared by both engines when initializing the marshal actor
     /// and its backing finalized-blocks store.
     pub(crate) struct Config {
@@ -96,18 +113,10 @@ pub(crate) mod marshal {
         /// height and the startup floor height.
         pub finalized_floor: Height,
 
-        /// Finalized tip selected at startup from the archive or genesis,
-        /// together with the round it was finalized in (the zero round for
-        /// genesis, which is not finalized in any round) and its certificate
-        /// (`None` for genesis).
-        pub finalized_tip: (
-            Round,
-            Height,
-            Digest,
-            Option<Finalization<Scheme<PublicKey, MinSig>, Digest>>,
-        ),
+        /// Latest archived finalization. `None` means startup is at genesis.
+        pub finalized_tip: Option<FinalizedTip>,
 
-        /// Header to validate against the tip certificate before starting the engine's actors.
+        /// Header matching the finalized tip, or the genesis header when the tip is `None`.
         pub finalized_tip_header: TempoHeader,
     }
 
@@ -147,12 +156,15 @@ pub(crate) mod marshal {
             floor: finalized_floor,
             tip: finalized_tip,
         } = establish_finalization_range(&finalizations_by_height, &execution_node).await?;
+        let tip_height = finalized_tip
+            .as_ref()
+            .map_or(Height::zero(), |tip| tip.height);
         info!(
             floor_height = %finalized_floor.0,
             floor_digest = %finalized_floor.1,
-            tip_round = %finalized_tip.0,
-            tip_height = %finalized_tip.1,
-            tip_digest = %finalized_tip.2,
+            tip_round = ?finalized_tip.as_ref().map(FinalizedTip::round),
+            %tip_height,
+            tip_digest = ?finalized_tip.as_ref().map(FinalizedTip::digest),
             "selected finalized startup range"
         );
 
@@ -170,7 +182,6 @@ pub(crate) mod marshal {
         .await
         .wrap_err("failed to initialize hybrid finalized blocks store")?;
 
-        let tip_height = finalized_tip.1;
         let tip_header = read_header(&execution_node, &finalized_blocks, tip_height)
             .await
             .wrap_err_with(|| {
@@ -218,12 +229,12 @@ pub(crate) mod marshal {
 
         if let Some(marshal_stored_height) = marshal_floor.height() {
             ensure!(
-                finalized_tip.1 >= marshal_stored_height,
+                tip_height >= marshal_stored_height,
                 "finalizations archive is inconsistent with the node's consensus metadata: \
                 archive tip height `{}` is below stored marshal height `{marshal_stored_height}`; \
                 have you overwritten consensus storage from a stale snapshot? delete consensus \
                 storage and try again",
-                finalized_tip.1,
+                tip_height,
             );
         }
 
@@ -251,12 +262,7 @@ pub(crate) mod marshal {
 
     struct FinalizationRange {
         floor: (Height, Digest),
-        tip: (
-            Round,
-            Height,
-            Digest,
-            Option<Finalization<Scheme<PublicKey, MinSig>, Digest>>,
-        ),
+        tip: Option<FinalizedTip>,
     }
 
     async fn establish_finalization_range<TContext>(
@@ -279,14 +285,7 @@ pub(crate) mod marshal {
             Some(range) => Ok(range),
             None if execution_finalized.0.is_zero() => Ok(FinalizationRange {
                 floor: execution_finalized,
-                // Genesis is not finalized in any round; the zero round
-                // precedes all real rounds.
-                tip: (
-                    Round::default(),
-                    execution_finalized.0,
-                    execution_finalized.1,
-                    None,
-                ),
+                tip: None,
             }),
             None => Err(eyre!(
                 "consensus startup requires a finalized certificate archive unless the \
@@ -324,7 +323,7 @@ pub(crate) mod marshal {
             .wrap_err_with(|| {
                 format!("failed to read finalized floor from archive at height `{first}`")
             })?;
-        let floor_point = (floor.1, floor.2);
+        let floor_point = (floor.height, floor.digest());
         let tip = if first == last {
             floor
         } else {
@@ -337,7 +336,7 @@ pub(crate) mod marshal {
 
         Ok(Some(FinalizationRange {
             floor: floor_point,
-            tip: (tip.0, tip.1, tip.2, Some(tip.3)),
+            tip: Some(tip),
         }))
     }
 
@@ -485,26 +484,23 @@ pub(crate) mod marshal {
             Finalization<Scheme<PublicKey, MinSig>, Digest>,
         >,
         height: u64,
-    ) -> eyre::Result<(
-        Round,
-        Height,
-        Digest,
-        Finalization<Scheme<PublicKey, MinSig>, Digest>,
-    )>
+    ) -> eyre::Result<FinalizedTip>
     where
         TContext: Clock + Metrics + Spawner + Storage + BufferPooler + Send + 'static,
     {
-        let finalization = archive
+        ensure!(
+            height != 0,
+            "genesis must not have an archived finalization certificate"
+        );
+        let certificate = archive
             .get(Identifier::Index(height))
             .await
             .wrap_err("failed reading certificate from archive")?
             .ok_or_eyre("archive did not contain certificate")?;
-        Ok((
-            finalization.proposal.round,
-            Height::new(height),
-            finalization.proposal.payload,
-            finalization,
-        ))
+        Ok(FinalizedTip {
+            height: Height::new(height),
+            certificate,
+        })
     }
 
     fn execution_finalized_point(execution_node: &TempoFullNode) -> (Height, Digest) {

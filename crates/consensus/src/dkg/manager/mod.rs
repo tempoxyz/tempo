@@ -76,8 +76,12 @@ pub(crate) struct Config<TExecutionLayer, TMarshal, TEpochManager> {
     /// boundary block that seeds the initial DKG state.
     pub(crate) last_finalized_height: Height,
 
-    /// Finalized tip evidence, verified before opening any epoch or healing DKG state.
-    pub(crate) finalized_tip: crate::network_identity::FinalizedTip,
+    /// Latest archived finalization, verified before opening an epoch or healing DKG state.
+    /// `None` means startup is at genesis.
+    pub(crate) finalized_tip: Option<crate::alias::marshal::FinalizedTip>,
+
+    /// Header matching the finalized tip, or the genesis header when the tip is `None`.
+    pub(crate) finalized_tip_header: TempoHeader,
 
     pub(crate) network_identity: tempo_chainspec::NetworkIdentity,
 

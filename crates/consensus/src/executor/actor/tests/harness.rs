@@ -924,7 +924,7 @@ impl Marshal for FakeMarshal {
 /// Options for starting the actor under test.
 pub(super) struct HarnessOptions {
     pub(super) finalized_floor: u64,
-    pub(super) finalized_tip: (Round, u64, Digest),
+    pub(super) finalized_tip: Option<(Round, u64, Digest)>,
     pub(super) fcu_heartbeat_interval: Duration,
     pub(super) public_key: Option<commonware_cryptography::ed25519::PublicKey>,
 }
@@ -933,7 +933,7 @@ impl Default for HarnessOptions {
     fn default() -> Self {
         Self {
             finalized_floor: 0,
-            finalized_tip: (Round::zero(), 0, GENESIS),
+            finalized_tip: None,
             // Keeps the heartbeat out of tests that do not target it.
             fcu_heartbeat_interval: Duration::from_secs(3_600),
             public_key: None,
@@ -997,11 +997,22 @@ impl HarnessBuilder {
             Config {
                 execution_node: execution.clone(),
                 finalized_floor: Height::new(options.finalized_floor),
-                finalized_tip: (
-                    options.finalized_tip.0,
-                    Height::new(options.finalized_tip.1),
-                    options.finalized_tip.2,
-                ),
+                finalized_tip: options.finalized_tip.map(|(round, height, digest)| {
+                    use rand::SeedableRng as _;
+                    let fixture = crate::test_utils::dkg_fixture(
+                        &mut rand::rngs::StdRng::seed_from_u64(0),
+                        round.epoch(),
+                    );
+                    crate::alias::marshal::FinalizedTip {
+                        height: Height::new(height),
+                        certificate: crate::test_utils::make_certificate(
+                            digest,
+                            round.epoch(),
+                            round.view().get(),
+                            &fixture.schemes,
+                        ),
+                    }
+                }),
                 marshal: marshal.clone(),
                 fcu_heartbeat_interval: options.fcu_heartbeat_interval,
                 public_key: options.public_key,
