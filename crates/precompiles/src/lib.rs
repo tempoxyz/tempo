@@ -255,7 +255,7 @@ pub fn extend_tempo_precompiles(
             Some(CurrentCommittee::create_precompile(&env))
         } else if *address == ZONE_FACTORY_ADDRESS && env.cfg.spec.is_t10() {
             Some(ZoneFactory::create_precompile(&env))
-        } else if *address == ZONE_VERIFIER_ADDRESS && env.cfg.spec.is_t11() {
+        } else if *address == ZONE_VERIFIER_ADDRESS && env.cfg.spec.is_t13() {
             Some(ZoneVerifier::create_precompile(&env))
         } else {
             None
@@ -473,7 +473,7 @@ mod tests {
     };
     use tempo_contracts::{
         precompiles::{ITIP20, IZoneVerifier, UnknownFunctionSelector},
-        zones::ZONE_VERIFIER_RUNTIME,
+        zones::T13_ZONE_VERIFIER_RUNTIME,
     };
     use tempo_evm::{TempoBlockEnv, TempoEvmFactory};
     use tempo_revm::TempoTxEnv;
@@ -1200,28 +1200,33 @@ mod tests {
     }
 
     #[test]
-    fn test_zone_verifier_registered_at_t11_only() {
-        let mut t10 = CfgEnv::<TempoHardfork>::default();
-        t10.set_spec_and_mainnet_gas_params(TempoHardfork::T10);
-        assert!(
-            test_tempo_precompiles(&t10)
-                .get(&ZONE_VERIFIER_ADDRESS)
-                .is_none(),
-            "the permissive EVM runtime must remain active through T10"
-        );
+    fn test_zone_verifier_registered_at_t13_only() {
+        let activation = SYSTEM_PRECOMPILES
+            .iter()
+            .find_map(|(address, fork)| (*address == ZONE_VERIFIER_ADDRESS).then_some(*fork))
+            .expect("ZoneVerifier must be listed in SYSTEM_PRECOMPILES");
+        assert_eq!(activation, TempoHardfork::T13);
 
-        let mut t11 = CfgEnv::<TempoHardfork>::default();
-        t11.set_spec_and_mainnet_gas_params(TempoHardfork::T11);
-        assert!(
-            test_tempo_precompiles(&t11)
-                .get(&ZONE_VERIFIER_ADDRESS)
-                .is_some(),
-            "the native verifier must shadow the runtime at T11"
-        );
+        for (spec, active) in [
+            (TempoHardfork::T10, false),
+            (TempoHardfork::T11, false),
+            (TempoHardfork::T12, false),
+            (TempoHardfork::T13, true),
+        ] {
+            let mut cfg = CfgEnv::<TempoHardfork>::default();
+            cfg.set_spec_and_mainnet_gas_params(spec);
+            assert_eq!(
+                test_tempo_precompiles(&cfg)
+                    .get(&ZONE_VERIFIER_ADDRESS)
+                    .is_some(),
+                active,
+                "unexpected native ZoneVerifier activation at {spec:?}"
+            );
+        }
     }
 
     #[test]
-    fn test_zone_verifier_runtime_is_shadowed_at_t11() {
+    fn test_zone_verifier_runtime_is_shadowed_at_t13() {
         let calldata = IZoneVerifier::verifyCall {
             zoneId: 1,
             tempoBlockNumber: 1,
@@ -1251,7 +1256,8 @@ mod tests {
         let execute = |spec| {
             let mut cfg = CfgEnv::<TempoHardfork>::default();
             cfg.set_spec_and_mainnet_gas_params(spec);
-            let code = Bytecode::new_legacy(ZONE_VERIFIER_RUNTIME);
+            // Use a runtime with the matching ABI to isolate the native dispatch boundary.
+            let code = Bytecode::new_legacy(T13_ZONE_VERIFIER_RUNTIME);
             let mut db = CacheDB::new(EmptyDB::new());
             db.insert_account_info(
                 ZONE_VERIFIER_ADDRESS,
@@ -1293,7 +1299,9 @@ mod tests {
         };
 
         assert!(execute(TempoHardfork::T10));
-        assert!(!execute(TempoHardfork::T11));
+        assert!(execute(TempoHardfork::T11));
+        assert!(execute(TempoHardfork::T12));
+        assert!(!execute(TempoHardfork::T13));
     }
 
     #[test]
