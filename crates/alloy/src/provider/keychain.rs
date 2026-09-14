@@ -73,30 +73,7 @@ impl KeyRestrictions {
     /// - Rule has no recipients → any recipient is allowed.
     /// - Otherwise the first ABI word after the selector must match an allowed recipient.
     pub fn is_call_allowed(&self, target: &Address, input: &[u8]) -> bool {
-        (|| {
-            let Some(scopes) = &self.allowed_calls else {
-                return Some(true);
-            };
-            let scope = scopes.iter().find(|s| s.target == *target)?;
-
-            if scope.selector_rules.is_empty() {
-                return Some(true);
-            }
-
-            let selector: [u8; 4] = input.get(..4)?.try_into().ok()?;
-            let rule = scope
-                .selector_rules
-                .iter()
-                .find(|r| r.selector == selector)?;
-
-            if rule.recipients.is_empty() {
-                return Some(true);
-            }
-
-            let word: [u8; 32] = input.get(4..36)?.try_into().ok()?;
-            Some(rule.recipients.contains(&Address::from_word(word.into())))
-        })()
-        .unwrap_or(false)
+        call_scopes_allow(self.allowed_calls.as_deref(), target, input)
     }
 
     /// Returns the expiry timestamp, if one is set.
@@ -123,6 +100,38 @@ impl KeyRestrictions {
     fn has_call_scopes(&self) -> bool {
         self.allowed_calls.is_some()
     }
+}
+
+pub(crate) fn call_scopes_allow(
+    scopes: Option<&[CallScope]>,
+    target: &Address,
+    input: &[u8],
+) -> bool {
+    (|| {
+        let Some(scopes) = scopes else {
+            return Some(true);
+        };
+        let scope = scopes.iter().find(|scope| scope.target == *target)?;
+        if scope.selector_rules.is_empty() {
+            return Some(true);
+        }
+
+        let selector: [u8; 4] = input.get(..4)?.try_into().ok()?;
+        let rule = scope
+            .selector_rules
+            .iter()
+            .find(|rule| rule.selector == selector)?;
+        if rule.recipients.is_empty() {
+            return Some(true);
+        }
+
+        let word: [u8; 32] = input.get(4..36)?.try_into().ok()?;
+        if word[..12].iter().any(|byte| *byte != 0) {
+            return Some(false);
+        }
+        Some(rule.recipients.contains(&Address::from_slice(&word[12..])))
+    })()
+    .unwrap_or(false)
 }
 
 impl From<KeyRestrictions> for AbiKeyRestrictions {
@@ -687,6 +696,21 @@ mod tests {
 
         // Selector only, no recipient word
         let input = ITIP20::transferCall::SELECTOR.to_vec();
+        assert!(!r.is_call_allowed(&token, &input));
+    }
+
+    #[test]
+    fn test_is_call_allowed_rejects_noncanonical_recipient_padding() {
+        let token = address!("0x20c0000000000000000000000000000000000001");
+        let allowed = address!("0x4444444444444444444444444444444444444444");
+        let r = KeyRestrictions::default().with_allowed_calls(vec![
+            CallScopeBuilder::new(token).transfer(vec![allowed]).build(),
+        ]);
+        let mut input = ITIP20::transferCall::SELECTOR.to_vec();
+        input.extend_from_slice(&[0u8; 12]);
+        input.extend_from_slice(allowed.as_slice());
+        input[4] = 1;
+
         assert!(!r.is_call_allowed(&token, &input));
     }
 

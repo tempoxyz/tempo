@@ -87,7 +87,7 @@ impl Display for Query {
 pub struct ConsensusState {
     /// The latest finalized block (if any).
     pub finalized: Option<CertifiedBlock>,
-    /// The latest notarized block (if any, and not yet finalized).
+    /// Reserved for backwards compatibility. The feed does not track notarizations.
     pub notarized: Option<CertifiedBlock>,
 }
 
@@ -131,7 +131,7 @@ pub trait ConsensusFeed: Send + Sync + 'static {
         query: Query,
     ) -> impl Future<Output = Response<CertifiedBlock>> + Send;
 
-    /// Get the current consensus state (latest finalized + latest notarized).
+    /// Get the current consensus state.
     fn get_latest(&self) -> impl Future<Output = ConsensusState> + Send;
 
     /// Subscribe to consensus events.

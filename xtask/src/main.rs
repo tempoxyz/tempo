@@ -4,9 +4,9 @@ use std::net::SocketAddr;
 use crate::{
     bootstrap_shadowfork::BootstrapShadowfork, check_abi::CheckAbi,
     generate_devnet::GenerateDevnet, generate_genesis::GenerateGenesis,
-    generate_localnet::GenerateLocalnet, generate_shadowfork::GenerateShadowfork,
-    generate_state_bloat::GenerateStateBloat, get_dkg_outcome::GetDkgOutcome,
-    identity_transitions::GetIdentityTransitions,
+    generate_hardfork::AddHardfork, generate_localnet::GenerateLocalnet,
+    generate_shadowfork::GenerateShadowfork, generate_state_bloat::GenerateStateBloat,
+    get_dkg_outcome::GetDkgOutcome, identity_transitions::GetIdentityTransitions,
 };
 
 use alloy::signers::{local::MnemonicBuilder, utils::secret_key_to_address};
@@ -18,6 +18,7 @@ mod bootstrap_shadowfork;
 mod check_abi;
 mod generate_devnet;
 mod generate_genesis;
+mod generate_hardfork;
 mod generate_localnet;
 mod generate_shadowfork;
 mod generate_state_bloat;
@@ -37,6 +38,7 @@ async fn main() -> eyre::Result<()> {
             .await
             .wrap_err("failed to get identity transitions"),
         Action::GenerateGenesis(args) => args.run().await.wrap_err("failed generating genesis"),
+        Action::AddHardfork(args) => args.run().wrap_err("failed adding hardfork plumbing"),
         Action::GenerateDevnet(args) => args
             .run()
             .await
@@ -76,6 +78,7 @@ enum Action {
     GetDkgOutcome(GetDkgOutcome),
     GetIdentityTransitions(GetIdentityTransitions),
     GenerateGenesis(GenerateGenesis),
+    AddHardfork(AddHardfork),
     GenerateDevnet(GenerateDevnet),
     GenerateLocalnet(GenerateLocalnet),
     GenerateShadowfork(GenerateShadowfork),

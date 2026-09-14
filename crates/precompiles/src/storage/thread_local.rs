@@ -218,6 +218,12 @@ impl StorageCtx {
         Self::with_storage(|s| s.state_gas_used())
     }
 
+    /// Returns the state gas that was drawn from regular gas because the reservoir was empty
+    /// (EIP-8037's `state_gas_from_gas_left`).
+    pub fn state_gas_spilled(&self) -> u64 {
+        Self::with_storage(|s| s.state_gas_spilled())
+    }
+
     /// Returns the gas refunded so far.
     pub fn gas_refunded(&self) -> i64 {
         Self::with_storage(|s| s.gas_refunded())
@@ -378,7 +384,7 @@ impl<'evm> StorageCtx {
         journal: &'evm mut J,
         block_env: &'evm TempoBlockEnv,
         cfg: &CfgEnv<TempoHardfork>,
-        tx_env: &'evm impl Transaction,
+        tx_env: &'evm (impl Transaction + 'static),
         actions: StorageActions,
         f: impl FnOnce() -> R,
     ) -> R
@@ -402,7 +408,7 @@ impl<'evm> StorageCtx {
         journal: &'evm mut J,
         block_env: &'evm TempoBlockEnv,
         cfg: &CfgEnv<TempoHardfork>,
-        tx_env: &'evm impl Transaction,
+        tx_env: &'evm (impl Transaction + 'static),
         actions: StorageActions,
         f: impl FnOnce() -> R,
     ) -> R
@@ -427,6 +433,7 @@ impl<'evm> StorageCtx {
                 Journal: Debug,
                 Db: Database,
             >,
+        C::Tx: 'static,
     {
         let (tx, block, cfg, journal) = ctx.tx_block_cfg_journal_mut();
         Self::enter_evm(journal, block, cfg, tx, actions, f)
@@ -448,6 +455,7 @@ impl<'evm> StorageCtx {
                 Journal: Debug,
                 Db: Database,
             >,
+        C::Tx: 'static,
     {
         let (tx, block, cfg, journal) = ctx.tx_block_cfg_journal_mut();
         let internals = EvmInternals::new(journal, block, cfg, tx);
@@ -464,7 +472,7 @@ impl<'evm> StorageCtx {
         journal: &'evm mut J,
         block_env: &'evm TempoBlockEnv,
         cfg: &CfgEnv<TempoHardfork>,
-        tx_env: &'evm impl Transaction,
+        tx_env: &'evm (impl Transaction + 'static),
         actions: StorageActions,
         f: impl FnOnce(P) -> R,
     ) -> R

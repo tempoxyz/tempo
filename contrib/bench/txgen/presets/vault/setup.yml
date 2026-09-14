@@ -1,0 +1,601 @@
+# Fixed deployment nonces and policy 2 require a fresh local benchmark chain.
+# The price stays fixed at one unit; age limits keep it valid for the whole run.
+setup:
+  steps:
+  - id: authority
+    deploy:
+      type: eip1559
+      from:
+        pool: deployers
+        select:
+          index: 0
+      nonce: 0
+      artifact: AccessController
+      gas_limit: 30000000
+      constructor_args:
+      - '0xf39fd6e51aad88f6f4ce6ab8827279cfffb92266'
+      - '0x0000000000000000000000000000000000000000'
+  - id: strategy_vault
+    deploy:
+      type: eip1559
+      from:
+        pool: deployers
+        select:
+          index: 0
+      nonce: 1
+      artifact: StrategyVault
+      gas_limit: 30000000
+      constructor_args:
+      - '0xf39fd6e51aad88f6f4ce6ab8827279cfffb92266'
+      - Benchmark Vault
+      - bVAULT
+      - 6
+  - id: accountant
+    deploy:
+      type: eip1559
+      from:
+        pool: deployers
+        select:
+          index: 0
+      nonce: 2
+      artifact: RateAccountant
+      gas_limit: 30000000
+      constructor_args:
+      - '0xf39fd6e51aad88f6f4ce6ab8827279cfffb92266'
+      - var: setup.strategy_vault.address
+      - '0xf39fd6e51aad88f6f4ce6ab8827279cfffb92266'
+      - 1000000
+      - '0x20c0000000000000000000000000000000000000'
+      - 11000
+      - 9000
+      - 0
+      - 0
+      - 0
+  - id: router
+    deploy:
+      type: eip1559
+      from:
+        pool: deployers
+        select:
+          index: 0
+      nonce: 3
+      artifact: VaultRouter
+      gas_limit: 30000000
+      constructor_args:
+      - '0xf39fd6e51aad88f6f4ce6ab8827279cfffb92266'
+      - var: setup.strategy_vault.address
+      - var: setup.accountant.address
+      - '0x0000000000000000000000000000000000000000'
+  - id: oracle
+    deploy:
+      type: eip1559
+      from:
+        pool: deployers
+        select:
+          index: 0
+      nonce: 4
+      artifact: PriceOracle
+      gas_limit: 30000000
+      constructor_args:
+      - 8
+      - '0xf39fd6e51aad88f6f4ce6ab8827279cfffb92266'
+      - '0xf39fd6e51aad88f6f4ce6ab8827279cfffb92266'
+      - 100000000
+      - 1
+  - id: pool
+    deploy:
+      type: eip1559
+      from:
+        pool: deployers
+        select:
+          index: 0
+      nonce: 5
+      artifact: LiquidityPool
+      gas_limit: 30000000
+      constructor_args:
+      - '0x20c0000000000000000000000000000000000001'
+      - '0x20c0000000000000000000000000000000000000'
+      - var: setup.oracle.address
+      - '0xfdc0000000000000000000000000000000000000'
+      - '0xf39fd6e51aad88f6f4ce6ab8827279cfffb92266'
+      - '0xf39fd6e51aad88f6f4ce6ab8827279cfffb92266'
+      - '1208925819614629174706175'
+      - 50
+  - id: buffer
+    deploy:
+      type: eip1559
+      from:
+        pool: deployers
+        select:
+          index: 0
+      nonce: 6
+      artifact: LiquidityBuffer
+      gas_limit: 30000000
+      constructor_args:
+      - var: setup.pool.address
+      - var: setup.strategy_vault.address
+      - '0x0101010101010101010101010101010101010101010101010101010101010101'
+      - 0
+  - id: registry
+    deploy:
+      type: eip1559
+      from:
+        pool: deployers
+        select:
+          index: 0
+      nonce: 7
+      artifact: ComponentRegistry
+      gas_limit: 30000000
+      constructor_args:
+      - var: setup.strategy_vault.address
+      - '0x20c0000000000000000000000000000000000000'
+  - id: publish_components
+    bindings:
+      calldata:
+        abi_encode_packed:
+          types:
+          - bytes4
+          - bytes12
+          - address
+          - bytes12
+          - address
+          - bytes12
+          - address
+          values:
+          - '0x6668dac1'
+          - '0x000000000000000000000000'
+          - var: setup.router.address
+          - '0x000000000000000000000000'
+          - '0x0000000000000000000000000000000000000000'
+          - '0x000000000000000000000000'
+          - var: setup.accountant.address
+    tx:
+      type: tempo
+      from:
+        pool: users
+        select:
+          index: 0
+      sponsor:
+        pool: fee_payers
+        select:
+          index: 0
+      gas_limit: 20000000
+      fee_token: '0x20c0000000000000000000000000000000000000'
+      calls:
+      - to:
+          var: setup.registry.address
+        function:
+          var: calldata
+  - id: engine
+    deploy:
+      type: eip1559
+      from:
+        pool: deployers
+        select:
+          index: 0
+      nonce: 8
+      artifact: VaultEngine
+      gas_limit: 30000000
+      constructor_args:
+      - var: setup.registry.address
+      - '0xf39fd6e51aad88f6f4ce6ab8827279cfffb92266'
+      - '18446744073709551615'
+      - Benchmark Vault
+      - bVAULT
+  - id: vault_implementation
+    deploy:
+      type: eip1559
+      from:
+        pool: deployers
+        select:
+          index: 0
+      nonce: 9
+      artifact: UserVault
+      gas_limit: 30000000
+      constructor_args: []
+  - id: fee_implementation
+    deploy:
+      type: eip1559
+      from:
+        pool: deployers
+        select:
+          index: 0
+      nonce: 10
+      artifact: FeeModule
+      gas_limit: 30000000
+      constructor_args: []
+  - id: factory
+    deploy:
+      type: eip1559
+      from:
+        pool: deployers
+        select:
+          index: 0
+      nonce: 11
+      artifact: VaultFactory
+      gas_limit: 30000000
+      constructor_args:
+      - '0x20fc000000000000000000000000000000000000'
+      - var: setup.vault_implementation.address
+      - var: setup.fee_implementation.address
+  - id: create_policy
+    tx:
+      type: tempo
+      from:
+        pool: users
+        select:
+          index: 0
+      sponsor:
+        pool: fee_payers
+        select:
+          index: 0
+      gas_limit: 20000000
+      fee_token: '0x20c0000000000000000000000000000000000000'
+      calls:
+      - to: '0x403c000000000000000000000000000000000000'
+        abi: PolicyRegistry
+        function: createPolicy
+        args:
+        - '0xf39fd6e51aad88f6f4ce6ab8827279cfffb92266'
+        - 0
+  - id: configure_0
+    tx:
+      type: tempo
+      from:
+        pool: users
+        select:
+          index: 0
+      sponsor:
+        pool: fee_payers
+        select:
+          index: 0
+      gas_limit: 20000000
+      fee_token: '0x20c0000000000000000000000000000000000000'
+      calls:
+      - to:
+          var: setup.strategy_vault.address
+        abi: StrategyVault
+        function: setAuthority
+        args:
+        - var: setup.authority.address
+      - to:
+          var: setup.accountant.address
+        abi: RateAccountant
+        function: setAuthority
+        args:
+        - var: setup.authority.address
+      - to:
+          var: setup.router.address
+        abi: VaultRouter
+        function: setAuthority
+        args:
+        - var: setup.authority.address
+      - to:
+          var: setup.authority.address
+        abi: AccessController
+        function: setRoleCapability
+        args:
+        - 1
+        - var: setup.strategy_vault.address
+        - '0x39d6ba32'
+        - true
+      - to:
+          var: setup.authority.address
+        abi: AccessController
+        function: setRoleCapability
+        args:
+        - 1
+        - var: setup.strategy_vault.address
+        - '0x18457e61'
+        - true
+      - to:
+          var: setup.authority.address
+        abi: AccessController
+        function: setRoleCapability
+        args:
+        - 1
+        - var: setup.strategy_vault.address
+        - '0x224d8703'
+        - true
+      - to:
+          var: setup.authority.address
+        abi: AccessController
+        function: setRoleCapability
+        args:
+        - 1
+        - var: setup.accountant.address
+        - '0x02ce728f'
+        - true
+      - to:
+          var: setup.authority.address
+        abi: AccessController
+        function: setRoleCapability
+        args:
+        - 1
+        - var: setup.accountant.address
+        - '0x4512deb7'
+        - true
+      - to:
+          var: setup.authority.address
+        abi: AccessController
+        function: setRoleCapability
+        args:
+        - 2
+        - var: setup.router.address
+        - '0x9d574420'
+        - true
+      - to:
+          var: setup.authority.address
+        abi: AccessController
+        function: setRoleCapability
+        args:
+        - 2
+        - var: setup.router.address
+        - '0x3e64ce99'
+        - true
+      - to:
+          var: setup.authority.address
+        abi: AccessController
+        function: setUserRole
+        args:
+        - var: setup.router.address
+        - 1
+        - true
+      - to:
+          var: setup.authority.address
+        abi: AccessController
+        function: setUserRole
+        args:
+        - var: setup.engine.address
+        - 2
+        - true
+  - id: configure_1
+    tx:
+      type: tempo
+      from:
+        pool: users
+        select:
+          index: 0
+      sponsor:
+        pool: fee_payers
+        select:
+          index: 0
+      gas_limit: 20000000
+      fee_token: '0x20c0000000000000000000000000000000000000'
+      calls:
+      - to:
+          var: setup.strategy_vault.address
+        abi: StrategyVault
+        function: setBeforeTransferHook
+        args:
+        - var: setup.router.address
+      - to:
+          var: setup.router.address
+        abi: VaultRouter
+        function: updateAssetData
+        args:
+        - '0x20c0000000000000000000000000000000000000'
+        - true
+        - true
+        - 0
+      - to:
+          var: setup.router.address
+        abi: VaultRouter
+        function: allowBufferHelper
+        args:
+        - '0x20c0000000000000000000000000000000000000'
+        - var: setup.buffer.address
+      - to:
+          var: setup.router.address
+        abi: VaultRouter
+        function: setDepositBufferHelper
+        args:
+        - '0x20c0000000000000000000000000000000000000'
+        - var: setup.buffer.address
+      - to:
+          var: setup.router.address
+        abi: VaultRouter
+        function: setWithdrawBufferHelper
+        args:
+        - '0x20c0000000000000000000000000000000000000'
+        - var: setup.buffer.address
+      - to:
+          var: setup.pool.address
+        abi: LiquidityPool
+        function: setTakerAllowed
+        args:
+        - var: setup.strategy_vault.address
+        - true
+      - to:
+          var: setup.pool.address
+        abi: LiquidityPool
+        function: setRecipientAllowed
+        args:
+        - var: setup.strategy_vault.address
+        - true
+      - to:
+          var: setup.registry.address
+        abi: ComponentRegistry
+        function: bindEngine
+        args:
+        - var: setup.engine.address
+      - to: '0x20c0000000000000000000000000000000000001'
+        abi: ERC20
+        function: mint
+        args:
+        - var: setup.pool.address
+        - '1000000000000000000000000000000'
+      - to: '0x20c0000000000000000000000000000000000000'
+        abi: ERC20
+        function: mint
+        args:
+        - var: setup.pool.address
+        - '1000000000000000000000000000000'
+      - to: '0x20c0000000000000000000000000000000000000'
+        abi: ERC20
+        function: mint
+        args:
+        - '0xf39fd6e51aad88f6f4ce6ab8827279cfffb92266'
+        - '1000000000000000000000000000000'
+      - to: '0x20c0000000000000000000000000000000000000'
+        abi: ERC20
+        function: mint
+        args:
+        - '0xcc2ba0b70b1ffae6a70ac50e90d8eb484a8cd548'
+        - '1000000000000000000000000000000'
+  - id: configure_2
+    tx:
+      type: tempo
+      from:
+        pool: users
+        select:
+          index: 0
+      sponsor:
+        pool: fee_payers
+        select:
+          index: 0
+      gas_limit: 20000000
+      fee_token: '0x20c0000000000000000000000000000000000000'
+      calls:
+      - to:
+          var: setup.pool.address
+        abi: LiquidityPool
+        function: unpause
+        args: []
+  - id: deploy_vault
+    tx:
+      type: tempo
+      from:
+        pool: users
+        select:
+          index: 0
+      sponsor:
+        pool: fee_payers
+        select:
+          index: 0
+      gas_limit: 20000000
+      fee_token: '0x20c0000000000000000000000000000000000000'
+      calls:
+      - to:
+          var: setup.factory.address
+        abi: VaultFactory
+        function: deploy
+        args:
+        - deploymentId: '0x0202020202020202020202020202020202020202020202020202020202020202'
+          engine:
+            var: setup.engine.address
+          owner: '0xf39fd6e51aad88f6f4ce6ab8827279cfffb92266'
+          controls:
+            emergencyGuardian: '0xf39fd6e51aad88f6f4ce6ab8827279cfffb92266'
+            asyncJanitor: '0xf39fd6e51aad88f6f4ce6ab8827279cfffb92266'
+            maxManagedAssets: 0
+            migrationMode: 0
+          distributorConfig:
+            distributor: '0x0000000000000000000000000000000000000000'
+            updateDelay: 0
+          fees:
+            fixedFeeCount: 1
+            fixedFees:
+            - - '0xf39fd6e51aad88f6f4ce6ab8827279cfffb92266'
+              - 100
+            - &id001
+              - '0x0000000000000000000000000000000000000000'
+              - 0
+            - *id001
+            - *id001
+            excess:
+            - false
+            - '0x0000000000000000000000000000000000000000'
+            - 0
+            - 0
+          transferPolicyId: 2
+  - id: bind_vault
+    bindings:
+      calldata:
+        abi_encode_packed:
+          types:
+          - bytes4
+          - bytes12
+          - address
+          values:
+          - '0x6a48b469'
+          - '0x000000000000000000000000'
+          - '0x7ab1b8f13760b57021ad9baff0be170259245992'
+    tx:
+      type: tempo
+      from:
+        pool: users
+        select:
+          index: 0
+      sponsor:
+        pool: fee_payers
+        select:
+          index: 0
+      gas_limit: 20000000
+      fee_token: '0x20c0000000000000000000000000000000000000'
+      calls:
+      - to:
+          var: setup.engine.address
+        function:
+          var: calldata
+  - id: prepare_vault
+    tx:
+      type: tempo
+      from:
+        pool: users
+        select:
+          index: 0
+      sponsor:
+        pool: fee_payers
+        select:
+          index: 0
+      gas_limit: 20000000
+      fee_token: '0x20c0000000000000000000000000000000000000'
+      calls:
+      - to: '0x403c000000000000000000000000000000000000'
+        abi: PolicyRegistry
+        function: modifyPolicyWhitelist
+        args:
+        - 2
+        - '0xf39fd6e51aad88f6f4ce6ab8827279cfffb92266'
+        - true
+      - to: '0x403c000000000000000000000000000000000000'
+        abi: PolicyRegistry
+        function: modifyPolicyWhitelist
+        args:
+        - 2
+        - '0x7ab1b8f13760b57021ad9baff0be170259245992'
+        - true
+      - to: '0x403c000000000000000000000000000000000000'
+        abi: PolicyRegistry
+        function: modifyPolicyWhitelist
+        args:
+        - 2
+        - '0x2afdb4beb393d4297ba73d892aa453ff0fa0bc3f'
+        - true
+      - to: '0x20c0000000000000000000000000000000000000'
+        abi: ERC20
+        function: approve
+        args:
+        - '0x7ab1b8f13760b57021ad9baff0be170259245992'
+        - '1000000000000000000000000000000'
+      - to: '0x20c000000000000000000000b40ebef7b60e73cf'
+        abi: ERC20
+        function: approve
+        args:
+        - '0x7ab1b8f13760b57021ad9baff0be170259245992'
+        - 1000000
+      - to: '0x7ab1b8f13760b57021ad9baff0be170259245992'
+        abi: UserVault
+        function: deposit
+        args:
+        - 10000000
+        - '0xf39fd6e51aad88f6f4ce6ab8827279cfffb92266'
+        - 9000000
+      - to: '0x7ab1b8f13760b57021ad9baff0be170259245992'
+        abi: UserVault
+        function: redeem
+        args:
+        - 1000000
+        - '0xf39fd6e51aad88f6f4ce6ab8827279cfffb92266'
+        - 990000

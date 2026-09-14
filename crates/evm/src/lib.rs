@@ -5,13 +5,14 @@
 
 mod action_replay;
 mod assemble;
+mod pool;
 pub use action_replay::{
     ExpiringNonceReplay, StorageActionReplay, StorageActionReplayError, StorageActionReplayOutcome,
     StorageActionReplayState,
 };
-use alloy_consensus::{BlockHeader as _, Transaction};
-use alloy_rlp::Decodable;
+use alloy_consensus::BlockHeader as _;
 pub use assemble::TempoBlockAssembler;
+pub use pool::{TempoPoolValidationEvm, TempoPoolValidationResult};
 mod block;
 pub use block::{TempoBlockExecutor, TempoReceiptBuilder, TempoTxResult};
 mod context;
@@ -33,22 +34,24 @@ use alloy_evm::{
     eth::{EthBlockExecutionCtx, NextEvmEnvAttributes},
     revm::Inspector,
 };
+use alloy_primitives::Address;
 pub use evm::TempoEvmFactory;
 use reth_chainspec::EthChainSpec;
-use reth_evm::{self, ConfigureEvm, EvmEnvFor, block::StateDB};
+use reth_evm::{self, ConfigureEvm, EvmEnvFor, SenderRecoveryCache, block::StateDB};
 use reth_primitives_traits::{SealedBlock, SealedHeader};
-use tempo_primitives::{
-    Block, SubBlockMetadata, TempoHeader, TempoPrimitives, TempoReceipt, TempoTxEnvelope,
-    subblock::PartialValidatorKey,
-};
+use tempo_primitives::{Block, TempoHeader, TempoPrimitives, TempoReceipt, TempoTxEnvelope};
 
 use crate::evm::TempoEvm;
 use reth_evm_ethereum::EthEvmConfig;
-use tempo_chainspec::{TempoChainSpec, hardfork::TempoHardforks};
-use tempo_revm::{evm::TempoContext, gas_params::tempo_gas_params_with_amsterdam};
+use tempo_chainspec::{
+    TempoChainSpec,
+    hardfork::{TempoHardfork, TempoHardforks},
+};
+use tempo_precompiles::{error::Result as TempoResult, storage::StorageActions};
+use tempo_revm::{TempoTxEnv, evm::TempoContext, gas_params::tempo_gas_params_with_amsterdam};
 
 pub use tempo_revm::{
-    ProtocolFeeContext, ProtocolFeeManager, TempoBlockEnv, TempoFeeManager, TempoHaltReason,
+    FeeTokenResolver, ProtocolFeeContext, ProtocolFeeManager, TempoBlockEnv, TempoFeeManager,
     TempoInvalidTransaction, TempoStateAccess,
 };
 
@@ -65,6 +68,22 @@ pub struct TempoEvmConfig {
     pub block_assembler: TempoBlockAssembler,
 }
 
+impl FeeTokenResolver for TempoEvmConfig {
+    fn resolve_fee_token<S, M>(
+        &self,
+        state: &mut S,
+        tx: &TempoTxEnv,
+        fee_payer: Address,
+        spec: TempoHardfork,
+        actions: StorageActions,
+    ) -> TempoResult<Address>
+    where
+        S: TempoStateAccess<M>,
+    {
+        TempoFeeManager::new().resolve_fee_token(state, tx, fee_payer, spec, actions)
+    }
+}
+
 impl TempoEvmConfig {
     /// Create a new [`TempoEvmConfig`] with the given chain spec and EVM factory.
     pub fn new(chain_spec: Arc<TempoChainSpec>) -> Self {
@@ -74,6 +93,12 @@ impl TempoEvmConfig {
             inner,
             block_assembler: TempoBlockAssembler::new(chain_spec),
         }
+    }
+
+    /// Uses the provided sender recovery cache.
+    pub fn with_sender_recovery_cache(mut self, cache: SenderRecoveryCache) -> Self {
+        self.inner = self.inner.with_sender_recovery_cache(cache);
+        self
     }
 
     /// Returns the chain spec
@@ -240,24 +265,6 @@ impl ConfigureEvm for TempoEvmConfig {
         &self,
         block: &'a SealedBlock<Block>,
     ) -> Result<TempoBlockExecutionCtx<'a>, Self::Error> {
-        // Decode validator -> fee_recipient mapping from the subblock metadata system transaction.
-        let subblock_fee_recipients = block
-            .body()
-            .transactions
-            .iter()
-            .rev()
-            .filter(|tx| tx.is_system_tx())
-            .find_map(|tx| Vec::<SubBlockMetadata>::decode(&mut tx.input().as_ref()).ok())
-            .unwrap_or_default()
-            .into_iter()
-            .map(|metadata| {
-                (
-                    PartialValidatorKey::from_slice(&metadata.validator[..15]),
-                    metadata.fee_recipient,
-                )
-            })
-            .collect();
-
         Ok(TempoBlockExecutionCtx {
             inner: EthBlockExecutionCtx {
                 parent_hash: block.header().parent_hash(),
@@ -275,10 +282,7 @@ impl ConfigureEvm for TempoEvmConfig {
             },
             general_gas_limit: block.header().general_gas_limit,
             shared_gas_limit: block.header().shared_gas_limit,
-            // Not available when we only have a block body.
-            validator_set: None,
             consensus_context: block.header().consensus_context,
-            subblock_fee_recipients,
         })
     }
 
@@ -302,10 +306,7 @@ impl ConfigureEvm for TempoEvmConfig {
             },
             general_gas_limit: attributes.general_gas_limit,
             shared_gas_limit: attributes.shared_gas_limit,
-            // Fine to not validate during block building.
-            validator_set: None,
             consensus_context: attributes.consensus_context,
-            subblock_fee_recipients: attributes.subblock_fee_recipients,
         })
     }
 }
@@ -318,7 +319,6 @@ mod tests {
     use alloy_primitives::{Address, B256, Bytes, TxKind, U256};
     use alloy_rlp::{Encodable, bytes::BytesMut};
     use reth_evm::{ConfigureEvm, NextBlockEnvAttributes};
-    use std::collections::HashMap;
     use tempo_chainspec::hardfork::TempoHardfork;
     use tempo_primitives::{
         BlockBody, SubBlockMetadata, TempoConsensusContext, ed25519::PublicKey,
@@ -371,7 +371,7 @@ mod tests {
         assert_eq!(evm_env.block_env.timestamp_millis_part, 500);
         assert_eq!(evm_env.block_env.proposer_public_key, None);
 
-        let proposer = PublicKey::from_seed([0xab; 32]);
+        let proposer = PublicKey::from_seed(0xab);
         let evm_env = evm_config
             .evm_env(&TempoHeader {
                 consensus_context: Some(TempoConsensusContext {
@@ -457,7 +457,6 @@ mod tests {
             shared_gas_limit: 3_000_000,
             timestamp_millis_part: 750,
             consensus_context: None,
-            subblock_fee_recipients: HashMap::new(),
         };
 
         let result = evm_config.next_evm_env(&parent, &attributes);
@@ -479,7 +478,7 @@ mod tests {
         assert_eq!(evm_env.block_env.timestamp_millis_part, 750);
         assert_eq!(evm_env.block_env.proposer_public_key, None);
 
-        let proposer = PublicKey::from_seed([0xcd; 32]);
+        let proposer = PublicKey::from_seed(0xcd);
         let evm_env = evm_config
             .next_evm_env(
                 &parent,
@@ -562,18 +561,10 @@ mod tests {
         // Verify context fields
         assert_eq!(context.general_gas_limit, 10_000_000);
         assert_eq!(context.shared_gas_limit, 3_000_000);
-        assert!(context.validator_set.is_none());
-
-        // Verify subblock_fee_recipients was extracted from metadata
-        let partial_key = PartialValidatorKey::from_slice(&validator_key[..15]);
-        assert_eq!(
-            context.subblock_fee_recipients.get(&partial_key),
-            Some(&fee_recipient)
-        );
     }
 
     #[test]
-    fn test_context_for_block_t4_without_metadata_has_empty_fee_recipients() {
+    fn test_context_for_block_t4_without_metadata() {
         use tempo_chainspec::spec::DEV;
 
         let chainspec = DEV.clone();
@@ -603,7 +594,7 @@ mod tests {
         let sealed_block = SealedBlock::seal_slow(block);
 
         let context = evm_config.context_for_block(&sealed_block).unwrap();
-        assert!(context.subblock_fee_recipients.is_empty());
+        assert_eq!(context.general_gas_limit, 10_000_000);
     }
 
     #[test]
@@ -624,11 +615,6 @@ mod tests {
         };
         let parent = SealedHeader::seal_slow(parent_header);
 
-        let fee_recipient = Address::repeat_byte(0x02);
-        let mut subblock_fee_recipients = HashMap::new();
-        let partial_key = PartialValidatorKey::from_slice(&[0x01; 15]);
-        subblock_fee_recipients.insert(partial_key, fee_recipient);
-
         let attributes = TempoNextBlockEnvAttributes {
             inner: NextBlockEnvAttributes {
                 timestamp: 1000,
@@ -644,7 +630,6 @@ mod tests {
             shared_gas_limit: 4_000_000,
             timestamp_millis_part: 999,
             consensus_context: None,
-            subblock_fee_recipients: subblock_fee_recipients.clone(),
         };
 
         let result = evm_config.context_for_next_block(&parent, attributes);
@@ -655,17 +640,10 @@ mod tests {
         // Verify context fields from attributes
         assert_eq!(context.general_gas_limit, 12_000_000);
         assert_eq!(context.shared_gas_limit, 4_000_000);
-        assert!(context.validator_set.is_none());
         assert_eq!(context.inner.parent_hash, parent.hash());
         assert_eq!(
             context.inner.parent_beacon_block_root,
             Some(B256::repeat_byte(0x05))
-        );
-
-        // Verify subblock_fee_recipients passed through
-        assert_eq!(
-            context.subblock_fee_recipients.get(&partial_key),
-            Some(&fee_recipient)
         );
     }
 }

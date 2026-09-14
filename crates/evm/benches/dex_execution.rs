@@ -4,7 +4,7 @@
 //! fixed-cache execution path. This is intended as a small CodSpeed/flamegraph target for
 //! TIP-1062 order storage layout work.
 
-#[allow(dead_code)]
+#[expect(dead_code)]
 mod common;
 
 use alloy_consensus::transaction::Recovered;
@@ -88,7 +88,7 @@ fn seed_dex_cache_db(
             )?;
 
             let mut quote = TIP20Token::from_address(PATH_USD_ADDRESS)?;
-            quote.grant_role_internal(admin, *ISSUER_ROLE)?;
+            quote.grant_role_internal(admin, ISSUER_ROLE)?;
 
             let base_token = TIP20Factory::new().create_token(
                 admin,
@@ -102,7 +102,7 @@ fn seed_dex_cache_db(
                 },
             )?;
             let mut base = TIP20Token::from_address(base_token)?;
-            base.grant_role_internal(admin, *ISSUER_ROLE)?;
+            base.grant_role_internal(admin, ISSUER_ROLE)?;
 
             for participant in participants {
                 let mint = ITIP20::mintCall {

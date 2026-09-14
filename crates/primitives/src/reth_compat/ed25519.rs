@@ -1,10 +1,21 @@
-use alloy_rlp::Encodable;
-
-use crate::ed25519::PublicKey;
-
-impl reth_primitives_traits::InMemorySize for PublicKey {
+impl reth_primitives_traits::InMemorySize for crate::ed25519::PublicKey {
     fn size(&self) -> usize {
-        self.length()
+        alloy_primitives::B256::len_bytes()
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use alloy_primitives::B256;
+    use reth_primitives_traits::InMemorySize as _;
+
+    use crate::ed25519::PublicKey;
+
+    #[test]
+    fn public_key_size_matches_b256() {
+        let key = PublicKey::from_seed(42);
+
+        assert_eq!(key.size(), B256::len_bytes());
     }
 }
 

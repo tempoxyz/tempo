@@ -692,6 +692,7 @@ pub(super) async fn run_estimate_gas_matrix<E: TestEnv>(
 /// deterministic by signing + recovering with a random signer.
 pub(super) async fn run_fill_transaction_matrix<E: TestEnv>(env: &mut E) -> eyre::Result<()> {
     let is_t3 = env.hardfork().is_t3();
+    let max_expiry_secs = env.hardfork().expiring_nonce_max_expiry_secs();
     let supports_scoped_key_auth_rpc = env.supports_scoped_key_auth_rpc();
     let signer = PrivateKeySigner::random();
     let signer_addr = signer.address();
@@ -757,9 +758,14 @@ pub(super) async fn run_fill_transaction_matrix<E: TestEnv>(env: &mut E) -> eyre
     for (index, test_case) in matrix.iter().enumerate() {
         println!("[{}/{}] {}", index + 1, matrix.len(), test_case.name);
 
-        let fill_result =
-            fill_transaction_from_case(env.provider(), test_case, signer_addr, current_timestamp)
-                .await;
+        let fill_result = fill_transaction_from_case(
+            env.provider(),
+            test_case,
+            signer_addr,
+            current_timestamp,
+            max_expiry_secs,
+        )
+        .await;
         let (filled_tx, request_context) = match fill_result {
             Ok(pair) => {
                 if matches!(test_case.expected, ExpectedOutcome::Rejection) {
@@ -1735,6 +1741,7 @@ pub(super) async fn run_fill_sign_send<E: TestEnv>(
 
     let uses_p256 = matches!(test_case.key_type, KeyType::P256 | KeyType::WebAuthn);
     let chain_id = env.chain_id();
+    let max_expiry_secs = env.hardfork().expiring_nonce_max_expiry_secs();
 
     if uses_p256 && test_case.pre_bump_nonce.is_some() {
         return Err(eyre::eyre!(
@@ -1753,9 +1760,14 @@ pub(super) async fn run_fill_sign_send<E: TestEnv>(
 
         let current_timestamp = env.current_block_timestamp().await?;
 
-        let fill_result =
-            fill_transaction_from_case(env.provider(), test_case, signer_addr, current_timestamp)
-                .await;
+        let fill_result = fill_transaction_from_case(
+            env.provider(),
+            test_case,
+            signer_addr,
+            current_timestamp,
+            max_expiry_secs,
+        )
+        .await;
 
         let (mut tx, _request_context) = match fill_result {
             Ok(pair) => pair,
@@ -1808,9 +1820,14 @@ pub(super) async fn run_fill_sign_send<E: TestEnv>(
         let current_timestamp = env.current_block_timestamp().await?;
         let initial_protocol_nonce = env.provider().get_transaction_count(signer_addr).await?;
 
-        let fill_result =
-            fill_transaction_from_case(env.provider(), test_case, signer_addr, current_timestamp)
-                .await;
+        let fill_result = fill_transaction_from_case(
+            env.provider(),
+            test_case,
+            signer_addr,
+            current_timestamp,
+            max_expiry_secs,
+        )
+        .await;
 
         let (mut tx, request_context) = match fill_result {
             Ok(pair) => pair,

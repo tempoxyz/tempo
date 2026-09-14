@@ -16,7 +16,7 @@ use commonware_cryptography::{
     ed25519::{PrivateKey, PublicKey},
 };
 use commonware_math::algebra::Random as _;
-use rand_core::CryptoRngCore;
+use rand_core::CryptoRng;
 use secrecy::{ExposeSecret as _, ExposeSecretMut as _, SecretBox, SecretString};
 
 #[cfg(test)]
@@ -84,7 +84,7 @@ impl SigningKey {
     }
 
     /// Generates a fresh, cryptographically random signing key using `rng`.
-    pub fn random<R: CryptoRngCore>(rng: R) -> Self {
+    pub fn random<R: CryptoRng>(rng: R) -> Self {
         Self {
             inner: PrivateKey::random(rng),
         }
@@ -145,7 +145,20 @@ impl SigningKey {
         path: P,
         passphrase: SecretString,
     ) -> Result<(), SigningKeyError> {
-        let file = std::fs::File::create(path).map_err(SigningKeyErrorKind::Write)?;
+        let mut options = std::fs::OpenOptions::new();
+        options.write(true).create_new(true);
+
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::OpenOptionsExt as _;
+
+            // Apply restrictive permissions atomically when creating a new key file.
+            options.mode(0o600);
+        }
+
+        let file = options
+            .open(path.as_ref())
+            .map_err(SigningKeyErrorKind::Write)?;
         self.write_encrypted(file, passphrase)
     }
 

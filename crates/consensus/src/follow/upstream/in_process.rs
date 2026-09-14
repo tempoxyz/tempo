@@ -72,7 +72,7 @@ where
 
     async fn run(mut self, mut reporter: impl Reporter<Activity = Event>) {
         let feed = self.config.feed.clone();
-        let context = self.context.clone();
+        let context = self.context.child("subscription");
         let mut pending_subscription = OptionFuture::some(
             async move {
                 loop {
@@ -102,7 +102,9 @@ where
                         ?event, "received consensus event, forwarding to reporter"
                     ));
                     match event {
-                        Ok(event) => reporter.report(event).await,
+                        Ok(event) => {
+                            let _ = reporter.report(event);
+                        }
                         Err(BroadcastStreamRecvError::Lagged(events_skipped)) => {
                             debug_span!("subscription").in_scope(|| debug!(
                                 events_skipped,
@@ -122,13 +124,13 @@ where
                         Message::GetFinalization { height, response } => {
                             let feed = self.config.feed.clone();
                             self.context
-                                .with_label("get_finalization")
+                                .child("get_finalization")
                                 .spawn(move |_| get_finalization(feed, height, response));
                         }
                         Message::GetBlock { digest, response } => {
                             let execution_node = self.config.execution_node.clone();
                             self.context
-                                .with_label("get_block")
+                                .child("get_block")
                                 .spawn(move |_| get_block(execution_node, digest, response));
                         }
                     }

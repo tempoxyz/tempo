@@ -1,7 +1,13 @@
+[profile.default]
+slow-timeout = { period = "3m", terminate-after = 1 }
+
 [profile.ci]
 fail-fast = false
 retries = 2
 test-threads = "num-cpus"
+
+[profile.ci.junit]
+path = "junit.xml"
 
 # Treat timeout as success while debugging snapshot-restart flakiness.
 [[profile.ci.overrides]]
@@ -15,8 +21,7 @@ slow-timeout = { period = "3m", terminate-after = 3, on-timeout = "pass" }
 filter = """
   package(tempo-e2e) & (
     test(can_restart_after_joining_from_snapshot) |
-    test(validator_can_fast_sync_after_full_dkg) |
-    test(subblocks_are_included)
+    test(validator_can_fast_sync_after_full_dkg)
   )
 """
 threads-required = "num-test-threads"
@@ -25,13 +30,12 @@ priority = -100
 # tempo-e2e tests spawn multiple execution nodes, each creating 4 rayon thread
 # pools (cpu, rpc, trie, storage) via reth's Runtime. Even with test_with_handle()
 # (2 threads per pool), running many in parallel causes OOM on CI.
-# threads-required = 8 means nextest counts each test as needing 8 of the -j slots,
-# so on a 32-vCPU runner (-j 32) at most 4 e2e tests run concurrently.
+# threads-required = 4 means nextest counts each test as needing 4 of the -j slots,
+# so on a 32-vCPU runner (-j 32) at most 8 e2e tests run concurrently.
 [[profile.ci.overrides]]
 filter = "package(tempo-e2e)"
 failure-output = "never"
-threads-required = 8
-slow-timeout = { period = "3m", terminate-after = 1 }
+threads-required = 4
 
 # Separate profile for flaky snapshot-restart tests so they fail-fast independently.
 [profile.ci-flaky]
@@ -39,7 +43,6 @@ inherits = "ci"
 fail-fast = true
 retries = 0
 failure-output = "final"
-slow-timeout = { period = "3m", terminate-after = 1 }
 default-filter = "package(tempo-e2e) & test(can_restart_after_joining_from_snapshot)"
 
 # Dedicated profile for live RPC matrix tests (testnet/devnet).
@@ -66,8 +69,7 @@ failure-output = "final"
 filter = """
   package(tempo-e2e) & (
     test(can_restart_after_joining_from_snapshot) |
-    test(validator_can_fast_sync_after_full_dkg) |
-    test(subblocks_are_included)
+    test(validator_can_fast_sync_after_full_dkg)
   )
 """
 threads-required = "num-test-threads"
@@ -75,8 +77,7 @@ priority = -100
 
 [[profile.default.overrides]]
 filter = "package(tempo-e2e)"
-threads-required = 8
-slow-timeout = { period = "4m", terminate-after = 1 }
+threads-required = 4
 
 [[profile.default.overrides]]
 filter = "package(tempo-node) & binary(it)"

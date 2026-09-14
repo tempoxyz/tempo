@@ -3,9 +3,12 @@
 // Routes user nonces (nonce_key>0) to minimal 2D nonce pool
 
 use crate::{
-    amm::AmmLiquidityCache, best::MergeBestTransactions, ordering::TempoTipOrdering,
-    transaction::TempoPooledTransaction, tt_2d_pool::AA2dPool,
-    validator::TempoTransactionValidator,
+    amm::AmmLiquidityCache,
+    best::MergeBestTransactions,
+    ordering::TempoTipOrdering,
+    transaction::TempoPooledTransaction,
+    tt_2d_pool::AA2dPool,
+    validator::{ConfigureTempoPoolEvm, TempoTransactionValidator},
 };
 use alloy_consensus::Transaction;
 use alloy_primitives::{
@@ -30,6 +33,7 @@ use reth_transaction_pool::{
 use revm::database::BundleAccount;
 use std::{sync::Arc, time::Instant};
 use tempo_chainspec::hardfork::{TempoHardfork, TempoHardforks};
+use tempo_evm::TempoEvmConfig;
 use tempo_precompiles::{
     TIP_FEE_MANAGER_ADDRESS,
     account_keychain::AccountKeychain,
@@ -42,10 +46,10 @@ use tempo_primitives::{Block, TempoHeader};
 use tempo_revm::TempoStateAccess;
 
 /// Tempo transaction pool that routes based on nonce_key
-pub struct TempoTransactionPool<Client> {
+pub struct TempoTransactionPool<Client, EvmConfig = TempoEvmConfig> {
     /// Vanilla pool for all standard transactions and AA transactions with regular nonce.
     protocol_pool: Pool<
-        TransactionValidationTaskExecutor<TempoTransactionValidator<Client>>,
+        TransactionValidationTaskExecutor<TempoTransactionValidator<Client, EvmConfig>>,
         TempoTipOrdering<TempoPooledTransaction>,
         InMemoryBlobStore,
     >,
@@ -53,15 +57,16 @@ pub struct TempoTransactionPool<Client> {
     aa_2d_pool: Arc<RwLock<AA2dPool>>,
 }
 
-impl<Client> TempoTransactionPool<Client>
+impl<Client, EvmConfig> TempoTransactionPool<Client, EvmConfig>
 where
     Client: StateProviderFactory
         + ChainSpecProvider<ChainSpec: EthChainSpec<Header = TempoHeader> + TempoHardforks>
         + 'static,
+    EvmConfig: ConfigureTempoPoolEvm,
 {
     pub fn new(
         protocol_pool: Pool<
-            TransactionValidationTaskExecutor<TempoTransactionValidator<Client>>,
+            TransactionValidationTaskExecutor<TempoTransactionValidator<Client, EvmConfig>>,
             TempoTipOrdering<TempoPooledTransaction>,
             InMemoryBlobStore,
         >,
@@ -74,11 +79,12 @@ where
         }
     }
 }
-impl<Client> TempoTransactionPool<Client>
+impl<Client, EvmConfig> TempoTransactionPool<Client, EvmConfig>
 where
     Client: StateProviderFactory
         + ChainSpecProvider<ChainSpec: EthChainSpec<Header = TempoHeader> + TempoHardforks>
         + 'static,
+    EvmConfig: ConfigureTempoPoolEvm,
 {
     /// Obtains a clone of the shared [`AmmLiquidityCache`].
     pub fn amm_liquidity_cache(&self) -> AmmLiquidityCache {
@@ -100,11 +106,11 @@ where
         &self,
         state: &AddressMap<BundleAccount>,
     ) -> Vec<Arc<ValidPoolTransaction<TempoPooledTransaction>>> {
-        let (promoted, mined) = self.aa_2d_pool.write().on_state_updates(state);
+        let (promoted, mined, discarded) = self.aa_2d_pool.write().on_state_updates(state);
         // Note: mined transactions are notified via the vanilla pool updates
         self.protocol_pool
             .inner()
-            .notify_on_transaction_updates(promoted, Vec::new());
+            .notify_on_transaction_updates(promoted, discarded);
         mined
     }
 
@@ -122,6 +128,7 @@ where
     ///    liquidity in the new (user_token, validator_token) AMM pool
     /// 4. **Fee payer balance changes**: Transactions whose fee payer no longer has enough
     ///    balance in the resolved fee token after a TIP20 transfer
+    /// 5. **Fee token pauses**: Transactions using a token paused in the committed block
     ///
     /// All checks are combined into one scan to avoid iterating the pool multiple times
     /// per block.
@@ -134,7 +141,7 @@ where
         }
 
         let all_txs = self.all_transactions();
-        self.evict_invalidated_transactions_from(updates, all_txs.iter())
+        self.evict_invalidated_transactions_from(updates, all_txs.iter(), None)
     }
 
     /// See [`Self::evict_invalidated_transactions`]; returns the removed transactions so
@@ -143,8 +150,9 @@ where
         &self,
         updates: &crate::maintain::TempoPoolUpdates,
         transactions: impl IntoIterator<Item = &'a Arc<ValidPoolTransaction<TempoPooledTransaction>>>,
+        expiry_cutoff: Option<u64>,
     ) -> Vec<Arc<ValidPoolTransaction<TempoPooledTransaction>>> {
-        if !updates.has_invalidation_events() {
+        if !updates.has_invalidation_events() && expiry_cutoff.is_none() {
             return Vec::new();
         }
 
@@ -229,12 +237,29 @@ where
         let mut blacklisted_count = 0;
         let mut unwhitelisted_count = 0;
         let mut insolvent_fee_payer_count = 0;
+        let mut paused_token_count = 0;
+        let has_paused_tokens = !updates.paused_tokens.is_empty();
         let has_keychain_subject_updates = updates.has_keychain_subject_updates();
         let has_key_authorization_target_updates =
             !updates.key_authorization_target_changes.is_empty();
         let mut fee_balance_cache: HashMap<(Address, Address), U256> = HashMap::default();
 
         for tx in transactions {
+            if expiry_cutoff.is_some_and(|cutoff| tx.transaction.is_expired_by(cutoff)) {
+                to_remove.push(*tx.hash());
+                continue;
+            }
+
+            if has_paused_tokens
+                && updates
+                    .paused_tokens
+                    .contains(&tx.transaction.effective_fee_token())
+            {
+                to_remove.push(*tx.hash());
+                paused_token_count += 1;
+                continue;
+            }
+
             // Avoid recovering key ids unless a keychain invalidation can use them.
             if has_keychain_subject_updates || has_key_authorization_target_updates {
                 let keychain_subject = has_keychain_subject_updates
@@ -500,7 +525,8 @@ where
             blacklisted_count,
             unwhitelisted_count,
             insolvent_fee_payer_count,
-            "Evicting invalidated transactions"
+            paused_token_count,
+            "Evicting invalidated or expired transactions"
         );
         self.remove_transactions(to_remove)
     }
@@ -598,7 +624,7 @@ where
 }
 
 // Manual Clone implementation
-impl<Client> Clone for TempoTransactionPool<Client> {
+impl<Client, EvmConfig> Clone for TempoTransactionPool<Client, EvmConfig> {
     fn clone(&self) -> Self {
         Self {
             protocol_pool: self.protocol_pool.clone(),
@@ -608,19 +634,19 @@ impl<Client> Clone for TempoTransactionPool<Client> {
 }
 
 // Manual Debug implementation
-impl<Client> std::fmt::Debug for TempoTransactionPool<Client> {
+impl<Client, EvmConfig> std::fmt::Debug for TempoTransactionPool<Client, EvmConfig> {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.debug_struct("TempoTransactionPool")
             .field("protocol_pool", &"Pool<...>")
             .field("aa_2d_nonce_pool", &"AA2dPool<...>")
-            .field("paused_fee_token_pool", &"PausedFeeTokenPool<...>")
             .finish_non_exhaustive()
     }
 }
 
 // Implement the TransactionPool trait
-impl<Client> TransactionPool for TempoTransactionPool<Client>
+impl<Client, EvmConfig> TransactionPool for TempoTransactionPool<Client, EvmConfig>
 where
+    EvmConfig: ConfigureTempoPoolEvm,
     Client: StateProviderFactory
         + ChainSpecProvider<ChainSpec: EthChainSpec<Header = TempoHeader> + TempoHardforks>
         + Send
@@ -632,9 +658,14 @@ where
 
     fn pool_size(&self) -> PoolSize {
         let mut size = self.protocol_pool.pool_size();
-        let (pending, queued) = self.aa_2d_pool.read().pending_and_queued_txn_count();
+        let aa_2d_pool = self.aa_2d_pool.read();
+        let (pending, queued) = aa_2d_pool.pending_and_queued_txn_count();
+        let (pending_size, queued_size) = aa_2d_pool.pending_and_queued_txn_size();
         size.pending += pending;
+        size.pending_size += pending_size;
         size.queued += queued;
+        size.queued_size += queued_size;
+        size.total += pending + queued;
         size
     }
 
@@ -930,6 +961,17 @@ where
         transactions
     }
 
+    fn all_transactions_by_sender(
+        &self,
+        sender: Address,
+    ) -> AllPoolTransactions<Self::Transaction> {
+        let mut transactions = self.protocol_pool.all_transactions_by_sender(sender);
+        self.aa_2d_pool
+            .read()
+            .append_all_transactions_by_sender(sender, &mut transactions);
+        transactions
+    }
+
     fn all_transaction_hashes(&self) -> Vec<B256> {
         let mut hashes = self.protocol_pool.all_transaction_hashes();
         hashes.extend(self.aa_2d_pool.read().all_transaction_hashes_iter());
@@ -1213,13 +1255,13 @@ where
     fn get_blobs_for_versioned_hashes_v4(
         &self,
         versioned_hashes: &[B256],
-        indices_bitarray: alloy_primitives::B128,
+        cell_mask: alloy_eips::eip7594::BlobCellMask,
     ) -> Result<
         Vec<Option<alloy_eips::eip4844::BlobCellsAndProofsV1>>,
         reth_transaction_pool::blobstore::BlobStoreError,
     > {
         self.protocol_pool
-            .get_blobs_for_versioned_hashes_v4(versioned_hashes, indices_bitarray)
+            .get_blobs_for_versioned_hashes_v4(versioned_hashes, cell_mask)
     }
 
     fn blob_store(&self) -> Box<dyn reth_transaction_pool::BlobStore> {
@@ -1227,8 +1269,9 @@ where
     }
 }
 
-impl<Client> TransactionPoolExt for TempoTransactionPool<Client>
+impl<Client, EvmConfig> TransactionPoolExt for TempoTransactionPool<Client, EvmConfig>
 where
+    EvmConfig: ConfigureTempoPoolEvm,
     Client: StateProviderFactory
         + ChainSpecProvider<ChainSpec: EthChainSpec<Header = TempoHeader> + TempoHardforks>
         + 'static,
@@ -1600,6 +1643,24 @@ mod tests {
             },
         );
         provider
+    }
+
+    #[test]
+    fn pool_size_includes_aa_2d_transaction_counts_and_bytes() {
+        let pool = create_test_pool(create_provider_with_tip());
+        let tx = crate::test_utils::TxBuilder::aa(Address::random())
+            .nonce_key(U256::from(1))
+            .build();
+        let tx_size = reth_primitives_traits::InMemorySize::size(&tx);
+
+        add_validated(&pool, tx);
+
+        let size = pool.pool_size();
+        assert_eq!(size.pending, 1);
+        assert_eq!(size.pending_size, tx_size);
+        assert_eq!(size.queued, 0);
+        assert_eq!(size.queued_size, 0);
+        assert_eq!(size.total, 1);
     }
 
     fn sponsored_keychain_transaction(

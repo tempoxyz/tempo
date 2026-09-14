@@ -1,9 +1,13 @@
 //! Follower finalization driver.
 //!
-//! Validates finalized blocks received from upstream and reports them to marshal and the consensus
-//! feed.
+//! Validates finalized blocks received from upstream and certificates received
+//! through gossip, then reports verified finalizations to marshal. Marshal
+//! resolves any block it is missing, and its finalized-tip updates drive both
+//! the consensus feed and the execution layer's forkchoice. The driver never
+//! addresses the executor itself, so no forkchoice can name a block that has
+//! not been persisted alongside its certificate.
 
-use std::future::Future;
+use std::{future::Future, sync::LazyLock};
 
 use commonware_consensus::{
     simplex::{scheme::bls12381_threshold::vrf::Scheme, types::Activity},
@@ -28,7 +32,6 @@ use tempo_primitives::TempoHeader;
 use crate::{
     consensus::{Block, Digest},
     epoch::SchemeProvider,
-    feed,
 };
 
 mod actor;
@@ -42,7 +45,13 @@ pub(super) use ingress::Mailbox;
 
 type ConsensusActivity = Activity<Scheme<PublicKey, MinSig>, Digest>;
 
-pub(super) struct Config<P, M, F> {
+// Follow mode uses an opaque resolver that ignores peer targets, but Commonware
+// requires a non-empty target list. Reusing one placeholder lets overflow
+// coalesce repeated hints without accumulating random public keys.
+static FOLLOW_HINT_TARGET: LazyLock<PublicKey> =
+    LazyLock::new(|| PrivateKey::random(rand::rng()).public_key());
+
+pub(super) struct Config<P, M> {
     pub(super) execution_provider: P,
     pub(super) scheme_provider: SchemeProvider,
     pub(super) network_identity: NetworkIdentity,
@@ -50,20 +59,21 @@ pub(super) struct Config<P, M, F> {
     pub(super) last_finalized_height: Height,
 
     pub(super) marshal: M,
-    pub(super) feed: F,
 
     pub(super) epoch_strategy: FixedEpocher,
 }
 
-pub(super) fn try_init<TContext, P, M, F>(
+/// A driver and its mailbox.
+pub(super) type Initialized<TContext, P, M> = (Driver<TContext, P, M>, Mailbox);
+
+pub(super) fn try_init<TContext, P, M>(
     context: TContext,
-    config: Config<P, M, F>,
-) -> eyre::Result<(Driver<TContext, P, M, F>, Mailbox)>
+    config: Config<P, M>,
+) -> eyre::Result<Initialized<TContext, P, M>>
 where
     TContext: Clock + Spawner,
     P: ExecutionProvider + 'static,
     M: Marshal + 'static,
-    F: Feed + 'static,
 {
     actor::try_init(context, config)
 }
@@ -80,11 +90,6 @@ pub(super) trait Marshal: Send + Sync {
     fn certified(&self, round: Round, block: Block) -> impl Future<Output = bool> + Send;
     fn report(&self, activity: ConsensusActivity) -> impl Future<Output = ()> + Send;
     fn hint_finalized(&self, height: Height) -> impl Future<Output = ()> + Send;
-}
-
-/// Consensus-feed operation used by the follower driver.
-pub(super) trait Feed: Send + Sync {
-    fn report(&self, activity: ConsensusActivity) -> impl Future<Output = ()> + Send;
 }
 
 impl<N> ExecutionProvider for BlockchainProvider<N>
@@ -110,11 +115,8 @@ impl Marshal for crate::alias::marshal::Mailbox {
     fn hint_finalized(&self, height: Height) -> impl Future<Output = ()> + Send {
         let mailbox = self.clone();
         async move {
-            // Stub out a random target
-            let target = PrivateKey::random(&mut rand_08::thread_rng()).public_key();
-            mailbox
-                .hint_finalized(height, NonEmptyVec::new(target))
-                .await
+            let target = (*FOLLOW_HINT_TARGET).clone();
+            mailbox.hint_finalized(height, NonEmptyVec::new(target));
         }
     }
 
@@ -125,13 +127,8 @@ impl Marshal for crate::alias::marshal::Mailbox {
 
     fn report(&self, activity: ConsensusActivity) -> impl Future<Output = ()> + Send {
         let mut mailbox = self.clone();
-        async move { commonware_consensus::Reporter::report(&mut mailbox, activity).await }
-    }
-}
-
-impl Feed for feed::Mailbox {
-    fn report(&self, activity: ConsensusActivity) -> impl Future<Output = ()> + Send {
-        let mut mailbox = self.clone();
-        async move { commonware_consensus::Reporter::report(&mut mailbox, activity).await }
+        async move {
+            let _ = commonware_consensus::Reporter::report(&mut mailbox, activity);
+        }
     }
 }

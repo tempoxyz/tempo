@@ -3,7 +3,7 @@ use alloy_consensus::crypto::RecoveryError;
 use alloy_primitives::Address;
 use reth_evm::{
     ConfigureEngineEvm, ConfigureEvm, EvmEnvFor, ExecutableTxIterator, ExecutionCtxFor,
-    FromRecoveredTx, RecoveredTx, ToTxEnv, block::ExecutableTxParts,
+    FromRecoveredTx, RecoveredTx, SenderRecoveryCache, ToTxEnv, block::ExecutableTxParts,
 };
 use reth_primitives_traits::{SealedOrRecoveredBlock, SignedTransaction};
 use tempo_payload_types::TempoExecutionData;
@@ -25,13 +25,8 @@ impl ConfigureEngineEvm<TempoExecutionData> for TempoEvmConfig {
         let TempoExecutionData {
             block,
             block_access_list: _,
-            validator_set,
         } = payload;
-        let mut context = self.context_for_block(block)?;
-
-        context.validator_set = validator_set.clone();
-
-        Ok(context)
+        self.context_for_block(block)
     }
 
     fn tx_iterator_for_payload(
@@ -39,6 +34,7 @@ impl ConfigureEngineEvm<TempoExecutionData> for TempoEvmConfig {
         payload: &TempoExecutionData,
     ) -> Result<impl ExecutableTxIterator<Self>, Self::Error> {
         let block = payload.block.clone();
+        let sender_recovery_cache = self.inner.sender_recovery_cache.clone();
         let mut transactions = Vec::with_capacity(block.body().transactions.len());
         let mut expiring_nonce_idx = 0;
 
@@ -52,7 +48,12 @@ impl ConfigureEngineEvm<TempoExecutionData> for TempoEvmConfig {
         }
 
         Ok((transactions, move |(index, expiring_nonce_idx)| {
-            RecoveredInBlock::new(block.clone(), index, expiring_nonce_idx)
+            RecoveredInBlock::new(
+                block.clone(),
+                index,
+                expiring_nonce_idx,
+                sender_recovery_cache.as_ref(),
+            )
         }))
     }
 }
@@ -73,12 +74,21 @@ impl RecoveredInBlock {
         block: SealedOrRecoveredBlock<Block>,
         index: usize,
         expiring_nonce_idx: Option<usize>,
+        sender_recovery_cache: Option<&SenderRecoveryCache>,
     ) -> Result<Self, RecoveryError> {
-        let sender = block
+        let recovered_sender = block
             .recovered_block()
-            .and_then(|block| block.senders().get(index).copied())
-            .map(Ok)
-            .unwrap_or_else(|| block.body().transactions[index].try_recover())?;
+            .and_then(|block| block.senders().get(index).copied());
+        let tx = &block.body().transactions[index];
+        let sender = if let Some(sender) = recovered_sender {
+            sender
+        } else if tx.is_system_tx() {
+            tx.try_recover()?
+        } else if let Some(cache) = sender_recovery_cache {
+            cache.recover(tx)?
+        } else {
+            tx.try_recover()?
+        };
         Ok(Self {
             block,
             index,
@@ -120,7 +130,7 @@ impl ExecutableTxParts<TempoTxEnv, TempoTxEnvelope> for RecoveredInBlock {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use alloy_consensus::{BlockHeader, Signed, TxLegacy};
+    use alloy_consensus::{BlockHeader, Signed, TxLegacy, transaction::TxHashRef};
     use alloy_primitives::{B256, Bytes, Signature, TxKind, U256};
     use alloy_rlp::{Encodable, bytes::BytesMut};
     use rayon::iter::{IntoParallelIterator, ParallelIterator};
@@ -194,18 +204,21 @@ mod tests {
     #[test]
     fn test_tx_iterator_for_payload() {
         let chainspec = Arc::new(TempoChainSpec::from_genesis(MODERATO.genesis().clone()));
-        let evm_config = TempoEvmConfig::new(chainspec.clone());
+        let sender_recovery_cache = SenderRecoveryCache::new(4);
+        let evm_config = TempoEvmConfig::new(chainspec.clone())
+            .with_sender_recovery_cache(sender_recovery_cache.clone());
 
         let tx1 = create_legacy_tx();
         let tx2 = create_legacy_tx();
         let system_tx = create_subblock_metadata_tx(chainspec.chain().id(), 1);
+        let tx_hash = *tx1.tx_hash();
+        let system_tx_hash = *system_tx.tx_hash();
 
         let block = create_test_block(vec![tx1, tx2, system_tx]);
 
         let payload = TempoExecutionData {
             block: block.into(),
             block_access_list: None,
-            validator_set: None,
         };
 
         let result = evm_config.tx_iterator_for_payload(&payload);
@@ -221,8 +234,16 @@ mod tests {
         // Test the recovery function works on all items
         for item in items {
             let recovered = recover_fn.convert(item);
-            assert!(recovered.is_ok());
+            let recovered = recovered.unwrap();
+            let (env, _) = recovered.into_parts();
+            assert!(matches!(
+                env.execution_context,
+                tempo_revm::ExecutionContext::Transaction { .. }
+            ));
         }
+
+        assert!(sender_recovery_cache.get(&tx_hash).is_some());
+        assert_eq!(sender_recovery_cache.get(&system_tx_hash), None);
     }
 
     #[test]
@@ -232,12 +253,9 @@ mod tests {
 
         let system_tx = create_subblock_metadata_tx(chainspec.chain().id(), 1);
         let block = create_test_block(vec![system_tx]);
-        let validator_set = Some(vec![B256::repeat_byte(0x01), B256::repeat_byte(0x02)]);
-
         let payload = TempoExecutionData {
             block: block.into(),
             block_access_list: None,
-            validator_set: validator_set.clone(),
         };
 
         let result = evm_config.context_for_payload(&payload);
@@ -248,8 +266,6 @@ mod tests {
         // Verify context fields
         assert_eq!(context.general_gas_limit, 10_000_000);
         assert_eq!(context.shared_gas_limit, 3_000_000);
-        assert_eq!(context.validator_set, validator_set);
-        assert!(context.subblock_fee_recipients.is_empty());
     }
 
     #[test]
@@ -263,7 +279,6 @@ mod tests {
         let payload = TempoExecutionData {
             block: block.clone().into(),
             block_access_list: None,
-            validator_set: None,
         };
 
         let result = evm_config.evm_env_for_payload(&payload);

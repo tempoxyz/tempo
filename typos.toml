@@ -22,3 +22,6 @@ Nam = "Nam"
 prool = "prool"
 Prool = "Prool"
 JOD = "JOD"
+
+[default.extend-identifiers]
+OtOGGpViE5JRa7WT7wVYPtLlhm9ctiYKMBcjf9ibkK8 = "OtOGGpViE5JRa7WT7wVYPtLlhm9ctiYKMBcjf9ibkK8"

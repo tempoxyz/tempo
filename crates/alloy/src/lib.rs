@@ -8,6 +8,9 @@ use reqwest as _;
 mod network;
 pub use network::*;
 
+/// Tempo Accounts-compatible wallets and signers.
+pub mod accounts;
+
 /// Provider traits.
 pub mod provider;
 

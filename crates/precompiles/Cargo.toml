@@ -22,8 +22,11 @@ tempo-chainspec = { workspace = true, features = ["evm"] }
 tempo-primitives = { workspace = true, features = ["evm"] }
 tempo-precompiles-macros.workspace = true
 alloy = { workspace = true, features = ["sol-types", "consensus"] }
+alloy-json-abi = { workspace = true, optional = true }
+itertools = { workspace = true, optional = true }
 alloy-evm = { workspace = true, features = ["std"] }
 alloy-primitives = { workspace = true, features = ["map-foldhash"] }
+keccak-const.workspace = true
 revm.workspace = true
 paste.workspace = true
 bitflags.workspace = true
@@ -35,6 +38,8 @@ tracing.workspace = true
 thiserror.workspace = true
 derive_more.workspace = true
 scoped-tls = "1.0"
+serde = { workspace = true, optional = true }
+serde_json = { workspace = true, optional = true }
 
 [dev-dependencies]
 criterion.workspace = true
@@ -53,7 +58,14 @@ tempo-revm.workspace = true
 
 [features]
 default = ["rpc"]
-test-utils = ["alloy/getrandom"]
+test-utils = [
+    "alloy/getrandom",
+    "dep:alloy-json-abi",
+    "dep:itertools",
+    "dep:serde",
+    "dep:serde_json",
+    "tempo-primitives/test-utils",
+]
 rpc = ["tempo-contracts/rpc"]
 
 [[test]]

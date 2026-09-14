@@ -18,32 +18,9 @@ impl Precompile for ZoneFactory {
             |call| match call {
                 IZoneFactory::IZoneFactoryCalls {
                     owner(call) => view(call, |_| self.owner()),
-                    implementationUpdatesLocked(call) => {
-                        view(call, |_| self.implementation_updates_locked())
-                    },
                     transferOwnership(call) => {
                         mutate_void(call, msg_sender, |sender, call| {
                             self.transfer_ownership(sender, call)
-                        })
-                    },
-                    lockImplementationUpdates(call) => {
-                        mutate_void(call, msg_sender, |sender, _| {
-                            self.lock_implementation_updates(sender)
-                        })
-                    },
-                    setPortalImplementation(call) => {
-                        mutate_void(call, msg_sender, |sender, call| {
-                            self.set_portal_implementation(sender, call)
-                        })
-                    },
-                    setZoneMessengerImplementation(call) => {
-                        mutate_void(call, msg_sender, |sender, call| {
-                            self.set_zone_messenger_implementation(sender, call)
-                        })
-                    },
-                    setVerifierImplementation(call) => {
-                        mutate_void(call, msg_sender, |sender, call| {
-                            self.set_verifier_implementation(sender, call)
                         })
                     },
                     createZone(call) => {
@@ -72,7 +49,7 @@ mod tests {
     fn create_zone_selector_matches_tip_1091() {
         assert_eq!(
             IZoneFactory::createZoneCall::SELECTOR,
-            [0xf2, 0xc5, 0x8f, 0x2b]
+            [0x89, 0x67, 0x7d, 0x9e]
         );
     }
 

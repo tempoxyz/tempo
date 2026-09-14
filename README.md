@@ -103,6 +103,12 @@ Tempo has several SDKs to help you get started building on Tempo:
 - [Go](https://docs.tempo.xyz/sdk/go)
 - [Foundry](https://docs.tempo.xyz/sdk/foundry)
 
+For local development and CI, run the [bootstrapped localnet container](./docs/localnet.md):
+
+```bash
+docker run --rm -p 127.0.0.1:8545:8545 ghcr.io/tempoxyz/tempo-localnet:latest
+```
+
 Want to contribute?
 
 First, clone the repository:

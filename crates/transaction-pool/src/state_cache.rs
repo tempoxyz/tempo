@@ -44,7 +44,8 @@ impl StateCache {
 /// A [`DatabaseRef`] adapter that serves reads from a shared [`StateCache`], falling back
 /// to the wrapped database and populating the cache on miss.
 #[derive(Debug)]
-pub(crate) struct StateCacheDb<'a, DB> {
+#[expect(unnameable_types)]
+pub struct StateCacheDb<'a, DB> {
     /// The shared read cache.
     cache: &'a StateCache,
     /// The underlying database.

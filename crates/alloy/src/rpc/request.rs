@@ -157,9 +157,43 @@ impl TempoTransactionRequest {
         self
     }
 
+    /// Builder-pattern method for appending one call to the Tempo call list.
+    pub fn call(mut self, call: Call) -> Self {
+        self.calls.push(call);
+        self
+    }
+
     /// Append one call to the Tempo call list.
     pub fn push_call(&mut self, call: Call) {
         self.calls.push(call);
+    }
+
+    /// Replace the Tempo authorization list for this transaction.
+    pub fn set_tempo_authorization_list(
+        &mut self,
+        authorization_list: Vec<TempoSignedAuthorization>,
+    ) {
+        self.tempo_authorization_list = authorization_list;
+    }
+
+    /// Builder-pattern method for replacing the Tempo authorization list.
+    pub fn with_tempo_authorization_list(
+        mut self,
+        authorization_list: Vec<TempoSignedAuthorization>,
+    ) -> Self {
+        self.tempo_authorization_list = authorization_list;
+        self
+    }
+
+    /// Builder-pattern method for appending one Tempo authorization.
+    pub fn tempo_authorization(mut self, authorization: TempoSignedAuthorization) -> Self {
+        self.tempo_authorization_list.push(authorization);
+        self
+    }
+
+    /// Append one authorization to the Tempo authorization list.
+    pub fn push_tempo_authorization(&mut self, authorization: TempoSignedAuthorization) {
+        self.tempo_authorization_list.push(authorization);
     }
 
     /// Set the access-key signature type used for gas estimation.
@@ -750,6 +784,21 @@ mod tests {
         let mut request = TempoTransactionRequest::default();
         request.set_calls(vec![call.clone()]);
         request.push_call(call.clone());
+
+        assert_eq!(request.calls, vec![call.clone(), call]);
+    }
+
+    #[test]
+    fn test_call_builder() {
+        let call = Call {
+            to: address!("0x1111111111111111111111111111111111111111").into(),
+            value: U256::ZERO,
+            input: Bytes::from(vec![0xaa]),
+        };
+
+        let request = TempoTransactionRequest::default()
+            .with_calls(vec![call.clone()])
+            .call(call.clone());
 
         assert_eq!(request.calls, vec![call.clone(), call]);
     }

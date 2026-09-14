@@ -413,9 +413,12 @@ fn validate_sponsor_signed_same_payload(
         ));
     }
 
-    // Normalize the sponsor response to validate all tx fields.
+    // The fee-payer service encoding deliberately omits the user's fee-token
+    // preference so the sponsor can select the token it will pay with.
+    // Normalize the two sponsor-owned fields before validating everything else.
     let mut signed_tx = signed.tx().clone();
     signed_tx.fee_payer_signature = Some(FEE_PAYER_SIGNATURE_MARKER);
+    signed_tx.fee_token = unsigned.tx().fee_token;
     if unsigned.tx() != &signed_tx {
         return Err(TransportErrorKind::custom_str(
             "sponsor returned transaction with different payload",
@@ -599,11 +602,16 @@ mod tests {
     const USER_PK: &str = "0x59c6995e998f97a5a0044966f0945389dc9e86dae88c7a8412f4603b6b78690d";
     const FEE_PAYER_PK: &str = "0x5de4111afa1a4b94908f83103eb1f1706367c2e68ca870fc3fb9a804cdab365a";
 
-    fn signed_tempo_aa_raw_tx_with_nonce(fee_payer_signed: bool, nonce: u64) -> String {
+    fn signed_tempo_aa_raw_tx(
+        fee_payer_signed: bool,
+        nonce: u64,
+        fee_token: Option<Address>,
+    ) -> String {
         let user: alloy_signer_local::PrivateKeySigner = USER_PK.parse().unwrap();
         let fee_payer: alloy_signer_local::PrivateKeySigner = FEE_PAYER_PK.parse().unwrap();
         let mut tx = TempoTransaction {
             chain_id: 42431,
+            fee_token,
             max_priority_fee_per_gas: 1,
             max_fee_per_gas: 1,
             gas_limit: 21_000,
@@ -630,6 +638,10 @@ mod tests {
         let mut encoded = Vec::new();
         envelope.encode_2718(&mut encoded);
         format!("0x{}", hex::encode(encoded))
+    }
+
+    fn signed_tempo_aa_raw_tx_with_nonce(fee_payer_signed: bool, nonce: u64) -> String {
+        signed_tempo_aa_raw_tx(fee_payer_signed, nonce, None)
     }
 
     #[test]
@@ -783,6 +795,27 @@ mod tests {
             rpc.default.header_value(0, "authorization"),
             Some("Bearer default-rpc-token".to_string())
         );
+    }
+
+    #[tokio::test]
+    async fn sign_only_accepts_sponsor_selected_fee_token() {
+        let user_fee_token = Address::repeat_byte(0x22);
+        let unsigned_raw_tx = signed_tempo_aa_raw_tx(false, 1, Some(user_fee_token));
+        // Fee-payer service encoding omits the user's fee-token preference. The
+        // returned transaction therefore contains the sponsor-selected value.
+        let signed_raw_tx = signed_tempo_aa_raw_tx(true, 1, None);
+        let (default, relay) = (RecordingTransport::default(), RecordingTransport::default());
+        relay.push_success(&signed_raw_tx);
+        default.push_success(&alloy_primitives::B256::ZERO);
+        let mut rpc = RelayTransport::with_config(default, relay, SponsorshipMode::SignOnly, false);
+
+        tower::Service::call(&mut rpc, make_send_raw_tx_request(&unsigned_raw_tx, false))
+            .await
+            .unwrap();
+
+        assert_eq!(rpc.relay.methods(), vec![SIGN_METHOD]);
+        assert_eq!(rpc.default.methods(), vec![SEND_METHODS[0]]);
+        assert_eq!(rpc.default.params(0), serde_json::json!([signed_raw_tx]));
     }
 
     #[tokio::test]

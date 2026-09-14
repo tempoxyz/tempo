@@ -1,16 +1,14 @@
 //! ABI compatibility checker between Rust `sol!` bindings and tempo-std Solidity interfaces.
 
 use std::{
-    collections::{BTreeSet, HashMap},
-    fs,
+    collections::HashMap,
     path::{Path, PathBuf},
 };
 
-use alloy_json_abi::{
-    ContractObject, Error, Event, EventParam, Function, JsonAbi, Param, StateMutability,
-};
+use alloy_json_abi::JsonAbi;
 use eyre::{Context, bail, eyre};
 use itertools::Itertools;
+use tempo_precompiles::test_util::abi_conformance::{AbiSurface, DiffEntries, load_foundry_abi};
 
 #[derive(Clone, Copy)]
 struct InterfaceSpec {
@@ -57,16 +55,6 @@ static INTERFACE_SPECS: &[InterfaceSpec] = &[
     interface_spec!(IValidatorConfig),
     interface_spec!(IValidatorConfigV2),
 ];
-
-/// List of `(kind, signature)` pairs, e.g. `("function", "foo(uint256) [view]")`.
-type DiffEntries = Vec<(String, String)>;
-
-#[derive(Default)]
-struct AbiSurface {
-    functions: BTreeSet<String>,
-    errors: BTreeSet<String>,
-    events: BTreeSet<String>,
-}
 
 #[derive(Debug, clap::Args)]
 pub(crate) struct CheckAbi {
@@ -179,8 +167,9 @@ fn check_interface(
     let rust_surface = surface_for_spec(spec, all_specs, &mut Vec::new())?;
 
     let solidity_abi = load_foundry_abi(artifact_path)
+        .map_err(|error| eyre!(error))
         .with_context(|| format!("parsing {}", artifact_path.display()))?;
-    let solidity_surface = surface_from_abi(&solidity_abi);
+    let solidity_surface = AbiSurface::from_abi(&solidity_abi);
 
     Ok(rust_surface.diff(&solidity_surface))
 }
@@ -201,7 +190,7 @@ fn surface_for_spec(
 
     visiting.push(spec.solidity_name);
 
-    let mut surface = surface_from_abi(&(spec.abi)());
+    let mut surface = AbiSurface::from_abi(&(spec.abi)());
     for parent_name in spec.inherits {
         let parent = all_specs.get(parent_name).ok_or_else(|| {
             eyre!(
@@ -214,126 +203,6 @@ fn surface_for_spec(
 
     visiting.pop();
     Ok(surface)
-}
-
-fn load_foundry_abi(path: &Path) -> eyre::Result<JsonAbi> {
-    let content = fs::read_to_string(path)?;
-    let artifact: ContractObject = serde_json::from_str(&content)?;
-    artifact
-        .abi
-        .ok_or_else(|| eyre!("missing 'abi' field in {}", path.display()))
-}
-
-fn surface_from_abi(abi: &JsonAbi) -> AbiSurface {
-    AbiSurface {
-        functions: abi.functions().map(function_signature).collect(),
-        errors: abi.errors().map(error_signature).collect(),
-        events: abi.events().map(event_signature).collect(),
-    }
-}
-
-impl AbiSurface {
-    fn extend(&mut self, other: Self) {
-        self.functions.extend(other.functions);
-        self.errors.extend(other.errors);
-        self.events.extend(other.events);
-    }
-
-    /// Returns `(only_in_self, only_in_other)` diffs grouped by kind.
-    fn diff(&self, other: &Self) -> (DiffEntries, DiffEntries) {
-        let mut only_self = Vec::new();
-        let mut only_other = Vec::new();
-        for (kind, a, b) in [
-            ("function", &self.functions, &other.functions),
-            ("error", &self.errors, &other.errors),
-            ("event", &self.events, &other.events),
-        ] {
-            for sig in a.difference(b) {
-                only_self.push((kind.to_string(), sig.clone()));
-            }
-            for sig in b.difference(a) {
-                only_other.push((kind.to_string(), sig.clone()));
-            }
-        }
-        (only_self, only_other)
-    }
-}
-
-fn function_signature(function: &Function) -> String {
-    let inputs = function.inputs.iter().map(param_type).join(",");
-    let mut signature = format!("{}({inputs})", function.name);
-
-    if !function.outputs.is_empty() {
-        let outputs = canonical_output_types(&function.outputs);
-        signature.push_str(&format!(" returns ({outputs})"));
-    }
-
-    signature.push_str(&format!(
-        " [{}]",
-        state_mutability(function.state_mutability)
-    ));
-    signature
-}
-
-fn error_signature(error: &Error) -> String {
-    let inputs = error.inputs.iter().map(param_type).join(",");
-    format!("{}({inputs})", error.name)
-}
-
-fn event_signature(event: &Event) -> String {
-    let inputs = event.inputs.iter().map(event_param_signature).join(",");
-    let mut signature = format!("{}({inputs})", event.name);
-    if event.anonymous {
-        signature.push_str(" [anonymous]");
-    }
-    signature
-}
-
-fn event_param_signature(param: &EventParam) -> String {
-    let ty = canonical_param_type(&param.ty, &param.components);
-    if param.indexed {
-        format!("indexed {ty}")
-    } else {
-        ty
-    }
-}
-
-fn param_type(param: &Param) -> String {
-    canonical_param_type(&param.ty, &param.components)
-}
-
-/// Flattens a single bare-tuples so that if they share the same abi encoding they are equivalent.
-fn canonical_output_types(outputs: &[Param]) -> String {
-    match outputs {
-        [output] if output.ty == "tuple" => output.components.iter().map(param_type).join(","),
-        _ => outputs.iter().map(param_type).join(","),
-    }
-}
-
-fn canonical_param_type(ty: &str, components: &[Param]) -> String {
-    if components.is_empty() {
-        return ty.to_string();
-    }
-
-    let inner = components.iter().map(param_type).join(",");
-    let tuple = format!("({inner})");
-
-    if ty == "tuple" {
-        tuple
-    } else if let Some(suffix) = ty.strip_prefix("tuple") {
-        format!("{tuple}{suffix}")
-    } else {
-        ty.to_string()
-    }
-}
-
-fn state_mutability(state_mutability: StateMutability) -> &'static str {
-    match state_mutability {
-        StateMutability::Pure => "pure",
-        StateMutability::View => "view",
-        StateMutability::NonPayable => "nonpayable",
-        StateMutability::Payable => "payable",
-    }
 }
 
 fn print_grouped_diffs(diffs: &[(String, String)], missing_in: &str) {
@@ -374,107 +243,4 @@ fn find_workspace_root() -> eyre::Result<PathBuf> {
         .ok_or_else(|| eyre!("missing workspace_root in cargo metadata"))?;
 
     Ok(PathBuf::from(root))
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn surface_from_abi_preserves_tuple_signatures() {
-        let abi = JsonAbi::parse([
-            "function addPerson(tuple(string,uint16) person)",
-            "event PersonAdded(uint indexed id, tuple(string,uint16) person)",
-            "error BadPerson(tuple(string,uint16) person)",
-        ])
-        .unwrap();
-
-        let surface = surface_from_abi(&abi);
-        assert!(
-            surface
-                .functions
-                .contains("addPerson((string,uint16)) [nonpayable]")
-        );
-        assert!(
-            surface
-                .events
-                .contains("PersonAdded(indexed uint256,(string,uint16))")
-        );
-        assert!(surface.errors.contains("BadPerson((string,uint16))"));
-    }
-
-    #[test]
-    fn surface_from_abi_tracks_returns_mutability_and_anonymous_events() {
-        let abi = JsonAbi::parse([
-            "function foo(uint256 value) external view returns (bool ok)",
-            "event Bar(address indexed from, uint256 amount) anonymous",
-        ])
-        .unwrap();
-
-        let surface = surface_from_abi(&abi);
-        assert!(
-            surface
-                .functions
-                .contains("foo(uint256) returns (bool) [view]")
-        );
-        assert!(
-            surface
-                .events
-                .contains("Bar(indexed address,uint256) [anonymous]")
-        );
-    }
-
-    #[test]
-    fn function_signature_treats_single_tuple_outputs_like_flat_outputs() {
-        let tuple_output =
-            JsonAbi::parse(["function pool() external view returns ((uint128,uint128) reserves)"])
-                .unwrap();
-        let flat_output = JsonAbi::parse([
-            "function pool() external view returns (uint128 reserveUserToken, uint128 reserveValidatorToken)",
-        ])
-        .unwrap();
-
-        let tuple_signature = tuple_output
-            .functions()
-            .next()
-            .map(function_signature)
-            .unwrap();
-        let flat_signature = flat_output
-            .functions()
-            .next()
-            .map(function_signature)
-            .unwrap();
-
-        assert_eq!(tuple_signature, flat_signature);
-        assert_eq!(tuple_signature, "pool() returns (uint128,uint128) [view]");
-    }
-
-    #[test]
-    fn diff_reports_symmetric_differences() {
-        let rust = AbiSurface {
-            functions: BTreeSet::from(["foo(uint256) [nonpayable]".to_string()]),
-            ..Default::default()
-        };
-        let solidity = AbiSurface {
-            functions: BTreeSet::from(["bar(uint256) [nonpayable]".to_string()]),
-            ..Default::default()
-        };
-
-        let (rust_only, sol_only) = rust.diff(&solidity);
-
-        assert_eq!(
-            rust_only,
-            [(
-                "function".to_string(),
-                "foo(uint256) [nonpayable]".to_string()
-            )]
-        );
-        assert_eq!(
-            sol_only,
-            [(
-                "function".to_string(),
-                "bar(uint256) [nonpayable]".to_string()
-            )]
-        );
-    }
 }

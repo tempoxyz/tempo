@@ -26,7 +26,6 @@ alloy-genesis = { workspace = true, features = ["std"] }
 alloy-primitives.workspace = true
 
 commonware-codec.workspace = true
-commonware-consensus.workspace = true
 commonware-cryptography.workspace = true
 commonware-math.workspace = true
 commonware-p2p.workspace = true
@@ -81,6 +80,7 @@ tracing-subscriber.workspace = true
 alloy-network.workspace = true
 
 rand_08.workspace = true
+rand.workspace = true
 
 [lints]
 workspace = true

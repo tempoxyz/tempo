@@ -1,5 +1,11 @@
 # Changelog
 
+## `tempo-alloy@1.11.0`
+
+### Minor Changes
+
+- Added Accounts-compatible wallets with strict persisted access-key selection, P-256 and secp256k1 signing, pending authorization preparation, and sponsorship-aware transaction filling. (by @HamdiAllam, [#7244](https://github.com/tempoxyz/tempo/pull/7244))
+
 ## `tempo-alloy@1.10.1`
 
 ### Patch Changes

@@ -11,18 +11,18 @@ use commonware_codec::{Encode as _, EncodeSize, RangeCfg, Read, ReadExt, Write};
 use commonware_consensus::types::Epoch;
 use commonware_cryptography::{
     bls12381::{
-        dkg::Output,
+        dkg::feldman_desmedt::Output,
         primitives::{group::Share, sharing::ModeVersion, variant::MinSig},
     },
     ed25519::PublicKey,
     transcript::Summary,
 };
 use commonware_math::algebra::Random as _;
-use commonware_runtime::{Metrics as _, Runner as _};
+use commonware_runtime::{Runner as _, Supervisor as _};
 use commonware_storage::metadata::{Config as MetadataConfig, Metadata};
 use commonware_utils::{NZU32, ordered};
 use eyre::{Context as _, OptionExt as _, ensure, eyre};
-use rand_08::SeedableRng as _;
+use rand::SeedableRng as _;
 use reth_db::{mdbx::DatabaseArguments, open_db};
 use reth_db_api::{
     cursor::{DbCursorRO as _, DbCursorRW as _, DbDupCursorRO as _, DbDupCursorRW as _},
@@ -152,7 +152,7 @@ impl BootstrapShadowfork {
         };
 
         ensure!(
-            outcome.epoch == Epoch::new(SHADOW_EPOCH),
+            outcome.epoch == SHADOW_EPOCH,
             "shadow DKG outcome is for epoch `{}`, expected `{SHADOW_EPOCH}`",
             outcome.epoch,
         );
@@ -564,6 +564,10 @@ where
         0
     }
 
+    fn state_gas_spilled(&self) -> u64 {
+        0
+    }
+
     fn gas_refunded(&self) -> i64 {
         0
     }
@@ -631,7 +635,7 @@ fn read_private_genesis_outcome(manifest_dir: &Path) -> eyre::Result<OnchainDkgO
         .and_then(serde_json::Value::as_str)
         .ok_or_eyre("shadow genesis JSON does not contain string field `extraData`")?;
     let mut outcome = decode_outcome(extra_data)?;
-    outcome.epoch = Epoch::new(SHADOW_EPOCH);
+    outcome.epoch = SHADOW_EPOCH;
     Ok(outcome)
 }
 
@@ -1091,13 +1095,22 @@ fn seed_consensus_state(
     std::thread::Builder::new()
         .name("shadowfork-bootstrap-commonware".to_string())
         .spawn(move || {
+            #[expect(
+                deprecated,
+                reason = "Keep bootstrapped consensus storage readable until all nodes have \
+                          been updated; V1 blob creation will be enabled in a followup."
+            )]
             let runner = commonware_runtime::tokio::Runner::new(
-                commonware_runtime::tokio::Config::default().with_storage_directory(consensus_dir),
+                commonware_runtime::tokio::Config::default()
+                    .with_storage_directory(consensus_dir)
+                    .with_storage_blob_layouts(
+                        commonware_runtime::BlobLayout::V0..=commonware_runtime::BlobLayout::V0,
+                    ),
             );
 
             runner.start(|context| async move {
                 let mut states = Metadata::<_, u64, BootstrapDkgState>::init(
-                    context.with_label("states"),
+                    context.child("states"),
                     MetadataConfig {
                         partition: DKG_STATES_METADATA_PARTITION.to_string(),
                         codec_config: MAXIMUM_VALIDATORS,
@@ -1116,9 +1129,9 @@ fn seed_consensus_state(
                     states.clear();
                 }
 
-                let mut rng = rand_08::rngs::StdRng::seed_from_u64(seed);
+                let mut rng = rand::rngs::StdRng::seed_from_u64(seed);
                 let state = BootstrapDkgState {
-                    epoch: outcome.epoch,
+                    epoch: Epoch::new(outcome.epoch),
                     seed: Summary::random(&mut rng),
                     output: outcome.output,
                     share: BootstrapShareState::Plaintext(Some(signing_share)),
@@ -1129,6 +1142,7 @@ fn seed_consensus_state(
                 states
                     .put_sync(SHADOW_EPOCH, state)
                     .await
+                    .map(|_| ())
                     .map_err(eyre::Report::from)
                     .wrap_err("unable to write shadow DKG state metadata")
             })

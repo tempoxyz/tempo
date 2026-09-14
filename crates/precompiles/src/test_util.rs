@@ -1,5 +1,17 @@
 //! Test utilities for precompile dispatch testing
 
+pub mod abi_conformance;
+pub mod storage_conformance;
+
+/// Resolves a contract artifact within a Foundry output directory.
+pub fn foundry_artifact_path(
+    artifacts: &std::path::Path,
+    source: &str,
+    contract: &str,
+) -> std::path::PathBuf {
+    artifacts.join(source).join(format!("{contract}.json"))
+}
+
 #[cfg(any(test, feature = "test-utils"))]
 use crate::error::TempoPrecompileError;
 use crate::{
@@ -221,7 +233,7 @@ impl TIP20Setup {
 
     /// Grant ISSUER_ROLE to an account.
     pub fn with_issuer(self, account: Address) -> Self {
-        self.with_role(account, *tip20::ISSUER_ROLE)
+        self.with_role(account, tip20::ISSUER_ROLE)
     }
 
     /// Grant an arbitrary role to an account.

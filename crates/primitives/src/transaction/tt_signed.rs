@@ -100,7 +100,7 @@ impl AASigned {
 
     /// Calculate the transaction hash
     fn compute_hash(&self) -> B256 {
-        let mut buf = Vec::new();
+        let mut buf = Vec::with_capacity(self.eip2718_encoded_length());
         self.eip2718_encode(&mut buf);
         alloy_primitives::keccak256(&buf)
     }
@@ -552,7 +552,7 @@ mod serde_impl {
 }
 
 #[cfg(test)]
-mod tests {
+pub(crate) mod tests {
     use super::*;
     use crate::transaction::{
         tempo_transaction::Call,
@@ -564,6 +564,7 @@ mod tests {
     use alloy_signer_local::PrivateKeySigner;
     use core::num::NonZeroU64;
     use proptest::prelude::*;
+    use proptest_arbitrary_interop::arb;
 
     fn make_tx() -> TempoTransaction {
         TempoTransaction {
@@ -624,7 +625,7 @@ mod tests {
         })
     }
 
-    fn arb_tempo_tx() -> impl Strategy<Value = TempoTransaction> {
+    pub(crate) fn arb_tempo_tx() -> impl Strategy<Value = TempoTransaction> {
         (
             any::<u64>(),
             prop::option::of(arb_address()),
@@ -926,6 +927,35 @@ mod tests {
     }
 
     proptest! {
+        #[test]
+        fn proptest_eip2718_encoding_length_and_hash(
+            tx in arb_tempo_tx(),
+            signature in arb::<TempoSignature>(),
+        ) {
+            let signed = AASigned::new_unhashed(tx, signature);
+            let mut encoded = vec![0; signed.eip2718_encoded_length()];
+            let mut remaining = encoded.as_mut_slice();
+            signed.eip2718_encode(&mut remaining);
+            prop_assert!(remaining.is_empty());
+
+            let mut payload = Vec::new();
+            signed.tx().rlp_encode_fields_default(&mut payload);
+            signed.signature().to_bytes().encode(&mut payload);
+            let mut expected = vec![TEMPO_TX_TYPE_ID];
+            alloy_rlp::Header { list: true, payload_length: payload.len() }.encode(&mut expected);
+            expected.extend_from_slice(&payload);
+            prop_assert_eq!(&encoded, &expected);
+            prop_assert_eq!(*signed.hash(), alloy_primitives::keccak256(&expected));
+
+            encoded.extend_from_slice(&[0xaa, 0xbb]);
+            let mut input = &encoded[1..];
+            let decoded = AASigned::rlp_decode(&mut input).unwrap();
+            prop_assert_eq!(input, &[0xaa, 0xbb]);
+            prop_assert_eq!(decoded.tx(), signed.tx());
+            prop_assert_eq!(decoded.signature(), signed.signature());
+            prop_assert_eq!(decoded.hash(), signed.hash());
+        }
+
         #[test]
         fn proptest_recover_signer_with_expiring_nonce_hash_matches_individuals(mut tx in arb_tempo_tx()) {
             tx.nonce_key = U256::MAX;

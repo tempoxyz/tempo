@@ -1,5 +1,12 @@
 # Changelog
 
+## `tempo-primitives@1.11.0`
+
+### Minor Changes
+
+- Added the T10 hardfork and moved TIP-1091 activation (ZoneFactory precompile and shared Zone runtime installation) from T9 to T10, so the ZonePortal runtime can still change after the audit without reopening T9. (by @HamdiAllam, [#7244](https://github.com/tempoxyz/tempo/pull/7244))
+- Implemented TIP-1093 by extending the expiring nonce validity window to five minutes and the replay-protection ring to 3,000,000 entries at T11 activation. (by @HamdiAllam, [#7244](https://github.com/tempoxyz/tempo/pull/7244))
+
 ## `tempo-primitives@1.10.1`
 
 

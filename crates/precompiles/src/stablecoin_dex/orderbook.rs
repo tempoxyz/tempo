@@ -183,10 +183,10 @@ pub struct Orderbook {
     /// Quote token address
     pub quote: Address,
     /// Bid orders by tick
-    #[allow(dead_code)]
+    #[expect(dead_code)]
     bids: Mapping<i16, TickLevel>,
     /// Ask orders by tick
-    #[allow(dead_code)]
+    #[expect(dead_code)]
     asks: Mapping<i16, TickLevel>,
     /// Best bid tick for highest bid price.
     pub(crate) best_bid_tick: i16,
@@ -194,11 +194,11 @@ pub struct Orderbook {
     pub(crate) best_ask_tick: i16,
     /// (+T8) 1-based book ID; zero means unset.
     pub(crate) book_id: u32,
-    #[allow(dead_code)]
+    #[expect(dead_code)]
     /// Mapping of tick index to bid bitmap for price discovery
     bid_bitmap: Mapping<i16, U256>,
     /// Mapping of tick index to ask bitmap for price discovery
-    #[allow(dead_code)]
+    #[expect(dead_code)]
     ask_bitmap: Mapping<i16, U256>,
 }
 

@@ -231,25 +231,24 @@ impl TempoCalls {
         self
     }
 
-    #[allow(dead_code)]
+    #[expect(dead_code)]
     pub(crate) fn fee_token(mut self, fee_token: Option<Address>) -> Self {
         self.fee_token = fee_token;
         self
     }
 
-    #[allow(dead_code)]
+    #[expect(dead_code)]
     pub(crate) fn nonce_key(mut self, nonce_key: U256) -> Self {
         self.nonce_key = nonce_key;
         self
     }
 
-    #[allow(dead_code)]
     pub(crate) fn gas_limit(mut self, gas_limit: u64) -> Self {
         self.gas_limit = gas_limit;
         self
     }
 
-    #[allow(dead_code)]
+    #[expect(dead_code)]
     pub(crate) fn expect_existing_nonce(mut self) -> Self {
         self.expect_existing_nonce = true;
         self

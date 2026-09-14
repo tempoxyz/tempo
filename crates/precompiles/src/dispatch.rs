@@ -10,9 +10,25 @@ use alloy::{
     sol_types::{SolCall, SolError},
 };
 use revm::precompile::{PrecompileHalt, PrecompileOutput, PrecompileResult};
+use tempo_chainspec::hardfork::TempoHardfork;
 
 sol! {
     error StaticCallNotAllowed();
+}
+
+/// Maximum memory the ABI decoder may allocate for a precompile call.
+pub const ABI_DECODER_MEMORY_LIMIT: usize = 16 * 1024 * 1024;
+
+/// Returns the hardfork-aware ABI decoder configuration used to dispatch precompile calls.
+/// Strict decoding starts at T11; T12 additionally permits trailing bytes.
+#[inline]
+pub const fn abi_decoder_config_for_spec(
+    spec: TempoHardfork,
+) -> alloy::sol_types::abi::AbiDecoderConfig {
+    alloy::sol_types::abi::AbiDecoderConfig::new()
+        .memory_limit(ABI_DECODER_MEMORY_LIMIT)
+        .strict(spec.is_t11())
+        .validate_allow_trailing_bytes(spec.is_t12())
 }
 
 pub mod typed {
@@ -125,7 +141,10 @@ pub fn preserve_storage_credits(credit_owner: Address) -> Result<()> {
 /// Deducts the calldata input cost, returning an OOG halt result if insufficient gas.
 #[inline]
 pub fn charge_input_cost(storage: &mut StorageCtx, calldata: &[u8]) -> Option<PrecompileResult> {
-    if storage.deduct_gas(input_cost(calldata.len())).is_err() {
+    if input_cost(storage.spec(), calldata.len())
+        .and_then(|cost| storage.deduct_gas(cost))
+        .is_err()
+    {
         return Some(Ok(storage.halt_output(PrecompileHalt::OutOfGas)));
     }
     None
@@ -148,16 +167,15 @@ fn fill_state_gas(output: &mut PrecompileOutput, storage: &StorageCtx) {
     }
 
     if storage.amsterdam_eip8037_enabled() {
-        if output.is_success() {
-            // On success: parent takes the child's final reservoir.
-            output.reservoir = storage.reservoir();
-            output.state_gas_used = storage.state_gas_used();
-        } else {
-            // On revert or halt: state changes are undone, so ALL state gas returns
-            // to the parent's reservoir.
-            output.reservoir = storage.state_gas_used() + storage.reservoir();
-            output.state_gas_used = 0;
-        }
+        // Report the raw tracker values on success and failure alike. The parent
+        // settles them in `handle_reservoir_remaining_gas` exactly like a regular
+        // child frame: on success it adopts the reservoir and merges state gas and
+        // its spilled portion; on revert or halt `rollback_state_gas` credits the
+        // spilled portion back to regular gas and restores the reservoir to the
+        // value this call inherited.
+        output.reservoir = storage.reservoir();
+        output.state_gas_used = storage.state_gas_used() as i64;
+        output.state_gas_spilled = storage.state_gas_spilled();
     }
 }
 
@@ -246,9 +264,20 @@ macro_rules! dispatch {
                 $(
                     if <$iface::$calls as alloy::sol_types::SolInterface>::valid_selector(selector) {
                         type Calls = $iface::$calls;
-                        return $crate::dispatch::dispatch_call($calldata, <Calls as alloy::sol_types::SolInterface>::abi_decode, |$call| match $match_call {
-                            $(Calls::$variant($binding) => $body,)*
-                        });
+                        return $crate::dispatch::dispatch_call(
+                            $calldata,
+                            |data| {
+                                <Calls as alloy::sol_types::SolInterface>::abi_decode_with_config(
+                                    data,
+                                    $crate::dispatch::abi_decoder_config_for_spec(
+                                        $crate::storage::StorageCtx.spec(),
+                                    ),
+                                )
+                            },
+                            |$call| match $match_call {
+                                $(Calls::$variant($binding) => $body,)*
+                            },
+                        );
                     }
                 )*
                 return $crate::dispatch::unknown_selector_result($calldata);
@@ -315,6 +344,10 @@ mod tests {
             function clear(uint256 value) external;
         }
 
+        interface ITestMemoryDispatch {
+            function setValues(uint256[] values) external;
+        }
+
         error CustomTypedError(uint256 code);
     }
 
@@ -334,6 +367,69 @@ mod tests {
                 Self::Tempo(error) => error.into_precompile_result(gas, reservoir),
             }
         }
+    }
+
+    #[test]
+    fn trailing_bytes_are_allowed_from_t12() -> eyre::Result<()> {
+        let canonical = ITestMemoryDispatch::setValuesCall {
+            values: vec![U256::from(1), U256::from(2)],
+        }
+        .abi_encode();
+
+        for spec in [
+            TempoHardfork::Genesis,
+            TempoHardfork::T10,
+            TempoHardfork::T11,
+            TempoHardfork::T12,
+            TempoHardfork::T13,
+        ] {
+            let config = abi_decoder_config_for_spec(spec);
+            assert_eq!(config.get_strict(), spec.is_t11());
+            assert_eq!(config.get_validate(), spec.is_t11());
+            assert_eq!(config.get_validate_allow_trailing_bytes(), spec.is_t12());
+            assert_eq!(config.get_memory_limit(), ABI_DECODER_MEMORY_LIMIT);
+
+            let mut storage = HashMapStorageProvider::new_with_spec(1, spec);
+            for suffix_len in [0, 1, 32, 33] {
+                let mut calldata = canonical.clone();
+                calldata.extend(vec![0xff; suffix_len]);
+                let output = StorageCtx::enter(&mut storage, || {
+                    dispatch!(
+                        &calldata,
+                        |call| match call {
+                            ITestMemoryDispatch::ITestMemoryDispatchCalls {
+                                setValues(_) => Ok(PrecompileOutput::new(0, Bytes::new(), 0)),
+                            }
+                        }
+                    )
+                })?;
+                let expected_success = suffix_len == 0 || !spec.is_t11() || spec.is_t12();
+                assert_eq!(
+                    output.is_success(),
+                    expected_success,
+                    "{spec:?}, {suffix_len}"
+                );
+            }
+
+            // Allowing a suffix must not permit gaps inside the encoding.
+            let mut gapped = canonical.clone();
+            gapped[4..36].copy_from_slice(&U256::from(64).to_be_bytes::<32>());
+            gapped.splice(36..36, [0u8; 32]);
+            assert_eq!(
+                ITestMemoryDispatch::setValuesCall::abi_decode_with_config(&gapped, config).is_ok(),
+                !spec.is_t11(),
+                "{spec:?}"
+            );
+            assert!(
+                ITestMemoryDispatch::setValuesCall::abi_decode_with_config(
+                    &canonical[..canonical.len() - 1],
+                    config,
+                )
+                .is_err(),
+                "{spec:?}"
+            );
+        }
+        Ok(())
     }
 
     #[test]
@@ -406,6 +502,29 @@ mod tests {
             .into_precompile_result(0, 0)
             .unwrap_err();
         assert!(matches!(error, PrecompileError::Fatal(message) if message == "boom"));
+        Ok(())
+    }
+
+    #[test]
+    fn dispatch_limits_abi_decoder_memory() -> eyre::Result<()> {
+        let mut calldata = ITestMemoryDispatch::setValuesCall::SELECTOR.to_vec();
+        calldata.extend(U256::from(32).to_be_bytes::<32>());
+        calldata.extend(U256::from(ABI_DECODER_MEMORY_LIMIT as u64).to_be_bytes::<32>());
+
+        let mut storage = HashMapStorageProvider::new_with_spec(1, TempoHardfork::T1);
+        let output = StorageCtx::enter(&mut storage, || {
+            dispatch!(
+                &calldata,
+                |call| match call {
+                    ITestMemoryDispatch::ITestMemoryDispatchCalls {
+                        setValues(_) => Ok(PrecompileOutput::new(0, Bytes::new(), 0)),
+                    }
+                }
+            )
+        })?;
+
+        assert!(output.is_revert());
+        assert!(output.bytes.is_empty());
         Ok(())
     }
 }

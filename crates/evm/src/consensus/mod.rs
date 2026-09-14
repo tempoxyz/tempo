@@ -15,8 +15,8 @@ use reth_ethereum_consensus::EthBeaconConsensus;
 use reth_primitives_traits::{RecoveredBlock, SealedBlock, SealedHeader};
 use std::sync::Arc;
 use tempo_chainspec::{
-    hardfork::TempoHardforks,
-    spec::{SYSTEM_TX_ADDRESSES, SYSTEM_TX_COUNT, TempoChainSpec},
+    TempoChainSpec, TempoConsensusSpec,
+    spec::{SYSTEM_TX_ADDRESSES, SYSTEM_TX_COUNT},
 };
 use tempo_primitives::{
     Block, BlockBody, TempoHeader, TempoPrimitives, TempoReceipt, TempoTxEnvelope,
@@ -33,26 +33,60 @@ pub const ALLOWED_FUTURE_BLOCK_TIME_MILLIS: u64 = 0;
 /// Maximum extra data size for Tempo blocks.
 pub const TEMPO_MAXIMUM_EXTRA_DATA_SIZE: usize = 10 * 1_024; // 10KiB
 
-/// Tempo consensus implementation.
-#[derive(Debug, Clone)]
-pub struct TempoConsensus {
-    /// Inner Ethereum consensus.
-    inner: EthBeaconConsensus<TempoChainSpec>,
+/// Validates that an execution block body matches the commitments in its header.
+pub fn validate_body_against_header(
+    body: &BlockBody,
+    header: &TempoHeader,
+) -> Result<(), ConsensusError> {
+    reth_consensus_common::validation::validate_body_against_header(body, header)
 }
 
-impl TempoConsensus {
+/// Tempo consensus implementation.
+#[derive(Debug, Clone)]
+pub struct TempoConsensus<C = TempoChainSpec> {
+    /// Inner Ethereum consensus.
+    inner: EthBeaconConsensus<C>,
+    /// How far in the future a block timestamp may be.
+    allowed_future_block_time_millis: u64,
+    /// Whether child headers may use the same millisecond timestamp as their parent.
+    allow_equal_timestamps: bool,
+}
+
+impl<C> TempoConsensus<C>
+where
+    C: TempoConsensusSpec,
+{
     /// Creates a new [`TempoConsensus`] with the given chain spec.
-    pub fn new(chain_spec: Arc<TempoChainSpec>) -> Self {
+    pub fn new(chain_spec: Arc<C>) -> Self {
         Self::new_with_bal_hashes(chain_spec, false)
     }
 
     /// Creates a new [`TempoConsensus`] with optional pre-Amsterdam BAL hash support.
-    pub fn new_with_bal_hashes(chain_spec: Arc<TempoChainSpec>, allow_bal_hashes: bool) -> Self {
+    pub fn new_with_bal_hashes(chain_spec: Arc<C>, allow_bal_hashes: bool) -> Self {
         Self {
             inner: EthBeaconConsensus::new(chain_spec)
                 .with_max_extra_data_size(TEMPO_MAXIMUM_EXTRA_DATA_SIZE)
                 .with_allow_bal_hashes(allow_bal_hashes),
+            allowed_future_block_time_millis: ALLOWED_FUTURE_BLOCK_TIME_MILLIS,
+            allow_equal_timestamps: false,
         }
+    }
+
+    /// Configures how far in the future a block timestamp may be.
+    pub fn with_allowed_future_block_time_millis(
+        mut self,
+        allowed_future_block_time_millis: u64,
+    ) -> Self {
+        self.allowed_future_block_time_millis = allowed_future_block_time_millis;
+        self
+    }
+
+    /// Configures whether child headers may use the same millisecond timestamp as their parent.
+    ///
+    /// Equal timestamps are rejected by default. Timestamp regressions are always rejected.
+    pub fn with_allow_equal_timestamps(mut self, allow_equal_timestamps: bool) -> Self {
+        self.allow_equal_timestamps = allow_equal_timestamps;
+        self
     }
 
     /// Validates the given header against common consensus rules and the given millisecond timestamp.
@@ -71,7 +105,9 @@ impl TempoConsensus {
             .into());
         }
 
-        if header.timestamp_millis() > present_timestamp_millis + ALLOWED_FUTURE_BLOCK_TIME_MILLIS {
+        if header.timestamp_millis()
+            > present_timestamp_millis.saturating_add(self.allowed_future_block_time_millis)
+        {
             return Err(ConsensusError::TimestampIsInFuture {
                 timestamp: header.timestamp_millis(),
                 present_timestamp: present_timestamp_millis,
@@ -109,7 +145,10 @@ impl TempoConsensus {
     }
 }
 
-impl HeaderValidator<TempoHeader> for TempoConsensus {
+impl<C> HeaderValidator<TempoHeader> for TempoConsensus<C>
+where
+    C: TempoConsensusSpec,
+{
     fn validate_header(&self, header: &SealedHeader<TempoHeader>) -> Result<(), ConsensusError> {
         let current_timestamp_millis = std::time::SystemTime::now()
             .duration_since(std::time::SystemTime::UNIX_EPOCH)
@@ -141,10 +180,18 @@ impl HeaderValidator<TempoHeader> for TempoConsensus {
             validate_against_parent_4844(header.header(), parent.header(), blob_params)?;
         }
 
-        if header.timestamp_millis() <= parent.timestamp_millis() {
+        let timestamp = header.timestamp_millis();
+        let parent_timestamp = parent.timestamp_millis();
+        let timestamp_is_invalid = if self.allow_equal_timestamps {
+            timestamp < parent_timestamp
+        } else {
+            timestamp <= parent_timestamp
+        };
+
+        if timestamp_is_invalid {
             return Err(ConsensusError::TimestampIsInPast {
-                parent_timestamp: parent.timestamp_millis(),
-                timestamp: header.timestamp_millis(),
+                parent_timestamp,
+                timestamp,
             });
         }
 
@@ -152,13 +199,16 @@ impl HeaderValidator<TempoHeader> for TempoConsensus {
     }
 }
 
-impl Consensus<Block> for TempoConsensus {
+impl<C> Consensus<Block> for TempoConsensus<C>
+where
+    C: TempoConsensusSpec,
+{
     fn validate_body_against_header(
         &self,
         body: &BlockBody,
         header: &SealedHeader<TempoHeader>,
     ) -> Result<(), ConsensusError> {
-        Consensus::<Block>::validate_body_against_header(&self.inner, body, header)
+        validate_body_against_header(body, header.header())
     }
 
     fn validate_block_pre_execution(
@@ -227,7 +277,10 @@ impl Consensus<Block> for TempoConsensus {
     }
 }
 
-impl FullConsensus<TempoPrimitives> for TempoConsensus {
+impl<C> FullConsensus<TempoPrimitives> for TempoConsensus<C>
+where
+    C: TempoConsensusSpec,
+{
     fn validate_block_post_execution(
         &self,
         block: &RecoveredBlock<Block>,
@@ -708,10 +761,48 @@ mod tests {
     }
 
     #[test]
+    fn test_validate_header_against_parent_equal_timestamp_is_configurable() {
+        use tempo_chainspec::spec::TEMPO_T1_BASE_FEE;
+
+        let parent_ts = TempoHardfork::T6.moderato_activation_timestamp().unwrap();
+        let parent = TestHeaderBuilder::default()
+            .gas_limit(30_000_000)
+            .timestamp(parent_ts)
+            .number(1)
+            .timestamp_millis_part(500)
+            .base_fee(TEMPO_T1_BASE_FEE)
+            .build();
+        let parent_sealed = SealedHeader::seal_slow(parent);
+
+        let child = TestHeaderBuilder::default()
+            .gas_limit(30_000_000)
+            .timestamp(parent_ts)
+            .timestamp_millis_part(500)
+            .number(2)
+            .base_fee(TEMPO_T1_BASE_FEE)
+            .parent_hash(parent_sealed.hash())
+            .build();
+        let child_sealed = SealedHeader::seal_slow(child);
+
+        let strict_consensus = TempoConsensus::new(MODERATO.clone());
+        let result = strict_consensus.validate_header_against_parent(&child_sealed, &parent_sealed);
+        assert!(matches!(
+            result,
+            Err(ConsensusError::TimestampIsInPast { .. })
+        ));
+
+        let permissive_consensus =
+            TempoConsensus::new(MODERATO.clone()).with_allow_equal_timestamps(true);
+        let result =
+            permissive_consensus.validate_header_against_parent(&child_sealed, &parent_sealed);
+        assert!(result.is_ok());
+    }
+
+    #[test]
     fn test_validate_header_against_parent_timestamp_not_increasing() {
         use tempo_chainspec::spec::TEMPO_T1_BASE_FEE;
 
-        let consensus = TempoConsensus::new(MODERATO.clone());
+        let consensus = TempoConsensus::new(MODERATO.clone()).with_allow_equal_timestamps(true);
         let parent_ts = TempoHardfork::T6.moderato_activation_timestamp().unwrap();
         let parent = TestHeaderBuilder::default()
             .gas_limit(30_000_000)
@@ -1069,20 +1160,54 @@ mod tests {
 
     #[test]
     fn test_validate_header_timestamp_exactly_at_boundary() {
-        let consensus = TempoConsensus::new(MODERATO.clone());
-        let boundary_timestamp = current_timestamp_millis() + ALLOWED_FUTURE_BLOCK_TIME_MILLIS;
+        let present_timestamp = 1_000_000_000;
+        let allowed_future_block_time_millis = 100;
+        let consensus = TempoConsensus::new(MODERATO.clone())
+            .with_allowed_future_block_time_millis(allowed_future_block_time_millis);
+        let boundary_timestamp = present_timestamp + allowed_future_block_time_millis;
+        let shared_gas_limit = MODERATO.shared_gas_limit_at(boundary_timestamp / 1000, 30_000_000);
         let header = TestHeaderBuilder::default()
             .gas_limit(30_000_000)
             .timestamp_millis(boundary_timestamp)
-            .shared_gas_limit(MODERATO.shared_gas_limit_at(boundary_timestamp / 1000, 30_000_000))
+            .shared_gas_limit(shared_gas_limit)
+            .general_gas_limit(MODERATO.general_gas_limit_at(
+                boundary_timestamp / 1000,
+                30_000_000,
+                shared_gas_limit,
+            ))
             .build();
         let sealed = SealedHeader::seal_slow(header);
 
-        let result = consensus.validate_header(&sealed);
+        let result = consensus.validate_header_with_timestamp_millis(&sealed, present_timestamp);
         assert!(
             result.is_ok(),
             "Timestamp exactly at boundary should be accepted, got: {result:?}"
         );
+    }
+
+    #[test]
+    fn test_validate_header_timestamp_past_configured_boundary() {
+        let present_timestamp = 1_000_000_000;
+        let allowed_future_block_time_millis = 100;
+        let consensus = TempoConsensus::new(MODERATO.clone())
+            .with_allowed_future_block_time_millis(allowed_future_block_time_millis);
+        let block_timestamp = present_timestamp + allowed_future_block_time_millis + 1;
+        let header = TestHeaderBuilder::default()
+            .gas_limit(30_000_000)
+            .timestamp_millis(block_timestamp)
+            .build();
+        let sealed = SealedHeader::seal_slow(header);
+
+        let err = consensus
+            .validate_header_with_timestamp_millis(&sealed, present_timestamp)
+            .unwrap_err();
+        assert!(matches!(
+            err,
+            ConsensusError::TimestampIsInFuture {
+                timestamp,
+                present_timestamp: actual_present_timestamp,
+            } if timestamp == block_timestamp && actual_present_timestamp == present_timestamp
+        ));
     }
 
     #[test]

@@ -22,13 +22,12 @@ use commonware_consensus::{
     types::{Epoch, Height, Round, View},
 };
 use commonware_cryptography::{bls12381::primitives::variant::MinSig, ed25519::PublicKey};
-use commonware_utils::channel::oneshot;
 use parking_lot::Mutex;
 use reth_node_core::primitives::SealedBlock;
 use tempo_node::rpc::consensus::CertifiedBlock;
 use tempo_primitives::{Block as TempoBlock, BlockBody, TempoHeader};
 
-use super::super::{BlockProvider, Upstream};
+use super::super::{BlockNetwork, BlockProvider, Upstream};
 use crate::consensus::{Block, Digest};
 
 pub(super) fn make_block(height: u64) -> Block {
@@ -43,7 +42,7 @@ pub(super) fn make_block(height: u64) -> Block {
         header,
         body: BlockBody::default(),
     };
-    Block::from_execution_block(SealedBlock::seal_slow(inner), None)
+    Block::try_from_execution_block(SealedBlock::seal_slow(inner), None)
         .expect("test block should not contain BAL side data")
 }
 
@@ -123,7 +122,7 @@ struct StubUpstreamInner {
     finalizations: Mutex<HashMap<u64, CertifiedBlock>>,
     block_reads: AtomicUsize,
     finalization_reads: AtomicUsize,
-    block_gate: Mutex<Option<oneshot::Receiver<()>>>,
+    hang_block_reads: AtomicBool,
 }
 
 impl StubUpstream {
@@ -143,21 +142,19 @@ impl StubUpstream {
         self.inner.finalization_reads.load(Ordering::SeqCst)
     }
 
-    pub(super) fn pause_next_block_read(&self) -> oneshot::Sender<()> {
-        let (release, gate) = oneshot::channel();
-        *self.inner.block_gate.lock() = Some(gate);
-        release
+    pub(super) fn hang_block_reads(&self) {
+        self.inner.hang_block_reads.store(true, Ordering::SeqCst);
     }
 }
 
 impl Upstream for StubUpstream {
-    fn get_block(&self, digest: Digest) -> impl Future<Output = Option<Block>> + Send {
+    fn get_block(&self, digest: Digest) -> impl Future<Output = Option<Block>> + Send + 'static {
         self.inner.block_reads.fetch_add(1, Ordering::SeqCst);
         let block = self.inner.blocks.lock().get(&digest).cloned();
-        let gate = self.inner.block_gate.lock().take();
+        let hang = self.inner.hang_block_reads.load(Ordering::SeqCst);
         async move {
-            if let Some(gate) = gate {
-                let _ = gate.await;
+            if hang {
+                std::future::pending::<()>().await;
             }
             block
         }
@@ -166,9 +163,33 @@ impl Upstream for StubUpstream {
     fn get_finalization(
         &self,
         height: Height,
-    ) -> impl Future<Output = Option<CertifiedBlock>> + Send {
+    ) -> impl Future<Output = Option<CertifiedBlock>> + Send + 'static {
         self.inner.finalization_reads.fetch_add(1, Ordering::SeqCst);
         let finalization = self.inner.finalizations.lock().get(&height.get()).cloned();
         async move { finalization }
+    }
+}
+
+#[derive(Clone, Default)]
+pub(super) struct StubBlockNetwork {
+    blocks: Arc<Mutex<HashMap<Digest, Block>>>,
+    reads: Arc<AtomicUsize>,
+}
+
+impl StubBlockNetwork {
+    pub(super) fn add_block(&self, block: Block) {
+        self.blocks.lock().insert(block.digest(), block);
+    }
+
+    pub(super) fn reads(&self) -> usize {
+        self.reads.load(Ordering::SeqCst)
+    }
+}
+
+impl BlockNetwork for StubBlockNetwork {
+    fn get_block(&self, digest: Digest) -> impl Future<Output = Option<Block>> + Send + 'static {
+        self.reads.fetch_add(1, Ordering::SeqCst);
+        let block = self.blocks.lock().get(&digest).cloned();
+        async move { block }
     }
 }

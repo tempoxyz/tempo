@@ -12,7 +12,10 @@ use commonware_consensus::{
 use commonware_cryptography::{
     Signer as _,
     bls12381::{
-        dkg::{self, DealerPrivMsg, DealerPubMsg, Info, Output, PlayerAck, SignedDealerLog},
+        dkg::feldman_desmedt::{
+            self as dkg, DealerPrivMsg, DealerPubMsg, Info, Output, PlayerAck, Reveal,
+            SignedDealerLog,
+        },
         primitives::{
             group::Share,
             sharing::{Mode, ModeVersion},
@@ -20,14 +23,13 @@ use commonware_cryptography::{
         },
     },
     ed25519::{PrivateKey, PublicKey},
-    transcript::{Summary, Transcript},
+    transcript::{Summary, Transcript, Version},
 };
 use commonware_parallel::Strategy;
-use commonware_runtime::{BufferPooler, Clock, Metrics, buffer::paged::CacheRef};
+use commonware_runtime::{BufferPooler, Clock, Metrics, ReadOptions, buffer::paged::CacheRef};
 use commonware_storage::{journal::segmented, metadata};
-use commonware_utils::{N3f1, NZU16, NZU32, NZUsize, ordered};
-use eyre::{OptionExt, WrapErr as _, bail, eyre};
-use futures::{FutureExt as _, StreamExt as _, future::BoxFuture};
+use commonware_utils::{N3f1, NZU16, NZU32, NZUsize, futures::rebind, ordered};
+use eyre::{OptionExt, WrapErr as _, bail};
 use tempo_primitives::TempoHeader;
 use tracing::{debug, info, instrument, warn};
 
@@ -51,18 +53,52 @@ pub(super) fn builder() -> Builder {
 
 pub(super) struct Storage<TContext>
 where
-    TContext: commonware_runtime::Storage + Clock + Metrics,
+    TContext: BufferPooler + commonware_runtime::Storage + Clock + Metrics,
 {
-    states: metadata::Metadata<TContext, u64, State>,
-    events: segmented::variable::Journal<TContext, Event>,
+    // Rebind consuming commonware mutations through these slots. Write failures
+    // panic, so an invalidated handle is never reused by the actor.
+    states: Option<metadata::Metadata<TContext, u64, State>>,
+    events: Option<segmented::variable::Journal<TContext, Event>>,
 
-    current: State,
+    current: Option<State>,
     cache: BTreeMap<Epoch, Events>,
+}
+
+/// Storage as read from disk, holding a state that has not yet been checked
+/// against the finalized floor (or no state at all).
+///
+/// [`Unverified::init_verified`] persists the verified state and turns this
+/// into a usable [`Storage`].
+pub(super) struct Unverified<TContext>
+where
+    TContext: BufferPooler + commonware_runtime::Storage + Clock + Metrics,
+{
+    storage: Storage<TContext>,
+}
+
+impl<TContext> Unverified<TContext>
+where
+    TContext: BufferPooler + commonware_runtime::Storage + Clock + Metrics,
+{
+    pub(super) fn state(&self) -> Option<&State> {
+        self.storage.current.as_ref()
+    }
+
+    pub(super) async fn init_verified(self, state: State) -> Storage<TContext> {
+        let Self { mut storage } = self;
+        rebind(&mut storage.states, |states| {
+            states.put_sync(state.epoch.get(), state.clone())
+        })
+        .await
+        .expect("failed to persist initial DKG state");
+        storage.current = Some(state);
+        storage
+    }
 }
 
 impl<TContext> Storage<TContext>
 where
-    TContext: commonware_runtime::Storage + Clock + Metrics,
+    TContext: BufferPooler + commonware_runtime::Storage + Clock + Metrics,
 {
     /// Returns all player acknowledgments received during the given epoch.
     fn acks_for_epoch(
@@ -99,17 +135,31 @@ where
 
     /// Returns the DKG outcome for the current epoch.
     pub(super) fn current(&self) -> State {
-        self.current.clone()
+        self.current.clone().expect("invariant: state must be set")
     }
 
-    /// Persists the outcome of a DKG ceremony to state
-    pub(super) async fn set_state(&mut self, state: State) -> eyre::Result<()> {
-        if let Some(old) = self.states.put(state.epoch.get(), state.clone()) {
-            warn!(epoch = %old.epoch, "overwriting existing state");
-        }
-        self.states.sync().await.wrap_err("failed writing state")?;
-        self.current = state;
-        Ok(())
+    /// Persists the outcome of a DKG ceremony, panicking on write failure.
+    pub(super) async fn set_state(&mut self, state: State) {
+        rebind(&mut self.states, |mut states| async {
+            if let Some(old) = states.put(state.epoch.get(), state.clone()) {
+                warn!(epoch = %old.epoch, "overwriting existing state");
+            }
+            states.sync().await
+        })
+        .await
+        .expect("failed to persist DKG state");
+        self.current = Some(state);
+    }
+
+    /// Appends and durably syncs an event, panicking on write failure.
+    async fn append_event(&mut self, epoch: Epoch, event: Event) {
+        rebind(&mut self.events, |events| async move {
+            let section = epoch.get();
+            let (events, _, _) = events.append(section, &event).await?;
+            events.sync(section).await
+        })
+        .await
+        .expect("failed to persist DKG event");
     }
 
     /// Append a player ACK to the journal.
@@ -119,47 +169,31 @@ where
             %epoch,
             %player,
         ),
-        err,
     )]
-    async fn append_ack(
-        &mut self,
-        epoch: Epoch,
-        player: PublicKey,
-        ack: PlayerAck<PublicKey>,
-    ) -> eyre::Result<()> {
+    async fn append_ack(&mut self, epoch: Epoch, player: PublicKey, ack: PlayerAck<PublicKey>) {
         if self
             .cache
             .get(&epoch)
             .is_some_and(|events| events.acks.contains_key(&player))
         {
             info!(%player, %epoch, "ack for player already found in cache, dropping");
-            return Ok(());
+            return;
         }
 
-        let section = epoch.get();
-        self.events
-            .append(
-                section,
-                &Event::Ack {
-                    player: player.clone(),
-                    ack: ack.clone(),
-                },
-            )
-            .await
-            .wrap_err("unable to write event to storage")?;
-
-        self.events
-            .sync(section)
-            .await
-            .wrap_err("unable to sync events journal")?;
+        self.append_event(
+            epoch,
+            Event::Ack {
+                player: player.clone(),
+                ack: ack.clone(),
+            },
+        )
+        .await;
 
         self.cache
             .entry(epoch)
             .or_default()
             .acks
             .insert(player, ack);
-
-        Ok(())
     }
 
     /// Append a dealer's dealing to the journal.
@@ -169,7 +203,6 @@ where
             %epoch,
             %dealer,
         ),
-        err,
     )]
     async fn append_dealing(
         &mut self,
@@ -177,41 +210,31 @@ where
         dealer: PublicKey,
         pub_msg: DealerPubMsg<MinSig>,
         priv_msg: DealerPrivMsg,
-    ) -> eyre::Result<()> {
+    ) {
         if self
             .cache
             .get(&epoch)
             .is_some_and(|events| events.dealings.contains_key(&dealer))
         {
             info!(%dealer, %epoch, "dealing of dealer already found in cache, dropping");
-            return Ok(());
+            return;
         }
 
-        let section = epoch.get();
-        self.events
-            .append(
-                section,
-                &Event::Dealing {
-                    dealer: dealer.clone(),
-                    public_msg: pub_msg.clone(),
-                    private_msg: priv_msg.clone(),
-                },
-            )
-            .await
-            .wrap_err("unable to write event to storage")?;
-
-        self.events
-            .sync(section)
-            .await
-            .wrap_err("unable to sync events journal")?;
+        self.append_event(
+            epoch,
+            Event::Dealing {
+                dealer: dealer.clone(),
+                public_msg: pub_msg.clone(),
+                private_msg: priv_msg.clone(),
+            },
+        )
+        .await;
 
         self.cache
             .entry(epoch)
             .or_default()
             .dealings
             .insert(dealer, (pub_msg, priv_msg));
-
-        Ok(())
     }
 
     /// Appends a dealer log to the journal
@@ -220,7 +243,7 @@ where
         epoch: Epoch,
         dealer: PublicKey,
         log: dkg::DealerLog<MinSig, PublicKey>,
-    ) -> eyre::Result<()> {
+    ) {
         if self
             .cache
             .get(&epoch)
@@ -231,36 +254,24 @@ where
                 %epoch,
                 "dealer log already found in cache; dropping"
             );
-            return Ok(());
+            return;
         }
 
-        let section = epoch.get();
-        self.events
-            .append(
-                section,
-                &Event::Log {
-                    dealer: dealer.clone(),
-                    log: log.clone(),
-                },
-            )
-            .await
-            .wrap_err("failed to append log to journal")?;
-        self.events
-            .sync(section)
-            .await
-            .wrap_err("unable to sync journal")?;
+        self.append_event(
+            epoch,
+            Event::Log {
+                dealer: dealer.clone(),
+                log: log.clone(),
+            },
+        )
+        .await;
 
         let cache = self.cache.entry(epoch).or_default();
         cache.logs.insert(dealer, log);
-        Ok(())
     }
 
     /// Appends the height, digest, and parent of the finalized header to the journal.
-    pub(super) async fn append_finalized_header(
-        &mut self,
-        epoch: Epoch,
-        header: TempoHeader,
-    ) -> eyre::Result<()> {
+    pub(super) async fn append_finalized_header(&mut self, epoch: Epoch, header: TempoHeader) {
         let height = Height::new(header.number());
         let digest = Digest(header.hash_slow());
         let parent = Digest(header.parent_hash());
@@ -275,25 +286,18 @@ where
                 %parent,
                 "finalized block was already found in cache; dropping",
             );
-            return Ok(());
+            return;
         }
 
-        let section = epoch.get();
-        self.events
-            .append(
-                section,
-                &Event::Finalized {
-                    digest,
-                    parent,
-                    height,
-                },
-            )
-            .await
-            .wrap_err("failed to append finalized block to journal")?;
-        self.events
-            .sync(section)
-            .await
-            .wrap_err("unable to sync journal")?;
+        self.append_event(
+            epoch,
+            Event::Finalized {
+                digest,
+                parent,
+                height,
+            },
+        )
+        .await;
 
         let cache = self.cache.entry(epoch).or_default();
         cache.finalized.insert(
@@ -304,7 +308,6 @@ where
                 parent,
             },
         );
-        Ok(())
     }
 
     pub(super) fn cache_dkg_outcome(
@@ -351,7 +354,7 @@ where
         err,
     )]
     pub(super) fn create_dealer_for_round(
-        &mut self,
+        &self,
         me: PrivateKey,
         round: Round,
         share: ShareState,
@@ -379,7 +382,7 @@ where
         };
 
         let (mut dealer, pub_msg, priv_msgs) = dkg::Dealer::start::<N3f1>(
-            Transcript::resume(seed).noise(b"dealer-rng"),
+            Transcript::resume(seed, Version::V0).noise(b"dealer-rng"),
             round.info.clone(),
             me.clone(),
             share,
@@ -453,64 +456,50 @@ where
             .and_then(|cache| cache.notarized_blocks.get(digest))
     }
 
-    #[instrument(skip_all, fields(%up_to_epoch), err)]
-    pub(super) async fn prune(&mut self, up_to_epoch: Epoch) -> eyre::Result<()> {
-        self.events
-            .prune(up_to_epoch.get())
+    #[instrument(skip_all, fields(%up_to_epoch))]
+    pub(super) async fn prune(&mut self, up_to_epoch: Epoch) {
+        rebind(&mut self.events, |events| events.prune(up_to_epoch.get()))
             .await
-            .wrap_err("unable to prune events journal")?;
-        self.states.retain(|&key, _| key >= up_to_epoch.get());
-        self.states
-            .sync()
-            .await
-            .wrap_err("unable to prune events metadata")?;
+            .expect("failed to prune DKG events journal");
+        rebind(&mut self.states, |mut states| async move {
+            states.retain(|&key, _| key >= up_to_epoch.get());
+            states.sync().await
+        })
+        .await
+        .expect("failed to prune DKG state metadata");
         self.cache.retain(|&epoch, _| epoch >= up_to_epoch);
-        Ok(())
     }
 }
 
 #[derive(Default)]
 pub(super) struct Builder {
-    initial_state: Option<BoxFuture<'static, eyre::Result<State>>>,
     partition_prefix: Option<String>,
 }
 
 impl Builder {
-    pub(super) fn initial_state(
-        self,
-        initial_state: impl Future<Output = eyre::Result<State>> + Send + 'static,
-    ) -> Self {
-        Self {
-            initial_state: Some(initial_state.boxed()),
-            ..self
-        }
-    }
-
     pub(super) fn partition_prefix(self, partition_prefix: &str) -> Self {
         Self {
             partition_prefix: Some(partition_prefix.to_string()),
-            ..self
         }
     }
 
     #[instrument(skip_all, err)]
-    pub(super) async fn init<TContext>(self, context: TContext) -> eyre::Result<Storage<TContext>>
+    pub(super) async fn init_unverified<TContext>(
+        self,
+        context: TContext,
+    ) -> eyre::Result<Unverified<TContext>>
     where
         TContext: BufferPooler + commonware_runtime::Storage + Clock + Metrics,
     {
-        let Self {
-            initial_state,
-            partition_prefix,
-        } = self;
+        let Self { partition_prefix } = self;
         let partition_prefix =
             partition_prefix.ok_or_eyre("DKG actors state must have its partition prefix set")?;
 
         let page_cache = CacheRef::from_pooler(&context, PAGE_SIZE, POOL_CAPACITY);
 
         let states_metadata_partition = format!("{partition_prefix}_states_metadata");
-
-        let mut states = metadata::Metadata::init(
-            context.with_label("states"),
+        let states: metadata::Metadata<TContext, u64, State> = metadata::Metadata::init(
+            context.child("states"),
             metadata::Config {
                 partition: states_metadata_partition,
                 codec_config: MAXIMUM_VALIDATORS,
@@ -519,36 +508,15 @@ impl Builder {
         .await
         .wrap_err("unable to initialize DKG states metadata")?;
 
-        if states.keys().max().is_none() {
-            let initial_state = match initial_state {
-                None => {
-                    return Err(eyre!(
-                        "states metadata was empty and initializer was not set"
-                    ));
-                }
-                Some(initial_state) => initial_state
-                    .await
-                    .wrap_err("failed constructing initial state to populate storage")?,
-            };
+        let current = states.keys().max().map(|epoch| {
             states
-                .put_sync(initial_state.epoch.get(), initial_state)
-                .await
-                .wrap_err("unable to write initial state to metadata")?;
-        }
+                .get(epoch)
+                .expect("state at keys iterator must exist")
+                .clone()
+        });
 
-        let current = states
-            .keys()
-            .max()
-            .map(|epoch| {
-                states
-                    .get(epoch)
-                    .expect("state at keys iterator must exist")
-                    .clone()
-            })
-            .expect("states storage must contain a state after initialization");
-
-        let events = segmented::variable::Journal::init(
-            context.with_label("events"),
+        let mut events = segmented::variable::Journal::init(
+            context.child("events"),
             segmented::variable::Config {
                 partition: format!("{partition_prefix}_events"),
                 compression: None,
@@ -563,11 +531,10 @@ impl Builder {
         // Replay msgs to populate epoch caches
         let mut cache = BTreeMap::<Epoch, Events>::new();
         {
-            let replay = events
-                .replay(0, 0, READ_BUFFER)
+            let mut replay = events
+                .replay(0, 0, READ_BUFFER, ReadOptions::default())
                 .await
                 .wrap_err("unable to start a replay stream to populate events cache")?;
-            futures::pin_mut!(replay);
 
             while let Some(result) = replay.next().await {
                 let (section, _, _, event) =
@@ -576,13 +543,22 @@ impl Builder {
                 let events = cache.entry(epoch).or_default();
                 events.insert(event);
             }
+            events = replay
+                .finish()
+                .wrap_err("unable to finish replaying events journal")?;
         }
 
-        Ok(Storage {
-            states,
-            events,
-            current,
-            cache,
+        eyre::ensure!(
+            current.is_some() || cache.is_empty(),
+            "DKG states metadata is empty, but events journal contains retained events",
+        );
+        Ok(Unverified {
+            storage: Storage {
+                states: Some(states),
+                events: Some(events),
+                current,
+                cache,
+            },
         })
     }
 }
@@ -600,6 +576,10 @@ pub(super) enum ShareState {
 }
 
 impl ShareState {
+    pub(super) fn unset_plaintext() -> Self {
+        Self::Plaintext(None)
+    }
+
     pub(super) fn into_inner(self) -> Option<Share> {
         match self {
             Self::Plaintext(share) => share,
@@ -939,10 +919,9 @@ impl Dealer {
         }
     }
 
-    /// Handle an incoming ack from a player.
+    /// Handle an incoming ack from a player, persisting it before returning success.
     ///
-    /// If the ack is valid and new, persists it to storage.
-    /// Returns true if the ack was successfully processed.
+    /// Returns protocol validation errors. Storage write failures panic.
     pub(super) async fn receive_ack<TContext>(
         &mut self,
         storage: &mut Storage<TContext>,
@@ -951,26 +930,19 @@ impl Dealer {
         ack: PlayerAck<PublicKey>,
     ) -> eyre::Result<()>
     where
-        TContext: commonware_runtime::Storage + Clock + Metrics,
+        TContext: BufferPooler + commonware_runtime::Storage + Clock + Metrics,
     {
         if !self.unsent.contains_key(&player) {
             bail!("already received an ack from `{player}`");
         }
-        match &mut self.dealer {
-            Some(dealer) => {
-                dealer
-                    .receive_player_ack(player.clone(), ack.clone())
-                    .wrap_err("unable to receive player ack")?;
-                self.unsent.remove(&player);
-                storage
-                    .append_ack(epoch, player.clone(), ack.clone())
-                    .await
-                    .wrap_err("unable to append ack to journal")?;
-            }
-            None => {
-                bail!("dealer was already finalized, dropping ack of player `{player}`");
-            }
-        }
+        let Some(dealer) = &mut self.dealer else {
+            bail!("dealer was already finalized, dropping ack of player `{player}`");
+        };
+        dealer
+            .receive_player_ack(player.clone(), ack.clone())
+            .wrap_err("unable to receive player ack")?;
+        storage.append_ack(epoch, player.clone(), ack).await;
+        self.unsent.remove(&player);
         Ok(())
     }
 
@@ -1039,6 +1011,12 @@ impl Round {
                 state.epoch.get(),
                 previous_output,
                 Mode::NonZeroCounter,
+                #[expect(
+                    deprecated,
+                    reason = "switching the revealed-share calculation to V1 changes the round \
+                              summary and requires a coordinated protocol change"
+                )]
+                Reveal::V0,
                 dealers.clone(),
                 players.clone(),
             )
@@ -1086,9 +1064,9 @@ impl Player {
         }
     }
 
-    /// Handle an incoming dealer message.
+    /// Handle an incoming dealer message, persisting it before returning its ack.
     ///
-    /// If this is a new valid dealer message, persists it to storage before returning.
+    /// Returns protocol validation errors. Storage write failures panic.
     pub(super) async fn receive_dealing<TContext>(
         &mut self,
         storage: &mut Storage<TContext>,
@@ -1098,25 +1076,21 @@ impl Player {
         priv_msg: DealerPrivMsg,
     ) -> eyre::Result<PlayerAck<PublicKey>>
     where
-        TContext: commonware_runtime::Storage + Clock + Metrics,
+        TContext: BufferPooler + commonware_runtime::Storage + Clock + Metrics,
     {
-        // If we've already generated an ack, return the cached version
+        // Cached acks are backed by a persisted dealing.
         if let Some(ack) = self.acks.get(&dealer) {
             return Ok(ack.clone());
         }
 
-        // Otherwise generate a new ack
         let ack = self
             .player
             .dealer_message::<N3f1>(dealer.clone(), pub_msg.clone(), priv_msg.clone())
-            // FIXME(janis): it would be great to know why exactly that is not the case.
-            .ok_or_eyre(
-                "applying dealer message to player instance did not result in a usable ack",
-            )?;
+            .wrap_err("applying dealer message to player instance failed")?
+            .ok_or_eyre("dealer message was already processed without a cached acknowledgement")?;
         storage
             .append_dealing(epoch, dealer.clone(), pub_msg, priv_msg)
-            .await
-            .wrap_err("unable to append dealing to journal")?;
+            .await;
         self.acks.insert(dealer, ack.clone());
         Ok(ack)
     }
@@ -1131,7 +1105,7 @@ impl Player {
         if self.acks.contains_key(&dealer) {
             return;
         }
-        if let Some(ack) = self
+        if let Ok(Some(ack)) = self
             .player
             .dealer_message::<N3f1>(dealer.clone(), pub_msg, priv_msg)
         {
@@ -1142,10 +1116,10 @@ impl Player {
     /// Finalize the player's participation in the DKG round.
     pub(super) fn finalize(
         self,
-        rng: &mut impl rand_core::CryptoRngCore,
+        rng: &mut impl rand_core::CryptoRng,
         logs: dkg::Logs<MinSig, PublicKey, N3f1>,
         strategy: &impl Strategy,
-    ) -> Result<(Output<MinSig, PublicKey>, Share), dkg::Error> {
+    ) -> Result<(Output<MinSig, PublicKey>, Share), dkg::FinalizeError<PublicKey>> {
         self.player
             .finalize::<N3f1, commonware_cryptography::ed25519::Batch>(rng, logs, strategy)
     }
@@ -1214,15 +1188,15 @@ mod tests {
     use super::*;
     use commonware_codec::Encode as _;
     use commonware_cryptography::{
-        bls12381::{dkg, primitives::sharing::Mode},
+        bls12381::{dkg::feldman_desmedt as dkg, primitives::sharing::Mode},
         ed25519::PrivateKey,
         transcript::Summary,
     };
     use commonware_math::algebra::Random as _;
-    use commonware_runtime::{Runner as _, deterministic};
+    use commonware_runtime::{Runner as _, Supervisor as _, deterministic};
     use commonware_utils::TryFromIterator as _;
 
-    fn make_test_state(rng: &mut impl rand_core::CryptoRngCore, epoch: u64) -> State {
+    fn make_test_state(rng: &mut impl rand_core::CryptoRng, epoch: u64) -> State {
         let mut keys: Vec<_> = (0..3)
             .map(|i| PrivateKey::from_seed(i + epoch * 100))
             .collect();
@@ -1296,8 +1270,8 @@ mod tests {
 
     #[test]
     fn share_state_roundtrip_plaintext_some() {
-        use rand_08::SeedableRng as _;
-        let mut rng = rand_08::rngs::StdRng::seed_from_u64(42);
+        use rand::SeedableRng as _;
+        let mut rng = rand::rngs::StdRng::seed_from_u64(42);
 
         let keys = std::iter::repeat_with(|| PrivateKey::random(&mut rng))
             .take(3)
@@ -1309,5 +1283,216 @@ mod tests {
 
         let share = shares.into_iter().next().unwrap().1;
         assert_roundtrip(&ShareState::Plaintext(Some(share)));
+    }
+
+    #[test]
+    fn empty_storage_requires_an_initial_state() {
+        let executor = deterministic::Runner::default();
+        executor.start(|mut context| async move {
+            let unverified = builder()
+                .partition_prefix("empty_storage_requires_an_initial_state")
+                .init_unverified(context.child("initial"))
+                .await
+                .unwrap();
+            assert!(
+                unverified.state().is_none(),
+                "new storage must not contain a state"
+            );
+
+            let state = make_test_state(&mut context, 0);
+            let storage = unverified.init_verified(state.clone()).await;
+            assert_eq!(storage.current(), state);
+            drop(storage);
+
+            let reopened = builder()
+                .partition_prefix("empty_storage_requires_an_initial_state")
+                .init_unverified(context.child("reopened"))
+                .await
+                .unwrap();
+            assert_eq!(
+                reopened.state(),
+                Some(&state),
+                "storage with an initial state must reopen with it"
+            );
+        });
+    }
+
+    #[test]
+    fn metadata_write_failures_panic() {
+        use commonware_utils::probability;
+        use futures::FutureExt as _;
+        use std::panic::AssertUnwindSafe;
+
+        for (operation, expected) in [
+            ("initialize", "failed to persist initial DKG state"),
+            ("set_state", "failed to persist DKG state"),
+            ("prune", "failed to prune DKG state metadata"),
+        ] {
+            deterministic::Runner::default().start(|mut context| async move {
+                let unverified = builder()
+                    .partition_prefix("metadata_write_failure")
+                    .init_unverified(context.child("storage"))
+                    .await
+                    .unwrap();
+                let state = make_test_state(&mut context, 1);
+                let faults = context.storage_fault_config();
+                let write = async {
+                    if operation == "initialize" {
+                        faults.write().sync_rate = Some(probability!(1.0));
+                        unverified.init_verified(state).await;
+                    } else {
+                        let mut storage = unverified.init_verified(state.clone()).await;
+                        faults.write().sync_rate = Some(probability!(1.0));
+                        if operation == "set_state" {
+                            storage
+                                .set_state(State {
+                                    epoch: state.epoch.next(),
+                                    ..state
+                                })
+                                .await;
+                        } else {
+                            storage.prune(state.epoch.next()).await;
+                        }
+                    }
+                };
+                let panic = AssertUnwindSafe(write)
+                    .catch_unwind()
+                    .await
+                    .expect_err("metadata write failures must panic");
+                let message = panic
+                    .downcast_ref::<String>()
+                    .map(String::as_str)
+                    .or_else(|| panic.downcast_ref::<&str>().copied())
+                    .expect("panic must have an error message");
+                assert!(message.starts_with(expected), "unexpected panic: {message}");
+            });
+        }
+    }
+
+    #[test]
+    fn receive_methods_persist_dealings_and_acks() {
+        deterministic::Runner::default().start(|mut context| async move {
+            let mut state = make_test_state(&mut context, 1);
+            state.is_full_dkg = true;
+            let round = Round::from_state(&state, crate::config::NAMESPACE);
+            let dealer_key = PrivateKey::from_seed(100);
+            let player_key = PrivateKey::from_seed(101);
+            let mut storage = builder()
+                .partition_prefix("receive_methods_persist")
+                .init_unverified(context.child("initial"))
+                .await
+                .unwrap()
+                .init_verified(state.clone())
+                .await;
+            let mut dealer = storage
+                .create_dealer_for_round(
+                    dealer_key.clone(),
+                    round.clone(),
+                    state.share.clone(),
+                    state.seed,
+                )
+                .unwrap()
+                .unwrap();
+            let mut player = storage
+                .create_player_for_round(player_key.clone(), &round)
+                .unwrap()
+                .unwrap();
+            let (_, public, private) = dealer
+                .shares_to_distribute()
+                .find(|(recipient, _, _)| *recipient == player_key.public_key())
+                .unwrap();
+
+            let ack = player
+                .receive_dealing(
+                    &mut storage,
+                    state.epoch,
+                    dealer_key.public_key(),
+                    public,
+                    private,
+                )
+                .await
+                .unwrap();
+            drop(storage);
+            drop(player);
+
+            let mut storage = builder()
+                .partition_prefix("receive_methods_persist")
+                .init_unverified(context.child("after_dealing"))
+                .await
+                .unwrap()
+                .init_verified(state.clone())
+                .await;
+            let player = storage
+                .create_player_for_round(player_key.clone(), &round)
+                .unwrap()
+                .unwrap();
+            assert_eq!(player.acks.get(&dealer_key.public_key()), Some(&ack));
+
+            dealer
+                .receive_ack(&mut storage, state.epoch, player_key.public_key(), ack)
+                .await
+                .unwrap();
+            drop(storage);
+            drop(dealer);
+
+            let storage = builder()
+                .partition_prefix("receive_methods_persist")
+                .init_unverified(context.child("after_ack"))
+                .await
+                .unwrap()
+                .init_verified(state.clone())
+                .await;
+            let dealer = storage
+                .create_dealer_for_round(dealer_key, round, state.share, state.seed)
+                .unwrap()
+                .unwrap();
+            assert!(
+                dealer
+                    .shares_to_distribute()
+                    .all(|(recipient, _, _)| recipient != player_key.public_key())
+            );
+        });
+    }
+
+    #[test]
+    fn empty_states_reject_retained_events() {
+        let executor = deterministic::Runner::default();
+        executor.start(|context| async move {
+            let mut unverified = builder()
+                .partition_prefix("empty_states_reject_retained_events")
+                .init_unverified(context.child("initial"))
+                .await
+                .unwrap();
+            assert!(
+                unverified.state().is_none(),
+                "new storage must not contain a state"
+            );
+
+            unverified
+                .storage
+                .append_event(
+                    Epoch::zero(),
+                    Event::Finalized {
+                        digest: Digest(alloy_primitives::B256::with_last_byte(1)),
+                        parent: Digest(alloy_primitives::B256::ZERO),
+                        height: Height::zero(),
+                    },
+                )
+                .await;
+            drop(unverified);
+
+            let result = builder()
+                .partition_prefix("empty_states_reject_retained_events")
+                .init_unverified(context.child("reopened"))
+                .await;
+            let Err(error) = result else {
+                panic!("retained events without state metadata must be rejected");
+            };
+            assert!(
+                error
+                    .to_string()
+                    .contains("states metadata is empty, but events journal contains")
+            );
+        });
     }
 }

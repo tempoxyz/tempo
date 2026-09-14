@@ -201,7 +201,7 @@ mod tests {
         let ctx = TempoConsensusContext {
             epoch: 1,
             view: 5,
-            proposer: PublicKey::from_seed([0xab; 32]),
+            proposer: PublicKey::from_seed(42),
             parent_view: 4,
         };
 
@@ -287,7 +287,7 @@ mod tests {
                 epoch: 1,
                 view: 2,
                 parent_view: 1,
-                proposer: PublicKey::from_seed([0x01; 32]),
+                proposer: PublicKey::from_seed(1),
             }),
         };
 

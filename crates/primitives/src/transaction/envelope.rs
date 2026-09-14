@@ -1,5 +1,9 @@
-use super::{tt_signed::AASigned, unique_tx_identifier_from_signable};
-use crate::{TempoAddressExt, TempoTransaction, subblock::PartialValidatorKey};
+use super::{
+    tempo_transaction::{InvalidValidAfter, InvalidValidBefore},
+    tt_signed::AASigned,
+    unique_tx_identifier_from_signable,
+};
+use crate::{TempoAddressExt, TempoTransaction};
 use alloy_consensus::{
     EthereumTxEnvelope, SignableTransaction, Signed, Transaction, TxEip1559, TxEip2930, TxEip7702,
     TxLegacy, TxType, TypedTransaction,
@@ -9,7 +13,7 @@ use alloy_consensus::{
 };
 use alloy_primitives::{Address, B256, Bytes, Signature, TxKind, U256};
 use alloy_rlp::Encodable;
-use core::fmt;
+use core::{fmt, num::NonZeroU64};
 use tempo_contracts::precompiles::{ITIP20, ITIP20ChannelReserve, TIP20_CHANNEL_RESERVE_ADDRESS};
 
 /// Maximum RLP-encoded size of a `key_authorization` permitted in a payment transaction
@@ -98,6 +102,47 @@ impl alloy_consensus::InMemorySize for TempoTxType {
 }
 
 impl TempoTxEnvelope {
+    /// Returns an AA transaction's `valid_before` timestamp, if set.
+    ///
+    /// Other transaction types do not carry this bound.
+    pub fn valid_before(&self) -> Option<u64> {
+        match self {
+            Self::AA(tx) => tx.tx().valid_before.map(NonZeroU64::get),
+            _ => None,
+        }
+    }
+
+    /// Returns an AA transaction's `valid_after` timestamp, if set.
+    ///
+    /// Other transaction types do not carry this bound.
+    pub fn valid_after(&self) -> Option<u64> {
+        match self {
+            Self::AA(tx) => tx.tx().valid_after.map(NonZeroU64::get),
+            _ => None,
+        }
+    }
+
+    /// Ensures an AA transaction's `valid_before`, when present, is strictly greater than
+    /// `min_allowed`.
+    ///
+    /// Other transaction types do not carry this bound and always pass.
+    pub fn ensure_valid_before(&self, min_allowed: u64) -> Result<(), InvalidValidBefore> {
+        match self {
+            Self::AA(tx) => tx.tx().ensure_valid_before(min_allowed),
+            _ => Ok(()),
+        }
+    }
+
+    /// Ensures an AA transaction's `valid_after`, when present, does not exceed `max_allowed`.
+    ///
+    /// Other transaction types do not carry this bound and always pass.
+    pub fn ensure_valid_after(&self, max_allowed: u64) -> Result<(), InvalidValidAfter> {
+        match self {
+            Self::AA(tx) => tx.tx().ensure_valid_after(max_allowed),
+            _ => Ok(()),
+        }
+    }
+
     /// Returns the fee token preference if this is a fee token transaction
     pub fn fee_token(&self) -> Option<Address> {
         match self {
@@ -111,6 +156,18 @@ impl TempoTxEnvelope {
         match self {
             Self::AA(tx) => tx.tx().recover_fee_payer(sender),
             _ => Ok(sender),
+        }
+    }
+
+    /// Returns `true` if this is an AA transaction whose fee payer signature is the
+    /// [`FEE_PAYER_SIGNATURE_MARKER`](super::FEE_PAYER_SIGNATURE_MARKER) placeholder,
+    /// indicating it still needs to be signed by a fee payer.
+    ///
+    /// Other transaction types do not carry a fee payer signature.
+    pub fn has_fee_payer_signature_marker(&self) -> bool {
+        match self {
+            Self::AA(tx) => tx.tx().has_fee_payer_signature_marker(),
+            _ => false,
         }
     }
 
@@ -242,10 +299,10 @@ impl TempoTxEnvelope {
         }
     }
 
-    /// Returns the proposer of the subblock if this is a subblock transaction.
-    pub fn subblock_proposer(&self) -> Option<PartialValidatorKey> {
-        let Self::AA(tx) = &self else { return None };
-        tx.tx().subblock_proposer()
+    /// Returns whether this transaction uses the reserved subblock nonce prefix.
+    pub fn has_sub_block_nonce_key_prefix(&self) -> bool {
+        self.as_aa()
+            .is_some_and(|tx| tx.tx().has_sub_block_nonce_key_prefix())
     }
 
     /// Returns the [`AASigned`] transaction if this is a Tempo transaction.
@@ -555,6 +612,7 @@ mod tests {
     };
     use alloy_primitives::{Bytes, Signature, TxKind, U256, address, aliases::U96};
     use alloy_sol_types::SolCall;
+    use core::num::NonZeroU64;
     use tempo_contracts::precompiles::ITIP20ChannelReserve;
 
     const PAYMENT_TKN: Address = address!("20c0000000000000000000000000000000000001");
@@ -669,6 +727,44 @@ mod tests {
         assert_eq!(envelope.fee_token(), None);
         assert!(!envelope.is_aa());
         assert!(envelope.as_aa().is_none());
+    }
+
+    #[test]
+    fn test_time_bounds_delegate_for_aa_transactions() {
+        let envelope = TempoTxEnvelope::AA(
+            TempoTransaction {
+                valid_before: NonZeroU64::new(100),
+                valid_after: NonZeroU64::new(50),
+                ..Default::default()
+            }
+            .into_signed(Signature::test_signature().into()),
+        );
+
+        assert_eq!(
+            envelope.ensure_valid_before(100),
+            Err(InvalidValidBefore {
+                valid_before: 100,
+                min_allowed: 100,
+            })
+        );
+        assert_eq!(
+            envelope.ensure_valid_after(49),
+            Err(InvalidValidAfter {
+                valid_after: 50,
+                max_allowed: 49,
+            })
+        );
+    }
+
+    #[test]
+    fn test_time_bounds_ignore_non_aa_transactions() {
+        let envelope = TempoTxEnvelope::Legacy(Signed::new_unhashed(
+            TxLegacy::default(),
+            Signature::test_signature(),
+        ));
+
+        assert_eq!(envelope.ensure_valid_before(100), Ok(()));
+        assert_eq!(envelope.ensure_valid_after(100), Ok(()));
     }
 
     #[test]
@@ -1240,8 +1336,8 @@ mod tests {
         assert_eq!(calls.len(), 1);
         assert_eq!(calls[0].0, TxKind::Call(Address::ZERO));
 
-        // subblock_proposer() returns None for non-subblock tx
-        assert!(system_tx.subblock_proposer().is_none());
+        // System transactions do not use the reserved subblock nonce prefix
+        assert!(!system_tx.has_sub_block_nonce_key_prefix());
 
         // AA-specific methods
         let aa_envelope = create_aa_envelope(Call {
