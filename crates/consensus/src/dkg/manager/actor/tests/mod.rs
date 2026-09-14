@@ -25,7 +25,7 @@ use harness::{
 };
 
 #[test]
-fn network_storage_failures_stop_actor_and_allow_recovery() {
+fn network_storage_failures_panic_and_allow_recovery() {
     use commonware_runtime::deterministic::FaultConfig;
     use commonware_utils::probability;
 
@@ -50,6 +50,29 @@ fn network_storage_failures_stop_actor_and_allow_recovery() {
                 .find(|(player, _)| player == &keys[0].public_key())
                 .unwrap()
                 .1;
+            let (_, other_public, _) = dkg::Dealer::start::<commonware_utils::N3f1>(
+                &mut context,
+                round.info().clone(),
+                keys[1].clone(),
+                None,
+            )
+            .unwrap();
+            let ack = dkg::Player::new(round.info().clone(), keys[0].clone())
+                .unwrap()
+                .dealer_message::<commonware_utils::N3f1>(
+                    keys[1].public_key(),
+                    public.clone(),
+                    private.clone(),
+                )
+                .unwrap()
+                .unwrap();
+            let invalid_messages = [
+                vec![u8::MAX].into(),
+                // The commitment belongs to a different polynomial.
+                Message::Dealer(other_public, private.clone()).encode(),
+                // This ACK was signed by keys[0], but arrives from keys[1].
+                Message::Ack(ack).encode(),
+            ];
             let message = Message::Dealer(public, private).encode();
             let network = TestNetwork::default();
             let (sender, mut receiver) = network.register(keys[1].public_key());
@@ -69,6 +92,23 @@ fn network_storage_failures_stop_actor_and_allow_recovery() {
             } else {
                 faults.write().sync_rate = Some(probability!(1.0));
             }
+            // Rejected protocol messages must not attempt a write or stop the
+            // actor, even when every storage operation would fail.
+            for invalid in invalid_messages {
+                assert!(
+                    sender
+                        .send(
+                            state.epoch.get(),
+                            Recipients::One(keys[0].public_key()),
+                            invalid,
+                            true,
+                        )
+                        .accepted()
+                );
+                context.sleep(Duration::from_millis(1)).await;
+                assert!(!harness.has_dealer_log(state.epoch).await);
+                assert!(receiver.recv().now_or_never().is_none());
+            }
             assert!(
                 sender
                     .send(
@@ -80,15 +120,18 @@ fn network_storage_failures_stop_actor_and_allow_recovery() {
                     .accepted()
             );
 
-            // No second message should be needed to discover the missing handle,
-            // and the failed task handle must notify the engine supervisor.
+            // The failed write must panic immediately without another message.
             let mut harness = context
                 .timeout(Duration::from_secs(1), async move {
-                    harness.wait_for_actor_failure().await;
+                    harness.wait_for_actor_panic().await;
                     harness
                 })
                 .await
-                .expect("a network storage failure must terminate the actor immediately");
+                .expect("a network storage failure must panic immediately");
+            assert!(
+                receiver.recv().now_or_never().is_none(),
+                "a dealing must be persisted before its ACK is sent",
+            );
 
             *faults.write() = FaultConfig::default();
             harness.stop().await;
@@ -139,7 +182,7 @@ fn network_storage_failures_stop_actor_and_allow_recovery() {
 }
 
 #[test]
-fn local_share_storage_failures_stop_actor_and_allow_recovery() {
+fn local_share_storage_failures_panic_and_allow_recovery() {
     use commonware_consensus::Reporter as _;
     use commonware_runtime::deterministic::FaultConfig;
     use commonware_utils::probability;
@@ -206,11 +249,11 @@ fn local_share_storage_failures_stop_actor_and_allow_recovery() {
             );
             let mut harness = context
                 .timeout(Duration::from_secs(1), async move {
-                    harness.wait_for_actor_failure().await;
+                    harness.wait_for_actor_panic().await;
                     harness
                 })
                 .await
-                .expect("a local storage failure must terminate the actor immediately");
+                .expect("a local storage failure must panic immediately");
             assert!(
                 waiter.await.is_err(),
                 "the failed block must not be acknowledged"
@@ -467,14 +510,14 @@ fn failed_dkg_outcomes_carry_share_forward() {
             .get_dkg_outcome(first_digest, Height::new(10))
             .await
             .unwrap();
-        assert_eq!(first_outcome.epoch, state.epoch.next());
+        assert_eq!(first_outcome.epoch(), state.epoch.next());
         assert_eq!(first_outcome.output, state.output);
 
         let mut first_boundary = header(Height::new(19));
         first_boundary.inner.parent_hash = first_digest.0;
         first_boundary.inner.extra_data = first_outcome.encode().into();
         harness.report_finalized_header(first_boundary).await;
-        assert!(!harness.has_dealer_log(first_outcome.epoch).await);
+        assert!(!harness.has_dealer_log(first_outcome.epoch()).await);
 
         harness
             .report_finalized_header(header(Height::new(20)))
@@ -489,14 +532,14 @@ fn failed_dkg_outcomes_carry_share_forward() {
             .get_dkg_outcome(second_digest, Height::new(20))
             .await
             .unwrap();
-        assert_eq!(second_outcome.epoch, first_outcome.epoch.next());
+        assert_eq!(second_outcome.epoch(), first_outcome.epoch().next());
         assert_eq!(second_outcome.output, state.output);
 
         let mut second_boundary = header(Height::new(29));
         second_boundary.inner.parent_hash = second_digest.0;
         second_boundary.inner.extra_data = second_outcome.encode().into();
         harness.report_finalized_header(second_boundary).await;
-        assert!(!harness.has_dealer_log(second_outcome.epoch).await);
+        assert!(!harness.has_dealer_log(second_outcome.epoch()).await);
 
         assert_eq!(
             harness.epoch_manager.events(),
@@ -509,14 +552,14 @@ fn failed_dkg_outcomes_carry_share_forward() {
                 },
                 EpochEvent::Exit(state.epoch),
                 EpochEvent::Enter {
-                    epoch: first_outcome.epoch,
+                    epoch: first_outcome.epoch(),
                     public: state.output.public().clone(),
                     share: Some(share.clone()),
                     participants: state.dealers().clone(),
                 },
-                EpochEvent::Exit(first_outcome.epoch),
+                EpochEvent::Exit(first_outcome.epoch()),
                 EpochEvent::Enter {
-                    epoch: second_outcome.epoch,
+                    epoch: second_outcome.epoch(),
                     public: state.output.public().clone(),
                     share: Some(share),
                     participants: state.dealers().clone(),
@@ -816,7 +859,7 @@ fn finalized_blocks_preserve_legacy_revealed_share_calculation() {
             }
             let output = observe::<_, _, N3f1, Batch>(&mut context, logs, &Sequential).unwrap();
             let outcome = OnchainDkgOutcome {
-                epoch: state.epoch.next(),
+                epoch: state.epoch.next().get(),
                 output,
                 next_players: state.players().clone(),
                 is_next_full_dkg: false,
@@ -1097,8 +1140,8 @@ fn reshare_produces_new_shares() {
             .await;
 
         second_harness.report_finalized_header(boundary).await;
-        assert!(!first_harness.has_dealer_log(first_outcome.epoch).await);
-        assert!(!second_harness.has_dealer_log(first_outcome.epoch).await);
+        assert!(!first_harness.has_dealer_log(first_outcome.epoch()).await);
+        assert!(!second_harness.has_dealer_log(first_outcome.epoch()).await);
 
         let first_events = first_harness.epoch_manager.events();
         let EpochEvent::Enter {
@@ -1297,7 +1340,7 @@ fn outcome_requests_use_reshare_fallback_and_require_next_players() {
             .await
             .unwrap();
 
-        assert_eq!(outcome.epoch, state.epoch.next());
+        assert_eq!(outcome.epoch(), state.epoch.next());
 
         // The incomplete ceremony fails forward by carrying the prior output
         // into the next epoch.

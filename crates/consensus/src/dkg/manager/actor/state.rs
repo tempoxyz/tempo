@@ -59,8 +59,8 @@ pub(super) struct Storage<TContext>
 where
     TContext: BufferPooler + commonware_runtime::Storage + Clock + Metrics,
 {
-    // Commonware mutations consume their handles. rebind restores them on success;
-    // failure panics and cancellation must drop the actor owning this storage.
+    // Rebind consuming commonware mutations through these slots. Write failures
+    // panic, so an invalidated handle is never reused by the actor.
     states: Option<metadata::Metadata<TContext, u64, State>>,
     events: Option<segmented::variable::Journal<TContext, Event>>,
 
@@ -94,7 +94,7 @@ where
             states.put_sync(state.epoch.get(), state.clone())
         })
         .await
-        .expect("unable to write initial state to metadata");
+        .expect("failed to persist initial DKG state");
         storage.current = Some(state);
         storage
     }
@@ -142,18 +142,28 @@ where
         self.current.clone().expect("invariant: state must be set")
     }
 
-    /// Persists the outcome of a DKG ceremony to state
+    /// Persists the outcome of a DKG ceremony, panicking on write failure.
     pub(super) async fn set_state(&mut self, state: State) {
-        let persisted = state.clone();
-        rebind(&mut self.states, |mut states| async move {
-            if let Some(old) = states.put(persisted.epoch.get(), persisted) {
+        rebind(&mut self.states, |mut states| async {
+            if let Some(old) = states.put(state.epoch.get(), state.clone()) {
                 warn!(epoch = %old.epoch, "overwriting existing state");
             }
             states.sync().await
         })
         .await
-        .expect("failed writing state");
+        .expect("failed to persist DKG state");
         self.current = Some(state);
+    }
+
+    /// Appends and durably syncs an event, panicking on write failure.
+    async fn append_event(&mut self, epoch: Epoch, event: Event) {
+        rebind(&mut self.events, |events| async move {
+            let section = epoch.get();
+            let (events, _, _) = events.append(section, &event).await?;
+            events.sync(section).await
+        })
+        .await
+        .expect("failed to persist DKG event");
     }
 
     /// Append a player ACK to the journal.
@@ -176,7 +186,7 @@ where
 
         self.append_event(
             epoch,
-            &Event::Ack {
+            Event::Ack {
                 player: player.clone(),
                 ack: ack.clone(),
             },
@@ -216,7 +226,7 @@ where
 
         self.append_event(
             epoch,
-            &Event::Dealing {
+            Event::Dealing {
                 dealer: dealer.clone(),
                 public_msg: pub_msg.clone(),
                 private_msg: priv_msg.clone(),
@@ -253,7 +263,7 @@ where
 
         self.append_event(
             epoch,
-            &Event::Log {
+            Event::Log {
                 dealer: dealer.clone(),
                 log: log.clone(),
             },
@@ -285,7 +295,7 @@ where
 
         self.append_event(
             epoch,
-            &Event::Finalized {
+            Event::Finalized {
                 digest,
                 parent,
                 height,
@@ -348,7 +358,7 @@ where
         err,
     )]
     pub(super) fn create_dealer_for_round(
-        &mut self,
+        &self,
         me: PrivateKey,
         round: Round,
         share: ShareState,
@@ -454,25 +464,14 @@ where
     pub(super) async fn prune(&mut self, up_to_epoch: Epoch) {
         rebind(&mut self.events, |events| events.prune(up_to_epoch.get()))
             .await
-            .expect("unable to prune events journal");
+            .expect("failed to prune DKG events journal");
         rebind(&mut self.states, |mut states| async move {
             states.retain(|&key, _| key >= up_to_epoch.get());
             states.sync().await
         })
         .await
-        .expect("unable to prune events metadata");
+        .expect("failed to prune DKG state metadata");
         self.cache.retain(|&epoch, _| epoch >= up_to_epoch);
-    }
-
-    /// Persist before updating caches or allowing protocol responses.
-    async fn append_event(&mut self, epoch: Epoch, event: &Event) {
-        rebind(&mut self.events, |events| async move {
-            let section = epoch.get();
-            let (events, _, _) = events.append(section, event).await?;
-            events.sync(section).await
-        })
-        .await
-        .expect("unable to append and sync DKG event");
     }
 }
 
@@ -924,10 +923,9 @@ impl Dealer {
         }
     }
 
-    /// Handle an incoming ack from a player.
+    /// Handle an incoming ack from a player, persisting it before returning success.
     ///
-    /// If the ack is valid and new, persists it to storage.
-    /// Returned errors describe rejected protocol input; persistence failures panic.
+    /// Returns protocol validation errors. Storage write failures panic.
     pub(super) async fn receive_ack<TContext>(
         &mut self,
         storage: &mut Storage<TContext>,
@@ -941,18 +939,14 @@ impl Dealer {
         if !self.unsent.contains_key(&player) {
             bail!("already received an ack from `{player}`");
         }
-        match &mut self.dealer {
-            Some(dealer) => {
-                dealer
-                    .receive_player_ack(player.clone(), ack.clone())
-                    .wrap_err("unable to receive player ack")?;
-                self.unsent.remove(&player);
-                storage.append_ack(epoch, player.clone(), ack.clone()).await;
-            }
-            None => {
-                bail!("dealer was already finalized, dropping ack of player `{player}`");
-            }
-        }
+        let Some(dealer) = &mut self.dealer else {
+            bail!("dealer was already finalized, dropping ack of player `{player}`");
+        };
+        dealer
+            .receive_player_ack(player.clone(), ack.clone())
+            .wrap_err("unable to receive player ack")?;
+        storage.append_ack(epoch, player.clone(), ack).await;
+        self.unsent.remove(&player);
         Ok(())
     }
 
@@ -1074,10 +1068,9 @@ impl Player {
         }
     }
 
-    /// Handle an incoming dealer message.
+    /// Handle an incoming dealer message, persisting it before returning its ack.
     ///
-    /// If this is a new valid dealer message, persists it to storage before returning.
-    /// Returned errors describe rejected protocol input; persistence failures panic.
+    /// Returns protocol validation errors. Storage write failures panic.
     pub(super) async fn receive_dealing<TContext>(
         &mut self,
         storage: &mut Storage<TContext>,
@@ -1089,17 +1082,16 @@ impl Player {
     where
         TContext: BufferPooler + commonware_runtime::Storage + Clock + Metrics,
     {
-        // If we've already generated an ack, return the cached version
+        // Cached acks are backed by a persisted dealing.
         if let Some(ack) = self.acks.get(&dealer) {
             return Ok(ack.clone());
         }
 
-        // Otherwise generate a new ack
         let ack = self
             .player
             .dealer_message::<N3f1>(dealer.clone(), pub_msg.clone(), priv_msg.clone())
             .wrap_err("applying dealer message to player instance failed")?
-            .expect("processed dealer must have a cached acknowledgement");
+            .ok_or_eyre("dealer message was already processed without a cached acknowledgement")?;
         storage
             .append_dealing(epoch, dealer.clone(), pub_msg, priv_msg)
             .await;
@@ -1330,34 +1322,13 @@ mod tests {
     }
 
     #[test]
-    #[should_panic(expected = "unable to write initial state to metadata")]
-    fn initial_state_write_failure_is_fatal() {
-        deterministic::Runner::default().start(|mut context| async move {
-            let unverified = builder()
-                .partition_prefix("initial_state_write_failure")
-                .init_unverified(context.child("storage"))
-                .await
-                .unwrap();
-            let state = make_test_state(&mut context, 0);
-            context.storage_fault_config().write().sync_rate =
-                Some(commonware_utils::probability!(1.0));
-            unverified.init_verified(state).await;
-        });
-    }
-
-    #[test]
-    fn write_failures_are_fatal() {
+    fn journal_write_failures_are_fatal() {
         use futures::FutureExt as _;
         use std::panic::AssertUnwindSafe;
 
         // Network dealing and ACK failures are exercised by the actor tests.
-        // Cover metadata, headers, dealer logs and pruning at the storage boundary.
-        for operation in [
-            "set_state",
-            "append_finalized_header",
-            "append_dealer_log",
-            "prune",
-        ] {
+        // Cover finalized headers and dealer logs at the storage boundary.
+        for operation in ["append_finalized_header", "append_dealer_log"] {
             deterministic::Runner::default().start(|mut context| async move {
                 let mut state = make_test_state(&mut context, 0);
                 state.is_full_dkg = true;
@@ -1376,7 +1347,6 @@ mod tests {
                 faults.write().sync_rate = Some(commonware_utils::probability!(1.0));
                 let result = AssertUnwindSafe(async move {
                     match operation {
-                        "set_state" => storage.set_state(state.clone()).await,
                         "append_finalized_header" => {
                             storage
                                 .append_finalized_header(state.epoch.next(), header.clone())
@@ -1395,7 +1365,6 @@ mod tests {
                                 dealer.finalize::<N3f1>().check(round.info()).unwrap();
                             storage.append_dealer_log(state.epoch, dealer, log).await
                         }
-                        "prune" => storage.prune(state.epoch.next()).await,
                         _ => unreachable!(),
                     }
                 })
@@ -1407,14 +1376,147 @@ mod tests {
                     .map(String::as_str)
                     .or_else(|| panic.downcast_ref::<&str>().copied())
                     .unwrap();
-                let expected = match operation {
-                    "set_state" => "failed writing state",
-                    "prune" => "unable to prune events metadata",
-                    _ => "unable to append and sync DKG event",
-                };
+                let expected = "failed to persist DKG event";
                 assert!(message.contains(expected), "{operation}: {message}");
             });
         }
+    }
+
+    #[test]
+    fn metadata_write_failures_panic() {
+        use commonware_utils::probability;
+        use futures::FutureExt as _;
+        use std::panic::AssertUnwindSafe;
+
+        for (operation, expected) in [
+            ("initialize", "failed to persist initial DKG state"),
+            ("set_state", "failed to persist DKG state"),
+            ("prune", "failed to prune DKG state metadata"),
+        ] {
+            deterministic::Runner::default().start(|mut context| async move {
+                let unverified = builder()
+                    .partition_prefix("metadata_write_failure")
+                    .init_unverified(context.child("storage"))
+                    .await
+                    .unwrap();
+                let state = make_test_state(&mut context, 1);
+                let faults = context.storage_fault_config();
+                let write = async {
+                    if operation == "initialize" {
+                        faults.write().sync_rate = Some(probability!(1.0));
+                        unverified.init_verified(state).await;
+                    } else {
+                        let mut storage = unverified.init_verified(state.clone()).await;
+                        faults.write().sync_rate = Some(probability!(1.0));
+                        if operation == "set_state" {
+                            storage
+                                .set_state(State {
+                                    epoch: state.epoch.next(),
+                                    ..state
+                                })
+                                .await;
+                        } else {
+                            storage.prune(state.epoch.next()).await;
+                        }
+                    }
+                };
+                let panic = AssertUnwindSafe(write)
+                    .catch_unwind()
+                    .await
+                    .expect_err("metadata write failures must panic");
+                let message = panic
+                    .downcast_ref::<String>()
+                    .map(String::as_str)
+                    .or_else(|| panic.downcast_ref::<&str>().copied())
+                    .expect("panic must have an error message");
+                assert!(message.starts_with(expected), "unexpected panic: {message}");
+            });
+        }
+    }
+
+    #[test]
+    fn receive_methods_persist_dealings_and_acks() {
+        deterministic::Runner::default().start(|mut context| async move {
+            let mut state = make_test_state(&mut context, 1);
+            state.is_full_dkg = true;
+            let round = Round::from_state(&state, crate::config::NAMESPACE);
+            let dealer_key = PrivateKey::from_seed(100);
+            let player_key = PrivateKey::from_seed(101);
+            let mut storage = builder()
+                .partition_prefix("receive_methods_persist")
+                .init_unverified(context.child("initial"))
+                .await
+                .unwrap()
+                .init_verified(state.clone())
+                .await;
+            let mut dealer = storage
+                .create_dealer_for_round(
+                    dealer_key.clone(),
+                    round.clone(),
+                    state.share.clone(),
+                    state.seed,
+                )
+                .unwrap()
+                .unwrap();
+            let mut player = storage
+                .create_player_for_round(player_key.clone(), &round)
+                .unwrap()
+                .unwrap();
+            let (_, public, private) = dealer
+                .shares_to_distribute()
+                .find(|(recipient, _, _)| *recipient == player_key.public_key())
+                .unwrap();
+
+            let ack = player
+                .receive_dealing(
+                    &mut storage,
+                    state.epoch,
+                    dealer_key.public_key(),
+                    public,
+                    private,
+                )
+                .await
+                .unwrap();
+            drop(storage);
+            drop(player);
+
+            let mut storage = builder()
+                .partition_prefix("receive_methods_persist")
+                .init_unverified(context.child("after_dealing"))
+                .await
+                .unwrap()
+                .init_verified(state.clone())
+                .await;
+            let player = storage
+                .create_player_for_round(player_key.clone(), &round)
+                .unwrap()
+                .unwrap();
+            assert_eq!(player.acks.get(&dealer_key.public_key()), Some(&ack));
+
+            dealer
+                .receive_ack(&mut storage, state.epoch, player_key.public_key(), ack)
+                .await
+                .unwrap();
+            drop(storage);
+            drop(dealer);
+
+            let storage = builder()
+                .partition_prefix("receive_methods_persist")
+                .init_unverified(context.child("after_ack"))
+                .await
+                .unwrap()
+                .init_verified(state.clone())
+                .await;
+            let dealer = storage
+                .create_dealer_for_round(dealer_key, round, state.share, state.seed)
+                .unwrap()
+                .unwrap();
+            assert!(
+                dealer
+                    .shares_to_distribute()
+                    .all(|(recipient, _, _)| recipient != player_key.public_key())
+            );
+        });
     }
 
     #[test]
@@ -1431,22 +1533,17 @@ mod tests {
                 "new storage must not contain a state"
             );
 
-            let (events, _, _) = unverified
+            unverified
                 .storage
-                .events
-                .take()
-                .expect("DKG events storage is available")
-                .append(
-                    0,
-                    &Event::Finalized {
+                .append_event(
+                    Epoch::zero(),
+                    Event::Finalized {
                         digest: Digest(alloy_primitives::B256::with_last_byte(1)),
                         parent: Digest(alloy_primitives::B256::ZERO),
                         height: Height::zero(),
                     },
                 )
-                .await
-                .unwrap();
-            unverified.storage.events = Some(events.sync(0).await.unwrap());
+                .await;
             drop(unverified);
 
             let result = builder()

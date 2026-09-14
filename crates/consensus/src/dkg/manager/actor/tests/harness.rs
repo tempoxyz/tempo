@@ -279,7 +279,7 @@ impl Harness {
         self.mailbox.take();
     }
 
-    pub(super) async fn wait_for_actor_failure(&mut self) {
+    pub(super) async fn wait_for_actor_panic(&mut self) {
         let handle = self.handle.take().expect("DKG actor is not running");
         assert!(
             matches!(handle.await, Err(commonware_runtime::Error::Exited)),
@@ -676,7 +676,7 @@ pub(super) fn block(header: TempoHeader) -> Block {
 
 pub(super) fn outcome_header(height: Height, state: &State) -> TempoHeader {
     let outcome = OnchainDkgOutcome {
-        epoch: state.epoch,
+        epoch: state.epoch.get(),
         output: state.output.clone(),
         next_players: state.players().clone(),
         is_next_full_dkg: state.is_full_dkg,

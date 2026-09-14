@@ -314,7 +314,7 @@ where
                 }
 
                 Some((cause, block, ack)) = self.pending_finalized_blocks.next() => {
-                    let should_break = match self
+                    let new_state = self
                         .handle_finalized_header(
                             cause,
                             &state,
@@ -326,8 +326,8 @@ where
                             block.header().clone(),
                         )
                         .await
-                        .wrap_err("failed handling finalized block")?
-                    {
+                        .wrap_err("failed handling finalized block")?;
+                    let should_break = match new_state {
                         Some(new_state) => {
                             info_span!("run_dkg_loop", epoch = %state.epoch).in_scope(|| {
                                 info!(
@@ -353,8 +353,7 @@ where
                 network_msg = round_receiver.recv().fuse() => {
                     match network_msg {
                         Ok((sender, message)) => {
-                            // Protocol and send errors are logged and recoverable;
-                            // persistence failures panic inside storage.
+                            // Protocol errors are logged by the handler; write failures panic.
                             let _ = self.handle_network_msg(
                                 &round,
                                 &mut round_sender,
@@ -581,8 +580,7 @@ where
             ))?;
 
             self.record_finalized_header(storage, &round, header, None)
-                .await
-                .wrap_err("failed backfilling header to storage")?;
+                .await;
             height = height.next();
         }
         Ok(())
@@ -594,8 +592,7 @@ where
         round: &Round,
         header: TempoHeader,
         dealer_state: Option<&mut Dealer>,
-    ) -> eyre::Result<()>
-    where
+    ) where
         TStorageContext: BufferPooler + commonware_runtime::Metrics + Clock + Storage,
     {
         let height = Height::new(header.number());
@@ -628,7 +625,6 @@ where
         }
 
         storage.append_finalized_header(round.epoch(), header).await;
-        Ok(())
     }
 
     fn handle_verify_dealer_log(
@@ -764,8 +760,7 @@ where
                         player_state,
                         round_channel,
                     )
-                    .await
-                    .wrap_err("failed distributing shares")?;
+                    .await;
                 }
             }
             EpochPhase::Midpoint | EpochPhase::Late => {
@@ -777,8 +772,7 @@ where
 
         if height != epoch_info.last() {
             self.record_finalized_header(storage, round, header, dealer_state.as_mut())
-                .await
-                .wrap_err("failed to record finalized header")?;
+                .await;
 
             return Ok(None);
         }
@@ -881,7 +875,7 @@ where
         }
 
         Ok(Some(State {
-            epoch: onchain_outcome.epoch,
+            epoch: onchain_outcome.epoch(),
             seed: Summary::random(self.context.as_present_mut()),
             output: onchain_outcome.output.clone(),
             share,
@@ -898,8 +892,7 @@ where
         dealer_state: &mut Dealer,
         player_state: &mut Option<Player>,
         round_channel: &mut TSender,
-    ) -> eyre::Result<()>
-    where
+    ) where
         TStorageContext: BufferPooler + commonware_runtime::Metrics + Clock + Storage,
         TSender: Sender<PublicKey = PublicKey>,
     {
@@ -907,26 +900,28 @@ where
         for (player, pub_msg, priv_msg) in dealer_state.shares_to_distribute().collect::<Vec<_>>() {
             if player == me {
                 if let Some(player_state) = player_state {
-                    let result: eyre::Result<()> = async {
-                        let ack = player_state
-                            .receive_dealing(storage, epoch, me.clone(), pub_msg, priv_msg)
-                            .await
-                            .wrap_err("failed to store our own dealing")?;
-                        self.metrics.shares_distributed.metric().inc();
-                        self.metrics.shares_received.metric().inc();
-                        dealer_state
-                            .receive_ack(storage, epoch, me.clone(), ack)
-                            .await
-                            .wrap_err("failed to store our own ACK")?;
-                        self.metrics.acks_received.metric().inc();
-                        self.metrics.acks_sent.metric().inc();
-                        info!("stored our own ACK and share");
-                        Ok(())
+                    let ack = match player_state
+                        .receive_dealing(storage, epoch, me.clone(), pub_msg, priv_msg)
+                        .await
+                    {
+                        Ok(ack) => ack,
+                        Err(error) => {
+                            warn!(%error, "failed to process our own dealing");
+                            continue;
+                        }
+                    };
+                    self.metrics.shares_distributed.metric().inc();
+                    self.metrics.shares_received.metric().inc();
+                    if let Err(error) = dealer_state
+                        .receive_ack(storage, epoch, me.clone(), ack)
+                        .await
+                    {
+                        warn!(%error, "failed to process our own ACK");
+                        continue;
                     }
-                    .await;
-                    if let Err(error) = result {
-                        warn!(%error, "failed to process our own dealing or ACK");
-                    }
+                    self.metrics.acks_received.metric().inc();
+                    self.metrics.acks_sent.metric().inc();
+                    info!("stored our own ACK and share");
                 }
             } else {
                 // Send to remote player
@@ -938,7 +933,6 @@ where
                 }
             }
         }
-        Ok(())
     }
 
     #[instrument(
@@ -977,7 +971,7 @@ where
                     let ack = player_state
                         .receive_dealing(storage, round.epoch(), from.clone(), pub_msg, priv_msg)
                         .await
-                        .wrap_err("failed storing dealing")?;
+                        .wrap_err("failed to process dealing")?;
 
                     let sent = round_channel.send(
                         Recipients::One(from.clone()),
@@ -986,12 +980,14 @@ where
                     );
 
                     // Follows the doc on the return value of of Sender::send.
-                    ensure!(
-                        !sent.is_empty(),
-                        "failed returning ACK to dealer because it was rate \
-                        limited, the connection was closed, or the message \
-                        otherwise rejected",
-                    );
+                    if sent.is_empty() {
+                        warn!(
+                            "failed returning ACK to dealer because it was rate \
+                            limited, the connection was closed, or the message \
+                            otherwise rejected",
+                        );
+                        return Ok(());
+                    }
 
                     info!("returned ACK to dealer");
                     self.metrics.acks_sent.metric().inc();
@@ -1006,7 +1002,7 @@ where
                     dealer_state
                         .receive_ack(storage, round.epoch(), from, ack)
                         .await
-                        .wrap_err("failed storing ACK")?;
+                        .wrap_err("failed to process ACK")?;
                 } else {
                     info!("received an ACK, but we are not a dealer");
                 }
@@ -1214,7 +1210,7 @@ where
         request
             .response
             .send(OnchainDkgOutcome {
-                epoch: next_epoch,
+                epoch: next_epoch.get(),
                 output,
                 next_players,
                 is_next_full_dkg: will_be_re_dkg,
@@ -1308,7 +1304,7 @@ where
         }
 
         let mut state = State {
-            epoch: onchain_outcome.epoch,
+            epoch: onchain_outcome.epoch(),
             seed: Summary::random(&mut self.context),
             output: onchain_outcome.output.clone(),
             share: state::ShareState::Plaintext(share),
@@ -1358,7 +1354,7 @@ where
         .wrap_err("failed reading outcome for ceremony boundary")?;
 
         ensure!(
-            ceremony_outcome.epoch == ceremony_epoch,
+            ceremony_outcome.epoch() == ceremony_epoch,
             "boundary outcome is for epoch `{}`, expected ceremony epoch `{ceremony_epoch}`",
             ceremony_outcome.epoch,
         );
@@ -1371,7 +1367,7 @@ where
         }
 
         let ceremony_state = State {
-            epoch: ceremony_outcome.epoch,
+            epoch: ceremony_outcome.epoch(),
             seed: state.seed,
             output: ceremony_outcome.output,
             share: state::ShareState::Plaintext(None),

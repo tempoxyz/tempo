@@ -152,7 +152,7 @@ impl BootstrapShadowfork {
         };
 
         ensure!(
-            outcome.epoch == Epoch::new(SHADOW_EPOCH),
+            outcome.epoch == SHADOW_EPOCH,
             "shadow DKG outcome is for epoch `{}`, expected `{SHADOW_EPOCH}`",
             outcome.epoch,
         );
@@ -635,7 +635,7 @@ fn read_private_genesis_outcome(manifest_dir: &Path) -> eyre::Result<OnchainDkgO
         .and_then(serde_json::Value::as_str)
         .ok_or_eyre("shadow genesis JSON does not contain string field `extraData`")?;
     let mut outcome = decode_outcome(extra_data)?;
-    outcome.epoch = Epoch::new(SHADOW_EPOCH);
+    outcome.epoch = SHADOW_EPOCH;
     Ok(outcome)
 }
 
@@ -1131,7 +1131,7 @@ fn seed_consensus_state(
 
                 let mut rng = rand::rngs::StdRng::seed_from_u64(seed);
                 let state = BootstrapDkgState {
-                    epoch: outcome.epoch,
+                    epoch: Epoch::new(outcome.epoch),
                     seed: Summary::random(&mut rng),
                     output: outcome.output,
                     share: BootstrapShareState::Plaintext(Some(signing_share)),
