@@ -48,6 +48,13 @@ pub(crate) mod marshal {
 
     pub(crate) type Mailbox = core::Mailbox<Scheme<PublicKey, MinSig>, Standard<Block>>;
 
+    /// Startup evidence read before marshal takes ownership of its archives.
+    pub(crate) struct FinalizedTip {
+        pub(crate) header: TempoHeader,
+        /// Genesis has no finalization certificate; verification requires one for every non-genesis tip.
+        pub(crate) certificate: Option<Finalization<Scheme<PublicKey, MinSig>, Digest>>,
+    }
+
     /// Settings shared by both engines when initializing the marshal actor
     /// and its backing finalized-blocks store.
     pub(crate) struct Config {
@@ -99,10 +106,12 @@ pub(crate) mod marshal {
         /// Finalized tip selected at startup from the archive or genesis,
         /// together with the round it was finalized in (the zero round for
         /// genesis, which is not finalized in any round).
-        pub finalized_tip: (Round, Height, Digest),
-
-        /// Header and certificate to validate before starting the engine's actors.
-        pub finalized_tip_evidence: crate::network_identity::FinalizedTip,
+        /// The certificate is absent for genesis.
+        pub finalized_tip: (
+            Round,
+            TempoHeader,
+            Option<Finalization<Scheme<PublicKey, MinSig>, Digest>>,
+        ),
     }
 
     /// Initialize the marshal actor and its backing finalized-blocks store
@@ -245,11 +254,7 @@ pub(crate) mod marshal {
             actor,
             mailbox,
             finalized_floor: last_finalized_height,
-            finalized_tip,
-            finalized_tip_evidence: crate::network_identity::FinalizedTip {
-                header: tip_header,
-                certificate: tip_certificate,
-            },
+            finalized_tip: (finalized_tip.0, tip_header, tip_certificate),
         })
     }
 

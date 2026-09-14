@@ -74,10 +74,10 @@ pub(crate) struct Config<TExecutionLayer, TMarshal, TEpochManager> {
 
     /// The finalized floor reported by marshal at startup. Used to choose the
     /// boundary block that seeds the initial DKG state.
-    pub(crate) last_finalized_height: Height,
+    pub(crate) finalized_floor: Height,
 
-    /// Finalized tip evidence, verified before opening any epoch or healing DKG state.
-    pub(crate) finalized_tip: crate::network_identity::FinalizedTip,
+    /// Finalized tip evidence, verified after healing and before opening any epoch.
+    pub(crate) finalized_tip: crate::alias::marshal::FinalizedTip,
 
     pub(crate) network_identity: tempo_chainspec::NetworkIdentity,
 

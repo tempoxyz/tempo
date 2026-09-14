@@ -1,6 +1,7 @@
 //! Standalone DKG manager actor tests.
 
 mod harness;
+mod startup_verification;
 
 use std::time::Duration;
 
@@ -25,16 +26,16 @@ use harness::{
 };
 
 #[test]
-fn startup_uses_runtime_observed_tip_identity_before_healing() {
+fn startup_uses_runtime_observed_tip_identity_after_healing() {
     use crate::{
+        alias::marshal::FinalizedTip,
         follow::test_utils::{dkg_fixture, make_block, make_finalization},
-        network_identity::FinalizedTip,
     };
-    use harness::{StubEpochManager, StubMarshal};
+    use harness::{InertReceiver, RecordingSender, StubEpochManager, StubMarshal};
 
-    for observed in [false, true] {
-        for boundary_tip in [false, true] {
-            Runner::default().start(|mut context| async move {
+    for (observed, boundary_tip) in [(false, false), (false, true), (true, false), (true, true)] {
+        Runner::new(commonware_runtime::deterministic::Config::default().with_catch_panics(true))
+            .start(|mut context| async move {
                 let genesis = dkg_fixture(&mut context, Epoch::zero());
                 let rotated = dkg_fixture(&mut context, Epoch::new(2));
                 let next = dkg_fixture(&mut context, Epoch::new(3));
@@ -64,7 +65,6 @@ fn startup_uses_runtime_observed_tip_identity_before_healing() {
                     storage.prune(Epoch::new(2)).await;
                 }
                 drop(storage);
-
                 for attempt in ["attempt_0", "attempt_1"] {
                     let block = if boundary_tip {
                         make_block(29, Some(&next.outcome))
@@ -73,6 +73,9 @@ fn startup_uses_runtime_observed_tip_identity_before_healing() {
                     };
                     let certificate = make_finalization(&block, Epoch::new(2), &rotated.schemes);
                     let execution = StubExecutionProvider::default();
+                    execution.add_header(header(Height::new(20)));
+                    execution.add_header(header(Height::new(21)));
+                    execution.add_header(make_block(29, Some(&next.outcome)).header().clone());
                     let marshal = StubMarshal::default();
                     let epochs = StubEpochManager::default();
                     let result = super::super::init(
@@ -86,7 +89,7 @@ fn startup_uses_runtime_observed_tip_identity_before_healing() {
                             me: PrivateKey::from_seed(0),
                             mailbox_size: std::num::NonZeroUsize::new(1).unwrap(),
                             marshal: marshal.clone(),
-                            last_finalized_height: Height::new(block.header().number()),
+                            finalized_floor: Height::new(block.header().number()),
                             finalized_tip: FinalizedTip {
                                 header: block.header().clone(),
                                 certificate: Some(certificate),
@@ -101,17 +104,37 @@ fn startup_uses_runtime_observed_tip_identity_before_healing() {
                         },
                     )
                     .await;
-                    assert_eq!(result.is_ok(), observed);
-                    if let Err(error) = &result {
-                        assert!(format!("{error:#}").contains("failed verification"));
-                    }
+                    let (actor, mailbox) = result.expect("construction does not verify storage");
                     assert!(execution.reads().is_empty());
                     assert!(marshal.reads().is_empty());
                     assert!(epochs.events().is_empty());
-                    drop(result);
+                    let task = actor.start((RecordingSender::default(), InertReceiver));
+                    if observed {
+                        let epoch = if boundary_tip {
+                            Epoch::new(3)
+                        } else {
+                            Epoch::new(2)
+                        };
+                        mailbox
+                            .get_dealer_log(epoch)
+                            .await
+                            .expect("verified actor should run");
+                        assert!(!epochs.events().is_empty());
+                        drop(mailbox);
+                        task.await
+                            .expect("actor should stop when its mailbox closes");
+                    } else {
+                        assert!(matches!(task.await, Err(commonware_runtime::Error::Exited)));
+                        // Healing may read the boundary, but failed verification prevents epoch entry.
+                        if !boundary_tip {
+                            assert!(execution.reads().is_empty());
+                        }
+                        assert!(marshal.reads().is_empty());
+                        assert!(epochs.events().is_empty());
+                        drop(mailbox);
+                    }
                 }
             });
-        }
     }
 }
 
@@ -530,7 +553,7 @@ fn startup_skips_reading_previous_epoch_after_a_failed_ceremony() {
             .build()
             .await;
 
-        let last_finalized_height = Height::new(19);
+        let finalized_floor = Height::new(19);
         let ceremony_boundary = harness
             .epoch_strategy
             .last(ceremony_epoch.previous().unwrap())
@@ -542,7 +565,7 @@ fn startup_skips_reading_previous_epoch_after_a_failed_ceremony() {
 
         harness
             .execution
-            .add_header(outcome_header(last_finalized_height, &carried_state));
+            .add_header(outcome_header(finalized_floor, &carried_state));
 
         harness.start().await;
 
@@ -558,7 +581,7 @@ fn startup_skips_reading_previous_epoch_after_a_failed_ceremony() {
         );
         assert_eq!(
             harness.execution.reads(),
-            vec![last_finalized_height, ceremony_boundary],
+            vec![finalized_floor, ceremony_boundary],
             "a carried-forward output must skip dealer-log recovery"
         );
     });

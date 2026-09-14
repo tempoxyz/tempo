@@ -4,10 +4,11 @@
 
 use std::{num::NonZeroUsize, sync::Arc, time::Duration};
 
+use alloy_consensus::{BlockHeader as _, Sealable as _};
 use commonware_broadcast::buffered;
 use commonware_consensus::{
     Reporters, marshal,
-    types::{FixedEpocher, ViewDelta},
+    types::{FixedEpocher, Height, ViewDelta},
 };
 use commonware_cryptography::{
     Signer as _,
@@ -143,8 +144,7 @@ where
             actor: marshal,
             mailbox: marshal_mailbox,
             finalized_floor,
-            finalized_tip,
-            finalized_tip_evidence,
+            finalized_tip: (tip_round, tip_header, tip_certificate),
         } = alias::marshal::init(
             context.child("marshal"),
             page_cache_ref.clone(),
@@ -164,6 +164,12 @@ where
         )
         .await
         .wrap_err("failed to initialize marshal")?;
+
+        let finalized_tip = (
+            tip_round,
+            Height::new(tip_header.number()),
+            super::Digest(tip_header.hash_slow()),
+        );
 
         let (executor, executor_mailbox) = crate::executor::init(
             context.child("executor"),
@@ -283,8 +289,11 @@ where
                 epoch_strategy: epoch_strategy.clone(),
                 execution_node,
                 initial_share: self.share.clone(),
-                last_finalized_height: finalized_floor,
-                finalized_tip: finalized_tip_evidence,
+                finalized_floor,
+                finalized_tip: alias::marshal::FinalizedTip {
+                    header: tip_header,
+                    certificate: tip_certificate,
+                },
                 network_identity: self.network_identity,
                 mailbox_size: self.mailbox_size,
                 marshal: marshal_mailbox,

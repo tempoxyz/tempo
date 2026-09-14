@@ -58,8 +58,6 @@ where
     // Rebind consuming commonware mutations through these slots. Write failures
     // panic, so an invalidated handle is never reused by the actor.
     states: Option<metadata::Metadata<TContext, u64, State>>,
-    // Only runtime transitions populate this map; snapshot healing never does.
-    observed_identities: Option<metadata::Metadata<TContext, u64, <MinSig as Variant>::Public>>,
     events: Option<segmented::variable::Journal<TContext, Event>>,
 
     current: Option<State>,
@@ -86,23 +84,7 @@ where
         self.storage.current.as_ref()
     }
 
-    pub(super) fn observed_identity(&self, epoch: Epoch) -> Option<<MinSig as Variant>::Public> {
-        self.storage
-            .observed_identities
-            .as_ref()
-            .unwrap()
-            .get(&epoch.get())
-            .copied()
-    }
-
     pub(super) async fn init_verified(self, state: State) -> Storage<TContext> {
-        if let Some(identity) = self.observed_identity(state.epoch) {
-            assert_eq!(
-                identity,
-                *state.output.public().public(),
-                "network identity mismatch while healing a runtime-observed DKG epoch",
-            );
-        }
         let Self { mut storage } = self;
         rebind(&mut storage.states, |states| {
             states.put_sync(state.epoch.get(), state.clone())
@@ -118,6 +100,15 @@ impl<TContext> Storage<TContext>
 where
     TContext: BufferPooler + commonware_runtime::Storage + Clock + Metrics,
 {
+    /// Returns the identity recorded by a runtime transition into this epoch.
+    /// Returns `None` when no transition record is retained; healed state alone
+    /// does not establish an identity.
+    pub(super) fn identity(&self, epoch: Epoch) -> Option<<MinSig as Variant>::Public> {
+        self.cache
+            .get(&epoch)
+            .and_then(|events| events.observed_identity)
+    }
+
     /// Returns all player acknowledgments received during the given epoch.
     fn acks_for_epoch(
         &self,
@@ -160,13 +151,12 @@ where
     pub(super) async fn set_state(&mut self, state: State) {
         let identity = *state.output.public().public();
         if let Some(existing) = self
-            .observed_identities
-            .as_ref()
-            .unwrap()
-            .get(&state.epoch.get())
+            .cache
+            .get(&state.epoch)
+            .and_then(|events| events.observed_identity)
         {
             assert_eq!(
-                *existing, identity,
+                existing, identity,
                 "network identity mismatch in persisted DKG epoch"
             );
         }
@@ -178,12 +168,13 @@ where
         })
         .await
         .expect("failed to persist DKG state");
-        rebind(&mut self.observed_identities, |mut identities| async {
-            identities.put(state.epoch.get(), identity);
-            identities.sync().await
-        })
-        .await
-        .expect("failed to persist runtime-observed DKG identity");
+        // Healing persists state too, but only a runtime transition records this event.
+        self.append_event(state.epoch, Event::EpochTransition { identity })
+            .await;
+        self.cache
+            .entry(state.epoch)
+            .or_default()
+            .insert(Event::EpochTransition { identity });
         self.current = Some(state);
     }
 
@@ -503,12 +494,6 @@ where
         })
         .await
         .expect("failed to prune DKG state metadata");
-        rebind(&mut self.observed_identities, |mut identities| async move {
-            identities.retain(|&key, _| key >= up_to_epoch.get());
-            identities.sync().await
-        })
-        .await
-        .expect("failed to prune runtime-observed DKG identities");
         self.cache.retain(|&epoch, _| epoch >= up_to_epoch);
     }
 }
@@ -549,18 +534,6 @@ impl Builder {
         )
         .await
         .wrap_err("unable to initialize DKG states metadata")?;
-
-        // Legacy storage has no provenance marker, so it falls back to the configured
-        // identity until a runtime transition is observed; do not infer trust from states.
-        let observed_identities = metadata::Metadata::init(
-            context.child("observed_identities"),
-            metadata::Config {
-                partition: format!("{partition_prefix}_observed_identities"),
-                codec_config: (),
-            },
-        )
-        .await
-        .wrap_err("unable to initialize runtime-observed DKG identities")?;
 
         let current = states.keys().max().map(|epoch| {
             states
@@ -609,7 +582,6 @@ impl Builder {
         Ok(Unverified {
             storage: Storage {
                 states: Some(states),
-                observed_identities: Some(observed_identities),
                 events: Some(events),
                 current,
                 cache,
@@ -775,6 +747,8 @@ pub(super) struct FinalizedBlockInfo {
 /// A cache of all events that transpired during a given epoch.
 #[derive(Debug, Default)]
 struct Events {
+    // Absent for legacy journals and epochs reconstructed only through healing.
+    observed_identity: Option<<MinSig as Variant>::Public>,
     acks: BTreeMap<PublicKey, PlayerAck<PublicKey>>,
     dealings: BTreeMap<PublicKey, (DealerPubMsg<MinSig>, DealerPrivMsg)>,
     logs: BTreeMap<PublicKey, dkg::DealerLog<MinSig, PublicKey>>,
@@ -787,6 +761,15 @@ struct Events {
 impl Events {
     fn insert(&mut self, event: Event) {
         match event {
+            Event::EpochTransition { identity } => {
+                if let Some(existing) = self.observed_identity {
+                    assert_eq!(
+                        existing, identity,
+                        "network identity mismatch in journaled DKG epoch"
+                    );
+                }
+                self.observed_identity = Some(identity);
+            }
             Event::Dealing {
                 dealer: public_key,
                 public_msg,
@@ -822,6 +805,10 @@ impl Events {
 }
 
 enum Event {
+    /// Identity of the epoch entered through a runtime transition, never startup healing.
+    EpochTransition {
+        identity: <MinSig as Variant>::Public,
+    },
     /// A message received from a dealer (as a player).
     Dealing {
         dealer: PublicKey,
@@ -849,6 +836,7 @@ enum Event {
 impl EncodeSize for Event {
     fn encode_size(&self) -> usize {
         1 + match self {
+            Self::EpochTransition { identity } => identity.encode_size(),
             Self::Dealing {
                 dealer: public_key,
                 public_msg,
@@ -871,6 +859,10 @@ impl EncodeSize for Event {
 impl Write for Event {
     fn write(&self, buf: &mut impl bytes::BufMut) {
         match self {
+            Self::EpochTransition { identity } => {
+                4u8.write(buf);
+                identity.write(buf);
+            }
             Self::Dealing {
                 dealer: public_key,
                 public_msg,
@@ -934,6 +926,9 @@ impl Read for Event {
                 digest: ReadExt::read(buf)?,
                 parent: ReadExt::read(buf)?,
                 height: ReadExt::read(buf)?,
+            }),
+            4 => Ok(Self::EpochTransition {
+                identity: ReadExt::read(buf)?,
             }),
             other => Err(commonware_codec::Error::InvalidEnum(other)),
         }
@@ -1385,6 +1380,10 @@ mod tests {
                 .unwrap()
                 .init_verified(initial.clone())
                 .await;
+            // Existing event types do not confer runtime provenance on healed state.
+            storage
+                .append_finalized_header(initial.epoch, TempoHeader::default())
+                .await;
             storage.set_state(runtime.clone()).await;
             drop(storage);
 
@@ -1393,12 +1392,21 @@ mod tests {
                 .init_unverified(context.child("reopen"))
                 .await
                 .unwrap();
-            assert_eq!(opened.observed_identity(initial.epoch), None);
+            let state = opened.state().unwrap().clone();
+            let opened = opened.init_verified(state).await;
+            assert_eq!(opened.identity(initial.epoch), None);
             assert_eq!(
-                opened.observed_identity(runtime.epoch),
+                opened.identity(runtime.epoch),
                 Some(*runtime.output.public().public())
             );
-            let mut storage = opened.init_verified(healed.clone()).await;
+            drop(opened);
+            let mut storage = builder()
+                .partition_prefix("identity_provenance")
+                .init_unverified(context.child("heal"))
+                .await
+                .unwrap()
+                .init_verified(healed.clone())
+                .await;
             storage.prune(runtime.epoch).await;
             drop(storage);
 
@@ -1407,11 +1415,57 @@ mod tests {
                 .init_unverified(context.child("after_healing"))
                 .await
                 .unwrap();
+            let state = opened.state().unwrap().clone();
+            let opened = opened.init_verified(state).await;
             assert_eq!(
-                opened.observed_identity(runtime.epoch),
+                opened.identity(runtime.epoch),
                 Some(*runtime.output.public().public())
             );
-            assert_eq!(opened.observed_identity(healed.epoch), None);
+            assert_eq!(opened.identity(healed.epoch), None);
+
+            let mut storage = opened;
+            storage.prune(healed.epoch).await;
+            drop(storage);
+            let opened = builder()
+                .partition_prefix("identity_provenance")
+                .init_unverified(context.child("after_pruning"))
+                .await
+                .unwrap();
+            let state = opened.state().unwrap().clone();
+            let opened = opened.init_verified(state).await;
+            assert_eq!(opened.identity(runtime.epoch), None);
+            assert_eq!(opened.identity(healed.epoch), None);
+        });
+    }
+
+    #[test]
+    #[should_panic(expected = "network identity mismatch in journaled DKG epoch")]
+    fn conflicting_journaled_transitions_panic_on_replay() {
+        deterministic::Runner::default().start(|mut context| async move {
+            let state = make_test_state(&mut context, 1);
+            let conflicting = make_test_state(&mut context, 1);
+            let mut storage = builder()
+                .partition_prefix("conflicting_transitions")
+                .init_unverified(context.child("initial"))
+                .await
+                .unwrap()
+                .init_verified(state.clone())
+                .await;
+            storage.set_state(state.clone()).await;
+            // Inject an inconsistent record to exercise validation during journal replay.
+            storage
+                .append_event(
+                    state.epoch,
+                    Event::EpochTransition {
+                        identity: *conflicting.output.public().public(),
+                    },
+                )
+                .await;
+            drop(storage);
+            let _ = builder()
+                .partition_prefix("conflicting_transitions")
+                .init_unverified(context.child("reopen"))
+                .await;
         });
     }
 

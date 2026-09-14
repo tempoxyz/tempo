@@ -318,7 +318,7 @@ impl FollowerBuilder {
                 }),
             feed_state: feed_state.clone(),
             partition_prefix,
-            epoch_strategy: FixedEpocher::new(commonware_utils::NZU64!(EPOCH_LENGTH)),
+            epoch_strategy: FixedEpocher::new(node.node.chain_spec().info.epoch_length().unwrap()),
             mailbox_size: commonware_utils::NZUsize!(16_384),
             upstream_request_timeout: Duration::from_secs(2),
             fcu_heartbeat_interval: Duration::from_secs(300),
@@ -617,20 +617,31 @@ fn follower_bootstraps_from_follower() {
 
 #[test_traced]
 fn follower_starts_from_validator_archives() {
-    assert_follower_starts_from_validator_archives(false);
+    assert_follower_starts_from_validator_archives(false, false);
 }
 
 #[test_traced]
 fn follower_starts_from_validator_archives_with_execution_behind() {
-    assert_follower_starts_from_validator_archives(true);
+    assert_follower_starts_from_validator_archives(true, false);
 }
 
-fn assert_follower_starts_from_validator_archives(unwind_execution: bool) {
+#[test_traced]
+fn follower_starts_from_validator_archives_after_rotation_with_stale_identity() {
+    assert_follower_starts_from_validator_archives(false, true);
+}
+
+fn assert_follower_starts_from_validator_archives(unwind_execution: bool, rotate_identity: bool) {
     let _ = tempo_eyre::install();
-    let target_height = 15;
+    // Allow enough blocks for the full ceremony to complete before its boundary.
+    let epoch_length = if rotate_identity { 30 } else { EPOCH_LENGTH };
+    let target_height = if rotate_identity {
+        2 * epoch_length + 5
+    } else {
+        15
+    };
     let follower_target_height = target_height + 5;
 
-    let setup = Setup::new().how_many_signers(4).epoch_length(EPOCH_LENGTH);
+    let setup = Setup::new().how_many_signers(4).epoch_length(epoch_length);
     let cfg = deterministic::Config::default().with_seed(setup.seed);
 
     let executor = Runner::from(cfg);
@@ -638,6 +649,26 @@ fn assert_follower_starts_from_validator_archives(unwind_execution: bool) {
         let (mut validators, execution_runtime) = setup_validators(&mut context, setup).await;
         join_all(validators.iter_mut().map(|v| v.start(&context))).await;
         connect_execution_peers(&validators).await;
+
+        if rotate_identity {
+            let url = validators[0]
+                .execution()
+                .rpc_server_handle()
+                .http_url()
+                .unwrap()
+                .parse()
+                .unwrap();
+            execution_runtime
+                .set_next_full_dkg_ceremony_v2(url, 1)
+                .await
+                .unwrap();
+            let before =
+                super::dkg::common::wait_for_outcome(&context, &validators, 0, epoch_length).await;
+            assert!(before.is_next_full_dkg);
+            let after =
+                super::dkg::common::wait_for_outcome(&context, &validators, 1, epoch_length).await;
+            assert_ne!(before.network_identity(), after.network_identity());
+        }
 
         // Wait for validator[0] specifically since we'll donate its archive.
         wait_for_height(&context, &validators[0], target_height).await;
@@ -652,6 +683,7 @@ fn assert_follower_starts_from_validator_archives(unwind_execution: bool) {
             assert_eq!(execution_height, 0);
         }
 
+        // Keep the chainspec's original identity even when the donated state has rotated.
         let follower = Follower::builder()
             .runtime(execution_runtime.handle())
             .donor(donor)

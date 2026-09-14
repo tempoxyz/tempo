@@ -60,7 +60,7 @@ pub(super) struct Harness {
     partition_prefix: String,
     pub(super) epoch_strategy: FixedEpocher,
     identity: PrivateKey,
-    last_finalized_height: Height,
+    finalized_floor: Height,
     initial_state: Option<State>,
     storage: Option<state::Storage<Context>>,
     mailbox: Option<Mailbox>,
@@ -83,7 +83,7 @@ pub(super) struct HarnessBuilder {
     partition_prefix: String,
     epoch_strategy: FixedEpocher,
     identity: PrivateKey,
-    last_finalized_height: Height,
+    finalized_floor: Height,
     initial_state: InitialState,
     execution: StubExecutionProvider,
     marshal: StubMarshal,
@@ -115,7 +115,7 @@ impl HarnessBuilder {
     }
 
     pub(super) fn finalized_floor(mut self, height: Height) -> Self {
-        self.last_finalized_height = height;
+        self.finalized_floor = height;
         self
     }
 
@@ -154,7 +154,7 @@ impl HarnessBuilder {
             partition_prefix: self.partition_prefix,
             epoch_strategy: self.epoch_strategy,
             identity: self.identity,
-            last_finalized_height: self.last_finalized_height,
+            finalized_floor: self.finalized_floor,
             initial_state,
             storage,
             mailbox: None,
@@ -175,7 +175,7 @@ impl Harness {
             partition_prefix: partition_prefix.into(),
             epoch_strategy: FixedEpocher::new(NonZeroU64::new(10).unwrap()),
             identity: PrivateKey::from_seed(0),
-            last_finalized_height: Height::new(9),
+            finalized_floor: Height::new(9),
             initial_state: InitialState::None,
             execution: StubExecutionProvider::default(),
             marshal: StubMarshal::default(),
@@ -220,8 +220,8 @@ impl Harness {
                 me: self.identity.clone(),
                 mailbox_size: NonZeroUsize::new(1).unwrap(),
                 marshal: self.marshal.clone(),
-                last_finalized_height: self.last_finalized_height,
-                finalized_tip: crate::network_identity::FinalizedTip {
+                finalized_floor: self.finalized_floor,
+                finalized_tip: crate::alias::marshal::FinalizedTip {
                     header: outcome_header(Height::zero(), &genesis),
                     certificate: None,
                 },

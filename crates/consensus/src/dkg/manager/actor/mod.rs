@@ -4,8 +4,9 @@ use alloy_consensus::{BlockHeader as _, Sealable};
 use bytes::{Buf, BufMut};
 use commonware_codec::{Encode as _, EncodeSize, Read, ReadExt as _, Write};
 use commonware_consensus::{
-    Heightable as _,
+    Epochable as _, Heightable as _,
     marshal::{Update, core::DigestFallback},
+    simplex::scheme::bls12381_threshold::vrf::Scheme,
     types::{Epoch, EpochPhase, Epocher as _, FixedEpocher, Height},
 };
 use commonware_cryptography::{
@@ -134,9 +135,6 @@ pub(crate) struct Actor<
     /// runtime.
     metrics: Metrics,
 
-    /// Opened and checked against the startup tip before any snapshot healing.
-    startup_storage: Option<state::Unverified<TContext>>,
-
     /// Queue of finalized blocks if marshal is configured to send out multiple
     /// blocks at a time.
     pending_finalized_blocks: FuturesOrdered<Ready<(Span, Block, Exact)>>,
@@ -155,41 +153,14 @@ where
         context: TContext,
         mailbox: mpsc::UnboundedReceiver<super::ingress::Message>,
     ) -> eyre::Result<Self> {
-        let mut context = ContextCell::new(context);
+        let context = ContextCell::new(context);
         let metrics = Metrics::init(context.as_present());
-
-        let storage = state::builder()
-            .partition_prefix(&config.partition_prefix)
-            .init_unverified(context.child("state"))
-            .await?;
-        if let Some(identity) =
-            storage.observed_identity(Epoch::new(config.network_identity.from_epoch))
-        {
-            assert_eq!(
-                identity, config.network_identity.identity,
-                "network identity mismatch at configured activation epoch"
-            );
-        }
-        let tip_epoch = config
-            .epoch_strategy
-            .containing(Height::new(config.finalized_tip.header.number()))
-            .expect("epoch strategy covers all heights")
-            .epoch();
-        crate::network_identity::verify_finalized_tip(
-            context.as_present_mut(),
-            &config.epoch_strategy,
-            &config.network_identity,
-            storage.observed_identity(tip_epoch),
-            &config.finalized_tip.header,
-            config.finalized_tip.certificate.as_ref(),
-        )?;
 
         Ok(Self {
             config,
             context,
             mailbox,
             metrics,
-            startup_storage: Some(storage),
             pending_finalized_blocks: FuturesOrdered::new(),
         })
     }
@@ -213,17 +184,23 @@ where
     ) {
         // NOTE: The instrumented fns emits on error events
 
-        let opened = self
-            .startup_storage
-            .take()
-            .expect("startup storage is present");
+        let Ok(opened) = state::builder()
+            .partition_prefix(&self.config.partition_prefix)
+            .init_unverified(self.context.child("state"))
+            .await
+        else {
+            return;
+        };
 
         let Ok(mut storage) = self.heal(opened).await else {
             return;
         };
 
+        self.verify_finalized_tip(&storage)
+            .expect("finalized state failed startup verification");
+
         if self
-            .prepopulate_to_last_finalized_height(&mut storage)
+            .prepopulate_to_finalized_floor(&mut storage)
             .await
             .is_err()
         {
@@ -535,7 +512,7 @@ where
             let epoch_info = self
                 .config
                 .epoch_strategy
-                .containing(self.config.last_finalized_height.next())
+                .containing(self.config.finalized_floor.next())
                 .expect("epoch strategy is covering all heights");
             let round = Round::from_state(state, &self.config.namespace);
             if round.epoch() < epoch_info.epoch() {
@@ -560,7 +537,7 @@ where
     }
 
     #[instrument(skip_all, err)]
-    async fn prepopulate_to_last_finalized_height<TStorageContext>(
+    async fn prepopulate_to_finalized_floor<TStorageContext>(
         &self,
         storage: &mut state::Storage<TStorageContext>,
     ) -> eyre::Result<()>
@@ -569,7 +546,7 @@ where
     {
         let state = storage.current();
         let round = Round::from_state(&state, &self.config.namespace);
-        let target_height = self.config.last_finalized_height;
+        let target_height = self.config.finalized_floor;
         let epoch_info = self
             .config
             .epoch_strategy
@@ -1300,13 +1277,11 @@ where
         &mut self,
         share_candidate: ShareState,
     ) -> eyre::Result<State> {
-        let latest_boundary = latest_boundary_at_or_before(
-            &self.config.epoch_strategy,
-            self.config.last_finalized_height,
-        );
+        let latest_boundary =
+            latest_boundary_at_or_before(&self.config.epoch_strategy, self.config.finalized_floor);
         info!(
             %latest_boundary,
-            last_finalized = %self.config.last_finalized_height,
+            finalized_floor = %self.config.finalized_floor,
             "marshal reported finalized floor at startup, reading on-chain DKG \
             outcome from last boundary height"
         );
@@ -1490,6 +1465,69 @@ where
         );
 
         Ok(Some(share))
+    }
+
+    fn verify_finalized_tip(&mut self, storage: &state::Storage<TContext>) -> eyre::Result<()> {
+        let epoch_strategy = &self.config.epoch_strategy;
+        let network_identity = &self.config.network_identity;
+        if let Some(identity) = storage.identity(Epoch::new(network_identity.from_epoch)) {
+            assert_eq!(
+                identity, network_identity.identity,
+                "network identity mismatch at configured activation epoch"
+            );
+        }
+
+        let header = &self.config.finalized_tip.header;
+        if header.number() == 0 {
+            ensure!(
+                network_identity.from_epoch == 0,
+                "cannot verify genesis with a network identity that activates at epoch {}; configure an epoch-zero network identity",
+                network_identity.from_epoch
+            );
+            let outcome = OnchainDkgOutcome::read(&mut header.extra_data().as_ref())
+                .wrap_err("genesis did not contain a DKG outcome")?;
+            ensure!(
+                *outcome.network_identity() == network_identity.identity,
+                "network genesis network identity mismatch"
+            );
+            return Ok(());
+        }
+
+        let epoch = epoch_strategy
+            .containing(Height::new(header.number()))
+            .expect("strategy valid for all heights");
+
+        let certificate = self
+            .config
+            .finalized_tip
+            .certificate
+            .clone()
+            .expect("non-genesis finalized tip must have a certificate");
+
+        // Check storage consistency even when the configured identity is newer than the tip.
+        ensure!(
+            header.hash_slow() == certificate.proposal.payload.0,
+            "finalize tip digest mismatch"
+        );
+
+        let identity = storage.identity(epoch.epoch());
+        ensure!(
+            identity.is_some() || epoch.epoch().get() >= network_identity.from_epoch,
+            "cannot verify finalized chain state at epoch {}: no locally recorded identity or observed identity transition",
+            epoch.epoch(),
+        );
+
+        let identity = identity.unwrap_or(network_identity.identity);
+        let scheme: Scheme<PublicKey, MinSig> =
+            Scheme::certificate_verifier(crate::config::NAMESPACE, identity);
+
+        ensure!(
+            certificate.verify(self.context.as_present_mut(), &scheme, &Sequential),
+            "finalized chain tip at epoch {} failed identity verification; update the binary or --consensus.network-identity and --consensus.network-identity-from-epoch",
+            certificate.epoch(),
+        );
+
+        Ok(())
     }
 }
 
