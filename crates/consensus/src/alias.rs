@@ -80,20 +80,43 @@ pub(crate) mod marshal {
         pub scheme_provider: SchemeProvider,
     }
 
-    /// A non-genesis finalized tip, including its certificate.
+    /// A non-genesis finalized tip, checked against its header.
     #[derive(Clone, Debug)]
     pub(crate) struct FinalizedTip {
-        pub height: Height,
-        pub certificate: Finalization<Scheme<PublicKey, MinSig>, Digest>,
+        /// Height recorded in the archive, checked against the header by the constructor.
+        height: Height,
+        certificate: Finalization<Scheme<PublicKey, MinSig>, Digest>,
     }
 
     impl FinalizedTip {
-        pub(crate) fn point(&self) -> (Round, Height, Digest) {
-            (
-                self.certificate.proposal.round,
-                self.height,
-                self.certificate.proposal.payload,
-            )
+        /// Binds the header to its archive height and certificate payload.
+        /// Certificate signature verification is left to DKG startup.
+        pub(crate) fn new(
+            height: Height,
+            header: &TempoHeader,
+            certificate: Finalization<Scheme<PublicKey, MinSig>, Digest>,
+        ) -> eyre::Result<Self> {
+            ensure!(
+                header.number() == height.get(),
+                "finalized tip header number `{}` does not match archive height `{height}`",
+                header.number(),
+            );
+            ensure!(
+                Digest(header.hash_slow()) == certificate.proposal.payload,
+                "finalized tip header hash does not match certificate payload at height `{height}`",
+            );
+            Ok(Self {
+                height,
+                certificate,
+            })
+        }
+
+        pub(crate) fn height(&self) -> Height {
+            self.height
+        }
+
+        pub(crate) fn certificate(&self) -> &Finalization<Scheme<PublicKey, MinSig>, Digest> {
+            &self.certificate
         }
     }
 
@@ -149,27 +172,6 @@ pub(crate) mod marshal {
         .await
         .wrap_err("failed to initialize finalizations by height archive")?;
 
-        let FinalizationRange {
-            floor: finalized_floor,
-            tip: finalized_tip,
-        } = establish_finalization_range(&finalizations_by_height, &execution_node).await?;
-        let tip_point = finalized_tip.as_ref().map_or(
-            (Round::zero(), finalized_floor.0, finalized_floor.1),
-            FinalizedTip::point,
-        );
-        info!(
-            floor_height = %finalized_floor.0,
-            floor_digest = %finalized_floor.1,
-            tip_round = %tip_point.0,
-            tip_height = %tip_point.1,
-            tip_digest = %tip_point.2,
-            "selected finalized startup range"
-        );
-
-        let start =
-            start_from_finalized_floor(&finalizations_by_height, &execution_node, finalized_floor)
-                .await?;
-
         let finalized_blocks = storage::init_finalized_blocks(
             &context,
             &config.partition_prefix,
@@ -179,6 +181,36 @@ pub(crate) mod marshal {
         )
         .await
         .wrap_err("failed to initialize hybrid finalized blocks store")?;
+
+        let FinalizationRange {
+            floor: finalized_floor,
+            tip: finalized_tip,
+        } = establish_finalization_range(
+            &finalizations_by_height,
+            &finalized_blocks,
+            &execution_node,
+        )
+        .await?;
+        let (tip_round, tip_height, tip_digest) = match &finalized_tip {
+            Some(tip) => (
+                tip.certificate().proposal.round,
+                tip.height(),
+                tip.certificate().proposal.payload,
+            ),
+            None => (Round::zero(), finalized_floor.0, finalized_floor.1),
+        };
+        info!(
+            floor_height = %finalized_floor.0,
+            floor_digest = %finalized_floor.1,
+            tip_round = %tip_round,
+            tip_height = %tip_height,
+            tip_digest = %tip_digest,
+            "selected finalized startup range"
+        );
+
+        let start =
+            start_from_finalized_floor(&finalizations_by_height, &execution_node, finalized_floor)
+                .await?;
 
         if let marshal::Start::Floor(finalization) = &start {
             register_scheme(
@@ -218,12 +250,12 @@ pub(crate) mod marshal {
 
         if let Some(marshal_stored_height) = marshal_floor.height() {
             ensure!(
-                tip_point.1 >= marshal_stored_height,
+                tip_height >= marshal_stored_height,
                 "finalizations archive is inconsistent with the node's consensus metadata: \
                 archive tip height `{}` is below stored marshal height `{marshal_stored_height}`; \
                 have you overwritten consensus storage from a stale snapshot? delete consensus \
                 storage and try again",
-                tip_point.1,
+                tip_height,
             );
         }
 
@@ -254,52 +286,33 @@ pub(crate) mod marshal {
     }
 
     async fn establish_finalization_range<TContext>(
-        finalizations_by_height: &immutable::Archive<
+        certificates: &immutable::Archive<
             TContext,
             Digest,
             Finalization<Scheme<PublicKey, MinSig>, Digest>,
+        >,
+        blocks: &Hybrid<
+            TContext,
+            BlockchainProvider<NodeTypesWithDBAdapter<TempoNode, DatabaseEnv>>,
         >,
         execution_node: &TempoFullNode,
     ) -> eyre::Result<FinalizationRange>
     where
-        TContext: Clock + Metrics + Spawner + Storage + BufferPooler + Send + 'static,
+        TContext: Clock + Metrics + Spawner + Storage + BufferPooler + Send + Sync + 'static,
     {
-        let archive_range = finalized_archive_range(finalizations_by_height)
-            .await
-            .wrap_err("failed to establish finalized archive bounds")?;
-        let execution_finalized = execution_finalized_point(execution_node);
-
-        match archive_range {
-            Some((floor, tip)) => Ok(FinalizationRange {
-                floor: (floor.height, floor.certificate.proposal.payload),
-                tip: Some(tip),
-            }),
-            None if execution_finalized.0.is_zero() => Ok(FinalizationRange {
-                floor: execution_finalized,
-                tip: None,
-            }),
-            None => Err(eyre!(
-                "consensus startup requires a finalized certificate archive unless the \
-                    execution layer is empty, but no finalized certificate was found and execution \
-                    finalized block is `{}` at height `{}`",
-                execution_finalized.1,
-                execution_finalized.0,
-            )),
-        }
-    }
-
-    async fn finalized_archive_range<TContext>(
-        archive: &immutable::Archive<
-            TContext,
-            Digest,
-            Finalization<Scheme<PublicKey, MinSig>, Digest>,
-        >,
-    ) -> eyre::Result<Option<(FinalizedTip, FinalizedTip)>>
-    where
-        TContext: Clock + Metrics + Spawner + Storage + BufferPooler + Send + 'static,
-    {
-        let (first, last) = match (archive.first_index(), archive.last_index()) {
-            (None, None) => return Ok(None),
+        let (first, last) = match (certificates.first_index(), certificates.last_index()) {
+            (None, None) => {
+                let floor = execution_finalized_point(execution_node);
+                ensure!(
+                    floor.0.is_zero(),
+                    "consensus startup requires a finalized certificate archive unless the \
+                     execution layer is empty, but no finalized certificate was found and execution \
+                     finalized block is `{}` at height `{}`",
+                    floor.1,
+                    floor.0,
+                );
+                return Ok(FinalizationRange { floor, tip: None });
+            }
             (Some(first), Some(last)) => (first, last),
             (first, last) => {
                 bail!(
@@ -308,23 +321,35 @@ pub(crate) mod marshal {
                 );
             }
         };
+        ensure!(
+            first != 0,
+            "genesis must not have a finalization certificate"
+        );
 
-        let floor = finalized_archive_point(archive, first)
+        let floor_certificate = certificates
+            .get(Identifier::Index(first))
             .await
-            .wrap_err_with(|| {
-                format!("failed to read finalized floor from archive at height `{first}`")
-            })?;
-        let tip = if first == last {
-            floor.clone()
+            .wrap_err("failed reading finalized floor certificate")?
+            .ok_or_eyre("archive did not contain finalized floor certificate")?;
+        let floor = (Height::new(first), floor_certificate.proposal.payload);
+        let certificate = if first == last {
+            floor_certificate
         } else {
-            finalized_archive_point(archive, last)
+            certificates
+                .get(Identifier::Index(last))
                 .await
-                .wrap_err_with(|| {
-                    format!("failed to read finalized tip from archive at height `{last}`")
-                })?
+                .wrap_err("failed reading finalized tip certificate")?
+                .ok_or_eyre("archive did not contain finalized tip certificate")?
         };
+        let height = Height::new(last);
+        let header = read_header(execution_node, blocks, height)
+            .await
+            .wrap_err("failed reading finalized tip header")?;
 
-        Ok(Some((floor, tip)))
+        Ok(FinalizationRange {
+            floor,
+            tip: Some(FinalizedTip::new(height, &header, certificate)?),
+        })
     }
 
     async fn start_from_finalized_floor<TContext>(
@@ -464,32 +489,6 @@ pub(crate) mod marshal {
         })
     }
 
-    async fn finalized_archive_point<TContext>(
-        archive: &immutable::Archive<
-            TContext,
-            Digest,
-            Finalization<Scheme<PublicKey, MinSig>, Digest>,
-        >,
-        height: u64,
-    ) -> eyre::Result<FinalizedTip>
-    where
-        TContext: Clock + Metrics + Spawner + Storage + BufferPooler + Send + 'static,
-    {
-        let finalization = archive
-            .get(Identifier::Index(height))
-            .await
-            .wrap_err("failed reading certificate from archive")?
-            .ok_or_eyre("archive did not contain certificate")?;
-        ensure!(
-            height != 0,
-            "genesis must not have a finalization certificate"
-        );
-        Ok(FinalizedTip {
-            height: Height::new(height),
-            certificate: finalization,
-        })
-    }
-
     fn execution_finalized_point(execution_node: &TempoFullNode) -> (Height, Digest) {
         execution_node
             .provider
@@ -502,5 +501,59 @@ pub(crate) mod marshal {
                     Digest(execution_node.chain_spec().genesis_hash()),
                 )
             })
+    }
+
+    #[cfg(test)]
+    mod tests {
+        use alloy_consensus::{Header, Sealable as _};
+        use commonware_consensus::types::{Epoch, Height};
+        use commonware_runtime::{Runner as _, deterministic::Runner};
+        use tempo_primitives::TempoHeader;
+
+        use super::FinalizedTip;
+        use crate::{
+            consensus::Digest,
+            test_utils::{dkg_fixture, make_certificate},
+        };
+
+        #[test]
+        fn finalized_tip_binds_archive_height_and_header_to_certificate() {
+            Runner::default().start(|mut context| async move {
+                let fixture = dkg_fixture(&mut context, Epoch::new(1));
+                let height = Height::new(12);
+                let header = TempoHeader {
+                    inner: Header {
+                        number: height.get(),
+                        ..Default::default()
+                    },
+                    ..Default::default()
+                };
+                let certificate = make_certificate(
+                    Digest(header.hash_slow()),
+                    Epoch::new(1),
+                    1,
+                    &fixture.schemes,
+                );
+
+                let tip = FinalizedTip::new(height, &header, certificate.clone()).unwrap();
+                assert_eq!(tip.height(), height);
+                assert_eq!(tip.certificate(), &certificate);
+
+                // A valid certificate cannot be associated with a different archive height.
+                let error =
+                    FinalizedTip::new(height.next(), &header, certificate.clone()).unwrap_err();
+                assert!(error.to_string().contains("does not match archive height"));
+
+                // A header at the correct height still has to match the signed payload.
+                let mut substituted = header;
+                substituted.inner.extra_data = vec![1].into();
+                let error = FinalizedTip::new(height, &substituted, certificate).unwrap_err();
+                assert!(
+                    error
+                        .to_string()
+                        .contains("header hash does not match certificate payload")
+                );
+            });
+        }
     }
 }

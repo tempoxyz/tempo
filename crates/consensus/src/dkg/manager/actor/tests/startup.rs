@@ -1,18 +1,20 @@
 //! Startup authentication uses only the binary and the latest persisted DKG state.
 
+use alloy_consensus::{BlockHeader as _, Sealable as _};
 use commonware_consensus::types::{Epoch, FixedEpocher, Height};
 use commonware_cryptography::{Signer as _, transcript::Summary};
 use commonware_math::algebra::Random as _;
 use commonware_runtime::{Runner as _, Supervisor as _, deterministic::Runner};
 use rand_core::CryptoRng;
 use tempo_chainspec::NetworkIdentity;
+use tempo_primitives::TempoHeader;
 
 use super::{
     super::{
         startup::verify_finalized_tip,
         state::{self, ShareState, State},
     },
-    harness::{Harness, outcome_header},
+    harness::{Harness, header, outcome_header},
 };
 use crate::{
     alias::marshal::FinalizedTip,
@@ -39,15 +41,21 @@ fn persisted(fixture: &DkgFixture, rng: &mut impl CryptoRng) -> State {
 }
 
 fn tip(fixture: &DkgFixture, epoch: u64) -> FinalizedTip {
-    FinalizedTip {
-        height: Height::new(epoch * 10 + 2),
-        certificate: make_certificate(
-            Digest(alloy_primitives::B256::ZERO),
-            Epoch::new(epoch),
+    tip_for_header(fixture, &header(Height::new(epoch * 10 + 2)))
+}
+
+fn tip_for_header(fixture: &DkgFixture, header: &TempoHeader) -> FinalizedTip {
+    FinalizedTip::new(
+        Height::new(header.number()),
+        header,
+        make_certificate(
+            Digest(header.hash_slow()),
+            Epoch::new(header.number() / 10),
             1,
             &fixture.schemes,
         ),
-    }
+    )
+    .unwrap()
 }
 
 #[test]
@@ -148,8 +156,7 @@ fn historical_tips_and_genesis_remain_allowed() {
         let state = persisted(&new, &mut context);
         // Last block of epoch 2, signed by the outgoing key. Persisted DKG
         // state already holds the identity for epoch 3.
-        let mut boundary_tip = tip(&old, 2);
-        boundary_tip.height = Height::new(29);
+        let boundary_tip = tip_for_header(&old, &header(Height::new(29)));
         let strategy = FixedEpocher::new(commonware_utils::NZU64!(10));
         for (binary, local) in [
             (identity(&new), None),
@@ -184,12 +191,27 @@ fn startup_rejects_malformed_or_invalid_tip_certificates() {
         let fixture = dkg_fixture(&mut context, Epoch::new(0));
         let binary = identity(&fixture);
         let strategy = FixedEpocher::new(commonware_utils::NZU64!(10));
-        let mut invalid = tip(&fixture, 1);
-        invalid.certificate.proposal.payload = Digest(alloy_primitives::B256::repeat_byte(1));
-        let mut wrong_epoch = tip(&fixture, 1);
-        wrong_epoch.height = Height::new(22);
-        let mut genesis_certificate = tip(&fixture, 0);
-        genesis_certificate.height = Height::zero();
+        let valid = tip(&fixture, 1);
+        let mut altered_header = header(valid.height());
+        altered_header.inner.extra_data = vec![1].into();
+        let mut invalid_certificate = valid.certificate().clone();
+        invalid_certificate.proposal.payload = Digest(altered_header.hash_slow());
+        // Header and payload agree, but the signature still covers the original payload.
+        let invalid =
+            FinalizedTip::new(valid.height(), &altered_header, invalid_certificate).unwrap();
+        let wrong_epoch_header = header(Height::new(22));
+        let wrong_epoch = FinalizedTip::new(
+            Height::new(22),
+            &wrong_epoch_header,
+            make_certificate(
+                Digest(wrong_epoch_header.hash_slow()),
+                Epoch::new(1),
+                1,
+                &fixture.schemes,
+            ),
+        )
+        .unwrap();
+        let genesis_certificate = tip_for_header(&fixture, &header(Height::zero()));
         for tip in [invalid, wrong_epoch, genesis_certificate] {
             assert!(
                 verify_finalized_tip(

@@ -15,7 +15,7 @@ use crate::{
     alias::marshal::FinalizedTip,
     test_utils::{dkg_fixture, make_certificate},
 };
-use alloy_consensus::Header;
+use alloy_consensus::{Header, Sealable as _};
 use commonware_actor::{Feedback, Unreliable};
 use commonware_codec::Encode as _;
 use commonware_consensus::{
@@ -162,14 +162,11 @@ impl HarnessBuilder {
                 .map_or(tip_epoch, |state| state.epoch.max(tip_epoch))
                 .next();
             let fixture = dkg_fixture(&mut self.context, identity_epoch);
-            let tip = (!self.last_finalized_height.is_zero()).then(|| FinalizedTip {
-                height: self.last_finalized_height,
-                certificate: make_certificate(
-                    Digest(alloy_primitives::B256::ZERO),
-                    tip_epoch,
-                    1,
-                    &fixture.schemes,
-                ),
+            let tip = (!self.last_finalized_height.is_zero()).then(|| {
+                let header = header(self.last_finalized_height);
+                let certificate =
+                    make_certificate(Digest(header.hash_slow()), tip_epoch, 1, &fixture.schemes);
+                FinalizedTip::new(self.last_finalized_height, &header, certificate).unwrap()
             });
             (
                 NetworkIdentity {

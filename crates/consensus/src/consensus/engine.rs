@@ -176,23 +176,25 @@ where
         .await
         .wrap_err("failed to initialize marshal")?;
 
-        let finalized_tip_point = finalized_tip.as_ref().map_or_else(
-            || {
-                (
-                    Round::zero(),
-                    Height::zero(),
-                    super::Digest(execution_node.chain_spec().genesis_hash()),
-                )
-            },
-            alias::marshal::FinalizedTip::point,
-        );
+        let (tip_round, tip_height, tip_digest) = match &finalized_tip {
+            Some(tip) => (
+                tip.certificate().proposal.round,
+                tip.height(),
+                tip.certificate().proposal.payload,
+            ),
+            None => (
+                Round::zero(),
+                Height::zero(),
+                super::Digest(execution_node.chain_spec().genesis_hash()),
+            ),
+        };
 
         let (executor, executor_mailbox) = crate::executor::init(
             context.child("executor"),
             crate::executor::Config {
                 execution_node: execution_node.clone(),
                 finalized_floor,
-                finalized_tip: finalized_tip_point,
+                finalized_tip: (tip_round, tip_height, tip_digest),
                 marshal: marshal_mailbox.clone(),
                 fcu_heartbeat_interval: self.fcu_heartbeat_interval,
                 public_key: Some(self.signer.public_key()),
@@ -207,7 +209,7 @@ where
                 oracle: self.peer_manager.clone(),
                 epoch_strategy: epoch_strategy.clone(),
                 finalized_floor,
-                finalized_tip: (finalized_tip_point.1, finalized_tip_point.2),
+                finalized_tip: (tip_height, tip_digest),
             },
         );
 

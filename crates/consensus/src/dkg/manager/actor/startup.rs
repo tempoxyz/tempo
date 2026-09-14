@@ -50,22 +50,22 @@ pub(super) fn verify_finalized_tip(
         return Ok(());
     };
     ensure!(
-        !tip.height.is_zero(),
+        !tip.height().is_zero(),
         "genesis must not have a finalization certificate"
     );
     ensure!(
-        tip.height >= finalized_floor,
+        tip.height() >= finalized_floor,
         "finalized tip is below the finalized floor"
     );
     let epoch = epoch_strategy
-        .containing(tip.height)
+        .containing(tip.height())
         .expect("epoch strategy covers all heights")
         .epoch();
     ensure!(
-        tip.certificate.epoch() == epoch,
+        tip.certificate().epoch() == epoch,
         "finalized tip certificate epoch `{}` does not match height `{}` in epoch `{epoch}`",
-        tip.certificate.epoch(),
-        tip.height,
+        tip.certificate().epoch(),
+        tip.height(),
     );
 
     if epoch.get() < trusted.from_epoch {
@@ -73,7 +73,7 @@ pub(super) fn verify_finalized_tip(
         // persisted DKG identity. Historical bootstrap remains allowed; the
         // binary and persisted identities stay pinned when their epochs start.
         info!(
-            tip_height = %tip.height,
+            tip_height = %tip.height(),
             tip_epoch = %epoch,
             identity_from_epoch = trusted.from_epoch,
             "finalized tip predates the trusted network identity; accepting historical bootstrap",
@@ -85,11 +85,11 @@ pub(super) fn verify_finalized_tip(
     // schemes read from the same snapshot whose tip we are authenticating.
     let scheme = Scheme::<PublicKey, _>::certificate_verifier(NAMESPACE, trusted.identity);
     ensure!(
-        tip.certificate.verify(rng, &scheme, &Sequential),
+        tip.certificate().verify(rng, &scheme, &Sequential),
         "finalized tip certificate at height `{}` in epoch `{epoch}` failed verification \
          against the trusted network identity from epoch `{}`; configure an updated network \
          identity if a full DKG rotation occurred while the node was offline",
-        tip.height,
+        tip.height(),
         trusted.from_epoch,
     );
     Ok(())
