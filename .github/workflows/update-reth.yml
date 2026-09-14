@@ -658,17 +658,17 @@ jobs:
           done
 
       # ── Slack notification ─────────────────────────────────────
-      - name: Notify Slack
-        if: always() && job.status != 'success'
+      - name: Notify Slack on failure
+        if: failure()
         env:
           GH_TOKEN: ${{ secrets.DEREK_UPDATE_RETH_TOKEN }}
-          SLACK_WEBHOOK_URL: ${{ secrets.SLACK_ENG_TEMPO_WORKFLOWS_WEBHOOK_URL }}
+          SLACK_BOT_TOKEN: ${{ secrets.SLACK_BENCH_BOT_TOKEN }}
+          SLACK_CHANNEL: C09KA1JNJ02 # eng-reth-alerts
           OLD_REV_IN: ${{ steps.update.outputs.old_rev }}
           NEW_REV_IN: ${{ steps.update.outputs.new_rev }}
           BUMPED_IN: ${{ steps.update.outputs.bumped }}
           CLIPPY_PASSED_IN: ${{ steps.check-loop.outputs.clippy_passed }}
           TEST_PASSED_IN: ${{ steps.test-loop.outputs.test_passed }}
-          JOB_STATUS_IN: ${{ job.status }}
         run: |
           PR_BRANCH="reth-auto-bump"
           RUN_URL="${GITHUB_SERVER_URL}/${GITHUB_REPOSITORY}/actions/runs/${GITHUB_RUN_ID}"
@@ -685,22 +685,10 @@ jobs:
             IFS=$'\t' read -r PR_NUMBER PR_URL <<< "$PR_INFO"
           fi
 
-          # Determine overall status
-          JOB_STATUS="${JOB_STATUS_IN}"
           MENTION="<!subteam^S09KMRP46D7|reth>"
-          if [ "$JOB_STATUS" = "success" ]; then
-            EMOJI="✅"
-            STATUS="succeeded"
-            COLOR="#2eb67d"
-          elif [ "$JOB_STATUS" = "cancelled" ]; then
-            EMOJI="⚠️"
-            STATUS="cancelled"
-            COLOR="#e0a523"
-          else
-            EMOJI="❌"
-            STATUS="failed"
-            COLOR="#e01e5a"
-          fi
+          EMOJI="❌"
+          STATUS="failed"
+          COLOR="#e01e5a"
 
           # Build detail lines
           DETAILS=""
@@ -724,21 +712,26 @@ jobs:
 
           DETAILS="${DETAILS}\n• <${RUN_URL}|Workflow>"
 
-          # Post to Slack via incoming webhook
-          if [ -z "${SLACK_WEBHOOK_URL:-}" ]; then
-            echo "::warning::SLACK_WEBHOOK_URL is not set; skipping Slack notification"
+          # Use the existing notification bot to target eng-reth-alerts directly.
+          if [ -z "${SLACK_BOT_TOKEN:-}" ]; then
+            echo "::warning::SLACK_BOT_TOKEN is not set; skipping Slack notification"
             exit 0
           fi
 
           DETAILS_TEXT=$(printf '%b' "$DETAILS")
 
           PAYLOAD=$(jq -n \
+            --arg channel "$SLACK_CHANNEL" \
             --arg emoji "$EMOJI" \
             --arg status "$STATUS" \
             --arg mention "$MENTION" \
             --arg details "$DETAILS_TEXT" \
             --arg color "$COLOR" \
             '{
+              channel: $channel,
+              text: "Reth update failed",
+              unfurl_links: false,
+              unfurl_media: false,
               attachments: [{
                 color: $color,
                 blocks: [
@@ -753,7 +746,15 @@ jobs:
               }]
             }')
 
-          curl -sf -X POST -H 'Content-type: application/json' \
+          RESPONSE=$(curl -sf -X POST \
+            -H "Authorization: Bearer $SLACK_BOT_TOKEN" \
+            -H 'Content-type: application/json' \
             --data "$PAYLOAD" \
-            "$SLACK_WEBHOOK_URL" \
-            || echo "::warning::Failed to post Slack notification"
+            https://slack.com/api/chat.postMessage) || {
+              echo "::warning::Failed to post Slack notification"
+              exit 0
+            }
+          if ! jq -e '.ok == true' <<< "$RESPONSE" >/dev/null; then
+            ERROR=$(jq -r '.error // "unknown_error"' <<< "$RESPONSE")
+            echo "::warning::Slack rejected notification: $ERROR"
+          fi

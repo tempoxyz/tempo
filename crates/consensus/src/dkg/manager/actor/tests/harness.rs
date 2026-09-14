@@ -676,7 +676,7 @@ pub(super) fn block(header: TempoHeader) -> Block {
 
 pub(super) fn outcome_header(height: Height, state: &State) -> TempoHeader {
     let outcome = OnchainDkgOutcome {
-        epoch: state.epoch,
+        epoch: state.epoch.get(),
         output: state.output.clone(),
         next_players: state.players().clone(),
         is_next_full_dkg: state.is_full_dkg,
