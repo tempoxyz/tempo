@@ -97,7 +97,7 @@ jobs:
         with:
           repository: foundry-rs/foundry
           # Keep Foundry on revm 43.0.2 to match the version used by reth and Tempo.
-          ref: b3b42c3ac1ca5c6abadbdc1de6f961d01881a21a
+          ref: 4e9eba80e77a8e696a9c888c6af058da65c12fc8
           path: foundry
           persist-credentials: false
 
@@ -246,7 +246,7 @@ jobs:
         with:
           repository: foundry-rs/foundry
           # Keep Foundry on revm 43.0.2 to match the version used by reth and Tempo.
-          ref: b3b42c3ac1ca5c6abadbdc1de6f961d01881a21a
+          ref: 4e9eba80e77a8e696a9c888c6af058da65c12fc8
           path: foundry
           persist-credentials: false
 
