@@ -8,7 +8,7 @@ use commonware_broadcast::buffered;
 use commonware_consensus::{
     Reporters, marshal,
     simplex::scheme::bls12381_threshold::vrf::Scheme,
-    types::{Epoch, FixedEpocher, ViewDelta},
+    types::{Epoch, FixedEpocher, Height, Round, ViewDelta},
 };
 use commonware_cryptography::{
     Signer as _,
@@ -23,6 +23,7 @@ use commonware_runtime::{
 use commonware_utils::NZUsize;
 use eyre::{OptionExt as _, WrapErr as _};
 use rand_core::{CryptoRng, Rng};
+use reth_ethereum::chainspec::EthChainSpec as _;
 use tempo_node::TempoFullNode;
 use tracing::info;
 
@@ -175,12 +176,23 @@ where
         .await
         .wrap_err("failed to initialize marshal")?;
 
+        let finalized_tip_point = finalized_tip.as_ref().map_or_else(
+            || {
+                (
+                    Round::zero(),
+                    Height::zero(),
+                    super::Digest(execution_node.chain_spec().genesis_hash()),
+                )
+            },
+            alias::marshal::FinalizedTip::point,
+        );
+
         let (executor, executor_mailbox) = crate::executor::init(
             context.child("executor"),
             crate::executor::Config {
                 execution_node: execution_node.clone(),
                 finalized_floor,
-                finalized_tip,
+                finalized_tip: finalized_tip_point,
                 marshal: marshal_mailbox.clone(),
                 fcu_heartbeat_interval: self.fcu_heartbeat_interval,
                 public_key: Some(self.signer.public_key()),
@@ -195,7 +207,7 @@ where
                 oracle: self.peer_manager.clone(),
                 epoch_strategy: epoch_strategy.clone(),
                 finalized_floor,
-                finalized_tip: (finalized_tip.1, finalized_tip.2),
+                finalized_tip: (finalized_tip_point.1, finalized_tip_point.2),
             },
         );
 
@@ -292,6 +304,8 @@ where
                 epoch_strategy: epoch_strategy.clone(),
                 execution_node,
                 initial_share: self.share.clone(),
+                finalized_tip,
+                network_identity: self.network_identity,
                 last_finalized_height: finalized_floor,
                 mailbox_size: self.mailbox_size,
                 marshal: marshal_mailbox,

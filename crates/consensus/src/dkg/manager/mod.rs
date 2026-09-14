@@ -76,6 +76,13 @@ pub(crate) struct Config<TExecutionLayer, TMarshal, TEpochManager> {
     /// boundary block that seeds the initial DKG state.
     pub(crate) last_finalized_height: Height,
 
+    /// Certified archive tip to authenticate before healing local DKG state.
+    /// `None` only at genesis.
+    pub(crate) finalized_tip: Option<crate::alias::marshal::FinalizedTip>,
+
+    /// Trusted identity supplied by the binary or its explicit configuration.
+    pub(crate) network_identity: tempo_chainspec::NetworkIdentity,
+
     /// The partition prefix to use when persisting ceremony metadata during
     /// rounds.
     pub(crate) partition_prefix: String,

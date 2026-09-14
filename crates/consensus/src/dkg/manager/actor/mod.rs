@@ -50,6 +50,7 @@ use tracing::{Level, Span, debug, info, info_span, instrument, warn};
 
 use crate::consensus::{Digest, block::Block};
 
+mod startup;
 mod state;
 #[cfg(test)]
 mod tests;
@@ -190,6 +191,21 @@ where
         else {
             return;
         };
+
+        // Check against the original persisted identity before healing can
+        // replace stale state with an outcome supplied by the snapshot.
+        if startup::verify_finalized_tip(
+            &mut *self.context,
+            &self.config.epoch_strategy,
+            &self.config.network_identity,
+            opened.state(),
+            self.config.finalized_tip.as_ref(),
+            self.config.last_finalized_height,
+        )
+        .is_err()
+        {
+            return;
+        }
 
         let Ok(mut storage) = self.heal(opened).await else {
             return;

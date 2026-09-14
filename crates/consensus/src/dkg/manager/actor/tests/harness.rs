@@ -11,6 +11,10 @@ use std::{
     time::SystemTime,
 };
 
+use crate::{
+    alias::marshal::FinalizedTip,
+    test_utils::{dkg_fixture, make_certificate},
+};
 use alloy_consensus::Header;
 use commonware_actor::{Feedback, Unreliable};
 use commonware_codec::Encode as _;
@@ -46,6 +50,7 @@ use futures::{StreamExt as _, channel::mpsc};
 use rand::{SeedableRng as _, rngs::StdRng};
 use rand_core::CryptoRng;
 use reth_node_core::primitives::SealedBlock;
+use tempo_chainspec::NetworkIdentity;
 use tempo_dkg_onchain_artifacts::OnchainDkgOutcome;
 use tempo_primitives::{BlockBody, TempoHeader};
 
@@ -62,6 +67,8 @@ pub(super) struct Harness {
     identity: PrivateKey,
     last_finalized_height: Height,
     initial_state: Option<State>,
+    network_identity: NetworkIdentity,
+    finalized_tip: Option<FinalizedTip>,
     storage: Option<state::Storage<Context>>,
     mailbox: Option<Mailbox>,
     handle: Option<Handle<()>>,
@@ -85,6 +92,7 @@ pub(super) struct HarnessBuilder {
     identity: PrivateKey,
     last_finalized_height: Height,
     initial_state: InitialState,
+    startup: Option<(NetworkIdentity, Option<FinalizedTip>)>,
     execution: StubExecutionProvider,
     marshal: StubMarshal,
     epoch_manager: StubEpochManager,
@@ -119,6 +127,11 @@ impl HarnessBuilder {
         self
     }
 
+    pub(super) fn startup(mut self, identity: NetworkIdentity, tip: Option<FinalizedTip>) -> Self {
+        self.startup = Some((identity, tip));
+        self
+    }
+
     pub(super) fn execution(mut self, execution: StubExecutionProvider) -> Self {
         self.execution = execution;
         self
@@ -135,6 +148,37 @@ impl HarnessBuilder {
             InitialState::Epoch(epoch) => Some(dkg_state(&mut self.context, epoch, 4, false).0),
             InitialState::State(state) => Some(*state),
         };
+        let (network_identity, finalized_tip) = self.startup.unwrap_or_else(|| {
+            // Most actor tests exercise recovery and ceremonies. Model a newer
+            // binary bootstrapping from historical data; startup verification
+            // tests supply their own identity and certificate explicitly.
+            let tip_epoch = self
+                .epoch_strategy
+                .containing(self.last_finalized_height)
+                .unwrap()
+                .epoch();
+            let identity_epoch = initial_state
+                .as_ref()
+                .map_or(tip_epoch, |state| state.epoch.max(tip_epoch))
+                .next();
+            let fixture = dkg_fixture(&mut self.context, identity_epoch);
+            let tip = (!self.last_finalized_height.is_zero()).then(|| FinalizedTip {
+                height: self.last_finalized_height,
+                certificate: make_certificate(
+                    Digest(alloy_primitives::B256::ZERO),
+                    tip_epoch,
+                    1,
+                    &fixture.schemes,
+                ),
+            });
+            (
+                NetworkIdentity {
+                    from_epoch: identity_epoch.get(),
+                    identity: *fixture.outcome.network_identity(),
+                },
+                tip,
+            )
+        });
         let storage = if let Some(state) = initial_state.clone() {
             Some(
                 state::builder()
@@ -156,6 +200,8 @@ impl HarnessBuilder {
             identity: self.identity,
             last_finalized_height: self.last_finalized_height,
             initial_state,
+            network_identity,
+            finalized_tip,
             storage,
             mailbox: None,
             handle: None,
@@ -177,6 +223,7 @@ impl Harness {
             identity: PrivateKey::from_seed(0),
             last_finalized_height: Height::new(9),
             initial_state: InitialState::None,
+            startup: None,
             execution: StubExecutionProvider::default(),
             marshal: StubMarshal::default(),
             epoch_manager: StubEpochManager::default(),
@@ -215,6 +262,8 @@ impl Harness {
                 mailbox_size: NonZeroUsize::new(1).unwrap(),
                 marshal: self.marshal.clone(),
                 last_finalized_height: self.last_finalized_height,
+                finalized_tip: self.finalized_tip.clone(),
+                network_identity: self.network_identity.clone(),
                 partition_prefix: self.partition_prefix.clone(),
                 execution_node: self.execution.clone(),
                 initial_share: None,
