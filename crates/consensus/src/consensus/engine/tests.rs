@@ -1,5 +1,5 @@
 // Verify the shutdown contract required by the engine against the pinned runtime.
-use commonware_runtime::{Error, Handle, Metrics, Runner, Spawner, deterministic};
+use commonware_runtime::{Error, Handle, Metrics, Runner, Spawner, Supervisor, deterministic};
 use futures::{FutureExt, future};
 
 fn assert_stopped(context: &deterministic::Context, label: &str) {
