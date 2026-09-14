@@ -7,7 +7,7 @@ use alloy::{
     providers::{Provider, ProviderBuilder},
 };
 use commonware_codec::{Encode as _, ReadExt as _};
-use commonware_consensus::types::{Epoch, Epocher as _, FixedEpocher};
+use commonware_consensus::types::{Epoch, Epocher as _, FixedEpocher, Height};
 use commonware_cryptography::ed25519::PublicKey;
 use eyre::{Context as _, OptionExt as _, ensure, eyre};
 use serde::Serialize;
@@ -24,9 +24,9 @@ pub(crate) struct GetDkgOutcome {
     #[arg(long)]
     rpc_url: Option<String>,
 
-    /// Epoch number to query
+    /// Epoch number to query. Defaults to the latest DKG outcome available at the current block.
     #[arg(long)]
-    epoch: u64,
+    epoch: Option<u64>,
 }
 
 #[derive(Serialize)]
@@ -57,6 +57,24 @@ fn pubkey_to_hex(pk: &PublicKey) -> String {
     const_hex::encode_prefixed(pk.as_ref())
 }
 
+fn latest_dkg_block(epocher: &FixedEpocher, height: Height) -> Height {
+    let epoch_info = epocher
+        .containing(height)
+        .expect("fixed epocher is valid for all heights");
+    if epoch_info.last() == height {
+        height
+    } else {
+        epoch_info
+            .epoch()
+            .previous()
+            .map_or_else(Height::zero, |epoch| {
+                epocher
+                    .last(epoch)
+                    .expect("fixed epocher is valid for all epochs")
+            })
+    }
+}
+
 impl GetDkgOutcome {
     pub(crate) async fn run(self) -> eyre::Result<()> {
         let Self {
@@ -82,10 +100,18 @@ impl GetDkgOutcome {
             .ok_or_eyre("epochLength not found in chainspec")?;
 
         let epocher = FixedEpocher::new(epoch_length);
-        let block_number = epocher
-            .last(Epoch::new(epoch))
-            .expect("fixed epocher is valid for all epochs")
-            .get();
+        let block_number = if let Some(epoch) = epoch {
+            epocher
+                .last(Epoch::new(epoch))
+                .expect("fixed epocher is valid for all epochs")
+        } else {
+            let height = provider
+                .get_block_number()
+                .await
+                .wrap_err("failed to fetch current block number")?;
+            latest_dkg_block(&epocher, Height::new(height))
+        }
+        .get();
 
         let block = provider
             .get_block_by_number(block_number.into())
@@ -123,5 +149,48 @@ impl GetDkgOutcome {
         println!("{}", serde_json::to_string_pretty(&info)?);
 
         Ok(())
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use clap::Parser as _;
+    use commonware_utils::NZU64;
+
+    #[test]
+    fn epoch_argument_is_optional() {
+        for (args, expected) in [
+            (vec!["xtask", "get-dkg-outcome", "--chain", "mainnet"], None),
+            (
+                vec![
+                    "xtask",
+                    "get-dkg-outcome",
+                    "--chain",
+                    "mainnet",
+                    "--epoch",
+                    "7",
+                ],
+                Some(7),
+            ),
+        ] {
+            let parsed = crate::Args::try_parse_from(args).unwrap();
+            let crate::Action::GetDkgOutcome(args) = parsed.action else {
+                panic!("expected get-dkg-outcome");
+            };
+            assert_eq!(args.epoch, expected);
+        }
+    }
+
+    #[test]
+    fn latest_dkg_uses_the_last_available_boundary_or_genesis() {
+        let epocher = FixedEpocher::new(NZU64!(10));
+        for (height, expected) in [(0, 0), (8, 0), (9, 9), (10, 9), (18, 9), (19, 19), (20, 19)] {
+            assert_eq!(
+                latest_dkg_block(&epocher, Height::new(height)).get(),
+                expected,
+                "at height {height}"
+            );
+        }
     }
 }
