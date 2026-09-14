@@ -94,6 +94,103 @@ fn get_returns_block_from_prunable_archive() {
 }
 
 #[test_traced]
+fn get_header_uses_cache_above_execution_finalized_watermark() {
+    deterministic::Runner::default().start(|context| async move {
+        let (mut hybrid, provider) = SetupHybrid::default().build(&context).await;
+        let block = make_block(10, B256::ZERO);
+        hybrid = hybrid.put(block.clone()).await.expect("put");
+        provider.set_reth_finalized(9);
+        provider.set_fail(true);
+
+        for id in [Identifier::Index(10), Identifier::Key(&block.digest())] {
+            let header = hybrid.get_header(id).await.expect("read cached header");
+            assert_eq!(header.as_ref(), Some(block.block().header()));
+        }
+    });
+}
+
+#[test_traced]
+fn get_header_reads_execution_headers_without_bodies() {
+    deterministic::Runner::default().start(|context| async move {
+        let (hybrid, provider) = SetupHybrid::default().build(&context).await;
+        let genesis = make_block(0, B256::ZERO);
+        provider.add_header(genesis.block().header().clone());
+        assert_eq!(
+            hybrid
+                .get_header(Identifier::Index(0))
+                .await
+                .unwrap()
+                .as_ref(),
+            Some(genesis.block().header()),
+        );
+
+        let block = make_block(10, B256::ZERO);
+        let digest = block.digest();
+        provider.add_header(block.block().header().clone());
+
+        // Exact hash reads do not require execution to have finalized the header.
+        assert_eq!(
+            hybrid
+                .get_header(Identifier::Key(&digest))
+                .await
+                .unwrap()
+                .as_ref(),
+            Some(block.block().header()),
+        );
+        assert!(
+            hybrid
+                .get_header(Identifier::Index(10))
+                .await
+                .unwrap()
+                .is_none()
+        );
+        provider.set_reth_finalized(9);
+        assert!(
+            hybrid
+                .get_header(Identifier::Index(10))
+                .await
+                .unwrap()
+                .is_none()
+        );
+
+        provider.set_reth_finalized(10);
+        assert_eq!(
+            hybrid
+                .get_header(Identifier::Index(10))
+                .await
+                .unwrap()
+                .as_ref(),
+            Some(block.block().header()),
+        );
+        // Headers remain available even though neither store has the block body.
+        assert!(hybrid.get(Identifier::Index(10)).await.unwrap().is_none());
+        assert!(
+            hybrid
+                .get(Identifier::Key(&digest))
+                .await
+                .unwrap()
+                .is_none()
+        );
+
+        assert!(
+            hybrid
+                .get_header(Identifier::Index(1))
+                .await
+                .unwrap()
+                .is_none()
+        );
+        let missing = make_block(1, B256::ZERO).digest();
+        assert!(
+            hybrid
+                .get_header(Identifier::Key(&missing))
+                .await
+                .unwrap()
+                .is_none()
+        );
+    });
+}
+
+#[test_traced]
 fn get_falls_back_to_reth_on_prunable_miss() {
     let executor = deterministic::Runner::default();
     executor.start(|context| async move {
@@ -842,5 +939,12 @@ fn reth_provider_errors_propagate_to_caller() {
             matches!(result, Err(Error::Provider(_))),
             "expected Error::Provider on digest path, got {result:?}"
         );
+
+        for id in [Identifier::Index(99), Identifier::Key(&digest)] {
+            assert!(matches!(
+                hybrid.get_header(id).await,
+                Err(Error::Provider(_))
+            ));
+        }
     });
 }
