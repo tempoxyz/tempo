@@ -9,8 +9,16 @@ on:
       - "Cargo.lock"
       - "**/Cargo.toml"
       - "tips/verify/**"
+      - "crates/alloy/**"
+      - "crates/chainspec/**"
       - "crates/contracts/**"
+      - "crates/dkg-onchain-artifacts/**"
+      - "crates/evm/**"
+      - "crates/hardfork/**"
       - "crates/precompiles/**"
+      - "crates/precompiles-macros/**"
+      - "crates/primitives/**"
+      - "crates/revm/**"
       - "scripts/foundry-patch.sh"
       - ".github/workflows/specs.yml"
       - ".github/workflows/update-reth.yml"
@@ -45,10 +53,26 @@ jobs:
               - 'Cargo.lock'
               - '**/Cargo.toml'
               - 'tips/verify/**'
+              - 'crates/alloy/**'
+              - '!crates/alloy/CHANGELOG.md'
+              - 'crates/chainspec/**'
+              - '!crates/chainspec/CHANGELOG.md'
               - 'crates/contracts/**'
               - '!crates/contracts/CHANGELOG.md'
+              - 'crates/dkg-onchain-artifacts/**'
+              - '!crates/dkg-onchain-artifacts/CHANGELOG.md'
+              - 'crates/evm/**'
+              - '!crates/evm/CHANGELOG.md'
+              - 'crates/hardfork/**'
+              - '!crates/hardfork/CHANGELOG.md'
               - 'crates/precompiles/**'
               - '!crates/precompiles/CHANGELOG.md'
+              - 'crates/precompiles-macros/**'
+              - '!crates/precompiles-macros/CHANGELOG.md'
+              - 'crates/primitives/**'
+              - '!crates/primitives/CHANGELOG.md'
+              - 'crates/revm/**'
+              - '!crates/revm/CHANGELOG.md'
               - 'scripts/foundry-patch.sh'
               - '.github/workflows/specs.yml'
             foundry_smoke:
