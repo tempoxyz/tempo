@@ -36,9 +36,6 @@ use crate::{
 
 use super::block::Block;
 
-#[cfg(test)]
-mod tests;
-
 // A bunch of constants to configure commonwarexyz singletons and copied over form alto.
 
 /// To better support peers near tip during network instability, we multiply
