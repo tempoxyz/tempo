@@ -88,7 +88,7 @@ where
             )
         })?;
 
-    let current_epoch = onchain_outcome.epoch;
+    let current_epoch = onchain_outcome.epoch();
 
     let actor = Driver {
         context: ContextCell::new(context),
@@ -211,7 +211,7 @@ where
                     )
                 })?;
 
-            self.current_epoch = self.current_epoch.max(onchain_outcome.epoch);
+            self.current_epoch = self.current_epoch.max(onchain_outcome.epoch());
         } else {
             debug!("no gap detected");
         }
@@ -385,7 +385,7 @@ where
                 .verifier
                 .decode_dkg_outcome_and_register_boundary(block.header().extra_data().as_ref())?;
 
-            self.current_epoch = self.current_epoch.max(onchain_outcome.epoch);
+            self.current_epoch = self.current_epoch.max(onchain_outcome.epoch());
 
             if self
                 .epoch_sync_target

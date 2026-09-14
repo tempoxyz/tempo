@@ -21,7 +21,6 @@ use commonware_runtime::{
 };
 use commonware_utils::NZUsize;
 use eyre::{OptionExt as _, WrapErr as _};
-use futures::future::try_join_all;
 use rand_core::{CryptoRng, Rng};
 use tempo_node::TempoFullNode;
 use tracing::info;
@@ -566,9 +565,10 @@ where
             tasks.push(gossip_task);
         }
 
-        try_join_all(tasks)
+        // Even a clean actor exit (e.g. marshal losing an acknowledgement) must
+        // stop the engine. Selection also aborts siblings when canceled.
+        Handle::select(tasks)
             .await
-            .map(|_| ())
             // TODO: look into adding error context so that we know which
             // component failed.
             .wrap_err("one of the consensus engine's actors failed")

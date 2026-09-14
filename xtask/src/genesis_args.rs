@@ -6,7 +6,6 @@ use alloy::{
 use alloy_eips::eip2935::{HISTORY_STORAGE_ADDRESS, HISTORY_STORAGE_CODE};
 use alloy_primitives::{B256, Bytes};
 use commonware_codec::Encode as _;
-use commonware_consensus::types::Epoch;
 use commonware_cryptography::{
     Signer as _,
     bls12381::{
@@ -232,7 +231,7 @@ pub(crate) struct ConsensusConfig {
 impl ConsensusConfig {
     pub(crate) fn to_genesis_dkg_outcome(&self) -> OnchainDkgOutcome {
         OnchainDkgOutcome {
-            epoch: Epoch::zero(),
+            epoch: 0,
             output: self.output.clone(),
             next_players: ordered::Set::try_from_iter(
                 self.validators.iter().map(Validator::public_key),

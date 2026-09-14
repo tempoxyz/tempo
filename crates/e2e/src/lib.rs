@@ -13,7 +13,6 @@
 use std::{iter::repeat_with, net::SocketAddr, time::Duration};
 
 use alloy_primitives::Address;
-use commonware_consensus::types::Epoch;
 use commonware_cryptography::{
     Signer as _,
     bls12381::{
@@ -75,7 +74,7 @@ fn generate_consensus_node_config(
     .unwrap();
 
     let onchain_dkg_outcome = OnchainDkgOutcome {
-        epoch: Epoch::zero(),
+        epoch: 0,
         output: initial_dkg_outcome,
         next_players: shares.keys().clone(),
         is_next_full_dkg: false,

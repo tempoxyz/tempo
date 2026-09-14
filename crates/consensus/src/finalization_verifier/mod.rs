@@ -75,7 +75,7 @@ impl FinalizationVerifier {
         mut extra_data: &[u8],
     ) -> eyre::Result<OnchainDkgOutcome> {
         let outcome = OnchainDkgOutcome::read(&mut extra_data)?;
-        if outcome.epoch.get() == self.network_identity.from_epoch {
+        if outcome.epoch == self.network_identity.from_epoch {
             assert_eq!(
                 *outcome.network_identity(),
                 self.network_identity.identity,
@@ -87,7 +87,7 @@ impl FinalizationVerifier {
         }
 
         self.scheme_provider.register(
-            outcome.epoch,
+            outcome.epoch(),
             Scheme::certificate_verifier(NAMESPACE, *outcome.network_identity()),
         );
         Ok(outcome)

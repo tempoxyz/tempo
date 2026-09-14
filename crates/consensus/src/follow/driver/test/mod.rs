@@ -197,7 +197,7 @@ fn network_identity_verifies_finalization_when_epoch_scheme_is_missing() {
                 execution_provider: provider,
                 scheme_provider: schemes.clone(),
                 network_identity: NetworkIdentity {
-                    from_epoch: network_fixture.outcome.epoch.get(),
+                    from_epoch: network_fixture.outcome.epoch,
                     identity: *network_fixture.outcome.network_identity(),
                 },
                 last_finalized_height: Height::zero(),
@@ -208,10 +208,10 @@ fn network_identity_verifies_finalization_when_epoch_scheme_is_missing() {
         .expect("driver should initialize");
 
         assert!(
-            schemes.scoped(network_fixture.outcome.epoch).is_some(),
+            schemes.scoped(network_fixture.outcome.epoch()).is_some(),
             "the configured activation epoch must be pinned at startup",
         );
-        let epoch = network_fixture.outcome.epoch.next();
+        let epoch = network_fixture.outcome.epoch().next();
         assert!(
             schemes.scoped(epoch).is_none(),
             "network identity fallback requires the epoch scheme to be missing",
@@ -254,7 +254,7 @@ fn gossiped_certificate_is_admitted_and_reported_only_to_marshal() {
                 execution_provider: provider,
                 scheme_provider: schemes.clone(),
                 network_identity: NetworkIdentity {
-                    from_epoch: network_fixture.outcome.epoch.get(),
+                    from_epoch: network_fixture.outcome.epoch,
                     identity: *network_fixture.outcome.network_identity(),
                 },
                 last_finalized_height: Height::zero(),
@@ -266,7 +266,7 @@ fn gossiped_certificate_is_admitted_and_reported_only_to_marshal() {
 
         actor.start();
 
-        let epoch = network_fixture.outcome.epoch.next();
+        let epoch = network_fixture.outcome.epoch().next();
         let block = make_block(EPOCH_LENGTH.get() * epoch.get() + 1, None);
         let finalization = make_finalization(&block, epoch, &network_fixture.schemes);
         assert!(
@@ -824,7 +824,7 @@ fn scheme_before_network_identity_epoch_is_required() {
                 execution_provider: provider,
                 scheme_provider: schemes.clone(),
                 network_identity: NetworkIdentity {
-                    from_epoch: missing_fixture.outcome.epoch.get() + 1,
+                    from_epoch: missing_fixture.outcome.epoch + 1,
                     identity: *missing_fixture.outcome.network_identity(),
                 },
                 last_finalized_height: Height::zero(),
@@ -834,13 +834,13 @@ fn scheme_before_network_identity_epoch_is_required() {
         )
         .expect("driver should initialize");
 
-        assert!(schemes.scoped(missing_fixture.outcome.epoch).is_none());
+        assert!(schemes.scoped(missing_fixture.outcome.epoch()).is_none());
         actor.start();
 
         let block = make_block(EPOCH_LENGTH.get() + 1, None);
         let finalization = make_finalization(
             &block,
-            missing_fixture.outcome.epoch,
+            missing_fixture.outcome.epoch(),
             &missing_fixture.schemes,
         );
 
@@ -876,7 +876,7 @@ fn gossiped_certificate_without_a_usable_identity_needs_scheme() {
                 execution_provider: provider,
                 scheme_provider: SchemeProvider::new(),
                 network_identity: NetworkIdentity {
-                    from_epoch: missing_fixture.outcome.epoch.get() + 1,
+                    from_epoch: missing_fixture.outcome.epoch + 1,
                     identity: *missing_fixture.outcome.network_identity(),
                 },
                 last_finalized_height: Height::zero(),
@@ -891,7 +891,7 @@ fn gossiped_certificate_without_a_usable_identity_needs_scheme() {
         let block = make_block(EPOCH_LENGTH.get() + 1, None);
         let certificate = make_finalization(
             &block,
-            missing_fixture.outcome.epoch,
+            missing_fixture.outcome.epoch(),
             &missing_fixture.schemes,
         );
         let result = mailbox
@@ -902,7 +902,7 @@ fn gossiped_certificate_without_a_usable_identity_needs_scheme() {
         assert_eq!(
             result,
             Err(CertificateError::NeedsScheme {
-                epoch: missing_fixture.outcome.epoch,
+                epoch: missing_fixture.outcome.epoch(),
             })
         );
         assert_eq!(marshal.report_count(), 0);
@@ -1044,7 +1044,7 @@ fn startup_installs_missing_consensus_epoch_scheme_from_marshal() {
 
         actor.start();
         wait_until(&context, || {
-            schemes.scoped(recovered_fixture.outcome.epoch).is_some()
+            schemes.scoped(recovered_fixture.outcome.epoch()).is_some()
         })
         .await;
 
@@ -1126,7 +1126,7 @@ fn configured_identity_is_enforced_before_acknowledging_rotation_boundary() {
             } else {
                 old.outcome.clone()
             };
-            outcome.epoch = Epoch::new(1);
+            outcome.epoch = 1;
             let block = make_block(EPOCH_LENGTH.get() - 1, Some(&outcome));
             let (ack, processed) = Exact::handle();
             assert!(
@@ -1139,7 +1139,7 @@ fn configured_identity_is_enforced_before_acknowledging_rotation_boundary() {
             if matches {
                 // After matching the configured epoch, an authenticated rotation is allowed.
                 let mut next = old.outcome.clone();
-                next.epoch = Epoch::new(2);
+                next.epoch = 2;
                 let (ack, processed) = Exact::handle();
                 assert!(
                     mailbox
@@ -1156,7 +1156,7 @@ fn configured_identity_is_enforced_before_acknowledging_rotation_boundary() {
                 assert!(schemes.scoped(Epoch::new(2)).is_some());
 
                 // Replaying the configured epoch must still match its identity.
-                next.epoch = Epoch::new(1);
+                next.epoch = 1;
                 let (ack, processed) = Exact::handle();
                 assert!(
                     mailbox

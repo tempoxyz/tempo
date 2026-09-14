@@ -227,13 +227,13 @@ mod tests {
                         from_epoch,
                     };
                     let strategy = FixedEpocher::new(EPOCH_LENGTH);
-                    let block = if outcome.epoch == Epoch::zero() {
+                    let block = if outcome.epoch == 0 {
                         make_block(0, Some(outcome))
                     } else {
-                        make_block(outcome.epoch.get() * EPOCH_LENGTH.get() + 1, None)
+                        make_block(outcome.epoch * EPOCH_LENGTH.get() + 1, None)
                     };
-                    let certificate = (outcome.epoch != Epoch::zero())
-                        .then(|| make_finalization(&block, outcome.epoch, &fixture.schemes));
+                    let certificate = (outcome.epoch != 0)
+                        .then(|| make_finalization(&block, outcome.epoch(), &fixture.schemes));
                     let result = verify_finalized_tip(
                         &mut context,
                         &strategy,
@@ -243,7 +243,7 @@ mod tests {
                         certificate.as_ref(),
                     );
                     let should_pass =
-                        outcome.epoch.get() < from_epoch || outcome.network_identity() == identity;
+                        outcome.epoch < from_epoch || outcome.network_identity() == identity;
                     assert_eq!(
                         result.is_ok(),
                         should_pass,

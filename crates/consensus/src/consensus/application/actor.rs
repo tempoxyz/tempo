@@ -512,7 +512,7 @@ impl Inner<Init> {
                 .await
                 .wrap_err("failed getting public dkg ceremony outcome")?;
             ensure!(
-                round.epoch().next() == outcome.epoch,
+                round.epoch().next() == outcome.epoch(),
                 "outcome is for epoch `{}`, but we are trying to include the \
                 outcome for epoch `{}`",
                 outcome.epoch,

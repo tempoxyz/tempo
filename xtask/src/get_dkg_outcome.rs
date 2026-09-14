@@ -113,7 +113,7 @@ impl GetDkgOutcome {
         let sharing = outcome.sharing();
 
         let info = DkgOutcomeInfo {
-            epoch: outcome.epoch.get(),
+            epoch: outcome.epoch,
             block_number,
             block_hash,
             dealers: outcome.dealers().iter().map(pubkey_to_hex).collect(),
