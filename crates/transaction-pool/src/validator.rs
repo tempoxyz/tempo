@@ -1085,6 +1085,11 @@ mod tests {
                     .valid_before(TEST_VALIDITY_WINDOW)
                     .build(),
             ] {
+                assert_eq!(
+                    tx.nonce(),
+                    nonce,
+                    "test transaction must preserve its nonce"
+                );
                 let validator = setup_validator(&tx, 1);
                 let result = validator
                     .inner
