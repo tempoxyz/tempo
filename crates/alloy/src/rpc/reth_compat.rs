@@ -1,5 +1,7 @@
 use crate::rpc::{TempoHeaderResponse, TempoTransactionRequest};
-use alloy_consensus::{EthereumTxEnvelope, TxEip4844, error::ValueError, transaction::Recovered};
+use alloy_consensus::{
+    EthereumTxEnvelope, Transaction, TxEip4844, error::ValueError, transaction::Recovered,
+};
 use alloy_network::{NetworkTransactionBuilder, TxSigner};
 use alloy_primitives::{Address, B256, Bytes, Signature};
 use reth_primitives_traits::SealedHeader;
@@ -94,7 +96,10 @@ impl TryIntoSimTx<TempoTxEnvelope> for TempoTransactionRequest {
 impl TryIntoTxEnv<Recovered<TempoTxEnv>, TempoEvmEnv> for TempoTransactionRequest {
     type Err = EthApiError;
 
-    fn try_into_tx_env(self, evm_env: &TempoEvmEnv) -> Result<Recovered<TempoTxEnv>, Self::Err> {
+    fn try_into_tx_env(
+        mut self,
+        evm_env: &TempoEvmEnv,
+    ) -> Result<Recovered<TempoTxEnv>, Self::Err> {
         let caller_addr = self.inner.from.unwrap_or_default();
         let is_aa = self.output_tx_type() == TempoTxType::AA;
         if !is_aa {
@@ -108,6 +113,22 @@ impl TryIntoTxEnv<Recovered<TempoTxEnv>, TempoEvmEnv> for TempoTransactionReques
                 })
                 .map(|env| Recovered::new_unchecked(env, caller_addr));
         }
+
+        // RPC calls may omit fields that a signed transaction requires. Reuse Ethereum's
+        // request defaults and fee validation before building the simulated AA envelope.
+        let defaults = TryIntoTxEnv::<RecoveredTxEnvelope, TempoEvmEnv>::try_into_tx_env(
+            self.inner.clone(),
+            evm_env,
+        )?;
+        self.inner.gas.get_or_insert(defaults.gas_limit());
+        self.inner.nonce.get_or_insert(defaults.nonce());
+        self.inner.chain_id = self.inner.chain_id.or(defaults.chain_id());
+        self.inner
+            .max_fee_per_gas
+            .get_or_insert(defaults.max_fee_per_gas());
+        self.inner
+            .max_priority_fee_per_gas
+            .get_or_insert(defaults.max_priority_fee_per_gas().unwrap_or_default());
 
         let key_type = self.key_type.unwrap_or(SignatureType::Secp256k1);
         let key_data = self.key_data.clone();
@@ -303,6 +324,44 @@ mod tests {
             chain_id: Some(4217),
             ..Default::default()
         }
+    }
+
+    #[test]
+    fn test_estimate_gas_fills_missing_aa_fields() {
+        let mut evm_env = TempoEvmEnv::default();
+        evm_env.version.chain_id = 1337;
+        evm_env.block.gas_limit = alloy_primitives::U256::from(30_000_000);
+        let req = TempoTransactionRequest {
+            inner: TransactionRequest {
+                to: Some(TxKind::Call(Address::repeat_byte(1))),
+                ..Default::default()
+            },
+            nonce_key: Some(alloy_primitives::U256::ZERO),
+            ..Default::default()
+        };
+        assert!(
+            req.clone().build_aa().is_err(),
+            "signed requests remain strict"
+        );
+        let env = req.try_into_tx_env(&evm_env).expect("simulation defaults");
+        let tx = env.as_aa().unwrap().inner().tx();
+        assert_eq!(tx.gas_limit, 30_000_000);
+        assert_eq!(tx.nonce, 0);
+        assert_eq!(tx.chain_id, 1337);
+        assert_eq!(tx.max_fee_per_gas, 0);
+        assert_eq!(tx.max_priority_fee_per_gas, 0);
+    }
+
+    #[test]
+    fn test_estimate_gas_preserves_explicit_aa_fields() {
+        let req = TempoTransactionRequest {
+            inner: call_request(Address::repeat_byte(1)),
+            nonce_key: Some(alloy_primitives::U256::ZERO),
+            ..Default::default()
+        };
+        let expected = req.clone().build_aa().unwrap();
+        let env = req.try_into_tx_env(&TempoEvmEnv::default()).unwrap();
+        assert_eq!(env.as_aa().unwrap().inner().tx(), &expected);
     }
 
     #[test]
