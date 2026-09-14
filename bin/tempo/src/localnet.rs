@@ -5,7 +5,7 @@ use std::{path::Path, process::ExitStatus, str::FromStr, time::Duration};
 use alloy::{
     network::ReceiptResponse,
     primitives::{Address, B256, U256, address},
-    providers::{Provider, ProviderBuilder},
+    providers::{PendingTransactionBuilder, Provider, ProviderBuilder},
     signers::local::PrivateKeySigner,
 };
 use clap::Parser;
@@ -174,6 +174,9 @@ async fn bootstrap(bare: bool, block_time: Duration) -> Result<()> {
         .filler(FeeTokenFiller::new(PATH_USD_ADDRESS))
         .wallet(signer)
         .connect_http(RPC_URL.parse()?);
+    provider
+        .client()
+        .set_poll_interval(Duration::from_millis(250));
 
     wait_for_rpc(&provider).await?;
     if bare {
@@ -212,16 +215,19 @@ async fn bootstrap(bare: bool, block_time: Duration) -> Result<()> {
         .await
         .wrap_err("failed to fund the localnet bootstrap account")?;
     for hash in hashes {
-        wait_for_receipt(&provider, hash, block_time).await?;
+        wait_for_receipt(
+            PendingTransactionBuilder::new(provider.root().clone(), hash),
+            block_time,
+        )
+        .await?;
     }
 
     for token in missing_fee_pools {
-        let hash = *fee_amm
+        let pending = fee_amm
             .mint(token, PATH_USD_ADDRESS, U256::from(FEE_LIQUIDITY), admin)
             .send()
-            .await?
-            .tx_hash();
-        wait_for_receipt(&provider, hash, block_time).await?;
+            .await?;
+        wait_for_receipt(pending, block_time).await?;
 
         let pool = fee_amm.getPool(token, PATH_USD_ADDRESS).call().await?;
         if fee_pool_needs_repair(pool.reserveValidatorToken) {
@@ -231,21 +237,16 @@ async fn bootstrap(bare: bool, block_time: Duration) -> Result<()> {
 
     if !missing_orders.is_empty() {
         for token in TOKENS {
-            let hash = *ITIP20::new(token, provider.clone())
+            let pending = ITIP20::new(token, provider.clone())
                 .approve(STABLECOIN_DEX_ADDRESS, U256::MAX)
                 .send()
-                .await?
-                .tx_hash();
-            wait_for_receipt(&provider, hash, block_time).await?;
+                .await?;
+            wait_for_receipt(pending, block_time).await?;
         }
 
         for (token, is_bid) in missing_orders {
-            let hash = *dex
-                .place(token, DEX_LIQUIDITY, is_bid, 0)
-                .send()
-                .await?
-                .tx_hash();
-            wait_for_receipt(&provider, hash, block_time).await?;
+            let pending = dex.place(token, DEX_LIQUIDITY, is_bid, 0).send().await?;
+            wait_for_receipt(pending, block_time).await?;
         }
     }
 
@@ -271,26 +272,19 @@ fn receipt_timeout(block_time: Duration) -> Duration {
 }
 
 async fn wait_for_receipt(
-    provider: &impl Provider<TempoNetwork>,
-    hash: B256,
+    pending: PendingTransactionBuilder<TempoNetwork>,
     block_time: Duration,
 ) -> Result<()> {
-    match timeout(receipt_timeout(block_time), async {
-        loop {
-            if let Some(receipt) = provider.get_transaction_receipt(hash).await? {
-                if receipt.status() {
-                    return Ok(());
-                }
-                bail!("bootstrap transaction {hash} failed");
-            }
-            sleep(Duration::from_millis(250)).await;
-        }
-    })
-    .await
-    {
-        Ok(result) => result,
-        Err(_) => Err(eyre!("timed out waiting for bootstrap transaction {hash}")),
+    let hash = *pending.tx_hash();
+    let receipt = pending
+        .with_timeout(Some(receipt_timeout(block_time)))
+        .get_receipt()
+        .await
+        .wrap_err_with(|| format!("failed waiting for bootstrap transaction {hash}"))?;
+    if !receipt.status() {
+        bail!("bootstrap transaction {hash} failed");
     }
+    Ok(())
 }
 
 async fn health() -> Result<()> {

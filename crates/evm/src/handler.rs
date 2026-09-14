@@ -494,7 +494,7 @@ fn validate_time_window(
         }));
     }
     // Validate validBefore constraint
-    // IMPORTANT: must be aligned with `RecoveredSubBlock::has_expired_transactions`.
+    // Keep this aligned with transaction-pool expiry checks.
     if let Some(valid_before) = valid_before
         && timestamp >= valid_before
     {
@@ -1386,19 +1386,6 @@ fn execute_batch(
     Ok(result)
 }
 
-fn is_subblock_fee_error(error: &HandlerError) -> bool {
-    matches!(error, HandlerError::InsufficientFunds)
-        || error
-            .external_ref::<TempoInvalidTransaction>()
-            .is_some_and(|error| {
-                matches!(
-                    error,
-                    TempoInvalidTransaction::CollectFeePreTx(_)
-                        | TempoInvalidTransaction::FeeTokenPaused { .. }
-                )
-            })
-}
-
 /// Validates and executes an AA transaction using Tempo's custom transaction lifecycle.
 ///
 /// Performs standard validation plus AA-specific checks:
@@ -1411,6 +1398,12 @@ fn handle(
     let signed = request.tx.inner();
     let tx = signed.tx();
     let spec = request.host.config_spec_id();
+
+    if tempo_primitives::subblock::has_sub_block_nonce_key_prefix(&tx.nonce_key) {
+        return Err(invalid(
+            TempoInvalidTransaction::SubblockTransactionsDisabled,
+        ));
+    }
 
     // Validate AA transaction structure (calls list, CREATE rules)
     validate_calls(&tx.calls, !tx.tempo_authorization_list.is_empty())
@@ -1441,13 +1434,6 @@ fn handle(
         return Err(invalid(TempoInvalidTransaction::CallsValidation(
             "access-key transactions cannot use CREATE as the first call",
         )));
-    }
-    if tx.subblock_proposer().is_some()
-        && (tx.key_authorization.is_some() || signed.signature().is_keychain())
-    {
-        return Err(invalid(
-            TempoInvalidTransaction::KeychainOpInSubblockTransaction,
-        ));
     }
     // All accounts have zero balance so transfer of value is not possible.
     // Check added in https://github.com/tempoxyz/tempo/pull/759
@@ -1569,17 +1555,7 @@ fn handle(
     } else {
         Ok(())
     };
-    if let Err(error) = fee_result {
-        if tx.subblock_proposer().is_some() && is_subblock_fee_error(&error) {
-            return Ok(TxResult::<TempoEvmTypes> {
-                status: false,
-                total_gas_spent: tx.gas_limit.min(request.host.version().tx_gas_limit_cap),
-                stop: InstrStop::PrecompileError,
-                ..TxResult::<TempoEvmTypes>::default()
-            });
-        }
-        return Err(error);
-    }
+    fee_result?;
 
     let key_auth_gas = apply_key_authorization(
         request.host,

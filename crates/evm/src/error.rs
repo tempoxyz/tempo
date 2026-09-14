@@ -44,8 +44,8 @@ pub enum TempoInvalidTransaction {
     ExpiringNonceMissingValidBefore,
     #[error("expiring nonce transaction must have nonce == 0")]
     ExpiringNonceNonceNotZero,
-    #[error("subblock transaction must have zero fee")]
-    SubblockTransactionMustHaveZeroFee,
+    #[error("subblock transactions are not supported")]
+    SubblockTransactionsDisabled,
     #[error("invalid fee token: {0}")]
     InvalidFeeToken(Address),
     #[error("fee token {address} is not a TIP-20 token; fee tokens must be TIP-20 tokens")]
@@ -87,8 +87,6 @@ pub enum TempoInvalidTransaction {
     LegacyKeychainSignature,
     #[error("V2 keychain signature (type 0x04) is not valid before T1C activation")]
     V2KeychainBeforeActivation,
-    #[error("keychain operations are not supported in subblock transactions")]
-    KeychainOpInSubblockTransaction,
     #[error(transparent)]
     CollectFeePreTx(#[from] FeePaymentError),
     #[error("{0}")]
@@ -116,8 +114,7 @@ impl TempoInvalidTransaction {
             | Self::ExpiringNonceMissingTxEnv
             | Self::ExpiringNonceMissingValidBefore
             | Self::ExpiringNonceNonceNotZero
-            | Self::SubblockTransactionMustHaveZeroFee
-            | Self::KeychainOpInSubblockTransaction
+            | Self::SubblockTransactionsDisabled
             | Self::LegacyKeychainSignature
             | Self::CallsValidation(_) => true,
             Self::ValidAfter { .. }

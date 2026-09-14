@@ -68,6 +68,7 @@ impl TempoBlockExecutor<'_> {
 
         let result = TempoTxResult::new_precomputed(
             original,
+            tx.inner().execution_context(),
             result,
             state,
             next_section,

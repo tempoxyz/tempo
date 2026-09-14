@@ -186,6 +186,7 @@ where
             key_partition: format!("{partition_prefix}-{PRUNABLE_FINALIZED_BLOCKS}-key"),
             key_page_cache: page_cache,
             value_partition: format!("{partition_prefix}-{PRUNABLE_FINALIZED_BLOCKS}-value"),
+            metadata_partition: format!("{partition_prefix}-{PRUNABLE_FINALIZED_BLOCKS}-metadata"),
             compression: FREEZER_VALUE_COMPRESSION,
             codec_config: (),
             items_per_section: PRUNABLE_ITEMS_PER_SECTION,

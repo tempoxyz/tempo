@@ -324,8 +324,8 @@ mod tests {
 
         StorageCtx::enter(&mut storage, || {
             let mut token = TIP20Setup::create("Test", "TST", admin)
-                .with_role(pauser, *PAUSE_ROLE)
-                .with_role(unpauser, *UNPAUSE_ROLE)
+                .with_role(pauser, PAUSE_ROLE)
+                .with_role(unpauser, UNPAUSE_ROLE)
                 .apply()?;
             assert!(!token.paused()?);
 
@@ -355,7 +355,7 @@ mod tests {
         StorageCtx::enter(&mut storage, || {
             let mut token = TIP20Setup::create("Test", "TST", admin)
                 .with_issuer(admin)
-                .with_role(burner, *ISSUER_ROLE)
+                .with_role(burner, ISSUER_ROLE)
                 .with_mint(burner, initial_balance)
                 .apply()?;
 
@@ -472,11 +472,11 @@ mod tests {
         StorageCtx::enter(&mut storage, || {
             let mut token = TIP20Setup::create("Test", "TST", admin)
                 .with_issuer(admin)
-                .with_role(user1, *ISSUER_ROLE)
+                .with_role(user1, ISSUER_ROLE)
                 .apply()?;
 
             let has_role_call = IRolesAuth::hasRoleCall {
-                role: *ISSUER_ROLE,
+                role: ISSUER_ROLE,
                 account: user1,
             };
             let calldata = has_role_call.abi_encode();
@@ -485,7 +485,7 @@ mod tests {
             assert!(has_role);
 
             let has_role_call = IRolesAuth::hasRoleCall {
-                role: *ISSUER_ROLE,
+                role: ISSUER_ROLE,
                 account: user2,
             };
             let calldata = has_role_call.abi_encode();

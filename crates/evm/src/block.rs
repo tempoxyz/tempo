@@ -1,14 +1,13 @@
-use crate::{StorageActionReplayState, TempoBlockExecutionCtx, TempoEvm, TempoEvmTypes};
+use crate::{
+    StorageActionReplayState, TempoBlockExecutionCtx, TempoEvm, TempoEvmTypes,
+    transaction::ExecutionContext,
+};
 use alloy_consensus::{Transaction, transaction::TxHashRef};
 use alloy_eip7928::{BlockAccessIndex, BlockAccessList};
 use alloy_primitives::{Address, B256, Bytes, KECCAK256_EMPTY, U256};
 use alloy_rlp::Decodable;
 use alloy_sol_types::SolCall;
-use commonware_codec::{DecodeExt, ReadExt};
-use commonware_cryptography::{
-    Verifier,
-    ed25519::{PublicKey, Signature},
-};
+use commonware_codec::ReadExt;
 use evm2::{
     EvmTypes, TxResult, TxResultWithState,
     bytecode::Bytecode,
@@ -20,10 +19,7 @@ use reth_evm::{
 };
 use reth_evm_ethereum::{EthBlockExecutor, EthTransactionResultWithState};
 use reth_execution_types::HashedPostState;
-use std::{
-    collections::{HashMap, HashSet},
-    sync::Arc,
-};
+use std::sync::Arc;
 use tempo_chainspec::TempoChainSpec;
 use tempo_contracts::precompiles::{
     ADDRESS_REGISTRY_ADDRESS, CURRENT_COMMITTEE_ADDRESS, ICurrentCommittee, INITIAL_FACTORY_OWNER,
@@ -31,10 +27,7 @@ use tempo_contracts::precompiles::{
     STORAGE_CREDITS_ADDRESS, TIP20_CHANNEL_RESERVE_ADDRESS, VALIDATOR_CONFIG_V2_ADDRESS,
     initial_zone_factory_state, t13_zone_factory_state,
 };
-use tempo_primitives::{
-    SubBlock, SubBlockMetadata, TempoReceipt, TempoTxEnvelope, TempoTxType,
-    subblock::PartialValidatorKey,
-};
+use tempo_primitives::{SubBlockMetadata, TempoReceipt, TempoTxEnvelope, TempoTxType};
 use tracing::trace;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
@@ -45,8 +38,6 @@ pub(crate) enum BlockSection {
     ///
     /// Must use at most `non_shared_gas_left` gas.
     NonShared,
-    /// Subblock authored by the given validator.
-    SubBlock { proposer: PartialValidatorKey },
     /// Gas incentive transaction.
     GasIncentive,
     /// End of block system transactions.
@@ -89,15 +80,12 @@ impl ReceiptBuilder for TempoReceiptBuilder {
 pub struct TempoTxResult {
     /// Inner transaction execution result.
     inner: EthTransactionResultWithState<TempoEvmTypes, TempoTxType>,
+    /// Execution provenance used to exempt RPC simulations from block gas validation.
+    execution_context: ExecutionContext,
     /// Next section of the block.
     next_section: BlockSection,
     /// Whether the transaction is a payment transaction.
     is_payment: bool,
-    /// Full transaction that is being committed.
-    ///
-    /// This is only populated for subblock transactions for which we need to store
-    /// the full transaction encoding for later validation of subblock hash.
-    tx: Option<TempoTxEnvelope>,
     /// Block gas consumed by this transaction. The block `gas_used` field will be incremented by this value.
     block_gas_used: u64,
     /// Validator-credited fee (in the validator's fee token) reported by `collectFeePostTx`.
@@ -109,8 +97,13 @@ pub struct TempoTxResult {
 
 impl TempoTxResult {
     /// Creates a new [`TempoTxResult`] from a precomputed result and state.
+    #[expect(
+        clippy::too_many_arguments,
+        reason = "preserve execution provenance alongside precomputed results"
+    )]
     pub(crate) fn new_precomputed(
         tx: &TempoTxEnvelope,
+        execution_context: ExecutionContext,
         result: TxResult<TempoEvmTypes>,
         state: PendingState,
         next_section: BlockSection,
@@ -128,9 +121,9 @@ impl TempoTxResult {
                 tx.tx_type(),
                 0,
             ),
+            execution_context,
             next_section,
             is_payment,
-            tx: matches!(next_section, BlockSection::SubBlock { .. }).then(|| tx.clone()),
             block_gas_used,
             validator_fee,
         }
@@ -177,23 +170,20 @@ impl AsRef<TxResult<TempoEvmTypes>> for TempoTxResult {
 /// Block executor for Tempo.
 ///
 /// Wraps an inner [`EthBlockExecutor`] and layers Tempo-specific block execution
-/// logic on top: section-based transaction ordering (`BlockSection`), subblock
+/// logic on top: section-based transaction ordering (`BlockSection`), system transaction
 /// validation, shared/non-shared gas accounting, and gas incentive tracking.
 #[expect(missing_debug_implementations)]
 pub struct TempoBlockExecutor<'a> {
     pub(crate) inner: EthBlockExecutor<'a, TempoEvmTypes, TempoReceiptBuilder>,
 
     section: BlockSection,
-    seen_subblocks: Vec<(PartialValidatorKey, Vec<TempoTxEnvelope>)>,
-    validator_set: Option<Vec<B256>>,
-    subblock_fee_recipients: HashMap<PartialValidatorKey, Address>,
     extra_data: Bytes,
 
     pub(crate) replay_state: StorageActionReplayState,
 
-    shared_gas_limit: u64,
     non_shared_gas_left: u64,
     non_payment_gas_left: u64,
+    /// Incentive-section gas from real transactions; simulations are exempt.
     incentive_gas_used: u64,
     block_gas_used: u64,
 }
@@ -208,15 +198,11 @@ impl<'a> TempoBlockExecutor<'a> {
         Self {
             incentive_gas_used: 0,
             block_gas_used: 0,
-            validator_set: ctx.validator_set,
             non_payment_gas_left: ctx.general_gas_limit,
             non_shared_gas_left: block_gas_limit.saturating_sub(ctx.shared_gas_limit),
-            shared_gas_limit: ctx.shared_gas_limit,
             extra_data: ctx.inner.extra_data.clone(),
             inner: EthBlockExecutor::new(evm, ctx.inner, chain_spec, TempoReceiptBuilder),
             section: BlockSection::StartOfBlock,
-            seen_subblocks: Vec::new(),
-            subblock_fee_recipients: ctx.subblock_fee_recipients,
             replay_state: StorageActionReplayState::default(),
         }
     }
@@ -361,7 +347,7 @@ impl<'a> TempoBlockExecutor<'a> {
                         "failed decoding boundary block extra data as DKG outcome: {err}"
                     ))
                 })?;
-        let epoch = outcome.epoch.get();
+        let epoch = outcome.epoch;
         let public_keys = outcome
             .players()
             .iter()
@@ -433,7 +419,7 @@ impl<'a> TempoBlockExecutor<'a> {
             }
 
             let mut buf = metadata_input;
-            let Ok(metadata) = Vec::<SubBlockMetadata>::decode(&mut buf) else {
+            let Ok(_) = Vec::<SubBlockMetadata>::decode(&mut buf) else {
                 return Err(BlockValidationError::msg(
                     "invalid subblocks metadata system transaction",
                 ));
@@ -445,8 +431,6 @@ impl<'a> TempoBlockExecutor<'a> {
                 ));
             }
 
-            self.validate_shared_gas(&metadata)?;
-
             seen_subblocks_signatures = true;
         } else {
             return Err(BlockValidationError::msg("invalid system transaction"));
@@ -457,104 +441,20 @@ impl<'a> TempoBlockExecutor<'a> {
         })
     }
 
-    pub(crate) fn validate_shared_gas(
-        &self,
-        metadata: &[SubBlockMetadata],
-    ) -> Result<(), BlockValidationError> {
-        // Skip incentive gas validation if validator set context is not available.
-        let Some(validator_set) = &self.validator_set else {
-            return Ok(());
-        };
-        let gas_per_subblock = self
-            .shared_gas_limit
-            .checked_div(validator_set.len() as u64)
-            .expect("validator set must not be empty");
-
-        let mut incentive_gas = 0;
-        let mut seen = HashSet::new();
-        let mut next_non_empty = 0;
-        for metadata in metadata {
-            if !validator_set.contains(&metadata.validator) {
-                return Err(BlockValidationError::msg("invalid subblock validator"));
-            }
-
-            if !seen.insert(metadata.validator) {
-                return Err(BlockValidationError::msg(
-                    "only one subblock per validator is allowed",
-                ));
-            }
-
-            let transactions = if let Some((validator, txs)) =
-                self.seen_subblocks.get(next_non_empty)
-                && validator.matches(metadata.validator)
-            {
-                next_non_empty += 1;
-                txs.clone()
-            } else {
-                Vec::new()
-            };
-
-            let reserved_gas = transactions
-                .iter()
-                .map(|tx| core::cmp::min(tx.gas_limit(), self.evm().version().tx_gas_limit_cap))
-                .sum::<u64>();
-
-            let signature_hash = SubBlock {
-                version: metadata.version,
-                fee_recipient: metadata.fee_recipient,
-                parent_hash: self.inner.context().parent_hash,
-                transactions: transactions.clone(),
-            }
-            .signature_hash();
-
-            let Ok(validator) = PublicKey::decode(&mut metadata.validator.as_ref()) else {
-                return Err(BlockValidationError::msg("invalid subblock validator"));
-            };
-
-            let Ok(signature) = Signature::decode(&mut metadata.signature.as_ref()) else {
-                return Err(BlockValidationError::msg(
-                    "invalid subblock signature encoding",
-                ));
-            };
-
-            // TODO: Add namespace?
-            if !validator.verify(&[], signature_hash.as_slice(), &signature) {
-                return Err(BlockValidationError::msg("invalid subblock signature"));
-            }
-
-            if reserved_gas > gas_per_subblock {
-                return Err(BlockValidationError::msg(
-                    "subblock gas used exceeds gas per subblock",
-                ));
-            }
-
-            incentive_gas += gas_per_subblock - reserved_gas;
-        }
-
-        if next_non_empty != self.seen_subblocks.len() {
-            return Err(BlockValidationError::msg(
-                "failed to map all non-empty subblocks to metadata",
-            ));
-        }
-
-        if incentive_gas < self.incentive_gas_used {
-            return Err(BlockValidationError::msg("incentive gas limit exceeded"));
-        }
-
-        Ok(())
-    }
-
     /// Pre-validate a transaction before execution.
     ///
-    /// This is only done for system transaction as they are effectively bypassing
-    /// the regular block gas limit checks and we need to make sure that they
-    /// only perform explicitly allowed actions.
+    /// Reject reserved subblock nonces and restrict system transactions to explicitly
+    /// allowed actions, since they bypass regular block gas limit checks.
     pub(crate) fn validate_tx_pre_execution(
         &self,
         tx: &TempoTxEnvelope,
     ) -> Result<Option<BlockSection>, BlockValidationError> {
         if tx.is_system_tx() {
             self.validate_system_tx(tx).map(Some)
+        } else if tx.has_sub_block_nonce_key_prefix() {
+            Err(BlockValidationError::msg(
+                "subblock transactions are not supported",
+            ))
         } else {
             Ok(None)
         }
@@ -583,48 +483,22 @@ impl<'a> TempoBlockExecutor<'a> {
         // Start with processing of transaction kinds that require specific sections.
         if tx.is_system_tx() {
             self.validate_system_tx(tx)
-        } else if let Some(tx_proposer) = tx.subblock_proposer() {
-            match self.section {
-                BlockSection::GasIncentive | BlockSection::System { .. } => {
-                    Err(BlockValidationError::msg("subblock section already passed"))
-                }
-                BlockSection::StartOfBlock | BlockSection::NonShared => {
-                    Ok(BlockSection::SubBlock {
-                        proposer: tx_proposer,
-                    })
-                }
-                BlockSection::SubBlock { proposer } => {
-                    if proposer == tx_proposer
-                        || !self.seen_subblocks.iter().any(|(p, _)| *p == tx_proposer)
-                    {
-                        Ok(BlockSection::SubBlock {
-                            proposer: tx_proposer,
-                        })
-                    } else {
-                        Err(BlockValidationError::msg(
-                            "proposer's subblock already processed",
-                        ))
-                    }
-                }
-            }
+        } else if tx.has_sub_block_nonce_key_prefix() {
+            Err(BlockValidationError::msg(
+                "subblock transactions are not supported",
+            ))
         } else {
             match self.section {
                 BlockSection::StartOfBlock | BlockSection::NonShared => {
                     if gas_used > self.non_shared_gas_left
                         || (!self.is_payment(tx) && gas_used > self.non_payment_gas_left)
                     {
-                        // Assume that this transaction wants to make use of gas incentive section
-                        //
-                        // This would only be possible if no non-empty subblocks were included.
+                        // Historical blocks can use the gas incentive section after
+                        // exhausting the non-shared or general gas budget.
                         Ok(BlockSection::GasIncentive)
                     } else {
                         Ok(BlockSection::NonShared)
                     }
-                }
-                BlockSection::SubBlock { .. } => {
-                    // If we were just processing a subblock, assume that this transaction wants to make
-                    // use of gas incentive section, thus concluding subblocks execution.
-                    Ok(BlockSection::GasIncentive)
                 }
                 BlockSection::GasIncentive => Ok(BlockSection::GasIncentive),
                 BlockSection::System { .. } => {
@@ -699,28 +573,12 @@ impl<'a> BlockExecutor for TempoBlockExecutor<'a> {
         let (mut tx, recovered) = transaction.into_parts();
         // Remove any prewarming-specific context that was added to the tx env.
         tx.inner_mut().set_expiring_nonce_idx(None);
+        let execution_context = tx.inner().execution_context();
         let original = recovered.tx().clone();
         let next_section = self.validate_tx_pre_execution(&original)?;
-
-        let block = *self.evm().block();
-        // If we are dealing with a subblock transaction, configure the fee recipient context.
-        if let Some(validator) = original.subblock_proposer() {
-            let fee_recipient = *self
-                .subblock_fee_recipients
-                .get(&validator)
-                .ok_or_else(|| BlockValidationError::msg("invalid subblock transaction"))?;
-
-            let mut subblock = block;
-            subblock.beneficiary = fee_recipient;
-            self.evm_mut().set_block(subblock);
-        }
-        let result = self
+        let inner = self
             .inner
-            .execute_transaction_without_commit((tx, recovered));
-
-        self.evm_mut().set_block(block);
-
-        let inner = result?;
+            .execute_transaction_without_commit((tx, recovered))?;
 
         // TIP-1016 enabled: use block_regular_gas_used (excludes state gas) for section
         // validation, matching block gas limit semantics. TIP-1016 disabled: use tx_gas_used.
@@ -740,9 +598,9 @@ impl<'a> BlockExecutor for TempoBlockExecutor<'a> {
         let validator_fee = inner.result().result.ext.validator_fee;
         Ok(TempoTxResult {
             inner,
+            execution_context,
             next_section,
             is_payment: self.is_payment(&original),
-            tx: matches!(next_section, BlockSection::SubBlock { .. }).then_some(original),
             block_gas_used,
             validator_fee,
         })
@@ -754,9 +612,9 @@ impl<'a> BlockExecutor for TempoBlockExecutor<'a> {
     ) -> Result<GasOutput, BlockExecutionError> {
         let TempoTxResult {
             inner,
+            execution_context,
             next_section,
             is_payment,
-            tx,
             block_gas_used,
             validator_fee: _,
         } = output;
@@ -776,24 +634,10 @@ impl<'a> BlockExecutor for TempoBlockExecutor<'a> {
                     self.non_payment_gas_left -= block_gas_used;
                 }
             }
-            BlockSection::SubBlock { proposer } => {
-                let last_subblock = if let Some(last) = self
-                    .seen_subblocks
-                    .last_mut()
-                    .filter(|(p, _)| *p == proposer)
-                {
-                    last
-                } else {
-                    self.seen_subblocks.push((proposer, Vec::new()));
-                    self.seen_subblocks.last_mut().unwrap()
-                };
-
-                last_subblock
-                    .1
-                    .push(tx.expect("missing tx for subblock transaction"));
-            }
             BlockSection::GasIncentive => {
-                self.incentive_gas_used += block_gas_used;
+                if matches!(execution_context, ExecutionContext::Transaction { .. }) {
+                    self.incentive_gas_used += block_gas_used;
+                }
             }
             BlockSection::System { .. } => {
                 // no gas spending for end-of-block system transactions
@@ -809,16 +653,10 @@ impl<'a> BlockExecutor for TempoBlockExecutor<'a> {
         mut self,
     ) -> Result<(BlockExecutionOutput<TempoReceipt>, Option<BlockAccessList>), BlockExecutionError>
     {
-        let seen_subblock_signatures = match self.section {
-            BlockSection::System {
-                seen_subblocks_signatures,
-            } => seen_subblocks_signatures,
-            _ => false,
-        };
-
-        // Post T4, if subblocks metadata transaction was not seen, imply empty metadata.
-        if !seen_subblock_signatures && self.evm().config_spec_id().is_t4() {
-            self.validate_shared_gas(&[])?;
+        // T4 sets the shared gas limit to zero, so any gas spilled into the
+        // incentive section exceeds the available block capacity.
+        if self.evm().config_spec_id().is_t4() && self.incentive_gas_used > 0 {
+            return Err(BlockValidationError::msg("incentive gas limit exceeded").into());
         }
 
         self.apply_current_committee_system_call()?;
@@ -876,20 +714,6 @@ impl TempoBlockExecutor<'_> {
         self.section = section;
     }
 
-    /// Add a seen subblock for testing shared gas validation.
-    pub(crate) fn add_seen_subblock_for_test(
-        &mut self,
-        proposer: PartialValidatorKey,
-        txs: Vec<TempoTxEnvelope>,
-    ) {
-        self.seen_subblocks.push((proposer, txs));
-    }
-
-    /// Set incentive gas used for testing gas limit validation.
-    pub(crate) fn set_incentive_gas_used_for_test(&mut self, gas: u64) {
-        self.incentive_gas_used = gas;
-    }
-
     /// Get the current section for assertions.
     pub(crate) fn section(&self) -> BlockSection {
         self.section
@@ -904,9 +728,10 @@ mod tests {
     use alloy_primitives::{Bytes, Log, Signature, TxKind, address, bytes::BytesMut};
     use alloy_rlp::Encodable;
     use commonware_codec::Encode as _;
-    use commonware_consensus::types::Epoch;
     use commonware_cryptography::{
-        Signer, bls12381::dkg::feldman_desmedt as dkg, ed25519::PrivateKey,
+        Signer,
+        bls12381::{dkg::feldman_desmedt as dkg, primitives::sharing::Mode},
+        ed25519::PrivateKey,
     };
     use commonware_math::algebra::Random as _;
     use commonware_utils::{N3f1, TryFromIterator as _, ordered};
@@ -971,10 +796,10 @@ mod tests {
         let player_set =
             ordered::Set::try_from_iter(player_keys.iter().map(|key| key.public_key())).unwrap();
         let (output, shares) =
-            dkg::deal::<_, _, N3f1>(&mut rng, Default::default(), player_set).unwrap();
+            dkg::deal::<_, _, N3f1>(&mut rng, Mode::NonZeroCounter, player_set).unwrap();
 
         OnchainDkgOutcome {
-            epoch: Epoch::new(epoch),
+            epoch,
             output,
             next_players: shares.keys().clone(),
             is_next_full_dkg: false,
@@ -1039,7 +864,7 @@ mod tests {
         let executor = TestExecutorBuilder::default().build(&mut db, &chainspec);
 
         let signer = PrivateKey::from_seed(0);
-        let metadata = vec![create_valid_subblock_metadata(B256::ZERO, &signer)];
+        let metadata = vec![create_subblock_metadata(&signer)];
         let input = create_system_tx_input(metadata, 1);
         let system_tx = create_system_tx(chainspec.chain().id(), input);
 
@@ -1079,22 +904,13 @@ mod tests {
         ))
     }
 
-    fn create_valid_subblock_metadata(parent_hash: B256, signer: &PrivateKey) -> SubBlockMetadata {
-        let validator_key = B256::from_slice(&signer.public_key());
-        let subblock = tempo_primitives::SubBlock {
-            version: SubBlockVersion::V1,
-            parent_hash,
-            fee_recipient: Address::ZERO,
-            transactions: vec![],
-        };
-        let signature_hash = subblock.signature_hash();
-        let signature = signer.sign(&[], signature_hash.as_slice());
-
+    fn create_subblock_metadata(signer: &PrivateKey) -> SubBlockMetadata {
         SubBlockMetadata {
             version: SubBlockVersion::V1,
-            validator: validator_key,
+            validator: B256::from_slice(&signer.public_key()),
             fee_recipient: Address::ZERO,
-            signature: Bytes::copy_from_slice(signature.as_ref()),
+            // Historical replay decodes the signature but does not verify it.
+            signature: Bytes::from(vec![0; 64]),
         }
     }
 
@@ -1109,7 +925,7 @@ mod tests {
             .build(&mut db, &chainspec);
 
         let signer = PrivateKey::from_seed(0);
-        let metadata = vec![create_valid_subblock_metadata(B256::ZERO, &signer)];
+        let metadata = vec![create_subblock_metadata(&signer)];
         let input = create_system_tx_input(metadata, 1);
         let system_tx = create_system_tx(chainspec.chain().id(), input);
 
@@ -1177,7 +993,7 @@ mod tests {
             .build(&mut db, &chainspec);
 
         let signer = PrivateKey::from_seed(0);
-        let metadata = vec![create_valid_subblock_metadata(B256::ZERO, &signer)];
+        let metadata = vec![create_subblock_metadata(&signer)];
         let input = create_system_tx_input(metadata, 1);
         let system_tx = create_system_tx(chainspec.chain().id(), input);
 
@@ -1186,214 +1002,6 @@ mod tests {
         assert_eq!(
             result.unwrap_err().to_string(),
             "subblocks are disabled in T4+"
-        );
-    }
-
-    #[test]
-    fn test_validate_shared_gas() {
-        let chainspec = test_chainspec();
-        let mut db = InMemoryDB::default();
-        let signer = PrivateKey::from_seed(0);
-        let validator_key = B256::from_slice(&signer.public_key());
-        let executor = TestExecutorBuilder::default()
-            .with_validator_set(vec![validator_key])
-            .build(&mut db, &chainspec);
-
-        let metadata = vec![create_valid_subblock_metadata(B256::ZERO, &signer)];
-        let result = executor.validate_shared_gas(&metadata);
-        assert!(result.is_ok());
-    }
-
-    #[test]
-    fn test_validate_shared_gas_set_does_not_contain_validator() {
-        let chainspec = test_chainspec();
-        let mut db = InMemoryDB::default();
-        let signer = PrivateKey::from_seed(0);
-        let different_validator = B256::repeat_byte(0x42); // Not the signer's key
-        let executor = TestExecutorBuilder::default()
-            .with_validator_set(vec![different_validator])
-            .build(&mut db, &chainspec);
-
-        let metadata = vec![create_valid_subblock_metadata(B256::ZERO, &signer)];
-        let result = executor.validate_shared_gas(&metadata);
-        assert!(result.is_err());
-        assert_eq!(
-            result.unwrap_err().to_string(),
-            "invalid subblock validator"
-        );
-    }
-
-    #[test]
-    fn test_validate_shared_gas_more_than_one_subblock_per_validator() {
-        let chainspec = test_chainspec();
-        let mut db = InMemoryDB::default();
-        let signer = PrivateKey::from_seed(0);
-        let validator_key = B256::from_slice(&signer.public_key());
-        let executor = TestExecutorBuilder::default()
-            .with_validator_set(vec![validator_key])
-            .build(&mut db, &chainspec);
-
-        // Same validator appears twice
-        let m = create_valid_subblock_metadata(B256::ZERO, &signer);
-        let metadata = vec![m.clone(), m];
-
-        let result = executor.validate_shared_gas(&metadata);
-        assert!(result.is_err());
-        assert_eq!(
-            result.unwrap_err().to_string(),
-            "only one subblock per validator is allowed"
-        );
-    }
-
-    #[test]
-    fn test_validate_shared_gas_invalid_signature_encoding() {
-        let chainspec = test_chainspec();
-        let mut db = InMemoryDB::default();
-        let signer = PrivateKey::from_seed(0);
-        let validator_key = B256::from_slice(&signer.public_key());
-        let executor = TestExecutorBuilder::default()
-            .with_validator_set(vec![validator_key])
-            .build(&mut db, &chainspec);
-
-        // Create metadata with invalid signature encoding
-        let metadata = vec![SubBlockMetadata {
-            version: SubBlockVersion::V1,
-            validator: validator_key,
-            fee_recipient: Address::ZERO,
-            signature: Bytes::from_static(&[0x01, 0x02, 0x03]),
-        }];
-
-        let result = executor.validate_shared_gas(&metadata);
-        assert!(result.is_err());
-        assert_eq!(
-            result.unwrap_err().to_string(),
-            "invalid subblock signature encoding"
-        );
-    }
-
-    #[test]
-    fn test_validate_shared_gas_invalid_signature() {
-        let chainspec = test_chainspec();
-        let mut db = InMemoryDB::default();
-        let signer = PrivateKey::from_seed(0);
-        let validator_key = B256::from_slice(&signer.public_key());
-        let executor = TestExecutorBuilder::default()
-            .with_validator_set(vec![validator_key])
-            .build(&mut db, &chainspec);
-
-        // Create metadata with wrong signature
-        let wrong_signer = PrivateKey::from_seed(1);
-        let subblock = tempo_primitives::SubBlock {
-            version: SubBlockVersion::V1,
-            parent_hash: B256::ZERO,
-            fee_recipient: Address::ZERO,
-            transactions: vec![],
-        };
-        let signature_hash = subblock.signature_hash();
-        let wrong_signature = wrong_signer.sign(&[], signature_hash.as_slice());
-
-        let metadata = vec![SubBlockMetadata {
-            version: SubBlockVersion::V1,
-            validator: validator_key, // Correct validator
-            fee_recipient: Address::ZERO,
-            signature: Bytes::copy_from_slice(wrong_signature.as_ref()), // Wrong signature
-        }];
-
-        let result = executor.validate_shared_gas(&metadata);
-        assert!(result.is_err());
-        assert_eq!(
-            result.unwrap_err().to_string(),
-            "invalid subblock signature"
-        );
-    }
-
-    #[test]
-    fn test_validate_shared_gas_gas_used_exceeds_gas_per_subblock() {
-        let chainspec = test_chainspec();
-        let mut db = InMemoryDB::default();
-        let signer = PrivateKey::from_seed(0);
-        let validator_key = B256::from_slice(&signer.public_key());
-        let tx = create_legacy_tx();
-        let proposer = PartialValidatorKey::from_slice(&validator_key[..15]);
-
-        // Create subblock with transactions included
-        let subblock = tempo_primitives::SubBlock {
-            version: SubBlockVersion::V1,
-            parent_hash: B256::ZERO,
-            fee_recipient: Address::ZERO,
-            transactions: vec![tx.clone()],
-        };
-
-        let executor = TestExecutorBuilder::default()
-            .with_validator_set(vec![validator_key])
-            .with_shared_gas_limit(100) // Low shared gas limit
-            .with_seen_subblock(proposer, vec![tx])
-            .build(&mut db, &chainspec);
-        let signature_hash = subblock.signature_hash();
-        let signature = signer.sign(&[], signature_hash.as_slice());
-
-        let metadata = vec![SubBlockMetadata {
-            version: SubBlockVersion::V1,
-            validator: validator_key,
-            fee_recipient: Address::ZERO,
-            signature: Bytes::copy_from_slice(signature.as_ref()),
-        }];
-
-        let result = executor.validate_shared_gas(&metadata);
-        assert!(result.is_err());
-        assert_eq!(
-            result.unwrap_err().to_string(),
-            "subblock gas used exceeds gas per subblock"
-        );
-    }
-
-    #[test]
-    fn test_validate_shared_gas_unexpected_subblock_len() {
-        let chainspec = test_chainspec();
-        let mut db = InMemoryDB::default();
-        let signer = PrivateKey::from_seed(0);
-        let validator_key = B256::from_slice(&signer.public_key());
-
-        // Add a seen subblock from a different validator that won't match metadata
-        let different_key = B256::repeat_byte(0x99);
-        let different_proposer = PartialValidatorKey::from_slice(&different_key[..15]);
-
-        let executor = TestExecutorBuilder::default()
-            .with_validator_set(vec![validator_key])
-            .with_seen_subblock(different_proposer, vec![])
-            .build(&mut db, &chainspec);
-
-        // Metadata has validator_key but seen_subblocks has different_key
-        let metadata = vec![create_valid_subblock_metadata(B256::ZERO, &signer)];
-
-        let result = executor.validate_shared_gas(&metadata);
-        assert!(result.is_err());
-        assert_eq!(
-            result.unwrap_err().to_string(),
-            "failed to map all non-empty subblocks to metadata"
-        );
-    }
-
-    #[test]
-    fn test_validate_shared_gas_limit_exceeded() {
-        let chainspec = test_chainspec();
-        let mut db = InMemoryDB::default();
-        let signer = PrivateKey::from_seed(0);
-        let validator_key = B256::from_slice(&signer.public_key());
-
-        // Set incentive_gas_used higher than available incentive gas
-        let executor = TestExecutorBuilder::default()
-            .with_validator_set(vec![validator_key])
-            .with_incentive_gas_used(100_000_000)
-            .build(&mut db, &chainspec);
-
-        let metadata = vec![create_valid_subblock_metadata(B256::ZERO, &signer)];
-
-        let result = executor.validate_shared_gas(&metadata);
-        assert!(result.is_err());
-        assert_eq!(
-            result.unwrap_err().to_string(),
-            "incentive gas limit exceeded"
         );
     }
 
@@ -1435,10 +1043,10 @@ mod tests {
         assert_eq!(result.unwrap(), BlockSection::NonShared);
     }
 
-    fn create_subblock_tx(proposer: &PartialValidatorKey) -> TempoTxEnvelope {
+    fn create_subblock_tx() -> TempoTxEnvelope {
         let mut nonce_bytes = [0u8; 32];
         nonce_bytes[0] = TEMPO_SUBBLOCK_NONCE_KEY_PREFIX;
-        nonce_bytes[1..16].copy_from_slice(proposer.as_slice());
+        nonce_bytes[1..16].fill(0xff);
 
         let tx = TempoTransaction {
             chain_id: 1,
@@ -1459,15 +1067,14 @@ mod tests {
     }
 
     #[test]
-    fn test_execute_transaction_t4_subblock_nonce_returns_validation_error() {
+    fn test_subblock_nonce_rejected_before_execution_and_commit() {
         let chainspec = DEV.clone();
         let mut db = InMemoryDB::default();
         let mut executor = TestExecutorBuilder::default()
             .with_spec(TempoHardfork::T11)
             .build(&mut db, &chainspec);
 
-        let proposer = PartialValidatorKey::from_slice(&[0xff; 15]);
-        let subblock_tx = create_subblock_tx(&proposer);
+        let subblock_tx = create_subblock_tx();
         let recovered = Recovered::new_unchecked(subblock_tx, Address::ZERO);
 
         let err = executor.execute_transaction(recovered).unwrap_err();
@@ -1475,74 +1082,7 @@ mod tests {
             matches!(&err, BlockExecutionError::Validation(_)),
             "unexpected error: {err:?}"
         );
-        assert_eq!(err.to_string(), "invalid subblock transaction");
-    }
-
-    #[test]
-    fn test_validate_tx_subblock_section_already_passed() {
-        let chainspec = test_chainspec();
-        let mut db = InMemoryDB::default();
-        let signer = PrivateKey::from_seed(0);
-        let validator_key = B256::from_slice(&signer.public_key());
-        let proposer = PartialValidatorKey::from_slice(&validator_key[..15]);
-
-        // Test with GasIncentive section
-        let executor = TestExecutorBuilder::default()
-            .with_section(BlockSection::GasIncentive)
-            .build(&mut db, &chainspec);
-
-        let subblock_tx = create_subblock_tx(&proposer);
-        let result = executor.validate_tx(&subblock_tx, 21000);
-        assert!(result.is_err());
-        assert_eq!(
-            result.unwrap_err().to_string(),
-            "subblock section already passed"
-        );
-
-        // Also test with System section
-        let mut db2 = InMemoryDB::default();
-        let executor2 = TestExecutorBuilder::default()
-            .with_section(BlockSection::System {
-                seen_subblocks_signatures: false,
-            })
-            .build(&mut db2, &chainspec);
-
-        let result = executor2.validate_tx(&subblock_tx, 21000);
-        assert!(result.is_err());
-        assert_eq!(
-            result.unwrap_err().to_string(),
-            "subblock section already passed"
-        );
-    }
-
-    #[test]
-    fn test_validate_tx_proposer_subblock_already_processed() {
-        let chainspec = test_chainspec();
-        let mut db = InMemoryDB::default();
-        let signer1 = PrivateKey::from_seed(0);
-        let validator_key1 = B256::from_slice(&signer1.public_key());
-        let proposer1 = PartialValidatorKey::from_slice(&validator_key1[..15]);
-
-        let signer2 = PrivateKey::from_seed(1);
-        let validator_key2 = B256::from_slice(&signer2.public_key());
-        let proposer2 = PartialValidatorKey::from_slice(&validator_key2[..15]);
-
-        // Set section to SubBlock with a different proposer, and mark proposer1 as already seen
-        let executor = TestExecutorBuilder::default()
-            .with_section(BlockSection::SubBlock {
-                proposer: proposer2,
-            })
-            .with_seen_subblock(proposer1, vec![])
-            .build(&mut db, &chainspec);
-
-        // Try to submit a tx for proposer1 (already processed)
-        let subblock_tx = create_subblock_tx(&proposer1);
-        let result = executor.validate_tx(&subblock_tx, 21000);
-        assert!(result.is_err());
-        assert_eq!(
-            result.unwrap_err().to_string(),
-            "proposer's subblock already processed"
-        );
+        assert_eq!(err.to_string(), "subblock transactions are not supported");
     }
 
     #[test]
@@ -1581,6 +1121,9 @@ mod tests {
 
         let tx = create_legacy_tx();
         let output = TempoTxResult {
+            execution_context: ExecutionContext::Transaction {
+                tx_hash: B256::ZERO,
+            },
             inner: EthTransactionResultWithState::new(
                 TxResultWithState {
                     result: TxResult::<TempoEvmTypes> {
@@ -1595,7 +1138,6 @@ mod tests {
             ),
             next_section: BlockSection::NonShared,
             is_payment: false,
-            tx: None,
             block_gas_used: 21000,
             validator_fee: U256::ZERO,
         };
@@ -1630,7 +1172,7 @@ mod tests {
         executor.apply_current_committee_system_call().unwrap();
 
         let committee = read_current_committee(&mut executor);
-        assert_eq!(committee.epoch, outcome.epoch.get());
+        assert_eq!(committee.epoch, outcome.epoch);
         assert_eq!(committee.publicKeys, expected_public_keys);
     }
 
@@ -1690,7 +1232,6 @@ mod tests {
         let mut db = InMemoryDB::default();
         let mut executor = TestExecutorBuilder::default()
             .with_parent_beacon_block_root(B256::ZERO)
-            .with_validator_set(vec![B256::repeat_byte(0x01)])
             .with_spec(TempoHardfork::T4)
             .build(&mut db, &chainspec);
         executor.apply_pre_execution_changes().unwrap();
@@ -1699,20 +1240,60 @@ mod tests {
     }
 
     #[test]
-    fn test_finish_t4_without_metadata_rejects_incentive_gas() {
-        let chainspec = DEV.clone();
-        let mut db = InMemoryDB::default();
-        let mut executor = TestExecutorBuilder::default()
-            .with_parent_beacon_block_root(B256::ZERO)
-            .with_validator_set(vec![B256::repeat_byte(0x01)])
-            .with_incentive_gas_used(1)
-            .with_spec(TempoHardfork::T4)
-            .build(&mut db, &chainspec);
-        executor.apply_pre_execution_changes().unwrap();
-
-        match executor.finish() {
-            Err(err) => assert_eq!(err.to_string(), "incentive gas limit exceeded"),
-            Ok(_) => panic!("finish should fail when T4 block has incentive gas without metadata"),
+    fn test_incentive_gas_validation_exempts_only_simulated_transactions() {
+        for hardfork in [TempoHardfork::T3, TempoHardfork::T4] {
+            for simulations in [
+                vec![true],
+                vec![false],
+                vec![false, true],
+                vec![true, false],
+            ] {
+                let chainspec = DEV.clone();
+                let mut db = InMemoryDB::default();
+                let mut executor = TestExecutorBuilder::default()
+                    .with_parent_beacon_block_root(B256::ZERO)
+                    .with_general_gas_limit(0)
+                    .with_spec(hardfork)
+                    .build(&mut db, &chainspec);
+                executor.apply_pre_execution_changes().unwrap();
+                for &simulation in &simulations {
+                    executor
+                        .commit_transaction(TempoTxResult {
+                            execution_context: if simulation {
+                                ExecutionContext::Simulation
+                            } else {
+                                ExecutionContext::Transaction {
+                                    tx_hash: B256::ZERO,
+                                }
+                            },
+                            inner: EthTransactionResultWithState::new(
+                                TxResultWithState {
+                                    result: TxResult::<TempoEvmTypes> {
+                                        status: true,
+                                        total_gas_spent: 21_000,
+                                        ..Default::default()
+                                    },
+                                    ..Default::default()
+                                },
+                                TempoTxType::Legacy,
+                                0,
+                            ),
+                            next_section: BlockSection::GasIncentive,
+                            is_payment: false,
+                            block_gas_used: 21_000,
+                            validator_fee: U256::ZERO,
+                        })
+                        .unwrap();
+                }
+                let should_reject = hardfork == TempoHardfork::T4 && simulations.contains(&false);
+                match executor.finish() {
+                    Err(error) => {
+                        assert!(should_reject);
+                        assert_eq!(error.to_string(), "incentive gas limit exceeded");
+                    }
+                    Ok(_) => assert!(!should_reject),
+                }
+            }
         }
     }
 
@@ -1729,6 +1310,9 @@ mod tests {
 
         let tx = create_legacy_tx();
         let output = TempoTxResult {
+            execution_context: ExecutionContext::Transaction {
+                tx_hash: B256::ZERO,
+            },
             inner: EthTransactionResultWithState::new(
                 TxResultWithState {
                     result: TxResult::<TempoEvmTypes> {
@@ -1743,7 +1327,6 @@ mod tests {
             ),
             next_section: BlockSection::NonShared,
             is_payment: false,
-            tx: None,
             block_gas_used: 21000,
             validator_fee: U256::ZERO,
         };
@@ -1768,6 +1351,9 @@ mod tests {
         // Commit first transaction (21000 gas)
         let tx1 = create_legacy_tx();
         let output1 = TempoTxResult {
+            execution_context: ExecutionContext::Transaction {
+                tx_hash: B256::ZERO,
+            },
             inner: EthTransactionResultWithState::new(
                 TxResultWithState {
                     result: TxResult::<TempoEvmTypes> {
@@ -1782,7 +1368,6 @@ mod tests {
             ),
             next_section: BlockSection::NonShared,
             is_payment: false,
-            tx: None,
             block_gas_used: 21000,
             validator_fee: U256::ZERO,
         };
@@ -1791,6 +1376,9 @@ mod tests {
         // Commit second transaction (50000 gas)
         let tx2 = create_legacy_tx();
         let output2 = TempoTxResult {
+            execution_context: ExecutionContext::Transaction {
+                tx_hash: B256::ZERO,
+            },
             inner: EthTransactionResultWithState::new(
                 TxResultWithState {
                     result: TxResult::<TempoEvmTypes> {
@@ -1805,7 +1393,6 @@ mod tests {
             ),
             next_section: BlockSection::NonShared,
             is_payment: false,
-            tx: None,
             block_gas_used: 50000,
             validator_fee: U256::ZERO,
         };
@@ -1832,6 +1419,9 @@ mod tests {
         // Manually set state to simulate a committed transaction (no state gas)
         executor
             .commit_transaction(TempoTxResult {
+                execution_context: ExecutionContext::Transaction {
+                    tx_hash: B256::ZERO,
+                },
                 inner: EthTransactionResultWithState::new(
                     TxResultWithState {
                         result: TxResult::<TempoEvmTypes> {
@@ -1846,7 +1436,6 @@ mod tests {
                 ),
                 next_section: BlockSection::NonShared,
                 is_payment: false,
-                tx: None,
                 block_gas_used: 21000,
                 validator_fee: U256::ZERO,
             })
@@ -1872,6 +1461,9 @@ mod tests {
 
         let tx = create_legacy_tx();
         let output = TempoTxResult {
+            execution_context: ExecutionContext::Transaction {
+                tx_hash: B256::ZERO,
+            },
             inner: EthTransactionResultWithState::new(
                 TxResultWithState {
                     result: TxResult::<TempoEvmTypes> {
@@ -1886,7 +1478,6 @@ mod tests {
             ),
             next_section: BlockSection::NonShared,
             is_payment: false,
-            tx: None,
             block_gas_used: 50_000,
             validator_fee: U256::ZERO,
         };
@@ -1917,6 +1508,9 @@ mod tests {
         // tx_gas_used = max(300k - 0_refund, 0) = 300k
         let tx = create_legacy_tx();
         let output = TempoTxResult {
+            execution_context: ExecutionContext::Transaction {
+                tx_hash: B256::ZERO,
+            },
             inner: EthTransactionResultWithState::new(
                 TxResultWithState {
                     result: TxResult::<TempoEvmTypes> {
@@ -1932,7 +1526,6 @@ mod tests {
             ),
             next_section: BlockSection::NonShared,
             is_payment: false,
-            tx: None,
             block_gas_used: 200_000,
             validator_fee: U256::ZERO,
         };
@@ -1966,6 +1559,9 @@ mod tests {
 
         let tx = create_legacy_tx();
         let output = TempoTxResult {
+            execution_context: ExecutionContext::Transaction {
+                tx_hash: B256::ZERO,
+            },
             inner: EthTransactionResultWithState::new(
                 TxResultWithState {
                     result: TxResult::<TempoEvmTypes> {
@@ -1981,7 +1577,6 @@ mod tests {
             ),
             next_section: BlockSection::GasIncentive,
             is_payment: false,
-            tx: None,
             block_gas_used: 200_000,
             validator_fee: U256::ZERO,
         };
@@ -2317,6 +1912,9 @@ mod tests {
 
         executor
             .commit_transaction(TempoTxResult {
+                execution_context: ExecutionContext::Transaction {
+                    tx_hash: B256::ZERO,
+                },
                 inner: EthTransactionResultWithState::new(
                     TxResultWithState {
                         result: TxResult::<TempoEvmTypes> {
@@ -2333,7 +1931,6 @@ mod tests {
                 ),
                 next_section: BlockSection::StartOfBlock,
                 is_payment: false,
-                tx: None,
                 block_gas_used: regular_gas,
                 validator_fee: U256::ZERO,
             })
@@ -2365,6 +1962,9 @@ mod tests {
         executor.apply_pre_execution_changes().unwrap();
         executor
             .commit_transaction(TempoTxResult {
+                execution_context: ExecutionContext::Transaction {
+                    tx_hash: B256::ZERO,
+                },
                 inner: EthTransactionResultWithState::new(
                     TxResultWithState {
                         result: TxResult::<TempoEvmTypes> {
@@ -2380,7 +1980,6 @@ mod tests {
                 ),
                 next_section: BlockSection::StartOfBlock,
                 is_payment: false,
-                tx: None,
                 block_gas_used: 100_000,
                 validator_fee: U256::ZERO,
             })
@@ -2413,6 +2012,9 @@ mod tests {
 
         executor
             .commit_transaction(TempoTxResult {
+                execution_context: ExecutionContext::Transaction {
+                    tx_hash: B256::ZERO,
+                },
                 inner: EthTransactionResultWithState::new(
                     TxResultWithState {
                         result: TxResult::<TempoEvmTypes> {
@@ -2428,7 +2030,6 @@ mod tests {
                 ),
                 next_section: BlockSection::StartOfBlock,
                 is_payment: false,
-                tx: None,
                 block_gas_used: cumulative,
                 validator_fee: U256::ZERO,
             })

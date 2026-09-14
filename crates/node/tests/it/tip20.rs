@@ -848,7 +848,7 @@ async fn test_tip20_pause_blocks_fee_collection() -> eyre::Result<()> {
 
     // Grant PAUSE_ROLE to admin and user
     roles
-        .grantRole(*PAUSE_ROLE, admin)
+        .grantRole(PAUSE_ROLE, admin)
         .gas(gas)
         .gas_price(gas_price)
         .send()
@@ -856,7 +856,7 @@ async fn test_tip20_pause_blocks_fee_collection() -> eyre::Result<()> {
         .get_receipt()
         .await?;
     roles
-        .grantRole(*PAUSE_ROLE, user)
+        .grantRole(PAUSE_ROLE, user)
         .gas(gas)
         .gas_price(gas_price)
         .send()

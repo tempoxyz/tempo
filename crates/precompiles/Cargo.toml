@@ -25,6 +25,7 @@ alloy = { workspace = true, features = ["sol-types", "consensus"] }
 alloy-json-abi = { workspace = true, optional = true }
 itertools = { workspace = true, optional = true }
 alloy-primitives = { workspace = true, features = ["map-foldhash"] }
+keccak-const.workspace = true
 evm2 = { workspace = true, features = ["std"] }
 paste.workspace = true
 

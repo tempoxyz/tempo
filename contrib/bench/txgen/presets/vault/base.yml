@@ -16,7 +16,7 @@ accounts:
     mnemonic: test test test test test test test test test test test junk
     index: 100001
 artifacts:
-  ERC20: ../../erc20.abi.json
+  ERC20: ../../tip20.abi.json
   PolicyRegistry: ../../vault/abi/PolicyRegistry.json
   AccessController:
     abi: ../../vault/abi/AccessController.json

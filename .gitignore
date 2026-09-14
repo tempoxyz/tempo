@@ -41,3 +41,4 @@ _
 # LLVM coverage profraw files
 *.profraw
 __pycache__/
+.bench-tmp/

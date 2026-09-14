@@ -600,6 +600,59 @@ def txgen-fund-accounts [txgen_bin: string, spec_path: string, rpc_url: string] 
     txgen-wait-for-txpool-drain $rpc_url $TXGEN_HELPER_FUND_DRAIN_TIMEOUT_SECS
 }
 
+def txgen-prepare-zones-preset [spec_path: string, count: int, accounts: int, zones: int, mode: string] {
+    if $mode not-in [mixed deposit withdraw] { error make {msg: "TXGEN_ZONE_MODE must be mixed, deposit, or withdraw"} }
+    let spec = (open $spec_path)
+    let token = "0x20c0000000000000000000000000000000000000"
+    mut steps = [$spec.setup.steps.0]
+    for zone in 0..<$zones {
+        $steps = ($steps | append ($spec.setup.steps.1
+            | update id $"portal_($zone)"
+            | update deploy.constructor_args.0 {var: setup.settlement.sender}))
+    }
+    for zone in 0..<$zones {
+        $steps = ($steps | append ($spec.setup.steps.2 | update id $"fund_($zone)"
+            | update tx.calls.0.args [{var: $"setup.portal_($zone).address"} $count]))
+    }
+    let pairs = ([$accounts $zones] | math max)
+    let minimum_per_zone = ($pairs // $zones)
+    mut templates = {}
+    mut mix = []
+    for pair in 0..<$pairs {
+        let user = $pair mod $accounts
+        let zone = $pair mod $zones
+        let portal = {var: $"setup.portal_($zone).address"}
+        let account = {pool: users, select: {index: $user}}
+        let recipient = {pool: $account}
+        if $mode != withdraw {
+            $steps = ($steps | append ($spec.setup.steps.2 | update id $"approve_($pair)"
+                | update tx.from $account
+                | update tx.calls [{to: $token, abi: ERC20, function: approve,
+                    args: [$portal "0xffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff"]}]))
+        }
+        let per_zone = $minimum_per_zone + (if $zone < ($pairs mod $zones) { 1 } else { 0 })
+        let weight = $minimum_per_zone * ($minimum_per_zone + 1) // $per_zone
+        for kind in (if $mode == mixed { [deposit withdraw] } else { [$mode] }) {
+            let name = $"zone_($kind)_($pair)"
+            mut template = ($spec.templates | get $"zone_($kind)" | update from $account)
+            if $kind == deposit {
+                $template = ($template | update calls.0.to $portal | update calls.0.args.4 $recipient)
+            }
+            let settlement_index = if $kind == deposit { 1 } else { 0 }
+            let call = ($template.calls | get $settlement_index | update args [$portal $token $recipient ($kind == withdraw)])
+            $template = ($template | update calls ($template.calls | update $settlement_index $call))
+            $templates = ($templates | insert $name $template)
+            $mix = ($mix | append {template: $name, weight: $weight})
+        }
+    }
+    let output_dir = ([ (txgen-repo-root) $TXGEN_HELPER_DEFAULT_RENDERED_SPECS_DIR (random uuid) ] | path join)
+    mkdir $output_dir
+    let output = ($output_dir | path join zones.yml)
+    {include: $spec_path, accounts: {users: {range: [0 $accounts]}},
+        setup: {steps: $steps}, templates: $templates, mix: $mix} | to yaml | save -f $output
+    $output
+}
+
 def txgen-prepare-vault-preset [spec_path: string, accounts: int, chain_id: int] {
     if $chain_id != 1337 or $accounts <= 0 or $accounts > 100000 {
         error make { msg: "Vault presets require chain ID 1337 and 1..100000 user accounts" }
@@ -669,6 +722,33 @@ def txgen-run-preset-pipeline [
     txgen-configure-existing-recipients-env $spec_path $bloat_mib $bloat_token_count
     txgen-configure-fee-amm-env $spec_path
     let preset_name = ($spec_path | path basename | str replace --regex '\.yml$' '')
+    let tx_count = [($tps * $duration) 1] | math max
+    mut zone_metadata = []
+    if $preset_name == "zones" {
+        if $chain_id != 1337 or $accounts < 1 or $accounts > 100000 {
+            error make { msg: "zones requires local chain 1337 and 1–100000 accounts" }
+        }
+        let portal_code = (txgen-rpc-call $generate_rpc_url '{"jsonrpc":"2.0","id":1,"method":"eth_getCode","params":["0x5ad1000000000000000000000000000000000000","latest"]}')
+        if $portal_code.result == "0x" {
+            error make { msg: "zones requires the ZonePortal runtime; activate T10 or later before running the benchmark" }
+        }
+        let nonce_response = (txgen-rpc-call $generate_rpc_url '{"jsonrpc":"2.0","id":1,"method":"eth_getTransactionCount","params":["0xd7932ce865275be97001a0574441d79b143820ec","pending"]}')
+        let latest_nonce = (txgen-rpc-call $generate_rpc_url '{"jsonrpc":"2.0","id":1,"method":"eth_getTransactionCount","params":["0xd7932ce865275be97001a0574441d79b143820ec","latest"]}')
+        if $nonce_response.result != $latest_nonce.result {
+            error make { msg: "zone fixture deployer has pending transactions; drain its nonce lane before setup" }
+        }
+        let mode = ($env.TXGEN_ZONE_MODE? | default "mixed")
+        # TIP-1096 allows 230 outstanding deposits, reserving 20 for bounce-backs.
+        # This is a configurable sizing window, not a claimed mainnet settlement cadence.
+        let window_ms = ($env.TXGEN_ZONE_SETTLEMENT_WINDOW_MS? | default "3000" | into int)
+        if $window_ms < 1 { error make { msg: "TXGEN_ZONE_SETTLEMENT_WINDOW_MS must be positive" } }
+        let automatic_zones = ([1 (($tps * $window_ms / 210000) | math ceil | into int)] | math max)
+        let zones = ($env.TXGEN_ZONE_COUNT? | default $automatic_zones | into int)
+        if $zones < 1 { error make { msg: "TXGEN_ZONE_COUNT must be positive" } }
+        $zone_metadata = ["-m" $"zone_count=($zones)" "-m" $"zone_sizing_window_ms=($window_ms)"]
+        print $"  Zones: ($zones), users: ($accounts), sizing window: ($window_ms)ms, capacity: 210 deposits/portal"
+        $spec_path = (txgen-prepare-zones-preset $spec_path $tx_count $accounts $zones $mode)
+    }
     let skip_faucet_funding = $skip_funding and ($preset_name not-in $TXGEN_HELPER_ALWAYS_FUND_PRESETS)
     let is_vault = $preset_name in ["vault-deposit" "vault-withdraw"]
     if $is_vault {
@@ -694,7 +774,6 @@ def txgen-run-preset-pipeline [
         txgen-fund-accounts $txgen_tempo_bin $spec_path $generate_rpc_url
     }
 
-    let tx_count = [($tps * $duration) 1] | math max
     let txgen_duration = $"($duration)s"
     let txgen_cmd = [
         $txgen_tempo_bin
@@ -703,7 +782,8 @@ def txgen-run-preset-pipeline [
         "-n" $tx_count
         "--seed" $TXGEN_HELPER_DEFAULT_SEED
         "--rpc" $generate_rpc_url
-    ] | append (if $is_vault { [] } else { ["--duration" $txgen_duration] })
+    ] | append (if $is_vault or $preset_name == "zones" { [] } else { ["--duration" $txgen_duration] })
+    # Zones and vaults generate the full count: setup must not consume workload duration.
     let txgen_setup_cmd = [
         $txgen_tempo_bin
         "generate"
@@ -753,6 +833,7 @@ def txgen-run-preset-pipeline [
         "-m" $"build_profile=($build_profile)"
         "-m" $"mode=($benchmark_mode)"
     ]
+        | append $zone_metadata
         | append (if $recipient_accounts > 0 { ["-m" $"recipient_accounts=($recipient_accounts)"] } else { [] })
         | append (if $benchmark_id != "" { ["-m" $"benchmark_id=($benchmark_id)"] } else { [] })
         | append (if $benchmark_run != "" { ["-m" $"benchmark_run=($benchmark_run)"] } else { [] })
@@ -795,8 +876,8 @@ def txgen-run-preset-pipeline [
         }
     }
 
-    if $is_vault {
-        print $"  Streaming ($tx_count) vault transactions at target ($tps) TPS into bench send..."
+    if $is_vault or $preset_name == "zones" {
+        print $"  Streaming ($tx_count) ($preset_name) transactions at target ($tps) TPS into bench send..."
     } else {
         print $"  Streaming up to ($tx_count) txgen transaction\(s\) over ($txgen_duration) into bench send..."
     }
@@ -815,7 +896,7 @@ def txgen-run-preset-pipeline [
         return { ok: false, exit_code: 1, report_path: $report_path }
     }
 
-    if $is_vault and (open $report_path).failed > 0 {
+    if $preset_name in ["zones" "vault-deposit" "vault-withdraw"] and (open $report_path).failed > 0 {
         print $"ERROR: ($preset_name) workload contains sender failures; see ($report_path)"
         return { ok: false, exit_code: 1, report_path: $report_path }
     }

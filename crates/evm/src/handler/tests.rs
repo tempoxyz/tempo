@@ -10,11 +10,7 @@ use evm2::{
     evm::{InMemoryDB, precompile::NoPrecompiles},
 };
 use proptest::prelude::*;
-use tempo_precompiles::{
-    PATH_USD_ADDRESS,
-    test_util::TIP20Setup,
-    tip20::{ITIP20, PAUSE_ROLE},
-};
+use tempo_precompiles::{PATH_USD_ADDRESS, test_util::TIP20Setup};
 use tempo_primitives::{
     AASigned, TempoTransaction,
     subblock::TEMPO_SUBBLOCK_NONCE_KEY_PREFIX,
@@ -82,6 +78,26 @@ fn intrinsic_with_amsterdam(
         state.saturating_add(nonce_state),
         floor,
     ))
+}
+
+#[test]
+fn test_reserved_subblock_nonce_rejected() {
+    for spec in [TempoHardfork::T3, TempoHardfork::T4, TempoHardfork::T11] {
+        let mut evm = test_evm(spec);
+        let env = aa_env(
+            TempoTransaction {
+                nonce_key: U256::from(TEMPO_SUBBLOCK_NONCE_KEY_PREFIX) << 248,
+                ..Default::default()
+            },
+            secp256k1_signature(),
+        );
+        let env = Recovered::new_unchecked(env, SIGNER);
+        let error = evm.transact(&env).unwrap_err();
+        assert!(matches!(
+            error.external_ref::<TempoInvalidTransaction>(),
+            Some(TempoInvalidTransaction::SubblockTransactionsDisabled)
+        ));
+    }
 }
 
 fn call(input: Bytes) -> Call {
@@ -2739,98 +2755,6 @@ fn test_state_gas_tx_gas_limit_above_cap_rejected_pre_t4() {
     );
 }
 
-/// TIP-1016 regression: subblock fee-payment halt must not exceed the gas cap.
-#[test]
-fn test_subblock_fee_payment_halt_clamps_to_gas_cap_t4() {
-    const CAP: u64 = 1 << 24;
-    const TX_GAS_LIMIT: u64 = 60_000_000;
-
-    let mut evm = test_evm_with_amsterdam(TempoHardfork::T4, true);
-    StorageCtx::enter_evm_without_tip1060_accounting(&mut evm, || {
-        TIP20Setup::path_usd(SIGNER).with_issuer(SIGNER).apply()
-    })
-    .expect("PATH USD setup succeeds");
-
-    let env = aa_env(
-        TempoTransaction {
-            chain_id: 1,
-            fee_token: Some(PATH_USD_ADDRESS),
-            max_priority_fee_per_gas: 1,
-            max_fee_per_gas: 1,
-            gas_limit: TX_GAS_LIMIT,
-            calls: vec![call(Bytes::new())],
-            nonce_key: U256::from(TEMPO_SUBBLOCK_NONCE_KEY_PREFIX) << 248,
-            ..Default::default()
-        },
-        secp256k1_signature(),
-    );
-
-    // Sanity: T4 must actually have the cap-skip enabled so tx_gas_limit > cap is legal.
-    assert!(
-        evm.feature(EvmFeatures::EIP8037),
-        "T4 must enable EIP-8037 for this regression to apply"
-    );
-    assert_eq!(evm.version().tx_gas_limit_cap, CAP);
-
-    let env = Recovered::new_unchecked(env, SIGNER);
-    let result = evm
-        .transact(&env)
-        .expect("subblock fee-payment failure must be converted to a halt, not a hard error")
-        .detach()
-        .result;
-
-    assert!(!result.status);
-    assert_eq!(result.stop, InstrStop::PrecompileError);
-    assert_eq!(
-        result.total_gas_spent, CAP,
-        "regular gas charged on subblock fee-payment halt must be clamped to \
-                     tx_gas_limit_cap (got {} for tx.gas_limit={} cap={})",
-        result.total_gas_spent, TX_GAS_LIMIT, CAP,
-    );
-    assert_eq!(result.state_gas_spent, 0, "halt reports zero state gas");
-}
-
-#[test]
-fn test_subblock_paused_fee_token_halts_as_fee_payment_failure() {
-    const GAS_LIMIT: u64 = 300_000;
-
-    let mut evm = test_evm_with_amsterdam(TempoHardfork::T4, true);
-    StorageCtx::enter_evm_without_tip1060_accounting(&mut evm, || {
-        let mut token = TIP20Setup::path_usd(SIGNER)
-            .with_issuer(SIGNER)
-            .with_role(SIGNER, *PAUSE_ROLE)
-            .apply()?;
-        token.pause(SIGNER, ITIP20::pauseCall {})
-    })
-    .expect("paused PATH USD setup succeeds");
-
-    let env = aa_env(
-        TempoTransaction {
-            chain_id: 1,
-            fee_token: Some(PATH_USD_ADDRESS),
-            max_priority_fee_per_gas: 1,
-            max_fee_per_gas: 1,
-            gas_limit: GAS_LIMIT,
-            calls: vec![call(Bytes::new())],
-            nonce_key: U256::from(TEMPO_SUBBLOCK_NONCE_KEY_PREFIX) << 248,
-            ..Default::default()
-        },
-        secp256k1_signature(),
-    );
-
-    let env = Recovered::new_unchecked(env, SIGNER);
-    let result = evm
-        .transact(&env)
-        .expect("subblock paused fee-token failure must be converted to a halt")
-        .detach()
-        .result;
-
-    assert!(!result.status);
-    assert_eq!(result.stop, InstrStop::PrecompileError);
-    assert_eq!(result.total_gas_spent, GAS_LIMIT);
-    assert_eq!(result.state_gas_spent, 0, "halt reports zero state gas");
-}
-
 /// TIP-1016: Pre-T4 behavior unchanged. EIP-8037 is disabled and a CALL
 /// transaction has no initial state gas.
 #[test]
@@ -4196,7 +4120,7 @@ fn test_paused_fee_token_rejected() {
     let fee_token = StorageCtx::enter_evm_without_tip1060_accounting(&mut test, || {
         let mut token = TIP20Setup::create("Paused USD", "PUSD", admin)
             .with_issuer(admin)
-            .with_role(admin, *tempo_precompiles::tip20::PAUSE_ROLE)
+            .with_role(admin, tempo_precompiles::tip20::PAUSE_ROLE)
             .with_mint(fee_payer, fee)
             .apply()?;
         token.pause(admin, tempo_precompiles::tip20::ITIP20::pauseCall {})?;

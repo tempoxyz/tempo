@@ -598,12 +598,7 @@ impl TempoHandlerHooks {
                 address: fee_token,
             }));
         }
-        if !collected.is_zero()
-            || envelope
-                .evm_tx()
-                .as_aa()
-                .is_some_and(|tx| tx.inner().tx().subblock_proposer().is_some())
-        {
+        if !collected.is_zero() {
             fee_manager.validate_fee_token(host, fee_token, spec)?;
         }
 

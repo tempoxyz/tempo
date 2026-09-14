@@ -214,19 +214,60 @@ fn resolve_chainspec(
     }
 }
 
+/// Lock file every Commonware runtime creates at the root of its storage
+/// directory. `commonware_runtime` keeps the name private.
+const COMMONWARE_HOLD_FILE: &str = ".hold";
+
+/// Commonware runtimes take an exclusive advisory lock on `<dir>/.hold` for the
+/// lifetime of the process and block indefinitely while another holder exists.
+/// Fail fast instead, so a snapshot is never attempted against a running node.
+fn ensure_consensus_storage_not_held(consensus_dir: &Path) -> eyre::Result<()> {
+    let hold = consensus_dir.join(COMMONWARE_HOLD_FILE);
+    let file = match fs::OpenOptions::new().write(true).open(&hold) {
+        Ok(file) => file,
+        // Never opened by a Commonware runtime that creates the hold file.
+        Err(err) if err.kind() == std::io::ErrorKind::NotFound => return Ok(()),
+        Err(err) => {
+            return Err(err).wrap_err_with(|| format!("failed to open {}", hold.display()));
+        }
+    };
+    match file.try_lock() {
+        // Released when `file` drops, before the source runtime acquires it.
+        Ok(()) => Ok(()),
+        Err(fs::TryLockError::WouldBlock) => Err(eyre::eyre!(
+            "consensus storage at `{}` is held by another process; stop the node before \
+             creating a snapshot",
+            consensus_dir.display()
+        )),
+        Err(fs::TryLockError::Error(err)) => {
+            Err(err).wrap_err_with(|| format!("failed to probe lock on {}", hold.display()))
+        }
+    }
+}
+
 fn prepare_snapshot_consensus_archive(
     consensus_dir: &Path,
     chainspec: Arc<TempoChainSpec>,
     source_datadir: &Path,
 ) -> eyre::Result<PreparedConsensusSnapshot> {
+    ensure_consensus_storage_not_held(consensus_dir)?;
     let execution_provider = execution_provider(chainspec, source_datadir)?;
     let archive_dir = tempfile::tempdir().wrap_err("failed to create consensus snapshot dir")?;
     let archive_storage_dir = archive_dir.path().to_path_buf();
     let (archive_entries_tx, archive_entries_rx) = tokio::sync::mpsc::channel(64);
 
     let writer_thread = thread::spawn(move || -> eyre::Result<()> {
+        #[expect(
+            deprecated,
+            reason = "Keep exported snapshots readable by nodes using Commonware before 2026.9.0 \
+                      until all nodes have been updated; V1 blob creation will be enabled \
+                      in a followup."
+        )]
         let output_runtime_config = commonware_runtime::tokio::Config::default()
-            .with_storage_directory(archive_storage_dir);
+            .with_storage_directory(archive_storage_dir)
+            .with_storage_blob_layouts(
+                commonware_runtime::BlobLayout::V0..=commonware_runtime::BlobLayout::V0,
+            );
         let output_runner = commonware_runtime::tokio::Runner::new(output_runtime_config);
         output_runner.start(|context| async move {
             tempo_consensus::storage::snapshot::write_archive(
@@ -238,8 +279,17 @@ fn prepare_snapshot_consensus_archive(
         })
     });
 
-    let source_runtime_config =
-        commonware_runtime::tokio::Config::default().with_storage_directory(consensus_dir);
+    #[expect(
+        deprecated,
+        reason = "Opening snapshot source archives can create recovery metadata. Maintain \
+                  backward compatibility until all nodes have been updated; V1 blob creation \
+                  will be enabled in a followup."
+    )]
+    let source_runtime_config = commonware_runtime::tokio::Config::default()
+        .with_storage_directory(consensus_dir)
+        .with_storage_blob_layouts(
+            commonware_runtime::BlobLayout::V0..=commonware_runtime::BlobLayout::V0,
+        );
 
     let source_runner = commonware_runtime::tokio::Runner::new(source_runtime_config);
     let state = source_runner.start(|context| async move {
@@ -301,6 +351,10 @@ fn collect_consensus_archive_output_files(
     let metadata =
         fs::metadata(path).wrap_err_with(|| format!("failed to stat {}", path.display()))?;
 
+    if is_hold_file(root, path) {
+        return Ok(());
+    }
+
     if metadata.is_file() {
         let relative = path.strip_prefix(root).wrap_err_with(|| {
             format!(
@@ -346,17 +400,41 @@ fn write_zstd_tar_archive(path: &Path, source_dir: &Path) -> eyre::Result<()> {
     let mut encoder = zstd::Encoder::new(file, 0)?;
     encoder.include_checksum(true)?;
     let mut builder = tar::Builder::new(encoder);
-    builder.append_dir_all("", source_dir).wrap_err_with(|| {
-        format!(
-            "failed to append consensus archive from {}",
-            source_dir.display()
-        )
-    })?;
+    for entry in fs::read_dir(source_dir)
+        .wrap_err_with(|| format!("failed to read directory {}", source_dir.display()))?
+    {
+        let entry = entry.wrap_err_with(|| {
+            format!("failed to read directory entry in {}", source_dir.display())
+        })?;
+        let path = entry.path();
+        // The output runtime's lock file carries no state; the restoring node
+        // recreates it on first open.
+        if is_hold_file(source_dir, &path) {
+            continue;
+        }
+        let name = entry.file_name();
+        let result = if path.is_dir() {
+            builder.append_dir_all(&name, &path)
+        } else {
+            builder.append_path_with_name(&path, &name)
+        };
+        result.wrap_err_with(|| {
+            format!("failed to append {} to consensus archive", path.display())
+        })?;
+    }
 
     builder.finish()?;
     let encoder = builder.into_inner()?;
     encoder.finish()?;
     Ok(())
+}
+
+/// Whether `path` is the Commonware lock file at the root of `root`.
+fn is_hold_file(root: &Path, path: &Path) -> bool {
+    path.parent() == Some(root)
+        && path
+            .file_name()
+            .is_some_and(|name| name == COMMONWARE_HOLD_FILE)
 }
 
 fn hash_file_blake3(path: &Path) -> eyre::Result<String> {
@@ -484,6 +562,10 @@ mod tests {
         fs::create_dir_all(&value_partition).unwrap();
         fs::write(key_partition.join("nested").join("00"), b"key").unwrap();
         fs::write(value_partition.join("00"), b"value").unwrap();
+        // The output runtime's lock file must not be packaged, but a blob that
+        // merely shares the name inside a partition must be.
+        fs::write(dir.path().join(COMMONWARE_HOLD_FILE), b"").unwrap();
+        fs::write(value_partition.join(COMMONWARE_HOLD_FILE), b"blob").unwrap();
 
         let archive_path = output.path().join("consensus.tar.zst");
         write_zstd_tar_archive(&archive_path, dir.path()).unwrap();
@@ -500,6 +582,93 @@ mod tests {
 
         assert!(paths.contains(&"partition-key/nested/00".to_string()));
         assert!(paths.contains(&"partition-value/00".to_string()));
+        assert!(paths.contains(&format!("partition-value/{COMMONWARE_HOLD_FILE}")));
+        assert!(!paths.contains(&COMMONWARE_HOLD_FILE.to_string()));
+
+        let mut listed = consensus_archive_output_files(dir.path())
+            .unwrap()
+            .into_iter()
+            .map(|file| file.path)
+            .collect::<Vec<_>>();
+        listed.sort();
+        assert_eq!(
+            listed,
+            vec![
+                "partition-key/nested/00".to_string(),
+                format!("partition-value/{COMMONWARE_HOLD_FILE}"),
+                "partition-value/00".to_string(),
+            ]
+        );
+    }
+
+    #[test]
+    fn commonware_runtime_holds_lock_file_while_running() {
+        let dir = tempfile::tempdir().unwrap();
+        let storage_dir = dir.path().join("consensus");
+        assert!(!storage_dir.exists());
+
+        // Run a Commonware runtime on its own thread, as a node process would,
+        // and keep it alive until told to stop.
+        let (ready_tx, ready_rx) = std::sync::mpsc::channel::<()>();
+        let (stop_tx, stop_rx) = tokio::sync::oneshot::channel::<()>();
+        let runtime_dir = storage_dir.clone();
+        let runtime = thread::spawn(move || {
+            let runner = commonware_runtime::tokio::Runner::new(
+                commonware_runtime::tokio::Config::default().with_storage_directory(runtime_dir),
+            );
+            runner.start(|context| async move {
+                // The hold lives as long as the storage handles the context
+                // owns, which is the node's whole run.
+                let _context = context;
+                ready_tx.send(()).unwrap();
+                let _ = stop_rx.await;
+            });
+        });
+        ready_rx.recv().unwrap();
+
+        // Constructing the runtime created the directory and exactly the lock
+        // file; no blob has been written.
+        let entries = fs::read_dir(&storage_dir)
+            .unwrap()
+            .map(|entry| entry.unwrap().file_name().into_string().unwrap())
+            .collect::<Vec<_>>();
+        assert_eq!(entries, vec![COMMONWARE_HOLD_FILE.to_string()]);
+
+        // Probe from outside the runtime while it holds the directory.
+        let err = ensure_consensus_storage_not_held(&storage_dir).unwrap_err();
+        assert!(err.to_string().contains("stop the node"), "{err}");
+
+        // Stopping the runtime releases the hold but leaves the file behind.
+        stop_tx.send(()).unwrap();
+        runtime.join().unwrap();
+        assert!(storage_dir.join(COMMONWARE_HOLD_FILE).is_file());
+        ensure_consensus_storage_not_held(&storage_dir).unwrap();
+    }
+
+    #[test]
+    fn snapshot_refuses_consensus_storage_held_by_another_runtime() {
+        let dir = tempfile::tempdir().unwrap();
+
+        // No hold file: the directory predates Commonware's lock.
+        ensure_consensus_storage_not_held(dir.path()).unwrap();
+
+        // Hold file present but unlocked: the previous run has exited.
+        let hold = dir.path().join(COMMONWARE_HOLD_FILE);
+        fs::write(&hold, b"").unwrap();
+        ensure_consensus_storage_not_held(dir.path()).unwrap();
+
+        // Locked through a separate open file description, as a running node
+        // would hold it.
+        let holder = fs::OpenOptions::new().write(true).open(&hold).unwrap();
+        holder.lock().unwrap();
+        let err = ensure_consensus_storage_not_held(dir.path()).unwrap_err();
+        assert!(
+            err.to_string().contains("stop the node"),
+            "unexpected error: {err}"
+        );
+
+        drop(holder);
+        ensure_consensus_storage_not_held(dir.path()).unwrap();
     }
 
     #[test]
