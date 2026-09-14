@@ -143,7 +143,7 @@ where
             mailbox: marshal_mailbox,
             finalized_floor,
             finalized_tip,
-            finalized_tip_evidence,
+            finalized_tip_header,
         } = alias::marshal::init(
             context.child("marshal"),
             page_cache_ref.clone(),
@@ -169,7 +169,7 @@ where
             crate::executor::Config {
                 execution_node: execution_node.clone(),
                 finalized_floor,
-                finalized_tip,
+                finalized_tip: (finalized_tip.0, finalized_tip.1, finalized_tip.2),
                 marshal: marshal_mailbox.clone(),
                 fcu_heartbeat_interval: self.fcu_heartbeat_interval,
                 public_key: Some(self.signer.public_key()),
@@ -283,7 +283,10 @@ where
                 execution_node,
                 initial_share: self.share.clone(),
                 last_finalized_height: finalized_floor,
-                finalized_tip: finalized_tip_evidence,
+                finalized_tip: crate::network_identity::FinalizedTip {
+                    header: finalized_tip_header,
+                    certificate: finalized_tip.3,
+                },
                 network_identity: self.network_identity,
                 mailbox_size: self.mailbox_size,
                 marshal: marshal_mailbox,

@@ -98,11 +98,17 @@ pub(crate) mod marshal {
 
         /// Finalized tip selected at startup from the archive or genesis,
         /// together with the round it was finalized in (the zero round for
-        /// genesis, which is not finalized in any round).
-        pub finalized_tip: (Round, Height, Digest),
+        /// genesis, which is not finalized in any round) and its certificate
+        /// (`None` for genesis).
+        pub finalized_tip: (
+            Round,
+            Height,
+            Digest,
+            Option<Finalization<Scheme<PublicKey, MinSig>, Digest>>,
+        ),
 
-        /// Header and certificate to validate before starting the engine's actors.
-        pub finalized_tip_evidence: crate::network_identity::FinalizedTip,
+        /// Header to validate against the tip certificate before starting the engine's actors.
+        pub finalized_tip_header: TempoHeader,
     }
 
     /// Initialize the marshal actor and its backing finalized-blocks store
@@ -174,13 +180,6 @@ pub(crate) mod marshal {
                     be available in execution or finalized-block storage"
                 )
             })?;
-        let tip_certificate = finalizations_by_height
-            .get(Identifier::Index(tip_height.get()))
-            .await
-            .wrap_err_with(|| {
-                format!("failed to read finalized tip certificate at height `{tip_height}`")
-            })?;
-
         if let marshal::Start::Floor(finalization) = &start {
             register_scheme(
                 &mut context,
@@ -246,16 +245,18 @@ pub(crate) mod marshal {
             mailbox,
             finalized_floor: last_finalized_height,
             finalized_tip,
-            finalized_tip_evidence: crate::network_identity::FinalizedTip {
-                header: tip_header,
-                certificate: tip_certificate,
-            },
+            finalized_tip_header: tip_header,
         })
     }
 
     struct FinalizationRange {
         floor: (Height, Digest),
-        tip: (Round, Height, Digest),
+        tip: (
+            Round,
+            Height,
+            Digest,
+            Option<Finalization<Scheme<PublicKey, MinSig>, Digest>>,
+        ),
     }
 
     async fn establish_finalization_range<TContext>(
@@ -275,7 +276,7 @@ pub(crate) mod marshal {
         let execution_finalized = execution_finalized_point(execution_node);
 
         match archive_range {
-            Some((floor, tip)) => Ok(FinalizationRange { floor, tip }),
+            Some(range) => Ok(range),
             None if execution_finalized.0.is_zero() => Ok(FinalizationRange {
                 floor: execution_finalized,
                 // Genesis is not finalized in any round; the zero round
@@ -284,6 +285,7 @@ pub(crate) mod marshal {
                     Round::default(),
                     execution_finalized.0,
                     execution_finalized.1,
+                    None,
                 ),
             }),
             None => Err(eyre!(
@@ -302,7 +304,7 @@ pub(crate) mod marshal {
             Digest,
             Finalization<Scheme<PublicKey, MinSig>, Digest>,
         >,
-    ) -> eyre::Result<Option<((Height, Digest), (Round, Height, Digest))>>
+    ) -> eyre::Result<Option<FinalizationRange>>
     where
         TContext: Clock + Metrics + Spawner + Storage + BufferPooler + Send + 'static,
     {
@@ -322,6 +324,7 @@ pub(crate) mod marshal {
             .wrap_err_with(|| {
                 format!("failed to read finalized floor from archive at height `{first}`")
             })?;
+        let floor_point = (floor.1, floor.2);
         let tip = if first == last {
             floor
         } else {
@@ -332,7 +335,10 @@ pub(crate) mod marshal {
                 })?
         };
 
-        Ok(Some(((floor.1, floor.2), tip)))
+        Ok(Some(FinalizationRange {
+            floor: floor_point,
+            tip: (tip.0, tip.1, tip.2, Some(tip.3)),
+        }))
     }
 
     async fn start_from_finalized_floor<TContext>(
@@ -479,7 +485,12 @@ pub(crate) mod marshal {
             Finalization<Scheme<PublicKey, MinSig>, Digest>,
         >,
         height: u64,
-    ) -> eyre::Result<(Round, Height, Digest)>
+    ) -> eyre::Result<(
+        Round,
+        Height,
+        Digest,
+        Finalization<Scheme<PublicKey, MinSig>, Digest>,
+    )>
     where
         TContext: Clock + Metrics + Spawner + Storage + BufferPooler + Send + 'static,
     {
@@ -492,6 +503,7 @@ pub(crate) mod marshal {
             finalization.proposal.round,
             Height::new(height),
             finalization.proposal.payload,
+            finalization,
         ))
     }
 

@@ -115,8 +115,8 @@ impl<TUpstream> Config<TUpstream> {
             actor: marshal_actor,
             mailbox: marshal_mailbox,
             finalized_floor: last_finalized_height,
-            finalized_tip_evidence,
-            ..
+            finalized_tip,
+            finalized_tip_header,
         } = alias::marshal::init(
             context.child("marshal"),
             page_cache_ref,
@@ -140,8 +140,8 @@ impl<TUpstream> Config<TUpstream> {
             &epoch_strategy,
             &self.network_identity,
             None,
-            &finalized_tip_evidence.header,
-            finalized_tip_evidence.certificate.as_ref(),
+            &finalized_tip_header,
+            finalized_tip.3.as_ref(),
         )?;
 
         info_span!("follow_engine").in_scope(|| {
