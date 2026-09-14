@@ -667,7 +667,7 @@ pub fn tempo_main_with(mut overrides: TempoOverrides) -> eyre::Result<()> {
 
     match consensus_handle.join() {
         Ok(Ok(())) => {}
-        Ok(Err(err)) => eprintln!("consensus task exited with error:\n{err:?}"),
+        Ok(Err(err)) => return Err(err).wrap_err("consensus task exited with error"),
         Err(unwind) => std::panic::resume_unwind(unwind),
     }
     Ok(())
