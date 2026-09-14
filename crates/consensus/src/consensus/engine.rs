@@ -7,7 +7,8 @@ use std::{num::NonZeroUsize, sync::Arc, time::Duration};
 use commonware_broadcast::buffered;
 use commonware_consensus::{
     Reporters, marshal,
-    types::{FixedEpocher, ViewDelta},
+    simplex::scheme::bls12381_threshold::vrf::Scheme,
+    types::{Epoch, FixedEpocher, ViewDelta},
 };
 use commonware_cryptography::{
     Signer as _,
@@ -50,6 +51,9 @@ const MAX_PENDING_ACKS: NonZeroUsize = NZUsize!(1);
 // because there doesn't really seem to be a point putting it into an extra initializer.
 pub struct Builder<TBlocker, TPeerManager> {
     pub execution_node: Option<Arc<TempoFullNode>>,
+
+    /// Trusted network identity to register before initializing consensus actors.
+    pub network_identity: tempo_chainspec::NetworkIdentity,
 
     pub blocker: TBlocker,
     pub peer_manager: TPeerManager,
@@ -140,6 +144,11 @@ where
         );
 
         let scheme_provider = SchemeProvider::new();
+        // Pin the binary's identity before marshal or any actor registers an epoch scheme.
+        scheme_provider.register(
+            Epoch::new(self.network_identity.from_epoch),
+            Scheme::certificate_verifier(config::NAMESPACE, self.network_identity.identity),
+        );
 
         let alias::marshal::Initialized {
             actor: marshal,
