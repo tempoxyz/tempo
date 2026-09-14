@@ -822,6 +822,7 @@ def txgen-run-preset-pipeline [
     }
 
     let txgen_duration = $"($duration)s"
+    let setup_state_path = ($spec_path | path dirname | path join "setup-state.json")
     let txgen_cmd = [
         $txgen_tempo_bin
         "generate"
@@ -830,6 +831,7 @@ def txgen-run-preset-pipeline [
         "--seed" $TXGEN_HELPER_DEFAULT_SEED
         "--rpc" $generate_rpc_url
     ] | append (if $is_vault or $preset_name == "zones" { [] } else { ["--duration" $txgen_duration] })
+      | append (if $is_public_mix { ["--setup-state-in" $setup_state_path] } else { [] })
     # Zones and vaults generate the full count: setup must not consume workload duration.
     let txgen_setup_cmd = [
         $txgen_tempo_bin
@@ -838,7 +840,7 @@ def txgen-run-preset-pipeline [
         "-n" 0
         "--seed" $TXGEN_HELPER_DEFAULT_SEED
         "--rpc" $generate_rpc_url
-    ]
+    ] | append (if $is_public_mix { ["--setup-state-out" $setup_state_path] } else { [] })
     let metrics_url_args = ($metrics_url | each { |url| ["--metrics-url" $url] } | flatten)
     let bench_send_base_cmd = [
         $txgen_bench_bin
@@ -893,10 +895,10 @@ def txgen-run-preset-pipeline [
 
     let bench_env_export = if $bench_env != "" { $"export ($bench_env) && " } else { "" }
     let txgen_extra_args = (txgen-parse-bench-args $bench_args)
-    let use_two_phase_setup = $is_vault or (txgen-spec-has-keychain-setup $spec_path)
+    let use_two_phase_setup = $is_vault or $is_public_mix or (txgen-spec-has-keychain-setup $spec_path)
     let txgen_cmd_str = (txgen-shell-join ($txgen_cmd | append $txgen_extra_args))
     let bench_cmd = if $use_two_phase_setup { $bench_cmd | append "--skip-setup" } else { $bench_cmd }
-    let bench_cmd = if $is_vault { $bench_cmd | append ["--drain-timeout" "300"] } else { $bench_cmd }
+    let bench_cmd = if $is_vault or $is_public_mix { $bench_cmd | append ["--drain-timeout" "300"] } else { $bench_cmd }
     let bench_cmd_str = (txgen-shell-join $bench_cmd)
     let pipeline = $"set -euo pipefail; ($bench_env_export)ulimit -Sn unlimited && ($txgen_cmd_str) | ($bench_cmd_str)"
 
@@ -905,7 +907,9 @@ def txgen-run-preset-pipeline [
         let bench_setup_cmd_str = (txgen-shell-join ($bench_send_base_cmd | append ["--drain-timeout" 0]))
         let setup_pipeline = $"set -euo pipefail; ($bench_env_export)ulimit -Sn unlimited && ($txgen_setup_cmd_str) | ($bench_setup_cmd_str)"
 
-        if $is_vault {
+        if $is_public_mix {
+            print "  Streaming public-mix setup; preserving deployment bindings for the workload..."
+        } else if $is_vault {
             print "  Streaming vault setup transactions into bench send..."
         } else {
             print "  Streaming keychain setup transactions into bench send..."
@@ -943,7 +947,7 @@ def txgen-run-preset-pipeline [
         return { ok: false, exit_code: 1, report_path: $report_path }
     }
 
-    if $preset_name in ["zones" "vault-deposit" "vault-withdraw"] and (open $report_path).failed > 0 {
+    if $preset_name in ["zones" "vault-deposit" "vault-withdraw" "public-mix"] and (open $report_path).failed > 0 {
         print $"ERROR: ($preset_name) workload contains sender failures; see ($report_path)"
         return { ok: false, exit_code: 1, report_path: $report_path }
     }
