@@ -141,6 +141,11 @@ impl StorageCtx {
             .with_gas_params(gas_params);
         storage.set_tip1060_storage_credits(false);
         let result = Self::enter(&mut storage, f);
+        let logs = storage.take_pending_logs();
+        drop(storage);
+        for log in logs {
+            evm.log(log);
+        }
         (result, gas)
     }
 
@@ -161,7 +166,13 @@ impl StorageCtx {
             .with_actions(actions)
             .with_non_creditable_slots(non_creditable_slots);
         storage.set_tip1060_storage_credits(tip1060_storage_credits);
-        Self::enter(&mut storage, f)
+        let result = Self::enter(&mut storage, f);
+        let logs = storage.take_pending_logs();
+        drop(storage);
+        for log in logs {
+            evm.log(log);
+        }
+        result
     }
 
     /// Execute an infallible function with access to the current thread-local storage provider.

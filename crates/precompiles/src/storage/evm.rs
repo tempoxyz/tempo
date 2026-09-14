@@ -34,6 +34,11 @@ pub struct EvmPrecompileStorageProvider<'state, 'gas, 'db> {
     non_creditable_slots: Rc<RefCell<NonCreditableSlots>>,
     /// Recorded storage actions.
     actions: StorageActions,
+    /// Logs emitted while the provider exclusively borrows EVM state.
+    ///
+    /// These are forwarded through `Evm::log` after the storage context exits so
+    /// inspectors are notified exactly once.
+    pending_logs: Vec<Log>,
 }
 
 impl<'state, 'gas, 'db> EvmPrecompileStorageProvider<'state, 'gas, 'db> {
@@ -95,7 +100,13 @@ impl<'state, 'gas, 'db> EvmPrecompileStorageProvider<'state, 'gas, 'db> {
             tip1060_storage_credit_minting_enabled: true,
             non_creditable_slots: Rc::new(RefCell::new(NonCreditableSlots::empty())),
             actions: StorageActions::disabled(),
+            pending_logs: Vec::new(),
         }
+    }
+
+    /// Takes logs that must be forwarded through [`Evm::log`].
+    pub fn take_pending_logs(&mut self) -> Vec<Log> {
+        std::mem::take(&mut self.pending_logs)
     }
 
     /// Sets the storage actions for this provider.
@@ -575,7 +586,7 @@ impl PrecompileStorageProvider for EvmPrecompileStorageProvider<'_, '_, '_> {
             ),
         )?;
 
-        self.state.log(Log {
+        self.pending_logs.push(Log {
             address,
             data: event,
         });
@@ -658,7 +669,8 @@ impl PrecompileStorageProvider for EvmPrecompileStorageProvider<'_, '_, '_> {
 
     #[inline]
     fn checkpoint(&mut self) -> evm2::evm::StateCheckpoint {
-        self.state.checkpoint()
+        let checkpoint = self.state.checkpoint();
+        evm2::evm::StateCheckpoint::new(checkpoint.journal_len(), self.pending_logs.len())
     }
 
     #[inline]
@@ -666,7 +678,10 @@ impl PrecompileStorageProvider for EvmPrecompileStorageProvider<'_, '_, '_> {
 
     #[inline]
     fn checkpoint_revert(&mut self, checkpoint: evm2::evm::StateCheckpoint) {
-        self.state.rollback(checkpoint, self.version.features);
+        self.pending_logs.truncate(checkpoint.logs_len());
+        let state_checkpoint =
+            evm2::evm::StateCheckpoint::new(checkpoint.journal_len(), self.state.logs().len());
+        self.state.rollback(state_checkpoint, self.version.features);
     }
 
     #[inline]
@@ -689,7 +704,7 @@ mod tests {
         storage::{PrecompileStorageProvider, StorageActions, actions::StorageAction},
         storage_credits::StorageCredits,
     };
-    use alloy::primitives::{Address, B256, Bytes, LogData, U256, b256, bytes, keccak256};
+    use alloy::primitives::{Address, B256, Bytes, Log, LogData, U256, b256, bytes, keccak256};
     use alloy_signer::SignerSync;
     use alloy_signer_local::PrivateKeySigner;
     use evm2::{
@@ -932,10 +947,20 @@ mod tests {
             "00000000000000000000000000000000000000000000000000000000000000200000000000000000000000000000000000000000000000000000000000000001"
         );
 
+        let address = Address::random();
         let log_data = LogData::new_unchecked(vec![topic], data);
 
-        // Should not error even though events can't be emitted from handlers
-        provider.emit_event(Address::random(), log_data)?;
+        provider.emit_event(address, log_data.clone())?;
+        let checkpoint = provider.checkpoint();
+        provider.emit_event(Address::random(), LogData::default())?;
+        provider.checkpoint_revert(checkpoint);
+        assert_eq!(
+            provider.take_pending_logs(),
+            vec![Log {
+                address,
+                data: log_data
+            }]
+        );
 
         Ok(())
     }
