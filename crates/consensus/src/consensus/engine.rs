@@ -208,10 +208,10 @@ where
                 execution_node: execution_node.clone(),
                 oracle: self.peer_manager.clone(),
                 epoch_strategy: epoch_strategy.clone(),
-                finalized_floor,
                 finalized_tip: (tip_height, tip_digest),
             },
-        );
+        )
+        .wrap_err("failed initializing peer manager")?;
 
         let (broadcast, broadcast_mailbox) = buffered::Engine::new(
             context.child("broadcast"),
@@ -395,7 +395,7 @@ where
 
     epoch_manager: epoch::manager::Actor<TContext, TBlocker>,
 
-    peer_manager: peer_manager::Actor<TContext, TPeerManager>,
+    peer_manager: peer_manager::Actor<TContext, TPeerManager, TempoFullNode>,
     peer_manager_mailbox: peer_manager::Mailbox,
 
     feed: crate::feed::Actor<TContext>,
