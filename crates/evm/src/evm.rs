@@ -4573,6 +4573,170 @@ mod tests {
         Ok(())
     }
 
+    /// TIP-1016 / EIP-8037: a reverting CREATE must not consume `create_state_gas`,
+    /// no matter where the CREATE sits.
+    ///
+    /// Each scenario's create-state-gas consumption is measured as the gas
+    /// delta between default T4 params and `create_state_gas` overridden to
+    /// zero: equal gas across the override means the charge was fully refunded.
+    #[test]
+    fn test_t4_reverting_create_refunds_state_gas_like_inner_create() -> eyre::Result<()> {
+        let caller = Address::repeat_byte(0x11);
+        // PUSH1 0 PUSH1 0 REVERT
+        let reverting_initcode = bytes!("60006000fd");
+        // Runtime code that CREATEs the reverting initcode and swallows the
+        // failure: PUSH5 <initcode> PUSH1 0 MSTORE (initcode at memory[27..32]),
+        // then PUSH1 5 PUSH1 27 PUSH1 0 CREATE POP STOP.
+        let inner_create_code = bytes!("6460006000fd6000526005601b6000f05000");
+
+        assert!(
+            tempo_chainspec::gas_params::version(SpecId::OSAKA, TempoHardfork::T4, true)
+                .gas_params
+                .create_state_gas()
+                > 0,
+            "T4 must price CREATE state gas for this test to be meaningful"
+        );
+
+        let run = |top_level: bool, zero_create_state_gas: bool| -> eyre::Result<u64> {
+            let mut evm = create_funded_evm_t4(caller);
+            if zero_create_state_gas {
+                let mut version = *evm.version();
+                version.gas_params.set(evm2::version::GasId::CreateState, 0);
+                let precompiles = tempo_precompiles::TempoPrecompiles::<TempoEvmTypes>::new(
+                    TempoHardfork::T4,
+                    evm.ext().actions.clone(),
+                    evm.ext().non_creditable_slots.clone(),
+                );
+                evm.set_execution_config(
+                    ExecutionConfig::for_spec_and_version(TempoHardfork::T4, version),
+                    TempoHardfork::T4,
+                    tempo_tx_registry(SpecId::OSAKA),
+                    precompiles,
+                );
+            }
+
+            let tx_env = if top_level {
+                legacy_tx_env(
+                    caller,
+                    0,
+                    TxKind::Create,
+                    reverting_initcode.clone(),
+                    3_000_000,
+                )
+            } else {
+                let contract = Address::repeat_byte(0x42);
+                evm.overlay_db_mut().insert_account_info(
+                    &contract,
+                    AccountInfo {
+                        code: Some(Bytecode::new_raw(inner_create_code.clone())),
+                        ..Default::default()
+                    },
+                );
+                legacy_tx_env(caller, 0, TxKind::Call(contract), Bytes::new(), 3_000_000)
+            };
+
+            let result = evm.transact_commit(tx_env)?;
+            if top_level {
+                assert!(!result.is_success(), "top-level CREATE should revert");
+            } else {
+                assert!(
+                    result.is_success(),
+                    "inner-CREATE caller swallows the revert"
+                );
+            }
+            Ok(result.tx_gas_used())
+        };
+
+        assert_eq!(
+            run(false, false)?,
+            run(false, true)?,
+            "reverting inner CREATE must refund its create_state_gas"
+        );
+        assert_eq!(
+            run(true, false)?,
+            run(true, true)?,
+            "reverting top-level CREATE must refund create_state_gas like a reverting inner CREATE"
+        );
+        Ok(())
+    }
+
+    /// Same regression for the AA batch path: a failed batch must refund the
+    /// CREATE state gas of every CREATE call in the batch — both the reverting
+    /// CREATE itself and a successfully deployed CREATE whose state is rolled
+    /// back by the atomic batch revert.
+    #[test]
+    fn test_t4_aa_reverting_create_refunds_state_gas() -> eyre::Result<()> {
+        let key_pair = P256KeyPair::random();
+        let caller = key_pair.address;
+
+        // PUSH1 0 PUSH1 0 REVERT
+        let reverting_initcode = bytes!("60006000fd");
+        // PUSH1 0 PUSH1 0 RETURN — deploys an empty contract
+        let empty_initcode = bytes!("60006000f3");
+        // Contract whose runtime code reverts immediately.
+        let reverting_contract = Address::repeat_byte(0x42);
+
+        // Scenario 1: the CREATE call itself reverts.
+        let create_reverts = key_pair.sign_tx(
+            TxBuilder::new()
+                .create(&reverting_initcode)
+                .gas_limit(5_000_000)
+                .build(),
+        )?;
+        // Scenario 2: the CREATE deploys, then a later call fails the batch.
+        let batch_reverts_after_create = key_pair.sign_tx(
+            TxBuilder::new()
+                .create(&empty_initcode)
+                .call(reverting_contract, &[])
+                .gas_limit(5_000_000)
+                .build(),
+        )?;
+
+        let run = |signed_tx: &AASigned, zero_create_state_gas: bool| -> eyre::Result<u64> {
+            let mut evm = create_funded_evm_t4(caller);
+            if zero_create_state_gas {
+                let mut version = *evm.version();
+                version.gas_params.set(evm2::version::GasId::CreateState, 0);
+                let precompiles = tempo_precompiles::TempoPrecompiles::<TempoEvmTypes>::new(
+                    TempoHardfork::T4,
+                    evm.ext().actions.clone(),
+                    evm.ext().non_creditable_slots.clone(),
+                );
+                evm.set_execution_config(
+                    ExecutionConfig::for_spec_and_version(TempoHardfork::T4, version),
+                    TempoHardfork::T4,
+                    tempo_tx_registry(SpecId::OSAKA),
+                    precompiles,
+                );
+            }
+            evm.overlay_db_mut().insert_account_info(
+                &reverting_contract,
+                AccountInfo {
+                    code: Some(Bytecode::new_raw(bytes!("60006000fd"))),
+                    ..Default::default()
+                },
+            );
+
+            let result = evm.transact_commit(
+                Recovered::new_unchecked(TempoTxEnvelope::AA(signed_tx.clone()), caller).into(),
+            )?;
+            assert!(!result.is_success(), "the batch should fail");
+            Ok(result.tx_gas_used())
+        };
+
+        assert_eq!(
+            run(&create_reverts, false)?,
+            run(&create_reverts, true)?,
+            "a reverting AA CREATE call must refund its create_state_gas"
+        );
+        assert_eq!(
+            run(&batch_reverts_after_create, false)?,
+            run(&batch_reverts_after_create, true)?,
+            "a rolled-back deployed AA CREATE call must refund its create_state_gas"
+        );
+        Ok(())
+    }
+
     /// Test AA transaction gas for CREATE with 2D nonce (nonce_key != 0).
     /// When caller account nonce is 0, an additional 250k gas is charged for account creation.
     /// Uses T1 hardfork for TIP-1000 gas costs.

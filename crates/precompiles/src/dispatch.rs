@@ -343,17 +343,15 @@ mod tests {
                         &calldata,
                         |call| match call {
                             ITestMemoryDispatch::ITestMemoryDispatchCalls {
-                                setValues(_) => Ok(PrecompileOutput::new(0, Bytes::new(), 0)),
+                                setValues(_) => Ok(evm2::precompile::PrecompileOutput::new(
+                                    Bytes::new(),
+                                )),
                             }
                         }
                     )
-                })?;
+                });
                 let expected_success = suffix_len == 0 || !spec.is_t11() || spec.is_t12();
-                assert_eq!(
-                    output.is_success(),
-                    expected_success,
-                    "{spec:?}, {suffix_len}"
-                );
+                assert_eq!(output.is_ok(), expected_success, "{spec:?}, {suffix_len}");
             }
 
             // Allowing a suffix must not permit gaps inside the encoding.

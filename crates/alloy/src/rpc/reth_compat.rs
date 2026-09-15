@@ -306,6 +306,49 @@ mod tests {
     }
 
     #[test]
+    fn access_key_request_populates_typed_simulation_env() {
+        let root = address!("0xaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa");
+        let key_id = address!("0xbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb");
+        let target = address!("0xcccccccccccccccccccccccccccccccccccccccc");
+        let request = TempoTransactionRequest {
+            inner: TransactionRequest {
+                from: Some(root),
+                to: Some(TxKind::Call(target)),
+                nonce: Some(0),
+                gas: Some(100_000),
+                max_fee_per_gas: Some(1_000_000_000),
+                max_priority_fee_per_gas: Some(1_000_000),
+                chain_id: Some(4217),
+                ..Default::default()
+            },
+            key_type: Some(SignatureType::Secp256k1),
+            key_id: Some(key_id),
+            ..Default::default()
+        };
+
+        let env = request
+            .try_into_tx_env(&TempoEvmEnv::default())
+            .expect("valid simulation request");
+        let aa = env.as_aa().expect("AA simulation env");
+
+        assert_eq!(aa.override_key_id(), Some(key_id));
+        assert_eq!(aa.inner().tx().calls.len(), 1);
+        assert_eq!(aa.inner().tx().calls[0].to, TxKind::Call(target));
+        assert!(matches!(
+            aa.inner().signature(),
+            TempoSignature::Keychain(_)
+        ));
+        assert_eq!(
+            env.execution_context(),
+            tempo_evm::ExecutionContext::Simulation
+        );
+        assert_eq!(
+            env.channel_open_context_hash(),
+            RPC_SIMULATION_UNIQUE_TX_IDENTIFIER
+        );
+    }
+
+    #[test]
     fn test_estimate_gas_when_calls_set() {
         let existing_call = Call {
             to: TxKind::Call(address!("0x1111111111111111111111111111111111111111")),
