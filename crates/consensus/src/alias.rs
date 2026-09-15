@@ -2,14 +2,14 @@
 //! (primarily commonware) types.
 
 pub(crate) mod marshal {
-    use std::{num::NonZeroUsize, sync::Arc};
+    use std::{future::Future, num::NonZeroUsize, pin::Pin, sync::Arc};
 
     use alloy_consensus::{BlockHeader as _, Sealable as _};
     use commonware_codec::ReadExt as _;
     use commonware_consensus::{
         Epochable as _,
-        marshal::{self, core, standard::Standard},
-        simplex::{scheme::bls12381_threshold::vrf::Scheme, types::Finalization},
+        marshal::{self, core, core::DigestFallback, standard::Standard},
+        simplex::scheme::bls12381_threshold::vrf::Scheme,
         types::{Epoch, Epocher as _, FixedEpocher, Height, Round, ViewDelta},
     };
     use commonware_cryptography::{bls12381::primitives::variant::MinSig, ed25519::PublicKey};
@@ -32,6 +32,7 @@ pub(crate) mod marshal {
     use crate::{
         consensus::{Digest, block::Block},
         epoch::SchemeProvider,
+        gossip::Certificate,
         storage::{self, Hybrid},
     };
 
@@ -39,7 +40,7 @@ pub(crate) mod marshal {
         TContext,
         Standard<Block>,
         SchemeProvider,
-        immutable::Archive<TContext, Digest, Finalization<Scheme<PublicKey, MinSig>, Digest>>,
+        immutable::Archive<TContext, Digest, Certificate>,
         Hybrid<TContext, BlockchainProvider<NodeTypesWithDBAdapter<TempoNode, DatabaseEnv>>>,
         FixedEpocher,
         Sequential,
@@ -80,12 +81,16 @@ pub(crate) mod marshal {
         pub scheme_provider: SchemeProvider,
     }
 
+    /// Deferred header recovery and binding, polled after marshal starts.
+    pub(crate) type FinalizedTipFuture =
+        Pin<Box<dyn Future<Output = eyre::Result<FinalizedTip>> + Send + Sync>>;
+
     /// A non-genesis finalized tip, checked against its header.
     #[derive(Clone, Debug)]
     pub(crate) struct FinalizedTip {
         /// Height recorded in the archive, checked against the header by the constructor.
         height: Height,
-        certificate: Finalization<Scheme<PublicKey, MinSig>, Digest>,
+        certificate: Certificate,
     }
 
     impl FinalizedTip {
@@ -94,7 +99,7 @@ pub(crate) mod marshal {
         pub(crate) fn new(
             height: Height,
             header: &TempoHeader,
-            certificate: Finalization<Scheme<PublicKey, MinSig>, Digest>,
+            certificate: Certificate,
         ) -> eyre::Result<Self> {
             ensure!(
                 header.number() == height.get(),
@@ -111,11 +116,34 @@ pub(crate) mod marshal {
             })
         }
 
+        /// Wait for marshal to recover a missing header, then enforce the same
+        /// binding as for a header found locally. This does not wait for replay.
+        #[instrument(skip_all, fields(%height), err(Display))]
+        pub(crate) async fn recover(
+            height: Height,
+            certificate: Certificate,
+            header: Option<TempoHeader>,
+            recovered_block: impl Future<Output = Option<Arc<Block>>>,
+        ) -> eyre::Result<Self> {
+            let header = match header {
+                Some(header) => header,
+                None => {
+                    info!(digest = %certificate.proposal.payload, "waiting for marshal to recover finalized tip header");
+                    recovered_block
+                        .await
+                        .ok_or_eyre("marshal closed finalized tip subscription without a block")?
+                        .header()
+                        .clone()
+                }
+            };
+            Self::new(height, &header, certificate)
+        }
+
         pub(crate) fn height(&self) -> Height {
             self.height
         }
 
-        pub(crate) fn certificate(&self) -> &Finalization<Scheme<PublicKey, MinSig>, Digest> {
+        pub(crate) fn certificate(&self) -> &Certificate {
             &self.certificate
         }
     }
@@ -136,8 +164,10 @@ pub(crate) mod marshal {
         /// height and the startup floor height.
         pub finalized_floor: Height,
 
-        /// Certified tip selected from the archive. `None` only at genesis.
-        pub finalized_tip: Option<FinalizedTip>,
+        /// Archive tip height and certificate, with deferred header validation.
+        /// Poll the future after starting marshal, which may need to recover the
+        /// block from its cache or peers. `None` only at genesis.
+        pub finalized_tip: Option<(Height, Certificate, FinalizedTipFuture)>,
     }
 
     /// Initialize the marshal actor and its backing finalized-blocks store
@@ -192,10 +222,10 @@ pub(crate) mod marshal {
         )
         .await?;
         let (tip_round, tip_height, tip_digest) = match &finalized_tip {
-            Some(tip) => (
-                tip.certificate().proposal.round,
-                tip.height(),
-                tip.certificate().proposal.payload,
+            Some((height, certificate, _)) => (
+                certificate.proposal.round,
+                *height,
+                certificate.proposal.payload,
             ),
             None => (Round::zero(), finalized_floor.0, finalized_floor.1),
         };
@@ -271,6 +301,26 @@ pub(crate) mod marshal {
             "setting marshal sync floor"
         );
 
+        let finalized_tip = finalized_tip.map(|(height, certificate, header)| {
+            let mailbox = mailbox.clone();
+            let digest = certificate.proposal.payload;
+            // Marshal repairs trailing missing blocks independently of ordered
+            // dispatch. Waiting on dispatch here would deadlock with executor readiness.
+            let block = async move {
+                mailbox
+                    .subscribe_by_digest(digest, DigestFallback::Wait)
+                    .await
+                    .ok()
+            };
+            let validation = Box::pin(FinalizedTip::recover(
+                height,
+                certificate.clone(),
+                header,
+                block,
+            )) as FinalizedTipFuture;
+            (height, certificate, validation)
+        });
+
         Ok(Initialized {
             actor,
             mailbox,
@@ -281,15 +331,11 @@ pub(crate) mod marshal {
 
     struct FinalizationRange {
         floor: (Height, Digest),
-        tip: Option<FinalizedTip>,
+        tip: Option<(Height, Certificate, Option<TempoHeader>)>,
     }
 
     async fn establish_finalization_range<TContext>(
-        certificates: &immutable::Archive<
-            TContext,
-            Digest,
-            Finalization<Scheme<PublicKey, MinSig>, Digest>,
-        >,
+        certificates: &immutable::Archive<TContext, Digest, Certificate>,
         blocks: &Hybrid<
             TContext,
             BlockchainProvider<NodeTypesWithDBAdapter<TempoNode, DatabaseEnv>>,
@@ -344,21 +390,19 @@ pub(crate) mod marshal {
         let header = blocks
             .get_header(Identifier::Key(&certificate.proposal.payload))
             .await
-            .wrap_err("failed reading finalized tip header")?
-            .ok_or_eyre("missing finalized tip header in hybrid store")?;
+            .wrap_err("failed reading finalized tip header")?;
+        if let Some(header) = &header {
+            FinalizedTip::new(height, header, certificate.clone())?;
+        }
 
         Ok(FinalizationRange {
             floor,
-            tip: Some(FinalizedTip::new(height, &header, certificate)?),
+            tip: Some((height, certificate, header)),
         })
     }
 
     async fn start_from_finalized_floor<TContext>(
-        archive: &immutable::Archive<
-            TContext,
-            Digest,
-            Finalization<Scheme<PublicKey, MinSig>, Digest>,
-        >,
+        archive: &immutable::Archive<TContext, Digest, Certificate>,
         execution_node: &TempoFullNode,
         finalized_floor: (Height, Digest),
     ) -> eyre::Result<marshal::Start<Scheme<PublicKey, MinSig>, Digest, Block>>
@@ -398,7 +442,7 @@ pub(crate) mod marshal {
             TContext,
             BlockchainProvider<NodeTypesWithDBAdapter<TempoNode, DatabaseEnv>>,
         >,
-        finalization: &Finalization<Scheme<PublicKey, MinSig>, Digest>,
+        finalization: &Certificate,
     ) -> eyre::Result<()>
     where
         TContext: Clock + Metrics + Storage + BufferPooler + CryptoRng + Send + Sync + 'static,
@@ -471,6 +515,34 @@ pub(crate) mod marshal {
             consensus::Digest,
             test_utils::{dkg_fixture, make_certificate},
         };
+
+        #[test]
+        fn locally_available_tip_header_does_not_wait_for_a_block() {
+            Runner::default().start(|mut context| async move {
+                let fixture = dkg_fixture(&mut context, Epoch::new(1));
+                let height = Height::new(12);
+                let header = TempoHeader {
+                    inner: Header {
+                        number: height.get(),
+                        ..Default::default()
+                    },
+                    ..Default::default()
+                };
+                let certificate = make_certificate(
+                    Digest(header.hash_slow()),
+                    Epoch::new(1),
+                    1,
+                    &fixture.schemes,
+                );
+                let tip = FinalizedTip::recover(height, certificate.clone(), Some(header), async {
+                    panic!("header-only lookup must not subscribe for the full block")
+                })
+                .await
+                .unwrap();
+                assert_eq!(tip.height(), height);
+                assert_eq!(tip.certificate(), &certificate);
+            });
+        }
 
         #[test]
         fn finalized_tip_binds_archive_height_and_header_to_certificate() {

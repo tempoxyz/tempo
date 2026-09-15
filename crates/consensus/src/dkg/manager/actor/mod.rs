@@ -192,6 +192,19 @@ where
             return;
         };
 
+        // Marshal must be running to resolve a tip missing from finalized storage.
+        // Epoch readiness remains withheld until both header and certificate validate.
+        let finalized_tip = match self.config.finalized_tip.take() {
+            Some(validation) => match validation.await {
+                Ok(tip) => Some(tip),
+                Err(error) => {
+                    warn!(%error, "failed resolving finalized tip");
+                    return;
+                }
+            },
+            None => None,
+        };
+
         // Check against the original persisted identity before healing can
         // replace stale state with an outcome supplied by the snapshot.
         if startup::verify_finalized_tip(
@@ -199,7 +212,7 @@ where
             &self.config.epoch_strategy,
             &self.config.network_identity,
             opened.state(),
-            self.config.finalized_tip.as_ref(),
+            finalized_tip.as_ref(),
             self.config.last_finalized_height,
         )
         .is_err()

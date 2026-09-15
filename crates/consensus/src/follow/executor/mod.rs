@@ -48,6 +48,8 @@ pub(crate) struct Config<P, E, M = crate::alias::marshal::Mailbox> {
     pub(crate) marshal: M,
     pub(crate) epoch_strategy: FixedEpocher,
     pub(crate) floor: Height,
+    /// Bind the startup archive tip to its header before advancing execution.
+    pub(crate) finalized_tip: Option<crate::alias::marshal::FinalizedTipFuture>,
     pub(crate) fcu_heartbeat_interval: std::time::Duration,
 }
 

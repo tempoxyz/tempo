@@ -177,10 +177,10 @@ where
         .wrap_err("failed to initialize marshal")?;
 
         let (tip_round, tip_height, tip_digest) = match &finalized_tip {
-            Some(tip) => (
-                tip.certificate().proposal.round,
-                tip.height(),
-                tip.certificate().proposal.payload,
+            Some((height, certificate, _)) => (
+                certificate.proposal.round,
+                *height,
+                certificate.proposal.payload,
             ),
             None => (
                 Round::zero(),
@@ -306,7 +306,7 @@ where
                 epoch_strategy: epoch_strategy.clone(),
                 execution_node,
                 initial_share: self.share.clone(),
-                finalized_tip,
+                finalized_tip: finalized_tip.map(|(_, _, validation)| validation),
                 network_identity: self.network_identity,
                 last_finalized_height: finalized_floor,
                 mailbox_size: self.mailbox_size,

@@ -12,7 +12,7 @@ use std::{
 };
 
 use crate::{
-    alias::marshal::FinalizedTip,
+    alias::marshal::{FinalizedTip, FinalizedTipFuture},
     test_utils::{dkg_fixture, make_certificate},
 };
 use alloy_consensus::{Header, Sealable as _};
@@ -247,6 +247,14 @@ impl Harness {
     }
 
     pub(super) async fn start(&mut self) {
+        let tip = self
+            .finalized_tip
+            .clone()
+            .map(|tip| Box::pin(async move { Ok(tip) }) as FinalizedTipFuture);
+        self.start_with_tip(tip).await;
+    }
+
+    pub(super) async fn start_with_tip(&mut self, finalized_tip: Option<FinalizedTipFuture>) {
         assert!(self.handle.is_none(), "DKG actor is already running");
         drop(self.storage.take());
         let (actor, mailbox) = init(
@@ -259,7 +267,7 @@ impl Harness {
                 mailbox_size: NonZeroUsize::new(1).unwrap(),
                 marshal: self.marshal.clone(),
                 last_finalized_height: self.last_finalized_height,
-                finalized_tip: self.finalized_tip.clone(),
+                finalized_tip,
                 network_identity: self.network_identity.clone(),
                 partition_prefix: self.partition_prefix.clone(),
                 execution_node: self.execution.clone(),

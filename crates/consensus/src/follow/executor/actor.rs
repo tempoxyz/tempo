@@ -44,6 +44,7 @@ pub(crate) struct Actor<TContext, P, E, M = crate::alias::marshal::Mailbox> {
 
     epoch_strategy: FixedEpocher,
     floor: Height,
+    finalized_tip: Option<crate::alias::marshal::FinalizedTipFuture>,
 
     last_fcu: Target,
     latest_tip: Target,
@@ -75,6 +76,7 @@ where
             marshal,
             epoch_strategy,
             floor,
+            finalized_tip,
             fcu_heartbeat_interval,
         } = config;
 
@@ -90,6 +92,7 @@ where
             marshal,
             epoch_strategy,
             floor,
+            finalized_tip,
             execution_provider,
             execution_engine,
 
@@ -109,6 +112,13 @@ where
     }
 
     async fn run(mut self) {
+        if let Some(validation) = self.finalized_tip.take()
+            && let Err(error) = validation.await
+        {
+            error!(%error, "failed resolving finalized tip");
+            return;
+        }
+
         let mut heartbeat = false;
         loop {
             self.start_execution_task(heartbeat);

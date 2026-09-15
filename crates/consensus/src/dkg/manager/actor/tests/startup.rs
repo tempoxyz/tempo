@@ -14,7 +14,7 @@ use super::{
         startup::verify_finalized_tip,
         state::{self, ShareState, State},
     },
-    harness::{Harness, header, outcome_header},
+    harness::{Harness, block, header, outcome_header},
 };
 use crate::{
     alias::marshal::FinalizedTip,
@@ -340,4 +340,103 @@ fn authenticated_tip_allows_healing_from_an_older_floor() {
         assert_eq!(harness.storage().current().output, current_state.output);
         assert_eq!(harness.execution.reads(), vec![Height::new(19)]);
     });
+}
+
+#[test]
+fn tip_recovery_precedes_healing_and_epoch_entry() {
+    for case in [
+        "valid",
+        "wrong_height",
+        "wrong_hash",
+        "invalid_signature",
+        "closed",
+    ] {
+        Runner::default().start(|mut context| async move {
+            let old = dkg_fixture(&mut context, Epoch::new(1));
+            let current = dkg_fixture(&mut context, Epoch::new(2));
+            let old_state = persisted(&old, &mut context);
+            let current_state = persisted(&current, &mut context);
+            let prefix = "recover_tip_before_healing";
+            let tip_header = header(Height::new(22));
+            let tip = tip_for_header(&current, &tip_header);
+            let mut certificate = tip.certificate().clone();
+            let mut recovered_header = tip_header;
+            let archive_height = if case == "wrong_height" {
+                tip.height().next()
+            } else {
+                tip.height()
+            };
+            if case == "wrong_hash" {
+                recovered_header.inner.extra_data = vec![1].into();
+            }
+            if case == "invalid_signature" {
+                // Header binding succeeds, but this signature uses the old key.
+                certificate = tip_for_header(&old, &recovered_header)
+                    .certificate()
+                    .clone();
+            }
+
+            let mut harness = Harness::builder(context.child("test"), prefix)
+                .initial_state(old_state.clone())
+                .identity(commonware_cryptography::ed25519::PrivateKey::from_seed(
+                    u64::MAX,
+                ))
+                .finalized_floor(Height::new(19))
+                .startup(identity(&current), Some(tip))
+                .build()
+                .await;
+            harness
+                .execution
+                .add_header(outcome_header(Height::new(19), &current_state));
+
+            let (recovery_started, waiting) = tokio::sync::oneshot::channel();
+            let (recovered, block_rx) = tokio::sync::oneshot::channel();
+            let validation = Box::pin(FinalizedTip::recover(
+                archive_height,
+                certificate,
+                None,
+                async move {
+                    recovery_started.send(()).unwrap();
+                    block_rx.await.ok()
+                },
+            ));
+            harness.start_with_tip(Some(validation)).await;
+            waiting.await.unwrap();
+            assert!(
+                harness.execution.reads().is_empty(),
+                "must not heal while the tip is missing"
+            );
+            assert!(
+                harness.epoch_manager.events().is_empty(),
+                "must not enter an epoch while the tip is missing"
+            );
+
+            // Deliver directly, without sending or acknowledging replayed blocks.
+            if case == "closed" {
+                drop(recovered);
+            } else {
+                recovered
+                    .send(std::sync::Arc::new(block(recovered_header)))
+                    .unwrap();
+            }
+            if case == "valid" {
+                assert!(!harness.has_dealer_log(current_state.epoch).await);
+                assert!(!harness.epoch_manager.events().is_empty());
+                harness.stop().await;
+                assert_eq!(harness.storage().current().output, current_state.output);
+            } else {
+                harness.wait_for_actor_exit().await;
+                assert!(harness.epoch_manager.events().is_empty(), "{case}");
+                assert!(harness.execution.reads().is_empty(), "{case}");
+                let storage = state::builder()
+                    .partition_prefix(prefix)
+                    .init_unverified(context.child("inspect_storage"))
+                    .await
+                    .unwrap();
+                let persisted = storage.state().unwrap();
+                assert_eq!(persisted.epoch, old_state.epoch, "{case}");
+                assert_eq!(persisted.output, old_state.output, "{case}");
+            }
+        });
+    }
 }

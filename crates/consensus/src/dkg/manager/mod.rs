@@ -76,9 +76,9 @@ pub(crate) struct Config<TExecutionLayer, TMarshal, TEpochManager> {
     /// boundary block that seeds the initial DKG state.
     pub(crate) last_finalized_height: Height,
 
-    /// Certified archive tip to authenticate before healing local DKG state.
-    /// `None` only at genesis.
-    pub(crate) finalized_tip: Option<crate::alias::marshal::FinalizedTip>,
+    /// Resolves and binds the archive tip's header before authenticating its
+    /// certificate and healing local DKG state. `None` only at genesis.
+    pub(crate) finalized_tip: Option<crate::alias::marshal::FinalizedTipFuture>,
 
     /// Trusted identity supplied by the binary or its explicit configuration.
     pub(crate) network_identity: tempo_chainspec::NetworkIdentity,
