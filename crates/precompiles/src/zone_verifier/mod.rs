@@ -10,7 +10,7 @@ use alloy::{
 use tempo_contracts::precompiles::{IZoneVerifier, ZONE_VERIFIER_ADDRESS};
 use tempo_precompiles_macros::contract;
 
-use crate::error::Result;
+use crate::{error::Result, zone_factory::portal_address};
 
 use self::attestation::{AWS_NITRO_ROOT_DER, AttestationError, verify_attestation_with_root};
 
@@ -20,7 +20,7 @@ const MAX_FUTURE_SKEW_MILLIS: u64 = 300_000;
 /// Production measurements remain deliberately unset until the reproducible T11 EIF is finalized.
 const APPROVED_PCRS: Option<[[u8; 48]; 3]> = None;
 
-const BATCH_ATTESTATION_TYPE: &str = "NitroBatchAttestation(uint256 parentChainId,address verifier,address portal,uint32 zoneId,uint64 tempoBlockNumber,uint64 anchorBlockNumber,bytes32 anchorBlockHash,uint64 expectedWithdrawalBatchIndex,bytes32 prevBlockHash,bytes32 nextBlockHash,bytes32 prevProcessedHash,bytes32 nextProcessedHash,uint64 prevDepositNumber,uint64 nextDepositNumber,uint64 prevProcessedTokenCount,uint64 nextProcessedTokenCount,bytes32 withdrawalQueueHash,bytes32 verifierConfigHash)";
+const BATCH_ATTESTATION_TYPE: &str = "NitroBatchAttestation(uint256 parentChainId,address verifier,uint32 zoneId,uint64 tempoBlockNumber,uint64 anchorBlockNumber,bytes32 anchorBlockHash,uint64 expectedWithdrawalBatchIndex,bytes32 prevBlockHash,bytes32 nextBlockHash,bytes32 prevProcessedHash,bytes32 nextProcessedHash,uint64 prevDepositNumber,uint64 nextDepositNumber,uint64 prevProcessedTokenCount,uint64 nextProcessedTokenCount,bytes32 withdrawalQueueHash,bytes32 verifierConfigHash)";
 
 #[contract(addr = ZONE_VERIFIER_ADDRESS)]
 pub struct ZoneVerifier {}
@@ -37,7 +37,11 @@ impl ZoneVerifier {
         root_der: &[u8],
         approved_pcrs: Option<[[u8; 48]; 3]>,
     ) -> Result<bool> {
-        if call.verifierConfig.as_ref() != CONFIG_V1 || call.proof.is_empty() {
+        // The zone ID binds the portal domain only when the caller is its canonical portal.
+        if portal != portal_address(call.zoneId)
+            || call.verifierConfig.as_ref() != CONFIG_V1
+            || call.proof.is_empty()
+        {
             return Ok(false);
         }
 
@@ -78,18 +82,17 @@ impl ZoneVerifier {
             return Ok(false);
         }
 
-        let commitment = batch_commitment(self.storage.chain_id(), portal, &call);
+        let commitment = batch_commitment(self.storage.chain_id(), &call);
         Ok(attestation.user_data.as_slice() == commitment.as_slice())
     }
 }
 
-fn batch_commitment(chain_id: u64, portal: Address, call: &IZoneVerifier::verifyCall) -> B256 {
+fn batch_commitment(chain_id: u64, call: &IZoneVerifier::verifyCall) -> B256 {
     keccak256(
         (
             keccak256(BATCH_ATTESTATION_TYPE),
             U256::from(chain_id),
             ZONE_VERIFIER_ADDRESS,
-            portal,
             call.zoneId,
             call.tempoBlockNumber,
             call.anchorBlockNumber,
@@ -155,27 +158,22 @@ mod tests {
         assert_eq!(
             keccak256(BATCH_ATTESTATION_TYPE),
             B256::from(alloy::primitives::hex!(
-                "d09980465a50a967b8b5b35dc6b3d8f9eb9245916e285a7555f3937ceda0ac68"
+                "5f68457ecb053e8123f7c6c8d100b27e79ebae8ca9925aaf79a7b107346bb24f"
             ))
         );
         assert_eq!(
-            batch_commitment(42_431, Address::from([0x11; 20]), &call(),),
+            batch_commitment(42_431, &call()),
             B256::from(alloy::primitives::hex!(
-                "df555b114bb028244692775b994c6a766999bd3f68307c9985fcf0122c449b01"
+                "c01ffd959ca368959c0724a9de479a8fc678f36ff608cc0565f6cfd86e98202e"
             ))
         );
     }
 
     #[test]
     fn batch_commitment_binds_all_fields() {
-        let portal = Address::repeat_byte(0x77);
         let original = call();
-        let expected = batch_commitment(1, portal, &original);
-        assert_ne!(batch_commitment(2, portal, &original), expected);
-        assert_ne!(
-            batch_commitment(1, Address::repeat_byte(0x78), &original),
-            expected
-        );
+        let expected = batch_commitment(1, &original);
+        assert_ne!(batch_commitment(2, &original), expected);
 
         let mutations: [fn(&mut IZoneVerifier::verifyCall); 15] = [
             |call| call.zoneId += 1,
@@ -198,7 +196,7 @@ mod tests {
             let mut changed = original.clone();
             mutate(&mut changed);
             assert_ne!(
-                batch_commitment(1, portal, &changed),
+                batch_commitment(1, &changed),
                 expected,
                 "field mutation {index} was not bound"
             );
@@ -207,9 +205,9 @@ mod tests {
 
     #[test]
     fn valid_attestation_binds_every_zone_input() {
-        let portal = Address::repeat_byte(0x77);
         let mut call = call();
-        let commitment = batch_commitment(1, portal, &call);
+        let portal = portal_address(call.zoneId);
+        let commitment = batch_commitment(1, &call);
         let (proof, root, pcrs) = attestation::tests::fixture(commitment.as_ref());
         call.proof = proof.into();
 
@@ -220,6 +218,27 @@ mod tests {
             assert!(
                 verifier
                     .verify_with_policy(portal, call.clone(), &root, Some(pcrs))
+                    .unwrap()
+            );
+
+            for caller in [Address::repeat_byte(0x77), portal_address(call.zoneId + 1)] {
+                assert!(
+                    !verifier
+                        .verify_with_policy(caller, call.clone(), &root, Some(pcrs))
+                        .unwrap()
+                );
+            }
+
+            let mut other_zone = call.clone();
+            other_zone.zoneId += 1;
+            assert!(
+                !verifier
+                    .verify_with_policy(
+                        portal_address(other_zone.zoneId),
+                        other_zone,
+                        &root,
+                        Some(pcrs),
+                    )
                     .unwrap()
             );
 
@@ -240,9 +259,9 @@ mod tests {
 
     #[test]
     fn future_skew_boundary_is_inclusive() {
-        let portal = Address::repeat_byte(0x77);
         let call = call();
-        let commitment = batch_commitment(1, portal, &call);
+        let portal = portal_address(call.zoneId);
+        let commitment = batch_commitment(1, &call);
         let mut storage = HashMapStorageProvider::new_with_spec(1, TempoHardfork::T11);
         storage.set_timestamp(U256::from(BLOCK_TIMESTAMP));
         StorageCtx::enter(&mut storage, || {

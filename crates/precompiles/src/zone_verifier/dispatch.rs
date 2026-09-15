@@ -76,7 +76,10 @@ mod tests {
                 call(vec![0; super::super::attestation::MAX_DOCUMENT_LEN + 1]),
             ] {
                 let output = ZoneVerifier::new()
-                    .call(&call.abi_encode(), Address::repeat_byte(1))
+                    .call(
+                        &call.abi_encode(),
+                        crate::zone_factory::portal_address(call.zoneId),
+                    )
                     .unwrap();
                 assert!(output.is_success());
                 assert!(!IZoneVerifier::verifyCall::abi_decode_returns(&output.bytes).unwrap());
