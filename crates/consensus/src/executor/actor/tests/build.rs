@@ -24,10 +24,7 @@ fn proposal_waits_for_local_admission() {
             .script_built_payload(built_payload(&make_block(1, 1, GENESIS)));
         let mut build = h.build(round(1), GENESIS);
         h.wait_until(|| h.execution.admission_count() == 1).await;
-        assert!(matches!(
-            build.try_recv(),
-            Err(tokio::sync::oneshot::error::TryRecvError::Empty)
-        ));
+        assert!(build.try_recv().unwrap().is_none());
         gate.send(Ok(())).unwrap();
         assert!(build.await.is_ok());
         assert!(
