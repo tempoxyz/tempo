@@ -1,7 +1,6 @@
 //! Authenticate the startup tip before recovering DKG state from chain data.
 
 use commonware_consensus::{
-    Epochable as _,
     simplex::scheme::bls12381_threshold::vrf::Scheme,
     types::{Epocher as _, FixedEpocher, Height},
 };

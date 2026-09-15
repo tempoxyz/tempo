@@ -1,13 +1,13 @@
 //! Startup authentication uses only the configured identity and the latest persisted DKG state.
 
 use alloy_consensus::{BlockHeader as _, Sealable as _};
-use commonware_consensus::types::{Epoch, FixedEpocher, Height};
+use commonware_consensus::types::{Epoch, FixedEpocher, Height, Round};
 use commonware_cryptography::{Signer as _, transcript::Summary};
 use commonware_math::algebra::Random as _;
 use commonware_runtime::{Runner as _, Supervisor as _, deterministic::Runner};
 use rand_core::CryptoRng;
 use tempo_chainspec::NetworkIdentity;
-use tempo_primitives::TempoHeader;
+use tempo_primitives::{TempoConsensusContext, TempoHeader};
 
 use super::{
     super::{
@@ -199,20 +199,11 @@ fn startup_rejects_malformed_or_invalid_tip_certificates() {
         // Header and payload agree, but the signature still covers the original payload.
         let invalid =
             FinalizedTip::new(valid.height(), &altered_header, invalid_certificate).unwrap();
-        let wrong_epoch_header = header(Height::new(22));
-        let wrong_epoch = FinalizedTip::new(
-            Height::new(22),
-            &wrong_epoch_header,
-            make_certificate(
-                Digest(wrong_epoch_header.hash_slow()),
-                Epoch::new(1),
-                1,
-                &fixture.schemes,
-            ),
-        )
-        .unwrap();
         let genesis_certificate = tip_for_header(&fixture, &header(Height::zero()));
-        for tip in [invalid, wrong_epoch, genesis_certificate] {
+        for (name, tip) in [
+            ("invalid signature", invalid),
+            ("genesis certificate", genesis_certificate),
+        ] {
             assert!(
                 verify_finalized_tip(
                     &mut context,
@@ -222,7 +213,8 @@ fn startup_rejects_malformed_or_invalid_tip_certificates() {
                     Some(&tip),
                     Height::zero()
                 )
-                .is_err()
+                .is_err(),
+                "{name} unexpectedly accepted",
             );
         }
         assert!(
@@ -247,6 +239,77 @@ fn startup_rejects_malformed_or_invalid_tip_certificates() {
             )
             .is_err()
         );
+    });
+}
+
+#[test]
+fn startup_rejects_epoch_tampering() {
+    Runner::default().start(|mut context| async move {
+        let fixture = dkg_fixture(&mut context, Epoch::new(2));
+        let configured_identity = identity(&fixture);
+        let strategy = FixedEpocher::new(commonware_utils::NZU64!(10));
+        let mut header = header(Height::new(22));
+        header.consensus_context = Some(TempoConsensusContext {
+            epoch: 2,
+            view: 1,
+            parent_view: 0,
+            proposer: crate::utils::public_key_to_tempo_primitive(
+                fixture.outcome.players().iter().next().unwrap(),
+            ),
+        });
+        let valid = tip_for_header(&fixture, &header);
+        verify_finalized_tip(
+            &mut context,
+            &strategy,
+            &configured_identity,
+            None,
+            Some(&valid),
+            Height::zero(),
+        )
+        .unwrap();
+
+        // Changing the header's context invalidates its binding to the original
+        // certificate. Keep the archive height and certificate unchanged.
+        let mut altered_header = header.clone();
+        altered_header.consensus_context.as_mut().unwrap().epoch = 1;
+        let error = FinalizedTip::new(valid.height(), &altered_header, valid.certificate().clone())
+            .unwrap_err();
+        assert!(
+            error
+                .to_string()
+                .contains("header hash does not match certificate payload")
+        );
+
+        // Updating the payload to match the altered header cannot preserve the
+        // signature. Nor can changing only the certificate's own epoch.
+        let mut altered_payload = valid.certificate().clone();
+        altered_payload.proposal.payload = Digest(altered_header.hash_slow());
+        let mut altered_round = valid.certificate().clone();
+        altered_round.proposal.round =
+            Round::new(Epoch::new(1), altered_round.proposal.round.view());
+        for (name, header, certificate) in [
+            (
+                "header context and payload",
+                &altered_header,
+                altered_payload,
+            ),
+            ("certificate epoch", &header, altered_round),
+        ] {
+            let tip = FinalizedTip::new(valid.height(), header, certificate).unwrap();
+            let result = verify_finalized_tip(
+                &mut context,
+                &strategy,
+                &configured_identity,
+                None,
+                Some(&tip),
+                Height::zero(),
+            );
+            let error = result.expect_err(name);
+            assert!(
+                error.to_string().contains("failed verification"),
+                "{name}: {error}"
+            );
+        }
     });
 }
 
