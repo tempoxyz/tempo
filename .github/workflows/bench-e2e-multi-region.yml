@@ -303,7 +303,8 @@ jobs:
       BENCH_INPUT_BENCH_ARGS: ${{ inputs['bench-args'] || '' }}
       BENCH_INPUT_RUN_PAIRS: ${{ inputs['run-pairs'] || '1' }}
       BENCH_INPUT_CLICKHOUSE_RUN: ${{ inputs['clickhouse-run'] || 'feature-1' }}
-      CLICKHOUSE_URL: ${{ secrets.CLICKHOUSE_URL }}
+      # Keep local benchmark artifacts; skip slow post-run database exports.
+      CLICKHOUSE_URL: ""
       CLICKHOUSE_USER: ${{ secrets.CLICKHOUSE_USER }}
       CLICKHOUSE_PASSWORD: ${{ secrets.CLICKHOUSE_PASSWORD }}
       VALSCOPE_CONTROL_URL: ${{ secrets.VALSCOPE_CONTROL_URL }}
@@ -380,7 +381,7 @@ jobs:
         uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
         with:
           repository: tempoxyz/tempo-multi-region-benchmark
-          ref: ${{ github.repository == 'tempoxyz/tempo-multi-region-benchmark' && github.sha || 'main' }}
+          ref: cc5ea5a978a8d93ba2df8176886f184fe21e63f4 # Same runner as the four-worker comparison
           path: ${{ env.BENCH_REPO_DIR }}
           token: ${{ steps.github-sts.outputs.token }}
           persist-credentials: false
@@ -557,7 +558,7 @@ jobs:
             --regions "${{ steps.regions.outputs.regions }}" \
             --instance-type "$BENCH_INPUT_INSTANCE_TYPE" \
             --local-ssd-count "$BENCH_INPUT_LOCAL_SSD_COUNT" \
-            --metrics-push-url "${{ secrets.BENCH_VICTORIAMETRICS_URL }}" \
+            --metrics-push-url "" \
             --logs-push-url "${{ secrets.TEMPO_TELEMETRY_URL || secrets.BENCH_LOGS_PUSH_URL }}" \
             --victoriametrics-url "${{ secrets.VICTORIAMETRICS_URL }}" \
             --victorialogs-url "${{ secrets.VICTORIALOGS_URL }}"
@@ -611,7 +612,7 @@ jobs:
             --regions "${{ steps.regions.outputs.regions }}" \
             --instance-type "$BENCH_INPUT_INSTANCE_TYPE" \
             --local-ssd-count "$BENCH_INPUT_LOCAL_SSD_COUNT" \
-            --metrics-push-url "${{ secrets.BENCH_VICTORIAMETRICS_URL }}" \
+            --metrics-push-url "" \
             --logs-push-url "${{ secrets.TEMPO_TELEMETRY_URL || secrets.BENCH_LOGS_PUSH_URL }}" \
             --victoriametrics-url "${{ secrets.VICTORIAMETRICS_URL }}" \
             --victorialogs-url "${{ secrets.VICTORIALOGS_URL }}"
@@ -658,7 +659,7 @@ jobs:
             --regions "${{ steps.regions.outputs.regions }}" \
             --instance-type "$BENCH_INPUT_INSTANCE_TYPE" \
             --local-ssd-count "$BENCH_INPUT_LOCAL_SSD_COUNT" \
-            --metrics-push-url "${{ secrets.BENCH_VICTORIAMETRICS_URL }}" \
+            --metrics-push-url "" \
             --logs-push-url "${{ secrets.TEMPO_TELEMETRY_URL || secrets.BENCH_LOGS_PUSH_URL }}" \
             --victoriametrics-url "${{ secrets.VICTORIAMETRICS_URL }}" \
             --victorialogs-url "${{ secrets.VICTORIALOGS_URL }}"
@@ -705,7 +706,7 @@ jobs:
             --regions "${{ steps.regions.outputs.regions }}" \
             --instance-type "$BENCH_INPUT_INSTANCE_TYPE" \
             --local-ssd-count "$BENCH_INPUT_LOCAL_SSD_COUNT" \
-            --metrics-push-url "${{ secrets.BENCH_VICTORIAMETRICS_URL }}" \
+            --metrics-push-url "" \
             --logs-push-url "${{ secrets.TEMPO_TELEMETRY_URL || secrets.BENCH_LOGS_PUSH_URL }}" \
             --victoriametrics-url "${{ secrets.VICTORIAMETRICS_URL }}" \
             --victorialogs-url "${{ secrets.VICTORIALOGS_URL }}"
