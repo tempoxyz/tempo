@@ -9,16 +9,16 @@ use std::{cell::RefCell, collections::HashSet, ops::Range, rc::Rc};
 use tempo_precompiles::storage::{StorageAction, StorageActions};
 use tempo_revm::{ProtocolFeeContext, ProtocolFeeManager, TempoFeeManager};
 
-/// Scratch collected for one transaction and cleared before the next transaction executes.
+/// Storage slots and log ranges produced by protocol fee hooks during one transaction.
 #[derive(Debug, Default)]
-pub struct FeeWrites {
-    pub slots: HashSet<(Address, U256)>,
-    pub log_ranges: Vec<Range<usize>>,
+pub(super) struct FeeWrites {
+    pub(super) slots: HashSet<(Address, U256)>,
+    pub(super) log_ranges: Vec<Range<usize>>,
 }
 
 /// Delegates protocol fee collection while recording hook-local storage writes and emitted logs.
 #[derive(Debug, Clone)]
-pub struct RecordingFeeManager(pub Rc<RefCell<FeeWrites>>);
+pub(super) struct RecordingFeeManager(pub(super) Rc<RefCell<FeeWrites>>);
 
 impl RecordingFeeManager {
     /// Runs one fee hook with an isolated recorder and retains its storage and log provenance.
