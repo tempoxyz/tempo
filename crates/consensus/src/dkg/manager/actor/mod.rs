@@ -170,8 +170,18 @@ where
             impl Sender<PublicKey = PublicKey>,
             impl Receiver<PublicKey = PublicKey>,
         ),
+        execution_ready: impl Future<Output = eyre::Result<()>> + Send + 'static,
     ) -> Handle<()> {
-        spawn_cell!(self.context, self.run(dkg_channel))
+        spawn_cell!(self.context, async move {
+            // The transferred DKG state can refer to headers absent from the
+            // target execution database. Replay them before reading that state
+            // or entering a signing epoch; preserve the stored DKG state itself.
+            if let Err(error) = execution_ready.await {
+                warn!(%error, "execution recovery failed before DKG startup");
+                return;
+            }
+            self.run(dkg_channel).await;
+        })
     }
 
     async fn run(

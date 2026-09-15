@@ -31,7 +31,7 @@ use commonware_consensus::{
     simplex::types::Context,
     types::{Epoch, Height, Round, View},
 };
-use commonware_runtime::{Clock, Handle, Metrics, Spawner, deterministic};
+use commonware_runtime::{Clock, Handle, Metrics, Spawner, Storage, deterministic};
 use commonware_utils::{Acknowledgement as _, acknowledgement::Exact};
 use eyre::{Report, WrapErr as _};
 use parking_lot::Mutex;
@@ -268,6 +268,8 @@ struct FakeExecutionInner {
     scripted_builds: Mutex<VecDeque<TempoBuiltPayload>>,
     /// Blocks servable through `block_by_digest`.
     bodies: Mutex<HashMap<B256, Block>>,
+    network_blocks: Mutex<HashMap<B256, Block>>,
+    network_requests: Mutex<Vec<(Digest, u64)>>,
 }
 
 /// Records cancellation when an unresolved fake payload future is dropped.
@@ -325,6 +327,8 @@ impl FakeExecution {
                 canceled_payload_jobs: Mutex::new(Vec::new()),
                 scripted_builds: Mutex::new(VecDeque::new()),
                 bodies: Mutex::new(HashMap::new()),
+                network_blocks: Mutex::new(HashMap::new()),
+                network_requests: Mutex::new(Vec::new()),
             }),
         }
     }
@@ -351,6 +355,14 @@ impl FakeExecution {
     /// Makes `block` servable through `block_by_digest`.
     pub(super) fn add_body(&self, block: Block) {
         self.inner.bodies.lock().insert(block.digest().0, block);
+    }
+
+    pub(super) fn add_network_block(&self, digest: Digest, block: Block) {
+        self.inner.network_blocks.lock().insert(digest.0, block);
+    }
+
+    pub(super) fn network_requests(&self) -> Vec<(Digest, u64)> {
+        self.inner.network_requests.lock().clone()
     }
 
     // ---- fault injection ----
@@ -613,6 +625,37 @@ impl ExecutionLayer for FakeExecution {
                 .wrap_err_with(|| format!("scripted block lookup failed for `{digest}"));
         }
         Ok(self.inner.bodies.lock().get(&digest.0).cloned())
+    }
+
+    async fn fetch_headers(
+        &self,
+        mut digest: Digest,
+        count: u64,
+    ) -> eyre::Result<Vec<TempoHeader>> {
+        self.inner.network_requests.lock().push((digest, count));
+        let blocks = self.inner.network_blocks.lock();
+        let mut headers = Vec::new();
+        for _ in 0..count {
+            let Some(block) = blocks.get(&digest.0) else {
+                break;
+            };
+            headers.push(block.block().header().clone());
+            digest = block.parent_digest();
+        }
+        if headers.is_empty() {
+            eyre::bail!("peer has no requested history");
+        }
+        Ok(headers)
+    }
+
+    async fn fetch_block(&self, digest: Digest) -> eyre::Result<Block> {
+        self.inner.network_requests.lock().push((digest, 0));
+        self.inner
+            .network_blocks
+            .lock()
+            .get(&digest.0)
+            .cloned()
+            .ok_or_else(|| eyre::eyre!("peer has no requested block"))
     }
 
     fn new_payload(
@@ -977,7 +1020,7 @@ impl HarnessBuilder {
 
     pub(super) fn start<TContext>(self, context: &TContext) -> Harness<TContext>
     where
-        TContext: Clock + Metrics + Spawner,
+        TContext: Clock + Metrics + Spawner + Storage,
     {
         self.try_start(context)
             .expect("executor actor should initialize")
@@ -985,7 +1028,7 @@ impl HarnessBuilder {
 
     pub(super) fn try_start<TContext>(self, context: &TContext) -> eyre::Result<Harness<TContext>>
     where
-        TContext: Clock + Metrics + Spawner,
+        TContext: Clock + Metrics + Spawner + Storage,
     {
         let Self {
             execution,
@@ -997,6 +1040,7 @@ impl HarnessBuilder {
             Config {
                 execution_node: execution.clone(),
                 finalized_floor: Height::new(options.finalized_floor),
+                recovery_partition: "executor-recovery".into(),
                 finalized_tip: (
                     options.finalized_tip.0,
                     Height::new(options.finalized_tip.1),
@@ -1035,7 +1079,7 @@ impl Harness {
 
 impl<TContext> Harness<TContext>
 where
-    TContext: Clock + Metrics + Spawner,
+    TContext: Clock + Metrics + Spawner + Storage,
 {
     /// Starts the actor on a genesis-only chain: empty fakes, floor and tip
     /// at genesis.

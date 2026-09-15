@@ -15,6 +15,16 @@ pub(crate) struct Mailbox {
 }
 
 impl Mailbox {
+    /// Wait until the startup replay has reached marshal's stored floor.
+    /// DKG must not read its persisted epoch's history before this completes.
+    pub(crate) async fn wait_for_startup(&self) -> eyre::Result<()> {
+        let (response, rx) = oneshot::channel();
+        self.inner
+            .unbounded_send(Message::in_current_span(Command::WaitForStartup(response)))
+            .wrap_err("executor exited before startup completed")?;
+        rx.await.wrap_err("executor failed during startup recovery")
+    }
+
     /// Reports that, from simplex's point of view, `context`'s parent is
     /// the pending head of the chain: the block the proposal of this
     /// context builds on or is verified against. The agent converges the
@@ -118,6 +128,7 @@ impl Message {
 
 #[derive(Debug)]
 pub(super) enum Command {
+    WaitForStartup(oneshot::Sender<()>),
     /// Requests the agent to canonicalize the head and build a new payload.
     Build(Build),
     /// Requests the agent to verify a block against the execution layer.

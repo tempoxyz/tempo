@@ -171,6 +171,7 @@ where
             crate::executor::Config {
                 execution_node: execution_node.clone(),
                 finalized_floor,
+                recovery_partition: format!("{}-executor-recovery", self.partition_prefix),
                 finalized_tip,
                 marshal: marshal_mailbox.clone(),
                 fcu_heartbeat_interval: self.fcu_heartbeat_interval,
@@ -517,6 +518,7 @@ where
         );
 
         let application = self.application.start(self.dkg_manager_mailbox.clone());
+        let executor_ready = self.executor_mailbox.clone();
         let executor = self.executor.start();
 
         let marshal = self.marshal.start(
@@ -547,7 +549,9 @@ where
         let feed = self.feed.start();
         let gossip_task = self.gossip_actor.map(crate::gossip::Actor::start);
 
-        let dkg_manager = self.dkg_manager.start(dkg_channel);
+        let dkg_manager = self.dkg_manager.start(dkg_channel, async move {
+            executor_ready.wait_for_startup().await
+        });
 
         let mut tasks = vec![
             application,

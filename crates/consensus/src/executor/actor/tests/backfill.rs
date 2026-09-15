@@ -480,3 +480,36 @@ fn new_payload_transport_error_fails_startup() {
         assert_eq!(h.execution.fcus(), vec![STARTUP_FCU]);
     });
 }
+
+#[test_traced]
+fn snapshot_restore_consumes_tip_after_execution_backed_redelivery() {
+    deterministic::Runner::default().start(|context| async move {
+        let b1 = make_block(1, 1, GENESIS);
+        let b2 = make_block(2, 2, b1.digest());
+        let b3 = make_block(3, 3, b2.digest());
+        let b4 = make_block(4, 4, b3.digest());
+        let execution = FakeExecution::new();
+        for block in [&b1, &b2, &b3] {
+            execution.seed_canonical_block(block);
+        }
+        execution.set_finalized(3, b3.digest());
+        let mut h = Harness::builder()
+            .execution(execution)
+            .harness_options(HarnessOptions {
+                finalized_floor: 1,
+                finalized_tip: (round(1), 1, b1.digest()),
+                ..Default::default()
+            })
+            .start(&context);
+
+        // The hybrid store delivers 2 from execution before marshal reports
+        // a covering certificate. The next iteration must not panic or spin.
+        h.deliver_finalized(b2).await.unwrap();
+        h.deliver_tip(round(3), 3, b3.digest());
+        h.deliver_finalized(b3).await.unwrap();
+        h.deliver_tip(round(4), 4, b4.digest());
+        h.deliver_finalized(b4.clone()).await.unwrap();
+        assert_eq!(h.execution.finalized(), Some((4, b4.digest())));
+        assert_eq!(h.execution.new_payloads().len(), 3);
+    });
+}

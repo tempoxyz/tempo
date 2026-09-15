@@ -225,8 +225,14 @@ impl Harness {
 
         self.mailbox = Some(mailbox);
         self.handle = Some(match &self.network {
-            Some(network) => actor.start(network.register(self.identity.public_key())),
-            None => actor.start((self.sender.clone(), InertReceiver)),
+            Some(network) => actor.start(
+                network.register(self.identity.public_key()),
+                std::future::ready(Ok(())),
+            ),
+            None => actor.start(
+                (self.sender.clone(), InertReceiver),
+                std::future::ready(Ok(())),
+            ),
         });
     }
 

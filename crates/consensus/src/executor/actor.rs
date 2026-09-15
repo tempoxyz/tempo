@@ -42,7 +42,7 @@ use commonware_consensus::{
 };
 use commonware_cryptography::ed25519::PublicKey;
 use commonware_runtime::{
-    Clock, ContextCell, Handle, Metrics as RuntimeMetrics, Spawner, spawn_cell,
+    Clock, ContextCell, Handle, Metrics as RuntimeMetrics, Spawner, Storage, spawn_cell,
 };
 use commonware_utils::{Acknowledgement, acknowledgement::Exact};
 use eyre::{OptionExt as _, Report, WrapErr as _, bail, ensure, eyre};
@@ -91,6 +91,8 @@ pub(crate) struct Actor<TContext, TExecutionLayer, TMarshal> {
     /// Highest finalized height the executor should backfill to on startup so
     /// that CL and EL have a consistent view.
     finalized_floor: Height,
+    recovery_partition: String,
+    finalized_anchor: (Height, Digest),
 
     /// The channel over which the agent will receive new commands from the
     /// application actor.
@@ -155,6 +157,9 @@ pub(crate) struct Actor<TContext, TExecutionLayer, TMarshal> {
 
 #[derive(Clone)]
 struct Metrics {
+    recovery_active: commonware_runtime::telemetry::metrics::Registered<Gauge>,
+    recovery_height: commonware_runtime::telemetry::metrics::Registered<Gauge>,
+    recovery_target: commonware_runtime::telemetry::metrics::Registered<Gauge>,
     /// Number of finalized blocks whose proposer matches this node's public key.
     finalized_blocks_proposed_by_self: commonware_runtime::telemetry::metrics::Registered<Counter>,
     /// Number of block bodies held by the notarized tree.
@@ -197,6 +202,21 @@ impl Metrics {
             Gauge::default(),
         );
         Self {
+            recovery_active: context.register(
+                "recovery_active",
+                "executor is performing startup backfill",
+                Gauge::default(),
+            ),
+            recovery_height: context.register(
+                "recovery_height",
+                "last finalized execution height during startup backfill",
+                Gauge::default(),
+            ),
+            recovery_target: context.register(
+                "recovery_target",
+                "required startup backfill height",
+                Gauge::default(),
+            ),
             finalized_blocks_proposed_by_self,
             notarized_tree_blocks,
             finalization_lag,
@@ -217,7 +237,7 @@ impl Metrics {
 
 impl<TContext, TExecutionLayer, TMarshal> Actor<TContext, TExecutionLayer, TMarshal>
 where
-    TContext: Clock + RuntimeMetrics + Spawner,
+    TContext: Clock + RuntimeMetrics + Spawner + Storage,
     TExecutionLayer: ExecutionLayer,
     TMarshal: Marshal,
 {
@@ -229,6 +249,7 @@ where
         let Config {
             execution_node,
             finalized_floor,
+            recovery_partition,
             finalized_tip,
             marshal,
             fcu_heartbeat_interval,
@@ -289,6 +310,8 @@ where
             context: ContextCell::new(context),
             execution_node,
             finalized_floor,
+            recovery_partition,
+            finalized_anchor: (finalized_tip.1, finalized_tip.2),
             mailbox,
             marshal,
             fcu_heartbeat_interval,
@@ -344,7 +367,25 @@ where
             );
         });
 
+        // Preserve execution's latency priority, but bound how long ready
+        // tasks can postpone consensus updates (including a covering Tip).
+        let mut ready_events = 0;
         loop {
+            if ready_events >= 32 {
+                ready_events = 0;
+                match self.mailbox.next().now_or_never() {
+                    Some(Some(msg)) => {
+                        if let Err(error) = self.handle_message(msg) {
+                            error!(%error, "executor failed handling message");
+                            break;
+                        }
+                    }
+                    Some(None) => break,
+                    None => {}
+                }
+            }
+            ready_events += 1;
+
             // The tree is pruned to the advancing finalized tip here,
             // before the scheduling decisions below read it. The select
             // branches only record primary state. Metrics observe the same
@@ -385,6 +426,7 @@ where
                 }
 
                 msg = self.mailbox.next() => {
+                    ready_events = 0;
                     let Some(msg) = msg else { break; };
                     if let Err(error) = self.handle_message(msg) {
                         error_span!("shutdown").in_scope(|| error!(
@@ -502,6 +544,12 @@ where
         let start = self.notarized_tree.local_state().finalized.0.get() + 1;
         let end = self.finalized_floor.get();
         let heights = start..=end;
+        let mut recovery = None;
+        self.metrics.recovery_height.set((start - 1) as i64);
+        self.metrics.recovery_target.set(end as i64);
+        self.metrics
+            .recovery_active
+            .set(i64::from(!heights.is_empty()));
         if !heights.is_empty() {
             info!(
                 start = *heights.start(),
@@ -511,13 +559,39 @@ where
         }
         for height in heights {
             let span = info_span!("backfill_on_start", %height);
-            let block = get_block(
+            let block = if let Some(recovery) = &recovery {
+                super::recovery::Recovery::block(
+                    recovery,
+                    &*self.context,
+                    &self.execution_node,
+                    Height::new(height),
+                )
+                .await?
+            } else if let Some(block) = get_block(
                 self.marshal.clone(),
                 self.execution_node.clone(),
                 Height::new(height),
             )
             .await
-            .wrap_err_with(|| format!("failed backfilling block for height `{height}`"))?;
+            .wrap_err_with(|| format!("failed backfilling block for height `{height}`"))?
+            {
+                block
+            } else {
+                let pending = super::recovery::Recovery::init(
+                    &*self.context,
+                    &self.execution_node,
+                    &self.recovery_partition,
+                    self.notarized_tree.local_state().finalized,
+                    self.finalized_floor,
+                    self.finalized_anchor,
+                )
+                .await?;
+                let block = pending
+                    .block(&*self.context, &self.execution_node, Height::new(height))
+                    .await?;
+                recovery = Some(pending);
+                block
+            };
 
             let (ack, _wait) = Exact::handle();
             let request = FinalizedBlockRequest {
@@ -544,8 +618,21 @@ where
                 )
             })?;
             self.notarized_tree.set_local_state(canonicalized);
+            self.metrics.recovery_height.set(height as i64);
+            if height.is_multiple_of(1000) || height == end {
+                info!(
+                    height,
+                    target = end,
+                    "startup execution backfill progressed"
+                );
+            }
         }
-
+        if let Some(recovery) = recovery
+            && let Err(error) = recovery.clear().await
+        {
+            warn!(%error, "failed clearing bootstrap scratch index");
+        }
+        self.metrics.recovery_active.set(0);
         Ok(())
     }
 
@@ -597,6 +684,9 @@ where
     fn handle_message(&mut self, message: Message) -> eyre::Result<()> {
         let cause = message.cause;
         match message.command {
+            Command::WaitForStartup(response) => {
+                let _ = response.send(());
+            }
             Command::Build(build) => {
                 queue_consensus_request(
                     &mut self.pending_consensus_request,
@@ -857,35 +947,16 @@ async fn get_block(
     marshal: impl Marshal,
     execution_node: impl ExecutionLayer,
     height: Height,
-) -> eyre::Result<Block> {
+) -> eyre::Result<Option<Block>> {
     if let Some(block) = marshal.get_block(height).await {
-        return Ok(block);
+        return Ok(Some(block));
     }
-
-    warn!(
-        "marshal did not have backfill block; looking up its finalized digest \
-        to look for it in the execution layer"
-    );
     let Some((_, digest)) = marshal.get_info(height).await else {
-        bail!("marshal actor did not have finalization info at height");
+        return Ok(None);
     };
-
-    info!(
-        %digest,
-        "found finalized digest for block height; checking execution layer",
-    );
-    let Some(block) = execution_node.block_by_digest(digest).wrap_err_with(|| {
-        format!("failed querying execution layer for backfill block `{digest}`")
-    })?
-    else {
-        warn!(%digest, "execution layer did not have missing backfill block");
-        bail!(
-            "marshal actor did not have block at height `{height}` and \
-            execution layer did not have block `{digest}`"
-        );
-    };
-
-    Ok(block)
+    execution_node
+        .block_by_digest(digest)
+        .wrap_err_with(|| format!("failed querying execution layer for backfill block `{digest}`"))
 }
 
 struct FinalizedBlockRequest {

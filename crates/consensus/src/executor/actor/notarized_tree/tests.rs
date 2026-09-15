@@ -785,3 +785,27 @@ fn reaffirmed_finalized_tip_needs_no_fetch() {
 
     assert_eq!(tree.first_missing_ancestor(), None);
 }
+
+#[test]
+fn execution_backed_redelivery_waits_for_a_covering_tip() {
+    let old = Digest(B256::repeat_byte(0xff));
+    let mut tree = empty_tree(old);
+    let next = block(1, 11, old);
+    tree.set_local_state(LocalState {
+        head: (Height::new(11), next.digest()),
+        finalized: (Height::new(11), next.digest()),
+    });
+    tree.heal();
+    assert!(tree.next_to_forward(T0).is_none());
+    assert!(tree.first_missing_ancestor().is_none());
+    assert_eq!(
+        tree.local_state().finalized,
+        (Height::new(11), next.digest())
+    );
+
+    tree.set_network_finalized_tip(round(2), Height::new(11), next.digest());
+    tree.heal();
+    let child = block(3, 12, next.digest());
+    record(&mut tree, &child);
+    assert_eq!(next_block(&tree, T0).unwrap().digest(), child.digest());
+}

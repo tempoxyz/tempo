@@ -8,16 +8,24 @@ use commonware_consensus::{
     types::{Height, Round},
 };
 use commonware_cryptography::ed25519::PublicKey;
-use commonware_runtime::{Clock, Metrics, Spawner};
+use commonware_runtime::{Clock, Metrics, Spawner, Storage};
 use reth_ethereum::{chainspec::EthChainSpec as _, rpc::eth::primitives::BlockNumHash};
+use reth_network_api::BlockDownloaderProvider as _;
+use reth_network_p2p::{
+    FullBlockClient,
+    headers::client::{HeadersClient as _, HeadersRequest},
+};
 use reth_node_builder::PayloadKind;
 use reth_provider::{BlockHashReader as _, BlockReader as _, BlockSource};
+use tempo_evm::consensus::TempoConsensus;
 use tempo_node::{TempoExecutionData, TempoFullNode};
 use tempo_payload_types::{TempoBuiltPayload, TempoPayloadAttributes};
+use tempo_primitives::TempoHeader;
 use tokio::sync::oneshot;
 
 mod actor;
 mod ingress;
+pub(crate) mod recovery;
 
 pub(crate) use actor::Actor;
 use eyre::WrapErr as _;
@@ -82,6 +90,17 @@ pub(crate) trait ExecutionLayer: Clone + Send + Sync + 'static {
 
     /// Looks up a full block by its digest in the execution layer's stores.
     fn block_by_digest(&self, digest: Digest) -> eyre::Result<Option<Block>>;
+
+    /// Fetch untrusted headers in descending order from execution peers.
+    /// Bootstrap recovery verifies the entire chain against persisted finality.
+    fn fetch_headers(
+        &self,
+        digest: Digest,
+        count: u64,
+    ) -> impl Future<Output = eyre::Result<Vec<TempoHeader>>> + Send;
+
+    /// Fetch a block with validated header/body commitments from execution peers.
+    fn fetch_block(&self, digest: Digest) -> impl Future<Output = eyre::Result<Block>> + Send;
 
     /// Submits a block to the execution layer via a new-payload request.
     fn new_payload(
@@ -174,6 +193,41 @@ impl ExecutionLayer for Arc<TempoFullNode> {
             .map(|block| Block::from_execution_block_unchecked(block, None)))
     }
 
+    async fn fetch_headers(&self, digest: Digest, count: u64) -> eyre::Result<Vec<TempoHeader>> {
+        let client = self.network.fetch_client().await?;
+        Ok(client
+            .get_headers(HeadersRequest::falling(digest.0.into(), count))
+            .await?
+            .into_data())
+    }
+
+    async fn fetch_block(&self, digest: Digest) -> eyre::Result<Block> {
+        let client = FullBlockClient::new(
+            self.network.fetch_client().await?,
+            Arc::new(TempoConsensus::new_with_bal_hashes(
+                self.chain_spec(),
+                cfg!(feature = "bal"),
+            )),
+        );
+        #[cfg(not(feature = "bal"))]
+        return Ok(Block::try_from_execution_block(
+            client.get_full_block(digest.0).await,
+            None,
+        )?);
+
+        #[cfg(feature = "bal")]
+        {
+            let (block, bal) = client
+                .get_full_block_with_access_lists(digest.0)
+                .await
+                .split();
+            Ok(Block::try_from_execution_block(
+                block,
+                bal.map(|bal| bal.into_raw()),
+            )?)
+        }
+    }
+
     fn new_payload(
         &self,
         payload: TempoExecutionData,
@@ -241,7 +295,7 @@ pub(crate) fn init<TContext, TExecutionLayer, TMarshal>(
     config: Config<TExecutionLayer, TMarshal>,
 ) -> eyre::Result<(Actor<TContext, TExecutionLayer, TMarshal>, Mailbox)>
 where
-    TContext: Clock + Metrics + Spawner,
+    TContext: Clock + Metrics + Spawner + Storage,
     TExecutionLayer: ExecutionLayer,
     TMarshal: Marshal,
 {
@@ -260,6 +314,9 @@ pub(crate) struct Config<TExecutionLayer, TMarshal> {
     /// to reach because the marshal actor will only send finalized heights
     /// above this value.
     pub(crate) finalized_floor: Height,
+
+    /// Scratch partition for authenticated bootstrap hashes, separate from signing state.
+    pub(crate) recovery_partition: String,
 
     /// Finalized tip reported by marshal at startup, together with the
     /// round it was finalized in (the zero round for genesis).
