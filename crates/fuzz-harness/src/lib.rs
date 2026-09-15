@@ -960,10 +960,12 @@ fn encode_state_overlay<DB>(db: &CacheDB<DB>, base: &StateInput) -> StateInput {
         };
         view.balance = info.balance;
         view.nonce = info.nonce;
-        view.code = match info.code.as_ref() {
-            Some(code) => code.original_byte_slice().to_vec(),
-            None => Vec::new(),
-        };
+        view.code = info
+            .code
+            .as_ref()
+            .or_else(|| db.cache.contracts.get(&info.code_hash))
+            .map(|code| code.original_byte_slice().to_vec())
+            .unwrap_or_default();
 
         if let Some(storage) = db.cache.storage.get(&address) {
             if storage.wiped {
@@ -1059,6 +1061,23 @@ mod tests {
         assert_eq!(decoded_blocks.len(), 1);
         assert_eq!(decoded_blocks[0].txs.len(), 1);
         assert_eq!(decoded_blocks[0].txs[0].nonce(), 7);
+    }
+
+    #[test]
+    fn encode_state_recovers_seeded_code_from_contract_cache() {
+        let input = StateInput {
+            accounts: vec![AccountInput {
+                address: [0x22; 20],
+                balance: [0; 32],
+                nonce: 0,
+                code: vec![0x60, 0x00, 0x56],
+                storage: Vec::new(),
+            }],
+        };
+        let mut db = InMemoryDB::default();
+        seed_state(&mut db, &input).expect("state seeds");
+
+        assert_eq!(encode_state(&db), input);
     }
 
     #[test]
