@@ -13785,6 +13785,7 @@ version = "1.14.0"
 dependencies = [
  "ciborium",
  "minicbor",
+ "serde",
  "serde_bytes",
  "sha2 0.10.9",
  "x509-cert",

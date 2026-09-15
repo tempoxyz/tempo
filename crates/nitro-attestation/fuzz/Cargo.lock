@@ -533,6 +533,7 @@ name = "tempo-nitro-attestation"
 version = "1.14.0"
 dependencies = [
  "ciborium",
+ "serde",
  "serde_bytes",
  "sha2",
  "x509-cert",
