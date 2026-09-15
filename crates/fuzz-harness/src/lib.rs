@@ -7,25 +7,22 @@ use alloy_consensus::{
     transaction::Transaction,
 };
 use alloy_eips::Decodable2718;
-use alloy_evm::{
-    Evm as _, EvmEnv,
-    block::{BlockExecutionResult, BlockExecutor, BlockExecutorFactory, TxResult as AlloyTxResult},
-};
 use alloy_primitives::{Address, B256, Bytes, Log, U256, keccak256};
 use core::ffi::c_int;
+use evm2::{
+    bytecode::Bytecode,
+    evm::{AccountInfo, CacheDB, InMemoryDB},
+};
 use reth_chainspec::ForkCondition;
 use reth_consensus::Consensus as _;
-use reth_evm::ConfigureEvm;
-use reth_primitives_traits::{RecoveredBlock, transaction::signed::SignedTransaction};
-use revm::{
-    bytecode::Bytecode,
-    database::{EmptyDB, in_memory_db::CacheDB},
-    state::AccountInfo,
+use reth_evm::{
+    BlockExecutionError, BlockExecutionOutput, BlockExecutor, BlockExecutorFactory, ConfigureEvm,
 };
+use reth_primitives_traits::{RecoveredBlock, transaction::signed::SignedTransaction};
 use serde::{Deserialize, Serialize};
 use std::{collections::BTreeMap, sync::Arc};
 use tempo_chainspec::{TempoChainSpec, hardfork::TempoHardfork};
-use tempo_evm::{TempoEvmConfig, consensus::TempoConsensus, evm::TempoEvm};
+use tempo_evm::{TempoBlockExecutor, TempoEvmConfig, consensus::TempoConsensus, evm::TempoEvm};
 use tempo_fuzz_types::{
     AccountInput, BlockContextInput, ChainSpecInput, ErrorClass, FUZZ_ACCEPT, FUZZ_REJECT,
     HarnessInputKind, LogOutput, NonEmpty, StateDiff, StateInput, StorageInput,
@@ -305,15 +302,19 @@ fn execute_concrete_block(request: &BlockInput) -> Result<BlockResult, ErrorClas
     })
 }
 
-fn make_evm(
-    db: CacheDB<EmptyDB>,
-    evm_config: &TempoEvmConfig,
+fn make_evm<'a>(
+    db: &'a mut InMemoryDB,
+    evm_config: &'a TempoEvmConfig,
     header: &TempoHeader,
-) -> Result<TempoEvm<CacheDB<EmptyDB>>, String> {
+) -> Result<TempoEvm<'a>, String> {
     let env = evm_config
         .evm_env(header)
         .map_err(|err| format!("evm_env_error={err}"))?;
-    Ok(TempoEvm::new(db, env))
+    Ok(BlockExecutorFactory::evm_with_env(
+        evm_config.block_executor_factory(),
+        db,
+        env,
+    ))
 }
 
 #[derive(Clone)]
@@ -353,7 +354,7 @@ fn execute_blocks(
 ) -> ExecutionResult {
     assert_monotonic_hardforks(blocks);
 
-    let mut db = CacheDB::new(EmptyDB::default());
+    let mut db = InMemoryDB::default();
     if let Err(error_class) = seed_state(&mut db, pre_state) {
         return ExecutionResult {
             accepted: false,
@@ -418,7 +419,7 @@ fn execute_blocks(
 
         body.push_str(&format!(" block[{block_idx}]={{txs={}}}", block.txs.len()));
 
-        let evm = match make_evm(db, &evm_config, recovered.sealed_block().header()) {
+        let evm = match make_evm(&mut db, &evm_config, recovered.sealed_block().header()) {
             Ok(evm) => evm,
             Err(err) => {
                 return finish_execution_result_from_state(
@@ -434,7 +435,6 @@ fn execute_blocks(
         let ctx = match evm_config.context_for_block(recovered.sealed_block()) {
             Ok(ctx) => ctx,
             Err(err) => {
-                let _ = evm.finish();
                 return finish_execution_result_from_state(
                     false,
                     ErrorClass::Rejected,
@@ -450,7 +450,7 @@ fn execute_blocks(
 
         match execute_recovered_block(&mut executor, &recovered, &context, hardfork) {
             Ok(tx_outputs) => {
-                let (evm, block_result) = match executor.finish() {
+                let block_result = match executor.finish() {
                     Ok(output) => output,
                     Err(err) => {
                         return finish_execution_result_from_state(
@@ -463,13 +463,12 @@ fn execute_blocks(
                         );
                     }
                 };
-                let (next_db, _) = evm.finish();
                 executed_blocks.push(block_execution_result_output(
                     block_idx as u64,
                     &block_result,
                     &tx_outputs,
                 ));
-                db = next_db;
+                db.commit_source(&block_result.state);
             }
             Err(HarnessBlockExecutionError::Invariant { state, detail }) => {
                 return finish_execution_result_from_state(
@@ -482,7 +481,7 @@ fn execute_blocks(
                 );
             }
             Err(HarnessBlockExecutionError::Execution(err)) => {
-                let (evm, _) = match executor.finish() {
+                let _ = match executor.finish() {
                     Ok(output) => output,
                     Err(finish_err) => {
                         return finish_execution_result_from_state(
@@ -497,7 +496,6 @@ fn execute_blocks(
                         );
                     }
                 };
-                let _ = evm.finish();
                 return finish_execution_result_from_state(
                     false,
                     ErrorClass::Rejected,
@@ -534,21 +532,14 @@ fn assert_monotonic_hardforks(blocks: &[ExecutionBlock]) {
     }
 }
 
-fn execute_recovered_block<E>(
-    executor: &mut E,
+fn execute_recovered_block(
+    executor: &mut TempoBlockExecutor<'_>,
     block: &RecoveredBlock<Block<TempoTxEnvelope, TempoHeader>>,
     context: &BlockContextInput,
     _hardfork: TempoHardfork,
-) -> Result<Vec<TxExecutionOutput>, HarnessBlockExecutionError>
-where
-    E: BlockExecutor<
-            Transaction = TempoTxEnvelope,
-            Receipt = TempoReceipt,
-            Evm = TempoEvm<CacheDB<EmptyDB>>,
-        >,
-{
+) -> Result<Vec<TxExecutionOutput>, HarnessBlockExecutionError> {
     executor.apply_pre_execution_changes()?;
-    let post_pre_execution_state = encode_state(executor.evm().components().0);
+    let post_pre_execution_state = encode_state(executor.evm().overlay_db());
     validate_executor_state_invariants(
         executor.evm(),
         "post-pre-execution",
@@ -559,12 +550,9 @@ where
     for tx in block.transactions_recovered() {
         let mut output = TxExecutionOutput::default();
         let gas_output = executor.execute_transaction_with_result_closure(tx, |result| {
-            output.output = match result.result().result.output() {
-                Some(bytes) => bytes.to_vec(),
-                None => Vec::new(),
-            };
+            output.output = result.result().output.to_vec();
         })?;
-        let post_tx_state = encode_state(executor.evm().components().0);
+        let post_tx_state = encode_state(executor.evm().overlay_db());
         validate_executor_state_invariants(executor.evm(), "post-tx", &post_tx_state)?;
 
         output.gas_used = gas_output.tx_gas_used();
@@ -575,20 +563,25 @@ where
 }
 
 fn validate_executor_state_invariants(
-    evm: &TempoEvm<CacheDB<EmptyDB>>,
+    evm: &TempoEvm<'_>,
     side: &'static str,
     state: &StateInput,
 ) -> Result<(), HarnessBlockExecutionError> {
-    let evm_env = EvmEnv {
-        cfg_env: evm.ctx().cfg.clone(),
-        block_env: evm.ctx().block.clone(),
+    let evm_env = tempo_evm::TempoEvmEnv {
+        tempo_spec: evm.config_spec_id(),
+        version: *evm.version(),
+        block: *evm.block(),
     };
-    let mut db = CacheDB::new(EmptyDB::default());
+    let mut db = InMemoryDB::default();
     seed_state(&mut db, state).map_err(|error_class| HarnessBlockExecutionError::Invariant {
         state: state.clone(),
         detail: format!("TEMPO-INVARIANT-STATE-SEED side={side} error={error_class:?}"),
     })?;
-    let mut evm = TempoEvm::new(db, evm_env);
+    let mut evm = BlockExecutorFactory::evm_with_env(
+        TempoEvmConfig::moderato().block_executor_factory(),
+        &mut db,
+        evm_env,
+    );
 
     invariants::validate_state_invariants(&mut evm, side, state).map_err(|detail| {
         HarnessBlockExecutionError::Invariant {
@@ -600,12 +593,12 @@ fn validate_executor_state_invariants(
 
 #[derive(Debug)]
 enum HarnessBlockExecutionError {
-    Execution(alloy_evm::block::BlockExecutionError),
+    Execution(BlockExecutionError),
     Invariant { state: StateInput, detail: String },
 }
 
-impl From<alloy_evm::block::BlockExecutionError> for HarnessBlockExecutionError {
-    fn from(value: alloy_evm::block::BlockExecutionError) -> Self {
+impl From<BlockExecutionError> for HarnessBlockExecutionError {
+    fn from(value: BlockExecutionError) -> Self {
         Self::Execution(value)
     }
 }
@@ -613,7 +606,7 @@ impl From<alloy_evm::block::BlockExecutionError> for HarnessBlockExecutionError 
 fn finish_execution_result(
     accepted: bool,
     error_class: ErrorClass,
-    db: CacheDB<EmptyDB>,
+    db: InMemoryDB,
     initial_state: &StateInput,
     _body: String,
     blocks: Vec<ExecutedBlockOutput>,
@@ -838,7 +831,7 @@ fn receipt_output_from_tempo(
 
 fn block_execution_result_output(
     block_index: u64,
-    result: &BlockExecutionResult<TempoReceipt>,
+    result: &BlockExecutionOutput<TempoReceipt>,
     execution_outputs: &[TxExecutionOutput],
 ) -> ExecutedBlockOutput {
     ExecutedBlockOutput {
@@ -916,7 +909,7 @@ fn address_bytes(address: Address) -> [u8; 20] {
     bytes.copy_from_slice(address.as_slice());
     bytes
 }
-fn seed_state(db: &mut CacheDB<EmptyDB>, input: &StateInput) -> Result<(), ErrorClass> {
+fn seed_state(db: &mut InMemoryDB, input: &StateInput) -> Result<(), ErrorClass> {
     for account in &input.accounts {
         let address = Address::from(account.address);
         let balance = U256::from_be_bytes(account.balance);
@@ -931,33 +924,32 @@ fn seed_state(db: &mut CacheDB<EmptyDB>, input: &StateInput) -> Result<(), Error
             info.code_hash = bytecode.hash_slow();
             info.code = Some(bytecode);
         }
-        db.insert_account_info(address, info);
+        db.insert_account_info(&address, info);
 
         for storage in &account.storage {
             let slot = U256::from_be_bytes(storage.slot);
             let value = U256::from_be_bytes(storage.value);
-            db.insert_account_storage(address, slot, value)
-                .map_err(|_| ErrorClass::Internal)?;
+            db.insert_account_storage(&address, &slot, &value);
         }
     }
     Ok(())
 }
 
-fn encode_state(db: &CacheDB<EmptyDB>) -> StateInput {
+fn encode_state<DB>(db: &CacheDB<DB>) -> StateInput {
     encode_state_overlay(db, &StateInput::default())
 }
 
-fn encode_state_overlay(db: &CacheDB<EmptyDB>, base: &StateInput) -> StateInput {
+fn encode_state_overlay<DB>(db: &CacheDB<DB>, base: &StateInput) -> StateInput {
     let mut account_views = canonical_state(base);
     let mut accounts: Vec<_> = db
         .cache
         .accounts
         .iter()
-        .filter_map(|(address, account)| account.info().map(|info| (*address, info, account)))
+        .filter_map(|(address, info)| info.as_ref().map(|info| (*address, info)))
         .collect();
-    accounts.sort_by_key(|(address, _, _)| *address);
+    accounts.sort_by_key(|(address, _)| *address);
 
-    for (address, info, account) in accounts {
+    for (address, info) in accounts {
         let mut address_bytes = [0u8; 20];
         address_bytes.copy_from_slice(address.as_slice());
         let view = match account_views.entry(address_bytes) {
@@ -973,8 +965,13 @@ fn encode_state_overlay(db: &CacheDB<EmptyDB>, base: &StateInput) -> StateInput 
             None => Vec::new(),
         };
 
-        for (slot, value) in &account.storage {
-            view.storage.insert(slot.to_be_bytes(), value.to_be_bytes());
+        if let Some(storage) = db.cache.storage.get(&address) {
+            if storage.wiped {
+                view.storage.clear();
+            }
+            for (slot, value) in &storage.slots {
+                view.storage.insert(slot.to_be_bytes(), value.to_be_bytes());
+            }
         }
     }
 

@@ -1,19 +1,15 @@
 mod tip20;
 
-use alloy_evm::Evm as _;
 use alloy_primitives::{Address, Bytes};
 use alloy_sol_types::SolCall;
-use revm::{
-    context::result::{ExecutionResult, Output},
-    database::{EmptyDB, in_memory_db::CacheDB},
-};
+use evm2::evm::SystemTx;
 use tempo_evm::evm::TempoEvm;
 use tempo_fuzz_types::StateInput;
 
-pub(crate) type HarnessEvm = TempoEvm<CacheDB<EmptyDB>>;
+pub(crate) type HarnessEvm<'a> = TempoEvm<'a>;
 
 pub(crate) fn validate_state_invariants(
-    evm: &mut HarnessEvm,
+    evm: &mut HarnessEvm<'_>,
     side: &'static str,
     state: &StateInput,
 ) -> Result<(), String> {
@@ -22,7 +18,7 @@ pub(crate) fn validate_state_invariants(
 }
 
 pub(super) fn view_call<C>(
-    evm: &mut HarnessEvm,
+    evm: &mut HarnessEvm<'_>,
     target: Address,
     call: C,
 ) -> Result<Option<C::Return>, String>
@@ -30,30 +26,25 @@ where
     C: SolCall,
 {
     let result = evm
-        .transact_system_call(Address::ZERO, target, Bytes::from(call.abi_encode()))
+        .system_call(
+            SystemTx::new(target, Bytes::from(call.abi_encode())).with_caller(Address::ZERO),
+        )
         .map_err(|err| format!("view_call target={} error={err}", fmt_addr(target)))?;
-    match result.result {
-        ExecutionResult::Success {
-            output: Output::Call(output),
-            ..
-        } => {
-            if output.is_empty() {
-                return Ok(None);
-            }
-            C::abi_decode_returns(&output)
-                .map(Some)
-                .map_err(|err| format!("view_call target={} decode_error={err}", fmt_addr(target)))
+    let result = result.discard();
+    if result.status {
+        if result.output.is_empty() {
+            return Ok(None);
         }
-        ExecutionResult::Success { .. } => Ok(None),
-        ExecutionResult::Revert { output, .. } => Err(format!(
-            "view_call target={} reverted output=0x{}",
+        C::abi_decode_returns(&result.output)
+            .map(Some)
+            .map_err(|err| format!("view_call target={} decode_error={err}", fmt_addr(target)))
+    } else {
+        Err(format!(
+            "view_call target={} failed stop={:?} output=0x{}",
             fmt_addr(target),
-            hex_prefix(&output, 32)
-        )),
-        ExecutionResult::Halt { reason, .. } => Err(format!(
-            "view_call target={} halted reason={reason:?}",
-            fmt_addr(target)
-        )),
+            result.stop,
+            hex_prefix(&result.output, 32)
+        ))
     }
 }
 

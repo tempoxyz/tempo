@@ -13920,21 +13920,20 @@ dependencies = [
 
 [[package]]
 name = "tempo-fuzz-harness"
-version = "1.13.2"
+version = "1.14.0"
 dependencies = [
  "alloy-consensus",
  "alloy-eips",
- "alloy-evm",
  "alloy-primitives",
  "alloy-rlp",
  "alloy-sol-types",
  "bincode",
+ "evm2",
  "reth-chainspec",
  "reth-consensus",
  "reth-evm",
  "reth-primitives-traits",
  "reth-trie-common",
- "revm",
  "serde",
  "tempo-chainspec",
  "tempo-consensus",
@@ -13943,7 +13942,6 @@ dependencies = [
  "tempo-fuzz-types",
  "tempo-precompiles",
  "tempo-primitives",
- "tempo-revm",
 ]
 
 [[package]]

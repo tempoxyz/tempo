@@ -7,7 +7,7 @@ use tempo_fuzz_types::StateInput;
 use super::{HarnessEvm, fmt_addr, is_tip20_like, state_accounts, view_call};
 
 pub(super) fn validate(
-    evm: &mut HarnessEvm,
+    evm: &mut HarnessEvm<'_>,
     side: &'static str,
     state: &StateInput,
 ) -> Result<(), String> {
@@ -15,7 +15,7 @@ pub(super) fn validate(
 }
 
 fn check_supply(
-    evm: &mut HarnessEvm,
+    evm: &mut HarnessEvm<'_>,
     side: &'static str,
     state: &StateInput,
 ) -> Result<(), String> {
@@ -74,16 +74,16 @@ fn known_accounts(state: &StateInput) -> BTreeSet<Address> {
     state_accounts(state).collect()
 }
 
-fn total_supply(evm: &mut HarnessEvm, token: Address) -> Result<Option<U256>, String> {
+fn total_supply(evm: &mut HarnessEvm<'_>, token: Address) -> Result<Option<U256>, String> {
     view_call::<ITIP20::totalSupplyCall>(evm, token, ITIP20::totalSupplyCall {})
 }
 
-fn supply_cap(evm: &mut HarnessEvm, token: Address) -> Result<Option<U256>, String> {
+fn supply_cap(evm: &mut HarnessEvm<'_>, token: Address) -> Result<Option<U256>, String> {
     view_call::<ITIP20::supplyCapCall>(evm, token, ITIP20::supplyCapCall {})
 }
 
 fn balance_of(
-    evm: &mut HarnessEvm,
+    evm: &mut HarnessEvm<'_>,
     token: Address,
     account: Address,
 ) -> Result<Option<U256>, String> {
