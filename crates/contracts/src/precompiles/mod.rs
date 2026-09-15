@@ -64,11 +64,6 @@ pub const CURRENT_COMMITTEE_ADDRESS: Address =
 /// Block-bucket replay protection (PoC).
 pub const EXPIRING_NONCE_PRECOMPILE_ADDRESS: Address =
     address!("0x4E4F4E4345000000000000000000000000000001");
-alloy_sol_types::sol! {
-    interface IExpiringNonce {
-        function prune() external;
-    }
-}
 
 /// Fixed system precompile addresses and corresponding activation hardfork
 pub const SYSTEM_PRECOMPILES: &[(Address, TempoHardfork)] = &[

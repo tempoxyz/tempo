@@ -631,7 +631,7 @@ where
             &ctx.cfg,
             &ctx.tx,
             tempo_precompiles::storage::StorageActions::disabled(),
-            || tempo_precompiles::expiring_nonce::ExpiringNonceManager::new().prune(Address::ZERO),
+            || tempo_precompiles::expiring_nonce::ExpiringNonceManager::new().prune(),
         )
         .map_err(BlockExecutionError::other)?;
         let state = ctx.journaled_state.finalize();

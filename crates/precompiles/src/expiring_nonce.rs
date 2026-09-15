@@ -2,11 +2,10 @@
 use crate::{
     EXPIRING_NONCE_PRECOMPILE_ADDRESS, Precompile, charge_input_cost, dispatch,
     error::Result,
-    mutate_void,
     storage::{Handler, Mapping},
 };
 use alloy::primitives::{Address, B256};
-use tempo_contracts::precompiles::{IExpiringNonce, NonceError};
+use tempo_contracts::precompiles::NonceError;
 use tempo_precompiles_macros::contract;
 
 /// Five minutes at the minimum one-millisecond block interval.
@@ -44,10 +43,7 @@ impl ExpiringNonceManager {
     }
 
     /// Clears the retired block's hashes, bucket entries, and count at block end.
-    pub fn prune(&mut self, sender: Address) -> Result<()> {
-        if sender != Address::ZERO {
-            return Err(tempo_contracts::precompiles::CurrentCommitteeError::unauthorized().into());
-        }
+    pub fn prune(&mut self) -> Result<()> {
         let Some(block) = self
             .storage
             .block_number()
@@ -76,15 +72,16 @@ impl ExpiringNonceManager {
 }
 
 impl Precompile for ExpiringNonceManager {
-    fn call(&mut self, calldata: &[u8], sender: Address) -> revm::precompile::PrecompileResult {
+    fn call(&mut self, calldata: &[u8], _sender: Address) -> revm::precompile::PrecompileResult {
         if let Some(err) = charge_input_cost(&mut self.storage, calldata) {
             return err;
         }
-        dispatch!(calldata, |call| match call {
-            IExpiringNonce::IExpiringNonceCalls {
-                prune(call) => mutate_void(call, sender, |s, _| self.prune(s))
-            }
-        })
+        // This precompile exposes storage only; mutations come from the EVM.
+        if calldata.len() >= 4 {
+            dispatch::unknown_selector_result(calldata)
+        } else {
+            dispatch::missing_selector_result()
+        }
     }
 }
 
@@ -204,14 +201,14 @@ mod tests {
         storage.set_timestamp(U256::from(1300));
         StorageCtx::enter(&mut storage, || {
             let mut mgr = ExpiringNonceManager::new();
-            mgr.prune(Address::ZERO)?;
+            mgr.prune()?;
             assert_eq!(mgr.seen[first].read()?, 1300);
             Ok::<_, eyre::Report>(())
         })?;
         storage.set_block_number(7 + MAX_EXPIRY_NUM_BLOCKS);
         StorageCtx::enter(&mut storage, || {
             let mut mgr = ExpiringNonceManager::new();
-            mgr.prune(Address::ZERO)?;
+            mgr.prune()?;
             assert_eq!(mgr.seen[first].read()?, 0);
             assert_eq!(mgr.seen[second].read()?, 0);
             assert_eq!(mgr.bucket[7][0].read()?, B256::ZERO);
@@ -219,28 +216,49 @@ mod tests {
             assert_eq!(mgr.bucket_count[7].read()?, 0);
             assert_eq!(mgr.seen[later].read()?, 1301);
             assert_eq!(mgr.bucket_count[8].read()?, 1);
-            mgr.prune(Address::ZERO)?;
+            mgr.prune()?;
             Ok(())
         })
     }
 
     #[test]
-    fn expiring_nonce_pruning_rejects_live_entries_and_unauthorized_calls() -> eyre::Result<()> {
+    fn expiring_nonce_pruning_rejects_live_entries() -> eyre::Result<()> {
         let mut storage = HashMapStorageProvider::new(1);
         storage.set_timestamp(U256::from(1000));
         storage.set_block_number(0);
         StorageCtx::enter(&mut storage, || {
             let mut mgr = ExpiringNonceManager::new();
             mgr.check_and_mark_expiring_nonce(B256::ZERO, 1030)?;
-            assert!(mgr.prune(Address::repeat_byte(1)).is_err());
-            mgr.prune(Address::ZERO)?;
+            mgr.prune()?;
             Ok::<_, eyre::Report>(())
         })?;
         storage.set_block_number(MAX_EXPIRY_NUM_BLOCKS);
         StorageCtx::enter(&mut storage, || {
             let mut mgr = ExpiringNonceManager::new();
-            assert!(mgr.prune(Address::ZERO).is_err());
+            assert!(mgr.prune().is_err());
             assert_eq!(mgr.seen[B256::ZERO].read()?, 1030);
+            Ok(())
+        })
+    }
+    #[test]
+    fn expiring_nonce_has_no_external_prune_method() -> eyre::Result<()> {
+        let mut storage = HashMapStorageProvider::new(1);
+        storage.set_timestamp(U256::from(1000));
+        storage.set_block_number(MAX_EXPIRY_NUM_BLOCKS);
+        StorageCtx::enter(&mut storage, || {
+            let mut mgr = ExpiringNonceManager::new();
+            let hash = B256::repeat_byte(1);
+            mgr.seen[hash].write(999)?;
+            mgr.bucket[0][0].write(hash)?;
+            mgr.bucket_count[0].write(1)?;
+            let selector = alloy::primitives::keccak256("prune()");
+            let output = mgr.call(&selector[..4], Address::ZERO)?;
+            assert!(matches!(
+                output.status,
+                revm::precompile::PrecompileStatus::Revert
+            ));
+            assert_eq!(mgr.seen[hash].read()?, 999);
+            assert_eq!(mgr.bucket_count[0].read()?, 1);
             Ok(())
         })
     }
