@@ -8,7 +8,7 @@
 //! through consensus.
 //!
 //! The decision model is:
-//! `leader_idle + predicted_builder_work + predicted_validator_work + 2 * marshal_persist >= budget`.
+//! `leader_idle + builder_work + proposer_wait + validator_work + validator_wait + 2 * marshal_persist >= budget`.
 //! Idle waiting only happens on the proposer. Builder work is projected from the
 //! current build, while validator work uses feedback from previously validated
 //! blocks when available and otherwise falls back to the builder projection.
@@ -18,7 +18,8 @@ use std::time::Duration;
 #[cfg(test)]
 use tempo_payload_types::ValidationLatencyEstimator;
 use tempo_payload_types::{
-    MarshalPersistEstimator, ValidationLatencyEstimate, ValidationLatencyWorkload,
+    AdaptivePersistenceBudget, MarshalPersistEstimator, ValidationLatencyEstimate,
+    ValidationLatencyWorkload,
 };
 
 /// Fixed-point scale for build time multipliers.
@@ -57,6 +58,8 @@ fn scaled_duration(elapsed: Duration, multiplier: u64) -> Duration {
 pub(crate) struct PayloadBudgetDecision {
     pub(crate) predicted_builder_work: Duration,
     pub(crate) predicted_validator_work: Duration,
+    pub(crate) predicted_proposer_wait: Duration,
+    pub(crate) predicted_validator_wait: Duration,
     pub(crate) marshal_persist: Duration,
     pub(crate) total_reserved: Duration,
 }
@@ -75,8 +78,9 @@ pub(crate) struct PayloadBudgetDecision {
 ///
 /// The budget is not split into fixed leader/validator buckets. Instead, we
 /// charge proposer idle once, projected builder work once, learned validator
-/// latency once (including admission waits), and marshal
-/// persistence once for each side.
+/// non-adaptive latency once, predicted adaptive deficits once per side, and marshal
+/// persistence once for each side. Prior actual sleeps are not fixed build deductions.
+#[allow(clippy::too_many_arguments)]
 pub(crate) fn payload_budget_decision(
     elapsed: Duration,
     idle_elapsed: Duration,
@@ -84,6 +88,7 @@ pub(crate) fn payload_budget_decision(
     marshal_persist: MarshalPersistEstimator,
     block_size_bytes: usize,
     validation_latency: Option<ValidationLatencyEstimate>,
+    persistence_budget: Option<AdaptivePersistenceBudget>,
     current_workload: ValidationLatencyWorkload,
 ) -> PayloadBudgetDecision {
     let work_elapsed = elapsed.saturating_sub(idle_elapsed);
@@ -91,15 +96,25 @@ pub(crate) fn payload_budget_decision(
     let validation_latency_estimate =
         validation_latency.and_then(|estimate| estimate.estimate(current_workload));
     let predicted_validator_work = validation_latency_estimate.unwrap_or(predicted_builder_work);
+    let predicted_proposer_wait = persistence_budget.map_or(Duration::ZERO, |budget| {
+        budget.proposer_wait(elapsed, idle_elapsed.saturating_add(predicted_builder_work))
+    });
+    let predicted_validator_wait = persistence_budget.map_or(Duration::ZERO, |budget| {
+        budget.validator_wait(predicted_validator_work)
+    });
     let marshal_persist = marshal_persist.estimate(block_size_bytes);
     let total_reserved = idle_elapsed
         .saturating_add(predicted_builder_work)
         .saturating_add(predicted_validator_work)
+        .saturating_add(predicted_proposer_wait)
+        .saturating_add(predicted_validator_wait)
         .saturating_add(marshal_persist)
         .saturating_add(marshal_persist);
     PayloadBudgetDecision {
         predicted_builder_work,
         predicted_validator_work,
+        predicted_proposer_wait,
+        predicted_validator_wait,
         marshal_persist,
         total_reserved,
     }
@@ -139,6 +154,38 @@ pub(crate) fn decay_build_time_multiplier(current: u64, observed: u64) -> u64 {
 mod tests {
     use super::*;
 
+    #[test]
+    fn payload_budget_reserves_both_adaptive_deficits_once() {
+        let workload = ValidationLatencyWorkload::new(100, 10);
+        let validation_latency = validation_latency_estimate(workload, Duration::from_millis(80));
+        let pacing = AdaptivePersistenceBudget::new(
+            tempo_payload_types::PersistencePacingFeedback {
+                adaptive_wait: Duration::from_millis(132),
+                persistence_per_block: Some(Duration::from_millis(200)),
+            },
+            // Keep dispatch credit zero independent of test scheduling.
+            std::time::Instant::now() + Duration::from_secs(60),
+        );
+        let decision = payload_budget_decision(
+            Duration::from_millis(100),
+            Duration::ZERO,
+            BUILD_TIME_MULTIPLIER_SCALE,
+            MarshalPersistEstimator::default(),
+            0,
+            validation_latency,
+            Some(pacing),
+            workload,
+        );
+        assert_eq!(decision.predicted_builder_work, Duration::from_millis(100));
+        assert_eq!(decision.predicted_validator_work, Duration::from_millis(80));
+        assert_eq!(decision.predicted_proposer_wait, Duration::from_millis(110));
+        assert_eq!(
+            decision.predicted_validator_wait,
+            Duration::from_millis(132)
+        );
+        assert_eq!(decision.total_reserved, Duration::from_millis(422));
+    }
+
     fn validation_latency_estimate(
         workload: ValidationLatencyWorkload,
         elapsed: Duration,
@@ -174,6 +221,7 @@ mod tests {
             MarshalPersistEstimator::default(),
             0,
             None,
+            None,
             ValidationLatencyWorkload::default(),
         );
         assert_eq!(decision.predicted_builder_work, Duration::from_millis(135));
@@ -189,6 +237,7 @@ mod tests {
             1_350_000,
             MarshalPersistEstimator::default(),
             0,
+            None,
             None,
             ValidationLatencyWorkload::default(),
         );
@@ -211,6 +260,7 @@ mod tests {
             MarshalPersistEstimator::default(),
             0,
             validation_latency,
+            None,
             workload,
         );
 
@@ -232,6 +282,7 @@ mod tests {
             MarshalPersistEstimator::default(),
             0,
             validation_latency,
+            None,
             ValidationLatencyWorkload::new(200, 10),
         );
 
@@ -253,6 +304,7 @@ mod tests {
             marshal_persist,
             15_000,
             None,
+            None,
             ValidationLatencyWorkload::default(),
         );
         assert_eq!(decision.marshal_persist, Duration::from_millis(15));
@@ -264,6 +316,7 @@ mod tests {
             1_350_000,
             marshal_persist,
             14_999,
+            None,
             None,
             ValidationLatencyWorkload::default(),
         );

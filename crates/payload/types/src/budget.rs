@@ -1,7 +1,8 @@
+use crate::PersistencePacingFeedback;
 use std::{
     collections::BTreeMap,
     sync::atomic::{AtomicU64, Ordering},
-    time::Duration,
+    time::{Duration, Instant},
 };
 use tracing::debug;
 
@@ -15,6 +16,48 @@ const VALIDATION_LATENCY_SAMPLE_WINDOW: usize = 64;
 const VALIDATION_LATENCY_WORKLOAD_SCALE: u128 = 1_000_000;
 
 static MARSHAL_PERSIST_NS_PER_BYTE: AtomicU64 = AtomicU64::new(0);
+
+/// Execution-layer response timing. Adaptive sleep is separated before learning work costs.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct ValidationFeedback {
+    /// Full request time, including admission and scheduling.
+    pub elapsed: Duration,
+    /// Actual adaptive sleep incurred by this request (not queue or hard-stall time).
+    pub adaptive_wait: Duration,
+    /// Latest new block's pacing state. `None` means no fresh completion, e.g. a duplicate.
+    pub pacing: Option<PersistencePacingFeedback>,
+}
+
+/// Local pacing snapshot for the next build. Never part of a consensus payload.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct AdaptivePersistenceBudget {
+    feedback: PersistencePacingFeedback,
+    /// Receipt after admission completed: previous adaptive sleep cannot count as new work.
+    admitted_at: Instant,
+}
+
+impl AdaptivePersistenceBudget {
+    /// Snapshot a completed admission, including inactive/zero-wait feedback to clear old pacing.
+    pub fn new(feedback: PersistencePacingFeedback, admitted_at: Instant) -> Self {
+        Self {
+            feedback,
+            admitted_at,
+        }
+    }
+
+    /// Predict the proposer's remaining wait, crediting idle/dispatch time and projected work.
+    pub fn proposer_wait(self, elapsed: Duration, projected_wall: Duration) -> Duration {
+        let before_build = self.admitted_at.elapsed().saturating_sub(elapsed);
+        self.feedback
+            .remaining_wait(before_build.saturating_add(projected_wall))
+    }
+
+    /// Reserve validator sleep separately from replay work. Remote idle time is unknown, so
+    /// credit only predicted replay work; this is deliberately conservative.
+    pub fn validator_wait(self, work: Duration) -> Duration {
+        self.feedback.remaining_wait(work)
+    }
+}
 
 /// Returns the current estimate of consensus marshal persistence cost.
 ///
@@ -216,6 +259,9 @@ impl ValidationLatencyEstimate {
 /// that produced the feedback.
 #[derive(Clone, Debug, Default)]
 pub struct ValidationLatencyEstimator {
+    /// Latest admitted height, shared by proposer and validator paths. Repeated/older feedback
+    /// must not restart the pacing clock or resurrect an obsolete target.
+    pacing: Option<(u64, AdaptivePersistenceBudget)>,
     /// Samples are kept in id order for retention; count maps are keyed by
     /// observed values so estimate snapshots can read percentiles without
     /// sorting.
@@ -226,6 +272,37 @@ pub struct ValidationLatencyEstimator {
 }
 
 impl ValidationLatencyEstimator {
+    /// Record a pacing snapshot once per height, including locally built blocks without replay.
+    pub fn observe_pacing(&mut self, height: u64, feedback: PersistencePacingFeedback) {
+        if self.pacing.is_none_or(|(previous, _)| height > previous) {
+            self.pacing = Some((
+                height,
+                AdaptivePersistenceBudget::new(feedback, Instant::now()),
+            ));
+        }
+    }
+
+    /// Pacing target and local admission clock for build budgeting.
+    pub fn persistence_budget(&self) -> Option<AdaptivePersistenceBudget> {
+        self.pacing.map(|(_, budget)| budget)
+    }
+
+    /// Learn non-adaptive request latency and update the pacing target only for fresh blocks.
+    pub fn observe_validation(
+        &mut self,
+        height: u64,
+        workload: ValidationLatencyWorkload,
+        feedback: ValidationFeedback,
+    ) {
+        if let Some(pacing) = feedback.pacing {
+            self.observe_pacing(height, pacing);
+            self.observe(
+                height,
+                workload,
+                feedback.elapsed.saturating_sub(feedback.adaptive_wait),
+            );
+        }
+    }
     fn insert_sample_counts(&mut self, sample: ValidationLatencySample) {
         insert_count(&mut self.elapsed_counts, sample.elapsed);
         insert_count(&mut self.gas_used_counts, sample.workload.gas_used);
@@ -314,6 +391,83 @@ impl ValidationLatencyEstimator {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn adaptive_wait_is_split_before_learning_validation_work() {
+        let mut estimator = super::ValidationLatencyEstimator::default();
+        let workload = super::ValidationLatencyWorkload::new(100, 10);
+        let pacing = crate::PersistencePacingFeedback {
+            adaptive_wait: std::time::Duration::from_millis(110),
+            persistence_per_block: Some(std::time::Duration::from_millis(200)),
+        };
+        estimator.observe_validation(
+            1,
+            workload,
+            super::ValidationFeedback {
+                elapsed: std::time::Duration::from_millis(210),
+                adaptive_wait: pacing.adaptive_wait,
+                pacing: Some(pacing),
+            },
+        );
+        assert_eq!(
+            estimator.estimate().unwrap().estimate(workload),
+            Some(std::time::Duration::from_millis(100))
+        );
+        let snapshot = estimator.persistence_budget().unwrap();
+        assert_eq!(
+            snapshot.validator_wait(std::time::Duration::from_millis(100)),
+            std::time::Duration::from_millis(110)
+        );
+        // Less work leaves a larger deficit, not a fixed 110ms charge.
+        assert_eq!(
+            snapshot.validator_wait(std::time::Duration::from_millis(50)),
+            std::time::Duration::from_millis(165)
+        );
+        assert_eq!(
+            snapshot.validator_wait(std::time::Duration::from_millis(250)),
+            std::time::Duration::ZERO
+        );
+        // Duplicate acknowledgments must not restart the admission clock or clear its target.
+        estimator.observe_pacing(1, Default::default());
+        assert_eq!(estimator.persistence_budget(), Some(snapshot));
+        estimator.observe_validation(1, workload, super::ValidationFeedback::default());
+        assert_eq!(
+            estimator.estimate().unwrap().estimate(workload),
+            Some(std::time::Duration::from_millis(100))
+        );
+        // A fresh zero-wait/inactive sample clears the target, and stale feedback cannot revive it.
+        estimator.observe_pacing(2, Default::default());
+        estimator.observe_pacing(1, pacing);
+        assert_eq!(
+            estimator
+                .persistence_budget()
+                .unwrap()
+                .validator_wait(std::time::Duration::ZERO),
+            std::time::Duration::ZERO
+        );
+    }
+
+    #[test]
+    fn proposer_credits_time_since_completed_admission() {
+        let budget = super::AdaptivePersistenceBudget::new(
+            crate::PersistencePacingFeedback {
+                adaptive_wait: std::time::Duration::from_secs(10),
+                persistence_per_block: Some(std::time::Duration::from_millis(200)),
+            },
+            std::time::Instant::now() - std::time::Duration::from_secs(1),
+        );
+        assert_eq!(
+            budget.proposer_wait(
+                std::time::Duration::from_millis(50),
+                std::time::Duration::from_millis(100)
+            ),
+            std::time::Duration::ZERO
+        );
+        // Previous sleep duration is not used as new work credit.
+        assert_eq!(
+            budget.validator_wait(std::time::Duration::from_millis(100)),
+            std::time::Duration::from_millis(110)
+        );
+    }
     use super::*;
 
     fn estimate_with_sample(

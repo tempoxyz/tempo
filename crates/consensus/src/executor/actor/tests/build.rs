@@ -26,7 +26,8 @@ fn proposal_waits_for_local_admission() {
         h.wait_until(|| h.execution.admission_count() == 1).await;
         assert!(build.try_recv().unwrap().is_none());
         gate.send(Ok(())).unwrap();
-        assert!(build.await.is_ok());
+        let payload = build.await.unwrap();
+        assert_eq!(payload.admission_feedback(), Some(Default::default()));
         assert!(
             h.execution.new_payloads().is_empty(),
             "built blocks must not be re-executed"

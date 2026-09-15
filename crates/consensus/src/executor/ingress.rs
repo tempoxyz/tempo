@@ -3,8 +3,8 @@ use commonware_consensus::{Reporter, marshal::Update, simplex::types::Context, t
 use commonware_cryptography::ed25519::PublicKey;
 use eyre::WrapErr as _;
 use futures::channel::{mpsc, oneshot};
-use std::{sync::Arc, time::Duration};
-use tempo_payload_types::{TempoBuiltPayload, TempoPayloadAttributes};
+use std::sync::Arc;
+use tempo_payload_types::{TempoBuiltPayload, TempoPayloadAttributes, ValidationFeedback};
 use tracing::Span;
 
 use crate::consensus::{Digest, block::Block};
@@ -49,7 +49,7 @@ impl Mailbox {
         &self,
         round: Round,
         block: Block,
-    ) -> eyre::Result<Option<Duration>> {
+    ) -> eyre::Result<Option<ValidationFeedback>> {
         let (response, rx) = oneshot::channel();
         self.inner
             .unbounded_send(Message::in_current_span(VerifyBlock {
@@ -152,7 +152,7 @@ pub(super) struct Build {
 pub(super) struct VerifyBlock {
     pub(super) round: Round,
     pub(super) block: Arc<Block>,
-    pub(super) response: oneshot::Sender<Option<Duration>>,
+    pub(super) response: oneshot::Sender<Option<ValidationFeedback>>,
 }
 
 impl From<Build> for Command {

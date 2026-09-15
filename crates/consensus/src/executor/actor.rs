@@ -977,7 +977,7 @@ struct VerifyBlockRequest {
     /// layer accepted the block, `None` when it rejected it. Dropped without
     /// a value when validation was not possible or the request was
     /// superseded.
-    response: oneshot::Sender<Option<Duration>>,
+    response: oneshot::Sender<Option<tempo_payload_types::ValidationFeedback>>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -1364,20 +1364,19 @@ async fn execute_validation(
 async fn validate_block(
     execution_node: &impl ExecutionLayer,
     block: Arc<Block>,
-) -> eyre::Result<Option<Duration>> {
+) -> eyre::Result<Option<tempo_payload_types::ValidationFeedback>> {
     use alloy_rpc_types_engine::PayloadStatusEnum;
 
     let (block, block_access_list) = Arc::unwrap_or_clone(block).into_parts();
-    let validation_start = Instant::now();
-    let payload_status = execution_node
-        .new_payload(TempoExecutionData {
+    let (payload_status, feedback) = execution_node
+        .new_payload_with_feedback(TempoExecutionData {
             block,
             block_access_list,
         })
         .await
         .wrap_err("failed sending new-payload request to execution layer to validate block")?;
     match payload_status.status {
-        PayloadStatusEnum::Valid => Ok(Some(validation_start.elapsed())),
+        PayloadStatusEnum::Valid => Ok(Some(feedback)),
         PayloadStatusEnum::Invalid { validation_error } => {
             info!(
                 validation_error,
@@ -1432,7 +1431,7 @@ async fn run_payload_job(
                     execution_node
                         .admit_payload(payload.clone())
                         .await
-                        .map(|()| payload),
+                        .map(|feedback| payload.with_admission_feedback(feedback)),
                 )
             }
             other => other,

@@ -1,4 +1,4 @@
-use crate::ValidationLatencyEstimate;
+use crate::{AdaptivePersistenceBudget, ValidationLatencyEstimate};
 use alloy_primitives::{Address, B256, Bytes, Keccak256};
 use alloy_rpc_types_engine::PayloadId;
 use alloy_rpc_types_eth::Withdrawal;
@@ -34,6 +34,9 @@ pub struct TempoPayloadAttributes {
     /// means the builder should use its conservative fallback.
     #[serde(skip)]
     validation_latency_estimate: Option<ValidationLatencyEstimate>,
+    /// Local adaptive pacing snapshot; never serialized or included in payload identity.
+    #[serde(skip)]
+    persistence_budget: Option<AdaptivePersistenceBudget>,
     /// Milliseconds portion of the timestamp.
     timestamp_millis_part: u64,
     /// DKG ceremony data to include in the block's extra_data header field.
@@ -80,6 +83,7 @@ impl TempoPayloadAttributes {
             },
             payload_build_budget: None,
             validation_latency_estimate: None,
+            persistence_budget: None,
             timestamp_millis_part,
             extra_data,
             proposer_public_key,
@@ -130,6 +134,17 @@ impl TempoPayloadAttributes {
         self.validation_latency_estimate
     }
 
+    /// Set local proposer/validator adaptive-wait budgeting feedback.
+    pub fn with_persistence_budget(mut self, budget: Option<AdaptivePersistenceBudget>) -> Self {
+        self.persistence_budget = budget;
+        self
+    }
+
+    /// Return the local adaptive pacing snapshot.
+    pub fn persistence_budget(&self) -> Option<AdaptivePersistenceBudget> {
+        self.persistence_budget
+    }
+
     /// Returns the milliseconds portion of the timestamp.
     pub fn timestamp_millis_part(&self) -> u64 {
         self.timestamp_millis_part
@@ -158,6 +173,7 @@ impl From<EthPayloadAttributes> for TempoPayloadAttributes {
             inner,
             payload_build_budget: None,
             validation_latency_estimate: None,
+            persistence_budget: None,
             timestamp_millis_part: 0,
             extra_data: Bytes::default(),
             proposer_public_key: None,

@@ -13,7 +13,9 @@ use reth_ethereum::{chainspec::EthChainSpec as _, rpc::eth::primitives::BlockNum
 use reth_node_builder::{BuiltPayload as _, PayloadKind};
 use reth_provider::{BlockHashReader as _, BlockReader as _, BlockSource};
 use tempo_node::{TempoExecutionData, TempoFullNode};
-use tempo_payload_types::{TempoBuiltPayload, TempoPayloadAttributes};
+use tempo_payload_types::{
+    PersistencePacingFeedback, TempoBuiltPayload, TempoPayloadAttributes, ValidationFeedback,
+};
 use tokio::sync::oneshot;
 
 mod actor;
@@ -89,6 +91,27 @@ pub(crate) trait ExecutionLayer: Clone + Send + Sync + 'static {
         payload: TempoExecutionData,
     ) -> impl Future<Output = eyre::Result<PayloadStatus>> + Send + 'static;
 
+    /// Validate with separate adaptive-wait feedback for subsequent build budgets.
+    fn new_payload_with_feedback(
+        &self,
+        payload: TempoExecutionData,
+    ) -> impl Future<Output = eyre::Result<(PayloadStatus, ValidationFeedback)>> + Send + 'static
+    {
+        let future = self.new_payload(payload);
+        async move {
+            let start = std::time::Instant::now();
+            let status = future.await?;
+            Ok((
+                status,
+                ValidationFeedback {
+                    elapsed: start.elapsed(),
+                    pacing: Some(PersistencePacingFeedback::default()),
+                    ..Default::default()
+                },
+            ))
+        }
+    }
+
     /// Updates the execution layer's head and finalized blocks, optionally
     /// registering a payload build.
     fn fork_choice_updated(
@@ -111,7 +134,7 @@ pub(crate) trait ExecutionLayer: Clone + Send + Sync + 'static {
     fn admit_payload(
         &self,
         payload: TempoBuiltPayload,
-    ) -> impl Future<Output = eyre::Result<()>> + Send + 'static;
+    ) -> impl Future<Output = eyre::Result<Option<PersistencePacingFeedback>>> + Send + 'static;
 }
 
 /// The narrow marshal-actor capability used by the executor actor.
@@ -140,17 +163,36 @@ impl ExecutionLayer for Arc<TempoFullNode> {
     fn admit_payload(
         &self,
         payload: TempoBuiltPayload,
-    ) -> impl Future<Output = eyre::Result<()>> + Send + 'static {
+    ) -> impl Future<Output = eyre::Result<Option<PersistencePacingFeedback>>> + Send + 'static
+    {
         let engine = self.add_ons_handle.beacon_engine_handle.clone();
         async move {
             let executed = payload.executed_block().ok_or_else(|| {
                 eyre::eyre!("built payload is missing its local execution result")
             })?;
-            eyre::ensure!(
-                engine.insert_executed_block(executed).await?,
-                "built payload admission failed"
-            );
-            Ok(())
+            let (admitted, feedback) = engine.insert_executed_block_with_pacing(executed).await?;
+            eyre::ensure!(admitted, "built payload admission failed");
+            Ok(feedback)
+        }
+    }
+
+    fn new_payload_with_feedback(
+        &self,
+        payload: TempoExecutionData,
+    ) -> impl Future<Output = eyre::Result<(PayloadStatus, ValidationFeedback)>> + Send + 'static
+    {
+        let engine = self.add_ons_handle.beacon_engine_handle.clone();
+        async move {
+            let start = std::time::Instant::now();
+            let (status, timings) = engine.reth_new_payload(payload, false, false).await?;
+            Ok((
+                status,
+                ValidationFeedback {
+                    elapsed: start.elapsed(),
+                    adaptive_wait: timings.adaptive_wait,
+                    pacing: timings.pacing,
+                },
+            ))
         }
     }
 

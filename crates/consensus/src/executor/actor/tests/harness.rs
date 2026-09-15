@@ -787,16 +787,19 @@ impl ExecutionLayer for FakeExecution {
     fn admit_payload(
         &self,
         _payload: TempoBuiltPayload,
-    ) -> impl Future<Output = eyre::Result<()>> + Send + 'static {
+    ) -> impl Future<Output = eyre::Result<Option<tempo_payload_types::PersistencePacingFeedback>>>
+    + Send
+    + 'static {
         self.inner.admission_count.fetch_add(1, Ordering::Relaxed);
         let gate = self.inner.admission_gate.lock().take();
         async move {
             if let Some(gate) = gate {
                 gate.await
-                    .map_err(|_| eyre::eyre!("admission gate dropped"))?
-            } else {
-                Ok(())
+                    .map_err(|_| eyre::eyre!("admission gate dropped"))??;
             }
+            Ok(Some(
+                tempo_payload_types::PersistencePacingFeedback::default(),
+            ))
         }
     }
 }
@@ -1141,7 +1144,8 @@ where
         &self,
         round: Round,
         block: Block,
-    ) -> impl Future<Output = eyre::Result<Option<Duration>>> + use<TContext> {
+    ) -> impl Future<Output = eyre::Result<Option<tempo_payload_types::ValidationFeedback>>>
+    + use<TContext> {
         let mailbox = self.mailbox.clone();
         async move { mailbox.verify_block(round, block).await }
     }

@@ -507,6 +507,7 @@ where
         let build_time_multiplier = self.build_time_multiplier();
         let marshal_persist = marshal_persist_estimate();
         let validation_latency = attributes.validation_latency_estimate();
+        let persistence_budget = attributes.persistence_budget();
         let block_build_stop_reason = loop {
             check_cancel!();
 
@@ -523,6 +524,7 @@ where
                     marshal_persist,
                     estimated_rlp_block_size,
                     validation_latency,
+                    persistence_budget,
                     current_workload,
                 );
                 if budget_decision.total_reserved >= build_budget {
@@ -533,6 +535,8 @@ where
                         ?build_budget,
                         predicted_builder_work = ?budget_decision.predicted_builder_work,
                         predicted_validator_work = ?budget_decision.predicted_validator_work,
+                        predicted_proposer_wait = ?budget_decision.predicted_proposer_wait,
+                        predicted_validator_wait = ?budget_decision.predicted_validator_wait,
                         total_reserved = ?budget_decision.total_reserved,
                         marshal_persist = ?budget_decision.marshal_persist,
                         ?current_workload,
@@ -1005,6 +1009,11 @@ where
         let validation_latency_duration = validation_latency
             .and_then(|estimate| estimate.estimate(final_workload))
             .unwrap_or(validation_work_duration);
+        let validation_latency_duration = validation_latency_duration.saturating_add(
+            persistence_budget.map_or(Duration::ZERO, |budget| {
+                budget.validator_wait(validation_latency_duration)
+            }),
+        );
 
         self.metrics.payload_build_duration_seconds.record(elapsed);
         let gas_per_second = block.gas_used() as f64 / elapsed.as_secs_f64();

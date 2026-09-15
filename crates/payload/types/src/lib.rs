@@ -9,9 +9,11 @@ mod budget;
 use alloy_primitives::Bytes;
 pub use attrs::TempoPayloadAttributes;
 pub use budget::{
-    MarshalPersistEstimator, ValidationLatencyEstimate, ValidationLatencyEstimator,
-    ValidationLatencyWorkload, marshal_persist_estimate, observe_marshal_persist,
+    AdaptivePersistenceBudget, MarshalPersistEstimator, ValidationFeedback,
+    ValidationLatencyEstimate, ValidationLatencyEstimator, ValidationLatencyWorkload,
+    marshal_persist_estimate, observe_marshal_persist,
 };
+pub use reth_engine_primitives::PersistencePacingFeedback;
 use std::{
     sync::{Arc, OnceLock},
     time::Duration,
@@ -51,6 +53,8 @@ pub struct TempoBuiltPayload {
     validation_work_duration: Duration,
     /// Time validators are expected to spend validating this payload.
     validation_latency_duration: Duration,
+    /// Original pacing feedback from acknowledged local admission, not builder execution.
+    admission_feedback: Option<PersistencePacingFeedback>,
     /// Approximate execution block RLP size estimate used for pacing and builder-side limits.
     execution_block_size_estimate: usize,
     /// Shared cache for the encoded execution block bytes.
@@ -74,6 +78,7 @@ impl TempoBuiltPayload {
             executed_block,
             validation_work_duration,
             validation_latency_duration,
+            admission_feedback: None,
             execution_block_size_estimate,
             execution_block_encoded,
         }
@@ -113,6 +118,17 @@ impl TempoBuiltPayload {
     /// Returns the time validators are expected to spend validating this payload.
     pub fn validation_latency_duration(&self) -> Duration {
         self.validation_latency_duration
+    }
+
+    /// Attach feedback after local admission has completed.
+    pub fn with_admission_feedback(mut self, feedback: Option<PersistencePacingFeedback>) -> Self {
+        self.admission_feedback = feedback;
+        self
+    }
+
+    /// Return the original local block's pacing feedback, including duplicate acknowledgments.
+    pub fn admission_feedback(&self) -> Option<PersistencePacingFeedback> {
+        self.admission_feedback
     }
 
     /// Converts the built payload into [`TempoExecutionData`].

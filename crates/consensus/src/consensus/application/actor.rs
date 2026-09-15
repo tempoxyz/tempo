@@ -36,6 +36,7 @@ use commonware_runtime::{
 use commonware_utils::SystemTimeExt;
 use eyre::{OptionExt as _, WrapErr as _, bail, ensure, eyre};
 use rand_core::{CryptoRng, Rng};
+use reth_node_builder::BuiltPayload as _;
 use reth_primitives_traits::BlockBody as _;
 use tempo_dkg_onchain_artifacts::OnchainDkgOutcome;
 use tempo_node::TempoFullNode;
@@ -581,6 +582,11 @@ impl Inner<Init> {
             .lock()
             .ok()
             .and_then(|estimator| estimator.estimate());
+        let persistence_budget = self
+            .validation_latency_estimator
+            .lock()
+            .ok()
+            .and_then(|estimator| estimator.persistence_budget());
         let attrs = TempoPayloadAttributes::new(
             Some(proposer_public_key),
             timestamp,
@@ -589,7 +595,8 @@ impl Inner<Init> {
             consensus_context,
         )
         .with_payload_build_budget(build_budget)
-        .with_validation_latency_estimate(validation_latency_estimate);
+        .with_validation_latency_estimate(validation_latency_estimate)
+        .with_persistence_budget(persistence_budget);
 
         // Subscribe to the payload build. The executor owns the build job
         // and runs it to completion; dropping the receiver (for example
@@ -607,6 +614,11 @@ impl Inner<Init> {
             )?;
 
         let payload_build_elapsed = payload_build_start.elapsed();
+        if let Some(feedback) = payload.admission_feedback()
+            && let Ok(mut estimator) = self.validation_latency_estimator.lock()
+        {
+            estimator.observe_pacing(payload.block().number(), feedback);
+        }
         let payload_validation_work_elapsed = payload.validation_work_duration();
         let validation_latency_elapsed = payload.validation_latency_duration();
         let execution_block_rlp_size_estimate_bytes = payload.execution_block_size_estimate();
@@ -739,7 +751,7 @@ impl Inner<Init> {
         if let Some(duration) = validation_duration
             && let Ok(mut estimator) = self.validation_latency_estimator.lock()
         {
-            estimator.observe(
+            estimator.observe_validation(
                 block.height().get(),
                 ValidationLatencyWorkload::new(
                     block.block().gas_used(),
@@ -839,7 +851,7 @@ async fn verify_block(
     executor: &crate::executor::Mailbox,
     block: &Block,
     parent_digest: Digest,
-) -> eyre::Result<Option<Duration>> {
+) -> eyre::Result<Option<tempo_payload_types::ValidationFeedback>> {
     let epoch = round.epoch();
     let epoch_info = epoch_strategy
         .containing(block.height())
