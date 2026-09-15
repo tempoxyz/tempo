@@ -78,7 +78,7 @@ impl<N: Network<TransactionRequest = TempoTransactionRequest>> TxFiller<N> for R
 
 /// A [`TxFiller`] that populates transactions with expiring nonce fields ([TIP-1009]).
 ///
-/// Sets `nonce_key` to `U256::MAX`, defaults an unset `nonce` to `0`, and sets `valid_before` to
+/// Sets `nonce_key` to `TEMPO_EXPIRING_NONCE_KEY`, defaults an unset `nonce` to `0`, and sets `valid_before` to
 /// current time + expiry window. An explicitly supplied nonce is preserved as an opaque
 /// discriminator for TIP-1106.
 /// This enables transactions to use the circular buffer replay protection instead of 2D nonce storage.
