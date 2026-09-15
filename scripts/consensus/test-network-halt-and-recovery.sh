@@ -27,7 +27,7 @@ main() {
   echo ""
 
   # Start transaction generator and assert block production
-  tx_gen_pid=$(start_tx_generator 10 "$SCRIPT_DIR")
+  start_tx_generator tx_gen_pid 10 "$SCRIPT_DIR"
   echo ""
 
   echo "Checking initial block production with tx generator..."
@@ -74,7 +74,7 @@ main() {
   echo ""
 
   # Start transaction generator and assert block production
-  tx_gen_pid=$(start_tx_generator 10 "$SCRIPT_DIR")
+  start_tx_generator tx_gen_pid 10 "$SCRIPT_DIR"
   echo ""
 
   echo "Checking block production after recovery..."

@@ -63,12 +63,13 @@ main() {
   echo ""
 
   # Start transaction generator and assert block production
-  tx_gen_pid=$(start_tx_generator 10 "$SCRIPT_DIR")
+  start_tx_generator tx_gen_pid 10 "$SCRIPT_DIR"
   echo ""
 
   echo "Checking initial block production with tx generator..."
   if ! monitor_blocks "$rpc_url" 5 "  Monitoring for 5 seconds:"; then
     echo "Test FAILED: Initial block production not working"
+    stop_tx_generator "$tx_gen_pid" || true
     exit 1
   fi
   echo ""
@@ -102,12 +103,13 @@ main() {
   echo ""
 
   # Start transaction generator and ensure block production comes back up
-  tx_gen_pid=$(start_tx_generator 10 "$SCRIPT_DIR")
+  start_tx_generator tx_gen_pid 10 "$SCRIPT_DIR"
   echo ""
 
   echo "Checking block production after full restart..."
   if ! monitor_blocks "$rpc_url" 5 "  Monitoring for 5 seconds:"; then
     echo "Test FAILED: Network should resume block production after full restart"
+    stop_tx_generator "$tx_gen_pid" || true
     exit 1
   fi
   echo ""
