@@ -58,6 +58,7 @@ target "tempo-nightly" {
     RETH_ENGINE_PERSISTENCE_THRESHOLD = "30"
     RETH_ENGINE_NUM_STATE_MASKING_BLOCKS = "20"
   }
+  tags = ["${REGISTRY}/tempo:nightly", "docker.io/tempoxyz/tempo:nightly"]
 }
 
 target "tempo-localnet" {

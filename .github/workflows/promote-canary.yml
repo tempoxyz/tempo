@@ -87,7 +87,7 @@ jobs:
               --status success \
               --created "<=${cutoff}" \
               --limit 10 \
-              --json databaseId,headSha,updatedAt,url \
+              --json databaseId,headSha,updatedAt,url,attempt \
               --jq "[.[] | select((.updatedAt | fromdateiso8601) <= ${cutoff_epoch})] | first // empty")"
 
             if [ -z "$run" ]; then
@@ -99,12 +99,27 @@ jobs:
             run_id="$(jq -er '.databaseId' <<< "$run")"
             run_completed_at="$(jq -er '.updatedAt' <<< "$run")"
             run_url="$(jq -er '.url' <<< "$run")"
-            sha_tag="sha-${head_sha:0:7}"
-            source_ref="${IMAGE}:${sha_tag}"
+            run_attempt="$(jq -er '.attempt | select(type == "number" and . >= 1)' <<< "$run")"
+            artifact_dir="$(mktemp -d)"
+            if ! gh run download "$run_id" --repo "$GH_REPO" \
+              --name "tempo-image-${run_attempt}" --dir "$artifact_dir"; then
+              echo "Nightly run ${run_id} has no digest record for attempt ${run_attempt}; refusing to resolve a mutable SHA tag. Use an explicit verified digest or wait for a recorded nightly to soak." >&2
+              exit 1
+            fi
+
+            digest="$(jq -er --arg sha "$head_sha" --arg run_id "$run_id" --arg attempt "$run_attempt" '
+              select(.commit == $sha and .run_id == $run_id
+                and .run_attempt == $attempt and .target == "tempo-nightly")
+              | .digest | select(type == "string" and test("^sha256:[0-9a-f]{64}$"))
+            ' "${artifact_dir}/tempo-image.json")"
+            source_ref="${IMAGE}@${digest}"
             source="nightly run ${run_id}"
 
             inspection="$(docker buildx imagetools inspect "$source_ref" --format '{{json .}}')"
-            digest="$(jq -er '.manifest.digest | select(test("^sha256:[0-9a-f]{64}$"))' <<< "$inspection")"
+            if [ "$(jq -er '.manifest.digest' <<< "$inspection")" != "$digest" ]; then
+              echo "Registry digest does not match the recorded nightly digest ${digest}" >&2
+              exit 1
+            fi
 
             if ! jq -e --arg sha "$head_sha" '
               [.image[] | .config.Labels["org.opencontainers.image.revision"]] as $revisions

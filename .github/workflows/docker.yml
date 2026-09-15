@@ -180,17 +180,19 @@ jobs:
           VERGEN_GIT_SHA: ${{ github.sha }}
           VERGEN_GIT_SHA_SHORT: ${{ steps.shortsha.outputs.shortsha }}
 
+      - name: Resolve published images
+        id: images
+        env:
+          BUILD_METADATA: ${{ steps.build-and-push.outputs.metadata }}
+          TEMPO_TARGET: ${{ (github.event_name == 'schedule' || github.event.inputs.nightly == 'true') && 'tempo-nightly' || 'tempo' }}
+        run: bash scripts/docker/resolve-images.sh
+
       - name: Install cosign
         uses: tempoxyz/gh-actions/vendor/sigstore/cosign-installer@3626124474a987bc74b41fc7ae65b2e23f8e4e4e
 
       - name: Sign Docker images
         id: sign-images
         shell: bash
-        env:
-          TEMPO_TAGS: ${{ steps.meta-tempo.outputs.tags }}
-          TEMPO_LOCALNET_TAGS: ${{ steps.meta-tempo-localnet.outputs.tags }}
-          TEMPO_SIDECAR_TAGS: ${{ steps.meta-tempo-sidecar.outputs.tags }}
-          TEMPO_XTASK_TAGS: ${{ steps.meta-tempo-xtask.outputs.tags }}
         run: |
           set -euo pipefail
           sign_image() {
@@ -213,30 +215,30 @@ jobs:
             done
           }
 
-          images=(
-            "$TEMPO_TAGS"
-            "$TEMPO_LOCALNET_TAGS"
-            "$TEMPO_SIDECAR_TAGS"
-            "$TEMPO_XTASK_TAGS"
-          )
           sign_failures=0
-          for tags in "${images[@]}"; do
-            while IFS= read -r image; do
-              [ -n "$image" ] || continue
-              if ! sign_image "$image"; then
-                sign_failures=$((sign_failures + 1))
-              fi
-            done <<< "$tags"
-          done
+          while IFS= read -r image; do
+            if ! sign_image "$image"; then
+              sign_failures=$((sign_failures + 1))
+            fi
+          done < "${RUNNER_TEMP}/docker-signing-refs.txt"
 
           if [ "$sign_failures" -ne 0 ]; then
             echo "Failed to sign $sign_failures image reference(s)" >&2
             exit 1
           fi
 
+      - name: Record nightly image digest
+        if: ${{ github.event_name == 'schedule' || github.event.inputs.nightly == 'true' }}
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: tempo-image-${{ github.run_attempt }}
+          path: ${{ runner.temp }}/tempo-image.json
+          if-no-files-found: error
+          retention-days: 90
+
       - name: Publish event (sha tag)
         id: publish-sha-event
-        if: ${{ github.repository == 'tempoxyz/tempo' && github.event_name != 'merge_group' }}
+        if: ${{ github.repository == 'tempoxyz/tempo' && github.event_name != 'merge_group' && github.event_name != 'schedule' && github.event.inputs.nightly != 'true' }}
         shell: bash
         env:
           EVENTS_KEY: ${{ secrets.EVENTS_KEY }}
@@ -276,6 +278,7 @@ jobs:
           EVENTS_CERT: ${{ secrets.EVENTS_CERT }}
           RUNNER_TEMP: ${{ runner.temp }}
           GH_REPO: ${{ github.repository }}
+          IMAGE_DIGEST: ${{ steps.images.outputs.digest }}
           COMMIT_SHA: ${{ github.sha }}
           BRANCH_NAME: ${{ github.head_ref || github.ref_name }}
         run: |
@@ -301,6 +304,7 @@ jobs:
               \"event\": \"registry_package\",
               \"data\": {
                 \"tag\": \"nightly\",
+                \"digest\": \"${IMAGE_DIGEST}\",
                 \"sha\": \"${COMMIT_SHA}\",
                 \"branch\": \"${BRANCH_NAME}\",
                 \"invariant_timeout\": \"${INVARIANT_TIMEOUT}\"
@@ -311,10 +315,7 @@ jobs:
         if: ${{ always() }}
         shell: bash
         env:
-          TEMPO_TAGS: ${{ steps.meta-tempo.outputs.tags }}
-          TEMPO_LOCALNET_TAGS: ${{ steps.meta-tempo-localnet.outputs.tags }}
-          TEMPO_SIDECAR_TAGS: ${{ steps.meta-tempo-sidecar.outputs.tags }}
-          TEMPO_XTASK_TAGS: ${{ steps.meta-tempo-xtask.outputs.tags }}
+          TEMPO_TARGET: ${{ (github.event_name == 'schedule' || github.event.inputs.nightly == 'true') && 'tempo-nightly' || 'tempo' }}
           SHORT_SHA: ${{ steps.shortsha.outputs.shortsha }}
           BUILD_OUTCOME: ${{ steps.build-and-push.outcome }}
           SIGN_OUTCOME: ${{ steps.sign-images.outcome }}
@@ -347,7 +348,6 @@ jobs:
             echo "| Workflow run | [run #${{ github.run_number }}](${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}) |"
             echo "| Workflow run ID | [\`${{ github.run_id }}\`](${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}) |"
             echo "| Job summary | [Build and Push Docker Images](${job_url}) |"
-            echo "| Short SHA tag | \`sha-${SHORT_SHA}\` |"
             echo "| Build | \`${BUILD_OUTCOME:-unknown}\` |"
             echo "| Sign | \`${SIGN_OUTCOME:-unknown}\` |"
             echo
@@ -360,13 +360,14 @@ jobs:
           summarize_image() {
             local image="$1"
             local package_url="$2"
-            local tags="$3"
-            local target="$4"
+            local target="$3"
+            local tags
             local formatted=""
             local digest
             local tag
 
             digest="$(jq -r --arg target "$target" '.[$target]["containerimage.digest"] // empty' <<< "$BUILD_METADATA" 2>/dev/null || true)"
+            tags="$(jq -r --arg target "$target" '.[$target]["image.name"] // "" | split(",")[]' <<< "$BUILD_METADATA" 2>/dev/null || true)"
 
             while IFS= read -r tag; do
               [ -n "$tag" ] || continue
@@ -380,10 +381,10 @@ jobs:
             echo "| ${image} | [GHCR package](${package_url}) | ${formatted:-None} | \`${digest:-None}\` |" >> "$GITHUB_STEP_SUMMARY"
           }
 
-          summarize_image "tempo" "${{ github.server_url }}/orgs/tempoxyz/packages/container/package/tempo" "$TEMPO_TAGS" "tempo"
-          summarize_image "tempo-localnet" "${{ github.server_url }}/orgs/tempoxyz/packages/container/package/tempo-localnet" "$TEMPO_LOCALNET_TAGS" "tempo-localnet"
-          summarize_image "tempo-sidecar" "${{ github.server_url }}/orgs/tempoxyz/packages/container/package/tempo-sidecar" "$TEMPO_SIDECAR_TAGS" "tempo-sidecar"
-          summarize_image "tempo-xtask" "${{ github.server_url }}/orgs/tempoxyz/packages/container/package/tempo-xtask" "$TEMPO_XTASK_TAGS" "tempo-xtask"
+          summarize_image "tempo" "${{ github.server_url }}/orgs/tempoxyz/packages/container/package/tempo" "$TEMPO_TARGET"
+          summarize_image "tempo-localnet" "${{ github.server_url }}/orgs/tempoxyz/packages/container/package/tempo-localnet" "tempo-localnet"
+          summarize_image "tempo-sidecar" "${{ github.server_url }}/orgs/tempoxyz/packages/container/package/tempo-sidecar" "tempo-sidecar"
+          summarize_image "tempo-xtask" "${{ github.server_url }}/orgs/tempoxyz/packages/container/package/tempo-xtask" "tempo-xtask"
 
           {
             echo
