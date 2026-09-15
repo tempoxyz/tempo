@@ -276,7 +276,7 @@ macro_rules! tempo_precompile {
         tempo_precompile!($id, env: &env, |$input| $impl)
     }};
     ($id:expr, env: $env:expr, |$input:ident| $impl:expr) => {{
-        let env = $env.clone();
+        let env: &PrecompileEnv = $env;
         let spec = env.cfg.spec;
         let amsterdam_eip8037_enabled = env.cfg.enable_amsterdam_eip8037;
         let gas_params = env.cfg.gas_params.clone();

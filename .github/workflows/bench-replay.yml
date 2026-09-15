@@ -254,7 +254,7 @@ jobs:
 
       - name: Fetch GitHub token via STS
         id: github-sts
-        uses: tempoxyz/gh-actions/actions/github-sts@8819cf80bdcb39c36c34700e3f2ecc08bde54f23
+        uses: tempoxyz/gh-actions/actions/github-sts@c0292122e255def866c64c55e5844d1e7d5fe7ad
         with:
           policy: bench-replay
 
@@ -484,6 +484,11 @@ jobs:
           BENCH_REPLAY_RPC_URL: ${{ env.BENCH_CHAIN == 'mainnet' && secrets.BENCH_MAINNET_RPC_URL || env.BENCH_CHAIN == 'testnet' && secrets.BENCH_TESTNET_RPC_URL || '' }}
         run: bash .github/scripts/bench-tempo-replay.sh
 
+      - name: Install Node.js
+        uses: actions/setup-node@48b55a011bda9f5d6aeb4c2d9c7362e8dae4041e # v6.4.0
+        with:
+          node-version: 24
+
       - name: Parse results
         id: results
         if: success()
@@ -515,6 +520,7 @@ jobs:
             --feature-ref "$FEATURE_REF" \
             --baseline-json "${BASELINE_JSONS[@]}" \
             --feature-json "${FEATURE_JSONS[@]}"
+          node .github/scripts/bench-log-summary.js "$BENCH_WORK_DIR" replay comment.md
 
       - name: Generate charts
         id: charts

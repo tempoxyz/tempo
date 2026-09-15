@@ -10,6 +10,8 @@ const TXGEN_HELPER_ALWAYS_FUND_PRESETS = [
     "neobank-deposit"
     "neobank-swap"
     "neobank-withdraw"
+    "vault-deposit"
+    "vault-withdraw"
 ]
 const TXGEN_HELPER_EXISTING_RECIPIENTS_START = 10000
 const TXGEN_HELPER_KEYCHAIN_ACCESS_KEYS_START = 100000
@@ -598,6 +600,84 @@ def txgen-fund-accounts [txgen_bin: string, spec_path: string, rpc_url: string] 
     txgen-wait-for-txpool-drain $rpc_url $TXGEN_HELPER_FUND_DRAIN_TIMEOUT_SECS
 }
 
+def txgen-prepare-zones-preset [spec_path: string, count: int, accounts: int, zones: int, mode: string] {
+    if $mode not-in [mixed deposit withdraw] { error make {msg: "TXGEN_ZONE_MODE must be mixed, deposit, or withdraw"} }
+    let spec = (open $spec_path)
+    let token = "0x20c0000000000000000000000000000000000000"
+    mut steps = [$spec.setup.steps.0]
+    for zone in 0..<$zones {
+        $steps = ($steps | append ($spec.setup.steps.1
+            | update id $"portal_($zone)"
+            | update deploy.constructor_args.0 {var: setup.settlement.sender}))
+    }
+    for zone in 0..<$zones {
+        $steps = ($steps | append ($spec.setup.steps.2 | update id $"fund_($zone)"
+            | update tx.calls.0.args [{var: $"setup.portal_($zone).address"} $count]))
+    }
+    let pairs = ([$accounts $zones] | math max)
+    let minimum_per_zone = ($pairs // $zones)
+    mut templates = {}
+    mut mix = []
+    for pair in 0..<$pairs {
+        let user = $pair mod $accounts
+        let zone = $pair mod $zones
+        let portal = {var: $"setup.portal_($zone).address"}
+        let account = {pool: users, select: {index: $user}}
+        let recipient = {pool: $account}
+        if $mode != withdraw {
+            $steps = ($steps | append ($spec.setup.steps.2 | update id $"approve_($pair)"
+                | update tx.from $account
+                | update tx.calls [{to: $token, abi: ERC20, function: approve,
+                    args: [$portal "0xffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff"]}]))
+        }
+        let per_zone = $minimum_per_zone + (if $zone < ($pairs mod $zones) { 1 } else { 0 })
+        let weight = $minimum_per_zone * ($minimum_per_zone + 1) // $per_zone
+        for kind in (if $mode == mixed { [deposit withdraw] } else { [$mode] }) {
+            let name = $"zone_($kind)_($pair)"
+            mut template = ($spec.templates | get $"zone_($kind)" | update from $account)
+            if $kind == deposit {
+                $template = ($template | update calls.0.to $portal | update calls.0.args.4 $recipient)
+            }
+            let settlement_index = if $kind == deposit { 1 } else { 0 }
+            let call = ($template.calls | get $settlement_index | update args [$portal $token $recipient ($kind == withdraw)])
+            $template = ($template | update calls ($template.calls | update $settlement_index $call))
+            $templates = ($templates | insert $name $template)
+            $mix = ($mix | append {template: $name, weight: $weight})
+        }
+    }
+    let output_dir = ([ (txgen-repo-root) $TXGEN_HELPER_DEFAULT_RENDERED_SPECS_DIR (random uuid) ] | path join)
+    mkdir $output_dir
+    let output = ($output_dir | path join zones.yml)
+    {include: $spec_path, accounts: {users: {range: [0 $accounts]}},
+        setup: {steps: $steps}, templates: $templates, mix: $mix} | to yaml | save -f $output
+    $output
+}
+
+def txgen-prepare-vault-preset [spec_path: string, accounts: int, chain_id: int] {
+    if $chain_id != 1337 or $accounts <= 0 or $accounts > 100000 {
+        error make { msg: "Vault presets require chain ID 1337 and 1..100000 user accounts" }
+    }
+    let operation = ($spec_path | path basename | str replace "vault-" "" | str replace ".yml" "")
+    let template_path = ([ ($spec_path | path dirname) "vault" $"user-($operation).yml" ] | path join)
+    let template = (open $template_path).setup.steps.0
+    let steps = (0..<$accounts | each { |index|
+        $template | update id $"($template.id)_($index)" | update bindings.user.account.select.index $index
+    })
+    let base = (open ([ ($template_path | path dirname) "base.yml" ] | path join))
+    let workload = ($base.templates | get $"vault_($operation)")
+    let templates = (0..<$accounts | each { |index|
+        { name: $"vault_($operation)_($index)", value: ($workload
+            | update from.select {index: $index}
+            | update calls.1.args.1 {pool: {pool: users, select: {index: $index}}}) }
+    } | transpose -r -d)
+    let mix = (0..<$accounts | each { |index| {template: $"vault_($operation)_($index)", weight: 1} })
+    let output_dir = ([ (txgen-repo-root) $TXGEN_HELPER_DEFAULT_RENDERED_SPECS_DIR (random uuid) ] | path join)
+    mkdir $output_dir
+    let output = ($output_dir | path join ($spec_path | path basename))
+    { include: $spec_path, templates: $templates, mix: $mix, append: { setup: { steps: $steps } } } | to yaml | save -f $output
+    $output
+}
+
 def txgen-run-preset-pipeline [
     --txgen-tempo-bin: string
     --txgen-bench-bin: string
@@ -632,7 +712,7 @@ def txgen-run-preset-pipeline [
 ] {
     let chain_id = (txgen-fetch-chain-id $generate_rpc_url)
     $env.TXGEN_ACCOUNTS = ($accounts | into string)
-    let spec_path = ($preset_path | path expand)
+    mut spec_path = ($preset_path | path expand)
     if not ($spec_path | path exists) {
         error make { msg: $"txgen preset file not found: ($spec_path)" }
     }
@@ -642,10 +722,49 @@ def txgen-run-preset-pipeline [
     txgen-configure-existing-recipients-env $spec_path $bloat_mib $bloat_token_count
     txgen-configure-fee-amm-env $spec_path
     let preset_name = ($spec_path | path basename | str replace --regex '\.yml$' '')
+    let tx_count = [($tps * $duration) 1] | math max
+    mut zone_metadata = []
+    if $preset_name == "zones" {
+        if $chain_id != 1337 or $accounts < 1 or $accounts > 100000 {
+            error make { msg: "zones requires local chain 1337 and 1–100000 accounts" }
+        }
+        let portal_code = (txgen-rpc-call $generate_rpc_url '{"jsonrpc":"2.0","id":1,"method":"eth_getCode","params":["0x5ad1000000000000000000000000000000000000","latest"]}')
+        if $portal_code.result == "0x" {
+            error make { msg: "zones requires the ZonePortal runtime; activate T10 or later before running the benchmark" }
+        }
+        let nonce_response = (txgen-rpc-call $generate_rpc_url '{"jsonrpc":"2.0","id":1,"method":"eth_getTransactionCount","params":["0xd7932ce865275be97001a0574441d79b143820ec","pending"]}')
+        let latest_nonce = (txgen-rpc-call $generate_rpc_url '{"jsonrpc":"2.0","id":1,"method":"eth_getTransactionCount","params":["0xd7932ce865275be97001a0574441d79b143820ec","latest"]}')
+        if $nonce_response.result != $latest_nonce.result {
+            error make { msg: "zone fixture deployer has pending transactions; drain its nonce lane before setup" }
+        }
+        let mode = ($env.TXGEN_ZONE_MODE? | default "mixed")
+        # TIP-1096 allows 230 outstanding deposits, reserving 20 for bounce-backs.
+        # This is a configurable sizing window, not a claimed mainnet settlement cadence.
+        let window_ms = ($env.TXGEN_ZONE_SETTLEMENT_WINDOW_MS? | default "3000" | into int)
+        if $window_ms < 1 { error make { msg: "TXGEN_ZONE_SETTLEMENT_WINDOW_MS must be positive" } }
+        let automatic_zones = ([1 (($tps * $window_ms / 210000) | math ceil | into int)] | math max)
+        let zones = ($env.TXGEN_ZONE_COUNT? | default $automatic_zones | into int)
+        if $zones < 1 { error make { msg: "TXGEN_ZONE_COUNT must be positive" } }
+        $zone_metadata = ["-m" $"zone_count=($zones)" "-m" $"zone_sizing_window_ms=($window_ms)"]
+        print $"  Zones: ($zones), users: ($accounts), sizing window: ($window_ms)ms, capacity: 210 deposits/portal"
+        $spec_path = (txgen-prepare-zones-preset $spec_path $tx_count $accounts $zones $mode)
+    }
     let skip_faucet_funding = $skip_funding and ($preset_name not-in $TXGEN_HELPER_ALWAYS_FUND_PRESETS)
+    let is_vault = $preset_name in ["vault-deposit" "vault-withdraw"]
+    if $is_vault {
+        $spec_path = (txgen-prepare-vault-preset $spec_path $accounts $chain_id)
+        # The checked-in deployments use fixed nonces and transfer policy 2.
+        # Check before funding or submitting any setup transactions.
+        let deployer_nonce = (txgen-rpc-call $generate_rpc_url '{"jsonrpc":"2.0","id":1,"method":"eth_getTransactionCount","params":["0xd7932ce865275be97001a0574441d79b143820ec","pending"]}')
+        let policy_counter = (txgen-rpc-call $generate_rpc_url '{"jsonrpc":"2.0","id":1,"method":"eth_call","params":[{"to":"0x403c000000000000000000000000000000000000","data":"0x3cc32f9c"},"pending"]}')
+        if ($deployer_nonce.result | into int) != 0 or ($policy_counter.result | into int) != 2 {
+            error make { msg: "Vault presets require a fresh fixture: deployers[0] nonce must be 0 and TIP-403 policyIdCounter must be 2. Restore the benchmark snapshot before rerunning." }
+        }
+    }
     let existing_recipient_start = ($env | get --optional TXGEN_EXISTING_RECIPIENTS_START | default "0" | into int)
     let existing_recipient_end = ($env | get --optional TXGEN_EXISTING_RECIPIENTS_END | default "0" | into int)
-    let recipient_accounts = if $existing_recipient_end > $existing_recipient_start {
+    let uses_existing_recipients = (txgen-spec-effective-text $spec_path) =~ '(?m)^\s*existing_recipients:\s*$'
+    let recipient_accounts = if $uses_existing_recipients and $existing_recipient_end > $existing_recipient_start {
         $existing_recipient_end - $existing_recipient_start
     } else {
         0
@@ -655,17 +774,16 @@ def txgen-run-preset-pipeline [
         txgen-fund-accounts $txgen_tempo_bin $spec_path $generate_rpc_url
     }
 
-    let tx_count = [($tps * $duration) 1] | math max
     let txgen_duration = $"($duration)s"
     let txgen_cmd = [
         $txgen_tempo_bin
         "generate"
         "-s" $spec_path
         "-n" $tx_count
-        "--duration" $txgen_duration
         "--seed" $TXGEN_HELPER_DEFAULT_SEED
         "--rpc" $generate_rpc_url
-    ]
+    ] | append (if $is_vault or $preset_name == "zones" { [] } else { ["--duration" $txgen_duration] })
+    # Zones and vaults generate the full count: setup must not consume workload duration.
     let txgen_setup_cmd = [
         $txgen_tempo_bin
         "generate"
@@ -715,6 +833,8 @@ def txgen-run-preset-pipeline [
         "-m" $"build_profile=($build_profile)"
         "-m" $"mode=($benchmark_mode)"
     ]
+        | append $zone_metadata
+        | append (if $recipient_accounts > 0 { ["-m" $"recipient_accounts=($recipient_accounts)"] } else { [] })
         | append (if $benchmark_id != "" { ["-m" $"benchmark_id=($benchmark_id)"] } else { [] })
         | append (if $benchmark_run != "" { ["-m" $"benchmark_run=($benchmark_run)"] } else { [] })
         | append (if $run_type != "" { ["-m" $"run_type=($run_type)"] } else { [] })
@@ -726,18 +846,23 @@ def txgen-run-preset-pipeline [
 
     let bench_env_export = if $bench_env != "" { $"export ($bench_env) && " } else { "" }
     let txgen_extra_args = (txgen-parse-bench-args $bench_args)
-    let use_two_phase_keychain_setup = (txgen-spec-has-keychain-setup $spec_path)
+    let use_two_phase_setup = $is_vault or (txgen-spec-has-keychain-setup $spec_path)
     let txgen_cmd_str = (txgen-shell-join ($txgen_cmd | append $txgen_extra_args))
-    let bench_cmd = if $use_two_phase_keychain_setup { $bench_cmd | append "--skip-setup" } else { $bench_cmd }
+    let bench_cmd = if $use_two_phase_setup { $bench_cmd | append "--skip-setup" } else { $bench_cmd }
+    let bench_cmd = if $is_vault { $bench_cmd | append ["--drain-timeout" "300"] } else { $bench_cmd }
     let bench_cmd_str = (txgen-shell-join $bench_cmd)
     let pipeline = $"set -euo pipefail; ($bench_env_export)ulimit -Sn unlimited && ($txgen_cmd_str) | ($bench_cmd_str)"
 
-    if $use_two_phase_keychain_setup {
+    if $use_two_phase_setup {
         let txgen_setup_cmd_str = (txgen-shell-join ($txgen_setup_cmd | append $txgen_extra_args))
         let bench_setup_cmd_str = (txgen-shell-join ($bench_send_base_cmd | append ["--drain-timeout" 0]))
         let setup_pipeline = $"set -euo pipefail; ($bench_env_export)ulimit -Sn unlimited && ($txgen_setup_cmd_str) | ($bench_setup_cmd_str)"
 
-        print "  Streaming keychain setup transactions into bench send..."
+        if $is_vault {
+            print "  Streaming vault setup transactions into bench send..."
+        } else {
+            print "  Streaming keychain setup transactions into bench send..."
+        }
         let setup_result = (bash -lc $setup_pipeline | complete)
         if $setup_result.stdout != "" { print $setup_result.stdout }
         if $setup_result.stderr != "" { print $setup_result.stderr }
@@ -745,9 +870,20 @@ def txgen-run-preset-pipeline [
         if $setup_result.exit_code != 0 {
             return { ok: false, exit_code: $setup_result.exit_code, report_path: $report_path }
         }
+        if $is_vault {
+            # Setup is complete. Do not reserve its nonces again when generating the workload.
+            open $spec_path | reject append | insert setup {steps: []} | to yaml | save -f $spec_path
+        }
     }
 
-    print $"  Streaming up to ($tx_count) txgen transaction\(s\) over ($txgen_duration) into bench send..."
+    if $is_vault or $preset_name == "zones" {
+        print $"  Streaming ($tx_count) ($preset_name) transactions at target ($tps) TPS into bench send..."
+    } else {
+        print $"  Streaming up to ($tx_count) txgen transaction\(s\) over ($txgen_duration) into bench send..."
+    }
+    let vault_start_block = if $is_vault {
+        (txgen-rpc-call $generate_rpc_url '{"jsonrpc":"2.0","id":1,"method":"eth_blockNumber","params":[]}').result | into int
+    } else { 0 }
     let result = (bash -lc $pipeline | complete)
     if $result.stdout != "" { print $result.stdout }
     if $result.stderr != "" { print $result.stderr }
@@ -760,6 +896,35 @@ def txgen-run-preset-pipeline [
         return { ok: false, exit_code: 1, report_path: $report_path }
     }
 
+    if $preset_name in ["zones" "vault-deposit" "vault-withdraw"] and (open $report_path).failed > 0 {
+        print $"ERROR: ($preset_name) workload contains sender failures; see ($report_path)"
+        return { ok: false, exit_code: 1, report_path: $report_path }
+    }
+    if $is_vault {
+        # Check block receipts after bench drains the pool, without polling every transaction.
+        let report = (open $report_path)
+        let deadline = (date now) + 60sec
+        mut next_block = $vault_start_block + 1
+        mut included = 0
+        mut reverted = 0
+        while $included < $tx_count and (date now) < $deadline {
+            let last = (txgen-rpc-call $generate_rpc_url '{"jsonrpc":"2.0","id":1,"method":"eth_blockNumber","params":[]}').result | into int
+            while $next_block <= $last {
+                let block = ($next_block | format number | get lowerhex)
+                let payload = ({jsonrpc: "2.0", id: 1, method: eth_getBlockReceipts, params: [$block]} | to json -r)
+                let receipts = (txgen-rpc-call $generate_rpc_url $payload).result | where type == "0x76"
+                $included = $included + ($receipts | length)
+                $reverted = $reverted + ($receipts | where status == "0x0" | length)
+                $next_block = $next_block + 1
+            }
+            # An empty pool can precede canonical inclusion of the last built block.
+            if $included < $tx_count { sleep 200ms }
+        }
+        print $"  Vault receipts: ($included) included, ($reverted) reverted, ($report.sent) submitted"
+        if $included != $tx_count or $reverted != 0 {
+            error make { msg: "Vault workload did not include the full transaction count successfully" }
+        }
+    }
     print $"  Report saved: ($report_path)"
     { ok: true, exit_code: 0, report_path: $report_path }
 }
