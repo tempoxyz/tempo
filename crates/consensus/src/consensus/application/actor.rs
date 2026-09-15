@@ -33,7 +33,7 @@ use commonware_runtime::{
     telemetry::metrics::{Counter, MetricsExt as _},
 };
 
-use commonware_utils::SystemTimeExt;
+use commonware_utils::{SystemTimeExt, channel::oneshot};
 use eyre::{OptionExt as _, WrapErr as _, bail, ensure, eyre};
 use rand_core::{CryptoRng, Rng};
 use reth_primitives_traits::BlockBody as _;
@@ -51,6 +51,7 @@ use tracing::{Level, debug, info, instrument, warn};
 
 use super::{
     Mailbox,
+    early_broadcast::{EarlyBroadcast, await_durability},
     ingress::{Broadcast, Message, Propose, Verify},
 };
 use crate::{
@@ -120,6 +121,7 @@ where
 
                 my_mailbox,
                 marshal: config.marshal,
+                early_broadcast: Default::default(),
 
                 execution_node: config.execution_node,
                 executor: config.executor,
@@ -222,6 +224,7 @@ struct Inner<TState> {
     my_mailbox: Mailbox,
 
     marshal: crate::alias::marshal::Mailbox,
+    early_broadcast: Arc<Mutex<EarlyBroadcast>>,
 
     execution_node: Arc<TempoFullNode>,
     executor: crate::executor::Mailbox,
@@ -235,6 +238,14 @@ struct Inner<TState> {
 impl Inner<Init> {
     #[instrument(skip_all, fields(%digest))]
     async fn handle_broadcast(self, Broadcast { digest, plan }: Broadcast) {
+        if self
+            .early_broadcast
+            .lock()
+            .expect("early broadcast lock poisoned")
+            .consume(digest, &plan)
+        {
+            return;
+        }
         let (round, recipients) = match plan {
             Plan::Propose { round } => (round, Recipients::All),
             Plan::Forward { round, recipients } => (round, recipients),
@@ -344,9 +355,19 @@ impl Inner<Init> {
 
                 if let Some(proposal_return) = proposal_return {
                     let persist_start = Instant::now();
-                    if !self.marshal.verified(round, block.clone()).await {
+                    let (ack, receiver) = oneshot::channel();
+                    // Send the body we already built while its archive sync runs.
+                    // Consensus must not receive the digest (and journal a vote)
+                    // until that sync completes, just as with `verified`.
+                    self.marshal
+                        .proposed(round, block.clone(), Recipients::All, ack);
+                    if !await_durability(receiver, round).await {
                         bail!("marshal actor rejected persisting proposal");
                     }
+                    self.early_broadcast
+                        .lock()
+                        .expect("early broadcast lock poisoned")
+                        .record(round, block.digest());
                     observe_marshal_persist(
                         proposal_return.block_size_estimate_bytes,
                         persist_start.elapsed(),
@@ -787,6 +808,7 @@ impl Inner<Uninit> {
             proposal_return_budget: self.proposal_return_budget,
             my_mailbox: self.my_mailbox,
             marshal: self.marshal,
+            early_broadcast: self.early_broadcast,
             execution_node: self.execution_node,
             executor: self.executor.clone(),
             state: Init {
