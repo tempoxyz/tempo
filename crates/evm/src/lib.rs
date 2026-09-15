@@ -34,7 +34,7 @@ pub use evm::{TempoEvm, TempoEvmFactory};
 pub use handler::{
     FeeTokenResolver, ProtocolFeeManager, TempoBlockEnv, TempoBlockExt, TempoConfig,
     TempoConfigSelector, TempoEvmExt, TempoEvmTypes, TempoFeeManager, TempoTxResultExt,
-    build_tempo_evm, tempo_execution_config, tempo_tx_registry,
+    build_tempo_evm, tempo_execution_config, tempo_opcode_config, tempo_tx_registry,
 };
 pub use pool::{TempoPoolValidationError, TempoPoolValidationEvm};
 pub use transaction::{ExecutionContext, RecoveredTxEnvelope, TempoAaTx, TempoEvmTx, TempoTxEnv};

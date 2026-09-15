@@ -6,13 +6,14 @@ use crate::{
 };
 use alloy_primitives::{Address, U256, map::HashMap};
 use evm2::evm::{StateChangeSink, StateChangeSource, StorageChange};
+use reth_evm::BlockTransactionResult;
 use reth_primitives_traits::transaction::error::InvalidTransactionError;
 use reth_transaction_pool::{
     BestTransactions, Priority, TransactionOrdering, ValidPoolTransaction,
     error::InvalidPoolTransactionError,
 };
 use std::sync::Arc;
-use tempo_evm::TempoTxResult;
+use tempo_evm::TempoEvmTypes;
 use tempo_precompiles::tip20::is_tip20_prefix;
 
 pub type BestTransaction = Arc<ValidPoolTransaction<TempoPooledTransaction>>;
@@ -192,9 +193,10 @@ where
 
     /// Processes a new transaction execution result and collects any relevant
     /// state changes that might affect other transactions validity.
-    pub fn on_new_result(&mut self, result: &TempoTxResult) {
+    pub fn on_new_result<R: BlockTransactionResult<TempoEvmTypes>>(&mut self, result: &R) {
         result
-            .pending_state()
+            .result()
+            .pending_state
             .visit(&mut DecreasedBalancesSink(&mut self.decreased_balances))
             .unwrap();
     }
