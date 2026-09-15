@@ -329,13 +329,13 @@ impl TickLevel {
 }
 
 // `Storable` also generates `Handler<TickLevel>` for raw two-slot access. These
-// inherent methods intentionally take precedence at call sites so normal T11 access
+// inherent methods intentionally take precedence at call sites so normal T12 access
 // uses only `links`; tests use UFCS when they need to inspect the stale aggregate.
 impl TickLevelHandler {
-    /// Reads only the live linked-list slot at T11 while preserving the legacy layout below T11.
+    /// Reads only the live linked-list slot at T12 while preserving the legacy layout below T12.
     #[inline]
     pub(crate) fn read(&self) -> Result<TickLevel> {
-        if StorageCtx.spec().is_t11() {
+        if StorageCtx.spec().is_t12() {
             Ok(TickLevel {
                 links: self.links.read()?,
                 total_liquidity: 0,
@@ -345,20 +345,20 @@ impl TickLevelHandler {
         }
     }
 
-    /// Writes only the live linked-list slot at T11 while preserving the legacy layout below T11.
+    /// Writes only the live linked-list slot at T12 while preserving the legacy layout below T12.
     #[inline]
     pub(crate) fn write(&mut self, level: TickLevel) -> Result<()> {
-        if StorageCtx.spec().is_t11() {
+        if StorageCtx.spec().is_t12() {
             self.links.write(level.links)
         } else {
             <Self as Handler<TickLevel>>::write(self, level)
         }
     }
 
-    /// Deletes only the live linked-list slot at T11 while preserving the stale aggregate.
+    /// Deletes only the live linked-list slot at T12 while preserving the stale aggregate.
     #[inline]
     pub(crate) fn delete(&mut self) -> Result<()> {
-        if StorageCtx.spec().is_t11() {
+        if StorageCtx.spec().is_t12() {
             self.links.delete()
         } else {
             <Self as Handler<TickLevel>>::delete(self)
@@ -787,8 +787,9 @@ mod tests {
             TempoHardfork::T3,
             TempoHardfork::T10,
             TempoHardfork::T11,
+            TempoHardfork::T12,
         ] {
-            let is_t11 = spec.is_t11();
+            let is_t12 = spec.is_t12();
             let mut storage = HashMapStorageProvider::new_with_spec(1, spec);
             StorageCtx::enter(&mut storage, || {
                 Handler::<TickLevel>::write(&mut TickLevelHandler::new(slot, address), legacy)
@@ -798,8 +799,8 @@ mod tests {
             let level =
                 StorageCtx::enter(&mut storage, || TickLevelHandler::new(slot, address).read())?;
             assert_eq!(level.links, legacy.links);
-            assert_eq!(level.total_liquidity, if is_t11 { 0 } else { 33 });
-            assert_eq!(storage.counter_sload(), if is_t11 { 1 } else { 2 });
+            assert_eq!(level.total_liquidity, if is_t12 { 0 } else { 33 });
+            assert_eq!(storage.counter_sload(), if is_t12 { 1 } else { 2 });
             assert_eq!(storage.counter_sstore(), 0);
 
             storage.reset_counters();
@@ -807,20 +808,20 @@ mod tests {
                 TickLevelHandler::new(slot, address).write(updated)
             })?;
             assert_eq!(storage.counter_sload(), if spec.is_t4() { 0 } else { 2 });
-            assert_eq!(storage.counter_sstore(), if is_t11 { 1 } else { 2 });
+            assert_eq!(storage.counter_sstore(), if is_t12 { 1 } else { 2 });
 
             storage.reset_counters();
             StorageCtx::enter(&mut storage, || {
                 TickLevelHandler::new(slot, address).delete()
             })?;
             assert_eq!(storage.counter_sload(), 0);
-            assert_eq!(storage.counter_sstore(), if is_t11 { 1 } else { 2 });
+            assert_eq!(storage.counter_sstore(), if is_t12 { 1 } else { 2 });
 
             let stored = StorageCtx::enter(&mut storage, || {
                 Handler::<TickLevel>::read(&TickLevelHandler::new(slot, address))
             })?;
             assert_eq!(stored.links, TickLevelLinks::default());
-            assert_eq!(stored.total_liquidity, if is_t11 { 33 } else { 0 });
+            assert_eq!(stored.total_liquidity, if is_t12 { 33 } else { 0 });
         }
 
         Ok(())
