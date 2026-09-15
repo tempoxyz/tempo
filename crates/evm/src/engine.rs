@@ -35,25 +35,9 @@ impl ConfigureEngineEvm<TempoExecutionData> for TempoEvmConfig {
     ) -> Result<impl ExecutableTxIterator<Self>, Self::Error> {
         let block = payload.block.clone();
         let sender_recovery_cache = self.inner.sender_recovery_cache.clone();
-        let mut transactions = Vec::with_capacity(block.body().transactions.len());
-        let mut expiring_nonce_idx = 0;
-
-        for (idx, tx) in block.body().transactions.iter().enumerate() {
-            if tx.is_expiring_nonce() {
-                transactions.push((idx, Some(expiring_nonce_idx)));
-                expiring_nonce_idx += 1;
-            } else {
-                transactions.push((idx, None));
-            }
-        }
-
-        Ok((transactions, move |(index, expiring_nonce_idx)| {
-            RecoveredInBlock::new(
-                block.clone(),
-                index,
-                expiring_nonce_idx,
-                sender_recovery_cache.as_ref(),
-            )
+        let transactions: Vec<_> = (0..block.body().transactions.len()).collect();
+        Ok((transactions, move |index| {
+            RecoveredInBlock::new(block.clone(), index, sender_recovery_cache.as_ref())
         }))
     }
 }
@@ -66,14 +50,12 @@ struct RecoveredInBlock {
     block: SealedOrRecoveredBlock<Block>,
     index: usize,
     sender: Address,
-    expiring_nonce_idx: Option<usize>,
 }
 
 impl RecoveredInBlock {
     fn new(
         block: SealedOrRecoveredBlock<Block>,
         index: usize,
-        expiring_nonce_idx: Option<usize>,
         sender_recovery_cache: Option<&SenderRecoveryCache>,
     ) -> Result<Self, RecoveryError> {
         let recovered_sender = block
@@ -93,7 +75,6 @@ impl RecoveredInBlock {
             block,
             index,
             sender,
-            expiring_nonce_idx,
         })
     }
 }
@@ -110,12 +91,7 @@ impl RecoveredTx<TempoTxEnvelope> for RecoveredInBlock {
 
 impl ToTxEnv<TempoTxEnv> for RecoveredInBlock {
     fn to_tx_env(&self) -> TempoTxEnv {
-        let mut tx_env = TempoTxEnv::from_recovered_tx(self.tx(), *self.signer());
-        if let Some(tempo_tx_env) = tx_env.tempo_tx_env.as_mut() {
-            tempo_tx_env.expiring_nonce_idx = self.expiring_nonce_idx;
-        }
-
-        tx_env
+        TempoTxEnv::from_recovered_tx(self.tx(), *self.signer())
     }
 }
 

@@ -18,7 +18,10 @@ use commonware_codec::ReadExt;
 use reth_evm::block::StateDB;
 use reth_revm::{
     Inspector,
-    context::result::{ExecutionResult, HaltReason, ResultAndState},
+    context::{
+        JournalTr,
+        result::{ExecutionResult, HaltReason, ResultAndState},
+    },
     state::{Account, Bytecode, EvmState, EvmStorageSlot, TransactionId},
 };
 use tempo_chainspec::{TempoChainSpec, hardfork::TempoHardforks};
@@ -493,6 +496,10 @@ where
         }
 
         self.inner.apply_pre_execution_changes()?;
+        self.deploy_precompile_at_boundary(
+            tempo_contracts::precompiles::EXPIRING_NONCE_PRECOMPILE_ADDRESS,
+            &[],
+        )?;
 
         // Deploy 0xEF marker bytecode to precompiles at their activation hardforks.
         let timestamp = self.evm().block().timestamp.to::<u64>();
@@ -533,12 +540,8 @@ where
         &mut self,
         tx: impl ExecutableTx<Self>,
     ) -> Result<Self::Result, BlockExecutionError> {
-        let (mut tx_env, recovered) = tx.into_parts();
+        let (tx_env, recovered) = tx.into_parts();
         let execution_context = tx_env.execution_context;
-        // Remove any prewarming-specific context that was added to the tx env.
-        if let Some(tempo_tx_env) = tx_env.tempo_tx_env.as_mut() {
-            tempo_tx_env.expiring_nonce_idx = None;
-        }
         let next_section = self.validate_tx_pre_execution(recovered.tx())?;
 
         let inner = self
@@ -620,6 +623,19 @@ where
         }
 
         self.apply_current_committee_system_call()?;
+        // Pruning is block bookkeeping: no transaction gas or storage credits.
+        let ctx = self.evm_mut().ctx_mut();
+        tempo_precompiles::storage::StorageCtx::enter_evm_without_tip1060_accounting(
+            &mut ctx.journaled_state,
+            &ctx.block,
+            &ctx.cfg,
+            &ctx.tx,
+            tempo_precompiles::storage::StorageActions::disabled(),
+            || tempo_precompiles::expiring_nonce::ExpiringNonceManager::new().prune(Address::ZERO),
+        )
+        .map_err(BlockExecutionError::other)?;
+        let state = ctx.journaled_state.finalize();
+        self.evm_mut().db_mut().commit(state);
 
         let amsterdam_eip8037_enabled = self.evm().cfg.enable_amsterdam_eip8037;
 
@@ -1191,6 +1207,49 @@ mod tests {
                 .contains("failed decoding boundary block extra data as DKG outcome"),
             "unexpected error: {err}"
         );
+    }
+
+    #[test]
+    fn expiring_nonce_pruned_when_empty_block_finishes() {
+        use revm::Database as _;
+        use tempo_precompiles::{
+            EXPIRING_NONCE_PRECOMPILE_ADDRESS,
+            expiring_nonce::{ExpiringNonceManager, MAX_EXPIRY_NUM_BLOCKS},
+        };
+        let chainspec = test_chainspec();
+        let mut db = State::builder().with_bundle_update().build();
+        let mgr = ExpiringNonceManager::new();
+        let hash = B256::repeat_byte(1);
+        let seen = mgr.seen[hash].slot();
+        let bucket = mgr.bucket[1][0].slot();
+        let count = mgr.bucket_count[1].slot();
+        db.insert_account_with_storage(
+            EXPIRING_NONCE_PRECOMPILE_ADDRESS,
+            AccountInfo {
+                nonce: 1,
+                ..Default::default()
+            },
+            [
+                (seen, U256::from(100)),
+                (bucket, U256::from_be_bytes(hash.0)),
+                (count, U256::ONE),
+            ]
+            .into_iter()
+            .collect(),
+        );
+        let mut executor = TestExecutorBuilder::default()
+            .with_block_number(1 + MAX_EXPIRY_NUM_BLOCKS)
+            .with_spec(TempoHardfork::T1)
+            .build(&mut db, &chainspec);
+        executor.evm_mut().ctx_mut().block.timestamp = U256::from(100);
+        let (_, result) = executor.finish().unwrap();
+        assert_eq!(result.gas_used, 0);
+        for slot in [seen, bucket, count] {
+            assert_eq!(
+                db.storage(EXPIRING_NONCE_PRECOMPILE_ADDRESS, slot).unwrap(),
+                U256::ZERO
+            );
+        }
     }
 
     #[test]
