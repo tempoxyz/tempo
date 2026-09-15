@@ -3,7 +3,10 @@ use std::io::Write as _;
 use commonware_codec::Encode as _;
 use commonware_cryptography::{
     Signer as _,
-    bls12381::{dkg::feldman_desmedt as dkg, primitives::variant::MinSig},
+    bls12381::{
+        dkg::feldman_desmedt as dkg,
+        primitives::{sharing::Mode, variant::MinSig},
+    },
     ed25519::PrivateKey,
 };
 use commonware_utils::{N3f1, NZU32};
@@ -214,7 +217,7 @@ fn signing_share_roundtrip() {
     let mut rng = rand::rngs::StdRng::seed_from_u64(42);
 
     let (_, mut shares) =
-        dkg::deal_anonymous::<MinSig, N3f1>(&mut rng, Default::default(), NZU32!(1));
+        dkg::deal_anonymous::<MinSig, N3f1>(&mut rng, Mode::NonZeroCounter, NZU32!(1));
     let share = shares.remove(0);
     let signing_share: SigningShare = share.into();
     assert_eq!(

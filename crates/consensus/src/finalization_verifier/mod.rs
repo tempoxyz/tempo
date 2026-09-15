@@ -75,7 +75,7 @@ impl FinalizationVerifier {
     ) -> Result<OnchainDkgOutcome, commonware_codec::Error> {
         let outcome = OnchainDkgOutcome::read(&mut extra_data)?;
         self.scheme_provider.register(
-            outcome.epoch,
+            outcome.epoch(),
             Scheme::certificate_verifier(NAMESPACE, *outcome.network_identity()),
         );
         Ok(outcome)

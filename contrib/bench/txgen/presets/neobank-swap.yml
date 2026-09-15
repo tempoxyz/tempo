@@ -20,7 +20,7 @@ accounts:
     index: 100000
 
 artifacts:
-  ERC20: ../erc20.abi.json
+  ERC20: ../tip20.abi.json
   DirectSwapABI: ../directswap.abi.json
   ERC4626Vault: ../erc4626-vault.abi.json
   DirectSwap:

@@ -258,6 +258,7 @@ run_single() {
     --chain "$CHAIN_NAME"
     --datadir "$DATADIR"
     --log.file.directory "$output_dir/tempo-logs"
+    --log.file.format json
     --http
     --http.port 8545
     --http.api all

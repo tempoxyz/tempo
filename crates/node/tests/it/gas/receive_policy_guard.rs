@@ -55,7 +55,7 @@ where
 
     let roles = IRolesAuth::new(token, provider);
     let grant = roles
-        .grantRole(*ISSUER_ROLE, admin)
+        .grantRole(ISSUER_ROLE, admin)
         .gas(GAS_LIMIT)
         .send()
         .await?
