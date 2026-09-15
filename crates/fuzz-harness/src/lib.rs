@@ -20,7 +20,10 @@ use reth_evm::{
 };
 use reth_primitives_traits::{RecoveredBlock, transaction::signed::SignedTransaction};
 use serde::{Deserialize, Serialize};
-use std::{collections::BTreeMap, sync::Arc};
+use std::{
+    collections::{BTreeMap, BTreeSet},
+    sync::Arc,
+};
 use tempo_chainspec::{TempoChainSpec, hardfork::TempoHardfork};
 use tempo_evm::{TempoBlockExecutor, TempoEvmConfig, consensus::TempoConsensus, evm::TempoEvm};
 use tempo_fuzz_types::{
@@ -949,38 +952,48 @@ fn encode_state<DB>(db: &CacheDB<DB>) -> StateInput {
 
 fn encode_state_overlay<DB>(db: &CacheDB<DB>, base: &StateInput) -> StateInput {
     let mut account_views = canonical_state(base);
-    let mut accounts: Vec<_> = db
+    let addresses: BTreeSet<_> = db
         .cache
         .accounts
-        .iter()
-        .filter_map(|(address, info)| info.as_ref().map(|info| (*address, info)))
+        .keys()
+        .chain(db.cache.storage.keys())
+        .copied()
         .collect();
-    accounts.sort_by_key(|(address, _)| *address);
 
-    for (address, info) in accounts {
+    for address in addresses {
         let mut address_bytes = [0u8; 20];
         address_bytes.copy_from_slice(address.as_slice());
-        let view = match account_views.entry(address_bytes) {
-            std::collections::btree_map::Entry::Occupied(entry) => entry.into_mut(),
-            std::collections::btree_map::Entry::Vacant(entry) => {
-                entry.insert(AccountView::default())
+
+        if let Some(info) = db.cache.accounts.get(&address) {
+            match info {
+                Some(info) => {
+                    let view = account_views.entry(address_bytes).or_default();
+                    view.balance = info.balance;
+                    view.nonce = info.nonce;
+                    view.code = info
+                        .code
+                        .as_ref()
+                        .or_else(|| db.cache.contracts.get(&info.code_hash))
+                        .map(|code| code.original_byte_slice().to_vec())
+                        .unwrap_or_default();
+                }
+                None => {
+                    account_views.remove(&address_bytes);
+                }
             }
-        };
-        view.balance = info.balance;
-        view.nonce = info.nonce;
-        view.code = info
-            .code
-            .as_ref()
-            .or_else(|| db.cache.contracts.get(&info.code_hash))
-            .map(|code| code.original_byte_slice().to_vec())
-            .unwrap_or_default();
+        }
 
         if let Some(storage) = db.cache.storage.get(&address) {
+            let view = account_views.entry(address_bytes).or_default();
             if storage.wiped {
                 view.storage.clear();
             }
             for (slot, value) in &storage.slots {
-                view.storage.insert(slot.to_be_bytes(), value.to_be_bytes());
+                if value.is_zero() {
+                    view.storage.remove(&slot.to_be_bytes());
+                } else {
+                    view.storage.insert(slot.to_be_bytes(), value.to_be_bytes());
+                }
             }
         }
     }
@@ -1134,6 +1147,50 @@ mod tests {
             entry.slot == touched_slot.to_be_bytes()
                 && entry.value == U256::from(2_000_000).to_be_bytes()
         }));
+    }
+
+    #[test]
+    fn encode_state_overlay_includes_storage_only_cache_addresses() {
+        let address = Address::repeat_byte(0x44);
+        let slot = U256::from(7);
+        let value = U256::from(9);
+        let mut db = InMemoryDB::default();
+        db.insert_account_storage(&address, &slot, &value);
+
+        let materialized = encode_state(&db);
+
+        assert_eq!(materialized.accounts.len(), 1);
+        assert_eq!(materialized.accounts[0].address, address_bytes(address));
+        assert_eq!(materialized.accounts[0].storage.len(), 1);
+        assert_eq!(materialized.accounts[0].storage[0].slot, slot.to_be_bytes());
+        assert_eq!(
+            materialized.accounts[0].storage[0].value,
+            value.to_be_bytes()
+        );
+    }
+
+    #[test]
+    fn encode_state_overlay_removes_zero_cached_storage() {
+        let address = Address::repeat_byte(0x55);
+        let slot = U256::from(7);
+        let base = StateInput {
+            accounts: vec![AccountInput {
+                address: address_bytes(address),
+                balance: [0; 32],
+                nonce: 0,
+                code: Vec::new(),
+                storage: vec![StorageInput {
+                    slot: slot.to_be_bytes(),
+                    value: U256::from(9).to_be_bytes(),
+                }],
+            }],
+        };
+        let mut db = InMemoryDB::default();
+        db.insert_account_storage(&address, &slot, &U256::ZERO);
+
+        let materialized = encode_state_overlay(&db, &base);
+
+        assert!(materialized.accounts.is_empty());
     }
 
     #[test]
