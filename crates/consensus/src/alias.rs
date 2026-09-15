@@ -2,9 +2,14 @@
 //! (primarily commonware) types.
 
 pub(crate) mod marshal {
-    use std::{future::Future, num::NonZeroUsize, pin::Pin, sync::Arc};
+    use std::{
+        future::{Future, ready},
+        num::NonZeroUsize,
+        pin::Pin,
+        sync::Arc,
+    };
 
-    use alloy_consensus::{BlockHeader as _, Sealable as _};
+    use alloy_consensus::BlockHeader as _;
     use commonware_codec::ReadExt as _;
     use commonware_consensus::{
         Epochable as _,
@@ -81,71 +86,29 @@ pub(crate) mod marshal {
         pub scheme_provider: SchemeProvider,
     }
 
-    /// Deferred header recovery and binding, polled after marshal starts.
-    pub(crate) type FinalizedTipFuture =
-        Pin<Box<dyn Future<Output = eyre::Result<FinalizedTip>> + Send + Sync>>;
-
-    /// A non-genesis finalized tip, checked against its header.
-    #[derive(Clone, Debug)]
-    pub(crate) struct FinalizedTip {
-        /// Height recorded in the archive, checked against the header by the constructor.
+    /// Return a local header immediately, or fetch its block by the certificate's round.
+    fn recover(
         height: Height,
-        certificate: Certificate,
-    }
-
-    impl FinalizedTip {
-        /// Binds the header to its archive height and certificate payload.
-        /// Certificate signature verification is left to DKG startup.
-        pub(crate) fn new(
-            height: Height,
-            header: &TempoHeader,
-            certificate: Certificate,
-        ) -> eyre::Result<Self> {
-            ensure!(
-                header.number() == height.get(),
-                "finalized tip header number `{}` does not match archive height `{height}`",
-                header.number(),
-            );
-            ensure!(
-                Digest(header.hash_slow()) == certificate.proposal.payload,
-                "finalized tip header hash does not match certificate payload at height `{height}`",
-            );
-            Ok(Self {
-                height,
-                certificate,
-            })
+        certificate: &Certificate,
+        header: Option<TempoHeader>,
+        marshal: Mailbox,
+    ) -> Pin<Box<dyn Future<Output = eyre::Result<TempoHeader>> + Send + Sync>> {
+        if let Some(header) = header {
+            return Box::pin(ready(Ok(header)));
         }
 
-        /// Wait for marshal to recover a missing header, then enforce the same
-        /// binding as for a header found locally. This does not wait for replay.
-        #[instrument(skip_all, fields(%height), err(Display))]
-        pub(crate) async fn recover(
-            height: Height,
-            certificate: Certificate,
-            header: Option<TempoHeader>,
-            recovered_block: impl Future<Output = Option<Arc<Block>>>,
-        ) -> eyre::Result<Self> {
-            let header = match header {
-                Some(header) => header,
-                None => {
-                    info!(digest = %certificate.proposal.payload, "waiting for marshal to recover finalized tip header");
-                    recovered_block
-                        .await
-                        .ok_or_eyre("marshal closed finalized tip subscription without a block")?
-                        .header()
-                        .clone()
-                }
-            };
-            Self::new(height, &header, certificate)
-        }
-
-        pub(crate) fn height(&self) -> Height {
-            self.height
-        }
-
-        pub(crate) fn certificate(&self) -> &Certificate {
-            &self.certificate
-        }
+        let digest = certificate.proposal.payload;
+        let round = certificate.proposal.round;
+        Box::pin(async move {
+            info!(%height, %digest, "fetching finalized tip header through marshal");
+            // Request the missing block explicitly: passive waiting can deadlock
+            // while executor readiness is withheld until this tip is checked.
+            let block = marshal
+                .subscribe_by_digest(digest, DigestFallback::FetchByRound { round })
+                .await
+                .wrap_err("marshal closed finalized tip subscription without a block")?;
+            Ok(block.header().clone())
+        })
     }
 
     /// Marshal actor + mailbox + the height marshal will resume from,
@@ -164,10 +127,19 @@ pub(crate) mod marshal {
         /// height and the startup floor height.
         pub finalized_floor: Height,
 
-        /// Archive tip height and certificate, with deferred header validation.
+        /// Archive tip metadata used to initialize the executor and peer manager
+        /// before header recovery. Execution remains gated on epoch readiness.
+        pub finalized_tip: (Round, Height, Digest),
+
+        /// The archive certificate to authenticate once its header is available.
+        /// `None` only at genesis.
+        pub finalized_tip_certificate: Option<Certificate>,
+
+        /// Resolves the archive tip's header without validating it.
         /// Poll the future after starting marshal, which may need to recover the
         /// block from its cache or peers. `None` only at genesis.
-        pub finalized_tip: Option<(Height, Certificate, FinalizedTipFuture)>,
+        pub finalized_tip_header:
+            Option<Pin<Box<dyn Future<Output = eyre::Result<TempoHeader>> + Send + Sync>>>,
     }
 
     /// Initialize the marshal actor and its backing finalized-blocks store
@@ -301,31 +273,20 @@ pub(crate) mod marshal {
             "setting marshal sync floor"
         );
 
-        let finalized_tip = finalized_tip.map(|(height, certificate, header)| {
-            let mailbox = mailbox.clone();
-            let digest = certificate.proposal.payload;
-            // Marshal repairs trailing missing blocks independently of ordered
-            // dispatch. Waiting on dispatch here would deadlock with executor readiness.
-            let block = async move {
-                mailbox
-                    .subscribe_by_digest(digest, DigestFallback::Wait)
-                    .await
-                    .ok()
-            };
-            let validation = Box::pin(FinalizedTip::recover(
-                height,
-                certificate.clone(),
-                header,
-                block,
-            )) as FinalizedTipFuture;
-            (height, certificate, validation)
-        });
+        let (finalized_tip_certificate, finalized_tip_header) = finalized_tip
+            .map(|(height, certificate, header)| {
+                let header = recover(height, &certificate, header, mailbox.clone());
+                (Some(certificate), Some(header))
+            })
+            .unwrap_or_default();
 
         Ok(Initialized {
             actor,
             mailbox,
             finalized_floor: last_finalized_height,
-            finalized_tip,
+            finalized_tip: (tip_round, tip_height, tip_digest),
+            finalized_tip_certificate,
+            finalized_tip_header,
         })
     }
 
@@ -391,9 +352,6 @@ pub(crate) mod marshal {
             .get_header(Identifier::Key(&certificate.proposal.payload))
             .await
             .wrap_err("failed reading finalized tip header")?;
-        if let Some(header) = &header {
-            FinalizedTip::new(height, header, certificate.clone())?;
-        }
 
         Ok(FinalizationRange {
             floor,
@@ -501,87 +459,5 @@ pub(crate) mod marshal {
                     Digest(execution_node.chain_spec().genesis_hash()),
                 )
             })
-    }
-
-    #[cfg(test)]
-    mod tests {
-        use alloy_consensus::{Header, Sealable as _};
-        use commonware_consensus::types::{Epoch, Height};
-        use commonware_runtime::{Runner as _, deterministic::Runner};
-        use tempo_primitives::TempoHeader;
-
-        use super::FinalizedTip;
-        use crate::{
-            consensus::Digest,
-            test_utils::{dkg_fixture, make_certificate},
-        };
-
-        #[test]
-        fn locally_available_tip_header_does_not_wait_for_a_block() {
-            Runner::default().start(|mut context| async move {
-                let fixture = dkg_fixture(&mut context, Epoch::new(1));
-                let height = Height::new(12);
-                let header = TempoHeader {
-                    inner: Header {
-                        number: height.get(),
-                        ..Default::default()
-                    },
-                    ..Default::default()
-                };
-                let certificate = make_certificate(
-                    Digest(header.hash_slow()),
-                    Epoch::new(1),
-                    1,
-                    &fixture.schemes,
-                );
-                let tip = FinalizedTip::recover(height, certificate.clone(), Some(header), async {
-                    panic!("header-only lookup must not subscribe for the full block")
-                })
-                .await
-                .unwrap();
-                assert_eq!(tip.height(), height);
-                assert_eq!(tip.certificate(), &certificate);
-            });
-        }
-
-        #[test]
-        fn finalized_tip_binds_archive_height_and_header_to_certificate() {
-            Runner::default().start(|mut context| async move {
-                let fixture = dkg_fixture(&mut context, Epoch::new(1));
-                let height = Height::new(12);
-                let header = TempoHeader {
-                    inner: Header {
-                        number: height.get(),
-                        ..Default::default()
-                    },
-                    ..Default::default()
-                };
-                let certificate = make_certificate(
-                    Digest(header.hash_slow()),
-                    Epoch::new(1),
-                    1,
-                    &fixture.schemes,
-                );
-
-                let tip = FinalizedTip::new(height, &header, certificate.clone()).unwrap();
-                assert_eq!(tip.height(), height);
-                assert_eq!(tip.certificate(), &certificate);
-
-                // A valid certificate cannot be associated with a different archive height.
-                let error =
-                    FinalizedTip::new(height.next(), &header, certificate.clone()).unwrap_err();
-                assert!(error.to_string().contains("does not match archive height"));
-
-                // A header at the correct height still has to match the signed payload.
-                let mut substituted = header;
-                substituted.inner.extra_data = vec![1].into();
-                let error = FinalizedTip::new(height, &substituted, certificate).unwrap_err();
-                assert!(
-                    error
-                        .to_string()
-                        .contains("header hash does not match certificate payload")
-                );
-            });
-        }
     }
 }

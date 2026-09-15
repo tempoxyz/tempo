@@ -732,22 +732,11 @@ fn startup_uses_execution_finalized_tip_without_immediate_forkchoice() {
 #[test_traced]
 fn startup_tip_recovery_gates_execution() {
     for accept in [true, false] {
-        deterministic::Runner::default().start(|mut context| async move {
+        deterministic::Runner::default().start(|context| async move {
             let provider = StubExecutionProvider::default();
             let marshal = StubMarshal::default();
-            let fixture = crate::test_utils::dkg_fixture(&mut context, Epoch::zero());
             let block = make_block_at_round(1, B256::ZERO, round(1));
-            let tip = crate::alias::marshal::FinalizedTip::new(
-                Height::new(1),
-                block.header(),
-                crate::test_utils::make_certificate(
-                    block.digest(),
-                    Epoch::zero(),
-                    1,
-                    &fixture.schemes,
-                ),
-            )
-            .unwrap();
+            let header = block.header().clone();
             let (started, waiting) = tokio::sync::oneshot::channel();
             let (resolved, validation) = tokio::sync::oneshot::channel();
             let (actor, mut mailbox) = init(
@@ -776,7 +765,7 @@ fn startup_tip_recovery_gates_execution() {
             assert!((&mut waiter).now_or_never().is_none());
 
             if accept {
-                resolved.send(Ok(tip)).unwrap();
+                resolved.send(Ok(header)).unwrap();
                 waiter
                     .await
                     .expect("block should execute after tip resolution");

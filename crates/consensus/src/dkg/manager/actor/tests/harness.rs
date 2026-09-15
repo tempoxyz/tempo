@@ -2,8 +2,10 @@
 
 use std::{
     collections::BTreeMap,
+    future::Future,
     io,
     num::{NonZeroU64, NonZeroUsize},
+    pin::Pin,
     sync::{
         Arc, Mutex,
         atomic::{AtomicBool, AtomicUsize, Ordering},
@@ -12,7 +14,7 @@ use std::{
 };
 
 use crate::{
-    alias::marshal::{FinalizedTip, FinalizedTipFuture},
+    gossip::Certificate,
     test_utils::{dkg_fixture, make_certificate},
 };
 use alloy_consensus::{Header, Sealable as _};
@@ -68,7 +70,7 @@ pub(super) struct Harness {
     last_finalized_height: Height,
     initial_state: Option<State>,
     network_identity: NetworkIdentity,
-    finalized_tip: Option<FinalizedTip>,
+    finalized_tip: Option<(Height, Certificate, TempoHeader)>,
     storage: Option<state::Storage<Context>>,
     mailbox: Option<Mailbox>,
     handle: Option<Handle<()>>,
@@ -92,7 +94,8 @@ pub(super) struct HarnessBuilder {
     identity: PrivateKey,
     last_finalized_height: Height,
     initial_state: InitialState,
-    startup: Option<(NetworkIdentity, Option<FinalizedTip>)>,
+    network_identity: Option<NetworkIdentity>,
+    finalized_tip: Option<(Height, Certificate, TempoHeader)>,
     execution: StubExecutionProvider,
     marshal: StubMarshal,
     epoch_manager: StubEpochManager,
@@ -127,8 +130,13 @@ impl HarnessBuilder {
         self
     }
 
-    pub(super) fn startup(mut self, identity: NetworkIdentity, tip: Option<FinalizedTip>) -> Self {
-        self.startup = Some((identity, tip));
+    pub(super) fn startup(
+        mut self,
+        identity: NetworkIdentity,
+        tip: Option<(Height, Certificate, TempoHeader)>,
+    ) -> Self {
+        self.network_identity = Some(identity);
+        self.finalized_tip = tip;
         self
     }
 
@@ -148,7 +156,9 @@ impl HarnessBuilder {
             InitialState::Epoch(epoch) => Some(dkg_state(&mut self.context, epoch, 4, false).0),
             InitialState::State(state) => Some(*state),
         };
-        let (network_identity, finalized_tip) = self.startup.unwrap_or_else(|| {
+        let (network_identity, finalized_tip) = if let Some(identity) = self.network_identity {
+            (identity, self.finalized_tip)
+        } else {
             // Most actor tests exercise recovery and ceremonies. Model a newer
             // binary bootstrapping from historical data; startup verification
             // tests supply their own identity and certificate explicitly.
@@ -166,7 +176,7 @@ impl HarnessBuilder {
                 let header = header(self.last_finalized_height);
                 let certificate =
                     make_certificate(Digest(header.hash_slow()), tip_epoch, 1, &fixture.schemes);
-                FinalizedTip::new(self.last_finalized_height, &header, certificate).unwrap()
+                (self.last_finalized_height, certificate, header)
             });
             (
                 NetworkIdentity {
@@ -175,7 +185,7 @@ impl HarnessBuilder {
                 },
                 tip,
             )
-        });
+        };
         let storage = if let Some(state) = initial_state.clone() {
             Some(
                 state::builder()
@@ -220,7 +230,8 @@ impl Harness {
             identity: PrivateKey::from_seed(0),
             last_finalized_height: Height::new(9),
             initial_state: InitialState::None,
-            startup: None,
+            network_identity: None,
+            finalized_tip: None,
             execution: StubExecutionProvider::default(),
             marshal: StubMarshal::default(),
             epoch_manager: StubEpochManager::default(),
@@ -247,14 +258,19 @@ impl Harness {
     }
 
     pub(super) async fn start(&mut self) {
-        let tip = self
-            .finalized_tip
-            .clone()
-            .map(|tip| Box::pin(async move { Ok(tip) }) as FinalizedTipFuture);
+        let tip: Option<Pin<Box<dyn Future<Output = eyre::Result<TempoHeader>> + Send + Sync>>> =
+            self.finalized_tip
+                .clone()
+                .map(|(_, _, header)| Box::pin(std::future::ready(Ok(header))) as _);
         self.start_with_tip(tip).await;
     }
 
-    pub(super) async fn start_with_tip(&mut self, finalized_tip: Option<FinalizedTipFuture>) {
+    pub(super) async fn start_with_tip(
+        &mut self,
+        finalized_tip_header: Option<
+            Pin<Box<dyn Future<Output = eyre::Result<TempoHeader>> + Send + Sync>>,
+        >,
+    ) {
         assert!(self.handle.is_none(), "DKG actor is already running");
         drop(self.storage.take());
         let (actor, mailbox) = init(
@@ -267,7 +283,11 @@ impl Harness {
                 mailbox_size: NonZeroUsize::new(1).unwrap(),
                 marshal: self.marshal.clone(),
                 last_finalized_height: self.last_finalized_height,
-                finalized_tip,
+                finalized_tip: self
+                    .finalized_tip
+                    .as_ref()
+                    .map(|(height, certificate, _)| (*height, certificate.clone())),
+                finalized_tip_header,
                 network_identity: self.network_identity.clone(),
                 partition_prefix: self.partition_prefix.clone(),
                 execution_node: self.execution.clone(),

@@ -8,7 +8,7 @@ use commonware_broadcast::buffered;
 use commonware_consensus::{
     Reporters, marshal,
     simplex::scheme::bls12381_threshold::vrf::Scheme,
-    types::{Epoch, FixedEpocher, Height, Round, ViewDelta},
+    types::{Epoch, FixedEpocher, ViewDelta},
 };
 use commonware_cryptography::{
     Signer as _,
@@ -23,7 +23,6 @@ use commonware_runtime::{
 use commonware_utils::NZUsize;
 use eyre::{OptionExt as _, WrapErr as _};
 use rand_core::{CryptoRng, Rng};
-use reth_ethereum::chainspec::EthChainSpec as _;
 use tempo_node::TempoFullNode;
 use tracing::info;
 
@@ -156,6 +155,8 @@ where
             mailbox: marshal_mailbox,
             finalized_floor,
             finalized_tip,
+            finalized_tip_certificate,
+            finalized_tip_header,
         } = alias::marshal::init(
             context.child("marshal"),
             page_cache_ref.clone(),
@@ -176,25 +177,12 @@ where
         .await
         .wrap_err("failed to initialize marshal")?;
 
-        let (tip_round, tip_height, tip_digest) = match &finalized_tip {
-            Some((height, certificate, _)) => (
-                certificate.proposal.round,
-                *height,
-                certificate.proposal.payload,
-            ),
-            None => (
-                Round::zero(),
-                Height::zero(),
-                super::Digest(execution_node.chain_spec().genesis_hash()),
-            ),
-        };
-
         let (executor, executor_mailbox) = crate::executor::init(
             context.child("executor"),
             crate::executor::Config {
                 execution_node: execution_node.clone(),
                 finalized_floor,
-                finalized_tip: (tip_round, tip_height, tip_digest),
+                finalized_tip,
                 marshal: marshal_mailbox.clone(),
                 fcu_heartbeat_interval: self.fcu_heartbeat_interval,
                 public_key: Some(self.signer.public_key()),
@@ -208,7 +196,7 @@ where
                 execution_node: execution_node.clone(),
                 oracle: self.peer_manager.clone(),
                 epoch_strategy: epoch_strategy.clone(),
-                finalized_tip: (tip_height, tip_digest),
+                finalized_tip: (finalized_tip.1, finalized_tip.2),
             },
         )
         .wrap_err("failed initializing peer manager")?;
@@ -306,7 +294,9 @@ where
                 epoch_strategy: epoch_strategy.clone(),
                 execution_node,
                 initial_share: self.share.clone(),
-                finalized_tip: finalized_tip.map(|(_, _, validation)| validation),
+                finalized_tip: finalized_tip_certificate
+                    .map(|certificate| (finalized_tip.1, certificate)),
+                finalized_tip_header,
                 network_identity: self.network_identity,
                 last_finalized_height: finalized_floor,
                 mailbox_size: self.mailbox_size,

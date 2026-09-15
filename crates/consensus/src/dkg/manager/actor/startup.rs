@@ -1,5 +1,6 @@
 //! Authenticate the startup tip before recovering DKG state from chain data.
 
+use alloy_consensus::{BlockHeader as _, Sealable as _};
 use commonware_consensus::{
     simplex::scheme::bls12381_threshold::vrf::Scheme,
     types::{Epocher as _, FixedEpocher, Height},
@@ -9,10 +10,11 @@ use commonware_parallel::Sequential;
 use eyre::ensure;
 use rand_core::CryptoRng;
 use tempo_chainspec::NetworkIdentity;
+use tempo_primitives::TempoHeader;
 use tracing::{info, instrument};
 
 use super::state::State;
-use crate::{alias::marshal::FinalizedTip, config::NAMESPACE};
+use crate::{config::NAMESPACE, consensus::Digest, gossip::Certificate};
 
 #[instrument(skip_all, err)]
 pub(super) fn verify_finalized_tip(
@@ -20,7 +22,7 @@ pub(super) fn verify_finalized_tip(
     epoch_strategy: &FixedEpocher,
     configured_identity: &NetworkIdentity,
     persisted: Option<&State>,
-    tip: Option<&FinalizedTip>,
+    tip: Option<(Height, &Certificate, &TempoHeader)>,
     finalized_floor: Height,
 ) -> eyre::Result<()> {
     let mut trusted = configured_identity.clone();
@@ -41,7 +43,7 @@ pub(super) fn verify_finalized_tip(
         }
     }
 
-    let Some(tip) = tip else {
+    let Some((height, certificate, header)) = tip else {
         ensure!(
             finalized_floor.is_zero(),
             "only genesis may lack a finalized tip certificate"
@@ -49,15 +51,24 @@ pub(super) fn verify_finalized_tip(
         return Ok(());
     };
     ensure!(
-        !tip.height().is_zero(),
+        header.number() == height.get(),
+        "finalized tip header number `{}` does not match archive height `{height}`",
+        header.number(),
+    );
+    ensure!(
+        Digest(header.hash_slow()) == certificate.proposal.payload,
+        "finalized tip header hash does not match certificate payload at height `{height}`",
+    );
+    ensure!(
+        !height.is_zero(),
         "genesis must not have a finalization certificate"
     );
     ensure!(
-        tip.height() >= finalized_floor,
+        height >= finalized_floor,
         "finalized tip is below the finalized floor"
     );
     let epoch = epoch_strategy
-        .containing(tip.height())
+        .containing(height)
         .expect("epoch strategy covers all heights")
         .epoch();
 
@@ -66,7 +77,7 @@ pub(super) fn verify_finalized_tip(
         // persisted DKG identity. Historical bootstrap remains allowed; the
         // configured and persisted identities stay pinned when their epochs start.
         info!(
-            tip_height = %tip.height(),
+            tip_height = %height,
             tip_epoch = %epoch,
             identity_from_epoch = trusted.from_epoch,
             "finalized tip predates the trusted network identity; accepting historical bootstrap",
@@ -78,11 +89,11 @@ pub(super) fn verify_finalized_tip(
     // schemes read from the same snapshot whose tip we are authenticating.
     let scheme = Scheme::<PublicKey, _>::certificate_verifier(NAMESPACE, trusted.identity);
     ensure!(
-        tip.certificate().verify(rng, &scheme, &Sequential),
+        certificate.verify(rng, &scheme, &Sequential),
         "finalized tip certificate at height `{}` in epoch `{epoch}` failed verification \
          against the trusted network identity from epoch `{}`; configure an updated network \
          identity if a full DKG rotation occurred while the node was offline",
-        tip.height(),
+        height,
         trusted.from_epoch,
     );
     Ok(())

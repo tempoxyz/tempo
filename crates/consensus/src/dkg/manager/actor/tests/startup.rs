@@ -17,8 +17,8 @@ use super::{
     harness::{Harness, block, header, outcome_header},
 };
 use crate::{
-    alias::marshal::FinalizedTip,
     consensus::Digest,
+    gossip::Certificate,
     test_utils::{DkgFixture, dkg_fixture, make_certificate},
 };
 
@@ -40,22 +40,24 @@ fn persisted(fixture: &DkgFixture, rng: &mut impl CryptoRng) -> State {
     }
 }
 
-fn tip(fixture: &DkgFixture, epoch: u64) -> FinalizedTip {
+fn tip(fixture: &DkgFixture, epoch: u64) -> (Height, Certificate, TempoHeader) {
     tip_for_header(fixture, &header(Height::new(epoch * 10 + 2)))
 }
 
-fn tip_for_header(fixture: &DkgFixture, header: &TempoHeader) -> FinalizedTip {
-    FinalizedTip::new(
+fn tip_for_header(
+    fixture: &DkgFixture,
+    header: &TempoHeader,
+) -> (Height, Certificate, TempoHeader) {
+    (
         Height::new(header.number()),
-        header,
         make_certificate(
             Digest(header.hash_slow()),
             Epoch::new(header.number() / 10),
             1,
             &fixture.schemes,
         ),
+        header.clone(),
     )
-    .unwrap()
 }
 
 #[test]
@@ -140,7 +142,7 @@ fn startup_uses_the_newest_trusted_identity_without_falling_back() {
                 &strategy,
                 &configured_identity,
                 state,
-                Some(tip),
+                Some((tip.0, &tip.1, &tip.2)),
                 Height::zero(),
             );
             assert_eq!(result.is_ok(), accepted, "{name}: {result:?}");
@@ -168,10 +170,36 @@ fn historical_tips_and_genesis_remain_allowed() {
                 &strategy,
                 &configured_identity,
                 local,
-                Some(&boundary_tip),
+                Some((boundary_tip.0, &boundary_tip.1, &boundary_tip.2)),
                 Height::new(29),
             )
             .unwrap();
+            // Historical trust skips signature verification, never header binding.
+            let mut substituted_header = boundary_tip.2.clone();
+            substituted_header.inner.extra_data = vec![1].into();
+            for (height, header, expected) in [
+                (
+                    boundary_tip.0.next(),
+                    &boundary_tip.2,
+                    "does not match archive height",
+                ),
+                (
+                    boundary_tip.0,
+                    &substituted_header,
+                    "header hash does not match certificate payload",
+                ),
+            ] {
+                let error = verify_finalized_tip(
+                    &mut context,
+                    &strategy,
+                    &configured_identity,
+                    local,
+                    Some((height, &boundary_tip.1, header)),
+                    Height::new(29),
+                )
+                .unwrap_err();
+                assert!(error.to_string().contains(expected), "{error}");
+            }
             verify_finalized_tip(
                 &mut context,
                 &strategy,
@@ -192,15 +220,18 @@ fn startup_rejects_malformed_or_invalid_tip_certificates() {
         let configured_identity = identity(&fixture);
         let strategy = FixedEpocher::new(commonware_utils::NZU64!(10));
         let valid = tip(&fixture, 1);
-        let mut altered_header = header(valid.height());
+        let mut altered_header = header(valid.0);
         altered_header.inner.extra_data = vec![1].into();
-        let mut invalid_certificate = valid.certificate().clone();
+        let mut invalid_certificate = valid.1.clone();
         invalid_certificate.proposal.payload = Digest(altered_header.hash_slow());
         // Header and payload agree, but the signature still covers the original payload.
-        let invalid =
-            FinalizedTip::new(valid.height(), &altered_header, invalid_certificate).unwrap();
+        let invalid = (valid.0, invalid_certificate, altered_header.clone());
+        let wrong_height = (valid.0.next(), valid.1.clone(), valid.2.clone());
+        let wrong_hash = (valid.0, valid.1.clone(), altered_header);
         let genesis_certificate = tip_for_header(&fixture, &header(Height::zero()));
         for (name, tip) in [
+            ("archive height mismatch", wrong_height),
+            ("certificate payload mismatch", wrong_hash),
             ("invalid signature", invalid),
             ("genesis certificate", genesis_certificate),
         ] {
@@ -210,7 +241,7 @@ fn startup_rejects_malformed_or_invalid_tip_certificates() {
                     &strategy,
                     &configured_identity,
                     None,
-                    Some(&tip),
+                    Some((tip.0, &tip.1, &tip.2)),
                     Height::zero()
                 )
                 .is_err(),
@@ -234,7 +265,7 @@ fn startup_rejects_malformed_or_invalid_tip_certificates() {
                 &strategy,
                 &configured_identity,
                 None,
-                Some(&tip(&fixture, 1)),
+                Some((valid.0, &valid.1, &valid.2)),
                 Height::new(13)
             )
             .is_err()
@@ -263,7 +294,7 @@ fn startup_rejects_epoch_tampering() {
             &strategy,
             &configured_identity,
             None,
-            Some(&valid),
+            Some((valid.0, &valid.1, &valid.2)),
             Height::zero(),
         )
         .unwrap();
@@ -272,8 +303,15 @@ fn startup_rejects_epoch_tampering() {
         // certificate. Keep the archive height and certificate unchanged.
         let mut altered_header = header.clone();
         altered_header.consensus_context.as_mut().unwrap().epoch = 1;
-        let error = FinalizedTip::new(valid.height(), &altered_header, valid.certificate().clone())
-            .unwrap_err();
+        let error = verify_finalized_tip(
+            &mut context,
+            &strategy,
+            &configured_identity,
+            None,
+            Some((valid.0, &valid.1, &altered_header)),
+            Height::zero(),
+        )
+        .unwrap_err();
         assert!(
             error
                 .to_string()
@@ -282,9 +320,9 @@ fn startup_rejects_epoch_tampering() {
 
         // Updating the payload to match the altered header cannot preserve the
         // signature. Nor can changing only the certificate's own epoch.
-        let mut altered_payload = valid.certificate().clone();
+        let mut altered_payload = valid.1.clone();
         altered_payload.proposal.payload = Digest(altered_header.hash_slow());
-        let mut altered_round = valid.certificate().clone();
+        let mut altered_round = valid.1.clone();
         altered_round.proposal.round =
             Round::new(Epoch::new(1), altered_round.proposal.round.view());
         for (name, header, certificate) in [
@@ -295,13 +333,13 @@ fn startup_rejects_epoch_tampering() {
             ),
             ("certificate epoch", &header, altered_round),
         ] {
-            let tip = FinalizedTip::new(valid.height(), header, certificate).unwrap();
+            let tip = (valid.0, certificate, header.clone());
             let result = verify_finalized_tip(
                 &mut context,
                 &strategy,
                 &configured_identity,
                 None,
-                Some(&tip),
+                Some((tip.0, &tip.1, &tip.2)),
                 Height::zero(),
             );
             let error = result.expect_err(name);
@@ -422,21 +460,19 @@ fn tip_recovery_precedes_healing_and_epoch_entry() {
             let prefix = "recover_tip_before_healing";
             let tip_header = header(Height::new(22));
             let tip = tip_for_header(&current, &tip_header);
-            let mut certificate = tip.certificate().clone();
+            let mut certificate = tip.1.clone();
             let mut recovered_header = tip_header;
             let archive_height = if case == "wrong_height" {
-                tip.height().next()
+                tip.0.next()
             } else {
-                tip.height()
+                tip.0
             };
             if case == "wrong_hash" {
                 recovered_header.inner.extra_data = vec![1].into();
             }
             if case == "invalid_signature" {
                 // Header binding succeeds, but this signature uses the old key.
-                certificate = tip_for_header(&old, &recovered_header)
-                    .certificate()
-                    .clone();
+                certificate = tip_for_header(&old, &recovered_header).1;
             }
 
             let mut harness = Harness::builder(context.child("test"), prefix)
@@ -445,7 +481,10 @@ fn tip_recovery_precedes_healing_and_epoch_entry() {
                     u64::MAX,
                 ))
                 .finalized_floor(Height::new(19))
-                .startup(identity(&current), Some(tip))
+                .startup(
+                    identity(&current),
+                    Some((archive_height, certificate, tip.2)),
+                )
                 .build()
                 .await;
             harness
@@ -454,15 +493,11 @@ fn tip_recovery_precedes_healing_and_epoch_entry() {
 
             let (recovery_started, waiting) = tokio::sync::oneshot::channel();
             let (recovered, block_rx) = tokio::sync::oneshot::channel();
-            let validation = Box::pin(FinalizedTip::recover(
-                archive_height,
-                certificate,
-                None,
-                async move {
-                    recovery_started.send(()).unwrap();
-                    block_rx.await.ok()
-                },
-            ));
+            let validation = Box::pin(async move {
+                recovery_started.send(()).unwrap();
+                let block: std::sync::Arc<crate::consensus::block::Block> = block_rx.await?;
+                Ok(block.header().clone())
+            });
             harness.start_with_tip(Some(validation)).await;
             waiting.await.unwrap();
             assert!(

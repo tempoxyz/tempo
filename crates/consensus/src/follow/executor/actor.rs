@@ -27,6 +27,7 @@ use commonware_utils::{Acknowledgement as _, acknowledgement::Exact};
 use eyre::{Report, WrapErr as _, ensure, eyre};
 use futures::{FutureExt as _, StreamExt as _, channel::mpsc, future::BoxFuture};
 use tempo_node::TempoExecutionData;
+use tempo_primitives::TempoHeader;
 use tracing::{Level, debug, error, instrument};
 
 use super::{
@@ -44,7 +45,7 @@ pub(crate) struct Actor<TContext, P, E, M = crate::alias::marshal::Mailbox> {
 
     epoch_strategy: FixedEpocher,
     floor: Height,
-    finalized_tip: Option<crate::alias::marshal::FinalizedTipFuture>,
+    finalized_tip: Option<BoxFuture<'static, eyre::Result<TempoHeader>>>,
 
     last_fcu: Target,
     latest_tip: Target,
