@@ -28,7 +28,7 @@ on:
         description: Benchmark duration in seconds.
         type: string
         required: true
-        default: "90"
+        default: "300"
       bloat:
         description: State bloat size in GB.
         type: choice
@@ -162,7 +162,7 @@ jobs:
       feature: ${{ needs.resolve-refs.outputs.feature-ref }}
       feature-name: ${{ needs.resolve-refs.outputs.feature-name }}
       preset: public-mix
-      duration: ${{ inputs.duration || '90' }}
+      duration: ${{ inputs.duration || '300' }}
       bloat: ${{ inputs.bloat || '100' }}
       validator-count: ${{ inputs['validator-count'] || '10' }}
       regions: ${{ inputs.regions || '' }}
