@@ -45,6 +45,7 @@ use tokio::sync::oneshot;
 
 use crate::{
     consensus::{Digest, block::Block},
+    epoch::manager::Readiness,
     executor::{Config, ExecutionLayer, Mailbox, Marshal, init},
 };
 
@@ -947,6 +948,7 @@ pub(super) struct HarnessBuilder {
     execution: FakeExecution,
     marshal: FakeMarshal,
     options: HarnessOptions,
+    defer_readiness: bool,
 }
 
 impl Default for HarnessBuilder {
@@ -955,11 +957,17 @@ impl Default for HarnessBuilder {
             execution: FakeExecution::new(),
             marshal: FakeMarshal::new(),
             options: HarnessOptions::default(),
+            defer_readiness: false,
         }
     }
 }
 
 impl HarnessBuilder {
+    pub(super) fn defer_readiness(mut self) -> Self {
+        self.defer_readiness = true;
+        self
+    }
+
     pub(super) fn execution(mut self, execution: FakeExecution) -> Self {
         self.execution = execution;
         self
@@ -991,6 +999,7 @@ impl HarnessBuilder {
             execution,
             marshal,
             options,
+            defer_readiness,
         } = self;
         let (actor, mailbox) = init(
             context.child("executor"),
@@ -1008,6 +1017,9 @@ impl HarnessBuilder {
             },
         )?;
         let actor = actor.start();
+        if !defer_readiness {
+            assert!(mailbox.readiness_reporter().report(Readiness).accepted());
+        }
         Ok(Harness {
             context: context.child("harness"),
             execution,

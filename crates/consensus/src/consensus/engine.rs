@@ -530,6 +530,8 @@ where
             config::DKG_CHANNEL_IDENT,
             self.max_message_size,
         );
+        let readiness = self.executor_mailbox.readiness_reporter();
+
         let peer_manager = self.peer_manager.start();
 
         let broadcast = self.broadcast.start(broadcast_channel);
@@ -560,9 +562,12 @@ where
             resolver,
         );
 
-        let epoch_manager =
-            self.epoch_manager
-                .start(votes_channel, certificates_channel, resolver_channel);
+        let epoch_manager = self.epoch_manager.start(
+            votes_channel,
+            certificates_channel,
+            resolver_channel,
+            readiness,
+        );
 
         let feed = self.feed.start();
         let gossip_task = self.gossip_actor.map(crate::gossip::Actor::start);
