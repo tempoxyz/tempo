@@ -29,6 +29,6 @@ Shared utilities for monitoring block production, starting/stopping validators, 
 
 To regenerate the validator configs, run the following command:
 ```bash
-cargo x generate-config --output scripts/consensus/configs --peers 4 --bootstrappers 1 --message-backlog 16384 --mailbox-size 16384 --deque-size 10 --from-port 8000 --fee-recipient 0x0000000000000000000000000000000000000000 --seed 0
+cargo x generate-localnet --output scripts/consensus/configs --validators 127.0.0.1:8000,127.0.0.1:8100,127.0.0.1:8200,127.0.0.1:8300 --seed 0
 ```
 
