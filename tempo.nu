@@ -33,14 +33,14 @@ def log-filter-args [loud: bool] {
     if $loud { [] } else { ["--log.stdout.filter" "info"] }
 }
 
-# Keep benchmark OTLP logs useful without emitting high-volume HTTP transport internals.
+# Keep benchmark OTLP logs useful without emitting high-volume connection and storage internals.
 def benchmark-otlp-args [endpoint: string] {
     if $endpoint == "" {
         []
     } else {
         [
             $"--tracing-otlp=($endpoint)"
-            "--logs-otlp.filter=debug,h2=off,hyper=off,hyper_util=off"
+            "--logs-otlp.filter=debug,h2=off,hyper=off,hyper_util=off,jsonrpsee-server=off,storage::overlay=off"
         ]
     }
 }
