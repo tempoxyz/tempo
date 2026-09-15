@@ -15,13 +15,13 @@ pub(super) struct Difference {
     field: &'static str,
     address: Option<Address>,
     slot: Option<U256>,
-    control: String,
-    candidate: String,
+    real: String,
+    shadow: String,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord)]
 enum Kind {
-    Stopping,
+    Stop,
     Observation,
     Gas,
     Fee,
@@ -63,66 +63,33 @@ impl Report {
 
     /// Compares common completed boundaries in order and stops after finishing the first boundary
     /// containing a stopping difference.
-    pub(super) fn analyze(control: &Evidence, candidate: &Evidence) -> Self {
+    pub(super) fn analyze(real: &Evidence, shadow: &Evidence) -> Self {
         let mut report = Self::default();
-        let common_txs = control.txs.len().min(candidate.txs.len());
+        let common_txs = real.txs.len().min(shadow.txs.len());
 
-        if let Some((control, candidate)) =
-            control.pre_block.as_ref().zip(candidate.pre_block.as_ref())
-        {
-            report.record_state_diffs(Boundary::PreBlock, control, candidate, None);
+        if let Some((real, shadow)) = real.pre_block.as_ref().zip(shadow.pre_block.as_ref()) {
+            report.record_state_diffs(Boundary::PreBlock, real, shadow, None);
         }
         for index in 0..common_txs {
             if report.cutoff.is_some() {
                 report.boundaries_not_evaluated += common_txs - index;
                 break;
             }
-            report.record_tx_diffs(control, candidate, index);
+            report.record_tx_diffs(real, shadow, index);
         }
-        if let Some((control, candidate)) = control
-            .post_block
-            .as_ref()
-            .zip(candidate.post_block.as_ref())
-        {
+        if let Some((real, shadow)) = real.post_block.as_ref().zip(shadow.post_block.as_ref()) {
             if report.cutoff.is_some() {
                 report.boundaries_not_evaluated += 1;
             } else {
-                report.record_state_diffs(Boundary::PostBlock, control, candidate, None);
+                report.record_state_diffs(Boundary::PostBlock, real, shadow, None);
             }
         }
         report
     }
 
-    fn record_diff<T: Debug + Eq>(
-        &mut self,
-        boundary: Boundary,
-        location: Location,
-        field: &'static str,
-        control: T,
-        candidate: T,
-        kind: Kind,
-    ) {
-        if control == candidate {
-            return;
-        }
-
-        let (address, slot) = location.parts();
-        self.record(
-            boundary,
-            Difference {
-                kind,
-                field,
-                address,
-                slot,
-                control: format!("{control:?}"),
-                candidate: format!("{candidate:?}"),
-            },
-        );
-    }
-
     fn record(&mut self, boundary: Boundary, difference: Difference) {
         *match difference.kind {
-            Kind::Stopping => &mut self.stopping,
+            Kind::Stop => &mut self.stopping,
             Kind::Observation => &mut self.observation,
             Kind::Gas => &mut self.gas_divergent_txs,
             Kind::Fee => &mut self.fee_associated,
@@ -140,65 +107,44 @@ impl Report {
     fn record_state_diffs(
         &mut self,
         boundary: Boundary,
-        control: &TransitionState,
-        candidate: &TransitionState,
+        real: &TransitionState,
+        shadow: &TransitionState,
         tx: Option<(&ObservedTx, &ObservedTx)>,
     ) {
-        let addresses: HashSet<_> = control
+        let addresses: HashSet<_> = real
             .transitions
             .keys()
-            .chain(candidate.transitions.keys())
+            .chain(shadow.transitions.keys())
             .copied()
             .collect();
 
         for address in addresses {
-            let control = AccountDelta(control.transitions.get(&address));
-            let candidate = AccountDelta(candidate.transitions.get(&address));
-            let location = Location::Account(address);
+            let real = AccountDelta(real.transitions.get(&address));
+            let shadow = AccountDelta(shadow.transitions.get(&address));
+            let mut diff =
+                Comparison::new(self, boundary, Location::Account(address), &real, &shadow);
+            diff.record("existence", |account| account.existence(), Kind::Stop);
+            diff.record("balance", |acc| acc.info(|info| info.balance), Kind::Stop);
+            diff.record("nonce", |acc| acc.info(|info| info.nonce), Kind::Stop);
 
-            self.record_diff(
-                boundary,
-                location,
-                "existence",
-                control.existence(),
-                candidate.existence(),
-                Kind::Stopping,
-            );
-            self.record_diff(
-                boundary,
-                location,
-                "balance",
-                control.info(|info| info.balance),
-                candidate.info(|info| info.balance),
-                Kind::Stopping,
-            );
-            self.record_diff(
-                boundary,
-                location,
-                "nonce",
-                control.info(|info| info.nonce),
-                candidate.info(|info| info.nonce),
-                Kind::Stopping,
-            );
-
-            let slots: HashSet<_> = control.slots().chain(candidate.slots()).copied().collect();
+            let slots: HashSet<_> = real.slots().chain(shadow.slots()).copied().collect();
             for slot in slots {
-                let kind = if tx.is_some_and(|(control, candidate)| {
-                    control.fee_slots.contains(&(address, slot))
-                        || candidate.fee_slots.contains(&(address, slot))
+                let kind = if tx.is_some_and(|(real, shadow)| {
+                    real.fee_slots.contains(&(address, slot))
+                        || shadow.fee_slots.contains(&(address, slot))
                 }) {
                     Kind::Fee
                 } else {
-                    Kind::Stopping
+                    Kind::Stop
                 };
-                self.record_diff(
+                Comparison::new(
+                    self,
                     boundary,
                     Location::Storage(address, slot),
-                    "storage",
-                    control.storage(slot),
-                    candidate.storage(slot),
-                    kind,
-                );
+                    &real,
+                    &shadow,
+                )
+                .record("storage", |account| account.storage(slot), kind);
             }
         }
 
@@ -207,57 +153,69 @@ impl Report {
         }
     }
 
-    fn record_tx_diffs(&mut self, control: &Evidence, candidate: &Evidence, index: usize) {
+    fn record_tx_diffs(&mut self, real: &Evidence, shadow: &Evidence, index: usize) {
         let boundary = Boundary::Transaction(index);
-        let (control_tx, candidate_tx) = (&control.txs[index], &candidate.txs[index]);
-        self.record_diff(
-            boundary,
-            Location::Observation,
-            "success",
-            control_tx.receipt.success,
-            candidate_tx.receipt.success,
-            Kind::Observation,
-        );
-        self.record_diff(
-            boundary,
-            Location::Observation,
-            "output",
-            control_tx.output_hash,
-            candidate_tx.output_hash,
-            Kind::Observation,
-        );
-        if control_tx.logs_hash != candidate_tx.logs_hash {
-            self.record_diff(
-                boundary,
-                Location::Observation,
-                "logs",
-                control_tx.logs_hash,
-                candidate_tx.logs_hash,
-                Kind::Observation,
-            );
+        let (real_tx, shadow_tx) = (&real.txs[index], &shadow.txs[index]);
+        let mut diff = Comparison::new(self, boundary, Location::Observation, real_tx, shadow_tx);
+        diff.record("success", |tx| tx.receipt.success, Kind::Observation);
+        diff.record("output", |tx| tx.output_hash, Kind::Observation);
+        if real_tx.logs_hash != shadow_tx.logs_hash {
+            diff.record("logs", |tx| tx.logs_hash, Kind::Observation);
         } else {
-            self.record_diff(
-                boundary,
-                Location::Observation,
-                "fee_logs",
-                control_tx.receipt.logs_hash,
-                candidate_tx.receipt.logs_hash,
-                Kind::Fee,
-            );
+            diff.record("fee_logs", |tx| tx.receipt.logs_hash, Kind::Fee);
         }
-        self.record_diff(
-            boundary,
-            Location::Observation,
-            "gas",
-            control_tx.receipt.gas_used,
-            candidate_tx.receipt.gas_used,
-            Kind::Gas,
-        );
+        diff.record("gas", |tx| tx.receipt.gas_used, Kind::Gas);
         self.record_state_diffs(
             boundary,
-            &control_tx.state,
-            &candidate_tx.state,
-            Some((control_tx, candidate_tx)),
+            &real_tx.state,
+            &shadow_tx.state,
+            Some((real_tx, shadow_tx)),
+        );
+    }
+}
+
+struct Comparison<'a, T> {
+    report: &'a mut Report,
+    boundary: Boundary,
+    loc: Location,
+    real: &'a T,
+    shadow: &'a T,
+}
+
+impl<'a, T> Comparison<'a, T> {
+    fn new(
+        report: &'a mut Report,
+        boundary: Boundary,
+        location: Location,
+        real: &'a T,
+        shadow: &'a T,
+    ) -> Self {
+        Self {
+            report,
+            boundary,
+            loc: location,
+            real,
+            shadow,
+        }
+    }
+
+    fn record<V: Debug + Eq>(&mut self, field: &'static str, get: impl Fn(&T) -> V, kind: Kind) {
+        let (real, shadow) = (get(self.real), get(self.shadow));
+        if real == shadow {
+            return;
+        }
+
+        let (address, slot) = self.loc.parts();
+        self.report.record(
+            self.boundary,
+            Difference {
+                kind,
+                field,
+                address,
+                slot,
+                real: format!("{real:?}"),
+                shadow: format!("{shadow:?}"),
+            },
         );
     }
 }

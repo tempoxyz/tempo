@@ -1,11 +1,11 @@
-//! Counterfactual replay of canonical blocks under candidate Tempo hardfork rules.
+//! Counterfactual replay of canonical blocks under shadow (candidate) Tempo hardfork rules.
 //!
-//! The node continues to follow and persist the canonical chain normally. For each newly canonical
-//! block, a worker executes its exact transactions independently under control and candidate rules:
+//! The node follows and persists the canonical chain. For each newly canonical block, executes
+//! its exact transactions independently under real (control) and shadow (candidate) rules:
 //!
 //! ```text
-//! control[N]   = CanonicalRules(CanonicalState[N - 1], CanonicalBlock[N])
-//! candidate[N] = CandidateRules(CanonicalState[N - 1], CanonicalBlock[N])
+//! real[N]   = CanonicalHardforkRules(CanonicalState[N - 1], CanonicalBlock[N])
+//! shadow[N] = CandidateHardforkRules(CanonicalState[N - 1], CanonicalBlock[N])
 //! ```
 //!
 //! Each execution opens its own parent-state provider and keeps writes in a private in-memory
@@ -13,11 +13,11 @@
 //! and net state transitions; they are never persisted, submitted to forkchoice, shared between
 //! executions, or reused by later blocks.
 //!
-//! The control must complete and reproduce canonical receipts before candidate evidence is
-//! analyzed. Analysis compares completed pre-block, transaction, and post-block boundaries in
-//! order. It compares net committed effects at each boundary—not complete state equality, write
-//! history, or effects under identical evolving prefixes. A stopping state difference ends analysis
-//! after its boundary, while fee-associated and observation differences do not.
+//! Re-execution must complete and reproduce canonical receipts before shadow evidence is analyzed.
+//! Analysis compares completed pre-block, transaction, and post-block boundaries in order.
+//! It compares net committed effects at each boundary—not complete state equality, write history,
+//! or effects under identical evolving prefixes. A stopping state difference ends analysis after
+//! its boundary, while fee-associated and observation differences do not.
 
 mod analysis;
 mod fees;
@@ -54,9 +54,9 @@ use tokio::sync::broadcast::error::RecvError;
 #[derive(Debug)]
 pub struct ShadowReplayer<P> {
     provider: P,
-    control_config: TempoEvmConfig,
-    candidate_config: TempoEvmConfig,
-    candidate_hardfork: TempoHardfork,
+    real_config: TempoEvmConfig,
+    shadow_config: TempoEvmConfig,
+    shadow_hardfork: TempoHardfork,
 }
 
 impl<P> ShadowReplayer<P>
@@ -68,21 +68,21 @@ where
         + Sync
         + 'static,
 {
-    pub fn new(provider: P, candidate_hardfork: TempoHardfork) -> Self {
+    pub fn new(provider: P, shadow_hardfork: TempoHardfork) -> Self {
         let canonical_spec = provider.chain_spec();
-        let candidate_spec = Arc::new(candidate_spec(&canonical_spec, candidate_hardfork));
+        let shadow_spec = Arc::new(shadow_spec(&canonical_spec, shadow_hardfork));
         Self {
-            control_config: TempoEvmConfig::new(canonical_spec),
-            candidate_config: TempoEvmConfig::new(candidate_spec),
+            real_config: TempoEvmConfig::new(canonical_spec),
+            shadow_config: TempoEvmConfig::new(shadow_spec),
             provider,
-            candidate_hardfork,
+            shadow_hardfork,
         }
     }
 
     /// Spawns the replay task. Lagged notifications are reported rather than backfilled.
     pub fn spawn(self, executor: TaskExecutor) {
         let mut notifs = self.provider.subscribe_to_canonical_state();
-        let hardfork = self.candidate_hardfork;
+        let hardfork = self.shadow_hardfork;
         let replayer = Arc::new(self);
         let worker = executor.clone();
         executor.spawn_task(async move {
@@ -118,7 +118,7 @@ where
                         %hardfork,
                     );
                     if replayer
-                        .control_config
+                        .real_config
                         .chain_spec()
                         .tempo_hardfork_at(block.timestamp())
                         >= hardfork
@@ -174,31 +174,31 @@ impl<P: StateProviderFactory + Sync> ShadowReplayer<P> {
         block: &RecoveredBlock<Block>,
         receipts: &[TempoReceipt],
     ) -> Result<(), String> {
-        let (control, candidate) = std::thread::scope(|scope| {
-            let candidate = scope.spawn(|| self.execute(&self.candidate_config, block));
-            let control = self.execute(&self.control_config, block);
-            (control, candidate.join())
+        let (real, shadow) = std::thread::scope(|scope| {
+            let shadow = scope.spawn(|| self.execute(&self.shadow_config, block));
+            let real = self.execute(&self.real_config, block);
+            (real, shadow.join())
         });
-        let control = control?;
-        let candidate = candidate.map_err(|_| "candidate execution panicked".to_string())??;
-        if let Some(f) = &control.failure {
+        let real = real?;
+        let shadow = shadow.map_err(|_| "shadow execution panicked".to_string())??;
+        if let Some(f) = &real.failure {
             return Err(format!(
-                "control execution failed at {:?}: {}",
+                "re-execution failed at {:?}: {}",
                 f.boundary, f.error
             ));
         }
-        if !matches_receipts(&control.txs, receipts) {
-            return Err("control execution does not reproduce canonical receipts".into());
+        if !matches_receipts(&real.txs, receipts) {
+            return Err("re-execution does not reproduce canonical receipts".into());
         }
 
-        let report = Report::analyze(&control, &candidate);
-        if report.findings() == 0 && candidate.failure.is_none() {
-            debug!(target:"shadow_replay", "Candidate replay match");
+        let report = Report::analyze(&real, &shadow);
+        if report.findings() == 0 && shadow.failure.is_none() {
+            debug!(target:"shadow_replay", "shadow replay match");
             return Ok(());
         }
 
         metrics::counter!("tempo_shadow_replay_findings_total","kind"=>"divergence").increment(1);
-        let failure = candidate.failure.as_ref();
+        let failure = shadow.failure.as_ref();
         let after_cutoff = failure
             .zip(report.cutoff)
             .is_some_and(|(failure, cutoff)| failure.boundary > cutoff);
@@ -207,12 +207,12 @@ impl<P: StateProviderFactory + Sync> ShadowReplayer<P> {
             block_number=block.number(),
             block_hash=?block.hash(),
             findings=?report,
-            candidate_failure_boundary=?failure.map(|f|f.boundary),
-            candidate_failure= failure.map(|f|f.error.as_str()).unwrap_or(""),
+            shadow_failure_boundary=?failure.map(|f|f.boundary),
+            shadow_failure= failure.map(|f|f.error.as_str()).unwrap_or(""),
             failure_after_cutoff=after_cutoff,
-            control_completed_txs=control.txs.len()
-            ,candidate_completed_txs=candidate.txs.len(),
-            "Candidate shadow replay findings"
+            real_completed_txs=real.txs.len()
+            ,shadow_completed_txs=shadow.txs.len(),
+            "shadow shadow replay findings"
         );
         Ok(())
     }
@@ -377,7 +377,7 @@ fn hash_logs<T: alloy_rlp::Encodable>(logs: &[T]) -> B256 {
     keccak256(encoded)
 }
 
-fn candidate_spec(canonical: &TempoChainSpec, hardfork: TempoHardfork) -> TempoChainSpec {
+fn shadow_spec(canonical: &TempoChainSpec, hardfork: TempoHardfork) -> TempoChainSpec {
     let mut c = canonical.clone();
     for &fork in TempoHardfork::VARIANTS
         .iter()
@@ -392,11 +392,11 @@ fn candidate_spec(canonical: &TempoChainSpec, hardfork: TempoHardfork) -> TempoC
 mod tests {
     use super::*;
     #[test]
-    fn candidate_schedule_activates_prefix_without_mutating_canonical() {
+    fn shadow_schedule_activates_prefix_without_mutating_canonical() {
         let canonical = TempoChainSpec::mainnet();
         let activation = canonical.tempo_fork_activation(TempoHardfork::T13);
-        let candidate = candidate_spec(&canonical, TempoHardfork::T12);
-        assert_eq!(candidate.tempo_hardfork_at(0), TempoHardfork::T12);
+        let shadow = shadow_spec(&canonical, TempoHardfork::T12);
+        assert_eq!(shadow.tempo_hardfork_at(0), TempoHardfork::T12);
         assert_eq!(
             canonical.tempo_fork_activation(TempoHardfork::T13),
             activation
