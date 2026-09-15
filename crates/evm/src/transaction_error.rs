@@ -295,15 +295,6 @@ impl From<KeychainVersionError> for TempoInvalidTransaction {
     }
 }
 
-impl From<KeyAuthorizationChainIdError> for TempoInvalidTransaction {
-    fn from(err: KeyAuthorizationChainIdError) -> Self {
-        Self::KeyAuthorizationChainIdMismatch {
-            expected: err.expected,
-            got: err.got,
-        }
-    }
-}
-
 /// Error type for fee payment errors.
 #[derive(Debug, Clone, PartialEq, Eq, Hash, thiserror::Error)]
 pub enum FeePaymentError {
@@ -339,6 +330,15 @@ pub enum FeePaymentError {
     /// Other error.
     #[error("{0}")]
     Other(String),
+}
+
+impl From<KeyAuthorizationChainIdError> for TempoInvalidTransaction {
+    fn from(err: KeyAuthorizationChainIdError) -> Self {
+        Self::KeyAuthorizationChainIdMismatch {
+            expected: err.expected,
+            got: err.got,
+        }
+    }
 }
 
 fn liquidity_pair_msg(user_token: &Option<Address>, validator_token: &Option<Address>) -> String {
