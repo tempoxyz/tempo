@@ -17,6 +17,11 @@ use tempo_node::TempoFullNode;
 
 use crate::epoch::scheme_provider::SchemeProvider;
 
+/// The epoch manager has accepted the first DKG epoch and registered its scheme.
+/// Reported once at startup to registered listeners.
+#[derive(Clone, Copy, Debug)]
+pub(crate) struct Readiness;
+
 pub(crate) struct Config<TBlocker> {
     pub(crate) application: crate::consensus::application::Mailbox,
     pub(crate) execution_node: Arc<TempoFullNode>,

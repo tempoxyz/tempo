@@ -313,6 +313,11 @@ where
     }
 
     async fn run(mut self) {
+        if let Err(error) = self.wait_for_readiness().await {
+            error!(%error, "failed waiting for epoch readiness");
+            return;
+        }
+
         if let Err(error) = self.wait_for_execution_layer().await {
             error_span!("shutdown").in_scope(|| {
                 error!(
@@ -472,6 +477,19 @@ where
         Ok(())
     }
 
+    /// Drains the mailbox up to the first readiness report, recording messages in
+    /// the existing pending queues and tree. Request arbitration still applies,
+    /// but no execution work, block acknowledgements, or fetches start here.
+    async fn wait_for_readiness(&mut self) -> eyre::Result<()> {
+        while let Some(message) = self.mailbox.next().await {
+            if matches!(message.command, Command::Readiness) {
+                return Ok(());
+            }
+            self.handle_message(message)?;
+        }
+        bail!("executor mailbox closed before epoch readiness");
+    }
+
     /// Waits until reth is ready to process blocks by repeatedly reaffirming the execution layer's
     /// own forkchoice state.
     ///
@@ -597,6 +615,8 @@ where
     fn handle_message(&mut self, message: Message) -> eyre::Result<()> {
         let cause = message.cause;
         match message.command {
+            // Startup consumed the first readiness report. Further reports are harmless.
+            Command::Readiness => {}
             Command::Build(build) => {
                 queue_consensus_request(
                     &mut self.pending_consensus_request,

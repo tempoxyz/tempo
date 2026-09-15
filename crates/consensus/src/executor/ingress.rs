@@ -7,7 +7,10 @@ use std::{sync::Arc, time::Duration};
 use tempo_payload_types::{TempoBuiltPayload, TempoPayloadAttributes};
 use tracing::Span;
 
-use crate::consensus::{Digest, block::Block};
+use crate::{
+    consensus::{Digest, block::Block},
+    epoch::manager::Readiness,
+};
 
 #[derive(Clone, Debug)]
 pub(crate) struct Mailbox {
@@ -15,6 +18,11 @@ pub(crate) struct Mailbox {
 }
 
 impl Mailbox {
+    /// Reports epoch readiness through the same mailbox as block reports and requests.
+    pub(crate) fn readiness_reporter(&self) -> ReadinessReporter {
+        ReadinessReporter(self.clone())
+    }
+
     /// Reports that, from simplex's point of view, `context`'s parent is
     /// the pending head of the chain: the block the proposal of this
     /// context builds on or is verified against. The agent converges the
@@ -118,6 +126,8 @@ impl Message {
 
 #[derive(Debug)]
 pub(super) enum Command {
+    /// Allows the executor to begin processing its queued work.
+    Readiness,
     /// Requests the agent to canonicalize the head and build a new payload.
     Build(Build),
     /// Requests the agent to verify a block against the execution layer.
@@ -167,6 +177,12 @@ impl From<VerifyBlock> for Command {
     }
 }
 
+impl From<Readiness> for Command {
+    fn from(_: Readiness) -> Self {
+        Self::Readiness
+    }
+}
+
 impl From<Update<Block>> for Command {
     fn from(value: Update<Block>) -> Self {
         Self::Finalize(value.into())
@@ -178,6 +194,24 @@ impl Reporter for Mailbox {
 
     fn report(&mut self, update: Self::Activity) -> Feedback {
         match self.inner.unbounded_send(Message::in_current_span(update)) {
+            Ok(()) => Feedback::Ok,
+            Err(_) => Feedback::Closed,
+        }
+    }
+}
+
+#[derive(Clone)]
+pub(crate) struct ReadinessReporter(Mailbox);
+
+impl Reporter for ReadinessReporter {
+    type Activity = Readiness;
+
+    fn report(&mut self, activity: Self::Activity) -> Feedback {
+        match self
+            .0
+            .inner
+            .unbounded_send(Message::in_current_span(activity))
+        {
             Ok(()) => Feedback::Ok,
             Err(_) => Feedback::Closed,
         }

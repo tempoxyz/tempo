@@ -50,6 +50,7 @@ use tracing::{Level, Span, debug, info, info_span, instrument, warn};
 
 use crate::consensus::{Digest, block::Block};
 
+mod startup;
 mod state;
 #[cfg(test)]
 mod tests;
@@ -190,6 +191,40 @@ where
         else {
             return;
         };
+
+        // Marshal must be running to resolve a tip missing from finalized storage.
+        // Epoch readiness remains withheld until both header and certificate validate.
+        let finalized_tip = match (
+            self.config.finalized_tip.take(),
+            self.config.finalized_tip_header.take(),
+        ) {
+            (Some((height, certificate)), Some(header)) => match header.await {
+                Ok(header) => Some((height, certificate, header)),
+                Err(error) => {
+                    warn!(%error, "failed resolving finalized tip");
+                    return;
+                }
+            },
+            (None, None) => None,
+            _ => panic!("finalized tip certificate and header future must be provided together"),
+        };
+
+        // Check against the original persisted identity before healing can
+        // replace stale state with an outcome supplied by the snapshot.
+        if startup::verify_finalized_tip(
+            &mut *self.context,
+            &self.config.epoch_strategy,
+            &self.config.network_identity,
+            opened.state(),
+            finalized_tip
+                .as_ref()
+                .map(|(height, certificate, header)| (*height, certificate, header)),
+            self.config.last_finalized_height,
+        )
+        .is_err()
+        {
+            return;
+        }
 
         let Ok(mut storage) = self.heal(opened).await else {
             return;

@@ -28,6 +28,7 @@ pub(crate) use ingress::Mailbox;
 
 use crate::{
     consensus::{Block, Digest},
+    gossip::Certificate,
     validators::{read_active_and_known_peers_at_block_hash, read_validator_config_at_block_hash},
 };
 
@@ -75,6 +76,17 @@ pub(crate) struct Config<TExecutionLayer, TMarshal, TEpochManager> {
     /// The finalized floor reported by marshal at startup. Used to choose the
     /// boundary block that seeds the initial DKG state.
     pub(crate) last_finalized_height: Height,
+
+    /// Archive height and certificate, checked against the resolved header at startup.
+    /// `None` only at genesis, together with `finalized_tip_header`.
+    pub(crate) finalized_tip: Option<(Height, Certificate)>,
+
+    /// Resolves the header before authenticating the tip and healing local DKG state.
+    pub(crate) finalized_tip_header:
+        Option<Pin<Box<dyn Future<Output = eyre::Result<TempoHeader>> + Send + Sync>>>,
+
+    /// Trusted identity supplied by the binary or its explicit configuration.
+    pub(crate) network_identity: tempo_chainspec::NetworkIdentity,
 
     /// The partition prefix to use when persisting ceremony metadata during
     /// rounds.
