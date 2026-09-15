@@ -21,11 +21,11 @@ pub(crate) mod marshal {
     use commonware_utils::acknowledgement::Exact;
     use eyre::{OptionExt as _, WrapErr as _, bail, ensure, eyre};
     use rand_core::{CryptoRng, Rng};
-    use reth_ethereum::{chainspec::EthChainSpec, provider::db::DatabaseEnv};
+    use reth_ethereum::chainspec::EthChainSpec;
     use reth_node_builder::NodeTypesWithDBAdapter;
     use reth_provider::{BlockReader as _, HeaderProvider as _, providers::BlockchainProvider};
     use tempo_dkg_onchain_artifacts::OnchainDkgOutcome;
-    use tempo_node::{TempoFullNode, node::TempoNode};
+    use tempo_node::{TempoFullNode, node::TempoNode, storage::TempoDatabase};
     use tempo_primitives::TempoHeader;
     use tracing::{info, instrument, warn};
 
@@ -40,7 +40,7 @@ pub(crate) mod marshal {
         Standard<Block>,
         SchemeProvider,
         immutable::Archive<TContext, Digest, Finalization<Scheme<PublicKey, MinSig>, Digest>>,
-        Hybrid<TContext, BlockchainProvider<NodeTypesWithDBAdapter<TempoNode, DatabaseEnv>>>,
+        Hybrid<TContext, BlockchainProvider<NodeTypesWithDBAdapter<TempoNode, TempoDatabase>>>,
         FixedEpocher,
         Sequential,
         Exact,
@@ -354,7 +354,7 @@ pub(crate) mod marshal {
         scheme_provider: &SchemeProvider,
         finalized_blocks: &Hybrid<
             TContext,
-            BlockchainProvider<NodeTypesWithDBAdapter<TempoNode, DatabaseEnv>>,
+            BlockchainProvider<NodeTypesWithDBAdapter<TempoNode, TempoDatabase>>,
         >,
         execution_node: &TempoFullNode,
         (height, finalization): (Height, &Finalization<Scheme<PublicKey, MinSig>, Digest>),
@@ -404,7 +404,7 @@ pub(crate) mod marshal {
         execution_node: &TempoFullNode,
         finalized_blocks: &Hybrid<
             TContext,
-            BlockchainProvider<NodeTypesWithDBAdapter<TempoNode, DatabaseEnv>>,
+            BlockchainProvider<NodeTypesWithDBAdapter<TempoNode, TempoDatabase>>,
         >,
         height: Height,
     ) -> eyre::Result<TempoHeader>

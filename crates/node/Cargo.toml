@@ -28,6 +28,7 @@ tempo-revm.workspace = true
 
 thiserror.workspace = true
 
+reth-db-api.workspace = true
 reth-chainspec.workspace = true
 reth-errors.workspace = true
 reth-ethereum = { workspace = true, features = ["node", "rpc"] }
@@ -79,10 +80,11 @@ tokio.workspace = true
 tokio-stream = { workspace = true, features = ["sync"] }
 
 [dev-dependencies]
+reth-stages-types.workspace = true
 tempo-e2e.workspace = true
 tempo-transaction-pool = { workspace = true, features = ["test-utils"] }
 alloy-network.workspace = true
-tempo-precompiles.workspace = true
+tempo-precompiles = { workspace = true, features = ["test-utils"] }
 alloy-rpc-types-engine.workspace = true
 reth-ethereum = { workspace = true, features = ["node", "test-utils", "pool"] }
 reth-e2e-test-utils.workspace = true
