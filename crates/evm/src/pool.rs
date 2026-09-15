@@ -17,9 +17,13 @@ pub enum TempoPoolValidationError {
 /// Implementations must run the full Tempo validation pipeline without executing the transaction
 /// and apply the pool-specific semantics:
 /// - skip `valid_after`, because the pool queues transactions until they become executable;
+/// - disable protocol nonce checking, because the pool queues future-nonce transactions;
 /// - skip the EVM liquidity check, because the pool checks liquidity against its cached AMM view;
 /// - discard journaled writes (nonce updates, fee deduction, and key authorization).
 pub trait TempoPoolValidationEvm {
+    /// Configures this EVM for transaction-pool validation.
+    fn configure_for_pool(&mut self);
+
     /// Validates `tx` using transaction-pool semantics.
     fn validate_pool_transaction(
         &mut self,
@@ -28,13 +32,15 @@ pub trait TempoPoolValidationEvm {
 }
 
 impl TempoPoolValidationEvm for Evm<'_, TempoEvmTypes> {
+    fn configure_for_pool(&mut self) {
+        self.ext_mut().skip_valid_after_check = true;
+        self.ext_mut().skip_liquidity_check = true;
+    }
+
     fn validate_pool_transaction(
         &mut self,
         tx: &Recovered<TempoTxEnv>,
     ) -> Result<(Address, Option<u64>), TempoPoolValidationError> {
-        self.ext_mut().skip_valid_after_check = true;
-        self.ext_mut().skip_liquidity_check = true;
-
         if let Err(err) = self.transact(tx).map(|executed| executed.discard()) {
             return match err {
                 HandlerError::Fatal(code) => Err(TempoPoolValidationError::Fatal(self.error(code))),

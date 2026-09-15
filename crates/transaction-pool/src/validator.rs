@@ -347,11 +347,7 @@ where
         transactions: impl IntoIterator<Item = (TransactionOrigin, TempoPooledTransaction)>,
     ) -> Vec<TransactionValidationOutcome<TempoPooledTransaction>> {
         let mut db = StateCacheDb::new(&cached_state, StateProviderDatabase::new(&state_provider));
-        let evm_env = self
-            .cached_evm_env
-            .read()
-            .clone()
-            .with_nonce_check_disabled();
+        let evm_env = self.cached_evm_env.read().clone();
 
         // Validate every transaction with the same tip-scoped database and read cache.
         // - Skip `valid_after` check: the pool intentionally accepts transactions with a
@@ -826,7 +822,8 @@ where
     where
         DB: Database,
     {
-        let mut evm = self.evm_with_env(&mut *db, evm_env);
+        let mut evm = self.evm_with_env(&mut *db, evm_env.with_nonce_check_disabled());
+        evm.configure_for_pool();
         TempoPoolValidationEvm::validate_pool_transaction(&mut evm, tx)
     }
 }
