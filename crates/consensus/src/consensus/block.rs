@@ -153,6 +153,28 @@ impl Block {
         Ok(block)
     }
 
+    /// Wraps a locally built execution block without recomputing its body commitments.
+    ///
+    /// The payload builder assembles the body and computes its transaction root before returning
+    /// the block. Only use this for its output; network and archive reads must use the validating
+    /// constructor. The separately supplied BAL still needs to match the header commitment.
+    pub(crate) fn try_from_built_execution_block(
+        execution_block: SealedOrRecoveredBlock<tempo_primitives::Block>,
+        block_access_list: Option<Bytes>,
+        execution_block_encoded: EncodedBlock,
+    ) -> Result<Self, Error> {
+        validate_block_access_list_hash(
+            execution_block.block_access_list_hash(),
+            block_access_list.as_ref(),
+        )?;
+
+        Ok(Self::from_execution_block_unchecked_with_encoded_cache(
+            execution_block,
+            block_access_list,
+            execution_block_encoded,
+        ))
+    }
+
     /// Creates a block without checking that BAL bytes match the header.
     ///
     /// This is for reconstructing blocks from persisted EL data that does not include
@@ -459,9 +481,7 @@ mod tests {
     use reth_node_core::primitives::SealedBlock;
     use tempo_primitives::{Block as TempoBlock, TempoHeader};
 
-    #[cfg(feature = "bal")]
-    use super::BlockAccessListError;
-    use super::{Block, Error};
+    use super::{Block, BlockAccessListError, Error};
 
     fn execution_block_with_block_access_list_hash(
         block_access_list_hash: B256,
@@ -597,6 +617,85 @@ mod tests {
         let err = Block::try_from_execution_block(execution_block, None).unwrap_err();
 
         assert!(matches!(err, Error::Body(_)));
+    }
+
+    #[test]
+    fn built_execution_block_preserves_encoding() {
+        let execution_block = SealedBlock::seal_slow(TempoBlock::default());
+        let expected = Block::try_from_execution_block(execution_block.clone(), None).unwrap();
+        let encoded = expected.encode();
+        let block = Block::try_from_built_execution_block(
+            execution_block.into(),
+            None,
+            tempo_payload_types::EncodedBlock::new(encoded.clone().into()),
+        )
+        .unwrap();
+
+        assert_eq!(block, expected);
+        assert_eq!(block.encode(), encoded);
+        assert_eq!(Block::read_cfg(&mut encoded.as_ref(), &()).unwrap(), block);
+    }
+
+    #[test]
+    fn built_execution_block_still_checks_block_access_list() {
+        let block_access_list = bytes!("0xc0");
+        let execution_block = execution_block_with_block_access_list_hash(B256::ZERO);
+        let err = Block::try_from_built_execution_block(
+            execution_block.clone().into(),
+            None,
+            Default::default(),
+        )
+        .unwrap_err();
+        assert!(matches!(
+            err,
+            Error::BlockAccessList(BlockAccessListError::Missing { .. })
+        ));
+
+        let err = Block::try_from_built_execution_block(
+            execution_block.into(),
+            Some(block_access_list.clone()),
+            Default::default(),
+        )
+        .unwrap_err();
+        assert!(matches!(
+            err,
+            Error::BlockAccessList(BlockAccessListError::HashMismatch { .. })
+        ));
+
+        let err = Block::try_from_built_execution_block(
+            SealedBlock::seal_slow(TempoBlock::default()).into(),
+            Some(block_access_list),
+            Default::default(),
+        )
+        .unwrap_err();
+        assert!(matches!(
+            err,
+            Error::BlockAccessList(BlockAccessListError::Unexpected)
+        ));
+    }
+
+    #[test]
+    fn read_still_rejects_incorrect_transaction_root() {
+        let execution_block = SealedBlock::seal_slow(TempoBlock {
+            header: TempoHeader {
+                inner: alloy_consensus::Header {
+                    transactions_root: B256::ZERO,
+                    ..Default::default()
+                },
+                ..Default::default()
+            },
+            body: Default::default(),
+        });
+        let mut encoded = Vec::new();
+        alloy_rlp::Encodable::encode(&execution_block, &mut encoded);
+
+        assert!(matches!(
+            Block::read_cfg(&mut encoded.as_slice(), &()),
+            Err(commonware_codec::Error::Wrapped(
+                "validating execution block body against header",
+                _
+            ))
+        ));
     }
 
     #[cfg(not(feature = "bal"))]

@@ -616,7 +616,7 @@ impl Inner<Init> {
             .as_ref()
             .map_or(0, |block_access_list| block_access_list.encode_size());
         let proposal_construction_start = Instant::now();
-        let proposal = Block::try_from_execution_block_with_encoded_cache(
+        let proposal = Block::try_from_built_execution_block(
             block,
             block_access_list,
             execution_block_encoded,
