@@ -267,7 +267,7 @@ jobs:
       TF_IN_AUTOMATION: "1"
       TF_INPUT: "0"
       BENCH_REPO_DIR: tempo-multi-region-benchmark
-      TERRAFORM_DIR: ${{ (inputs.cloud || 'aws') == 'gcp' && 'tempo-multi-region-benchmark/terraform/gcp' || 'tempo-multi-region-benchmark/terraform' }}
+      TERRAFORM_DIR: ${{ (inputs.cloud || 'aws') == 'gcp' && 'tempo-multi-region-benchmark/terraform/gcp' || 'tempo-multi-region-benchmark/terraform/aws' }}
       BENCHMARK_ID: bench-e2e-multi-region-${{ github.run_id }}-${{ github.run_attempt }}
       BENCH_RESULTS_DIR: tempo-bench-e2e-multi-region-results
       BENCH_INPUT_CLOUD: ${{ inputs.cloud || 'aws' }}
@@ -375,12 +375,19 @@ jobs:
             fs.mkdirSync('contrib/bench', { recursive: true });
             fs.writeFileSync(path, Buffer.from(data.content, 'base64'));
 
+      - name: Require publication credentials
+        run: |
+          test -n "$CLICKHOUSE_URL" && test -n "$CLICKHOUSE_USER" && test -n "$CLICKHOUSE_PASSWORD" || {
+            echo "::error::ClickHouse publication credentials are missing"
+            exit 1
+          }
+
       - name: Checkout benchmark repo
         id: checkout_benchmark_repo
         uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
         with:
           repository: tempoxyz/tempo-multi-region-benchmark
-          ref: ${{ github.repository == 'tempoxyz/tempo-multi-region-benchmark' && github.sha || 'main' }}
+          ref: 9d9ab4c33731f2ecd855d072a71dbeba68b14942
           path: ${{ env.BENCH_REPO_DIR }}
           token: ${{ steps.github-sts.outputs.token }}
           persist-credentials: false
@@ -521,6 +528,7 @@ jobs:
         continue-on-error: true
         run: |
           "$BENCH_REPO_DIR/scripts/run_comparison.sh" \
+            --run-side feature \
             --stage fetch-tempo-binaries \
             --cloud "$BENCH_INPUT_CLOUD" \
             --gcp-project-id "$BENCH_GCP_PROJECT_ID" \
@@ -575,6 +583,7 @@ jobs:
         continue-on-error: true
         run: |
           "$BENCH_REPO_DIR/scripts/run_comparison.sh" \
+            --run-side feature \
             --stage generate-initial-validator-state \
             --cloud "$BENCH_INPUT_CLOUD" \
             --gcp-project-id "$BENCH_GCP_PROJECT_ID" \
@@ -622,6 +631,7 @@ jobs:
         continue-on-error: true
         run: |
           "$BENCH_REPO_DIR/scripts/run_comparison.sh" \
+            --run-side feature \
             --stage initialize-validator-state \
             --cloud "$BENCH_INPUT_CLOUD" \
             --gcp-project-id "$BENCH_GCP_PROJECT_ID" \
@@ -669,6 +679,7 @@ jobs:
         continue-on-error: true
         run: |
           "$BENCH_REPO_DIR/scripts/run_comparison.sh" \
+            --run-side feature \
             --stage run-benchmarks \
             --cloud "$BENCH_INPUT_CLOUD" \
             --gcp-project-id "$BENCH_GCP_PROJECT_ID" \
