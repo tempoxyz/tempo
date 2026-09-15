@@ -14,6 +14,7 @@ use rand_core::{CryptoRng, Rng};
 use tempo_node::TempoFullNode;
 
 mod actor;
+mod broadcast_cache;
 mod ingress;
 
 pub(super) use actor::Actor;
@@ -48,6 +49,9 @@ pub(super) struct Config<TContext> {
 
     /// For subscribing to blocks distributed via the consensus p2p network.
     pub(super) marshal: crate::alias::marshal::Mailbox,
+
+    /// The existing broadcast cache, primed only after local proposal persistence.
+    pub(super) broadcast: commonware_broadcast::buffered::Mailbox<PublicKey, super::block::Block>,
 
     pub(super) executor: crate::executor::Mailbox,
 
