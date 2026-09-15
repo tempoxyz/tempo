@@ -19,6 +19,7 @@ mod pool;
 #[cfg(test)]
 mod test_utils;
 mod transaction;
+pub mod transaction_error;
 
 pub use action_replay::{
     ExpiringNonceReplay, StorageActionReplay, StorageActionReplayError, StorageActionReplayOutcome,
@@ -28,7 +29,7 @@ pub use assemble::TempoBlockAssembler;
 pub use block::{TempoBlockExecutor, TempoReceiptBuilder, TempoTxResult};
 pub use common::{TempoStateAccess, TempoTx};
 pub use context::{TempoBlockExecutionCtx, TempoNextBlockEnvAttributes};
-pub use error::{FeePaymentError, TempoEvmError, TempoInvalidTransaction};
+pub use error::TempoEvmError;
 pub use evm::{TempoEvm, TempoEvmFactory};
 pub use handler::{
     FeeTokenResolver, ProtocolFeeManager, TempoBlockEnv, TempoBlockExt, TempoConfig,
@@ -37,6 +38,7 @@ pub use handler::{
 };
 pub use pool::{TempoPoolValidationError, TempoPoolValidationEvm};
 pub use transaction::{ExecutionContext, RecoveredTxEnvelope, TempoAaTx, TempoEvmTx, TempoTxEnv};
+pub use transaction_error::{FeePaymentError, TempoInvalidTransaction};
 
 use core::num::NonZeroU64;
 use std::{borrow::Cow, sync::Arc};
