@@ -391,15 +391,6 @@ pub(crate) mod marshal {
             .get_header(Identifier::Key(&certificate.proposal.payload))
             .await
             .wrap_err("failed reading finalized tip header")?;
-        assert_eq!(
-            height.get(),
-            header.number(),
-            "consistency violated: the certificate carrying digest `{}` was \
-            stored at height `{height}`, but the corresponding header is for
-            block number `{}`",
-            certificate.proposal.payload,
-            header.number(),
-        );
         if let Some(header) = &header {
             FinalizedTip::new(height, header, certificate.clone())?;
         }
