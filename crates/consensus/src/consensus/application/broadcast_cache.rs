@@ -28,21 +28,37 @@ pub(super) async fn prime(
 #[cfg(test)]
 mod tests {
     use std::{
+        convert::Infallible,
         sync::Mutex,
         time::{Duration, SystemTime},
     };
 
     use commonware_actor::{Feedback, Unreliable};
     use commonware_cryptography::{Signer as _, ed25519::PrivateKey};
-    use commonware_p2p::{
-        CheckedSender, LimitedSender,
-        utils::{StaticProvider, mocks::inert_channel},
+    use commonware_p2p::{CheckedSender, LimitedSender, Receiver, utils::StaticProvider};
+    use commonware_runtime::{
+        Clock as _, IoBuf, IoBufs, Runner as _, Supervisor as _, deterministic,
     };
-    use commonware_runtime::{Clock as _, IoBufs, Runner as _, Supervisor as _, deterministic};
     use commonware_utils::{NZUsize, ordered::Set};
     use reth_primitives_traits::SealedBlock;
 
     use super::*;
+
+    type TestEngine =
+        buffered::Engine<deterministic::Context, PublicKey, Block, StaticProvider<PublicKey>>;
+    type TestMailbox = buffered::Mailbox<PublicKey, Block>;
+
+    #[derive(Debug)]
+    struct NeverReceive;
+
+    impl Receiver for NeverReceive {
+        type Error = Infallible;
+        type PublicKey = PublicKey;
+
+        async fn recv(&mut self) -> Result<(PublicKey, IoBuf), Infallible> {
+            std::future::pending().await
+        }
+    }
 
     #[derive(Clone, Debug)]
     struct RecordingSender {
@@ -97,11 +113,7 @@ mod tests {
         context: deterministic::Context,
         capacity: usize,
         eligible: bool,
-    ) -> (
-        buffered::Engine<deterministic::Context, PublicKey, Block, StaticProvider<PublicKey>>,
-        buffered::Mailbox<PublicKey, Block>,
-        RecordingSender,
-    ) {
+    ) -> (TestEngine, TestMailbox, RecordingSender) {
         let local = PrivateKey::from_seed(0).public_key();
         let remote = PrivateKey::from_seed(1).public_key();
         let peers = if eligible {
@@ -136,7 +148,7 @@ mod tests {
             let (engine, mailbox, sender) = engine(context.child("broadcast"), 1, true);
             let attempts = sender.attempts.clone();
             let peers = sender.peers.clone();
-            let _task = engine.start((sender, inert_channel::<PublicKey>([]).1));
+            let _task = engine.start((sender, NeverReceive));
             context.sleep(Duration::from_millis(1)).await;
 
             let block = block(1);
@@ -158,7 +170,7 @@ mod tests {
     fn prime_preserves_bounded_cache_eviction() {
         deterministic::Runner::default().start(|context| async move {
             let (engine, mailbox, sender) = engine(context.child("broadcast"), 1, true);
-            let _task = engine.start((sender, inert_channel::<PublicKey>([]).1));
+            let _task = engine.start((sender, NeverReceive));
             context.sleep(Duration::from_millis(1)).await;
             let first = block(1);
             assert!(prime(&mailbox, first.clone()).await);
@@ -173,7 +185,7 @@ mod tests {
             deterministic::Runner::default().start(|context| async move {
                 let (engine, mailbox, sender) =
                     engine(context.child("broadcast"), capacity, eligible);
-                let _task = engine.start((sender, inert_channel::<PublicKey>([]).1));
+                let _task = engine.start((sender, NeverReceive));
                 context.sleep(Duration::from_millis(1)).await;
                 assert!(!prime(&mailbox, block(1)).await);
             });
