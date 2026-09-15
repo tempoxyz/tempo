@@ -96,7 +96,7 @@ impl NonceManager {
     /// Checks if a hash has been seen and is still valid (not expired).
     /// NOTE: internally used by the transaction pool.
     pub fn is_expiring_nonce_seen(&self, hash: B256, now: u64) -> Result<bool> {
-        let expiry = self.expiring_nonce_seen[hash].read()?;
+        let expiry = self.expiring_nonce_seen.at_uncached(&hash).read()?;
         Ok(expiry != 0 && expiry > now)
     }
 
@@ -136,32 +136,34 @@ impl NonceManager {
         }
 
         // 2. Replay check: reject if hash is already seen and not expired
-        let seen_expiry = self.expiring_nonce_seen[expiring_nonce_hash].read()?;
+        let mut seen = self.expiring_nonce_seen.at_uncached(&expiring_nonce_hash);
+        let seen_expiry = seen.read()?;
         if seen_expiry != 0 && seen_expiry > now {
             return Err(NonceError::expiring_nonce_replay().into());
         }
 
         // 3. Get current pointer (bounded in [0, CAPACITY)) and use directly as index
         let ptr = self.expiring_nonce_ring_ptr.read()?;
-        let idx = ptr;
-        let old_hash = self.expiring_nonce_ring[idx].read()?;
+        let mut ring_entry = self.expiring_nonce_ring.at_uncached(&ptr);
+        let old_hash = ring_entry.read()?;
 
         // 4. If there's an existing entry, check if it's expired (can be evicted)
         // Safety check: buffer is sized so entries should always be expired, but verify
         // in case TPS exceeds expectations.
         if old_hash != B256::ZERO {
-            let old_expiry = self.expiring_nonce_seen[old_hash].read()?;
+            let mut old_seen = self.expiring_nonce_seen.at_uncached(&old_hash);
+            let old_expiry = old_seen.read()?;
             if old_expiry != 0 && old_expiry > now {
                 // Entry is still valid, cannot evict - buffer is full
                 return Err(NonceError::expiring_nonce_set_full().into());
             }
             // Clear the old entry from seen set
-            self.expiring_nonce_seen[old_hash].write(0)?;
+            old_seen.write(0)?;
         }
 
         // 5. Insert new entry
-        self.expiring_nonce_ring[idx].write(expiring_nonce_hash)?;
-        self.expiring_nonce_seen[expiring_nonce_hash].write(valid_before)?;
+        ring_entry.write(expiring_nonce_hash)?;
+        seen.write(valid_before)?;
 
         // 6. Advance pointer (wraps at CAPACITY, not u32::MAX)
         let next = if ptr + 1 >= capacity { 0 } else { ptr + 1 };
@@ -457,6 +459,55 @@ mod tests {
     #[test]
     fn test_ring_buffer_pointer_wraps_at_t11_capacity() -> eyre::Result<()> {
         assert_ring_buffer_pointer_wraps_at_capacity(TempoHardfork::T11)
+    }
+
+    #[test]
+    fn test_expiring_nonce_eviction_at_expiry() -> eyre::Result<()> {
+        for spec in [TempoHardfork::T10, TempoHardfork::T11] {
+            let mut storage = HashMapStorageProvider::new_with_spec(1, spec);
+            let now = 1000;
+            let expiry = now + spec.expiring_nonce_max_expiry_secs();
+            let last = spec.expiring_nonce_set_capacity() - 1;
+            let old_hash = B256::repeat_byte(0xaa);
+            let new_hash = B256::repeat_byte(0xbb);
+            storage.set_timestamp(U256::from(now));
+
+            StorageCtx::enter(&mut storage, || -> eyre::Result<()> {
+                let mut mgr = NonceManager::new();
+                mgr.expiring_nonce_ring_ptr.write(last)?;
+                mgr.expiring_nonce_ring[last].write(old_hash)?;
+                mgr.expiring_nonce_seen[old_hash].write(expiry)?;
+
+                assert_eq!(
+                    mgr.check_and_mark_expiring_nonce(new_hash, expiry)
+                        .unwrap_err(),
+                    TempoPrecompileError::NonceError(NonceError::expiring_nonce_set_full())
+                );
+                assert_eq!(mgr.expiring_nonce_ring_ptr.read()?, last);
+                assert_eq!(mgr.expiring_nonce_ring[last].read()?, old_hash);
+                assert_eq!(mgr.expiring_nonce_seen[old_hash].read()?, expiry);
+                assert_eq!(mgr.expiring_nonce_seen[new_hash].read()?, 0);
+                Ok(())
+            })?;
+
+            storage.set_timestamp(U256::from(expiry));
+            StorageCtx::enter(&mut storage, || -> eyre::Result<()> {
+                let mut mgr = NonceManager::new();
+                let new_expiry = expiry + spec.expiring_nonce_max_expiry_secs();
+                mgr.check_and_mark_expiring_nonce(new_hash, new_expiry)?;
+                assert_eq!(mgr.expiring_nonce_ring_ptr.read()?, 0);
+                assert_eq!(mgr.expiring_nonce_ring[last].read()?, new_hash);
+                assert_eq!(mgr.expiring_nonce_seen[old_hash].read()?, 0);
+                assert_eq!(mgr.expiring_nonce_seen[new_hash].read()?, new_expiry);
+                assert_eq!(
+                    mgr.check_and_mark_expiring_nonce(new_hash, new_expiry)
+                        .unwrap_err(),
+                    TempoPrecompileError::NonceError(NonceError::expiring_nonce_replay())
+                );
+                Ok(())
+            })?;
+        }
+        Ok(())
     }
 
     #[test]
