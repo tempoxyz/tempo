@@ -153,28 +153,6 @@ impl Block {
         Ok(block)
     }
 
-    /// Wraps a locally built execution block without recomputing its body commitments.
-    ///
-    /// The payload builder assembles the body and computes its transaction root before returning
-    /// the block. Only use this for its output; network and archive reads must use the validating
-    /// constructor. The separately supplied BAL still needs to match the header commitment.
-    pub(crate) fn try_from_built_execution_block(
-        execution_block: SealedOrRecoveredBlock<tempo_primitives::Block>,
-        block_access_list: Option<Bytes>,
-        execution_block_encoded: EncodedBlock,
-    ) -> Result<Self, Error> {
-        validate_block_access_list_hash(
-            execution_block.block_access_list_hash(),
-            block_access_list.as_ref(),
-        )?;
-
-        Ok(Self::from_execution_block_unchecked_with_encoded_cache(
-            execution_block,
-            block_access_list,
-            execution_block_encoded,
-        ))
-    }
-
     /// Creates a block without checking that BAL bytes match the header.
     ///
     /// This is for reconstructing blocks from persisted EL data that does not include
@@ -194,7 +172,10 @@ impl Block {
         )
     }
 
-    fn from_execution_block_unchecked_with_encoded_cache<T>(
+    /// Wraps a trusted execution block and its encoded bytes without validating body or BAL
+    /// commitments. Locally built payloads already contain the matching body, BAL, and header;
+    /// network and archive reads must use the validating constructor instead.
+    pub(crate) fn from_execution_block_unchecked_with_encoded_cache<T>(
         execution_block: T,
         block_access_list: Option<Bytes>,
         execution_block_encoded: EncodedBlock,
@@ -481,7 +462,9 @@ mod tests {
     use reth_node_core::primitives::SealedBlock;
     use tempo_primitives::{Block as TempoBlock, TempoHeader};
 
-    use super::{Block, BlockAccessListError, Error};
+    #[cfg(feature = "bal")]
+    use super::BlockAccessListError;
+    use super::{Block, Error};
 
     fn execution_block_with_block_access_list_hash(
         block_access_list_hash: B256,
@@ -624,54 +607,40 @@ mod tests {
         let execution_block = SealedBlock::seal_slow(TempoBlock::default());
         let expected = Block::try_from_execution_block(execution_block.clone(), None).unwrap();
         let encoded = expected.encode();
-        let block = Block::try_from_built_execution_block(
-            execution_block.into(),
+        let block = Block::from_execution_block_unchecked_with_encoded_cache(
+            execution_block,
             None,
             tempo_payload_types::EncodedBlock::new(encoded.clone().into()),
-        )
-        .unwrap();
+        );
 
         assert_eq!(block, expected);
         assert_eq!(block.encode(), encoded);
         assert_eq!(Block::read_cfg(&mut encoded.as_ref(), &()).unwrap(), block);
     }
 
+    #[cfg(feature = "bal")]
     #[test]
-    fn built_execution_block_still_checks_block_access_list() {
+    fn built_execution_block_preserves_bal_encoding() {
         let block_access_list = bytes!("0xc0");
-        let execution_block = execution_block_with_block_access_list_hash(B256::ZERO);
-        let err = Block::try_from_built_execution_block(
-            execution_block.clone().into(),
-            None,
-            Default::default(),
-        )
-        .unwrap_err();
-        assert!(matches!(
-            err,
-            Error::BlockAccessList(BlockAccessListError::Missing { .. })
-        ));
-
-        let err = Block::try_from_built_execution_block(
-            execution_block.into(),
+        let execution_block =
+            execution_block_with_block_access_list_hash(keccak256(block_access_list.as_ref()));
+        let expected = Block::try_from_execution_block(
+            execution_block.clone(),
             Some(block_access_list.clone()),
-            Default::default(),
         )
-        .unwrap_err();
-        assert!(matches!(
-            err,
-            Error::BlockAccessList(BlockAccessListError::HashMismatch { .. })
-        ));
-
-        let err = Block::try_from_built_execution_block(
-            SealedBlock::seal_slow(TempoBlock::default()).into(),
+        .unwrap();
+        let mut encoded_execution_block = Vec::new();
+        alloy_rlp::Encodable::encode(&execution_block, &mut encoded_execution_block);
+        let block = Block::from_execution_block_unchecked_with_encoded_cache(
+            execution_block,
             Some(block_access_list),
-            Default::default(),
-        )
-        .unwrap_err();
-        assert!(matches!(
-            err,
-            Error::BlockAccessList(BlockAccessListError::Unexpected)
-        ));
+            tempo_payload_types::EncodedBlock::new(encoded_execution_block.into()),
+        );
+        let encoded = block.encode();
+
+        assert_eq!(block, expected);
+        assert_eq!(encoded, expected.encode());
+        assert_eq!(Block::read_cfg(&mut encoded.as_ref(), &()).unwrap(), block);
     }
 
     #[test]

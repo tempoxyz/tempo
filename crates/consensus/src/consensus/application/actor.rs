@@ -616,12 +616,11 @@ impl Inner<Init> {
             .as_ref()
             .map_or(0, |block_access_list| block_access_list.encode_size());
         let proposal_construction_start = Instant::now();
-        let proposal = Block::try_from_built_execution_block(
+        let proposal = Block::from_execution_block_unchecked_with_encoded_cache(
             block,
             block_access_list,
             execution_block_encoded,
-        )
-        .wrap_err("payload builder produced an invalid block")?;
+        );
         let proposal_construction_elapsed = proposal_construction_start.elapsed();
         let block_size_estimate_bytes =
             execution_block_rlp_size_estimate_bytes + block_access_list_size_bytes;
