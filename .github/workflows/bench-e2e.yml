@@ -130,7 +130,7 @@ on:
         required: true
         default: true
       bench-args:
-        description: Extra bench args.
+        description: Extra generator args, or --max-pending=N to cap outstanding sender transactions (requires a compatible txgen-ref).
         type: string
         required: false
         default: ""

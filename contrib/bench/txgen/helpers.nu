@@ -455,7 +455,38 @@ def txgen-parse-bench-args [bench_args: string] {
 }
 
 def txgen-validate-bench-args [bench_args: string] {
-    txgen-parse-bench-args $bench_args | ignore
+    txgen-split-bench-args $bench_args | ignore
+}
+
+# Most benchmark extras configure generation. Pending capacity belongs to the
+# sender, so route it there while retaining the existing workflow input.
+def txgen-split-bench-args [bench_args: string] {
+    let args = (txgen-parse-bench-args $bench_args)
+    mut generate = []
+    mut send = []
+    mut index = 0
+    while $index < ($args | length) {
+        let arg = ($args | get $index)
+        if $arg == "--max-pending" or ($arg | str starts-with "--max-pending=") {
+            let value = if $arg == "--max-pending" {
+                $index = $index + 1
+                $args | get -o $index | default ""
+            } else {
+                $arg | str replace "--max-pending=" ""
+            }
+            if not ($value =~ '^[1-9][0-9]*$') {
+                error make { msg: "--max-pending requires a positive integer" }
+            }
+            if not ($send | is-empty) {
+                error make { msg: "--max-pending may only be specified once" }
+            }
+            $send = ["--max-pending" $value]
+        } else {
+            $generate = ($generate | append $arg)
+        }
+        $index = $index + 1
+    }
+    { generate: $generate, send: $send }
 }
 
 # Return the spec text with `include` entries expanded, so content checks see
@@ -842,10 +873,11 @@ def txgen-run-preset-pipeline [
         | append (if $scenario != "" { ["-m" $"scenario=($scenario)"] } else { [] })
         | append (if $pr_number != "" { ["-m" $"pr_number=($pr_number)"] } else { [] })
         | append (if $initial_db_size_bytes > 0 { ["-m" $"initial_db_size_bytes=($initial_db_size_bytes)"] } else { [] })
-    let bench_cmd = $bench_base_cmd | append $report_args | append $metadata_args
+    let extra_args = (txgen-split-bench-args $bench_args)
+    let bench_cmd = $bench_base_cmd | append $extra_args.send | append $report_args | append $metadata_args
 
     let bench_env_export = if $bench_env != "" { $"export ($bench_env) && " } else { "" }
-    let txgen_extra_args = (txgen-parse-bench-args $bench_args)
+    let txgen_extra_args = $extra_args.generate
     let use_two_phase_setup = $is_vault or (txgen-spec-has-keychain-setup $spec_path)
     let txgen_cmd_str = (txgen-shell-join ($txgen_cmd | append $txgen_extra_args))
     let bench_cmd = if $use_two_phase_setup { $bench_cmd | append "--skip-setup" } else { $bench_cmd }
