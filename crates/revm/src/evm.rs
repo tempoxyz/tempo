@@ -566,6 +566,31 @@ mod tests {
         evm
     }
 
+    /// Create an EVM at a specific Tempo hardfork and timestamp with a funded account.
+    fn create_funded_evm_at_spec_with_timestamp(
+        address: Address,
+        timestamp: u64,
+        spec: TempoHardfork,
+    ) -> TempoEvm<CacheDB<EmptyDB>, ()> {
+        let db = CacheDB::new(EmptyDB::new());
+        let mut cfg = CfgEnv::<TempoHardfork>::default();
+        cfg.spec = spec;
+        cfg.gas_params = tempo_gas_params_with_amsterdam(spec, false);
+
+        let mut block = TempoBlockEnv::default();
+        block.inner.timestamp = U256::from(timestamp);
+
+        let ctx = Context::mainnet()
+            .with_db(db)
+            .with_block(block)
+            .with_cfg(cfg)
+            .with_tx(Default::default());
+
+        let mut evm = TempoEvm::new(ctx, ());
+        fund_account(&mut evm, address);
+        evm
+    }
+
     /// Create an EVM with a specific timestamp and a funded account.
     fn create_funded_evm_with_timestamp(
         address: Address,
@@ -3787,6 +3812,58 @@ mod tests {
             0,
             "expiring nonce bookkeeping must not accrue storage credits"
         );
+
+        Ok(())
+    }
+
+    /// TIP-1106: expiring nonces become opaque discriminators at T12.
+    #[test]
+    fn test_expiring_nonce_discriminator_activation() -> eyre::Result<()> {
+        use tempo_primitives::transaction::TEMPO_EXPIRING_NONCE_KEY;
+
+        let key_pair = P256KeyPair::random();
+        let caller = key_pair.address;
+        let timestamp = 1_000u64;
+
+        let build_env = |nonce| -> eyre::Result<_> {
+            let tx = TxBuilder::new()
+                .call_identity(&[])
+                .nonce_key(TEMPO_EXPIRING_NONCE_KEY)
+                .nonce(nonce)
+                .valid_before(Some(timestamp + 30))
+                .gas_limit(500_000)
+                .build();
+            let signed_tx = key_pair.sign_tx(tx)?;
+            Ok(TempoTxEnv::from_recovered_tx(&signed_tx, caller))
+        };
+
+        let mut pre_activation =
+            create_funded_evm_at_spec_with_timestamp(caller, timestamp, TempoHardfork::T11);
+        assert!(
+            pre_activation.transact_commit(build_env(1)?).is_err(),
+            "T11 must reject a non-zero expiring nonce"
+        );
+
+        for nonce in [0, 1, u64::MAX] {
+            let mut evm =
+                create_funded_evm_at_spec_with_timestamp(caller, timestamp, TempoHardfork::T12);
+            let result = evm.transact_commit(build_env(nonce)?)?;
+            assert!(
+                result.is_success(),
+                "T12 must accept expiring nonce discriminator {nonce}"
+            );
+            assert_eq!(
+                evm.ctx
+                    .db()
+                    .basic_ref(caller)
+                    .ok()
+                    .flatten()
+                    .map(|account| account.nonce)
+                    .unwrap_or_default(),
+                0,
+                "expiring nonce discriminator must not mutate the protocol nonce"
+            );
+        }
 
         Ok(())
     }
