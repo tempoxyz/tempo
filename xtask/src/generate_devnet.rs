@@ -47,6 +47,7 @@ impl GenerateDevnet {
         } = self;
 
         let seed = genesis_args.seed;
+        let fee_recipients = genesis_args.validator_onchain_addresses()?;
         let (genesis, consensus_config) = genesis_args
             .generate_genesis()
             .await
@@ -95,7 +96,7 @@ impl GenerateDevnet {
         let devmode = consensus_config.validators.len() == 1;
 
         let mut all_configs = vec![];
-        for validator in consensus_config.validators {
+        for (idx, validator) in consensus_config.validators.into_iter().enumerate() {
             let (execution_p2p_signing_key, execution_p2p_identity) = {
                 let (sk, pk) = SECP256K1.generate_keypair(&mut rng);
                 (sk, pk2id(&pk))
@@ -121,8 +122,7 @@ impl GenerateDevnet {
                     consensus_on_disk_signing_key: signing_key_to_hex(&validator.signing_key),
                     consensus_on_disk_signing_share: validator.signing_share.to_string(),
 
-                    // FIXME(janis): this should not be zero
-                    consensus_fee_recipient: Address::ZERO,
+                    consensus_fee_recipient: fee_recipients[idx],
 
                     consensus_p2p_port,
                     consensus_metrics_port,
@@ -183,4 +183,67 @@ fn signing_key_to_hex(key: &tempo_consensus_config::SigningKey) -> String {
     key.to_writer_unencrypted(&mut buf)
         .expect("writing to Vec cannot fail");
     String::from_utf8(buf).expect("hex output is valid utf-8")
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use alloy_primitives::address;
+    use clap::Parser as _;
+
+    #[tokio::test]
+    async fn generated_configs_use_validator_fee_recipients() {
+        let default_recipients = [
+            address!("70997970c51812dc3a010c7d01b50e0d17dc79c8"),
+            address!("3c44cdddb6a900fa2b585dd299e03d12fa4293bc"),
+            address!("90f79bf6eb2c4f870365e785982e1f101e93b906"),
+            address!("15d34aaf54267db7d7c367839aaf71a00a2c6a65"),
+        ];
+        let custom_recipients = [0x11, 0x22, 0x33, 0x44].map(Address::repeat_byte);
+
+        for (custom, expected) in [(false, default_recipients), (true, custom_recipients)] {
+            let output = tempfile::tempdir().unwrap();
+            let addresses = expected
+                .iter()
+                .map(ToString::to_string)
+                .collect::<Vec<_>>()
+                .join(",");
+            let mut args = vec![
+                "generate-devnet",
+                "--output",
+                output.path().to_str().unwrap(),
+                "--image-tag",
+                "test",
+                "--genesis-url",
+                "http://localhost/genesis.json",
+                "--accounts",
+                "5",
+                "--validators",
+                "127.0.0.1:8000,127.0.0.1:8010,127.0.0.1:8020,127.0.0.1:8030",
+                "--seed",
+                "1",
+                "--no-extra-tokens",
+                "--no-pairwise-liquidity",
+            ];
+            if custom {
+                args.extend(["--validator-addresses", &addresses]);
+            }
+            GenerateDevnet::try_parse_from(args)
+                .unwrap()
+                .run()
+                .await
+                .unwrap();
+
+            for (port, recipient) in [8000, 8010, 8020, 8030].into_iter().zip(expected) {
+                let config: serde_json::Value = serde_json::from_slice(
+                    &std::fs::read(output.path().join(format!("127.0.0.1:{port}.json"))).unwrap(),
+                )
+                .unwrap();
+                assert_eq!(
+                    config["consensus_fee_recipient"],
+                    serde_json::json!(recipient)
+                );
+            }
+        }
+    }
 }

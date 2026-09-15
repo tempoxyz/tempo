@@ -14227,6 +14227,7 @@ dependencies = [
  "tempo-primitives",
  "tempo-revm",
  "tempo-validator-config",
+ "tempfile",
  "tokio",
 ]
 
