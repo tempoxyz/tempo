@@ -280,7 +280,8 @@ impl<const BASE_SPEC_ID: u32> EvmConfig<TempoEvmTypes> for TempoConfig<BASE_SPEC
         &tempo_opcode_config::<BASE_SPEC_ID>();
 }
 
-const fn tempo_opcode_config<const BASE_SPEC_ID: u32>() -> OpcodeConfig<TempoEvmTypes> {
+/// Returns Tempo's opcode configuration over an inherited Ethereum specification.
+pub const fn tempo_opcode_config<const BASE_SPEC_ID: u32>() -> OpcodeConfig<TempoEvmTypes> {
     let mut config = OpcodeConfig::base::<TempoConfig<BASE_SPEC_ID>>();
     config.set_instruction::<crate::instructions::millis_timestamp>(0x4f, 0);
     config.set_instruction::<crate::instructions::sstore>(evm2::interpreter::op::SSTORE, 0);

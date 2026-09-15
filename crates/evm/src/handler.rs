@@ -5,7 +5,7 @@ mod config;
 pub use self::config::{
     FeeTokenResolver, ProtocolFeeManager, TempoBlockEnv, TempoBlockExt, TempoConfig,
     TempoConfigSelector, TempoEvmExt, TempoEvmTypes, TempoFeeManager, TempoTxResultExt,
-    build_tempo_evm, tempo_execution_config, tempo_tx_registry,
+    build_tempo_evm, tempo_execution_config, tempo_opcode_config, tempo_tx_registry,
 };
 use self::config::{TempoFeeContext, TempoHandlerHooks, invalid};
 use crate::{FeePaymentError, TempoAaTx, TempoInvalidTransaction, TempoTxEnv};
