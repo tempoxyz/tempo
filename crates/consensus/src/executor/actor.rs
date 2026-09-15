@@ -1423,14 +1423,27 @@ async fn run_payload_job(
         mut response,
     }: StartPayloadJob,
 ) -> Option<Arc<Block>> {
+    let resolve_and_admit = async {
+        match execution_node.resolve_payload(payload_id).await {
+            Some(Ok(payload)) => {
+                // A builder result is not admission: its asynchronous insertion may still be
+                // queued or sleeping. Match newPayload by waiting before publishing the proposal.
+                Some(
+                    execution_node
+                        .admit_payload(payload.clone())
+                        .await
+                        .map(|()| payload),
+                )
+            }
+            other => other,
+        }
+    };
     let payload = select! {
-        payload = execution_node
-            .resolve_payload(payload_id)
-        => payload,
+        payload = resolve_and_admit => payload,
 
         // Drops the in-flight payload-resolution, killing payload build.
         () = response.cancellation() => {
-            info!("payload subscriber went away before the payload was resolved; killing the payload build");
+            info!("payload subscriber went away before the payload was admitted; abandoning the proposal");
             return None;
         }
     };

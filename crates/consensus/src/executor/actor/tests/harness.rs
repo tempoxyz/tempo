@@ -266,6 +266,8 @@ struct FakeExecutionInner {
     canceled_payload_jobs: Mutex<Vec<PayloadId>>,
     /// Payloads to auto-deliver to the next registered build jobs.
     scripted_builds: Mutex<VecDeque<TempoBuiltPayload>>,
+    admission_gate: Mutex<Option<oneshot::Receiver<eyre::Result<()>>>>,
+    admission_count: AtomicU64,
     /// Blocks servable through `block_by_digest`.
     bodies: Mutex<HashMap<B256, Block>>,
 }
@@ -324,12 +326,24 @@ impl FakeExecution {
                 payload_receivers: Mutex::new(HashMap::new()),
                 canceled_payload_jobs: Mutex::new(Vec::new()),
                 scripted_builds: Mutex::new(VecDeque::new()),
+                admission_gate: Mutex::new(None),
+                admission_count: AtomicU64::new(0),
                 bodies: Mutex::new(HashMap::new()),
             }),
         }
     }
 
     // ---- state seeding ----
+
+    pub(super) fn gate_next_admission(&self) -> oneshot::Sender<eyre::Result<()>> {
+        let (tx, rx) = oneshot::channel();
+        *self.inner.admission_gate.lock() = Some(rx);
+        tx
+    }
+
+    pub(super) fn admission_count(&self) -> u64 {
+        self.inner.admission_count.load(Ordering::Relaxed)
+    }
 
     /// Seeds `block` as known and canonical, moving the head onto it.
     pub(super) fn seed_canonical_block(&self, block: &Block) {
@@ -766,6 +780,22 @@ impl ExecutionLayer for FakeExecution {
                     Some(result)
                 }
                 None => None,
+            }
+        }
+    }
+
+    fn admit_payload(
+        &self,
+        _payload: TempoBuiltPayload,
+    ) -> impl Future<Output = eyre::Result<()>> + Send + 'static {
+        self.inner.admission_count.fetch_add(1, Ordering::Relaxed);
+        let gate = self.inner.admission_gate.lock().take();
+        async move {
+            if let Some(gate) = gate {
+                gate.await
+                    .map_err(|_| eyre::eyre!("admission gate dropped"))?
+            } else {
+                Ok(())
             }
         }
     }

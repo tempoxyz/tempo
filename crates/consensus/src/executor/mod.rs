@@ -10,7 +10,7 @@ use commonware_consensus::{
 use commonware_cryptography::ed25519::PublicKey;
 use commonware_runtime::{Clock, Metrics, Spawner};
 use reth_ethereum::{chainspec::EthChainSpec as _, rpc::eth::primitives::BlockNumHash};
-use reth_node_builder::PayloadKind;
+use reth_node_builder::{BuiltPayload as _, PayloadKind};
 use reth_provider::{BlockHashReader as _, BlockReader as _, BlockSource};
 use tempo_node::{TempoExecutionData, TempoFullNode};
 use tempo_payload_types::{TempoBuiltPayload, TempoPayloadAttributes};
@@ -106,6 +106,12 @@ pub(crate) trait ExecutionLayer: Clone + Send + Sync + 'static {
         &self,
         payload_id: PayloadId,
     ) -> impl Future<Output = Option<eyre::Result<TempoBuiltPayload>>> + Send + 'static;
+
+    /// Wait for local insertion and persistence pacing, without executing the built block again.
+    fn admit_payload(
+        &self,
+        payload: TempoBuiltPayload,
+    ) -> impl Future<Output = eyre::Result<()>> + Send + 'static;
 }
 
 /// The narrow marshal-actor capability used by the executor actor.
@@ -131,6 +137,23 @@ pub(crate) trait Marshal: Clone + Send + Sync + 'static {
 }
 
 impl ExecutionLayer for Arc<TempoFullNode> {
+    fn admit_payload(
+        &self,
+        payload: TempoBuiltPayload,
+    ) -> impl Future<Output = eyre::Result<()>> + Send + 'static {
+        let engine = self.add_ons_handle.beacon_engine_handle.clone();
+        async move {
+            let executed = payload.executed_block().ok_or_else(|| {
+                eyre::eyre!("built payload is missing its local execution result")
+            })?;
+            eyre::ensure!(
+                engine.insert_executed_block(executed).await?,
+                "built payload admission failed"
+            );
+            Ok(())
+        }
+    }
+
     fn current_forkchoice_state(&self) -> eyre::Result<ForkchoiceState> {
         let state = self.provider.canonical_in_memory_state();
         let head_block_hash = state.get_canonical_head().hash();

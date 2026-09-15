@@ -16,6 +16,59 @@ use super::harness::{
 use crate::consensus::Digest;
 
 #[test_traced]
+fn proposal_waits_for_local_admission() {
+    deterministic::Runner::default().start(|context| async move {
+        let h = Harness::start_at_genesis(&context);
+        let gate = h.execution.gate_next_admission();
+        h.execution
+            .script_built_payload(built_payload(&make_block(1, 1, GENESIS)));
+        let mut build = h.build(round(1), GENESIS);
+        h.wait_until(|| h.execution.admission_count() == 1).await;
+        assert!(matches!(
+            build.try_recv(),
+            Err(tokio::sync::oneshot::error::TryRecvError::Empty)
+        ));
+        gate.send(Ok(())).unwrap();
+        assert!(build.await.is_ok());
+        assert!(
+            h.execution.new_payloads().is_empty(),
+            "built blocks must not be re-executed"
+        );
+    });
+}
+
+#[test_traced]
+fn failed_local_admission_does_not_publish_a_proposal() {
+    deterministic::Runner::default().start(|context| async move {
+        let h = Harness::start_at_genesis(&context);
+        let gate = h.execution.gate_next_admission();
+        h.execution
+            .script_built_payload(built_payload(&make_block(1, 1, GENESIS)));
+        let build = h.build(round(1), GENESIS);
+        h.wait_until(|| h.execution.admission_count() == 1).await;
+        gate.send(Err(eyre::eyre!("admission rejected"))).unwrap();
+        assert!(build.await.is_err());
+    });
+}
+
+#[test_traced]
+fn cancelled_local_admission_does_not_publish_a_proposal() {
+    deterministic::Runner::default().start(|context| async move {
+        let h = Harness::start_at_genesis(&context);
+        let gate = h.execution.gate_next_admission();
+        let proposal = make_block(1, 1, GENESIS);
+        let digest = proposal.digest();
+        h.execution.script_built_payload(built_payload(&proposal));
+        let build = h.build(round(1), GENESIS);
+        h.wait_until(|| h.execution.admission_count() == 1).await;
+        drop(build);
+        h.wait_until(|| gate.is_closed()).await;
+        h.report_pending_head(2, 1, digest);
+        h.wait_until(|| !h.marshal.subscribe_log().is_empty()).await;
+    });
+}
+
+#[test_traced]
 fn building_on_an_unfinalized_head_leaves_forkchoice_unchanged() {
     deterministic::Runner::default().start(|context| async move {
         let h = Harness::start_at_genesis(&context);
