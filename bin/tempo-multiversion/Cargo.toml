@@ -1,0 +1,24 @@
+[package]
+name = "tempo-multiversion-cli"
+description = "Experimental packer and launcher for Tempo hardfork executables"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+publish = false
+
+[[bin]]
+name = "tempo-multiversion"
+path = "src/main.rs"
+
+[lints]
+workspace = true
+
+[dependencies]
+clap.workspace = true
+tempo-hardfork.workspace = true
+tempo-multiversion = { path = "../../crates/multiversion" }
+tempfile.workspace = true
+
+[target.'cfg(target_os = "linux")'.dependencies]
+rustix = { version = "1.1.4", features = ["fs"] }

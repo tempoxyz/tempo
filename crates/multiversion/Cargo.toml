@@ -1,0 +1,15 @@
+[package]
+name = "tempo-multiversion"
+description = "Format and verification for bundles of Tempo hardfork executables"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+publish = false
+
+[lints]
+workspace = true
+
+[dependencies]
+sha2.workspace = true
+tempo-hardfork.workspace = true
