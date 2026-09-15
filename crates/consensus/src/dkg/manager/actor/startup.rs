@@ -61,12 +61,6 @@ pub(super) fn verify_finalized_tip(
         .containing(tip.height())
         .expect("epoch strategy covers all heights")
         .epoch();
-    ensure!(
-        tip.certificate().epoch() == epoch,
-        "finalized tip certificate epoch `{}` does not match height `{}` in epoch `{epoch}`",
-        tip.certificate().epoch(),
-        tip.height(),
-    );
 
     if epoch.get() < trusted.from_epoch {
         // A rotation's outgoing boundary certificate can precede the latest
