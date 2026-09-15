@@ -974,7 +974,11 @@ fn encode_state_overlay(db: &CacheDB<EmptyDB>, base: &StateInput) -> StateInput 
         };
 
         for (slot, value) in &account.storage {
-            view.storage.insert(slot.to_be_bytes(), value.to_be_bytes());
+            if value.is_zero() {
+                view.storage.remove(&slot.to_be_bytes());
+            } else {
+                view.storage.insert(slot.to_be_bytes(), value.to_be_bytes());
+            }
         }
     }
 
@@ -1007,6 +1011,32 @@ mod tests {
     use alloy_eips::Encodable2718;
     use alloy_primitives::{Address, Bytes, Signature, TxKind, U256};
     use tempo_chainspec::hardfork::TempoHardforks;
+
+    #[test]
+    fn encode_state_overlay_removes_zero_cached_storage() {
+        let address = Address::repeat_byte(0x55);
+        let slot = U256::from(7);
+        let base = StateInput {
+            accounts: vec![AccountInput {
+                address: address_bytes(address),
+                balance: [0; 32],
+                nonce: 0,
+                code: Vec::new(),
+                storage: vec![StorageInput {
+                    slot: slot.to_be_bytes(),
+                    value: U256::from(9).to_be_bytes(),
+                }],
+            }],
+        };
+        let mut db = CacheDB::new(EmptyDB::default());
+        db.insert_account_info(address, AccountInfo::default());
+        db.insert_account_storage(address, slot, U256::ZERO)
+            .expect("zero storage should insert");
+
+        let materialized = encode_state_overlay(&db, &base);
+
+        assert!(materialized.accounts.is_empty());
+    }
 
     fn legacy_tx(nonce: u64, gas_price: u128) -> TempoTxEnvelope {
         let signed = Signed::new_unhashed(
