@@ -37,6 +37,37 @@ async fn wait_until<T: commonware_runtime::Clock>(context: &T, mut cond: impl Fn
 }
 
 #[test_traced]
+fn exits_when_mailbox_closes() {
+    deterministic::Runner::default().start(|mut context| async move {
+        let fixture = dkg_fixture(&mut context, Epoch::zero());
+        let provider = StubExecutionProvider::default();
+        provider.add_header(&make_block(0, Some(&fixture.outcome)));
+        let (actor, mailbox) = try_init(
+            context.child("driver"),
+            Config {
+                execution_provider: provider,
+                scheme_provider: SchemeProvider::new(),
+                network_identity: NetworkIdentity {
+                    from_epoch: 0,
+                    identity: *fixture.outcome.network_identity(),
+                },
+                last_finalized_height: Height::zero(),
+                marshal: StubMarshal::default(),
+                epoch_strategy: FixedEpocher::new(EPOCH_LENGTH),
+            },
+        )
+        .expect("driver should initialize");
+        let handle = actor.start();
+        drop(mailbox);
+
+        tokio::select! {
+            result = handle => result.expect("actor should exit without panicking"),
+            _ = context.sleep(Duration::from_secs(1)) => panic!("actor did not exit"),
+        }
+    });
+}
+
+#[test_traced]
 fn startup_uses_previous_execution_boundary() {
     deterministic::Runner::default().start(|mut context| async move {
         let strategy = FixedEpocher::new(EPOCH_LENGTH);

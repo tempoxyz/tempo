@@ -27,7 +27,7 @@ use commonware_utils::{Acknowledgement as _, acknowledgement::Exact};
 use eyre::{Report, WrapErr as _, ensure, eyre};
 use futures::{FutureExt as _, StreamExt as _, channel::mpsc, future::BoxFuture};
 use tempo_node::TempoExecutionData;
-use tracing::{Level, debug, error, instrument};
+use tracing::{Level, debug, error, error_span, instrument};
 
 use super::{
     Config, ExecutionEngine, FinalizedBlockProvider, Marshal, ingress::Message, target::Target,
@@ -110,7 +110,7 @@ where
 
     async fn run(mut self) {
         let mut heartbeat = false;
-        loop {
+        let reason = loop {
             self.start_execution_task(heartbeat);
             heartbeat = false;
 
@@ -132,13 +132,15 @@ where
                             let _: Result<_, _> = self.try_advance_floor().await;
                         }
                         ExecutionTaskResult::Fatal(error) => {
-                            error!(%error, "execution task failed");
-                            break;
+                            break error.wrap_err("execution task failed");
                         }
                     }
                 }
 
-                Some(message) = self.mailbox.next() => {
+                message = self.mailbox.next() => {
+                    let Some(message) = message else {
+                        break eyre::eyre!("mailbox closed");
+                    };
                     match message {
                         Message::Update(Update::Block(block, ack)) => {
                             self.block_queue.push_back(((*block).clone(), ack));
@@ -162,7 +164,11 @@ where
                     heartbeat = true;
                 }
             }
-        }
+        };
+
+        error_span!("shutdown").in_scope(
+            || error!(reason = %format_args!("{reason:#}"), "follow executor actor exited"),
+        );
     }
 
     fn should_send_forkchoice(&self) -> bool {

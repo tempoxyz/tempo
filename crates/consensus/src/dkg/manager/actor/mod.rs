@@ -218,10 +218,10 @@ where
             }
         };
 
-        tracing::warn_span!("dkg_actor").in_scope(|| {
+        tracing::warn_span!("shutdown").in_scope(|| {
             warn!(
                 %reason,
-                "actor exited",
+                "DKG actor exited",
             );
         });
     }

@@ -27,7 +27,7 @@ use tempo_dkg_onchain_artifacts::OnchainDkgOutcome;
 use tempo_node::TempoFullNode;
 use tempo_precompiles::validator_config_v2::ValidatorConfigV2;
 use tempo_primitives::TempoHeader;
-use tracing::{Span, debug, error, info_span, instrument, warn};
+use tracing::{Span, debug, error, error_span, instrument, warn};
 
 use crate::{
     consensus::Digest,
@@ -125,7 +125,7 @@ where
                 }
             )
         };
-        info_span!("peer_manager").in_scope(|| error!(%reason,"agent shutting down"));
+        error_span!("shutdown").in_scope(|| error!(%reason, "peer manager actor exited"));
     }
     pub(crate) fn start(mut self) -> commonware_runtime::Handle<()> {
         spawn_cell!(self.context, self.run())
