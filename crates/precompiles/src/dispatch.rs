@@ -89,13 +89,13 @@ pub mod typed {
 /// Dispatches a parameterless view call, encoding the return via `T`.
 #[inline]
 pub fn metadata<T: SolCall>(f: impl FnOnce() -> Result<T::Return>) -> PrecompileResult {
-    typed::metadata::<T, error::TempoPrecompileError>(f)
+    typed::metadata::<T, crate::error::TempoPrecompileError>(f)
 }
 
 /// Dispatches a read-only call with decoded arguments, encoding the return via `T`.
 #[inline]
 pub fn view<T: SolCall>(call: T, f: impl FnOnce(T) -> Result<T::Return>) -> PrecompileResult {
-    typed::view::<T, error::TempoPrecompileError>(call, f)
+    typed::view::<T, crate::error::TempoPrecompileError>(call, f)
 }
 
 /// Dispatches a state-mutating call that returns ABI-encoded data.
@@ -107,7 +107,7 @@ pub fn mutate<T: SolCall>(
     sender: Address,
     f: impl FnOnce(Address, T) -> Result<T::Return>,
 ) -> PrecompileResult {
-    typed::mutate::<T, error::TempoPrecompileError>(call, sender, f)
+    typed::mutate::<T, crate::error::TempoPrecompileError>(call, sender, f)
 }
 
 /// Dispatches a state-mutating call that returns no data (e.g. `approve`, `transfer`).
@@ -119,7 +119,7 @@ pub fn mutate_void<T: SolCall>(
     sender: Address,
     f: impl FnOnce(Address, T) -> Result<()>,
 ) -> PrecompileResult {
-    typed::mutate_void::<T, error::TempoPrecompileError>(call, sender, f)
+    typed::mutate_void::<T, crate::error::TempoPrecompileError>(call, sender, f)
 }
 
 /// Sets TIP-1060 storage creation mode to Preserve for the given storage-credit owner.
@@ -459,7 +459,7 @@ mod tests {
                 &calldata,
                 |call| match call {
                     ITestMemoryDispatch::ITestMemoryDispatchCalls {
-                        setValues(_) => Ok(evm2::evm::precompile::PrecompileOutput::new(Bytes::new())),
+                        setValues(_) => Ok(evm2::precompile::PrecompileOutput::new(Bytes::new())),
                     }
                 }
             )

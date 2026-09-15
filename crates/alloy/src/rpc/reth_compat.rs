@@ -1,7 +1,7 @@
 use crate::rpc::{TempoHeaderResponse, TempoTransactionRequest};
 use alloy_consensus::{EthereumTxEnvelope, TxEip4844, error::ValueError, transaction::Recovered};
 use alloy_network::{NetworkTransactionBuilder, TxSigner};
-use alloy_primitives::{Address, B256, Bytes, Signature};
+use alloy_primitives::{Address, B256, Bytes, Signature, U256};
 use reth_primitives_traits::SealedHeader;
 use reth_rpc_convert::{
     FromConsensusHeader, SignTxRequestError, SignableTxRequest, TryIntoSimTx, TryIntoTxEnv,
@@ -136,18 +136,12 @@ impl TryIntoTxEnv<Recovered<TempoTxEnv>, TempoEvmEnv> for TempoTransactionReques
     }
 }
 
-/// Creates a mock AA signature for gas estimation based on key type hints
-///
-/// - `key_type`: The primitive signature type (secp256k1, P256, WebAuthn)
-/// - `key_data`: Type-specific data (e.g., WebAuthn size)
-/// - `key_id`: If Some, wraps the signature in a Keychain wrapper (+3,000 gas for key validation)
-/// - `caller_addr`: The transaction caller address (used as root key address for Keychain)
-/// - `is_t1c`: Whether T1C is active — determines keychain signature version (V1 pre-T1C, V2 post-T1C)
+/// Creates a mock AA signature for gas estimation based on key type hints.
 fn create_mock_tempo_sig(
     key_type: &SignatureType,
     key_data: Option<&Bytes>,
     key_id: Option<Address>,
-    caller_addr: alloy_primitives::Address,
+    caller_addr: Address,
     is_t1c: bool,
 ) -> TempoSignature {
     use tempo_primitives::transaction::tt_signature::{KeychainSignature, TempoSignature};
@@ -155,7 +149,6 @@ fn create_mock_tempo_sig(
     let inner_sig = create_mock_primitive_signature(key_type, key_data.cloned());
 
     if key_id.is_some() {
-        // For Keychain signatures, the root_key_address is the caller (account owner).
         let keychain_sig = if is_t1c {
             KeychainSignature::new(caller_addr, inner_sig)
         } else {
@@ -167,7 +160,7 @@ fn create_mock_tempo_sig(
     }
 }
 
-/// Creates a mock primitive signature for gas estimation
+/// Creates a mock primitive signature for gas estimation.
 fn create_mock_primitive_signature(
     sig_type: &SignatureType,
     key_data: Option<Bytes>,
@@ -178,61 +171,40 @@ fn create_mock_primitive_signature(
 
     match sig_type {
         SignatureType::Secp256k1 => {
-            // Create a dummy secp256k1 signature (65 bytes)
-            PrimitiveSignature::Secp256k1(Signature::new(
-                alloy_primitives::U256::ZERO,
-                alloy_primitives::U256::ZERO,
-                false,
-            ))
+            PrimitiveSignature::Secp256k1(Signature::new(U256::ZERO, U256::ZERO, false))
         }
-        SignatureType::P256 => {
-            // Create a dummy P256 signature
-            PrimitiveSignature::P256(P256SignatureWithPreHash {
-                r: alloy_primitives::B256::ZERO,
-                s: alloy_primitives::B256::ZERO,
-                pub_key_x: alloy_primitives::B256::ZERO,
-                pub_key_y: alloy_primitives::B256::ZERO,
-                pre_hash: false,
-            })
-        }
+        SignatureType::P256 => PrimitiveSignature::P256(P256SignatureWithPreHash {
+            r: B256::ZERO,
+            s: B256::ZERO,
+            pub_key_x: B256::ZERO,
+            pub_key_y: B256::ZERO,
+            pre_hash: false,
+        }),
         SignatureType::WebAuthn => {
-            // Create a dummy WebAuthn signature with the specified size
-            // key_data contains the total size of webauthn_data (excluding 128 bytes for public keys)
-            // Default: 800 bytes if no key_data provided
-
-            // Base clientDataJSON template (50 bytes): {"type":"webauthn.get","challenge":"","origin":""}
-            // Authenticator data (37 bytes): 32 rpIdHash + 1 flags + 4 signCount
-            // Minimum total: 87 bytes
+            // Base clientDataJSON template (50 bytes) plus 37 bytes of authenticator data.
             const BASE_CLIENT_JSON: &str = r#"{"type":"webauthn.get","challenge":"","origin":""}"#;
             const AUTH_DATA_SIZE: usize = 37;
-            const MIN_WEBAUTHN_SIZE: usize = AUTH_DATA_SIZE + BASE_CLIENT_JSON.len(); // 87 bytes
-            const DEFAULT_WEBAUTHN_SIZE: usize = 800; // Default when no key_data provided
-            const MAX_WEBAUTHN_SIZE: usize = 8192; // Maximum realistic WebAuthn signature size
+            const MIN_WEBAUTHN_SIZE: usize = AUTH_DATA_SIZE + BASE_CLIENT_JSON.len();
+            const DEFAULT_WEBAUTHN_SIZE: usize = 800;
+            const MAX_WEBAUTHN_SIZE: usize = 8192;
 
-            // Parse size from key_data, or use default
             let size = if let Some(data) = key_data.as_ref() {
                 match data.len() {
                     1 => data[0] as usize,
                     2 => u16::from_be_bytes([data[0], data[1]]) as usize,
                     4 => u32::from_be_bytes([data[0], data[1], data[2], data[3]]) as usize,
-                    _ => DEFAULT_WEBAUTHN_SIZE, // Fallback default
+                    _ => DEFAULT_WEBAUTHN_SIZE,
                 }
             } else {
-                DEFAULT_WEBAUTHN_SIZE // Default size when no key_data provided
-            };
+                DEFAULT_WEBAUTHN_SIZE
+            }
+            .clamp(MIN_WEBAUTHN_SIZE, MAX_WEBAUTHN_SIZE);
 
-            // Clamp size to safe bounds to prevent DoS via unbounded allocation
-            let size = size.clamp(MIN_WEBAUTHN_SIZE, MAX_WEBAUTHN_SIZE);
-
-            // Construct authenticatorData (37 bytes)
             let mut webauthn_data = vec![0u8; AUTH_DATA_SIZE];
-            webauthn_data[32] = 0x01; // UP flag set
+            webauthn_data[32] = 0x01;
 
-            // Construct clientDataJSON with padding in origin field if needed
             let additional_bytes = size - MIN_WEBAUTHN_SIZE;
             let client_json = if additional_bytes > 0 {
-                // Add padding bytes to origin field
-                // {"type":"webauthn.get","challenge":"","origin":"XXXXX"}
                 let padding = "x".repeat(additional_bytes);
                 format!(r#"{{"type":"webauthn.get","challenge":"","origin":"{padding}"}}"#,)
             } else {
@@ -240,14 +212,12 @@ fn create_mock_primitive_signature(
             };
 
             webauthn_data.extend_from_slice(client_json.as_bytes());
-            let webauthn_data = Bytes::from(webauthn_data);
-
             PrimitiveSignature::WebAuthn(WebAuthnSignature {
-                webauthn_data,
-                r: alloy_primitives::B256::ZERO,
-                s: alloy_primitives::B256::ZERO,
-                pub_key_x: alloy_primitives::B256::ZERO,
-                pub_key_y: alloy_primitives::B256::ZERO,
+                webauthn_data: Bytes::from(webauthn_data),
+                r: B256::ZERO,
+                s: B256::ZERO,
+                pub_key_x: B256::ZERO,
+                pub_key_y: B256::ZERO,
             })
         }
     }
@@ -352,7 +322,7 @@ mod tests {
     fn test_estimate_gas_when_calls_set() {
         let existing_call = Call {
             to: TxKind::Call(address!("0x1111111111111111111111111111111111111111")),
-            value: alloy_primitives::U256::from(1),
+            value: U256::from(1),
             input: Bytes::from(vec![0xaa]),
         };
 
@@ -361,7 +331,7 @@ mod tests {
                 to: Some(TxKind::Call(address!(
                     "0x2222222222222222222222222222222222222222"
                 ))),
-                value: Some(alloy_primitives::U256::from(2)),
+                value: Some(U256::from(2)),
                 input: alloy_rpc_types_eth::TransactionInput::new(Bytes::from(vec![0xbb])),
                 nonce: Some(0),
                 gas: Some(100_000),
@@ -370,7 +340,7 @@ mod tests {
                 ..Default::default()
             },
             calls: vec![existing_call],
-            nonce_key: Some(alloy_primitives::U256::ZERO),
+            nonce_key: Some(U256::ZERO),
             ..Default::default()
         };
 
@@ -588,8 +558,6 @@ mod tests {
 
     #[test]
     fn test_aa_roundtrip_via_tx_env() {
-        use alloy_primitives::U256;
-
         let calls = vec![
             Call {
                 to: address!("0x1111111111111111111111111111111111111111").into(),
@@ -669,15 +637,13 @@ mod tests {
         let signer = PrivateKeySigner::random();
 
         let call = Call {
-            to: alloy_primitives::TxKind::Call(address!(
-                "0x1111111111111111111111111111111111111111"
-            )),
-            value: alloy_primitives::U256::from(1),
+            to: TxKind::Call(address!("0x1111111111111111111111111111111111111111")),
+            value: U256::from(1),
             input: Bytes::from(vec![0xaa]),
         };
 
         let fee_token = address!("0x20c0000000000000000000000000000000000000");
-        let nonce_key = alloy_primitives::U256::from(42);
+        let nonce_key = U256::from(42);
 
         let req = TempoTransactionRequest {
             inner: TransactionRequest {

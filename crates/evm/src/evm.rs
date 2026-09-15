@@ -3017,7 +3017,7 @@ mod tests {
                 .build();
             let signed_tx = key_pair.sign_tx(tx)?;
             let tx_env: TempoTxEnv =
-                Recovered::new_unchecked(TempoTxEnvelope::AA(signed_tx.clone()), caller).into();
+                Recovered::new_unchecked(TempoTxEnvelope::AA(signed_tx), caller).into();
 
             let result = evm.transact_commit(tx_env)?;
             if result.stop == InstrStop::Revert {
@@ -3065,7 +3065,7 @@ mod tests {
                 .build();
             let signed_tx = key_pair.sign_tx(tx)?;
             let tx_env: TempoTxEnv =
-                Recovered::new_unchecked(TempoTxEnvelope::AA(signed_tx.clone()), caller).into();
+                Recovered::new_unchecked(TempoTxEnvelope::AA(signed_tx), caller).into();
 
             let result = evm.transact_commit(tx_env)?;
             assert!(result.is_success());
@@ -3544,8 +3544,7 @@ mod tests {
                         .build();
                     let signed_tx = key_pair.sign_tx(tx)?;
                     let result = evm.transact_commit(
-                        Recovered::new_unchecked(TempoTxEnvelope::AA(signed_tx.clone()), caller)
-                            .into(),
+                        Recovered::new_unchecked(TempoTxEnvelope::AA(signed_tx), caller).into(),
                     )?;
                     assert!(
                         result.is_success(),
@@ -3826,8 +3825,7 @@ mod tests {
                 .gas_limit(2_000_000)
                 .build();
             let signed_tx1 = key_pair.sign_tx(tx1)?;
-            let tx_env1 =
-                Recovered::new_unchecked(TempoTxEnvelope::AA(signed_tx1.clone()), caller).into();
+            let tx_env1 = Recovered::new_unchecked(TempoTxEnvelope::AA(signed_tx1), caller).into();
             let result1 = evm.transact_commit(tx_env1)?;
             assert!(
                 result1.is_success(),
@@ -3846,8 +3844,7 @@ mod tests {
                 .gas_limit(2_000_000)
                 .build();
             let signed_tx2 = key_pair.sign_tx(tx2)?;
-            let tx_env2 =
-                Recovered::new_unchecked(TempoTxEnvelope::AA(signed_tx2.clone()), caller).into();
+            let tx_env2 = Recovered::new_unchecked(TempoTxEnvelope::AA(signed_tx2), caller).into();
             let result2 = evm.transact_commit(tx_env2)?;
             assert!(
                 result2.is_success(),

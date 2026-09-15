@@ -104,6 +104,7 @@ impl Precompile for StablecoinDEX {
 
 #[cfg(test)]
 mod tests {
+
     use crate::{
         Precompile,
         stablecoin_dex::{IStablecoinDEX, MIN_ORDER_AMOUNT, StablecoinDEX},

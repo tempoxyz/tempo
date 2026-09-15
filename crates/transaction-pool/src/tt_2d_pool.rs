@@ -1439,11 +1439,11 @@ impl AA2dPool {
         self.state_update_nonce_changes.clear();
         self.state_update_included_expiring_nonce_hashes.clear();
 
-        let nonce_storage = state
+        let mut nonce_storage = state
             .storage()
             .filter(|(key, _)| key.address() == NONCE_PRECOMPILE_ADDRESS)
-            .collect::<Vec<_>>();
-        if nonce_storage.is_empty() {
+            .peekable();
+        if nonce_storage.peek().is_none() {
             return (Vec::new(), Vec::new(), Vec::new());
         }
 
@@ -2510,21 +2510,6 @@ mod tests {
             tt_signed::AASigned,
         },
     };
-
-    fn storage_state(address: Address, slot: U256, current: U256) -> EvmState {
-        let mut state = EvmState::default();
-        StateChangeSink::storage(
-            &mut state,
-            StorageChange {
-                address,
-                key: slot,
-                original: U256::ZERO,
-                current,
-            },
-        )
-        .unwrap();
-        state
-    }
 
     #[test_case::test_case(U256::ZERO)]
     #[test_case::test_case(U256::random())]
@@ -6284,7 +6269,17 @@ mod tests {
         assert_eq!(pending, 3);
         assert_eq!(queued, 0);
 
-        let state = storage_state(NONCE_PRECOMPILE_ADDRESS, nonce_slot, U256::from(2u64));
+        let mut state = EvmState::default();
+        StateChangeSink::storage(
+            &mut state,
+            StorageChange {
+                address: NONCE_PRECOMPILE_ADDRESS,
+                key: nonce_slot,
+                original: U256::ZERO,
+                current: U256::from(2u64),
+            },
+        )
+        .unwrap();
 
         let (promoted, mined, discarded) = pool.on_state_updates(&state);
 
@@ -6337,7 +6332,17 @@ mod tests {
         assert_eq!(pending, 2);
         assert_eq!(queued, 1);
 
-        let state = storage_state(NONCE_PRECOMPILE_ADDRESS, nonce_slot, U256::from(2u64));
+        let mut state = EvmState::default();
+        StateChangeSink::storage(
+            &mut state,
+            StorageChange {
+                address: NONCE_PRECOMPILE_ADDRESS,
+                key: nonce_slot,
+                original: U256::ZERO,
+                current: U256::from(2u64),
+            },
+        )
+        .unwrap();
 
         let (promoted, mined, discarded) = pool.on_state_updates(&state);
 
@@ -6389,7 +6394,17 @@ mod tests {
             .unwrap();
         }
 
-        let state = storage_state(NONCE_PRECOMPILE_ADDRESS, nonce_slot, U256::from(2u64));
+        let mut state = EvmState::default();
+        StateChangeSink::storage(
+            &mut state,
+            StorageChange {
+                address: NONCE_PRECOMPILE_ADDRESS,
+                key: nonce_slot,
+                original: U256::ZERO,
+                current: U256::from(2u64),
+            },
+        )
+        .unwrap();
 
         let (promoted, mined, discarded) = pool.on_state_updates(&state);
 
@@ -7038,7 +7053,17 @@ mod tests {
         assert_expiring_eviction_index_len(&pool, 1);
         assert_expiring_eviction_index_contains(&pool, expiring_hash);
 
-        let state = storage_state(NONCE_PRECOMPILE_ADDRESS, slot, U256::from(123u64));
+        let mut state = EvmState::default();
+        StateChangeSink::storage(
+            &mut state,
+            StorageChange {
+                address: NONCE_PRECOMPILE_ADDRESS,
+                key: slot,
+                original: U256::ZERO,
+                current: U256::from(123u64),
+            },
+        )
+        .unwrap();
 
         let (promoted, mined, discarded) = pool.on_state_updates(&state);
 

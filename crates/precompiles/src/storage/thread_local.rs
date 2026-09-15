@@ -1,11 +1,11 @@
 use alloy::{
-    primitives::{Address, B256, Bytes, LogData, U256},
+    primitives::{Address, B256, Bytes, KECCAK256_EMPTY, LogData, U256},
     sol_types::SolInterface,
 };
 use evm2::{
     Evm, EvmTypes,
     bytecode::Bytecode,
-    evm::precompile::PrecompileOutput,
+    evm::{AccountInfo, StateCheckpoint, precompile::PrecompileOutput},
     interpreter::GasTracker,
     precompiles::{PrecompileError, PrecompileResult},
     version::GasParams,
@@ -74,6 +74,10 @@ impl StorageCtx {
     }
 
     /// Enters EVM-backed storage with TIP-1060 accounting disabled.
+    ///
+    /// Use when provider gas is not charged, or is charged externally, and the writes must not
+    /// mint, consume, or settle storage credits. If those writes create persistent storage, the
+    /// external charge must include `STORAGE_CREDIT_VALUE` unless exempt.
     pub fn enter_evm_without_tip1060_accounting<T, R>(
         evm: &mut Evm<'_, T>,
         f: impl FnOnce() -> R,
@@ -161,6 +165,8 @@ impl StorageCtx {
             .with_actions(actions)
             .with_non_creditable_slots(non_creditable_slots);
         storage.set_tip1060_storage_credits(tip1060_storage_credits);
+
+        // The core logic of setting up thread-local storage is here.
         Self::enter(&mut storage, f)
     }
 
@@ -210,7 +216,7 @@ impl StorageCtx {
     pub fn with_account_info<T>(
         &self,
         address: Address,
-        mut f: impl FnMut(&evm2::evm::AccountInfo) -> Result<T>,
+        mut f: impl FnMut(&AccountInfo) -> Result<T>,
     ) -> Result<T> {
         let mut result: Option<Result<T>> = None;
         Self::try_with_storage(|s| {
@@ -457,7 +463,7 @@ impl StorageCtx {
 /// guard.commit();  // finalizes all mutations
 /// ```
 pub struct CheckpointGuard {
-    checkpoint: Option<evm2::evm::StateCheckpoint>,
+    checkpoint: Option<StateCheckpoint>,
 }
 
 impl CheckpointGuard {
@@ -500,7 +506,7 @@ impl StorageCtx {
     }
 
     /// NOTE: assumes storage tests always use the `HashMapStorageProvider`
-    pub fn get_account_info(&self, address: Address) -> Option<&evm2::evm::AccountInfo> {
+    pub fn get_account_info(&self, address: Address) -> Option<&AccountInfo> {
         self.as_hashmap().get_account_info(address)
     }
 
@@ -564,9 +570,7 @@ impl StorageCtx {
 
     /// Checks if a contract at the given address has bytecode deployed.
     pub fn has_bytecode(&self, address: Address) -> Result<bool> {
-        self.with_account_info(address, |info| {
-            Ok(info.code_hash != alloy::primitives::KECCAK256_EMPTY)
-        })
+        self.with_account_info(address, |info| Ok(info.code_hash != KECCAK256_EMPTY))
     }
 }
 

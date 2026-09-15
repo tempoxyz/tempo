@@ -2,7 +2,7 @@ use alloy::primitives::{Address, B256, Bytes, LogData, U256};
 use evm2::{
     SpecId,
     bytecode::Bytecode,
-    evm::{AccountInfo, SLoad, SStore},
+    evm::{AccountInfo, SLoad, SStore, StateCheckpoint},
     interpreter::GasTracker,
     version::GasParams,
 };
@@ -250,17 +250,17 @@ impl PrecompileStorageProvider for HashMapStorageProvider {
         self.is_static
     }
 
-    fn checkpoint(&mut self) -> evm2::evm::StateCheckpoint {
+    fn checkpoint(&mut self) -> StateCheckpoint {
         let idx = self.snapshots.len();
         self.snapshots.push(Snapshot {
             internals: self.internals.clone(),
             transient: self.transient.clone(),
             events: self.events.clone(),
         });
-        evm2::evm::StateCheckpoint::new(idx, 0)
+        StateCheckpoint::new(idx, 0)
     }
 
-    fn checkpoint_commit(&mut self, checkpoint: evm2::evm::StateCheckpoint) {
+    fn checkpoint_commit(&mut self, checkpoint: StateCheckpoint) {
         assert_eq!(
             checkpoint.journal_len(),
             self.snapshots.len() - 1,
@@ -269,7 +269,7 @@ impl PrecompileStorageProvider for HashMapStorageProvider {
         self.snapshots.pop();
     }
 
-    fn checkpoint_revert(&mut self, checkpoint: evm2::evm::StateCheckpoint) {
+    fn checkpoint_revert(&mut self, checkpoint: StateCheckpoint) {
         assert_eq!(
             checkpoint.journal_len(),
             self.snapshots.len() - 1,

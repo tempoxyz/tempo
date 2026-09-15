@@ -731,6 +731,7 @@ fn insert_zone_state_at_genesis(
 }
 
 fn setup_tempo_evm(chain_id: u64) -> TempoEvm<'static> {
+    // The block timestamp defaults to 0 for genesis initializations.
     build_tempo_evm(
         tempo_chainspec::hardfork::TempoHardfork::T0,
         chain_id,

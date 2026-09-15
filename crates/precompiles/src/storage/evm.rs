@@ -7,9 +7,9 @@ use alloy::primitives::{Address, Bytes, Log, LogData, U256};
 use evm2::{
     Evm, EvmFeatures, EvmTypes, Version,
     bytecode::Bytecode,
-    evm::{SLoad, SStore, State},
+    evm::{AccountInfo, SLoad, SStore, State, StateCheckpoint},
     interpreter::{GasTracker, gas},
-    version::GasId,
+    version::{GasId, GasParams},
 };
 use std::{
     cell::RefCell,
@@ -105,7 +105,7 @@ impl<'state, 'gas, 'db> EvmPrecompileStorageProvider<'state, 'gas, 'db> {
     }
 
     /// Overrides the gas parameter table used by this storage provider.
-    pub fn with_gas_params(mut self, gas_params: evm2::version::GasParams) -> Self {
+    pub fn with_gas_params(mut self, gas_params: GasParams) -> Self {
         self.version.gas_params = gas_params;
         self
     }
@@ -331,7 +331,7 @@ impl StorageCreditsBackend for EvmPrecompileStorageProvider<'_, '_, '_> {
     type Error = TempoPrecompileError;
 
     #[inline]
-    fn gas_params(&self) -> &evm2::version::GasParams {
+    fn gas_params(&self) -> &GasParams {
         &self.version.gas_params
     }
 
@@ -417,7 +417,7 @@ impl PrecompileStorageProvider for EvmPrecompileStorageProvider<'_, '_, '_> {
 
         let was_empty = {
             let mut account = self.state.account(&address, false)?;
-            let was_empty = account.get().is_none_or(evm2::evm::AccountInfo::is_empty);
+            let was_empty = account.get().is_none_or(AccountInfo::is_empty);
             account.set_code_slow(code);
             was_empty
         };
@@ -440,7 +440,7 @@ impl PrecompileStorageProvider for EvmPrecompileStorageProvider<'_, '_, '_> {
     fn with_account_info(
         &mut self,
         address: Address,
-        f: &mut dyn FnMut(&evm2::evm::AccountInfo),
+        f: &mut dyn FnMut(&AccountInfo),
     ) -> Result<(), TempoPrecompileError> {
         let additional_cost = self.version.gas_params.cold_account_additional_cost();
 
@@ -657,15 +657,15 @@ impl PrecompileStorageProvider for EvmPrecompileStorageProvider<'_, '_, '_> {
     }
 
     #[inline]
-    fn checkpoint(&mut self) -> evm2::evm::StateCheckpoint {
+    fn checkpoint(&mut self) -> StateCheckpoint {
         self.state.checkpoint()
     }
 
     #[inline]
-    fn checkpoint_commit(&mut self, _checkpoint: evm2::evm::StateCheckpoint) {}
+    fn checkpoint_commit(&mut self, _checkpoint: StateCheckpoint) {}
 
     #[inline]
-    fn checkpoint_revert(&mut self, checkpoint: evm2::evm::StateCheckpoint) {
+    fn checkpoint_revert(&mut self, checkpoint: StateCheckpoint) {
         self.state.rollback(checkpoint, self.version.features);
     }
 
@@ -689,7 +689,9 @@ mod tests {
         storage::{PrecompileStorageProvider, StorageActions, actions::StorageAction},
         storage_credits::StorageCredits,
     };
-    use alloy::primitives::{Address, B256, Bytes, LogData, U256, b256, bytes, keccak256};
+    use alloy::primitives::{
+        Address, B256, Bytes, KECCAK256_EMPTY, LogData, U256, b256, bytes, keccak256,
+    };
     use alloy_signer::SignerSync;
     use alloy_signer_local::PrivateKeySigner;
     use evm2::{
@@ -714,6 +716,11 @@ mod tests {
             Self::with_amsterdam(spec, false)
         }
 
+        /// Constructs a [`TestEvm`] with TIP-1016 (EIP-8037) manually enabled.
+        ///
+        /// Used by tests that exercise TIP-1016 behavior (state gas split, reservoir
+        /// accounting). TIP-1016 is otherwise opt-in through EVM2's feature set and
+        /// defaults to `false` in production.
         fn new_with_tip1016(spec: TempoHardfork) -> Self {
             Self::with_amsterdam(spec, true)
         }
@@ -897,7 +904,7 @@ mod tests {
             // Should be an empty account
             assert!(info.balance.is_zero());
             assert_eq!(info.nonce, 0);
-            assert_eq!(info.code_hash, alloy::primitives::KECCAK256_EMPTY);
+            assert_eq!(info.code_hash, KECCAK256_EMPTY);
         })?;
 
         Ok(())

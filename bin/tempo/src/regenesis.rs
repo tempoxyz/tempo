@@ -371,6 +371,9 @@ fn replacement_hashed_post_state(replacements: &[GenesisAccountReplacement]) -> 
                 .map(|replacement| (replacement.hashed_address, Some(replacement.account))),
         )
         .with_storages(replacements.iter().map(|replacement| {
+            // A regenesis replacement has the same storage semantics as a destroyed and recreated
+            // account. Mark its storage as wiped so reth expands all old slots to zero;
+            // replacement values take precedence over those zeroes.
             let storage = HashedStorage::from_iter(
                 true,
                 replacement

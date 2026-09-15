@@ -37,8 +37,8 @@ reth-metrics.workspace = true
 alloy-consensus.workspace = true
 alloy-primitives.workspace = true
 alloy-eips.workspace = true
-alloy-sol-types.workspace = true
 evm2.workspace = true
+alloy-sol-types.workspace = true
 
 derive_more.workspace = true
 dashmap.workspace = true

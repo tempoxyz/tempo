@@ -14,6 +14,7 @@ use alloy_rpc_types_eth::{
     TransactionInput,
     state::{AccountOverride, StateOverride},
 };
+use evm2::PrecompileError;
 use tempo_chainspec::{hardfork::TempoHardfork, spec::TEMPO_T1_BASE_FEE};
 use tempo_contracts::precompiles::{
     IFeeManager,
@@ -35,10 +36,10 @@ fn extract_revert_data(
 
 /// Expected revert bytes for `Panic(UnderOverflow)`.
 fn under_overflow_revert() -> Bytes {
-    TempoPrecompileError::under_overflow()
-        .into_precompile_result()
-        .unwrap()
-        .into_bytes()
+    match TempoPrecompileError::under_overflow().into_precompile_result() {
+        Err(PrecompileError::Revert(bytes)) => bytes,
+        result => panic!("expected precompile revert, got {result:?}"),
+    }
 }
 
 /// Builds a `StateOverride` targeting `address` with the given slot→value diffs.

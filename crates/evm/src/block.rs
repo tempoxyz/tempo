@@ -296,9 +296,9 @@ impl<'a> TempoBlockExecutor<'a> {
         &mut self,
         runtimes: [InitialZoneFactoryAccount; 3],
     ) -> Result<(), BlockExecutionError> {
-        let mut runtime_state = PendingState::default();
-        for account in runtimes {
-            let destination = account.address;
+        let mut state = PendingState::default();
+        for runtime in runtimes {
+            let destination = runtime.address;
             let original = match self
                 .evm_mut()
                 .state_mut()
@@ -314,17 +314,17 @@ impl<'a> TempoBlockExecutor<'a> {
             let current = original
                 .clone()
                 .unwrap_or_default()
-                .with_code(Bytecode::new_raw(account.code));
+                .with_code(Bytecode::new_raw(runtime.code));
             if original
                 .as_ref()
                 .is_some_and(|info| info.code_hash == current.code_hash)
             {
                 continue;
             }
-            runtime_state.insert_account(destination, original, Some(current));
+            state.insert_account(destination, original, Some(current));
         }
-        if !runtime_state.is_empty() {
-            self.inner.commit_pending_state(&runtime_state);
+        if !state.is_empty() {
+            self.inner.commit_pending_state(&state);
         }
         Ok(())
     }
@@ -568,17 +568,17 @@ impl<'a> BlockExecutor for TempoBlockExecutor<'a> {
 
     fn execute_transaction_without_commit(
         &mut self,
-        transaction: impl ExecutorTx<Self>,
+        tx: impl ExecutorTx<Self>,
     ) -> Result<Self::TransactionResultWithState, BlockExecutionError> {
-        let (mut tx, recovered) = transaction.into_parts();
+        let (mut tx_env, recovered) = tx.into_parts();
         // Remove any prewarming-specific context that was added to the tx env.
-        tx.inner_mut().set_expiring_nonce_idx(None);
-        let execution_context = tx.inner().execution_context();
+        tx_env.inner_mut().set_expiring_nonce_idx(None);
+        let execution_context = tx_env.inner().execution_context();
         let original = recovered.tx().clone();
         let next_section = self.validate_tx_pre_execution(&original)?;
         let inner = self
             .inner
-            .execute_transaction_without_commit((tx, recovered))?;
+            .execute_transaction_without_commit((tx_env, recovered))?;
 
         // TIP-1016 enabled: use block_regular_gas_used (excludes state gas) for section
         // validation, matching block gas limit semantics. TIP-1016 disabled: use tx_gas_used.
@@ -664,6 +664,15 @@ impl<'a> BlockExecutor for TempoBlockExecutor<'a> {
         let block_gas_used = self.block_gas_used;
         let use_regular_gas = self.evm().version().feature(evm2::EvmFeatures::EIP8037);
         let (mut output, block_access_list) = self.inner.finish_with_block_access_list()?;
+
+        // TIP-1016 enabled: block header `gas_used` = block_regular_gas_used.
+        // State gas is charged to users (in receipts) but exempted from block
+        // capacity. block_regular_gas_used is accumulated per-tx as
+        // max(total_spent - state_spent, floor) and is independent of refunds.
+        //
+        // TIP-1016 disabled: use the standard gas_used from the inner executor which equals
+        // cumulative_tx_gas_used (total_spent - refunded), matching the original
+        // block header semantics.
         if use_regular_gas {
             output.result.gas_used = block_gas_used;
         }
@@ -1069,20 +1078,25 @@ mod tests {
     #[test]
     fn test_subblock_nonce_rejected_before_execution_and_commit() {
         let chainspec = DEV.clone();
-        let mut db = InMemoryDB::default();
-        let mut executor = TestExecutorBuilder::default()
-            .with_spec(TempoHardfork::T11)
-            .build(&mut db, &chainspec);
-
-        let subblock_tx = create_subblock_tx();
-        let recovered = Recovered::new_unchecked(subblock_tx, Address::ZERO);
-
-        let err = executor.execute_transaction(recovered).unwrap_err();
-        assert!(
-            matches!(&err, BlockExecutionError::Validation(_)),
-            "unexpected error: {err:?}"
-        );
-        assert_eq!(err.to_string(), "subblock transactions are not supported");
+        for spec in [TempoHardfork::T3, TempoHardfork::T4, TempoHardfork::T11] {
+            let mut db = InMemoryDB::default();
+            let mut executor = TestExecutorBuilder::default()
+                .with_spec(spec)
+                .build(&mut db, &chainspec);
+            let tx = create_subblock_tx();
+            // Precomputed execution results must pass the same transaction-kind validation.
+            assert_eq!(
+                executor.validate_tx(&tx, 21_000).unwrap_err().to_string(),
+                "subblock transactions are not supported"
+            );
+            let recovered = Recovered::new_unchecked(tx, Address::ZERO);
+            let err = executor.execute_transaction(recovered).unwrap_err();
+            assert!(
+                matches!(&err, BlockExecutionError::Validation(_)),
+                "{err:?}"
+            );
+            assert_eq!(err.to_string(), "subblock transactions are not supported");
+        }
     }
 
     #[test]

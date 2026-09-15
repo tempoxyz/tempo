@@ -292,7 +292,7 @@ where
         let BuildArguments {
             cached_reads,
             execution_cache,
-            state_root_handle: mut trie_handle,
+            mut state_root_handle,
             config,
             cancel,
             best_payload,
@@ -336,7 +336,7 @@ where
             state_provider = Box::new(InstrumentedStateProvider::new(state_provider, "builder"));
         }
 
-        let mut database = StateProviderDatabase::new(&state_provider);
+        let mut db = StateProviderDatabase::new(&state_provider);
         drop(_state_setup_span);
         self.metrics
             .state_setup_duration_seconds
@@ -401,11 +401,11 @@ where
 
         // Resolve the configured fee recipient before moving the database into the EVM. This
         // keeps the read out of EVM2's journal and therefore out of transaction gas accounting.
-        maybe_override_fee_recipient(&mut database, &mut evm_env, &attributes);
+        maybe_override_fee_recipient(&mut db, &mut evm_env, &attributes);
 
         let prewarm_evm_env = evm_env.clone();
         let assembly_evm_env = evm_env.clone();
-        let evm = self.evm_config.evm_with_database(database, evm_env);
+        let evm = self.evm_config.evm_with_database(db, evm_env);
         let mut executor = self.evm_config.create_executor(evm, ctx.clone());
 
         check_cancel!();
@@ -413,7 +413,7 @@ where
         if self.enable_bal {
             executor.enable_block_access_list_builder();
         }
-        if let Some(handle) = trie_handle.as_mut() {
+        if let Some(handle) = state_root_handle.as_mut() {
             let mut hook = handle.take_state_hook();
             executor.set_state_hook(move |state| hook.on_hashed_state_update(state));
         }
@@ -754,7 +754,7 @@ where
         let execution_result = &execution_output.result;
         let execution_state = execution_output.state.inner();
 
-        let hashed_state = if let Some(Ok(hashed_state)) = trie_handle
+        let hashed_state = if let Some(Ok(hashed_state)) = state_root_handle
             .as_mut()
             .and_then(|handle| handle.try_take_hashed_state_rx())
             .map(|rx| rx.recv())
@@ -773,7 +773,7 @@ where
                     "skipping payload state-root computation"
                 );
                 None
-            } else if let Some(mut handle) = trie_handle {
+            } else if let Some(mut handle) = state_root_handle {
                 let state_root_wait_start = Instant::now();
                 let _span = debug_span!(target: "payload_builder", "await_state_root").entered();
                 match handle.state_root() {
@@ -1089,7 +1089,7 @@ where
 /// V2 validator config contract, if the contract is active and returns a
 /// non-zero address for the given `public_key`.
 fn maybe_override_fee_recipient<DB: Database>(
-    database: &mut DB,
+    db: &mut DB,
     evm_env: &mut reth_evm::EvmEnvFor<TempoEvmConfig>,
     attributes: &TempoPayloadAttributes,
 ) {
@@ -1102,8 +1102,8 @@ fn maybe_override_fee_recipient<DB: Database>(
 
     // We are using the database as a read-only storage context to avoid modifying the journal state.
     // Reading slots here might be dangerous because they would end up being warmed and might affect gas accounting.
-    let parent_number = evm_env.block.number.to::<u64>().saturating_sub(1);
-    match database.with_read_only_storage_ctx(
+    let parent_number = evm_env.block.number.to::<u64>() - 1;
+    match db.with_read_only_storage_ctx(
         evm_env.tempo_spec,
         StorageActions::disabled(),
         || -> Result<Option<Address>, PayloadBuilderError> {

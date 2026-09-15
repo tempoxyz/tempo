@@ -23,12 +23,12 @@ impl TempoBlockExecutor<'_> {
     /// `result_closure` observes the synthesized result before the replayed state is committed.
     pub fn execute_transaction_with_actions(
         &mut self,
-        transaction: impl ExecutorTx<Self>,
+        tx: impl ExecutorTx<Self>,
         replay: StorageActionReplay,
         result_closure: impl FnOnce(&TempoTxResult),
         commit_reads: bool,
     ) -> Result<(), BlockExecutionError> {
-        let (tx, recovered) = transaction.into_parts();
+        let (tx_env, recovered) = tx.into_parts();
         let original = recovered.tx();
 
         let StorageActionReplay {
@@ -46,7 +46,7 @@ impl TempoBlockExecutor<'_> {
 
         let state = self
             .replay_actions(
-                tx.inner().evm_tx().signer(),
+                tx_env.inner().evm_tx().signer(),
                 actions.drain(..),
                 commit_reads,
                 expiring_nonce,
@@ -68,7 +68,7 @@ impl TempoBlockExecutor<'_> {
 
         let result = TempoTxResult::new_precomputed(
             original,
-            tx.inner().execution_context(),
+            tx_env.inner().execution_context(),
             result,
             state,
             next_section,
@@ -212,6 +212,7 @@ impl TempoBlockExecutor<'_> {
         {
             return Err(StorageActionReplayError::ActionConflict.into());
         }
+
         let db = self.inner.evm_mut().overlay_db_mut();
 
         let nonce_manager = NonceManager::new();

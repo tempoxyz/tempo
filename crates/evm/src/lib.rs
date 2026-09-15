@@ -38,10 +38,12 @@ pub use handler::{
 pub use pool::{TempoPoolValidationError, TempoPoolValidationEvm};
 pub use transaction::{ExecutionContext, RecoveredTxEnvelope, TempoAaTx, TempoEvmTx, TempoTxEnv};
 
+use core::num::NonZeroU64;
+use std::{borrow::Cow, sync::Arc};
+
 use alloy_consensus::BlockHeader as _;
 use alloy_eips::eip7840::BlobParams;
 use alloy_primitives::{Address, U256};
-use core::num::NonZeroU64;
 use evm2::{EvmFeatures, ExecutionConfig, env::BlockEnv, evm::DynDatabase, version::GasId};
 use reth_chainspec::EthChainSpec;
 use reth_evm::{
@@ -50,7 +52,6 @@ use reth_evm::{
 };
 use reth_evm_ethereum::EthBlockExecutionCtx;
 use reth_primitives_traits::{SealedBlock, SealedHeader};
-use std::{borrow::Cow, sync::Arc};
 use tempo_chainspec::{
     TempoChainSpec,
     hardfork::{TempoHardfork, TempoHardforks},
@@ -237,17 +238,17 @@ impl TempoEvmConfig {
         }
     }
 
-    /// Returns the chain spec.
+    /// Returns the chain spec
     pub const fn chain_spec(&self) -> &Arc<TempoChainSpec> {
         &self.chain_spec
     }
 
-    /// Returns the Moderato config.
+    /// Returns the moderato EVM config.
     pub fn moderato() -> Self {
         Self::new(Arc::new(TempoChainSpec::moderato()))
     }
 
-    /// Returns the mainnet config.
+    /// Returns the mainnet EVM config.
     pub fn mainnet() -> Self {
         Self::new(Arc::new(TempoChainSpec::mainnet()))
     }
@@ -492,7 +493,7 @@ mod tests {
     use alloy_primitives::{Address, B256, Bytes, TxKind};
     use alloy_rlp::{Encodable, bytes::BytesMut};
     use reth_evm::{ConfigureEvm, NextBlockEnvAttributes};
-    use tempo_chainspec::{hardfork::TempoHardfork, spec::DEV};
+    use tempo_chainspec::hardfork::TempoHardfork;
     use tempo_primitives::{
         BlockBody, SubBlockMetadata, TempoConsensusContext, TempoTxEnvelope, ed25519::PublicKey,
         subblock::SubBlockVersion, transaction::envelope::TEMPO_SYSTEM_TX_SIGNATURE,
@@ -517,11 +518,11 @@ mod tests {
                 timestamp: 1000,
                 gas_limit: 30_000_000,
                 base_fee_per_gas: Some(1000),
-                beneficiary: Address::repeat_byte(1),
+                beneficiary: alloy_primitives::Address::repeat_byte(0x01),
                 ..Default::default()
             },
-            timestamp_millis_part: 500,
             general_gas_limit: 10_000_000,
+            timestamp_millis_part: 500,
             shared_gas_limit: 3_000_000,
             ..Default::default()
         };
@@ -561,6 +562,8 @@ mod tests {
     /// [TIP-1000]: <https://docs.tempo.xyz/protocol/tips/tip-1000>
     #[test]
     fn test_evm_env_t1_gas_cap() {
+        use tempo_chainspec::spec::DEV;
+
         // DEV chainspec has T1 activated at timestamp 0
         let chainspec = DEV.clone();
         let evm_config = TempoEvmConfig::new(chainspec.clone());
@@ -568,7 +571,7 @@ mod tests {
         let header = TempoHeader {
             inner: alloy_consensus::Header {
                 number: 100,
-                timestamp: 1000,
+                timestamp: 1000, // After T1 activation
                 gas_limit: 30_000_000,
                 base_fee_per_gas: Some(1000),
                 ..Default::default()
@@ -613,8 +616,8 @@ mod tests {
         let attributes = TempoNextBlockEnvAttributes {
             inner: NextBlockEnvAttributes {
                 timestamp: 1000,
-                suggested_fee_recipient: Address::repeat_byte(2),
-                prev_randao: B256::repeat_byte(3),
+                suggested_fee_recipient: alloy_primitives::Address::repeat_byte(0x02),
+                prev_randao: B256::repeat_byte(0x03),
                 gas_limit: 30_000_000,
                 parent_beacon_block_root: Some(B256::ZERO),
                 withdrawals: None,
@@ -626,6 +629,7 @@ mod tests {
             timestamp_millis_part: 750,
             consensus_context: None,
         };
+
         let result = evm_config.next_evm_env(&parent, &attributes);
         assert!(result.is_ok());
 
@@ -667,7 +671,7 @@ mod tests {
 
         // Create subblock metadata
         let validator_key = B256::repeat_byte(0x01);
-        let fee_recipient = Address::repeat_byte(0x02);
+        let fee_recipient = alloy_primitives::Address::repeat_byte(0x02);
         let metadata = vec![SubBlockMetadata {
             version: SubBlockVersion::V1,
             validator: validator_key,
@@ -683,11 +687,11 @@ mod tests {
 
         let system_tx = TempoTxEnvelope::Legacy(Signed::new_unhashed(
             TxLegacy {
-                chain_id: Some(chainspec.chain().id()),
+                chain_id: Some(reth_chainspec::EthChainSpec::chain(&*chainspec).id()),
                 nonce: 0,
                 gas_price: 0,
                 gas_limit: 0,
-                to: TxKind::Call(Address::ZERO),
+                to: TxKind::Call(alloy_primitives::Address::ZERO),
                 value: U256::ZERO,
                 input: input.freeze().into(),
             },
@@ -729,6 +733,8 @@ mod tests {
 
     #[test]
     fn test_context_for_block_t4_without_metadata() {
+        use tempo_chainspec::spec::DEV;
+
         let chainspec = DEV.clone();
         let evm_config = TempoEvmConfig::new(chainspec);
 
@@ -780,7 +786,7 @@ mod tests {
         let attributes = TempoNextBlockEnvAttributes {
             inner: NextBlockEnvAttributes {
                 timestamp: 1000,
-                suggested_fee_recipient: Address::repeat_byte(0x03),
+                suggested_fee_recipient: alloy_primitives::Address::repeat_byte(0x03),
                 prev_randao: B256::repeat_byte(0x04),
                 gas_limit: 30_000_000,
                 parent_beacon_block_root: Some(B256::repeat_byte(0x05)),

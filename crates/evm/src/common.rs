@@ -456,9 +456,8 @@ mod tests {
     use super::*;
     use crate::{FeeTokenResolver, TempoFeeManager};
     use alloy_consensus::{Signed, TxLegacy};
-    use alloy_primitives::{B256, Signature, address, uint};
-    use evm2::bytecode::Bytecode;
-    use std::{collections::HashMap, convert::Infallible};
+    use alloy_primitives::{Signature, address, uint};
+    use evm2::evm::InMemoryDB;
     use tempo_contracts::precompiles::{
         DEFAULT_FEE_TOKEN, IFeeManager, IStablecoinDEX, STABLECOIN_DEX_ADDRESS,
     };
@@ -470,43 +469,6 @@ mod tests {
     use tempo_primitives::{
         AASigned, TempoSignature, TempoTransaction, transaction::tt_signature::PrimitiveSignature,
     };
-
-    #[derive(Default)]
-    struct TestDatabase {
-        accounts: HashMap<Address, AccountInfo>,
-        storage: HashMap<(Address, U256), U256>,
-    }
-
-    impl Database for TestDatabase {
-        type Error = Infallible;
-
-        fn get_account(&mut self, address: &Address) -> Result<Option<AccountInfo>, Self::Error> {
-            Ok(self.accounts.get(address).cloned())
-        }
-
-        fn get_code_by_hash(&mut self, _code_hash: &B256) -> Result<Bytecode, Self::Error> {
-            Ok(Bytecode::default())
-        }
-
-        fn get_storage(&mut self, address: &Address, key: &U256) -> Result<U256, Self::Error> {
-            Ok(self
-                .storage
-                .get(&(*address, *key))
-                .copied()
-                .unwrap_or_default())
-        }
-
-        fn get_block_hash(&mut self, _number: &U256) -> Result<B256, Self::Error> {
-            Ok(B256::ZERO)
-        }
-    }
-
-    impl TestDatabase {
-        fn insert_account_storage(&mut self, address: Address, slot: U256, value: U256) {
-            self.accounts.entry(address).or_default();
-            self.storage.insert((address, slot), value);
-        }
-    }
 
     fn legacy_env(caller: Address, to: TxKind, input: Bytes) -> TempoTxEnv {
         Recovered::new_unchecked(
@@ -551,7 +513,7 @@ mod tests {
             },
         );
 
-        let mut db = TestDatabase::default();
+        let mut db = InMemoryDB::default();
         let token = TempoFeeManager.resolve_fee_token(
             &mut db,
             &tx,
@@ -574,7 +536,7 @@ mod tests {
             IFeeManager::setUserTokenCall { token }.abi_encode().into(),
         );
 
-        let mut db = TestDatabase::default();
+        let mut db = InMemoryDB::default();
         let result_token = TempoFeeManager.resolve_fee_token(
             &mut db,
             &tx,
@@ -592,11 +554,11 @@ mod tests {
         let user_token = Address::random();
 
         // Set user stored token preference in the FeeManager
-        let mut db = TestDatabase::default();
+        let mut db = InMemoryDB::default();
         db.insert_account_storage(
-            TIP_FEE_MANAGER_ADDRESS,
-            TipFeeManager::new().user_tokens[caller].slot(),
-            U256::from_be_bytes(user_token.into_word().0),
+            &TIP_FEE_MANAGER_ADDRESS,
+            &TipFeeManager::new().user_tokens[caller].slot(),
+            &U256::from_be_bytes(user_token.into_word().0),
         );
 
         let tx = legacy_env(caller, TxKind::Call(Address::ZERO), Bytes::new());
@@ -622,7 +584,7 @@ mod tests {
             Bytes::from_static(b"transfer_data"),
         );
 
-        let mut db = TestDatabase::default();
+        let mut db = InMemoryDB::default();
         let result_token = TempoFeeManager.resolve_fee_token(
             &mut db,
             &tx,
@@ -639,7 +601,7 @@ mod tests {
         let caller = Address::random();
         let tx = legacy_env(caller, TxKind::Call(Address::ZERO), Bytes::new());
 
-        let mut db = TestDatabase::default();
+        let mut db = InMemoryDB::default();
         let result_token = TempoFeeManager.resolve_fee_token(
             &mut db,
             &tx,
@@ -667,7 +629,7 @@ mod tests {
             minAmountOut: 900,
         };
 
-        let mut db = TestDatabase::default();
+        let mut db = InMemoryDB::default();
         let tx = legacy_env(
             caller,
             TxKind::Call(STABLECOIN_DEX_ADDRESS),
@@ -715,9 +677,9 @@ mod tests {
         let expected_balance = U256::from(1000u64);
 
         // Set up CacheDB with balance
-        let mut db = TestDatabase::default();
+        let mut db = InMemoryDB::default();
         let balance_slot = TIP20Token::from_address(token_address)?.balances[account].slot();
-        db.insert_account_storage(token_address, balance_slot, expected_balance);
+        db.insert_account_storage(&token_address, &balance_slot, &expected_balance);
 
         // Read balance using typed storage
         let balance = db.get_token_balance(
@@ -760,7 +722,7 @@ mod tests {
     #[test]
     fn test_is_fee_token_paused() -> eyre::Result<()> {
         let token_address = PATH_USD_ADDRESS;
-        let mut db = TestDatabase::default();
+        let mut db = InMemoryDB::default();
 
         // Default (unpaused) returns false
         assert!(!db.is_fee_token_paused(
@@ -770,7 +732,7 @@ mod tests {
         )?);
 
         // Set paused=true
-        db.insert_account_storage(token_address, tip20_slots::PAUSED, U256::from(1));
+        db.insert_account_storage(&token_address, &tip20_slots::PAUSED, &U256::from(1));
         assert!(db.is_fee_token_paused(
             TempoHardfork::Genesis,
             token_address,
@@ -809,8 +771,8 @@ mod tests {
         ];
 
         for (currency_value, expected, label) in cases {
-            let mut db = TestDatabase::default();
-            db.insert_account_storage(fee_token, tip20_slots::CURRENCY, *currency_value);
+            let mut db = InMemoryDB::default();
+            db.insert_account_storage(&fee_token, &tip20_slots::CURRENCY, currency_value);
 
             let is_usd = db.is_tip20_usd(
                 TempoHardfork::Genesis,
@@ -826,10 +788,10 @@ mod tests {
     #[test]
     fn test_tip20_currency_for_error_does_not_read_long_currency() -> eyre::Result<()> {
         let fee_token = PATH_USD_ADDRESS;
-        let mut db = TestDatabase::default();
+        let mut db = InMemoryDB::default();
         let len = 1024usize;
 
-        db.insert_account_storage(fee_token, tip20_slots::CURRENCY, U256::from(len * 2 + 1));
+        db.insert_account_storage(&fee_token, &tip20_slots::CURRENCY, &U256::from(len * 2 + 1));
 
         let err = db
             .ensure_tip20_usd(

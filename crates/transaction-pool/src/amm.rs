@@ -201,7 +201,7 @@ impl AmmLiquidityCache {
                 // Update validator fee token preferences
                 inner
                     .validator_preferences
-                    .insert(validator, word_to_address(value));
+                    .insert(validator, Address::from_word(value.into()));
             }
         }
 
@@ -252,12 +252,14 @@ impl AmmLiquidityCache {
                     state = Some(client.state_by_block_hash(latest_hash)?);
                 }
 
-                let preference = state
-                    .as_mut()
-                    .expect("initialized above")
-                    .storage(TIP_FEE_MANAGER_ADDRESS, validator_token_slot.into())?
-                    .unwrap_or_default();
-                word_to_address(preference)
+                Address::from_word(
+                    state
+                        .as_mut()
+                        .expect("initialized above")
+                        .storage(TIP_FEE_MANAGER_ADDRESS, validator_token_slot.into())?
+                        .unwrap_or_default()
+                        .into(),
+                )
             };
 
             // Get the actual fee token, accounting for defaults.
@@ -302,10 +304,6 @@ impl AmmLiquidityCache {
 
         Ok(())
     }
-}
-
-fn word_to_address(word: U256) -> Address {
-    Address::from_slice(&word.to_be_bytes::<32>()[12..])
 }
 
 #[derive(Debug, Default)]

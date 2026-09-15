@@ -509,29 +509,32 @@ where
             transaction.set_key_expiry(Some(key_expiry));
         }
 
-        // Validate that transaction has enough liquidity against at least one of the recent validator tokens.
-        let fee = transaction.fee_token_cost();
-        match self
-            .amm_liquidity_cache
-            .has_enough_liquidity(fee_token, fee, &mut *db)
-        {
-            Ok(true) => {}
-            Ok(false) => {
-                return TransactionValidationOutcome::Invalid(
-                    transaction,
-                    InvalidPoolTransactionError::other(TempoPoolTransactionError::Evm(
-                        HandlerError::external(TempoInvalidTransaction::CollectFeePreTx(
-                            FeePaymentError::InsufficientAmmLiquidity {
-                                user_token: Some(fee_token),
-                                validator_token: None,
-                                fee,
-                            },
+        // Validate that transaction has enough liquidity against at least one of the recent
+        // validator tokens, unless the node's fee mechanism does not use the FeeAMM.
+        if !self.disable_fee_amm_check {
+            let fee = transaction.fee_token_cost();
+            match self
+                .amm_liquidity_cache
+                .has_enough_liquidity(fee_token, fee, &mut *db)
+            {
+                Ok(true) => {}
+                Ok(false) => {
+                    return TransactionValidationOutcome::Invalid(
+                        transaction,
+                        InvalidPoolTransactionError::other(TempoPoolTransactionError::Evm(
+                            HandlerError::external(TempoInvalidTransaction::CollectFeePreTx(
+                                FeePaymentError::InsufficientAmmLiquidity {
+                                    user_token: Some(fee_token),
+                                    validator_token: None,
+                                    fee,
+                                },
+                            )),
                         )),
-                    )),
-                );
-            }
-            Err(err) => {
-                return TransactionValidationOutcome::Error(*transaction.hash(), Box::new(err));
+                    );
+                }
+                Err(err) => {
+                    return TransactionValidationOutcome::Error(*transaction.hash(), Box::new(err));
+                }
             }
         }
 
@@ -2623,10 +2626,11 @@ mod tests {
             ]),
         );
 
-        let mut database = StateProviderDatabase::new(provider.latest().unwrap());
+        let mut state = StateProviderDatabase::new(provider.latest().unwrap());
         let spec = provider.chain_spec().tempo_hardfork_at(0);
 
-        let result = database.is_fee_token_paused(spec, fee_token, StorageActions::disabled());
+        // Test that is_fee_token_paused returns true for paused tokens
+        let result = state.is_fee_token_paused(spec, fee_token, StorageActions::disabled());
         assert!(result.is_ok());
         assert!(
             result.unwrap(),
@@ -2749,7 +2753,7 @@ mod tests {
             ]),
         );
 
-        let mut database = StateProviderDatabase::new(provider.latest().unwrap());
+        let mut state = StateProviderDatabase::new(provider.latest().unwrap());
         let spec = provider.chain_spec().tempo_hardfork_at(0);
 
         // Create AMM cache with the paused token in unique_tokens (simulating a validator's
@@ -2766,15 +2770,15 @@ mod tests {
         // Verify has_enough_liquidity would bypass (return true) for this token
         // because it matches a validator token. This confirms the vulnerability we're testing.
         let liquidity_result =
-            amm_cache.has_enough_liquidity(paused_validator_token, U256::from(1000), &mut database);
+            amm_cache.has_enough_liquidity(paused_validator_token, U256::from(1000), &mut state);
         assert!(
             liquidity_result.is_ok() && liquidity_result.unwrap(),
             "Token in unique_tokens should bypass liquidity check and return true"
         );
 
-        // BUT the pause check should catch it BEFORE the bypass.
+        // BUT the pause check in is_fee_token_paused should catch it BEFORE the bypass
         let is_paused =
-            database.is_fee_token_paused(spec, paused_validator_token, StorageActions::disabled());
+            state.is_fee_token_paused(spec, paused_validator_token, StorageActions::disabled());
         assert!(is_paused.is_ok());
         assert!(
             is_paused.unwrap(),

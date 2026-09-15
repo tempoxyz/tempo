@@ -1,13 +1,14 @@
+use std::{num::NonZeroU64, sync::Arc};
+
 use crate::{
-    TempoBlockEnv, TempoBlockExecutionCtx, TempoBlockExecutor, TempoBlockExt, TempoEvm,
-    TempoEvmConfig, TempoEvmEnv, block::BlockSection,
+    TempoBlockEnv, TempoBlockExecutionCtx, TempoBlockExecutor, TempoBlockExt, TempoEvmConfig,
+    TempoEvmEnv, block::BlockSection,
 };
 use alloy_primitives::{B256, Bytes, U256};
 use evm2::{EvmFeatures, SpecId, evm::DynDatabase};
 use reth_chainspec::EthChainSpec;
 use reth_evm::BlockExecutorFactory;
 use reth_evm_ethereum::EthBlockExecutionCtx;
-use std::{num::NonZeroU64, sync::Arc};
 use tempo_chainspec::{TempoChainSpec, TempoHardfork, spec::MODERATO};
 
 pub(crate) fn test_chainspec() -> Arc<TempoChainSpec> {
@@ -21,9 +22,11 @@ pub(crate) struct TestExecutorBuilder {
     pub(crate) general_gas_limit: u64,
     pub(crate) shared_gas_limit: u64,
     pub(crate) parent_beacon_block_root: Option<B256>,
+    /// Enables the Amsterdam EIP-8037 feature to gate TIP-1016 behavior in tests.
     pub(crate) amsterdam_eip8037_enabled: bool,
     pub(crate) spec: TempoHardfork,
     pub(crate) extra_data: Bytes,
+    // Test state to seed into the executor after creation
     pub(crate) initial_section: Option<BlockSection>,
 }
 
@@ -75,28 +78,31 @@ impl TestExecutorBuilder {
         self
     }
 
+    /// Toggles the Amsterdam EIP-8037 feature, which gates TIP-1016 (state gas split)
+    /// behavior independently of the T4 hardfork.
     pub(crate) fn with_amsterdam_eip8037_enabled(mut self, enabled: bool) -> Self {
         self.amsterdam_eip8037_enabled = enabled;
         self
     }
 
+    /// Set the initial block section for the executor (for testing section transitions).
     pub(crate) fn with_section(mut self, section: BlockSection) -> Self {
         self.initial_section = Some(section);
         self
     }
 
-    fn evm<'a>(
-        &self,
+    pub(crate) fn build<'a>(
+        self,
         database: impl DynDatabase + 'a,
-        chainspec: &Arc<TempoChainSpec>,
-    ) -> TempoEvm<'a> {
+        chainspec: &'a Arc<TempoChainSpec>,
+    ) -> TempoBlockExecutor<'a> {
         let spec = SpecId::OSAKA;
         let mut version =
             tempo_chainspec::gas_params::version(spec, self.spec, self.amsterdam_eip8037_enabled);
         version.chain_id = chainspec.chain().id();
         version.features.remove(EvmFeatures::BALANCE_CHECK);
         version.features.remove(EvmFeatures::BALANCE_TOP_UP);
-        TempoEvmConfig::new(chainspec.clone()).evm_with_env(
+        let evm = TempoEvmConfig::new(chainspec.clone()).evm_with_env(
             database,
             TempoEvmEnv {
                 tempo_spec: self.spec,
@@ -112,15 +118,8 @@ impl TestExecutorBuilder {
                     ..Default::default()
                 },
             },
-        )
-    }
+        );
 
-    pub(crate) fn build<'a>(
-        self,
-        database: impl DynDatabase + 'a,
-        chainspec: &'a Arc<TempoChainSpec>,
-    ) -> TempoBlockExecutor<'a> {
-        let evm = self.evm(database, chainspec);
         let ctx = TempoBlockExecutionCtx {
             inner: EthBlockExecutionCtx {
                 parent_hash: self.parent_hash,
@@ -135,10 +134,14 @@ impl TestExecutorBuilder {
             shared_gas_limit: self.shared_gas_limit,
             consensus_context: None,
         };
+
         let mut executor = TempoBlockExecutor::new(evm, ctx, chainspec);
+
+        // Apply test-specific initial state
         if let Some(section) = self.initial_section {
             executor.set_section_for_test(section);
         }
+
         executor
     }
 }

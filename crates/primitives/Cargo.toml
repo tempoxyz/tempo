@@ -28,13 +28,13 @@ reth-rpc-convert = { workspace = true, optional = true }
 
 # Alloy
 alloy-consensus = { workspace = true, features = ["k256"] }
+evm2 = { workspace = true, optional = true }
 alloy-eips.workspace = true
 alloy-primitives.workspace = true
 alloy-rlp.workspace = true
 alloy-serde = { workspace = true, optional = true }
 alloy-rpc-types-eth = { workspace = true, optional = true }
 alloy-network = { workspace = true, optional = true }
-evm2 = { workspace = true, optional = true }
 
 # Utils
 arbitrary = { workspace = true, features = ["derive"], optional = true }

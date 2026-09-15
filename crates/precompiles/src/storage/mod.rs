@@ -20,7 +20,7 @@ pub mod packing;
 pub use packing::FieldLocation;
 pub use types::mapping as slots;
 
-use alloy::primitives::{Address, B256, Bytes, LogData, Signature, U256};
+use alloy::primitives::{Address, B256, Bytes, KECCAK256_EMPTY, LogData, Signature, U256};
 use evm2::{
     bytecode::Bytecode,
     evm::{AccountInfo, StateCheckpoint},
@@ -270,8 +270,7 @@ pub trait ContractStorage {
 
     /// Returns true if the contract has been initialized (has bytecode deployed).
     fn is_initialized(&self) -> Result<bool> {
-        self.storage().with_account_info(self.address(), |info| {
-            Ok(info.code_hash != alloy::primitives::KECCAK256_EMPTY)
-        })
+        self.storage()
+            .with_account_info(self.address(), |info| Ok(info.code_hash != KECCAK256_EMPTY))
     }
 }

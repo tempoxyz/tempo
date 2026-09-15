@@ -318,8 +318,6 @@ where
 
 impl<N> EthFees for TempoEthApi<N> where N: TempoEthApiBounds {}
 
-impl<N> EthSubscriptions for TempoEthApi<N> where N: TempoEthApiBounds {}
-
 impl<N> Trace for TempoEthApi<N> where N: TempoEthApiBounds {}
 
 impl<N> EthCall for TempoEthApi<N> where N: TempoEthApiBounds {}
@@ -427,6 +425,7 @@ where
 }
 
 impl<N> EstimateCall for TempoEthApi<N> where N: TempoEthApiBounds {}
+impl<N> EthSubscriptions for TempoEthApi<N> where N: TempoEthApiBounds {}
 impl<N> LoadBlock for TempoEthApi<N> where N: TempoEthApiBounds {}
 impl<N> LoadReceipt for TempoEthApi<N> where N: TempoEthApiBounds {}
 impl<N> EthBlocks for TempoEthApi<N> where N: TempoEthApiBounds {}
