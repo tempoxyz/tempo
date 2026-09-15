@@ -448,7 +448,13 @@ fn execute_blocks(
         let mut executor =
             BlockExecutorFactory::create_executor(evm_config.block_executor_factory(), evm, ctx);
 
-        match execute_recovered_block(&mut executor, &recovered, &context, hardfork) {
+        match execute_recovered_block(
+            &mut executor,
+            &recovered,
+            &context,
+            hardfork,
+            &pre_block_state,
+        ) {
             Ok(tx_outputs) => {
                 let block_result = match executor.finish() {
                     Ok(output) => output,
@@ -537,9 +543,11 @@ fn execute_recovered_block(
     block: &RecoveredBlock<Block<TempoTxEnvelope, TempoHeader>>,
     context: &BlockContextInput,
     _hardfork: TempoHardfork,
+    pre_block_state: &StateInput,
 ) -> Result<Vec<TxExecutionOutput>, HarnessBlockExecutionError> {
     executor.apply_pre_execution_changes()?;
-    let post_pre_execution_state = encode_state(executor.evm().overlay_db());
+    let post_pre_execution_state =
+        encode_state_overlay(executor.evm().overlay_db(), pre_block_state);
     validate_executor_state_invariants(
         executor.evm(),
         "post-pre-execution",
@@ -552,7 +560,7 @@ fn execute_recovered_block(
         let gas_output = executor.execute_transaction_with_result_closure(tx, |result| {
             output.output = result.result().output.to_vec();
         })?;
-        let post_tx_state = encode_state(executor.evm().overlay_db());
+        let post_tx_state = encode_state_overlay(executor.evm().overlay_db(), pre_block_state);
         validate_executor_state_invariants(executor.evm(), "post-tx", &post_tx_state)?;
 
         output.gas_used = gas_output.tx_gas_used();
@@ -1078,6 +1086,54 @@ mod tests {
         seed_state(&mut db, &input).expect("state seeds");
 
         assert_eq!(encode_state(&db), input);
+    }
+
+    #[test]
+    fn encode_state_overlay_retains_untouched_base_storage() {
+        let address = Address::repeat_byte(0x20);
+        let untouched_slot = U256::from(8);
+        let touched_slot = U256::from(9);
+        let base = StateInput {
+            accounts: vec![AccountInput {
+                address: address_bytes(address),
+                balance: [0; 32],
+                nonce: 0,
+                code: vec![0xef],
+                storage: vec![
+                    StorageInput {
+                        slot: untouched_slot.to_be_bytes(),
+                        value: U256::from(14_000_000).to_be_bytes(),
+                    },
+                    StorageInput {
+                        slot: touched_slot.to_be_bytes(),
+                        value: U256::from(1_000_000).to_be_bytes(),
+                    },
+                ],
+            }],
+        };
+        let mut overlay = InMemoryDB::default();
+        let bytecode = Bytecode::new_raw(Bytes::from(vec![0xef]));
+        overlay.insert_account_info(
+            &address,
+            AccountInfo {
+                code_hash: bytecode.hash_slow(),
+                code: Some(bytecode),
+                ..Default::default()
+            },
+        );
+        overlay.insert_account_storage(&address, &touched_slot, &U256::from(2_000_000));
+
+        let materialized = encode_state_overlay(&overlay, &base);
+        let storage = &materialized.accounts[0].storage;
+
+        assert!(storage.iter().any(|entry| {
+            entry.slot == untouched_slot.to_be_bytes()
+                && entry.value == U256::from(14_000_000).to_be_bytes()
+        }));
+        assert!(storage.iter().any(|entry| {
+            entry.slot == touched_slot.to_be_bytes()
+                && entry.value == U256::from(2_000_000).to_be_bytes()
+        }));
     }
 
     #[test]
