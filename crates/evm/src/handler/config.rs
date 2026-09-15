@@ -583,6 +583,8 @@ impl TempoHandlerHooks {
         } else {
             U256::ZERO
         };
+        let max_balance_spending =
+            calc_gas_balance_spending(envelope.evm_tx().gas_limit(), envelope.max_fee_per_gas());
         let spec = host.config_spec_id();
 
         map_protocol_result(StorageCtx::enter_evm_without_tip1060_accounting(
@@ -603,8 +605,21 @@ impl TempoHandlerHooks {
                 address: fee_token,
             }));
         }
-        if !collected.is_zero() {
+        // Match the canonical handler: a transaction is free only when its maximum fee is zero.
+        // The effective price can be zero in a zero-basefee block even though the transaction has
+        // a nonzero fee cap; fee-token validation must still run in that case.
+        if !max_balance_spending.is_zero() {
             fee_manager.validate_fee_token(host, fee_token, spec)?;
+        }
+
+        // The canonical handler checks the payer against the maximum possible fee, then deducts
+        // only the effective fee. Keep the balance read unconditional as it also determines the
+        // transaction's warm storage set.
+        let actions = host.ext().actions.clone();
+        let account_balance =
+            map_protocol_result(host.get_token_balance(fee_token, fee_payer, spec, actions))?;
+        if host.feature(EvmFeatures::FEE_CHARGE) && account_balance < max_balance_spending {
+            return Err(HandlerError::InsufficientFunds);
         }
 
         Ok(TempoFeeContext {

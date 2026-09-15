@@ -284,6 +284,83 @@ fn test_non_usd_fee_token_rejected() {
 }
 
 #[test]
+fn test_non_usd_fee_token_rejected_when_effective_gas_price_is_zero() {
+    let admin = Address::random();
+    let mut test = storage_evm(TempoHardfork::T6);
+
+    let fee_token = StorageCtx::enter_evm_without_tip1060_accounting(&mut test, || {
+        TIP20Setup::create("Euro", "EUR", admin)
+            .currency("EUR")
+            .apply()
+            .map(|token| token.address())
+    })
+    .expect("EUR token setup succeeds");
+
+    let tx = aa_env_for(
+        SIGNER,
+        TempoTransaction {
+            chain_id: 1,
+            fee_token: Some(fee_token),
+            gas_limit: 100_000,
+            max_fee_per_gas: 1,
+            max_priority_fee_per_gas: 0,
+            ..Default::default()
+        },
+    );
+
+    let result = collect_fee_pre_tx(&mut test, &tx);
+
+    assert!(
+        matches!(
+            result,
+            Err(ref error)
+                if matches!(
+                    error.external_ref::<TempoInvalidTransaction>(),
+                    Some(TempoInvalidTransaction::FeeTokenNotUsdCurrency {
+                        address,
+                        currency,
+                    }) if *address == fee_token && currency == "EUR"
+                )
+        ),
+        "a nonzero max fee must validate the token even when the effective gas price is zero: {result:?}"
+    );
+}
+
+#[test]
+fn test_fee_payer_must_cover_max_fee_when_effective_gas_price_is_zero() {
+    let admin = Address::random();
+    let fee_payer = Address::random();
+    let mut test = storage_evm(TempoHardfork::T6);
+
+    let fee_token = StorageCtx::enter_evm_without_tip1060_accounting(&mut test, || {
+        TIP20Setup::create("Dollar", "USD", admin)
+            .currency("USD")
+            .apply()
+            .map(|token| token.address())
+    })
+    .expect("USD token setup succeeds");
+
+    let tx = aa_env_for(
+        fee_payer,
+        TempoTransaction {
+            chain_id: 1,
+            fee_token: Some(fee_token),
+            gas_limit: 100_000,
+            max_fee_per_gas: 1,
+            max_priority_fee_per_gas: 0,
+            ..Default::default()
+        },
+    );
+
+    let result = collect_fee_pre_tx(&mut test, &tx);
+
+    assert!(
+        matches!(result, Err(HandlerError::InsufficientFunds)),
+        "the fee payer must cover the maximum fee even when no fee is collected: {result:?}"
+    );
+}
+
+#[test]
 fn test_paused_fee_token_rejected() {
     let admin = Address::random();
     let fee_payer = Address::random();
