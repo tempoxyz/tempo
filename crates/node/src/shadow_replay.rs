@@ -160,22 +160,6 @@ where
     }
 }
 
-/// Returns `canonical` with all Tempo forks through `hardfork` active from genesis,
-/// equivalent to activating the candidate at every replayed block.
-fn candidate_chain_spec(canonical: &TempoChainSpec, hardfork: TempoHardfork) -> TempoChainSpec {
-    let mut candidate = canonical.clone();
-    for &fork in TempoHardfork::VARIANTS
-        .iter()
-        .take_while(|&&fork| fork <= hardfork)
-    {
-        candidate
-            .inner
-            .hardforks
-            .insert(fork, ForkCondition::Timestamp(0));
-    }
-    candidate
-}
-
 impl<P: StateProviderFactory> ShadowReplayer<P> {
     fn replay(
         &self,
@@ -367,6 +351,7 @@ struct TxDiff {
     logs: bool,
     output: bool,
 }
+
 impl TxDiff {
     /// Returns which observed fields differ, or `None` if the transactions are equivalent.
     fn between(some: &ObservedTx, other: &ObservedTx) -> Option<Self> {
@@ -398,6 +383,21 @@ fn observe_receipts(receipts: &[TempoReceipt]) -> Vec<ObservedTx> {
             }
         })
         .collect()
+}
+
+/// Clones `canonical` and activates all Tempo forks from `Genesis` until (including) `hardfork`.
+fn candidate_chain_spec(canonical: &TempoChainSpec, hardfork: TempoHardfork) -> TempoChainSpec {
+    let mut candidate = canonical.clone();
+    for &fork in TempoHardfork::VARIANTS
+        .iter()
+        .take_while(|&&fork| fork <= hardfork)
+    {
+        candidate
+            .inner
+            .hardforks
+            .insert(fork, ForkCondition::Timestamp(0));
+    }
+    candidate
 }
 
 fn first_divergence(reference: &[ObservedTx], candidate: &[ObservedTx]) -> Option<(usize, TxDiff)> {
