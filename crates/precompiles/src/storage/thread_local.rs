@@ -1,5 +1,5 @@
 use alloy::{
-    primitives::{Address, B256, Bytes, KECCAK256_EMPTY, LogData, U256},
+    primitives::{Address, B256, Bytes, LogData, U256},
     sol_types::SolInterface,
 };
 use evm2::{
@@ -570,7 +570,9 @@ impl StorageCtx {
 
     /// Checks if a contract at the given address has bytecode deployed.
     pub fn has_bytecode(&self, address: Address) -> Result<bool> {
-        self.with_account_info(address, |info| Ok(info.code_hash != KECCAK256_EMPTY))
+        self.with_account_info(address, |info| {
+            Ok(info.code_hash != alloy::primitives::KECCAK256_EMPTY)
+        })
     }
 }
 

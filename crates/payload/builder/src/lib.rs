@@ -1102,7 +1102,7 @@ fn maybe_override_fee_recipient<DB: Database>(
 
     // We are using the database as a read-only storage context to avoid modifying the journal state.
     // Reading slots here might be dangerous because they would end up being warmed and might affect gas accounting.
-    let parent_number = evm_env.block.number.to::<u64>() - 1;
+    let parent_number = evm_env.block.number.saturating_to::<u64>() - 1;
     match db.with_read_only_storage_ctx(
         evm_env.tempo_spec,
         StorageActions::disabled(),
