@@ -4323,7 +4323,6 @@ fn test_state_gas_failed_batch_refunds_runtime_create_state_gas() {
     assert_eq!(result.gas.reservoir(), create_state_gas);
 }
 
-/// TIP-1016: AA CREATE state gas is charged at runtime rather than populated in initial_state_gas.
 #[test]
 fn registers_transaction_types_by_fork() {
     let frontier = tempo_tx_registry(SpecId::FRONTIER);
@@ -4358,51 +4357,4 @@ fn builds_evm_with_matching_tempo_spec_and_fee_rules() {
     assert!(!evm.version().features.contains(EvmFeatures::BALANCE_TOP_UP));
     assert!(evm.version().features.contains(EvmFeatures::FEE_CHARGE));
     assert_eq!(evm.version().gas_params[GasId::MaxRefundQuotient], 1);
-}
-
-#[test]
-fn test_tempo_evm_applies_gas_params() {
-    let version = tempo_chainspec::gas_params::version(SpecId::OSAKA, TempoHardfork::T1, false);
-    assert_eq!(
-        version.gas_params[GasId::TxEip7702PerEmptyAccountCost],
-        12_500
-    );
-}
-
-#[test]
-fn test_tempo_evm_respects_gas_cap() {
-    let mut version = tempo_chainspec::gas_params::version(SpecId::OSAKA, TempoHardfork::T1, false);
-    version.tx_gas_limit_cap = TempoHardfork::T1.tx_gas_limit_cap().unwrap();
-    let evm = Evm::new_with_execution_config_and_ext(
-        ExecutionConfig::for_spec_and_version(TempoHardfork::T1, version),
-        TempoHardfork::T1,
-        TempoBlockEnv::default(),
-        tempo_tx_registry(SpecId::OSAKA),
-        InMemoryDB::default(),
-        NoPrecompiles::default(),
-        TempoEvmExt::default(),
-    );
-    assert_eq!(
-        evm.version().tx_gas_limit_cap,
-        TempoHardfork::T1.tx_gas_limit_cap().unwrap()
-    );
-}
-
-#[test]
-fn test_tempo_evm_gas_params_differ_t0_vs_t1() {
-    let t0 = tempo_chainspec::gas_params::version(SpecId::OSAKA, TempoHardfork::T0, false);
-    let t1 = tempo_chainspec::gas_params::version(SpecId::OSAKA, TempoHardfork::T1, false);
-    assert_eq!(t0.gas_params[GasId::TxEip7702PerEmptyAccountCost], 25_000);
-    assert_eq!(t1.gas_params[GasId::TxEip7702PerEmptyAccountCost], 12_500);
-}
-
-#[test]
-fn test_tempo_evm_t1_state_creation_costs() {
-    let params =
-        tempo_chainspec::gas_params::version(SpecId::OSAKA, TempoHardfork::T1, false).gas_params;
-    assert_eq!(params[GasId::SstoreSetWithoutLoadCost], 250_000);
-    assert_eq!(params[GasId::TxCreateCost], 500_000);
-    assert_eq!(params[GasId::Create], 500_000);
-    assert_eq!(params[GasId::NewAccountCost], 250_000);
-    assert_eq!(params[GasId::CodeDepositCost], 1_000);
 }

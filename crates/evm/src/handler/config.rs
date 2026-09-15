@@ -452,7 +452,9 @@ fn settle_storage_credit_refunds(
 
                 balance -= credits;
                 settled = settled.saturating_add(credits as i64);
-                storage.sstore(STORAGE_CREDITS_ADDRESS, key, U256::from(balance))?;
+                let new_word = U256::from(balance);
+                debug_assert_ne!(new_word, old_word);
+                storage.sstore(STORAGE_CREDITS_ADDRESS, key, new_word)?;
             }
             Ok(settled)
         },

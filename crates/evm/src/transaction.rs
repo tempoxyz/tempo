@@ -893,6 +893,112 @@ mod tests {
     }
 
     #[test]
+    fn test_transaction_env_set_gas_limit() {
+        let tx_env = legacy_env(
+            TxLegacy {
+                gas_limit: 21_000,
+                ..Default::default()
+            },
+            SIGNER,
+        );
+        assert_eq!(tx_env.evm_tx().gas_limit(), 21_000);
+
+        let tx_env = legacy_env(
+            TxLegacy {
+                gas_limit: 1_000_000,
+                ..Default::default()
+            },
+            SIGNER,
+        );
+        assert_eq!(tx_env.evm_tx().gas_limit(), 1_000_000);
+    }
+
+    #[test]
+    fn test_transaction_env_nonce() {
+        let tx_env = legacy_env(TxLegacy::default(), SIGNER);
+        assert_eq!(tx_env.as_legacy().unwrap().nonce, 0);
+
+        let tx_env = legacy_env(
+            TxLegacy {
+                nonce: 42,
+                ..Default::default()
+            },
+            SIGNER,
+        );
+        assert_eq!(tx_env.as_legacy().unwrap().nonce, 42);
+
+        let tx_env = legacy_env(
+            TxLegacy {
+                nonce: u64::MAX,
+                ..Default::default()
+            },
+            SIGNER,
+        );
+        assert_eq!(tx_env.as_legacy().unwrap().nonce, u64::MAX);
+    }
+
+    #[test]
+    fn test_transaction_env_set_access_list() {
+        let access_list = AccessList(vec![
+            AccessListItem {
+                address: Address::ZERO,
+                storage_keys: vec![B256::ZERO],
+            },
+            AccessListItem {
+                address: Address::repeat_byte(1),
+                storage_keys: vec![B256::repeat_byte(1), B256::repeat_byte(2)],
+            },
+        ]);
+        let transaction = convert(TempoTxEnvelope::Eip2930(Signed::new_unhashed(
+            TxEip2930 {
+                access_list: access_list.clone(),
+                ..Default::default()
+            },
+            Signature::test_signature(),
+        )));
+        assert_eq!(transaction.as_eip2930().unwrap().access_list, access_list);
+    }
+
+    #[test]
+    fn test_transaction_env_combined_operations() {
+        let access_list = AccessList(vec![AccessListItem {
+            address: Address::repeat_byte(0xab),
+            storage_keys: Vec::new(),
+        }]);
+        let transaction = convert(TempoTxEnvelope::Eip2930(Signed::new_unhashed(
+            TxEip2930 {
+                gas_limit: 50_000,
+                nonce: 100,
+                access_list: access_list.clone(),
+                ..Default::default()
+            },
+            Signature::test_signature(),
+        )));
+        let transaction = transaction.as_eip2930().unwrap();
+        assert_eq!(transaction.gas_limit, 50_000);
+        assert_eq!(transaction.nonce, 100);
+        assert_eq!(transaction.access_list, access_list);
+    }
+
+    #[test]
+    fn test_transaction_env_from_tx_env() {
+        let tx_env = legacy_env(
+            TxLegacy {
+                gas_limit: 75_000,
+                nonce: 55,
+                ..Default::default()
+            },
+            SIGNER,
+        );
+        assert_eq!(tx_env.evm_tx().gas_limit(), 75_000);
+        assert_eq!(tx_env.as_legacy().unwrap().nonce, 55);
+        assert_eq!(tx_env.evm_tx().signer(), SIGNER);
+        assert!(tx_env.evm_tx().fee_token().is_none());
+        assert!(!tx_env.evm_tx().is_system_tx());
+        assert!(tx_env.as_aa().is_none());
+    }
+
+    #[test]
     fn test_first_call_without_aa() {
         // Test without an AA transaction.
         let address = Address::repeat_byte(0x42);
@@ -1009,123 +1115,6 @@ mod tests {
         let empty_aa_tx = aa_env(TempoTransaction::default(), SIGNER);
         let calls: Vec<_> = empty_aa_tx.evm_tx().calls().collect();
         assert!(calls.is_empty());
-    }
-
-    #[test]
-    fn test_calls_count_non_aa_tx() {
-        assert_eq!(
-            legacy_env(TxLegacy::default(), SIGNER)
-                .evm_tx()
-                .calls()
-                .count(),
-            1
-        );
-    }
-
-    #[test]
-    fn test_transaction_env_set_gas_limit() {
-        let tx_env = legacy_env(
-            TxLegacy {
-                gas_limit: 21_000,
-                ..Default::default()
-            },
-            SIGNER,
-        );
-        assert_eq!(tx_env.evm_tx().gas_limit(), 21_000);
-
-        let tx_env = legacy_env(
-            TxLegacy {
-                gas_limit: 1_000_000,
-                ..Default::default()
-            },
-            SIGNER,
-        );
-        assert_eq!(tx_env.evm_tx().gas_limit(), 1_000_000);
-    }
-
-    #[test]
-    fn test_transaction_env_nonce() {
-        let tx_env = legacy_env(TxLegacy::default(), SIGNER);
-        assert_eq!(tx_env.as_legacy().unwrap().nonce, 0);
-
-        let tx_env = legacy_env(
-            TxLegacy {
-                nonce: 42,
-                ..Default::default()
-            },
-            SIGNER,
-        );
-        assert_eq!(tx_env.as_legacy().unwrap().nonce, 42);
-
-        let tx_env = legacy_env(
-            TxLegacy {
-                nonce: u64::MAX,
-                ..Default::default()
-            },
-            SIGNER,
-        );
-        assert_eq!(tx_env.as_legacy().unwrap().nonce, u64::MAX);
-    }
-
-    #[test]
-    fn test_transaction_env_set_access_list() {
-        let access_list = AccessList(vec![
-            AccessListItem {
-                address: Address::ZERO,
-                storage_keys: vec![B256::ZERO],
-            },
-            AccessListItem {
-                address: Address::repeat_byte(1),
-                storage_keys: vec![B256::repeat_byte(1), B256::repeat_byte(2)],
-            },
-        ]);
-        let transaction = convert(TempoTxEnvelope::Eip2930(Signed::new_unhashed(
-            TxEip2930 {
-                access_list: access_list.clone(),
-                ..Default::default()
-            },
-            Signature::test_signature(),
-        )));
-        assert_eq!(transaction.as_eip2930().unwrap().access_list, access_list);
-    }
-
-    #[test]
-    fn test_transaction_env_combined_operations() {
-        let access_list = AccessList(vec![AccessListItem {
-            address: Address::repeat_byte(0xab),
-            storage_keys: Vec::new(),
-        }]);
-        let transaction = convert(TempoTxEnvelope::Eip2930(Signed::new_unhashed(
-            TxEip2930 {
-                gas_limit: 50_000,
-                nonce: 100,
-                access_list: access_list.clone(),
-                ..Default::default()
-            },
-            Signature::test_signature(),
-        )));
-        let transaction = transaction.as_eip2930().unwrap();
-        assert_eq!(transaction.gas_limit, 50_000);
-        assert_eq!(transaction.nonce, 100);
-        assert_eq!(transaction.access_list, access_list);
-    }
-
-    #[test]
-    fn test_transaction_env_from_tx_env() {
-        let tx_env = legacy_env(
-            TxLegacy {
-                gas_limit: 75_000,
-                nonce: 55,
-                ..Default::default()
-            },
-            SIGNER,
-        );
-        assert_eq!(tx_env.evm_tx().gas_limit(), 75_000);
-        assert_eq!(tx_env.as_legacy().unwrap().nonce, 55);
-        assert_eq!(tx_env.evm_tx().signer(), SIGNER);
-        assert!(tx_env.evm_tx().fee_token().is_none());
-        assert!(!tx_env.evm_tx().is_system_tx());
-        assert!(tx_env.as_aa().is_none());
     }
 
     /// Strategy for random U256 values.
@@ -1286,5 +1275,16 @@ mod tests {
             );
             prop_assert_eq!(tx.evm_tx().calls().count(), num_calls);
         }
+    }
+
+    #[test]
+    fn test_calls_count_non_aa_tx() {
+        assert_eq!(
+            legacy_env(TxLegacy::default(), SIGNER)
+                .evm_tx()
+                .calls()
+                .count(),
+            1
+        );
     }
 }
