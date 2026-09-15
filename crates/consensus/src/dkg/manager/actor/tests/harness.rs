@@ -281,10 +281,10 @@ impl Harness {
 
     pub(super) async fn wait_for_actor_panic(&mut self) {
         let handle = self.handle.take().expect("DKG actor is not running");
-        assert!(matches!(
-            handle.await,
-            Err(commonware_runtime::Error::Exited)
-        ));
+        assert!(
+            matches!(handle.await, Err(commonware_runtime::Error::Exited)),
+            "a storage failure must be visible to the engine as a failed task"
+        );
         self.mailbox.take();
     }
 
