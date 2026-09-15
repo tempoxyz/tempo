@@ -13783,11 +13783,8 @@ dependencies = [
 name = "tempo-nitro-attestation"
 version = "1.14.0"
 dependencies = [
- "base64 0.22.1",
  "ciborium",
  "minicbor",
- "p384",
- "serde",
  "serde_bytes",
  "sha2 0.10.9",
  "x509-cert",

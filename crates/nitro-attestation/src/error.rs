@@ -102,19 +102,3 @@ impl fmt::Display for Error {
         }
     }
 }
-
-impl core::error::Error for Error {}
-
-impl serde::de::Error for Error {
-    fn custom<T: fmt::Display>(_: T) -> Self {
-        FormatError::InvalidPayload.into()
-    }
-
-    fn missing_field(field: &'static str) -> Self {
-        FormatError::MissingField(field).into()
-    }
-
-    fn duplicate_field(field: &'static str) -> Self {
-        FormatError::DuplicateField(field).into()
-    }
-}
