@@ -728,7 +728,7 @@ mod tests {
     }
 
     #[test]
-    fn test_context_for_block_t4_without_metadata_has_empty_fee_recipients() {
+    fn test_context_for_block_t4_without_metadata() {
         let chainspec = DEV.clone();
         let evm_config = TempoEvmConfig::new(chainspec);
 
