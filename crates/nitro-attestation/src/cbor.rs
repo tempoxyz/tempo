@@ -3,410 +3,181 @@ use crate::{
     P384_FIXED_SIGNATURE_SIZE, ParsedAttestation, Pcr,
 };
 use alloc::{string::String, vec::Vec};
-use minicbor::{Decoder, data::Type};
-use serde::{
-    Deserialize,
-    de::value::{BorrowedBytesDeserializer, MapDeserializer},
-};
+use ciborium::Value;
 
 type Result<T> = core::result::Result<T, crate::Error>;
 
-#[derive(Clone, Copy)]
-struct Collection {
-    remaining: Option<u64>,
-}
-
-impl Collection {
-    fn new(remaining: Option<u64>) -> Self {
-        Self { remaining }
+/// Ciborium owns all CBOR decoding, including indefinite strings and nesting limits.
+/// Keep maps as entry lists: collecting them into a map would silently erase duplicate keys.
+fn decode(mut input: &[u8]) -> Result<Value> {
+    let value = ciborium::de::from_reader_with_recursion_limit(&mut input, MAX_CBOR_DEPTH)
+        .map_err(|error| match error {
+            ciborium::de::Error::RecursionLimitExceeded => FormatError::NestingTooDeep,
+            _ => FormatError::InvalidCbor,
+        })?;
+    if !input.is_empty() {
+        return Err(FormatError::InvalidCbor.into());
     }
-
-    fn next(&mut self, decoder: &mut Decoder<'_>) -> Result<bool> {
-        match self.remaining {
-            Some(0) => Ok(false),
-            Some(ref mut remaining) => {
-                *remaining -= 1;
-                Ok(true)
-            }
-            None if decoder.datatype().map_err(cbor_error)? == Type::Break => {
-                decoder.skip().map_err(cbor_error)?;
-                Ok(false)
-            }
-            None => Ok(true),
-        }
-    }
-}
-
-fn cbor_error(_: minicbor::decode::Error) -> crate::Error {
-    FormatError::InvalidCbor.into()
+    Ok(value)
 }
 
 pub(crate) fn parse_attestation(document: &[u8]) -> Result<ParsedAttestation> {
     if document.len() > MAX_DOCUMENT_SIZE {
         return Err(FormatError::DocumentTooLarge.into());
     }
-
-    let mut decoder = Decoder::new(document);
-    let tagged = decoder.datatype().map_err(cbor_error)? == Type::Tag;
-    if tagged && decoder.tag().map_err(cbor_error)?.as_u64() != 18 {
-        return Err(FormatError::InvalidCoseTag.into());
-    }
-
-    let outer_len = decoder.array().map_err(cbor_error)?;
-    if outer_len.is_some_and(|len| len != 4) {
+    let envelope = match decode(document)? {
+        Value::Tag(18, value) => *value,
+        Value::Tag(..) => return Err(FormatError::InvalidCoseTag.into()),
+        value => value,
+    };
+    let Value::Array(envelope) = envelope else {
+        return Err(FormatError::InvalidCoseStructure.into());
+    };
+    let [protected, unprotected, payload, signature]: [Value; 4] = envelope
+        .try_into()
+        .map_err(|_| FormatError::InvalidCoseStructure)?;
+    if !matches!(unprotected, Value::Map(_)) {
         return Err(FormatError::InvalidCoseStructure.into());
     }
-
-    let protected = read_bytes(&mut decoder, 1, MAX_DOCUMENT_SIZE, "protected header")?;
-    validate_protected_header(&protected)?;
-
-    // A COSE Header is a map. Its contents do not participate in validation, but still need to
-    // be well-formed and depth-bounded.
-    if !matches!(
-        decoder.datatype().map_err(cbor_error)?,
-        Type::Map | Type::MapIndef
-    ) {
-        return Err(FormatError::InvalidCoseStructure.into());
+    let protected = bytes(protected, 1, MAX_DOCUMENT_SIZE, "protected header")?;
+    let header = decode(&protected).map_err(|_| FormatError::InvalidProtectedHeader)?;
+    if header != Value::Map(alloc::vec![(Value::from(1), Value::from(-35))]) {
+        return Err(FormatError::InvalidProtectedHeader.into());
     }
-    skip_value(&mut decoder, if tagged { 3 } else { 2 })?;
-
-    let payload = read_bytes(&mut decoder, 1, MAX_PAYLOAD_SIZE, "payload")?;
-    let signature_bytes = read_bytes(
-        &mut decoder,
+    let payload = bytes(payload, 1, MAX_PAYLOAD_SIZE, "payload")?;
+    let signature = bytes(
+        signature,
         P384_FIXED_SIGNATURE_SIZE,
         P384_FIXED_SIGNATURE_SIZE,
         "signature",
-    )?;
-    let signature = signature_bytes
-        .try_into()
-        .map_err(|_| FormatError::InvalidSignatureEncoding)?;
-
-    if outer_len.is_none() {
-        if decoder.datatype().map_err(cbor_error)? != Type::Break {
-            return Err(FormatError::InvalidCoseStructure.into());
-        }
-        decoder.skip().map_err(cbor_error)?;
-    }
-    if decoder.position() != document.len() {
-        return Err(FormatError::InvalidCoseStructure.into());
-    }
-
-    parse_payload(protected, payload, signature)
-}
-
-fn validate_protected_header(protected: &[u8]) -> Result<()> {
-    let mut decoder = Decoder::new(protected);
-    let len = decoder
-        .map()
-        .map_err(|_| crate::Error::from(FormatError::InvalidProtectedHeader))?;
-    if len.is_some_and(|len| len != 1) {
-        return Err(FormatError::InvalidProtectedHeader.into());
-    }
-
-    let key = decoder
-        .u64()
-        .map_err(|_| crate::Error::from(FormatError::InvalidProtectedHeader))?;
-    let value = decoder
-        .i64()
-        .map_err(|_| crate::Error::from(FormatError::InvalidProtectedHeader))?;
-    if key != 1 || value != -35 {
-        return Err(FormatError::InvalidProtectedHeader.into());
-    }
-
-    if len.is_none() {
-        if decoder
-            .datatype()
-            .map_err(|_| crate::Error::from(FormatError::InvalidProtectedHeader))?
-            != Type::Break
-        {
-            return Err(FormatError::InvalidProtectedHeader.into());
-        }
-        decoder
-            .skip()
-            .map_err(|_| crate::Error::from(FormatError::InvalidProtectedHeader))?;
-    }
-    if decoder.position() != protected.len() {
-        return Err(FormatError::InvalidProtectedHeader.into());
-    }
-    Ok(())
-}
-
-/// Borrow the encoded fields so Serde handles field dispatch, required fields and duplicates.
-/// Framing stays separate: unknown CBOR values need not fit Serde's data model, and Ciborium's
-/// typed decoder otherwise accepts tags and undefined values that the Nitro profile rejects.
-#[derive(Deserialize)]
-struct Payload<'a> {
-    #[serde(borrow)]
-    module_id: &'a [u8],
-    digest: &'a [u8],
-    timestamp: &'a [u8],
-    pcrs: &'a [u8],
-    certificate: &'a [u8],
-    cabundle: &'a [u8],
-    // An empty encoded slice denotes an absent field; even CBOR null occupies one byte.
-    #[serde(default)]
-    public_key: &'a [u8],
-    #[serde(default)]
-    user_data: &'a [u8],
-    #[serde(default)]
-    nonce: &'a [u8],
-}
-
-fn parse_payload(
-    protected: Vec<u8>,
-    payload: Vec<u8>,
-    signature: [u8; P384_FIXED_SIGNATURE_SIZE],
-) -> Result<ParsedAttestation> {
-    let mut decoder = Decoder::new(&payload);
-    let mut entries = Collection::new(
-        decoder
-            .map()
-            .map_err(|_| crate::Error::from(FormatError::InvalidPayload))?,
-    );
-
-    let mut fields = Vec::new();
-    while entries.next(&mut decoder)? {
-        let key = if matches!(
-            decoder.datatype().map_err(cbor_error)?,
-            Type::String | Type::StringIndef
-        ) {
-            Some(read_text(&mut decoder, MAX_PAYLOAD_SIZE, "payload key")?)
-        } else {
-            skip_value(&mut decoder, 2)?;
-            None
-        };
-
-        let start = decoder.position();
-        skip_value(&mut decoder, 2)?;
-        if let Some(key) = key {
-            fields.push((
-                key,
-                BorrowedBytesDeserializer::<crate::Error>::new(&payload[start..decoder.position()]),
-            ));
-        }
-    }
-
-    if decoder.position() != payload.len() {
+    )?
+    .try_into()
+    .map_err(|_| FormatError::InvalidSignatureEncoding)?;
+    let Value::Map(mut fields) = decode(&payload)? else {
         return Err(FormatError::InvalidPayload.into());
-    }
-    let fields = Payload::deserialize(MapDeserializer::new(fields.into_iter()))?;
-    let module_id = read_text(
-        &mut Decoder::new(fields.module_id),
-        MAX_PAYLOAD_SIZE,
-        "module_id",
-    )?;
+    };
+
+    let module_id = text(field(&mut fields, "module_id", true)?, "module_id")?;
     if module_id.is_empty() {
         return Err(FormatError::InvalidField("module_id").into());
     }
-    if read_text(&mut Decoder::new(fields.digest), 6, "digest")? != "SHA384" {
+    if text(field(&mut fields, "digest", true)?, "digest")? != "SHA384" {
         return Err(FormatError::InvalidField("digest").into());
     }
-    if !matches!(
-        Decoder::new(fields.timestamp)
-            .datatype()
-            .map_err(cbor_error)?,
-        Type::U8 | Type::U16 | Type::U32 | Type::U64
-    ) {
-        return Err(FormatError::InvalidField("timestamp").into());
-    }
-    let timestamp: u64 = ciborium::from_reader(fields.timestamp)
-        .map_err(|_| FormatError::InvalidField("timestamp"))?;
+    let timestamp = unsigned(field(&mut fields, "timestamp", true)?, "timestamp")?;
     if timestamp == 0 {
         return Err(FormatError::InvalidField("timestamp").into());
     }
-
     Ok(ParsedAttestation {
         module_id,
         timestamp,
-        pcrs: parse_pcrs(&mut Decoder::new(fields.pcrs))?,
-        certificate: read_bytes(
-            &mut Decoder::new(fields.certificate),
+        pcrs: pcrs(field(&mut fields, "pcrs", true)?)?,
+        certificate: bytes(
+            field(&mut fields, "certificate", true)?,
             1,
             1_024,
             "certificate",
         )?,
-        cabundle: parse_cabundle(&mut Decoder::new(fields.cabundle))?,
-        public_key: read_optional_bytes(fields.public_key, 1, 1_024, "public_key")?,
-        user_data: read_optional_bytes(fields.user_data, 0, 512, "user_data")?,
-        nonce: read_optional_bytes(fields.nonce, 0, 512, "nonce")?,
+        cabundle: cabundle(field(&mut fields, "cabundle", true)?)?,
+        public_key: optional_bytes(
+            field(&mut fields, "public_key", false)?,
+            1,
+            1_024,
+            "public_key",
+        )?,
+        user_data: optional_bytes(field(&mut fields, "user_data", false)?, 0, 512, "user_data")?,
+        nonce: optional_bytes(field(&mut fields, "nonce", false)?, 0, 512, "nonce")?,
         protected,
         payload,
         signature,
     })
 }
 
-fn parse_pcrs(decoder: &mut Decoder<'_>) -> Result<Vec<Pcr>> {
-    let len = decoder
-        .map()
-        .map_err(|_| crate::Error::from(FormatError::InvalidField("pcrs")))?;
-    if len.is_some_and(|len| len == 0 || len > MAX_PCRS as u64) {
+fn field(fields: &mut Vec<(Value, Value)>, name: &'static str, required: bool) -> Result<Value> {
+    let mut matches = fields
+        .iter()
+        .enumerate()
+        .filter(|(_, (key, _))| key.as_text() == Some(name));
+    let index = matches.next().map(|(index, _)| index);
+    if matches.next().is_some() {
+        return Err(FormatError::DuplicateField(name).into());
+    }
+    match index {
+        Some(index) => Ok(fields.swap_remove(index).1),
+        None if required => Err(FormatError::MissingField(name).into()),
+        None => Ok(Value::Null),
+    }
+}
+
+fn text(value: Value, name: &'static str) -> Result<String> {
+    match value {
+        Value::Text(value) => Ok(value),
+        _ => Err(FormatError::InvalidField(name).into()),
+    }
+}
+
+fn unsigned(value: Value, name: &'static str) -> Result<u64> {
+    value
+        .as_integer()
+        .and_then(|value| value.try_into().ok())
+        .ok_or_else(|| FormatError::InvalidField(name).into())
+}
+
+fn bytes(value: Value, min: usize, max: usize, name: &'static str) -> Result<Vec<u8>> {
+    match value {
+        Value::Bytes(value) if (min..=max).contains(&value.len()) => Ok(value),
+        _ => Err(FormatError::InvalidField(name).into()),
+    }
+}
+
+fn optional_bytes(value: Value, min: usize, max: usize, name: &'static str) -> Result<Vec<u8>> {
+    match value {
+        Value::Null => Ok(Vec::new()),
+        value => bytes(value, min, max, name),
+    }
+}
+
+fn pcrs(value: Value) -> Result<Vec<Pcr>> {
+    let Value::Map(entries) = value else {
+        return Err(FormatError::InvalidField("pcrs").into());
+    };
+    if entries.is_empty() || entries.len() > MAX_PCRS {
         return Err(FormatError::TooManyPcrs.into());
     }
-
-    let mut entries = Collection::new(len);
     let mut seen = [false; MAX_PCRS];
-    let mut pcrs = Vec::new();
-    while entries.next(decoder)? {
-        if pcrs.len() == MAX_PCRS {
-            return Err(FormatError::TooManyPcrs.into());
-        }
-        let index = decoder
-            .u8()
-            .map_err(|_| crate::Error::from(FormatError::InvalidField("pcrs")))?;
-        if usize::from(index) >= MAX_PCRS {
+    let mut pcrs = Vec::with_capacity(entries.len());
+    for (index, value) in entries {
+        let index = unsigned(index, "pcrs")?;
+        if index >= MAX_PCRS as u64 {
             return Err(FormatError::InvalidField("pcrs").into());
         }
-        if seen[usize::from(index)] {
-            return Err(FormatError::DuplicatePcr(index).into());
+        if core::mem::replace(&mut seen[index as usize], true) {
+            return Err(FormatError::DuplicatePcr(index as u8).into());
         }
-        seen[usize::from(index)] = true;
-
-        let value = read_bytes(decoder, 0, 64, "pcrs")?;
+        let value = bytes(value, 32, 64, "pcrs")?;
         if !matches!(value.len(), 32 | 48 | 64) {
             return Err(FormatError::InvalidField("pcrs").into());
         }
-        pcrs.push(Pcr { index, value });
-    }
-    if pcrs.is_empty() {
-        return Err(FormatError::InvalidField("pcrs").into());
+        pcrs.push(Pcr {
+            index: index as u8,
+            value,
+        });
     }
     pcrs.sort_unstable_by_key(|pcr| pcr.index);
     Ok(pcrs)
 }
 
-fn parse_cabundle(decoder: &mut Decoder<'_>) -> Result<Vec<Vec<u8>>> {
-    let len = decoder
-        .array()
-        .map_err(|_| crate::Error::from(FormatError::InvalidField("cabundle")))?;
-    if len.is_some_and(|len| len == 0 || len > MAX_CA_BUNDLE as u64) {
+fn cabundle(value: Value) -> Result<Vec<Vec<u8>>> {
+    let Value::Array(entries) = value else {
+        return Err(FormatError::InvalidField("cabundle").into());
+    };
+    if entries.is_empty() || entries.len() > MAX_CA_BUNDLE {
         return Err(FormatError::TooManyCertificates.into());
     }
-
-    let mut entries = Collection::new(len);
-    let mut cabundle = Vec::new();
-    while entries.next(decoder)? {
-        if cabundle.len() == MAX_CA_BUNDLE {
-            return Err(FormatError::TooManyCertificates.into());
-        }
-        cabundle.push(read_bytes(decoder, 1, 1_024, "cabundle")?);
-    }
-    if cabundle.is_empty() {
-        return Err(FormatError::InvalidField("cabundle").into());
-    }
-    Ok(cabundle)
-}
-
-fn read_bytes(
-    decoder: &mut Decoder<'_>,
-    min: usize,
-    max: usize,
-    field: &'static str,
-) -> Result<Vec<u8>> {
-    let start = decoder.position();
-    let mut len = 0usize;
-    let chunks = decoder
-        .bytes_iter()
-        .map_err(|_| crate::Error::from(FormatError::InvalidField(field)))?;
-    for chunk in chunks {
-        let chunk = chunk.map_err(cbor_error)?;
-        len = len
-            .checked_add(chunk.len())
-            .ok_or(FormatError::InvalidField(field))?;
-        if len > max {
-            return Err(FormatError::InvalidField(field).into());
-        }
-    }
-    if len < min {
-        return Err(FormatError::InvalidField(field).into());
-    }
-    let bytes: serde_bytes::ByteBuf =
-        ciborium::from_reader(&decoder.input()[start..decoder.position()])
-            .map_err(cbor_decode_error)?;
-    Ok(bytes.into_vec())
-}
-
-fn read_optional_bytes(
-    encoded: &[u8],
-    min: usize,
-    max: usize,
-    field: &'static str,
-) -> Result<Vec<u8>> {
-    if encoded.is_empty() {
-        return Ok(Vec::new());
-    }
-    let mut decoder = Decoder::new(encoded);
-    if decoder.datatype().map_err(cbor_error)? == Type::Null {
-        Ok(Vec::new())
-    } else {
-        read_bytes(&mut decoder, min, max, field)
-    }
-}
-
-fn read_text(decoder: &mut Decoder<'_>, max: usize, field: &'static str) -> Result<String> {
-    let start = decoder.position();
-    let mut len = 0usize;
-    let chunks = decoder
-        .str_iter()
-        .map_err(|_| crate::Error::from(FormatError::InvalidField(field)))?;
-    for chunk in chunks {
-        let chunk = chunk.map_err(cbor_error)?;
-        len = len
-            .checked_add(chunk.len())
-            .ok_or(FormatError::InvalidField(field))?;
-        if len > max {
-            return Err(FormatError::InvalidField(field).into());
-        }
-    }
-    ciborium::from_reader(&decoder.input()[start..decoder.position()]).map_err(cbor_decode_error)
-}
-
-fn cbor_decode_error<E>(_: ciborium::de::Error<E>) -> crate::Error {
-    FormatError::InvalidCbor.into()
-}
-
-fn skip_value(decoder: &mut Decoder<'_>, depth: usize) -> Result<()> {
-    let datatype = decoder.datatype().map_err(cbor_error)?;
-    if depth > MAX_CBOR_DEPTH
-        && matches!(
-            datatype,
-            Type::Array | Type::ArrayIndef | Type::Map | Type::MapIndef | Type::Tag
-        )
-    {
-        return Err(FormatError::NestingTooDeep.into());
-    }
-
-    match datatype {
-        Type::Array | Type::ArrayIndef => {
-            let mut items = Collection::new(decoder.array().map_err(cbor_error)?);
-            while items.next(decoder)? {
-                skip_value(decoder, depth + 1)?;
-            }
-        }
-        Type::Map | Type::MapIndef => {
-            let mut entries = Collection::new(decoder.map().map_err(cbor_error)?);
-            while entries.next(decoder)? {
-                skip_value(decoder, depth + 1)?;
-                skip_value(decoder, depth + 1)?;
-            }
-        }
-        Type::Tag => {
-            decoder.tag().map_err(cbor_error)?;
-            skip_value(decoder, depth + 1)?;
-        }
-        Type::Bytes | Type::BytesIndef => {
-            for chunk in decoder.bytes_iter().map_err(cbor_error)? {
-                chunk.map_err(cbor_error)?;
-            }
-        }
-        Type::String | Type::StringIndef => {
-            for chunk in decoder.str_iter().map_err(cbor_error)? {
-                chunk.map_err(cbor_error)?;
-            }
-        }
-        Type::Break => return Err(FormatError::InvalidCbor.into()),
-        _ => decoder.skip().map_err(cbor_error)?,
-    }
-    Ok(())
+    entries
+        .into_iter()
+        .map(|value| bytes(value, 1, 1_024, "cabundle"))
+        .collect()
 }
 
 pub(crate) fn encode_sig_structure(protected: &[u8], payload: &[u8]) -> Result<Vec<u8>> {
@@ -427,7 +198,7 @@ mod tests {
 
     use super::*;
     use alloc::vec;
-    use minicbor::{Encoder, data::Tag};
+    use minicbor::{Decoder, Encoder, data::Tag};
 
     fn payload(indefinite: bool, duplicate_module: bool, include_null_optionals: bool) -> Vec<u8> {
         let mut e = Encoder::new(Vec::new());
@@ -740,7 +511,7 @@ mod tests {
     }
 
     #[test]
-    fn keeps_strict_field_types_before_serde_decoding() {
+    fn rejects_tagged_fields_and_arrays_in_byte_fields() {
         for field in default_fields() {
             let mut fields = default_fields();
             let mut tagged = encoded_value(|e| {
@@ -752,7 +523,6 @@ mod tests {
         }
         for name in ["public_key", "user_data", "nonce"] {
             for value in [
-                vec![0xf7],               // undefined is not null
                 vec![0x81, 0x01],         // an integer array is not a byte string
                 vec![0xd8, 100, 0x41, 1], // a tag is not a byte string
             ] {
@@ -802,18 +572,36 @@ mod tests {
     }
 
     #[test]
-    fn skips_unknown_values_outside_serdes_data_model() {
-        for value in [
-            vec![0xf0],       // unassigned simple value
-            vec![0xc2, 0xf6], // uninterpreted tag 2, not a Serde integer
+    fn uses_ciboriums_data_model_for_unknown_values() {
+        for (value, accepted) in [
+            (vec![0xf0], false),      // unassigned simple value
+            (vec![0xc2, 0xf6], true), // non-byte tag content remains opaque
         ] {
             let mut fields = default_fields();
             fields.push(TestField {
                 name: "future_field",
                 value,
             });
-            assert!(parse_fields(&fields).is_ok());
+            assert_eq!(parse_fields(&fields).is_ok(), accepted);
         }
+    }
+
+    #[test]
+    fn accepts_ciborium_null_and_integer_normalization() {
+        let mut fields = default_fields();
+        // Ciborium maps undefined to null and tag-2 bignums to integers when they fit.
+        for name in ["public_key", "user_data", "nonce"] {
+            fields.push(TestField {
+                name,
+                value: vec![0xf7],
+            });
+        }
+        set_field(&mut fields, "timestamp", vec![0xc2, 0x41, 1]);
+        let parsed = parse_fields(&fields).unwrap();
+        assert_eq!(parsed.timestamp, 1);
+        assert!(
+            parsed.public_key.is_empty() && parsed.user_data.is_empty() && parsed.nonce.is_empty()
+        );
     }
 
     #[test]
@@ -1252,17 +1040,13 @@ mod tests {
             e.into_writer()
         };
 
-        // Simulate an unknown value inside the payload map (which is depth one).
-        let accepted = nested(MAX_CBOR_DEPTH - 1);
-        let mut decoder = Decoder::new(&accepted);
-        skip_value(&mut decoder, 2).unwrap();
-        assert_eq!(decoder.position(), accepted.len());
-
-        let rejected = nested(MAX_CBOR_DEPTH);
-        let mut decoder = Decoder::new(&rejected);
-        assert_eq!(
-            skip_value(&mut decoder, 2).unwrap_err(),
-            crate::Error::InvalidFormat(FormatError::NestingTooDeep)
-        );
+        let mut fields = default_fields();
+        fields.push(TestField {
+            name: "future_field",
+            value: nested(MAX_CBOR_DEPTH - 1),
+        });
+        assert!(parse_fields(&fields).is_ok());
+        set_field(&mut fields, "future_field", nested(MAX_CBOR_DEPTH));
+        assert_field_error(&fields, FormatError::NestingTooDeep);
     }
 }
