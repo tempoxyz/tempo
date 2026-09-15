@@ -269,9 +269,15 @@ where
         let mut storage = EvmPrecompileStorageProvider::new(evm, gas, self.spec, is_static)
             .with_actions(self.actions.clone())
             .with_non_creditable_slots(self.non_creditable_slots.clone());
-        Some(StorageCtx::enter(&mut storage, || {
+        let result = StorageCtx::enter(&mut storage, || {
             self.call_tempo(message.code_address, &message.input, message.caller)
-        }))
+        });
+        let logs = storage.take_pending_logs();
+        drop(storage);
+        for log in logs {
+            evm.log(log);
+        }
+        Some(result)
     }
 }
 
