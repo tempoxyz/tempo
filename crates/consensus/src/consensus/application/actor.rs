@@ -615,13 +615,11 @@ impl Inner<Init> {
         let block_access_list_size_bytes = block_access_list
             .as_ref()
             .map_or(0, |block_access_list| block_access_list.encode_size());
-        let proposal_construction_start = Instant::now();
         let proposal = Block::from_execution_block_unchecked_with_encoded_cache(
             block,
             block_access_list,
             execution_block_encoded,
         );
-        let proposal_construction_elapsed = proposal_construction_start.elapsed();
         let block_size_estimate_bytes =
             execution_block_rlp_size_estimate_bytes + block_access_list_size_bytes;
         let validator_marshal_persist = marshal_persist.estimate(block_size_estimate_bytes);
@@ -637,7 +635,6 @@ impl Inner<Init> {
         debug!(
             proposal_elapsed = %display_duration(proposal_elapsed),
             build_time = %display_duration(payload_build_elapsed),
-            proposal_construction_time = %display_duration(proposal_construction_elapsed),
             payload_validation_work = %display_duration(payload_validation_work_elapsed),
             validation_latency_time = %display_duration(validation_latency_elapsed),
             validator_marshal_persist = %display_duration(validator_marshal_persist),
