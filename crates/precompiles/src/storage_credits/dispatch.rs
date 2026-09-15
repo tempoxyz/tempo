@@ -133,6 +133,7 @@ mod tests {
             let mut storage = HashMapStorageProvider::new_with_spec(1, spec);
             StorageCtx::enter(&mut storage, || -> eyre::Result<()> {
                 let output = StorageCredits::new().call(&calldata, caller);
+                assert!(output.is_err());
                 if spec.is_t11() {
                     assert!(revert_bytes(&output).is_empty());
                 } else {

@@ -7,11 +7,18 @@ on:
     branches: [main]
     paths:
       - "Cargo.lock"
-      - "Cargo.toml"
-      - "crates/**/Cargo.toml"
+      - "**/Cargo.toml"
       - "tips/verify/**"
+      - "crates/alloy/**"
+      - "crates/chainspec/**"
       - "crates/contracts/**"
+      - "crates/dkg-onchain-artifacts/**"
+      - "crates/evm/**"
+      - "crates/hardfork/**"
       - "crates/precompiles/**"
+      - "crates/precompiles-macros/**"
+      - "crates/primitives/**"
+      - "crates/revm/**"
       - "scripts/foundry-patch.sh"
       - ".github/workflows/specs.yml"
       - ".github/workflows/update-reth.yml"
@@ -30,9 +37,8 @@ jobs:
       contents: read
       pull-requests: read
     outputs:
-      should_run: ${{ steps.filter.outputs.specs }}
-      foundry_smoke: ${{ steps.filter.outputs.foundry_smoke }}
-      release_only_sdk_crates: ${{ steps.release-only.outputs.release_only_sdk_crates }}
+      should_run: ${{ contains(fromJSON(steps.filter.outputs.changes), 'specs') }}
+      foundry_smoke: ${{ contains(fromJSON(steps.filter.outputs.changes), 'foundry_smoke') }}
     steps:
       - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
         with:
@@ -43,50 +49,28 @@ jobs:
         with:
           filters: |
             specs:
+              # Dependency updates can change native precompile behavior without Rust source changes.
+              - 'Cargo.lock'
+              - '**/Cargo.toml'
               - 'tips/verify/**'
+              - 'crates/alloy/**'
+              - 'crates/chainspec/**'
               - 'crates/contracts/**'
-              - '!crates/contracts/CHANGELOG.md'
-              - '!crates/contracts/Cargo.toml'
+              - 'crates/dkg-onchain-artifacts/**'
+              - 'crates/evm/**'
+              - 'crates/hardfork/**'
               - 'crates/precompiles/**'
-              - '!crates/precompiles/CHANGELOG.md'
-              - '!crates/precompiles/Cargo.toml'
+              - 'crates/precompiles-macros/**'
+              - 'crates/primitives/**'
+              - 'crates/revm/**'
+              - 'scripts/foundry-patch.sh'
               - '.github/workflows/specs.yml'
             foundry_smoke:
               - 'Cargo.lock'
-              - 'Cargo.toml'
-              - 'crates/**/Cargo.toml'
+              - '**/Cargo.toml'
               - 'scripts/foundry-patch.sh'
               - '.github/workflows/specs.yml'
               - '.github/workflows/update-reth.yml'
-      - name: Check release-only SDK crate changes
-        id: release-only
-        env:
-          EVENT_NAME: ${{ github.event_name }}
-          BASE_REF: ${{ github.base_ref || github.event.merge_group.base_ref || 'main' }}
-        run: |
-          if [[ "$EVENT_NAME" == "push" ]]; then
-            echo "release_only_sdk_crates=false" >> "$GITHUB_OUTPUT"
-            echo "Not skipping Foundry precompile tests on push events."
-            exit 0
-          fi
-
-          base_ref="${BASE_REF#refs/heads/}"
-          changed_files="$(git diff --name-only "origin/${base_ref}...HEAD")"
-          if [[ -z "$changed_files" ]]; then
-            echo "release_only_sdk_crates=false" >> "$GITHUB_OUTPUT"
-            echo "No changed files detected against origin/${base_ref}."
-            exit 0
-          fi
-
-          # Release PRs may also add/delete consumed changelog fragments.
-          allowed='^(Cargo\.lock|\.changelog/[^/]+\.md|crates/(alloy|chainspec|contracts|primitives|hardfork)/(Cargo\.toml|CHANGELOG\.md))$'
-          if printf '%s\n' "$changed_files" | grep -Ev "$allowed" >/dev/null; then
-            echo "release_only_sdk_crates=false" >> "$GITHUB_OUTPUT"
-            echo "Found non-release-only SDK crate changes."
-          else
-            echo "release_only_sdk_crates=true" >> "$GITHUB_OUTPUT"
-            echo "Skipping Foundry precompile tests: only SDK crate release metadata changed."
-          fi
 
   foundry-resolver-smoke:
     name: Foundry Resolver Smoke
@@ -112,8 +96,8 @@ jobs:
         uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
         with:
           repository: foundry-rs/foundry
-          # Keep Foundry on revm 42 to match the version used by reth and Tempo.
-          ref: 8811c408fe72c244317a508e5343fc460447be1a
+          # Keep Foundry on revm 43.0.2 to match the version used by reth and Tempo.
+          ref: 4e9eba80e77a8e696a9c888c6af058da65c12fc8
           path: foundry
           persist-credentials: false
 
@@ -244,7 +228,7 @@ jobs:
   foundry-build:
     name: Build patched Forge
     needs: [check-specs-changes, check-precompiles]
-    if: github.repository == 'tempoxyz/tempo' && needs.check-specs-changes.outputs.should_run == 'true' && needs.check-specs-changes.outputs.release_only_sdk_crates != 'true'
+    if: github.repository == 'tempoxyz/tempo' && needs.check-specs-changes.outputs.should_run == 'true'
     runs-on: depot-ubuntu-latest-8
     timeout-minutes: 60
     permissions:
@@ -261,8 +245,8 @@ jobs:
         uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
         with:
           repository: foundry-rs/foundry
-          # Keep Foundry on revm 42 to match the version used by reth and Tempo.
-          ref: 8811c408fe72c244317a508e5343fc460447be1a
+          # Keep Foundry on revm 43.0.2 to match the version used by reth and Tempo.
+          ref: 4e9eba80e77a8e696a9c888c6af058da65c12fc8
           path: foundry
           persist-credentials: false
 
