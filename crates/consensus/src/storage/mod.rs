@@ -144,17 +144,19 @@ where
             .wrap_err("failed to initialize prunable finalized blocks archive")?;
 
     // Contiguous run of blocks starting at the prunable archive's first index.
-    let start_range = prunable.first_index().and_then(|first| {
-        prunable
-            .next_gap(first)
-            .0
-            .map(|end| format!("{first}..={end}"))
-    });
+    // Use the archive's range index, without reading blocks or including EL coverage.
+    let first_block = prunable.first_index();
+    let contiguous_end = first_block.and_then(|first| prunable.next_gap(first).0);
+    let start_range = first_block
+        .zip(contiguous_end)
+        .map(|(first, end)| format!("{first}..={end}"));
 
     info!(
         consensus_cache.start_range = start_range,
-        consensus_cache.last_block = prunable.last_index(),
-        execution_layer.finalized_height = provider.finalized_height(),
+        consensus_cache.first_block = ?first_block,
+        consensus_cache.last_block = ?prunable.last_index(),
+        consensus_cache.contiguous_end = ?contiguous_end,
+        execution_layer.finalized_height = ?provider.finalized_height(),
         "initialized finalized blocks store",
     );
 
