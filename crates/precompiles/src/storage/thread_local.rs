@@ -145,6 +145,11 @@ impl StorageCtx {
             .with_gas_params(gas_params);
         storage.set_tip1060_storage_credits(false);
         let result = Self::enter(&mut storage, f);
+        let logs = storage.take_logs();
+        drop(storage);
+        for log in logs {
+            evm.log(log);
+        }
         (result, gas)
     }
 
@@ -167,7 +172,13 @@ impl StorageCtx {
         storage.set_tip1060_storage_credits(tip1060_storage_credits);
 
         // The core logic of setting up thread-local storage is here.
-        Self::enter(&mut storage, f)
+        let result = Self::enter(&mut storage, f);
+        let logs = storage.take_logs();
+        drop(storage);
+        for log in logs {
+            evm.log(log);
+        }
+        result
     }
 
     /// Execute an infallible function with access to the current thread-local storage provider.

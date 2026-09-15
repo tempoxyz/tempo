@@ -34,6 +34,8 @@ pub struct EvmPrecompileStorageProvider<'state, 'gas, 'db> {
     non_creditable_slots: Rc<RefCell<NonCreditableSlots>>,
     /// Recorded storage actions.
     actions: StorageActions,
+    /// Logs waiting to be forwarded through [`Evm::log`].
+    pending_logs: Vec<Log>,
 }
 
 impl<'state, 'gas, 'db> EvmPrecompileStorageProvider<'state, 'gas, 'db> {
@@ -95,6 +97,7 @@ impl<'state, 'gas, 'db> EvmPrecompileStorageProvider<'state, 'gas, 'db> {
             tip1060_storage_credit_minting_enabled: true,
             non_creditable_slots: Rc::new(RefCell::new(NonCreditableSlots::empty())),
             actions: StorageActions::disabled(),
+            pending_logs: Vec::new(),
         }
     }
 
@@ -124,6 +127,11 @@ impl<'state, 'gas, 'db> EvmPrecompileStorageProvider<'state, 'gas, 'db> {
     /// Replaces the recorded storage actions with the given ones, returning the previous actions.
     pub fn replace_actions(&self, actions: Vec<StorageAction>) -> Option<Vec<StorageAction>> {
         self.actions.replace(actions)
+    }
+
+    /// Takes logs emitted through this provider so the caller can forward them through the EVM.
+    pub fn take_logs(&mut self) -> Vec<Log> {
+        std::mem::take(&mut self.pending_logs)
     }
 
     #[inline]
@@ -575,7 +583,7 @@ impl PrecompileStorageProvider for EvmPrecompileStorageProvider<'_, '_, '_> {
             ),
         )?;
 
-        self.state.log(Log {
+        self.pending_logs.push(Log {
             address,
             data: event,
         });
