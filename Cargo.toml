@@ -186,7 +186,7 @@ reth-node-ethereum = { git = "https://github.com/paradigmxyz/reth", rev = "32a80
 reth-node-metrics = { git = "https://github.com/paradigmxyz/reth", rev = "32a801f" }
 reth-payload-builder = { git = "https://github.com/paradigmxyz/reth", rev = "32a801f" }
 reth-payload-primitives = { git = "https://github.com/paradigmxyz/reth", rev = "32a801f" }
-reth-primitives-traits = { version = "0.7.0", default-features = false }
+reth-primitives-traits = { version = "0.7.1", default-features = false }
 reth-config = { git = "https://github.com/paradigmxyz/reth", rev = "32a801f" }
 reth-downloaders = { git = "https://github.com/paradigmxyz/reth", rev = "32a801f" }
 reth-provider = { git = "https://github.com/paradigmxyz/reth", rev = "32a801f" }
