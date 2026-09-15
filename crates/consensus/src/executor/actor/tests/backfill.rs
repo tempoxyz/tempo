@@ -45,7 +45,7 @@ fn backfills_to_the_floor_from_marshal() {
             .marshal(marshal)
             .harness_options(HarnessOptions {
                 finalized_floor: 2,
-                finalized_tip: (round(2), 2, d2),
+                finalized_tip: Some((round(2), 2, d2)),
                 ..Default::default()
             })
             .start(&context);
@@ -75,7 +75,7 @@ fn backfill_then_converges_onto_a_notarized_extension() {
             .marshal(marshal)
             .harness_options(HarnessOptions {
                 finalized_floor: 2,
-                finalized_tip: (round(2), 2, d2),
+                finalized_tip: Some((round(2), 2, d2)),
                 ..Default::default()
             })
             .start(&context);
@@ -136,7 +136,7 @@ fn backfill_falls_back_to_the_execution_layer_for_missing_blocks() {
             .marshal(marshal)
             .harness_options(HarnessOptions {
                 finalized_floor: 1,
-                finalized_tip: (round(1), 1, d1),
+                finalized_tip: Some((round(1), 1, d1)),
                 ..Default::default()
             })
             .start(&context);
@@ -164,7 +164,7 @@ fn execution_layer_body_lookup_error_fails_startup() {
             .marshal(marshal)
             .harness_options(HarnessOptions {
                 finalized_floor: 1,
-                finalized_tip: (round(1), 1, d1),
+                finalized_tip: Some((round(1), 1, d1)),
                 ..Default::default()
             })
             .start(&context);
@@ -192,7 +192,7 @@ fn execution_layer_missing_body_from_finalization_info_fails_startup() {
             .marshal(marshal)
             .harness_options(HarnessOptions {
                 finalized_floor: 1,
-                finalized_tip: (round(1), 1, d1),
+                finalized_tip: Some((round(1), 1, d1)),
                 ..Default::default()
             })
             .start(&context);
@@ -214,7 +214,7 @@ fn unsourceable_backfill_block_fails_startup() {
         let h = Harness::builder()
             .harness_options(HarnessOptions {
                 finalized_floor: 1,
-                finalized_tip: (round(1), 1, make_block(1, 1, GENESIS).digest()),
+                finalized_tip: Some((round(1), 1, make_block(1, 1, GENESIS).digest())),
                 ..Default::default()
             })
             .start(&context);
@@ -245,7 +245,7 @@ fn canonical_hash_read_error_fails_initialization() {
             .execution(execution)
             .harness_options(HarnessOptions {
                 finalized_floor: 1,
-                finalized_tip: (round(2), 2, d2),
+                finalized_tip: Some((round(2), 2, d2)),
                 ..Default::default()
             })
             .try_start(&context);
@@ -268,6 +268,27 @@ fn canonical_hash_read_error_fails_initialization() {
 }
 
 #[test_traced]
+fn missing_finalized_tip_with_nonzero_floor_fails_initialization() {
+    deterministic::Runner::default().start(|context| async move {
+        let result = Harness::builder()
+            .harness_options(HarnessOptions {
+                finalized_floor: 1,
+                finalized_tip: None,
+                ..Default::default()
+            })
+            .try_start(&context);
+
+        let Err(error) = result else {
+            panic!("an absent finalized tip must mean genesis");
+        };
+        assert!(
+            format!("{error:#}")
+                .contains("finalized tip height `0` is below the finalized floor `1`")
+        );
+    });
+}
+
+#[test_traced]
 fn finalized_tip_below_the_floor_fails_initialization() {
     deterministic::Runner::default().start(|context| async move {
         let b1 = make_block(1, 1, GENESIS);
@@ -275,7 +296,7 @@ fn finalized_tip_below_the_floor_fails_initialization() {
         let result = Harness::builder()
             .harness_options(HarnessOptions {
                 finalized_floor: 2,
-                finalized_tip: (round(1), 1, b1.digest()),
+                finalized_tip: Some((round(1), 1, b1.digest())),
                 ..Default::default()
             })
             .try_start(&context);
@@ -311,7 +332,7 @@ fn snapshot_restore_replays_below_execution_finality_without_forkchoice_updates(
             .execution(execution)
             .harness_options(HarnessOptions {
                 finalized_floor: 1,
-                finalized_tip: (round(2), 2, d2),
+                finalized_tip: Some((round(2), 2, d2)),
                 ..Default::default()
             })
             .start(&context);
@@ -360,7 +381,7 @@ fn invalid_payload_fails_startup_backfill() {
             .marshal(marshal)
             .harness_options(HarnessOptions {
                 finalized_floor: 1,
-                finalized_tip: (round(1), 1, d1),
+                finalized_tip: Some((round(1), 1, d1)),
                 ..Default::default()
             })
             .start(&context);
@@ -394,7 +415,7 @@ fn rejected_forkchoice_update_fails_startup_backfill() {
             .marshal(marshal)
             .harness_options(HarnessOptions {
                 finalized_floor: 1,
-                finalized_tip: (round(1), 1, d1),
+                finalized_tip: Some((round(1), 1, d1)),
                 ..Default::default()
             })
             .start(&context);
@@ -428,7 +449,7 @@ fn startup_waits_for_valid_fcu_before_backfill() {
             .marshal(marshal)
             .harness_options(HarnessOptions {
                 finalized_floor: 1,
-                finalized_tip: (round(1), 1, d1),
+                finalized_tip: Some((round(1), 1, d1)),
                 ..Default::default()
             })
             .start(&context);
@@ -468,7 +489,7 @@ fn new_payload_transport_error_fails_startup() {
             .marshal(marshal)
             .harness_options(HarnessOptions {
                 finalized_floor: 1,
-                finalized_tip: (round(1), 1, d1),
+                finalized_tip: Some((round(1), 1, d1)),
                 ..Default::default()
             })
             .start(&context);

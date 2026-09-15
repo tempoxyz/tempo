@@ -85,6 +85,8 @@ where
     pub partition_prefix: String,
     /// Initial share used whenever the consensus engine starts.
     pub share: Option<Share>,
+    /// Optional network identity override for startup and epoch synchronization.
+    pub network_identity: Option<tempo_chainspec::NetworkIdentity>,
     /// Feed state shared by the consensus and execution layers.
     pub feed_state: FeedStateHandle,
     /// Local proposal work budget used whenever the consensus engine starts.
@@ -125,6 +127,7 @@ where
             private_key,
             oracle,
             share,
+            network_identity: None,
             feed_state,
             proposal_return_budget,
             consensus_handle: None,
@@ -299,7 +302,7 @@ where
                 transport,
                 verify_rate: GOSSIP_VERIFY_RATE,
             });
-        let execution_node = self
+        let execution_node: Arc<tempo_node::TempoFullNode> = self
             .execution_node
             .as_ref()
             .expect("execution node must be running before consensus")
@@ -307,6 +310,11 @@ where
             .clone()
             .into();
         let config = consensus::Builder {
+            network_identity: self
+                .network_identity
+                .clone()
+                .or_else(|| execution_node.chain_spec().network_identity.clone())
+                .expect("network identity"),
             execution_node: Some(execution_node),
             gossip,
             blocker: self.oracle.control(self.public_key()),

@@ -261,9 +261,8 @@ pub(crate) struct Config<TExecutionLayer, TMarshal> {
     /// above this value.
     pub(crate) finalized_floor: Height,
 
-    /// Finalized tip reported by marshal at startup, together with the
-    /// round it was finalized in (the zero round for genesis).
-    pub(crate) finalized_tip: (Round, Height, Digest),
+    /// Latest archived finalization. `None` means startup is at genesis.
+    pub(crate) finalized_tip: Option<crate::alias::marshal::FinalizedTip>,
 
     /// The mailbox of the marshal actor. Used to backfill blocks.
     pub(crate) marshal: TMarshal,

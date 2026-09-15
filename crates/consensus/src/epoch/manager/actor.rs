@@ -43,8 +43,6 @@
 //! epoch.
 use std::{collections::BTreeMap, num::NonZeroUsize};
 
-use alloy_consensus::BlockHeader as _;
-use commonware_codec::ReadExt as _;
 use commonware_consensus::{
     marshal::{Update, core::DigestFallback},
     simplex::{self, config::Floor, elector, scheme::bls12381_threshold::vrf::Scheme},
@@ -62,11 +60,11 @@ use commonware_runtime::{
     telemetry::metrics::{Counter, Gauge, GaugeExt as _, MetricsExt as _},
 };
 use commonware_utils::{Acknowledgement as _, NZUsize, vec::NonEmptyVec};
-use eyre::{ensure, eyre};
+use eyre::eyre;
 use futures::{StreamExt as _, channel::mpsc};
 use rand_core::{CryptoRng, Rng};
 use reth_ethereum::chainspec::EthChainSpec;
-use tracing::{Level, Span, debug, error, error_span, info, instrument, warn, warn_span};
+use tracing::{Span, debug, error, error_span, info, instrument, warn, warn_span};
 
 use crate::{
     consensus::Digest,
@@ -106,6 +104,13 @@ where
         context: TContext,
         mailbox: mpsc::UnboundedReceiver<Message>,
     ) -> Self {
+        config.scheme_provider.register(
+            Epoch::new(config.network_identity.from_epoch),
+            Scheme::certificate_verifier(
+                crate::config::NAMESPACE,
+                config.network_identity.identity,
+            ),
+        );
         let active_epochs = context.gauge(
             "active_epochs",
             "the number of epochs currently managed by the epoch manager",
@@ -228,7 +233,7 @@ where
                     let cause = msg.cause;
                     match msg.content {
                         Content::Enter(enter) => {
-                            let _: Result<_, _> = self
+                            self
                                 .enter(
                                     cause,
                                     enter,
@@ -263,7 +268,6 @@ where
             network_identity = %public.public(),
             ?participants,
         ),
-        err(level = Level::WARN)
     )]
     async fn enter(
         &mut self,
@@ -286,13 +290,24 @@ where
             impl Sender<PublicKey = PublicKey>,
             impl Receiver<PublicKey = PublicKey>,
         >,
-    ) -> eyre::Result<()> {
-        if let Some(latest) = self.active_epochs.last_key_value().map(|(k, _)| *k) {
-            ensure!(
-                epoch > latest,
+    ) {
+        let network_identity = &self.config.network_identity;
+        if epoch.get() == network_identity.from_epoch {
+            assert_eq!(
+                *public.public(),
+                network_identity.identity,
+                "network identity mismatch in epoch `{epoch}`; refusing to enter epoch",
+            );
+        }
+
+        if let Some(latest) = self.active_epochs.last_key_value().map(|(k, _)| *k)
+            && epoch <= latest
+        {
+            info!(
                 "requested to start an epoch `{epoch}` older than the latest \
                 running, `{latest}`; refusing",
             );
+            return;
         }
 
         let n_participants = participants.len();
@@ -317,19 +332,15 @@ where
                 .expect("epoch strategy valid for all epochs and heights")
         }) {
             Some(boundary_height) => {
-                let (_, digest) = self
-                    .config
-                    .marshal
-                    .get_info(boundary_height)
-                    .await
-                    .ok_or_else(|| {
-                        eyre!(
-                            "cannot start a consensus for epoch `{epoch}`, \
-                            because we do not have information on the \
-                            finalized block of its boundary height \
-                            `{boundary_height}`"
-                        )
-                    })?;
+                let Some((_, digest)) = self.config.marshal.get_info(boundary_height).await else {
+                    info!(
+                        "cannot start a consensus for epoch `{epoch}`, \
+                        because we do not have information on the \
+                        finalized block of its boundary height \
+                        `{boundary_height}`"
+                    );
+                    return;
+                };
 
                 Floor::Genesis(digest)
             }
@@ -416,8 +427,6 @@ where
             .how_often_verifier
             .metric()
             .inc_by(u64::from(!is_signer));
-
-        Ok(())
     }
 
     #[instrument(parent = &cause, skip_all, fields(epoch))]
@@ -495,10 +504,10 @@ where
                 .subscribe_by_digest(digest, DigestFallback::Wait)
                 .await
                 .map_err(|_| eyre!("marshal never returned the block"))?;
-            let onchain_outcome = tempo_dkg_onchain_artifacts::OnchainDkgOutcome::read(
-                &mut block.header().extra_data().as_ref(),
-            )
-            .expect("boundary blocks must contain DKG outcomes");
+            let onchain_outcome = crate::network_identity::decode_boundary_outcome(
+                &self.config.epoch_strategy,
+                block.header(),
+            )?;
             self.config.scheme_provider.register(
                 onchain_outcome.epoch(),
                 Scheme::verifier(

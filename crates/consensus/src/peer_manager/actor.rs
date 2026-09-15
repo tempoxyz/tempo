@@ -22,6 +22,7 @@ use commonware_runtime::{
 use commonware_utils::{Acknowledgement, ordered};
 use eyre::{OptionExt as _, WrapErr as _};
 use futures::{StreamExt as _, channel::mpsc};
+use reth_ethereum::chainspec::EthChainSpec as _;
 use reth_provider::{BlockIdReader as _, HeaderProvider as _};
 use tempo_dkg_onchain_artifacts::OnchainDkgOutcome;
 use tempo_node::TempoFullNode;
@@ -87,6 +88,19 @@ where
         );
         let context = ContextCell::new(context);
         let peer_update_timer = Box::pin(context.sleep(BOOTSTRAP_UPDATE_INTERVAL));
+        let finalized_tip = finalized_tip.map_or_else(
+            || {
+                (
+                    Height::zero(),
+                    Digest(execution_node.chain_spec().genesis_hash()),
+                )
+            },
+            |tip| (tip.height, tip.digest()),
+        );
+        assert!(
+            finalized_tip.0 >= finalized_floor,
+            "finalized tip is below the finalized floor"
+        );
         Self {
             context,
             oracle,

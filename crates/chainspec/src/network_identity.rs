@@ -1,5 +1,7 @@
 //! Compiled network identities.
 
+use core::fmt;
+
 use alloy_primitives::hex;
 use commonware_codec::ReadExt as _;
 use commonware_cryptography::bls12381::primitives::variant::{MinSig, Variant};
@@ -28,6 +30,16 @@ pub struct NetworkIdentity {
     pub from_epoch: u64,
     /// BLS threshold public key.
     pub identity: <MinSig as Variant>::Public,
+}
+
+impl fmt::Display for NetworkIdentity {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(
+            f,
+            "from_epoch={}, identity={}",
+            self.from_epoch, self.identity
+        )
+    }
 }
 
 impl NetworkIdentity {

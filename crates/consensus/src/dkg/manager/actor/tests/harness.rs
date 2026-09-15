@@ -205,6 +205,33 @@ impl Harness {
     pub(super) async fn start(&mut self) {
         assert!(self.handle.is_none(), "DKG actor is already running");
         drop(self.storage.take());
+        // These actor tests start before a future identity anchor. Startup certificate
+        // verification and persisted identity provenance have dedicated tests.
+        let genesis = self
+            .initial_state
+            .clone()
+            .unwrap_or_else(|| dkg_state(&mut self.context, Epoch::zero(), 4, false).0);
+        let finalized_tip_header = if self.last_finalized_height.is_zero() {
+            outcome_header(Height::zero(), &genesis)
+        } else {
+            header(self.last_finalized_height)
+        };
+        let finalized_tip = (!self.last_finalized_height.is_zero()).then(|| {
+            let epoch = self
+                .epoch_strategy
+                .containing(self.last_finalized_height)
+                .unwrap()
+                .epoch();
+            let fixture = crate::test_utils::dkg_fixture(&mut self.context, epoch);
+            crate::alias::marshal::FinalizedTip {
+                height: self.last_finalized_height,
+                certificate: crate::follow::test_utils::make_finalization(
+                    &block(finalized_tip_header.clone()),
+                    epoch,
+                    &fixture.schemes,
+                ),
+            }
+        });
         let (actor, mailbox) = init(
             self.context.child("actor"),
             Config {
@@ -215,6 +242,12 @@ impl Harness {
                 mailbox_size: NonZeroUsize::new(1).unwrap(),
                 marshal: self.marshal.clone(),
                 last_finalized_height: self.last_finalized_height,
+                finalized_tip,
+                finalized_tip_header,
+                network_identity: tempo_chainspec::NetworkIdentity {
+                    from_epoch: u64::MAX,
+                    identity: *genesis.output.public().public(),
+                },
                 partition_prefix: self.partition_prefix.clone(),
                 execution_node: self.execution.clone(),
                 initial_share: None,

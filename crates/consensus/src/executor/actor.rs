@@ -234,6 +234,16 @@ where
             fcu_heartbeat_interval,
             public_key,
         } = config;
+        let finalized_tip = finalized_tip.map_or_else(
+            || {
+                (
+                    Round::zero(),
+                    Height::zero(),
+                    Digest(execution_node.genesis_hash()),
+                )
+            },
+            |tip| (tip.round(), tip.height, tip.digest()),
+        );
         ensure!(
             finalized_tip.1 >= finalized_floor,
             "finalized tip height `{}` is below the finalized floor `{finalized_floor}`",

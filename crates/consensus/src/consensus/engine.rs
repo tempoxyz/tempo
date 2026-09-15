@@ -26,12 +26,8 @@ use tempo_node::TempoFullNode;
 use tracing::info;
 
 use crate::{
-    alias, config,
-    consensus::application,
-    dkg,
-    epoch::{self, SchemeProvider},
-    network::limit_channel,
-    peer_manager, storage,
+    alias, config, consensus::application, dkg, epoch, epoch::SchemeProvider,
+    network::limit_channel, peer_manager, storage,
 };
 
 use super::block::Block;
@@ -50,6 +46,7 @@ const MAX_PENDING_ACKS: NonZeroUsize = NZUsize!(1);
 // because there doesn't really seem to be a point putting it into an extra initializer.
 pub struct Builder<TBlocker, TPeerManager> {
     pub execution_node: Option<Arc<TempoFullNode>>,
+    pub network_identity: tempo_chainspec::NetworkIdentity,
 
     pub blocker: TBlocker,
     pub peer_manager: TPeerManager,
@@ -146,6 +143,7 @@ where
             mailbox: marshal_mailbox,
             finalized_floor,
             finalized_tip,
+            finalized_tip_header,
         } = alias::marshal::init(
             context.child("marshal"),
             page_cache_ref.clone(),
@@ -171,7 +169,7 @@ where
             crate::executor::Config {
                 execution_node: execution_node.clone(),
                 finalized_floor,
-                finalized_tip,
+                finalized_tip: finalized_tip.clone(),
                 marshal: marshal_mailbox.clone(),
                 fcu_heartbeat_interval: self.fcu_heartbeat_interval,
                 public_key: Some(self.signer.public_key()),
@@ -186,7 +184,7 @@ where
                 oracle: self.peer_manager.clone(),
                 epoch_strategy: epoch_strategy.clone(),
                 finalized_floor,
-                finalized_tip: (finalized_tip.1, finalized_tip.2),
+                finalized_tip: finalized_tip.clone(),
             },
         );
 
@@ -268,6 +266,7 @@ where
                 mailbox_size: self.mailbox_size,
                 marshal: marshal_mailbox.clone(),
                 scheme_provider: scheme_provider.clone(),
+                network_identity: self.network_identity.clone(),
                 time_to_collect_notarizations: self.time_to_collect_notarizations,
                 time_to_retry_nullify_broadcast: self.time_to_retry_nullify_broadcast,
                 partition_prefix: format!("{}_epoch_manager", self.partition_prefix),
@@ -284,6 +283,9 @@ where
                 execution_node,
                 initial_share: self.share.clone(),
                 last_finalized_height: finalized_floor,
+                finalized_tip,
+                finalized_tip_header,
+                network_identity: self.network_identity,
                 mailbox_size: self.mailbox_size,
                 marshal: marshal_mailbox,
                 namespace: crate::config::NAMESPACE.to_vec(),
