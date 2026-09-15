@@ -79,7 +79,7 @@ pub(in crate::storage) fn make_chain(start: u64, count: usize) -> Vec<Block> {
     let mut parent = B256::ZERO;
     for offset in 0..count {
         let block = make_block(start + offset as u64, parent);
-        parent = block.block_hash();
+        parent = block.digest().0;
         chain.push(block);
     }
     chain
@@ -117,7 +117,7 @@ impl StubProvider {
     /// [`FinalizedBlocksProvider::block_by_hash`] calls return `block`.
     pub(in crate::storage::hybrid) fn add_block(&self, block: &Block) {
         let height = block.height().get();
-        let hash = block.block_hash();
+        let hash = block.digest().0;
         self.by_number.lock().insert(height, block.clone());
         self.by_hash.lock().insert(hash, block.clone());
     }
@@ -203,6 +203,7 @@ where
             key_partition: format!("{TEST_PARTITION_PREFIX}-prunable-key"),
             key_page_cache: cache,
             value_partition: format!("{TEST_PARTITION_PREFIX}-prunable-value"),
+            metadata_partition: format!("{TEST_PARTITION_PREFIX}-prunable-metadata"),
             // Tests use blocks small enough that compression overhead would
             // dominate; mirror production's compression to keep the codec
             // path identical.

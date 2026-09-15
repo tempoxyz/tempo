@@ -13,7 +13,10 @@ use alloy_evm::{
 use alloy_primitives::{Address, Bytes, TxKind};
 use reth_revm::{
     InspectSystemCallEvm, MainContext,
-    context::{CfgEnv, result::ExecutionResult},
+    context::{
+        CfgEnv,
+        result::{ExecutionResult, HaltReason},
+    },
 };
 use std::{
     cell::RefCell,
@@ -23,8 +26,8 @@ use std::{
 use tempo_chainspec::hardfork::TempoHardfork;
 use tempo_precompiles::{storage::StorageAction, storage_credits::NonCreditableSlots};
 use tempo_revm::{
-    ProtocolFeeManager, TempoHaltReason, TempoInvalidTransaction, TempoTxEnv, ValidationContext,
-    evm::TempoContext, handler::TempoEvmHandler,
+    ProtocolFeeManager, TempoInvalidTransaction, TempoTxEnv, ValidationContext, evm::TempoContext,
+    handler::TempoEvmHandler,
 };
 
 use crate::{TempoBlockEnv, TempoPoolValidationEvm, TempoPoolValidationResult};
@@ -39,7 +42,7 @@ impl EvmFactory for TempoEvmFactory {
     type Context<DB: Database> = TempoContext<DB>;
     type Tx = TempoTxEnv;
     type Error<DBError: DBErrorMarker> = EVMError<DBError, TempoInvalidTransaction>;
-    type HaltReason = TempoHaltReason;
+    type HaltReason = HaltReason;
     type Spec = TempoHardfork;
     type BlockEnv = TempoBlockEnv;
     type Precompiles = PrecompilesMap;
@@ -251,7 +254,7 @@ where
     type DB = DB;
     type Tx = TempoTxEnv;
     type Error = EVMError<DB::Error, TempoInvalidTransaction>;
-    type HaltReason = TempoHaltReason;
+    type HaltReason = HaltReason;
     type Spec = TempoHardfork;
     type BlockEnv = TempoBlockEnv;
     type Precompiles = PrecompilesMap;
@@ -1147,7 +1150,7 @@ mod tests {
         assert_matches!(
             result.result,
             ExecutionResult::Halt {
-                reason: TempoHaltReason::Ethereum(HaltReason::OutOfGas(_)),
+                reason: HaltReason::OutOfGas(_),
                 ..
             }
         );

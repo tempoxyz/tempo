@@ -12,7 +12,7 @@ use tempo_node::rpc::consensus::{CertifiedBlock, Event};
 use tokio::{select, sync::mpsc};
 use tracing::{debug, instrument, warn};
 
-use super::{Config, ExecutionProvider, Executor, Mailbox, Marshal, ingress::Message};
+use super::{Config, ExecutionProvider, Mailbox, Marshal, ingress::Message};
 use crate::{
     consensus::Block,
     finalization_verifier::{
@@ -21,15 +21,14 @@ use crate::{
     gossip::{Certificate, CertificateError},
 };
 
-pub(super) fn try_init<TContext, P, M, E>(
+pub(super) fn try_init<TContext, P, M>(
     context: TContext,
-    config: Config<P, M, E>,
-) -> eyre::Result<super::Initialized<TContext, P, M, E>>
+    config: Config<P, M>,
+) -> eyre::Result<super::Initialized<TContext, P, M>>
 where
     TContext: Clock + Spawner,
     P: ExecutionProvider + 'static,
     M: Marshal + 'static,
-    E: Executor + 'static,
 {
     let (tx, rx) = mpsc::unbounded_channel();
     let mailbox = Mailbox(tx);
@@ -81,7 +80,7 @@ where
             )
         })?;
 
-    let current_epoch = onchain_outcome.epoch;
+    let current_epoch = onchain_outcome.epoch();
 
     let actor = Driver {
         context: ContextCell::new(context),
@@ -96,9 +95,9 @@ where
     Ok((actor, mailbox))
 }
 
-pub(crate) struct Driver<TContext, P, M, E = crate::follow::executor::Mailbox> {
+pub(crate) struct Driver<TContext, P, M> {
     context: ContextCell<TContext>,
-    config: Config<P, M, E>,
+    config: Config<P, M>,
     mailbox: mpsc::UnboundedReceiver<Message>,
     startup_execution_boundary: Height,
     current_epoch: Epoch,
@@ -107,12 +106,11 @@ pub(crate) struct Driver<TContext, P, M, E = crate::follow::executor::Mailbox> {
     latest_verified_round: Round,
 }
 
-impl<C, P, M, E> Driver<C, P, M, E>
+impl<C, P, M> Driver<C, P, M>
 where
     C: Clock + Rng + CryptoRng + Spawner,
     P: ExecutionProvider + 'static,
     M: Marshal + 'static,
-    E: Executor + 'static,
 {
     pub(crate) fn start(mut self) -> commonware_runtime::Handle<()> {
         spawn_cell!(self.context, self.run())
@@ -203,7 +201,7 @@ where
                     )
                 })?;
 
-            self.current_epoch = self.current_epoch.max(onchain_outcome.epoch);
+            self.current_epoch = self.current_epoch.max(onchain_outcome.epoch());
         } else {
             debug!("no gap detected");
         }
@@ -319,15 +317,17 @@ where
         }
 
         let round = certificate.round();
-        let digest = certificate.proposal.payload;
 
         self.latest_verified_round = self.latest_verified_round.max(round);
+
+        // Reporting to marshal is the only step. Marshal resolves the block the
+        // certificate names, and only once it has durably persisted that pair
+        // does it emit a tip update that moves the execution layer's forkchoice.
         self.config
             .marshal
             .report(Activity::Finalization(certificate))
             .await;
 
-        self.config.executor.finalization(round, digest);
         Ok(())
     }
 
@@ -377,7 +377,7 @@ where
                 .expect("boundary blocks must contain DKG outcomes");
 
             let network_identity = self.verifier.network_identity();
-            if onchain_outcome.epoch.get() >= network_identity.from_epoch
+            if onchain_outcome.epoch >= network_identity.from_epoch
                 && network_identity.identity != *onchain_outcome.network_identity()
             {
                 warn!(
@@ -389,7 +389,7 @@ where
                 );
             }
 
-            self.current_epoch = self.current_epoch.max(onchain_outcome.epoch);
+            self.current_epoch = self.current_epoch.max(onchain_outcome.epoch());
 
             if self
                 .epoch_sync_target

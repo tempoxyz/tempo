@@ -15,11 +15,12 @@ use reth_node_core::primitives::SealedBlock;
 use tempo_primitives::{Block as TempoBlock, BlockBody};
 
 use super::{
-    Fetcher, MAX_RETRY_DELAY, RETRY_STATE_TTL, RetryState, resolve_block, resolve_finalized,
+    Fetcher, MAX_RETRY_DELAY, NoopBlockNetwork, RETRY_STATE_TTL, RetryState, resolve_block,
+    resolve_finalized,
 };
 
 mod utils;
-use utils::{StubBlockProvider, StubUpstream, make_block, make_certified_block};
+use utils::{StubBlockNetwork, StubBlockProvider, StubUpstream, make_block, make_certified_block};
 
 #[test]
 fn resolves_blocks_from_local_execution_first() {
@@ -29,7 +30,7 @@ fn resolves_blocks_from_local_execution_first() {
         let block = make_block(3);
         provider.add_block(&block);
 
-        let resolved = resolve_block(&provider, &upstream, block.digest()).await;
+        let resolved = resolve_block(&provider, &upstream, &NoopBlockNetwork, block.digest()).await;
 
         assert_eq!(resolved, Some(block.encode()));
         assert_eq!(provider.reads(), 1);
@@ -45,11 +46,30 @@ fn falls_back_to_upstream_for_missing_blocks() {
         let block = make_block(4);
         upstream.add_block(block.clone());
 
-        let resolved = resolve_block(&provider, &upstream, block.digest()).await;
+        let resolved = resolve_block(&provider, &upstream, &NoopBlockNetwork, block.digest()).await;
 
         assert_eq!(resolved, Some(block.encode()));
         assert_eq!(provider.reads(), 1);
         assert_eq!(upstream.block_reads(), 1);
+    });
+}
+
+#[test]
+fn resolves_missing_blocks_from_devp2p() {
+    block_on(async {
+        let provider = StubBlockProvider::default();
+        let upstream = StubUpstream::default();
+        upstream.hang_block_reads();
+        let block_network = StubBlockNetwork::default();
+        let block = make_block(5);
+        block_network.add_block(block.clone());
+
+        let resolved = resolve_block(&provider, &upstream, &block_network, block.digest()).await;
+
+        assert_eq!(resolved, Some(block.encode()));
+        assert_eq!(provider.reads(), 1);
+        assert_eq!(upstream.block_reads(), 1);
+        assert_eq!(block_network.reads(), 1);
     });
 }
 
@@ -59,10 +79,10 @@ fn retries_after_local_provider_errors() {
         let provider = StubBlockProvider::default();
         provider.fail_reads();
         let upstream = StubUpstream::default();
-        let block = make_block(5);
+        let block = make_block(6);
 
         assert_eq!(
-            resolve_block(&provider, &upstream, block.digest()).await,
+            resolve_block(&provider, &upstream, &NoopBlockNetwork, block.digest()).await,
             None
         );
         assert_eq!(upstream.block_reads(), 0);
@@ -172,6 +192,7 @@ fn timed_out_upstream_request_is_retried_with_backoff() {
             context: Arc::new(context),
             execution_provider: StubBlockProvider::default(),
             upstream: upstream.clone(),
+            block_network: NoopBlockNetwork,
             upstream_request_timeout: TIMEOUT,
             upstream_request_timeouts: timeouts.clone(),
             retries: Arc::new(Mutex::new(RetryState::default())),
