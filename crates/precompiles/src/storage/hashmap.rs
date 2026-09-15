@@ -342,8 +342,9 @@ impl StorageCreditsBackend for HashMapStorageProvider {
             .unwrap_or(U256::ZERO)
     }
 
-    fn tstore(&mut self, address: Address, key: U256, value: U256) {
+    fn tstore(&mut self, address: Address, key: U256, value: U256) -> Result<(), Self::Error> {
         self.transient.insert((address, key), value);
+        Ok(())
     }
 
     fn is_non_creditable_slot(&mut self, owner: Address, key: U256) -> bool {

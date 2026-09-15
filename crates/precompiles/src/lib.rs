@@ -585,6 +585,65 @@ mod tests {
         );
     }
 
+    #[test]
+    fn test_precompile_static_call_halts_at_t13() {
+        let mut cfg = CfgEnv::<TempoHardfork>::default();
+        cfg.spec = TempoHardfork::T13;
+        let tx = TxEnv::default();
+        let precompile = tempo_precompile!("TIP20Token", &cfg, |input| {
+            TIP20Token::from_address(PATH_USD_ADDRESS).expect("PATH_USD_ADDRESS is valid")
+        });
+
+        let call_static = |calldata: Bytes| {
+            let mut db = CacheDB::new(EmptyDB::new());
+            db.insert_account_info(
+                PATH_USD_ADDRESS,
+                AccountInfo {
+                    code: Some(Bytecode::new_raw(bytes!("0xEF"))),
+                    ..Default::default()
+                },
+            );
+            let mut evm = EthEvmFactory::default().create_evm(db, EvmEnv::default());
+            let block = evm.block.clone();
+            let evm_internals = EvmInternals::new(evm.journal_mut(), &block, &cfg, &tx);
+
+            AlloyEvmPrecompile::call(
+                &precompile,
+                PrecompileInput {
+                    data: &calldata,
+                    caller: Address::ZERO,
+                    internals: evm_internals,
+                    gas: 1_000_000,
+                    is_static: true,
+                    value: U256::ZERO,
+                    target_address: PATH_USD_ADDRESS,
+                    bytecode_address: PATH_USD_ADDRESS,
+                    reservoir: 0,
+                },
+            )
+        };
+
+        let mutation = call_static(Bytes::from(
+            ITIP20::transferCall {
+                to: Address::random(),
+                amount: U256::from(100),
+            }
+            .abi_encode(),
+        ))
+        .expect("static mutation should return a frame-local halt");
+        assert!(mutation.is_halt());
+        assert!(mutation.bytes.is_empty());
+
+        let view = call_static(Bytes::from(
+            ITIP20::balanceOfCall {
+                account: Address::random(),
+            }
+            .abi_encode(),
+        ))
+        .expect("view function should succeed in static context");
+        assert!(view.is_success());
+    }
+
     /// Verifies that early-return revert paths in precompile `call()` methods correctly
     /// report gas_used. When a TIP-20 precompile reverts before reaching `dispatch_call`
     /// (e.g., uninitialized token), the gas consumed for input decoding and account info

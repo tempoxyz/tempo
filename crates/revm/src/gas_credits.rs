@@ -144,8 +144,9 @@ impl<DB: Database> StorageCreditsBackend for StorageCreditsContext<'_, DB> {
     }
 
     #[inline]
-    fn tstore(&mut self, address: Address, key: U256, value: U256) {
+    fn tstore(&mut self, address: Address, key: U256, value: U256) -> Result<(), Self::Error> {
         self.context.tstore(address, key, value);
+        Ok(())
     }
 }
 

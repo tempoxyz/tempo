@@ -117,6 +117,14 @@ impl<'a> EvmPrecompileStorageProvider<'a> {
     }
 
     #[inline]
+    fn ensure_not_static(&self) -> Result<(), TempoPrecompileError> {
+        match self.is_static {
+            false => Ok(()),
+            true => Err(TempoPrecompileError::StaticCallNotAllowed),
+        }
+    }
+
+    #[inline]
     fn deduct_state_gas(&mut self, gas: u64) -> Result<(), TempoPrecompileError> {
         if !self.gas_tracker.record_state_cost(gas) {
             return Err(TempoPrecompileError::OutOfGas);
@@ -146,6 +154,7 @@ impl<'a> EvmPrecompileStorageProvider<'a> {
         value: U256,
         skip_cold_load: bool,
     ) -> Result<StateLoad<SStoreResult>, TempoPrecompileError> {
+        self.ensure_not_static()?;
         Ok(self
             .internals
             .load_account_mut(address)?
@@ -322,8 +331,10 @@ impl crate::storage_credits::StorageCreditsBackend for EvmPrecompileStorageProvi
     }
 
     #[inline]
-    fn tstore(&mut self, address: Address, key: U256, value: U256) {
+    fn tstore(&mut self, address: Address, key: U256, value: U256) -> Result<(), Self::Error> {
+        self.ensure_not_static()?;
         self.internals.tstore(address, key, value);
+        Ok(())
     }
 
     #[inline]
@@ -352,6 +363,8 @@ impl<'a> PrecompileStorageProvider for EvmPrecompileStorageProvider<'a> {
 
     #[inline]
     fn set_code(&mut self, address: Address, code: Bytecode) -> Result<(), TempoPrecompileError> {
+        self.ensure_not_static()?;
+
         let code_len = code.len();
         self.deduct_gas(self.gas_params.code_deposit_cost(code_len))?;
 
@@ -400,6 +413,8 @@ impl<'a> PrecompileStorageProvider for EvmPrecompileStorageProvider<'a> {
         key: U256,
         value: U256,
     ) -> Result<(), TempoPrecompileError> {
+        self.ensure_not_static()?;
+
         self.sstore_inner(address, key, value, |result| {
             StorageAction::Sstore(address, key, result.present_value, value)
         })
@@ -412,6 +427,8 @@ impl<'a> PrecompileStorageProvider for EvmPrecompileStorageProvider<'a> {
         key: U256,
         delta: U256,
     ) -> Result<(), TempoPrecompileError> {
+        self.ensure_not_static()?;
+
         let current = self.sload_inner(address, key, false)?;
         let value = current
             .checked_add(delta)
@@ -437,6 +454,8 @@ impl<'a> PrecompileStorageProvider for EvmPrecompileStorageProvider<'a> {
         key: U256,
         delta: U256,
     ) -> Result<(), TempoPrecompileError> {
+        self.ensure_not_static()?;
+
         let current = self.sload_inner(address, key, false)?;
         let value = current
             .checked_sub(delta)
@@ -462,6 +481,8 @@ impl<'a> PrecompileStorageProvider for EvmPrecompileStorageProvider<'a> {
         key: U256,
         value: U256,
     ) -> Result<(), TempoPrecompileError> {
+        self.ensure_not_static()?;
+
         self.deduct_gas(self.gas_params.warm_storage_read_cost())?;
         self.internals.tstore(address, key, value);
         Ok(())
@@ -469,6 +490,8 @@ impl<'a> PrecompileStorageProvider for EvmPrecompileStorageProvider<'a> {
 
     #[inline]
     fn emit_event(&mut self, address: Address, event: LogData) -> Result<(), TempoPrecompileError> {
+        self.ensure_not_static()?;
+
         self.deduct_gas(
             gas::LOG
                 + self
