@@ -12,8 +12,12 @@
 pub(in crate::storage) mod utils;
 
 use commonware_macros::test_traced;
-use commonware_runtime::{Runner as _, Spawner, deterministic};
+use commonware_runtime::{
+    Runner as _, Spawner, deterministic,
+    mocks::{DelayedSyncContext, PendingSyncs, fail_pending_syncs, release_pending_syncs},
+};
 use commonware_utils::NZU64;
+use futures::FutureExt as _;
 
 use super::*;
 use crate::storage::PRUNABLE_ITEMS_PER_SECTION;
@@ -61,6 +65,61 @@ impl SetupHybrid {
         });
         (hybrid, provider)
     }
+}
+
+#[test_traced]
+fn start_sync_returns_before_durability_and_preserves_recovery() {
+    let block = make_block(1, B256::ZERO);
+    let expected = block.clone();
+    let (_, checkpoint) =
+        deterministic::Runner::default().start_and_recover(|context| async move {
+            let pending = PendingSyncs::default();
+            let context = DelayedSyncContext {
+                inner: context,
+                pending: pending.clone(),
+            };
+            let (mut hybrid, _) = SetupHybrid::default().build(&context).await;
+            hybrid.put(block.clone()).await.expect("put");
+
+            // Calling the Blocks trait must forward the archive's deferred sync,
+            // rather than falling back to a blocking sync inside the marshal actor.
+            let mut handle = Blocks::start_sync(&mut hybrid).await.expect("start sync");
+            assert!(!pending.lock().is_empty(), "sync must remain in flight");
+            assert!((&mut handle).now_or_never().is_none());
+            assert_eq!(hybrid.get(Identifier::Index(1)).await.unwrap(), Some(block));
+
+            release_pending_syncs(&pending);
+            handle.await.expect("durability barrier");
+        });
+
+    deterministic::Runner::from(checkpoint).start(|context| async move {
+        let (hybrid, _) = SetupHybrid::default().build(&context).await;
+        assert_eq!(
+            hybrid.get(Identifier::Index(1)).await.unwrap(),
+            Some(expected)
+        );
+    });
+}
+
+#[test_traced]
+fn start_sync_propagates_durability_failure() {
+    deterministic::Runner::default().start(|context| async move {
+        let pending = PendingSyncs::default();
+        let context = DelayedSyncContext {
+            inner: context,
+            pending: pending.clone(),
+        };
+        let (mut hybrid, _) = SetupHybrid::default().build(&context).await;
+        hybrid.put(make_block(1, B256::ZERO)).await.expect("put");
+
+        let handle = Blocks::start_sync(&mut hybrid).await.expect("start sync");
+        assert!(!pending.lock().is_empty(), "sync must remain in flight");
+        fail_pending_syncs(&pending);
+        assert!(
+            handle.await.is_err(),
+            "failed sync must not acknowledge durability"
+        );
+    });
 }
 
 #[test_traced]

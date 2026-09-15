@@ -96,7 +96,7 @@
 
 use alloy_primitives::B256;
 use commonware_consensus::{Heightable as _, marshal::store::Blocks, types::Height};
-use commonware_runtime::{BufferPooler, Clock, Metrics, Storage};
+use commonware_runtime::{BufferPooler, Clock, Handle, Metrics, Storage};
 use commonware_storage::{
     archive::{self, Identifier, prunable},
     translator::TwoCap,
@@ -339,6 +339,13 @@ where
     async fn sync(mut self) -> Result<Self, Self::Error> {
         self.prunable = archive::Archive::sync(self.prunable).await?;
         Ok(self)
+    }
+
+    async fn start_sync(&mut self) -> Result<Handle<()>, Self::Error> {
+        // Marshal drives this handle outside its mailbox loop and gates finalized
+        // delivery on completion. The Blocks default calls sync().await instead,
+        // stalling unrelated proposal and verification requests on this fsync.
+        Ok(archive::Archive::start_sync(&mut self.prunable).await?)
     }
 
     /// Attempts to read `id` from the prunable archive, falling back to EL on miss.
