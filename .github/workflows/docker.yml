@@ -40,7 +40,7 @@ jobs:
         with:
           persist-credentials: false
 
-      - uses: depot/setup-action@15c09a5f77a0840ad4bce955686522a257853461 # v1.7.1
+      - uses: tempoxyz/gh-actions/vendor/depot/setup-action@3626124474a987bc74b41fc7ae65b2e23f8e4e4e
 
       - name: Determine Docker labels
         id: docker-labels
@@ -63,7 +63,7 @@ jobs:
 
       - name: Docker metadata for tempo
         id: meta-tempo
-        uses: docker/metadata-action@030e881283bb7a6894de51c315a6bfe6a94e05cf # v6.0.0
+        uses: tempoxyz/gh-actions/vendor/docker/metadata-action@3626124474a987bc74b41fc7ae65b2e23f8e4e4e
         with:
           images: |
             ${{ env.REGISTRY }}/tempo
@@ -84,7 +84,7 @@ jobs:
 
       - name: Docker metadata for tempo-localnet
         id: meta-tempo-localnet
-        uses: docker/metadata-action@030e881283bb7a6894de51c315a6bfe6a94e05cf # v6.0.0
+        uses: tempoxyz/gh-actions/vendor/docker/metadata-action@3626124474a987bc74b41fc7ae65b2e23f8e4e4e
         with:
           images: |
             ${{ env.REGISTRY }}/tempo-localnet
@@ -105,7 +105,7 @@ jobs:
 
       - name: Docker metadata for tempo-sidecar
         id: meta-tempo-sidecar
-        uses: docker/metadata-action@030e881283bb7a6894de51c315a6bfe6a94e05cf # v6.0.0
+        uses: tempoxyz/gh-actions/vendor/docker/metadata-action@3626124474a987bc74b41fc7ae65b2e23f8e4e4e
         with:
           images: |
             ${{ env.REGISTRY }}/tempo-sidecar
@@ -124,22 +124,9 @@ jobs:
             type=sha,prefix=sha-
             type=ref,event=pr
 
-      - name: Docker metadata for tempo partial persistence
-        id: meta-tempo-partial-persistence
-        if: ${{ github.event_name == 'schedule' || github.event.inputs.nightly == 'true' }}
-        uses: docker/metadata-action@030e881283bb7a6894de51c315a6bfe6a94e05cf # v6.0.0
-        with:
-          images: |
-            ${{ env.REGISTRY }}/tempo
-            docker.io/tempoxyz/tempo
-          bake-target: tempo-partial-persistence
-          labels: ${{ steps.docker-labels.outputs.value }}
-          tags: |
-            type=raw,value=nightly-partial-persistence
-
       - name: Docker metadata for tempo-xtask
         id: meta-tempo-xtask
-        uses: docker/metadata-action@030e881283bb7a6894de51c315a6bfe6a94e05cf # v6.0.0
+        uses: tempoxyz/gh-actions/vendor/docker/metadata-action@3626124474a987bc74b41fc7ae65b2e23f8e4e4e
         with:
           images: |
             ${{ env.REGISTRY }}/tempo-xtask
@@ -159,14 +146,14 @@ jobs:
             type=ref,event=pr
 
       - name: Log in to Container Registry
-        uses: docker/login-action@4907a6ddec9925e35a0a9e82d7399ccc52663121 # v4.1.0
+        uses: tempoxyz/gh-actions/vendor/docker/login-action@3626124474a987bc74b41fc7ae65b2e23f8e4e4e
         with:
           registry: ${{ env.REGISTRY }}
           username: ${{ github.actor }}
           password: ${{ secrets.GITHUB_TOKEN }}
 
       - name: Log in to Docker Hub
-        uses: docker/login-action@4907a6ddec9925e35a0a9e82d7399ccc52663121 # v4.1.0
+        uses: tempoxyz/gh-actions/vendor/docker/login-action@3626124474a987bc74b41fc7ae65b2e23f8e4e4e
         with:
           username: ${{ vars.DOCKER_HUB_USER }}
           password: ${{ secrets.DOCKER_HUB_TOKEN }}
@@ -176,7 +163,7 @@ jobs:
 
       - name: Build and push Docker images
         id: build-and-push
-        uses: depot/bake-action@1d58c2668346981089b088b7ef36755b206b20e9 # v1.13.0
+        uses: tempoxyz/gh-actions/vendor/depot/bake-action@3626124474a987bc74b41fc7ae65b2e23f8e4e4e
         with:
           files: |
             docker-bake.hcl
@@ -184,7 +171,6 @@ jobs:
             ${{ steps.meta-tempo-localnet.outputs.bake-file }}
             ${{ steps.meta-tempo-sidecar.outputs.bake-file }}
             ${{ steps.meta-tempo-xtask.outputs.bake-file }}
-            ${{ steps.meta-tempo-partial-persistence.outputs.bake-file }}
           targets: ${{ (github.event_name == 'schedule' || github.event.inputs.nightly == 'true') && 'nightly' || 'default' }}
           project: 0c6tg19qsp
           push: true
@@ -195,7 +181,7 @@ jobs:
           VERGEN_GIT_SHA_SHORT: ${{ steps.shortsha.outputs.shortsha }}
 
       - name: Install cosign
-        uses: sigstore/cosign-installer@cad07c2e89fa2edd6e2d7bab4c1aa38e53f76003 # v4.1.1
+        uses: tempoxyz/gh-actions/vendor/sigstore/cosign-installer@3626124474a987bc74b41fc7ae65b2e23f8e4e4e
 
       - name: Sign Docker images
         id: sign-images
@@ -205,7 +191,6 @@ jobs:
           TEMPO_LOCALNET_TAGS: ${{ steps.meta-tempo-localnet.outputs.tags }}
           TEMPO_SIDECAR_TAGS: ${{ steps.meta-tempo-sidecar.outputs.tags }}
           TEMPO_XTASK_TAGS: ${{ steps.meta-tempo-xtask.outputs.tags }}
-          TEMPO_PARTIAL_PERSISTENCE_TAGS: ${{ steps.meta-tempo-partial-persistence.outputs.tags }}
         run: |
           set -euo pipefail
           sign_image() {
@@ -233,7 +218,6 @@ jobs:
             "$TEMPO_LOCALNET_TAGS"
             "$TEMPO_SIDECAR_TAGS"
             "$TEMPO_XTASK_TAGS"
-            "$TEMPO_PARTIAL_PERSISTENCE_TAGS"
           )
           sign_failures=0
           for tags in "${images[@]}"; do
@@ -331,7 +315,6 @@ jobs:
           TEMPO_LOCALNET_TAGS: ${{ steps.meta-tempo-localnet.outputs.tags }}
           TEMPO_SIDECAR_TAGS: ${{ steps.meta-tempo-sidecar.outputs.tags }}
           TEMPO_XTASK_TAGS: ${{ steps.meta-tempo-xtask.outputs.tags }}
-          TEMPO_PARTIAL_PERSISTENCE_TAGS: ${{ steps.meta-tempo-partial-persistence.outputs.tags }}
           SHORT_SHA: ${{ steps.shortsha.outputs.shortsha }}
           BUILD_OUTCOME: ${{ steps.build-and-push.outcome }}
           SIGN_OUTCOME: ${{ steps.sign-images.outcome }}
@@ -401,7 +384,6 @@ jobs:
           summarize_image "tempo-localnet" "${{ github.server_url }}/orgs/tempoxyz/packages/container/package/tempo-localnet" "$TEMPO_LOCALNET_TAGS" "tempo-localnet"
           summarize_image "tempo-sidecar" "${{ github.server_url }}/orgs/tempoxyz/packages/container/package/tempo-sidecar" "$TEMPO_SIDECAR_TAGS" "tempo-sidecar"
           summarize_image "tempo-xtask" "${{ github.server_url }}/orgs/tempoxyz/packages/container/package/tempo-xtask" "$TEMPO_XTASK_TAGS" "tempo-xtask"
-          summarize_image "tempo partial persistence" "${{ github.server_url }}/orgs/tempoxyz/packages/container/package/tempo" "$TEMPO_PARTIAL_PERSISTENCE_TAGS" "tempo-partial-persistence"
 
           {
             echo

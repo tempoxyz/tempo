@@ -133,9 +133,9 @@ fn convergence_depth_is_negative_while_reanchoring_below_the_local_head() {
         // local head remains b2 at height 2.
         h.execution.script_fcu(
             ForkchoiceState::from_finalized_head(GENESIS, d1),
-            [Ok(PayloadStatusEnum::Invalid {
+            Ok(PayloadStatusEnum::Invalid {
                 validation_error: "re-anchor rejected by test".into(),
-            })],
+            }),
         );
         h.report_pending_head(4, 1, d1);
         h.wait_until(|| gauge(&h, "convergence_depth") == -1).await;

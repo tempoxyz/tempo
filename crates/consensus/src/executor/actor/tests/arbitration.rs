@@ -4,6 +4,7 @@
 
 use std::time::Duration;
 
+use alloy_rpc_types_engine::PayloadStatusEnum;
 use commonware_macros::test_traced;
 use commonware_runtime::{Runner as _, deterministic};
 use futures::future::Either;
@@ -16,11 +17,13 @@ fn build_supersedes_queued_verification_while_another_request_executes() {
     deterministic::Runner::default().start(|context| async move {
         let h = Harness::start_at_genesis(&context);
 
-        // Start a validation and stop polling its subscriber before the
-        // execution layer's paced result is delivered. Its new-payload call
-        // proves that it currently owns the execution-task slot.
+        // Hold a validation open in the execution layer so it owns the
+        // execution-task slot while later requests arbitrate behind it.
         let active_block = make_block(1, 1, GENESIS);
         let active_digest = active_block.digest();
+        let release_active = h
+            .execution
+            .script_delayed_new_payload(active_digest, Ok(PayloadStatusEnum::Valid));
         let active = h.verify(round(1), active_block);
         futures::pin_mut!(active);
         let deadline = h.run_for(Duration::from_millis(1));
@@ -54,6 +57,9 @@ fn build_supersedes_queued_verification_while_another_request_executes() {
         let _ = superseded
             .await
             .expect_err("the newer build must supersede the queued verification");
+        release_active
+            .send(())
+            .expect("active validation should still be gated");
         assert!(
             active
                 .await

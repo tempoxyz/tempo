@@ -6,12 +6,16 @@ variable "VERGEN_GIT_SHA_SHORT" {
   default = ""
 }
 
+variable "REGISTRY" {
+  default = "ghcr.io/tempoxyz"
+}
+
 group "default" {
   targets = ["tempo", "tempo-localnet", "tempo-sidecar", "tempo-xtask"]
 }
 
 group "nightly" {
-  targets = ["tempo", "tempo-localnet", "tempo-sidecar", "tempo-xtask", "tempo-partial-persistence"]
+  targets = ["tempo-nightly", "tempo-localnet", "tempo-sidecar", "tempo-xtask"]
 }
 
 target "docker-metadata" {}
@@ -48,17 +52,18 @@ target "tempo" {
   target = "tempo"
 }
 
+target "tempo-nightly" {
+  inherits = ["tempo"]
+  args = {
+    RETH_ENGINE_PERSISTENCE_THRESHOLD = "30"
+    RETH_ENGINE_NUM_STATE_MASKING_BLOCKS = "20"
+  }
+  tags = ["${REGISTRY}/tempo:nightly", "docker.io/tempoxyz/tempo:nightly"]
+}
+
 target "tempo-localnet" {
   inherits = ["_common", "docker-metadata"]
   target = "tempo-localnet"
-}
-
-target "tempo-partial-persistence" {
-  inherits = ["_common", "docker-metadata"]
-  target = "tempo"
-  args = {
-    RUST_FEATURES = "asm-keccak,jemalloc,otlp,partial-persistence"
-  }
 }
 
 target "tempo-sidecar" {

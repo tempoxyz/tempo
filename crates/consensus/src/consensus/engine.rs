@@ -21,7 +21,6 @@ use commonware_runtime::{
 };
 use commonware_utils::NZUsize;
 use eyre::{OptionExt as _, WrapErr as _};
-use futures::future::try_join_all;
 use rand_core::{CryptoRng, Rng};
 use tempo_node::TempoFullNode;
 use tracing::info;
@@ -32,7 +31,7 @@ use crate::{
     dkg,
     epoch::{self, SchemeProvider},
     network::limit_channel,
-    peer_manager, storage, subblocks,
+    peer_manager, storage,
 };
 
 use super::block::Block;
@@ -49,7 +48,6 @@ const MAX_PENDING_ACKS: NonZeroUsize = NZUsize!(1);
 ///
 // XXX: Mostly a one-to-one copy of alto for now. We also put the context in here
 // because there doesn't really seem to be a point putting it into an extra initializer.
-#[derive(Clone)]
 pub struct Builder<TBlocker, TPeerManager> {
     pub execution_node: Option<Arc<TempoFullNode>>,
 
@@ -72,18 +70,18 @@ pub struct Builder<TBlocker, TPeerManager> {
     pub time_to_retry_nullify_broadcast: Duration,
     pub time_for_peer_response: Duration,
     pub views_to_track: u64,
-    pub views_until_leader_skip: u64,
+    /// Leader inactivity window after which a view is skipped early. Must
+    /// exceed `time_to_collect_notarizations` and `time_to_retry_nullify_broadcast`.
+    pub inactive_time_before_leader_skip: Duration,
     /// Local proposal return budget after reserving network propagation time.
     ///
     /// The leader uses this window for payload building, local marshal
     /// persistence, and any final wait before returning the proposal.
     pub proposal_return_budget: Duration,
-    pub time_to_build_subblock: Duration,
-    pub subblock_broadcast_interval: Duration,
     pub fcu_heartbeat_interval: Duration,
-    pub with_subblocks: bool,
 
     pub feed_state: crate::feed::FeedStateHandle,
+    pub gossip: Option<crate::gossip::Config>,
 
     /// Number of recently finalized blocks retained in the prunable archive
     /// passed to the marshal actor. Older blocks are served from reth.
@@ -100,6 +98,7 @@ where
         self
     }
 
+    /// Initializes the engine.
     pub async fn try_init<TContext>(
         self,
         context: TContext,
@@ -211,34 +210,37 @@ where
             peer_provider: peer_manager_mailbox.clone(),
             mailbox_size: self.mailbox_size,
             blocker: self.blocker.clone(),
-            initial: Duration::from_secs(1),
             timeout: Duration::from_secs(2),
             fetch_retry_timeout: Duration::from_millis(100),
             priority_requests: false,
             priority_responses: false,
         };
 
-        let subblocks = self.with_subblocks.then(|| {
-            subblocks::Actor::new(subblocks::Config {
-                context: context.child("subblocks"),
-                signer: self.signer.clone(),
-                scheme_provider: scheme_provider.clone(),
-                node: execution_node.clone(),
-                // TODO: subblocks are currently dead; hardcode the recipient to
-                // zero until this is wired through V2 or the subblocks logic is
-                // replaced.
-                fee_recipient: alloy_primitives::Address::ZERO,
-                time_to_build_subblock: self.time_to_build_subblock,
-                subblock_broadcast_interval: self.subblock_broadcast_interval,
-                epoch_strategy: epoch_strategy.clone(),
-            })
-        });
-
         let (feed, feed_mailbox) = crate::feed::init(
             context.child("feed"),
             marshal_mailbox.clone(),
             self.feed_state,
         );
+
+        // Validator gossip is publish-only. Marshal sends durable tips to the
+        // actor, and the transport discards inbound frames.
+        let (gossip_actor, gossip_mailbox) = self
+            .gossip
+            .map(|gossip_config| {
+                crate::gossip::init(
+                    context.child("gossip"),
+                    crate::gossip::actor::Config {
+                        verify_rate: gossip_config.verify_rate,
+                        transport: gossip_config.transport,
+                        epoch_strategy: epoch_strategy.clone(),
+                        finalized_floor,
+                        peer_control: execution_node.network.clone(),
+                        driver: crate::gossip::PublishOnlySink,
+                        marshal: marshal_mailbox.clone(),
+                    },
+                )
+            })
+            .unzip();
 
         let (application, application_mailbox) = application::init(super::application::Config {
             context: context.child("application"),
@@ -248,8 +250,6 @@ where
             execution_node: execution_node.clone(),
             executor: executor_mailbox.clone(),
             proposal_return_budget: self.proposal_return_budget,
-            subblocks: subblocks.as_ref().map(|s| s.mailbox()),
-            scheme_provider: scheme_provider.clone(),
             epoch_strategy: epoch_strategy.clone(),
         })
         .await
@@ -266,14 +266,13 @@ where
                 time_for_peer_response: self.time_for_peer_response,
                 time_to_propose: self.time_to_propose,
                 mailbox_size: self.mailbox_size,
-                subblocks: subblocks.as_ref().map(|s| s.mailbox()),
                 marshal: marshal_mailbox.clone(),
                 scheme_provider: scheme_provider.clone(),
                 time_to_collect_notarizations: self.time_to_collect_notarizations,
                 time_to_retry_nullify_broadcast: self.time_to_retry_nullify_broadcast,
                 partition_prefix: format!("{}_epoch_manager", self.partition_prefix),
                 views_to_track: ViewDelta::new(self.views_to_track),
-                views_until_leader_skip: ViewDelta::new(self.views_until_leader_skip),
+                inactive_time_before_leader_skip: self.inactive_time_before_leader_skip,
             },
         );
 
@@ -321,8 +320,8 @@ where
 
             feed,
             feed_mailbox,
-
-            subblocks,
+            gossip_mailbox,
+            gossip_actor,
         })
     }
 }
@@ -378,8 +377,15 @@ where
 
     feed: crate::feed::Actor<TContext>,
     feed_mailbox: crate::feed::Mailbox,
-
-    subblocks: Option<subblocks::Actor<TContext>>,
+    gossip_mailbox: Option<crate::gossip::Mailbox>,
+    /// Publish-only certificate gossip for validators.
+    gossip_actor: Option<
+        crate::gossip::Actor<
+            TContext,
+            crate::gossip::PublishOnlySink,
+            crate::gossip::NetworkPeerControl,
+        >,
+    >,
 }
 
 impl<TContext, TBlocker, TPeerManager> Engine<TContext, TBlocker, TPeerManager>
@@ -397,10 +403,6 @@ where
     TBlocker: Blocker<PublicKey = PublicKey> + Sync,
     TPeerManager: AddressableManager<PublicKey = PublicKey> + Sync,
 {
-    #[expect(
-        clippy::too_many_arguments,
-        reason = "following commonware's style of writing"
-    )]
     pub fn start(
         mut self,
         votes_network: (
@@ -427,10 +429,6 @@ where
             impl Sender<PublicKey = PublicKey>,
             impl Receiver<PublicKey = PublicKey>,
         ),
-        subblocks_channel: (
-            impl Sender<PublicKey = PublicKey>,
-            impl Receiver<PublicKey = PublicKey>,
-        ),
     ) -> Handle<eyre::Result<()>> {
         spawn_cell!(
             self.context,
@@ -441,15 +439,10 @@ where
                 broadcast_network,
                 marshal_network,
                 dkg_channel,
-                subblocks_channel,
             )
         )
     }
 
-    #[expect(
-        clippy::too_many_arguments,
-        reason = "following commonware's style of writing"
-    )]
     async fn run(
         self,
         votes_channel: (
@@ -473,10 +466,6 @@ where
             impl Receiver<PublicKey = PublicKey>,
         ),
         dkg_channel: (
-            impl Sender<PublicKey = PublicKey>,
-            impl Receiver<PublicKey = PublicKey>,
-        ),
-        subblocks_channel: (
             impl Sender<PublicKey = PublicKey>,
             impl Receiver<PublicKey = PublicKey>,
         ),
@@ -518,13 +507,6 @@ where
             config::DKG_CHANNEL_IDENT,
             self.max_message_size,
         );
-        let subblocks_channel = limit_channel(
-            context,
-            subblocks_channel,
-            config::SUBBLOCKS_CHANNEL_IDENT,
-            self.max_message_size,
-        );
-
         let peer_manager = self.peer_manager.start();
 
         let broadcast = self.broadcast.start(broadcast_channel);
@@ -544,7 +526,13 @@ where
                     self.executor_mailbox,
                     Reporters::from((
                         self.dkg_manager_mailbox.clone(),
-                        Reporters::from((self.peer_manager_mailbox, self.feed_mailbox)),
+                        Reporters::from((
+                            self.peer_manager_mailbox,
+                            Reporters::<_, crate::feed::Mailbox, crate::gossip::Mailbox>::from((
+                                self.feed_mailbox,
+                                self.gossip_mailbox,
+                            )),
+                        )),
                     )),
                 )),
             )),
@@ -557,6 +545,7 @@ where
                 .start(votes_channel, certificates_channel, resolver_channel);
 
         let feed = self.feed.start();
+        let gossip_task = self.gossip_actor.map(crate::gossip::Actor::start);
 
         let dkg_manager = self.dkg_manager.start(dkg_channel);
 
@@ -571,19 +560,14 @@ where
             peer_manager,
         ];
 
-        if let Some(subblocks) = self.subblocks {
-            tasks.push(
-                self.context
-                    .child("subblocks_channel")
-                    .spawn(|_| subblocks.run(subblocks_channel)),
-            );
-        } else {
-            drop(subblocks_channel);
+        if let Some(gossip_task) = gossip_task {
+            tasks.push(gossip_task);
         }
 
-        try_join_all(tasks)
+        // Even a clean actor exit (e.g. marshal losing an acknowledgement) must
+        // stop the engine. Selection also aborts siblings when canceled.
+        Handle::select(tasks)
             .await
-            .map(|_| ())
             // TODO: look into adding error context so that we know which
             // component failed.
             .wrap_err("one of the consensus engine's actors failed")

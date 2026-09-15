@@ -167,7 +167,7 @@ impl ZonePortalStorage {
         self.token_enable_count_block.write(creation_block)?;
         self.tokens_enabled_in_current_block.write(1)?;
         self.token_enablement_hash.write(token_enablement_hash)?;
-        if self.storage.spec().is_t12() {
+        if self.storage.spec().is_t13() {
             self.token_enablement_cursor_initialized.write(true)?;
         }
         for gateway in &params.zoneGateways {

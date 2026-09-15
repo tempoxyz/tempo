@@ -29,7 +29,6 @@ fn validator_lost_share_but_gets_share_in_next_epoch() {
         {
             let last_node = &mut validators[lost_share_index];
             last_node
-                .consensus_config_mut()
                 .share
                 .take()
                 .expect("the node must have had a share");

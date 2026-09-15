@@ -14,13 +14,12 @@ pub mod feed;
 pub mod finalization_verifier;
 pub mod finalized_header_stream;
 pub mod follow;
-pub(crate) mod gossip;
+pub mod gossip;
 pub mod metrics;
 mod network;
 pub(crate) mod network_identity;
 pub(crate) mod peer_manager;
 pub mod storage;
-pub(crate) mod subblocks;
 #[cfg(test)]
 pub(crate) mod test_utils;
 pub(crate) mod utils;
@@ -40,8 +39,7 @@ use tracing::info;
 pub use crate::config::{
     BROADCASTER_CHANNEL_IDENT, BROADCASTER_LIMIT, CERTIFICATES_CHANNEL_IDENT, CERTIFICATES_LIMIT,
     DKG_CHANNEL_IDENT, DKG_LIMIT, MARSHAL_CHANNEL_IDENT, MARSHAL_LIMIT, NAMESPACE,
-    RESOLVER_CHANNEL_IDENT, RESOLVER_LIMIT, SUBBLOCKS_CHANNEL_IDENT, SUBBLOCKS_LIMIT,
-    VOTES_CHANNEL_IDENT, VOTES_LIMIT,
+    RESOLVER_CHANNEL_IDENT, RESOLVER_LIMIT, VOTES_CHANNEL_IDENT, VOTES_LIMIT,
 };
 
 pub use args::{Args, PositiveDuration};
@@ -55,7 +53,10 @@ pub async fn run_consensus_stack(
     config: Args,
     execution_node: Arc<TempoFullNode>,
     feed_state: feed::FeedStateHandle,
+    gossip_transport: Option<tempo_node::gossip::TransportHandle>,
 ) -> eyre::Result<()> {
+    config.validate_simplex_timing()?;
+
     let share = config
         .signing_share
         .as_ref()
@@ -82,26 +83,12 @@ pub async fn run_consensus_stack(
             .await
             .wrap_err("failed to start network")?;
 
-    let message_backlog = config.message_backlog;
-    let votes = network.register(VOTES_CHANNEL_IDENT, VOTES_LIMIT, message_backlog);
-    let certificates = network.register(
-        CERTIFICATES_CHANNEL_IDENT,
-        CERTIFICATES_LIMIT,
-        message_backlog,
-    );
-    let resolver = network.register(RESOLVER_CHANNEL_IDENT, RESOLVER_LIMIT, message_backlog);
-    let broadcaster = network.register(
-        BROADCASTER_CHANNEL_IDENT,
-        BROADCASTER_LIMIT,
-        message_backlog,
-    );
-    let marshal = network.register(MARSHAL_CHANNEL_IDENT, backfill_quota, message_backlog);
-    let dkg = network.register(DKG_CHANNEL_IDENT, DKG_LIMIT, message_backlog);
-    // We create the subblocks channel even though it might not be used to make
-    // sure that we don't ban peers that activate subblocks and send messages
-    // through this subchannel.
-    let subblocks = network.register(SUBBLOCKS_CHANNEL_IDENT, SUBBLOCKS_LIMIT, message_backlog);
-
+    let votes = network.register(VOTES_CHANNEL_IDENT, VOTES_LIMIT);
+    let certificates = network.register(CERTIFICATES_CHANNEL_IDENT, CERTIFICATES_LIMIT);
+    let resolver = network.register(RESOLVER_CHANNEL_IDENT, RESOLVER_LIMIT);
+    let broadcaster = network.register(BROADCASTER_CHANNEL_IDENT, BROADCASTER_LIMIT);
+    let marshal = network.register(MARSHAL_CHANNEL_IDENT, backfill_quota);
+    let dkg = network.register(DKG_CHANNEL_IDENT, DKG_LIMIT);
     let target_block_time = config.target_block_time.into_duration();
     // Consensus owns the end-to-end local proposal window. The network budget
     // is reserved for propagation, and the remaining time is passed down to
@@ -111,6 +98,10 @@ pub async fn run_consensus_stack(
 
     let consensus_engine = crate::consensus::engine::Builder {
         execution_node: Some(execution_node),
+        gossip: gossip_transport.map(|transport| gossip::Config {
+            transport,
+            verify_rate: config.gossip_verify_rate,
+        }),
         blocker: oracle.clone(),
         peer_manager: oracle.clone(),
 
@@ -128,12 +119,9 @@ pub async fn run_consensus_stack(
         time_to_retry_nullify_broadcast: config.wait_to_rebroadcast_nullify.into_duration(),
         time_for_peer_response: config.wait_for_peer_response.into_duration(),
         views_to_track: config.views_to_track,
-        views_until_leader_skip: config.inactive_views_until_leader_skip,
+        inactive_time_before_leader_skip: config.inactive_time_before_leader_skip.into_duration(),
         proposal_return_budget,
-        time_to_build_subblock: config.time_to_build_subblock.into_duration(),
-        subblock_broadcast_interval: config.subblock_broadcast_interval.into_duration(),
         fcu_heartbeat_interval: config.fcu_heartbeat_interval.into_duration(),
-        with_subblocks: false,
 
         feed_state,
 
@@ -145,15 +133,7 @@ pub async fn run_consensus_stack(
 
     let (network, consensus_engine) = (
         network.start(),
-        consensus_engine.start(
-            votes,
-            certificates,
-            resolver,
-            broadcaster,
-            marshal,
-            dkg,
-            subblocks,
-        ),
+        consensus_engine.start(votes, certificates, resolver, broadcaster, marshal, dkg),
     );
 
     tokio::select! {
@@ -180,6 +160,7 @@ pub async fn run_follow_stack(
     upstream_request_timeout: std::time::Duration,
     execution_node: Arc<TempoFullNode>,
     feed_state: feed::FeedStateHandle,
+    gossip_transport: Option<tempo_node::gossip::TransportHandle>,
 ) -> eyre::Result<()> {
     let chain_spec = execution_node.chain_spec();
 
@@ -205,8 +186,12 @@ pub async fn run_follow_stack(
     )
     .wrap_err("failed to initialize client to upstream node")?;
 
-    let config = follow::Config {
+    let follow_engine = follow::Config {
         execution_node,
+        gossip: gossip_transport.map(|transport| gossip::Config {
+            transport,
+            verify_rate: config.gossip_verify_rate,
+        }),
         feed_state,
         upstream,
         upstream_mailbox,
@@ -219,7 +204,7 @@ pub async fn run_follow_stack(
         finalized_blocks_retention: config.finalized_blocks_retention,
     };
 
-    let ret = config
+    let ret = follow_engine
         .try_init(context.child("engine"))
         .await
         .wrap_err("failed initializing follow engine")?
@@ -253,9 +238,11 @@ async fn instantiate_network(
         allow_private_ips: config.allow_private_ips,
         allow_dns: config.allow_dns,
         tracked_peer_sets: crate::config::PEERSETS_TO_TRACK,
+        max_peers_per_set: config.max_peers_per_set,
         synchrony_bound: config.synchrony_bound.into_duration(),
         max_handshake_age: config.handshake_stale_after.into_duration(),
         handshake_timeout: config.handshake_timeout.into_duration(),
+        dial_timeout: config.dial_timeout.into_duration(),
         max_concurrent_handshakes: config.max_concurrent_handshakes,
         block_duration: config.time_to_unblock_byzantine_peer.into_duration(),
         dial_frequency: config.wait_before_peers_redial.into_duration(),

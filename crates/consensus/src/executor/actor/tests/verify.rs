@@ -3,7 +3,6 @@
 
 use std::time::Duration;
 
-use alloy_primitives::B256;
 use alloy_rpc_types_engine::PayloadStatusEnum;
 use commonware_macros::test_traced;
 use commonware_runtime::{Runner as _, deterministic};
@@ -30,26 +29,6 @@ fn valid_block_resolves_with_a_duration() {
 }
 
 #[test_traced]
-fn validator_set_reaches_new_payload_unchanged() {
-    deterministic::Runner::default().start(|context| async move {
-        let h = Harness::start_at_genesis(&context);
-
-        let b1 = make_block(1, 1, GENESIS);
-        let validator_set = vec![B256::repeat_byte(0x11), B256::repeat_byte(0x22)];
-        let verdict = h
-            .verify_with_validator_set(round(1), b1.clone(), Some(validator_set.clone()))
-            .await
-            .expect("verification should complete");
-
-        assert!(verdict.is_some());
-        assert_eq!(
-            h.execution.payload_validator_sets(),
-            vec![(b1.digest(), Some(validator_set))],
-        );
-    });
-}
-
-#[test_traced]
 fn invalid_block_resolves_with_a_rejection() {
     deterministic::Runner::default().start(|context| async move {
         let h = Harness::start_at_genesis(&context);
@@ -57,9 +36,9 @@ fn invalid_block_resolves_with_a_rejection() {
         let b1 = make_block(1, 1, GENESIS);
         h.execution.script_new_payload(
             b1.digest(),
-            [Ok(PayloadStatusEnum::Invalid {
+            Ok(PayloadStatusEnum::Invalid {
                 validation_error: "bad state root".into(),
-            })],
+            }),
         );
 
         let verdict = h
@@ -144,13 +123,10 @@ fn accepted_payload_status_fails_the_validation() {
         let h = Harness::start_at_genesis(&context);
 
         let b1 = make_block(1, 1, GENESIS);
-        h.execution.script_new_payload(
-            b1.digest(),
-            [
-                Ok(PayloadStatusEnum::Accepted),
-                Ok(PayloadStatusEnum::Valid),
-            ],
-        );
+        h.execution
+            .script_new_payload(b1.digest(), Ok(PayloadStatusEnum::Accepted));
+        h.execution
+            .script_new_payload(b1.digest(), Ok(PayloadStatusEnum::Valid));
         let _ = h
             .verify(round(1), b1)
             .await
@@ -172,10 +148,10 @@ fn new_payload_transport_error_fails_validation_but_is_not_fatal() {
         let h = Harness::start_at_genesis(&context);
 
         let b1 = make_block(1, 1, GENESIS);
-        h.execution.script_new_payload(
-            b1.digest(),
-            [Err("connection closed"), Ok(PayloadStatusEnum::Valid)],
-        );
+        h.execution
+            .script_new_payload(b1.digest(), Err("connection closed"));
+        h.execution
+            .script_new_payload(b1.digest(), Ok(PayloadStatusEnum::Valid));
         let _ = h
             .verify(round(1), b1.clone())
             .await
@@ -243,9 +219,14 @@ fn cancellation_before_verification_delivery_still_leaves_the_body_for_convergen
         let b1 = make_block(1, 1, GENESIS);
         let d1 = b1.digest();
 
-        // Start validation, then abandon it after newPayload has been issued
-        // but before its paced result is delivered (consensus moved on from
-        // the view). Dropping the future drops the response receiver.
+        // Start validation, then abandon it while newPayload is held open
+        // (consensus moved on from the view). Dropping the future drops the
+        // response receiver.
+        let _release_validation = h
+            .execution
+            .script_delayed_new_payload(d1, Ok(PayloadStatusEnum::Valid));
+        h.execution
+            .script_new_payload(d1, Ok(PayloadStatusEnum::Valid));
         let verify = Box::pin(h.verify(round(1), b1));
         let sleep = Box::pin(h.run_for(Duration::from_millis(1)));
         let verify = match futures::future::select(verify, sleep).await {

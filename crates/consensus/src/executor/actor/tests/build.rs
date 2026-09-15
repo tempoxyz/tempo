@@ -350,9 +350,9 @@ fn rejected_build_forkchoice_update_fails_the_build_without_shutdown() {
 
         h.execution.script_fcu(
             ForkchoiceState::from_finalized_head(GENESIS, GENESIS),
-            [Ok(PayloadStatusEnum::Invalid {
+            Ok(PayloadStatusEnum::Invalid {
                 validation_error: "rejected".into(),
-            })],
+            }),
         );
         let rx = h.build(round(1), GENESIS);
         rx.await.expect_err("the failed FCU must fail the build");
@@ -374,7 +374,7 @@ fn forkchoice_update_transport_error_fails_the_build_without_shutdown() {
 
         h.execution.script_fcu(
             ForkchoiceState::from_finalized_head(GENESIS, GENESIS),
-            [Err("connection closed")],
+            Err("connection closed"),
         );
         let rx = h.build(round(1), GENESIS);
         rx.await
@@ -411,7 +411,6 @@ fn payload_attributes_reach_the_execution_layer_unchanged() {
             456,
             extra_data.clone(),
             Some(consensus_context),
-            Vec::new,
         )
         .with_payload_build_budget(build_budget);
 
@@ -431,6 +430,5 @@ fn payload_attributes_reach_the_execution_layer_unchanged() {
         assert_eq!(received.consensus_context(), Some(consensus_context));
         assert_eq!(received.payload_build_budget(), Some(build_budget));
         assert!(received.validation_latency_estimate().is_none());
-        assert!(received.subblocks().is_empty());
     });
 }

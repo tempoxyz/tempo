@@ -1,15 +1,16 @@
 //! The `tempo/1` actor.
 //!
-//! The actor admits and schedules peer certificates for driver judgment, then
-//! publishes certificates after marshal confirms they are durable. It uses the
-//! runtime clock so scheduling and rate limits work in deterministic tests.
+//! The actor publishes certificates after marshal confirms they are durable. In
+//! follow mode, it also admits and schedules peer certificates for verification.
+//! It uses the runtime clock so scheduling and rate limits work in deterministic
+//! tests.
 
 use std::{collections::HashMap, num::NonZeroU32};
 
 use alloy_primitives::{B256, Bytes, keccak256};
 use commonware_consensus::{
     Epochable as _,
-    types::{Epoch, Round},
+    types::{Epoch, Epocher as _, FixedEpocher, Height, Round},
 };
 use commonware_runtime::{
     Clock, ContextCell, Handle, Metrics as RuntimeMetrics, Quota, RateLimiter, Spawner, spawn_cell,
@@ -112,26 +113,30 @@ type PeerKey = alloy_primitives::B512;
 
 /// Inputs and limits for the `tempo/1` actor.
 pub(crate) struct Config<K, P, M = crate::alias::marshal::Mailbox> {
-    /// Maximum driver judgements per second across all peers.
+    /// Maximum inbound certificate judgements per second across all peers.
     ///
-    /// Each signature check runs on the driver task, which also acknowledges
-    /// blocks to marshal. This limit bounds how much a flood can delay block import.
+    /// In follow mode, each signature check runs on the driver task, which also
+    /// acknowledges blocks to marshal. This limit bounds how much a flood can
+    /// delay block import.
     pub(crate) verify_rate: NonZeroU32,
     /// The consensus layer's end of the `tempo/1` transport.
     pub(crate) transport: TransportHandle,
-    /// Marshal notifications that trigger durable publication and scheme retries.
-    pub(crate) mailbox: mpsc::UnboundedReceiver<Message>,
+    /// Epoch layout used to interpret gap-free marshal block updates.
+    pub(crate) epoch_strategy: FixedEpocher,
+    /// Finalized height processed before marshal starts reporting updates.
+    pub(crate) finalized_floor: Height,
     /// Reputation control for peers that misbehave.
     pub(crate) peer_control: P,
-    /// Driver capability that verifies and processes peer certificates.
+    /// Capability used to verify and process inbound peer certificates.
     pub(crate) driver: K,
     /// Retrieves certificates after marshal announces their persisted tips.
     pub(crate) marshal: M,
 }
 
-pub(crate) fn init<TContext, K, P, M>(
+pub(super) fn init<TContext, K, P, M>(
     context: TContext,
     config: Config<K, P, M>,
+    mailbox: mpsc::UnboundedReceiver<Message>,
 ) -> Actor<TContext, K, P, M>
 where
     TContext: Clock + RuntimeMetrics + Spawner,
@@ -139,11 +144,22 @@ where
     let metrics = Metrics::init(&context);
     let quota = Quota::per_second(config.verify_rate);
     let limiter_context = context.child("verify_limiter");
+    let info = config
+        .epoch_strategy
+        .containing(config.finalized_floor)
+        .expect("fixed epoch strategy supports every height");
+    let latest_processed_epoch = if info.last() == config.finalized_floor {
+        info.epoch().next()
+    } else {
+        info.epoch()
+    };
 
     Actor {
         verify_limiter: RateLimiter::direct_with_clock(quota, limiter_context),
         context: ContextCell::new(context),
         config,
+        mailbox,
+        latest_processed_epoch,
         peers: HashMap::new(),
         latest: None,
         pending: OptionFuture::none(),
@@ -157,6 +173,7 @@ where
 pub(crate) struct Actor<TContext: Clock, K, P, M = crate::alias::marshal::Mailbox> {
     context: ContextCell<TContext>,
     config: Config<K, P, M>,
+    mailbox: mpsc::UnboundedReceiver<Message>,
 
     /// Active logical `tempo/1` peers and their certificate slots.
     ///
@@ -170,7 +187,8 @@ pub(crate) struct Actor<TContext: Clock, K, P, M = crate::alias::marshal::Mailbo
 
     /// Highest verified round learned from driver judgment or a durable marshal tip.
     latest_verified_round: Round,
-
+    /// Highest epoch whose scheme is available from processed boundary blocks.
+    latest_processed_epoch: Epoch,
     /// Next available ticket to assign to a slot.
     next_ready_ticket: ReadyTicket,
 
@@ -193,7 +211,7 @@ where
         loop {
             // Biased order keeps incoming peer frames last. A flood cannot delay
             // driver results, budget wakeups, control changes, publications, or
-            // scheme updates.
+            // marshal progress updates.
             select! {
                 biased;
 
@@ -210,7 +228,7 @@ where
 
                 Some(event) = self.config.transport.control.recv() => self.on_peer(event),
 
-                Some(message) = self.config.mailbox.recv() => self.on_message(message).await,
+                Some(message) = self.mailbox.recv() => self.on_message(message).await,
 
                 Some(frame) = self.config.transport.frames.recv() => self.on_frame(frame),
             }
@@ -325,15 +343,29 @@ where
 
     async fn on_message(&mut self, message: Message) {
         match message {
-            Message::BoundarySchemeInstalled { epoch } => self.release_quarantines(epoch),
             Message::FinalizedTip { round, height } => {
                 let Some(certificate) = self.config.marshal.get_finalization(height).await else {
                     debug!(%height, "finalized tip is missing its persisted certificate");
                     return;
                 };
+                debug_assert_eq!(round, certificate.proposal.round);
                 self.advance_latest_verified_round(round);
                 let frame = wire::encode(&certificate).freeze().into();
                 self.publish(round, frame);
+            }
+            Message::FinalizedBlock { height } => {
+                let info = self
+                    .config
+                    .epoch_strategy
+                    .containing(height)
+                    .expect("fixed epoch strategy supports every height");
+                if info.last() == height {
+                    let installed = info.epoch().next();
+                    if installed > self.latest_processed_epoch {
+                        self.latest_processed_epoch = installed;
+                        self.release_quarantines(installed);
+                    }
+                }
             }
         }
     }
@@ -361,15 +393,15 @@ where
         self.relay(round, &frame);
     }
 
-    /// Releases live quarantines covered by an authenticated boundary scheme.
-    fn release_quarantines(&mut self, installed: Epoch) {
+    /// Releases live quarantines covered by a processed epoch boundary.
+    fn release_quarantines(&mut self, available: Epoch) {
         let mut releasable: Vec<(ReadyTicket, PeerKey, Epoch)> = self
             .peers
             .iter()
             .filter_map(|(peer, state)| {
                 let slot = state.slot.as_ref()?;
                 match slot.state {
-                    SlotState::NeedsScheme(epoch) if epoch <= installed => {
+                    SlotState::NeedsScheme(epoch) if epoch <= available => {
                         Some((slot.ready_ticket, *peer, epoch))
                     }
                     _ => None,
@@ -390,15 +422,14 @@ where
             debug!(
                 %peer,
                 %epoch,
-                %installed,
+                %available,
                 round = %slot.certificate.round(),
                 digest = %slot.certificate.proposal.payload,
-                "releasing quarantined certificate after boundary scheme installation",
+                "releasing quarantined certificate after processing its epoch boundary",
             );
             slot.state = SlotState::Ready;
             slot.ready_ticket = ready_ticket;
         }
-        self.metrics.boundary_scheme_events.inc();
         self.update_slot_metrics();
         if released {
             self.try_dispatch();
@@ -525,19 +556,13 @@ where
                 }
             }
             Err(CertificateError::NeedsScheme { epoch }) => {
-                // `NeedsScheme` is provisional.
-                //
-                // This means that we cannot get a definitive judgement for the pending certificate.
-                // We might be lacking the scheme for the epoch the certificate requires or perhaps
-                // the certificate is forged.
-                //
-                // Because of that, we do not forget it nor settle it, we are going to quarantine it
-                // until the scheme for the epoch is installed.
-                //
-                // Once the scheme is installed, the pending certificate will be released and can be
-                // settled, potentially punishing the peer if forgery is detected.
+                // A missing scheme is provisional because the sender may be
+                // honest after an identity rotation. A boundary update can race
+                // with this judgement, so check the retained watermark after
+                // quarantining instead of relying only on the update.
                 self.metrics.needs_scheme.inc();
                 self.quarantine(&pending, epoch);
+                self.release_quarantines(self.latest_processed_epoch);
             }
         }
     }
@@ -591,7 +616,7 @@ where
             certificate_epoch = %slot.certificate.epoch(),
             round = %pending.round,
             digest = %slot.certificate.proposal.payload,
-            "quarantining certificate until an authenticated boundary installs its scheme",
+            "quarantining certificate until marshal processes its epoch boundary",
         );
         slot.state = SlotState::NeedsScheme(required);
         self.update_slot_metrics();

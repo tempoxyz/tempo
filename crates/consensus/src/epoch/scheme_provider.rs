@@ -11,7 +11,6 @@ use commonware_cryptography::{
     certificate::{Provider, Scoped},
     ed25519::PublicKey,
 };
-
 #[derive(Clone)]
 #[expect(clippy::type_complexity)]
 pub(crate) struct SchemeProvider {

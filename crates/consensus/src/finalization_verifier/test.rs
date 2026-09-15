@@ -1,8 +1,10 @@
-use alloy_consensus::BlockHeader as _;
+use alloy_consensus::{BlockHeader as _, Header};
 use commonware_consensus::types::{Epoch, FixedEpocher};
 use commonware_macros::test_traced;
 use commonware_runtime::{Runner as _, deterministic};
+use reth_node_core::primitives::SealedBlock;
 use tempo_chainspec::NetworkIdentity;
+use tempo_primitives::{Block as TempoBlock, BlockBody, TempoHeader};
 
 use super::{Error, FinalizationVerifier};
 use crate::follow::test_utils::{
@@ -64,6 +66,47 @@ fn rejects_epoch_mismatching_block_height() {
                 expected: 1,
                 actual: 0,
             }) if height == EPOCH_LENGTH.get()
+        ));
+    });
+}
+
+#[test_traced]
+fn rejects_block_body_that_does_not_match_header() {
+    deterministic::Runner::default().start(|mut context| async move {
+        let fixture = dkg_fixture(&mut context, Epoch::zero());
+        let verifier = FinalizationVerifier::new(
+            NetworkIdentity {
+                from_epoch: 0,
+                identity: *fixture.outcome.network_identity(),
+            },
+            FixedEpocher::new(EPOCH_LENGTH),
+        );
+
+        let block = make_block(1, None);
+        let finalization = make_finalization(&block, Epoch::zero(), &fixture.schemes);
+        let mut certified = make_certified_block(block, &finalization);
+        let hash = certified.block.hash();
+        certified.block = SealedBlock::new_unchecked(
+            TempoBlock {
+                header: TempoHeader {
+                    inner: Header {
+                        number: 1,
+                        ..Default::default()
+                    },
+                    ..Default::default()
+                },
+                body: BlockBody {
+                    withdrawals: Some(Default::default()),
+                    ..Default::default()
+                },
+            },
+            hash,
+        )
+        .into();
+
+        assert!(matches!(
+            verifier.decode_and_verify(&mut context, &certified),
+            Err(Error::BlockBodyMismatch(_))
         ));
     });
 }

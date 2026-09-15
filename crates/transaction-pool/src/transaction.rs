@@ -109,11 +109,13 @@ impl TempoPooledTransaction {
             calc_gas_balance_spending(transaction.gas_limit(), transaction.max_fee_per_gas())
                 .saturating_add(value);
         let fee_token_cost = cost - value;
+        let in_memory_size = transaction.size();
         Self {
             inner: EthPooledTransaction {
                 transaction,
                 cost,
                 encoded_length,
+                in_memory_size,
                 blob_sidecar: EthBlobTransactionSidecar::None,
                 blob_cell_availability: None,
             },
@@ -696,6 +698,16 @@ pub enum TempoPoolTransactionError {
         min_allowed: u64,
     },
 
+    /// A transaction matched a configured address check.
+    ///
+    /// Thrown during pool admission when the recovered sender or a direct call target
+    /// appears in the node's configured address filter.
+    #[error("Transaction address check failed for {address}")]
+    AddressCheck {
+        /// The address that matched the configured filter.
+        address: Address,
+    },
+
     /// A Tempo EVM validation error returned by the transaction pool.
     ///
     /// Thrown when `TempoEvm::validate_transaction` rejects the transaction with
@@ -715,6 +727,7 @@ impl PoolTransactionError for TempoPoolTransactionError {
             | Self::InvalidValidAfter(_)
             | Self::AccessKeyExpired { .. }
             | Self::KeyAuthorizationExpired { .. }
+            | Self::AddressCheck { .. }
             | Self::Keychain(_) => false,
             Self::SubblockNonceKey
             | Self::TooManyAuthorizations { .. }
@@ -1234,6 +1247,12 @@ mod tests {
                 TempoPoolTransactionError::KeyAuthorizationExpired {
                     expiry: 100,
                     min_allowed: 200,
+                },
+                false,
+            ),
+            (
+                TempoPoolTransactionError::AddressCheck {
+                    address: Address::repeat_byte(0x20),
                 },
                 false,
             ),

@@ -85,9 +85,7 @@ pub trait ProtocolFeeManager<DB: Database>: Debug {
     /// `journal` is mutable because validation reads can warm accounts and storage, but
     /// implementations must not stage state changes here.
     ///
-    /// This hook runs before nonce and replay state are consumed. Do not return
-    /// `CollectFeePreTx`, `FeeTokenPaused`, or `LackOfFundForMaxFee`; subblock handling treats
-    /// those as post-nonce fee collection failures.
+    /// This hook runs before nonce and replay state are consumed.
     ///
     /// Implementations charging non-zero fees in non-USD tokens must normalize them to the fee
     /// unit used by admission, ordering, charging, and settlement.

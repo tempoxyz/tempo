@@ -31,13 +31,13 @@ contains() {
 }
 
 log_contains() {
-    if [[ ! -f "$1" ]] || ! grep -qF "$2" "$1"; then
+    if [[ ! -f "$1" ]] || ! grep -qF -- "$2" "$1"; then
         fail "expected $1 to contain $2"
     fi
 }
 
 log_lacks() {
-    [[ ! -f "$1" ]] || ! grep -qF "$2" "$1" || fail "expected $1 not to contain $2"
+    [[ ! -f "$1" ]] || ! grep -qF -- "$2" "$1" || fail "expected $1 not to contain $2"
 }
 
 run_source() {
@@ -89,6 +89,32 @@ case "$1 ${2:-}" in
 esac
 FAKE_BREW
     chmod +x "$1/brew"
+}
+
+fake_gh() {
+    mkdir -p "$1"
+    cat > "$1/gh" <<'FAKE_GH'
+#!/usr/bin/env bash
+printf '%s\n' "$*" >> "$GH_LOG"
+case "$1 $2" in
+    "auth status") exit 0 ;;
+    "release list")
+        [[ " $* " == *" --exclude-drafts "* ]] || exit 20
+        [[ " $* " == *" --exclude-pre-releases "* ]] || exit 21
+        printf 'v1.13.1\n'
+        ;;
+    "release view")
+        case "$GH_RELEASE_STATE" in
+            draft) printf 'draft=true\ntempo-v1.13.2-aarch64-apple-darwin.tar.gz\ntempo-v1.13.2-aarch64-apple-darwin.tar.gz.sha256\n' ;;
+            missing) printf 'draft=false\ntempo-v1.13.1-aarch64-apple-darwin.tar.gz\n' ;;
+            published) printf 'draft=false\ntempo-v1.13.1-aarch64-apple-darwin.tar.gz\ntempo-v1.13.1-aarch64-apple-darwin.tar.gz.sha256\n' ;;
+            *) exit 22 ;;
+        esac
+        ;;
+    *) exit 23 ;;
+esac
+FAKE_GH
+    chmod +x "$1/gh"
 }
 
 setup_case() {
@@ -173,6 +199,38 @@ if output="$(TEST_BINARY="$BAD_TEMPO" run_tempoup 'verify_tempo_binary "$TEST_BI
 fi
 contains "$output" "could not launch because libusb is missing"
 ok "tempo launch verification catches libusb failure"
+
+GH_CASE_DIR="$TMP_ROOT/gh-release-selection"
+GH_BIN="$GH_CASE_DIR/bin"
+GH_LOG="$GH_CASE_DIR/gh.log"
+mkdir -p "$GH_CASE_DIR"
+fake_gh "$GH_BIN"
+
+latest="$(GH_LOG="$GH_LOG" PATH="$GH_BIN:$PATH" run_tempoup 'get_latest_version')"
+[[ "$latest" == "v1.13.1" ]] || fail "latest release selection returned $latest"
+log_contains "$GH_LOG" "--exclude-drafts"
+log_contains "$GH_LOG" "--exclude-pre-releases"
+ok "latest release selection excludes drafts and prereleases"
+
+if output="$(GH_LOG="$GH_LOG" GH_RELEASE_STATE=draft PATH="$GH_BIN:$PATH" run_tempoup \
+    'validate_release_assets v1.13.2 tempo-v1.13.2-aarch64-apple-darwin.tar.gz tempo-v1.13.2-aarch64-apple-darwin.tar.gz.sha256' 2>&1)"; then
+    printf '%s\n' "$output" >&2
+    fail "draft release validation succeeded"
+fi
+contains "$output" "still a draft"
+ok "draft release validation fails clearly"
+
+if output="$(GH_LOG="$GH_LOG" GH_RELEASE_STATE=missing PATH="$GH_BIN:$PATH" run_tempoup \
+    'validate_release_assets v1.13.1 tempo-v1.13.1-aarch64-apple-darwin.tar.gz tempo-v1.13.1-aarch64-apple-darwin.tar.gz.sha256' 2>&1)"; then
+    printf '%s\n' "$output" >&2
+    fail "release with missing checksum validation succeeded"
+fi
+contains "$output" "does not contain required asset"
+ok "release asset validation catches missing files"
+
+GH_LOG="$GH_LOG" GH_RELEASE_STATE=published PATH="$GH_BIN:$PATH" run_tempoup \
+    'validate_release_assets v1.13.1 tempo-v1.13.1-aarch64-apple-darwin.tar.gz tempo-v1.13.1-aarch64-apple-darwin.tar.gz.sha256'
+ok "published release asset validation succeeds"
 
 run_install '
     should_verify_tempo_after_tempoup
