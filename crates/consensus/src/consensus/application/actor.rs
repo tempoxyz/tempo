@@ -120,6 +120,7 @@ where
 
                 my_mailbox,
                 marshal: config.marshal,
+                broadcast: config.broadcast,
 
                 execution_node: config.execution_node,
                 executor: config.executor,
@@ -222,6 +223,7 @@ struct Inner<TState> {
     my_mailbox: Mailbox,
 
     marshal: crate::alias::marshal::Mailbox,
+    broadcast: commonware_broadcast::buffered::Mailbox<PublicKey, Block>,
 
     execution_node: Arc<TempoFullNode>,
     executor: crate::executor::Mailbox,
@@ -351,6 +353,14 @@ impl Inner<Init> {
                         proposal_return.block_size_estimate_bytes,
                         persist_start.elapsed(),
                     );
+
+                    // Keep durability before proposal release, but avoid decoding the same
+                    // block from the archive when the relay later forwards its digest.
+                    if !super::broadcast_cache::prime(&self.broadcast, Arc::new(block.clone()))
+                        .await
+                    {
+                        debug!("proposal cache priming missed; relay will fall back to archive");
+                    }
 
                     // Keep waiting for the remaining return time, if there's anything left after building the block.
                     context.sleep_until(proposal_return.return_at).await;
@@ -787,6 +797,7 @@ impl Inner<Uninit> {
             proposal_return_budget: self.proposal_return_budget,
             my_mailbox: self.my_mailbox,
             marshal: self.marshal,
+            broadcast: self.broadcast,
             execution_node: self.execution_node,
             executor: self.executor.clone(),
             state: Init {

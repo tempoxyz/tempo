@@ -249,6 +249,7 @@ where
             marshal: marshal_mailbox.clone(),
             execution_node: execution_node.clone(),
             executor: executor_mailbox.clone(),
+            broadcast: broadcast_mailbox.clone(),
             proposal_return_budget: self.proposal_return_budget,
             epoch_strategy: epoch_strategy.clone(),
         })
