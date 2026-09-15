@@ -287,6 +287,19 @@ where
             count,
             next,
         );
+        let max_expiry_slot = nonce_manager.bucket_max_expiry[block_number].slot();
+        let max_expiry = db
+            .storage(EXPIRING_NONCE_PRECOMPILE_ADDRESS, max_expiry_slot)
+            .map_err(BlockExecutionError::other)?;
+        let expiry = U256::from(expiring_nonce.valid_before);
+        if expiry > max_expiry {
+            self.replay_state.record_sstore(
+                EXPIRING_NONCE_PRECOMPILE_ADDRESS,
+                max_expiry_slot,
+                max_expiry,
+                expiry,
+            );
+        }
         self.replay_state.expiring_nonce.set_next_bucket_count(next);
 
         Ok(())
@@ -624,7 +637,8 @@ mod tests {
         executor.evm_mut().ctx_mut().block.timestamp = U256::from(1000);
         executor.apply_pre_execution_changes().unwrap();
         let manager = ExpiringNonceManager::new();
-        for i in 0..2u64 {
+        for (i, expiry) in [1020, 1030, 1010].into_iter().enumerate() {
+            let i = i as u64;
             let hash = B256::repeat_byte(i as u8 + 1);
             executor.replay_state.reset_tx_changes();
             let state = executor
@@ -634,7 +648,7 @@ mod tests {
                     false,
                     Some(ExpiringNonceReplay {
                         hash,
-                        valid_before: 1020,
+                        valid_before: expiry,
                     }),
                 )
                 .unwrap();
@@ -649,6 +663,17 @@ mod tests {
             );
             executor.evm_mut().db_mut().commit(state);
             executor.replay_state.commit_tx_changes();
+            assert_eq!(
+                executor
+                    .evm_mut()
+                    .db_mut()
+                    .storage(
+                        EXPIRING_NONCE_PRECOMPILE_ADDRESS,
+                        manager.bucket_max_expiry[1].slot(),
+                    )
+                    .unwrap(),
+                U256::from(if i == 0 { 1020 } else { 1030 })
+            );
         }
         executor.replay_state.reset_tx_changes();
         assert!(

@@ -496,9 +496,15 @@ where
         }
 
         self.inner.apply_pre_execution_changes()?;
+        // Start at deployment so a PoC launched at a high block does not scan from genesis.
         self.deploy_precompile_at_boundary(
             tempo_contracts::precompiles::EXPIRING_NONCE_PRECOMPILE_ADDRESS,
-            &[],
+            &[(
+                tempo_precompiles::expiring_nonce::ExpiringNonceManager::new()
+                    .oldest_unpruned_block
+                    .slot(),
+                self.evm().block().number,
+            )],
         )?;
 
         // Deploy 0xEF marker bytecode to precompiles at their activation hardforks.
@@ -1210,11 +1216,39 @@ mod tests {
     }
 
     #[test]
+    fn expiring_nonce_cursor_starts_at_deployment_and_is_not_reset() {
+        use revm::Database as _;
+        use tempo_precompiles::{
+            EXPIRING_NONCE_PRECOMPILE_ADDRESS, expiring_nonce::ExpiringNonceManager,
+        };
+        let chainspec = test_chainspec();
+        let mut db = State::builder().with_bundle_update().build();
+        for block in [1_000_000, 1_000_001] {
+            let mut executor = TestExecutorBuilder::default()
+                .with_block_number(block)
+                .with_parent_beacon_block_root(B256::ZERO)
+                .with_spec(TempoHardfork::T1)
+                .build(&mut db, &chainspec);
+            executor.apply_pre_execution_changes().unwrap();
+            assert_eq!(
+                executor
+                    .evm_mut()
+                    .db_mut()
+                    .storage(
+                        EXPIRING_NONCE_PRECOMPILE_ADDRESS,
+                        ExpiringNonceManager::new().oldest_unpruned_block.slot(),
+                    )
+                    .unwrap(),
+                U256::from(1_000_000)
+            );
+        }
+    }
+
+    #[test]
     fn expiring_nonce_pruned_when_empty_block_finishes() {
         use revm::Database as _;
         use tempo_precompiles::{
-            EXPIRING_NONCE_PRECOMPILE_ADDRESS,
-            expiring_nonce::{ExpiringNonceManager, MAX_EXPIRY_NUM_BLOCKS},
+            EXPIRING_NONCE_PRECOMPILE_ADDRESS, expiring_nonce::ExpiringNonceManager,
         };
         let chainspec = test_chainspec();
         let mut db = State::builder().with_bundle_update().build();
@@ -1223,6 +1257,7 @@ mod tests {
         let seen = mgr.seen[hash].slot();
         let bucket = mgr.bucket[1][0].slot();
         let count = mgr.bucket_count[1].slot();
+        let max_expiry = mgr.bucket_max_expiry[1].slot();
         db.insert_account_with_storage(
             EXPIRING_NONCE_PRECOMPILE_ADDRESS,
             AccountInfo {
@@ -1233,18 +1268,27 @@ mod tests {
                 (seen, U256::from(100)),
                 (bucket, U256::from_be_bytes(hash.0)),
                 (count, U256::ONE),
+                (max_expiry, U256::from(100)),
             ]
             .into_iter()
             .collect(),
         );
         let mut executor = TestExecutorBuilder::default()
-            .with_block_number(1 + MAX_EXPIRY_NUM_BLOCKS)
+            .with_block_number(2)
             .with_spec(TempoHardfork::T1)
             .build(&mut db, &chainspec);
         executor.evm_mut().ctx_mut().block.timestamp = U256::from(100);
         let (_, result) = executor.finish().unwrap();
         assert_eq!(result.gas_used, 0);
-        for slot in [seen, bucket, count] {
+        assert_eq!(
+            db.storage(
+                EXPIRING_NONCE_PRECOMPILE_ADDRESS,
+                mgr.oldest_unpruned_block.slot()
+            )
+            .unwrap(),
+            U256::from(2)
+        );
+        for slot in [seen, bucket, count, max_expiry] {
             assert_eq!(
                 db.storage(EXPIRING_NONCE_PRECOMPILE_ADDRESS, slot).unwrap(),
                 U256::ZERO
