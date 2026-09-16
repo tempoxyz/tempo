@@ -24,7 +24,6 @@ jobs:
       contains(github.event.comment.body, '/docker')
     runs-on: ubuntu-latest
     permissions:
-      actions: write
       id-token: write
       pull-requests: read
     steps:
@@ -80,6 +79,8 @@ jobs:
         if: steps.command.outputs.recognized == 'true'
         uses: actions/github-script@3a2844b7e9c422d3c10d287c895573f7108da1b3 # v9.0.0
         with:
+          # GITHUB_TOKEN dispatches suppress downstream workflow_run reporters.
+          github-token: ${{ steps.github-sts.outputs.token }}
           retries: 0
           script: |
             const workflows = {

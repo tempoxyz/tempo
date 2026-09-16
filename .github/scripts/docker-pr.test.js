@@ -15,6 +15,17 @@ const detectScript = scriptFor('Detect Docker command');
 const membershipScript = scriptFor('Check org membership');
 const dispatchScript = scriptFor('Queue Docker build from comment');
 
+test('dispatch uses the STS app token so build lifecycle reporters can run', () => {
+  const step = yaml.split('      - name: Queue Docker build from comment\n')[1].split('\n  acknowledge:')[0];
+  assert.ok(step.includes('github-token: ${{ steps.github-sts.outputs.token }}'));
+  const policy = fs.readFileSync(path.join(__dirname, '../sts/docker-pr.sts.yaml'), 'utf8');
+  assert.match(policy, /^  actions: write$/m);
+  assert.match(policy, /^  members: read$/m);
+  assert.match(policy, /^  pull_requests: read$/m);
+  const dispatchJob = yaml.split('\n  dispatch:')[1].split('\n  acknowledge:')[0];
+  assert.ok(!dispatchJob.includes('actions: write'));
+});
+
 for (const [workflow, prefix] of [
   ['docker.yml', 'docker-build'],
   ['docker-profiling.yml', 'docker-profiling-build'],
