@@ -62,7 +62,7 @@ use tracing::{Level, Span, debug, error, error_span, info, instrument, warn, war
 
 use crate::{
     consensus::Digest,
-    epoch::manager::ingress::{EpochTransition, Exit},
+    epoch::ingress::{EpochTransition, Exit},
 };
 
 use super::ingress::{Content, Message};
