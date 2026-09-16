@@ -1,5 +1,7 @@
 //! Standalone websocket upstream actor tests.
 
+mod helpers;
+mod url;
 mod utils;
 
 use std::time::Duration;
