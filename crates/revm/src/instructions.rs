@@ -63,16 +63,16 @@ pub(crate) fn tempo_instructions<DB: Database>(
     if spec.is_t13() {
         // TIP-1102: static opcode repricing. KECCAK256's dynamic per-word
         // component is configured in `tempo_gas_params`.
-        instructions.insert_gas(MOD, 41);
-        instructions.insert_gas(SMOD, 48);
-        instructions.insert_gas(ADDMOD, 41);
-        instructions.insert_gas(MULMOD, 70);
-        instructions.insert_gas(SHL, 8);
-        instructions.insert_gas(SHR, 8);
-        instructions.insert_gas(SAR, 7);
-        instructions.insert_gas(NOT, 4);
-        instructions.insert_gas(KECCAK256, 165);
-        instructions.insert_gas(SELFBALANCE, 22);
+        instructions.insert_gas(MOD, 40);
+        instructions.insert_gas(SMOD, 37);
+        instructions.insert_gas(ADDMOD, 36);
+        instructions.insert_gas(MULMOD, 65);
+        instructions.insert_gas(SHL, 9);
+        instructions.insert_gas(SHR, 9);
+        instructions.insert_gas(SAR, 10);
+        instructions.insert_gas(NOT, 3);
+        instructions.insert_gas(KECCAK256, 205);
+        instructions.insert_gas(SELFBALANCE, 13);
     }
     instructions
 }
@@ -88,16 +88,16 @@ mod tests {
         let t13 = tempo_instructions::<EmptyDB>(TempoHardfork::T13);
 
         for (opcode, old, new) in [
-            (MOD, 5, 41),
-            (SMOD, 5, 48),
-            (ADDMOD, 8, 41),
-            (MULMOD, 8, 70),
-            (NOT, 3, 4),
-            (SHL, 3, 8),
-            (SHR, 3, 8),
-            (SAR, 3, 7),
-            (KECCAK256, 30, 165),
-            (SELFBALANCE, 5, 22),
+            (MOD, 5, 40),
+            (SMOD, 5, 37),
+            (ADDMOD, 8, 36),
+            (MULMOD, 8, 65),
+            (NOT, 3, 3),
+            (SHL, 3, 9),
+            (SHR, 3, 9),
+            (SAR, 3, 10),
+            (KECCAK256, 30, 205),
+            (SELFBALANCE, 5, 13),
         ] {
             assert_eq!(t12.gas_table()[opcode as usize], old);
             assert_eq!(t13.gas_table()[opcode as usize], new);

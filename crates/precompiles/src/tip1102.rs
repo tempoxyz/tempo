@@ -7,26 +7,26 @@ use revm::precompile::{
     PrecompileResult,
 };
 
-const ECRECOVER_BASE: u64 = 23_000;
-const SHA256_BASE: u64 = 120;
-const SHA256_PER_WORD: u64 = 17;
-const IDENTITY_BASE: u64 = 31;
-const IDENTITY_PER_WORD: u64 = 5;
+const ECRECOVER_BASE: u64 = 25_000;
+const SHA256_BASE: u64 = 104;
+const SHA256_PER_WORD: u64 = 13;
+const IDENTITY_BASE: u64 = 50;
+const IDENTITY_PER_WORD: u64 = 1;
 const BN254_ADD: u64 = 750;
 const BN254_MUL: u64 = 30_000;
-const BN254_PAIR_BASE: u64 = 320_000;
-const BN254_PAIR_PER_POINT: u64 = 240_000;
-const BLAKE2_F_ROUND: u64 = 8;
-const BLS12_G1_ADD: u64 = 2_650;
-const BLS12_G1_MSM_BASE: u64 = 88_000;
-const BLS12_G2_ADD: u64 = 4_000;
-const BLS12_G2_MSM_BASE: u64 = 146_000;
-const BLS12_PAIRING_OFFSET: u64 = 220_000;
-const BLS12_PAIRING_MULTIPLIER: u64 = 170_000;
-const BLS12_MAP_FP_TO_G1: u64 = 28_500;
-const BLS12_MAP_FP2_TO_G2: u64 = 110_000;
+const BN254_PAIR_BASE: u64 = 285_000;
+const BN254_PAIR_PER_POINT: u64 = 243_000;
+const BLAKE2_F_ROUND: u64 = 10;
+const BLS12_G1_ADD: u64 = 2_300;
+const BLS12_G1_MSM_BASE: u64 = 78_000;
+const BLS12_G2_ADD: u64 = 3_500;
+const BLS12_G2_MSM_BASE: u64 = 143_000;
+const BLS12_PAIRING_OFFSET: u64 = 230_000;
+const BLS12_PAIRING_MULTIPLIER: u64 = 167_000;
+const BLS12_MAP_FP_TO_G1: u64 = 26_000;
+const BLS12_MAP_FP2_TO_G2: u64 = 95_000;
 const MODEXP_MIN_GAS: u64 = 500;
-const MODEXP_SMALL_MULTIPLICATION_COMPLEXITY: u64 = 72;
+const MODEXP_SMALL_MULTIPLICATION_COMPLEXITY: u64 = 81;
 const MODEXP_LARGE_BASE_MODULUS_MULTIPLIER: u64 = 2;
 const MODEXP_EXPONENT_BYTE_MULTIPLIER: u64 = 20;
 
@@ -426,7 +426,7 @@ mod tests {
             input
         }
 
-        assert_price(modexp, &input(32), 18_360, 32);
+        assert_price(modexp, &input(32), 20_655, 32);
         assert_price(modexp, &input(64), 114_560, 64);
         assert_price(modexp, &input(128), 1_113_600, 128);
     }

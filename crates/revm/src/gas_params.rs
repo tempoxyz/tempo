@@ -85,7 +85,7 @@ pub fn tempo_gas_params_with_amsterdam(
 /// Builds the T13 gas table with TIP-1102's KECCAK256 per-word repricing.
 fn t13_gas_params() -> GasParams {
     let mut gas_params = t7_gas_params();
-    gas_params.override_gas([(GasId::keccak256_per_word(), 33)]);
+    gas_params.override_gas([(GasId::keccak256_per_word(), 41)]);
     gas_params
 }
 
@@ -213,7 +213,7 @@ mod tests {
         let t13 = tempo_gas_params(TempoHardfork::T13);
 
         assert_eq!(t12.get(GasId::keccak256_per_word()), 6);
-        assert_eq!(t13.get(GasId::keccak256_per_word()), 33);
+        assert_eq!(t13.get(GasId::keccak256_per_word()), 41);
         assert!(!std::ptr::eq(t12.table(), t13.table()));
     }
 
