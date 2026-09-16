@@ -35,54 +35,17 @@ Examples:
 
 ### Descriptions
 
-Keep it short. Say what changed and why — nothing more.
+Use the repository PR template: **Problem**, **Changes**, and **Validation**.
+Keep each section concise; one or two sentences is usually enough. Add **Rollout**
+only for deployment steps, migrations, compatibility risks, or rollback details.
 
-**Do:**
-- Write 1–3 sentences summarizing the change
-- Explain _why_ if the diff doesn't make it obvious
-- Link related issues or TIPs
-- Include benchmark numbers for perf changes
+- Describe the concrete problem, the final behavioral change, and why it solves the problem.
+- Link related issues or TIPs. Include benchmark results for performance changes when available.
+- State checks actually run and their results. If none ran, explain why; distinguish proposed checks from completed validation.
+- Before opening a PR, and after changing its implementation, compare the saved title and body with the full diff against its actual base branch. Remove stale claims and preserve human-written context.
+- Do not list every changed file, repeat the title, or use filler such as "This PR introduces...".
+- Read back the saved PR description after creating or updating it.
 
-**Don't:**
-- List every file changed — that's what the diff is for
-- Repeat the title in the body
-- Add "Files changed" or "Changes" sections
-- Write walls of text that go stale when the diff is updated
-- Use filler like "This PR introduces...", "comprehensive", "robust", "enhance", "leverage"
-
-**Template:**
-
-```
-Closes #<issue>
-
-<what changed, 1-3 sentences>
-
-<why, if not obvious from the diff>
-```
-
-**Good example:**
-
-```
-Closes #2901
-
-Adds `valid_before` upper bound for all AA transactions. Transactions past
-their expiry are rejected at validation time and cleaned up from the pool
-via a periodic sweep.
-```
-
-**Bad example:**
-
-```
-## Summary
-This PR introduces comprehensive validation checks for the valid_before field.
-
-## Changes
-- Modified `crates/pool/src/validate.rs` to add validation
-- Modified `crates/pool/src/pool.rs` to add cleanup
-- Added tests in `crates/pool/src/tests/valid_before.rs`
-
-## Files Changed
-- crates/pool/src/validate.rs
-- crates/pool/src/pool.rs
-- crates/pool/src/tests/valid_before.rs
-```
+The `PR description structure` check checks required sections and common placeholders;
+it does not establish that the description matches the code. Reviewers must still
+check claims against the implementation and available test evidence.
