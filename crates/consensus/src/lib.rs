@@ -57,6 +57,11 @@ pub async fn run_consensus_stack(
 ) -> eyre::Result<()> {
     config.validate_simplex_timing()?;
 
+    let network_identity = config
+        .network_identity()
+        .or_else(|| execution_node.chain_spec().network_identity.clone())
+        .ok_or_eyre("chainspec has no network identity and none was configured")?;
+
     let share = config
         .signing_share
         .as_ref()
@@ -97,6 +102,7 @@ pub async fn run_consensus_stack(
         target_block_time.saturating_sub(config.network_budget.into_duration());
 
     let consensus_engine = crate::consensus::engine::Builder {
+        network_identity,
         execution_node: Some(execution_node),
         gossip: gossip_transport.map(|transport| gossip::Config {
             transport,
