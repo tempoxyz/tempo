@@ -472,6 +472,7 @@ impl TxHandlerHooks<TempoEvmTypes> for TempoHandlerHooks {
         envelope: &TempoTxEnv,
         intrinsic: &mut u64,
         initial_state_gas: &mut u64,
+        _floor_gas: &mut u64,
     ) -> HandlerResult<()> {
         if !host.config_spec_id().is_t1() {
             return Ok(());
@@ -492,9 +493,10 @@ impl TxHandlerHooks<TempoEvmTypes> for TempoHandlerHooks {
             TempoEvmTx::AA(_) => return Ok(()),
         };
         let new_accounts = zero_nonce_authorizations.saturating_add(u64::from(nonce == 0));
-        *intrinsic = intrinsic.saturating_add(new_accounts.saturating_mul(u64::from(
+        let execution_surcharge = new_accounts.saturating_mul(u64::from(
             host.version().gas_params.get(GasId::NewAccountCost),
-        )));
+        ));
+        *intrinsic = intrinsic.saturating_add(execution_surcharge);
         *initial_state_gas = initial_state_gas.saturating_add(
             new_accounts.saturating_mul(host.version().gas_params.new_account_state_gas()),
         );
