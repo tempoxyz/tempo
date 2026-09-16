@@ -201,3 +201,15 @@ An unmarked scope is labeled `span_lifetime`; its close timestamp is not proof
 that the function ran or waited until that time. A last poll exit is never used
 as completion. Active wall time is not CPU time. Completion/cancellation markers
 at or after first backpressure are pruned with every other timed record.
+
+Cache insertion diagnostics split shared-value acquisition and item-map insertion
+from eviction, item-map removal, and dropping the removed cache reference:
+`broadcast.cache.acquire`, `.insert`, `.evict`, `.remove`, and `.drop`. These are
+synchronous elapsed-time spans. The eviction scope includes reference-decrement
+attempts that retain an item for another peer. Dropping a reference may only decrement an Arc;
+it does not prove the block's allocations were destroyed, or measure CPU time.
+An incoming block can trigger eviction of an older block, so its insertion span
+identifies the triggering operation rather than the object being freed. No
+strong-count snapshots or new fields are recorded. Use this profiling candidate
+separately from the combined optimization comparison so observer settings remain
+uniform within that comparison.
