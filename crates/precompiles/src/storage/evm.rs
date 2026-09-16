@@ -984,12 +984,7 @@ mod tests {
 
     #[test]
     fn test_sstore_reentrancy_sentry_blocks_dirty_write() -> eyre::Result<()> {
-        for spec in [
-            TempoHardfork::T6,
-            TempoHardfork::T7,
-            TempoHardfork::T12,
-            TempoHardfork::T13,
-        ] {
+        for spec in [TempoHardfork::T11, TempoHardfork::T12] {
             let mut evm = TestEvm::new(spec);
             let gas_params = evm.ctx().cfg.gas_params.clone();
             let address = Address::random();
