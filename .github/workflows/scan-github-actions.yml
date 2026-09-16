@@ -16,6 +16,19 @@ on:
 permissions: {}
 
 jobs:
+  benchmark-helpers:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6.0.3
+        with:
+          persist-credentials: false
+      - name: Test benchmark CI helpers
+        run: |
+          bash .github/scripts/bench-state-test.sh
+          bash .github/scripts/bench-upload-charts-test.sh
+
   scan:
     if: ${{ github.event_name != 'schedule' || github.repository == 'tempoxyz/tempo' }}
     uses: tempoxyz/gh-actions/.github/workflows/scan-github-actions.yml@5d3a903b51ce8d1f6d363d1c59d7243ecf80f026

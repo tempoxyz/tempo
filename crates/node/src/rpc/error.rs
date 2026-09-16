@@ -4,7 +4,7 @@ use alloy_primitives::Bytes;
 use alloy_rpc_types_eth::error::EthRpcErrorCode;
 use jsonrpsee::types::error::ErrorObject;
 use reth_errors::ProviderError;
-use reth_evm::revm::context::result::EVMError;
+use reth_evm::revm::context::result::{EVMError, HaltReason};
 use reth_node_core::rpc::result::rpc_err;
 use reth_rpc_eth_api::AsEthApiError;
 use reth_rpc_eth_types::{
@@ -14,7 +14,7 @@ use reth_rpc_eth_types::{
         api::{FromEvmHalt, FromRevert},
     },
 };
-use tempo_evm::{TempoHaltReason, TempoInvalidTransaction};
+use tempo_evm::TempoInvalidTransaction;
 use tempo_transaction_pool::transaction::TempoPoolTransactionError;
 
 #[derive(Debug, thiserror::Error)]
@@ -107,8 +107,8 @@ fn fee_token_rpc_error(err: &TempoInvalidTransaction) -> Option<ErrorObject<'sta
     ))
 }
 
-impl FromEvmHalt<TempoHaltReason> for TempoEthApiError {
-    fn from_evm_halt(halt: TempoHaltReason, gas_limit: u64) -> Self {
+impl FromEvmHalt<HaltReason> for TempoEthApiError {
+    fn from_evm_halt(halt: HaltReason, gas_limit: u64) -> Self {
         EthApiError::from_evm_halt(halt, gas_limit).into()
     }
 }

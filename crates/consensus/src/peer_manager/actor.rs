@@ -495,7 +495,6 @@ mod tests {
     use alloy_consensus::Header;
     use alloy_primitives::{Address as AlloyAddress, B256, Keccak256, U256};
     use commonware_codec::Encode as _;
-    use commonware_consensus::types::Epoch;
     use commonware_cryptography::{
         Signer as _,
         bls12381::{
@@ -669,7 +668,7 @@ mod tests {
         )?;
 
         Ok(OnchainDkgOutcome {
-            epoch: Epoch::new(0),
+            epoch: 0,
             output,
             next_players: ordered::Set::try_from_iter(next_players)?,
             is_next_full_dkg: false,

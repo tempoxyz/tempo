@@ -48,7 +48,7 @@ where
     let token = ITIP20::new(event.token, provider.clone());
 
     IRolesAuth::new(*token.address(), provider)
-        .grantRole(*ISSUER_ROLE, caller)
+        .grantRole(ISSUER_ROLE, caller)
         .gas(1_000_000)
         .send()
         .await?
