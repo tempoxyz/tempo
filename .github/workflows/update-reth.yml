@@ -512,27 +512,54 @@ jobs:
           MAX_CI_FIX_ATTEMPTS=10
           CI_FIX_DEADLINE=$((SECONDS + 3600))  # 60 minutes for the whole fix cycle
           ci_fix_attempt=0
+          UNFIXED_SHA=""
+          UNFIXED_FAILURES=""
 
-          while true; do
-            ci_fix_attempt=$((ci_fix_attempt + 1))
-            if [ "$ci_fix_attempt" -gt "$MAX_CI_FIX_ATTEMPTS" ] || [ "$SECONDS" -ge "$CI_FIX_DEADLINE" ]; then
-              echo "::error::CI fix loop gave up after $((ci_fix_attempt - 1)) attempts / $((SECONDS / 60))m"
+          begin_ci_fix() {
+            if [ "$ci_fix_attempt" -ge "$MAX_CI_FIX_ATTEMPTS" ]; then
+              echo "::error::CI fix loop gave up after $ci_fix_attempt attempts"
               exit 1
             fi
-            echo "Polling CI checks..."
+            ci_fix_attempt=$((ci_fix_attempt + 1))
+          }
+
+          while true; do
+            # PR/branch metadata can briefly refer to the old commit after a push.
+            # Use the local commit for both status polling and failure logs.
+            HEAD_SHA=$(git rev-parse HEAD)
+            echo "Polling CI checks for $HEAD_SHA..."
             WAIT_START=$SECONDS
             while true; do
-              STATUS=$(gh pr checks "$PR_BRANCH" --json bucket,name,state 2>&1) || true
-              # gh pr checks may return non-JSON (e.g. "no checks reported") before CI starts
-              if ! echo "$STATUS" | jq empty 2>/dev/null; then
-                echo "Waiting for CI to start (gh pr checks returned non-JSON)..."
+              # Apply the deadline even when checks have not appeared or GitHub is unavailable.
+              if [ "$SECONDS" -ge "$CI_FIX_DEADLINE" ]; then
+                echo "::error::CI fix loop timed out after $ci_fix_attempt attempts"
+                exit 1
+              fi
+              if ! STATUS=$(bash .github/scripts/reth-ci-status.sh "$HEAD_SHA"); then
+                echo "Unable to read CI checks for $HEAD_SHA; retrying..."
                 sleep 60
                 continue
               fi
+              if [ "$(echo "$STATUS" | jq 'length')" = "0" ]; then
+                echo "Waiting for CI checks to appear on $HEAD_SHA..."
+                sleep 60
+                continue
+              fi
+              # External checks may register before Actions jobs. Require the test/lint
+              # aggregate checks to appear before accepting a partially populated result.
+              STATUS=$(echo "$STATUS" | jq '. as $checks | . + [
+                "test success", "lint success" | . as $name |
+                select($checks | any(.name == $name) | not) |
+                {name: $name, state: "PENDING"}
+              ]')
 
               # Check for any failures immediately
               FAILED=$(echo "$STATUS" | jq -r '[.[] | select(.state == "FAILURE" or .state == "ERROR")] | .[].name' 2>/dev/null || true)
               if [ -n "$FAILED" ]; then
+                if [ "$UNFIXED_SHA" = "$HEAD_SHA" ] && [ "$UNFIXED_FAILURES" = "$FAILED" ]; then
+                  echo "::error::Amp made no changes and fresh CI results still report the same failures on $HEAD_SHA"
+                  exit 1
+                fi
                 echo "Found failed checks (not waiting for others): $FAILED"
                 break
               fi
@@ -565,11 +592,14 @@ jobs:
               # Check for stuck jobs
               ELAPSED=$(( (SECONDS - WAIT_START) / 60 ))
               if [ "$ELAPSED" -ge "$CI_TIMEOUT_MINUTES" ]; then
+                if [ "$UNFIXED_SHA" = "$HEAD_SHA" ] && [ -z "$UNFIXED_FAILURES" ]; then
+                  echo "::error::Amp made no changes and fresh CI results are still stuck on $HEAD_SHA"
+                  exit 1
+                fi
                 echo "CI checks stuck for ${ELAPSED}m — investigating with Amp..."
                 STUCK_NAMES=$(echo "$STATUS" | jq -r '[.[] | select((.state == "PENDING" or .state == "QUEUED" or .state == "IN_PROGRESS") and .name != "Review" and .name != "Cyclops audit run")] | map(.name) | join(", ")')
 
                 # Fetch logs from in-progress runs for the current HEAD commit
-                HEAD_SHA=$(gh pr view "$PR_BRANCH" --json headRefOid --jq '.headRefOid')
                 {
                   echo "Some CI jobs on this PR have been running for over ${CI_TIMEOUT_MINUTES} minutes and appear stuck."
                   echo "Investigate why these tests might be hanging. Look at the logs below for clues — common causes include"
@@ -594,6 +624,7 @@ jobs:
 
                 PRE_SHA=$(git rev-parse HEAD)
 
+                begin_ci_fix
                 echo "::group::Amp stuck CI investigation"
                 amp-run --dangerously-allow-all -x < /tmp/amp-prompt.txt
                 echo "::endgroup::"
@@ -603,8 +634,9 @@ jobs:
                   git commit -m "fix: resolve stuck CI jobs from reth update ($(date -u +%Y-%m-%d))"
                   git push origin "$PR_BRANCH"
                 elif [ "$(git rev-parse HEAD)" = "$PRE_SHA" ]; then
-                  echo "Amp made no changes for stuck jobs — giving up"
-                  exit 1
+                  echo "Amp made no changes; refreshing CI before deciding whether it is still stuck"
+                  UNFIXED_SHA="$HEAD_SHA"
+                  UNFIXED_FAILURES=""
                 fi
                 # Restart the outer loop to wait for new CI run
                 continue 2
@@ -619,7 +651,6 @@ jobs:
             echo "Failed checks: $FAILED_NAMES"
 
             # Fetch logs from failed runs for the current HEAD commit
-            HEAD_SHA=$(gh pr view "$PR_BRANCH" --json headRefOid --jq '.headRefOid')
             {
               echo "The CI checks on this PR are failing. Please fix the issues."
               echo "You may also bump non-reth dependency versions in Cargo.toml files if needed (e.g. revm, alloy),"
@@ -642,6 +673,7 @@ jobs:
 
             PRE_SHA=$(git rev-parse HEAD)
 
+            begin_ci_fix
             echo "::group::Amp CI fix"
             amp-run --dangerously-allow-all -x < /tmp/amp-prompt.txt
             echo "::endgroup::"
@@ -652,8 +684,9 @@ jobs:
               git commit -m "fix: resolve CI failures from reth update ($(date -u +%Y-%m-%d))"
               git push origin "$PR_BRANCH"
             elif [ "$(git rev-parse HEAD)" = "$PRE_SHA" ]; then
-              echo "Amp made no changes but CI is still failing — giving up"
-              exit 1
+              echo "Amp made no changes; refreshing CI before deciding whether it still fails"
+              UNFIXED_SHA="$HEAD_SHA"
+              UNFIXED_FAILURES="$FAILED"
             fi
           done
 
