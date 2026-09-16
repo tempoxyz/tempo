@@ -1,3 +1,5 @@
+use ./workload-metadata.nu *
+
 const TXGEN_HELPER_ACCOUNT_MNEMONIC = "test test test test test test test test test test test junk"
 const TXGEN_HELPER_DEFAULT_SEED = 99
 const TXGEN_HELPER_SCRAPE_INTERVAL_MS = 200
@@ -770,6 +772,7 @@ def txgen-run-preset-pipeline [
         0
     }
     let total_accounts = $accounts + $recipient_accounts
+    let workload_metadata = (txgen-workload-metadata (txgen-workload-mix $spec_path))
     if not $skip_faucet_funding {
         txgen-fund-accounts $txgen_tempo_bin $spec_path $generate_rpc_url
     }
@@ -815,6 +818,8 @@ def txgen-run-preset-pipeline [
     let pr_number = ($env | get --optional BENCH_PR | default "")
     let metadata_args = [
         "-m" "job=github-tempo-bench-e2e"
+        "-m" $"workload_mix_version=($workload_metadata.workload_mix_version)"
+        "-m" $"workload_mix_weights=($workload_metadata.workload_mix_weights)"
         "-m" $"chain_id=($chain_id)"
         "-m" $"target_tps=($tps)"
         "-m" $"run_duration_secs=($duration)"
