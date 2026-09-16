@@ -1,6 +1,7 @@
 //! Standalone DKG manager actor tests.
 
 mod harness;
+mod startup;
 
 use std::time::Duration;
 
