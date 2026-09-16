@@ -38,7 +38,9 @@ def trace_events(data, block_id=None):
             args.update(call_count=s['count'], elapsed_sum_ms=s['elapsed_sum_ms'])
         else:
             args.update(active_wall_ms=s['active_ms'], source_thread_ordinal=s['thread'],
-                        retained_after_operation_ms=s.get('retained_after_operation_ms', 0))
+                        retained_after_operation_ms=s.get('retained_after_operation_ms'),
+                        reference_right_censored=s.get('reference_right_censored', False),
+                        reference_retention_lower_bound_ms=s.get('reference_retention_lower_bound_ms'))
         if s.get('right_censored'):
             args.update(right_censored=True, semantics='reference lifetime truncated at cutoff; operation completion unknown')
         intervals.append((nodes[s['node']], s['category'], 'aggregate envelope' if aggregate else 'wall time',
