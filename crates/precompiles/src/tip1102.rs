@@ -1,30 +1,34 @@
 //! TIP-1102 precompile repricing, active from T13.
 
 use alloy_evm::precompiles::{DynPrecompile, PrecompilesMap};
-use alloy_primitives::Address;
+use alloy_primitives::{Address, U256};
 use revm::precompile::{
     self, EthPrecompileResult, PrecompileFn, PrecompileHalt, PrecompileId, PrecompileOutput,
     PrecompileResult,
 };
 
-const ECRECOVER_BASE: u64 = 18_000;
-const SHA256_BASE: u64 = 85;
+const ECRECOVER_BASE: u64 = 23_000;
+const SHA256_BASE: u64 = 120;
 const SHA256_PER_WORD: u64 = 17;
-const IDENTITY_BASE: u64 = 20;
-const IDENTITY_PER_WORD: u64 = 4;
+const IDENTITY_BASE: u64 = 31;
+const IDENTITY_PER_WORD: u64 = 5;
 const BN254_ADD: u64 = 750;
 const BN254_MUL: u64 = 30_000;
-const BN254_PAIR_BASE: u64 = 250_000;
-const BN254_PAIR_PER_POINT: u64 = 190_000;
-const BLAKE2_F_ROUND: u64 = 7;
-const BLS12_G1_ADD: u64 = 1_750;
-const BLS12_G1_MSM_BASE: u64 = 70_000;
-const BLS12_G2_ADD: u64 = 2_750;
-const BLS12_G2_MSM_BASE: u64 = 110_000;
-const BLS12_PAIRING_OFFSET: u64 = 195_000;
+const BN254_PAIR_BASE: u64 = 320_000;
+const BN254_PAIR_PER_POINT: u64 = 240_000;
+const BLAKE2_F_ROUND: u64 = 8;
+const BLS12_G1_ADD: u64 = 2_650;
+const BLS12_G1_MSM_BASE: u64 = 88_000;
+const BLS12_G2_ADD: u64 = 4_000;
+const BLS12_G2_MSM_BASE: u64 = 146_000;
+const BLS12_PAIRING_OFFSET: u64 = 220_000;
 const BLS12_PAIRING_MULTIPLIER: u64 = 170_000;
-const BLS12_MAP_FP_TO_G1: u64 = 26_000;
+const BLS12_MAP_FP_TO_G1: u64 = 28_500;
 const BLS12_MAP_FP2_TO_G2: u64 = 110_000;
+const MODEXP_MIN_GAS: u64 = 500;
+const MODEXP_SMALL_MULTIPLICATION_COMPLEXITY: u64 = 72;
+const MODEXP_LARGE_BASE_MODULUS_MULTIPLIER: u64 = 2;
+const MODEXP_EXPONENT_BYTE_MULTIPLIER: u64 = 20;
 
 /// Applies the T13 precompile schedule and removes the KZG point-evaluation precompile.
 pub(crate) fn apply(precompiles: &mut PrecompilesMap) {
@@ -50,6 +54,12 @@ pub(crate) fn apply(precompiles: &mut PrecompilesMap) {
         precompile::identity::FUN.address(),
         PrecompileId::Identity,
         identity,
+    );
+    replace(
+        precompiles,
+        precompile::modexp::OSAKA.address(),
+        PrecompileId::ModExp,
+        modexp,
     );
     replace(
         precompiles,
@@ -119,9 +129,6 @@ pub(crate) fn apply(precompiles: &mut PrecompilesMap) {
     );
 
     precompiles.apply_precompile(&precompile::kzg_point_evaluation::ADDRESS, |_| None);
-
-    // T13 uses Osaka built-ins. TIP-1102's candidate modexp formula is
-    // explicitly Berlin-only, so Osaka's EIP-7883 pricing remains unchanged.
 }
 
 fn replace(
@@ -182,6 +189,30 @@ fn identity(input: &[u8], gas_limit: u64, reservoir: u64) -> PrecompileResult {
         reservoir,
         precompile::calc_linear_cost(input.len(), IDENTITY_BASE, IDENTITY_PER_WORD),
         precompile::identity::identity_run,
+    )
+}
+
+fn modexp_gas_calc(base_len: u64, exp_len: u64, mod_len: u64, exp_highp: &U256) -> u64 {
+    precompile::modexp::gas_calc::<MODEXP_MIN_GAS, MODEXP_EXPONENT_BYTE_MULTIPLIER, 1, _>(
+        base_len,
+        exp_len,
+        mod_len,
+        exp_highp,
+        |max_len| {
+            if max_len <= 32 {
+                return U256::from(MODEXP_SMALL_MULTIPLICATION_COMPLEXITY);
+            }
+
+            let words = U256::from(max_len.div_ceil(8));
+            words * words * U256::from(MODEXP_LARGE_BASE_MODULUS_MULTIPLIER)
+        },
+    )
+}
+
+fn modexp(input: &[u8], gas_limit: u64, reservoir: u64) -> PrecompileResult {
+    into_result(
+        precompile::modexp::run_inner::<_, true>(input, gas_limit, MODEXP_MIN_GAS, modexp_gas_calc),
+        reservoir,
     )
 }
 
@@ -381,5 +412,22 @@ mod tests {
         );
         assert_price(bls12_map_fp_to_g1, &[0; 64], BLS12_MAP_FP_TO_G1, 128);
         assert_price(bls12_map_fp2_to_g2, &[0; 128], BLS12_MAP_FP2_TO_G2, 256);
+    }
+
+    #[test]
+    fn modexp_prices_match_tip_1102() {
+        fn input(size: usize) -> Vec<u8> {
+            let mut input = Vec::with_capacity(96 + 3 * size);
+            let encoded_size = U256::from(size).to_be_bytes::<32>();
+            input.extend_from_slice(&encoded_size);
+            input.extend_from_slice(&encoded_size);
+            input.extend_from_slice(&encoded_size);
+            input.extend(std::iter::repeat_n(0xff, 3 * size));
+            input
+        }
+
+        assert_price(modexp, &input(32), 18_360, 32);
+        assert_price(modexp, &input(64), 114_560, 64);
+        assert_price(modexp, &input(128), 1_113_600, 128);
     }
 }
