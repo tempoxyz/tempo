@@ -13940,6 +13940,7 @@ dependencies = [
  "tempo-contracts",
  "tempo-evm",
  "tempo-fuzz-types",
+ "tempo-payload-types",
  "tempo-precompiles",
  "tempo-primitives",
 ]

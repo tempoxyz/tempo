@@ -10,7 +10,7 @@ pub type FuzzStatus = i32;
 pub const FUZZ_REJECT: FuzzStatus = 0;
 pub const FUZZ_ACCEPT: FuzzStatus = 1;
 
-pub const TYPED_HARNESS_SCHEMA_VERSION: u32 = 1;
+pub const TYPED_HARNESS_SCHEMA_VERSION: u32 = 2;
 
 pub const PINNED_CHAIN_ID: u64 = 42431;
 pub const MODERATO_T0_TIMESTAMP: u64 = 1_770_303_600;
@@ -28,10 +28,12 @@ pub const FUZZ_T9_TIMESTAMP: u64 = FUZZ_T8_TIMESTAMP + 1_000_000;
 pub const FUZZ_T10_TIMESTAMP: u64 = FUZZ_T9_TIMESTAMP + 1_000_000;
 pub const FUZZ_T11_TIMESTAMP: u64 = FUZZ_T10_TIMESTAMP + 1_000_000;
 pub const FUZZ_T12_TIMESTAMP: u64 = FUZZ_T11_TIMESTAMP + 1_000_000;
+pub const FUZZ_T13_TIMESTAMP: u64 = FUZZ_T12_TIMESTAMP + 1_000_000;
 
 #[repr(u8)]
-#[derive(Clone, Copy, Debug, Deserialize, Eq, Hash, PartialEq, Serialize)]
+#[derive(Clone, Copy, Debug, Default, Deserialize, Eq, Hash, PartialEq, Serialize)]
 pub enum ErrorClass {
+    #[default]
     None = 0,
     InvalidInput = 1,
     RlpDecode = 2,
@@ -40,12 +42,6 @@ pub enum ErrorClass {
     Unimplemented = 5,
     Internal = 6,
     Invariant = 7,
-}
-
-impl Default for ErrorClass {
-    fn default() -> Self {
-        Self::None
-    }
 }
 
 #[derive(Clone, Debug, Eq, Hash, PartialEq)]
@@ -224,6 +220,10 @@ impl Default for ChainSpecInput {
                     hardfork: 12,
                     timestamp: FUZZ_T12_TIMESTAMP,
                 },
+                HardforkActivationInput {
+                    hardfork: 13,
+                    timestamp: FUZZ_T13_TIMESTAMP,
+                },
             ],
         }
     }
@@ -248,6 +248,8 @@ pub struct TempoTransactionInput {
     pub chain_spec: ChainSpecInput,
     pub fork: u8,
     pub tx: Vec<u8>,
+    /// Sender verified by the ingress boundary. `None` asks the harness to recover it.
+    pub sender: Option<[u8; 20]>,
 }
 
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
@@ -256,6 +258,8 @@ pub struct TempoStateInput {
     pub pre_state: StateInput,
     pub block_context: BlockContextInput,
     pub tx: Vec<u8>,
+    /// Sender verified by the ingress boundary. `None` asks the harness to recover it.
+    pub sender: Option<[u8; 20]>,
 }
 
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
@@ -269,6 +273,8 @@ pub struct TempoBlockchainInput {
 pub struct TempoBlock {
     pub context: BlockContextInput,
     pub txs: Vec<Vec<u8>>,
+    /// Verified transaction senders in transaction order.
+    pub senders: Vec<[u8; 20]>,
 }
 
 #[derive(Clone, Debug, Default, Deserialize, Eq, Hash, PartialEq, Serialize)]
@@ -310,18 +316,10 @@ pub struct TempoExecutionOutcome {
     pub invariant_failures: Vec<InvariantFailure>,
 }
 
-#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[derive(Clone, Debug, Default, Deserialize, Eq, PartialEq, Serialize)]
 pub struct HarnessCapabilities {
     #[serde(default)]
     pub supported_hardforks: Vec<u8>,
-}
-
-impl Default for HarnessCapabilities {
-    fn default() -> Self {
-        Self {
-            supported_hardforks: Vec::new(),
-        }
-    }
 }
 
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]

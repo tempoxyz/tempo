@@ -33,6 +33,7 @@ tempo-fuzz-types.workspace = true
 tempo-chainspec.workspace = true
 tempo-consensus.workspace = true
 tempo-contracts.workspace = true
-tempo-evm.workspace = true
+tempo-evm = { workspace = true, features = ["engine"] }
+tempo-payload-types.workspace = true
 tempo-precompiles.workspace = true
 tempo-primitives = { workspace = true, features = ["reth"] }

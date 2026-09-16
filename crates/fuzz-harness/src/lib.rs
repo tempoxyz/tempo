@@ -7,7 +7,7 @@ use alloy_consensus::{
     transaction::Transaction,
 };
 use alloy_eips::Decodable2718;
-use alloy_primitives::{Address, B256, Bytes, Log, U256, keccak256};
+use alloy_primitives::{Address, B256, Bytes, KECCAK256_EMPTY, Log, U256};
 use core::ffi::c_int;
 use evm2::{
     bytecode::Bytecode,
@@ -16,7 +16,8 @@ use evm2::{
 use reth_chainspec::ForkCondition;
 use reth_consensus::Consensus as _;
 use reth_evm::{
-    BlockExecutionError, BlockExecutionOutput, BlockExecutor, BlockExecutorFactory, ConfigureEvm,
+    BlockExecutionError, BlockExecutionOutput, BlockExecutor, BlockExecutorFactory,
+    ConfigureEngineEvm, ConfigureEvm, ConvertTx, ExecutableTxTuple,
 };
 use reth_primitives_traits::{RecoveredBlock, transaction::signed::SignedTransaction};
 use serde::{Deserialize, Serialize};
@@ -25,13 +26,14 @@ use std::{
     sync::Arc,
 };
 use tempo_chainspec::{TempoChainSpec, hardfork::TempoHardfork};
-use tempo_evm::{TempoBlockExecutor, TempoEvmConfig, consensus::TempoConsensus, evm::TempoEvm};
+use tempo_evm::{TempoEvmConfig, consensus::TempoConsensus, evm::TempoEvm};
 use tempo_fuzz_types::{
     AccountInput, BlockContextInput, ChainSpecInput, ErrorClass, FUZZ_ACCEPT, FUZZ_REJECT,
-    HarnessInputKind, LogOutput, NonEmpty, StateDiff, StateInput, StorageInput,
-    TYPED_HARNESS_SCHEMA_VERSION, TempoExecutionOutcome, TempoHarnessCapabilities,
+    HarnessInputKind, InvariantFailure, InvariantScope, LogOutput, NonEmpty, StateDiff, StateInput,
+    StorageInput, TYPED_HARNESS_SCHEMA_VERSION, TempoExecutionOutcome, TempoHarnessCapabilities,
     TempoHarnessInput, TempoHarnessOutcome, TransactionOutcome, TxReceiptOutput,
 };
+use tempo_payload_types::TempoExecutionData;
 use tempo_primitives::{TempoHeader, TempoReceipt, TempoTxEnvelope};
 
 const PINNED_CHAIN_ID: u64 = 42431;
@@ -47,6 +49,7 @@ struct BlockInput {
 struct BlockPayload {
     context: BlockContextInput,
     txs: Vec<Vec<u8>>,
+    senders: Vec<[u8; 20]>,
 }
 
 #[derive(Clone, Debug, Default, Eq, PartialEq)]
@@ -55,6 +58,7 @@ struct BlockResult {
     final_state: StateInput,
     state_diff: StateDiff,
     error: ErrorClass,
+    invariant_failures: Vec<InvariantFailure>,
 }
 
 #[derive(Clone, Debug, Default, Eq, PartialEq)]
@@ -69,11 +73,6 @@ struct ExecutedBlockOutput {
     receipts: Vec<TxReceiptOutput>,
     gas_used: u64,
     blob_gas_used: u64,
-}
-
-struct DecodedBlock {
-    context: BlockContextInput,
-    txs: Vec<TempoTxEnvelope>,
 }
 
 #[unsafe(no_mangle)]
@@ -133,7 +132,11 @@ fn execute_typed_input(input: TempoHarnessInput) -> Result<TempoHarnessOutcome, 
     match input {
         TempoHarnessInput::Transaction(input) => {
             let tx = decode_tx(&input.tx)?;
-            let sender = tx.try_recover().map_err(|_| ErrorClass::Rejected)?;
+            let sender = input
+                .sender
+                .map(Address::new)
+                .or_else(|| tx.try_recover().ok())
+                .ok_or(ErrorClass::Rejected)?;
             Ok(TempoHarnessOutcome::Transaction(TransactionOutcome {
                 error: ErrorClass::None,
                 sender: Some(address_bytes(sender)),
@@ -148,6 +151,7 @@ fn execute_typed_input(input: TempoHarnessInput) -> Result<TempoHarnessOutcome, 
                 blocks: vec![BlockPayload {
                     context: input.block_context,
                     txs: vec![input.tx],
+                    senders: input.sender.into_iter().collect(),
                 }],
             })?;
             Ok(TempoHarnessOutcome::State(tempo_execution_outcome(
@@ -162,6 +166,7 @@ fn execute_typed_input(input: TempoHarnessInput) -> Result<TempoHarnessOutcome, 
                 .map(|block| BlockPayload {
                     context: block.context.clone(),
                     txs: block.txs.clone(),
+                    senders: block.senders.clone(),
                 })
                 .collect();
             let response = execute_concrete_block(&BlockInput {
@@ -177,14 +182,16 @@ fn execute_typed_input(input: TempoHarnessInput) -> Result<TempoHarnessOutcome, 
 }
 
 fn tempo_execution_outcome(response: BlockResult) -> TempoExecutionOutcome {
-    let state_root = state_root(&response.final_state);
     TempoExecutionOutcome {
         error: response.error,
         receipts: response.receipts,
-        state_root: Some(state_root),
+        // An in-memory execution database does not expose the provider-backed trie root used by
+        // block import. The canonical final state remains comparable; do not substitute a hash of
+        // the diagnostic serialization and label it an Ethereum state root.
+        state_root: None,
         final_state: Some(response.final_state),
         state_diff: response.state_diff,
-        invariant_failures: Vec::new(),
+        invariant_failures: response.invariant_failures,
     }
 }
 
@@ -198,14 +205,6 @@ fn decode_tx(input: &[u8]) -> Result<TempoTxEnvelope, ErrorClass> {
         return Err(ErrorClass::Rejected);
     }
     Ok(tx)
-}
-
-fn state_root(state: &StateInput) -> [u8; 32] {
-    let encoded = bincode::serialize(state).expect("StateInput serialization should not fail");
-    let hash = keccak256(encoded);
-    let mut root = [0u8; 32];
-    root.copy_from_slice(hash.as_slice());
-    root
 }
 
 unsafe fn write_fuzz_output(
@@ -246,12 +245,13 @@ fn decode_block_input(input: &[u8]) -> Result<BlockInput, InputDecodeError> {
     Ok(request)
 }
 
-fn decode_blocks(input: &[BlockPayload]) -> Result<Vec<DecodedBlock>, InputDecodeError> {
+fn decode_blocks(input: &[BlockPayload]) -> Result<Vec<ExecutionBlock>, InputDecodeError> {
     let mut blocks = Vec::with_capacity(input.len());
     for block in input {
-        blocks.push(DecodedBlock {
+        blocks.push(ExecutionBlock {
             context: block.context.clone(),
             txs: decode_txs(&block.txs)?,
+            senders: block.senders.clone(),
         });
     }
     Ok(blocks)
@@ -278,15 +278,8 @@ fn execute_concrete_block(request: &BlockInput) -> Result<BlockResult, ErrorClas
     if request.blocks.is_empty() {
         return Err(ErrorClass::InvalidInput);
     }
-    let decoded_blocks = decode_blocks(&request.blocks).map_err(|err| err.class)?;
-    let execution_blocks = decoded_blocks
-        .iter()
-        .map(|block| ExecutionBlock {
-            context: block.context.clone(),
-            txs: block.txs.clone(),
-        })
-        .collect::<Vec<_>>();
-    let execution = execute_blocks(&request.chain_spec, &request.pre_state, &execution_blocks);
+    let blocks = decode_blocks(&request.blocks).map_err(|err| err.class)?;
+    let execution = execute_blocks(&request.chain_spec, &request.pre_state, &blocks);
 
     let mut receipts = Vec::new();
     for (executed, requested) in execution.output.blocks.into_iter().zip(&request.blocks) {
@@ -302,28 +295,15 @@ fn execute_concrete_block(request: &BlockInput) -> Result<BlockResult, ErrorClas
         } else {
             execution.error
         },
+        invariant_failures: execution.invariant_failures,
     })
-}
-
-fn make_evm<'a>(
-    db: &'a mut InMemoryDB,
-    evm_config: &'a TempoEvmConfig,
-    header: &TempoHeader,
-) -> Result<TempoEvm<'a>, String> {
-    let env = evm_config
-        .evm_env(header)
-        .map_err(|err| format!("evm_env_error={err}"))?;
-    Ok(BlockExecutorFactory::evm_with_env(
-        evm_config.block_executor_factory(),
-        db,
-        env,
-    ))
 }
 
 #[derive(Clone)]
 struct ExecutionBlock {
     context: BlockContextInput,
     txs: Vec<TempoTxEnvelope>,
+    senders: Vec<[u8; 20]>,
 }
 
 #[cfg(test)]
@@ -337,16 +317,10 @@ fn execute_block_input(request: &BlockInput) -> ExecutionResult {
                 output: BlockExecutionResultOutput::default(),
                 state_diff: StateDiff::default(),
                 final_state: StateInput::default(),
+                invariant_failures: Vec::new(),
             };
         }
     };
-    let blocks: Vec<_> = blocks
-        .iter()
-        .map(|block| ExecutionBlock {
-            context: block.context.clone(),
-            txs: block.txs.clone(),
-        })
-        .collect();
     execute_blocks(&request.chain_spec, &request.pre_state, &blocks)
 }
 
@@ -355,9 +329,46 @@ fn execute_blocks(
     pre_state: &StateInput,
     blocks: &[ExecutionBlock],
 ) -> ExecutionResult {
-    assert_monotonic_hardforks(blocks);
+    if !hardforks_are_monotonic(blocks) {
+        return ExecutionResult {
+            accepted: false,
+            error: ErrorClass::Rejected,
+            output: BlockExecutionResultOutput::default(),
+            state_diff: StateDiff::default(),
+            final_state: pre_state.clone(),
+            invariant_failures: Vec::new(),
+        };
+    }
+
+    let chainspec = Arc::new(fuzz_dev_chainspec(chain_spec));
+    if pre_state.accounts.iter().any(|account| {
+        chainspec
+            .inner
+            .genesis
+            .alloc
+            .contains_key(&Address::from(account.address))
+    }) {
+        return ExecutionResult {
+            accepted: false,
+            error: ErrorClass::Rejected,
+            output: BlockExecutionResultOutput::default(),
+            state_diff: StateDiff::default(),
+            final_state: pre_state.clone(),
+            invariant_failures: Vec::new(),
+        };
+    }
 
     let mut db = InMemoryDB::default();
+    if let Err(error_class) = seed_genesis_state(&mut db, &chainspec) {
+        return ExecutionResult {
+            accepted: false,
+            error: error_class,
+            output: BlockExecutionResultOutput::default(),
+            state_diff: StateDiff::default(),
+            final_state: pre_state.clone(),
+            invariant_failures: Vec::new(),
+        };
+    }
     if let Err(error_class) = seed_state(&mut db, pre_state) {
         return ExecutionResult {
             accepted: false,
@@ -365,18 +376,13 @@ fn execute_blocks(
             output: BlockExecutionResultOutput::default(),
             state_diff: StateDiff::default(),
             final_state: pre_state.clone(),
+            invariant_failures: Vec::new(),
         };
     }
 
     let initial_state = encode_state(&db);
-    let chainspec = Arc::new(fuzz_moderato_chainspec(chain_spec));
     let evm_config = TempoEvmConfig::new(Arc::clone(&chainspec));
     let consensus = TempoConsensus::new(chainspec);
-    let mut body = format!(
-        "blocks={} pre_state_accounts={}",
-        blocks.len(),
-        pre_state.accounts.len(),
-    );
     let mut executed_blocks = Vec::new();
 
     for (block_idx, block) in blocks.iter().enumerate() {
@@ -388,7 +394,6 @@ fn execute_blocks(
                     error_class,
                     db,
                     &initial_state,
-                    format!("{body} block[{block_idx}]={{invalid_context=true}}"),
                     executed_blocks,
                 );
             }
@@ -396,78 +401,122 @@ fn execute_blocks(
 
         let pre_block_state = encode_state(&db);
         let context = context_for_hardfork(&block.context, block.context.hardfork, chain_spec);
-        let recovered = match recovered_block_from_context(&context, hardfork, &block.txs) {
-            Ok(recovered) => recovered,
-            Err(err) => {
-                return finish_execution_result_from_state(
-                    false,
-                    ErrorClass::Rejected,
-                    pre_block_state,
-                    &initial_state,
-                    format!("{body} block[{block_idx}]={{recover_error={err}}}"),
-                    executed_blocks,
-                );
-            }
-        };
-        if let Err(err) = consensus.validate_block_pre_execution(recovered.sealed_block()) {
+        let recovered =
+            match recovered_block_from_context(&context, hardfork, &block.txs, &block.senders) {
+                Ok(recovered) => recovered,
+                Err(_) => {
+                    return finish_execution_result_from_state(
+                        false,
+                        ErrorClass::Rejected,
+                        pre_block_state,
+                        executed_blocks,
+                    );
+                }
+            };
+        if consensus
+            .validate_block_pre_execution(recovered.sealed_block())
+            .is_err()
+        {
             return finish_execution_result_from_state(
                 false,
                 ErrorClass::Rejected,
                 pre_block_state,
-                &initial_state,
-                format!("{body} block[{block_idx}]={{pre_execution_validation_error={err}}}"),
                 executed_blocks,
             );
         }
 
-        body.push_str(&format!(" block[{block_idx}]={{txs={}}}", block.txs.len()));
-
-        let evm = match make_evm(&mut db, &evm_config, recovered.sealed_block().header()) {
-            Ok(evm) => evm,
-            Err(err) => {
+        // Enter through Tempo's production Engine Tree adapter. Because this is a recovered block,
+        // `tx_iterator_for_payload` reuses the ingress-verified signer pool.
+        let payload = TempoExecutionData {
+            block: recovered.into(),
+            block_access_list: None,
+        };
+        let env = match evm_config.evm_env_for_payload(&payload) {
+            Ok(env) => env,
+            Err(_) => {
                 return finish_execution_result_from_state(
                     false,
                     ErrorClass::Rejected,
                     pre_block_state,
-                    &initial_state,
-                    format!("{body} block[{block_idx}]={{{err}}}"),
                     executed_blocks,
                 );
             }
         };
-        let ctx = match evm_config.context_for_block(recovered.sealed_block()) {
+        let ctx = match evm_config.context_for_payload(&payload) {
             Ok(ctx) => ctx,
-            Err(err) => {
+            Err(_) => {
                 return finish_execution_result_from_state(
                     false,
                     ErrorClass::Rejected,
                     pre_block_state,
-                    &initial_state,
-                    format!("{body} block[{block_idx}]={{context_error={err}}}"),
                     executed_blocks,
                 );
             }
         };
+        let executable = match evm_config.tx_iterator_for_payload(&payload) {
+            Ok(executable) => executable,
+            Err(_) => {
+                return finish_execution_result_from_state(
+                    false,
+                    ErrorClass::Rejected,
+                    pre_block_state,
+                    executed_blocks,
+                );
+            }
+        };
+        let evm =
+            BlockExecutorFactory::evm_with_env(evm_config.block_executor_factory(), &mut db, env);
         let mut executor =
             BlockExecutorFactory::create_executor(evm_config.block_executor_factory(), evm, ctx);
+        let (raw_transactions, convert) = executable.into_parts();
 
-        match execute_recovered_block(
-            &mut executor,
-            &recovered,
-            &context,
-            hardfork,
-            &pre_block_state,
-        ) {
+        let transaction_execution = (|| {
+            executor.apply_pre_execution_changes()?;
+            let post_pre_execution_state =
+                encode_state_overlay(executor.evm().overlay_db(), &pre_block_state);
+            validate_executor_state_invariants(
+                executor.evm(),
+                "post-pre-execution",
+                &post_pre_execution_state,
+            )?;
+
+            let mut outputs = Vec::with_capacity(block.txs.len());
+            for (tx_index, raw) in raw_transactions.into_iter().enumerate() {
+                let tx = convert
+                    .convert(raw)
+                    .map_err(|_| HarnessBlockExecutionError::Conversion)?;
+                let mut output = TxExecutionOutput::default();
+                let gas_output =
+                    executor.execute_transaction_with_result_closure(tx, |result| {
+                        output.output = result.result().output.to_vec();
+                    })?;
+                let post_tx_state =
+                    encode_state_overlay(executor.evm().overlay_db(), &pre_block_state);
+                validate_executor_state_invariants(executor.evm(), "post-tx", &post_tx_state)?;
+
+                let original = block
+                    .txs
+                    .get(tx_index)
+                    .ok_or(HarnessBlockExecutionError::Conversion)?;
+                output.gas_used = gas_output.tx_gas_used();
+                output.effective_gas_price = original.effective_gas_price(Some(context.basefee));
+                outputs.push(output);
+            }
+            if outputs.len() != block.txs.len() {
+                return Err(HarnessBlockExecutionError::Conversion);
+            }
+            Ok(outputs)
+        })();
+
+        match transaction_execution {
             Ok(tx_outputs) => {
                 let block_result = match executor.finish() {
                     Ok(output) => output,
-                    Err(err) => {
+                    Err(_) => {
                         return finish_execution_result_from_state(
                             false,
                             ErrorClass::Rejected,
                             pre_block_state,
-                            &initial_state,
-                            format!("{body} block[{block_idx}]={{finish_error={err}}}"),
                             executed_blocks,
                         );
                     }
@@ -480,27 +529,30 @@ fn execute_blocks(
                 db.commit_source(&block_result.state);
             }
             Err(HarnessBlockExecutionError::Invariant { state, detail }) => {
-                return finish_execution_result_from_state(
-                    false,
-                    ErrorClass::Invariant,
-                    state,
-                    &initial_state,
-                    format!("{body} block[{block_idx}]={{invariant_error={detail}}}"),
-                    executed_blocks,
-                );
+                return ExecutionResult {
+                    accepted: false,
+                    error: ErrorClass::Invariant,
+                    output: BlockExecutionResultOutput {
+                        blocks: executed_blocks,
+                        storage_changes: Vec::new(),
+                    },
+                    state_diff: StateDiff::default(),
+                    final_state: state,
+                    invariant_failures: vec![InvariantFailure {
+                        id: "tempo-state-invariant".to_string(),
+                        message: detail,
+                        scope: InvariantScope::Execution,
+                    }],
+                };
             }
-            Err(HarnessBlockExecutionError::Execution(err)) => {
+            Err(HarnessBlockExecutionError::Execution) => {
                 let _ = match executor.finish() {
                     Ok(output) => output,
-                    Err(finish_err) => {
+                    Err(_) => {
                         return finish_execution_result_from_state(
                             false,
                             ErrorClass::Rejected,
                             pre_block_state,
-                            &initial_state,
-                            format!(
-                                "{body} block[{block_idx}]={{execution_error={err}; finish_error={finish_err}}}"
-                            ),
                             executed_blocks,
                         );
                     }
@@ -509,68 +561,33 @@ fn execute_blocks(
                     false,
                     ErrorClass::Rejected,
                     pre_block_state,
-                    &initial_state,
-                    format!("{body} block[{block_idx}]={{execution_error={err}}}"),
+                    executed_blocks,
+                );
+            }
+            Err(HarnessBlockExecutionError::Conversion) => {
+                return finish_execution_result_from_state(
+                    false,
+                    ErrorClass::Rejected,
+                    pre_block_state,
                     executed_blocks,
                 );
             }
         }
     }
 
-    finish_execution_result(
-        true,
-        ErrorClass::None,
-        db,
-        &initial_state,
-        body,
-        executed_blocks,
-    )
+    finish_execution_result(true, ErrorClass::None, db, &initial_state, executed_blocks)
 }
 
-fn assert_monotonic_hardforks(blocks: &[ExecutionBlock]) {
+fn hardforks_are_monotonic(blocks: &[ExecutionBlock]) -> bool {
     let mut previous = None;
-    for (block_index, block) in blocks.iter().enumerate() {
+    for block in blocks {
         let hardfork = block.context.hardfork;
-        if let Some(previous) = previous {
-            assert!(
-                hardfork >= previous,
-                "hardfork sequence is not monotonic at block {block_index}: T{previous} -> T{hardfork}"
-            );
+        if previous.is_some_and(|previous| hardfork < previous) {
+            return false;
         }
         previous = Some(hardfork);
     }
-}
-
-fn execute_recovered_block(
-    executor: &mut TempoBlockExecutor<'_>,
-    block: &RecoveredBlock<Block<TempoTxEnvelope, TempoHeader>>,
-    context: &BlockContextInput,
-    _hardfork: TempoHardfork,
-    pre_block_state: &StateInput,
-) -> Result<Vec<TxExecutionOutput>, HarnessBlockExecutionError> {
-    executor.apply_pre_execution_changes()?;
-    let post_pre_execution_state =
-        encode_state_overlay(executor.evm().overlay_db(), pre_block_state);
-    validate_executor_state_invariants(
-        executor.evm(),
-        "post-pre-execution",
-        &post_pre_execution_state,
-    )?;
-
-    let mut outputs = Vec::new();
-    for tx in block.transactions_recovered() {
-        let mut output = TxExecutionOutput::default();
-        let gas_output = executor.execute_transaction_with_result_closure(tx, |result| {
-            output.output = result.result().output.to_vec();
-        })?;
-        let post_tx_state = encode_state_overlay(executor.evm().overlay_db(), pre_block_state);
-        validate_executor_state_invariants(executor.evm(), "post-tx", &post_tx_state)?;
-
-        output.gas_used = gas_output.tx_gas_used();
-        output.effective_gas_price = (*tx.inner()).effective_gas_price(Some(context.basefee));
-        outputs.push(output);
-    }
-    Ok(outputs)
+    true
 }
 
 fn validate_executor_state_invariants(
@@ -584,9 +601,9 @@ fn validate_executor_state_invariants(
         block: *evm.block(),
     };
     let mut db = InMemoryDB::default();
-    seed_state(&mut db, state).map_err(|error_class| HarnessBlockExecutionError::Invariant {
+    seed_state(&mut db, state).map_err(|error| HarnessBlockExecutionError::Invariant {
         state: state.clone(),
-        detail: format!("TEMPO-INVARIANT-STATE-SEED side={side} error={error_class:?}"),
+        detail: format!("TEMPO-INVARIANT-STATE-SEED side={side} error={error:?}"),
     })?;
     let mut evm = BlockExecutorFactory::evm_with_env(
         TempoEvmConfig::moderato().block_executor_factory(),
@@ -604,13 +621,14 @@ fn validate_executor_state_invariants(
 
 #[derive(Debug)]
 enum HarnessBlockExecutionError {
-    Execution(BlockExecutionError),
+    Execution,
+    Conversion,
     Invariant { state: StateInput, detail: String },
 }
 
 impl From<BlockExecutionError> for HarnessBlockExecutionError {
-    fn from(value: BlockExecutionError) -> Self {
-        Self::Execution(value)
+    fn from(_: BlockExecutionError) -> Self {
+        Self::Execution
     }
 }
 
@@ -619,26 +637,16 @@ fn finish_execution_result(
     error_class: ErrorClass,
     db: InMemoryDB,
     initial_state: &StateInput,
-    _body: String,
     blocks: Vec<ExecutedBlockOutput>,
 ) -> ExecutionResult {
     let final_state = encode_state_overlay(&db, initial_state);
-    finish_execution_result_from_state(
-        accepted,
-        error_class,
-        final_state,
-        initial_state,
-        _body,
-        blocks,
-    )
+    finish_execution_result_from_state(accepted, error_class, final_state, blocks)
 }
 
 fn finish_execution_result_from_state(
     accepted: bool,
     error_class: ErrorClass,
     final_state: StateInput,
-    _initial_state: &StateInput,
-    _body: String,
     blocks: Vec<ExecutedBlockOutput>,
 ) -> ExecutionResult {
     let execution_result = BlockExecutionResultOutput {
@@ -651,6 +659,7 @@ fn finish_execution_result_from_state(
         output: execution_result,
         state_diff: StateDiff::default(),
         final_state,
+        invariant_failures: Vec::new(),
     }
 }
 
@@ -665,13 +674,15 @@ fn context_for_hardfork(
 }
 
 fn supported_hardforks() -> Vec<u8> {
-    (0..=12).collect()
+    (0..=13).collect()
 }
 
-fn fuzz_moderato_chainspec(input: &ChainSpecInput) -> TempoChainSpec {
-    let mut chainspec = TempoChainSpec::moderato();
+fn fuzz_dev_chainspec(input: &ChainSpecInput) -> TempoChainSpec {
+    let mut chainspec = tempo_chainspec::spec::DEV.as_ref().clone();
     chainspec.inner.chain = PINNED_CHAIN_ID.into();
-    chainspec.inner.hardforks.remove(&TempoHardfork::Genesis);
+    for hardfork in TempoHardfork::VARIANTS {
+        chainspec.inner.hardforks.remove(hardfork);
+    }
     chainspec
         .inner
         .hardforks
@@ -679,7 +690,7 @@ fn fuzz_moderato_chainspec(input: &ChainSpecInput) -> TempoChainSpec {
     chainspec
         .inner
         .hardforks
-        .extend((0..=12).filter_map(|value| {
+        .extend((0..=13).filter_map(|value| {
             hardfork_from_u8(value)
                 .ok()
                 .map(|hardfork| (hardfork, ForkCondition::Timestamp(u64::from(value) + 1)))
@@ -729,13 +740,25 @@ fn recovered_block_from_context(
     context: &BlockContextInput,
     hardfork: TempoHardfork,
     txs: &[TempoTxEnvelope],
+    verified_senders: &[[u8; 20]],
 ) -> Result<RecoveredBlock<Block<TempoTxEnvelope, TempoHeader>>, String> {
     let transactions = txs.to_vec();
-    let mut senders = Vec::with_capacity(transactions.len());
-    for (idx, tx) in transactions.iter().enumerate() {
-        let sender = tx.try_recover().map_err(|err| format!("tx[{idx}]={err}"))?;
-        senders.push(sender);
-    }
+    let senders = if verified_senders.is_empty() {
+        let mut recovered = Vec::with_capacity(transactions.len());
+        for (idx, tx) in transactions.iter().enumerate() {
+            let sender = tx.try_recover().map_err(|err| format!("tx[{idx}]={err}"))?;
+            recovered.push(sender);
+        }
+        recovered
+    } else if verified_senders.len() == transactions.len() {
+        verified_senders.iter().copied().map(Address::new).collect()
+    } else {
+        return Err(format!(
+            "sender_count={} tx_count={}",
+            verified_senders.len(),
+            transactions.len()
+        ));
+    };
 
     let mut header = TempoHeader {
         general_gas_limit: hardfork.general_gas_limit().unwrap_or(context.gas_limit),
@@ -785,6 +808,7 @@ struct ExecutionResult {
     output: BlockExecutionResultOutput,
     state_diff: StateDiff,
     final_state: StateInput,
+    invariant_failures: Vec<InvariantFailure>,
 }
 
 fn hardfork_from_u8(value: u8) -> Result<TempoHardfork, ErrorClass> {
@@ -802,6 +826,7 @@ fn hardfork_from_u8(value: u8) -> Result<TempoHardfork, ErrorClass> {
         10 => TempoHardfork::T10,
         11 => TempoHardfork::T11,
         12 => TempoHardfork::T12,
+        13 => TempoHardfork::T13,
         _ => return Err(ErrorClass::InvalidInput),
     })
 }
@@ -946,6 +971,33 @@ fn seed_state(db: &mut InMemoryDB, input: &StateInput) -> Result<(), ErrorClass>
     Ok(())
 }
 
+fn seed_genesis_state(db: &mut InMemoryDB, chain_spec: &TempoChainSpec) -> Result<(), ErrorClass> {
+    for (address, account) in &chain_spec.inner.genesis.alloc {
+        let mut info = AccountInfo {
+            balance: account.balance,
+            nonce: account.nonce.unwrap_or_default(),
+            ..Default::default()
+        };
+        if let Some(code) = &account.code {
+            let bytecode = Bytecode::new_raw(code.clone());
+            info.code_hash = bytecode.hash_slow();
+            info.code = Some(bytecode);
+        }
+        db.insert_account_info(address, info);
+
+        if let Some(storage) = &account.storage {
+            for (slot, value) in storage {
+                db.insert_account_storage(
+                    address,
+                    &U256::from_be_bytes(slot.0),
+                    &U256::from_be_bytes(value.0),
+                );
+            }
+        }
+    }
+    Ok(())
+}
+
 fn encode_state<DB>(db: &CacheDB<DB>) -> StateInput {
     encode_state_overlay(db, &StateInput::default())
 }
@@ -970,12 +1022,15 @@ fn encode_state_overlay<DB>(db: &CacheDB<DB>, base: &StateInput) -> StateInput {
                     let view = account_views.entry(address_bytes).or_default();
                     view.balance = info.balance;
                     view.nonce = info.nonce;
-                    view.code = info
+                    if let Some(code) = info
                         .code
                         .as_ref()
                         .or_else(|| db.cache.contracts.get(&info.code_hash))
-                        .map(|code| code.original_byte_slice().to_vec())
-                        .unwrap_or_default();
+                    {
+                        view.code = code.original_byte_slice().to_vec();
+                    } else if info.code_hash == KECCAK256_EMPTY {
+                        view.code.clear();
+                    }
                 }
                 None => {
                     account_views.remove(&address_bytes);
@@ -1064,6 +1119,7 @@ mod tests {
                     ..Default::default()
                 },
                 txs: encoded_txs(txs),
+                senders: Vec::new(),
             }],
         }
     }
@@ -1085,6 +1141,23 @@ mod tests {
     }
 
     #[test]
+    fn protocol_genesis_accounts_cannot_be_overwritten_by_fuzz_prestate() {
+        let mut request = block_input_with_txs(&[legacy_tx(0, 0)]);
+        request.pre_state.accounts.push(AccountInput {
+            address: address_bytes(tempo_contracts::precompiles::PATH_USD_ADDRESS),
+            balance: [0; 32],
+            nonce: 0,
+            code: vec![0xef],
+            storage: Vec::new(),
+        });
+
+        let result = execute_block_input(&request);
+
+        assert!(!result.accepted);
+        assert_eq!(result.error, ErrorClass::Rejected);
+    }
+
+    #[test]
     fn encode_state_recovers_seeded_code_from_contract_cache() {
         let input = StateInput {
             accounts: vec![AccountInput {
@@ -1099,6 +1172,34 @@ mod tests {
         seed_state(&mut db, &input).expect("state seeds");
 
         assert_eq!(encode_state(&db), input);
+    }
+
+    #[test]
+    fn encode_state_overlay_retains_provider_backed_code() {
+        let address = Address::repeat_byte(0x23);
+        let code = vec![0xef];
+        let base = StateInput {
+            accounts: vec![AccountInput {
+                address: address_bytes(address),
+                balance: [0; 32],
+                nonce: 0,
+                code: code.clone(),
+                storage: Vec::new(),
+            }],
+        };
+        let mut overlay = InMemoryDB::default();
+        overlay.insert_account_info(
+            &address,
+            AccountInfo {
+                code_hash: Bytecode::new_raw(Bytes::from(code)).hash_slow(),
+                code: None,
+                ..Default::default()
+            },
+        );
+
+        let materialized = encode_state_overlay(&overlay, &base);
+
+        assert_eq!(materialized.accounts[0].code, vec![0xef]);
     }
 
     #[test]
@@ -1228,6 +1329,7 @@ mod tests {
                         ..Default::default()
                     },
                     txs,
+                    senders: Vec::new(),
                 }])
                 .expect("test blockchain input has one block"),
             },
@@ -1240,6 +1342,48 @@ mod tests {
         assert!(matches!(response.error, ErrorClass::None));
         assert_eq!(response.receipts.len(), 1);
         assert!(response.receipts[0].success);
+    }
+
+    #[test]
+    fn engine_payload_adapter_reuses_verified_sender() {
+        let tx = TempoTxEnvelope::Legacy(Signed::new_unhashed(
+            TxLegacy {
+                chain_id: Some(PINNED_CHAIN_ID),
+                nonce: 0,
+                gas_price: 0,
+                gas_limit: 500_000,
+                to: TxKind::Call(Address::repeat_byte(0x11)),
+                value: U256::ZERO,
+                input: Bytes::new(),
+            },
+            Signature::new(U256::MAX, U256::MAX, false),
+        ));
+        assert!(tx.try_recover().is_err());
+
+        let mut request = block_input_with_txs(&[tx]);
+        request.blocks[0].senders = vec![[0x42; 20]];
+        let result = execute_block_input(&request);
+
+        assert!(result.accepted);
+        assert_eq!(result.output.blocks[0].receipts.len(), 1);
+    }
+
+    #[test]
+    fn non_monotonic_hardfork_sequence_is_rejected_without_panicking() {
+        let txs = [legacy_tx(0, 0), legacy_tx(1, 0)];
+        let mut request = block_input_with_txs(&txs[..1]);
+        request.blocks.push(BlockPayload {
+            context: BlockContextInput {
+                hardfork: 3,
+                ..Default::default()
+            },
+            txs: encoded_txs(&txs[1..]),
+            senders: Vec::new(),
+        });
+
+        let result = execute_block_input(&request);
+        assert!(!result.accepted);
+        assert_eq!(result.error, ErrorClass::Rejected);
     }
 
     #[test]
@@ -1276,8 +1420,8 @@ mod tests {
     }
 
     #[test]
-    fn fuzz_chainspec_pins_moderato_t4_boundary() {
-        let chainspec = fuzz_moderato_chainspec(&tempo_fuzz_types::ChainSpecInput::default());
+    fn fuzz_chainspec_pins_requested_t4_boundary() {
+        let chainspec = fuzz_dev_chainspec(&tempo_fuzz_types::ChainSpecInput::default());
         assert_eq!(chainspec.tempo_hardfork_at(1), TempoHardfork::T0);
         assert_eq!(chainspec.tempo_hardfork_at(2), TempoHardfork::T1);
         assert_eq!(chainspec.tempo_hardfork_at(3), TempoHardfork::T2);
@@ -1297,6 +1441,7 @@ mod tests {
         assert_eq!(hardfork_from_u8(10), Ok(TempoHardfork::T10));
         assert_eq!(hardfork_from_u8(11), Ok(TempoHardfork::T11));
         assert_eq!(hardfork_from_u8(12), Ok(TempoHardfork::T12));
-        assert_eq!(supported_hardforks(), (0..=12).collect::<Vec<_>>());
+        assert_eq!(hardfork_from_u8(13), Ok(TempoHardfork::T13));
+        assert_eq!(supported_hardforks(), (0..=13).collect::<Vec<_>>());
     }
 }
