@@ -511,7 +511,7 @@ mod tests {
 
     #[test]
     fn test_precompile_static_calls() {
-        for spec in [TempoHardfork::T12, TempoHardfork::T13] {
+        for spec in [TempoHardfork::T7, TempoHardfork::T12, TempoHardfork::T13] {
             let mut cfg = CfgEnv::<TempoHardfork>::default();
             cfg.spec = spec;
             let tx = TxEnv::default();
@@ -563,7 +563,7 @@ mod tests {
                 .abi_encode(),
             ] {
                 let output = call_static(calldata.into());
-                if spec.is_t13() {
+                if spec.is_t12() {
                     assert!(output.is_halt());
                     assert!(output.bytes.is_empty());
                 } else {

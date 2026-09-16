@@ -36,7 +36,7 @@ pub mod typed {
 
     #[inline]
     fn reject_static_call() -> PrecompileResult {
-        if !StorageCtx.spec().is_t13() {
+        if !StorageCtx.spec().is_t12() {
             let encoded = StaticCallNotAllowed {}.abi_encode().into();
             return Ok(PrecompileOutput::revert(0, encoded, StorageCtx.reservoir()));
         }
@@ -63,7 +63,7 @@ pub mod typed {
 
     /// Dispatches a state-mutating call that returns ABI-encoded data.
     ///
-    /// Rejects static calls: pre-T13 with [`StaticCallNotAllowed`], T13 with an execution halt.
+    /// Rejects static calls: pre-T12 with [`StaticCallNotAllowed`], T12 with an execution halt.
     #[inline]
     pub fn mutate<T: SolCall, E: IntoPrecompileResult>(
         call: T,
@@ -78,7 +78,7 @@ pub mod typed {
 
     /// Dispatches a state-mutating call that returns no data (e.g. `approve`, `transfer`).
     ///
-    /// Rejects static calls: pre-T13 with [`StaticCallNotAllowed`], T13 with an execution halt.
+    /// Rejects static calls: pre-T12 with [`StaticCallNotAllowed`], T12 with an execution halt.
     #[inline]
     pub fn mutate_void<T: SolCall, E: IntoPrecompileResult>(
         call: T,
