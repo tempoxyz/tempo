@@ -1,4 +1,4 @@
-//! TIP-1102 precompile repricing, active from T13.
+//! TIP-1117 precompile repricing, active from T13.
 
 use alloy_evm::precompiles::{DynPrecompile, PrecompilesMap};
 use alloy_primitives::{Address, U256};
@@ -375,7 +375,7 @@ mod tests {
     }
 
     #[test]
-    fn fixed_and_linear_prices_match_tip_1102() {
+    fn fixed_and_linear_prices_match_tip_1117() {
         assert_price(ecrecover, &[], ECRECOVER_BASE, 0);
         assert_price(sha256, &[], SHA256_BASE, 32);
         assert_price(sha256, &[0; 33], SHA256_BASE + 2 * SHA256_PER_WORD, 32);
@@ -392,14 +392,14 @@ mod tests {
     }
 
     #[test]
-    fn blake2_round_price_matches_tip_1102() {
+    fn blake2_round_price_matches_tip_1117() {
         let mut input = [0u8; 213];
         input[..4].copy_from_slice(&12u32.to_be_bytes());
         assert_price(blake2f, &input, 12 * BLAKE2_F_ROUND, 64);
     }
 
     #[test]
-    fn bls12_prices_match_tip_1102() {
+    fn bls12_prices_match_tip_1117() {
         assert_price(bls12_g1_add, &[0; 256], BLS12_G1_ADD, 128);
         assert_price(bls12_g1_msm, &[0; 160], BLS12_G1_MSM_BASE, 128);
         assert_price(bls12_g2_add, &[0; 512], BLS12_G2_ADD, 256);
@@ -415,7 +415,7 @@ mod tests {
     }
 
     #[test]
-    fn modexp_prices_match_tip_1102() {
+    fn modexp_prices_match_tip_1117() {
         fn input(size: usize) -> Vec<u8> {
             let mut input = Vec::with_capacity(96 + 3 * size);
             let encoded_size = U256::from(size).to_be_bytes::<32>();

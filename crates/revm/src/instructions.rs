@@ -2,7 +2,8 @@ use crate::{evm::TempoContext, gas_credits};
 use alloy_evm::Database;
 use revm::{
     bytecode::opcode::{
-        ADDMOD, KECCAK256, MOD, MULMOD, NOT, SAR, SELFBALANCE, SHL, SHR, SMOD, SSTORE,
+        ADDMOD, DIV, ISZERO, KECCAK256, MOD, MULMOD, NOT, SAR, SDIV, SELFBALANCE, SHL, SHR, SMOD,
+        SSTORE,
     },
     handler::instructions::EthInstructions,
     interpreter::{
@@ -61,16 +62,19 @@ pub(crate) fn tempo_instructions<DB: Database>(
     }
 
     if spec.is_t13() {
-        // TIP-1102: static opcode repricing. KECCAK256's dynamic per-word
+        // TIP-1117: static opcode repricing. KECCAK256's dynamic per-word
         // component is configured in `tempo_gas_params`.
         instructions.insert_gas(MOD, 40);
         instructions.insert_gas(SMOD, 37);
+        instructions.insert_gas(DIV, 17);
+        instructions.insert_gas(SDIV, 23);
         instructions.insert_gas(ADDMOD, 36);
         instructions.insert_gas(MULMOD, 65);
         instructions.insert_gas(SHL, 9);
         instructions.insert_gas(SHR, 9);
         instructions.insert_gas(SAR, 10);
         instructions.insert_gas(NOT, 3);
+        instructions.insert_gas(ISZERO, 5);
         instructions.insert_gas(KECCAK256, 205);
         instructions.insert_gas(SELFBALANCE, 13);
     }
@@ -83,16 +87,19 @@ mod tests {
     use revm::database::EmptyDB;
 
     #[test]
-    fn tip_1102_opcode_prices_activate_at_t13() {
+    fn tip_1117_opcode_prices_activate_at_t13() {
         let t12 = tempo_instructions::<EmptyDB>(TempoHardfork::T12);
         let t13 = tempo_instructions::<EmptyDB>(TempoHardfork::T13);
 
         for (opcode, old, new) in [
             (MOD, 5, 40),
             (SMOD, 5, 37),
+            (DIV, 5, 17),
+            (SDIV, 5, 23),
             (ADDMOD, 8, 36),
             (MULMOD, 8, 65),
             (NOT, 3, 3),
+            (ISZERO, 3, 5),
             (SHL, 3, 9),
             (SHR, 3, 9),
             (SAR, 3, 10),
