@@ -272,7 +272,12 @@ def build(paths, warmup=5, window=None):
                      'timing_semantics': ('aggregate_envelope' if s.get('count') else
                          'operation_' + s['operation_status'] if s.get('operation_status') else
                          'span_lifetime'),
-                     'retained_after_operation_ms': max(0, s.get('reference_end', s['end']) - s['end'])/1e6,
+                     'retained_after_operation_ms': (max(0, s['reference_end'] - s['end'])/1e6
+                         if 'reference_end' in s and s.get('operation_status') else None),
+                     'reference_right_censored': bool(cutoff is not None and s.get('operation_status')
+                         and 'reference_end' not in s),
+                     'reference_retention_lower_bound_ms': (max(0, cutoff-s['end'])/1e6
+                         if cutoff is not None and s.get('operation_status') and 'reference_end' not in s else None),
                      'attempt': attempt_ids.get((s['node'], s.get('attempt_root'))),
                      'details': {k:v for k,v in s['fields'].items() if k in (
                          'block_count', 'state_trie_block_count', 'first_block_number',
