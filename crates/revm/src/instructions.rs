@@ -66,8 +66,8 @@ pub(crate) fn tempo_instructions<DB: Database>(
         // component is configured in `tempo_gas_params`.
         instructions.insert_gas(MOD, 40);
         instructions.insert_gas(SMOD, 37);
-        instructions.insert_gas(DIV, 17);
-        instructions.insert_gas(SDIV, 23);
+        instructions.insert_gas(DIV, 24);
+        instructions.insert_gas(SDIV, 34);
         instructions.insert_gas(ADDMOD, 36);
         instructions.insert_gas(MULMOD, 65);
         instructions.insert_gas(SHL, 9);
@@ -94,8 +94,8 @@ mod tests {
         for (opcode, old, new) in [
             (MOD, 5, 40),
             (SMOD, 5, 37),
-            (DIV, 5, 17),
-            (SDIV, 5, 23),
+            (DIV, 5, 24),
+            (SDIV, 5, 34),
             (ADDMOD, 8, 36),
             (MULMOD, 8, 65),
             (NOT, 3, 3),
