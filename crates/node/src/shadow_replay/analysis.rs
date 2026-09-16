@@ -8,24 +8,8 @@ use alloy_primitives::{Address, U256};
 use reth_revm::db::{TransitionAccount, TransitionState};
 use std::{cmp::Ordering, collections::HashSet, fmt::Debug};
 
-/// Diagnostic data for one unexpected field difference.
-#[derive(Clone, Debug, PartialEq, Eq)]
-pub(super) struct Difference {
-    kind: Kind,
-    field: &'static str,
-    address: Option<Address>,
-    slot: Option<U256>,
-    real: String,
-    shadow: String,
-}
-
-#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord)]
-enum Kind {
-    Stop,
-    Observation,
-    Gas,
-    Fee,
-}
+/// Maximum retained diagnostic samples; finding counters remain exact.
+const MAX_SAMPLES: usize = 8;
 
 /// Exact finding counters plus a bounded, deterministic sample set.
 #[derive(Debug, Default)]
@@ -37,23 +21,6 @@ pub(super) struct Report {
     pub boundaries_not_evaluated: usize,
     pub cutoff: Option<Boundary>,
     pub samples: Vec<(Boundary, Difference)>,
-}
-
-#[derive(Clone, Copy)]
-enum Location {
-    Observation,
-    Account(Address),
-    Storage(Address, U256),
-}
-
-impl Location {
-    fn parts(self) -> (Option<Address>, Option<U256>) {
-        match self {
-            Self::Observation => (None, None),
-            Self::Account(address) => (Some(address), None),
-            Self::Storage(address, slot) => (Some(address), Some(slot)),
-        }
-    }
 }
 
 impl Report {
@@ -75,7 +42,7 @@ impl Report {
                 report.boundaries_not_evaluated += common_txs - index;
                 break;
             }
-            report.record_tx_diffs(real, shadow, index);
+            report.record_tx_diffs(&real.txs[index], &shadow.txs[index], index);
         }
         if let Some((real, shadow)) = real.post_block.as_ref().zip(shadow.post_block.as_ref()) {
             if report.cutoff.is_some() {
@@ -101,7 +68,7 @@ impl Report {
 
         self.samples.push((boundary, difference));
         self.samples.sort_by(sample_cmp);
-        self.samples.truncate(8);
+        self.samples.truncate(MAX_SAMPLES);
     }
 
     fn record_state_diffs(
@@ -153,24 +120,54 @@ impl Report {
         }
     }
 
-    fn record_tx_diffs(&mut self, real: &Evidence, shadow: &Evidence, index: usize) {
+    fn record_tx_diffs(&mut self, real: &ObservedTx, shadow: &ObservedTx, index: usize) {
         let boundary = Boundary::Transaction(index);
-        let (real_tx, shadow_tx) = (&real.txs[index], &shadow.txs[index]);
-        let mut diff = Comparison::new(self, boundary, Location::Observation, real_tx, shadow_tx);
+        let mut diff = Comparison::new(self, boundary, Location::Observation, real, shadow);
         diff.record("success", |tx| tx.receipt.success, Kind::Observation);
         diff.record("output", |tx| tx.output_hash, Kind::Observation);
-        if real_tx.logs_hash != shadow_tx.logs_hash {
+        if real.logs_hash != shadow.logs_hash {
             diff.record("logs", |tx| tx.logs_hash, Kind::Observation);
         } else {
             diff.record("fee_logs", |tx| tx.receipt.logs_hash, Kind::Fee);
         }
         diff.record("gas", |tx| tx.receipt.gas_used, Kind::Gas);
-        self.record_state_diffs(
-            boundary,
-            &real_tx.state,
-            &shadow_tx.state,
-            Some((real_tx, shadow_tx)),
-        );
+        self.record_state_diffs(boundary, &real.state, &shadow.state, Some((real, shadow)));
+    }
+}
+
+/// Diagnostic data for one unexpected field difference.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub(super) struct Difference {
+    kind: Kind,
+    field: &'static str,
+    address: Option<Address>,
+    slot: Option<U256>,
+    real: String,
+    shadow: String,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord)]
+enum Kind {
+    Stop,
+    Observation,
+    Gas,
+    Fee,
+}
+
+#[derive(Clone, Copy)]
+enum Location {
+    Observation,
+    Account(Address),
+    Storage(Address, U256),
+}
+
+impl Location {
+    fn parts(self) -> (Option<Address>, Option<U256>) {
+        match self {
+            Self::Observation => (None, None),
+            Self::Account(address) => (Some(address), None),
+            Self::Storage(address, slot) => (Some(address), Some(slot)),
+        }
     }
 }
 
