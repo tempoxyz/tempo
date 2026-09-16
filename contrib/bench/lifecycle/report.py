@@ -226,7 +226,8 @@ def build(paths, warmup=5, window=None, expected_detail=None):
         start = min(starts) if starts else min((e['ts'] for e in markers), default=0)
         finish = min(ends) if complete else max((e['ts'] for e in markers), default=start)
         totals = [dict(node=e['node'], **{k:v for k,v in e['fields'].items()
-                  if k in ('execution_ns','receipt_ns','wait_ns','transactions')})
+                  if k in ('execution_ns','receipt_ns','wait_ns','transactions',
+                           'execution_loop_ns','execution_thread_cpu_ns','execution_cpu_measured')})
                   for e in by_block[key] if e['fields'].get('stage') == 'execution_totals']
         blocks.append({'execution_totals': totals, 'id': aliases[key], 'start': start, 'end': finish,
                        'duration': finish-start, 'complete': complete, 'markers': markers})

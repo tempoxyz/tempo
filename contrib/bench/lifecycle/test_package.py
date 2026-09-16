@@ -99,6 +99,28 @@ class PackageTests(unittest.TestCase):
             self.assertIn('causal ancestor', ancestor['args']['association'])
 
     @unittest.skipUnless(shutil.which('node'), 'Node.js is required for viewer helper regression')
+    def test_viewer_cpu_distinguishes_unmeasured_from_zero(self):
+        template = Path(__file__).with_name('viewer.html').read_text()
+        helper = template.split('// BEGIN EXECUTION_LOOP_HELPER')[1].split('// END EXECUTION_LOOP_HELPER')[0]
+        script = "const ms=n=>n.toFixed(3)+' ms';" + helper + """
+console.log(JSON.stringify([
+  {},
+  {execution_loop_ns:10000000,execution_cpu_measured:0},
+  {execution_loop_ns:10000000,execution_cpu_measured:1,execution_thread_cpu_ns:0},
+  {execution_loop_ns:10000000,execution_cpu_measured:1,execution_thread_cpu_ns:12000000}
+].map(executionLoopSummary)));
+"""
+        old, missing, zero, larger = json.loads(subprocess.check_output(['node', '-e', script], text=True))
+        self.assertIn('loop wall unmeasured', old)
+        self.assertIn('loop thread CPU unmeasured', old)
+        self.assertIn('loop wall 10.000 ms', missing)
+        self.assertIn('loop thread CPU unmeasured', missing)
+        self.assertIn('loop thread CPU 0.000 ms', zero)
+        # Preserve the measured values independently, without clamping to wall time.
+        self.assertIn('loop wall 10.000 ms', larger)
+        self.assertIn('loop thread CPU 12.000 ms', larger)
+
+    @unittest.skipUnless(shutil.which('node'), 'Node.js is required for viewer helper regression')
     def test_viewer_reveals_nonoverlapping_causal_ancestors_and_extends_axis(self):
         template = Path(__file__).with_name('viewer.html').read_text()
         helpers = template.split('// BEGIN FOCUSED_CONTEXT_HELPERS')[1].split('// END FOCUSED_CONTEXT_HELPERS')[0]
