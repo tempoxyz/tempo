@@ -3,6 +3,7 @@
 # Tempo local utilities
 
 source contrib/bench/txgen/helpers.nu
+source contrib/bench/lifecycle/disk.nu
 
 const BENCH_DIR = "contrib/bench"
 const LOCALNET_DIR = "localnet"
@@ -516,12 +517,24 @@ def cache-upload [worktree_dir: string, profile: string, commit_sha: string, cac
 }
 
 # Build tempo binary in a git worktree (with optional MinIO cache)
-def build-in-worktree [worktree_dir: string, ref: string, profile: string, features: string, commit_sha: string, --no-cache, --no-default-features, --extra-rustflags: string = "", --bench-features: string = ""] {
+def build-in-worktree [worktree_dir: string, ref: string, profile: string, features: string, commit_sha: string, --no-cache, --no-default-features, --extra-rustflags: string = "", --bench-features: string = "", --lifecycle-build] {
     let cache_key = (bench-cache-key $commit_sha $features $no_default_features)
+
+    if $lifecycle_build {
+        lifecycle-validate-build-path $worktree_dir $profile
+        # Cache-only runs still need capture headroom before downloading either binary.
+        lifecycle-require-disk "before binary retrieval, worktree" $worktree_dir 49152
+        lifecycle-require-disk "before binary retrieval, runner root" "/" 49152
+    }
 
     # Try cache first
     if not $no_cache and (try-cache-download $worktree_dir $profile $commit_sha $cache_key) {
         return
+    }
+
+    if $lifecycle_build {
+        lifecycle-require-disk "before benchmark build, worktree" $worktree_dir 65536
+        lifecycle-require-disk "before benchmark build, runner root" "/" 65536
     }
 
     print $"Building tempo for ($ref) in ($worktree_dir)..."
