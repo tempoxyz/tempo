@@ -47,6 +47,7 @@ struct BlockInput {
 struct BlockPayload {
     context: BlockContextInput,
     txs: Vec<Vec<u8>>,
+    senders: Vec<[u8; 20]>,
 }
 
 #[derive(Clone, Debug, Default, Eq, PartialEq)]
@@ -74,6 +75,7 @@ struct ExecutedBlockOutput {
 struct DecodedBlock {
     context: BlockContextInput,
     txs: Vec<TempoTxEnvelope>,
+    senders: Vec<[u8; 20]>,
 }
 
 #[unsafe(no_mangle)]
@@ -133,7 +135,11 @@ fn execute_typed_input(input: TempoHarnessInput) -> Result<TempoHarnessOutcome, 
     match input {
         TempoHarnessInput::Transaction(input) => {
             let tx = decode_tx(&input.tx)?;
-            let sender = tx.try_recover().map_err(|_| ErrorClass::Rejected)?;
+            let sender = input
+                .sender
+                .map(Address::new)
+                .or_else(|| tx.try_recover().ok())
+                .ok_or(ErrorClass::Rejected)?;
             Ok(TempoHarnessOutcome::Transaction(TransactionOutcome {
                 error: ErrorClass::None,
                 sender: Some(address_bytes(sender)),
@@ -148,6 +154,7 @@ fn execute_typed_input(input: TempoHarnessInput) -> Result<TempoHarnessOutcome, 
                 blocks: vec![BlockPayload {
                     context: input.block_context,
                     txs: vec![input.tx],
+                    senders: input.sender.into_iter().collect(),
                 }],
             })?;
             Ok(TempoHarnessOutcome::State(tempo_execution_outcome(
@@ -162,6 +169,7 @@ fn execute_typed_input(input: TempoHarnessInput) -> Result<TempoHarnessOutcome, 
                 .map(|block| BlockPayload {
                     context: block.context.clone(),
                     txs: block.txs.clone(),
+                    senders: block.senders.clone(),
                 })
                 .collect();
             let response = execute_concrete_block(&BlockInput {
@@ -252,6 +260,7 @@ fn decode_blocks(input: &[BlockPayload]) -> Result<Vec<DecodedBlock>, InputDecod
         blocks.push(DecodedBlock {
             context: block.context.clone(),
             txs: decode_txs(&block.txs)?,
+            senders: block.senders.clone(),
         });
     }
     Ok(blocks)
@@ -284,6 +293,7 @@ fn execute_concrete_block(request: &BlockInput) -> Result<BlockResult, ErrorClas
         .map(|block| ExecutionBlock {
             context: block.context.clone(),
             txs: block.txs.clone(),
+            senders: block.senders.clone(),
         })
         .collect::<Vec<_>>();
     let execution = execute_blocks(&request.chain_spec, &request.pre_state, &execution_blocks);
@@ -320,6 +330,7 @@ fn make_evm(
 struct ExecutionBlock {
     context: BlockContextInput,
     txs: Vec<TempoTxEnvelope>,
+    senders: Vec<[u8; 20]>,
 }
 
 #[cfg(test)]
@@ -341,6 +352,7 @@ fn execute_block_input(request: &BlockInput) -> ExecutionResult {
         .map(|block| ExecutionBlock {
             context: block.context.clone(),
             txs: block.txs.clone(),
+            senders: block.senders.clone(),
         })
         .collect();
     execute_blocks(&request.chain_spec, &request.pre_state, &blocks)
@@ -392,19 +404,20 @@ fn execute_blocks(
 
         let pre_block_state = encode_state(&db);
         let context = context_for_hardfork(&block.context, block.context.hardfork, chain_spec);
-        let recovered = match recovered_block_from_context(&context, hardfork, &block.txs) {
-            Ok(recovered) => recovered,
-            Err(err) => {
-                return finish_execution_result_from_state(
-                    false,
-                    ErrorClass::Rejected,
-                    pre_block_state,
-                    &initial_state,
-                    format!("{body} block[{block_idx}]={{recover_error={err}}}"),
-                    executed_blocks,
-                );
-            }
-        };
+        let recovered =
+            match recovered_block_from_context(&context, hardfork, &block.txs, &block.senders) {
+                Ok(recovered) => recovered,
+                Err(err) => {
+                    return finish_execution_result_from_state(
+                        false,
+                        ErrorClass::Rejected,
+                        pre_block_state,
+                        &initial_state,
+                        format!("{body} block[{block_idx}]={{recover_error={err}}}"),
+                        executed_blocks,
+                    );
+                }
+            };
         if let Err(err) = consensus.validate_block_pre_execution(recovered.sealed_block()) {
             return finish_execution_result_from_state(
                 false,
@@ -725,13 +738,25 @@ fn recovered_block_from_context(
     context: &BlockContextInput,
     hardfork: TempoHardfork,
     txs: &[TempoTxEnvelope],
+    verified_senders: &[[u8; 20]],
 ) -> Result<RecoveredBlock<Block<TempoTxEnvelope, TempoHeader>>, String> {
     let transactions = txs.to_vec();
-    let mut senders = Vec::with_capacity(transactions.len());
-    for (idx, tx) in transactions.iter().enumerate() {
-        let sender = tx.try_recover().map_err(|err| format!("tx[{idx}]={err}"))?;
-        senders.push(sender);
-    }
+    let senders = if verified_senders.is_empty() {
+        let mut recovered = Vec::with_capacity(transactions.len());
+        for (idx, tx) in transactions.iter().enumerate() {
+            let sender = tx.try_recover().map_err(|err| format!("tx[{idx}]={err}"))?;
+            recovered.push(sender);
+        }
+        recovered
+    } else if verified_senders.len() == transactions.len() {
+        verified_senders.iter().copied().map(Address::new).collect()
+    } else {
+        return Err(format!(
+            "sender_count={} tx_count={}",
+            verified_senders.len(),
+            transactions.len()
+        ));
+    };
 
     let mut header = TempoHeader {
         general_gas_limit: hardfork.general_gas_limit().unwrap_or(context.gas_limit),
@@ -1074,6 +1099,7 @@ mod tests {
                     ..Default::default()
                 },
                 txs: encoded_txs(txs),
+                senders: Vec::new(),
             }],
         }
     }
@@ -1129,6 +1155,7 @@ mod tests {
                         ..Default::default()
                     },
                     txs,
+                    senders: Vec::new(),
                 }])
                 .expect("test blockchain input has one block"),
             },
@@ -1141,6 +1168,30 @@ mod tests {
         assert!(matches!(response.error, ErrorClass::None));
         assert_eq!(response.receipts.len(), 1);
         assert!(response.receipts[0].success);
+    }
+
+    #[test]
+    fn recovered_block_reuses_verified_sender() {
+        let tx = TempoTxEnvelope::Legacy(Signed::new_unhashed(
+            TxLegacy {
+                chain_id: Some(PINNED_CHAIN_ID),
+                nonce: 0,
+                gas_price: 0,
+                gas_limit: 500_000,
+                to: TxKind::Call(Address::repeat_byte(0x11)),
+                value: U256::ZERO,
+                input: Bytes::new(),
+            },
+            Signature::new(U256::MAX, U256::MAX, false),
+        ));
+        assert!(tx.try_recover().is_err());
+
+        let mut request = block_input_with_txs(&[tx]);
+        request.blocks[0].senders = vec![[0x42; 20]];
+        let result = execute_block_input(&request);
+
+        assert!(result.accepted);
+        assert_eq!(result.output.blocks[0].receipts.len(), 1);
     }
 
     #[test]
