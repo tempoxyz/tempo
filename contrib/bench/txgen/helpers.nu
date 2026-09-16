@@ -1,5 +1,3 @@
-use ./workload-metadata.nu *
-
 const TXGEN_HELPER_ACCOUNT_MNEMONIC = "test test test test test test test test test test test junk"
 const TXGEN_HELPER_DEFAULT_SEED = 99
 const TXGEN_HELPER_SCRAPE_INTERVAL_MS = 200
@@ -680,6 +678,26 @@ def txgen-prepare-vault-preset [spec_path: string, accounts: int, chain_id: int]
     $output
 }
 
+# Only public-mix needs category metadata; other presets keep their existing metadata.
+def txgen-workload-metadata-args [preset_name: string, spec_path: string] {
+    if $preset_name != "public-mix" { return [] }
+
+    # Read only the prepared file's mix, not its included setup/template specs.
+    # Pin the jq-compatible Python yq, rather than relying on a system yq variant.
+    let result = (^uv run --no-project --with yq==3.4.3 yq -ceS '
+        .mix | if length > 0 then . else error("public-mix requires a mix") end
+        | map({key: ((.template // .sequence)
+            | sub("^(?<category>(zone|vault)_(deposit|withdraw))_[0-9]+$"; "\(.category)")), value: .weight})
+        | group_by(.key)
+        | map({key: .[0].key, value: (map(.value) | add)})
+        | from_entries
+    ' $spec_path | complete)
+    if $result.exit_code != 0 {
+        error make {msg: $"Failed to extract public-mix metadata: ($result.stderr)"}
+    }
+    ["-m" "workload_mix_version=1" "-m" $"workload_mix_weights=($result.stdout | str trim)"]
+}
+
 def txgen-run-preset-pipeline [
     --txgen-tempo-bin: string
     --txgen-bench-bin: string
@@ -772,7 +790,7 @@ def txgen-run-preset-pipeline [
         0
     }
     let total_accounts = $accounts + $recipient_accounts
-    let workload_metadata = (txgen-workload-metadata (txgen-workload-mix $spec_path))
+    let workload_metadata = (txgen-workload-metadata-args $preset_name $spec_path)
     if not $skip_faucet_funding {
         txgen-fund-accounts $txgen_tempo_bin $spec_path $generate_rpc_url
     }
@@ -818,8 +836,6 @@ def txgen-run-preset-pipeline [
     let pr_number = ($env | get --optional BENCH_PR | default "")
     let metadata_args = [
         "-m" "job=github-tempo-bench-e2e"
-        "-m" $"workload_mix_version=($workload_metadata.workload_mix_version)"
-        "-m" $"workload_mix_weights=($workload_metadata.workload_mix_weights)"
         "-m" $"chain_id=($chain_id)"
         "-m" $"target_tps=($tps)"
         "-m" $"run_duration_secs=($duration)"
@@ -838,6 +854,7 @@ def txgen-run-preset-pipeline [
         "-m" $"build_profile=($build_profile)"
         "-m" $"mode=($benchmark_mode)"
     ]
+        | append $workload_metadata
         | append $zone_metadata
         | append (if $recipient_accounts > 0 { ["-m" $"recipient_accounts=($recipient_accounts)"] } else { [] })
         | append (if $benchmark_id != "" { ["-m" $"benchmark_id=($benchmark_id)"] } else { [] })
