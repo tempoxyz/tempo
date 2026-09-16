@@ -141,6 +141,7 @@ arbitrary = [
 	"alloy-primitives/arbitrary",
 	"alloy-eips/arbitrary",
 	"commonware-cryptography/arbitrary",
+	"evm2/arbitrary",
 	"reth-codecs?/arbitrary",
 	"alloy-serde?/arbitrary",
 	"reth-ethereum-primitives?/arbitrary",
