@@ -3,6 +3,8 @@ from collections import Counter
 import json
 from pathlib import Path
 import re
+import shutil
+import subprocess
 import tempfile
 import unittest
 
@@ -95,6 +97,33 @@ class PackageTests(unittest.TestCase):
             ancestor = next(e for e in events if e.get('args', {}).get('span_id') == 12345)
             self.assertEqual(ancestor['args']['block'], None)
             self.assertIn('causal ancestor', ancestor['args']['association'])
+
+    @unittest.skipUnless(shutil.which('node'), 'Node.js is required for viewer helper regression')
+    def test_viewer_reveals_nonoverlapping_causal_ancestors_and_extends_axis(self):
+        template = Path(__file__).with_name('viewer.html').read_text()
+        helpers = template.split('// BEGIN FOCUSED_CONTEXT_HELPERS')[1].split('// END FOCUSED_CONTEXT_HELPERS')[0]
+        script = helpers + """
+const block={id:2,start:100,end:200};
+const own={id:2,block:2,start:100,end:200};
+const before={id:1,block:null,start:0,end:1};
+const after={id:3,block:null,start:300,end:400};
+const data={packaged:true,spans:[own,before,after]};
+const isOwn=s=>s.block===2;
+const extra=contextSpans(data,block,isOwn,true);
+console.log(JSON.stringify({ids:extra.map(s=>s.id),extent:timelineExtent(data,block,[own],[own,...extra]),
+  hidden:contextSpans(data,block,isOwn,false),ancestor:associationLabel(data,false,false),
+  temporal:associationLabel({...data,context_chunk:true},false,false),
+  chunk:contextSpans({...data,context_chunk:true},block,isOwn,false).length,
+  legacy:contextSpans({...data,packaged:false},block,isOwn,true)}));
+"""
+        result = json.loads(subprocess.check_output(['node', '-e', script], text=True))
+        self.assertEqual(result['ids'], [1, 3])
+        self.assertEqual(result['extent'], [0, 400])
+        self.assertEqual(result['hidden'], [])
+        self.assertEqual(result['legacy'], [])
+        self.assertEqual(result['chunk'], 3)
+        self.assertIn('causal ancestor', result['ancestor'])
+        self.assertEqual(result['temporal'], 'temporal context; no causal assertion')
 
     def test_repack_removes_stale_generated_exports_but_keeps_raw(self):
         with tempfile.TemporaryDirectory() as directory:
