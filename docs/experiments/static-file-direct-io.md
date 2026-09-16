@@ -45,9 +45,14 @@ Errors and missing files remain explicit in the JSON artifacts.
 
 - Tempo binary `cargo check --locked` and nightly format check passed locally.
 - Patched Reth targeted storage tests and local clippy passed.
-- Linux direct-I/O/recovery tests passed on the patched Reth revision.
+- [Linux Reth CI](https://github.com/paradigmxyz/reth/actions/runs/35086915646)
+  passed: 31 direct-I/O/recovery tests, workspace clippy, and 3,331 workspace
+  tests (7 skipped). The existing randomized reorg-consistency test passed on
+  retry; the same failure was reproduced on unmodified upstream during the
+  earlier Reth experiment.
 - The Linux cache-probe test verifies that direct writes/reads leave zero pages
   resident, while buffered reads make the same file resident.
+  [Probe CI](https://github.com/tempoxyz/tempo/actions/runs/35087298690) passed.
 
 ## Results
 
