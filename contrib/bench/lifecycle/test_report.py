@@ -2,7 +2,7 @@ import json
 from pathlib import Path
 import tempfile
 import unittest
-from report import build, nearest_rank, write_report
+from report import build, nearest_rank, write_report, active_wall_ns
 
 
 def fixture(path, lost=0, close=True):
@@ -82,6 +82,9 @@ class ReportTests(unittest.TestCase):
             self.assertEqual(result['transfers'][0]['from'],'Validator A')
             self.assertEqual(result['transfers'][0]['to'],'Validator B')
             self.assertNotIn(frame,json.dumps(result))
+
+    def test_overlapping_entries_are_wall_time_not_cpu_sum(self):
+        self.assertEqual(active_wall_ns([(100,200,1),(150,220,2),(110,120,1)]),120)
 
     def test_empty_sample(self):
         self.assertIsNone(nearest_rank([],99))

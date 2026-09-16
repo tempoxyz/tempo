@@ -84,6 +84,14 @@ def read_node(path, role):
     return list(spans.values()), events, quality
 
 
+def active_wall_ns(intervals):
+    end, duration = 0, 0
+    for start, finish, _ in sorted(intervals):
+        duration += max(0, finish-max(start,end))
+        end = max(end,finish)
+    return duration
+
+
 def build(paths, warmup=5, window=None):
     spans, events, quality = [], [], []
     for index, path in enumerate(paths):
@@ -104,7 +112,10 @@ def build(paths, warmup=5, window=None):
         complete = bool(starts and ends and min(ends) >= min(starts))
         start = min(starts) if starts else min((e['ts'] for e in markers), default=0)
         finish = min(ends) if complete else max((e['ts'] for e in markers), default=start)
-        blocks.append({'id': aliases[key], 'start': start, 'end': finish,
+        totals = [dict(node=e['node'], **{k:v for k,v in e['fields'].items()
+                  if k in ('execution_ns','receipt_ns','wait_ns','transactions')})
+                  for e in events if e.get('block') == key and e['fields'].get('stage') == 'execution_totals']
+        blocks.append({'execution_totals': totals, 'id': aliases[key], 'start': start, 'end': finish,
                        'duration': finish-start, 'complete': complete, 'markers': markers})
     completed = sorted((b for b in blocks if b['complete']), key=lambda b: b['start'])
     for b in completed[:warmup]:
@@ -123,7 +134,7 @@ def build(paths, warmup=5, window=None):
         rows.append({'id': s['id'], 'node': s['node'], 'parent': s.get('parent'),
                      'name': s['name'], 'category': s['category'], 'block': aliases.get(s['block']),
                      'start': (s['ts']-first)/1e6, 'end': (s['end']-first)/1e6,
-                     'thread': s['thread'], 'active_ms': sum(max(0,b-a) for a,b,_ in s['active'])/1e6})
+                     'thread': s['thread'], 'active_ms': active_wall_ns(s['active'])/1e6})
     frames = {}
     for event in events:
         f = event['fields']
