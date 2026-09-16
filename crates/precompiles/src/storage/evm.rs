@@ -856,6 +856,42 @@ mod tests {
     }
 
     #[test]
+    fn test_static_provider_mutation_guards() {
+        use crate::storage_credits::StorageCreditsBackend;
+
+        let mut evm = TestEvm::default();
+        let ctx = evm.ctx_mut();
+        let internals = EvmInternals::new(&mut ctx.journaled_state, &ctx.block, &ctx.cfg, &ctx.tx);
+        let mut provider = EvmPrecompileStorageProvider::new(
+            internals,
+            u64::MAX,
+            0,
+            ctx.cfg.spec,
+            ctx.cfg.enable_amsterdam_eip8037,
+            true,
+            ctx.cfg.gas_params.clone(),
+        );
+
+        let (address, key, value) = (Address::ZERO, U256::ZERO, U256::ZERO);
+        let results = [
+            provider.set_code(address, Bytecode::default()),
+            PrecompileStorageProvider::sstore(&mut provider, address, key, value),
+            PrecompileStorageProvider::tstore(&mut provider, address, key, value),
+            StorageCreditsBackend::sstore(&mut provider, address, key, value, false).map(|_| ()),
+            StorageCreditsBackend::tstore(&mut provider, address, key, value),
+            provider.sinc(address, key, value),
+            provider.sdec(address, key, value),
+            provider.emit_event(address, LogData::new_unchecked(vec![], bytes!())),
+        ];
+
+        assert!(
+            results
+                .into_iter()
+                .all(|result| { result == Err(TempoPrecompileError::StaticCallNotAllowed) })
+        );
+    }
+
+    #[test]
     fn test_sstore_sload_actions_recording() -> eyre::Result<()> {
         let mut evm = TestEvm::default();
         let addr = Address::random();
