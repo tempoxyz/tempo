@@ -30,6 +30,31 @@ def lifecycle-require-disk [phase: string, path: string, minimum_mib: int] {
     }
 }
 
+# Validate the destination before a cache download or a compiler can write to it.
+def lifecycle-validate-build-path [worktree: string, profile: string] {
+    if $profile !~ '^[A-Za-z0-9][A-Za-z0-9_-]*$' {
+        error make { msg: "Invalid lifecycle build profile" }
+    }
+    let original = ($worktree | path expand --no-symlink)
+    let worktree = ($worktree | path expand --strict)
+    if $original != $worktree {
+        error make { msg: "Refusing redirected lifecycle worktree" }
+    }
+    let target = ([$worktree "target"] | path join)
+    let directory = ([$target (if $profile == "dev" { "debug" } else { $profile })] | path join)
+    for path in [$target $directory ($directory | path join "tempo")] {
+        # path type also catches dangling links, unlike path exists.
+        let kind = ($path | path type | default "")
+        if $kind == "symlink" or ($kind != "" and ($path | path expand --strict) != $path) {
+            error make { msg: "Refusing redirected lifecycle binary retrieval or build" }
+        }
+        let expected = if $path == ($directory | path join "tempo") { "file" } else { "dir" }
+        if $kind != "" and $kind != $expected {
+            error make { msg: "Invalid lifecycle binary retrieval or build path" }
+        }
+    }
+}
+
 # These worktrees are disposable benchmark builds. Preserve the linked executable
 # and trim only intermediates after the build and binary-cache upload finish.
 def lifecycle-trim-worktree [worktree: string, profile: string] {
