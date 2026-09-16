@@ -259,6 +259,11 @@ permissions:
 
 jobs:
   bench-e2e-multi-region:
+    permissions:
+      actions: read
+      contents: read
+      id-token: write
+      packages: read
     name: bench-e2e-multi-region
     runs-on: depot-ubuntu-latest-8
     timeout-minutes: 360
@@ -310,6 +315,9 @@ jobs:
       VALSCOPE_INTERNAL_TOKEN: ${{ secrets.VALSCOPE_INTERNAL_TOKEN }}
 
     steps:
+      - name: Secure runner
+        uses: tempoxyz/gh-actions/actions/secure-runner@6a4184039b7a7537d35ace0badc96764d5a1d4d0
+
       - name: Fetch GitHub token via STS
         id: github-sts
         uses: tempoxyz/gh-actions/actions/github-sts@c0292122e255def866c64c55e5844d1e7d5fe7ad

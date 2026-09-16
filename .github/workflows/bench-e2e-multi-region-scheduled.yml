@@ -77,6 +77,7 @@ jobs:
     name: resolve-refs
     runs-on: ubuntu-latest
     permissions:
+      id-token: write
       actions: read
       contents: read
     outputs:
@@ -86,6 +87,9 @@ jobs:
       feature-name: ${{ steps.refs.outputs.feature-name }}
       should-run: ${{ steps.refs.outputs.should-run }}
     steps:
+      - name: Secure runner
+        uses: tempoxyz/gh-actions/actions/secure-runner@6a4184039b7a7537d35ace0badc96764d5a1d4d0
+
       - name: Checkout Tempo main
         uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
         with:
@@ -194,8 +198,12 @@ jobs:
     name: save-state
     runs-on: ubuntu-latest
     permissions:
+      id-token: write
       contents: read
     steps:
+      - name: Secure runner
+        uses: tempoxyz/gh-actions/actions/secure-runner@6a4184039b7a7537d35ace0badc96764d5a1d4d0
+
       - name: Write successful Tempo main ref
         env:
           FEATURE_REF: ${{ needs.resolve-refs.outputs.feature-ref }}

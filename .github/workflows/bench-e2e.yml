@@ -358,6 +358,9 @@ permissions:
 
 jobs:
   bench-e2e:
+    permissions:
+      contents: read
+      id-token: write
     name: bench-e2e
     runs-on: [self-hosted, Linux, X64, bare-metal-dual-schelk]
     timeout-minutes: 300
@@ -415,6 +418,9 @@ jobs:
       SLACK_BENCH_BOT_TOKEN: ${{ secrets.SLACK_BENCH_BOT_TOKEN }}
       SLACK_BENCH_CHANNEL: ${{ secrets.SLACK_BENCH_CHANNEL }}
     steps:
+      - name: Secure runner
+        uses: tempoxyz/gh-actions/actions/secure-runner@6a4184039b7a7537d35ace0badc96764d5a1d4d0
+
       - name: Reset workspace directory
         run: |
           sudo rm -rf "$GITHUB_WORKSPACE"

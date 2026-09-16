@@ -1,0 +1,14 @@
+name: Dependency Review
+
+on:
+  pull_request:
+
+permissions: {}
+
+jobs:
+  dependency-review:
+    permissions:
+      contents: read
+      id-token: write
+      pull-requests: write
+    uses: tempoxyz/gh-actions/.github/workflows/dependency-review.yml@6a4184039b7a7537d35ace0badc96764d5a1d4d0
