@@ -511,7 +511,7 @@ mod tests {
 
     #[test]
     fn test_precompile_static_calls() {
-        for spec in [TempoHardfork::T7, TempoHardfork::T12, TempoHardfork::T13] {
+        for spec in [TempoHardfork::T11, TempoHardfork::T12] {
             let mut cfg = CfgEnv::<TempoHardfork>::default();
             cfg.spec = spec;
             let tx = TxEnv::default();
