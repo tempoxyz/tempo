@@ -22,35 +22,41 @@ def nearest_rank(blocks, percentile):
 
 
 def read_node(path, role):
-    spans, events, links, polls = {}, [], [], {}
+    spans, events, links, polls, aggregates = {}, [], [], {}, []
     header, footer, invalid = None, None, 0
-    for line in path.read_text().splitlines():
-        try:
-            event = json.loads(line)
-        except ValueError:
-            invalid += 1
-            continue
-        kind = event.get('type')
-        if kind == 'header':
-            header = event
-        elif kind == 'footer':
-            footer = event
-        elif kind == 'start':
-            spans[event['id']] = dict(event, node=role, end=None, active=[])
-        elif kind == 'fields' and event['id'] in spans:
-            spans[event['id']]['fields'].update(event['fields'])
-        elif kind == 'end' and event['id'] in spans:
-            spans[event['id']]['end'] = event['ts']
-        elif kind == 'event':
-            events.append(dict(event, node=role))
-        elif kind == 'link':
-            links.append(event)
-        elif kind == 'enter':
-            polls.setdefault((event['id'], event['thread']), []).append(event['ts'])
-        elif kind == 'exit':
-            stack = polls.get((event['id'], event['thread']), [])
-            if stack and event['id'] in spans:
-                spans[event['id']]['active'].append((stack.pop(), event['ts'], event['thread']))
+    with path.open() as capture:
+        for line in capture:
+            try:
+                event = json.loads(line)
+            except ValueError:
+                invalid += 1
+                continue
+            kind = event.get('type')
+            if kind == 'header':
+                header = event
+            elif kind == 'footer':
+                footer = event
+            elif kind == 'start':
+                spans[event['id']] = dict(event, node=role, end=None, active=[])
+            elif kind == 'fields' and event['id'] in spans:
+                spans[event['id']]['fields'].update(event['fields'])
+            elif kind == 'end' and event['id'] in spans:
+                spans[event['id']]['end'] = event['ts']
+            elif kind == 'aggregate':
+                aggregates.append(event)
+            elif kind == 'event':
+                events.append(dict(event, node=role))
+            elif kind == 'link':
+                links.append(event)
+            elif kind == 'enter':
+                polls.setdefault((event['id'], event['thread']), []).append(event['ts'])
+            elif kind == 'exit':
+                stack = polls.get((event['id'], event['thread']), [])
+                if stack and event['id'] in spans:
+                    spans[event['id']]['active'].append((stack.pop(), event['ts'], event['thread']))
+    for index, event in enumerate(aggregates,1):
+        spans[-index] = dict(event, id=-index, parent=event['id'] or None, node=role,
+                             thread=0, fields={}, active=[])
     # A marker can bind a previously anonymous build/attempt span after its hash exists.
     for event in events:
         key = block_key(event['fields'])
@@ -84,6 +90,17 @@ def read_node(path, role):
     return list(spans.values()), events, quality
 
 
+def operation_category(span):
+    if span['category'] != 'lifecycle':
+        return span['category']
+    for prefixes, category in ((('network.',),'network'), (('simplex.','marshal.','broadcast.','block.','proposal.'),'consensus'),
+                              (('builder.',),'builder'), (('execution.','prewarm.','receipt.'),'execution'),
+                              (('state.',),'state'), (('persistence.',),'storage')):
+        if span['name'].startswith(prefixes):
+            return category
+    return 'lifecycle'
+
+
 def active_wall_ns(intervals):
     end, duration = 0, 0
     for start, finish, _ in sorted(intervals):
@@ -100,13 +117,16 @@ def build(paths, warmup=5, window=None):
         events.extend(es)
         quality.append(qq)
     first = min((x['ts'] for x in spans + events), default=0)
-    keys = sorted({e['block'] for e in events if e.get('block')},
-                  key=lambda key: min(e['ts'] for e in events if e.get('block') == key))
+    by_block = {}
+    for event in events:
+        if event.get('block'):
+            by_block.setdefault(event['block'],[]).append(event)
+    keys = sorted(by_block,key=lambda key: min(e['ts'] for e in by_block[key]))
     aliases = {key: i + 1 for i, key in enumerate(keys)}
     blocks = []
     for key in keys:
         markers = [dict(stage=e['fields'].get('stage'), ts=(e['ts']-first)/1e6, node=e['node'])
-                   for e in events if e.get('block') == key and e['fields'].get('stage') in STAGES]
+                   for e in by_block[key] if e['fields'].get('stage') in STAGES]
         starts = [e['ts'] for e in markers if e['stage'] == 'proposal_start']
         ends = [e['ts'] for e in markers if e['stage'] == 'finalized']
         complete = bool(starts and ends and min(ends) >= min(starts))
@@ -114,7 +134,7 @@ def build(paths, warmup=5, window=None):
         finish = min(ends) if complete else max((e['ts'] for e in markers), default=start)
         totals = [dict(node=e['node'], **{k:v for k,v in e['fields'].items()
                   if k in ('execution_ns','receipt_ns','wait_ns','transactions')})
-                  for e in events if e.get('block') == key and e['fields'].get('stage') == 'execution_totals']
+                  for e in by_block[key] if e['fields'].get('stage') == 'execution_totals']
         blocks.append({'execution_totals': totals, 'id': aliases[key], 'start': start, 'end': finish,
                        'duration': finish-start, 'complete': complete, 'markers': markers})
     completed = sorted((b for b in blocks if b['complete']), key=lambda b: b['start'])
@@ -132,9 +152,10 @@ def build(paths, warmup=5, window=None):
         if s['end'] is None or s['end'] < s['ts']:
             continue
         rows.append({'id': s['id'], 'node': s['node'], 'parent': s.get('parent'),
-                     'name': s['name'], 'category': s['category'], 'block': aliases.get(s['block']),
+                     'name': s['name'], 'category': operation_category(s), 'block': aliases.get(s['block']),
                      'start': (s['ts']-first)/1e6, 'end': (s['end']-first)/1e6,
-                     'thread': s['thread'], 'active_ms': active_wall_ns(s['active'])/1e6})
+                     'thread': s['thread'], 'active_ms': active_wall_ns(s['active'])/1e6,
+                     'count': s.get('count'), 'elapsed_sum_ms': s.get('elapsed_ns',0)/1e6})
     frames = {}
     for event in events:
         f = event['fields']
@@ -161,9 +182,9 @@ def write_report(paths, out, warmup=5, window=None):
     template = Path(__file__).with_name('viewer.html').read_text()
     (out/'index.html').write_text(template.replace('__LIFECYCLE_DATA__', encoded))
     (out/'lifecycle.json').write_text(encoded)
-    trace = [{'name':s['name'], 'cat':s['category'], 'ph':'X', 'ts':s['start']*1000,
+    trace = [{'name':s['name']+(' [aggregate envelope]' if s['count'] else ''), 'cat':s['category'], 'ph':'X', 'ts':s['start']*1000,
               'dur':(s['end']-s['start'])*1000, 'pid':s['node'], 'tid':f"operation {s['id']}",
-              'args':{'block':s['block'], 'active_wall_ms':s['active_ms']}} for s in data['spans']]
+              'args':{'block':s['block'], 'active_wall_ms':s['active_ms'], 'call_count':s['count'], 'elapsed_sum_ms':s['elapsed_sum_ms']}} for s in data['spans']]
     for b in data['blocks']:
         trace += [{'name':e['stage'], 'ph':'i', 's':'p', 'ts':e['ts']*1000, 'pid':e['node'],
                    'tid':'milestones', 'args':{'block':b['id']}} for e in b['markers']]

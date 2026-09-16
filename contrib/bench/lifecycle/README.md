@@ -35,7 +35,12 @@ Matching encrypted authentication-tag digests join individual send/receive frame
 including batched writes. No message bytes are retained. Transfer spans cover
 pre-socket encryption completion to ciphertext receipt, not pure wire latency.
 
-Existing spans are retained alongside added scopes. The report lists observed
+Existing spans are retained alongside added scopes. Five high-frequency scopes
+(`execution_overlay`, `state_trie_overlay`, `database_provider_ro`, account and
+storage proof calculations) retain every call count and elapsed time as an
+aggregate under their enclosing operation. Dashed bars show the first/last-call
+range; that range is not continuous work. Nested or concurrent call totals must
+not be added to block wall time. No calls are sampled out. The report lists observed
 operations and missing milestones. Async durations include waits; enter/exit
 intervals are active wall time, not CPU time. Overlapping background work is
 labeled temporal context, not causality. Kernel scheduling, NIC timestamps and

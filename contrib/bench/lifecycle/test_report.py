@@ -86,6 +86,21 @@ class ReportTests(unittest.TestCase):
     def test_overlapping_entries_are_wall_time_not_cpu_sum(self):
         self.assertEqual(active_wall_ns([(100,200,1),(150,220,2),(110,120,1)]),120)
 
+    def test_aggregates_inherit_block_without_expanding_calls(self):
+        with tempfile.TemporaryDirectory() as directory:
+            path=Path(directory)/'a.jsonl';fixture(path)
+            records=[json.loads(line) for line in path.read_text().splitlines()]
+            records.insert(-1,{'type':'aggregate','id':50,'ts':50_000_000_001,'end':50_001_000_001,
+                'name':'database_provider_ro','category':'state','count':100_000,'elapsed_ns':500_000})
+            path.write_text('\n'.join(map(json.dumps,records)))
+            result=build([path],warmup=0)
+            rows=[s for s in result['spans'] if s['count']]
+            self.assertEqual(len(rows),1)
+            self.assertEqual(rows[0]['block'],50)
+            self.assertEqual(rows[0]['count'],100_000)
+            self.assertEqual(rows[0]['elapsed_sum_ms'],0.5)
+            self.assertEqual(result['representatives']['50'],50)
+
     def test_empty_sample(self):
         self.assertIsNone(nearest_rank([],99))
 
