@@ -30,18 +30,18 @@ pub enum RoundingDirection {
     Up,
 }
 
-/// Per-order result of stepping a trade across one resting order. Shared by the
-/// swap settlement and the per-order quote so both walk the book identically.
+/// Per-order fill sizing shared by swap execution and per-order quotes.
+/// Output and carry arithmetic are deferred until settlement returns the payout.
 pub struct OrderStep {
     /// Base amount filled from this order (`<= order.remaining()`). A value
     /// strictly below `remaining` means this order terminates the trade.
     pub fill_amount: u128,
-    /// Amount accumulated into the running total for this fill: taker output for
-    /// exact-in trades, taker input for exact-out trades.
-    pub accumulate: u128,
-    /// Input (exact-in) or output (exact-out) left after fully consuming this
-    /// order. Only meaningful on a full fill.
-    pub next_amount: u128,
+    /// Input accumulated for an exact-output trade. `None` denotes an exact-input
+    /// trade, which accumulates the output returned by settlement instead.
+    pub amount_in: Option<u128>,
+    /// Base demand before clamping to the order's remaining amount. A full fill
+    /// carries over only when this strictly exceeds the order's remaining amount.
+    pub demand: u128,
 }
 
 /// How the current resting order is consumed by [`walk_resting_orders`].
@@ -58,46 +58,63 @@ pub(crate) enum Fill {
 /// Returns the running total (output for exact-in, input for exact-out).
 ///
 /// This is the single traversal shared by swap execution and quotes: the swap
-/// passes a mutating `settle` that fills orders and returns the next one, while
-/// the quote passes a read-only `settle` that only advances the cursor, so both
-/// price a trade identically.
+/// passes a mutating `settle` that returns the actual payout and next order, while
+/// the quote calculates that payout read-only and advances the cursor. The route
+/// side sizes the fill; the resting order's side determines its settlement.
 pub(crate) fn walk_resting_orders(
     mut order: Order,
     mut amount: u128,
     is_bid: bool,
     step: impl Fn(u128, u128, i16, bool) -> Option<OrderStep>,
-    mut settle: impl FnMut(Order, Fill) -> Result<Option<Order>>,
+    mut settle: impl FnMut(Order, Fill) -> Result<(u128, Option<Order>)>,
 ) -> Result<u128> {
     let mut total: u128 = 0;
 
     while amount > 0 {
         let remaining = order.remaining();
-        let s = step(amount, remaining, order.tick(), is_bid)
+        let tick = order.tick();
+        let s =
+            step(amount, remaining, tick, is_bid).ok_or(TempoPrecompileError::under_overflow())?;
+        let partial = s.fill_amount < remaining;
+        let fill = if partial {
+            Fill::Partial(s.fill_amount)
+        } else {
+            Fill::Full
+        };
+        let (amount_out, next) = settle(order, fill)?;
+        // Settlement and accumulation must precede carry conversions/subtractions:
+        // moving a failing check earlier changes historical execution gas.
+        total = total
+            .checked_add(s.amount_in.unwrap_or(amount_out))
             .ok_or(TempoPrecompileError::under_overflow())?;
-        // Preserve historical settlement-before-overflow ordering for replay gas.
-        if s.fill_amount < remaining {
-            // Partial fill terminates the trade.
-            settle(order, Fill::Partial(s.fill_amount))?;
-            total = total
-                .checked_add(s.accumulate)
-                .ok_or(TempoPrecompileError::under_overflow())?;
+        if partial {
             break;
         }
 
-        let next = settle(order, Fill::Full)?;
-        total = total
-            .checked_add(s.accumulate)
-            .ok_or(TempoPrecompileError::under_overflow())?;
+        amount = if s.demand > remaining {
+            let consumed = if s.amount_in.is_some() {
+                amount_out
+            } else if is_bid {
+                remaining
+            } else {
+                base_to_quote(remaining, tick, RoundingDirection::Up)
+                    .ok_or(TempoPrecompileError::under_overflow())?
+            };
+            amount
+                .checked_sub(consumed)
+                .ok_or(TempoPrecompileError::under_overflow())?
+        } else {
+            0
+        };
         match next {
             Some(next) => order = next,
             None => {
-                if s.next_amount > 0 {
+                if amount > 0 {
                     return Err(StablecoinDEXError::insufficient_liquidity().into());
                 }
                 break;
             }
         }
-        amount = s.next_amount;
     }
 
     Ok(total)
@@ -163,8 +180,7 @@ pub fn quote_to_base(quote_amount: u128, tick: i16, rounding: RoundingDirection)
 /// (zero-sum with the maker): selling base into a bid yields quote rounded down,
 /// buying base from an ask yields the base amount exactly.
 ///
-/// Used by the shared per-order step arithmetic so quote and swap compute the
-/// taker output identically.
+/// `is_bid` is the resting order's side, not the route direction.
 pub fn taker_output(fill_amount: u128, tick: i16, is_bid: bool) -> Option<u128> {
     if is_bid {
         base_to_quote(fill_amount, tick, RoundingDirection::Down)
@@ -173,50 +189,39 @@ pub fn taker_output(fill_amount: u128, tick: i16, is_bid: bool) -> Option<u128> 
     }
 }
 
-/// Per-order arithmetic for an exact-input trade. Pure: depends only on the
-/// order's `remaining`, `tick`, and side. The caller compares `fill_amount`
-/// against `remaining` to decide whether the order is partially or fully consumed.
+/// Per-order sizing for an exact-input trade. Pure: uses the input amount,
+/// order's `remaining` and `tick`, and route direction. The caller compares
+/// `fill_amount` against `remaining` to decide whether the fill is partial or full.
 pub fn step_exact_in(
     amount_in: u128,
     remaining: u128,
     tick: i16,
     is_bid: bool,
 ) -> Option<OrderStep> {
-    let (fill_amount, next_amount) = if is_bid {
+    let demand = if is_bid {
         // Selling base: input is base, fill in base.
-        (
-            amount_in.min(remaining),
-            amount_in.saturating_sub(remaining),
-        )
+        amount_in
     } else {
         // Buying base: input is quote, convert to base (round down, favors protocol).
-        let base_out = quote_to_base(amount_in, tick, RoundingDirection::Down)?;
-        let next_amount = if base_out > remaining {
-            // Quote consumed = what the maker receives, rounded up (zero-sum with maker).
-            let quote_needed = base_to_quote(remaining, tick, RoundingDirection::Up)?;
-            amount_in.checked_sub(quote_needed)?
-        } else {
-            0
-        };
-        (base_out.min(remaining), next_amount)
+        quote_to_base(amount_in, tick, RoundingDirection::Down)?
     };
 
     Some(OrderStep {
-        fill_amount,
-        accumulate: taker_output(fill_amount, tick, is_bid)?,
-        next_amount,
+        fill_amount: demand.min(remaining),
+        amount_in: None,
+        demand,
     })
 }
 
-/// Per-order arithmetic for an exact-output trade. Pure: depends only on the
-/// order's `remaining`, `tick`, and side.
+/// Per-order sizing for an exact-output trade. Pure: uses the output amount,
+/// order's `remaining` and `tick`, and route direction.
 pub fn step_exact_out(
     amount_out: u128,
     remaining: u128,
     tick: i16,
     is_bid: bool,
 ) -> Option<OrderStep> {
-    let (fill_amount, accumulate, demand) = if is_bid {
+    let (fill_amount, amount_in, demand) = if is_bid {
         // Receiving quote: round up the base needed to cover the exact output.
         let base_needed = quote_to_base(amount_out, tick, RoundingDirection::Up)?;
         let fill_amount = base_needed.min(remaining);
@@ -228,20 +233,10 @@ pub fn step_exact_out(
         (fill_amount, amount_in, amount_out)
     };
 
-    // The trade carries over only when demand strictly exceeds this order: for a
-    // bid that is the base needed to cover the output, for an ask the output
-    // itself. The carried amount is the output still owed after this full fill.
-    let next_amount = if demand > remaining {
-        let amount_out_received = taker_output(remaining, tick, is_bid)?;
-        amount_out.checked_sub(amount_out_received)?
-    } else {
-        0
-    };
-
     Some(OrderStep {
         fill_amount,
-        accumulate,
-        next_amount,
+        amount_in: Some(amount_in),
+        demand,
     })
 }
 
@@ -731,6 +726,71 @@ mod tests {
     use alloy::primitives::address;
 
     #[test]
+    fn test_walk_exact_in_uses_settlement_output() -> Result<()> {
+        // The walker must treat settlement's return value as authoritative,
+        // rather than recomputing a payout from the route direction.
+        for is_bid in [false, true] {
+            for amount in [5, 10] {
+                let order = Order::new(1, Address::ZERO, B256::ZERO, 10, 0, is_bid, false, 0);
+                let mut settled = false;
+                let output =
+                    walk_resting_orders(order, amount, is_bid, step_exact_in, |_, fill| {
+                        settled = true;
+                        assert_eq!(matches!(fill, Fill::Full), amount == 10);
+                        Ok((7, None))
+                    })?;
+                assert!(settled);
+                assert_eq!(output, 7);
+            }
+        }
+        Ok(())
+    }
+
+    #[test]
+    fn test_walk_exact_out_carries_settlement_output() -> Result<()> {
+        for is_bid in [false, true] {
+            let first = Order::new(1, Address::ZERO, B256::ZERO, 10, 0, is_bid, false, 0);
+            let second = Order::new(2, Address::ZERO, B256::ZERO, 10, 0, is_bid, false, 0);
+            let mut settled = Vec::new();
+            let input = walk_resting_orders(first, 15, is_bid, step_exact_out, |order, fill| {
+                settled.push(order.order_id());
+                match (order.order_id(), fill) {
+                    (1, Fill::Full) => Ok((7, Some(second))),
+                    // Fifteen requested minus seven actually settled leaves eight.
+                    (2, Fill::Partial(8)) => Ok((8, None)),
+                    _ => panic!("unexpected fill"),
+                }
+            })?;
+            assert_eq!(settled, [1, 2]);
+            assert_eq!(input, 18);
+        }
+        Ok(())
+    }
+
+    #[test]
+    fn test_step_sizing_defers_output_conversion() {
+        assert!(taker_output(u128::MAX, MAX_TICK, true).is_none());
+        // Sizing succeeds: the payout overflow belongs to settlement, after the
+        // historical storage accesses, not to the pre-settlement sizing step.
+        let step = step_exact_in(u128::MAX, u128::MAX, MAX_TICK, true).unwrap();
+        assert_eq!(step.fill_amount, u128::MAX);
+        assert_eq!(step.amount_in, None);
+    }
+
+    #[test]
+    fn test_walk_settles_before_carry_failure() {
+        let order = Order::new_ask(1, Address::ZERO, B256::ZERO, 1, 0);
+        let mut settled = false;
+        let result = walk_resting_orders(order, 2, false, step_exact_out, |_, fill| {
+            assert!(matches!(fill, Fill::Full));
+            settled = true;
+            Ok((3, None))
+        });
+        assert!(settled);
+        assert_eq!(result.unwrap_err(), TempoPrecompileError::under_overflow());
+    }
+
+    #[test]
     fn test_walk_settles_before_accumulation_overflow() {
         for second_remaining in [2, 3] {
             let mut first = Order::new_ask(1, Address::ZERO, B256::ZERO, 1, 0);
@@ -746,15 +806,15 @@ mod tests {
                 |amount, remaining, _, _| {
                     Some(OrderStep {
                         fill_amount: amount.min(remaining),
-                        accumulate: if remaining == 1 { u128::MAX } else { 1 },
-                        next_amount: amount.saturating_sub(remaining),
+                        amount_in: Some(if remaining == 1 { u128::MAX } else { 1 }),
+                        demand: amount,
                     })
                 },
                 |order, fill| {
                     settled.push(order.order_id());
                     match (order.order_id(), fill) {
-                        (1, Fill::Full) => Ok(Some(second)),
-                        (2, Fill::Full | Fill::Partial(_)) => Ok(None),
+                        (1, Fill::Full) => Ok((1, Some(second))),
+                        (2, Fill::Full | Fill::Partial(_)) => Ok((1, None)),
                         _ => unreachable!(),
                     }
                 },

@@ -7,7 +7,6 @@
 
 pub mod dispatch;
 pub mod error;
-mod legacy;
 pub mod order;
 pub mod orderbook;
 
@@ -1014,7 +1013,7 @@ impl StablecoinDEX {
         level: &mut TickLevel,
         fill_amount: u128,
         taker: Address,
-    ) -> Result<()> {
+    ) -> Result<u128> {
         let orderbook = self.books[order.book_key()].read()?;
 
         // Update order remaining amount
@@ -1024,13 +1023,24 @@ impl StablecoinDEX {
             .write(new_remaining)?;
         order.remaining = new_remaining;
 
+        // Preserve settlement's historical conversion point: after the remaining
+        // amount write, but before crediting the maker, even for exact-out fills.
+        let quote_amount = base_to_quote(
+            fill_amount,
+            order.tick(),
+            if order.is_bid() {
+                RoundingDirection::Down
+            } else {
+                RoundingDirection::Up
+            },
+        )
+        .ok_or(TempoPrecompileError::under_overflow())?;
+
         if order.is_bid() {
             // Bid order maker receives base tokens (exact amount).
             self.increment_balance(order.maker(), orderbook.base, fill_amount)?;
         } else {
             // Ask order maker receives quote tokens, rounded up to favor the maker.
-            let quote_amount = base_to_quote(fill_amount, order.tick(), RoundingDirection::Up)
-                .ok_or(TempoPrecompileError::under_overflow())?;
             self.increment_balance(order.maker(), orderbook.quote, quote_amount)?;
         }
 
@@ -1049,10 +1059,15 @@ impl StablecoinDEX {
         // Emit OrderFilled event for partial fill
         self.emit_order_filled(order.order_id(), order.maker(), taker, fill_amount, true)?;
 
-        Ok(())
+        Ok(if order.is_bid() {
+            quote_amount
+        } else {
+            fill_amount
+        })
     }
 
-    /// Fill an order and delete from storage. Returns the next best order and price level.
+    /// Fill an order and delete from storage. Returns the taker output and the
+    /// next best order and price level.
     ///
     /// NOTE: Maker transfer policy is not enforced here to not block swaps on the pair.
     /// Note that TIP403 checks on order placement and withdraws are enforced.
@@ -1064,7 +1079,7 @@ impl StablecoinDEX {
         order: &mut Order,
         mut level: TickLevel,
         taker: Address,
-    ) -> Result<Option<(TickLevel, Order)>> {
+    ) -> Result<(u128, Option<(TickLevel, Order)>)> {
         debug_assert_eq!(order.book_key(), book_key);
 
         let orderbook = self.books[book_key].read()?;
@@ -1072,13 +1087,17 @@ impl StablecoinDEX {
 
         // Maker settlement: bid maker receives base (exact), ask maker receives quote
         // rounded UP to favor the maker.
-        if order.is_bid() {
+        let amount_out = if order.is_bid() {
             self.increment_balance(order.maker(), orderbook.base, fill_amount)?;
+            // Keep this conversion after the maker credit for historical gas/error ordering.
+            taker_output(fill_amount, order.tick(), true)
+                .ok_or(TempoPrecompileError::under_overflow())?
         } else {
             let quote_amount = base_to_quote(fill_amount, order.tick(), RoundingDirection::Up)
                 .ok_or(TempoPrecompileError::under_overflow())?;
             self.increment_balance(order.maker(), orderbook.quote, quote_amount)?;
-        }
+            fill_amount
+        };
 
         // Emit OrderFilled event for complete fill
         self.emit_order_filled(order.order_id(), order.maker(), taker, fill_amount, false)?;
@@ -1187,7 +1206,7 @@ impl StablecoinDEX {
             Some((level, new_order))
         };
 
-        Ok(next_tick_info)
+        Ok((amount_out, next_tick_info))
     }
 
     /// Fill orders for exact output amount
@@ -1199,16 +1218,6 @@ impl StablecoinDEX {
         amount_out: u128,
         taker: Address,
     ) -> Result<u128> {
-        if !self.storage.spec().is_t12() {
-            return self.fill_orders_exact_out_legacy(
-                storage_credits,
-                book_key,
-                is_bid,
-                amount_out,
-                taker,
-            );
-        }
-
         let mut level = self.get_best_price_level(book_key, is_bid)?;
         let order = self.orders[level.links.head].read_in_book(book_key)?;
 
@@ -1227,16 +1236,6 @@ impl StablecoinDEX {
         amount_in: u128,
         taker: Address,
     ) -> Result<u128> {
-        if !self.storage.spec().is_t12() {
-            return self.fill_orders_exact_in_legacy(
-                storage_credits,
-                book_key,
-                is_bid,
-                amount_in,
-                taker,
-            );
-        }
-
         let mut level = self.get_best_price_level(book_key, is_bid)?;
         let order = self.orders[level.links.head].read_in_book(book_key)?;
 
@@ -1246,9 +1245,9 @@ impl StablecoinDEX {
         })
     }
 
-    /// Applies one order fill during swap execution and returns the next order to
-    /// fill, or `None` when this order terminates the trade. Shared by the
-    /// exact-in and exact-out swap walks so their settlement cannot diverge.
+    /// Applies one order fill during swap execution and returns the taker output
+    /// and the next order to fill, or `None` when this order terminates the trade.
+    /// Shared by the exact-in and exact-out swap walks so their settlement cannot diverge.
     fn settle_fill(
         &mut self,
         storage_credits: &mut StorageCreditDeltas,
@@ -1257,20 +1256,21 @@ impl StablecoinDEX {
         level: &mut TickLevel,
         mut order: Order,
         fill: Fill,
-    ) -> Result<Option<Order>> {
+    ) -> Result<(u128, Option<Order>)> {
         match fill {
             Fill::Partial(fill_amount) => {
-                self.partial_fill_order(&mut order, level, fill_amount, taker)?;
-                Ok(None)
+                let amount_out = self.partial_fill_order(&mut order, level, fill_amount, taker)?;
+                Ok((amount_out, None))
             }
             Fill::Full => {
-                let next = self.fill_order(storage_credits, book_key, &mut order, *level, taker)?;
+                let (amount_out, next) =
+                    self.fill_order(storage_credits, book_key, &mut order, *level, taker)?;
                 match next {
                     Some((new_level, new_order)) => {
                         *level = new_level;
-                        Ok(Some(new_order))
+                        Ok((amount_out, Some(new_order)))
                     }
-                    None => Ok(None),
+                    None => Ok((amount_out, None)),
                 }
             }
         }
@@ -1304,16 +1304,12 @@ impl StablecoinDEX {
     ///
     /// Used by the per-order quote paths so quotes walk the book exactly like a
     /// swap does. Uses the order's in-memory `next`/`tick` (unchanged by a fill).
-    fn next_order_after(
-        &self,
-        book_key: B256,
-        order: &Order,
-        is_bid: bool,
-    ) -> Result<Option<Order>> {
+    fn next_order_after(&self, book_key: B256, order: &Order) -> Result<Option<Order>> {
         if order.next() != 0 {
             return Ok(Some(self.orders[order.next()].read_in_book(book_key)?));
         }
 
+        let is_bid = order.is_bid();
         let (next_tick, has_liquidity) =
             self.books[book_key].next_initialized_tick(order.tick(), is_bid)?;
         if !has_liquidity {
@@ -1537,9 +1533,33 @@ impl StablecoinDEX {
 
         // Read-only walk: advance the cursor without settling, so the quote uses
         // the same per-order arithmetic and traversal as execution.
-        walk_resting_orders(order, amount, is_bid, step, |order, fill| match fill {
-            Fill::Partial(_) => Ok(None),
-            Fill::Full => self.next_order_after(book_key, &order, is_bid),
+        walk_resting_orders(order, amount, is_bid, step, |order, fill| {
+            let fill_amount = match fill {
+                Fill::Partial(amount) => amount,
+                Fill::Full => order.remaining(),
+            };
+            // Mirror settlement's conversions using the resting order's side,
+            // independently of the route side used to size this fill.
+            let quote_amount = base_to_quote(
+                fill_amount,
+                order.tick(),
+                if order.is_bid() {
+                    RoundingDirection::Down
+                } else {
+                    RoundingDirection::Up
+                },
+            )
+            .ok_or(TempoPrecompileError::under_overflow())?;
+            let amount_out = if order.is_bid() {
+                quote_amount
+            } else {
+                fill_amount
+            };
+            let next = match fill {
+                Fill::Partial(_) => None,
+                Fill::Full => self.next_order_after(book_key, &order)?,
+            };
+            Ok((amount_out, next))
         })
     }
 
@@ -6593,12 +6613,14 @@ mod tests {
     // ----------------------------------------------------------------------
 
     #[test]
-    fn test_pre_t12_settlement_returns_order_side_output() -> eyre::Result<()> {
+    fn test_settlement_returns_order_side_output() -> eyre::Result<()> {
         for spec in [
             TempoHardfork::T0,
             TempoHardfork::T5,
             TempoHardfork::T8,
             TempoHardfork::T11,
+            TempoHardfork::T12,
+            TempoHardfork::T13,
         ] {
             for is_bid in [false, true] {
                 for partial in [false, true] {
@@ -6616,14 +6638,9 @@ mod tests {
                                 MIN_ORDER_AMOUNT
                             };
                             let amount_out = if partial {
-                                dex.partial_fill_order_legacy(
-                                    &mut order,
-                                    &mut level,
-                                    fill_amount,
-                                    taker,
-                                )?
+                                dex.partial_fill_order(&mut order, &mut level, fill_amount, taker)?
                             } else {
-                                let (amount_out, next) = dex.fill_order_legacy(
+                                let (amount_out, next) = dex.fill_order(
                                     &mut StorageCreditDeltas::default(),
                                     book_key,
                                     &mut order,
