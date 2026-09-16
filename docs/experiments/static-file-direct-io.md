@@ -1,5 +1,11 @@
 # Static-file direct I/O under Tempo load
 
+**Repeat result:** the throughput deficit repeated (-2.7% initially, -2.2% on
+repeat), but both comparisons remain neutral under the workflow's significance
+test. The large initial MDBX batch-time improvement did not repeat: it shrank
+from 22.8% to 3.7%. MDBX commits were slower in both experiments. See the
+[repeat comparison](#repeat-comparison) below.
+
 ## Revisions
 
 - Tempo baseline: `3912cff1ff52de0c90b3512b56e746e2e87b248e` (upstream main fetched September 16, 2026).
@@ -171,3 +177,78 @@ with comparable completed work and sustained memory pressure.
 
 The summary, per-run results, cache snapshots, and compact storage/pressure
 evidence are committed in [static-file-direct-io-results.json](static-file-direct-io-results.json).
+
+## Repeat comparison
+
+[Repeat benchmark](https://github.com/tempoxyz/tempo/actions/runs/35095292498)
+and its [metric analysis](https://github.com/tempoxyz/tempo/actions/runs/35101405436)
+completed successfully. Both measured code revisions, the txgen revision, and
+all summary configuration fields match the first experiment exactly. The repeat
+again ran three five-minute pairs at a 50,000 TPS target. The analysis used the
+same warmup and aggregation rules described above.
+
+### Throughput and latency
+
+| Metric | First experiment, baseline → candidate | Repeat, baseline → candidate |
+| --- | ---: | ---: |
+| Included TPS | 8,518 → 8,289 (-2.7%, neutral) | 8,716 → 8,522 (-2.2%, neutral) |
+| Median block interval | 477 → 453 ms (-5.0%, good) | 487 → 504 ms (+3.5%, neutral) |
+| Validation p90 | 310.3 → 294.7 ms (-5.0%, neutral) | 307 → 335.5 ms (+9.3%, bad) |
+
+The repeat TPS comparison has a reported confidence bound of 4.78 percentage
+points, versus 5.95 initially. Its overall workflow label is **Regression**,
+driven by validation p90; TPS itself remains neutral. The original median-block
+latency improvement reversed direction. These labels are individual workflow
+classifications, not proof of a specific storage mechanism.
+
+| Pair | Baseline TPS | Candidate TPS | Change | Baseline tx/block | Candidate tx/block |
+| --- | ---: | ---: | ---: | ---: | ---: |
+| Repeat 1 | 8,747 | 8,837 | +1.0% | 7,583 | 8,007 |
+| Repeat 2 | 9,027 | 8,488 | -6.0% | 7,561 | 7,071 |
+| Repeat 3 | 8,373 | 8,240 | -1.6% | 6,830 | 7,324 |
+
+Across all six pairs, individual throughput changes were +3.0%, -0.4%, -10.5%,
++1.0%, -6.0%, and -1.6%. Giving each phase equal weight yields 8,617 baseline TPS
+and 8,405 candidate TPS, a descriptive -2.46% difference; this is not a new
+pooled significance test. Four of six pairs were slower, so dismissing the
+entire deficit as noise would be premature, but neither experiment independently
+establishes a throughput regression.
+
+The repeat sender achieved 26,175 accepted submissions/sec on baseline and
+26,683 on candidate, with zero RPC submission failures. Those are distinct from
+the included TPS above; the 50k target was again not sustained. Unlike the first
+experiment, both sides recorded zero builder invalid-transaction skips.
+
+### Storage and cache repeatability
+
+| Metric | First experiment, baseline → candidate | Repeat, baseline → candidate |
+| --- | ---: | ---: |
+| MDBX save work per batch | 3,816.5 → 2,946.9 ms (-22.8%) | 3,662.8 → 3,525.8 ms (-3.7%) |
+| MDBX commit per call | 942.2 → 982.9 ms (+4.3%) | 920.0 → 983.5 ms (+6.9%) |
+| Static-file save work per batch | 549.4 → 570.1 ms (+3.8%) | 532.7 → 654.1 ms (+22.8%) |
+| Static-file finalize per call | 3.22 → 4.13 ms (+28.4%) | 3.01 → 3.33 ms (+10.7%) |
+| Blocks per save batch | 6.83 → 6.69 | 6.56 → 6.50 |
+
+Storage values remain descriptive per-call/per-batch means, with varying work
+per batch. The repeat MDBX save-time changes by pair were +1.8%, -11.7%, and
+-0.4%; commit-time changes were -7.4%, +17.8%, and +11.7%. The initial 22.8%
+MDBX batch-time benefit is not reproducible at that magnitude. The evidence
+supports treating much of that apparent gain as run/workload variation.
+
+All 12 repeat cache snapshots succeeded. Baseline static-file residency after
+each phase was 300.84–362.23 MiB per validator (325.55 MiB average); every candidate
+after snapshot again measured zero bytes. Average endpoint MDBX residency was
+12.63 GiB on baseline and 13.03 GiB on candidate, subject to the same snapshot
+timing limitations as the first experiment. Validator cgroup memory peaks were
+39.1–42.4 GiB, below the 60 GiB limits, with no memory-limit or OOM events. Host
+available memory stayed above 82.0 GiB. Thus cache bypass is reproducible, while
+sustained memory-capacity pressure remains unproven.
+
+**Conclusion:** the large MDBX write-time improvement was unstable; the small
+throughput deficit and slower mean MDBX commits repeated. There is still no
+demonstrated end-to-end benefit from this patch under these settings. The repeat
+does not resolve whether the approximately 2–3% throughput cost is a real small
+regression or noise, and it does not establish a benefit under memory pressure.
+
+The repeat evidence is committed in
+[static-file-direct-io-repeat-results.json](static-file-direct-io-repeat-results.json).
