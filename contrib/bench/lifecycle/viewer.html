@@ -19,10 +19,15 @@ const D=JSON.parse(document.getElementById('data').textContent),$=id=>document.g
 const colors={builder:'#60d6c0',consensus:'#be9ef8',execution:'#70aff6',state:'#f0c677',storage:'#ef9b86',network:'#84d19c',trie:'#e2a6da',lifecycle:'#8dacc9'};
 const ms=n=>n.toFixed(3)+' ms';
 // BEGIN EXECUTION_LOOP_HELPER
+function executionResourceSummary(t) {
+  const fields=['execution_voluntary_context_switches','execution_involuntary_context_switches','execution_minor_page_faults','execution_major_page_faults','execution_block_input_operations','execution_block_output_operations'];
+  if (t.execution_resources_measured!==1||fields.some(k=>typeof t[k]!=='number'||!Number.isFinite(t[k])||t[k]<0)) return 'loop resource counters unmeasured';
+  return `loop resource counts: voluntary/involuntary context switches ${t.execution_voluntary_context_switches}/${t.execution_involuntary_context_switches}; minor/major page faults ${t.execution_minor_page_faults}/${t.execution_major_page_faults}; filesystem input/output operations ${t.execution_block_input_operations}/${t.execution_block_output_operations} (same execution thread; counts, not wait durations or proof of a cause)`;
+}
 function executionLoopSummary(t) {
   const wall=t.execution_loop_ns==null?'unmeasured':ms(t.execution_loop_ns/1e6);
   const cpu=t.execution_cpu_measured===1&&t.execution_thread_cpu_ns!=null?ms(t.execution_thread_cpu_ns/1e6):'unmeasured';
-  return `loop wall ${wall} · loop thread CPU ${cpu} (user+system, microsecond-resolution counters; excludes worker CPU and block initialization/finalization)`;
+  return `loop wall ${wall} · loop thread CPU ${cpu} (user+system, microsecond-resolution counters; excludes worker CPU and block initialization/finalization) · ${executionResourceSummary(t)}`;
 }
 // END EXECUTION_LOOP_HELPER
 let rowPage=0;const PAGE_SIZE=500;

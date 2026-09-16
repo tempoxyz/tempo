@@ -26,6 +26,34 @@ def fixture(path, lost=0, close=True):
 
 
 class ReportTests(unittest.TestCase):
+    def test_execution_resource_counts_preserve_unavailable_and_cutoff(self):
+        counters = [
+            'execution_voluntary_context_switches', 'execution_involuntary_context_switches',
+            'execution_minor_page_faults', 'execution_major_page_faults',
+            'execution_block_input_operations', 'execution_block_output_operations',
+        ]
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory)/'a.jsonl'; fixture(path)
+            records = [json.loads(line) for line in path.read_text().splitlines()]
+            values = [
+                dict(execution_resources_measured=1, **dict(zip(counters, range(6)))),
+                dict(execution_resources_measured=1, **dict.fromkeys(counters, 0)),
+                dict(execution_resources_measured=0),
+                {},  # CPU-capable older capture without supplemental counters.
+            ]
+            records[-1:-1] = [dict(type='event', id=i, ts=i*1_000_000_000+200,
+                                  fields=dict(stage='execution_totals', execution_loop_ns=100,
+                                              execution_cpu_measured=1, execution_thread_cpu_ns=80, **fields))
+                              for i, fields in enumerate(values, 1)]
+            path.write_text('\n'.join(map(json.dumps, records)))
+            result = write_report([path], Path(directory)/'report', warmup=0)
+            for block, fields in zip(result['blocks'], values):
+                self.assertEqual(block['execution_totals'][0],
+                                 dict(node='Validator A', execution_loop_ns=100,
+                                      execution_cpu_measured=1, execution_thread_cpu_ns=80, **fields))
+            pruned = build([path], warmup=0, window={'backpressure': {'ts': 1_000_000_200, 'node': 'Validator A'}})
+            self.assertTrue(all(not b['execution_totals'] for b in pruned['blocks']))
+
     def test_execution_cpu_totals_preserve_unmeasured_and_zero(self):
         with tempfile.TemporaryDirectory() as directory:
             path = Path(directory)/'a.jsonl'; fixture(path)
