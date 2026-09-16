@@ -26,6 +26,29 @@ def fixture(path, lost=0, close=True):
 
 
 class ReportTests(unittest.TestCase):
+    def test_execution_cpu_totals_preserve_unmeasured_and_zero(self):
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory)/'a.jsonl'; fixture(path)
+            records = [json.loads(line) for line in path.read_text().splitlines()]
+            values = [
+                dict(execution_loop_ns=70, execution_cpu_measured=1, execution_thread_cpu_ns=50),
+                dict(execution_loop_ns=80, execution_cpu_measured=1, execution_thread_cpu_ns=0),
+                dict(execution_loop_ns=90, execution_cpu_measured=0),
+                {},  # Historical recording without CPU instrumentation.
+            ]
+            records[-1:-1] = [dict(type='event', id=i, ts=i*1_000_000_000+200,
+                                  fields=dict(stage='execution_totals', execution_ns=40, **fields))
+                              for i, fields in enumerate(values, 1)]
+            path.write_text('\n'.join(map(json.dumps, records)))
+            result = write_report([path], Path(directory)/'report', warmup=0)
+            for block, fields in zip(result['blocks'], values):
+                totals = block['execution_totals'][0]
+                self.assertEqual(totals, dict(node='Validator A', execution_ns=40, **fields))
+            # The same execution_totals event must be excluded at the strict cutoff.
+            cutoff = 1_000_000_200
+            pruned = build([path], warmup=0, window={'backpressure': {'ts': cutoff, 'node': 'Validator A'}})
+            self.assertTrue(all(not b['execution_totals'] for b in pruned['blocks']))
+
     def test_milestone_detail_preserves_population_and_marks_unmeasured_polls(self):
         with tempfile.TemporaryDirectory() as directory:
             path = Path(directory)/'a.jsonl'; fixture(path)

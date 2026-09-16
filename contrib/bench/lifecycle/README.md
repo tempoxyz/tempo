@@ -231,3 +231,26 @@ An unmarked scope is labeled `span_lifetime`; its close timestamp is not proof
 that the function ran or waited until that time. A last poll exit is never used
 as completion. Active wall time is not CPU time. Completion/cancellation markers
 at or after first backpressure are pruned with every other timed record.
+
+
+Execution totals also report the synchronous transaction loop's elapsed wall time
+(`execution_loop_ns`) and, on Linux when both resource samples succeed, its
+execution-thread user+system CPU time (`execution_thread_cpu_ns`). The numeric
+`execution_cpu_measured` flag is 1 for a measured value (including zero), or 0
+with the CPU field absent when unavailable. Older captures show **unmeasured**.
+At most two thread-bound `getrusage(RUSAGE_THREAD)` samples bracket each completed
+loop when the existing `lifecycle` INFO tracing gate is enabled; other subscribers
+can also enable that gate. There is no per-transaction CPU syscall. An early error
+keeps the existing behavior of emitting no totals and takes only the start sample.
+CPU nanoseconds are derived from microsecond-resolution counters. Sampling
+endpoints differ slightly, so the viewer preserves wall and CPU separately and
+does not compute or clamp an apparent off-CPU residual.
+
+The loop includes transaction-iterator waits, EVM execution, receipt cloning and
+sending, and same-thread bookkeeping/observer overhead. It excludes block
+initialization, pre-execution changes, finalization and other threads (including
+recovery, prewarming, proof and receipt-root workers). Existing `execution_ns`
+is just the summed EVM transaction calls and is **not** the matching wall scope
+for this CPU measurement. Local proposal builds and the parallel BAL replay path
+do not emit these loop totals. A wall/CPU gap can indicate time this thread was
+not executing, but does not identify scheduler, kernel or I/O causes.
