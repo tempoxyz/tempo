@@ -45,7 +45,7 @@ def validate(capture, process, cutoff, reason):
     for row in capture['intervals']:
         if (set(row) != {'thread','start','end','kind','right_censored'} or row['kind'] not in INTERVALS
                 or not integer(row['thread'], 1, 8192) or not integer(row['start'], 0, cutoff-1)
-                or not integer(row['end'], row['start']+1, cutoff) or type(row['right_censored']) is not bool):
+                or not integer(row['end'], row['start']+1, cutoff-1) or type(row['right_censored']) is not bool):
             raise ValueError('invalid scheduler interval or cutoff drift')
         if row['start'] < previous.get(row['thread'], 0):
             raise ValueError('overlapping scheduler states')
