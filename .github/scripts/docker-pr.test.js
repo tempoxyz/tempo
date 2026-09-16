@@ -102,11 +102,11 @@ function fixture(options = {}) {
   const sandbox = {
     context: {
       repo, actor: 'requester', runId: 999,
-      payload: { comment: { body: command, user: { login: 'comment-author' } },
+      payload: { comment: { id: 321, body: command, user: { login: 'comment-author' } },
         issue: { number: 123, pull_request: options.issue ? undefined : {} },
         repository: { default_branch: 'main' } },
     },
-    process: { env: { GITHUB_RUN_ATTEMPT: options.attempt || '1' } },
+    process: { env: { GITHUB_RUN_ATTEMPT: options.attempt || '1', REQUEST_ID: '321' } },
     core: {
       info() {}, summary,
       setOutput(key, value) {
@@ -155,9 +155,8 @@ function fixture(options = {}) {
       await execute(membershipScript);
       await execute(dispatchScript);
     } finally {
-      if (outputs['comment-id']) {
+      if (outputs['comment-id'] && outputs['dispatch-started'] !== 'true') {
         sandbox.process.env.RECEIPT_ID = outputs['comment-id'];
-        sandbox.process.env.BUILD_RUN_ID = outputs['run-id'] || '';
         try { await execute(updateReceiptScript); } catch { /* continue-on-error */ }
       }
     }
@@ -165,29 +164,29 @@ function fixture(options = {}) {
   return { run, calls, links, outputs, commentCalls, events };
 }
 
-test('receipt is posted before authorization and updated with the queued build', async () => {
+test('receipt is posted before authorization and handed to the status reporter', async () => {
   const f = fixture();
   await f.run();
   assert.equal(f.events[0], 'receipt');
-  const [created, updated] = f.commentCalls;
+  assert.equal(f.commentCalls.length, 1);
+  const [created] = f.commentCalls;
   assert.equal(created.args.issue_number, 123);
   assert.match(created.args.body, /Received `\/docker`\. Checking permissions/);
   assert.match(created.args.body, /actions\/runs\/999/);
-  assert.equal(updated.args.comment_id, 789);
-  assert.match(updated.args.body, /Docker build queued/);
-  assert.match(updated.args.body, /actions\/runs\/456/);
+  assert.ok(created.args.body.startsWith('<!-- tempo-docker-request:321 -->\n'));
+  assert.equal(f.calls.find(c => c.method === 'dispatch').args.inputs.request_id, '321');
 });
 
 for (const options of [
   { stsError: new Error('STS unavailable') },
   { commenterStatus: 403 },
-  { dispatchError: new Error('dispatch unavailable') },
+  { permission: 'read' },
 ]) {
   test(`receipt explains an unsuccessful request: ${JSON.stringify(options)}`, async () => {
     const f = fixture(options);
     await assert.rejects(f.run());
     assert.equal(f.commentCalls.length, 2);
-    assert.match(f.commentCalls[1].args.body, /could not confirm that a build was queued/);
+    assert.match(f.commentCalls[1].args.body, /request failed before a build could be queued/);
     assert.match(f.commentCalls[1].args.body, /actions\/runs\/999/);
   });
 }
@@ -199,13 +198,22 @@ test('receipt API failure is not retried and does not block the build', async ()
   assert.equal(f.outputs['run-id'], '456');
 });
 
-test('receipt update failure does not block the acknowledgement job', async () => {
-  const f = fixture({ updateReceiptError: new Error('comment unavailable') });
-  await f.run();
+test('receipt update failure preserves the authorization failure', async () => {
+  const f = fixture({ permission: 'read', updateReceiptError: new Error('comment unavailable') });
+  await assert.rejects(f.run(), /write access/);
   assert.equal(f.commentCalls.length, 2);
-  assert.equal(f.outputs['run-id'], '456');
+  assert.equal(f.outputs['run-id'], undefined);
   const step = yaml.split('      - name: Update Docker request receipt\n')[1].split('\n  acknowledge:')[0];
   assert.ok(step.includes('continue-on-error: true'));
+});
+
+test('a lost dispatch response never overwrites an early lifecycle report', async () => {
+  const f = fixture({ dispatchError: new Error('response lost') });
+  await assert.rejects(f.run(), /response lost/);
+  assert.equal(f.outputs['dispatch-started'], 'true');
+  assert.equal(f.commentCalls.length, 1);
+  const step = yaml.split('      - name: Update Docker request receipt\n')[1].split('\n  acknowledge:')[0];
+  assert.ok(step.includes("steps.build.outputs.dispatch-started != 'true'"));
 });
 
 for (const [command, workflow, nightly = false] of [
@@ -221,7 +229,7 @@ for (const [command, workflow, nightly = false] of [
     const dispatch = JSON.parse(JSON.stringify(f.calls.find(call => call.method === 'dispatch').args));
     assert.equal(dispatch.workflow_id, workflow);
     assert.equal(dispatch.ref, 'main');
-    assert.deepEqual(dispatch.inputs, nightly ? { pr_number: '123', nightly: 'true' } : { pr_number: '123' });
+    assert.deepEqual(dispatch.inputs, { pr_number: '123', request_id: '321', ...(nightly ? { nightly: 'true' } : {}) });
     assert.equal(dispatch.return_run_details, true);
     assert.equal(f.calls.find(call => call.method === 'permission').args.username, 'comment-author');
     assert.deepEqual(f.links, ['https://github.com/tempoxyz/tempo/actions/runs/456']);

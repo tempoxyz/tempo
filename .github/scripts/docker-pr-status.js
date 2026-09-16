@@ -4,6 +4,7 @@ const path = require('node:path');
 const repository = 'tempoxyz/tempo';
 const imageNames = ['tempo', 'tempo-localnet', 'tempo-sidecar', 'tempo-xtask'];
 const marker = id => `<!-- tempo-docker-run:${id} -->`;
+const requestMarker = id => `<!-- tempo-docker-request:${id} -->`;
 
 async function resolve(github, context, runId = context.payload.workflow_run?.id) {
   if (`${context.repo.owner}/${context.repo.repo}` !== repository) return null;
@@ -14,8 +15,9 @@ async function resolve(github, context, runId = context.payload.workflow_run?.id
   });
   if (run.event !== 'workflow_dispatch' || run.head_repository?.full_name !== repository ||
       run.head_branch !== context.payload.repository.default_branch) return null;
-  const match = /^Docker PR #([1-9][0-9]*)( nightly| profiling)?$/.exec(run.display_title);
+  const match = /^Docker PR #([1-9][0-9]*)( nightly| profiling)?(?: \(request ([1-9][0-9]*)\))?$/.exec(run.display_title);
   if (!match || !Number.isSafeInteger(Number(match[1]))) return null;
+  if (match[3] && !Number.isSafeInteger(Number(match[3]))) return null;
   const mode = (match[2] || '').trim();
   const expectedPath = `.github/workflows/docker${mode === 'profiling' ? '-profiling' : ''}.yml`;
   if (run.path !== expectedPath) return null;
@@ -26,6 +28,7 @@ async function resolve(github, context, runId = context.payload.workflow_run?.id
     id: run.id, attempt: run.run_attempt, number, mode,
     status: run.status, conclusion: run.conclusion,
   };
+  if (match[3]) status.requestId = Number(match[3]);
   if (run.status === 'completed') {
     try {
       const artifacts = await github.paginate(github.rest.actions.listWorkflowRunArtifacts, {
@@ -71,7 +74,8 @@ function render(status, images) {
     'action_required', 'neutral', 'skipped', 'stale', 'startup_failure'];
   if (!allowedStates.includes(state)) throw new Error('Unknown run state');
   const url = `https://github.com/${repository}/actions/runs/${status.id}`;
-  const lines = [marker(status.id), `**Docker request accepted: \`${command}\`**`, '',
+  const lines = [marker(status.id), ...(status.requestId ? [requestMarker(status.requestId)] : []),
+    `**Docker request accepted: \`${command}\`**`, '',
     `Status: **${state}** · [Build run](${url}) · Attempt ${status.attempt}`];
   if (status.status !== 'completed') return lines.join('\n');
   if (!images) {
@@ -111,8 +115,13 @@ async function report(github, context, core, status) {
   const comments = await github.paginate(github.rest.issues.listComments, {
     ...context.repo, issue_number: status.number, per_page: 100,
   });
-  const existing = comments.find(c => c.user?.login === 'github-actions[bot]' &&
-    c.user?.type === 'Bot' && c.body?.startsWith(`${marker(status.id)}\n`));
+  const botComments = comments.filter(c => c.user?.login === 'github-actions[bot]' && c.user?.type === 'Bot');
+  // The request ID is already in the build title when lifecycle events start,
+  // so even an event arriving before dispatch returns can adopt the receipt.
+  // Once linked, match by run ID and never adopt another run's comment.
+  const existing = botComments.find(c => c.body?.startsWith(`${marker(status.id)}\n`)) ||
+    (status.requestId && botComments.find(c => c.body?.startsWith(`${requestMarker(status.requestId)}\n`) &&
+      !c.body.includes('<!-- tempo-docker-run:')));
   if (existing) {
     if (existing.body !== body) await github.rest.issues.updateComment({
       ...context.repo, comment_id: existing.id, body,

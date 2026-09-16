@@ -75,6 +75,8 @@ for (const overrides of [
   { path: '.github/workflows/other.yml' }, { display_title: 'Docker PR #123 profiling' },
   { display_title: 'Docker PR #0' }, { display_title: 'Docker PR #9007199254740992' },
   { display_title: 'Docker PR #123 injected' }, { display_title: 'Regular build' },
+  { display_title: 'Docker PR #123 (request 0)' },
+  { display_title: 'Docker PR #123 (request 9007199254740992)' },
 ]) {
   test(`ignore unrelated or untrusted run: ${JSON.stringify(overrides)}`, async () => {
     const f = fixture(overrides);
@@ -187,6 +189,55 @@ test('duplicate lifecycle event does not mutate an unchanged comment', async () 
   const f = fixture({}, [{ id: 77, user: { login: 'github-actions[bot]', type: 'Bot' }, body: render(status) }]);
   await report(f.github, context, { warning() {} }, status);
   assert.deepEqual(f.calls.map(([name]) => name), ['comments']);
+});
+
+for (const mode of ['', 'nightly', 'profiling']) {
+  test(`${mode || 'normal'} requested event adopts the receipt before acknowledgement`, async () => {
+    const receipt = { id: 77, user: { login: 'github-actions[bot]', type: 'Bot' },
+      body: '<!-- tempo-docker-request:321 -->\nReceived command.' };
+    const f = fixture({ status: 'queued', conclusion: null,
+      display_title: `Docker PR #123${mode ? ` ${mode}` : ''} (request 321)`,
+      path: `.github/workflows/docker${mode === 'profiling' ? '-profiling' : ''}.yml`,
+    }, [receipt]);
+    const actual = await resolve(f.github, context);
+    assert.equal(actual.requestId, 321);
+    assert.equal(actual.mode, mode);
+    await report(f.github, context, { warning() {} }, actual);
+    const updated = f.calls.find(([name]) => name === 'update')[1];
+    assert.equal(updated.comment_id, 77);
+    assert.ok(updated.body.startsWith('<!-- tempo-docker-run:456 -->\n<!-- tempo-docker-request:321 -->\n'));
+    assert.ok(!f.calls.some(([name]) => name === 'create'));
+    receipt.body = updated.body;
+    // The direct acknowledgement uses the same run marker and current state.
+    await report(f.github, context, { warning() {} }, { ...actual, status: 'in_progress' });
+    assert.equal(f.calls.filter(([name]) => name === 'update').length, 2);
+    assert.ok(!f.calls.some(([name]) => name === 'create'));
+    await report(f.github, context, { warning() {} }, { ...actual, status: 'completed', conclusion: 'success' });
+    assert.equal(f.calls.filter(([name]) => name === 'update').at(-1)[1].comment_id, 77);
+  });
+}
+
+test('missing receipt falls back to one run comment which later events reuse', async () => {
+  const actual = { ...status, requestId: 321 };
+  const f = fixture();
+  await report(f.github, context, { warning() {} }, actual);
+  const created = f.calls.find(([name]) => name === 'create')[1];
+  const next = fixture({}, [{ id: 77, user: { login: 'github-actions[bot]', type: 'Bot' }, body: created.body }]);
+  await report(next.github, context, { warning() {} }, { ...actual, conclusion: 'cancelled' });
+  assert.equal(next.calls.find(([name]) => name === 'update')[1].comment_id, 77);
+  assert.ok(!next.calls.some(([name]) => name === 'create'));
+});
+
+test('receipt adoption rejects human markers and comments already linked to another run', async () => {
+  for (const receipt of [
+    { id: 77, user: { login: 'human', type: 'User' }, body: '<!-- tempo-docker-request:321 -->\nhello' },
+    { id: 77, user: { login: 'github-actions[bot]', type: 'Bot' }, body: '<!-- tempo-docker-request:321 -->\n<!-- tempo-docker-run:999 -->\nhello' },
+  ]) {
+    const f = fixture({}, [receipt]);
+    await report(f.github, context, { warning() {} }, { ...status, requestId: 321 });
+    assert.ok(!f.calls.some(([name]) => name === 'update'));
+    assert.ok(f.calls.some(([name]) => name === 'create'));
+  }
 });
 
 test('a newer build uses a different comment rather than overwriting an older run', async () => {

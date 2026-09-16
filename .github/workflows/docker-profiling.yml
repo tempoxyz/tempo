@@ -1,11 +1,15 @@
 name: Docker Build (Profiling)
-run-name: "${{ inputs.pr_number && format('Docker PR #{0} profiling', inputs.pr_number) || '' }}"
+run-name: "${{ inputs.pr_number && format('Docker PR #{0} profiling{1}', inputs.pr_number, inputs.request_id && format(' (request {0})', inputs.request_id) || '') || '' }}"
 
 permissions: {}
 
 on:
   workflow_dispatch:
     inputs:
+      request_id:
+        description: "Source command comment ID for updating its receipt (optional)"
+        type: string
+        default: ""
       tag:
         description: "Tag for selected-ref builds; ignored when pr_number is set"
         type: string

@@ -49,7 +49,7 @@ jobs:
             const { data: comment } = await github.rest.issues.createComment({
               ...context.repo,
               issue_number: context.payload.issue.number,
-              body: `Received \`${command}\`. Checking permissions and preparing the build.\n\n[Request progress](${url})`,
+              body: `<!-- tempo-docker-request:${context.payload.comment.id} -->\nReceived \`${command}\`. Checking permissions and preparing the build.\n\n[Request progress](${url})`,
             });
             core.setOutput('comment-id', String(comment.id));
 
@@ -94,6 +94,8 @@ jobs:
       - name: Queue Docker build from comment
         id: build
         if: steps.command.outputs.recognized == 'true'
+        env:
+          REQUEST_ID: ${{ github.event.comment.id }}
         uses: actions/github-script@3a2844b7e9c422d3c10d287c895573f7108da1b3 # v9.0.0
         with:
           # GITHUB_TOKEN dispatches suppress downstream workflow_run reporters.
@@ -127,8 +129,11 @@ jobs:
             }
             // Run trusted workflow code from the default branch. The build
             // workflow resolves pr_number to an exact head SHA before checkout.
-            const inputs = { pr_number: String(number) };
+            const inputs = { pr_number: String(number), request_id: process.env.REQUEST_ID };
             if (command === '/docker nightly') inputs.nightly = 'true';
+            // After this point the request may have queued a build even if the
+            // API response is lost. Only the serialized reporter edits its receipt.
+            core.setOutput('dispatch-started', 'true');
             const { data: run } = await github.rest.actions.createWorkflowDispatch({
               ...context.repo,
               workflow_id: workflow,
@@ -146,21 +151,17 @@ jobs:
               .write();
 
       - name: Update Docker request receipt
-        if: always() && steps.receipt.outputs.comment-id != ''
+        if: always() && steps.receipt.outputs.comment-id != '' && steps.build.outputs.dispatch-started != 'true'
         continue-on-error: true
         uses: actions/github-script@3a2844b7e9c422d3c10d287c895573f7108da1b3 # v9.0.0
         env:
           RECEIPT_ID: ${{ steps.receipt.outputs.comment-id }}
-          BUILD_RUN_ID: ${{ steps.build.outputs.run-id }}
         with:
           retries: 0
           script: |
             const command = context.payload.comment.body.trim();
             const base = `https://github.com/${context.repo.owner}/${context.repo.repo}/actions/runs/`;
-            const runId = process.env.BUILD_RUN_ID;
-            const body = runId
-              ? `Received \`${command}\`. [Docker build queued](${base}${runId}); detailed build status will be posted separately.`
-              : `Received \`${command}\`, but could not confirm that a build was queued. [Check the request log](${base}${context.runId}) for details.`;
+            const body = `<!-- tempo-docker-request:${context.payload.comment.id} -->\nReceived \`${command}\`, but the request failed before a build could be queued. [Check the request log](${base}${context.runId}) for details.`;
             await github.rest.issues.updateComment({
               ...context.repo, comment_id: Number(process.env.RECEIPT_ID), body,
             });

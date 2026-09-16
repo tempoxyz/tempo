@@ -1,5 +1,5 @@
 name: Docker Build
-run-name: "${{ inputs.pr_number && format('Docker PR #{0}{1}', inputs.pr_number, inputs.nightly && ' nightly' || '') || '' }}"
+run-name: "${{ inputs.pr_number && format('Docker PR #{0}{1}{2}', inputs.pr_number, inputs.nightly && ' nightly' || '', inputs.request_id && format(' (request {0})', inputs.request_id) || '') || '' }}"
 
 permissions: {}
 
@@ -13,6 +13,10 @@ on:
   merge_group:
   workflow_dispatch:
     inputs:
+      request_id:
+        description: "Source command comment ID for updating its receipt (optional)"
+        type: string
+        default: ""
       nightly:
         description: "Tag nightly"
         type: boolean
