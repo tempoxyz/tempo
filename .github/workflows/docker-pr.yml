@@ -1,0 +1,124 @@
+name: Docker Build from PR Comment
+run-name: "Docker build for PR #${{ github.event.issue.number }} requested by ${{ github.actor }}"
+
+on:
+  issue_comment:
+    types: [created]
+
+permissions: {}
+
+concurrency:
+  group: docker-pr-comment-${{ github.event.comment.id }}
+  cancel-in-progress: false
+
+jobs:
+  dispatch:
+    # Each new comment is one request. Post another command to retry, rather
+    # than rerunning a dispatcher that may already have queued a build.
+    if: >-
+      github.repository == 'tempoxyz/tempo' &&
+      github.run_attempt == 1 &&
+      github.event.issue.pull_request &&
+      contains(github.event.comment.body, '/docker')
+    runs-on: ubuntu-latest
+    permissions:
+      actions: write
+      id-token: write
+      pull-requests: read
+    steps:
+      # This workflow only calls GitHub APIs; it never checks out or runs PR code.
+      - name: Detect Docker command
+        id: command
+        uses: actions/github-script@3a2844b7e9c422d3c10d287c895573f7108da1b3 # v9.0.0
+        with:
+          script: |
+            const command = context.payload.comment.body.trim();
+            core.setOutput('recognized', ['/docker', '/docker nightly', '/docker profiling'].includes(command));
+
+      - name: Fetch GitHub token via STS
+        id: github-sts
+        if: steps.command.outputs.recognized == 'true'
+        uses: tempoxyz/gh-actions/actions/github-sts@c0292122e255def866c64c55e5844d1e7d5fe7ad
+        with:
+          policy: docker-pr
+
+      - name: Check org membership
+        if: steps.command.outputs.recognized == 'true'
+        uses: actions/github-script@3a2844b7e9c422d3c10d287c895573f7108da1b3 # v9.0.0
+        with:
+          github-token: ${{ steps.github-sts.outputs.token }}
+          script: |
+            const org = 'tempoxyz';
+            const checkMembership = async (username) => {
+              try {
+                const { status } = await github.rest.orgs.checkMembershipForUser({ org, username });
+                return status === 204 || status === 302;
+              } catch {
+                return false;
+              }
+            };
+
+            const commenter = context.payload.comment.user.login;
+            if (!await checkMembership(commenter)) {
+              core.setFailed(`@${commenter} is not a member of ${org}`);
+              return;
+            }
+
+            const { data: pr } = await github.rest.pulls.get({
+              ...context.repo,
+              pull_number: context.payload.issue.number,
+            });
+            const prAuthor = pr.user.login;
+            if (!await checkMembership(prAuthor)) {
+              core.setFailed(`PR author @${prAuthor} is not a member of ${org}`);
+            }
+
+      - name: Queue Docker build from comment
+        if: steps.command.outputs.recognized == 'true'
+        uses: actions/github-script@3a2844b7e9c422d3c10d287c895573f7108da1b3 # v9.0.0
+        with:
+          retries: 0
+          script: |
+            const workflows = {
+              '/docker': 'docker.yml',
+              '/docker nightly': 'docker.yml',
+              '/docker profiling': 'docker-profiling.yml',
+            };
+            const command = context.payload.comment.body.trim();
+            if (!context.payload.issue.pull_request || !Object.hasOwn(workflows, command) || process.env.GITHUB_RUN_ATTEMPT !== '1') return;
+            const workflow = workflows[command];
+
+            const { data: access } = await github.rest.repos.getCollaboratorPermissionLevel({
+              ...context.repo,
+              username: context.payload.comment.user.login,
+            });
+            if (!['write', 'maintain', 'admin'].includes(access.permission)) {
+              throw new Error('Docker builds require repository write access');
+            }
+
+            const number = context.payload.issue.number;
+            const { data: pr } = await github.rest.pulls.get({
+              ...context.repo,
+              pull_number: number,
+            });
+            if (pr.state !== 'open' || pr.head.repo?.full_name !== `${context.repo.owner}/${context.repo.repo}`) {
+              throw new Error('Docker builds require an open PR with a branch in this repository');
+            }
+            // Run trusted workflow code from the default branch. The build
+            // workflow resolves pr_number to an exact head SHA before checkout.
+            const inputs = { pr_number: String(number) };
+            if (command === '/docker nightly') inputs.nightly = 'true';
+            const { data: run } = await github.rest.actions.createWorkflowDispatch({
+              ...context.repo,
+              workflow_id: workflow,
+              ref: context.payload.repository.default_branch,
+              inputs,
+              return_run_details: true,
+              headers: { 'X-GitHub-Api-Version': '2022-11-28' },
+            });
+            core.info(`Queued ${workflow} for PR #${number}`);
+            await core.summary
+              .addHeading(`Docker build queued for PR #${number}`)
+              .addLink('Open build', run.html_url)
+              .addRaw('\n\nPost a new command comment to request another build. Edits and new commits alone do not trigger builds.\n')
+              .write();

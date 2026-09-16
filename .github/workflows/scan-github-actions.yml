@@ -24,10 +24,12 @@ jobs:
       - uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6.0.3
         with:
           persist-credentials: false
-      - name: Test benchmark CI helpers
+      - name: Test CI helpers
         run: |
           bash .github/scripts/bench-state-test.sh
           bash .github/scripts/bench-upload-charts-test.sh
+          node --test .github/scripts/docker-pr.test.js
+          node --test .github/scripts/docker-pr-status.test.js
 
   scan:
     if: ${{ github.event_name != 'schedule' || github.repository == 'tempoxyz/tempo' }}
