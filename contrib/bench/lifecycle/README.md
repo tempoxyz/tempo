@@ -56,9 +56,14 @@ events are disabled here because wrappers around excluded spans may otherwise
 refer to a retained ancestor. Full captures retain their existing completion
 semantics.
 
-Use the same milestone-capable binary for both settings of a proof parameter,
-then compare full-detail and milestone-only experiments separately. Counterbalance
-each comparison with `run-pairs: 2`. Reduced recording still has overhead, and
+Use **profiling: lifecycle-compare-detail** (or
+`--lifecycle --lifecycle-detail compare`) with `run-pairs: 2` to run all eight
+phases in one job: full feature/baseline, milestones feature/baseline, milestones
+baseline/feature, full baseline/feature. Each phase restores snapshots and has an
+independent cutoff. Both variant order and detail order are counterbalanced;
+explicit side metadata selects baseline/feature args even with mode-prefixed
+phase names. Use the same milestone-capable binary for both settings of a proof
+parameter to isolate its effect at each detail level. Reduced recording still has overhead, and
 changing capture mode can change scheduling: it is not a zero-observer baseline.
 Use full detail again when diagnosing a particular stall.
 

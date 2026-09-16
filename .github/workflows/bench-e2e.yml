@@ -86,6 +86,7 @@ on:
           - both
           - lifecycle
           - lifecycle-milestones
+          - lifecycle-compare-detail
       otlp:
         description: Export OTLP traces and logs.
         type: boolean
@@ -364,8 +365,8 @@ jobs:
     runs-on: [self-hosted, Linux, X64, bare-metal-dual-schelk]
     timeout-minutes: 300
     env:
-      BENCH_LIFECYCLE: ${{ (inputs.profiling == 'lifecycle' || inputs.profiling == 'lifecycle-milestones') }}
-      BENCH_LIFECYCLE_DETAIL: ${{ inputs.profiling == 'lifecycle-milestones' && 'milestones' || 'full' }}
+      BENCH_LIFECYCLE: ${{ (inputs.profiling == 'lifecycle' || inputs.profiling == 'lifecycle-milestones' || inputs.profiling == 'lifecycle-compare-detail') }}
+      BENCH_LIFECYCLE_DETAIL: ${{ inputs.profiling == 'lifecycle-compare-detail' && 'compare' || inputs.profiling == 'lifecycle-milestones' && 'milestones' || 'full' }}
       BENCH_PR: ${{ inputs.pr }}
       BENCH_ACTOR: ${{ inputs.actor || github.actor }}
       BENCH_MODE: ${{ inputs.mode || 'e2e' }}
@@ -383,8 +384,8 @@ jobs:
       BENCH_TRACY: ${{ inputs.tracy != '' && inputs.tracy || ((inputs.profiling == 'tracy' || inputs.profiling == 'both') && 'tracy' || ((inputs.profiling == 'off' || inputs.profiling == 'samply') && 'off' || 'off')) }}
       BENCH_TRACY_SECONDS: ${{ inputs.tracy-seconds || '10' }}
       BENCH_TRACY_OFFSET: ${{ inputs.tracy-offset }}
-      BENCH_OTLP: ${{ inputs.profiling != 'lifecycle' && inputs.profiling != 'lifecycle-milestones' && inputs.otlp != false && inputs.otlp != 'false' }}
-      BENCH_VALSCOPE: ${{ inputs.profiling != 'lifecycle' && inputs.profiling != 'lifecycle-milestones' && (inputs.valscope == true || inputs.valscope == 'true') }}
+      BENCH_OTLP: ${{ inputs.profiling != 'lifecycle' && inputs.profiling != 'lifecycle-milestones' && inputs.profiling != 'lifecycle-compare-detail' && inputs.otlp != false && inputs.otlp != 'false' }}
+      BENCH_VALSCOPE: ${{ inputs.profiling != 'lifecycle' && inputs.profiling != 'lifecycle-milestones' && inputs.profiling != 'lifecycle-compare-detail' && (inputs.valscope == true || inputs.valscope == 'true') }}
       BENCH_FEATURES: ${{ (inputs.otlp != false && inputs.otlp != 'false') && 'jemalloc,asm-keccak,keccak-cache-global,otlp' || 'jemalloc,asm-keccak,keccak-cache-global' }}
       BENCH_BASELINE_FEATURES: ${{ inputs.baseline-features }}
       BENCH_FEATURE_FEATURES: ${{ inputs.feature-features }}
@@ -404,7 +405,7 @@ jobs:
       BENCH_FEATURE_ENV: ${{ inputs.feature-env }}
       BENCH_RUN_PAIRS: ${{ inputs.run-pairs || '3' }}
       # An explicit instrumented baseline enables a same-runner lifecycle pair.
-      BENCH_RUN_SIDE: ${{ (inputs.profiling == 'lifecycle' || inputs.profiling == 'lifecycle-milestones') && inputs.baseline == '' && 'feature' || inputs.run-side || 'comparison' }}
+      BENCH_RUN_SIDE: ${{ (inputs.profiling == 'lifecycle' || inputs.profiling == 'lifecycle-milestones' || inputs.profiling == 'lifecycle-compare-detail') && inputs.baseline == '' && 'feature' || inputs.run-side || 'comparison' }}
       BENCH_CLICKHOUSE_RUN: ${{ inputs.clickhouse-run || 'feature-1' }}
       BENCHMARK_ID: bench-e2e-${{ github.run_id }}
       BENCH_COMMENT_ID: ${{ inputs.comment-id }}
