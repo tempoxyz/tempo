@@ -49,6 +49,13 @@ class ReportTests(unittest.TestCase):
             self.assertEqual(spans[0]['end'],10)
             self.assertFalse(spans[0].get('right_censored',False))
             self.assertTrue(spans[1]['right_censored'])
+            result=build([path],warmup=0,window={'backpressure':{'ts':50,'node':'Validator A'}})
+            operation=next(s for s in result['spans'] if s['id']==1)
+            self.assertEqual(operation['timing_semantics'],'operation_completed')
+            self.assertFalse(operation['right_censored'])
+            self.assertTrue(operation['reference_right_censored'])
+            self.assertIsNone(operation['retained_after_operation_ms'])
+            self.assertEqual(operation['reference_retention_lower_bound_ms'],40/1e6)
             # No completion is inferred from a pending future's last poll exit.
             spans, _, quality = read_node(path, 'Validator A', cutoff=10)
             self.assertTrue(spans[0]['right_censored'])
