@@ -277,7 +277,8 @@ def build(paths, warmup=5, window=None):
                      'details': {k:v for k,v in s['fields'].items() if k in (
                          'block_count', 'state_trie_block_count', 'first_block_number',
                          'last_block_number', 'canonical_height', 'persisted_height',
-                         'state_trie_height', 'backlog') and isinstance(v, (int, float))},
+                         'state_trie_height', 'backlog', 'queued_jobs', 'in_flight_proof_batches',
+                         'pending_updates', 'pending_targets', 'result_count') and isinstance(v, (int, float))},
                      'count': s.get('count'), 'elapsed_sum_ms': s.get('elapsed_ns',0)/1e6})
     frames = {}
     for event in events:
