@@ -100,7 +100,28 @@ fn reads_derive_from_blocks_and_writes_remain_native() {
         factory.static_file_provider().directory().to_owned(),
     );
     let tx = db.tx().unwrap();
-    let mut plain = tx.cursor_dup_read::<tables::PlainStorageState>().unwrap();
+    // A lazy database read can occur inside another precompile's storage scope.
+    use tempo_precompiles::storage::{
+        PrecompileStorageProvider, StorageCtx, hashmap::HashMapStorageProvider,
+    };
+    let mut outer = HashMapStorageProvider::new_with_spec(1, tempo_chainspec::TempoHardfork::T1C);
+    outer
+        .sstore(
+            address,
+            U256::from_be_slice(slot.as_slice()),
+            U256::from(42),
+        )
+        .unwrap();
+    let mut plain = StorageCtx::enter(&mut outer, || {
+        let cursor = tx.cursor_dup_read::<tables::PlainStorageState>().unwrap();
+        assert_eq!(
+            StorageCtx
+                .sload(address, U256::from_be_slice(slot.as_slice()))
+                .unwrap(),
+            U256::from(42)
+        );
+        cursor
+    });
     assert_eq!(
         plain
             .seek_by_key_subkey(address, slot)
