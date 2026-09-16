@@ -168,28 +168,19 @@ where
     /// Reads peers from the latest finalized state allowed by consensus.
     #[instrument(skip_all, err)]
     async fn refresh_peers(&mut self) -> eyre::Result<()> {
-        // Always take whatever is higher: the last finalized height as per
-        // consensus layer (greater than 0 only on restarts with populated
-        // consensus state), or the highest finalized block number from the
-        // execution layer. Cap the result by the latest consensus-observed
-        // finalized tip so EL-derived reads cannot move ahead of the
-        // consensus startup/archive view.
-        //
-        // This works even if the execution layer was replaced with a snapshot.
-        //
-        // There is no point taking an outdated state because the network has
-        // moved on and there is no guarantee that older peers are even around.
-        //
-        // Compare this to the DKG actor, which boots into older DKG epochs
-        // because it attempts to replay older rounds.
+        // During bootstrap, the persisted processed floor may be above the
+        // available execution database. Discover peers from state we can
+        // actually read; the timer refreshes this as authenticated replay advances.
         let highest_finalized = self
             .execution_node
             .provider
             .finalized_block_number()
             .wrap_err("unable to read highest finalized block from execution layer")?
-            .unwrap_or(self.finalized_floor.get())
-            .max(self.finalized_floor.get())
+            .unwrap_or(0)
             .min(self.latest_observed_finalized_tip.0.get());
+        if highest_finalized < self.finalized_floor.get() {
+            debug!(highest_finalized, floor = %self.finalized_floor, "using available execution state for bootstrap peers");
+        }
 
         // Short circuit - no need to read the same state if there is no new data.
         if self

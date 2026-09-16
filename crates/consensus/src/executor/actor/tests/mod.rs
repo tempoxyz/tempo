@@ -18,6 +18,7 @@ mod build;
 mod convergence;
 mod finalization;
 mod metrics;
+mod recovery;
 mod scheduling;
 mod verify;
 

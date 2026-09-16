@@ -348,16 +348,13 @@ impl NotarizedTree {
     /// traded for recovery speed, bounded by the advancing finalized tip,
     /// which sweeps everything it passes.
     pub(super) fn heal(&mut self) {
-        // `first_missing_ancestor` and `next_to_forward` bound their walks
-        // by the network's finalized tip, which is only correct while the
-        // locally canonicalized finalized tip does not run ahead of it. The
-        // marshal actor upholds this: it reports a finalized tip before
-        // delivering the finalized blocks covered by it.
-        debug_assert!(
-            self.local_finalized_tip.0 <= self.network_finalized_tip.1,
-            "the locally canonicalized finalized tip must never run ahead of \
-            the observed finalized tip of the network",
-        );
+        // After restoring consensus storage beside newer execution state,
+        // hybrid storage can re-deliver execution-backed blocks ahead of the
+        // last certificate tip. Wait for that tip instead of repointing below
+        // local finality. Execution height alone does not certify a new tip.
+        if self.local_finalized_tip.0 > self.network_finalized_tip.1 {
+            return;
+        }
 
         let (finalized_round, finalized_height, finalized_digest) = self.network_finalized_tip;
         self.blocks
@@ -429,7 +426,7 @@ impl NotarizedTree {
     ///
     /// **FIXME:** Allow for repointing to any ancestor.
     pub(super) fn next_to_forward(&self, now: SystemTime) -> Option<NextToForward> {
-        if self.local_finalized_tip.0 < self.network_finalized_tip.1 {
+        if self.local_finalized_tip.0 != self.network_finalized_tip.1 {
             return None;
         }
         let (_, finalized_height, finalized_digest) = self.network_finalized_tip;
@@ -452,8 +449,8 @@ impl NotarizedTree {
             // is stranded, repoint to the finalized tip.
             //
             // NOTE: This works because we short-circuit on
-            // `local_finalized < network_finalized`. If we did not do that,
-            // this would potentially trigger a SYNCING.
+            // unequal finalized heights. Repointing while behind can trigger
+            // SYNCING; repointing while ahead cannot change the local state.
             None => (digest == finalized_digest && self.local_head.1 != finalized_digest)
                 .then_some(NextToForward::Repoint(finalized_height, finalized_digest)),
         }
@@ -466,6 +463,9 @@ impl NotarizedTree {
     /// the finalized tip, so a missing ancestor body must be fetched even if
     /// no explicit notarization fact was observed for it.
     pub(super) fn first_missing_ancestor(&self) -> Option<(Round, Digest)> {
+        if self.local_finalized_tip.0 > self.network_finalized_tip.1 {
+            return None;
+        }
         let (finalized_round, finalized_height, finalized_digest) = self.network_finalized_tip;
         // The round of the pending head comes from the context that
         // reported it; further down the path it is derived from the context

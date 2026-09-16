@@ -356,13 +356,15 @@ pub(crate) mod marshal {
             TContext,
             BlockchainProvider<NodeTypesWithDBAdapter<TempoNode, DatabaseEnv>>,
         >,
-        execution_node: &TempoFullNode,
+        execution_node: &Arc<TempoFullNode>,
         (height, finalization): (Height, &Finalization<Scheme<PublicKey, MinSig>, Digest>),
     ) -> eyre::Result<()>
     where
         TContext: Clock + Metrics + Storage + BufferPooler + CryptoRng + Send + Sync + 'static,
     {
-        let finalized_header = read_header(execution_node, finalized_blocks, height).await?;
+        let anchor = (height, finalization.proposal.payload);
+        let finalized_header =
+            read_header(context, execution_node, finalized_blocks, height, anchor).await?;
 
         ensure!(
             Digest(finalized_header.hash_slow()) == finalization.proposal.payload,
@@ -371,7 +373,8 @@ pub(crate) mod marshal {
 
         let epoch = finalization.epoch();
         let boundary = boundary_for_epoch(epoch_strategy, epoch)?;
-        let header = read_header(execution_node, finalized_blocks, boundary).await?;
+        let header =
+            read_header(context, execution_node, finalized_blocks, boundary, anchor).await?;
 
         let onchain_outcome = OnchainDkgOutcome::read(&mut header.extra_data().as_ref())
             .wrap_err("failed to read DKG outcome from boundary header")?;
@@ -401,12 +404,14 @@ pub(crate) mod marshal {
     /// unavailable.
     #[instrument(skip_all, fields(%height), err)]
     async fn read_header<TContext>(
-        execution_node: &TempoFullNode,
+        context: &TContext,
+        execution_node: &Arc<TempoFullNode>,
         finalized_blocks: &Hybrid<
             TContext,
             BlockchainProvider<NodeTypesWithDBAdapter<TempoNode, DatabaseEnv>>,
         >,
         height: Height,
+        anchor: (Height, Digest),
     ) -> eyre::Result<TempoHeader>
     where
         TContext: Clock + Metrics + Storage + BufferPooler + Send + Sync + 'static,
@@ -425,18 +430,16 @@ pub(crate) mod marshal {
             }
         }
 
-        finalized_blocks
+        if let Some(block) = finalized_blocks
             .get(Identifier::Index(height.get()))
             .await
             .wrap_err_with(|| {
                 format!("failed reading finalized header at height `{height}` from hybrid store")
             })?
-            .map(|block| block.block().header().clone())
-            .ok_or_else(|| {
-                eyre!(
-                    "missing finalized header at height `{height}` in execution layer and hybrid store"
-                )
-            })
+        {
+            return Ok(block.block().header().clone());
+        }
+        crate::executor::recovery::header_at(context, execution_node, anchor, height).await
     }
 
     fn boundary_for_epoch(epoch_strategy: &FixedEpocher, epoch: Epoch) -> eyre::Result<Height> {
