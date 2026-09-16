@@ -109,6 +109,35 @@ fn legacy_env(to: TxKind, input: Bytes) -> TempoTxEnv {
     .into()
 }
 
+#[test]
+fn nonce_zero_surcharge_does_not_inflate_calldata_floor() {
+    let mut evm = test_evm(TempoHardfork::T6);
+    let envelope = legacy_env(TxKind::Call(Address::ZERO), Bytes::new());
+    let mut intrinsic = 21_000;
+    let mut initial_state_gas = 0;
+    let mut floor_gas = 21_000;
+
+    TempoHandlerHooks::adjust_intrinsic_gas(
+        &mut evm,
+        &envelope,
+        &mut intrinsic,
+        &mut initial_state_gas,
+        &mut floor_gas,
+    )
+    .unwrap();
+
+    let params = &evm.version().gas_params;
+    assert_eq!(
+        intrinsic,
+        21_000 + u64::from(params.get(GasId::NewAccountCost))
+    );
+    assert_eq!(initial_state_gas, params.new_account_state_gas());
+    assert_eq!(
+        floor_gas, 21_000,
+        "the EIP-7623 floor only prices calldata tokens"
+    );
+}
+
 fn aa_env_for(signer: Address, transaction: TempoTransaction) -> TempoTxEnv {
     Recovered::new_unchecked(
         TempoTxEnvelope::AA(AASigned::new_unhashed(
