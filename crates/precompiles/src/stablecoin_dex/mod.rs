@@ -7,6 +7,7 @@
 
 pub mod dispatch;
 pub mod error;
+mod legacy;
 pub mod order;
 pub mod orderbook;
 
@@ -1198,6 +1199,16 @@ impl StablecoinDEX {
         amount_out: u128,
         taker: Address,
     ) -> Result<u128> {
+        if !self.storage.spec().is_t12() {
+            return self.fill_orders_exact_out_legacy(
+                storage_credits,
+                book_key,
+                is_bid,
+                amount_out,
+                taker,
+            );
+        }
+
         let mut level = self.get_best_price_level(book_key, is_bid)?;
         let order = self.orders[level.links.head].read_in_book(book_key)?;
 
@@ -1216,6 +1227,16 @@ impl StablecoinDEX {
         amount_in: u128,
         taker: Address,
     ) -> Result<u128> {
+        if !self.storage.spec().is_t12() {
+            return self.fill_orders_exact_in_legacy(
+                storage_credits,
+                book_key,
+                is_bid,
+                amount_in,
+                taker,
+            );
+        }
+
         let mut level = self.get_best_price_level(book_key, is_bid)?;
         let order = self.orders[level.links.head].read_in_book(book_key)?;
 
@@ -6570,6 +6591,114 @@ mod tests {
     // ----------------------------------------------------------------------
     // Per-order quote vs swap parity (T12+)
     // ----------------------------------------------------------------------
+
+    #[test]
+    fn test_pre_t12_settlement_returns_order_side_output() -> eyre::Result<()> {
+        for spec in [
+            TempoHardfork::T0,
+            TempoHardfork::T5,
+            TempoHardfork::T8,
+            TempoHardfork::T11,
+        ] {
+            for is_bid in [false, true] {
+                for partial in [false, true] {
+                    with_fragmented_book(
+                        spec,
+                        &[(MIN_ORDER_AMOUNT, 100)],
+                        is_bid,
+                        |dex, base, quote, taker| {
+                            let book_key = compute_book_key(base, quote);
+                            let mut level = dex.get_best_price_level(book_key, is_bid)?;
+                            let mut order = dex.orders[level.links.head].read_in_book(book_key)?;
+                            let fill_amount = if partial {
+                                MIN_ORDER_AMOUNT / 2
+                            } else {
+                                MIN_ORDER_AMOUNT
+                            };
+                            let amount_out = if partial {
+                                dex.partial_fill_order_legacy(
+                                    &mut order,
+                                    &mut level,
+                                    fill_amount,
+                                    taker,
+                                )?
+                            } else {
+                                let (amount_out, next) = dex.fill_order_legacy(
+                                    &mut StorageCreditDeltas::default(),
+                                    book_key,
+                                    &mut order,
+                                    level,
+                                    taker,
+                                )?;
+                                assert!(next.is_none());
+                                amount_out
+                            };
+
+                            // Settlement, not the route-wide step, supplies the
+                            // historical taker output for both partial and full fills.
+                            let expected = if is_bid {
+                                fill_amount * 1_001 / 1_000
+                            } else {
+                                fill_amount
+                            };
+                            assert_eq!(amount_out, expected, "{spec:?}, {is_bid}, {partial}");
+                            Ok(())
+                        },
+                    )?;
+                }
+            }
+        }
+        Ok(())
+    }
+
+    #[test]
+    fn test_swap_execution_across_t12() -> eyre::Result<()> {
+        for spec in [
+            TempoHardfork::T0,
+            TempoHardfork::T5,
+            TempoHardfork::T8,
+            TempoHardfork::T11,
+            TempoHardfork::T12,
+            TempoHardfork::T13,
+        ] {
+            for is_bid in [false, true] {
+                for exact_in in [false, true] {
+                    for base_amount in [MIN_ORDER_AMOUNT * 3 / 2, MIN_ORDER_AMOUNT * 2] {
+                        with_fragmented_book(
+                            spec,
+                            &[(MIN_ORDER_AMOUNT, 100), (MIN_ORDER_AMOUNT, 100)],
+                            is_bid,
+                            |dex, base, quote, taker| {
+                                let quote_amount = base_amount * 1_001 / 1_000;
+                                let (token_in, token_out, amount_in, amount_out) = if is_bid {
+                                    (base, quote, base_amount, quote_amount)
+                                } else {
+                                    (quote, base, quote_amount, base_amount)
+                                };
+                                if exact_in {
+                                    assert_eq!(
+                                        dex.swap_exact_amount_in(
+                                            taker, token_in, token_out, amount_in, amount_out,
+                                        )?,
+                                        amount_out,
+                                    );
+                                } else {
+                                    assert_eq!(
+                                        dex.swap_exact_amount_out(
+                                            taker, token_in, token_out, amount_out, amount_in,
+                                        )?,
+                                        amount_in,
+                                    );
+                                }
+                                Ok(())
+                            },
+                        )?;
+                    }
+                }
+            }
+        }
+        Ok(())
+    }
 
     fn fund_and_approve(
         mut setup: TIP20Setup,
