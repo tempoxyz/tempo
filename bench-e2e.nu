@@ -1095,8 +1095,8 @@ def run-local-e2e-phase [run: record, ctx: record] {
         mkdir $lifecycle_dir
         ^python3 -c 'import os,sys,time; f=os.open(sys.argv[1],os.O_WRONLY|os.O_CREAT|os.O_EXCL,0o600); os.write(f,os.urandom(32)); os.close(f); print(time.monotonic_ns())' $lifecycle_key | str trim
     } else { "" }
-    let a_capture = if $ctx.lifecycle { $"RETH_LIFECYCLE_FILE=($lifecycle_dir)/a.jsonl RETH_LIFECYCLE_KEY_FILE=($lifecycle_key) RETH_LIFECYCLE_EPOCH_NS=($lifecycle_epoch) " } else { "" }
-    let b_capture = if $ctx.lifecycle { $"RETH_LIFECYCLE_FILE=($lifecycle_dir)/b.jsonl RETH_LIFECYCLE_KEY_FILE=($lifecycle_key) RETH_LIFECYCLE_EPOCH_NS=($lifecycle_epoch) " } else { "" }
+    let a_capture = if $ctx.lifecycle { $"RETH_LIFECYCLE_FILE=($lifecycle_dir)/a.jsonl TEMPO_LIFECYCLE_DETAIL=($ctx.lifecycle_detail) RETH_LIFECYCLE_KEY_FILE=($lifecycle_key) RETH_LIFECYCLE_EPOCH_NS=($lifecycle_epoch) " } else { "" }
+    let b_capture = if $ctx.lifecycle { $"RETH_LIFECYCLE_FILE=($lifecycle_dir)/b.jsonl TEMPO_LIFECYCLE_DETAIL=($ctx.lifecycle_detail) RETH_LIFECYCLE_KEY_FILE=($lifecycle_key) RETH_LIFECYCLE_EPOCH_NS=($lifecycle_epoch) " } else { "" }
 
     mark-schelk-dirty-at $ctx.a.state_path
     mark-schelk-dirty-at $ctx.b.state_path
@@ -1221,7 +1221,7 @@ def run-local-e2e-phase [run: record, ctx: record] {
     restore-system-tuning $tuning_state
     if $ctx.lifecycle {
         rm -f $lifecycle_key
-        let report = (^python3 contrib/bench/lifecycle/report.py --prune --out $lifecycle_report_dir --warmup $ctx.summary_warmup_blocks --window $"($lifecycle_dir)/window.json" $"($lifecycle_dir)/a.jsonl" $"($lifecycle_dir)/b.jsonl" | complete)
+        let report = (^python3 contrib/bench/lifecycle/report.py --prune --expected-detail $ctx.lifecycle_detail --out $lifecycle_report_dir --warmup $ctx.summary_warmup_blocks --window $"($lifecycle_dir)/window.json" $"($lifecycle_dir)/a.jsonl" $"($lifecycle_dir)/b.jsonl" | complete)
         print $report.stdout
         if $report.stderr != "" { print $report.stderr }
         if $report.exit_code != 0 { $phase_exit = 1 }
@@ -1422,6 +1422,7 @@ def "main e2e" [
     --feature-features: string = ""                     # Additional Cargo features for feature build (defaults to --features)
     --no-default-features                               # Disable Cargo default features
     --lifecycle                                         # Capture privacy-filtered block lifecycle artifacts on both validators
+    --lifecycle-detail: string = "full"                  # Capture detail: full or milestones (requires --lifecycle)
     --samply                                            # Profile validators with samply
     --samply-args: string = ""                          # Additional samply arguments
     --tracy: string = "off"                             # Tracy profiling: off, tracy
@@ -1453,6 +1454,9 @@ def "main e2e" [
     --valscope-dir: string = "../valscope"               # Path to the ValScope checkout
     --skip-summary                                       # Leave summary generation to a later workflow step
 ] {
+    if $lifecycle_detail not-in ["full" "milestones"] or (not $lifecycle and $lifecycle_detail != "full") {
+        error make {msg: "Lifecycle detail must be full or milestones; milestones requires --lifecycle"}
+    }
     if $lifecycle {
         if $samply or $tracy != "off" or $valscope_static_report {
             error make {msg: "Lifecycle mode requires other profilers and ValScope export to be disabled"}
@@ -1788,6 +1792,7 @@ def "main e2e" [
         samply: $samply
         samply_args: $samply_args_list
         lifecycle: $lifecycle
+        lifecycle_detail: $lifecycle_detail
         summary_warmup_blocks: $summary_warmup_blocks
         tracy: $tracy
         tracy_filter: $tracy_filter

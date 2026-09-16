@@ -37,6 +37,31 @@ Separate workflow jobs can land on different machines even with identical
 runner labels. Their operation counts can help identify work changes, but do
 not treat cross-runner timing differences as controlled optimization speedups.
 
+## Reduced instrumentation for optimization comparisons
+
+Select **profiling: lifecycle-milestones**, or pass
+`--lifecycle --lifecycle-detail milestones` directly, to retain coarse block and
+attempt milestones while disabling detailed proof, storage, transport and poll
+recording at the subscriber. The node reads `TEMPO_LIFECYCLE_DETAIL=milestones`;
+the default is `full`. Both revisions must support the requested detail mode.
+The harness checks recorder headers and rejects a silent fallback to full detail,
+unknown detail values or mixed modes across validators.
+
+This mode keeps the same source-timestamped first-backpressure stop, raw artifact
+pruning, pseudonyms, loss counters, telemetry suppression and private-only upload
+path. Reports explicitly identify the reduced coverage. Active wall time is
+unmeasured, not zero. Retained identity scopes describe tracing reference
+lifetimes; coarse phase durations come from milestones. Operation-completion
+events are disabled here because wrappers around excluded spans may otherwise
+refer to a retained ancestor. Full captures retain their existing completion
+semantics.
+
+Use the same milestone-capable binary for both settings of a proof parameter,
+then compare full-detail and milestone-only experiments separately. Counterbalance
+each comparison with `run-pairs: 2`. Reduced recording still has overhead, and
+changing capture mode can change scheduling: it is not a zero-observer baseline.
+Use full detail again when diagnosing a particular stall.
+
 ## Stop at first backpressure
 
 Lifecycle runs stop the load process group when either validator first enters

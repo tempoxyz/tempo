@@ -26,6 +26,42 @@ def fixture(path, lost=0, close=True):
 
 
 class ReportTests(unittest.TestCase):
+    def test_milestone_detail_preserves_population_and_marks_unmeasured_polls(self):
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory)/'a.jsonl'; fixture(path)
+            original = build([path], warmup=0, expected_detail='full')
+            records = [json.loads(line) for line in path.read_text().splitlines()]
+            records[0]['detail'] = 'milestones'
+            path.write_text('\n'.join(map(json.dumps, records)))
+            out = Path(directory)/'report'
+            reduced = write_report([path], out, warmup=0, expected_detail='milestones')
+            self.assertFalse(reduced['bad_capture'])
+            self.assertEqual(reduced['blocks'], original['blocks'])
+            self.assertEqual(reduced['attempt_details'], original['attempt_details'])
+            self.assertEqual(reduced['representatives'], original['representatives'])
+            self.assertTrue(all(s['active_ms'] is None for s in reduced['spans']))
+            self.assertIn('Milestone-only capture', (out/'index.html').read_text())
+            self.assertIn('not recorded in milestone-only capture', (out/'block-50.html').read_text())
+            self.assertIn('not recorded in milestone-only capture', (out/'perfetto-p50.json').read_text())
+
+    def test_wrong_unknown_or_mixed_detail_disables_percentiles(self):
+        with tempfile.TemporaryDirectory() as directory:
+            a = Path(directory)/'a.jsonl'; fixture(a)
+            records = [json.loads(line) for line in a.read_text().splitlines()]
+            # Legacy recorder headers are full, never silently accepted as milestones.
+            self.assertTrue(build([a], expected_detail='milestones')['bad_capture'])
+            self.assertFalse(build([a], expected_detail='full')['bad_capture'])
+            for detail in ('unknown', 'milestones'):
+                b = Path(directory)/'b.jsonl'
+                b.write_text('\n'.join(map(json.dumps, [dict(records[0], detail=detail), *records[1:]])))
+                result = build([a, b], warmup=0)
+                self.assertTrue(result['bad_capture'])
+                self.assertFalse(result['detail_valid'])
+                self.assertTrue(all(v is None for v in result['representatives'].values()))
+            records[0]['detail'] = 'unknown'
+            a.write_text('\n'.join(map(json.dumps, records)))
+            self.assertTrue(build([a])['bad_capture'])
+
     def test_explicit_completion_precedes_retained_child_close(self):
         records = [
             {'type':'header','schema':1},
