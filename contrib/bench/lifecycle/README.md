@@ -3,12 +3,45 @@
 Select **profiling: lifecycle** in the `bench-e2e` workflow. This runs the feature
 revision on both local validators and uploads the `block-lifecycle` artifact.
 Extract the artifact and open a phase's `index.html`. The viewer works offline.
-`perfetto.json` can also be opened in Perfetto.
+Open `perfetto-p50.json`, `perfetto-p90.json` or `perfetto-p99.json` in
+[Perfetto](https://ui.perfetto.dev) for a small trace of an actual representative
+block. `perfetto.json` contains the full capture.
 
 The feature revision must include the pinned Reth capture layer and Commonware
 instrumentation. To run directly, use `--lifecycle --run-side feature`. Other
 profilers and ValScope publication are disabled. The workflow uploads only the
 lifecycle directory, not ordinary benchmark logs/reports.
+
+## Repair or regenerate an existing Perfetto export
+
+The old exporter created one thread track per span, which could overwhelm the
+Perfetto UI. With the latest PR checkout, regenerate from the `lifecycle.json`
+you already downloaded; there is no need to rebuild the node or rerun the bench:
+
+```sh
+python3 contrib/bench/lifecycle/perfetto.py report/lifecycle.json --out report
+```
+
+For any individual report-local block number:
+
+```sh
+python3 contrib/bench/lifecycle/perfetto.py report/lifecycle.json --out report --block 200
+```
+
+Choose **Open trace file** in Perfetto and select the newly generated JSON file.
+Start with a percentile file for a focused view. Full and focused exports use the
+same capture clock. Focused files contain only operations attributed to that
+block, its milestones, and explicitly labeled frame transfers overlapping its
+proposal-to-finalization window; context frames do not acquire a block identity.
+
+Visual lanes are reused by validator, subsystem and interval kind. Their count
+is bounded by simultaneous intervals, not the total number of operations. Each
+lane has non-overlapping intervals, so crossing async operations remain intact
+without being misrepresented as a synchronous call stack. Lane names explicitly
+say `virtual`: they represent elapsed wall time, not real threads or CPU usage.
+Original span/parent IDs and the creation-thread ordinal remain inspectable as
+arguments. Aggregate envelopes have separate tracks and retain their call counts
+and summed call time; their envelopes are not continuous execution.
 
 ## Population and endpoints
 
