@@ -336,6 +336,17 @@ where
         Ok(self)
     }
 
+    /// Confirm only a new block retained in our owned archive after eviction.
+    /// EL coverage can advance independently and cannot prove this insertion.
+    async fn put_confirmed(mut self, block: Self::Block) -> Result<(Self, bool), Self::Error> {
+        let height = block.height().get();
+        let existed = archive::Archive::has(&self.prunable, Identifier::Index(height)).await?;
+        self = self.put(block).await?;
+        let confirmed =
+            !existed && archive::Archive::has(&self.prunable, Identifier::Index(height)).await?;
+        Ok((self, confirmed))
+    }
+
     async fn sync(mut self) -> Result<Self, Self::Error> {
         self.prunable = archive::Archive::sync(self.prunable).await?;
         Ok(self)
