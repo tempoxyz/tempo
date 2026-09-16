@@ -12,7 +12,6 @@
 
 use std::{num::NonZeroUsize, sync::Arc, time::Duration};
 
-use alloy_consensus::{BlockHeader as _, Sealable as _};
 use commonware_broadcast::buffered;
 use commonware_consensus::{
     Reporters,
@@ -25,8 +24,8 @@ use commonware_runtime::{
     buffer::paged::CacheRef, spawn_cell,
 };
 use commonware_utils::NZUsize;
-use eyre::{WrapErr as _, ensure, eyre};
-use futures::{FutureExt as _, StreamExt as _, stream::FuturesUnordered};
+use eyre::{WrapErr as _, eyre};
+use futures::{StreamExt as _, stream::FuturesUnordered};
 use rand_core::{CryptoRng, Rng};
 use reth_engine_primitives::ConsensusEngineHandle;
 use reth_network_api::BlockDownloaderProvider as _;
@@ -125,8 +124,6 @@ impl<TUpstream> Config<TUpstream> {
             actor: marshal_actor,
             mailbox: marshal_mailbox,
             finalized_floor: last_finalized_height,
-            finalized_tip,
-            finalized_tip_header,
             ..
         } = alias::marshal::init(
             context.child("marshal"),
@@ -195,22 +192,6 @@ impl<TUpstream> Config<TUpstream> {
                 marshal: marshal_mailbox.clone(),
                 epoch_strategy: epoch_strategy.clone(),
                 floor: last_finalized_height,
-                finalized_tip: finalized_tip_header.map(|header| {
-                    async move {
-                        let header = header.await?;
-                        let (_, height, digest) = finalized_tip;
-                        ensure!(
-                            header.number() == height.get(),
-                            "finalized tip header number `{}` does not match archive height `{height}`",
-                            header.number(),
-                        );
-                        ensure!(
-                            Digest(header.hash_slow()) == digest,
-                            "finalized tip header hash does not match certificate payload at height `{height}`",
-                        );
-                        Ok(header)
-                    }.boxed()
-                }),
                 fcu_heartbeat_interval: self.fcu_heartbeat_interval,
             },
         );

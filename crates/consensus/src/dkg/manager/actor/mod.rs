@@ -128,6 +128,9 @@ pub(crate) struct Actor<
     /// The runtime context passed in when constructing the actor.
     context: ContextCell<TContext>,
 
+    /// Opened during initialization, before authenticating the tip. Taken when the actor starts.
+    storage: Option<state::Unverified<TContext>>,
+
     /// The channel over which the actor will receive messages.
     mailbox: mpsc::UnboundedReceiver<super::Message>,
 
@@ -153,12 +156,32 @@ where
         context: TContext,
         mailbox: mpsc::UnboundedReceiver<super::ingress::Message>,
     ) -> eyre::Result<Self> {
-        let context = ContextCell::new(context);
+        let mut context = ContextCell::new(context);
         let metrics = Metrics::init(context.as_present());
+
+        let storage = state::builder()
+            .partition_prefix(&config.partition_prefix)
+            .init_unverified(context.child("state"))
+            .await?;
+
+        // Authenticate with the original persisted identity before healing can
+        // replace stale state with an outcome supplied by the snapshot.
+        startup::verify_finalized_tip(
+            &mut *context,
+            &config.network_identity,
+            storage.state(),
+            config
+                .finalized_tip
+                .as_ref()
+                .map(|(height, certificate)| (*height, certificate)),
+            config.last_finalized_height,
+            &config.scheme_provider,
+        )?;
 
         Ok(Self {
             config,
             context,
+            storage: Some(storage),
             mailbox,
             metrics,
             pending_finalized_blocks: FuturesOrdered::new(),
@@ -184,48 +207,10 @@ where
     ) {
         // NOTE: The instrumented fns emits on error events
 
-        let Ok(opened) = state::builder()
-            .partition_prefix(&self.config.partition_prefix)
-            .init_unverified(self.context.child("state"))
-            .await
-        else {
-            return;
-        };
-
-        // Marshal must be running to resolve a tip missing from finalized storage.
-        // Epoch readiness remains withheld until both header and certificate validate.
-        let finalized_tip = match (
-            self.config.finalized_tip.take(),
-            self.config.finalized_tip_header.take(),
-        ) {
-            (Some((height, certificate)), Some(header)) => match header.await {
-                Ok(header) => Some((height, certificate, header)),
-                Err(error) => {
-                    warn!(%error, "failed resolving finalized tip");
-                    return;
-                }
-            },
-            (None, None) => None,
-            _ => panic!("finalized tip certificate and header future must be provided together"),
-        };
-
-        // Check against the original persisted identity before healing can
-        // replace stale state with an outcome supplied by the snapshot.
-        if startup::verify_finalized_tip(
-            &mut *self.context,
-            &self.config.epoch_strategy,
-            &self.config.network_identity,
-            opened.state(),
-            finalized_tip
-                .as_ref()
-                .map(|(height, certificate, header)| (*height, certificate, header)),
-            self.config.last_finalized_height,
-        )
-        .is_err()
-        {
-            return;
-        }
-
+        let opened = self
+            .storage
+            .take()
+            .expect("storage opened during initialization");
         let Ok(mut storage) = self.heal(opened).await else {
             return;
         };

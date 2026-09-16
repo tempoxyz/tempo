@@ -17,7 +17,7 @@ use commonware_consensus::{
 use commonware_cryptography::{bls12381::primitives::variant::MinSig, ed25519::PublicKey};
 use commonware_runtime::{Clock, Pacer, Spawner};
 use eyre::OptionExt as _;
-use futures::{channel::mpsc, future::BoxFuture};
+use futures::channel::mpsc;
 use reth_engine_primitives::ConsensusEngineHandle;
 use reth_ethereum::chainspec::EthChainSpec as _;
 use reth_primitives_traits::{NodePrimitives, SealedHeader};
@@ -48,8 +48,6 @@ pub(crate) struct Config<P, E, M = crate::alias::marshal::Mailbox> {
     pub(crate) marshal: M,
     pub(crate) epoch_strategy: FixedEpocher,
     pub(crate) floor: Height,
-    /// Bind the startup archive tip to its header before advancing execution.
-    pub(crate) finalized_tip: Option<BoxFuture<'static, eyre::Result<TempoHeader>>>,
     pub(crate) fcu_heartbeat_interval: std::time::Duration,
 }
 

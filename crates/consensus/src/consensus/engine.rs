@@ -7,8 +7,7 @@ use std::{num::NonZeroUsize, sync::Arc, time::Duration};
 use commonware_broadcast::buffered;
 use commonware_consensus::{
     Reporters, marshal,
-    simplex::scheme::bls12381_threshold::vrf::Scheme,
-    types::{Epoch, FixedEpocher, ViewDelta},
+    types::{FixedEpocher, ViewDelta},
 };
 use commonware_cryptography::{
     Signer as _,
@@ -144,11 +143,6 @@ where
         );
 
         let scheme_provider = SchemeProvider::new();
-        // Pin the binary's identity before marshal or any actor registers an epoch scheme.
-        scheme_provider.register(
-            Epoch::new(self.network_identity.from_epoch),
-            Scheme::certificate_verifier(config::NAMESPACE, self.network_identity.identity),
-        );
 
         let alias::marshal::Initialized {
             actor: marshal,
@@ -156,7 +150,6 @@ where
             finalized_floor,
             finalized_tip,
             finalized_tip_certificate,
-            finalized_tip_header,
         } = alias::marshal::init(
             context.child("marshal"),
             page_cache_ref.clone(),
@@ -296,8 +289,8 @@ where
                 initial_share: self.share.clone(),
                 finalized_tip: finalized_tip_certificate
                     .map(|certificate| (finalized_tip.1, certificate)),
-                finalized_tip_header,
                 network_identity: self.network_identity,
+                scheme_provider,
                 last_finalized_height: finalized_floor,
                 mailbox_size: self.mailbox_size,
                 marshal: marshal_mailbox,
@@ -520,8 +513,6 @@ where
             config::DKG_CHANNEL_IDENT,
             self.max_message_size,
         );
-        let readiness = self.executor_mailbox.readiness_reporter();
-
         let peer_manager = self.peer_manager.start();
 
         let broadcast = self.broadcast.start(broadcast_channel);
@@ -552,12 +543,9 @@ where
             resolver,
         );
 
-        let epoch_manager = self.epoch_manager.start(
-            votes_channel,
-            certificates_channel,
-            resolver_channel,
-            readiness,
-        );
+        let epoch_manager =
+            self.epoch_manager
+                .start(votes_channel, certificates_channel, resolver_channel);
 
         let feed = self.feed.start();
         let gossip_task = self.gossip_actor.map(crate::gossip::Actor::start);

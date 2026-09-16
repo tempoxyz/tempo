@@ -2,10 +2,8 @@
 
 use std::{
     collections::BTreeMap,
-    future::Future,
     io,
     num::{NonZeroU64, NonZeroUsize},
-    pin::Pin,
     sync::{
         Arc, Mutex,
         atomic::{AtomicBool, AtomicUsize, Ordering},
@@ -14,6 +12,7 @@ use std::{
 };
 
 use crate::{
+    epoch::SchemeProvider,
     gossip::Certificate,
     test_utils::{dkg_fixture, make_certificate},
 };
@@ -58,9 +57,11 @@ use tempo_primitives::{BlockBody, TempoHeader};
 
 use super::super::{
     super::{Config, Mailbox, init},
-    Block, Digest, EpochManager, ExecutionLayer, Marshal, State,
+    Actor, Block, Digest, EpochManager, ExecutionLayer, Marshal, State,
     state::{self, Round, ShareState},
 };
+
+type TestActor = Actor<Context, StubExecutionProvider, StubMarshal, StubEpochManager>;
 
 pub(super) struct Harness {
     context: Context,
@@ -70,7 +71,7 @@ pub(super) struct Harness {
     last_finalized_height: Height,
     initial_state: Option<State>,
     network_identity: NetworkIdentity,
-    finalized_tip: Option<(Height, Certificate, TempoHeader)>,
+    finalized_tip: Option<(Height, Certificate)>,
     storage: Option<state::Storage<Context>>,
     mailbox: Option<Mailbox>,
     handle: Option<Handle<()>>,
@@ -79,6 +80,7 @@ pub(super) struct Harness {
     pub(super) execution: StubExecutionProvider,
     pub(super) marshal: StubMarshal,
     pub(super) epoch_manager: StubEpochManager,
+    pub(super) scheme_provider: SchemeProvider,
 }
 
 enum InitialState {
@@ -95,7 +97,7 @@ pub(super) struct HarnessBuilder {
     last_finalized_height: Height,
     initial_state: InitialState,
     network_identity: Option<NetworkIdentity>,
-    finalized_tip: Option<(Height, Certificate, TempoHeader)>,
+    finalized_tip: Option<(Height, Certificate)>,
     execution: StubExecutionProvider,
     marshal: StubMarshal,
     epoch_manager: StubEpochManager,
@@ -133,7 +135,7 @@ impl HarnessBuilder {
     pub(super) fn startup(
         mut self,
         identity: NetworkIdentity,
-        tip: Option<(Height, Certificate, TempoHeader)>,
+        tip: Option<(Height, Certificate)>,
     ) -> Self {
         self.network_identity = Some(identity);
         self.finalized_tip = tip;
@@ -176,7 +178,7 @@ impl HarnessBuilder {
                 let header = header(self.last_finalized_height);
                 let certificate =
                     make_certificate(Digest(header.hash_slow()), tip_epoch, 1, &fixture.schemes);
-                (self.last_finalized_height, certificate, header)
+                (self.last_finalized_height, certificate)
             });
             (
                 NetworkIdentity {
@@ -217,6 +219,7 @@ impl HarnessBuilder {
             execution: self.execution,
             marshal: self.marshal,
             epoch_manager: self.epoch_manager,
+            scheme_provider: SchemeProvider::new(),
         }
     }
 }
@@ -257,23 +260,10 @@ impl Harness {
             .expect("DKG storage is not open while the actor is running")
     }
 
-    pub(super) async fn start(&mut self) {
-        let tip: Option<Pin<Box<dyn Future<Output = eyre::Result<TempoHeader>> + Send + Sync>>> =
-            self.finalized_tip
-                .clone()
-                .map(|(_, _, header)| Box::pin(std::future::ready(Ok(header))) as _);
-        self.start_with_tip(tip).await;
-    }
-
-    pub(super) async fn start_with_tip(
-        &mut self,
-        finalized_tip_header: Option<
-            Pin<Box<dyn Future<Output = eyre::Result<TempoHeader>> + Send + Sync>>,
-        >,
-    ) {
+    pub(super) async fn init(&mut self) -> eyre::Result<(TestActor, Mailbox)> {
         assert!(self.handle.is_none(), "DKG actor is already running");
         drop(self.storage.take());
-        let (actor, mailbox) = init(
+        init(
             self.context.child("actor"),
             Config {
                 epoch_strategy: self.epoch_strategy.clone(),
@@ -283,20 +273,19 @@ impl Harness {
                 mailbox_size: NonZeroUsize::new(1).unwrap(),
                 marshal: self.marshal.clone(),
                 last_finalized_height: self.last_finalized_height,
-                finalized_tip: self
-                    .finalized_tip
-                    .as_ref()
-                    .map(|(height, certificate, _)| (*height, certificate.clone())),
-                finalized_tip_header,
+                finalized_tip: self.finalized_tip.clone(),
                 network_identity: self.network_identity.clone(),
+                scheme_provider: self.scheme_provider.clone(),
                 partition_prefix: self.partition_prefix.clone(),
                 execution_node: self.execution.clone(),
                 initial_share: None,
             },
         )
         .await
-        .unwrap();
+    }
 
+    pub(super) async fn start(&mut self) {
+        let (actor, mailbox) = self.init().await.unwrap();
         self.mailbox = Some(mailbox);
         self.handle = Some(match &self.network {
             Some(network) => actor.start(network.register(self.identity.public_key())),
