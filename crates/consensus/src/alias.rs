@@ -133,6 +133,7 @@ pub(crate) mod marshal {
             &context,
             &config.partition_prefix,
             page_cache.clone(),
+            &config.epoch_strategy,
         )
         .await
         .wrap_err("failed to initialize finalizations by height archive")?;
