@@ -44,7 +44,7 @@ use tempo_dkg_onchain_artifacts::OnchainDkgOutcome;
 use tempo_precompiles::validator_config_v2::{VALIDATOR_NS_ADD, VALIDATOR_NS_ROTATE};
 use tempo_validator_config::ValidatorConfig;
 
-use crate::{init_state, p2p_proxy::P2pProxyArgs, regenesis};
+use crate::{init_state, p2p_proxy::P2pProxyArgs, regenesis, shadow_replay};
 
 fn get_env(key: &str) -> eyre::Result<String> {
     std::env::var(key).wrap_err_with(|| format!("failed reading environment variable `{key}`"))
@@ -79,6 +79,9 @@ pub enum TempoSubcommand {
 
     /// Patch a virgin block-0 database to use a new genesis header.
     Regenesis(Box<regenesis::Regenesis<TempoChainSpecParser>>),
+
+    /// Replay historical canonical blocks under candidate hardfork rules.
+    ShadowReplay(Box<shadow_replay::ShadowReplay>),
 
     /// Install an extension (e.g., `tempo add wallet`).
     #[command(
@@ -126,6 +129,11 @@ impl ExtendedCommand for TempoSubcommand {
                 runner.run_blocking_until_ctrl_c(
                     cmd.execute::<tempo_node::node::TempoNode>(runtime),
                 )?;
+                Ok(())
+            }
+            Self::ShadowReplay(cmd) => {
+                let runtime = runner.runtime();
+                runner.run_blocking_until_ctrl_c(cmd.execute(runtime))?;
                 Ok(())
             }
             Self::Add(_) | Self::Update(_) | Self::Remove(_) | Self::List(_) => {

@@ -10,10 +10,12 @@
 //!
 //! Each execution opens its own parent-state provider and keeps writes in a private in-memory
 //! overlay. Overlays are discarded after collecting receipt observations, outputs, fee provenance,
-//! and net state transitions; they are never persisted, submitted to forkchoice, shared between
+//! and net state transitions. They are never persisted, submitted to forkchoice, shared between
 //! executions, or reused by later blocks.
 //!
-//! Re-execution must complete and reproduce canonical receipts before shadow evidence is analyzed.
+//! Control re-execution must reproduce canonical receipts. Failure or divergence indicates a
+//! non-canonical STF and terminates live replay. Shadow findings never stop replay.
+//!
 //! Analysis compares completed pre-block, transaction, and post-block boundaries in order.
 //! It compares net committed effects at each boundary—not complete state equality, write history,
 //! or effects under identical evolving prefixes. A stopping state difference ends analysis after
@@ -50,6 +52,13 @@ use tempo_evm::{TempoEvmConfig, TempoTxResult};
 use tempo_primitives::{Block, TempoPrimitives, TempoReceipt};
 use tokio::sync::broadcast::error::RecvError;
 
+/// Result of replaying one canonical block under candidate hardfork rules.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum ReplayOutcome {
+    Match,
+    Findings,
+}
+
 /// Replays canonical blocks under candidate rules without changing canonical state.
 #[derive(Debug)]
 pub struct ShadowReplayer<P> {
@@ -57,6 +66,19 @@ pub struct ShadowReplayer<P> {
     real_config: TempoEvmConfig,
     shadow_config: TempoEvmConfig,
     shadow_hardfork: TempoHardfork,
+}
+
+impl<P: ChainSpecProvider<ChainSpec = TempoChainSpec>> ShadowReplayer<P> {
+    pub fn new(provider: P, shadow_hardfork: TempoHardfork) -> Self {
+        let canonical_spec = provider.chain_spec();
+        let shadow_spec = Arc::new(shadow_spec(&canonical_spec, shadow_hardfork));
+        Self {
+            real_config: TempoEvmConfig::new(canonical_spec),
+            shadow_config: TempoEvmConfig::new(shadow_spec),
+            provider,
+            shadow_hardfork,
+        }
+    }
 }
 
 impl<P> ShadowReplayer<P>
@@ -68,24 +90,15 @@ where
         + Sync
         + 'static,
 {
-    pub fn new(provider: P, shadow_hardfork: TempoHardfork) -> Self {
-        let canonical_spec = provider.chain_spec();
-        let shadow_spec = Arc::new(shadow_spec(&canonical_spec, shadow_hardfork));
-        Self {
-            real_config: TempoEvmConfig::new(canonical_spec),
-            shadow_config: TempoEvmConfig::new(shadow_spec),
-            provider,
-            shadow_hardfork,
-        }
-    }
-
     /// Spawns the replay task. Lagged notifications are reported rather than backfilled.
+    ///
+    /// Runs as a critical task: a control-arm failure panics the task, which shuts the node down.
     pub fn spawn(self, executor: TaskExecutor) {
         let mut notifs = self.provider.subscribe_to_canonical_state();
         let hardfork = self.shadow_hardfork;
         let replayer = Arc::new(self);
         let worker = executor.clone();
-        executor.spawn_task(async move {
+        executor.spawn_critical_task("shadow replay", async move {
             info!(target: "shadow_replay", %hardfork, "Started counterfactual shadow replay");
             loop {
                 let notif = match notifs.recv().await {
@@ -147,21 +160,17 @@ where
 
                     // Entered only after the await so the span never leaks across a yield point.
                     let _guard = span.enter();
-                    let kind = match result {
-                        Ok(Ok(())) => {
+                    let err = match result {
+                        Ok(Ok(_)) => {
                             metrics::gauge!("shadow_replay_latest_completed_block").set(number as f64);
-                            "success"
+                            metrics::counter!("tempo_shadow_replay_blocks_total").increment(1);
+                            continue;
                         }
-                        Ok(Err(err)) => {
-                            error!(target: "shadow_replay", %err, "Shadow replay failed");
-                            "error"
-                        }
-                        Err(err) => {
-                            error!(target: "shadow_replay", %err, "Shadow replay worker panicked");
-                            "panic"
-                        }
+                        Ok(Err(err)) => err,
+                        Err(err) => format!("shadow replay worker panicked: {err}"),
                     };
-                    metrics::counter!("tempo_shadow_replay_blocks_total", "result" => kind).increment(1);
+                    error!(target: "shadow_replay", %err, "Control re-execution diverged from canonical chain");
+                    panic!("shadow replay control failure at block {number}: {err}");
                 }
             }
         });
@@ -169,11 +178,13 @@ where
 }
 
 impl<P: StateProviderFactory + Sync> ShadowReplayer<P> {
-    fn replay(
+    /// Replays a canonical block under both rule sets.
+    /// IMPORTANT: An error means the control arm can't be trusted. Callers must treat it as fatal.
+    pub fn replay(
         &self,
         block: &RecoveredBlock<Block>,
         receipts: &[TempoReceipt],
-    ) -> Result<(), String> {
+    ) -> Result<ReplayOutcome, String> {
         let (real, shadow) = std::thread::scope(|scope| {
             let shadow = scope.spawn(|| self.execute(&self.shadow_config, block));
             let real = self.execute(&self.real_config, block);
@@ -194,7 +205,7 @@ impl<P: StateProviderFactory + Sync> ShadowReplayer<P> {
         let report = Report::analyze(&real, &shadow);
         if report.findings() == 0 && shadow.failure.is_none() {
             debug!(target:"shadow_replay", "shadow replay match");
-            return Ok(());
+            return Ok(ReplayOutcome::Match);
         }
 
         metrics::counter!("tempo_shadow_replay_findings_total","kind"=>"divergence").increment(1);
@@ -212,9 +223,9 @@ impl<P: StateProviderFactory + Sync> ShadowReplayer<P> {
             failure_after_cutoff=after_cutoff,
             real_completed_txs=real.txs.len()
             ,shadow_completed_txs=shadow.txs.len(),
-            "shadow shadow replay findings"
+            "shadow replay findings"
         );
-        Ok(())
+        Ok(ReplayOutcome::Findings)
     }
 
     /// Executes `block` on top of its canonical parent in an isolated, disposable overlay.
@@ -336,7 +347,7 @@ struct Failure {
 
 /// Completed boundary evidence and, when present, the first execution failure.
 ///
-/// `None` for pre/post-block state means that boundary did not complete; `Some(empty)` means it
+/// `None` for pre/post-block state means that boundary did not complete. `Some(empty)` means it
 /// completed without a net recorded effect.
 #[derive(Debug, Default)]
 struct Evidence {
