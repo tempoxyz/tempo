@@ -8,8 +8,7 @@ import subprocess
 import tempfile
 import zipfile
 
-ARTIFACT_ID = 10445430036
-RUN_ID = 35087336997
+RUN_ID = int(os.environ.get("BENCH_RUN_ID", "35087336997"))
 PREFIXES = (
     "reth_storage_providers_database_save_blocks",
     "reth_consensus_engine_persistence_save_blocks",
@@ -20,7 +19,13 @@ PREFIXES = (
 
 
 def main():
-    api = f"repos/tempoxyz/tempo/actions/artifacts/{ARTIFACT_ID}"
+    artifacts = json.loads(subprocess.check_output(
+        ["gh", "api", f"repos/tempoxyz/tempo/actions/runs/{RUN_ID}/artifacts"], text=True))
+    matches = [item for item in artifacts["artifacts"]
+               if item["name"] == "tempo-bench-results" and not item["expired"]]
+    assert len(matches) == 1, "Expected exactly one live benchmark artifact"
+    artifact_id = matches[0]["id"]
+    api = f"repos/tempoxyz/tempo/actions/artifacts/{artifact_id}"
     metadata = json.loads(subprocess.check_output(["gh", "api", api], text=True))
     assert metadata["workflow_run"]["id"] == RUN_ID
     assert metadata["name"] == "tempo-bench-results" and not metadata["expired"]
@@ -32,10 +37,18 @@ def main():
         with archive.open("rb") as source:
             digest = hashlib.file_digest(source, "sha256").hexdigest()
         assert metadata["digest"] == "sha256:" + digest
-        result = {"run_id": RUN_ID, "artifact_id": ARTIFACT_ID, "archive_sha256": digest,
+        result = {"run_id": RUN_ID, "artifact_id": artifact_id, "archive_sha256": digest,
                   "note": "Counter deltas use first/last samples after five warmup blocks. Gauge min/max are sampled observations. Preserve node labels; never sum stacked block-device counters.",
                   "phases": {}}
         with zipfile.ZipFile(archive) as zipped:
+            output_dir = Path("benchmark-evidence")
+            output_dir.mkdir(exist_ok=True)
+            for name in zipped.namelist():
+                filename = Path(name).name
+                if (filename in {"summary.json", "summary.md", "log-summary.json"}
+                        or filename.startswith(("cache-", "phase-range-", "report-"))
+                        and filename.endswith(".json")):
+                    (output_dir / filename).write_bytes(zipped.read(name))
             entries = [name for name in zipped.namelist() if name.endswith(".samples.ndjson.gz")]
             assert len(entries) == 6
             for entry in sorted(entries):
