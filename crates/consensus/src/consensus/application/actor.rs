@@ -134,7 +134,7 @@ where
     }
 
     /// Runs the actor until it is externally stopped.
-    async fn run_until_stopped(self, dkg_manager: crate::dkg::manager::Mailbox) {
+    async fn run_until_stopped(self, dkg_manager: crate::dkg::Mailbox) {
         let Self {
             context,
             mailbox,
@@ -156,10 +156,7 @@ where
         .await
     }
 
-    pub(in crate::consensus) fn start(
-        mut self,
-        dkg_manager: crate::dkg::manager::Mailbox,
-    ) -> Handle<()> {
+    pub(in crate::consensus) fn start(mut self, dkg_manager: crate::dkg::Mailbox) -> Handle<()> {
         spawn_cell!(self.context, self.run_until_stopped(dkg_manager))
     }
 }
@@ -776,10 +773,7 @@ impl Inner<Uninit> {
     /// 1. reading the last finalized digest from the consensus marshaller.
     /// 2. starting the canonical chain engine and storing its handle.
     #[instrument(skip_all, err)]
-    async fn into_initialized(
-        self,
-        dkg_manager: crate::dkg::manager::Mailbox,
-    ) -> eyre::Result<Inner<Init>> {
+    async fn into_initialized(self, dkg_manager: crate::dkg::Mailbox) -> eyre::Result<Inner<Init>> {
         let initialized = Inner {
             public_key: self.public_key,
             epoch_strategy: self.epoch_strategy,
@@ -807,7 +801,7 @@ pub(in crate::consensus) struct Uninit(());
 /// Carries the runtime initialized state of the application.
 #[derive(Clone, Debug)]
 struct Init {
-    dkg_manager: crate::dkg::manager::Mailbox,
+    dkg_manager: crate::dkg::Mailbox,
     /// The communication channel to the executor agent.
     executor: crate::executor::Mailbox,
 }
@@ -863,7 +857,7 @@ async fn verify_header(
     block: &Block,
     parent: (View, Digest),
     round: Round,
-    dkg_manager: &crate::dkg::manager::Mailbox,
+    dkg_manager: &crate::dkg::Mailbox,
     epoch_strategy: &FixedEpocher,
     proposer: &PublicKey,
 ) -> eyre::Result<()> {
