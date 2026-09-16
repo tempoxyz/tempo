@@ -21,6 +21,3 @@ Keep other workloads and scalar run metadata unchanged. Do not send the expanded
 keep the full spec as txgen input and in benchmark artifacts. The multi-region
 sender in `tempoxyz/tempo-multi-region-benchmark` must adopt the same contract.
 Historical `mix` arrays remain readable by the companion dashboard change.
-
-Run `nu --no-config-file contrib/bench/txgen/workload-metadata-test.nu` to verify
-aggregation, bounded output, large YAML integers, and the non-public-mix bypass.
