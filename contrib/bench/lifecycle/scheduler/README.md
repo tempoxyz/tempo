@@ -33,3 +33,8 @@ Interpret the states conservatively:
 - Thread totals and overlapping scopes are not additive critical-path time. This diagnostic distinguishes scheduling states, not the reason for a blocked wait or an optimization opportunity.
 
 All ordinary lifecycle privacy, stop-at-first-backpressure, snapshot-reset and artifact-isolation paths remain active. No production scheduling, persistence, chunk-size, consensus or durability behavior is changed.
+The release marker check accepts a direct call or an x86-64 RIP-relative indirect
+call through a GOT slot whose ELF relocation points exactly to the marker. An
+unused marker symbol alone does not pass. Startup failures expose only fixed
+categories (`configuration`, `capability`, `marker`, `capture`, `cutoff`, `decode`,
+`publish`); private tool output and commands are never printed.

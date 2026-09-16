@@ -5,8 +5,8 @@ from pathlib import Path
 import tempfile
 import unittest
 
-from diagnostic import decode
-from runtime import final_cutoff, program_for
+from diagnostic import decode, marker_call, marker_slots
+from runtime import failure_summary, final_cutoff, program_for
 from test_diagnostic import fixture, stream
 # Avoid confusing this module with the parent lifecycle report module.
 spec = importlib.util.spec_from_file_location('scheduler_report', Path(__file__).with_name('report.py'))
@@ -22,6 +22,27 @@ def example(process=1):
 
 
 class RuntimeTests(unittest.TestCase):
+    def test_marker_verifies_direct_or_exact_relocated_indirect_call(self):
+        symbols = '00001000 T marker\n00002000 T other\n'
+        relocations = '00003000 00000008 R_X86_64_RELATIVE 1000\n00004000 00000008 R_X86_64_RELATIVE 2000\n'
+        slots = marker_slots(symbols, relocations, 'marker')
+        self.assertEqual(slots, {0x3000})
+        self.assertTrue(marker_call(' call 1000 <marker>', 'marker', slots))
+        self.assertTrue(marker_call(' call *0x42(%rip) # 3000 <_GLOBAL_OFFSET_TABLE_+0x18>', 'marker', slots))
+        for line in ('1000 <marker>:', ' call 2000 <other>', ' call *0x42(%rip) # 4000', ' mov 0x42(%rip),%rax # 3000', ' call *%rax'):
+            with self.subTest(line=line):
+                self.assertFalse(marker_call(line, 'marker', slots))
+        self.assertEqual(marker_slots(symbols, relocations, 'missing'), set())
+
+    def test_failure_summary_never_echoes_untrusted_contents(self):
+        with tempfile.TemporaryDirectory() as name:
+            directory = Path(name)
+            (directory/'scheduler-a.failed').write_text('marker\n')
+            (directory/'scheduler-b.failed').write_text('native identity or arbitrary command\n')
+            self.assertEqual(failure_summary(directory), [
+                'Scheduler validator a: startup/capture failure category marker',
+                'Scheduler validator b: startup/capture failure category unavailable'])
+
     def test_source_cutoff_uses_earliest_final_stream_boundary(self):
         with tempfile.TemporaryDirectory() as name:
             directory = Path(name)
