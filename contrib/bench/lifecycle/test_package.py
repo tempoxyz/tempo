@@ -1,0 +1,119 @@
+import copy
+from collections import Counter
+import json
+from pathlib import Path
+import re
+import tempfile
+import unittest
+
+from perfetto import trace_events
+from report import build
+from report_package import write_package
+from test_report import fixture
+
+
+def embedded(path):
+    return json.loads(re.search(r'<script type="application/json" id="data">(.*?)</script>', path.read_text(), re.S)[1])
+
+
+def identity(event):
+    return json.dumps({k:v for k,v in event.items() if k != 'tid'}, sort_keys=True)
+
+
+class PackageTests(unittest.TestCase):
+    def capture(self, directory, cutoff=None):
+        path = Path(directory)/'a.jsonl'
+        fixture(path)
+        return build([path], warmup=5, window={'backpressure': {'ts': cutoff, 'node':'Validator A'}} if cutoff else None)
+
+    def test_context_chunks_preserve_every_interval_marker_and_source_data(self):
+        with tempfile.TemporaryDirectory() as directory:
+            data = self.capture(directory)
+            extra = dict(data['spans'][0], id=12345, block=None, attempt=None, start=0, end=110_000)
+            data['spans'].append(extra)
+            data['transfers'] = [dict(start=0, end=100_500, bytes=12, **{'from':'Validator A', 'to':'Validator A'})]
+            original = copy.deepcopy(data)
+            out = Path(directory)/'report'
+            manifest = write_package(data, out, chunk_intervals=23)
+            self.assertEqual(data, original)
+            self.assertFalse((out/'perfetto.json').exists())
+            actual = []
+            for chunk in manifest['chunks']:
+                self.assertLessEqual(chunk['records'], 23)
+                actual.extend(e for e in json.loads((out/chunk['file']).read_text())['traceEvents'] if e['ph'] != 'M')
+            expected_data = dict(data, blocks=data['blocks'] + [dict(a, id=None, attempt=a['id']) for a in data['attempt_details'] if not a.get('block')])
+            expected = [e for e in trace_events(expected_data) if e['ph'] != 'M']
+            self.assertEqual(Counter(map(identity, actual)), Counter(map(identity, expected)))
+            long = next(e for e in actual if e.get('args', {}).get('span_id') == 12345)
+            self.assertEqual(long['dur'], 110_000_000)
+            self.assertGreater(manifest['chunks'][0]['end'], manifest['chunks'][1]['start'])
+            self.assertEqual(sum(c['spans'] for c in manifest['chunks']), len(data['spans']))
+            self.assertEqual(sum(c['transfers'] for c in manifest['chunks']), 1)
+
+    def test_compact_summary_focus_population_links_and_cutoff(self):
+        with tempfile.TemporaryDirectory() as directory:
+            data = self.capture(directory, cutoff=20_500_000_000)
+            out = Path(directory)/'report'
+            out.mkdir()
+            (out/'lifecycle.json').write_text(json.dumps(data))
+            before = (out/'lifecycle.json').read_bytes()
+            manifest = write_package(data, out, chunk_intervals=25)
+            self.assertEqual((out/'lifecycle.json').read_bytes(), before)
+            index = (out/'index.html').read_text()
+            self.assertNotIn('"spans":', index)
+            self.assertLess(len(index), 30_000)
+            self.assertEqual({p['id'] for p in manifest['pages'] if not p['attempt']}, {b['id'] for b in data['blocks']})
+            self.assertEqual({p['block'] for p in manifest['percentiles']}, set(data['representatives'].values()))
+            for p in manifest['percentiles']:
+                focused = embedded(out/p['page'])
+                self.assertEqual([b['id'] for b in focused['blocks']], [p['block']])
+                self.assertEqual(focused['population_blocks'], data['blocks'])
+                self.assertEqual(focused['eligible'], data['eligible'])
+            for page in out.glob('*.html'):
+                for href in re.findall(r'href="([^"]+)"', page.read_text()):
+                    self.assertTrue((out/href).exists(), (page.name, href))
+            cutoff = data['boundary']['relative_ms'] * 1000
+            for path in [out/c['file'] for c in manifest['chunks']] + [out/p['trace'] for p in manifest['pages']]:
+                for event in json.loads(path.read_text())['traceEvents']:
+                    if event['ph'] == 'M': continue
+                    if event['ph'] == 'X': self.assertLessEqual(event['ts'] + event['dur'], cutoff + 1e-7)
+                    else: self.assertLess(event['ts'], cutoff)
+
+    def test_focused_page_keeps_causal_ancestors_without_unrelated_overlap(self):
+        with tempfile.TemporaryDirectory() as directory:
+            data = self.capture(directory, cutoff=3_500_000_000)
+            selected = data['spans'][0]
+            selected['parent'] = 12345
+            parent = dict(selected, id=12345, parent=None, block=None, attempt=None)
+            unrelated = dict(parent, id=12346)
+            data['spans'].extend([parent, unrelated])
+            out = Path(directory)/'report'
+            write_package(data, out)
+            page = embedded(out/f"block-{selected['block']}.html")
+            self.assertEqual({s['id'] for s in page['spans']}, {selected['id'], 12345})
+            events = json.loads((out/f"perfetto-block-{selected['block']}.json").read_text())['traceEvents']
+            ancestor = next(e for e in events if e.get('args', {}).get('span_id') == 12345)
+            self.assertEqual(ancestor['args']['block'], None)
+            self.assertIn('causal ancestor', ancestor['args']['association'])
+
+    def test_repack_removes_stale_generated_exports_but_keeps_raw(self):
+        with tempfile.TemporaryDirectory() as directory:
+            data = self.capture(directory, cutoff=3_500_000_000)
+            out = Path(directory)/'report'
+            out.mkdir()
+            for name in ('perfetto.json', 'block-999.html', 'context-9999.json', 'perfetto-p99.json'):
+                (out/name).write_text('stale')
+            (out/'a.jsonl').write_text('raw unchanged')
+            data['bad_capture'] = True
+            manifest = write_package(data, out)
+            self.assertEqual(manifest['percentiles'], [])
+            self.assertEqual((out/'a.jsonl').read_text(), 'raw unchanged')
+            self.assertFalse((out/'perfetto.json').exists())
+            self.assertFalse((out/'block-999.html').exists())
+            self.assertFalse((out/'context-9999.json').exists())
+            self.assertFalse((out/'perfetto-p99.json').exists())
+            self.assertEqual(embedded(out/'block-1.html')['percentile_blocks'], {})
+
+
+if __name__ == '__main__':
+    unittest.main()
