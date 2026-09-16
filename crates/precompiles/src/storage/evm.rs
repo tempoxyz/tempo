@@ -197,8 +197,8 @@ impl<'a> EvmPrecompileStorageProvider<'a> {
         value: U256,
         action: impl FnOnce(&SStoreResult) -> StorageAction,
     ) -> Result<(), TempoPrecompileError> {
-        // T13+: EIP-2200 sentry. SSTORE fails if the frame only has the call stipend remaining.
-        if self.spec.is_t13() && self.gas_tracker.remaining() <= self.gas_params.call_stipend() {
+        // T12+: EIP-2200 sentry. SSTORE fails if the frame only has the call stipend remaining.
+        if self.spec.is_t12() && self.gas_tracker.remaining() <= self.gas_params.call_stipend() {
             return Err(TempoPrecompileError::OutOfGas);
         }
 
@@ -1001,11 +1001,11 @@ mod tests {
                 .provider_with_gas_limit(gas_params.call_stipend(), 0)
                 .sstore(address, key, U256::from(2));
 
-            let expected = if spec.is_t13() {
+            let expected = if spec.is_t12() {
                 assert_eq!(result, Err(TempoPrecompileError::OutOfGas));
                 U256::ONE
             } else {
-                result.expect("pre-T13 SSTORE at stipend should preserve historical behavior");
+                result.expect("pre-T12 SSTORE at stipend should preserve historical behavior");
                 U256::from(2)
             };
 
