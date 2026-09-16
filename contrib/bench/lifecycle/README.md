@@ -5,7 +5,12 @@ revision on both local validators and uploads the `block-lifecycle` artifact.
 Extract the artifact and open a phase's `index.html`. The viewer works offline.
 Open `perfetto-p50.json`, `perfetto-p90.json` or `perfetto-p99.json` in
 [Perfetto](https://ui.perfetto.dev) for a small trace of an actual representative
-block. `perfetto.json` contains the full capture.
+block. The compact index links every individual block/attempt page and focused
+Perfetto file. Standalone context pages/traces contain every span, frame transfer
+and milestone, including unassociated work, in chunks of at most 10,000 records.
+Chunks preserve original intervals without clipping; their time ranges can overlap.
+The viewer paginates operations in groups of 500. Complete raw captures and
+`lifecycle.json` remain available; a monolithic Perfetto export is optional.
 
 The feature revision must include the pinned Reth capture layer and Commonware
 instrumentation. To run directly, use `--lifecycle --run-side feature`. Other
@@ -45,7 +50,13 @@ Perfetto UI. With the latest PR checkout, regenerate from the `lifecycle.json`
 you already downloaded; there is no need to rebuild the node or rerun the bench:
 
 ```sh
-python3 contrib/bench/lifecycle/perfetto.py report/lifecycle.json --out report
+python3 contrib/bench/lifecycle/report_package.py report/lifecycle.json --out report
+```
+
+To also generate the potentially very large full Perfetto file:
+
+```sh
+python3 contrib/bench/lifecycle/perfetto.py report/lifecycle.json --out report --full
 ```
 
 For any individual report-local block number:
@@ -56,8 +67,8 @@ python3 contrib/bench/lifecycle/perfetto.py report/lifecycle.json --out report -
 
 Choose **Open trace file** in Perfetto and select the newly generated JSON file.
 Start with a percentile file for a focused view. Full and focused exports use the
-same capture clock. Focused files contain only operations attributed to that
-block, its milestones, and explicitly labeled frame transfers overlapping its
+same capture clock. Packaged focused files contain operations attributed to that
+block, causal ancestors labeled separately, its milestones, and explicitly labeled frame transfers overlapping its
 proposal-to-finalization window; context frames do not acquire a block identity.
 
 Visual lanes are reused by validator, subsystem and interval kind. Their count

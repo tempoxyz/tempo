@@ -32,14 +32,17 @@ def trace_events(data, block_id=None):
         args = {'block': s['block'], 'span_id': s['id'], 'parent_span_id': s['parent'],
                 'semantics': 'aggregate envelope, not continuous work' if aggregate else s.get('timing_semantics', 'span_lifetime')}
         args.update(s.get('details', {}))
+        if data.get('focus_block') is not None:
+            args['association'] = 'selected block' if s['block'] == data['focus_block'] else 'causal ancestor; no selected-block attribution'
         if s.get('attempt') is not None:
             args['proposal_attempt'] = s['attempt']
         if aggregate:
             args.update(call_count=s['count'], elapsed_sum_ms=s['elapsed_sum_ms'])
         else:
             args.update(active_wall_ms=s['active_ms'], source_thread_ordinal=s['thread'],
-                        retained_after_operation_ms=s.get('retained_after_operation_ms'),
-                        reference_right_censored=s.get('reference_right_censored', False),
+                        retained_after_operation_ms=(s.get('retained_after_operation_ms')
+                            if 'reference_right_censored' in s else None),
+                        reference_right_censored=s.get('reference_right_censored'),
                         reference_retention_lower_bound_ms=s.get('reference_retention_lower_bound_ms'))
         if s.get('right_censored'):
             args.update(right_censored=True, semantics='reference lifetime truncated at cutoff; operation completion unknown')
@@ -82,7 +85,7 @@ def trace_events(data, block_id=None):
     for b in blocks:
         for e in b['markers']:
             events.append({'name': e['stage'], 'ph': 'i', 's': 't', 'ts': round(e['ts'] * 1_000_000) / 1000,
-                           'pid': nodes[e['node']], 'tid': 0, 'args': {'block': b['id']}})
+                           'pid': nodes[e['node']], 'tid': 0, 'args': {'block': b['id'], **({'proposal_attempt': b['attempt']} if b.get('attempt') is not None else {})}})
     events.sort(key=lambda e: (e['ts'], e['pid'], e['tid']))
     return metadata + events
 
@@ -94,11 +97,13 @@ def write_trace(data, path, block_id=None):
             'tracks': sum(e['name'] == 'thread_name' and e['ph'] == 'M' for e in events)}
 
 
-def write_exports(data, out, block_id=None):
+def write_exports(data, out, block_id=None, full=False):
     out.mkdir(parents=True, exist_ok=True)
     if block_id is not None:
         return [write_trace(data, out / f'perfetto-block-{block_id}.json', block_id)]
-    results = [write_trace(data, out / 'perfetto.json')]
+    full_data = dict(data, blocks=data['blocks'] + [dict(a, id=None, attempt=a['id'])
+        for a in data.get('attempt_details', []) if not a.get('block')])
+    results = [write_trace(full_data, out / 'perfetto.json')] if full else []
     for percentile in (50, 90, 99):
         path = out / f'perfetto-p{percentile}.json'
         representative = data['representatives'].get(str(percentile))
@@ -115,7 +120,8 @@ if __name__ == '__main__':
     parser.add_argument('report', type=Path, help='Existing lifecycle.json; raw captures are not needed')
     parser.add_argument('--out', type=Path, required=True)
     parser.add_argument('--block', type=int, help='Export just this report-local block number')
+    parser.add_argument('--full', action='store_true', help='Also export the potentially very large complete Perfetto trace')
     args = parser.parse_args()
     data = json.loads(args.report.read_text())
-    for result in write_exports(data, args.out, args.block):
+    for result in write_exports(data, args.out, args.block, args.full):
         print(f"{result['file']}: {result['events']} events on {result['tracks']} visual lanes")
