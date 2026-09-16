@@ -37,7 +37,7 @@ mod ingress;
 mod target;
 
 #[cfg(test)]
-mod test;
+mod tests;
 
 pub(crate) use actor::Actor;
 pub(crate) use ingress::Mailbox;
