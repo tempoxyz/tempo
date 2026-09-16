@@ -2,7 +2,7 @@ import json
 from pathlib import Path
 import tempfile
 import unittest
-from report import build, nearest_rank, write_report, active_wall_ns
+from report import build, nearest_rank, write_report, active_wall_ns, read_node
 
 
 def fixture(path, lost=0, close=True):
@@ -26,6 +26,39 @@ def fixture(path, lost=0, close=True):
 
 
 class ReportTests(unittest.TestCase):
+    def test_explicit_completion_precedes_retained_child_close(self):
+        records = [
+            {'type':'header','schema':1},
+            {'type':'start','id':1,'ts':0,'thread':1,'name':'handler','category':'consensus','parent':None,'fields':{}},
+            {'type':'start','id':2,'ts':1,'thread':1,'name':'detached','category':'consensus','parent':1,'fields':{}},
+            {'type':'enter','id':1,'ts':1,'thread':1},
+            {'type':'exit','id':1,'ts':2,'thread':1},
+            {'type':'event','id':1,'ts':10,'fields':{'stage':'operation_completed'}},
+            {'type':'end','id':2,'ts':100},
+            {'type':'end','id':1,'ts':101},
+            {'type':'footer','dropped':0},
+        ]
+        with tempfile.TemporaryDirectory() as directory:
+            path=Path(directory)/'a.jsonl';path.write_text('\n'.join(map(json.dumps,records)))
+            spans, _, quality = read_node(path, 'Validator A')
+            self.assertEqual(spans[0]['end'],10)
+            self.assertEqual(spans[0]['reference_end'],101)
+            self.assertEqual(spans[1]['parent'],1)
+            self.assertEqual(spans[1]['end'],100)
+            spans, _, quality = read_node(path, 'Validator A', cutoff=50)
+            self.assertEqual(spans[0]['end'],10)
+            self.assertFalse(spans[0].get('right_censored',False))
+            self.assertTrue(spans[1]['right_censored'])
+            # No completion is inferred from a pending future's last poll exit.
+            spans, _, quality = read_node(path, 'Validator A', cutoff=10)
+            self.assertTrue(spans[0]['right_censored'])
+            self.assertNotIn('operation_status',spans[0])
+            records[5]['fields']['stage']='operation_abandoned'
+            path.write_text('\n'.join(map(json.dumps,records)))
+            spans, _, _ = read_node(path, 'Validator A')
+            self.assertEqual(spans[0]['operation_status'],'abandoned')
+            self.assertEqual(spans[0]['end'],10)
+
     def test_percentiles_are_actual_blocks_with_late_identity(self):
         with tempfile.TemporaryDirectory() as directory:
             path=Path(directory)/'a.jsonl';fixture(path)

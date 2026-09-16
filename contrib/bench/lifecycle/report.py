@@ -53,11 +53,19 @@ def read_node(path, role, cutoff=None):
             elif kind == 'fields' and event['id'] in spans:
                 spans[event['id']]['fields'].update(event['fields'])
             elif kind == 'end' and event['id'] in spans:
-                spans[event['id']]['end'] = event['ts']
+                spans[event['id']]['reference_end'] = event['ts']
+                if not spans[event['id']].get('operation_status'):
+                    spans[event['id']]['end'] = event['ts']
             elif kind == 'aggregate':
                 aggregates.append(event)
             elif kind == 'event':
                 events.append(dict(event, node=role))
+                stage = event.get('fields', {}).get('stage')
+                if stage in ('operation_completed', 'operation_abandoned') and event['id'] in spans:
+                    span = spans[event['id']]
+                    if not span.get('operation_status'):
+                        span['end'] = event['ts']
+                        span['operation_status'] = stage.removeprefix('operation_')
             elif kind == 'link':
                 links.append(event)
             elif kind == 'enter':
@@ -76,6 +84,12 @@ def read_node(path, role, cutoff=None):
                 span['end'] = cutoff
                 span['right_censored'] = True
                 censored += 1
+    # A completion marker, unlike the last poll exit, proves the operation ended.
+    # Preserve causal parent IDs even when detached children outlive that operation.
+    for span in spans.values():
+        if span.get('operation_status'):
+            span['active'] = [(a, min(b, span['end']), t) for a, b, t in span['active']
+                              if a < span['end']]
     for index, event in enumerate(aggregates,1):
         spans[-index] = dict(event, id=-index, parent=event['id'] or None, node=role,
                              thread=0, fields={}, active=[])
@@ -255,6 +269,10 @@ def build(paths, warmup=5, window=None):
                      'start': (s['ts']-first)/1e6, 'end': (s['end']-first)/1e6,
                      'thread': s['thread'], 'active_ms': active_wall_ns(s['active'])/1e6,
                      'right_censored': s.get('right_censored', False),
+                     'timing_semantics': ('aggregate_envelope' if s.get('count') else
+                         'operation_' + s['operation_status'] if s.get('operation_status') else
+                         'span_lifetime'),
+                     'retained_after_operation_ms': max(0, s.get('reference_end', s['end']) - s['end'])/1e6,
                      'attempt': attempt_ids.get((s['node'], s.get('attempt_root'))),
                      'details': {k:v for k,v in s['fields'].items() if k in (
                          'block_count', 'state_trie_block_count', 'first_block_number',

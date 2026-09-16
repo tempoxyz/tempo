@@ -30,16 +30,17 @@ def trace_events(data, block_id=None):
     for s in spans:
         aggregate = bool(s.get('count'))
         args = {'block': s['block'], 'span_id': s['id'], 'parent_span_id': s['parent'],
-                'semantics': 'aggregate envelope, not continuous work' if aggregate else 'elapsed wall time, includes async waits'}
+                'semantics': 'aggregate envelope, not continuous work' if aggregate else s.get('timing_semantics', 'span_lifetime')}
         args.update(s.get('details', {}))
         if s.get('attempt') is not None:
             args['proposal_attempt'] = s['attempt']
         if aggregate:
             args.update(call_count=s['count'], elapsed_sum_ms=s['elapsed_sum_ms'])
         else:
-            args.update(active_wall_ms=s['active_ms'], source_thread_ordinal=s['thread'])
+            args.update(active_wall_ms=s['active_ms'], source_thread_ordinal=s['thread'],
+                        retained_after_operation_ms=s.get('retained_after_operation_ms', 0))
         if s.get('right_censored'):
-            args.update(right_censored=True, semantics='elapsed wall time before cutoff; operation not observed complete')
+            args.update(right_censored=True, semantics='reference lifetime truncated at cutoff; operation completion unknown')
         intervals.append((nodes[s['node']], s['category'], 'aggregate envelope' if aggregate else 'wall time',
                           round(s['start'] * 1_000_000), round(s['end'] * 1_000_000),
                           s['name'] + (' [aggregate envelope]' if aggregate else ' [cutoff]' if s.get('right_censored') else ''), args))

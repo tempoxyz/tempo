@@ -160,3 +160,13 @@ through network fanout and batching, transport queue enqueue/dequeue markers, an
 profiling if kernel attribution is needed. Such IDs must remain source-filtered
 and must not alter network messages. Use this draft's coverage inventory to
 verify those additions before beginning the separate investigation phase.
+
+### Operation completion and reference lifetimes
+
+`operation_completed` and `operation_abandoned` markers delimit instrumented
+operations independently of tracing references retained by detached children.
+The report preserves causal parent IDs even when children outlive the operation.
+An unmarked scope is labeled `span_lifetime`; its close timestamp is not proof
+that the function ran or waited until that time. A last poll exit is never used
+as completion. Active wall time is not CPU time. Completion/cancellation markers
+at or after first backpressure are pruned with every other timed record.
