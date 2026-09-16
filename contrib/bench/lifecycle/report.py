@@ -236,7 +236,13 @@ def build(paths, warmup=5, window=None, expected_detail=None):
                            'execution_block_input_operations',
                            'execution_block_output_operations')})
                   for e in by_block[key] if e['fields'].get('stage') == 'execution_totals']
-        blocks.append({'execution_totals': totals, 'id': aliases[key], 'start': start, 'end': finish,
+        worker_totals = [dict(node=e['node'], span=e['id'], ts=(e['ts']-first)/1e6,
+                             **{k:v for k,v in e['fields'].items()
+                                if k in ('stage','worker_run_ns','worker_thread_cpu_ns',
+                                         'worker_cpu_measured','worker_success')})
+                         for e in by_block[key] if e['fields'].get('stage') in
+                         ('proof_storage_worker_totals','proof_account_worker_totals')]
+        blocks.append({'proof_worker_totals': worker_totals, 'execution_totals': totals, 'id': aliases[key], 'start': start, 'end': finish,
                        'duration': finish-start, 'complete': complete, 'markers': markers})
     completed = sorted((b for b in blocks if b['complete']), key=lambda b: b['start'])
     for b in completed[:warmup]:

@@ -26,6 +26,29 @@ def fixture(path, lost=0, close=True):
 
 
 class ReportTests(unittest.TestCase):
+    def test_proof_worker_totals_preserve_completions_and_strict_cutoff(self):
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory)/'a.jsonl'; fixture(path)
+            records = [json.loads(line) for line in path.read_text().splitlines()]
+            values = [
+                dict(worker_run_ns=10, worker_thread_cpu_ns=20, worker_cpu_measured=1, worker_success=1),
+                dict(worker_run_ns=30, worker_thread_cpu_ns=0, worker_cpu_measured=1, worker_success=1),
+                dict(worker_run_ns=40, worker_cpu_measured=0, worker_success=0),
+            ]
+            records[-1:-1] = [dict(type='event', id=1, ts=1_000_000_200+i,
+                                  fields=dict(stage='proof_storage_worker_totals', **fields))
+                              for i, fields in enumerate(values)]
+            path.write_text('\n'.join(map(json.dumps, records)))
+            result = write_report([path], Path(directory)/'report', warmup=0)
+            totals = result['blocks'][0]['proof_worker_totals']
+            self.assertEqual(len(totals), 3)
+            for row, fields in zip(totals, values):
+                self.assertEqual(row['span'], 1)
+                self.assertEqual(row['node'], 'Validator A')
+                self.assertEqual({k:v for k,v in row.items() if k.startswith('worker_')}, fields)
+            pruned = build([path], warmup=0, window={'backpressure': {'ts': 1_000_000_200, 'node': 'Validator A'}})
+            self.assertTrue(all(not b['proof_worker_totals'] for b in pruned['blocks']))
+
     def test_execution_resource_counts_preserve_unavailable_and_cutoff(self):
         counters = [
             'execution_voluntary_context_switches', 'execution_involuntary_context_switches',
