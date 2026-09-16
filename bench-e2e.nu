@@ -620,6 +620,7 @@ def start-e2e-local-node [
     results_dir: string,
     cpus: string,
     memory: string,
+    quiet: bool,
 ] {
     let profile_label = $"($phase)-($role)"
     let full_samply_args = if $samply {
@@ -631,11 +632,11 @@ def start-e2e-local-node [
     let script = $"($env_prefix)($otel_attrs)($tracy_env_prefix)($node_cmd_str) 2>&1"
     let unit_phase = ($phase | str replace -a "_" "-" | str replace -a "." "-")
     let runner = (systemd-scope-command $"tempo-e2e-($role)-($unit_phase)" $cpus $memory $script)
-    print $"Starting local e2e validator ($role) for ($phase): ($runner | str join ' ')"
+    if not $quiet { print $"Starting local e2e validator ($role) for ($phase): ($runner | str join ' ')" }
     job spawn {
         run-external ($runner | first) ...($runner | skip 1)
         | lines
-        | each { |line| print $"[e2e-($phase)-($role)] ($line)" }
+        | each { |line| if not $quiet { print $"[e2e-($phase)-($role)] ($line)" } }
     }
 }
 
@@ -1072,8 +1073,9 @@ def run-local-e2e-phase [run: record, ctx: record] {
         | append (if $ctx.gas_limit != "" { ["--builder.gaslimit" $ctx.gas_limit] } else { [] })
         | append (if $ctx.samply { ["--log.samply"] } else { [] })
         | append (benchmark-otlp-args $ctx.tracing_otlp)
-    let a_args = (dedup-args $a_base_args $extra_args)
-    let b_args = (dedup-args $b_base_args $extra_args)
+    let privacy_args = if $ctx.lifecycle { ["--log.stdout.filter" "off" "--log.file.filter" "off"] } else { [] }
+    let a_args = (dedup-args $a_base_args ($extra_args | append $privacy_args))
+    let b_args = (dedup-args $b_base_args ($extra_args | append $privacy_args))
 
     if $ctx.tracy != "off" {
         print $"  Tracy mode: ($ctx.tracy), sampling hz: ($TRACY_SAMPLING_HZ)"
@@ -1083,11 +1085,20 @@ def run-local-e2e-phase [run: record, ctx: record] {
     let a_otel = $"OTEL_RESOURCE_ATTRIBUTES=benchmark_id=($ctx.benchmark_id),benchmark_run=($phase),runner_role=a,run_type=($run_type),git_ref=($run.ref),reference_epoch=($ctx.reference_epoch) "
     let b_otel = $"OTEL_RESOURCE_ATTRIBUTES=benchmark_id=($ctx.benchmark_id),benchmark_run=($phase),runner_role=b,run_type=($run_type),git_ref=($run.ref),reference_epoch=($ctx.reference_epoch) "
 
+    let lifecycle_dir = ($"($ctx.results_dir)/lifecycle/($phase)" | path expand)
+    let lifecycle_key = ($"($LOCALNET_DIR)/lifecycle-key-($phase)" | path expand)
+    let lifecycle_epoch = if $ctx.lifecycle {
+        mkdir $lifecycle_dir
+        ^python3 -c 'import os,sys,time; f=os.open(sys.argv[1],os.O_WRONLY|os.O_CREAT|os.O_EXCL,0o600); os.write(f,os.urandom(32)); os.close(f); print(time.monotonic_ns())' $lifecycle_key | str trim
+    } else { "" }
+    let a_capture = if $ctx.lifecycle { $"RETH_LIFECYCLE_FILE=($lifecycle_dir)/a.jsonl RETH_LIFECYCLE_KEY_FILE=($lifecycle_key) RETH_LIFECYCLE_EPOCH_NS=($lifecycle_epoch) " } else { "" }
+    let b_capture = if $ctx.lifecycle { $"RETH_LIFECYCLE_FILE=($lifecycle_dir)/b.jsonl RETH_LIFECYCLE_KEY_FILE=($lifecycle_key) RETH_LIFECYCLE_EPOCH_NS=($lifecycle_epoch) " } else { "" }
+
     mark-schelk-dirty-at $ctx.a.state_path
     mark-schelk-dirty-at $ctx.b.state_path
 
-    start-e2e-local-node a $phase $run.tempo $a_args $env_prefix $a_otel $tracy_env_prefix $ctx.samply $ctx.samply_args $ctx.results_dir $ctx.a.cpus $ctx.a.memory
-    start-e2e-local-node b $phase $run.tempo $b_args $env_prefix $b_otel "" $ctx.samply $ctx.samply_args $ctx.results_dir $ctx.b.cpus $ctx.b.memory
+    start-e2e-local-node a $phase $run.tempo $a_args $"($env_prefix)($a_capture)" $a_otel $tracy_env_prefix $ctx.samply $ctx.samply_args $ctx.results_dir $ctx.a.cpus $ctx.a.memory $ctx.lifecycle
+    start-e2e-local-node b $phase $run.tempo $b_args $"($env_prefix)($b_capture)" $b_otel "" $ctx.samply $ctx.samply_args $ctx.results_dir $ctx.b.cpus $ctx.b.memory $ctx.lifecycle
 
     sleep 2sec
     let rpc_timeout = if $ctx.bloat > 0 { 600 } else { 300 }
@@ -1141,6 +1152,7 @@ def run-local-e2e-phase [run: record, ctx: record] {
     let submit_rpc_url = [$a_rpc $b_rpc] | str join ","
 
     if $phase_exit == 0 {
+        let lifecycle_start = if $ctx.lifecycle { ^python3 -c 'import time,sys; print(time.monotonic_ns()-int(sys.argv[1]))' $lifecycle_epoch | str trim | into int } else { 0 }
         let phase_started_ms = ((date now | into int) / 1_000_000 | into int)
         let initial_db_size_bytes = (e2e-db-size-bytes $ctx.a.datadir)
         let sender_exit = (try {
@@ -1192,6 +1204,10 @@ def run-local-e2e-phase [run: record, ctx: record] {
                 $report_benchmark_id | save -f $"($ctx.results_dir)/clickhouse-run-id.txt"
             }
         }
+        if $ctx.lifecycle {
+            let lifecycle_end = (^python3 -c 'import time,sys; print(time.monotonic_ns()-int(sys.argv[1]))' $lifecycle_epoch | str trim | into int)
+            {start_ns: $lifecycle_start, end_ns: $lifecycle_end} | to json | save -f $"($lifecycle_dir)/window.json"
+        }
         let phase_finished_ms = ((date now | into int) / 1_000_000 | into int)
         {
             phase: $phase
@@ -1226,9 +1242,15 @@ def run-local-e2e-phase [run: record, ctx: record] {
     chown-to-current-user $ctx.results_dir
     chown-to-current-user $a_log_dir
     chown-to-current-user $b_log_dir
-    if ($a_log_dir | path exists) { cp -r $a_log_dir $"($ctx.results_dir)/logs-($phase)-a" }
-    if ($b_log_dir | path exists) { cp -r $b_log_dir $"($ctx.results_dir)/logs-($phase)-b" }
+    if not $ctx.lifecycle and ($a_log_dir | path exists) { cp -r $a_log_dir $"($ctx.results_dir)/logs-($phase)-a" }
+    if not $ctx.lifecycle and ($b_log_dir | path exists) { cp -r $b_log_dir $"($ctx.results_dir)/logs-($phase)-b" }
     restore-system-tuning $tuning_state
+    if $ctx.lifecycle {
+        rm -f $lifecycle_key
+        let report = (^python3 contrib/bench/lifecycle/report.py --out $lifecycle_dir --warmup $ctx.summary_warmup_blocks --window $"($lifecycle_dir)/window.json" $"($lifecycle_dir)/a.jsonl" $"($lifecycle_dir)/b.jsonl" | complete)
+        print $report.stdout
+        if $report.exit_code != 0 { $phase_exit = 1 }
+    }
 
     if $phase_exit != 0 {
         return $phase_exit
@@ -1373,6 +1395,7 @@ def "main e2e" [
     --baseline-features: string = ""                    # Additional Cargo features for baseline build (defaults to --features)
     --feature-features: string = ""                     # Additional Cargo features for feature build (defaults to --features)
     --no-default-features                               # Disable Cargo default features
+    --lifecycle                                         # Capture privacy-filtered block lifecycle artifacts on both validators
     --samply                                            # Profile validators with samply
     --samply-args: string = ""                          # Additional samply arguments
     --tracy: string = "off"                             # Tracy profiling: off, tracy
@@ -1404,6 +1427,12 @@ def "main e2e" [
     --valscope-dir: string = "../valscope"               # Path to the ValScope checkout
     --skip-summary                                       # Leave summary generation to a later workflow step
 ] {
+    if $lifecycle {
+        if $samply or $tracy != "off" or $valscope_static_report {
+            error make {msg: "Lifecycle mode requires other profilers and ValScope export to be disabled"}
+        }
+        hide-env -i TEMPO_TELEMETRY_URL GRAFANA_TEMPO OTEL_EXPORTER_OTLP_TRACES_ENDPOINT OTEL_EXPORTER_OTLP_HEADERS CLICKHOUSE_URL CLICKHOUSE_USER CLICKHOUSE_PASSWORD BENCH_VICTORIAMETRICS_URL
+    }
     let preset_spec = if $preset_path == "" {
         txgen-resolve-bench-spec $preset
     } else {
@@ -1503,7 +1532,7 @@ def "main e2e" [
     let reference_epoch = (($run_started_at | into int) / 1_000_000_000 | into int)
     let gas_limit_args = if $gas_limit != "" { ["--gas-limit" $gas_limit] } else { [] }
     let general_gas_limit_args = if $general_gas_limit != "" { ["--general-gas-limit" $general_gas_limit] } else { [] }
-    let tracing_otlp = (derive-tracing-otlp $tracing_otlp)
+    let tracing_otlp = if $lifecycle { "" } else { derive-tracing-otlp $tracing_otlp }
     if $tracing_otlp != "" {
         $env.OTEL_EXPORTER_OTLP_TRACES_ENDPOINT = $tracing_otlp
     }
@@ -1718,6 +1747,8 @@ def "main e2e" [
         profile: $profile
         samply: $samply
         samply_args: $samply_args_list
+        lifecycle: $lifecycle
+        summary_warmup_blocks: $summary_warmup_blocks
         tracy: $tracy
         tracy_filter: $tracy_filter
         tracy_seconds: $tracy_seconds
@@ -1728,8 +1759,8 @@ def "main e2e" [
         baseline_env: $baseline_env
         feature_env: $feature_env
         bench_env: $bench_env
-        victoriametrics_url: $victoriametrics_url
-        clickhouse_url: $clickhouse_url
+        victoriametrics_url: (if $lifecycle { "" } else { $victoriametrics_url })
+        clickhouse_url: (if $lifecycle { "" } else { $clickhouse_url })
         clickhouse_run: $clickhouse_run
         runner_metrics_url: $runner_metrics_url
         run_type: $run_type

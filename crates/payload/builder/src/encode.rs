@@ -158,6 +158,12 @@ impl ExecutionBlockEncoder {
 }
 
 impl Drop for ExecutionBlockEncoder {
+    #[tracing::instrument(
+        name = "builder.encode.drop",
+        target = "lifecycle",
+        level = "debug",
+        skip_all
+    )]
     fn drop(&mut self) {
         let _ = self.encode_block();
     }

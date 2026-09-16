@@ -119,6 +119,12 @@ impl Eq for Block {}
 
 impl Block {
     /// Creates a block after validating its body and optional BAL against the header.
+    #[tracing::instrument(
+        name = "block.try_from_execution_block",
+        target = "lifecycle",
+        level = "debug",
+        skip_all
+    )]
     pub(crate) fn try_from_execution_block<T>(
         execution_block: T,
         block_access_list: Option<Bytes>,
@@ -127,7 +133,9 @@ impl Block {
         T: Into<SealedOrRecoveredBlock<tempo_primitives::Block>>,
     {
         let execution_block = execution_block.into();
-        validate_body_against_header(execution_block.body(), execution_block.header())?;
+        tracing::debug_span!(target: "lifecycle", "block.validate_body").in_scope(|| {
+            validate_body_against_header(execution_block.body(), execution_block.header())
+        })?;
         validate_block_access_list_hash(
             execution_block.block_access_list_hash(),
             block_access_list.as_ref(),
@@ -175,6 +183,12 @@ impl Block {
     /// Wraps a trusted execution block and its encoded bytes without validating body or BAL
     /// commitments. Locally built payloads already contain the matching body, BAL, and header;
     /// network and archive reads must use the validating constructor instead.
+    #[tracing::instrument(
+        name = "block.from_execution_block_unchecked_with_encoded_cache",
+        target = "lifecycle",
+        level = "debug",
+        skip_all
+    )]
     pub(crate) fn from_execution_block_unchecked_with_encoded_cache<T>(
         execution_block: T,
         block_access_list: Option<Bytes>,
@@ -291,6 +305,12 @@ impl Read for Block {
     // TODO: Figure out what this is for/when to use it. This is () for both alto and summit.
     type Cfg = ();
 
+    #[tracing::instrument(
+        name = "block.read_cfg",
+        target = "lifecycle",
+        level = "debug",
+        skip_all
+    )]
     fn read_cfg(buf: &mut impl Buf, _cfg: &Self::Cfg) -> Result<Self, commonware_codec::Error> {
         // XXX: this does not advance `buf`. Also, it assumes that the rlp
         // header is fully contained in the first chunk of `buf`. As per
@@ -333,6 +353,7 @@ impl Read for Block {
         #[cfg(not(feature = "bal"))]
         let block_access_list = None;
 
+        tracing::info!(target: "lifecycle", stage = "decode_done", block_hash = %inner.hash());
         let execution_block_encoded = EncodedBlock::new(bytes.into());
         Self::try_from_execution_block_with_encoded_cache(
             inner,
