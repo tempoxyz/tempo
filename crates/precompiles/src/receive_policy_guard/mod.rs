@@ -36,8 +36,8 @@ pub struct ReceivePolicyGuard {
 
 impl ReceivePolicyGuard {
     /// One-time storage initialization.
-    pub fn initialize(&mut self) -> Result<()> {
-        self.__initialize()
+    pub fn initialize(&mut self, write: &mut crate::storage::WriteCtx) -> Result<()> {
+        self.__initialize(write)
     }
 
     /// Returns the unclaimed amount for a receipt, or zero if unknown or already claimed.
@@ -51,6 +51,7 @@ impl ReceivePolicyGuard {
     #[allow(clippy::too_many_arguments)]
     pub(crate) fn store_blocked(
         &mut self,
+        write: &mut crate::storage::WriteCtx,
         token: Address,
         originator: Address,
         to: &Recipient,
@@ -76,7 +77,7 @@ impl ReceivePolicyGuard {
         let receiver = to.target;
         let recipient = to.virtual_addr.unwrap_or(to.target);
 
-        let blocked_nonce = self.next_receipt_nonce()?;
+        let blocked_nonce = self.next_receipt_nonce(write)?;
         let blocked_at = self.storage.timestamp().saturating_to::<u64>();
         let receipt = IReceivePolicyGuard::ClaimReceiptV1::new(
             token,
@@ -90,14 +91,20 @@ impl ReceivePolicyGuard {
             memo,
         );
         let key = self.receipt_key(&receipt)?;
-        self.balances[key].write(amount)?;
+        self.balances[key].write(write, amount)?;
 
-        self.emit_event(receipt.blocked_event(receiver, amount))?;
+        self.emit_event(write, receipt.blocked_event(receiver, amount))?;
         Ok((blocked_nonce, blocked_at))
     }
 
     /// Given a valid receipt, releases blocked funds to the authorized receiver.
-    pub fn claim(&mut self, msg_sender: Address, to: Address, receipt: Bytes) -> Result<()> {
+    pub fn claim(
+        &mut self,
+        write: &mut crate::storage::WriteCtx,
+        msg_sender: Address,
+        to: Address,
+        receipt: Bytes,
+    ) -> Result<()> {
         if to == RECEIVE_POLICY_GUARD_ADDRESS {
             return Err(ReceivePolicyGuardError::invalid_claim_address().into());
         }
@@ -114,9 +121,10 @@ impl ReceivePolicyGuard {
             return Err(ReceivePolicyGuardError::invalid_receipt().into());
         }
 
-        self.balances[key].write(U256::ZERO)?;
+        self.balances[key].write(write, U256::ZERO)?;
 
         TIP20Token::from_address(receipt.token)?.release_blocked_funds(
+            write,
             receipt.originator,
             receiver,
             to,
@@ -125,14 +133,22 @@ impl ReceivePolicyGuard {
             recovery_authority,
         )?;
 
-        self.emit_event(receipt.claimed_event(receiver, msg_sender, to, amount))
+        self.emit_event(
+            write,
+            receipt.claimed_event(receiver, msg_sender, to, amount),
+        )
     }
 
     /// Burns the blocked funds for one receipt.
     ///
     /// Lets token issuers use `burnBlocked` for receipt-backed funds without burning directly from
     /// the `ReceivePolicyGuard`.
-    pub fn burn_blocked_receipt(&mut self, msg_sender: Address, receipt: Bytes) -> Result<()> {
+    pub fn burn_blocked_receipt(
+        &mut self,
+        write: &mut crate::storage::WriteCtx,
+        msg_sender: Address,
+        receipt: Bytes,
+    ) -> Result<()> {
         let (receipt, receiver, recovery_mode) = resolve_receipt(receipt)?;
 
         let key = self.receipt_key(&receipt)?;
@@ -143,16 +159,18 @@ impl ReceivePolicyGuard {
 
         // Burn from the account with ownership of the funds.
         let owner = recovery_mode.policy_subject(receipt.originator, receiver);
-        TIP20Token::from_address(receipt.token)?.burn_blocked(msg_sender, owner, amount, false)?;
-        self.balances[key].write(U256::ZERO)?;
+        TIP20Token::from_address(receipt.token)?
+            .burn_blocked(write, msg_sender, owner, amount, false)?;
+        self.balances[key].write(write, U256::ZERO)?;
 
-        self.emit_event(receipt.burned_event(receiver, msg_sender, amount))
+        self.emit_event(write, receipt.burned_event(receiver, msg_sender, amount))
     }
 
     /// Allocates the next nonzero receipt nonce.
-    fn next_receipt_nonce(&mut self) -> Result<u64> {
+    fn next_receipt_nonce(&mut self, write: &mut crate::storage::WriteCtx) -> Result<u64> {
         let nonce = self.nonce.read()?.max(1);
         self.nonce.write(
+            write,
             nonce
                 .checked_add(1)
                 .ok_or(TempoPrecompileError::under_overflow())?,
@@ -263,6 +281,7 @@ mod tests {
 
     fn block_all_senders(receiver: Address, recovery_authority: Address) -> Result<()> {
         TIP403Registry::new().set_receive_policy(
+            &mut crate::storage::StorageCtx::test_writable(),
             receiver,
             ITIP403Registry::setReceivePolicyCall {
                 senderPolicyId: REJECT_ALL_POLICY_ID,
@@ -337,6 +356,7 @@ mod tests {
                     match kind {
                         InboundKind::TRANSFER => {
                             token.transfer(
+                                &mut crate::storage::StorageCtx::test_writable(),
                                 originator,
                                 ITIP20::transferCall {
                                     to: receiver,
@@ -351,6 +371,7 @@ mod tests {
                         }
                         InboundKind::MINT => {
                             token.mint(
+                                &mut crate::storage::StorageCtx::test_writable(),
                                 admin,
                                 ITIP20::mintCall {
                                     to: receiver,
@@ -393,11 +414,13 @@ mod tests {
 
                     if is_third_party {
                         assert_unauthorized(guard.claim(
+                            &mut crate::storage::StorageCtx::test_writable(),
                             receiver,
                             receiver,
                             receipt.abi_encode().into(),
                         ));
                         assert_unauthorized(guard.claim(
+                            &mut crate::storage::StorageCtx::test_writable(),
                             Address::random(),
                             receiver,
                             receipt.abi_encode().into(),
@@ -406,7 +429,12 @@ mod tests {
                     }
 
                     guard.clear_emitted_events();
-                    guard.claim(claimer, destination, receipt.abi_encode().into())?;
+                    guard.claim(
+                        &mut crate::storage::StorageCtx::test_writable(),
+                        claimer,
+                        destination,
+                        receipt.abi_encode().into(),
+                    )?;
                     guard.assert_emitted_events(vec![ReceivePolicyGuardEvent::ReceiptClaimed(
                         IReceivePolicyGuard::ReceiptClaimed {
                             token: token.address(),
@@ -466,6 +494,7 @@ mod tests {
             block_all_senders(receiver, receiver)?;
 
             token.transfer(
+                &mut crate::storage::StorageCtx::test_writable(),
                 originator,
                 ITIP20::transferCall {
                     to: receiver,
@@ -487,6 +516,7 @@ mod tests {
 
             let mut registry = TIP403Registry::new();
             let policy_id = registry.create_policy(
+                &mut crate::storage::StorageCtx::test_writable(),
                 admin,
                 ITIP403Registry::createPolicyCall {
                     admin,
@@ -494,6 +524,7 @@ mod tests {
                 },
             )?;
             registry.modify_policy_blacklist(
+                &mut crate::storage::StorageCtx::test_writable(),
                 admin,
                 ITIP403Registry::modifyPolicyBlacklistCall {
                     policyId: policy_id,
@@ -502,6 +533,7 @@ mod tests {
                 },
             )?;
             token.change_transfer_policy_id(
+                &mut crate::storage::StorageCtx::test_writable(),
                 admin,
                 ITIP20::changeTransferPolicyIdCall {
                     newPolicyId: policy_id,
@@ -511,7 +543,11 @@ mod tests {
             let mut guard = ReceivePolicyGuard::new();
             guard.clear_emitted_events();
 
-            guard.burn_blocked_receipt(burner, receipt.abi_encode().into())?;
+            guard.burn_blocked_receipt(
+                &mut crate::storage::StorageCtx::test_writable(),
+                burner,
+                receipt.abi_encode().into(),
+            )?;
 
             guard.assert_emitted_events(vec![ReceivePolicyGuardEvent::ReceiptBurned(
                 IReceivePolicyGuard::ReceiptBurned {
@@ -553,13 +589,18 @@ mod tests {
             block_all_senders(receiver, receiver)?;
 
             token.transfer(
+                &mut crate::storage::StorageCtx::test_writable(),
                 originator,
                 ITIP20::transferCall {
                     to: receiver,
                     amount,
                 },
             )?;
-            token.pause(admin, ITIP20::pauseCall {})?;
+            token.pause(
+                &mut crate::storage::StorageCtx::test_writable(),
+                admin,
+                ITIP20::pauseCall {},
+            )?;
 
             let receipt = ClaimReceiptV1::new(
                 token.address(),
@@ -573,7 +614,12 @@ mod tests {
                 B256::ZERO,
             );
             let mut guard = ReceivePolicyGuard::new();
-            let result = guard.claim(receiver, receiver, receipt.abi_encode().into());
+            let result = guard.claim(
+                &mut crate::storage::StorageCtx::test_writable(),
+                receiver,
+                receiver,
+                receipt.abi_encode().into(),
+            );
             assert_eq!(result.unwrap_err(), TIP20Error::contract_paused().into());
 
             Ok(())
@@ -610,6 +656,7 @@ mod tests {
             block_all_senders(receiver_c, receiver_c)?;
 
             token_a.transfer(
+                &mut crate::storage::StorageCtx::test_writable(),
                 originator,
                 ITIP20::transferCall {
                     to: receiver_a,
@@ -617,6 +664,7 @@ mod tests {
                 },
             )?;
             token_a.transfer(
+                &mut crate::storage::StorageCtx::test_writable(),
                 originator,
                 ITIP20::transferCall {
                     to: receiver_b,
@@ -624,6 +672,7 @@ mod tests {
                 },
             )?;
             token_b.transfer(
+                &mut crate::storage::StorageCtx::test_writable(),
                 originator,
                 ITIP20::transferCall {
                     to: receiver_c,
@@ -680,7 +729,12 @@ mod tests {
                 guard.balance_of(receipt_c.abi_encode().into())?
             );
 
-            guard.claim(receiver_a, receiver_a, receipt_a.abi_encode().into())?;
+            guard.claim(
+                &mut crate::storage::StorageCtx::test_writable(),
+                receiver_a,
+                receiver_a,
+                receipt_a.abi_encode().into(),
+            )?;
             assert_eq!(
                 token_a.balance_of(ITIP20::balanceOfCall {
                     account: RECEIVE_POLICY_GUARD_ADDRESS
@@ -694,7 +748,12 @@ mod tests {
                 guard.balance_of(receipt_c.abi_encode().into())?
             );
 
-            guard.claim(recovery, recovery, receipt_b.abi_encode().into())?;
+            guard.claim(
+                &mut crate::storage::StorageCtx::test_writable(),
+                recovery,
+                recovery,
+                receipt_b.abi_encode().into(),
+            )?;
             assert_eq!(
                 token_a.balance_of(ITIP20::balanceOfCall {
                     account: RECEIVE_POLICY_GUARD_ADDRESS
@@ -743,6 +802,7 @@ mod tests {
                 (BlockedReason::RECEIVE_POLICY, InboundKind::__Invalid),
             ] {
                 let result = guard.store_blocked(
+                    &mut crate::storage::StorageCtx::test_writable(),
                     token.address(),
                     Address::random(),
                     &Recipient::direct(Address::random()),
@@ -782,6 +842,7 @@ mod tests {
             let mut guard = ReceivePolicyGuard::new();
 
             let (nonce_a, blocked_at_a) = guard.store_blocked(
+                &mut crate::storage::StorageCtx::test_writable(),
                 token_a.address(),
                 originator_a,
                 &Recipient::direct(recipient),
@@ -792,6 +853,7 @@ mod tests {
                 memo,
             )?;
             let (nonce_b, blocked_at_b) = guard.store_blocked(
+                &mut crate::storage::StorageCtx::test_writable(),
                 token_b.address(),
                 originator_b,
                 &Recipient::direct(recipient),
@@ -946,18 +1008,34 @@ mod tests {
             );
 
             let mut guard = ReceivePolicyGuard::new();
-            assert_invalid_receipt(guard.claim(receiver, receiver, receipt.abi_encode().into()));
+            assert_invalid_receipt(guard.claim(
+                &mut crate::storage::StorageCtx::test_writable(),
+                receiver,
+                receiver,
+                receipt.abi_encode().into(),
+            ));
 
             block_all_senders(receiver, receiver)?;
             token.transfer(
+                &mut crate::storage::StorageCtx::test_writable(),
                 originator,
                 ITIP20::transferCall {
                     to: receiver,
                     amount,
                 },
             )?;
-            guard.claim(receiver, receiver, receipt.abi_encode().into())?;
-            assert_invalid_receipt(guard.claim(receiver, receiver, receipt.abi_encode().into()));
+            guard.claim(
+                &mut crate::storage::StorageCtx::test_writable(),
+                receiver,
+                receiver,
+                receipt.abi_encode().into(),
+            )?;
+            assert_invalid_receipt(guard.claim(
+                &mut crate::storage::StorageCtx::test_writable(),
+                receiver,
+                receiver,
+                receipt.abi_encode().into(),
+            ));
 
             Ok(())
         })
@@ -985,6 +1063,7 @@ mod tests {
             block_all_senders(recovery_receiver, recovery)?;
 
             token.transfer(
+                &mut crate::storage::StorageCtx::test_writable(),
                 originator,
                 ITIP20::transferCall {
                     to: receiver,
@@ -992,6 +1071,7 @@ mod tests {
                 },
             )?;
             token.transfer(
+                &mut crate::storage::StorageCtx::test_writable(),
                 originator,
                 ITIP20::transferCall {
                     to: recovery_receiver,
@@ -1023,9 +1103,15 @@ mod tests {
             );
 
             let mut guard = ReceivePolicyGuard::new();
-            assert_unauthorized(guard.claim(stranger, receiver, self_receipt.abi_encode().into()));
+            assert_unauthorized(guard.claim(
+                &mut crate::storage::StorageCtx::test_writable(),
+                stranger,
+                receiver,
+                self_receipt.abi_encode().into(),
+            ));
             for caller in [recovery_receiver, stranger] {
                 assert_unauthorized(guard.claim(
+                    &mut crate::storage::StorageCtx::test_writable(),
                     caller,
                     recovery_receiver,
                     recovery_receipt.abi_encode().into(),
@@ -1060,6 +1146,7 @@ mod tests {
             let mut guard = ReceivePolicyGuard::new();
             guard.clear_emitted_events();
             token.transfer(
+                &mut crate::storage::StorageCtx::test_writable(),
                 originator,
                 ITIP20::transferCall {
                     to: virtual_addr,
@@ -1089,7 +1176,12 @@ mod tests {
                 },
             )]);
             guard.clear_emitted_events();
-            guard.claim(VIRTUAL_MASTER, VIRTUAL_MASTER, receipt.abi_encode().into())?;
+            guard.claim(
+                &mut crate::storage::StorageCtx::test_writable(),
+                VIRTUAL_MASTER,
+                VIRTUAL_MASTER,
+                receipt.abi_encode().into(),
+            )?;
 
             guard.assert_emitted_events(vec![ReceivePolicyGuardEvent::ReceiptClaimed(
                 IReceivePolicyGuard::ReceiptClaimed {

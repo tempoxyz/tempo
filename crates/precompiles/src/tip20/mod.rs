@@ -219,8 +219,11 @@ impl TIP20Token {
     }
 
     /// Clears the legacy TIP-20 policy slot after its value has moved to TIP-403.
-    pub(crate) fn delete_legacy_transfer_policy_id(&mut self) -> Result<()> {
-        self.transfer_policy_id.delete()
+    pub(crate) fn delete_legacy_transfer_policy_id(
+        &mut self,
+        write: &mut crate::storage::WriteCtx,
+    ) -> Result<()> {
+        self.transfer_policy_id.delete(write)
     }
 
     /// Returns the PAUSE_ROLE constant
@@ -272,6 +275,7 @@ impl TIP20Token {
     /// - `InvalidTransferPolicyId` — policy does not exist in the [`TIP403Registry`]
     pub fn change_transfer_policy_id(
         &mut self,
+        write: &mut crate::storage::WriteCtx,
         msg_sender: Address,
         call: ITIP20::changeTransferPolicyIdCall,
     ) -> Result<()> {
@@ -285,15 +289,19 @@ impl TIP20Token {
         }
 
         if StorageCtx.spec().is_t9() {
-            TIP403Registry::new().set_token_transfer_policy(self.address, call.newPolicyId)?;
+            TIP403Registry::new().set_token_transfer_policy(
+                write,
+                self.address,
+                call.newPolicyId,
+            )?;
         } else {
-            self.transfer_policy_id.write(call.newPolicyId)?;
+            self.transfer_policy_id.write(write, call.newPolicyId)?;
         }
 
-        self.emit_event(TIP20Event::transfer_policy_update(
-            msg_sender,
-            call.newPolicyId,
-        ))
+        self.emit_event(
+            write,
+            TIP20Event::transfer_policy_update(msg_sender, call.newPolicyId),
+        )
     }
 
     /// Sets a new supply cap. Must be ≥ current total supply and ≤ [`U128_MAX`].
@@ -304,6 +312,7 @@ impl TIP20Token {
     /// - `SupplyCapExceeded` — new cap exceeds [`U128_MAX`]
     pub fn set_supply_cap(
         &mut self,
+        write: &mut crate::storage::WriteCtx,
         msg_sender: Address,
         call: ITIP20::setSupplyCapCall,
     ) -> Result<()> {
@@ -316,9 +325,12 @@ impl TIP20Token {
             return Err(TIP20Error::supply_cap_exceeded().into());
         }
 
-        self.supply_cap.write(call.newSupplyCap)?;
+        self.supply_cap.write(write, call.newSupplyCap)?;
 
-        self.emit_event(TIP20Event::supply_cap_update(msg_sender, call.newSupplyCap))
+        self.emit_event(
+            write,
+            TIP20Event::supply_cap_update(msg_sender, call.newSupplyCap),
+        )
     }
 
     // ========== TIP-1026: Logo URI ==========
@@ -381,26 +393,35 @@ impl TIP20Token {
     ///   [`Self::ALLOWED_LOGO_URI_SCHEMES`]
     pub fn set_logo_uri(
         &mut self,
+        write: &mut crate::storage::WriteCtx,
         msg_sender: Address,
         call: ITIP20::setLogoURICall,
     ) -> Result<()> {
         self.check_role(msg_sender, DEFAULT_ADMIN_ROLE)?;
-        self.write_logo_uri(msg_sender, call.newLogoURI)
+        self.write_logo_uri(write, msg_sender, call.newLogoURI)
     }
 
     /// Internal helper: runs [`Self::validate_logo_uri`] (length cap + scheme allowlist), stores the
     /// value, and emits `LogoURIUpdated`.
     ///
     /// **IMPORTANT:** this function performs NO role check. It is the caller's responsibility.
-    pub(crate) fn write_logo_uri(&mut self, updater: Address, new_logo_uri: String) -> Result<()> {
+    pub(crate) fn write_logo_uri(
+        &mut self,
+        write: &mut crate::storage::WriteCtx,
+        updater: Address,
+        new_logo_uri: String,
+    ) -> Result<()> {
         Self::validate_logo_uri(&new_logo_uri)?;
 
-        self.logo_uri.write(new_logo_uri.clone())?;
+        self.logo_uri.write(write, new_logo_uri.clone())?;
 
-        self.emit_event(TIP20Event::LogoURIUpdated(ITIP20::LogoURIUpdated {
-            updater,
-            newLogoURI: new_logo_uri,
-        }))
+        self.emit_event(
+            write,
+            TIP20Event::LogoURIUpdated(ITIP20::LogoURIUpdated {
+                updater,
+                newLogoURI: new_logo_uri,
+            }),
+        )
     }
 
     // ========== End TIP-1026 ==========
@@ -409,22 +430,32 @@ impl TIP20Token {
     ///
     /// # Errors
     /// - `Unauthorized` — caller does not hold `PAUSE_ROLE`
-    pub fn pause(&mut self, msg_sender: Address, _call: ITIP20::pauseCall) -> Result<()> {
+    pub fn pause(
+        &mut self,
+        write: &mut crate::storage::WriteCtx,
+        msg_sender: Address,
+        _call: ITIP20::pauseCall,
+    ) -> Result<()> {
         self.check_role(msg_sender, PAUSE_ROLE)?;
-        self.paused.write(true)?;
+        self.paused.write(write, true)?;
 
-        self.emit_event(TIP20Event::pause_state_update(msg_sender, true))
+        self.emit_event(write, TIP20Event::pause_state_update(msg_sender, true))
     }
 
     /// Unpauses token transfers.
     ///
     /// # Errors
     /// - `Unauthorized` — caller does not hold `UNPAUSE_ROLE`
-    pub fn unpause(&mut self, msg_sender: Address, _call: ITIP20::unpauseCall) -> Result<()> {
+    pub fn unpause(
+        &mut self,
+        write: &mut crate::storage::WriteCtx,
+        msg_sender: Address,
+        _call: ITIP20::unpauseCall,
+    ) -> Result<()> {
         self.check_role(msg_sender, UNPAUSE_ROLE)?;
-        self.paused.write(false)?;
+        self.paused.write(write, false)?;
 
-        self.emit_event(TIP20Event::pause_state_update(msg_sender, false))
+        self.emit_event(write, TIP20Event::pause_state_update(msg_sender, false))
     }
 
     /// Stages a new quote token. Must be finalized via [`Self::complete_quote_token_update`].
@@ -437,6 +468,7 @@ impl TIP20Token {
     ///   USD currency mismatch
     pub fn set_next_quote_token(
         &mut self,
+        write: &mut crate::storage::WriteCtx,
         msg_sender: Address,
         call: ITIP20::setNextQuoteTokenCall,
     ) -> Result<()> {
@@ -461,12 +493,12 @@ impl TIP20Token {
             }
         }
 
-        self.next_quote_token.write(call.newQuoteToken)?;
+        self.next_quote_token.write(write, call.newQuoteToken)?;
 
-        self.emit_event(TIP20Event::next_quote_token_set(
-            msg_sender,
-            call.newQuoteToken,
-        ))
+        self.emit_event(
+            write,
+            TIP20Event::next_quote_token_set(msg_sender, call.newQuoteToken),
+        )
     }
 
     /// Finalizes the staged quote token update. Walks the quote-token chain to detect cycles
@@ -477,6 +509,7 @@ impl TIP20Token {
     /// - `InvalidQuoteToken` — update would create a cycle in the quote-token graph
     pub fn complete_quote_token_update(
         &mut self,
+        write: &mut crate::storage::WriteCtx,
         msg_sender: Address,
         _call: ITIP20::completeQuoteTokenUpdateCall,
     ) -> Result<()> {
@@ -496,9 +529,12 @@ impl TIP20Token {
         }
 
         // Update the quote token
-        self.quote_token.write(next_quote_token)?;
+        self.quote_token.write(write, next_quote_token)?;
 
-        self.emit_event(TIP20Event::quote_token_update(msg_sender, next_quote_token))
+        self.emit_event(
+            write,
+            TIP20Event::quote_token_update(msg_sender, next_quote_token),
+        )
     }
 
     // Token operations
@@ -514,17 +550,22 @@ impl TIP20Token {
     /// - `InvalidRecipient` — (+T3) recipient is zero or a TIP-20 prefix address
     /// - `PolicyForbids` — TIP-403 policy rejects the mint recipient
     /// - `SupplyCapExceeded` — minting would push total supply above the cap
-    pub fn mint(&mut self, msg_sender: Address, call: ITIP20::mintCall) -> Result<()> {
+    pub fn mint(
+        &mut self,
+        write: &mut crate::storage::WriteCtx,
+        msg_sender: Address,
+        call: ITIP20::mintCall,
+    ) -> Result<()> {
         let Some((total_supply, to)) =
-            self.validate_mint(msg_sender, call.to, call.amount, B256::ZERO)?
+            self.validate_mint(write, msg_sender, call.to, call.amount, B256::ZERO)?
         else {
             return Ok(());
         };
 
-        self._mint(&to, total_supply, call.amount)?;
-        self.emit_event(TIP20Event::mint(call.to, call.amount))?;
+        self._mint(write, &to, total_supply, call.amount)?;
+        self.emit_event(write, TIP20Event::mint(call.to, call.amount))?;
         if let Some(hop) = to.build_virtual_transfer_event(call.amount) {
-            self.emit_event(hop)?;
+            self.emit_event(write, hop)?;
         }
 
         Ok(())
@@ -533,31 +574,36 @@ impl TIP20Token {
     /// Like [`Self::mint`], but attaches a 32-byte memo.
     pub fn mint_with_memo(
         &mut self,
+        write: &mut crate::storage::WriteCtx,
         msg_sender: Address,
         call: ITIP20::mintWithMemoCall,
     ) -> Result<()> {
         let Some((total_supply, to)) =
-            self.validate_mint(msg_sender, call.to, call.amount, call.memo)?
+            self.validate_mint(write, msg_sender, call.to, call.amount, call.memo)?
         else {
             return Ok(());
         };
 
-        self._mint(&to, total_supply, call.amount)?;
-        self.emit_event(TIP20Event::transfer_with_memo(
-            Address::ZERO,
-            call.to,
-            call.amount,
-            call.memo,
-        ))?;
-        self.emit_event(TIP20Event::mint(call.to, call.amount))?;
+        self._mint(write, &to, total_supply, call.amount)?;
+        self.emit_event(
+            write,
+            TIP20Event::transfer_with_memo(Address::ZERO, call.to, call.amount, call.memo),
+        )?;
+        self.emit_event(write, TIP20Event::mint(call.to, call.amount))?;
         if let Some(hop) = to.build_virtual_transfer_event(call.amount) {
-            self.emit_event(hop)?;
+            self.emit_event(write, hop)?;
         }
         Ok(())
     }
 
     /// Internal helper to mint new tokens and update balances.
-    pub(crate) fn _mint(&mut self, to: &Recipient, total_supply: U256, amount: U256) -> Result<()> {
+    pub(crate) fn _mint(
+        &mut self,
+        write: &mut crate::storage::WriteCtx,
+        to: &Recipient,
+        total_supply: U256,
+        amount: U256,
+    ) -> Result<()> {
         let new_supply = total_supply
             .checked_add(amount)
             .ok_or(TempoPrecompileError::under_overflow())?;
@@ -567,12 +613,12 @@ impl TIP20Token {
             return Err(TIP20Error::supply_cap_exceeded().into());
         }
 
-        self.handle_rewards_on_mint(to.target, amount)?;
+        self.handle_rewards_on_mint(write, to.target, amount)?;
 
-        self.set_total_supply(new_supply)?;
-        self.increment_balance(to.target, amount)?;
+        self.set_total_supply(write, new_supply)?;
+        self.increment_balance(write, to.target, amount)?;
 
-        self.emit_event(to.build_transfer_event(Address::ZERO, amount))
+        self.emit_event(write, to.build_transfer_event(Address::ZERO, amount))
     }
 
     /// Burns `amount` from the caller's balance and reduces total supply.
@@ -581,26 +627,30 @@ impl TIP20Token {
     /// - `ContractPaused` — (+T3) token is paused
     /// - `Unauthorized` — caller does not hold the `ISSUER_ROLE` role
     /// - `InsufficientBalance` — caller balance lower than burn amount
-    pub fn burn(&mut self, msg_sender: Address, call: ITIP20::burnCall) -> Result<()> {
-        self._burn(msg_sender, call.amount)?;
-        self.emit_event(TIP20Event::burn(msg_sender, call.amount))
+    pub fn burn(
+        &mut self,
+        write: &mut crate::storage::WriteCtx,
+        msg_sender: Address,
+        call: ITIP20::burnCall,
+    ) -> Result<()> {
+        self._burn(write, msg_sender, call.amount)?;
+        self.emit_event(write, TIP20Event::burn(msg_sender, call.amount))
     }
 
     /// Like [`Self::burn`], but attaches a 32-byte memo.
     pub fn burn_with_memo(
         &mut self,
+        write: &mut crate::storage::WriteCtx,
         msg_sender: Address,
         call: ITIP20::burnWithMemoCall,
     ) -> Result<()> {
-        self._burn(msg_sender, call.amount)?;
+        self._burn(write, msg_sender, call.amount)?;
 
-        self.emit_event(TIP20Event::transfer_with_memo(
-            msg_sender,
-            Address::ZERO,
-            call.amount,
-            call.memo,
-        ))?;
-        self.emit_event(TIP20Event::burn(msg_sender, call.amount))
+        self.emit_event(
+            write,
+            TIP20Event::transfer_with_memo(msg_sender, Address::ZERO, call.amount, call.memo),
+        )?;
+        self.emit_event(write, TIP20Event::burn(msg_sender, call.amount))
     }
 
     /// Burns tokens from addresses blocked by [`TIP403Registry`] policy. Where `owner` refers to
@@ -613,6 +663,7 @@ impl TIP20Token {
     /// - `ProtectedAddress` — cannot burn from protected system custody addresses
     pub fn burn_blocked(
         &mut self,
+        write: &mut crate::storage::WriteCtx,
         msg_sender: Address,
         owner: Address,
         amount: U256,
@@ -649,7 +700,7 @@ impl TIP20Token {
         } else {
             RECEIVE_POLICY_GUARD_ADDRESS
         };
-        self._transfer(burn_from, &Recipient::direct(Address::ZERO), amount)?;
+        self._transfer(write, burn_from, &Recipient::direct(Address::ZERO), amount)?;
 
         let total_supply = self.total_supply()?;
         let new_supply =
@@ -660,19 +711,24 @@ impl TIP20Token {
                     amount,
                     self.address,
                 ))?;
-        self.set_total_supply(new_supply)?;
+        self.set_total_supply(write, new_supply)?;
 
-        self.emit_event(TIP20Event::burn_blocked(owner, amount))
+        self.emit_event(write, TIP20Event::burn_blocked(owner, amount))
     }
 
-    fn _burn(&mut self, msg_sender: Address, amount: U256) -> Result<()> {
+    fn _burn(
+        &mut self,
+        write: &mut crate::storage::WriteCtx,
+        msg_sender: Address,
+        amount: U256,
+    ) -> Result<()> {
         // Validate issuer role and (+T3) ensure token is not paused
         if self.storage.spec().is_t3() {
             self.check_not_paused()?;
         }
         self.check_role(msg_sender, ISSUER_ROLE)?;
 
-        self._transfer(msg_sender, &Recipient::direct(Address::ZERO), amount)?;
+        self._transfer(write, msg_sender, &Recipient::direct(Address::ZERO), amount)?;
 
         let total_supply = self.total_supply()?;
         let new_supply =
@@ -683,7 +739,7 @@ impl TIP20Token {
                     amount,
                     self.address,
                 ))?;
-        self.set_total_supply(new_supply)
+        self.set_total_supply(write, new_supply)
     }
 
     /// Sets `spender`'s allowance to `amount` for the caller's tokens.
@@ -692,9 +748,15 @@ impl TIP20Token {
     ///
     /// # Errors
     /// - `SpendingLimitExceeded` — new allowance exceeds access key spending limit
-    pub fn approve(&mut self, msg_sender: Address, call: ITIP20::approveCall) -> Result<bool> {
+    pub fn approve(
+        &mut self,
+        write: &mut crate::storage::WriteCtx,
+        msg_sender: Address,
+        call: ITIP20::approveCall,
+    ) -> Result<bool> {
         // Check and update spending limits for access keys
         AccountKeychain::new().authorize_approve(
+            write,
             msg_sender,
             self.address,
             self.get_allowance(msg_sender, call.spender)?,
@@ -702,9 +764,12 @@ impl TIP20Token {
         )?;
 
         // Set the new allowance
-        self.set_allowance(msg_sender, call.spender, call.amount)?;
+        self.set_allowance(write, msg_sender, call.spender, call.amount)?;
 
-        self.emit_event(TIP20Event::approval(msg_sender, call.spender, call.amount))?;
+        self.emit_event(
+            write,
+            TIP20Event::approval(msg_sender, call.spender, call.amount),
+        )?;
 
         Ok(true)
     }
@@ -742,7 +807,11 @@ impl TIP20Token {
     /// # Errors
     /// - `PermitExpired` — current timestamp exceeds permit deadline
     /// - `InvalidSignature` — ECDSA recovery failed or recovered signer ≠ owner
-    pub fn permit(&mut self, call: ITIP20::permitCall) -> Result<()> {
+    pub fn permit(
+        &mut self,
+        write: &mut crate::storage::WriteCtx,
+        call: ITIP20::permitCall,
+    ) -> Result<()> {
         // 1. Check deadline
         if self.storage.timestamp() > call.deadline {
             return Err(TIP20Error::permit_expired().into());
@@ -785,16 +854,20 @@ impl TIP20Token {
 
         // 5. Increment nonce
         self.permit_nonces[call.owner].write(
+            write,
             nonce
                 .checked_add(U256::from(1))
                 .ok_or(TempoPrecompileError::under_overflow())?,
         )?;
 
         // 6. Set allowance
-        self.set_allowance(call.owner, call.spender, call.value)?;
+        self.set_allowance(write, call.owner, call.spender, call.value)?;
 
         // 7. Emit Approval event
-        self.emit_event(TIP20Event::approval(call.owner, call.spender, call.value))
+        self.emit_event(
+            write,
+            TIP20Event::approval(call.owner, call.spender, call.value),
+        )
     }
 
     /// Transfers `amount` tokens from the caller to `to`. Enforces compliance via the
@@ -806,17 +879,22 @@ impl TIP20Token {
     /// - `PolicyForbids` — TIP-403 policy rejects sender or recipient
     /// - `SpendingLimitExceeded` — access key spending limit exceeded
     /// - `InsufficientBalance` — sender balance lower than transfer amount
-    pub fn transfer(&mut self, msg_sender: Address, call: ITIP20::transferCall) -> Result<bool> {
+    pub fn transfer(
+        &mut self,
+        write: &mut crate::storage::WriteCtx,
+        msg_sender: Address,
+        call: ITIP20::transferCall,
+    ) -> Result<bool> {
         trace!(%msg_sender, ?call, "transferring TIP20");
         let Some(to) =
-            self.validate_transfer(None, msg_sender, call.to, call.amount, B256::ZERO)?
+            self.validate_transfer(write, None, msg_sender, call.to, call.amount, B256::ZERO)?
         else {
             return Ok(true);
         };
 
-        self._transfer(msg_sender, &to, call.amount)?;
+        self._transfer(write, msg_sender, &to, call.amount)?;
         if let Some(hop) = to.build_virtual_transfer_event(call.amount) {
-            self.emit_event(hop)?;
+            self.emit_event(write, hop)?;
         }
 
         Ok(true)
@@ -833,10 +911,12 @@ impl TIP20Token {
     /// - `InsufficientBalance` — `from` balance lower than transfer amount
     pub fn transfer_from(
         &mut self,
+        write: &mut crate::storage::WriteCtx,
         msg_sender: Address,
         call: ITIP20::transferFromCall,
     ) -> Result<bool> {
         let Some(to) = self.validate_transfer(
+            write,
             Some(msg_sender),
             call.from,
             call.to,
@@ -847,9 +927,9 @@ impl TIP20Token {
             return Ok(true);
         };
 
-        self._transfer(call.from, &to, call.amount)?;
+        self._transfer(write, call.from, &to, call.amount)?;
         if let Some(hop) = to.build_virtual_transfer_event(call.amount) {
-            self.emit_event(hop)?;
+            self.emit_event(write, hop)?;
         }
 
         Ok(true)
@@ -858,24 +938,29 @@ impl TIP20Token {
     /// Like [`Self::transfer_from`], but attaches a 32-byte memo.
     pub fn transfer_from_with_memo(
         &mut self,
+        write: &mut crate::storage::WriteCtx,
         msg_sender: Address,
         call: ITIP20::transferFromWithMemoCall,
     ) -> Result<bool> {
-        let Some(to) =
-            self.validate_transfer(Some(msg_sender), call.from, call.to, call.amount, call.memo)?
-        else {
-            return Ok(true);
-        };
-
-        self._transfer(call.from, &to, call.amount)?;
-        self.emit_event(TIP20Event::transfer_with_memo(
+        let Some(to) = self.validate_transfer(
+            write,
+            Some(msg_sender),
             call.from,
             call.to,
             call.amount,
             call.memo,
-        ))?;
+        )?
+        else {
+            return Ok(true);
+        };
+
+        self._transfer(write, call.from, &to, call.amount)?;
+        self.emit_event(
+            write,
+            TIP20Event::transfer_with_memo(call.from, call.to, call.amount, call.memo),
+        )?;
         if let Some(hop) = to.build_virtual_transfer_event(call.amount) {
-            self.emit_event(hop)?;
+            self.emit_event(write, hop)?;
         }
         Ok(true)
     }
@@ -901,6 +986,7 @@ impl TIP20Token {
     /// - `InsufficientBalance` — `from` balance lower than transfer amount
     pub fn system_transfer_from(
         &mut self,
+        write: &mut crate::storage::WriteCtx,
         caller: Address,
         from: Address,
         amount: U256,
@@ -911,13 +997,14 @@ impl TIP20Token {
             return Err(TIP20Error::unauthorized().into());
         }
 
-        let Some(to) = self.validate_transfer(None, from, caller, amount, B256::ZERO)? else {
+        let Some(to) = self.validate_transfer(write, None, from, caller, amount, B256::ZERO)?
+        else {
             return Ok(true);
         };
 
-        self._transfer(from, &to, amount)?;
+        self._transfer(write, from, &to, amount)?;
         if let Some(hop) = to.build_virtual_transfer_event(amount) {
-            self.emit_event(hop)?;
+            self.emit_event(write, hop)?;
         }
 
         Ok(true)
@@ -935,6 +1022,7 @@ impl TIP20Token {
     /// cannot represent a pending guarded payment.
     pub(crate) fn channel_reserve_transfer(
         &mut self,
+        write: &mut crate::storage::WriteCtx,
         from: Address,
         to: Recipient,
         amount: U256,
@@ -948,23 +1036,29 @@ impl TIP20Token {
 
         self.check_not_paused()?;
         to.validate()?;
-        self.check_and_update_spending_limit(from, amount)?;
+        self.check_and_update_spending_limit(write, from, amount)?;
 
         if to.target == RECEIVE_POLICY_GUARD_ADDRESS {
             return Err(ReceivePolicyGuardError::address_reserved().into());
         }
         self.ensure_receive_policy_authorized(receive_policy_sender, to.target)?;
 
-        self._transfer(from, &to, amount)?;
+        self._transfer(write, from, &to, amount)?;
         if let Some(hop) = to.build_virtual_transfer_event(amount) {
-            self.emit_event(hop)?;
+            self.emit_event(write, hop)?;
         }
 
         Ok(())
     }
 
     /// Debits `spender`'s allowance on `owner`. No-op when unlimited.
-    fn consume_allowance(&mut self, owner: Address, spender: Address, amount: U256) -> Result<()> {
+    fn consume_allowance(
+        &mut self,
+        write: &mut crate::storage::WriteCtx,
+        owner: Address,
+        spender: Address,
+        amount: U256,
+    ) -> Result<()> {
         let allowed = self.get_allowance(owner, spender)?;
         if amount > allowed {
             return Err(TIP20Error::insufficient_allowance().into());
@@ -974,7 +1068,7 @@ impl TIP20Token {
             let new_allowance = allowed
                 .checked_sub(amount)
                 .ok_or(TIP20Error::insufficient_allowance())?;
-            self.set_allowance(owner, spender, new_allowance)?;
+            self.set_allowance(write, owner, spender, new_allowance)?;
         }
         Ok(())
     }
@@ -982,23 +1076,23 @@ impl TIP20Token {
     /// Like [`Self::transfer`], but attaches a 32-byte memo.
     pub fn transfer_with_memo(
         &mut self,
+        write: &mut crate::storage::WriteCtx,
         msg_sender: Address,
         call: ITIP20::transferWithMemoCall,
     ) -> Result<()> {
-        let Some(to) = self.validate_transfer(None, msg_sender, call.to, call.amount, call.memo)?
+        let Some(to) =
+            self.validate_transfer(write, None, msg_sender, call.to, call.amount, call.memo)?
         else {
             return Ok(());
         };
 
-        self._transfer(msg_sender, &to, call.amount)?;
-        self.emit_event(TIP20Event::transfer_with_memo(
-            msg_sender,
-            call.to,
-            call.amount,
-            call.memo,
-        ))?;
+        self._transfer(write, msg_sender, &to, call.amount)?;
+        self.emit_event(
+            write,
+            TIP20Event::transfer_with_memo(msg_sender, call.to, call.amount, call.memo),
+        )?;
         if let Some(hop) = to.build_virtual_transfer_event(call.amount) {
-            self.emit_event(hop)?;
+            self.emit_event(write, hop)?;
         }
         Ok(())
     }
@@ -1031,6 +1125,7 @@ impl TIP20Token {
     /// default admin role. Called once by [`TIP20Factory`] during token creation.
     pub fn initialize(
         &mut self,
+        write: &mut crate::storage::WriteCtx,
         msg_sender: Address,
         name: &str,
         symbol: &str,
@@ -1041,39 +1136,53 @@ impl TIP20Token {
         trace!(%name, address=%self.address, "Initializing token");
 
         // must ensure the account is not empty, by setting some code
-        self.__initialize()?;
+        self.__initialize(write)?;
 
-        self.name.write(name.to_string())?;
-        self.symbol.write(symbol.to_string())?;
-        self.currency.write(currency.to_string())?;
+        self.name.write(write, name.to_string())?;
+        self.symbol.write(write, symbol.to_string())?;
+        self.currency.write(write, currency.to_string())?;
 
-        self.quote_token.write(quote_token)?;
+        self.quote_token.write(write, quote_token)?;
         // Initialize nextQuoteToken to the same value as quoteToken
-        self.next_quote_token.write(quote_token)?;
+        self.next_quote_token.write(write, quote_token)?;
 
         // Set default values
-        self.supply_cap.write(U128_MAX)?;
+        self.supply_cap.write(write, U128_MAX)?;
         if StorageCtx.spec().is_t9() {
-            TIP403Registry::new().set_token_transfer_policy(self.address, ALLOW_ALL_POLICY_ID)?;
+            TIP403Registry::new().set_token_transfer_policy(
+                write,
+                self.address,
+                ALLOW_ALL_POLICY_ID,
+            )?;
         } else {
-            self.transfer_policy_id.write(ALLOW_ALL_POLICY_ID)?;
+            self.transfer_policy_id.write(write, ALLOW_ALL_POLICY_ID)?;
         }
 
         // Initialize roles system and grant admin role
-        self.initialize_roles()?;
-        self.grant_default_admin(msg_sender, admin)
+        self.initialize_roles(write)?;
+        self.grant_default_admin(write, msg_sender, admin)
     }
 
     fn get_balance(&self, account: Address) -> Result<U256> {
         self.balances[account].read()
     }
 
-    fn set_balance(&mut self, account: Address, amount: U256) -> Result<()> {
-        self.balances[account].write(amount)
+    fn set_balance(
+        &mut self,
+        write: &mut crate::storage::WriteCtx,
+        account: Address,
+        amount: U256,
+    ) -> Result<()> {
+        self.balances[account].write(write, amount)
     }
 
-    pub fn increment_balance(&mut self, account: Address, amount: U256) -> Result<()> {
-        self.balances[account].sinc(amount).map_err(|err| {
+    pub fn increment_balance(
+        &mut self,
+        write: &mut crate::storage::WriteCtx,
+        account: Address,
+        amount: U256,
+    ) -> Result<()> {
+        self.balances[account].sinc(write, amount).map_err(|err| {
             if err == TempoPrecompileError::under_overflow() {
                 TIP20Error::supply_cap_exceeded().into()
             } else {
@@ -1082,9 +1191,14 @@ impl TIP20Token {
         })
     }
 
-    pub fn decrement_balance(&mut self, account: Address, amount: U256) -> Result<()> {
+    pub fn decrement_balance(
+        &mut self,
+        write: &mut crate::storage::WriteCtx,
+        account: Address,
+        amount: U256,
+    ) -> Result<()> {
         self.balances[account]
-            .sdec(amount)
+            .sdec(write, amount)
             .map_err(|err| match err {
                 TempoPrecompileError::StorageDeltaUnderflow(current) => {
                     TIP20Error::insufficient_balance(current, amount, self.address).into()
@@ -1097,12 +1211,22 @@ impl TIP20Token {
         self.allowances[owner][spender].read()
     }
 
-    fn set_allowance(&mut self, owner: Address, spender: Address, amount: U256) -> Result<()> {
-        self.allowances[owner][spender].write(amount)
+    fn set_allowance(
+        &mut self,
+        write: &mut crate::storage::WriteCtx,
+        owner: Address,
+        spender: Address,
+        amount: U256,
+    ) -> Result<()> {
+        self.allowances[owner][spender].write(write, amount)
     }
 
-    fn set_total_supply(&mut self, amount: U256) -> Result<()> {
-        self.total_supply.write(amount)
+    fn set_total_supply(
+        &mut self,
+        write: &mut crate::storage::WriteCtx,
+        amount: U256,
+    ) -> Result<()> {
+        self.total_supply.write(write, amount)
     }
 
     pub fn check_not_paused(&self) -> Result<()> {
@@ -1123,6 +1247,7 @@ impl TIP20Token {
     /// Returns `None` when funds were blocked, and the caller should return immediately.
     fn validate_transfer(
         &mut self,
+        write: &mut crate::storage::WriteCtx,
         spender: Option<Address>,
         from: Address,
         to: Address,
@@ -1135,12 +1260,12 @@ impl TIP20Token {
         self.ensure_transfer_authorized(from, to.target)?;
 
         if let Some(spender) = spender {
-            self.consume_allowance(from, spender, amount)?;
+            self.consume_allowance(write, from, spender, amount)?;
         } else {
-            self.check_and_update_spending_limit(from, amount)?;
+            self.check_and_update_spending_limit(write, from, amount)?;
         }
 
-        if self.validate_inbound_or_block(from, &to, amount, None, memo)? {
+        if self.validate_inbound_or_block(write, from, &to, amount, None, memo)? {
             return Ok(None);
         }
 
@@ -1155,6 +1280,7 @@ impl TIP20Token {
     /// Returns `None` when funds were minted and blocked, and the caller should return immediately.
     fn validate_mint(
         &mut self,
+        write: &mut crate::storage::WriteCtx,
         msg_sender: Address,
         to: Address,
         amount: U256,
@@ -1178,7 +1304,14 @@ impl TIP20Token {
             return Err(TIP20Error::policy_forbids().into());
         }
 
-        if self.validate_inbound_or_block(msg_sender, &to, amount, Some(total_supply), memo)? {
+        if self.validate_inbound_or_block(
+            write,
+            msg_sender,
+            &to,
+            amount,
+            Some(total_supply),
+            memo,
+        )? {
             return Ok(None);
         }
 
@@ -1252,15 +1385,26 @@ impl TIP20Token {
     ///
     /// # Errors
     /// - `SpendingLimitExceeded` — access key spending limit exceeded
-    pub fn check_and_update_spending_limit(&mut self, from: Address, amount: U256) -> Result<()> {
-        AccountKeychain::new().authorize_transfer(from, self.address, amount)
+    pub fn check_and_update_spending_limit(
+        &mut self,
+        write: &mut crate::storage::WriteCtx,
+        from: Address,
+        amount: U256,
+    ) -> Result<()> {
+        AccountKeychain::new().authorize_transfer(write, from, self.address, amount)
     }
 
     /// Core transfer: debits `from`, credits `to.target`, emits `Transfer(from, event_addr, amount)`.
     ///
     /// For virtual recipients the event address is the virtual alias; the balance update always
     /// targets `to.target` (the resolved master).
-    pub fn _transfer(&mut self, from: Address, to: &Recipient, amount: U256) -> Result<()> {
+    pub fn _transfer(
+        &mut self,
+        write: &mut crate::storage::WriteCtx,
+        from: Address,
+        to: &Recipient,
+        amount: U256,
+    ) -> Result<()> {
         let from_balance = if !self.storage.spec().is_t8() {
             let from_balance = self.get_balance(from)?;
             if amount > from_balance {
@@ -1273,7 +1417,7 @@ impl TIP20Token {
             None
         };
 
-        self.handle_rewards_on_transfer(from, to.target, amount)?;
+        self.handle_rewards_on_transfer(write, from, to.target, amount)?;
 
         // Adjust balances
         //
@@ -1285,17 +1429,17 @@ impl TIP20Token {
                 .checked_sub(amount)
                 .ok_or(TempoPrecompileError::under_overflow())?;
 
-            self.set_balance(from, new_from_balance)?;
+            self.set_balance(write, from, new_from_balance)?;
         } else {
             // post-T8 path
-            self.decrement_balance(from, amount)?;
+            self.decrement_balance(write, from, amount)?;
         }
 
         if to.target != Address::ZERO {
-            self.increment_balance(to.target, amount)?;
+            self.increment_balance(write, to.target, amount)?;
         }
 
-        self.emit_event(to.build_transfer_event(from, amount))
+        self.emit_event(write, to.build_transfer_event(from, amount))
     }
 
     /// Validates the receive policy of `to.target`. If blocked, moves the funds into the guard
@@ -1303,6 +1447,7 @@ impl TIP20Token {
     /// authorized and the caller should proceed with the normal transfer or mint.
     pub(crate) fn validate_inbound_or_block(
         &mut self,
+        write: &mut crate::storage::WriteCtx,
         originator: Address,
         to: &Recipient,
         amount: U256,
@@ -1325,15 +1470,16 @@ impl TIP20Token {
 
         let guard = Recipient::direct(RECEIVE_POLICY_GUARD_ADDRESS);
         let kind = if let Some(total_supply) = mint_total_supply {
-            self._mint(&guard, total_supply, amount)?;
-            self.emit_event(TIP20Event::mint(guard.target, amount))?;
+            self._mint(write, &guard, total_supply, amount)?;
+            self.emit_event(write, TIP20Event::mint(guard.target, amount))?;
             InboundKind::MINT
         } else {
-            self._transfer(originator, &guard, amount)?;
+            self._transfer(write, originator, &guard, amount)?;
             InboundKind::TRANSFER
         };
-        ReceivePolicyGuard::new()
-            .store_blocked(token, originator, to, recovery, amount, reason, kind, memo)?;
+        ReceivePolicyGuard::new().store_blocked(
+            write, token, originator, to, recovery, amount, reason, kind, memo,
+        )?;
 
         Ok(true)
     }
@@ -1342,6 +1488,7 @@ impl TIP20Token {
     /// revalidate the transfer and receive policies and meter the spending limit.
     pub(crate) fn release_blocked_funds(
         &mut self,
+        write: &mut crate::storage::WriteCtx,
         originator: Address,
         receiver: Address,
         to: Address,
@@ -1367,15 +1514,15 @@ impl TIP20Token {
                 return Err(TIP20Error::policy_forbids().into());
             }
             if let Some(addr) = recovery_mode.spending_account(recovery_auth) {
-                self.check_and_update_spending_limit(addr, amount)?;
+                self.check_and_update_spending_limit(write, addr, amount)?;
             }
         } else {
             self.ensure_authorized_as(&[(destination.target, AuthRole::recipient())])?;
         }
 
-        self._transfer(RECEIVE_POLICY_GUARD_ADDRESS, &destination, amount)?;
+        self._transfer(write, RECEIVE_POLICY_GUARD_ADDRESS, &destination, amount)?;
         if let Some(hop) = destination.build_virtual_transfer_event(amount) {
-            self.emit_event(hop)?;
+            self.emit_event(write, hop)?;
         }
         Ok(())
     }
@@ -1387,16 +1534,21 @@ impl TIP20Token {
     /// - `Paused` — token transfers are currently paused
     /// - `InsufficientBalance` — sender balance lower than fee amount
     /// - `SpendingLimitExceeded` — access key spending limit exceeded
-    pub fn transfer_fee_pre_tx(&mut self, from: Address, amount: U256) -> Result<()> {
+    pub fn transfer_fee_pre_tx(
+        &mut self,
+        write: &mut crate::storage::WriteCtx,
+        from: Address,
+        amount: U256,
+    ) -> Result<()> {
         // This function respects the token's pause state and will revert if the token is paused.
         // transfer_fee_post_tx is intentionally allowed to execute even when the token is paused.
         // This ensures that a transaction which pauses the token can still complete successfully and receive its fee refund.
         // Apart from this specific refund transfer, no other token transfers can occur after a pause event.
         self.check_not_paused()?;
-        self.check_and_update_spending_limit(from, amount)?;
+        self.check_and_update_spending_limit(write, from, amount)?;
 
         // Update rewards for the sender and get their reward recipient
-        let from_reward_recipient = self.update_rewards(from)?;
+        let from_reward_recipient = self.update_rewards(write, from)?;
 
         // If user is opted into rewards, decrease opted-in supply
         if from_reward_recipient != Address::ZERO {
@@ -1404,14 +1556,15 @@ impl TIP20Token {
                 .checked_sub(amount)
                 .ok_or(TempoPrecompileError::under_overflow())?;
             self.set_opted_in_supply(
+                write,
                 opted_in_supply
                     .try_into()
                     .map_err(|_| TempoPrecompileError::under_overflow())?,
             )?;
         }
 
-        self.decrement_balance(from, amount)?;
-        self.increment_balance(TIP_FEE_MANAGER_ADDRESS, amount)?;
+        self.decrement_balance(write, from, amount)?;
+        self.increment_balance(write, TIP_FEE_MANAGER_ADDRESS, amount)?;
 
         Ok(())
     }
@@ -1422,15 +1575,15 @@ impl TIP20Token {
     /// by the refund amount.
     pub fn transfer_fee_post_tx(
         &mut self,
+        write: &mut crate::storage::WriteCtx,
         to: Address,
         refund: U256,
         actual_spending: U256,
     ) -> Result<()> {
-        self.emit_event(TIP20Event::transfer(
-            to,
-            TIP_FEE_MANAGER_ADDRESS,
-            actual_spending,
-        ))?;
+        self.emit_event(
+            write,
+            TIP20Event::transfer(to, TIP_FEE_MANAGER_ADDRESS, actual_spending),
+        )?;
 
         // Exit early if there is no refund
         if refund.is_zero() {
@@ -1438,11 +1591,11 @@ impl TIP20Token {
         }
 
         if self.storage.spec().is_t1c() {
-            AccountKeychain::new().refund_spending_limit(to, self.address, refund)?;
+            AccountKeychain::new().refund_spending_limit(write, to, self.address, refund)?;
         }
 
         // Update rewards for the recipient and get their reward recipient
-        let to_reward_recipient = self.update_rewards(to)?;
+        let to_reward_recipient = self.update_rewards(write, to)?;
 
         // If user is opted into rewards, increase opted-in supply by refund amount
         if to_reward_recipient != Address::ZERO {
@@ -1450,14 +1603,15 @@ impl TIP20Token {
                 .checked_add(refund)
                 .ok_or(TempoPrecompileError::under_overflow())?;
             self.set_opted_in_supply(
+                write,
                 opted_in_supply
                     .try_into()
                     .map_err(|_| TempoPrecompileError::under_overflow())?,
             )?;
         }
 
-        self.decrement_balance(TIP_FEE_MANAGER_ADDRESS, refund)?;
-        self.increment_balance(to, refund)?;
+        self.decrement_balance(write, TIP_FEE_MANAGER_ADDRESS, refund)?;
+        self.increment_balance(write, to, refund)?;
 
         Ok(())
     }
@@ -1683,7 +1837,11 @@ pub(crate) mod tests {
                 .clear_events()
                 .apply()?;
 
-            token.mint(admin, ITIP20::mintCall { to: addr, amount })?;
+            token.mint(
+                &mut crate::storage::StorageCtx::test_writable(),
+                admin,
+                ITIP20::mintCall { to: addr, amount },
+            )?;
 
             assert_eq!(token.get_balance(addr)?, amount);
             assert_eq!(token.total_supply()?, amount);
@@ -1711,7 +1869,11 @@ pub(crate) mod tests {
                 .clear_events()
                 .apply()?;
 
-            token.transfer(from, ITIP20::transferCall { to, amount })?;
+            token.transfer(
+                &mut crate::storage::StorageCtx::test_writable(),
+                from,
+                ITIP20::transferCall { to, amount },
+            )?;
 
             assert_eq!(token.get_balance(from)?, U256::ZERO);
             assert_eq!(token.get_balance(to)?, amount);
@@ -1732,12 +1894,14 @@ pub(crate) mod tests {
         const BLOCKED_AT: u64 = 1_728_100;
 
         fn set_receive_policy(
+            write: &mut crate::storage::WriteCtx,
             receiver: Address,
             sender_policy_id: u64,
             token_filter_id: u64,
             recovery_address: Address,
         ) -> Result<()> {
             TIP403Registry::new().set_receive_policy(
+                write,
                 receiver,
                 ITIP403Registry::setReceivePolicyCall {
                     senderPolicyId: sender_policy_id,
@@ -1763,6 +1927,7 @@ pub(crate) mod tests {
                     .clear_events()
                     .apply()?;
                 set_receive_policy(
+                    &mut crate::storage::StorageCtx::test_writable(),
                     receiver,
                     REJECT_ALL_POLICY_ID,
                     ALLOW_ALL_POLICY_ID,
@@ -1770,6 +1935,7 @@ pub(crate) mod tests {
                 )?;
 
                 token.transfer(
+                    &mut crate::storage::StorageCtx::test_writable(),
                     sender,
                     ITIP20::transferCall {
                         to: receiver,
@@ -1843,16 +2009,16 @@ pub(crate) mod tests {
                     let mut token = TIP20Setup::create("Test", "TST", admin)
                         .with_issuer(admin)
                         .apply()?;
-                    token.set_balance(RECEIVE_POLICY_GUARD_ADDRESS, amount)?;
+                    token.set_balance(&mut crate::storage::StorageCtx::test_writable(), RECEIVE_POLICY_GUARD_ADDRESS, amount)?;
 
-                    set_receive_policy(
+                    set_receive_policy(&mut crate::storage::StorageCtx::test_writable(),
                         receiver,
                         REJECT_ALL_POLICY_ID,
                         ALLOW_ALL_POLICY_ID,
                         Address::ZERO,
                     )?;
                     if destination_policy_blocks && destination != receiver {
-                        set_receive_policy(
+                        set_receive_policy(&mut crate::storage::StorageCtx::test_writable(),
                             destination,
                             REJECT_ALL_POLICY_ID,
                             ALLOW_ALL_POLICY_ID,
@@ -1860,7 +2026,7 @@ pub(crate) mod tests {
                         )?;
                     }
 
-                    let result = token.release_blocked_funds(
+                    let result = token.release_blocked_funds(&mut crate::storage::StorageCtx::test_writable(),
                         originator,
                         receiver,
                         destination,
@@ -1886,7 +2052,7 @@ pub(crate) mod tests {
             let mut storage = HashMapStorageProvider::new_with_spec(1, TempoHardfork::T6);
             StorageCtx::enter(&mut storage, || {
                 let mut registry = TIP403Registry::new();
-                let recipient_policy = registry.create_policy_with_accounts(
+                let recipient_policy = registry.create_policy_with_accounts(&mut crate::storage::StorageCtx::test_writable(),
                     admin,
                     ITIP403Registry::createPolicyWithAccountsCall {
                         admin,
@@ -1894,7 +2060,7 @@ pub(crate) mod tests {
                         accounts: vec![receiver],
                     },
                 )?;
-                let transfer_policy = registry.create_compound_policy(
+                let transfer_policy = registry.create_compound_policy(&mut crate::storage::StorageCtx::test_writable(),
                     admin,
                     ITIP403Registry::createCompoundPolicyCall {
                         senderPolicyId: REJECT_ALL_POLICY_ID,
@@ -1906,18 +2072,18 @@ pub(crate) mod tests {
                 let mut token = TIP20Setup::create("Test", "TST", admin)
                     .with_issuer(admin)
                     .apply()?;
-                token.change_transfer_policy_id(
+                token.change_transfer_policy_id(&mut crate::storage::StorageCtx::test_writable(),
                     admin,
                     ITIP20::changeTransferPolicyIdCall {
                         newPolicyId: transfer_policy,
                     },
                 )?;
-                token.set_balance(RECEIVE_POLICY_GUARD_ADDRESS, amount)?;
+                token.set_balance(&mut crate::storage::StorageCtx::test_writable(), RECEIVE_POLICY_GUARD_ADDRESS, amount)?;
 
                 // A third-party claim back to the receiver is a resume. It requires the receiver
                 // to be authorized as recipient, but must not require the receiver/policy subject
                 // to be authorized as sender.
-                token.release_blocked_funds(
+                token.release_blocked_funds(&mut crate::storage::StorageCtx::test_writable(),
                     originator,
                     receiver,
                     receiver,
@@ -1950,6 +2116,7 @@ pub(crate) mod tests {
                     .with_mint(sender, amount)
                     .apply()?;
                 set_receive_policy(
+                    &mut crate::storage::StorageCtx::test_writable(),
                     receiver,
                     ALLOW_ALL_POLICY_ID,
                     REJECT_ALL_POLICY_ID,
@@ -1957,6 +2124,7 @@ pub(crate) mod tests {
                 )?;
 
                 token.transfer(
+                    &mut crate::storage::StorageCtx::test_writable(),
                     sender,
                     ITIP20::transferCall {
                         to: receiver,
@@ -2006,6 +2174,7 @@ pub(crate) mod tests {
                     .apply()?;
 
                 let result = token.transfer(
+                    &mut crate::storage::StorageCtx::test_writable(),
                     sender,
                     ITIP20::transferCall {
                         to: RECEIVE_POLICY_GUARD_ADDRESS,
@@ -2039,6 +2208,7 @@ pub(crate) mod tests {
                     .clear_events()
                     .apply()?;
                 set_receive_policy(
+                    &mut crate::storage::StorageCtx::test_writable(),
                     receiver,
                     REJECT_ALL_POLICY_ID,
                     ALLOW_ALL_POLICY_ID,
@@ -2046,6 +2216,7 @@ pub(crate) mod tests {
                 )?;
 
                 token.transfer(
+                    &mut crate::storage::StorageCtx::test_writable(),
                     sender,
                     ITIP20::transferCall {
                         to: receiver,
@@ -2099,6 +2270,7 @@ pub(crate) mod tests {
                     .with_approval(owner, spender, allowance)
                     .apply()?;
                 set_receive_policy(
+                    &mut crate::storage::StorageCtx::test_writable(),
                     receiver,
                     REJECT_ALL_POLICY_ID,
                     ALLOW_ALL_POLICY_ID,
@@ -2106,6 +2278,7 @@ pub(crate) mod tests {
                 )?;
 
                 token.transfer_from(
+                    &mut crate::storage::StorageCtx::test_writable(),
                     spender,
                     ITIP20::transferFromCall {
                         from: owner,
@@ -2143,6 +2316,7 @@ pub(crate) mod tests {
                     .clear_events()
                     .apply()?;
                 set_receive_policy(
+                    &mut crate::storage::StorageCtx::test_writable(),
                     receiver,
                     REJECT_ALL_POLICY_ID,
                     ALLOW_ALL_POLICY_ID,
@@ -2150,6 +2324,7 @@ pub(crate) mod tests {
                 )?;
 
                 token.transfer_with_memo(
+                    &mut crate::storage::StorageCtx::test_writable(),
                     sender,
                     ITIP20::transferWithMemoCall {
                         to: receiver,
@@ -2197,6 +2372,7 @@ pub(crate) mod tests {
                     .clear_events()
                     .apply()?;
                 set_receive_policy(
+                    &mut crate::storage::StorageCtx::test_writable(),
                     receiver,
                     REJECT_ALL_POLICY_ID,
                     ALLOW_ALL_POLICY_ID,
@@ -2206,6 +2382,7 @@ pub(crate) mod tests {
                 let mut guard = ReceivePolicyGuard::new();
                 guard.clear_emitted_events();
                 token.mint(
+                    &mut crate::storage::StorageCtx::test_writable(),
                     admin,
                     ITIP20::mintCall {
                         to: receiver,
@@ -2258,7 +2435,11 @@ pub(crate) mod tests {
         StorageCtx::enter(&mut storage, || {
             let mut token = TIP20Setup::create("Test", "TST", admin).apply()?;
 
-            let result = token.transfer(from, ITIP20::transferCall { to, amount });
+            let result = token.transfer(
+                &mut crate::storage::StorageCtx::test_writable(),
+                from,
+                ITIP20::transferCall { to, amount },
+            );
             assert!(matches!(
                 result,
                 Err(TempoPrecompileError::TIP20(
@@ -2284,7 +2465,11 @@ pub(crate) mod tests {
                 .clear_events()
                 .apply()?;
 
-            token.mint_with_memo(admin, ITIP20::mintWithMemoCall { to, amount, memo })?;
+            token.mint_with_memo(
+                &mut crate::storage::StorageCtx::test_writable(),
+                admin,
+                ITIP20::mintWithMemoCall { to, amount, memo },
+            )?;
 
             // TransferWithMemo event should have Address::ZERO as from for mint
             token.assert_emitted_events(vec![
@@ -2311,7 +2496,11 @@ pub(crate) mod tests {
                 .clear_events()
                 .apply()?;
 
-            token.burn_with_memo(admin, ITIP20::burnWithMemoCall { amount, memo })?;
+            token.burn_with_memo(
+                &mut crate::storage::StorageCtx::test_writable(),
+                admin,
+                ITIP20::burnWithMemoCall { amount, memo },
+            )?;
             token.assert_emitted_events(vec![
                 TIP20Event::transfer(admin, Address::ZERO, amount),
                 TIP20Event::transfer_with_memo(admin, Address::ZERO, amount, memo),
@@ -2341,6 +2530,7 @@ pub(crate) mod tests {
                 .apply()?;
 
             token.transfer_from_with_memo(
+                &mut crate::storage::StorageCtx::test_writable(),
                 spender,
                 ITIP20::transferFromWithMemoCall {
                     from: owner,
@@ -2374,7 +2564,11 @@ pub(crate) mod tests {
                 .with_mint(user, amount)
                 .apply()?;
 
-            token.transfer_fee_pre_tx(user, fee_amount)?;
+            token.transfer_fee_pre_tx(
+                &mut crate::storage::StorageCtx::test_writable(),
+                user,
+                fee_amount,
+            )?;
 
             assert_eq!(token.get_balance(user)?, fee_amount);
             assert_eq!(token.get_balance(TIP_FEE_MANAGER_ADDRESS)?, fee_amount);
@@ -2397,7 +2591,11 @@ pub(crate) mod tests {
                 .apply()?;
 
             assert_eq!(
-                token.transfer_fee_pre_tx(user, fee_amount),
+                token.transfer_fee_pre_tx(
+                    &mut crate::storage::StorageCtx::test_writable(),
+                    user,
+                    fee_amount
+                ),
                 Err(TempoPrecompileError::TIP20(
                     TIP20Error::insufficient_balance(U256::ZERO, fee_amount, token.address)
                 ))
@@ -2418,10 +2616,18 @@ pub(crate) mod tests {
                 .with_issuer(admin)
                 .with_mint(user, fee_amount)
                 .apply()?;
-            token.set_balance(TIP_FEE_MANAGER_ADDRESS, U256::MAX)?;
+            token.set_balance(
+                &mut crate::storage::StorageCtx::test_writable(),
+                TIP_FEE_MANAGER_ADDRESS,
+                U256::MAX,
+            )?;
 
             assert_eq!(
-                token.transfer_fee_pre_tx(user, fee_amount),
+                token.transfer_fee_pre_tx(
+                    &mut crate::storage::StorageCtx::test_writable(),
+                    user,
+                    fee_amount
+                ),
                 Err(TempoPrecompileError::TIP20(
                     TIP20Error::supply_cap_exceeded()
                 ))
@@ -2446,11 +2652,19 @@ pub(crate) mod tests {
                 .apply()?;
 
             // Pause the token
-            token.pause(admin, ITIP20::pauseCall {})?;
+            token.pause(
+                &mut crate::storage::StorageCtx::test_writable(),
+                admin,
+                ITIP20::pauseCall {},
+            )?;
 
             // transfer_fee_pre_tx should fail when paused
             assert_eq!(
-                token.transfer_fee_pre_tx(user, fee_amount),
+                token.transfer_fee_pre_tx(
+                    &mut crate::storage::StorageCtx::test_writable(),
+                    user,
+                    fee_amount
+                ),
                 Err(TempoPrecompileError::TIP20(TIP20Error::contract_paused()))
             );
             Ok(())
@@ -2472,7 +2686,12 @@ pub(crate) mod tests {
                 .with_mint(TIP_FEE_MANAGER_ADDRESS, initial_fee)
                 .apply()?;
 
-            token.transfer_fee_post_tx(user, refund_amount, gas_used)?;
+            token.transfer_fee_post_tx(
+                &mut crate::storage::StorageCtx::test_writable(),
+                user,
+                refund_amount,
+                gas_used,
+            )?;
 
             assert_eq!(token.get_balance(user)?, refund_amount);
             assert_eq!(
@@ -2503,7 +2722,12 @@ pub(crate) mod tests {
                 .apply()?;
 
             assert_eq!(
-                token.transfer_fee_post_tx(user, refund_amount, U256::ZERO),
+                token.transfer_fee_post_tx(
+                    &mut crate::storage::StorageCtx::test_writable(),
+                    user,
+                    refund_amount,
+                    U256::ZERO
+                ),
                 Err(TempoPrecompileError::TIP20(
                     TIP20Error::insufficient_balance(initial_fee, refund_amount, token.address)
                 ))
@@ -2524,11 +2748,24 @@ pub(crate) mod tests {
             let mut token = TIP20Setup::create("Test", "TST", admin)
                 .with_issuer(admin)
                 .apply()?;
-            token.set_balance(TIP_FEE_MANAGER_ADDRESS, refund_amount)?;
-            token.set_balance(user, U256::MAX)?;
+            token.set_balance(
+                &mut crate::storage::StorageCtx::test_writable(),
+                TIP_FEE_MANAGER_ADDRESS,
+                refund_amount,
+            )?;
+            token.set_balance(
+                &mut crate::storage::StorageCtx::test_writable(),
+                user,
+                U256::MAX,
+            )?;
 
             assert_eq!(
-                token.transfer_fee_post_tx(user, refund_amount, U256::ZERO),
+                token.transfer_fee_post_tx(
+                    &mut crate::storage::StorageCtx::test_writable(),
+                    user,
+                    refund_amount,
+                    U256::ZERO
+                ),
                 Err(TempoPrecompileError::TIP20(
                     TIP20Error::supply_cap_exceeded()
                 ))
@@ -2558,10 +2795,14 @@ pub(crate) mod tests {
 
             // Set up keychain: authorize an access key with a spending limit
             let mut keychain = AccountKeychain::new();
-            keychain.initialize()?;
-            keychain.set_transaction_key(Address::ZERO)?;
+            keychain.initialize(&mut crate::storage::StorageCtx::test_writable())?;
+            keychain.set_transaction_key(
+                &mut crate::storage::StorageCtx::test_writable(),
+                Address::ZERO,
+            )?;
 
             keychain.authorize_key(
+                &mut crate::storage::StorageCtx::test_writable(),
                 user,
                 access_key,
                 SignatureType::Secp256k1,
@@ -2580,9 +2821,17 @@ pub(crate) mod tests {
             )?;
 
             // Simulate pre-tx: access key deducts max fee from spending limit
-            keychain.set_transaction_key(access_key)?;
-            keychain.set_tx_origin(user)?;
-            keychain.authorize_transfer(user, token_address, max_fee)?;
+            keychain.set_transaction_key(
+                &mut crate::storage::StorageCtx::test_writable(),
+                access_key,
+            )?;
+            keychain.set_tx_origin(&mut crate::storage::StorageCtx::test_writable(), user)?;
+            keychain.authorize_transfer(
+                &mut crate::storage::StorageCtx::test_writable(),
+                user,
+                token_address,
+                max_fee,
+            )?;
 
             let remaining_after_deduction =
                 keychain.get_remaining_limit(getRemainingLimitCall {
@@ -2593,7 +2842,12 @@ pub(crate) mod tests {
             assert_eq!(remaining_after_deduction, spending_limit - max_fee);
 
             // Call transfer_fee_post_tx — should refund the spending limit via is_t1c() gate
-            token.transfer_fee_post_tx(user, refund_amount, gas_used)?;
+            token.transfer_fee_post_tx(
+                &mut crate::storage::StorageCtx::test_writable(),
+                user,
+                refund_amount,
+                gas_used,
+            )?;
 
             let remaining_after_refund = keychain.get_remaining_limit(getRemainingLimitCall {
                 account: user,
@@ -2630,10 +2884,14 @@ pub(crate) mod tests {
             let spending_limit = U256::from(2000);
 
             let mut keychain = AccountKeychain::new();
-            keychain.initialize()?;
-            keychain.set_transaction_key(Address::ZERO)?;
+            keychain.initialize(&mut crate::storage::StorageCtx::test_writable())?;
+            keychain.set_transaction_key(
+                &mut crate::storage::StorageCtx::test_writable(),
+                Address::ZERO,
+            )?;
 
             keychain.authorize_key(
+                &mut crate::storage::StorageCtx::test_writable(),
                 user,
                 access_key,
                 SignatureType::Secp256k1,
@@ -2651,9 +2909,17 @@ pub(crate) mod tests {
                 None,
             )?;
 
-            keychain.set_transaction_key(access_key)?;
-            keychain.set_tx_origin(user)?;
-            keychain.authorize_transfer(user, token_address, max_fee)?;
+            keychain.set_transaction_key(
+                &mut crate::storage::StorageCtx::test_writable(),
+                access_key,
+            )?;
+            keychain.set_tx_origin(&mut crate::storage::StorageCtx::test_writable(), user)?;
+            keychain.authorize_transfer(
+                &mut crate::storage::StorageCtx::test_writable(),
+                user,
+                token_address,
+                max_fee,
+            )?;
 
             let remaining_after_deduction =
                 keychain.get_remaining_limit(getRemainingLimitCall {
@@ -2663,7 +2929,12 @@ pub(crate) mod tests {
                 })?;
             assert_eq!(remaining_after_deduction, spending_limit - max_fee);
 
-            token.transfer_fee_post_tx(user, refund_amount, gas_used)?;
+            token.transfer_fee_post_tx(
+                &mut crate::storage::StorageCtx::test_writable(),
+                user,
+                refund_amount,
+                gas_used,
+            )?;
 
             // spending limit unchanged pre-t1c
             let remaining_after_refund = keychain.get_remaining_limit(getRemainingLimitCall {
@@ -2693,7 +2964,11 @@ pub(crate) mod tests {
                 .apply()?;
 
             assert!(matches!(
-                token.transfer_from(spender, ITIP20::transferFromCall { from, to, amount }),
+                token.transfer_from(
+                    &mut crate::storage::StorageCtx::test_writable(),
+                    spender,
+                    ITIP20::transferFromCall { from, to, amount }
+                ),
                 Err(TempoPrecompileError::TIP20(
                     TIP20Error::InsufficientAllowance(_)
                 ))
@@ -2718,7 +2993,16 @@ pub(crate) mod tests {
                 .apply()?;
 
             // Pre-T5: caller is unchecked (preserves pre-TIP-1035 FeeAMM behavior).
-            assert!(token.system_transfer_from(to, from, amount).is_ok());
+            assert!(
+                token
+                    .system_transfer_from(
+                        &mut crate::storage::StorageCtx::test_writable(),
+                        to,
+                        from,
+                        amount
+                    )
+                    .is_ok()
+            );
             assert_eq!(
                 token.emitted_events().last().unwrap(),
                 &TIP20Event::transfer(from, to, amount).into_log_data()
@@ -2744,7 +3028,12 @@ pub(crate) mod tests {
             // Listed precompile is allowed to invoke `system_transfer_from`.
             assert!(
                 token
-                    .system_transfer_from(TIP_FEE_MANAGER_ADDRESS, from, amount)
+                    .system_transfer_from(
+                        &mut crate::storage::StorageCtx::test_writable(),
+                        TIP_FEE_MANAGER_ADDRESS,
+                        from,
+                        amount
+                    )
                     .is_ok()
             );
 
@@ -2768,7 +3057,12 @@ pub(crate) mod tests {
 
             // Unlisted callers are rejected with `Unauthorized` at T5+.
             assert!(matches!(
-                token.system_transfer_from(unlisted, from, amount),
+                token.system_transfer_from(
+                    &mut crate::storage::StorageCtx::test_writable(),
+                    unlisted,
+                    from,
+                    amount
+                ),
                 Err(TempoPrecompileError::TIP20(TIP20Error::Unauthorized(_)))
             ));
 
@@ -2809,6 +3103,7 @@ pub(crate) mod tests {
 
             // Set next quote token to the new token
             token.set_next_quote_token(
+                &mut crate::storage::StorageCtx::test_writable(),
                 admin,
                 ITIP20::setNextQuoteTokenCall {
                     newQuoteToken: new_quote_token_address,
@@ -2842,6 +3137,7 @@ pub(crate) mod tests {
 
             // Try to set next quote token as non-admin
             let result = token.set_next_quote_token(
+                &mut crate::storage::StorageCtx::test_writable(),
                 non_admin,
                 ITIP20::setNextQuoteTokenCall {
                     newQuoteToken: quote_token_address,
@@ -2870,6 +3166,7 @@ pub(crate) mod tests {
             // Try to set a non-TIP20 address (random address that doesn't match TIP20 pattern)
             let non_tip20_address = Address::random();
             let result = token.set_next_quote_token(
+                &mut crate::storage::StorageCtx::test_writable(),
                 admin,
                 ITIP20::setNextQuoteTokenCall {
                     newQuoteToken: non_tip20_address,
@@ -2900,6 +3197,7 @@ pub(crate) mod tests {
             let undeployed_token_address =
                 Address::from(hex!("20C0000000000000000000000000000000000999"));
             let result = token.set_next_quote_token(
+                &mut crate::storage::StorageCtx::test_writable(),
                 admin,
                 ITIP20::setNextQuoteTokenCall {
                     newQuoteToken: undeployed_token_address,
@@ -2928,6 +3226,7 @@ pub(crate) mod tests {
 
             // Set next quote token
             token.set_next_quote_token(
+                &mut crate::storage::StorageCtx::test_writable(),
                 admin,
                 ITIP20::setNextQuoteTokenCall {
                     newQuoteToken: quote_token_address,
@@ -2935,7 +3234,11 @@ pub(crate) mod tests {
             )?;
 
             // Complete the update
-            token.complete_quote_token_update(admin, ITIP20::completeQuoteTokenUpdateCall {})?;
+            token.complete_quote_token_update(
+                &mut crate::storage::StorageCtx::test_writable(),
+                admin,
+                ITIP20::completeQuoteTokenUpdateCall {},
+            )?;
 
             // Verify quote token was updated
             assert_eq!(token.quote_token()?, quote_token_address);
@@ -2965,6 +3268,7 @@ pub(crate) mod tests {
 
             // Now try to set token_a as the next quote token for token_b (would create A -> B -> A loop)
             token_b.set_next_quote_token(
+                &mut crate::storage::StorageCtx::test_writable(),
                 admin,
                 ITIP20::setNextQuoteTokenCall {
                     newQuoteToken: token_a.address,
@@ -2972,8 +3276,11 @@ pub(crate) mod tests {
             )?;
 
             // Try to complete the update - should fail due to loop detection
-            let result =
-                token_b.complete_quote_token_update(admin, ITIP20::completeQuoteTokenUpdateCall {});
+            let result = token_b.complete_quote_token_update(
+                &mut crate::storage::StorageCtx::test_writable(),
+                admin,
+                ITIP20::completeQuoteTokenUpdateCall {},
+            );
 
             assert!(matches!(
                 result,
@@ -2998,6 +3305,7 @@ pub(crate) mod tests {
 
             // Set next quote token as admin
             token.set_next_quote_token(
+                &mut crate::storage::StorageCtx::test_writable(),
                 admin,
                 ITIP20::setNextQuoteTokenCall {
                     newQuoteToken: quote_token_address,
@@ -3005,8 +3313,11 @@ pub(crate) mod tests {
             )?;
 
             // Try to complete update as non-admin
-            let result = token
-                .complete_quote_token_update(non_admin, ITIP20::completeQuoteTokenUpdateCall {});
+            let result = token.complete_quote_token_update(
+                &mut crate::storage::StorageCtx::test_writable(),
+                non_admin,
+                ITIP20::completeQuoteTokenUpdateCall {},
+            );
 
             assert!(matches!(
                 result,
@@ -3110,6 +3421,7 @@ pub(crate) mod tests {
             let mut token = TIP20Setup::create("Test", "TST", admin).apply()?;
 
             let result = token.set_logo_uri(
+                &mut crate::storage::StorageCtx::test_writable(),
                 non_admin,
                 ITIP20::setLogoURICall {
                     newLogoURI: "https://example.com/icon.svg".to_string(),
@@ -3144,6 +3456,7 @@ pub(crate) mod tests {
             let too_long = format!("{prefix}{}", "a".repeat(257 - prefix.len()));
             assert_eq!(too_long.len(), 257);
             let result = token.set_logo_uri(
+                &mut crate::storage::StorageCtx::test_writable(),
                 admin,
                 ITIP20::setLogoURICall {
                     newLogoURI: too_long,
@@ -3159,6 +3472,7 @@ pub(crate) mod tests {
             let at_limit = format!("{prefix}{}", "a".repeat(256 - prefix.len()));
             assert_eq!(at_limit.len(), 256);
             token.set_logo_uri(
+                &mut crate::storage::StorageCtx::test_writable(),
                 admin,
                 ITIP20::setLogoURICall {
                     newLogoURI: at_limit.clone(),
@@ -3185,6 +3499,7 @@ pub(crate) mod tests {
 
             let uri = "https://example.com/icon.svg".to_string();
             token.set_logo_uri(
+                &mut crate::storage::StorageCtx::test_writable(),
                 admin,
                 ITIP20::setLogoURICall {
                     newLogoURI: uri.clone(),
@@ -3211,6 +3526,7 @@ pub(crate) mod tests {
             let mut token = TIP20Setup::create("Test", "TST", admin).apply()?;
 
             token.set_logo_uri(
+                &mut crate::storage::StorageCtx::test_writable(),
                 admin,
                 ITIP20::setLogoURICall {
                     newLogoURI: "https://example.com/icon.svg".to_string(),
@@ -3220,6 +3536,7 @@ pub(crate) mod tests {
 
             // Empty string is still valid (clears the URI per spec).
             token.set_logo_uri(
+                &mut crate::storage::StorageCtx::test_writable(),
                 admin,
                 ITIP20::setLogoURICall {
                     newLogoURI: String::new(),
@@ -3348,6 +3665,7 @@ pub(crate) mod tests {
 
             // Try to update the USD token's quote token to the arbitrary currency token, this should fail
             let result = usd_token.set_next_quote_token(
+                &mut crate::storage::StorageCtx::test_writable(),
                 admin,
                 ITIP20::setNextQuoteTokenCall {
                     newQuoteToken: token_1.address,
@@ -3371,6 +3689,7 @@ pub(crate) mod tests {
             let _path_usd = TIP20Setup::path_usd(sender).apply()?;
 
             let created_tip20 = TIP20Factory::new().create_token(
+                &mut crate::storage::StorageCtx::test_writable(),
                 sender,
                 createTokenCall {
                     name: "Test Token".to_string(),
@@ -3429,7 +3748,13 @@ pub(crate) mod tests {
                 RECEIVE_POLICY_GUARD_ADDRESS,
                 TIP20_CHANNEL_RESERVE_ADDRESS,
             ] {
-                let result = token.burn_blocked(burner, protected, burn_amount, true);
+                let result = token.burn_blocked(
+                    &mut crate::storage::StorageCtx::test_writable(),
+                    burner,
+                    protected,
+                    burn_amount,
+                    true,
+                );
                 assert_eq!(result.unwrap_err(), TIP20Error::protected_address().into());
             }
 
@@ -3456,20 +3781,40 @@ pub(crate) mod tests {
                 STABLECOIN_DEX_ADDRESS,
                 TIP20_CHANNEL_RESERVE_ADDRESS,
             ] {
-                let result = token.burn_blocked(burner, protected, burn_amount, true);
+                let result = token.burn_blocked(
+                    &mut crate::storage::StorageCtx::test_writable(),
+                    burner,
+                    protected,
+                    burn_amount,
+                    true,
+                );
                 assert_eq!(result.unwrap_err(), TIP20Error::protected_address().into());
             }
 
             token.change_transfer_policy_id(
+                &mut crate::storage::StorageCtx::test_writable(),
                 admin,
                 ITIP20::changeTransferPolicyIdCall {
                     newPolicyId: REJECT_ALL_POLICY_ID,
                 },
             )?;
-            token.set_balance(RECEIVE_POLICY_GUARD_ADDRESS, amount)?;
-            token.set_total_supply(token.total_supply()? + amount)?;
+            token.set_balance(
+                &mut crate::storage::StorageCtx::test_writable(),
+                RECEIVE_POLICY_GUARD_ADDRESS,
+                amount,
+            )?;
+            token.set_total_supply(
+                &mut crate::storage::StorageCtx::test_writable(),
+                token.total_supply()? + amount,
+            )?;
 
-            token.burn_blocked(burner, RECEIVE_POLICY_GUARD_ADDRESS, burn_amount, true)?;
+            token.burn_blocked(
+                &mut crate::storage::StorageCtx::test_writable(),
+                burner,
+                RECEIVE_POLICY_GUARD_ADDRESS,
+                burn_amount,
+                true,
+            )?;
 
             let balance = token.balance_of(ITIP20::balanceOfCall {
                 account: RECEIVE_POLICY_GUARD_ADDRESS,
@@ -3490,6 +3835,7 @@ pub(crate) mod tests {
                 .apply()?;
 
             token.change_transfer_policy_id(
+                &mut crate::storage::StorageCtx::test_writable(),
                 admin,
                 ITIP20::changeTransferPolicyIdCall {
                     newPolicyId: REJECT_ALL_POLICY_ID,
@@ -3497,11 +3843,24 @@ pub(crate) mod tests {
             )?;
 
             // simulate a mint to TIP20 address.
-            token.set_balance(token.address, amount)?;
-            token.set_total_supply(token.total_supply()? + amount)?;
+            token.set_balance(
+                &mut crate::storage::StorageCtx::test_writable(),
+                token.address,
+                amount,
+            )?;
+            token.set_total_supply(
+                &mut crate::storage::StorageCtx::test_writable(),
+                token.total_supply()? + amount,
+            )?;
 
             for unprotected in [TIP20_CHANNEL_RESERVE_ADDRESS, token.address] {
-                token.burn_blocked(burner, unprotected, burn_amount, true)?;
+                token.burn_blocked(
+                    &mut crate::storage::StorageCtx::test_writable(),
+                    burner,
+                    unprotected,
+                    burn_amount,
+                    true,
+                )?;
 
                 let balance = token.balance_of(ITIP20::balanceOfCall {
                     account: unprotected,
@@ -3548,11 +3907,12 @@ pub(crate) mod tests {
 
             // Initialize the TIP403 registry
             let mut registry = TIP403Registry::new();
-            registry.initialize()?;
+            registry.initialize(&mut crate::storage::StorageCtx::test_writable())?;
 
             // Try to change to a non-existent policy ID (should fail)
             let invalid_policy_id = 999u64;
             let result = token.change_transfer_policy_id(
+                &mut crate::storage::StorageCtx::test_writable(),
                 admin,
                 ITIP20::changeTransferPolicyIdCall {
                     newPolicyId: invalid_policy_id,
@@ -3583,6 +3943,7 @@ pub(crate) mod tests {
                 .apply()?;
 
             let result = token.transfer(
+                &mut crate::storage::StorageCtx::test_writable(),
                 admin,
                 ITIP20::transferCall {
                     to: Address::ZERO,
@@ -3592,6 +3953,7 @@ pub(crate) mod tests {
             assert!(result.is_err_and(|err| err.to_string().contains("InvalidRecipient")));
 
             let result = token.transfer_from(
+                &mut crate::storage::StorageCtx::test_writable(),
                 bob,
                 ITIP20::transferFromCall {
                     from: admin,
@@ -3615,16 +3977,18 @@ pub(crate) mod tests {
 
             // Initialize the TIP403 registry
             let mut registry = TIP403Registry::new();
-            registry.initialize()?;
+            registry.initialize(&mut crate::storage::StorageCtx::test_writable())?;
 
             // Test special policies 0 and 1 (should always work)
             token.change_transfer_policy_id(
+                &mut crate::storage::StorageCtx::test_writable(),
                 admin,
                 ITIP20::changeTransferPolicyIdCall { newPolicyId: 0 },
             )?;
             assert_eq!(token.transfer_policy_id()?, 0);
 
             token.change_transfer_policy_id(
+                &mut crate::storage::StorageCtx::test_writable(),
                 admin,
                 ITIP20::changeTransferPolicyIdCall { newPolicyId: 1 },
             )?;
@@ -3635,6 +3999,7 @@ pub(crate) mod tests {
             for _ in 0..20 {
                 let invalid_policy_id = rng.gen_range(2..u64::MAX);
                 let result = token.change_transfer_policy_id(
+                    &mut crate::storage::StorageCtx::test_writable(),
                     admin,
                     ITIP20::changeTransferPolicyIdCall {
                         newPolicyId: invalid_policy_id,
@@ -3650,6 +4015,7 @@ pub(crate) mod tests {
             let mut valid_policy_ids = Vec::new();
             for i in 0..10 {
                 let policy_id = registry.create_policy(
+                    &mut crate::storage::StorageCtx::test_writable(),
                     admin,
                     ITIP403Registry::createPolicyCall {
                         admin,
@@ -3666,6 +4032,7 @@ pub(crate) mod tests {
             // Test that all created policies can be set
             for policy_id in valid_policy_ids {
                 let result = token.change_transfer_policy_id(
+                    &mut crate::storage::StorageCtx::test_writable(),
                     admin,
                     ITIP20::changeTransferPolicyIdCall {
                         newPolicyId: policy_id,
@@ -3714,6 +4081,7 @@ pub(crate) mod tests {
             // Invalid and duplicate addresses are skipped. Normal TIP-20 operations continue.
             assert_eq!(
                 registry.migrate_transfer_policy_ids(
+                    &mut crate::storage::StorageCtx::test_writable(),
                     ITIP403Registry::migrateTransferPolicyIdsCall {
                         tokens: vec![invalid_token, token.address, token.address],
                     },
@@ -3722,6 +4090,7 @@ pub(crate) mod tests {
             );
             assert_eq!(
                 registry.migrate_transfer_policy_ids(
+                    &mut crate::storage::StorageCtx::test_writable(),
                     ITIP403Registry::migrateTransferPolicyIdsCall {
                         tokens: vec![token.address, invalid_token],
                     },
@@ -3735,6 +4104,7 @@ pub(crate) mod tests {
             );
             assert_eq!(token.legacy_transfer_policy_id()?, 0);
             token.approve(
+                &mut crate::storage::StorageCtx::test_writable(),
                 Address::random(),
                 ITIP20::approveCall {
                     spender,
@@ -3744,6 +4114,7 @@ pub(crate) mod tests {
 
             // Once migrated, admin updates only the TIP-403 binding.
             token.change_transfer_policy_id(
+                &mut crate::storage::StorageCtx::test_writable(),
                 admin,
                 ITIP20::changeTransferPolicyIdCall {
                     newPolicyId: REJECT_ALL_POLICY_ID,
@@ -3755,6 +4126,7 @@ pub(crate) mod tests {
             // An existing registry binding is skipped and cannot be overwritten.
             assert_eq!(
                 registry.migrate_transfer_policy_ids(
+                    &mut crate::storage::StorageCtx::test_writable(),
                     ITIP403Registry::migrateTransferPolicyIdsCall {
                         tokens: vec![token.address],
                     },
@@ -3779,6 +4151,7 @@ pub(crate) mod tests {
             StorageCtx.set_spec(TempoHardfork::T9);
 
             token.change_transfer_policy_id(
+                &mut crate::storage::StorageCtx::test_writable(),
                 admin,
                 ITIP20::changeTransferPolicyIdCall {
                     newPolicyId: REJECT_ALL_POLICY_ID,
@@ -3844,9 +4217,10 @@ pub(crate) mod tests {
 
                 // Initialize TIP403 registry and create a whitelist policy
                 let mut registry = TIP403Registry::new();
-                registry.initialize()?;
+                registry.initialize(&mut crate::storage::StorageCtx::test_writable())?;
 
                 let policy_id = registry.create_policy(
+                    &mut crate::storage::StorageCtx::test_writable(),
                     admin,
                     ITIP403Registry::createPolicyCall {
                         admin,
@@ -3857,6 +4231,7 @@ pub(crate) mod tests {
                 // Assign token to use this policy
                 let mut token = token;
                 token.change_transfer_policy_id(
+                    &mut crate::storage::StorageCtx::test_writable(),
                     admin,
                     ITIP20::changeTransferPolicyIdCall {
                         newPolicyId: policy_id,
@@ -3865,6 +4240,7 @@ pub(crate) mod tests {
 
                 // Sender not whitelisted, recipient whitelisted
                 registry.modify_policy_whitelist(
+                    &mut crate::storage::StorageCtx::test_writable(),
                     admin,
                     ITIP403Registry::modifyPolicyWhitelistCall {
                         policyId: policy_id,
@@ -3876,6 +4252,7 @@ pub(crate) mod tests {
 
                 // Sender whitelisted, recipient not whitelisted
                 registry.modify_policy_whitelist(
+                    &mut crate::storage::StorageCtx::test_writable(),
                     admin,
                     ITIP403Registry::modifyPolicyWhitelistCall {
                         policyId: policy_id,
@@ -3884,6 +4261,7 @@ pub(crate) mod tests {
                     },
                 )?;
                 registry.modify_policy_whitelist(
+                    &mut crate::storage::StorageCtx::test_writable(),
                     admin,
                     ITIP403Registry::modifyPolicyWhitelistCall {
                         policyId: policy_id,
@@ -3895,6 +4273,7 @@ pub(crate) mod tests {
 
                 // Both whitelisted
                 registry.modify_policy_whitelist(
+                    &mut crate::storage::StorageCtx::test_writable(),
                     admin,
                     ITIP403Registry::modifyPolicyWhitelistCall {
                         policyId: policy_id,
@@ -3922,6 +4301,7 @@ pub(crate) mod tests {
 
             // pathUSD cannot update its quote token
             let result = path_usd.set_next_quote_token(
+                &mut crate::storage::StorageCtx::test_writable(),
                 admin,
                 ITIP20::setNextQuoteTokenCall {
                     newQuoteToken: other_token.address,
@@ -3957,14 +4337,18 @@ pub(crate) mod tests {
 
             // Try to create cycle where token_b -> token_a
             token_b.set_next_quote_token(
+                &mut crate::storage::StorageCtx::test_writable(),
                 admin,
                 ITIP20::setNextQuoteTokenCall {
                     newQuoteToken: token_a.address,
                 },
             )?;
 
-            let result =
-                token_b.complete_quote_token_update(admin, ITIP20::completeQuoteTokenUpdateCall {});
+            let result = token_b.complete_quote_token_update(
+                &mut crate::storage::StorageCtx::test_writable(),
+                admin,
+                ITIP20::completeQuoteTokenUpdateCall {},
+            );
 
             assert!(matches!(
                 result,
@@ -4009,6 +4393,7 @@ pub(crate) mod tests {
 
                 // mint
                 token.mint(
+                    &mut crate::storage::StorageCtx::test_writable(),
                     admin,
                     ITIP20::mintCall {
                         to: virtual_addr,
@@ -4037,6 +4422,7 @@ pub(crate) mod tests {
                 // mintWithMemo: same resolution behavior
                 let pre = token.get_balance(credited)?;
                 token.mint_with_memo(
+                    &mut crate::storage::StorageCtx::test_writable(),
                     admin,
                     ITIP20::mintWithMemoCall {
                         to: virtual_addr,
@@ -4078,6 +4464,7 @@ pub(crate) mod tests {
 
                 // transfer
                 token.transfer(
+                    &mut crate::storage::StorageCtx::test_writable(),
                     sender,
                     ITIP20::transferCall {
                         to: virtual_addr,
@@ -4102,6 +4489,7 @@ pub(crate) mod tests {
                 // transferWithMemo: same resolution behavior
                 let pre = token.get_balance(credited)?;
                 token.transfer_with_memo(
+                    &mut crate::storage::StorageCtx::test_writable(),
                     sender,
                     ITIP20::transferWithMemoCall {
                         to: virtual_addr,
@@ -4146,6 +4534,7 @@ pub(crate) mod tests {
 
                 // transferFrom
                 token.transfer_from(
+                    &mut crate::storage::StorageCtx::test_writable(),
                     spender,
                     ITIP20::transferFromCall {
                         from: owner,
@@ -4165,6 +4554,7 @@ pub(crate) mod tests {
                 // transferFromWithMemo: same resolution behavior
                 let pre = token.get_balance(credited)?;
                 token.transfer_from_with_memo(
+                    &mut crate::storage::StorageCtx::test_writable(),
                     spender,
                     ITIP20::transferFromWithMemoCall {
                         from: owner,
@@ -4200,12 +4590,12 @@ pub(crate) mod tests {
                 .apply()?;
 
             // All 6 entrypoints should revert for an unregistered virtual address
-            assert!(token.mint(admin, ITIP20::mintCall { to, amount }).is_err());
-            assert!(token.mint_with_memo(admin, ITIP20::mintWithMemoCall { to, amount, memo }).is_err());
-            assert!(token.transfer(sender, ITIP20::transferCall { to, amount }).is_err());
-            assert!(token.transfer_with_memo(sender, ITIP20::transferWithMemoCall { to, amount, memo }).is_err());
-            assert!(token.transfer_from(spender, ITIP20::transferFromCall { from: sender, to, amount }).is_err());
-            assert!(token.transfer_from_with_memo(spender, ITIP20::transferFromWithMemoCall { from: sender, to, amount, memo }).is_err());
+            assert!(token.mint(&mut crate::storage::StorageCtx::test_writable(), admin, ITIP20::mintCall { to, amount }).is_err());
+            assert!(token.mint_with_memo(&mut crate::storage::StorageCtx::test_writable(), admin, ITIP20::mintWithMemoCall { to, amount, memo }).is_err());
+            assert!(token.transfer(&mut crate::storage::StorageCtx::test_writable(), sender, ITIP20::transferCall { to, amount }).is_err());
+            assert!(token.transfer_with_memo(&mut crate::storage::StorageCtx::test_writable(), sender, ITIP20::transferWithMemoCall { to, amount, memo }).is_err());
+            assert!(token.transfer_from(&mut crate::storage::StorageCtx::test_writable(), spender, ITIP20::transferFromCall { from: sender, to, amount }).is_err());
+            assert!(token.transfer_from_with_memo(&mut crate::storage::StorageCtx::test_writable(), spender, ITIP20::transferFromWithMemoCall { from: sender, to, amount, memo }).is_err());
 
             Ok(())
         })
@@ -4341,7 +4731,7 @@ pub(crate) mod tests {
                 let mut token = TIP20Setup::create("Test", "TST", admin).apply()?;
                 let call =
                     make_permit_call(signer, spender, token.address, value, U256::ZERO, U256::MAX);
-                token.permit(call)?;
+                token.permit(&mut crate::storage::StorageCtx::test_writable(), call)?;
 
                 // Verify allowance was set
                 let allowance = token.allowance(ITIP20::allowanceCall { owner, spender })?;
@@ -4372,7 +4762,7 @@ pub(crate) mod tests {
                 let call =
                     make_permit_call(signer, spender, token.address, value, U256::ZERO, deadline);
 
-                let result = token.permit(call);
+                let result = token.permit(&mut crate::storage::StorageCtx::test_writable(), call);
 
                 assert!(matches!(
                     result,
@@ -4396,15 +4786,18 @@ pub(crate) mod tests {
                 let mut token = TIP20Setup::create("Test", "TST", admin).apply()?;
 
                 // Use garbage signature bytes
-                let result = token.permit(ITIP20::permitCall {
-                    owner,
-                    spender,
-                    value,
-                    deadline,
-                    v: 27,
-                    r: B256::ZERO,
-                    s: B256::ZERO,
-                });
+                let result = token.permit(
+                    &mut crate::storage::StorageCtx::test_writable(),
+                    ITIP20::permitCall {
+                        owner,
+                        spender,
+                        value,
+                        deadline,
+                        v: 27,
+                        r: B256::ZERO,
+                        s: B256::ZERO,
+                    },
+                );
 
                 assert!(matches!(
                     result,
@@ -4441,15 +4834,18 @@ pub(crate) mod tests {
                     deadline,
                 );
 
-                let result = token.permit(ITIP20::permitCall {
-                    owner: wrong_owner, // Different from signer
-                    spender,
-                    value,
-                    deadline,
-                    v,
-                    r,
-                    s,
-                });
+                let result = token.permit(
+                    &mut crate::storage::StorageCtx::test_writable(),
+                    ITIP20::permitCall {
+                        owner: wrong_owner, // Different from signer
+                        spender,
+                        value,
+                        deadline,
+                        v,
+                        r,
+                        s,
+                    },
+                );
 
                 assert!(matches!(
                     result,
@@ -4476,10 +4872,13 @@ pub(crate) mod tests {
                     make_permit_call(signer, spender, token.address, value, U256::ZERO, U256::MAX);
 
                 // First use should succeed
-                token.permit(call.clone())?;
+                token.permit(
+                    &mut crate::storage::StorageCtx::test_writable(),
+                    call.clone(),
+                )?;
 
                 // Second use of same signature should fail (nonce incremented)
-                let result = token.permit(call);
+                let result = token.permit(&mut crate::storage::StorageCtx::test_writable(), call);
 
                 assert!(matches!(
                     result,
@@ -4512,7 +4911,7 @@ pub(crate) mod tests {
                     let value = U256::from(100 * (i + 1));
                     let call =
                         make_permit_call(signer, spender, token.address, value, nonce, U256::MAX);
-                    token.permit(call)?;
+                    token.permit(&mut crate::storage::StorageCtx::test_writable(), call)?;
 
                     assert_eq!(
                         token.nonces(ITIP20::noncesCall { owner })?,
@@ -4541,14 +4940,18 @@ pub(crate) mod tests {
                     .apply()?;
 
                 // Pause the token
-                token.pause(admin, ITIP20::pauseCall {})?;
+                token.pause(
+                    &mut crate::storage::StorageCtx::test_writable(),
+                    admin,
+                    ITIP20::pauseCall {},
+                )?;
                 assert!(token.paused()?);
 
                 let call =
                     make_permit_call(signer, spender, token.address, value, U256::ZERO, U256::MAX);
 
                 // Permit should work even when paused
-                token.permit(call)?;
+                token.permit(&mut crate::storage::StorageCtx::test_writable(), call)?;
 
                 assert_eq!(
                     token.allowance(ITIP20::allowanceCall { owner, spender })?,
@@ -4596,7 +4999,7 @@ pub(crate) mod tests {
                     U256::ZERO,
                     U256::MAX,
                 );
-                token.permit(call)?;
+                token.permit(&mut crate::storage::StorageCtx::test_writable(), call)?;
 
                 assert_eq!(
                     token.allowance(ITIP20::allowanceCall { owner, spender })?,
@@ -4629,7 +5032,7 @@ pub(crate) mod tests {
                     U256::ZERO,
                     U256::MAX,
                 );
-                token.permit(call)?;
+                token.permit(&mut crate::storage::StorageCtx::test_writable(), call)?;
                 assert_eq!(
                     token.allowance(ITIP20::allowanceCall { owner, spender })?,
                     U256::from(1000)
@@ -4644,7 +5047,7 @@ pub(crate) mod tests {
                     U256::from(1),
                     U256::MAX,
                 );
-                token.permit(call)?;
+                token.permit(&mut crate::storage::StorageCtx::test_writable(), call)?;
                 assert_eq!(
                     token.allowance(ITIP20::allowanceCall { owner, spender })?,
                     U256::ZERO
@@ -4667,15 +5070,18 @@ pub(crate) mod tests {
                 let mut token = TIP20Setup::create("Test", "TST", admin).apply()?;
 
                 for v in [0u8, 1] {
-                    let result = token.permit(ITIP20::permitCall {
-                        owner: admin,
-                        spender,
-                        value: U256::from(1000),
-                        deadline: U256::MAX,
-                        v,
-                        r: B256::ZERO,
-                        s: B256::ZERO,
-                    });
+                    let result = token.permit(
+                        &mut crate::storage::StorageCtx::test_writable(),
+                        ITIP20::permitCall {
+                            owner: admin,
+                            spender,
+                            value: U256::from(1000),
+                            deadline: U256::MAX,
+                            v,
+                            r: B256::ZERO,
+                            s: B256::ZERO,
+                        },
+                    );
 
                     assert!(
                         matches!(
@@ -4702,15 +5108,18 @@ pub(crate) mod tests {
             StorageCtx::enter(&mut storage, || {
                 let mut token = TIP20Setup::create("Test", "TST", admin).apply()?;
 
-                let result = token.permit(ITIP20::permitCall {
-                    owner: Address::ZERO,
-                    spender,
-                    value: U256::from(1000),
-                    deadline: U256::MAX,
-                    v: 27,
-                    r: B256::ZERO,
-                    s: B256::ZERO,
-                });
+                let result = token.permit(
+                    &mut crate::storage::StorageCtx::test_writable(),
+                    ITIP20::permitCall {
+                        owner: Address::ZERO,
+                        spender,
+                        value: U256::from(1000),
+                        deadline: U256::MAX,
+                        v: 27,
+                        r: B256::ZERO,
+                        s: B256::ZERO,
+                    },
+                );
 
                 assert!(matches!(
                     result,
@@ -4760,10 +5169,18 @@ pub(crate) mod tests {
                 .with_issuer(admin)
                 .with_role(admin, PAUSE_ROLE)
                 .apply()?;
-            token.pause(admin, ITIP20::pauseCall {})?;
+            token.pause(
+                &mut crate::storage::StorageCtx::test_writable(),
+                admin,
+                ITIP20::pauseCall {},
+            )?;
 
             token.storage.reset_counters();
-            let result = token.mint(admin, ITIP20::mintCall { to: admin, amount });
+            let result = token.mint(
+                &mut crate::storage::StorageCtx::test_writable(),
+                admin,
+                ITIP20::mintCall { to: admin, amount },
+            );
 
             assert_eq!(
                 result,
@@ -4794,11 +5211,22 @@ pub(crate) mod tests {
                     .with_role(admin, PAUSE_ROLE)
                     .apply()?;
 
-                token.pause(admin, ITIP20::pauseCall {})?;
+                token.pause(
+                    &mut crate::storage::StorageCtx::test_writable(),
+                    admin,
+                    ITIP20::pauseCall {},
+                )?;
 
-                let mint_result = token.mint(admin, ITIP20::mintCall { to, amount });
-                let mint_memo_result =
-                    token.mint_with_memo(admin, ITIP20::mintWithMemoCall { to, amount, memo });
+                let mint_result = token.mint(
+                    &mut crate::storage::StorageCtx::test_writable(),
+                    admin,
+                    ITIP20::mintCall { to, amount },
+                );
+                let mint_memo_result = token.mint_with_memo(
+                    &mut crate::storage::StorageCtx::test_writable(),
+                    admin,
+                    ITIP20::mintWithMemoCall { to, amount, memo },
+                );
 
                 if hardfork.is_t3() {
                     let expected = TempoPrecompileError::TIP20(TIP20Error::contract_paused());
@@ -4831,11 +5259,22 @@ pub(crate) mod tests {
                     .with_mint(admin, amount * U256::from(2))
                     .apply()?;
 
-                token.pause(admin, ITIP20::pauseCall {})?;
+                token.pause(
+                    &mut crate::storage::StorageCtx::test_writable(),
+                    admin,
+                    ITIP20::pauseCall {},
+                )?;
 
-                let burn_result = token.burn(admin, ITIP20::burnCall { amount });
-                let burn_memo_result =
-                    token.burn_with_memo(admin, ITIP20::burnWithMemoCall { amount, memo });
+                let burn_result = token.burn(
+                    &mut crate::storage::StorageCtx::test_writable(),
+                    admin,
+                    ITIP20::burnCall { amount },
+                );
+                let burn_memo_result = token.burn_with_memo(
+                    &mut crate::storage::StorageCtx::test_writable(),
+                    admin,
+                    ITIP20::burnWithMemoCall { amount, memo },
+                );
 
                 if hardfork.is_t3() {
                     let expected = TempoPrecompileError::TIP20(TIP20Error::contract_paused());
@@ -4864,8 +5303,9 @@ pub(crate) mod tests {
             StorageCtx::enter(&mut storage, || {
                 // Create a blacklist policy and block the address
                 let mut registry = TIP403Registry::new();
-                registry.initialize()?;
+                registry.initialize(&mut crate::storage::StorageCtx::test_writable())?;
                 let policy_id = registry.create_policy(
+                    &mut crate::storage::StorageCtx::test_writable(),
                     admin,
                     ITIP403Registry::createPolicyCall {
                         admin,
@@ -4873,6 +5313,7 @@ pub(crate) mod tests {
                     },
                 )?;
                 registry.modify_policy_blacklist(
+                    &mut crate::storage::StorageCtx::test_writable(),
                     admin,
                     ITIP403Registry::modifyPolicyBlacklistCall {
                         policyId: policy_id,
@@ -4890,6 +5331,7 @@ pub(crate) mod tests {
 
                 // Point the token's transfer policy at our blacklist
                 token.change_transfer_policy_id(
+                    &mut crate::storage::StorageCtx::test_writable(),
                     admin,
                     ITIP20::changeTransferPolicyIdCall {
                         newPolicyId: policy_id,
@@ -4897,9 +5339,19 @@ pub(crate) mod tests {
                 )?;
 
                 // Pause the token
-                token.pause(admin, ITIP20::pauseCall {})?;
+                token.pause(
+                    &mut crate::storage::StorageCtx::test_writable(),
+                    admin,
+                    ITIP20::pauseCall {},
+                )?;
 
-                let result = token.burn_blocked(admin, blocked, amount, true);
+                let result = token.burn_blocked(
+                    &mut crate::storage::StorageCtx::test_writable(),
+                    admin,
+                    blocked,
+                    amount,
+                    true,
+                );
 
                 if hardfork.is_t3() {
                     assert_eq!(

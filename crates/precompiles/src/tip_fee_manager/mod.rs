@@ -60,8 +60,8 @@ impl TipFeeManager {
     pub const MINIMUM_BALANCE: U256 = uint!(1_000_000_000_U256);
 
     /// Initializes the fee manager precompile.
-    pub fn initialize(&mut self) -> Result<()> {
-        self.__initialize()
+    pub fn initialize(&mut self, write: &mut crate::storage::WriteCtx) -> Result<()> {
+        self.__initialize(write)
     }
 
     /// Returns the validator's preferred fee token, falling back to [`DEFAULT_FEE_TOKEN`].
@@ -87,6 +87,7 @@ impl TipFeeManager {
     /// - `InvalidCurrency` — token is not USD-denominated
     pub fn set_validator_token(
         &mut self,
+        write: &mut crate::storage::WriteCtx,
         sender: Address,
         call: IFeeManager::setValidatorTokenCall,
         beneficiary: Address,
@@ -104,10 +105,13 @@ impl TipFeeManager {
         // Validate that the fee token is USD
         validate_usd_currency(call.token)?;
 
-        self.validator_tokens[sender].write(call.token)?;
+        self.validator_tokens[sender].write(write, call.token)?;
 
         // Emit ValidatorTokenSet event
-        self.emit_event(FeeManagerEvent::validator_token_set(sender, call.token))
+        self.emit_event(
+            write,
+            FeeManagerEvent::validator_token_set(sender, call.token),
+        )
     }
 
     /// Sets the caller's preferred fee token as a user. Must be a valid USD-denominated TIP-20
@@ -118,6 +122,7 @@ impl TipFeeManager {
     /// - `InvalidCurrency` — token is not USD-denominated
     pub fn set_user_token(
         &mut self,
+        write: &mut crate::storage::WriteCtx,
         sender: Address,
         call: IFeeManager::setUserTokenCall,
     ) -> Result<()> {
@@ -138,10 +143,10 @@ impl TipFeeManager {
             }
         }
 
-        self.user_tokens[sender].write(call.token)?;
+        self.user_tokens[sender].write(write, call.token)?;
 
         // Emit UserTokenSet event
-        self.emit_event(FeeManagerEvent::user_token_set(sender, call.token))
+        self.emit_event(write, FeeManagerEvent::user_token_set(sender, call.token))
     }
 
     /// Collects fees from `fee_payer` before transaction execution.
@@ -157,6 +162,7 @@ impl TipFeeManager {
     /// - `InsufficientLiquidity` — AMM pool lacks liquidity for the fee swap (T5+: with two-hop fallback)
     pub fn collect_fee_pre_tx(
         &mut self,
+        write: &mut crate::storage::WriteCtx,
         fee_payer: Address,
         user_token: Address,
         max_amount: U256,
@@ -174,12 +180,12 @@ impl TipFeeManager {
         } else {
             tip20_token.ensure_transfer_authorized(fee_payer, self.address)?;
         }
-        tip20_token.transfer_fee_pre_tx(fee_payer, max_amount)?;
+        tip20_token.transfer_fee_pre_tx(write, fee_payer, max_amount)?;
 
         if !skip_liquidity_check {
             let (route, ..) = self.plan_fee_route(user_token, validator_token, max_amount)?;
             let route = route.ok_or_else(TIPFeeAMMError::insufficient_liquidity)?;
-            self.reserve_fee_liquidity(user_token, validator_token, max_amount, route)?;
+            self.reserve_fee_liquidity(write, user_token, validator_token, max_amount, route)?;
         }
 
         // Return the user's token preference
@@ -189,6 +195,7 @@ impl TipFeeManager {
     /// Reserves AMM liquidity needed to settle the selected fee route after transaction execution.
     fn reserve_fee_liquidity(
         &mut self,
+        write: &mut crate::storage::WriteCtx,
         user_token: Address,
         validator_token: Address,
         max_amount: U256,
@@ -200,7 +207,11 @@ impl TipFeeManager {
                 let amount_out: u128 = compute_amount_out(max_amount)?
                     .try_into()
                     .map_err(|_| TempoPrecompileError::under_overflow())?;
-                self.reserve_pool_liquidity(self.pool_id(user_token, validator_token), amount_out)?;
+                self.reserve_pool_liquidity(
+                    write,
+                    self.pool_id(user_token, validator_token),
+                    amount_out,
+                )?;
             }
             FeeRoute::Direct => {}
             FeeRoute::TwoHop(intermediate) => {
@@ -211,9 +222,13 @@ impl TipFeeManager {
                 let out2: u128 = compute_amount_out(U256::from(out1))?
                     .try_into()
                     .map_err(|_| TempoPrecompileError::under_overflow())?;
-                self.reserve_pool_liquidity(self.pool_id(user_token, intermediate), out1)?;
-                self.reserve_pool_liquidity(self.pool_id(intermediate, validator_token), out2)?;
-                self.two_hop_intermediate.t_write(intermediate)?;
+                self.reserve_pool_liquidity(write, self.pool_id(user_token, intermediate), out1)?;
+                self.reserve_pool_liquidity(
+                    write,
+                    self.pool_id(intermediate, validator_token),
+                    out2,
+                )?;
+                self.two_hop_intermediate.t_write(write, intermediate)?;
             }
         }
 
@@ -233,6 +248,7 @@ impl TipFeeManager {
     /// - `UnderOverflow` — collected-fee accumulator overflows
     pub fn collect_fee_post_tx(
         &mut self,
+        write: &mut crate::storage::WriteCtx,
         fee_payer: Address,
         actual_spending: U256,
         refund_amount: U256,
@@ -241,7 +257,7 @@ impl TipFeeManager {
     ) -> Result<U256> {
         // Refund unused tokens to user
         let mut tip20_token = TIP20Token::from_address(fee_token)?;
-        tip20_token.transfer_fee_post_tx(fee_payer, refund_amount, actual_spending)?;
+        tip20_token.transfer_fee_post_tx(write, fee_payer, refund_amount, actual_spending)?;
 
         // Execute fee swap and track collected fees
         let hop_token = self.two_hop_intermediate.t_read()?;
@@ -252,19 +268,19 @@ impl TipFeeManager {
         } else if hop_token.is_zero() {
             // Single-hop (direct) swap
             if !actual_spending.is_zero() {
-                self.execute_fee_swap(fee_token, validator_token, actual_spending)?;
+                self.execute_fee_swap(write, fee_token, validator_token, actual_spending)?;
             }
             compute_amount_out(actual_spending)?
         } else {
             // Two-hop swap (only in T5+): each hop applies M = 9970/10000 sequentially
             if !actual_spending.is_zero() {
-                let out1 = self.execute_fee_swap(fee_token, hop_token, actual_spending)?;
-                self.execute_fee_swap(hop_token, validator_token, out1)?;
+                let out1 = self.execute_fee_swap(write, fee_token, hop_token, actual_spending)?;
+                self.execute_fee_swap(write, hop_token, validator_token, out1)?;
             }
             compute_amount_out(compute_amount_out(actual_spending)?)?
         };
 
-        self.increment_collected_fees(beneficiary, validator_token, amount)?;
+        self.increment_collected_fees(write, beneficiary, validator_token, amount)?;
 
         Ok(amount)
     }
@@ -272,6 +288,7 @@ impl TipFeeManager {
     /// Increment collected fees for a specific validator and token combination.
     fn increment_collected_fees(
         &mut self,
+        write: &mut crate::storage::WriteCtx,
         validator: Address,
         token: Address,
         amount: U256,
@@ -280,7 +297,7 @@ impl TipFeeManager {
             return Ok(());
         }
 
-        self.collected_fees[validator][token].sinc(amount)?;
+        self.collected_fees[validator][token].sinc(write, amount)?;
 
         Ok(())
     }
@@ -290,7 +307,12 @@ impl TipFeeManager {
     ///
     /// # Errors
     /// - `InvalidToken` — `token` does not have a valid TIP-20 prefix
-    pub fn distribute_fees(&mut self, validator: Address, token: Address) -> Result<()> {
+    pub fn distribute_fees(
+        &mut self,
+        write: &mut crate::storage::WriteCtx,
+        validator: Address,
+        token: Address,
+    ) -> Result<()> {
         // collect_fee_pre_tx creates FeeManager balance slots for free; do not convert them into storage credits.
         StorageCtx.set_tip1060_storage_credit_minting(false);
 
@@ -298,11 +320,12 @@ impl TipFeeManager {
         if amount.is_zero() {
             return Ok(());
         }
-        self.collected_fees[validator][token].write(U256::ZERO)?;
+        self.collected_fees[validator][token].write(write, U256::ZERO)?;
 
         // Transfer fees to validator
         let mut tip20_token = TIP20Token::from_address(token)?;
         tip20_token.transfer(
+            write,
             self.address,
             ITIP20::transferCall {
                 to: validator,
@@ -311,7 +334,10 @@ impl TipFeeManager {
         )?;
 
         // Emit FeesDistributed event
-        self.emit_event(FeeManagerEvent::fees_distributed(validator, token, amount))?;
+        self.emit_event(
+            write,
+            FeeManagerEvent::fees_distributed(validator, token, amount),
+        )?;
 
         Ok(())
     }
@@ -351,7 +377,11 @@ mod tests {
             let call = IFeeManager::setUserTokenCall {
                 token: token.address(),
             };
-            let result = fee_manager.set_user_token(user, call);
+            let result = fee_manager.set_user_token(
+                &mut crate::storage::StorageCtx::test_writable(),
+                user,
+                call,
+            );
             assert!(result.is_ok());
 
             let call = IFeeManager::userTokensCall { user };
@@ -373,8 +403,16 @@ mod tests {
                 token: token.address(),
             };
 
-            fee_manager.set_user_token(user, call.clone())?;
-            fee_manager.set_user_token(user, call)?;
+            fee_manager.set_user_token(
+                &mut crate::storage::StorageCtx::test_writable(),
+                user,
+                call.clone(),
+            )?;
+            fee_manager.set_user_token(
+                &mut crate::storage::StorageCtx::test_writable(),
+                user,
+                call,
+            )?;
             let event_count = StorageCtx.get_events(TIP_FEE_MANAGER_ADDRESS).len();
             assert_eq!(
                 event_count, 2,
@@ -397,11 +435,19 @@ mod tests {
                 token: token.address(),
             };
 
-            fee_manager.set_user_token(user, call.clone())?;
+            fee_manager.set_user_token(
+                &mut crate::storage::StorageCtx::test_writable(),
+                user,
+                call.clone(),
+            )?;
             let event_count = StorageCtx.get_events(TIP_FEE_MANAGER_ADDRESS).len();
             assert_eq!(event_count, 1, "first set_user_token should emit event");
 
-            fee_manager.set_user_token(user, call)?;
+            fee_manager.set_user_token(
+                &mut crate::storage::StorageCtx::test_writable(),
+                user,
+                call,
+            )?;
             let event_count = StorageCtx.get_events(TIP_FEE_MANAGER_ADDRESS).len();
             assert_eq!(
                 event_count, 1,
@@ -427,7 +473,12 @@ mod tests {
             };
 
             // Should fail when validator == beneficiary (same block check)
-            let result = fee_manager.set_validator_token(validator, call.clone(), validator);
+            let result = fee_manager.set_validator_token(
+                &mut crate::storage::StorageCtx::test_writable(),
+                validator,
+                call.clone(),
+                validator,
+            );
             assert_eq!(
                 result,
                 Err(TempoPrecompileError::FeeManagerError(
@@ -436,7 +487,12 @@ mod tests {
             );
 
             // Should succeed with different beneficiary
-            let result = fee_manager.set_validator_token(validator, call, beneficiary);
+            let result = fee_manager.set_validator_token(
+                &mut crate::storage::StorageCtx::test_writable(),
+                validator,
+                call,
+                beneficiary,
+            );
             assert!(result.is_ok());
 
             let returned_token = fee_manager.get_validator_token(validator)?;
@@ -461,11 +517,21 @@ mod tests {
             };
 
             // Setting validator token when not beneficiary should succeed
-            let result = fee_manager.set_validator_token(validator, call.clone(), beneficiary);
+            let result = fee_manager.set_validator_token(
+                &mut crate::storage::StorageCtx::test_writable(),
+                validator,
+                call.clone(),
+                beneficiary,
+            );
             assert!(result.is_ok());
 
             // But if validator is the beneficiary, should fail with CannotChangeWithinBlock
-            let result = fee_manager.set_validator_token(validator, call, validator);
+            let result = fee_manager.set_validator_token(
+                &mut crate::storage::StorageCtx::test_writable(),
+                validator,
+                call,
+                validator,
+            );
             assert_eq!(
                 result,
                 Err(TempoPrecompileError::FeeManagerError(
@@ -496,6 +562,7 @@ mod tests {
 
             // Set validator token (use beneficiary to avoid CannotChangeWithinBlock)
             fee_manager.set_validator_token(
+                &mut crate::storage::StorageCtx::test_writable(),
                 validator,
                 IFeeManager::setValidatorTokenCall {
                     token: token.address(),
@@ -505,6 +572,7 @@ mod tests {
 
             // Set user token
             fee_manager.set_user_token(
+                &mut crate::storage::StorageCtx::test_writable(),
                 user,
                 IFeeManager::setUserTokenCall {
                     token: token.address(),
@@ -512,8 +580,14 @@ mod tests {
             )?;
 
             // Call collect_fee_pre_tx directly
-            let result =
-                fee_manager.collect_fee_pre_tx(user, token.address(), max_amount, validator, false);
+            let result = fee_manager.collect_fee_pre_tx(
+                &mut crate::storage::StorageCtx::test_writable(),
+                user,
+                token.address(),
+                max_amount,
+                validator,
+                false,
+            );
             assert!(result.is_ok());
             assert_eq!(result?, token.address());
 
@@ -537,8 +611,9 @@ mod tests {
                 .apply()?;
 
             let mut registry = TIP403Registry::new();
-            registry.initialize()?;
+            registry.initialize(&mut crate::storage::StorageCtx::test_writable())?;
             let policy_id = registry.create_policy_with_accounts(
+                &mut crate::storage::StorageCtx::test_writable(),
                 user,
                 ITIP403Registry::createPolicyWithAccountsCall {
                     admin: user,
@@ -547,6 +622,7 @@ mod tests {
                 },
             )?;
             token.change_transfer_policy_id(
+                &mut crate::storage::StorageCtx::test_writable(),
                 user,
                 ITIP20::changeTransferPolicyIdCall {
                     newPolicyId: policy_id,
@@ -555,6 +631,7 @@ mod tests {
 
             let mut fee_manager = TipFeeManager::new();
             fee_manager.set_validator_token(
+                &mut crate::storage::StorageCtx::test_writable(),
                 validator,
                 IFeeManager::setValidatorTokenCall {
                     token: token.address(),
@@ -562,8 +639,14 @@ mod tests {
                 beneficiary,
             )?;
 
-            let result =
-                fee_manager.collect_fee_pre_tx(user, token.address(), max_amount, validator, false);
+            let result = fee_manager.collect_fee_pre_tx(
+                &mut crate::storage::StorageCtx::test_writable(),
+                user,
+                token.address(),
+                max_amount,
+                validator,
+                false,
+            );
             assert_eq!(result?, token.address());
 
             Ok(())
@@ -586,8 +669,9 @@ mod tests {
                 .apply()?;
 
             let mut registry = TIP403Registry::new();
-            registry.initialize()?;
+            registry.initialize(&mut crate::storage::StorageCtx::test_writable())?;
             let policy_id = registry.create_policy_with_accounts(
+                &mut crate::storage::StorageCtx::test_writable(),
                 user,
                 ITIP403Registry::createPolicyWithAccountsCall {
                     admin: user,
@@ -596,6 +680,7 @@ mod tests {
                 },
             )?;
             token.change_transfer_policy_id(
+                &mut crate::storage::StorageCtx::test_writable(),
                 user,
                 ITIP20::changeTransferPolicyIdCall {
                     newPolicyId: policy_id,
@@ -604,6 +689,7 @@ mod tests {
 
             let mut fee_manager = TipFeeManager::new();
             fee_manager.set_validator_token(
+                &mut crate::storage::StorageCtx::test_writable(),
                 validator,
                 IFeeManager::setValidatorTokenCall {
                     token: token.address(),
@@ -611,8 +697,14 @@ mod tests {
                 beneficiary,
             )?;
 
-            let result =
-                fee_manager.collect_fee_pre_tx(user, token.address(), max_amount, validator, false);
+            let result = fee_manager.collect_fee_pre_tx(
+                &mut crate::storage::StorageCtx::test_writable(),
+                user,
+                token.address(),
+                max_amount,
+                validator,
+                false,
+            );
             assert!(matches!(
                 result,
                 Err(TempoPrecompileError::TIP20(TIP20Error::PolicyForbids(_)))
@@ -643,6 +735,7 @@ mod tests {
 
             // Set validator token (use beneficiary to avoid CannotChangeWithinBlock)
             fee_manager.set_validator_token(
+                &mut crate::storage::StorageCtx::test_writable(),
                 validator,
                 IFeeManager::setValidatorTokenCall {
                     token: token.address(),
@@ -652,6 +745,7 @@ mod tests {
 
             // Set user token
             fee_manager.set_user_token(
+                &mut crate::storage::StorageCtx::test_writable(),
                 user,
                 IFeeManager::setUserTokenCall {
                     token: token.address(),
@@ -660,6 +754,7 @@ mod tests {
 
             // Call collect_fee_post_tx directly
             let credited = fee_manager.collect_fee_post_tx(
+                &mut crate::storage::StorageCtx::test_writable(),
                 user,
                 actual_used,
                 refund_amount,
@@ -699,7 +794,11 @@ mod tests {
             let call = IFeeManager::setUserTokenCall {
                 token: non_usd_token.address(),
             };
-            let result = fee_manager.set_user_token(user, call);
+            let result = fee_manager.set_user_token(
+                &mut crate::storage::StorageCtx::test_writable(),
+                user,
+                call,
+            );
             assert!(matches!(
                 result,
                 Err(TempoPrecompileError::TIP20(TIP20Error::InvalidCurrency(_)))
@@ -709,7 +808,12 @@ mod tests {
             let call = IFeeManager::setValidatorTokenCall {
                 token: non_usd_token.address(),
             };
-            let result = fee_manager.set_validator_token(validator, call, beneficiary);
+            let result = fee_manager.set_validator_token(
+                &mut crate::storage::StorageCtx::test_writable(),
+                validator,
+                call,
+                beneficiary,
+            );
             assert!(matches!(
                 result,
                 Err(TempoPrecompileError::TIP20(TIP20Error::InvalidCurrency(_)))
@@ -745,13 +849,17 @@ mod tests {
 
             // Setup pool with liquidity
             let pool_id = fee_manager.pool_id(user_token.address(), validator_token.address());
-            fee_manager.pools[pool_id].write(crate::tip_fee_manager::amm::Pool {
-                reserve_user_token: 10000,
-                reserve_validator_token: 10000,
-            })?;
+            fee_manager.pools[pool_id].write(
+                &mut crate::storage::StorageCtx::test_writable(),
+                crate::tip_fee_manager::amm::Pool {
+                    reserve_user_token: 10000,
+                    reserve_validator_token: 10000,
+                },
+            )?;
 
             // Set validator's preferred token
             fee_manager.set_validator_token(
+                &mut crate::storage::StorageCtx::test_writable(),
                 validator,
                 IFeeManager::setValidatorTokenCall {
                     token: validator_token.address(),
@@ -763,6 +871,7 @@ mod tests {
 
             // Call collect_fee_pre_tx
             fee_manager.collect_fee_pre_tx(
+                &mut crate::storage::StorageCtx::test_writable(),
                 user,
                 user_token.address(),
                 max_amount,
@@ -820,12 +929,16 @@ mod tests {
             let mut fee_manager = TipFeeManager::new();
 
             let pool_id = fee_manager.pool_id(user_token.address(), validator_token.address());
-            fee_manager.pools[pool_id].write(crate::tip_fee_manager::amm::Pool {
-                reserve_user_token: 10000,
-                reserve_validator_token: 10000,
-            })?;
+            fee_manager.pools[pool_id].write(
+                &mut crate::storage::StorageCtx::test_writable(),
+                crate::tip_fee_manager::amm::Pool {
+                    reserve_user_token: 10000,
+                    reserve_validator_token: 10000,
+                },
+            )?;
 
             fee_manager.set_validator_token(
+                &mut crate::storage::StorageCtx::test_writable(),
                 validator,
                 IFeeManager::setValidatorTokenCall {
                     token: validator_token.address(),
@@ -839,6 +952,7 @@ mod tests {
 
             // First call collect_fee_pre_tx (checks liquidity)
             fee_manager.collect_fee_pre_tx(
+                &mut crate::storage::StorageCtx::test_writable(),
                 user,
                 user_token.address(),
                 max_amount,
@@ -848,6 +962,7 @@ mod tests {
 
             // Then call collect_fee_post_tx (executes swap immediately)
             let credited = fee_manager.collect_fee_post_tx(
+                &mut crate::storage::StorageCtx::test_writable(),
                 user,
                 actual_spending,
                 refund_amount,
@@ -900,12 +1015,16 @@ mod tests {
 
             let pool_id = fee_manager.pool_id(user_token.address(), validator_token.address());
             // Pool with very little validator token liquidity
-            fee_manager.pools[pool_id].write(crate::tip_fee_manager::amm::Pool {
-                reserve_user_token: 10000,
-                reserve_validator_token: 100,
-            })?;
+            fee_manager.pools[pool_id].write(
+                &mut crate::storage::StorageCtx::test_writable(),
+                crate::tip_fee_manager::amm::Pool {
+                    reserve_user_token: 10000,
+                    reserve_validator_token: 100,
+                },
+            )?;
 
             fee_manager.set_validator_token(
+                &mut crate::storage::StorageCtx::test_writable(),
                 validator,
                 IFeeManager::setValidatorTokenCall {
                     token: validator_token.address(),
@@ -918,6 +1037,7 @@ mod tests {
             let max_amount = U256::from(1000);
 
             let result = fee_manager.collect_fee_pre_tx(
+                &mut crate::storage::StorageCtx::test_writable(),
                 user,
                 user_token.address(),
                 max_amount,
@@ -953,6 +1073,7 @@ mod tests {
 
             let mut fee_manager = TipFeeManager::new();
             fee_manager.set_validator_token(
+                &mut crate::storage::StorageCtx::test_writable(),
                 validator,
                 IFeeManager::setValidatorTokenCall {
                     token: validator_token.address(),
@@ -962,6 +1083,7 @@ mod tests {
 
             // Skip liquidity check = false should fail
             let result = fee_manager.collect_fee_pre_tx(
+                &mut crate::storage::StorageCtx::test_writable(),
                 user,
                 user_token.address(),
                 U256::from(1000),
@@ -975,6 +1097,7 @@ mod tests {
 
             // Skip liquidity check = true should pass
             let result = fee_manager.collect_fee_pre_tx(
+                &mut crate::storage::StorageCtx::test_writable(),
                 user,
                 user_token.address(),
                 U256::from(1000),
@@ -1003,6 +1126,7 @@ mod tests {
             let mut fee_manager = TipFeeManager::new();
 
             fee_manager.set_validator_token(
+                &mut crate::storage::StorageCtx::test_writable(),
                 validator,
                 IFeeManager::setValidatorTokenCall {
                     token: token.address(),
@@ -1015,7 +1139,11 @@ mod tests {
             assert_eq!(collected, U256::ZERO);
 
             // distribute_fees should be a no-op
-            let result = fee_manager.distribute_fees(validator, token.address());
+            let result = fee_manager.distribute_fees(
+                &mut crate::storage::StorageCtx::test_writable(),
+                validator,
+                token.address(),
+            );
             assert!(result.is_ok(), "Should succeed even with zero balance");
 
             // Validator balance should still be zero
@@ -1045,6 +1173,7 @@ mod tests {
 
             // Set validator's preferred token
             fee_manager.set_validator_token(
+                &mut crate::storage::StorageCtx::test_writable(),
                 validator,
                 IFeeManager::setValidatorTokenCall {
                     token: token.address(),
@@ -1054,7 +1183,8 @@ mod tests {
 
             // Simulate accumulated fees
             let fee_amount = U256::from(500);
-            fee_manager.collected_fees[validator][token.address()].write(fee_amount)?;
+            fee_manager.collected_fees[validator][token.address()]
+                .write(&mut crate::storage::StorageCtx::test_writable(), fee_amount)?;
 
             // Check validator balance before
             let tip20_token = TIP20Token::from_address(token.address())?;
@@ -1064,7 +1194,11 @@ mod tests {
 
             // Distribute fees
             let mut fee_manager = TipFeeManager::new();
-            fee_manager.distribute_fees(validator, token.address())?;
+            fee_manager.distribute_fees(
+                &mut crate::storage::StorageCtx::test_writable(),
+                validator,
+                token.address(),
+            )?;
 
             // Verify validator received the fees
             let tip20_token = TIP20Token::from_address(token.address())?;
@@ -1091,7 +1225,7 @@ mod tests {
             assert!(!fee_manager.is_initialized()?);
 
             // Initialize
-            fee_manager.initialize()?;
+            fee_manager.initialize(&mut crate::storage::StorageCtx::test_writable())?;
 
             // After init, should be initialized
             assert!(fee_manager.is_initialized()?);
@@ -1146,6 +1280,7 @@ mod tests {
 
             let mut fee_manager = TipFeeManager::new();
             fee_manager.set_validator_token(
+                &mut crate::storage::StorageCtx::test_writable(),
                 validator,
                 IFeeManager::setValidatorTokenCall {
                     token: validator_token,
@@ -1170,10 +1305,13 @@ mod tests {
         validator_reserve: u128,
     ) -> Result<()> {
         let pid = fm.pool_id(a, b);
-        fm.pools[pid].write(crate::tip_fee_manager::amm::Pool {
-            reserve_user_token: validator_reserve.max(1),
-            reserve_validator_token: validator_reserve,
-        })
+        fm.pools[pid].write(
+            &mut crate::storage::StorageCtx::test_writable(),
+            crate::tip_fee_manager::amm::Pool {
+                reserve_user_token: validator_reserve.max(1),
+                reserve_validator_token: validator_reserve,
+            },
+        )
     }
 
     #[test]
@@ -1192,7 +1330,14 @@ mod tests {
             false,
             |fm, t, user, validator, _admin| {
                 setup_pools(fm, t)?;
-                let res = fm.collect_fee_pre_tx(user, t.user, U256::from(1_000), validator, false);
+                let res = fm.collect_fee_pre_tx(
+                    &mut crate::storage::StorageCtx::test_writable(),
+                    user,
+                    t.user,
+                    U256::from(1_000),
+                    validator,
+                    false,
+                );
                 assert_eq!(
                     res.unwrap_err(),
                     TIPFeeAMMError::insufficient_liquidity().into(),
@@ -1209,7 +1354,14 @@ mod tests {
             |fm, t, user, validator, _admin| {
                 setup_pools(fm, t)?;
 
-                fm.collect_fee_pre_tx(user, t.user, U256::from(1_000), validator, false)?;
+                fm.collect_fee_pre_tx(
+                    &mut crate::storage::StorageCtx::test_writable(),
+                    user,
+                    t.user,
+                    U256::from(1_000),
+                    validator,
+                    false,
+                )?;
                 assert_eq!(
                     fm.pending_fee_swap_reservation[fm.pool_id(t.user, t.hop)].t_read()?,
                     997 // 1st hop: floor(1000 * 9970/10000) = 997
@@ -1248,8 +1400,14 @@ mod tests {
                     write_pool(fm, t.user, t.hop, r1)?;
                     write_pool(fm, t.hop, t.validator, r2)?;
 
-                    let res =
-                        fm.collect_fee_pre_tx(user, t.user, U256::from(1_000), validator, skip);
+                    let res = fm.collect_fee_pre_tx(
+                        &mut crate::storage::StorageCtx::test_writable(),
+                        user,
+                        t.user,
+                        U256::from(1_000),
+                        validator,
+                        skip,
+                    );
                     assert_eq!(
                         res.is_ok(),
                         direct > 0 || skip,
@@ -1313,9 +1471,22 @@ mod tests {
                     write_pool(fm, t.hop, t.validator, reserve)?;
 
                     let amount_u = U256::from(amount);
-                    fm.collect_fee_pre_tx(user, t.user, amount_u, validator, false)?;
-                    let credited =
-                        fm.collect_fee_post_tx(user, amount_u, U256::ZERO, t.user, validator)?;
+                    fm.collect_fee_pre_tx(
+                        &mut crate::storage::StorageCtx::test_writable(),
+                        user,
+                        t.user,
+                        amount_u,
+                        validator,
+                        false,
+                    )?;
+                    let credited = fm.collect_fee_post_tx(
+                        &mut crate::storage::StorageCtx::test_writable(),
+                        user,
+                        amount_u,
+                        U256::ZERO,
+                        t.user,
+                        validator,
+                    )?;
                     let one_hop_amount = compute_amount_out(amount_u)?;
                     assert!(
                         credited < one_hop_amount,
@@ -1363,7 +1534,14 @@ mod tests {
             write_pool(fm, t.hop, t.validator, reserve)?;
 
             let amount = U256::from(1_000);
-            fm.collect_fee_pre_tx(user, t.user, amount, validator, false)?;
+            fm.collect_fee_pre_tx(
+                &mut crate::storage::StorageCtx::test_writable(),
+                user,
+                t.user,
+                amount,
+                validator,
+                false,
+            )?;
             assert_eq!(fm.two_hop_intermediate.t_read()?, t.hop);
 
             // Mid-tx: rotate user.quoteToken from hop → validator. After this rotation,
@@ -1371,13 +1549,17 @@ mod tests {
             // so any post_tx that re-resolves would silently break (or revert).
             let mut user_token = TIP20Token::from_address(t.user)?;
             user_token.set_next_quote_token(
+                &mut crate::storage::StorageCtx::test_writable(),
                 admin,
                 ITIP20::setNextQuoteTokenCall {
                     newQuoteToken: t.validator,
                 },
             )?;
-            user_token
-                .complete_quote_token_update(admin, ITIP20::completeQuoteTokenUpdateCall {})?;
+            user_token.complete_quote_token_update(
+                &mut crate::storage::StorageCtx::test_writable(),
+                admin,
+                ITIP20::completeQuoteTokenUpdateCall {},
+            )?;
             assert_eq!(
                 user_token.quote_token()?,
                 t.validator,
@@ -1385,7 +1567,14 @@ mod tests {
             );
 
             // Post-tx MUST use the cached two_hop_intermediate (hop), not the new quote token.
-            fm.collect_fee_post_tx(user, amount, U256::ZERO, t.user, validator)?;
+            fm.collect_fee_post_tx(
+                &mut crate::storage::StorageCtx::test_writable(),
+                user,
+                amount,
+                U256::ZERO,
+                t.user,
+                validator,
+            )?;
 
             let out1: u128 = compute_amount_out(amount)?.try_into().unwrap();
             let out2: u128 = compute_amount_out(U256::from(out1))?.try_into().unwrap();
@@ -1437,9 +1626,23 @@ mod tests {
                 write_pool(fm, t.hop, t.validator, reserve)?;
 
                 let amount = U256::from(1_000);
-                fm.collect_fee_pre_tx(user, t.user, amount, validator, false)?;
+                fm.collect_fee_pre_tx(
+                    &mut crate::storage::StorageCtx::test_writable(),
+                    user,
+                    t.user,
+                    amount,
+                    validator,
+                    false,
+                )?;
                 assert_eq!(fm.two_hop_intermediate.t_read()?, t.hop, "tx1: cached");
-                fm.collect_fee_post_tx(user, amount, U256::ZERO, t.user, validator)?;
+                fm.collect_fee_post_tx(
+                    &mut crate::storage::StorageCtx::test_writable(),
+                    user,
+                    amount,
+                    U256::ZERO,
+                    t.user,
+                    validator,
+                )?;
                 // Note: post_tx leaves the slot non-zero in-tx; EVM clears it at tx boundary.
                 assert_eq!(
                     fm.two_hop_intermediate.t_read()?,
@@ -1461,12 +1664,26 @@ mod tests {
                 write_pool(fm, t.user, t.hop, 0)?;
                 write_pool(fm, t.hop, t.validator, 0)?;
 
-                fm.collect_fee_pre_tx(user, t.user, amount, validator, false)?;
+                fm.collect_fee_pre_tx(
+                    &mut crate::storage::StorageCtx::test_writable(),
+                    user,
+                    t.user,
+                    amount,
+                    validator,
+                    false,
+                )?;
                 assert!(
                     fm.two_hop_intermediate.t_read()?.is_zero(),
                     "tx2: pre_tx took direct route, must not set intermediate",
                 );
-                fm.collect_fee_post_tx(user, amount, U256::ZERO, t.user, validator)?;
+                fm.collect_fee_post_tx(
+                    &mut crate::storage::StorageCtx::test_writable(),
+                    user,
+                    amount,
+                    U256::ZERO,
+                    t.user,
+                    validator,
+                )?;
 
                 // tx2 settled via direct pool: validator received single-hop fee.
                 let out_single: U256 = compute_amount_out(amount)?;
@@ -1502,19 +1719,35 @@ mod tests {
             let supply = U256::from(reserve);
             for (a, b) in [(t.user, t.hop), (t.hop, t.validator)] {
                 let pid = fm.pool_id(a, b);
-                fm.total_supply[pid].write(supply)?;
-                fm.liquidity_balances[pid][admin].write(supply)?;
+                fm.total_supply[pid]
+                    .write(&mut crate::storage::StorageCtx::test_writable(), supply)?;
+                fm.liquidity_balances[pid][admin]
+                    .write(&mut crate::storage::StorageCtx::test_writable(), supply)?;
             }
 
             // pre_tx reserves: hop1 = 997, hop2 = 994 (computed from 1_000 input).
             let amount = U256::from(1_000);
-            fm.collect_fee_pre_tx(user, t.user, amount, validator, false)?;
+            fm.collect_fee_pre_tx(
+                &mut crate::storage::StorageCtx::test_writable(),
+                user,
+                t.user,
+                amount,
+                validator,
+                false,
+            )?;
             let r1 = fm.pending_fee_swap_reservation[fm.pool_id(t.user, t.hop)].t_read()?;
             let r2 = fm.pending_fee_swap_reservation[fm.pool_id(t.hop, t.validator)].t_read()?;
             assert!(r1 > 0 && r2 > 0, "both hop pools must be reserved");
 
             // Full-supply burn on hop1 would zero the reserve → must trip reservation.
-            let res1 = fm.burn(admin, t.user, t.hop, supply, admin);
+            let res1 = fm.burn(
+                &mut crate::storage::StorageCtx::test_writable(),
+                admin,
+                t.user,
+                t.hop,
+                supply,
+                admin,
+            );
             assert!(
                 matches!(
                     res1,
@@ -1526,7 +1759,14 @@ mod tests {
             );
 
             // Same for hop2.
-            let res2 = fm.burn(admin, t.hop, t.validator, supply, admin);
+            let res2 = fm.burn(
+                &mut crate::storage::StorageCtx::test_writable(),
+                admin,
+                t.hop,
+                t.validator,
+                supply,
+                admin,
+            );
             assert!(
                 matches!(
                     res2,

@@ -28,11 +28,13 @@ use crate::{
 /// `Storable::store` and `Storable::load`.
 pub struct PackedSlot(pub U256);
 
-impl StorageOps for PackedSlot {
+impl crate::storage::StorageRead for PackedSlot {
     fn load(&self, _slot: U256) -> Result<U256> {
         Ok(self.0)
     }
+}
 
+impl StorageOps for PackedSlot {
     fn store(&mut self, _slot: U256, value: U256) -> Result<()> {
         self.0 = value;
         Ok(())
@@ -847,20 +849,20 @@ mod tests {
 
             let mut flag_slot =
                 Slot::<bool>::new_with_ctx(struct_base, LayoutCtx::packed(0), address);
-            flag_slot.write(flag)?;
+            flag_slot.write(&mut crate::storage::StorageCtx::test_writable(), flag)?;
             assert_eq!(flag_slot.read()?, flag);
 
             let mut ts_slot = Slot::<u64>::new_with_ctx(struct_base, LayoutCtx::packed(1), address);
-            ts_slot.write(timestamp)?;
+            ts_slot.write(&mut crate::storage::StorageCtx::test_writable(), timestamp)?;
             assert_eq!(ts_slot.read()?, timestamp);
 
             let mut amount_slot =
                 Slot::<u128>::new_with_ctx(struct_base, LayoutCtx::packed(9), address);
-            amount_slot.write(amount)?;
+            amount_slot.write(&mut crate::storage::StorageCtx::test_writable(), amount)?;
             assert_eq!(amount_slot.read()?, amount);
 
             // Clear the middle one
-            amount_slot.delete()?;
+            amount_slot.delete(&mut crate::storage::StorageCtx::test_writable())?;
             assert_eq!(flag_slot.read()?, flag);
             assert_eq!(amount_slot.read()?, 0);
             assert_eq!(ts_slot.read()?, timestamp);
@@ -879,7 +881,7 @@ mod tests {
             let flag = false;
             let mut flag_slot =
                 Slot::<bool>::new_with_ctx(struct_base, LayoutCtx::packed(0), address);
-            flag_slot.write(flag)?;
+            flag_slot.write(&mut crate::storage::StorageCtx::test_writable(), flag)?;
             assert_eq!(flag_slot.read()?, flag);
 
             // Field in slot 1 (u128 is 16 bytes, packable)
@@ -889,7 +891,7 @@ mod tests {
                 LayoutCtx::packed(0),
                 address,
             );
-            amount_slot.write(amount)?;
+            amount_slot.write(&mut crate::storage::StorageCtx::test_writable(), amount)?;
             assert_eq!(amount_slot.read()?, amount);
 
             // Field in slot 2 (u64 is 8 bytes, packable)
@@ -899,7 +901,7 @@ mod tests {
                 LayoutCtx::packed(0),
                 address,
             );
-            value_slot.write(value)?;
+            value_slot.write(&mut crate::storage::StorageCtx::test_writable(), value)?;
             assert_eq!(value_slot.read()?, value);
 
             Ok(())

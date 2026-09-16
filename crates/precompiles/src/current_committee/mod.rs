@@ -29,6 +29,7 @@ impl CurrentCommittee {
     /// processing the last block of an epoch.
     pub fn set_committee_members(
         &mut self,
+        write: &mut crate::storage::WriteCtx,
         msg_sender: Address,
         call: ICurrentCommittee::setCommitteeMembersCall,
     ) -> Result<()> {
@@ -38,8 +39,8 @@ impl CurrentCommittee {
 
         // System writes are free and must not mint or consume TIP-1060 storage credits.
         self.storage.set_tip1060_storage_credits(false);
-        self.epoch.write(call.epoch)?;
-        self.ids.write(call.publicKeys)?;
+        self.epoch.write(write, call.epoch)?;
+        self.ids.write(write, call.publicKeys)?;
         Ok(())
     }
 }

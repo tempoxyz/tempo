@@ -231,9 +231,10 @@ mod tests {
             let access_key = PrivateKeySigner::random();
 
             let mut keychain = AccountKeychain::new();
-            keychain.initialize()?;
-            keychain.set_tx_origin(account)?;
+            keychain.initialize(&mut crate::storage::StorageCtx::test_writable())?;
+            keychain.set_tx_origin(&mut crate::storage::StorageCtx::test_writable(), account)?;
             keychain.authorize_key(
+                &mut crate::storage::StorageCtx::test_writable(),
                 account,
                 access_key.address(),
                 SignatureType::Secp256k1,
@@ -297,9 +298,10 @@ mod tests {
             let access_key = PrivateKeySigner::random();
 
             let mut keychain = AccountKeychain::new();
-            keychain.initialize()?;
-            keychain.set_tx_origin(account)?;
+            keychain.initialize(&mut crate::storage::StorageCtx::test_writable())?;
+            keychain.set_tx_origin(&mut crate::storage::StorageCtx::test_writable(), account)?;
             keychain.authorize_key(
+                &mut crate::storage::StorageCtx::test_writable(),
                 account,
                 access_key.address(),
                 SignatureType::Secp256k1,
@@ -333,9 +335,10 @@ mod tests {
             let admin = PrivateKeySigner::random();
 
             let mut keychain = AccountKeychain::new();
-            keychain.initialize()?;
-            keychain.set_tx_origin(account)?;
+            keychain.initialize(&mut crate::storage::StorageCtx::test_writable())?;
+            keychain.set_tx_origin(&mut crate::storage::StorageCtx::test_writable(), account)?;
             keychain.authorize_admin_key(
+                &mut crate::storage::StorageCtx::test_writable(),
                 account,
                 admin.address(),
                 SignatureType::Secp256k1,
@@ -374,9 +377,10 @@ mod tests {
             let admin = PrivateKeySigner::random();
 
             let mut keychain = AccountKeychain::new();
-            keychain.initialize()?;
-            keychain.set_tx_origin(account)?;
+            keychain.initialize(&mut crate::storage::StorageCtx::test_writable())?;
+            keychain.set_tx_origin(&mut crate::storage::StorageCtx::test_writable(), account)?;
             keychain.authorize_admin_key(
+                &mut crate::storage::StorageCtx::test_writable(),
                 account,
                 admin.address(),
                 SignatureType::Secp256k1,
@@ -403,9 +407,10 @@ mod tests {
             let access_key = PrivateKeySigner::random();
 
             let mut keychain = AccountKeychain::new();
-            keychain.initialize()?;
-            keychain.set_tx_origin(account)?;
+            keychain.initialize(&mut crate::storage::StorageCtx::test_writable())?;
+            keychain.set_tx_origin(&mut crate::storage::StorageCtx::test_writable(), account)?;
             keychain.authorize_key(
+                &mut crate::storage::StorageCtx::test_writable(),
                 account,
                 access_key.address(),
                 SignatureType::Secp256k1,

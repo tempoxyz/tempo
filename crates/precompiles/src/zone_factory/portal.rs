@@ -125,6 +125,7 @@ impl ZonePortalStorage {
 
     pub(super) fn initialize(
         &mut self,
+        write: &mut crate::storage::WriteCtx,
         zone_id: u32,
         params: &IZoneFactory::CreateZoneParams,
         token_enablement_hash: B256,
@@ -133,48 +134,55 @@ impl ZonePortalStorage {
             return Err(ZoneFactoryError::already_initialized().into());
         }
 
-        self.storage.set_code(
+        write.set_code(
             self.address,
             Bytecode::new_legacy(Bytes::from_static(&ZONE_PORTAL_PROXY_RUNTIME)),
         )?;
 
-        self.admin.write(params.admin)?;
-        self.token_configs[params.initialToken].write(PortalTokenConfig {
-            enabled: true,
-            deposits_active: true,
-        })?;
-        self.enabled_tokens.write(vec![params.initialToken])?;
-        self.rpc_url.write(params.rpcUrl.clone())?;
-        self.zone_id.write(zone_id)?;
-        self.messenger.write(ZONE_MESSENGER_ADDRESS)?;
-        self.verifier.write(ZONE_VERIFIER_ADDRESS)?;
-        self.initialized.write(true)?;
-        self.sequencer_threshold.write(params.threshold)?;
-        self.sequencers.write(params.sequencers.clone())?;
+        self.admin.write(write, params.admin)?;
+        self.token_configs[params.initialToken].write(
+            write,
+            PortalTokenConfig {
+                enabled: true,
+                deposits_active: true,
+            },
+        )?;
+        self.enabled_tokens
+            .write(write, vec![params.initialToken])?;
+        self.rpc_url.write(write, params.rpcUrl.clone())?;
+        self.zone_id.write(write, zone_id)?;
+        self.messenger.write(write, ZONE_MESSENGER_ADDRESS)?;
+        self.verifier.write(write, ZONE_VERIFIER_ADDRESS)?;
+        self.initialized.write(write, true)?;
+        self.sequencer_threshold.write(write, params.threshold)?;
+        self.sequencers.write(write, params.sequencers.clone())?;
         for sequencer in &params.sequencers {
-            self.role[*sequencer].write(u8::from(ZonePortalRole::Sequencer))?;
+            self.role[*sequencer].write(write, u8::from(ZonePortalRole::Sequencer))?;
         }
-        self.is_access_enforced.write(params.accessMode)?;
-        self.is_gateway_enforced.write(params.gatewayMode)?;
+        self.is_access_enforced.write(write, params.accessMode)?;
+        self.is_gateway_enforced.write(write, params.gatewayMode)?;
         let leader = *params
             .sequencers
             .first()
             .ok_or_else(ZoneFactoryError::invalid_sequencer_set)?;
-        self.leader.write(leader)?;
-        self.leader_epoch.write(1)?;
+        self.leader.write(write, leader)?;
+        self.leader_epoch.write(write, 1)?;
         let creation_block = self.storage.block_number();
-        self.leader_activation_tempo_block.write(creation_block)?;
-        self.token_enable_count_block.write(creation_block)?;
-        self.tokens_enabled_in_current_block.write(1)?;
-        self.token_enablement_hash.write(token_enablement_hash)?;
+        self.leader_activation_tempo_block
+            .write(write, creation_block)?;
+        self.token_enable_count_block.write(write, creation_block)?;
+        self.tokens_enabled_in_current_block.write(write, 1)?;
+        self.token_enablement_hash
+            .write(write, token_enablement_hash)?;
         if self.storage.spec().is_t13() {
-            self.token_enablement_cursor_initialized.write(true)?;
+            self.token_enablement_cursor_initialized
+                .write(write, true)?;
         }
         for gateway in &params.zoneGateways {
-            self.role[*gateway].write(u8::from(ZonePortalRole::CallbackGateway))?;
+            self.role[*gateway].write(write, u8::from(ZonePortalRole::CallbackGateway))?;
         }
         for account in &params.allowedAccounts {
-            self.role[*account].write(u8::from(ZonePortalRole::Account))?;
+            self.role[*account].write(write, u8::from(ZonePortalRole::Account))?;
         }
         Ok(())
     }

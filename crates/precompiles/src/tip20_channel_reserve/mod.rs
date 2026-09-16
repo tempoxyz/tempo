@@ -119,8 +119,8 @@ pub struct TIP20ChannelReserve {
 
 impl TIP20ChannelReserve {
     /// Initializes the precompile storage layout.
-    pub fn initialize(&mut self) -> Result<()> {
-        self.__initialize()
+    pub fn initialize(&mut self, write: &mut crate::storage::WriteCtx) -> Result<()> {
+        self.__initialize(write)
     }
 
     /// Seeds the enclosing transaction's replay-protected context hash for `open` calls.
@@ -129,8 +129,12 @@ impl TIP20ChannelReserve {
     /// type. The value is stored in transient storage so batched `open` calls share the same
     /// transaction-derived hash and the context is automatically cleared before the next
     /// transaction. If this is not called, `open` reads zero from transient storage and reverts.
-    pub fn set_channel_open_context_hash(&mut self, hash: B256) -> Result<()> {
-        self.channel_open_context_hash.t_write(hash)
+    pub fn set_channel_open_context_hash(
+        &mut self,
+        write: &mut crate::storage::WriteCtx,
+        hash: B256,
+    ) -> Result<()> {
+        self.channel_open_context_hash.t_write(write, hash)
     }
 
     /// Returns the number of reusable channel storage credits owned by `payer`.
@@ -147,6 +151,7 @@ impl TIP20ChannelReserve {
     /// This prevents channels whose payee cannot receive direct payouts or submit vouchers itself.
     pub fn open(
         &mut self,
+        write: &mut crate::storage::WriteCtx,
         msg_sender: Address,
         call: ITIP20ChannelReserve::openCall,
     ) -> Result<B256> {
@@ -185,6 +190,7 @@ impl TIP20ChannelReserve {
             token.ensure_transfer_authorized(msg_sender, payee)?;
             token.ensure_receive_policy_authorized(msg_sender, payee)?;
             token.channel_reserve_transfer(
+                write,
                 msg_sender,
                 Recipient::direct(self.address),
                 U256::from(call.deposit),
@@ -195,10 +201,16 @@ impl TIP20ChannelReserve {
                 Recipient::resolve(call.payee)?.target,
                 AuthRole::Recipient,
             )])?;
-            token.system_transfer_from(self.address, msg_sender, U256::from(call.deposit))?;
+            token.system_transfer_from(
+                write,
+                self.address,
+                msg_sender,
+                U256::from(call.deposit),
+            )?;
         }
 
         self.write_channel_state_spending_credit(
+            write,
             msg_sender,
             channel_id,
             PackedChannelState {
@@ -208,10 +220,11 @@ impl TIP20ChannelReserve {
                 uses_logical_receive_policy_sender: self.storage.spec().is_t12(),
             },
         )?;
-        self.opened_this_tx[channel_id].t_write(true)?;
+        self.opened_this_tx[channel_id].t_write(write, true)?;
 
-        self.emit_event(TIP20ChannelReserveEvent::ChannelOpened(
-            ITIP20ChannelReserve::ChannelOpened {
+        self.emit_event(
+            write,
+            TIP20ChannelReserveEvent::ChannelOpened(ITIP20ChannelReserve::ChannelOpened {
                 channelId: channel_id,
                 payer: msg_sender,
                 payee: call.payee,
@@ -221,8 +234,8 @@ impl TIP20ChannelReserve {
                 salt: call.salt,
                 expiringNonceHash: expiring_nonce_hash,
                 deposit: call.deposit,
-            },
-        ))?;
+            }),
+        )?;
 
         Ok(channel_id)
     }
@@ -233,6 +246,7 @@ impl TIP20ChannelReserve {
     /// operator can submit the payee's voucher and route the payment to the descriptor payee.
     pub fn settle(
         &mut self,
+        write: &mut crate::storage::WriteCtx,
         msg_sender: Address,
         call: ITIP20ChannelReserve::settleCall,
     ) -> Result<()> {
@@ -266,6 +280,7 @@ impl TIP20ChannelReserve {
             let payee = Recipient::resolve(call.descriptor.payee)?;
             token.ensure_transfer_authorized(call.descriptor.payer, payee.target)?;
             token.channel_reserve_transfer(
+                write,
                 self.address,
                 payee,
                 U256::from(delta),
@@ -273,16 +288,17 @@ impl TIP20ChannelReserve {
             )?;
 
             state.settled = cumulative;
-            self.channel_states[channel_id].write(state)?;
+            self.channel_states[channel_id].write(write, state)?;
         } else {
             token.ensure_authorized_as(&[(call.descriptor.payer, AuthRole::Sender)])?;
 
             // Preserve the pre-T12 fallible-operation order. Although a later transfer failure
             // reverts this write, moving it changes consensus-visible gas on legacy forks.
             state.settled = cumulative;
-            self.channel_states[channel_id].write(state)?;
+            self.channel_states[channel_id].write(write, state)?;
 
             token.transfer(
+                write,
                 self.address,
                 ITIP20::transferCall {
                     to: call.descriptor.payee,
@@ -291,16 +307,17 @@ impl TIP20ChannelReserve {
             )?;
         }
 
-        self.emit_event(TIP20ChannelReserveEvent::Settled(
-            ITIP20ChannelReserve::Settled {
+        self.emit_event(
+            write,
+            TIP20ChannelReserveEvent::Settled(ITIP20ChannelReserve::Settled {
                 channelId: channel_id,
                 payer: call.descriptor.payer,
                 payee: call.descriptor.payee,
                 cumulativeAmount: call.cumulativeAmount,
                 deltaPaid: delta,
                 newSettled: cumulative,
-            },
-        ))?;
+            }),
+        )?;
 
         Ok(())
     }
@@ -310,6 +327,7 @@ impl TIP20ChannelReserve {
     /// A zero top-up is allowed and only cancels a pending close request.
     pub fn top_up(
         &mut self,
+        write: &mut crate::storage::WriteCtx,
         msg_sender: Address,
         call: ITIP20ChannelReserve::topUpCall,
     ) -> Result<()> {
@@ -343,6 +361,7 @@ impl TIP20ChannelReserve {
                     payee,
                 )?;
                 token.channel_reserve_transfer(
+                    write,
                     msg_sender,
                     Recipient::direct(self.address),
                     U256::from(call.additionalDeposit),
@@ -354,6 +373,7 @@ impl TIP20ChannelReserve {
                     AuthRole::Recipient,
                 )])?;
                 token.system_transfer_from(
+                    write,
                     self.address,
                     msg_sender,
                     U256::from(call.additionalDeposit),
@@ -364,25 +384,29 @@ impl TIP20ChannelReserve {
             state.close_requested_at = 0;
         }
 
-        self.channel_states[channel_id].write(state)?;
+        self.channel_states[channel_id].write(write, state)?;
         if had_close_request {
-            self.emit_event(TIP20ChannelReserveEvent::CloseRequestCancelled(
-                ITIP20ChannelReserve::CloseRequestCancelled {
-                    channelId: channel_id,
-                    payer: call.descriptor.payer,
-                    payee: call.descriptor.payee,
-                },
-            ))?;
+            self.emit_event(
+                write,
+                TIP20ChannelReserveEvent::CloseRequestCancelled(
+                    ITIP20ChannelReserve::CloseRequestCancelled {
+                        channelId: channel_id,
+                        payer: call.descriptor.payer,
+                        payee: call.descriptor.payee,
+                    },
+                ),
+            )?;
         }
-        self.emit_event(TIP20ChannelReserveEvent::TopUp(
-            ITIP20ChannelReserve::TopUp {
+        self.emit_event(
+            write,
+            TIP20ChannelReserveEvent::TopUp(ITIP20ChannelReserve::TopUp {
                 channelId: channel_id,
                 payer: call.descriptor.payer,
                 payee: call.descriptor.payee,
                 additionalDeposit: call.additionalDeposit,
                 newDeposit: state.deposit,
-            },
-        ))?;
+            }),
+        )?;
 
         Ok(())
     }
@@ -392,6 +416,7 @@ impl TIP20ChannelReserve {
     /// Repeated calls are idempotent while the timer is active.
     pub fn request_close(
         &mut self,
+        write: &mut crate::storage::WriteCtx,
         msg_sender: Address,
         call: ITIP20ChannelReserve::requestCloseCall,
     ) -> Result<()> {
@@ -407,15 +432,16 @@ impl TIP20ChannelReserve {
 
         let close_requested_at = self.now_u32();
         state.close_requested_at = close_requested_at;
-        self.channel_states[channel_id].write(state)?;
-        self.emit_event(TIP20ChannelReserveEvent::CloseRequested(
-            ITIP20ChannelReserve::CloseRequested {
+        self.channel_states[channel_id].write(write, state)?;
+        self.emit_event(
+            write,
+            TIP20ChannelReserveEvent::CloseRequested(ITIP20ChannelReserve::CloseRequested {
                 channelId: channel_id,
                 payer: call.descriptor.payer,
                 payee: call.descriptor.payee,
                 closeGraceEnd: U256::from(self.now() + CLOSE_GRACE_PERIOD),
-            },
-        ))?;
+            }),
+        )?;
 
         Ok(())
     }
@@ -429,6 +455,7 @@ impl TIP20ChannelReserve {
     /// settled. A new voucher is only required when the close captures more than `settled`.
     pub fn close(
         &mut self,
+        write: &mut crate::storage::WriteCtx,
         msg_sender: Address,
         call: ITIP20ChannelReserve::closeCall,
     ) -> Result<()> {
@@ -470,6 +497,7 @@ impl TIP20ChannelReserve {
                 let payee = Recipient::resolve(call.descriptor.payee)?;
                 token.ensure_transfer_authorized(call.descriptor.payer, payee.target)?;
                 token.channel_reserve_transfer(
+                    write,
                     self.address,
                     payee,
                     U256::from(delta),
@@ -478,6 +506,7 @@ impl TIP20ChannelReserve {
             }
             if !refund.is_zero() {
                 token.channel_reserve_transfer(
+                    write,
                     self.address,
                     Recipient::resolve(call.descriptor.payer)?,
                     U256::from(refund),
@@ -487,15 +516,16 @@ impl TIP20ChannelReserve {
 
             // Commit terminal channel state only after both deliveries succeed. TIP-1028
             // rejections therefore leave the channel available for retry.
-            self.delete_channel_state_and_credit_payer(channel_id, call.descriptor.payer)?;
+            self.delete_channel_state_and_credit_payer(write, channel_id, call.descriptor.payer)?;
         } else {
             // Preserve the pre-T12 fallible-operation order and gas behavior.
-            self.delete_channel_state_and_credit_payer(channel_id, call.descriptor.payer)?;
+            self.delete_channel_state_and_credit_payer(write, channel_id, call.descriptor.payer)?;
             let mut token = TIP20Token::from_address(call.descriptor.token)?;
 
             if !delta.is_zero() {
                 token.ensure_authorized_as(&[(call.descriptor.payer, AuthRole::Sender)])?;
                 token.transfer(
+                    write,
                     self.address,
                     ITIP20::transferCall {
                         to: call.descriptor.payee,
@@ -505,6 +535,7 @@ impl TIP20ChannelReserve {
             }
             if !refund.is_zero() {
                 token.transfer(
+                    write,
                     self.address,
                     ITIP20::transferCall {
                         to: call.descriptor.payer,
@@ -514,15 +545,16 @@ impl TIP20ChannelReserve {
             }
         }
 
-        self.emit_event(TIP20ChannelReserveEvent::ChannelClosed(
-            ITIP20ChannelReserve::ChannelClosed {
+        self.emit_event(
+            write,
+            TIP20ChannelReserveEvent::ChannelClosed(ITIP20ChannelReserve::ChannelClosed {
                 channelId: channel_id,
                 payer: call.descriptor.payer,
                 payee: call.descriptor.payee,
                 settledToPayee: capture,
                 refundedToPayer: refund,
-            },
-        ))?;
+            }),
+        )?;
 
         Ok(())
     }
@@ -530,6 +562,7 @@ impl TIP20ChannelReserve {
     /// Withdraws the payer's remaining deposit after the close grace period has elapsed.
     pub fn withdraw(
         &mut self,
+        write: &mut crate::storage::WriteCtx,
         msg_sender: Address,
         call: ITIP20ChannelReserve::withdrawCall,
     ) -> Result<()> {
@@ -556,6 +589,7 @@ impl TIP20ChannelReserve {
             if !refund.is_zero() {
                 let mut token = TIP20Token::from_address(call.descriptor.token)?;
                 token.channel_reserve_transfer(
+                    write,
                     self.address,
                     Recipient::resolve(call.descriptor.payer)?,
                     U256::from(refund),
@@ -564,12 +598,13 @@ impl TIP20ChannelReserve {
             }
             // Commit terminal state only after a nonzero refund succeeds. A zero-refund
             // withdrawal has no fallible token delivery to wait for.
-            self.delete_channel_state_and_credit_payer(channel_id, call.descriptor.payer)?;
+            self.delete_channel_state_and_credit_payer(write, channel_id, call.descriptor.payer)?;
         } else {
             // Preserve the pre-T12 fallible-operation order and gas behavior.
-            self.delete_channel_state_and_credit_payer(channel_id, call.descriptor.payer)?;
+            self.delete_channel_state_and_credit_payer(write, channel_id, call.descriptor.payer)?;
             if !refund.is_zero() {
                 TIP20Token::from_address(call.descriptor.token)?.transfer(
+                    write,
                     self.address,
                     ITIP20::transferCall {
                         to: call.descriptor.payer,
@@ -578,15 +613,16 @@ impl TIP20ChannelReserve {
                 )?;
             }
         }
-        self.emit_event(TIP20ChannelReserveEvent::ChannelClosed(
-            ITIP20ChannelReserve::ChannelClosed {
+        self.emit_event(
+            write,
+            TIP20ChannelReserveEvent::ChannelClosed(ITIP20ChannelReserve::ChannelClosed {
                 channelId: channel_id,
                 payer: call.descriptor.payer,
                 payee: call.descriptor.payee,
                 settledToPayee: state.settled,
                 refundedToPayer: refund,
-            },
-        ))?;
+            }),
+        )?;
 
         Ok(())
     }
@@ -664,16 +700,23 @@ impl TIP20ChannelReserve {
     /// Deletes a packed channel-state slot and credits its payer for any minted storage credits.
     fn delete_channel_state_and_credit_payer(
         &mut self,
+        write: &mut crate::storage::WriteCtx,
         channel_id: B256,
         payer: Address,
     ) -> Result<()> {
-        let (_, credits) = StorageCredits::new()
-            .track_minted_credits(self.address, || self.channel_states[channel_id].delete())?;
-        self.credit_channel_storage_slots(payer, credits)
+        let (_, credits) = StorageCredits::new().track_minted_credits(self.address, || {
+            self.channel_states[channel_id].delete(write)
+        })?;
+        self.credit_channel_storage_slots(write, payer, credits)
     }
 
     /// Credits `payer` for deleted packed channel-state slots.
-    fn credit_channel_storage_slots(&mut self, payer: Address, slots: u64) -> Result<()> {
+    fn credit_channel_storage_slots(
+        &mut self,
+        write: &mut crate::storage::WriteCtx,
+        payer: Address,
+        slots: u64,
+    ) -> Result<()> {
         if slots == 0 {
             return Ok(());
         }
@@ -683,8 +726,8 @@ impl TIP20ChannelReserve {
 
         if current == 0 {
             let mut storage_credits = StorageCredits::new();
-            let (_, delta) = storage_credits.with_budget(self.address, 1, || {
-                self.channel_storage_credits[payer].write(updated)
+            let (_, delta) = storage_credits.with_budget(write, self.address, 1, |write| {
+                self.channel_storage_credits[payer].write(write, updated)
             })?;
 
             if delta != -1 {
@@ -695,31 +738,32 @@ impl TIP20ChannelReserve {
 
             Ok(())
         } else {
-            self.channel_storage_credits[payer].write(updated)
+            self.channel_storage_credits[payer].write(write, updated)
         }
     }
 
     /// Creates a packed channel-state slot, consuming one payer-attributed credit when available.
     fn write_channel_state_spending_credit(
         &mut self,
+        write: &mut crate::storage::WriteCtx,
         payer: Address,
         channel_id: B256,
         state: PackedChannelState,
     ) -> Result<()> {
         if !self.storage.spec().is_t7() {
-            return self.channel_states[channel_id].write(state);
+            return self.channel_states[channel_id].write(write, state);
         }
 
         let current = self.channel_storage_credits[payer].read()?;
         if current == 0 {
-            return self.channel_states[channel_id].write(state);
+            return self.channel_states[channel_id].write(write, state);
         }
 
-        self.channel_storage_credits[payer].delete()?;
+        self.channel_storage_credits[payer].delete(write)?;
 
         let mut storage_credits = StorageCredits::new();
-        let (_, delta) = storage_credits.with_budget(self.address, current, || {
-            self.channel_states[channel_id].write(state)
+        let (_, delta) = storage_credits.with_budget(write, self.address, current, |write| {
+            self.channel_states[channel_id].write(write, state)
         })?;
         let spent_credits = if delta < 0 { (-delta) as u64 } else { 0 };
 
@@ -729,7 +773,7 @@ impl TIP20ChannelReserve {
             )));
         }
 
-        self.credit_channel_storage_slots(payer, current.saturating_sub(spent_credits))?;
+        self.credit_channel_storage_slots(write, payer, current.saturating_sub(spent_credits))?;
         Ok(())
     }
 
@@ -970,7 +1014,10 @@ mod tests {
 
     fn seed_expiring_nonce_hash(reserve: &mut TIP20ChannelReserve) -> Result<B256> {
         let hash = B256::random();
-        reserve.set_channel_open_context_hash(hash)?;
+        reserve.set_channel_open_context_hash(
+            &mut crate::storage::StorageCtx::test_writable(),
+            hash,
+        )?;
         Ok(hash)
     }
 
@@ -979,9 +1026,10 @@ mod tests {
         admin: Address,
     ) -> Result<(TIP403Registry, u64, u64)> {
         let mut registry = TIP403Registry::new();
-        registry.initialize()?;
+        registry.initialize(&mut crate::storage::StorageCtx::test_writable())?;
         let blacklist = |registry: &mut TIP403Registry| {
             registry.create_policy(
+                &mut crate::storage::StorageCtx::test_writable(),
                 admin,
                 ITIP403Registry::createPolicyCall {
                     admin,
@@ -992,6 +1040,7 @@ mod tests {
         let sender_policy = blacklist(&mut registry)?;
         let recipient_policy = blacklist(&mut registry)?;
         let compound_policy = registry.create_compound_policy(
+            &mut crate::storage::StorageCtx::test_writable(),
             admin,
             ITIP403Registry::createCompoundPolicyCall {
                 senderPolicyId: sender_policy,
@@ -1000,6 +1049,7 @@ mod tests {
             },
         )?;
         token.change_transfer_policy_id(
+            &mut crate::storage::StorageCtx::test_writable(),
             admin,
             ITIP20::changeTransferPolicyIdCall {
                 newPolicyId: compound_policy,
@@ -1016,6 +1066,7 @@ mod tests {
         restricted: bool,
     ) -> Result<()> {
         registry.modify_policy_blacklist(
+            &mut crate::storage::StorageCtx::test_writable(),
             admin,
             ITIP403Registry::modifyPolicyBlacklistCall {
                 policyId: policy_id,
@@ -1031,8 +1082,9 @@ mod tests {
         recipients: &[Address],
     ) -> Result<()> {
         let mut registry = TIP403Registry::new();
-        registry.initialize()?;
+        registry.initialize(&mut crate::storage::StorageCtx::test_writable())?;
         let recipient_policy = registry.create_policy_with_accounts(
+            &mut crate::storage::StorageCtx::test_writable(),
             admin,
             ITIP403Registry::createPolicyWithAccountsCall {
                 admin,
@@ -1041,6 +1093,7 @@ mod tests {
             },
         )?;
         let compound_policy = registry.create_compound_policy(
+            &mut crate::storage::StorageCtx::test_writable(),
             admin,
             ITIP403Registry::createCompoundPolicyCall {
                 senderPolicyId: ALLOW_ALL_POLICY_ID,
@@ -1049,6 +1102,7 @@ mod tests {
             },
         )?;
         token.change_transfer_policy_id(
+            &mut crate::storage::StorageCtx::test_writable(),
             admin,
             ITIP20::changeTransferPolicyIdCall {
                 newPolicyId: compound_policy,
@@ -1061,8 +1115,9 @@ mod tests {
         blocked_sender: Address,
     ) -> Result<(TIP403Registry, u64)> {
         let mut registry = TIP403Registry::new();
-        registry.initialize()?;
+        registry.initialize(&mut crate::storage::StorageCtx::test_writable())?;
         let sender_policy = registry.create_policy_with_accounts(
+            &mut crate::storage::StorageCtx::test_writable(),
             receiver,
             ITIP403Registry::createPolicyWithAccountsCall {
                 admin: receiver,
@@ -1071,6 +1126,7 @@ mod tests {
             },
         )?;
         registry.set_receive_policy(
+            &mut crate::storage::StorageCtx::test_writable(),
             receiver,
             ITIP403Registry::setReceivePolicyCall {
                 senderPolicyId: sender_policy,
@@ -1109,9 +1165,10 @@ mod tests {
                 .with_mint(payer, U256::from(100u128))
                 .apply()?;
             let mut reserve = TIP20ChannelReserve::new();
-            reserve.initialize()?;
+            reserve.initialize(&mut crate::storage::StorageCtx::test_writable())?;
 
             let result = reserve.open(
+                &mut crate::storage::StorageCtx::test_writable(),
                 payer,
                 open_call(
                     payee,
@@ -1142,12 +1199,13 @@ mod tests {
                 .apply()?;
             let (_, virtual_payee) = register_virtual_master(&mut AddressRegistry::new())?;
             let mut reserve = TIP20ChannelReserve::new();
-            reserve.initialize()?;
+            reserve.initialize(&mut crate::storage::StorageCtx::test_writable())?;
             seed_expiring_nonce_hash(&mut reserve)?;
 
             for invalid_payee in &[token.address(), virtual_payee] {
                 for invalid_operator_for_virtual_payee in &[Address::ZERO, virtual_payee] {
                     let result = reserve.open(
+                        &mut crate::storage::StorageCtx::test_writable(),
                         payer,
                         open_call(
                             *invalid_payee,
@@ -1167,6 +1225,7 @@ mod tests {
 
             // Virtual payees are valid when a non-virtual operator is set to submit vouchers on their behalf.
             reserve.open(
+                &mut crate::storage::StorageCtx::test_writable(),
                 payer,
                 open_call(
                     virtual_payee,
@@ -1197,12 +1256,13 @@ mod tests {
                 install_blacklist_policy(&mut token, admin)?;
             let (_, virtual_payee) = register_virtual_master(&mut AddressRegistry::new())?;
             let mut reserve = TIP20ChannelReserve::new();
-            reserve.initialize()?;
+            reserve.initialize(&mut crate::storage::StorageCtx::test_writable())?;
 
             // Admission must check the effective recipient, not just the virtual alias.
             set_blacklisted(&mut registry, admin, recipient_policy, VIRTUAL_MASTER, true)?;
             seed_expiring_nonce_hash(&mut reserve)?;
             let res = reserve.open(
+                &mut crate::storage::StorageCtx::test_writable(),
                 payer,
                 open_call(
                     virtual_payee,
@@ -1226,6 +1286,7 @@ mod tests {
             let salt = B256::random();
             let expiring_nonce_hash = seed_expiring_nonce_hash(&mut reserve)?;
             reserve.open(
+                &mut crate::storage::StorageCtx::test_writable(),
                 payer,
                 open_call(
                     virtual_payee,
@@ -1248,6 +1309,7 @@ mod tests {
 
             set_blacklisted(&mut registry, admin, recipient_policy, VIRTUAL_MASTER, true)?;
             let res = reserve.top_up(
+                &mut crate::storage::StorageCtx::test_writable(),
                 payer,
                 ITIP20ChannelReserve::topUpCall {
                     descriptor,
@@ -1275,12 +1337,13 @@ mod tests {
             let (mut registry, sender_policy, recipient_policy) =
                 install_blacklist_policy(&mut token, admin)?;
             let mut reserve = TIP20ChannelReserve::new();
-            reserve.initialize()?;
+            reserve.initialize(&mut crate::storage::StorageCtx::test_writable())?;
 
             // A blocked recipient cannot be used as the payee for a new channel.
             set_blacklisted(&mut registry, admin, recipient_policy, payee, true)?;
             seed_expiring_nonce_hash(&mut reserve)?;
             let res = reserve.open(
+                &mut crate::storage::StorageCtx::test_writable(),
                 payer,
                 open_call(
                     payee,
@@ -1298,6 +1361,7 @@ mod tests {
             let salt = B256::random();
             let expiring_nonce_hash = seed_expiring_nonce_hash(&mut reserve)?;
             let channel_id = reserve.open(
+                &mut crate::storage::StorageCtx::test_writable(),
                 payer,
                 open_call(
                     payee,
@@ -1321,6 +1385,7 @@ mod tests {
             // Top-ups also reject channels whose payee can no longer receive.
             set_blacklisted(&mut registry, admin, recipient_policy, payee, true)?;
             let res = reserve.top_up(
+                &mut crate::storage::StorageCtx::test_writable(),
                 payer,
                 ITIP20ChannelReserve::topUpCall {
                     descriptor: descriptor.clone(),
@@ -1342,6 +1407,7 @@ mod tests {
 
             // Settle enforces the logical payer-as-sender check, not just reserve -> payee.
             let res = reserve.settle(
+                &mut crate::storage::StorageCtx::test_writable(),
                 payee,
                 ITIP20ChannelReserve::settleCall {
                     descriptor: descriptor.clone(),
@@ -1353,6 +1419,7 @@ mod tests {
 
             // Close enforces the same check when it would pay additional value to the payee.
             let res = reserve.close(
+                &mut crate::storage::StorageCtx::test_writable(),
                 payee,
                 ITIP20ChannelReserve::closeCall {
                     descriptor,
@@ -1384,12 +1451,13 @@ mod tests {
             install_recipient_whitelist_policy(&mut token, payer, &[payee])?;
 
             let mut reserve = TIP20ChannelReserve::new();
-            reserve.initialize()?;
+            reserve.initialize(&mut crate::storage::StorageCtx::test_writable())?;
 
             // The reserve is not an authorized recipient, but the logical payer -> payee path is.
             let salt = B256::random();
             let expiring_nonce_hash = seed_expiring_nonce_hash(&mut reserve)?;
             let channel_id = reserve.open(
+                &mut crate::storage::StorageCtx::test_writable(),
                 payer,
                 open_call(
                     payee,
@@ -1411,6 +1479,7 @@ mod tests {
             );
 
             reserve.top_up(
+                &mut crate::storage::StorageCtx::test_writable(),
                 payer,
                 ITIP20ChannelReserve::topUpCall {
                     descriptor: descriptor.clone(),
@@ -1426,6 +1495,7 @@ mod tests {
             let signature =
                 Bytes::copy_from_slice(&payer_signer.sign_hash_sync(&digest)?.as_bytes());
             reserve.settle(
+                &mut crate::storage::StorageCtx::test_writable(),
                 payee,
                 ITIP20ChannelReserve::settleCall {
                     descriptor: descriptor.clone(),
@@ -1443,6 +1513,7 @@ mod tests {
             let close_signature =
                 Bytes::copy_from_slice(&payer_signer.sign_hash_sync(&close_digest)?.as_bytes());
             reserve.close(
+                &mut crate::storage::StorageCtx::test_writable(),
                 payee,
                 ITIP20ChannelReserve::closeCall {
                     descriptor,
@@ -1469,6 +1540,7 @@ mod tests {
 
             // The channel path does not weaken ordinary transfer restrictions.
             let result = token.transfer(
+                &mut crate::storage::StorageCtx::test_writable(),
                 payer,
                 ITIP20::transferCall {
                     to: stranger,
@@ -1480,6 +1552,7 @@ mod tests {
             // A caller cannot use the reserve to route value to an unauthorized payee.
             seed_expiring_nonce_hash(&mut reserve)?;
             let result = reserve.open(
+                &mut crate::storage::StorageCtx::test_writable(),
                 payer,
                 open_call(
                     stranger,
@@ -1508,13 +1581,14 @@ mod tests {
                 .with_mint(payer, U256::from(1_000u128))
                 .apply()?;
             let mut reserve = TIP20ChannelReserve::new();
-            reserve.initialize()?;
+            reserve.initialize(&mut crate::storage::StorageCtx::test_writable())?;
 
             let (mut registry, sender_policy) = install_receive_sender_blacklist(payee, payer)?;
 
             let salt = B256::random();
             seed_expiring_nonce_hash(&mut reserve)?;
             let result = reserve.open(
+                &mut crate::storage::StorageCtx::test_writable(),
                 payer,
                 open_call(
                     payee,
@@ -1534,6 +1608,7 @@ mod tests {
             set_blacklisted(&mut registry, payee, sender_policy, payer, false)?;
             let expiring_nonce_hash = seed_expiring_nonce_hash(&mut reserve)?;
             let channel_id = reserve.open(
+                &mut crate::storage::StorageCtx::test_writable(),
                 payer,
                 open_call(
                     payee,
@@ -1556,6 +1631,7 @@ mod tests {
 
             set_blacklisted(&mut registry, payee, sender_policy, payer, true)?;
             let result = reserve.top_up(
+                &mut crate::storage::StorageCtx::test_writable(),
                 payer,
                 ITIP20ChannelReserve::topUpCall {
                     descriptor,
@@ -1594,7 +1670,7 @@ mod tests {
                 .with_mint(payer, U256::from(1_000u128))
                 .apply()?;
             let mut reserve = TIP20ChannelReserve::new();
-            reserve.initialize()?;
+            reserve.initialize(&mut crate::storage::StorageCtx::test_writable())?;
 
             // This payee accepts the reserve but not the individual payer, matching the policy
             // under which pre-T12 channel captures were funded.
@@ -1603,6 +1679,7 @@ mod tests {
             let salt = B256::random();
             let expiring_nonce_hash = seed_expiring_nonce_hash(&mut reserve)?;
             let channel_id = reserve.open(
+                &mut crate::storage::StorageCtx::test_writable(),
                 payer,
                 open_call(
                     payee,
@@ -1627,6 +1704,7 @@ mod tests {
 
             // Post-activation top-ups and captures retain the reserve sender for this channel.
             reserve.top_up(
+                &mut crate::storage::StorageCtx::test_writable(),
                 payer,
                 ITIP20ChannelReserve::topUpCall {
                     descriptor: descriptor.clone(),
@@ -1643,6 +1721,7 @@ mod tests {
             let signature =
                 Bytes::copy_from_slice(&payer_signer.sign_hash_sync(&digest)?.as_bytes());
             reserve.settle(
+                &mut crate::storage::StorageCtx::test_writable(),
                 payee,
                 ITIP20ChannelReserve::settleCall {
                     descriptor: descriptor.clone(),
@@ -1660,6 +1739,7 @@ mod tests {
             let close_signature =
                 Bytes::copy_from_slice(&payer_signer.sign_hash_sync(&close_digest)?.as_bytes());
             reserve.close(
+                &mut crate::storage::StorageCtx::test_writable(),
                 payee,
                 ITIP20ChannelReserve::closeCall {
                     descriptor,
@@ -1701,11 +1781,12 @@ mod tests {
                 .with_mint(payer, U256::from(1_000u128))
                 .apply()?;
             let mut reserve = TIP20ChannelReserve::new();
-            reserve.initialize()?;
+            reserve.initialize(&mut crate::storage::StorageCtx::test_writable())?;
 
             let salt = B256::random();
             let expiring_nonce_hash = seed_expiring_nonce_hash(&mut reserve)?;
             let channel_id = reserve.open(
+                &mut crate::storage::StorageCtx::test_writable(),
                 payer,
                 open_call(
                     payee,
@@ -1739,6 +1820,7 @@ mod tests {
             let signature =
                 Bytes::copy_from_slice(&payer_signer.sign_hash_sync(&digest)?.as_bytes());
             let result = reserve.settle(
+                &mut crate::storage::StorageCtx::test_writable(),
                 payee,
                 ITIP20ChannelReserve::settleCall {
                     descriptor: descriptor.clone(),
@@ -1778,6 +1860,7 @@ mod tests {
             );
 
             let close_result = reserve.close(
+                &mut crate::storage::StorageCtx::test_writable(),
                 payee,
                 ITIP20ChannelReserve::closeCall {
                     descriptor: descriptor.clone(),
@@ -1799,6 +1882,7 @@ mod tests {
             // Once the payee accepts the logical payer, the same voucher can settle.
             set_blacklisted(&mut registry, payee, sender_policy, payer, false)?;
             reserve.settle(
+                &mut crate::storage::StorageCtx::test_writable(),
                 payee,
                 ITIP20ChannelReserve::settleCall {
                     descriptor,
@@ -1837,11 +1921,12 @@ mod tests {
             install_recipient_whitelist_policy(&mut token, payer, &[payee])?;
 
             let mut reserve = TIP20ChannelReserve::new();
-            reserve.initialize()?;
+            reserve.initialize(&mut crate::storage::StorageCtx::test_writable())?;
             reserve.storage.set_timestamp(U256::from(1_000u64));
             let salt = B256::random();
             let expiring_nonce_hash = seed_expiring_nonce_hash(&mut reserve)?;
             reserve.open(
+                &mut crate::storage::StorageCtx::test_writable(),
                 payer,
                 open_call(
                     payee,
@@ -1863,6 +1948,7 @@ mod tests {
             );
 
             reserve.request_close(
+                &mut crate::storage::StorageCtx::test_writable(),
                 payer,
                 ITIP20ChannelReserve::requestCloseCall {
                     descriptor: descriptor.clone(),
@@ -1871,7 +1957,11 @@ mod tests {
             reserve
                 .storage
                 .set_timestamp(U256::from(1_000u64 + CLOSE_GRACE_PERIOD));
-            reserve.withdraw(payer, ITIP20ChannelReserve::withdrawCall { descriptor })?;
+            reserve.withdraw(
+                &mut crate::storage::StorageCtx::test_writable(),
+                payer,
+                ITIP20ChannelReserve::withdrawCall { descriptor },
+            )?;
 
             assert_eq!(
                 token.balance_of(ITIP20::balanceOfCall { account: payer })?,
@@ -1899,12 +1989,13 @@ mod tests {
                 .with_mint(payer, U256::from(1_000u128))
                 .apply()?;
             let mut reserve = TIP20ChannelReserve::new();
-            reserve.initialize()?;
+            reserve.initialize(&mut crate::storage::StorageCtx::test_writable())?;
             reserve.storage.set_timestamp(U256::from(1_000u64));
 
             let salt = B256::random();
             let expiring_nonce_hash = seed_expiring_nonce_hash(&mut reserve)?;
             let channel_id = reserve.open(
+                &mut crate::storage::StorageCtx::test_writable(),
                 payer,
                 open_call(
                     payee,
@@ -1925,6 +2016,7 @@ mod tests {
                 expiring_nonce_hash,
             );
             reserve.request_close(
+                &mut crate::storage::StorageCtx::test_writable(),
                 payer,
                 ITIP20ChannelReserve::requestCloseCall {
                     descriptor: descriptor.clone(),
@@ -1940,6 +2032,7 @@ mod tests {
                 install_receive_sender_blacklist(payer, TIP20_CHANNEL_RESERVE_ADDRESS)?;
 
             let close_result = reserve.close(
+                &mut crate::storage::StorageCtx::test_writable(),
                 payee,
                 ITIP20ChannelReserve::closeCall {
                     descriptor: descriptor.clone(),
@@ -1954,6 +2047,7 @@ mod tests {
             );
 
             let result = reserve.withdraw(
+                &mut crate::storage::StorageCtx::test_writable(),
                 payer,
                 ITIP20ChannelReserve::withdrawCall {
                     descriptor: descriptor.clone(),
@@ -1986,7 +2080,11 @@ mod tests {
                 TIP20_CHANNEL_RESERVE_ADDRESS,
                 false,
             )?;
-            reserve.withdraw(payer, ITIP20ChannelReserve::withdrawCall { descriptor })?;
+            reserve.withdraw(
+                &mut crate::storage::StorageCtx::test_writable(),
+                payer,
+                ITIP20ChannelReserve::withdrawCall { descriptor },
+            )?;
             assert_eq!(
                 token.balance_of(ITIP20::balanceOfCall { account: payer })?,
                 U256::from(1_000u128)
@@ -2018,9 +2116,10 @@ mod tests {
             install_recipient_whitelist_policy(&mut token, payer, &[payee])?;
 
             let mut reserve = TIP20ChannelReserve::new();
-            reserve.initialize()?;
+            reserve.initialize(&mut crate::storage::StorageCtx::test_writable())?;
             seed_expiring_nonce_hash(&mut reserve)?;
             let result = reserve.open(
+                &mut crate::storage::StorageCtx::test_writable(),
                 payer,
                 open_call(
                     payee,
@@ -2050,11 +2149,12 @@ mod tests {
                 .with_mint(payer, U256::from(100u128))
                 .apply()?;
             let mut reserve = TIP20ChannelReserve::new();
-            reserve.initialize()?;
+            reserve.initialize(&mut crate::storage::StorageCtx::test_writable())?;
 
             let salt = B256::random();
             let expiring_nonce_hash = seed_expiring_nonce_hash(&mut reserve)?;
             let channel_id = reserve.open(
+                &mut crate::storage::StorageCtx::test_writable(),
                 payer,
                 open_call(
                     payee,
@@ -2083,8 +2183,13 @@ mod tests {
             let signature =
                 Bytes::copy_from_slice(&payer_signer.sign_hash_sync(&digest)?.as_bytes());
 
-            token.pause(payer, ITIP20::pauseCall {})?;
+            token.pause(
+                &mut crate::storage::StorageCtx::test_writable(),
+                payer,
+                ITIP20::pauseCall {},
+            )?;
             let result = reserve.settle(
+                &mut crate::storage::StorageCtx::test_writable(),
                 payee,
                 ITIP20ChannelReserve::settleCall {
                     descriptor,
@@ -2123,10 +2228,11 @@ mod tests {
                 .apply()?;
 
             let mut reserve = TIP20ChannelReserve::new();
-            reserve.initialize()?;
+            reserve.initialize(&mut crate::storage::StorageCtx::test_writable())?;
             let expiring_nonce_hash = seed_expiring_nonce_hash(&mut reserve)?;
 
             let channel_id = reserve.open(
+                &mut crate::storage::StorageCtx::test_writable(),
                 payer,
                 open_call(
                     payee,
@@ -2156,6 +2262,7 @@ mod tests {
                 expiring_nonce_hash,
             );
             reserve.settle(
+                &mut crate::storage::StorageCtx::test_writable(),
                 payee,
                 ITIP20ChannelReserve::settleCall {
                     descriptor: channel_descriptor.clone(),
@@ -2172,6 +2279,7 @@ mod tests {
             let close_signature =
                 Bytes::copy_from_slice(&payer_signer.sign_hash_sync(&close_digest)?.as_bytes());
             reserve.close(
+                &mut crate::storage::StorageCtx::test_writable(),
                 payee,
                 ITIP20ChannelReserve::closeCall {
                     descriptor: channel_descriptor,
@@ -2189,6 +2297,7 @@ mod tests {
             assert_eq!(state.closeRequestedAt, 0);
 
             let reopen_result = reserve.open(
+                &mut crate::storage::StorageCtx::test_writable(),
                 payer,
                 open_call(
                     payee,
@@ -2206,6 +2315,7 @@ mod tests {
 
             let new_expiring_nonce_hash = seed_expiring_nonce_hash(&mut reserve)?;
             let reopened_channel_id = reserve.open(
+                &mut crate::storage::StorageCtx::test_writable(),
                 payer,
                 open_call(
                     payee,
@@ -2296,10 +2406,11 @@ mod tests {
                 .with_mint(payer, U256::from(100u128))
                 .apply()?;
             let mut reserve = TIP20ChannelReserve::new();
-            reserve.initialize()?;
+            reserve.initialize(&mut crate::storage::StorageCtx::test_writable())?;
 
             let hash = seed_expiring_nonce_hash(&mut reserve)?;
             let first = reserve.open(
+                &mut crate::storage::StorageCtx::test_writable(),
                 payer,
                 open_call(
                     payee,
@@ -2311,6 +2422,7 @@ mod tests {
                 ),
             )?;
             let second = reserve.open(
+                &mut crate::storage::StorageCtx::test_writable(),
                 payer,
                 open_call(
                     payee,
@@ -2325,6 +2437,7 @@ mod tests {
 
             let other_hash = seed_expiring_nonce_hash(&mut reserve)?;
             let same_descriptor_other_tx_hash = reserve.open(
+                &mut crate::storage::StorageCtx::test_writable(),
                 payer,
                 open_call(
                     payee,
@@ -2356,11 +2469,12 @@ mod tests {
                 .with_mint(payer, U256::from(200u128))
                 .apply()?;
             let mut reserve = TIP20ChannelReserve::new();
-            reserve.initialize()?;
+            reserve.initialize(&mut crate::storage::StorageCtx::test_writable())?;
 
             let salt = B256::random();
             let expiring_nonce_hash = seed_expiring_nonce_hash(&mut reserve)?;
             let channel_id = reserve.open(
+                &mut crate::storage::StorageCtx::test_writable(),
                 payer,
                 open_call(payee, operator, token.address(), 100, salt, Address::ZERO),
             )?;
@@ -2382,6 +2496,7 @@ mod tests {
                 Bytes::copy_from_slice(&payer_signer.sign_hash_sync(&digest)?.as_bytes());
 
             reserve.settle(
+                &mut crate::storage::StorageCtx::test_writable(),
                 operator,
                 ITIP20ChannelReserve::settleCall {
                     descriptor: channel_descriptor,
@@ -2397,6 +2512,7 @@ mod tests {
             let salt = B256::random();
             let expiring_nonce_hash = seed_expiring_nonce_hash(&mut reserve)?;
             reserve.open(
+                &mut crate::storage::StorageCtx::test_writable(),
                 payer,
                 open_call(
                     payee,
@@ -2417,6 +2533,7 @@ mod tests {
                 expiring_nonce_hash,
             );
             let result = reserve.settle(
+                &mut crate::storage::StorageCtx::test_writable(),
                 Address::random(),
                 ITIP20ChannelReserve::settleCall {
                     descriptor: descriptor_without_operator,
@@ -2447,11 +2564,12 @@ mod tests {
                 .with_mint(payer, U256::from(300u128))
                 .apply()?;
             let mut reserve = TIP20ChannelReserve::new();
-            reserve.initialize()?;
+            reserve.initialize(&mut crate::storage::StorageCtx::test_writable())?;
 
             let salt = B256::random();
             let expiring_nonce_hash = seed_expiring_nonce_hash(&mut reserve)?;
             let channel_id = reserve.open(
+                &mut crate::storage::StorageCtx::test_writable(),
                 payer,
                 open_call(payee, operator, token.address(), 100, salt, Address::ZERO),
             )?;
@@ -2473,6 +2591,7 @@ mod tests {
                 Bytes::copy_from_slice(&payer_signer.sign_hash_sync(&digest)?.as_bytes());
 
             reserve.close(
+                &mut crate::storage::StorageCtx::test_writable(),
                 operator,
                 ITIP20ChannelReserve::closeCall {
                     descriptor: channel_descriptor,
@@ -2491,6 +2610,7 @@ mod tests {
             let salt = B256::random();
             let expiring_nonce_hash = seed_expiring_nonce_hash(&mut reserve)?;
             reserve.open(
+                &mut crate::storage::StorageCtx::test_writable(),
                 payer,
                 open_call(
                     payee,
@@ -2511,6 +2631,7 @@ mod tests {
                 expiring_nonce_hash,
             );
             let result = reserve.close(
+                &mut crate::storage::StorageCtx::test_writable(),
                 Address::random(),
                 ITIP20ChannelReserve::closeCall {
                     descriptor: descriptor_without_operator,
@@ -2541,7 +2662,7 @@ mod tests {
                 .with_mint(payer, U256::from(1_000u128))
                 .apply()?;
             let mut reserve = TIP20ChannelReserve::new();
-            reserve.initialize()?;
+            reserve.initialize(&mut crate::storage::StorageCtx::test_writable())?;
 
             let expiring_nonce_hash = seed_expiring_nonce_hash(&mut reserve)?;
             let descriptor = descriptor(
@@ -2554,6 +2675,7 @@ mod tests {
                 expiring_nonce_hash,
             );
             reserve.open(
+                &mut crate::storage::StorageCtx::test_writable(),
                 payer,
                 open_call(
                     payee,
@@ -2567,6 +2689,7 @@ mod tests {
             reserve.clear_emitted_events();
 
             reserve.top_up(
+                &mut crate::storage::StorageCtx::test_writable(),
                 payer,
                 ITIP20ChannelReserve::topUpCall {
                     descriptor: descriptor.clone(),
@@ -2601,7 +2724,7 @@ mod tests {
                 .with_mint(payer, U256::from(1_000u128))
                 .apply()?;
             let mut reserve = TIP20ChannelReserve::new();
-            reserve.initialize()?;
+            reserve.initialize(&mut crate::storage::StorageCtx::test_writable())?;
 
             let expiring_nonce_hash = seed_expiring_nonce_hash(&mut reserve)?;
             let descriptor = descriptor(
@@ -2614,6 +2737,7 @@ mod tests {
                 expiring_nonce_hash,
             );
             reserve.open(
+                &mut crate::storage::StorageCtx::test_writable(),
                 payer,
                 open_call(
                     payee,
@@ -2627,6 +2751,7 @@ mod tests {
 
             reserve.storage.set_timestamp(U256::from(1_000u64));
             reserve.request_close(
+                &mut crate::storage::StorageCtx::test_writable(),
                 payer,
                 ITIP20ChannelReserve::requestCloseCall {
                     descriptor: descriptor.clone(),
@@ -2638,6 +2763,7 @@ mod tests {
             assert_eq!(requested.state.closeRequestedAt, 1_000);
 
             reserve.top_up(
+                &mut crate::storage::StorageCtx::test_writable(),
                 payer,
                 ITIP20ChannelReserve::topUpCall {
                     descriptor: descriptor.clone(),
@@ -2689,9 +2815,10 @@ mod tests {
                 .with_mint(payer, U256::from(100u128))
                 .apply()?;
             let mut reserve = TIP20ChannelReserve::new();
-            reserve.initialize()?;
+            reserve.initialize(&mut crate::storage::StorageCtx::test_writable())?;
             let expiring_nonce_hash = seed_expiring_nonce_hash(&mut reserve)?;
             reserve.open(
+                &mut crate::storage::StorageCtx::test_writable(),
                 payer,
                 open_call(
                     payee,
@@ -2704,6 +2831,7 @@ mod tests {
             )?;
 
             let result = reserve.settle(
+                &mut crate::storage::StorageCtx::test_writable(),
                 payee,
                 ITIP20ChannelReserve::settleCall {
                     descriptor: descriptor(
@@ -2742,9 +2870,10 @@ mod tests {
                 .with_mint(payer, U256::from(100u128))
                 .apply()?;
             let mut reserve = TIP20ChannelReserve::new();
-            reserve.initialize()?;
+            reserve.initialize(&mut crate::storage::StorageCtx::test_writable())?;
             let expiring_nonce_hash = seed_expiring_nonce_hash(&mut reserve)?;
             reserve.open(
+                &mut crate::storage::StorageCtx::test_writable(),
                 payer,
                 open_call(
                     payee,
@@ -2762,6 +2891,7 @@ mod tests {
             keychain_signature.extend_from_slice(Signature::test_signature().as_bytes().as_slice());
 
             let result = reserve.settle(
+                &mut crate::storage::StorageCtx::test_writable(),
                 payee,
                 ITIP20ChannelReserve::settleCall {
                     descriptor: descriptor(
@@ -2798,9 +2928,10 @@ mod tests {
                 .with_mint(payer, U256::from(100u128))
                 .apply()?;
             let mut reserve = TIP20ChannelReserve::new();
-            reserve.initialize()?;
+            reserve.initialize(&mut crate::storage::StorageCtx::test_writable())?;
             let expiring_nonce_hash = seed_expiring_nonce_hash(&mut reserve)?;
             let channel_id = reserve.open(
+                &mut crate::storage::StorageCtx::test_writable(),
                 payer,
                 open_call(
                     payee,
@@ -2823,6 +2954,7 @@ mod tests {
 
             reserve.storage.set_timestamp(U256::from(1_000u64));
             reserve.request_close(
+                &mut crate::storage::StorageCtx::test_writable(),
                 payer,
                 ITIP20ChannelReserve::requestCloseCall {
                     descriptor: descriptor.clone(),
@@ -2831,7 +2963,11 @@ mod tests {
             reserve
                 .storage
                 .set_timestamp(U256::from(1_000u64 + CLOSE_GRACE_PERIOD));
-            reserve.withdraw(payer, ITIP20ChannelReserve::withdrawCall { descriptor })?;
+            reserve.withdraw(
+                &mut crate::storage::StorageCtx::test_writable(),
+                payer,
+                ITIP20ChannelReserve::withdrawCall { descriptor },
+            )?;
 
             let state = reserve.get_channel_state(ITIP20ChannelReserve::getChannelStateCall {
                 channelId: channel_id,
@@ -2857,7 +2993,7 @@ mod tests {
                 .with_mint(payer, U256::from(100u128))
                 .apply()?;
             let mut reserve = TIP20ChannelReserve::new();
-            reserve.initialize()?;
+            reserve.initialize(&mut crate::storage::StorageCtx::test_writable())?;
             let expiring_nonce_hash = seed_expiring_nonce_hash(&mut reserve)?;
             let descriptor = descriptor(
                 payer,
@@ -2869,6 +3005,7 @@ mod tests {
                 expiring_nonce_hash,
             );
             reserve.open(
+                &mut crate::storage::StorageCtx::test_writable(),
                 payer,
                 open_call(
                     payee,
@@ -2880,7 +3017,11 @@ mod tests {
                 ),
             )?;
 
-            let result = reserve.withdraw(payer, ITIP20ChannelReserve::withdrawCall { descriptor });
+            let result = reserve.withdraw(
+                &mut crate::storage::StorageCtx::test_writable(),
+                payer,
+                ITIP20ChannelReserve::withdrawCall { descriptor },
+            );
             assert_eq!(
                 result.unwrap_err(),
                 TIP20ChannelReserveError::close_not_ready().into()

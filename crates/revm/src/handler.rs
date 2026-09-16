@@ -403,13 +403,14 @@ impl<DB: alloy_evm::Database, I> TempoEvmHandler<DB, I> {
             &ctx.cfg,
             &ctx.tx,
             StorageActions::disabled(),
-            || {
+            |write| {
                 let mut keychain = AccountKeychain::new();
-                keychain.set_tx_origin(ctx.tx.caller())?;
+                keychain.set_tx_origin(write, ctx.tx.caller())?;
 
                 if let Some(channel_open_context_hash) = channel_open_context_hash {
                     let mut channel_reserve = TIP20ChannelReserve::new();
-                    channel_reserve.set_channel_open_context_hash(channel_open_context_hash)?;
+                    channel_reserve
+                        .set_channel_open_context_hash(write, channel_open_context_hash)?;
                 }
 
                 Ok::<(), TempoPrecompileError>(())
@@ -476,7 +477,7 @@ where
             *remaining_gas,
             reservoir,
             actions,
-            || {
+            |write| {
                 let keychain = AccountKeychain::default();
                 for call in calls {
                     keychain.validate_call_scope_for_transaction(
@@ -1108,7 +1109,7 @@ where
                 cfg,
                 tx,
                 actions.clone(),
-                || {
+                |write| {
                     let mut nonce_manager = NonceManager::new();
 
                     let prev_ptr = if let Some(expiring_nonce_idx) = tempo_tx_env.expiring_nonce_idx
@@ -1122,7 +1123,7 @@ where
 
                         nonce_manager
                             .expiring_nonce_ring_ptr
-                            .write(next)
+                            .write(write, next)
                             .map_err(|err| EVMError::Custom(err.to_string()))?;
 
                         Some(ptr)
@@ -1131,7 +1132,7 @@ where
                     };
 
                     nonce_manager
-                    .check_and_mark_expiring_nonce(replay_hash, valid_before)
+                    .check_and_mark_expiring_nonce(write, replay_hash, valid_before)
                     .map_err(|err| match err {
                         TempoPrecompileError::Fatal(err) => EVMError::Custom(err),
                         TempoPrecompileError::NonceError(
@@ -1156,7 +1157,7 @@ where
                     if let Some(prev_ptr) = prev_ptr {
                         nonce_manager
                             .expiring_nonce_ring_ptr
-                            .write(prev_ptr)
+                            .write(write, prev_ptr)
                             .map_err(|err| EVMError::Custom(err.to_string()))?;
                     }
 
@@ -1171,7 +1172,7 @@ where
                 cfg,
                 tx,
                 actions.clone(),
-                || {
+                |write| {
                     let mut nonce_manager = NonceManager::new();
 
                     if !cfg.is_nonce_check_disabled() {
@@ -1208,7 +1209,7 @@ where
 
                     // Always increment nonce for AA transactions with non-zero nonce keys.
                     nonce_manager
-                        .increment_nonce(tx.caller(), nonce_key)
+                        .increment_nonce(write, tx.caller(), nonce_key)
                         .map_err(|err| match err {
                             TempoPrecompileError::Fatal(err) => EVMError::Custom(err),
                             err => {
@@ -1312,7 +1313,7 @@ where
                     cfg,
                     tx,
                     actions.clone(),
-                    |mut keychain: AccountKeychain| {
+                    |write, mut keychain: AccountKeychain| {
                         // Extract the signature type from the inner signature to validate it matches
                         // the key_type stored in the keychain. This prevents using a signature of one
                         // type to authenticate as a key registered with a different type.
@@ -1344,7 +1345,7 @@ where
                         // The TIP20 precompile will read this during fee collection and
                         // execution to enforce spending limits for existing keys.
                         keychain
-                            .set_transaction_key(access_key_addr)
+                            .set_transaction_key(write, access_key_addr)
                             .map_err(|e| EVMError::Custom(e.to_string()))?;
 
                         Ok::<_, EVMError<_, TempoInvalidTransaction>>(LoadedTxAccessKey {
@@ -1542,7 +1543,7 @@ where
             provider.set_tip1060_storage_credits(false);
 
             // The core logic of setting up thread-local storage is here.
-            let out_of_gas = StorageCtx::enter(&mut provider, || {
+            let out_of_gas = StorageCtx::enter_writable(&mut provider, |write| {
                 let mut keychain = AccountKeychain::default();
                 let access_key_addr = key_auth.key_id;
 
@@ -1590,6 +1591,7 @@ where
                 // Call precompile to authorize the key (same phase as nonce increment).
                 let result = if key_auth.is_admin() {
                     keychain.authorize_admin_key(
+                        write,
                         tx.caller,
                         access_key_addr,
                         signature_type,
@@ -1597,6 +1599,7 @@ where
                     )
                 } else {
                     keychain.authorize_key(
+                        write,
                         tx.caller,
                         access_key_addr,
                         signature_type,
@@ -1616,7 +1619,8 @@ where
                     }
                     .into()),
                 }
-            })?;
+            })
+            .map_err(|err| EVMError::Custom(err.to_string()))??;
 
             let gas_used = provider.gas_used();
             drop(provider);
@@ -1652,10 +1656,10 @@ where
                     cfg,
                     tx,
                     actions,
-                    || {
+                    |write| {
                         let mut keychain = AccountKeychain::new();
                         keychain
-                            .set_transaction_key(key_auth.key_id)
+                            .set_transaction_key(write, key_auth.key_id)
                             .map_err(|e| EVMError::Custom(e.to_string()))?;
 
                         if evm.collected_fee.is_zero() {
@@ -1663,7 +1667,7 @@ where
                         }
 
                         keychain
-                            .authorize_transfer(fee_payer, fee_token, evm.collected_fee)
+                            .authorize_transfer(write, fee_payer, fee_token, evm.collected_fee)
                             .map_err(|err| match err {
                                 TempoPrecompileError::Fatal(err) => EVMError::Custom(err),
                                 err => FeePaymentError::Other(err.to_string()).into(),

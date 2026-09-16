@@ -53,12 +53,16 @@ pub struct ValidatorConfig {
 
 impl ValidatorConfig {
     /// Initializes the validator config (V1) precompile with an owner.
-    pub fn initialize(&mut self, owner: Address) -> Result<()> {
+    pub fn initialize(
+        &mut self,
+        write: &mut crate::storage::WriteCtx,
+        owner: Address,
+    ) -> Result<()> {
         trace!(address=%self.address, %owner, "Initializing validator config precompile");
 
         // must ensure the account is not empty, by setting some code
-        self.__initialize()?;
-        self.owner.write(owner)
+        self.__initialize(write)?;
+        self.owner.write(write, owner)
     }
 
     /// Returns the current contract owner address.
@@ -81,11 +85,12 @@ impl ValidatorConfig {
     /// - `unauthorized` — if `sender` is not the contract owner
     pub fn change_owner(
         &mut self,
+        write: &mut crate::storage::WriteCtx,
         sender: Address,
         call: IValidatorConfig::changeOwnerCall,
     ) -> Result<()> {
         self.check_owner(sender)?;
-        self.owner.write(call.newOwner)
+        self.owner.write(write, call.newOwner)
     }
 
     /// Returns the total number of registered validators.
@@ -168,6 +173,7 @@ impl ValidatorConfig {
     /// - `not_ip_port` — if `outboundAddress` is not a valid `<ip>:<port>`
     pub fn add_validator(
         &mut self,
+        write: &mut crate::storage::WriteCtx,
         sender: Address,
         call: IValidatorConfig::addValidatorCall,
     ) -> Result<()> {
@@ -229,10 +235,10 @@ impl ValidatorConfig {
             inbound_address: call.inboundAddress,
             outbound_address: call.outboundAddress,
         };
-        self.validators[call.newValidatorAddress].write(validator)?;
+        self.validators[call.newValidatorAddress].write(write, validator)?;
 
         // Add the validator address to the validators array
-        self.validators_array.push(call.newValidatorAddress)
+        self.validators_array.push(write, call.newValidatorAddress)
     }
 
     /// Updates validator information and optionally rotates to a new address.
@@ -258,6 +264,7 @@ impl ValidatorConfig {
     /// - `not_ip_port` — if `outboundAddress` is not a valid `<ip>:<port>`
     pub fn update_validator(
         &mut self,
+        write: &mut crate::storage::WriteCtx,
         sender: Address,
         call: IValidatorConfig::updateValidatorCall,
     ) -> Result<()> {
@@ -281,10 +288,11 @@ impl ValidatorConfig {
             }
 
             // Update the validators array to point at the new validator address
-            self.validators_array[old_validator.index as usize].write(call.newValidatorAddress)?;
+            self.validators_array[old_validator.index as usize]
+                .write(write, call.newValidatorAddress)?;
 
             // Clear the old validator
-            self.validators[sender].delete()?;
+            self.validators[sender].delete(write)?;
         }
 
         if self.storage.spec().is_t2() {
@@ -328,7 +336,7 @@ impl ValidatorConfig {
             outbound_address: call.outboundAddress,
         };
 
-        self.validators[call.newValidatorAddress].write(updated_validator)
+        self.validators[call.newValidatorAddress].write(write, updated_validator)
     }
 
     /// Sets a validator's active flag by address. Owner-only.
@@ -340,6 +348,7 @@ impl ValidatorConfig {
     /// - `validator_not_found` — if no validator exists at `call.validator`
     pub fn change_validator_status(
         &mut self,
+        write: &mut crate::storage::WriteCtx,
         sender: Address,
         call: IValidatorConfig::changeValidatorStatusCall,
     ) -> Result<()> {
@@ -351,7 +360,7 @@ impl ValidatorConfig {
 
         let mut validator = self.validators[call.validator].read()?;
         validator.active = call.active;
-        self.validators[call.validator].write(validator)
+        self.validators[call.validator].write(write, validator)
     }
 
     /// Sets a validator's active flag by array index. Owner-only, T1+.
@@ -363,6 +372,7 @@ impl ValidatorConfig {
     /// - `validator_not_found` — if `call.index` is out of bounds
     pub fn change_validator_status_by_index(
         &mut self,
+        write: &mut crate::storage::WriteCtx,
         sender: Address,
         call: IValidatorConfig::changeValidatorStatusByIndexCall,
     ) -> Result<()> {
@@ -376,7 +386,7 @@ impl ValidatorConfig {
 
         let mut validator = self.validators[validator_address].read()?;
         validator.active = call.active;
-        self.validators[validator_address].write(validator)
+        self.validators[validator_address].write(write, validator)
     }
 
     /// Returns the epoch at which a fresh DKG ceremony will be triggered.
@@ -399,11 +409,12 @@ impl ValidatorConfig {
     /// - `unauthorized` — if `sender` is not the contract owner
     pub fn set_next_full_dkg_ceremony(
         &mut self,
+        write: &mut crate::storage::WriteCtx,
         sender: Address,
         call: IValidatorConfig::setNextFullDkgCeremonyCall,
     ) -> Result<()> {
         self.check_owner(sender)?;
-        self.next_dkg_ceremony.write(call.epoch)
+        self.next_dkg_ceremony.write(write, call.epoch)
     }
 }
 
@@ -423,7 +434,8 @@ mod tests {
             let mut validator_config = ValidatorConfig::new();
 
             // Initialize with owner1
-            validator_config.initialize(owner1)?;
+            validator_config
+                .initialize(&mut crate::storage::StorageCtx::test_writable(), owner1)?;
 
             // Check that owner is owner1
             let current_owner = validator_config.owner()?;
@@ -434,6 +446,7 @@ mod tests {
 
             // Change owner to owner2
             validator_config.change_owner(
+                &mut crate::storage::StorageCtx::test_writable(),
                 owner1,
                 IValidatorConfig::changeOwnerCall { newOwner: owner2 },
             )?;
@@ -457,11 +470,13 @@ mod tests {
             let mut validator_config = ValidatorConfig::new();
 
             // Initialize with owner1
-            validator_config.initialize(owner1)?;
+            validator_config
+                .initialize(&mut crate::storage::StorageCtx::test_writable(), owner1)?;
 
             // Owner1 adds a validator - should succeed
             let public_key = FixedBytes::<32>::from([0x44; 32]);
             validator_config.add_validator(
+                &mut crate::storage::StorageCtx::test_writable(),
                 owner1,
                 IValidatorConfig::addValidatorCall {
                     newValidatorAddress: validator1,
@@ -481,6 +496,7 @@ mod tests {
 
             // Owner1 changes validator status - should succeed
             validator_config.change_validator_status(
+                &mut crate::storage::StorageCtx::test_writable(),
                 owner1,
                 IValidatorConfig::changeValidatorStatusCall {
                     validator: validator1,
@@ -494,6 +510,7 @@ mod tests {
 
             // Owner2 (non-owner) tries to add validator - should fail
             let res = validator_config.add_validator(
+                &mut crate::storage::StorageCtx::test_writable(),
                 owner2,
                 IValidatorConfig::addValidatorCall {
                     newValidatorAddress: validator2,
@@ -507,6 +524,7 @@ mod tests {
 
             // Owner2 (non-owner) tries to change validator status - should fail
             let res = validator_config.change_validator_status(
+                &mut crate::storage::StorageCtx::test_writable(),
                 owner2,
                 IValidatorConfig::changeValidatorStatusCall {
                     validator: validator1,
@@ -526,13 +544,14 @@ mod tests {
             let owner = Address::from([0x01; 20]);
 
             let mut validator_config = ValidatorConfig::new();
-            validator_config.initialize(owner)?;
+            validator_config.initialize(&mut crate::storage::StorageCtx::test_writable(), owner)?;
 
             let validator1 = Address::from([0x11; 20]);
             let public_key1 = FixedBytes::<32>::from([0x21; 32]);
             let inbound1 = "192.168.1.1:8000".to_string();
             let outbound1 = "192.168.1.1:9000".to_string();
             validator_config.add_validator(
+                &mut crate::storage::StorageCtx::test_writable(),
                 owner,
                 IValidatorConfig::addValidatorCall {
                     newValidatorAddress: validator1,
@@ -545,6 +564,7 @@ mod tests {
 
             // Try adding duplicate validator - should fail
             let result = validator_config.add_validator(
+                &mut crate::storage::StorageCtx::test_writable(),
                 owner,
                 IValidatorConfig::addValidatorCall {
                     newValidatorAddress: validator1,
@@ -564,6 +584,7 @@ mod tests {
             let validator2 = Address::from([0x12; 20]);
             let public_key2 = FixedBytes::<32>::from([0x22; 32]);
             validator_config.add_validator(
+                &mut crate::storage::StorageCtx::test_writable(),
                 owner,
                 IValidatorConfig::addValidatorCall {
                     newValidatorAddress: validator2,
@@ -577,6 +598,7 @@ mod tests {
             let validator3 = Address::from([0x13; 20]);
             let public_key3 = FixedBytes::<32>::from([0x23; 32]);
             validator_config.add_validator(
+                &mut crate::storage::StorageCtx::test_writable(),
                 owner,
                 IValidatorConfig::addValidatorCall {
                     newValidatorAddress: validator3,
@@ -590,6 +612,7 @@ mod tests {
             let validator4 = Address::from([0x14; 20]);
             let public_key4 = FixedBytes::<32>::from([0x24; 32]);
             validator_config.add_validator(
+                &mut crate::storage::StorageCtx::test_writable(),
                 owner,
                 IValidatorConfig::addValidatorCall {
                     newValidatorAddress: validator4,
@@ -603,6 +626,7 @@ mod tests {
             let validator5 = Address::from([0x15; 20]);
             let public_key5 = FixedBytes::<32>::from([0x25; 32]);
             validator_config.add_validator(
+                &mut crate::storage::StorageCtx::test_writable(),
                 owner,
                 IValidatorConfig::addValidatorCall {
                     newValidatorAddress: validator5,
@@ -653,6 +677,7 @@ mod tests {
             let short_inbound1 = "10.0.0.1:8000".to_string();
             let short_outbound1 = "10.0.0.1:9000".to_string();
             validator_config.update_validator(
+                &mut crate::storage::StorageCtx::test_writable(),
                 validator1,
                 IValidatorConfig::updateValidatorCall {
                     newValidatorAddress: validator1,
@@ -665,6 +690,7 @@ mod tests {
             // Validator2 rotates to new address, keeps IP and publicKey
             let validator2_new = Address::from([0x22; 20]);
             validator_config.update_validator(
+                &mut crate::storage::StorageCtx::test_writable(),
                 validator2,
                 IValidatorConfig::updateValidatorCall {
                     newValidatorAddress: validator2_new,
@@ -679,6 +705,7 @@ mod tests {
             let long_inbound3 = "192.169.1.3:8000".to_string();
             let long_outbound3 = "192.168.1.3:9000".to_string();
             validator_config.update_validator(
+                &mut crate::storage::StorageCtx::test_writable(),
                 validator3,
                 IValidatorConfig::updateValidatorCall {
                     newValidatorAddress: validator3_new,
@@ -756,11 +783,12 @@ mod tests {
         let validator = Address::random();
         StorageCtx::enter(&mut storage, || {
             let mut validator_config = ValidatorConfig::new();
-            validator_config.initialize(owner)?;
+            validator_config.initialize(&mut crate::storage::StorageCtx::test_writable(), owner)?;
 
             // Owner adds a validator
             let public_key = FixedBytes::<32>::from([0x21; 32]);
             validator_config.add_validator(
+                &mut crate::storage::StorageCtx::test_writable(),
                 owner,
                 IValidatorConfig::addValidatorCall {
                     newValidatorAddress: validator,
@@ -773,6 +801,7 @@ mod tests {
 
             // Owner tries to update validator - should fail
             let result = validator_config.update_validator(
+                &mut crate::storage::StorageCtx::test_writable(),
                 owner,
                 IValidatorConfig::updateValidatorCall {
                     newValidatorAddress: validator,
@@ -800,7 +829,7 @@ mod tests {
         let validator2 = Address::random();
         StorageCtx::enter(&mut storage, || {
             let mut validator_config = ValidatorConfig::new();
-            validator_config.initialize(owner)?;
+            validator_config.initialize(&mut crate::storage::StorageCtx::test_writable(), owner)?;
 
             // Add validator with long inbound address that uses multiple slots
             let long_inbound = "192.168.1.1:8000".to_string();
@@ -808,6 +837,7 @@ mod tests {
             let public_key = FixedBytes::<32>::from([0x21; 32]);
 
             validator_config.add_validator(
+                &mut crate::storage::StorageCtx::test_writable(),
                 owner,
                 IValidatorConfig::addValidatorCall {
                     newValidatorAddress: validator1,
@@ -820,6 +850,7 @@ mod tests {
 
             // Rotate to new address with shorter addresses
             validator_config.update_validator(
+                &mut crate::storage::StorageCtx::test_writable(),
                 validator1,
                 IValidatorConfig::updateValidatorCall {
                     newValidatorAddress: validator2,
@@ -867,13 +898,14 @@ mod tests {
         let non_owner = Address::random();
         StorageCtx::enter(&mut storage, || {
             let mut validator_config = ValidatorConfig::new();
-            validator_config.initialize(owner)?;
+            validator_config.initialize(&mut crate::storage::StorageCtx::test_writable(), owner)?;
 
             // Default value is 0
             assert_eq!(validator_config.get_next_full_dkg_ceremony()?, 0);
 
             // Owner can set the value
             validator_config.set_next_full_dkg_ceremony(
+                &mut crate::storage::StorageCtx::test_writable(),
                 owner,
                 IValidatorConfig::setNextFullDkgCeremonyCall { epoch: 42 },
             )?;
@@ -881,6 +913,7 @@ mod tests {
 
             // Non-owner cannot set the value
             let result = validator_config.set_next_full_dkg_ceremony(
+                &mut crate::storage::StorageCtx::test_writable(),
                 non_owner,
                 IValidatorConfig::setNextFullDkgCeremonyCall { epoch: 100 },
             );
@@ -910,10 +943,11 @@ mod tests {
         let validator = Address::random();
         StorageCtx::enter(&mut storage, || {
             let mut validator_config = ValidatorConfig::new();
-            validator_config.initialize(owner)?;
+            validator_config.initialize(&mut crate::storage::StorageCtx::test_writable(), owner)?;
 
             let zero_public_key = FixedBytes::<32>::ZERO;
             let result = validator_config.add_validator(
+                &mut crate::storage::StorageCtx::test_writable(),
                 owner,
                 IValidatorConfig::addValidatorCall {
                     newValidatorAddress: validator,
@@ -945,10 +979,11 @@ mod tests {
         let validator = Address::random();
         StorageCtx::enter(&mut storage, || {
             let mut validator_config = ValidatorConfig::new();
-            validator_config.initialize(owner)?;
+            validator_config.initialize(&mut crate::storage::StorageCtx::test_writable(), owner)?;
 
             let original_public_key = FixedBytes::<32>::from([0x44; 32]);
             validator_config.add_validator(
+                &mut crate::storage::StorageCtx::test_writable(),
                 owner,
                 IValidatorConfig::addValidatorCall {
                     newValidatorAddress: validator,
@@ -961,6 +996,7 @@ mod tests {
 
             let zero_public_key = FixedBytes::<32>::ZERO;
             let result = validator_config.update_validator(
+                &mut crate::storage::StorageCtx::test_writable(),
                 validator,
                 IValidatorConfig::updateValidatorCall {
                     newValidatorAddress: validator,
@@ -996,13 +1032,14 @@ mod tests {
         let validator2 = Address::random();
         StorageCtx::enter(&mut storage, || {
             let mut validator_config = ValidatorConfig::new();
-            validator_config.initialize(owner)?;
+            validator_config.initialize(&mut crate::storage::StorageCtx::test_writable(), owner)?;
 
             let public_key1 = FixedBytes::<32>::from([0x11; 32]);
             let public_key2 = FixedBytes::<32>::from([0x22; 32]);
 
             // Add validators
             validator_config.add_validator(
+                &mut crate::storage::StorageCtx::test_writable(),
                 owner,
                 IValidatorConfig::addValidatorCall {
                     newValidatorAddress: validator1,
@@ -1014,6 +1051,7 @@ mod tests {
             )?;
 
             validator_config.add_validator(
+                &mut crate::storage::StorageCtx::test_writable(),
                 owner,
                 IValidatorConfig::addValidatorCall {
                     newValidatorAddress: validator2,
@@ -1042,13 +1080,14 @@ mod tests {
         let owner = Address::random();
         StorageCtx::enter(&mut storage, || {
             let mut validator_config = ValidatorConfig::new();
-            validator_config.initialize(owner)?;
+            validator_config.initialize(&mut crate::storage::StorageCtx::test_writable(), owner)?;
 
             // Default should be 0
             assert_eq!(validator_config.get_next_full_dkg_ceremony()?, 0);
 
             // Set to a specific value
             validator_config.set_next_full_dkg_ceremony(
+                &mut crate::storage::StorageCtx::test_writable(),
                 owner,
                 IValidatorConfig::setNextFullDkgCeremonyCall { epoch: 100 },
             )?;

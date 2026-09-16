@@ -45,37 +45,37 @@ impl Precompile for AccountKeychain {
                             },
                         };
 
-                        mutate_void(call, msg_sender, |sender, c| {
-                            self.authorize_key(sender, c.keyId, c.signatureType, c.config, None)
+                        mutate_void(call, msg_sender, |write, sender, c| {
+                            self.authorize_key(write, sender, c.keyId, c.signatureType, c.config, None)
                         })
                     },
                     #[schedule(since = T3)]
-                    authorizeKey_1(call) => mutate_void(call, msg_sender, |sender, c| {
-                        self.authorize_key(sender, c.keyId, c.signatureType, c.config, None)
+                    authorizeKey_1(call) => mutate_void(call, msg_sender, |write, sender, c| {
+                        self.authorize_key(write, sender, c.keyId, c.signatureType, c.config, None)
                     }),
                     #[schedule(since = T5)]
-                    authorizeKey_2(call) => mutate_void(call, msg_sender, |sender, c| {
-                        self.authorize_key(sender, c.keyId, c.signatureType, c.config, Some(c.witness))
+                    authorizeKey_2(call) => mutate_void(call, msg_sender, |write, sender, c| {
+                        self.authorize_key(write, sender, c.keyId, c.signatureType, c.config, Some(c.witness))
                     }),
                     #[schedule(since = T6)]
-                    authorizeAdminKey(call) => mutate_void(call, msg_sender, |sender, c| {
-                        self.authorize_admin_key(sender, c.keyId, c.signatureType, Some(c.witness))
+                    authorizeAdminKey(call) => mutate_void(call, msg_sender, |write, sender, c| {
+                        self.authorize_admin_key(write, sender, c.keyId, c.signatureType, Some(c.witness))
                     }),
                     #[schedule(since = T5)]
-                    burnKeyAuthorizationWitness(call) => mutate_void(call, msg_sender, |sender, c| {
-                        self.burn_key_authorization_witness(sender, c)
+                    burnKeyAuthorizationWitness(call) => mutate_void(call, msg_sender, |write, sender, c| {
+                        self.burn_key_authorization_witness(write, sender, c)
                     }),
-                    revokeKey(call) => mutate_void(call, msg_sender, |sender, c| self.revoke_key(sender, c)),
-                    updateSpendingLimit(call) => mutate_void(call, msg_sender, |sender, c| {
-                        self.update_spending_limit(sender, c)
-                    }),
-                    #[schedule(since = T3)]
-                    setAllowedCalls(call) => mutate_void(call, msg_sender, |sender, c| {
-                        self.set_allowed_calls(sender, c)
+                    revokeKey(call) => mutate_void(call, msg_sender, |write, sender, c| self.revoke_key(write, sender, c)),
+                    updateSpendingLimit(call) => mutate_void(call, msg_sender, |write, sender, c| {
+                        self.update_spending_limit(write, sender, c)
                     }),
                     #[schedule(since = T3)]
-                    removeAllowedCalls(call) => mutate_void(call, msg_sender, |sender, c| {
-                        self.remove_allowed_calls(sender, c)
+                    setAllowedCalls(call) => mutate_void(call, msg_sender, |write, sender, c| {
+                        self.set_allowed_calls(write, sender, c)
+                    }),
+                    #[schedule(since = T3)]
+                    removeAllowedCalls(call) => mutate_void(call, msg_sender, |write, sender, c| {
+                        self.remove_allowed_calls(write, sender, c)
                     }),
                     getKey(call) => view(call, |c| self.get_key(c)),
                     #[schedule(until = T3)]
@@ -146,7 +146,7 @@ mod tests {
 
         StorageCtx::enter(&mut storage, || {
             let mut keychain = AccountKeychain::new();
-            keychain.initialize()?;
+            keychain.initialize(&mut crate::storage::StorageCtx::test_writable())?;
 
             let calldata = legacyAuthorizeKeyCall {
                 keyId: key_id,
@@ -183,7 +183,7 @@ mod tests {
 
         StorageCtx::enter(&mut storage, || {
             let mut keychain = AccountKeychain::new();
-            keychain.initialize()?;
+            keychain.initialize(&mut crate::storage::StorageCtx::test_writable())?;
 
             let calldata = authorizeKeyCall {
                 keyId: Address::random(),
@@ -279,7 +279,7 @@ mod tests {
 
         StorageCtx::enter(&mut storage, || {
             let mut keychain = AccountKeychain::new();
-            keychain.initialize()?;
+            keychain.initialize(&mut crate::storage::StorageCtx::test_writable())?;
 
             let calldata = legacyAuthorizeKeyCall {
                 keyId: Address::random(),
@@ -309,7 +309,7 @@ mod tests {
 
         StorageCtx::enter(&mut storage, || {
             let mut keychain = AccountKeychain::new();
-            keychain.initialize()?;
+            keychain.initialize(&mut crate::storage::StorageCtx::test_writable())?;
 
             let authorize_calldata = legacyAuthorizeKeyCall {
                 keyId: key_id,
@@ -353,7 +353,7 @@ mod tests {
 
         StorageCtx::enter(&mut storage, || {
             let mut keychain = AccountKeychain::new();
-            keychain.initialize()?;
+            keychain.initialize(&mut crate::storage::StorageCtx::test_writable())?;
 
             let calldata = getRemainingLimitWithPeriodCall {
                 account,
@@ -378,7 +378,7 @@ mod tests {
         let mut storage = HashMapStorageProvider::new_with_spec(1, TempoHardfork::T3);
         StorageCtx::enter(&mut storage, || {
             let mut keychain = AccountKeychain::new();
-            keychain.initialize()?;
+            keychain.initialize(&mut crate::storage::StorageCtx::test_writable())?;
 
             let calldata = getRemainingLimitCall {
                 account,
@@ -411,7 +411,7 @@ mod tests {
         let mut storage = HashMapStorageProvider::new_with_spec(1, TempoHardfork::T4);
         StorageCtx::enter(&mut storage, || {
             let mut keychain = AccountKeychain::new();
-            keychain.initialize()?;
+            keychain.initialize(&mut crate::storage::StorageCtx::test_writable())?;
 
             for (selector, calldata) in [
                 (

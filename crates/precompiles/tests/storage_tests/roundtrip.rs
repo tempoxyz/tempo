@@ -30,14 +30,32 @@ fn test_round_trip_operations_in_contract() {
         };
 
         // Round 1: Store and load
-        layout.block.write(original_block.clone()).unwrap();
-        layout.profile.write(original_profile.clone()).unwrap();
+        layout
+            .block
+            .write(
+                &mut tempo_precompiles::storage::StorageCtx::test_writable(),
+                original_block.clone(),
+            )
+            .unwrap();
+        layout
+            .profile
+            .write(
+                &mut tempo_precompiles::storage::StorageCtx::test_writable(),
+                original_profile.clone(),
+            )
+            .unwrap();
         assert_eq!(layout.block.read().unwrap(), original_block);
         assert_eq!(layout.profile.read().unwrap(), original_profile);
 
         // Round 2: Delete and verify defaults
-        layout.block.delete().unwrap();
-        layout.profile.delete().unwrap();
+        layout
+            .block
+            .delete(&mut tempo_precompiles::storage::StorageCtx::test_writable())
+            .unwrap();
+        layout
+            .profile
+            .delete(&mut tempo_precompiles::storage::StorageCtx::test_writable())
+            .unwrap();
 
         assert_eq!(layout.block.read().unwrap(), TestBlock::default());
         assert_eq!(layout.profile.read().unwrap(), UserProfile::default());
@@ -54,16 +72,39 @@ fn test_round_trip_operations_in_contract() {
             balance: U256::from(54321),
         };
 
-        layout.block.write(new_block.clone()).unwrap();
-        layout.profile.write(new_profile.clone()).unwrap();
+        layout
+            .block
+            .write(
+                &mut tempo_precompiles::storage::StorageCtx::test_writable(),
+                new_block.clone(),
+            )
+            .unwrap();
+        layout
+            .profile
+            .write(
+                &mut tempo_precompiles::storage::StorageCtx::test_writable(),
+                new_profile.clone(),
+            )
+            .unwrap();
 
         assert_eq!(layout.block.read().unwrap(), new_block);
         assert_eq!(layout.profile.read().unwrap(), new_profile);
 
         // Round 4: Individual field operations
         let modified_owner = test_address(77);
-        layout.profile.owner.write(modified_owner).unwrap();
-        layout.profile.active.delete().unwrap();
+        layout
+            .profile
+            .owner
+            .write(
+                &mut tempo_precompiles::storage::StorageCtx::test_writable(),
+                modified_owner,
+            )
+            .unwrap();
+        layout
+            .profile
+            .active
+            .delete(&mut tempo_precompiles::storage::StorageCtx::test_writable())
+            .unwrap();
 
         // Verify individual field reads
         assert_eq!(layout.profile.owner.read().unwrap(), modified_owner);
@@ -94,15 +135,15 @@ proptest! {
 
         StorageCtx::enter(&mut storage, || -> Result<(), TestCaseError> {
             // Round 1: Store and load
-            layout.block.write(block_val.clone())?;
-            layout.profile.write(profile_val.clone())?;
+            layout.block.write(&mut tempo_precompiles::storage::StorageCtx::test_writable(), block_val.clone())?;
+            layout.profile.write(&mut tempo_precompiles::storage::StorageCtx::test_writable(), profile_val.clone())?;
 
             prop_assert_eq!(layout.block.read()?, block_val);
             prop_assert_eq!(layout.profile.read()?, profile_val);
 
             // Round 2: Delete and verify defaults
-            layout.block.delete()?;
-            layout.profile.delete()?;
+            layout.block.delete(&mut tempo_precompiles::storage::StorageCtx::test_writable())?;
+            layout.profile.delete(&mut tempo_precompiles::storage::StorageCtx::test_writable())?;
 
             prop_assert_eq!(layout.block.read()?, TestBlock::default());
             prop_assert_eq!(layout.profile.read()?, UserProfile::default());
@@ -119,16 +160,16 @@ proptest! {
                 balance: U256::from(54321),
             };
 
-            layout.block.write(new_block.clone())?;
-            layout.profile.write(new_profile.clone())?;
+            layout.block.write(&mut tempo_precompiles::storage::StorageCtx::test_writable(), new_block.clone())?;
+            layout.profile.write(&mut tempo_precompiles::storage::StorageCtx::test_writable(), new_profile.clone())?;
             prop_assert_eq!(layout.block.read()?, new_block);
 
             // Round 4: Individual field operations
             let expected_balance = new_profile.balance;
             prop_assert_eq!(layout.profile.read()?, new_profile);
             let modified_owner = test_address(77);
-            layout.profile.owner.write(modified_owner)?;
-            layout.profile.active.delete()?;
+            layout.profile.owner.write(&mut tempo_precompiles::storage::StorageCtx::test_writable(), modified_owner)?;
+            layout.profile.active.delete(&mut tempo_precompiles::storage::StorageCtx::test_writable())?;
 
             // Verify individual field reads
             prop_assert_eq!(layout.profile.owner.read()?, modified_owner);
@@ -159,8 +200,8 @@ proptest! {
 
         StorageCtx::enter(&mut storage, || -> Result<(), TestCaseError> {
             // Round 1: Write proptest values
-            layout.vec_two.write(two_slots.clone())?;
-            layout.vec_three.write(three_slots.clone())?;
+            layout.vec_two.write(&mut tempo_precompiles::storage::StorageCtx::test_writable(), two_slots.clone())?;
+            layout.vec_three.write(&mut tempo_precompiles::storage::StorageCtx::test_writable(), three_slots.clone())?;
 
             prop_assert_eq!(layout.vec_two.len()?, two_slots.len());
             prop_assert_eq!(layout.vec_three.len()?, three_slots.len());
@@ -186,8 +227,8 @@ proptest! {
 
             let two_len_pre_push = layout.vec_two.len()?;
             let three_len_pre_push = layout.vec_three.len()?;
-            layout.vec_two.push(extra_two.clone())?;
-            layout.vec_three.push(extra_three.clone())?;
+            layout.vec_two.push(&mut tempo_precompiles::storage::StorageCtx::test_writable(), extra_two.clone())?;
+            layout.vec_three.push(&mut tempo_precompiles::storage::StorageCtx::test_writable(), extra_three.clone())?;
 
             // Verify pushed values
             prop_assert_eq!(layout.vec_two.len()?, two_slots.len() + 1);
@@ -196,8 +237,8 @@ proptest! {
             prop_assert_eq!(layout.vec_three[three_len_pre_push].read()?, extra_three.clone());
 
             // Round 3: Pop hardcoded values (delete last element, decrement length)
-            let pop_two = layout.vec_two.pop()?;
-            let pop_three = layout.vec_three.pop()?;
+            let pop_two = layout.vec_two.pop(&mut tempo_precompiles::storage::StorageCtx::test_writable())?;
+            let pop_three = layout.vec_three.pop(&mut tempo_precompiles::storage::StorageCtx::test_writable())?;
             prop_assert_eq!(pop_two, Some(extra_two));
             prop_assert_eq!(pop_three, Some(extra_three));
 

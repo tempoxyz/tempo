@@ -91,7 +91,10 @@ where
     let mut slot = Slot::<T>::new(base_slot, *address);
 
     // Write and read using the new API
-    slot.write(original.clone())?;
+    slot.write(
+        &mut tempo_precompiles::storage::StorageCtx::test_writable(),
+        original.clone(),
+    )?;
     let loaded = slot.read()?;
     assert_eq!(&loaded, original, "Store/load roundtrip failed");
     Ok(())
@@ -111,12 +114,18 @@ where
     let mut slot = Slot::<T>::new(base_slot, *address);
 
     // Test initial write and read
-    slot.write(initial.clone())?;
+    slot.write(
+        &mut tempo_precompiles::storage::StorageCtx::test_writable(),
+        initial.clone(),
+    )?;
     let loaded1 = slot.read()?;
     assert_eq!(&loaded1, initial, "Initial store/load failed");
 
     // Test update
-    slot.write(updated.clone())?;
+    slot.write(
+        &mut tempo_precompiles::storage::StorageCtx::test_writable(),
+        updated.clone(),
+    )?;
     let loaded2 = slot.read()?;
     assert_eq!(&loaded2, updated, "Update failed");
     Ok(())
@@ -131,12 +140,15 @@ where
     let mut slot = Slot::<T>::new(base_slot, *address);
 
     // Write and verify
-    slot.write(data.clone())?;
+    slot.write(
+        &mut tempo_precompiles::storage::StorageCtx::test_writable(),
+        data.clone(),
+    )?;
     let loaded = slot.read()?;
     assert_eq!(&loaded, data, "Initial store/load failed");
 
     // Delete and verify it's zeroed
-    slot.delete()?;
+    slot.delete(&mut tempo_precompiles::storage::StorageCtx::test_writable())?;
     let after_delete = slot.read()?;
     let expected_zero = T::default();
     assert_eq!(&after_delete, &expected_zero, "Delete did not zero values");

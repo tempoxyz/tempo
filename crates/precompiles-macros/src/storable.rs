@@ -121,7 +121,7 @@ fn derive_struct_impl(input: &DeriveInput, data_struct: &DataStruct) -> syn::Res
 
         // `Storable` implementation: storage I/O with full logic
         impl #impl_generics crate::storage::Storable for #strukt #ty_generics #where_clause {
-            fn load<S: crate::storage::StorageOps>(
+            fn load<S: crate::storage::StorageRead>(
                 storage: &S,
                 base_slot: ::alloy::primitives::U256,
                 ctx: crate::storage::LayoutCtx
@@ -238,7 +238,7 @@ fn derive_unit_enum_impl(input: &DeriveInput, data_enum: &DataEnum) -> syn::Resu
 
         impl #impl_generics crate::storage::Storable for #enum_name #ty_generics #where_clause {
             #[inline]
-            fn load<S: crate::storage::StorageOps>(
+            fn load<S: crate::storage::StorageRead>(
                 storage: &S,
                 slot: ::alloy::primitives::U256,
                 ctx: crate::storage::LayoutCtx
@@ -394,13 +394,13 @@ fn gen_handler_struct(
             }
 
             #[inline]
-            fn write(&mut self, value: #struct_name) -> crate::error::Result<()> {
-                self.as_slot().write(value)
+            fn write(&mut self, write: &mut crate::storage::WriteCtx, value: #struct_name) -> crate::error::Result<()> {
+                self.as_slot().write(write, value)
             }
 
             #[inline]
-            fn delete(&mut self) -> crate::error::Result<()> {
-                self.as_slot().delete()
+            fn delete(&mut self, write: &mut crate::storage::WriteCtx) -> crate::error::Result<()> {
+                self.as_slot().delete(write)
             }
 
             /// Reads the struct from transient storage.
@@ -411,14 +411,14 @@ fn gen_handler_struct(
 
             /// Writes the struct to transient storage.
             #[inline]
-            fn t_write(&mut self, value: #struct_name) -> crate::error::Result<()> {
-                self.as_slot().t_write(value)
+            fn t_write(&mut self, write: &mut crate::storage::WriteCtx, value: #struct_name) -> crate::error::Result<()> {
+                self.as_slot().t_write(write, value)
             }
 
             /// Deletes the struct from transient storage.
             #[inline]
-            fn t_delete(&mut self) -> crate::error::Result<()> {
-                self.as_slot().t_delete()
+            fn t_delete(&mut self, write: &mut crate::storage::WriteCtx) -> crate::error::Result<()> {
+                self.as_slot().t_delete(write)
             }
         }
     }

@@ -9,7 +9,7 @@ use revm::{
     state::{AccountInfo, Bytecode},
 };
 use scoped_tls::scoped_thread_local;
-use std::{cell::RefCell, fmt::Debug};
+use std::{cell::RefCell, fmt::Debug, marker::PhantomData};
 use tempo_chainspec::hardfork::TempoHardfork;
 use tempo_primitives::TempoBlockEnv;
 
@@ -21,24 +21,121 @@ use crate::{
 
 scoped_thread_local!(static STORAGE: RefCell<&mut dyn PrecompileStorageProvider>);
 
-/// Thread-local storage accessor that implements `PrecompileStorageProvider` without the trait bound.
+/// Read-only access to the active storage frame.
+#[derive(Debug, Clone, Copy)]
+pub struct ReadOnly;
+
+/// Permission to mutate state, issued only at a checked execution boundary.
+#[derive(Debug)]
+pub struct Writable(PhantomData<std::rc::Rc<()>>);
+
+/// Access to the active thread-local storage frame, parameterized by permission.
 ///
-/// This is the only type that exposes access to the thread-local `STORAGE` static.
+/// The default context permits reads and gas metering. State mutation requires
+/// borrowing a `StorageCtx<Writable>` supplied by a mutation dispatch callback or
+/// a non-static system execution entry point. Slots and generated handlers pass
+/// this capability through every write; creating or cloning a handler grants no
+/// permission. Backend checks still enforce the current frame's static flag.
+/// All operations must run inside [`StorageCtx::enter`].
 ///
-/// # Important
-///
-/// Since it provides access to the current thread-local storage context, it MUST be used within
-/// a `StorageCtx::enter` closure.
-///
-/// # Sync with `PrecompileStorageProvider`
-///
-/// This type mirrors `PrecompileStorageProvider` methods but with split mutability:
-/// - Read operations (staticcall) take `&self`
-/// - Write operations take `&mut self`
-#[derive(Debug, Default, Clone, Copy)]
-pub struct StorageCtx;
+/// Read-only contexts have no mutation methods:
+/// ```compile_fail,E0599
+/// use tempo_precompiles::storage::StorageCtx;
+/// use alloy::primitives::{Address, U256};
+/// StorageCtx.sstore(Address::ZERO, U256::ZERO, U256::ONE);
+/// ```
+/// They cannot authorize a handler write:
+/// ```compile_fail,E0308
+/// use tempo_precompiles::storage::{Handler, Slot, StorageCtx};
+/// use alloy::primitives::{Address, U256};
+/// Slot::<U256>::new(U256::ZERO, Address::ZERO).write(&mut StorageCtx, U256::ONE);
+/// ```
+/// Mutating contracts also require the capability:
+/// ```compile_fail,E0061
+/// use tempo_precompiles::tip20::TIP20Token;
+/// fn pause(token: &mut TIP20Token) {
+///     let _ = token.pause(Default::default(), Default::default());
+/// }
+/// ```
+/// Writable contexts cannot be freely constructed:
+/// ```compile_fail,E0599
+/// use tempo_precompiles::storage::{StorageCtx, Writable};
+/// let write = StorageCtx::<Writable>::default();
+/// ```
+/// The permission belongs to its thread:
+/// ```compile_fail,E0277
+/// use tempo_precompiles::storage::{StorageCtx, Writable};
+/// fn require_send<T: Send>() {}
+/// require_send::<StorageCtx<Writable>>();
+/// ```
+#[derive(Debug)]
+pub struct StorageCtx<Access = ReadOnly> {
+    access: PhantomData<Access>,
+}
+
+/// Read access never grants permission to mutate the current frame.
+#[allow(non_upper_case_globals)]
+pub const StorageCtx: StorageCtx<ReadOnly> = StorageCtx {
+    access: PhantomData,
+};
+
+impl Default for StorageCtx<ReadOnly> {
+    fn default() -> Self {
+        StorageCtx
+    }
+}
+
+impl Clone for StorageCtx<ReadOnly> {
+    fn clone(&self) -> Self {
+        *self
+    }
+}
+
+impl Copy for StorageCtx<ReadOnly> {}
+
+impl std::ops::Deref for StorageCtx<Writable> {
+    type Target = StorageCtx<ReadOnly>;
+
+    fn deref(&self) -> &Self::Target {
+        &StorageCtx
+    }
+}
+
+impl StorageCtx<ReadOnly> {
+    /// The caller must preserve the fork-specific ABI rejection at dispatch.
+    pub(crate) fn writable() -> Result<StorageCtx<Writable>> {
+        if StorageCtx.is_static() {
+            return Err(TempoPrecompileError::StaticCallNotAllowed);
+        }
+        Ok(StorageCtx {
+            access: PhantomData,
+        })
+    }
+
+    /// Obtain a write capability for test fixtures in a non-static frame.
+    #[cfg(any(test, feature = "test-utils"))]
+    pub fn test_writable() -> StorageCtx<Writable> {
+        Self::writable().expect("test fixture requires a non-static storage context")
+    }
+}
 
 impl StorageCtx {
+    /// Enter an owned provider with a borrowed write capability.
+    /// Static providers are rejected before invoking the callback.
+    pub fn enter_writable<S: PrecompileStorageProvider, R>(
+        storage: &mut S,
+        f: impl FnOnce(&mut StorageCtx<Writable>) -> R,
+    ) -> Result<R> {
+        if storage.is_static() {
+            return Err(TempoPrecompileError::StaticCallNotAllowed);
+        }
+        Ok(Self::enter(storage, || {
+            f(&mut StorageCtx {
+                access: PhantomData,
+            })
+        }))
+    }
+
     /// Enter storage context. All storage operations must happen within the closure.
     ///
     /// # IMPORTANT
@@ -121,13 +218,6 @@ impl StorageCtx {
         Self::try_with_storage(|s| s.account_code(address))
     }
 
-    /// Copies deployed runtime bytecode between accounts.
-    ///
-    /// Returns `None` when the source account's runtime bytecode is empty.
-    pub fn copy_runtime(&mut self, source: Address, destination: Address) -> Result<Option<B256>> {
-        Self::try_with_storage(|s| s.copy_runtime(source, destination))
-    }
-
     /// Returns the chain ID.
     pub fn chain_id(&self) -> u64 {
         Self::with_storage(|s| s.chain_id())
@@ -158,11 +248,6 @@ impl StorageCtx {
         self.with_block_env(|block_env| block_env.epoch(height))
     }
 
-    /// Sets the bytecode at the given address.
-    pub fn set_code(&mut self, address: Address, code: Bytecode) -> Result<()> {
-        Self::try_with_storage(|s| s.set_code(address, code))
-    }
-
     /// Performs an SLOAD operation (persistent storage read).
     pub fn sload(&self, address: Address, key: U256) -> Result<U256> {
         Self::try_with_storage(|s| s.sload(address, key))
@@ -173,33 +258,8 @@ impl StorageCtx {
         Self::try_with_storage(|s| s.tload(address, key))
     }
 
-    /// Performs an SSTORE operation (persistent storage write).
-    pub fn sstore(&mut self, address: Address, key: U256, value: U256) -> Result<()> {
-        Self::try_with_storage(|s| s.sstore(address, key, value))
-    }
-
-    /// Increments a persistent storage slot by `delta`.
-    pub fn sinc(&mut self, address: Address, key: U256, delta: U256) -> Result<()> {
-        Self::try_with_storage(|s| s.sinc(address, key, delta))
-    }
-
-    /// Decrements a persistent storage slot by `delta`.
-    pub fn sdec(&mut self, address: Address, key: U256, delta: U256) -> Result<()> {
-        Self::try_with_storage(|s| s.sdec(address, key, delta))
-    }
-
-    /// Performs a TSTORE operation (transient storage write).
-    pub fn tstore(&mut self, address: Address, key: U256, value: U256) -> Result<()> {
-        Self::try_with_storage(|s| s.tstore(address, key, value))
-    }
-
-    /// Emits an event from the given contract address.
-    pub fn emit_event(&mut self, address: Address, event: LogData) -> Result<()> {
-        Self::try_with_storage(|s| s.emit_event(address, event))
-    }
-
     /// Adds refund to the gas refund counter.
-    pub fn refund_gas(&mut self, gas: i64) {
+    pub fn refund_gas(&self, gas: i64) {
         Self::with_storage(|s| s.refund_gas(gas))
     }
 
@@ -256,12 +316,12 @@ impl StorageCtx {
     }
 
     /// Enables or disables TIP-1060 storage-credit accounting for subsequent storage writes.
-    pub fn set_tip1060_storage_credits(&mut self, enabled: bool) {
+    pub fn set_tip1060_storage_credits(&self, enabled: bool) {
         Self::with_storage(|s| s.set_tip1060_storage_credits(enabled))
     }
 
     /// Enables or disables minting new TIP-1060 storage credits for subsequent storage clears.
-    pub fn set_tip1060_storage_credit_minting(&mut self, enabled: bool) {
+    pub fn set_tip1060_storage_credit_minting(&self, enabled: bool) {
         Self::with_storage(|s| s.set_tip1060_storage_credit_minting(enabled))
     }
 
@@ -274,7 +334,7 @@ impl StorageCtx {
     /// # Panics
     ///
     /// Panics if no storage context is set.
-    pub fn checkpoint(&mut self) -> CheckpointGuard {
+    pub fn checkpoint(&self) -> CheckpointGuard {
         // spec: only available +T1C. Prior to that checkpoints are a no-op.
         let checkpoint = Self::with_storage(|s| {
             if s.spec().is_t1c() {
@@ -288,7 +348,7 @@ impl StorageCtx {
     }
 
     /// Deducts gas from the remaining gas and returns an error if insufficient.
-    pub fn deduct_gas(&mut self, gas: u64) -> Result<()> {
+    pub fn deduct_gas(&self, gas: u64) -> Result<()> {
         Self::try_with_storage(|s| s.deduct_gas(gas))
     }
 
@@ -340,6 +400,37 @@ impl StorageCtx {
     }
 }
 
+impl StorageCtx<Writable> {
+    /// Copy deployed runtime bytecode to another account.
+    pub fn copy_runtime(&mut self, source: Address, destination: Address) -> Result<Option<B256>> {
+        StorageCtx::try_with_storage(|s| s.copy_runtime(source, destination))
+    }
+    /// Set bytecode at an account.
+    pub fn set_code(&mut self, address: Address, code: Bytecode) -> Result<()> {
+        StorageCtx::try_with_storage(|s| s.set_code(address, code))
+    }
+    /// Write a persistent storage slot.
+    pub fn sstore(&mut self, address: Address, key: U256, value: U256) -> Result<()> {
+        StorageCtx::try_with_storage(|s| s.sstore(address, key, value))
+    }
+    /// Increment a persistent storage slot without observing the new value.
+    pub fn sinc(&mut self, address: Address, key: U256, delta: U256) -> Result<()> {
+        StorageCtx::try_with_storage(|s| s.sinc(address, key, delta))
+    }
+    /// Decrement a persistent storage slot without observing the new value.
+    pub fn sdec(&mut self, address: Address, key: U256, delta: U256) -> Result<()> {
+        StorageCtx::try_with_storage(|s| s.sdec(address, key, delta))
+    }
+    /// Write a transient storage slot.
+    pub fn tstore(&mut self, address: Address, key: U256, value: U256) -> Result<()> {
+        StorageCtx::try_with_storage(|s| s.tstore(address, key, value))
+    }
+    /// Emit an event from the given contract address.
+    pub fn emit_event(&mut self, address: Address, event: LogData) -> Result<()> {
+        StorageCtx::try_with_storage(|s| s.emit_event(address, event))
+    }
+}
+
 /// RAII guard for atomic state mutation batching.
 ///
 /// On drop, automatically reverts all state changes made since the checkpoint
@@ -386,7 +477,7 @@ impl<'evm> StorageCtx {
         cfg: &CfgEnv<TempoHardfork>,
         tx_env: &'evm (impl Transaction + 'static),
         actions: StorageActions,
-        f: impl FnOnce() -> R,
+        f: impl FnOnce(&mut StorageCtx<Writable>) -> R,
     ) -> R
     where
         J: JournalTr<Database: Database> + Debug,
@@ -396,7 +487,7 @@ impl<'evm> StorageCtx {
             EvmPrecompileStorageProvider::new_max_gas(internals, cfg).with_actions(actions);
 
         // The core logic of setting up thread-local storage is here.
-        Self::enter(&mut provider, f)
+        Self::enter_writable(&mut provider, f).expect("system storage provider is non-static")
     }
 
     /// Enters storage with TIP-1060 storage-credit accounting disabled.
@@ -410,7 +501,7 @@ impl<'evm> StorageCtx {
         cfg: &CfgEnv<TempoHardfork>,
         tx_env: &'evm (impl Transaction + 'static),
         actions: StorageActions,
-        f: impl FnOnce() -> R,
+        f: impl FnOnce(&mut StorageCtx<Writable>) -> R,
     ) -> R
     where
         J: JournalTr<Database: Database> + Debug,
@@ -420,12 +511,16 @@ impl<'evm> StorageCtx {
             EvmPrecompileStorageProvider::new_max_gas(internals, cfg).with_actions(actions);
         provider.set_tip1060_storage_credits(false);
 
-        Self::enter(&mut provider, f)
+        Self::enter_writable(&mut provider, f).expect("system storage provider is non-static")
     }
 
     /// Like [`enter_evm`](Self::enter_evm), but takes a `&mut impl ContextTr`
     /// directly instead of requiring the caller to destructure the context.
-    pub fn enter_ctx<C, R>(ctx: &mut C, actions: StorageActions, f: impl FnOnce() -> R) -> R
+    pub fn enter_ctx<C, R>(
+        ctx: &mut C,
+        actions: StorageActions,
+        f: impl FnOnce(&mut StorageCtx<Writable>) -> R,
+    ) -> R
     where
         C: ContextTr<
                 Block = TempoBlockEnv,
@@ -446,7 +541,7 @@ impl<'evm> StorageCtx {
         gas_limit: u64,
         reservoir: u64,
         actions: StorageActions,
-        f: impl FnOnce() -> R,
+        f: impl FnOnce(&mut StorageCtx<Writable>) -> R,
     ) -> (R, u64)
     where
         C: ContextTr<
@@ -462,7 +557,8 @@ impl<'evm> StorageCtx {
         let mut provider =
             EvmPrecompileStorageProvider::new_with_gas_limit(internals, cfg, gas_limit, reservoir)
                 .with_actions(actions);
-        let result = Self::enter(&mut provider, f);
+        let result =
+            Self::enter_writable(&mut provider, f).expect("system storage provider is non-static");
         let gas_used = provider.gas_used();
         (result, gas_used)
     }
@@ -474,7 +570,7 @@ impl<'evm> StorageCtx {
         cfg: &CfgEnv<TempoHardfork>,
         tx_env: &'evm (impl Transaction + 'static),
         actions: StorageActions,
-        f: impl FnOnce(P) -> R,
+        f: impl FnOnce(&mut StorageCtx<Writable>, P) -> R,
     ) -> R
     where
         J: JournalTr<Database: Database> + Debug,
@@ -482,7 +578,9 @@ impl<'evm> StorageCtx {
     {
         // Delegate all the setup logic to `enter_evm`.
         // We just need to provide a closure that `enter_evm` expects.
-        Self::enter_evm(journal, block_env, cfg, tx_env, actions, || f(P::default()))
+        Self::enter_evm(journal, block_env, cfg, tx_env, actions, |write| {
+            f(write, P::default())
+        })
     }
 }
 
@@ -618,16 +716,22 @@ mod tests {
             let mut ctx = StorageCtx;
 
             // commit persists state
-            ctx.sstore(addr, key, U256::from(42)).unwrap();
+            StorageCtx::test_writable()
+                .sstore(addr, key, U256::from(42))
+                .unwrap();
             let guard = ctx.checkpoint();
-            ctx.sstore(addr, key, U256::from(99)).unwrap();
+            StorageCtx::test_writable()
+                .sstore(addr, key, U256::from(99))
+                .unwrap();
             guard.commit();
             assert_eq!(ctx.sload(addr, key).unwrap(), U256::from(99));
 
             // drop reverts state
             {
                 let _guard = ctx.checkpoint();
-                ctx.sstore(addr, key, U256::from(1)).unwrap();
+                StorageCtx::test_writable()
+                    .sstore(addr, key, U256::from(1))
+                    .unwrap();
             }
             assert_eq!(ctx.sload(addr, key).unwrap(), U256::from(99));
         });
@@ -641,23 +745,33 @@ mod tests {
 
         StorageCtx::enter(&mut storage, || {
             let mut ctx = StorageCtx;
-            ctx.sstore(addr, key, U256::from(10)).unwrap();
+            StorageCtx::test_writable()
+                .sstore(addr, key, U256::from(10))
+                .unwrap();
 
             // both committed in LIFO order
             let outer = ctx.checkpoint();
-            ctx.sstore(addr, key, U256::from(20)).unwrap();
+            StorageCtx::test_writable()
+                .sstore(addr, key, U256::from(20))
+                .unwrap();
             let inner = ctx.checkpoint();
-            ctx.sstore(addr, key, U256::from(30)).unwrap();
+            StorageCtx::test_writable()
+                .sstore(addr, key, U256::from(30))
+                .unwrap();
             inner.commit();
             outer.commit();
             assert_eq!(ctx.sload(addr, key).unwrap(), U256::from(30));
 
             // inner reverts, outer commits
             let outer = ctx.checkpoint();
-            ctx.sstore(addr, key, U256::from(40)).unwrap();
+            StorageCtx::test_writable()
+                .sstore(addr, key, U256::from(40))
+                .unwrap();
             {
                 let _inner = ctx.checkpoint();
-                ctx.sstore(addr, key, U256::from(50)).unwrap();
+                StorageCtx::test_writable()
+                    .sstore(addr, key, U256::from(50))
+                    .unwrap();
             }
             outer.commit();
             assert_eq!(ctx.sload(addr, key).unwrap(), U256::from(40));
@@ -689,10 +803,14 @@ mod tests {
         StorageCtx::enter(&mut storage, || {
             let mut ctx = StorageCtx;
 
-            ctx.sstore(addr, key, U256::from(42)).unwrap();
+            StorageCtx::test_writable()
+                .sstore(addr, key, U256::from(42))
+                .unwrap();
             {
                 let _guard = ctx.checkpoint(); // no-op pre-T1C
-                ctx.sstore(addr, key, U256::from(99)).unwrap();
+                StorageCtx::test_writable()
+                    .sstore(addr, key, U256::from(99))
+                    .unwrap();
                 // drop does nothing — no checkpoint was created
             }
             // state is NOT reverted because checkpoints are disabled pre-T1C

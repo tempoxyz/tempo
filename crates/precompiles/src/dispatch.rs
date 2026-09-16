@@ -68,12 +68,17 @@ pub mod typed {
     pub fn mutate<T: SolCall, E: IntoPrecompileResult>(
         call: T,
         sender: Address,
-        f: impl FnOnce(Address, T) -> core::result::Result<T::Return, E>,
+        f: impl FnOnce(
+            &mut StorageCtx<crate::storage::Writable>,
+            Address,
+            T,
+        ) -> core::result::Result<T::Return, E>,
     ) -> PrecompileResult {
-        if StorageCtx.is_static() {
+        let Ok(mut write) = StorageCtx::writable() else {
             return reject_static_call();
-        }
-        f(sender, call).encode_precompile_result(0, 0, |ret| T::abi_encode_returns(&ret).into())
+        };
+        f(&mut write, sender, call)
+            .encode_precompile_result(0, 0, |ret| T::abi_encode_returns(&ret).into())
     }
 
     /// Dispatches a state-mutating call that returns no data (e.g. `approve`, `transfer`).
@@ -83,12 +88,16 @@ pub mod typed {
     pub fn mutate_void<T: SolCall, E: IntoPrecompileResult>(
         call: T,
         sender: Address,
-        f: impl FnOnce(Address, T) -> core::result::Result<(), E>,
+        f: impl FnOnce(
+            &mut StorageCtx<crate::storage::Writable>,
+            Address,
+            T,
+        ) -> core::result::Result<(), E>,
     ) -> PrecompileResult {
-        if StorageCtx.is_static() {
+        let Ok(mut write) = StorageCtx::writable() else {
             return reject_static_call();
-        }
-        f(sender, call).encode_precompile_result(0, 0, |()| Bytes::new())
+        };
+        f(&mut write, sender, call).encode_precompile_result(0, 0, |()| Bytes::new())
     }
 }
 
@@ -111,7 +120,7 @@ pub fn view<T: SolCall>(call: T, f: impl FnOnce(T) -> Result<T::Return>) -> Prec
 pub fn mutate<T: SolCall>(
     call: T,
     sender: Address,
-    f: impl FnOnce(Address, T) -> Result<T::Return>,
+    f: impl FnOnce(&mut StorageCtx<crate::storage::Writable>, Address, T) -> Result<T::Return>,
 ) -> PrecompileResult {
     typed::mutate::<T, crate::error::TempoPrecompileError>(call, sender, f)
 }
@@ -123,16 +132,20 @@ pub fn mutate<T: SolCall>(
 pub fn mutate_void<T: SolCall>(
     call: T,
     sender: Address,
-    f: impl FnOnce(Address, T) -> Result<()>,
+    f: impl FnOnce(&mut StorageCtx<crate::storage::Writable>, Address, T) -> Result<()>,
 ) -> PrecompileResult {
     typed::mutate_void::<T, crate::error::TempoPrecompileError>(call, sender, f)
 }
 
 /// Sets TIP-1060 storage creation mode to Preserve for the given storage-credit owner.
 #[inline]
-pub fn preserve_storage_credits(credit_owner: Address) -> Result<()> {
+pub fn preserve_storage_credits(
+    write: &mut crate::storage::WriteCtx,
+    credit_owner: Address,
+) -> Result<()> {
     if StorageCtx.spec().is_t7() {
         StorageCredits::new().set_mode(
+            write,
             credit_owner,
             tempo_contracts::precompiles::IStorageCredits::Mode::Preserve,
         )?;
@@ -456,7 +469,7 @@ mod tests {
                     value: U256::from(7),
                 },
                 sender,
-                |_, c| core::result::Result::<_, CustomError>::Ok(c.value),
+                |write, _, c| core::result::Result::<_, CustomError>::Ok(c.value),
             )?;
             assert!(output.is_success());
             assert_eq!(
@@ -469,7 +482,7 @@ mod tests {
                     value: U256::from(7),
                 },
                 sender,
-                |_, _| core::result::Result::<_, CustomError>::Ok(()),
+                |write, _, _| core::result::Result::<_, CustomError>::Ok(()),
             )?;
             assert!(output.is_success());
             assert!(output.bytes.is_empty());

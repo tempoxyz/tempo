@@ -124,8 +124,8 @@ impl From<TransientState> for U256 {
 pub struct StorageCredits {}
 
 impl StorageCredits {
-    pub fn initialize(&mut self) -> Result<()> {
-        self.__initialize()
+    pub fn initialize(&mut self, write: &mut crate::storage::WriteCtx) -> Result<()> {
+        self.__initialize(write)
     }
 
     pub fn balance_of(&self, account: Address) -> Result<u64> {
@@ -166,7 +166,12 @@ impl StorageCredits {
     }
 
     /// Sets the transaction-local storage-creation mode for the caller.
-    pub fn set_mode(&mut self, msg_sender: Address, mode: Mode) -> Result<()> {
+    pub fn set_mode(
+        &mut self,
+        write: &mut crate::storage::WriteCtx,
+        msg_sender: Address,
+        mode: Mode,
+    ) -> Result<()> {
         let mode = CreditMode::try_from(mode)?;
         let budget = if matches!(mode, CreditMode::Direct) {
             u64::MAX
@@ -174,15 +179,21 @@ impl StorageCredits {
             0
         };
 
-        self.write_mode_with_budget(msg_sender, mode, budget)
+        self.write_mode_with_budget(write, msg_sender, mode, budget)
     }
 
-    pub fn set_budget(&mut self, msg_sender: Address, credit_budget: u64) -> Result<()> {
-        self.write_mode_with_budget(msg_sender, CreditMode::Direct, credit_budget)
+    pub fn set_budget(
+        &mut self,
+        write: &mut crate::storage::WriteCtx,
+        msg_sender: Address,
+        credit_budget: u64,
+    ) -> Result<()> {
+        self.write_mode_with_budget(write, msg_sender, CreditMode::Direct, credit_budget)
     }
 
     fn write_mode_with_budget(
         &mut self,
+        write: &mut crate::storage::WriteCtx,
         msg_sender: Address,
         mode: CreditMode,
         budget: u64,
@@ -190,7 +201,7 @@ impl StorageCredits {
         let mut state = self.credit_state_of(msg_sender)?;
         state.mode = mode;
         state.budget = budget;
-        self.write_credit_state_of(msg_sender, state)
+        self.write_credit_state_of(write, msg_sender, state)
     }
 
     /// Returns the storage credit balance/state key for `account`.
@@ -211,8 +222,13 @@ impl StorageCredits {
     }
 
     #[inline]
-    fn write_credit_state_of(&mut self, account: Address, state: TransientState) -> Result<()> {
-        self.handler::<U256>(account).t_write(state.into())
+    fn write_credit_state_of(
+        &mut self,
+        write: &mut crate::storage::WriteCtx,
+        account: Address,
+        state: TransientState,
+    ) -> Result<()> {
+        self.handler::<U256>(account).t_write(write, state.into())
     }
 
     /// Runs `f` while allowing at most `limit` synchronous TIP-1060 storage-credit consumptions
@@ -222,25 +238,26 @@ impl StorageCredits {
     /// before this returns so later storage writes cannot consume the remaining allowance.
     pub fn with_budget<T>(
         &mut self,
+        write: &mut crate::storage::WriteCtx,
         credit_owner: Address,
         limit: u64,
-        f: impl FnOnce() -> Result<T>,
+        f: impl FnOnce(&mut crate::storage::WriteCtx) -> Result<T>,
     ) -> Result<(T, i128)> {
         if !StorageCtx.spec().is_t7() {
-            return f().map(|value| (value, 0));
+            return f(write).map(|value| (value, 0));
         }
 
         if limit == 0 {
             let before = self.balance_of(credit_owner)?;
-            let value = f()?;
+            let value = f(write)?;
             let after = self.balance_of(credit_owner)?;
             return Ok((value, i128::from(after) - i128::from(before)));
         }
 
-        self.set_budget(credit_owner, limit)?;
+        self.set_budget(write, credit_owner, limit)?;
 
         let before = self.balance_of(credit_owner)?;
-        let result = f();
+        let result = f(write);
         let after = self.balance_of(credit_owner)?;
         let delta = i128::from(after) - i128::from(before);
 
@@ -251,7 +268,7 @@ impl StorageCredits {
             mode: CreditMode::Preserve,
             pending_refunds: current_state.pending_refunds,
         };
-        self.write_credit_state_of(credit_owner, state)?;
+        self.write_credit_state_of(write, credit_owner, state)?;
 
         result.map(|value| (value, delta))
     }
@@ -387,15 +404,27 @@ mod tests {
             assert_eq!(credits.mode_of(account)?, CreditMode::Refund);
             assert_eq!(credits.budget_of(account)?, 0);
 
-            credits.set_mode(account, Mode::Direct)?;
+            credits.set_mode(
+                &mut crate::storage::StorageCtx::test_writable(),
+                account,
+                Mode::Direct,
+            )?;
             assert_eq!(credits.mode_of(account)?, CreditMode::Direct);
             assert_eq!(credits.budget_of(account)?, u64::MAX);
 
-            credits.set_mode(account, Mode::Preserve)?;
+            credits.set_mode(
+                &mut crate::storage::StorageCtx::test_writable(),
+                account,
+                Mode::Preserve,
+            )?;
             assert_eq!(credits.mode_of(account)?, CreditMode::Preserve);
             assert_eq!(credits.budget_of(account)?, 0);
 
-            credits.set_mode(account, Mode::Refund)?;
+            credits.set_mode(
+                &mut crate::storage::StorageCtx::test_writable(),
+                account,
+                Mode::Refund,
+            )?;
             assert_eq!(credits.mode_of(account)?, CreditMode::Refund);
             assert_eq!(credits.budget_of(account)?, 0);
 
@@ -411,11 +440,11 @@ mod tests {
         StorageCtx::enter(&mut storage, || {
             let mut credits = StorageCredits::new();
 
-            credits.set_budget(account, 2)?;
+            credits.set_budget(&mut crate::storage::StorageCtx::test_writable(), account, 2)?;
             assert_eq!(credits.mode_of(account)?, CreditMode::Direct);
             assert_eq!(credits.budget_of(account)?, 2);
 
-            credits.set_budget(account, 0)?;
+            credits.set_budget(&mut crate::storage::StorageCtx::test_writable(), account, 0)?;
             assert_eq!(credits.mode_of(account)?, CreditMode::Direct);
             assert_eq!(credits.budget_of(account)?, 0);
 

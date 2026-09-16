@@ -164,16 +164,16 @@ pub(crate) fn gen_constructor(
             }
 
             #[inline(always)]
-            fn __initialize(&mut self) -> crate::error::Result<()> {
+            fn __initialize(&mut self, write: &mut crate::storage::WriteCtx) -> crate::error::Result<()> {
                 let bytecode = ::revm::state::Bytecode::new_legacy(::alloy::primitives::Bytes::from_static(&[0xef]));
-                self.storage.set_code(self.address, bytecode)?;
+                write.set_code(self.address, bytecode)?;
 
                 Ok(())
             }
 
             #[inline(always)]
-            fn emit_event(&mut self, event: impl ::alloy::primitives::IntoLogData) -> crate::error::Result<()> {
-                self.storage.emit_event(self.address, event.into_log_data())
+            fn emit_event(&mut self, write: &mut crate::storage::WriteCtx, event: impl ::alloy::primitives::IntoLogData) -> crate::error::Result<()> {
+                write.emit_event(self.address, event.into_log_data())
             }
 
             #[cfg(any(test, feature = "test-utils"))]

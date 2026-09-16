@@ -239,7 +239,11 @@ mod tests {
             let mut state = credits.credit_state_of(owner)?;
             state.mode = CreditMode::Direct;
             state.budget = u64::MAX;
-            credits.write_credit_state_of(owner, state)
+            credits.write_credit_state_of(
+                &mut crate::storage::StorageCtx::test_writable(),
+                owner,
+                state,
+            )
         })?;
 
         storage.sstore(owner, fresh_slot, U256::ONE)?;

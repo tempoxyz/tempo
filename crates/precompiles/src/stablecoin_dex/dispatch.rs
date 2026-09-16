@@ -22,13 +22,13 @@ impl Precompile for StablecoinDEX {
             calldata,
             |call| match call {
                 IStablecoinDEX::IStablecoinDEXCalls {
-                    place(call) => mutate(call, msg_sender, |s, c| {
-                        preserve_storage_credits(self.address)?;
-                        self.place(s, c.token, c.amount, c.isBid, c.tick)
+                    place(call) => mutate(call, msg_sender, |write, s, c| {
+                        preserve_storage_credits(write, self.address)?;
+                        self.place(write, s, c.token, c.amount, c.isBid, c.tick)
                     }),
-                    placeFlip(call) => mutate(call, msg_sender, |s, c| {
-                        preserve_storage_credits(self.address)?;
-                        self.place_flip(s, c.token, c.amount, c.isBid, c.tick, c.flipTick, false)
+                    placeFlip(call) => mutate(call, msg_sender, |write, s, c| {
+                        preserve_storage_credits(write, self.address)?;
+                        self.place_flip(write, s, c.token, c.amount, c.isBid, c.tick, c.flipTick, false)
                     }),
                     balanceOf(call) => view(call, |c| self.balance_of(c.user, c.token)),
                     getOrder(call) => view(call, |c| {
@@ -41,29 +41,29 @@ impl Precompile for StablecoinDEX {
                     pairKey(call) => view(call, |c| Ok(compute_book_key(c.tokenA, c.tokenB))),
                     books(call) => view(call, |c| self.books(c.pairKey).map(Into::into)),
                     nextOrderId(call) => view(call, |_| self.next_order_id()),
-                    createPair(call) => mutate(call, msg_sender, |_, c| {
-                        preserve_storage_credits(self.address)?;
-                        self.create_pair(c.base)
+                    createPair(call) => mutate(call, msg_sender, |write, _, c| {
+                        preserve_storage_credits(write, self.address)?;
+                        self.create_pair(write, c.base)
                     }),
-                    withdraw(call) => mutate_void(call, msg_sender, |s, c| {
-                        preserve_storage_credits(self.address)?;
-                        self.withdraw(s, c.token, c.amount)
+                    withdraw(call) => mutate_void(call, msg_sender, |write, s, c| {
+                        preserve_storage_credits(write, self.address)?;
+                        self.withdraw(write, s, c.token, c.amount)
                     }),
-                    cancel(call) => mutate_void(call, msg_sender, |s, c| {
-                        preserve_storage_credits(self.address)?;
-                        self.cancel(s, c.orderId)
+                    cancel(call) => mutate_void(call, msg_sender, |write, s, c| {
+                        preserve_storage_credits(write, self.address)?;
+                        self.cancel(write, s, c.orderId)
                     }),
-                    cancelStaleOrder(call) => mutate_void(call, msg_sender, |_, c| {
-                        preserve_storage_credits(self.address)?;
-                        self.cancel_stale_order(c.orderId)
+                    cancelStaleOrder(call) => mutate_void(call, msg_sender, |write, _, c| {
+                        preserve_storage_credits(write, self.address)?;
+                        self.cancel_stale_order(write, c.orderId)
                     }),
-                    swapExactAmountIn(call) => mutate(call, msg_sender, |s, c| {
-                        preserve_storage_credits(self.address)?;
-                        self.swap_exact_amount_in(s, c.tokenIn, c.tokenOut, c.amountIn, c.minAmountOut)
+                    swapExactAmountIn(call) => mutate(call, msg_sender, |write, s, c| {
+                        preserve_storage_credits(write, self.address)?;
+                        self.swap_exact_amount_in(write, s, c.tokenIn, c.tokenOut, c.amountIn, c.minAmountOut)
                     }),
-                    swapExactAmountOut(call) => mutate(call, msg_sender, |s, c| {
-                        preserve_storage_credits(self.address)?;
-                        self.swap_exact_amount_out(s, c.tokenIn, c.tokenOut, c.amountOut, c.maxAmountIn)
+                    swapExactAmountOut(call) => mutate(call, msg_sender, |write, s, c| {
+                        preserve_storage_credits(write, self.address)?;
+                        self.swap_exact_amount_out(write, s, c.tokenIn, c.tokenOut, c.amountOut, c.maxAmountIn)
                     }),
                     quoteSwapExactAmountIn(call) => view(call, |c| {
                         self.quote_swap_exact_amount_in(c.tokenIn, c.tokenOut, c.amountIn)
@@ -92,9 +92,9 @@ impl Precompile for StablecoinDEX {
                     #[schedule(since = T8)]
                     bookKeyForIndex(call) => view(call, |c| self.book_key_for_index(c.index)),
                     #[schedule(since = T8)]
-                    setBookIndex(call) => mutate_void(call, msg_sender, |_, c| {
-                        preserve_storage_credits(self.address)?;
-                        self.set_book_index(c.index)
+                    setBookIndex(call) => mutate_void(call, msg_sender, |write, _, c| {
+                        preserve_storage_credits(write, self.address)?;
+                        self.set_book_index(write, c.index)
                     }),
                 }
             }
@@ -121,7 +121,7 @@ mod tests {
     /// Setup a basic exchange with tokens and liquidity for swap tests
     fn setup_exchange_with_liquidity() -> eyre::Result<(StablecoinDEX, Address, Address, Address)> {
         let mut exchange = StablecoinDEX::new();
-        exchange.initialize()?;
+        exchange.initialize(&mut crate::storage::StorageCtx::test_writable())?;
 
         let admin = Address::random();
         let user = Address::random();
@@ -141,10 +141,20 @@ mod tests {
             .apply()?;
 
         // Create pair and add liquidity
-        exchange.create_pair(base.address())?;
+        exchange.create_pair(
+            &mut crate::storage::StorageCtx::test_writable(),
+            base.address(),
+        )?;
 
         // Place an order to provide liquidity
-        exchange.place(user, base.address(), MIN_ORDER_AMOUNT, true, 0)?;
+        exchange.place(
+            &mut crate::storage::StorageCtx::test_writable(),
+            user,
+            base.address(),
+            MIN_ORDER_AMOUNT,
+            true,
+            0,
+        )?;
 
         Ok((exchange, base.address(), quote.address(), user))
     }
@@ -154,7 +164,7 @@ mod tests {
         let mut storage = HashMapStorageProvider::new(1);
         StorageCtx::enter(&mut storage, || {
             let mut exchange = StablecoinDEX::new();
-            exchange.initialize()?;
+            exchange.initialize(&mut crate::storage::StorageCtx::test_writable())?;
 
             let sender = Address::random();
             let token = Address::random();
@@ -181,7 +191,7 @@ mod tests {
         let mut storage = HashMapStorageProvider::new(1);
         StorageCtx::enter(&mut storage, || {
             let mut exchange = StablecoinDEX::new();
-            exchange.initialize()?;
+            exchange.initialize(&mut crate::storage::StorageCtx::test_writable())?;
 
             let sender = Address::random();
             let token = Address::random();
@@ -209,7 +219,7 @@ mod tests {
         let mut storage = HashMapStorageProvider::new(1);
         StorageCtx::enter(&mut storage, || {
             let mut exchange = StablecoinDEX::new();
-            exchange.initialize()?;
+            exchange.initialize(&mut crate::storage::StorageCtx::test_writable())?;
 
             let sender = Address::random();
             let token = Address::random();
@@ -231,7 +241,7 @@ mod tests {
         let mut storage = HashMapStorageProvider::new(1);
         StorageCtx::enter(&mut storage, || {
             let mut exchange = StablecoinDEX::new();
-            exchange.initialize()?;
+            exchange.initialize(&mut crate::storage::StorageCtx::test_writable())?;
 
             let sender = Address::ZERO;
             let call = IStablecoinDEX::MIN_PRICECall {};
@@ -253,7 +263,7 @@ mod tests {
         let mut storage = HashMapStorageProvider::new(1);
         StorageCtx::enter(&mut storage, || {
             let mut exchange = StablecoinDEX::new();
-            exchange.initialize()?;
+            exchange.initialize(&mut crate::storage::StorageCtx::test_writable())?;
 
             let sender = Address::ZERO;
             let call = IStablecoinDEX::TICK_SPACINGCall {};
@@ -279,7 +289,7 @@ mod tests {
         let mut storage = HashMapStorageProvider::new(1);
         StorageCtx::enter(&mut storage, || {
             let mut exchange = StablecoinDEX::new();
-            exchange.initialize()?;
+            exchange.initialize(&mut crate::storage::StorageCtx::test_writable())?;
 
             let sender = Address::ZERO;
             let call = IStablecoinDEX::MAX_PRICECall {};
@@ -301,7 +311,7 @@ mod tests {
         let mut storage = HashMapStorageProvider::new(1);
         StorageCtx::enter(&mut storage, || {
             let mut exchange = StablecoinDEX::new();
-            exchange.initialize()?;
+            exchange.initialize(&mut crate::storage::StorageCtx::test_writable())?;
 
             let sender = Address::random();
             let base = Address::from([2u8; 20]);
@@ -322,7 +332,7 @@ mod tests {
         let mut storage = HashMapStorageProvider::new(1);
         StorageCtx::enter(&mut storage, || {
             let mut exchange = StablecoinDEX::new();
-            exchange.initialize()?;
+            exchange.initialize(&mut crate::storage::StorageCtx::test_writable())?;
 
             let sender = Address::random();
             let token = Address::random();
@@ -347,7 +357,7 @@ mod tests {
         let mut storage = HashMapStorageProvider::new(1);
         StorageCtx::enter(&mut storage, || {
             let mut exchange = StablecoinDEX::new();
-            exchange.initialize()?;
+            exchange.initialize(&mut crate::storage::StorageCtx::test_writable())?;
 
             let sender = Address::random();
 
@@ -369,7 +379,12 @@ mod tests {
             let (mut exchange, base_token, quote_token, user) = setup_exchange_with_liquidity()?;
 
             // Set balance for the swapper
-            exchange.set_balance(user, base_token, 1_000_000u128)?;
+            exchange.set_balance(
+                &mut crate::storage::StorageCtx::test_writable(),
+                user,
+                base_token,
+                1_000_000u128,
+            )?;
 
             let call = IStablecoinDEX::swapExactAmountInCall {
                 tokenIn: base_token,
@@ -394,10 +409,22 @@ mod tests {
             let (mut exchange, base_token, quote_token, user) = setup_exchange_with_liquidity()?;
 
             // Place an ask order to provide liquidity for selling base
-            exchange.place(user, base_token, MIN_ORDER_AMOUNT, false, 0)?;
+            exchange.place(
+                &mut crate::storage::StorageCtx::test_writable(),
+                user,
+                base_token,
+                MIN_ORDER_AMOUNT,
+                false,
+                0,
+            )?;
 
             // Set balance for the swapper
-            exchange.set_balance(user, quote_token, 1_000_000u128)?;
+            exchange.set_balance(
+                &mut crate::storage::StorageCtx::test_writable(),
+                user,
+                quote_token,
+                1_000_000u128,
+            )?;
 
             let call = IStablecoinDEX::swapExactAmountOutCall {
                 tokenIn: quote_token,
@@ -445,7 +472,14 @@ mod tests {
             let (mut exchange, base_token, quote_token, user) = setup_exchange_with_liquidity()?;
 
             // Place an ask order to provide liquidity for selling base
-            exchange.place(user, base_token, MIN_ORDER_AMOUNT, false, 0)?;
+            exchange.place(
+                &mut crate::storage::StorageCtx::test_writable(),
+                user,
+                base_token,
+                MIN_ORDER_AMOUNT,
+                false,
+                0,
+            )?;
 
             let sender = Address::random();
 

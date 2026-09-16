@@ -60,8 +60,8 @@ pub(crate) fn compute_tip20_address(sender: Address, salt: B256) -> (Address, u6
 // Precompile functions
 impl TIP20Factory {
     /// Initializes the TIP-20 factory precompile.
-    pub fn initialize(&mut self) -> Result<()> {
-        self.__initialize()
+    pub fn initialize(&mut self, write: &mut crate::storage::WriteCtx) -> Result<()> {
+        self.__initialize(write)
     }
 
     /// Computes the deterministic address for a token given `sender` and `salt`. Reverts if the
@@ -102,7 +102,12 @@ impl TIP20Factory {
     /// - `TokenAlreadyExists` — a TIP-20 is already deployed at the derived address
     /// - `InvalidQuoteToken` — quote token is not a deployed TIP-20 or has incompatible currency
     /// - `AddressReserved` — the derived address is in the reserved range
-    pub fn create_token(&mut self, sender: Address, call: createTokenCall) -> Result<Address> {
+    pub fn create_token(
+        &mut self,
+        write: &mut crate::storage::WriteCtx,
+        sender: Address,
+        call: createTokenCall,
+    ) -> Result<Address> {
         trace!(%sender, ?call, "Create token");
 
         // Compute the deterministic address from sender and salt
@@ -134,6 +139,7 @@ impl TIP20Factory {
         }
 
         TIP20Token::from_address(token_address)?.initialize(
+            write,
             sender,
             &call.name,
             &call.symbol,
@@ -142,15 +148,18 @@ impl TIP20Factory {
             call.admin,
         )?;
 
-        self.emit_event(TIP20FactoryEvent::token_created(
-            token_address,
-            call.name,
-            call.symbol,
-            call.currency,
-            call.quoteToken,
-            call.admin,
-            call.salt,
-        ))?;
+        self.emit_event(
+            write,
+            TIP20FactoryEvent::token_created(
+                token_address,
+                call.name,
+                call.symbol,
+                call.currency,
+                call.quoteToken,
+                call.admin,
+                call.salt,
+            ),
+        )?;
 
         Ok(token_address)
     }
@@ -167,6 +176,7 @@ impl TIP20Factory {
     /// - `InvalidLogoURI` — `logoURI` is non-empty and fails validation
     pub fn create_token_with_logo(
         &mut self,
+        write: &mut crate::storage::WriteCtx,
         sender: Address,
         call: createTokenWithLogoCall,
     ) -> Result<Address> {
@@ -176,6 +186,7 @@ impl TIP20Factory {
         }
 
         let token_address = self.create_token(
+            write,
             sender,
             createTokenCall {
                 name: call.name,
@@ -188,7 +199,7 @@ impl TIP20Factory {
         )?;
 
         if !call.logoURI.is_empty() {
-            TIP20Token::from_address(token_address)?.write_logo_uri(sender, call.logoURI)?;
+            TIP20Token::from_address(token_address)?.write_logo_uri(write, sender, call.logoURI)?;
         }
 
         Ok(token_address)
@@ -205,6 +216,7 @@ impl TIP20Factory {
     /// - `AddressNotReserved` — the address is outside the reserved range
     pub fn create_token_reserved_address(
         &mut self,
+        write: &mut crate::storage::WriteCtx,
         address: Address,
         name: &str,
         symbol: &str,
@@ -251,17 +263,20 @@ impl TIP20Factory {
         }
 
         let mut token = TIP20Token::from_address(address)?;
-        token.initialize(admin, name, symbol, currency, quote_token, admin)?;
+        token.initialize(write, admin, name, symbol, currency, quote_token, admin)?;
 
-        self.emit_event(TIP20FactoryEvent::token_created(
-            address,
-            name.into(),
-            symbol.into(),
-            currency.into(),
-            quote_token,
-            admin,
-            B256::ZERO,
-        ))?;
+        self.emit_event(
+            write,
+            TIP20FactoryEvent::token_created(
+                address,
+                name.into(),
+                symbol.into(),
+                currency.into(),
+                quote_token,
+                admin,
+                B256::ZERO,
+            ),
+        )?;
 
         Ok(address)
     }
@@ -289,7 +304,7 @@ mod tests {
             assert!(!factory.is_initialized()?);
 
             // After initialize(), factory should be initialized
-            factory.initialize()?;
+            factory.initialize(&mut crate::storage::StorageCtx::test_writable())?;
             assert!(factory.is_initialized()?);
 
             // Creating a new handle should still see initialized state
@@ -412,8 +427,16 @@ mod tests {
                 salt: salt2,
             };
 
-            let token_addr_1 = factory.create_token(sender, call1.clone())?;
-            let token_addr_2 = factory.create_token(sender, call2.clone())?;
+            let token_addr_1 = factory.create_token(
+                &mut crate::storage::StorageCtx::test_writable(),
+                sender,
+                call1.clone(),
+            )?;
+            let token_addr_2 = factory.create_token(
+                &mut crate::storage::StorageCtx::test_writable(),
+                sender,
+                call2.clone(),
+            )?;
 
             // Verify addresses are different
             assert_ne!(token_addr_1, token_addr_2);
@@ -501,7 +524,11 @@ mod tests {
                 logoURI: logo_uri.clone(),
             };
 
-            let token_addr = factory.create_token_with_logo(sender, call.clone())?;
+            let token_addr = factory.create_token_with_logo(
+                &mut crate::storage::StorageCtx::test_writable(),
+                sender,
+                call.clone(),
+            )?;
 
             // Token deployed correctly
             assert!(token_addr.is_tip20());
@@ -555,6 +582,7 @@ mod tests {
             factory.clear_emitted_events();
 
             let token_addr = factory.create_token_with_logo(
+                &mut crate::storage::StorageCtx::test_writable(),
                 sender,
                 createTokenWithLogoCall {
                     name: "Empty Logo".to_string(),
@@ -611,21 +639,32 @@ mod tests {
             let too_long = format!("{prefix}{}", "a".repeat(257 - prefix.len()));
             assert_eq!(too_long.len(), 257);
             assert!(matches!(
-                factory.create_token_with_logo(sender, call(&too_long)),
+                factory.create_token_with_logo(
+                    &mut crate::storage::StorageCtx::test_writable(),
+                    sender,
+                    call(&too_long)
+                ),
                 Err(TempoPrecompileError::TIP20(TIP20Error::LogoURITooLong(_)))
             ));
 
             // (a2) Disallowed scheme — `javascript:` is the canonical example
             // from the spec's security considerations.
             assert!(matches!(
-                factory.create_token_with_logo(sender, call("javascript:alert(1)")),
+                factory.create_token_with_logo(
+                    &mut crate::storage::StorageCtx::test_writable(),
+                    sender,
+                    call("javascript:alert(1)")
+                ),
                 Err(TempoPrecompileError::TIP20(TIP20Error::InvalidLogoURI(_)))
             ));
 
             // (b) Atomicity: the same salt is reusable with a valid URI,
             // proving no partial token was left behind by either rejection.
-            let token =
-                factory.create_token_with_logo(sender, call("https://example.com/icon.svg"))?;
+            let token = factory.create_token_with_logo(
+                &mut crate::storage::StorageCtx::test_writable(),
+                sender,
+                call("https://example.com/icon.svg"),
+            )?;
             assert!(factory.is_tip20(token)?);
 
             Ok(())
@@ -649,7 +688,11 @@ mod tests {
                 salt: B256::random(),
             };
 
-            let result = factory.create_token(sender, invalid_call);
+            let result = factory.create_token(
+                &mut crate::storage::StorageCtx::test_writable(),
+                sender,
+                invalid_call,
+            );
             assert_eq!(
                 result.unwrap_err(),
                 TempoPrecompileError::TIP20(TIP20Error::invalid_quote_token())
@@ -678,7 +721,11 @@ mod tests {
                 salt: B256::random(),
             };
 
-            let result = factory.create_token(sender, invalid_call);
+            let result = factory.create_token(
+                &mut crate::storage::StorageCtx::test_writable(),
+                sender,
+                invalid_call,
+            );
             assert_eq!(
                 result.unwrap_err(),
                 TempoPrecompileError::TIP20(TIP20Error::invalid_quote_token())
@@ -707,7 +754,11 @@ mod tests {
                 salt: B256::random(),
             };
 
-            let result = factory.create_token(sender, invalid_call);
+            let result = factory.create_token(
+                &mut crate::storage::StorageCtx::test_writable(),
+                sender,
+                invalid_call,
+            );
             assert_eq!(
                 result.unwrap_err(),
                 TempoPrecompileError::TIP20(TIP20Error::invalid_quote_token())
@@ -734,8 +785,16 @@ mod tests {
                 salt,
             };
 
-            let token = factory.create_token(sender, create_token_call.clone())?;
-            let result = factory.create_token(sender, create_token_call);
+            let token = factory.create_token(
+                &mut crate::storage::StorageCtx::test_writable(),
+                sender,
+                create_token_call.clone(),
+            )?;
+            let result = factory.create_token(
+                &mut crate::storage::StorageCtx::test_writable(),
+                sender,
+                create_token_call,
+            );
             assert_eq!(
                 result.unwrap_err(),
                 TempoPrecompileError::TIP20Factory(TIP20FactoryError::TokenAlreadyExists(
@@ -754,9 +813,10 @@ mod tests {
 
         StorageCtx::enter(&mut storage, || {
             let mut factory = TIP20Factory::new();
-            factory.initialize()?;
+            factory.initialize(&mut crate::storage::StorageCtx::test_writable())?;
 
             let result = factory.create_token_reserved_address(
+                &mut crate::storage::StorageCtx::test_writable(),
                 Address::random(), // No TIP20 prefix
                 "Test",
                 "TST",
@@ -781,9 +841,10 @@ mod tests {
 
         StorageCtx::enter(&mut storage, || {
             let mut factory = TIP20Factory::new();
-            factory.initialize()?;
+            factory.initialize(&mut crate::storage::StorageCtx::test_writable())?;
 
             factory.create_token_reserved_address(
+                &mut crate::storage::StorageCtx::test_writable(),
                 PATH_USD_ADDRESS,
                 "pathUSD",
                 "pathUSD",
@@ -793,6 +854,7 @@ mod tests {
             )?;
 
             let result = factory.create_token_reserved_address(
+                &mut crate::storage::StorageCtx::test_writable(),
                 PATH_USD_ADDRESS,
                 "pathUSD",
                 "pathUSD",
@@ -826,6 +888,7 @@ mod tests {
             let mut factory = TIP20Factory::new();
 
             let result = factory.create_token_reserved_address(
+                &mut crate::storage::StorageCtx::test_writable(),
                 address!("20C0000000000000000000000000000000000001"), // reserved address
                 "Test USD",
                 "TUSD",
@@ -856,6 +919,7 @@ mod tests {
             let non_reserved = address!("20C0000000000000000000000000000000009999");
 
             let result = factory.create_token_reserved_address(
+                &mut crate::storage::StorageCtx::test_writable(),
                 non_reserved,
                 "Test",
                 "TST",
@@ -880,10 +944,11 @@ mod tests {
 
         StorageCtx::enter(&mut storage, || {
             let mut factory = TIP20Factory::new();
-            factory.initialize()?;
+            factory.initialize(&mut crate::storage::StorageCtx::test_writable())?;
 
             // Try to create PATH_USD with a non-deployed TIP20 as quote_token
             let result = factory.create_token_reserved_address(
+                &mut crate::storage::StorageCtx::test_writable(),
                 PATH_USD_ADDRESS,
                 "pathUSD",
                 "pathUSD",
@@ -900,6 +965,7 @@ mod tests {
 
             // Only possible to deploy PATH_USD (the first token) without a quote token
             factory.create_token_reserved_address(
+                &mut crate::storage::StorageCtx::test_writable(),
                 PATH_USD_ADDRESS,
                 "pathUSD",
                 "pathUSD",
@@ -919,9 +985,10 @@ mod tests {
 
         StorageCtx::enter(&mut storage, || {
             let mut factory = TIP20Factory::new();
-            factory.initialize()?;
+            factory.initialize(&mut crate::storage::StorageCtx::test_writable())?;
 
             let other_usd = factory.create_token_reserved_address(
+                &mut crate::storage::StorageCtx::test_writable(),
                 address!("20C0000000000000000000000000000000000001"),
                 "testUSD",
                 "testUSD",
@@ -931,6 +998,7 @@ mod tests {
             )?;
 
             let result = factory.create_token_reserved_address(
+                &mut crate::storage::StorageCtx::test_writable(),
                 PATH_USD_ADDRESS,
                 "pathUSD",
                 "pathUSD",
@@ -946,6 +1014,7 @@ mod tests {
             ));
 
             factory.create_token_reserved_address(
+                &mut crate::storage::StorageCtx::test_writable(),
                 PATH_USD_ADDRESS,
                 "pathUSD",
                 "pathUSD",

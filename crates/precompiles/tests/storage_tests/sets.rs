@@ -90,7 +90,10 @@ fn test_oz_add_adds_a_value() -> eyre::Result<()> {
         let value_a = test_address(1);
 
         // Add returns true when value is added
-        assert!(set.insert(value_a)?);
+        assert!(set.insert(
+            &mut tempo_precompiles::storage::StorageCtx::test_writable(),
+            value_a
+        )?);
 
         expect_members_match(&mut set, &[value_a])?;
 
@@ -109,8 +112,14 @@ fn test_oz_add_adds_several_values() -> eyre::Result<()> {
         let value_b = test_address(2);
         let value_c = test_address(3);
 
-        set.insert(value_a)?;
-        set.insert(value_b)?;
+        set.insert(
+            &mut tempo_precompiles::storage::StorageCtx::test_writable(),
+            value_a,
+        )?;
+        set.insert(
+            &mut tempo_precompiles::storage::StorageCtx::test_writable(),
+            value_b,
+        )?;
 
         expect_members_match(&mut set, &[value_a, value_b])?;
 
@@ -130,10 +139,16 @@ fn test_oz_add_returns_false_when_adding_values_already_in_set() -> eyre::Result
 
         let value_a = test_address(1);
 
-        set.insert(value_a)?;
+        set.insert(
+            &mut tempo_precompiles::storage::StorageCtx::test_writable(),
+            value_a,
+        )?;
 
         // Adding again returns false
-        assert!(!set.insert(value_a)?);
+        assert!(!set.insert(
+            &mut tempo_precompiles::storage::StorageCtx::test_writable(),
+            value_a
+        )?);
 
         // Set still has only one element
         expect_members_match(&mut set, &[value_a])?;
@@ -165,7 +180,10 @@ fn test_oz_at_retrieves_existing_element() -> eyre::Result<()> {
 
         let value_a = test_address(1);
 
-        set.insert(value_a)?;
+        set.insert(
+            &mut tempo_precompiles::storage::StorageCtx::test_writable(),
+            value_a,
+        )?;
 
         assert_eq!(set.at(0)?.unwrap(), value_a);
 
@@ -182,10 +200,16 @@ fn test_oz_remove_removes_added_values() -> eyre::Result<()> {
 
         let value_a = test_address(1);
 
-        set.insert(value_a)?;
+        set.insert(
+            &mut tempo_precompiles::storage::StorageCtx::test_writable(),
+            value_a,
+        )?;
 
         // Remove returns true
-        assert!(set.remove(&value_a)?);
+        assert!(set.remove(
+            &mut tempo_precompiles::storage::StorageCtx::test_writable(),
+            &value_a
+        )?);
 
         // No longer contains the value
         assert!(!set.contains(&value_a)?);
@@ -206,7 +230,10 @@ fn test_oz_remove_returns_false_when_removing_values_not_in_set() -> eyre::Resul
         let value_a = test_address(1);
 
         // Remove returns false for non-existent value
-        assert!(!set.remove(&value_a)?);
+        assert!(!set.remove(
+            &mut tempo_precompiles::storage::StorageCtx::test_writable(),
+            &value_a
+        )?);
 
         // Still doesn't contain the value
         assert!(!set.contains(&value_a)?);
@@ -227,31 +254,70 @@ fn test_oz_remove_adds_and_removes_multiple_values() -> eyre::Result<()> {
         let value_c = test_address(3);
 
         // []
-        set.insert(value_a)?;
-        set.insert(value_c)?;
+        set.insert(
+            &mut tempo_precompiles::storage::StorageCtx::test_writable(),
+            value_a,
+        )?;
+        set.insert(
+            &mut tempo_precompiles::storage::StorageCtx::test_writable(),
+            value_c,
+        )?;
         // [A, C]
 
-        set.remove(&value_a)?;
-        set.remove(&value_b)?; // B not in set, returns false
+        set.remove(
+            &mut tempo_precompiles::storage::StorageCtx::test_writable(),
+            &value_a,
+        )?;
+        set.remove(
+            &mut tempo_precompiles::storage::StorageCtx::test_writable(),
+            &value_b,
+        )?; // B not in set, returns false
         // [C]
 
-        set.insert(value_b)?;
+        set.insert(
+            &mut tempo_precompiles::storage::StorageCtx::test_writable(),
+            value_b,
+        )?;
         // [C, B]
 
-        set.insert(value_a)?;
-        set.remove(&value_c)?;
+        set.insert(
+            &mut tempo_precompiles::storage::StorageCtx::test_writable(),
+            value_a,
+        )?;
+        set.remove(
+            &mut tempo_precompiles::storage::StorageCtx::test_writable(),
+            &value_c,
+        )?;
         // [A, B] (order may vary due to swap-and-pop)
 
-        set.insert(value_a)?; // Already in set, returns false
-        set.insert(value_b)?; // Already in set, returns false
+        set.insert(
+            &mut tempo_precompiles::storage::StorageCtx::test_writable(),
+            value_a,
+        )?; // Already in set, returns false
+        set.insert(
+            &mut tempo_precompiles::storage::StorageCtx::test_writable(),
+            value_b,
+        )?; // Already in set, returns false
         // [A, B]
 
-        set.insert(value_c)?;
-        set.remove(&value_a)?;
+        set.insert(
+            &mut tempo_precompiles::storage::StorageCtx::test_writable(),
+            value_c,
+        )?;
+        set.remove(
+            &mut tempo_precompiles::storage::StorageCtx::test_writable(),
+            &value_a,
+        )?;
         // [B, C] (order may vary)
 
-        set.insert(value_a)?;
-        set.remove(&value_b)?;
+        set.insert(
+            &mut tempo_precompiles::storage::StorageCtx::test_writable(),
+            value_a,
+        )?;
+        set.remove(
+            &mut tempo_precompiles::storage::StorageCtx::test_writable(),
+            &value_b,
+        )?;
         // [A, C] (order may vary)
 
         expect_members_match(&mut set, &[value_a, value_c])?;
@@ -270,8 +336,11 @@ fn test_oz_clear_clears_a_single_value() -> eyre::Result<()> {
 
         let value_a = test_address(1);
 
-        set.insert(value_a)?;
-        set.delete()?;
+        set.insert(
+            &mut tempo_precompiles::storage::StorageCtx::test_writable(),
+            value_a,
+        )?;
+        set.delete(&mut tempo_precompiles::storage::StorageCtx::test_writable())?;
 
         assert!(!set.contains(&value_a)?);
         expect_members_match(&mut set, &[])?;
@@ -291,11 +360,20 @@ fn test_oz_clear_clears_multiple_values() -> eyre::Result<()> {
         let value_b = test_address(2);
         let value_c = test_address(3);
 
-        set.insert(value_a)?;
-        set.insert(value_b)?;
-        set.insert(value_c)?;
+        set.insert(
+            &mut tempo_precompiles::storage::StorageCtx::test_writable(),
+            value_a,
+        )?;
+        set.insert(
+            &mut tempo_precompiles::storage::StorageCtx::test_writable(),
+            value_b,
+        )?;
+        set.insert(
+            &mut tempo_precompiles::storage::StorageCtx::test_writable(),
+            value_c,
+        )?;
 
-        set.delete()?;
+        set.delete(&mut tempo_precompiles::storage::StorageCtx::test_writable())?;
 
         assert!(!set.contains(&value_a)?);
         assert!(!set.contains(&value_b)?);
@@ -314,7 +392,7 @@ fn test_oz_clear_does_not_revert_on_empty_set() -> eyre::Result<()> {
         let mut set = tempo_precompiles::storage::SetHandler::<Address>::new(U256::ZERO, address);
 
         // Should not panic/error
-        set.delete()?;
+        set.delete(&mut tempo_precompiles::storage::StorageCtx::test_writable())?;
 
         Ok(())
     })
@@ -331,13 +409,25 @@ fn test_oz_clear_then_add_value() -> eyre::Result<()> {
         let value_b = test_address(2);
         let value_c = test_address(3);
 
-        set.insert(value_a)?;
-        set.insert(value_b)?;
-        set.insert(value_c)?;
+        set.insert(
+            &mut tempo_precompiles::storage::StorageCtx::test_writable(),
+            value_a,
+        )?;
+        set.insert(
+            &mut tempo_precompiles::storage::StorageCtx::test_writable(),
+            value_b,
+        )?;
+        set.insert(
+            &mut tempo_precompiles::storage::StorageCtx::test_writable(),
+            value_c,
+        )?;
 
-        set.delete()?;
+        set.delete(&mut tempo_precompiles::storage::StorageCtx::test_writable())?;
 
-        set.insert(value_a)?;
+        set.insert(
+            &mut tempo_precompiles::storage::StorageCtx::test_writable(),
+            value_a,
+        )?;
 
         assert!(set.contains(&value_a)?);
         assert!(!set.contains(&value_b)?);
@@ -360,9 +450,18 @@ fn test_oz_values_full_and_paginated() -> eyre::Result<()> {
         let value_c = U256::from(3);
         let values = vec![value_a, value_b, value_c];
 
-        set.insert(value_a)?;
-        set.insert(value_b)?;
-        set.insert(value_c)?;
+        set.insert(
+            &mut tempo_precompiles::storage::StorageCtx::test_writable(),
+            value_a,
+        )?;
+        set.insert(
+            &mut tempo_precompiles::storage::StorageCtx::test_writable(),
+            value_b,
+        )?;
+        set.insert(
+            &mut tempo_precompiles::storage::StorageCtx::test_writable(),
+            value_c,
+        )?;
 
         // Try pagination with various begin/end combinations
         for begin in 0..=4 {
@@ -406,7 +505,10 @@ fn test_set_in_contract() -> eyre::Result<()> {
         assert_eq!(layout.ids.base_slot(), U256::from(3));
 
         // Test counter
-        layout.counter.write(U256::from(100))?;
+        layout.counter.write(
+            &mut tempo_precompiles::storage::StorageCtx::test_writable(),
+            U256::from(100),
+        )?;
         assert_eq!(layout.counter.read()?, U256::from(100));
 
         // Test holders set
@@ -416,9 +518,18 @@ fn test_set_in_contract() -> eyre::Result<()> {
 
         assert!(layout.holders.is_empty()?);
 
-        layout.holders.insert(addr1)?;
-        layout.holders.insert(addr2)?;
-        layout.holders.insert(addr3)?;
+        layout.holders.insert(
+            &mut tempo_precompiles::storage::StorageCtx::test_writable(),
+            addr1,
+        )?;
+        layout.holders.insert(
+            &mut tempo_precompiles::storage::StorageCtx::test_writable(),
+            addr2,
+        )?;
+        layout.holders.insert(
+            &mut tempo_precompiles::storage::StorageCtx::test_writable(),
+            addr3,
+        )?;
 
         assert_eq!(layout.holders.len()?, 3);
         assert!(layout.holders.contains(&addr1)?);
@@ -427,13 +538,22 @@ fn test_set_in_contract() -> eyre::Result<()> {
         assert!(!layout.holders.contains(&test_address(99))?);
 
         // Remove an element
-        layout.holders.remove(&addr2)?;
+        layout.holders.remove(
+            &mut tempo_precompiles::storage::StorageCtx::test_writable(),
+            &addr2,
+        )?;
         assert_eq!(layout.holders.len()?, 2);
         assert!(!layout.holders.contains(&addr2)?);
 
         // Test ids set with U256
-        layout.ids.insert(U256::from(1000))?;
-        layout.ids.insert(U256::from(2000))?;
+        layout.ids.insert(
+            &mut tempo_precompiles::storage::StorageCtx::test_writable(),
+            U256::from(1000),
+        )?;
+        layout.ids.insert(
+            &mut tempo_precompiles::storage::StorageCtx::test_writable(),
+            U256::from(2000),
+        )?;
 
         assert_eq!(layout.ids.len()?, 2);
         assert!(layout.ids.contains(&U256::from(1000))?);
@@ -465,11 +585,20 @@ fn test_set_with_mapping() -> eyre::Result<()> {
         let role_pauser = keccak256(b"PAUSER_ROLE");
 
         // Add roles to user1
-        layout.user_roles[user1].insert(role_admin)?;
-        layout.user_roles[user1].insert(role_minter)?;
+        layout.user_roles[user1].insert(
+            &mut tempo_precompiles::storage::StorageCtx::test_writable(),
+            role_admin,
+        )?;
+        layout.user_roles[user1].insert(
+            &mut tempo_precompiles::storage::StorageCtx::test_writable(),
+            role_minter,
+        )?;
 
         // Add roles to user2
-        layout.user_roles[user2].insert(role_pauser)?;
+        layout.user_roles[user2].insert(
+            &mut tempo_precompiles::storage::StorageCtx::test_writable(),
+            role_pauser,
+        )?;
 
         // Verify
         assert_eq!(layout.user_roles[user1].len()?, 2);
@@ -481,7 +610,10 @@ fn test_set_with_mapping() -> eyre::Result<()> {
         assert!(layout.user_roles[user2].contains(&role_pauser)?);
 
         // Remove a role
-        layout.user_roles[user1].remove(&role_admin)?;
+        layout.user_roles[user1].remove(
+            &mut tempo_precompiles::storage::StorageCtx::test_writable(),
+            &role_admin,
+        )?;
         assert_eq!(layout.user_roles[user1].len()?, 1);
         assert!(!layout.user_roles[user1].contains(&role_admin)?);
 
@@ -499,8 +631,14 @@ fn test_set_with_b256() -> eyre::Result<()> {
         let val1 = B256::random();
         let val2 = B256::random();
 
-        set.insert(val1)?;
-        set.insert(val2)?;
+        set.insert(
+            &mut tempo_precompiles::storage::StorageCtx::test_writable(),
+            val1,
+        )?;
+        set.insert(
+            &mut tempo_precompiles::storage::StorageCtx::test_writable(),
+            val2,
+        )?;
 
         assert_eq!(set.len()?, 2);
         assert!(set.contains(&val1)?);

@@ -38,13 +38,29 @@ fn test_mapping() {
         };
 
         // Store multiple entries
-        layout.block_mapping[1u64].write(block1.clone()).unwrap();
-        layout.block_mapping[2u64].write(block2.clone()).unwrap();
+        layout.block_mapping[1u64]
+            .write(
+                &mut tempo_precompiles::storage::StorageCtx::test_writable(),
+                block1.clone(),
+            )
+            .unwrap();
+        layout.block_mapping[2u64]
+            .write(
+                &mut tempo_precompiles::storage::StorageCtx::test_writable(),
+                block2.clone(),
+            )
+            .unwrap();
         layout.profile_mapping[test_address(10)]
-            .write(profile1.clone())
+            .write(
+                &mut tempo_precompiles::storage::StorageCtx::test_writable(),
+                profile1.clone(),
+            )
             .unwrap();
         layout.profile_mapping[test_address(20)]
-            .write(profile2.clone())
+            .write(
+                &mut tempo_precompiles::storage::StorageCtx::test_writable(),
+                profile2.clone(),
+            )
             .unwrap();
 
         // Verify all entries
@@ -60,8 +76,12 @@ fn test_mapping() {
         );
 
         // Delete specific entries
-        layout.block_mapping[1u64].delete().unwrap();
-        layout.profile_mapping[test_address(10)].delete().unwrap();
+        layout.block_mapping[1u64]
+            .delete(&mut tempo_precompiles::storage::StorageCtx::test_writable())
+            .unwrap();
+        layout.profile_mapping[test_address(10)]
+            .delete(&mut tempo_precompiles::storage::StorageCtx::test_writable())
+            .unwrap();
 
         // Verify deleted entries return defaults
         assert_eq!(
@@ -121,10 +141,10 @@ proptest! {
 
         StorageCtx::enter(&mut storage, || {
             // Store to different keys
-            layout.address_mapping[addr1].write(val1)?;
-            layout.address_mapping[addr2].write(val2)?;
-            layout.block_mapping[100u64].write(block1.clone())?;
-            layout.block_mapping[200u64].write(block2.clone())?;
+            layout.address_mapping[addr1].write(&mut tempo_precompiles::storage::StorageCtx::test_writable(), val1)?;
+            layout.address_mapping[addr2].write(&mut tempo_precompiles::storage::StorageCtx::test_writable(), val2)?;
+            layout.block_mapping[100u64].write(&mut tempo_precompiles::storage::StorageCtx::test_writable(), block1.clone())?;
+            layout.block_mapping[200u64].write(&mut tempo_precompiles::storage::StorageCtx::test_writable(), block2.clone())?;
 
             // Isolation property: each key has independent storage
             prop_assert_eq!(layout.address_mapping[addr1].read()?, val1);
@@ -133,11 +153,11 @@ proptest! {
             prop_assert_eq!(layout.block_mapping[200u64].read()?, block2.clone());
 
             // Delete one key doesn't affect others
-            layout.address_mapping[addr1].delete()?;
+            layout.address_mapping[addr1].delete(&mut tempo_precompiles::storage::StorageCtx::test_writable())?;
             prop_assert_eq!(layout.address_mapping[addr1].read()?, U256::ZERO);
             prop_assert_eq!(layout.address_mapping[addr2].read()?, val2);
 
-            layout.block_mapping[100u64].delete()?;
+            layout.block_mapping[100u64].delete(&mut tempo_precompiles::storage::StorageCtx::test_writable())?;
             let default_block = TestBlock {
                 field1: U256::ZERO,
                 field2: U256::ZERO,

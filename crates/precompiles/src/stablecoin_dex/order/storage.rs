@@ -20,7 +20,7 @@ use crate::{
     stablecoin_dex::{self, StablecoinDEX, orderbook::BookId},
     storage::{
         Handler, HandlerCache, Layout, LayoutCtx, Slot, Storable, StorableType, StorageCtx,
-        StorageKey, StorageOps, packing,
+        StorageKey, StorageOps, StorageRead, packing,
     },
 };
 use alloy::primitives::{Address, B256, FixedBytes, U256};
@@ -335,16 +335,30 @@ impl OrderHandler {
     }
 
     /// Writes this order using a known owning book ID, skipping index resolution.
-    pub(crate) fn write_in_book(&mut self, value: Order, book_id: BookId) -> StorageResult<()> {
-        self.write_with_book_id(value, Some(book_id))
+    pub(crate) fn write_in_book(
+        &mut self,
+        write: &mut crate::storage::WriteCtx,
+        value: Order,
+        book_id: BookId,
+    ) -> StorageResult<()> {
+        self.write_with_book_id(write, value, Some(book_id))
     }
 
     /// Writes this order, skipping V2 index resolution when a book ID is provided.
-    fn write_with_book_id(&mut self, value: Order, known_id: Option<BookId>) -> StorageResult<()> {
+    fn write_with_book_id(
+        &mut self,
+        write: &mut StorageCtx<crate::storage::Writable>,
+        value: Order,
+        known_id: Option<BookId>,
+    ) -> StorageResult<()> {
         debug_assert_eq!(value.order_id, self.order_id);
 
         if !StorageCtx.spec().is_t8() {
-            return value.store(self, self.base_slot, LayoutCtx::FULL);
+            return value.store(
+                &mut write.at_address(self.address),
+                self.base_slot,
+                LayoutCtx::FULL,
+            );
         }
 
         let (old_version, slot0) = self.version_and_slot()?;
@@ -361,27 +375,35 @@ impl OrderHandler {
         };
 
         let new_slots = if let Some(book_index) = book_index {
-            V2Order::new(value, book_index).store(self, self.base_slot, LayoutCtx::FULL)?;
+            V2Order::new(value, book_index).store(
+                &mut write.at_address(self.address),
+                self.base_slot,
+                LayoutCtx::FULL,
+            )?;
             V2Order::SLOTS
         } else {
-            V1Order::new(value).store(self, self.base_slot, LayoutCtx::FULL)?;
+            V1Order::new(value).store(
+                &mut write.at_address(self.address),
+                self.base_slot,
+                LayoutCtx::FULL,
+            )?;
             V1Order::SLOTS
         };
 
         if slot0.is_none_or(|val| !val.is_zero()) {
             for offset in new_slots..old_slots {
-                self.store(self.base_slot.wrapping_add(U256::from(offset)), U256::ZERO)?;
+                write.sstore(
+                    self.address,
+                    self.base_slot.wrapping_add(U256::from(offset)),
+                    U256::ZERO,
+                )?;
             }
         }
         Ok(())
     }
 }
 
-impl StorageOps for OrderHandler {
-    fn store(&mut self, slot: U256, value: U256) -> StorageResult<()> {
-        StorageCtx.sstore(self.address, slot, value)
-    }
-
+impl crate::storage::StorageRead for OrderHandler {
     fn load(&self, slot: U256) -> StorageResult<U256> {
         StorageCtx.sload(self.address, slot)
     }
@@ -394,12 +416,12 @@ impl Handler<Order> for OrderHandler {
     }
 
     /// Writes the order, migrating T8 records to V1/V2.
-    fn write(&mut self, value: Order) -> StorageResult<()> {
-        self.write_with_book_id(value, None)
+    fn write(&mut self, write: &mut crate::storage::WriteCtx, value: Order) -> StorageResult<()> {
+        self.write_with_book_id(write, value, None)
     }
 
     /// Deletes the physical slots for the cached or detected order layout.
-    fn delete(&mut self) -> StorageResult<()> {
+    fn delete(&mut self, write: &mut crate::storage::WriteCtx) -> StorageResult<()> {
         let slot_count = match self.version()? {
             OrderVersion::Legacy => LegacyOrder::SLOTS,
             OrderVersion::V1 => V1Order::SLOTS,
@@ -407,7 +429,11 @@ impl Handler<Order> for OrderHandler {
         };
 
         for offset in 0..slot_count {
-            self.store(self.base_slot.wrapping_add(U256::from(offset)), U256::ZERO)?;
+            write.sstore(
+                self.address,
+                self.base_slot.wrapping_add(U256::from(offset)),
+                U256::ZERO,
+            )?;
         }
 
         Ok(())
@@ -419,13 +445,17 @@ impl Handler<Order> for OrderHandler {
         ))
     }
 
-    fn t_write(&mut self, _value: Order) -> StorageResult<()> {
+    fn t_write(
+        &mut self,
+        write: &mut crate::storage::WriteCtx,
+        _value: Order,
+    ) -> StorageResult<()> {
         Err(TempoPrecompileError::Fatal(
             "transient order storage is unsupported".to_string(),
         ))
     }
 
-    fn t_delete(&mut self) -> StorageResult<()> {
+    fn t_delete(&mut self, write: &mut crate::storage::WriteCtx) -> StorageResult<()> {
         Err(TempoPrecompileError::Fatal(
             "transient order storage is unsupported".to_string(),
         ))
@@ -617,7 +647,10 @@ mod tests {
                 OrderVersion::V2 => TempoHardfork::T8,
             };
             StorageCtx.set_spec(pair_creation_hardfork);
-            exchange.create_pair(base.address())?;
+            exchange.create_pair(
+                &mut crate::storage::StorageCtx::test_writable(),
+                base.address(),
+            )?;
             StorageCtx.set_spec(prev_spec);
 
             let book_key = stablecoin_dex::orderbook::compute_book_key(base.address(), self.quote);
@@ -630,7 +663,7 @@ mod tests {
             let mut storage = HashMapStorageProvider::new_with_spec(1, spec);
             StorageCtx::enter(&mut storage, || {
                 let mut exchange = StablecoinDEX::new();
-                exchange.initialize()?;
+                exchange.initialize(&mut crate::storage::StorageCtx::test_writable())?;
 
                 let price = stablecoin_dex::orderbook::tick_to_price(self.tick);
                 let quote_amount =
@@ -742,7 +775,8 @@ mod tests {
                 order.set_prev(id - 1);
                 order.set_next(id + 1);
 
-                exchange.orders[id].write(order)?;
+                exchange.orders[id]
+                    .write(&mut crate::storage::StorageCtx::test_writable(), order)?;
 
                 let base_slot = exchange.orders[id].base_slot;
                 assert_eq!(exchange.orders[id].version()?, version);
@@ -813,7 +847,8 @@ mod tests {
                         flip_tick,
                         StorageCtx.spec(),
                     )?;
-                    exchange.orders[id].write(order)?;
+                    exchange.orders[id]
+                        .write(&mut crate::storage::StorageCtx::test_writable(), order)?;
                     assert_eq!(exchange.orders[id].version()?, version);
                     assert_eq!(exchange.orders[id].read()?, order);
                 }
@@ -823,7 +858,7 @@ mod tests {
                     StorageCtx.set_spec(hardfork);
                     let id = n + i as u128;
 
-                    exchange.orders[id].delete()?;
+                    exchange.orders[id].delete(&mut crate::storage::StorageCtx::test_writable())?;
                     let deleted_order = exchange.orders[id].read()?;
                     assert_eq!(deleted_order.order_id(), 0);
                     assert_eq!(deleted_order.maker(), Address::ZERO);
@@ -875,15 +910,22 @@ mod tests {
                 if version == OrderVersion::Legacy {
                     store_legacy_order(&exchange.orders[id], order)?;
                 } else {
-                    exchange.orders[id].write(order)?;
+                    exchange.orders[id]
+                        .write(&mut crate::storage::StorageCtx::test_writable(), order)?;
                 }
 
                 assert_eq!(exchange.orders[id].version()?, version);
                 assert_eq!(exchange.orders[id].read()?, order);
 
-                exchange.orders[id].remaining()?.write(600)?;
-                exchange.orders[id].prev()?.write(11)?;
-                exchange.orders[id].next()?.write(12)?;
+                exchange.orders[id]
+                    .remaining()?
+                    .write(&mut crate::storage::StorageCtx::test_writable(), 600)?;
+                exchange.orders[id]
+                    .prev()?
+                    .write(&mut crate::storage::StorageCtx::test_writable(), 11)?;
+                exchange.orders[id]
+                    .next()?
+                    .write(&mut crate::storage::StorageCtx::test_writable(), 12)?;
 
                 let loaded_order = exchange.orders[id].read()?;
                 assert_eq!(loaded_order.order_id(), id);
@@ -924,7 +966,9 @@ mod tests {
                 )?;
                 order.set_prev(id - 1);
                 order.set_next(id + 1);
-                exchange.next_order_id.write(id + 1)?;
+                exchange
+                    .next_order_id
+                    .write(&mut crate::storage::StorageCtx::test_writable(), id + 1)?;
                 store_legacy_order(&exchange.orders[id], order)?;
 
                 let base_slot = exchange.orders[id].base_slot;
@@ -950,7 +994,10 @@ mod tests {
                 migrated_order.fill(250).unwrap();
                 migrated_order.set_prev(11);
                 migrated_order.set_next(12);
-                exchange.orders[id].write(migrated_order)?;
+                exchange.orders[id].write(
+                    &mut crate::storage::StorageCtx::test_writable(),
+                    migrated_order,
+                )?;
 
                 assert_eq!(exchange.orders[id].version()?, version);
                 assert_eq!(exchange.orders[id].read()?, migrated_order);
@@ -976,7 +1023,8 @@ mod tests {
     }
 
     fn store_legacy_order(handler: &OrderHandler, order: Order) -> StorageResult<()> {
-        let mut storage = handler.clone();
+        let mut write = StorageCtx::test_writable();
+        let mut storage = write.at_address(handler.address);
         LegacyOrder::store(&order, &mut storage, handler.base_slot, LayoutCtx::FULL)
     }
 
@@ -989,13 +1037,15 @@ mod tests {
             OrderVersion::Legacy => store_legacy_order(&exchange.orders[order.order_id()], order),
             OrderVersion::V1 => {
                 let handler = &exchange.orders[order.order_id()];
-                let mut storage = handler.clone();
+                let mut write = StorageCtx::test_writable();
+                let mut storage = write.at_address(handler.address);
                 V1Order::new(order).store(&mut storage, handler.base_slot, LayoutCtx::FULL)
             }
             OrderVersion::V2 => {
                 let book_index = ensure_test_book_index(exchange, order.book_key)?;
                 let handler = &exchange.orders[order.order_id()];
-                let mut storage = handler.clone();
+                let mut write = StorageCtx::test_writable();
+                let mut storage = write.at_address(handler.address);
                 V2Order::new(order, book_index).store(
                     &mut storage,
                     handler.base_slot,
@@ -1010,15 +1060,21 @@ mod tests {
             Ok(Some(index)) => Ok(index),
             Ok(None) => {
                 let index = exchange.book_keys.len()? as u32;
-                exchange.book_keys.push(book_key)?;
-                exchange.set_book_index(index)?;
+                exchange
+                    .book_keys
+                    .push(&mut crate::storage::StorageCtx::test_writable(), book_key)?;
+                exchange.set_book_index(&mut crate::storage::StorageCtx::test_writable(), index)?;
                 Ok(index)
             }
             Err(TempoPrecompileError::StablecoinDEX(StablecoinDEXError::PairDoesNotExist(_))) => {
                 let index = exchange.book_keys.len()? as u32;
-                exchange.books[book_key]
-                    .write(Orderbook::new_with_index(TEST_BASE, TEST_QUOTE, index))?;
-                exchange.book_keys.push(book_key)?;
+                exchange.books[book_key].write(
+                    &mut crate::storage::StorageCtx::test_writable(),
+                    Orderbook::new_with_index(TEST_BASE, TEST_QUOTE, index),
+                )?;
+                exchange
+                    .book_keys
+                    .push(&mut crate::storage::StorageCtx::test_writable(), book_key)?;
                 Ok(index)
             }
             Err(err) => Err(err),
@@ -1030,7 +1086,8 @@ mod tests {
         StorageCtx::enter(&mut storage, || {
             let exchange = StablecoinDEX::new();
             let handler = &exchange.orders[order.order_id()];
-            let mut storage = handler.clone();
+            let mut write = StorageCtx::test_writable();
+            let mut storage = write.at_address(handler.address);
             LegacyOrder::store(&order, &mut storage, handler.base_slot, LayoutCtx::FULL)?;
             StorageCtx.sload(
                 exchange.address(),
@@ -1049,9 +1106,24 @@ mod tests {
                 let mut exchange = StablecoinDEX::new();
                 let (base_token, book_key) = test.pair(version);
 
-                let flip_id =
-                    exchange.place_flip(test.alice, base_token, amount, true, tick, tick, false)?;
-                let resting_id = exchange.place(test.alice, base_token, amount, true, tick)?;
+                let flip_id = exchange.place_flip(
+                    &mut crate::storage::StorageCtx::test_writable(),
+                    test.alice,
+                    base_token,
+                    amount,
+                    true,
+                    tick,
+                    tick,
+                    false,
+                )?;
+                let resting_id = exchange.place(
+                    &mut crate::storage::StorageCtx::test_writable(),
+                    test.alice,
+                    base_token,
+                    amount,
+                    true,
+                    tick,
+                )?;
 
                 let legacy_flip = exchange.orders[flip_id].read()?;
                 store_legacy_order(&exchange.orders[flip_id], legacy_flip)?;
@@ -1059,7 +1131,14 @@ mod tests {
                 assert_eq!(exchange.storage_credits(test.alice)?, 0);
                 let pooled_credits_before = StorageCredits::new().balance_of(exchange.address())?;
 
-                exchange.swap_exact_amount_in(test.bob, base_token, test.quote, amount, 0)?;
+                exchange.swap_exact_amount_in(
+                    &mut crate::storage::StorageCtx::test_writable(),
+                    test.bob,
+                    base_token,
+                    test.quote,
+                    amount,
+                    0,
+                )?;
 
                 assert!(
                     exchange.storage_credits(test.alice)? > 0,
@@ -1118,10 +1197,29 @@ mod tests {
                 let mut exchange = StablecoinDEX::new();
                 let (base_token, _) = test.pair(version);
 
-                let flip_id = exchange
-                    .place_flip(test.alice, base_token, amount, true, tick, flip_tick, false)?;
-                let credit_order_id = exchange.place(test.alice, base_token, amount, true, tick)?;
-                exchange.cancel(test.alice, credit_order_id)?;
+                let flip_id = exchange.place_flip(
+                    &mut crate::storage::StorageCtx::test_writable(),
+                    test.alice,
+                    base_token,
+                    amount,
+                    true,
+                    tick,
+                    flip_tick,
+                    false,
+                )?;
+                let credit_order_id = exchange.place(
+                    &mut crate::storage::StorageCtx::test_writable(),
+                    test.alice,
+                    base_token,
+                    amount,
+                    true,
+                    tick,
+                )?;
+                exchange.cancel(
+                    &mut crate::storage::StorageCtx::test_writable(),
+                    test.alice,
+                    credit_order_id,
+                )?;
 
                 let credits_before = exchange.storage_credits(test.alice)?;
                 assert!(
@@ -1132,9 +1230,22 @@ mod tests {
                 let rewrite_fork = DexTestSetup::hardfork_for(version);
                 StorageCtx.set_spec(rewrite_fork);
 
-                let destination_tail =
-                    exchange.place(test.carol, base_token, amount, false, flip_tick)?;
-                exchange.swap_exact_amount_in(test.bob, base_token, test.quote, amount, 0)?;
+                let destination_tail = exchange.place(
+                    &mut crate::storage::StorageCtx::test_writable(),
+                    test.carol,
+                    base_token,
+                    amount,
+                    false,
+                    flip_tick,
+                )?;
+                exchange.swap_exact_amount_in(
+                    &mut crate::storage::StorageCtx::test_writable(),
+                    test.bob,
+                    base_token,
+                    test.quote,
+                    amount,
+                    0,
+                )?;
 
                 let flipped = exchange.get_order(flip_id)?;
                 assert!(!flipped.is_bid());
@@ -1160,17 +1271,45 @@ mod tests {
                 let mut exchange = StablecoinDEX::new();
                 let (base_token, book_key) = test.pair(version);
 
-                let flip_id = exchange
-                    .place_flip(test.alice, base_token, amount, true, tick, flip_tick, false)?;
-                let source_next_id = exchange.place(test.alice, base_token, amount, true, tick)?;
-                let destination_tail_id =
-                    exchange.place(test.carol, base_token, amount, false, flip_tick)?;
+                let flip_id = exchange.place_flip(
+                    &mut crate::storage::StorageCtx::test_writable(),
+                    test.alice,
+                    base_token,
+                    amount,
+                    true,
+                    tick,
+                    flip_tick,
+                    false,
+                )?;
+                let source_next_id = exchange.place(
+                    &mut crate::storage::StorageCtx::test_writable(),
+                    test.alice,
+                    base_token,
+                    amount,
+                    true,
+                    tick,
+                )?;
+                let destination_tail_id = exchange.place(
+                    &mut crate::storage::StorageCtx::test_writable(),
+                    test.carol,
+                    base_token,
+                    amount,
+                    false,
+                    flip_tick,
+                )?;
 
                 let legacy_flip = exchange.orders[flip_id].read()?;
                 store_legacy_order(&exchange.orders[flip_id], legacy_flip)?;
                 assert_eq!(exchange.orders[flip_id].version()?, OrderVersion::Legacy);
 
-                exchange.swap_exact_amount_in(test.bob, base_token, test.quote, amount, 0)?;
+                exchange.swap_exact_amount_in(
+                    &mut crate::storage::StorageCtx::test_writable(),
+                    test.bob,
+                    base_token,
+                    test.quote,
+                    amount,
+                    0,
+                )?;
 
                 let source_level = exchange.books[book_key]
                     .tick_level_handler(tick, true)
@@ -1213,19 +1352,51 @@ mod tests {
                 let mut exchange = StablecoinDEX::new();
                 let (base_token, book_key) = test.pair(version);
 
-                let flip_id = exchange
-                    .place_flip(test.alice, base_token, amount, true, tick, flip_tick, false)?;
-                let source_next_id = exchange.place(test.alice, base_token, amount, true, tick)?;
-                let destination_tail_id =
-                    exchange.place(test.carol, base_token, amount, false, flip_tick)?;
+                let flip_id = exchange.place_flip(
+                    &mut crate::storage::StorageCtx::test_writable(),
+                    test.alice,
+                    base_token,
+                    amount,
+                    true,
+                    tick,
+                    flip_tick,
+                    false,
+                )?;
+                let source_next_id = exchange.place(
+                    &mut crate::storage::StorageCtx::test_writable(),
+                    test.alice,
+                    base_token,
+                    amount,
+                    true,
+                    tick,
+                )?;
+                let destination_tail_id = exchange.place(
+                    &mut crate::storage::StorageCtx::test_writable(),
+                    test.carol,
+                    base_token,
+                    amount,
+                    false,
+                    flip_tick,
+                )?;
 
                 let legacy_flip = exchange.orders[flip_id].read()?;
                 store_legacy_order(&exchange.orders[flip_id], legacy_flip)?;
 
-                exchange.swap_exact_amount_in(test.bob, base_token, test.quote, amount, 0)?;
+                exchange.swap_exact_amount_in(
+                    &mut crate::storage::StorageCtx::test_writable(),
+                    test.bob,
+                    base_token,
+                    test.quote,
+                    amount,
+                    0,
+                )?;
                 assert_eq!(exchange.orders[flip_id].version()?, version);
 
-                exchange.cancel(test.alice, flip_id)?;
+                exchange.cancel(
+                    &mut crate::storage::StorageCtx::test_writable(),
+                    test.alice,
+                    flip_id,
+                )?;
 
                 assert!(exchange.get_order(flip_id).is_err());
                 assert_eq!(exchange.balance_of(test.alice, base_token)?, amount);
@@ -1265,20 +1436,49 @@ mod tests {
                 let mut exchange = StablecoinDEX::new();
                 let (base_token, book_key) = test.pair(version);
 
-                let flip_id = exchange
-                    .place_flip(test.alice, base_token, amount, true, tick, flip_tick, false)?;
-                let source_next_id = exchange.place(test.alice, base_token, amount, true, tick)?;
-                let destination_tail_id =
-                    exchange.place(test.carol, base_token, amount, false, flip_tick)?;
+                let flip_id = exchange.place_flip(
+                    &mut crate::storage::StorageCtx::test_writable(),
+                    test.alice,
+                    base_token,
+                    amount,
+                    true,
+                    tick,
+                    flip_tick,
+                    false,
+                )?;
+                let source_next_id = exchange.place(
+                    &mut crate::storage::StorageCtx::test_writable(),
+                    test.alice,
+                    base_token,
+                    amount,
+                    true,
+                    tick,
+                )?;
+                let destination_tail_id = exchange.place(
+                    &mut crate::storage::StorageCtx::test_writable(),
+                    test.carol,
+                    base_token,
+                    amount,
+                    false,
+                    flip_tick,
+                )?;
 
                 let legacy_flip = exchange.orders[flip_id].read()?;
                 store_legacy_order(&exchange.orders[flip_id], legacy_flip)?;
 
-                exchange.swap_exact_amount_in(test.bob, base_token, test.quote, amount, 0)?;
+                exchange.swap_exact_amount_in(
+                    &mut crate::storage::StorageCtx::test_writable(),
+                    test.bob,
+                    base_token,
+                    test.quote,
+                    amount,
+                    0,
+                )?;
                 assert_eq!(exchange.orders[flip_id].version()?, version);
 
                 let mut registry = TIP403Registry::new();
                 let policy_id = registry.create_policy(
+                    &mut crate::storage::StorageCtx::test_writable(),
                     test.admin,
                     ITIP403Registry::createPolicyCall {
                         admin: test.admin,
@@ -1287,12 +1487,14 @@ mod tests {
                 )?;
                 let mut base = TIP20Token::from_address(base_token)?;
                 base.change_transfer_policy_id(
+                    &mut crate::storage::StorageCtx::test_writable(),
                     test.admin,
                     ITIP20::changeTransferPolicyIdCall {
                         newPolicyId: policy_id,
                     },
                 )?;
                 registry.modify_policy_blacklist(
+                    &mut crate::storage::StorageCtx::test_writable(),
                     test.admin,
                     ITIP403Registry::modifyPolicyBlacklistCall {
                         policyId: policy_id,
@@ -1301,7 +1503,10 @@ mod tests {
                     },
                 )?;
 
-                exchange.cancel_stale_order(flip_id)?;
+                exchange.cancel_stale_order(
+                    &mut crate::storage::StorageCtx::test_writable(),
+                    flip_id,
+                )?;
 
                 assert!(exchange.get_order(flip_id).is_err());
                 assert_eq!(exchange.balance_of(test.alice, base_token)?, amount);
@@ -1342,12 +1547,27 @@ mod tests {
                 let mut exchange = StablecoinDEX::new();
                 let (base_token, book_key) = test.pair(version);
 
-                let flip_id =
-                    exchange.place_flip(test.alice, base_token, amount, true, tick, tick, false)?;
+                let flip_id = exchange.place_flip(
+                    &mut crate::storage::StorageCtx::test_writable(),
+                    test.alice,
+                    base_token,
+                    amount,
+                    true,
+                    tick,
+                    tick,
+                    false,
+                )?;
                 let legacy_flip = exchange.orders[flip_id].read()?;
                 store_legacy_order(&exchange.orders[flip_id], legacy_flip)?;
 
-                exchange.swap_exact_amount_in(test.bob, base_token, test.quote, amount, 0)?;
+                exchange.swap_exact_amount_in(
+                    &mut crate::storage::StorageCtx::test_writable(),
+                    test.bob,
+                    base_token,
+                    test.quote,
+                    amount,
+                    0,
+                )?;
 
                 let ask_after_migration = exchange.get_order(flip_id)?;
                 assert!(!ask_after_migration.is_bid());
@@ -1355,6 +1575,7 @@ mod tests {
                 assert_eq!(exchange.orders[flip_id].version()?, version);
 
                 exchange.swap_exact_amount_out(
+                    &mut crate::storage::StorageCtx::test_writable(),
                     test.bob,
                     test.quote,
                     base_token,
@@ -1366,6 +1587,7 @@ mod tests {
                 assert_eq!(partially_filled_ask.remaining(), amount - partial);
 
                 exchange.swap_exact_amount_out(
+                    &mut crate::storage::StorageCtx::test_writable(),
                     test.bob,
                     test.quote,
                     base_token,
@@ -1414,8 +1636,22 @@ mod tests {
                 StorageCtx.set_spec(TempoHardfork::T8);
                 let mut exchange = StablecoinDEX::new();
                 let (base_token, book_key) = test.pair(version);
-                let legacy_head_id = exchange.place(test.alice, base_token, amount, false, tick)?;
-                let new_tail_id = exchange.place(test.bob, base_token, amount, false, tick)?;
+                let legacy_head_id = exchange.place(
+                    &mut crate::storage::StorageCtx::test_writable(),
+                    test.alice,
+                    base_token,
+                    amount,
+                    false,
+                    tick,
+                )?;
+                let new_tail_id = exchange.place(
+                    &mut crate::storage::StorageCtx::test_writable(),
+                    test.bob,
+                    base_token,
+                    amount,
+                    false,
+                    tick,
+                )?;
                 let legacy_head = exchange.orders[legacy_head_id].read()?;
                 store_legacy_order(&exchange.orders[legacy_head_id], legacy_head)?;
 
@@ -1426,6 +1662,7 @@ mod tests {
                 assert_eq!(exchange.orders[new_tail_id].version()?, version);
 
                 exchange.swap_exact_amount_out(
+                    &mut crate::storage::StorageCtx::test_writable(),
                     test.carol,
                     test.quote,
                     base_token,
@@ -1464,15 +1701,31 @@ mod tests {
                 let mut exchange = StablecoinDEX::new();
                 let (base_token, book_key) = test.pair(version);
 
-                let flip_id = exchange
-                    .place_flip(test.alice, base_token, amount, true, tick, flip_tick, false)?;
-                let source_next_id = exchange.place(test.alice, base_token, amount, true, tick)?;
+                let flip_id = exchange.place_flip(
+                    &mut crate::storage::StorageCtx::test_writable(),
+                    test.alice,
+                    base_token,
+                    amount,
+                    true,
+                    tick,
+                    flip_tick,
+                    false,
+                )?;
+                let source_next_id = exchange.place(
+                    &mut crate::storage::StorageCtx::test_writable(),
+                    test.alice,
+                    base_token,
+                    amount,
+                    true,
+                    tick,
+                )?;
 
                 let legacy_flip = exchange.orders[flip_id].read()?;
                 store_legacy_order(&exchange.orders[flip_id], legacy_flip)?;
 
                 let mut registry = TIP403Registry::new();
                 let policy_id = registry.create_policy(
+                    &mut crate::storage::StorageCtx::test_writable(),
                     test.admin,
                     ITIP403Registry::createPolicyCall {
                         admin: test.admin,
@@ -1481,12 +1734,14 @@ mod tests {
                 )?;
                 let mut quote = TIP20Token::from_address(test.quote)?;
                 quote.change_transfer_policy_id(
+                    &mut crate::storage::StorageCtx::test_writable(),
                     test.admin,
                     ITIP20::changeTransferPolicyIdCall {
                         newPolicyId: policy_id,
                     },
                 )?;
                 registry.modify_policy_blacklist(
+                    &mut crate::storage::StorageCtx::test_writable(),
                     test.admin,
                     ITIP403Registry::modifyPolicyBlacklistCall {
                         policyId: policy_id,
@@ -1495,11 +1750,24 @@ mod tests {
                     },
                 )?;
 
-                exchange.swap_exact_amount_in(test.bob, base_token, test.quote, amount, 0)?;
+                exchange.swap_exact_amount_in(
+                    &mut crate::storage::StorageCtx::test_writable(),
+                    test.bob,
+                    base_token,
+                    test.quote,
+                    amount,
+                    0,
+                )?;
 
                 assert!(exchange.get_order(flip_id).is_err());
                 assert!(
-                    exchange.cancel(test.alice, flip_id).is_err(),
+                    exchange
+                        .cancel(
+                            &mut crate::storage::StorageCtx::test_writable(),
+                            test.alice,
+                            flip_id
+                        )
+                        .is_err(),
                     "filled flip record must not remain cancellable after failed re-flip"
                 );
                 assert_eq!(
@@ -1555,12 +1823,24 @@ mod tests {
                 LayoutCtx::packed(__packing_v1_order::VERSION_LOC.offset_bytes),
             )?;
             slot0 = packed_slot0.0;
-            StorageCtx.sstore(exchange.address(), base_slot, slot0)?;
+            (&mut crate::storage::StorageCtx::test_writable()).sstore(
+                exchange.address(),
+                base_slot,
+                slot0,
+            )?;
 
             let order = Order::new_bid(id, TEST_MAKER, TEST_BOOK_KEY, 1000, 5);
             assert!(exchange.orders[id].read().is_err());
-            assert!(exchange.orders[id].write(order).is_err());
-            assert!(exchange.orders[id].delete().is_err());
+            assert!(
+                exchange.orders[id]
+                    .write(&mut crate::storage::StorageCtx::test_writable(), order)
+                    .is_err()
+            );
+            assert!(
+                exchange.orders[id]
+                    .delete(&mut crate::storage::StorageCtx::test_writable())
+                    .is_err()
+            );
 
             Ok(())
         })
@@ -1720,11 +2000,32 @@ mod tests {
                 .with_mint(test.bob, U256::from(ask_quote * 2))
                 .apply()?;
 
-            let flip_id = exchange
-                .place_flip(test.alice, base_token, amount, true, tick, flip_tick, false)?;
-            let resting_bid_id = exchange.place(test.alice, base_token, amount, true, tick)?;
-            let destination_tail_id =
-                exchange.place(test.carol, base_token, amount, false, flip_tick)?;
+            let flip_id = exchange.place_flip(
+                &mut crate::storage::StorageCtx::test_writable(),
+                test.alice,
+                base_token,
+                amount,
+                true,
+                tick,
+                flip_tick,
+                false,
+            )?;
+            let resting_bid_id = exchange.place(
+                &mut crate::storage::StorageCtx::test_writable(),
+                test.alice,
+                base_token,
+                amount,
+                true,
+                tick,
+            )?;
+            let destination_tail_id = exchange.place(
+                &mut crate::storage::StorageCtx::test_writable(),
+                test.carol,
+                base_token,
+                amount,
+                false,
+                flip_tick,
+            )?;
 
             rewrite_initial_orders_for_layout(
                 &mut exchange,
@@ -1733,9 +2034,21 @@ mod tests {
             )?;
             assert_initial_versions_for_mask(&exchange, version, legacy_mask, 3)?;
 
-            exchange.swap_exact_amount_in(test.bob, base_token, quote_token, amount, 0)?;
-            exchange.cancel(test.carol, destination_tail_id)?;
+            exchange.swap_exact_amount_in(
+                &mut crate::storage::StorageCtx::test_writable(),
+                test.bob,
+                base_token,
+                quote_token,
+                amount,
+                0,
+            )?;
+            exchange.cancel(
+                &mut crate::storage::StorageCtx::test_writable(),
+                test.carol,
+                destination_tail_id,
+            )?;
             exchange.swap_exact_amount_out(
+                &mut crate::storage::StorageCtx::test_writable(),
                 test.bob,
                 quote_token,
                 base_token,
@@ -1743,13 +2056,18 @@ mod tests {
                 u128::MAX,
             )?;
             exchange.swap_exact_amount_out(
+                &mut crate::storage::StorageCtx::test_writable(),
                 test.bob,
                 quote_token,
                 base_token,
                 amount - partial,
                 u128::MAX,
             )?;
-            exchange.cancel(test.alice, resting_bid_id)?;
+            exchange.cancel(
+                &mut crate::storage::StorageCtx::test_writable(),
+                test.alice,
+                resting_bid_id,
+            )?;
 
             let next_order_id = exchange.next_order_id()?;
             let active_orders = (1..next_order_id)
@@ -1899,9 +2217,10 @@ mod tests {
             let mut exchange = StablecoinDEX::new();
             let mut expected_ids: Vec<u128> = (1..=order_specs.len() as u128).collect();
 
-            exchange
-                .next_order_id
-                .write(order_specs.len() as u128 + 1)?;
+            exchange.next_order_id.write(
+                &mut crate::storage::StorageCtx::test_writable(),
+                order_specs.len() as u128 + 1,
+            )?;
 
             for (index, order_spec) in order_specs.iter().enumerate() {
                 let id = index as u128 + 1;
@@ -1916,7 +2235,9 @@ mod tests {
             let update_id = expected_ids[update_index];
             let amount = order_specs[update_index].amount;
             let remaining = (remaining_seed % amount) + 1;
-            exchange.orders[update_id].remaining()?.write(remaining)?;
+            exchange.orders[update_id]
+                .remaining()?
+                .write(&mut crate::storage::StorageCtx::test_writable(), remaining)?;
 
             if expected_ids.len() > 1 {
                 let remove_index = remove_seed % expected_ids.len();
@@ -1933,12 +2254,17 @@ mod tests {
                 };
 
                 if prev != 0 {
-                    exchange.orders[prev].next()?.write(next)?;
+                    exchange.orders[prev]
+                        .next()?
+                        .write(&mut crate::storage::StorageCtx::test_writable(), next)?;
                 }
                 if next != 0 {
-                    exchange.orders[next].prev()?.write(prev)?;
+                    exchange.orders[next]
+                        .prev()?
+                        .write(&mut crate::storage::StorageCtx::test_writable(), prev)?;
                 }
-                exchange.orders[remove_id].delete()?;
+                exchange.orders[remove_id]
+                    .delete(&mut crate::storage::StorageCtx::test_writable())?;
                 expected_ids.remove(remove_index);
 
                 assert!(exchange.get_order(remove_id).is_err());

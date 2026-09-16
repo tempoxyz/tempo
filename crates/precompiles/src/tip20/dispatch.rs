@@ -53,42 +53,42 @@ impl Precompile for TIP20Token {
                     BURN_BLOCKED_ROLE(call) => view(call, |_| Ok(Self::burn_blocked_role())),
 
                     // State changing functions
-                    transferFrom(call) => mutate(call, msg_sender, |s, c| self.transfer_from(s, c)),
-                    transfer(call) => mutate(call, msg_sender, |s, c| self.transfer(s, c)),
-                    approve(call) => mutate(call, msg_sender, |s, c| self.approve(s, c)),
-                    changeTransferPolicyId(call) => mutate_void(call, msg_sender, |s, c| {
-                        self.change_transfer_policy_id(s, c)
+                    transferFrom(call) => mutate(call, msg_sender, |write, s, c| self.transfer_from(write, s, c)),
+                    transfer(call) => mutate(call, msg_sender, |write, s, c| self.transfer(write, s, c)),
+                    approve(call) => mutate(call, msg_sender, |write, s, c| self.approve(write, s, c)),
+                    changeTransferPolicyId(call) => mutate_void(call, msg_sender, |write, s, c| {
+                        self.change_transfer_policy_id(write, s, c)
                     }),
-                    setSupplyCap(call) => mutate_void(call, msg_sender, |s, c| self.set_supply_cap(s, c)),
+                    setSupplyCap(call) => mutate_void(call, msg_sender, |write, s, c| self.set_supply_cap(write, s, c)),
                     #[schedule(since = T5)]
-                    setLogoURI(call) => mutate_void(call, msg_sender, |s, c| self.set_logo_uri(s, c)),
-                    pause(call) => mutate_void(call, msg_sender, |s, c| self.pause(s, c)),
-                    unpause(call) => mutate_void(call, msg_sender, |s, c| self.unpause(s, c)),
-                    setNextQuoteToken(call) => mutate_void(call, msg_sender, |s, c| self.set_next_quote_token(s, c)),
-                    completeQuoteTokenUpdate(call) => mutate_void(call, msg_sender, |s, c| {
-                        self.complete_quote_token_update(s, c)
+                    setLogoURI(call) => mutate_void(call, msg_sender, |write, s, c| self.set_logo_uri(write, s, c)),
+                    pause(call) => mutate_void(call, msg_sender, |write, s, c| self.pause(write, s, c)),
+                    unpause(call) => mutate_void(call, msg_sender, |write, s, c| self.unpause(write, s, c)),
+                    setNextQuoteToken(call) => mutate_void(call, msg_sender, |write, s, c| self.set_next_quote_token(write, s, c)),
+                    completeQuoteTokenUpdate(call) => mutate_void(call, msg_sender, |write, s, c| {
+                        self.complete_quote_token_update(write, s, c)
                     }),
-                    mint(call) => mutate_void(call, msg_sender, |s, c| self.mint(s, c)),
-                    mintWithMemo(call) => mutate_void(call, msg_sender, |s, c| self.mint_with_memo(s, c)),
-                    burn(call) => mutate_void(call, msg_sender, |s, c| self.burn(s, c)),
-                    burnWithMemo(call) => mutate_void(call, msg_sender, |s, c| self.burn_with_memo(s, c)),
-                    burnBlocked(call) => mutate_void(call, msg_sender, |s, c| {
-                        self.burn_blocked(s, c.from, c.amount, true)
+                    mint(call) => mutate_void(call, msg_sender, |write, s, c| self.mint(write, s, c)),
+                    mintWithMemo(call) => mutate_void(call, msg_sender, |write, s, c| self.mint_with_memo(write, s, c)),
+                    burn(call) => mutate_void(call, msg_sender, |write, s, c| self.burn(write, s, c)),
+                    burnWithMemo(call) => mutate_void(call, msg_sender, |write, s, c| self.burn_with_memo(write, s, c)),
+                    burnBlocked(call) => mutate_void(call, msg_sender, |write, s, c| {
+                        self.burn_blocked(write, s, c.from, c.amount, true)
                     }),
-                    transferWithMemo(call) => mutate_void(call, msg_sender, |s, c| self.transfer_with_memo(s, c)),
-                    transferFromWithMemo(call) => mutate(call, msg_sender, |sender, c| {
-                        self.transfer_from_with_memo(sender, c)
+                    transferWithMemo(call) => mutate_void(call, msg_sender, |write, s, c| self.transfer_with_memo(write, s, c)),
+                    transferFromWithMemo(call) => mutate(call, msg_sender, |write, sender, c| {
+                        self.transfer_from_with_memo(write, sender, c)
                     }),
-                    distributeReward(call) => mutate_void(call, msg_sender, |s, c| self.distribute_reward(s, c)),
-                    setRewardRecipient(call) => mutate_void(call, msg_sender, |s, c| self.set_reward_recipient(s, c)),
-                    claimRewards(call) => mutate(call, msg_sender, |_, _| self.claim_rewards(msg_sender)),
+                    distributeReward(call) => mutate_void(call, msg_sender, |write, s, c| self.distribute_reward(write, s, c)),
+                    setRewardRecipient(call) => mutate_void(call, msg_sender, |write, s, c| self.set_reward_recipient(write, s, c)),
+                    claimRewards(call) => mutate(call, msg_sender, |write, _, _| self.claim_rewards(write, msg_sender)),
                     globalRewardPerToken(call) => view(call, |_| self.get_global_reward_per_token()),
                     optedInSupply(call) => view(call, |_| self.get_opted_in_supply()),
                     userRewardInfo(call) => view(call, |c| self.get_user_reward_info(c.account).map(|info| info.into())),
                     getPendingRewards(call) => view(call, |c| self.get_pending_rewards(c.account)),
 
                     #[schedule(since = T2)]
-                    permit(call) => mutate_void(call, msg_sender, |_s, c| self.permit(c)),
+                    permit(call) => mutate_void(call, msg_sender, |write, _s, c| self.permit(write, c)),
                     #[schedule(since = T2)]
                     nonces(call) => view(call, |c| self.nonces(c)),
                     #[schedule(since = T2)]
@@ -99,10 +99,10 @@ impl Precompile for TIP20Token {
                     // RolesAuth functions
                     hasRole(call) => view(call, |c| self.has_role(c)),
                     getRoleAdmin(call) => view(call, |c| self.get_role_admin(c)),
-                    grantRole(call) => mutate_void(call, msg_sender, |s, c| self.grant_role(s, c)),
-                    revokeRole(call) => mutate_void(call, msg_sender, |s, c| self.revoke_role(s, c)),
-                    renounceRole(call) => mutate_void(call, msg_sender, |s, c| self.renounce_role(s, c)),
-                    setRoleAdmin(call) => mutate_void(call, msg_sender, |s, c| self.set_role_admin(s, c))
+                    grantRole(call) => mutate_void(call, msg_sender, |write, s, c| self.grant_role(write, s, c)),
+                    revokeRole(call) => mutate_void(call, msg_sender, |write, s, c| self.revoke_role(write, s, c)),
+                    renounceRole(call) => mutate_void(call, msg_sender, |write, s, c| self.renounce_role(write, s, c)),
+                    setRoleAdmin(call) => mutate_void(call, msg_sender, |write, s, c| self.set_role_admin(write, s, c))
                 }
             }
         )
@@ -574,10 +574,11 @@ mod tests {
 
             // Initialize TIP403 registry
             let mut registry = TIP403Registry::new();
-            registry.initialize()?;
+            registry.initialize(&mut crate::storage::StorageCtx::test_writable())?;
 
             // Create a valid policy
             let new_policy_id = registry.create_policy(
+                &mut crate::storage::StorageCtx::test_writable(),
                 admin,
                 ITIP403Registry::createPolicyCall {
                     admin,
@@ -595,6 +596,7 @@ mod tests {
 
             // Create another valid policy for the unauthorized test
             let another_policy_id = registry.create_policy(
+                &mut crate::storage::StorageCtx::test_writable(),
                 admin,
                 ITIP403Registry::createPolicyCall {
                     admin,

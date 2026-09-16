@@ -215,8 +215,8 @@ impl ReceivePolicyConfig {
 
 impl TIP403Registry {
     /// Initializes the TIP-403 registry precompile.
-    pub fn initialize(&mut self) -> Result<()> {
-        self.__initialize()
+    pub fn initialize(&mut self, write: &mut crate::storage::WriteCtx) -> Result<()> {
+        self.__initialize(write)
     }
 
     /// Returns the next policy ID to be assigned (always ≥ 2, since IDs 0 and 1 are reserved).
@@ -275,19 +275,24 @@ impl TIP403Registry {
     /// Writes the active registry binding for a TIP-20 token.
     pub(crate) fn set_token_transfer_policy(
         &mut self,
+        write: &mut crate::storage::WriteCtx,
         token: Address,
         policy_id: u64,
     ) -> Result<()> {
-        self.token_transfer_policies[token].write(TokenTransferPolicy {
-            policy_id,
-            is_set: true,
-        })
+        self.token_transfer_policies[token].write(
+            write,
+            TokenTransferPolicy {
+                policy_id,
+                is_set: true,
+            },
+        )
     }
 
     /// Migrates valid, unregistered TIP-20 tokens to registry-owned transfer policy bindings.
     /// Invalid and already-registered token addresses are skipped.
     pub fn migrate_transfer_policy_ids(
         &mut self,
+        write: &mut crate::storage::WriteCtx,
         call: ITIP403Registry::migrateTransferPolicyIdsCall,
     ) -> Result<U256> {
         let factory = TIP20Factory::new();
@@ -302,8 +307,8 @@ impl TIP403Registry {
 
             let mut token_contract = TIP20Token::from_address(token)?;
             let policy_id = token_contract.legacy_transfer_policy_id()?;
-            self.set_token_transfer_policy(token, policy_id)?;
-            token_contract.delete_legacy_transfer_policy_id()?;
+            self.set_token_transfer_policy(write, token, policy_id)?;
+            token_contract.delete_legacy_transfer_policy_id(write)?;
             migrated += U256::ONE;
         }
 
@@ -461,6 +466,7 @@ impl TIP403Registry {
     /// - `UnderOverflow` — policy ID counter overflows
     pub fn create_policy(
         &mut self,
+        write: &mut crate::storage::WriteCtx,
         msg_sender: Address,
         call: ITIP403Registry::createPolicyCall,
     ) -> Result<u64> {
@@ -470,28 +476,34 @@ impl TIP403Registry {
 
         // Increment counter
         self.policy_id_counter.write(
+            write,
             new_policy_id
                 .checked_add(1)
                 .ok_or(TempoPrecompileError::under_overflow())?,
         )?;
 
         // Store policy data
-        self.policy_records[new_policy_id].base.write(PolicyData {
-            policy_type,
-            admin: call.admin,
-        })?;
+        self.policy_records[new_policy_id].base.write(
+            write,
+            PolicyData {
+                policy_type,
+                admin: call.admin,
+            },
+        )?;
 
-        self.emit_event(TIP403RegistryEvent::policy_created(
-            new_policy_id,
-            msg_sender,
-            policy_type.try_into().unwrap_or(PolicyType::__Invalid),
-        ))?;
+        self.emit_event(
+            write,
+            TIP403RegistryEvent::policy_created(
+                new_policy_id,
+                msg_sender,
+                policy_type.try_into().unwrap_or(PolicyType::__Invalid),
+            ),
+        )?;
 
-        self.emit_event(TIP403RegistryEvent::policy_admin_updated(
-            new_policy_id,
-            msg_sender,
-            call.admin,
-        ))?;
+        self.emit_event(
+            write,
+            TIP403RegistryEvent::policy_admin_updated(new_policy_id, msg_sender, call.admin),
+        )?;
 
         Ok(new_policy_id)
     }
@@ -499,6 +511,7 @@ impl TIP403Registry {
     /// Sets the caller's TIP-1028 receive policy.
     pub fn set_receive_policy(
         &mut self,
+        write: &mut crate::storage::WriteCtx,
         msg_sender: Address,
         call: ITIP403Registry::setReceivePolicyCall,
     ) -> Result<()> {
@@ -524,19 +537,22 @@ impl TIP403Registry {
             token_filter_type,
             recovery_mode,
         };
-        self.receive_policies[msg_sender].config.write(config)?;
+        self.receive_policies[msg_sender]
+            .config
+            .write(write, config)?;
         self.receive_policies[msg_sender]
             .recovery_address
-            .write(recovery_write)?;
+            .write(write, recovery_write)?;
 
-        self.emit_event(TIP403RegistryEvent::ReceivePolicyUpdated(
-            ITIP403Registry::ReceivePolicyUpdated {
+        self.emit_event(
+            write,
+            TIP403RegistryEvent::ReceivePolicyUpdated(ITIP403Registry::ReceivePolicyUpdated {
                 account: msg_sender,
                 senderPolicyId: call.senderPolicyId,
                 tokenFilterId: call.tokenFilterId,
                 recoveryAuthority: recovery_address,
-            },
-        ))
+            }),
+        )
     }
 
     /// Creates a simple policy and pre-populates it with an initial set of accounts.
@@ -548,6 +564,7 @@ impl TIP403Registry {
     /// - `VirtualAddressNotAllowed` — virtual addresses are forbidden (T3+)
     pub fn create_policy_with_accounts(
         &mut self,
+        write: &mut crate::storage::WriteCtx,
         msg_sender: Address,
         call: ITIP403Registry::createPolicyWithAccountsCall,
     ) -> Result<u64> {
@@ -567,35 +584,42 @@ impl TIP403Registry {
 
         // Increment counter
         self.policy_id_counter.write(
+            write,
             new_policy_id
                 .checked_add(1)
                 .ok_or(TempoPrecompileError::under_overflow())?,
         )?;
 
         // Store policy data
-        self.set_policy_data(new_policy_id, PolicyData { policy_type, admin })?;
+        self.set_policy_data(write, new_policy_id, PolicyData { policy_type, admin })?;
 
         // Set initial accounts - only emit events for valid policy types
         // Pre-T2 with invalid types: accounts are added but no events emitted (matches original)
         for account in call.accounts.iter() {
-            self.set_policy_set(new_policy_id, *account, true)?;
+            self.set_policy_set(write, new_policy_id, *account, true)?;
 
             match call.policyType {
                 PolicyType::WHITELIST => {
-                    self.emit_event(TIP403RegistryEvent::whitelist_updated(
-                        new_policy_id,
-                        msg_sender,
-                        *account,
-                        true,
-                    ))?;
+                    self.emit_event(
+                        write,
+                        TIP403RegistryEvent::whitelist_updated(
+                            new_policy_id,
+                            msg_sender,
+                            *account,
+                            true,
+                        ),
+                    )?;
                 }
                 PolicyType::BLACKLIST => {
-                    self.emit_event(TIP403RegistryEvent::blacklist_updated(
-                        new_policy_id,
-                        msg_sender,
-                        *account,
-                        true,
-                    ))?;
+                    self.emit_event(
+                        write,
+                        TIP403RegistryEvent::blacklist_updated(
+                            new_policy_id,
+                            msg_sender,
+                            *account,
+                            true,
+                        ),
+                    )?;
                 }
                 ITIP403Registry::PolicyType::COMPOUND | ITIP403Registry::PolicyType::__Invalid => {
                     // T2+: unreachable since `ensure_is_simple` already rejected
@@ -604,17 +628,19 @@ impl TIP403Registry {
             }
         }
 
-        self.emit_event(TIP403RegistryEvent::policy_created(
-            new_policy_id,
-            msg_sender,
-            policy_type.try_into().unwrap_or(PolicyType::__Invalid),
-        ))?;
+        self.emit_event(
+            write,
+            TIP403RegistryEvent::policy_created(
+                new_policy_id,
+                msg_sender,
+                policy_type.try_into().unwrap_or(PolicyType::__Invalid),
+            ),
+        )?;
 
-        self.emit_event(TIP403RegistryEvent::policy_admin_updated(
-            new_policy_id,
-            msg_sender,
-            admin,
-        ))?;
+        self.emit_event(
+            write,
+            TIP403RegistryEvent::policy_admin_updated(new_policy_id, msg_sender, admin),
+        )?;
 
         Ok(new_policy_id)
     }
@@ -626,6 +652,7 @@ impl TIP403Registry {
     /// - `PolicyNotFound` — the policy ID does not exist (T2+)
     pub fn set_policy_admin(
         &mut self,
+        write: &mut crate::storage::WriteCtx,
         msg_sender: Address,
         call: ITIP403Registry::setPolicyAdminCall,
     ) -> Result<()> {
@@ -638,6 +665,7 @@ impl TIP403Registry {
 
         // Update admin policy ID
         self.set_policy_data(
+            write,
             call.policyId,
             PolicyData {
                 admin: call.admin,
@@ -645,11 +673,10 @@ impl TIP403Registry {
             },
         )?;
 
-        self.emit_event(TIP403RegistryEvent::policy_admin_updated(
-            call.policyId,
-            msg_sender,
-            call.admin,
-        ))
+        self.emit_event(
+            write,
+            TIP403RegistryEvent::policy_admin_updated(call.policyId, msg_sender, call.admin),
+        )
     }
 
     /// Adds or removes an account from a whitelist policy. Admin-only.
@@ -661,6 +688,7 @@ impl TIP403Registry {
     /// - `VirtualAddressNotAllowed` — virtual addresses are forbidden (T3+)
     pub fn modify_policy_whitelist(
         &mut self,
+        write: &mut crate::storage::WriteCtx,
         msg_sender: Address,
         call: ITIP403Registry::modifyPolicyWhitelistCall,
     ) -> Result<()> {
@@ -681,14 +709,17 @@ impl TIP403Registry {
             return Err(TIP403RegistryError::incompatible_policy_type().into());
         }
 
-        self.set_policy_set(call.policyId, call.account, call.allowed)?;
+        self.set_policy_set(write, call.policyId, call.account, call.allowed)?;
 
-        self.emit_event(TIP403RegistryEvent::whitelist_updated(
-            call.policyId,
-            msg_sender,
-            call.account,
-            call.allowed,
-        ))
+        self.emit_event(
+            write,
+            TIP403RegistryEvent::whitelist_updated(
+                call.policyId,
+                msg_sender,
+                call.account,
+                call.allowed,
+            ),
+        )
     }
 
     /// Adds or removes an account from a blacklist policy. Admin-only.
@@ -700,6 +731,7 @@ impl TIP403Registry {
     /// - `VirtualAddressNotAllowed` — virtual addresses are forbidden (T3+)
     pub fn modify_policy_blacklist(
         &mut self,
+        write: &mut crate::storage::WriteCtx,
         msg_sender: Address,
         call: ITIP403Registry::modifyPolicyBlacklistCall,
     ) -> Result<()> {
@@ -720,14 +752,17 @@ impl TIP403Registry {
             return Err(TIP403RegistryError::incompatible_policy_type().into());
         }
 
-        self.set_policy_set(call.policyId, call.account, call.restricted)?;
+        self.set_policy_set(write, call.policyId, call.account, call.restricted)?;
 
-        self.emit_event(TIP403RegistryEvent::blacklist_updated(
-            call.policyId,
-            msg_sender,
-            call.account,
-            call.restricted,
-        ))
+        self.emit_event(
+            write,
+            TIP403RegistryEvent::blacklist_updated(
+                call.policyId,
+                msg_sender,
+                call.account,
+                call.restricted,
+            ),
+        )
     }
 
     /// Creates a new compound policy that references three simple sub-policies ([TIP-1015]).
@@ -741,6 +776,7 @@ impl TIP403Registry {
     /// - `UnderOverflow` — policy ID counter overflows
     pub fn create_compound_policy(
         &mut self,
+        write: &mut crate::storage::WriteCtx,
         msg_sender: Address,
         call: ITIP403Registry::createCompoundPolicyCall,
     ) -> Result<u64> {
@@ -753,32 +789,39 @@ impl TIP403Registry {
 
         // Increment counter
         self.policy_id_counter.write(
+            write,
             new_policy_id
                 .checked_add(1)
                 .ok_or(TempoPrecompileError::under_overflow())?,
         )?;
 
         // Store policy record with COMPOUND type and compound data
-        self.policy_records[new_policy_id].write(PolicyRecord {
-            base: PolicyData {
-                policy_type: PolicyType::COMPOUND as u8,
-                admin: Address::ZERO,
+        self.policy_records[new_policy_id].write(
+            write,
+            PolicyRecord {
+                base: PolicyData {
+                    policy_type: PolicyType::COMPOUND as u8,
+                    admin: Address::ZERO,
+                },
+                compound: CompoundPolicyData {
+                    sender_policy_id: call.senderPolicyId,
+                    recipient_policy_id: call.recipientPolicyId,
+                    mint_recipient_policy_id: call.mintRecipientPolicyId,
+                },
             },
-            compound: CompoundPolicyData {
-                sender_policy_id: call.senderPolicyId,
-                recipient_policy_id: call.recipientPolicyId,
-                mint_recipient_policy_id: call.mintRecipientPolicyId,
-            },
-        })?;
+        )?;
 
         // Emit event
-        self.emit_event(TIP403RegistryEvent::compound_policy_created(
-            new_policy_id,
-            msg_sender,
-            call.senderPolicyId,
-            call.recipientPolicyId,
-            call.mintRecipientPolicyId,
-        ))?;
+        self.emit_event(
+            write,
+            TIP403RegistryEvent::compound_policy_created(
+                new_policy_id,
+                msg_sender,
+                call.senderPolicyId,
+                call.recipientPolicyId,
+                call.mintRecipientPolicyId,
+            ),
+        )?;
 
         Ok(new_policy_id)
     }
@@ -950,12 +993,23 @@ impl TIP403Registry {
     ///
     /// IMPORTANT: callers must not change `policy_type` for an existing policy. TIP-1028 receive
     /// policies cache `policy_type` and rely on it being immutable after creation.
-    fn set_policy_data(&mut self, policy_id: u64, data: PolicyData) -> Result<()> {
-        self.policy_records[policy_id].base.write(data)
+    fn set_policy_data(
+        &mut self,
+        write: &mut crate::storage::WriteCtx,
+        policy_id: u64,
+        data: PolicyData,
+    ) -> Result<()> {
+        self.policy_records[policy_id].base.write(write, data)
     }
 
-    fn set_policy_set(&mut self, policy_id: u64, account: Address, value: bool) -> Result<()> {
-        self.policy_set[policy_id][account].write(value)
+    fn set_policy_set(
+        &mut self,
+        write: &mut crate::storage::WriteCtx,
+        policy_id: u64,
+        account: Address,
+        value: bool,
+    ) -> Result<()> {
+        self.policy_set[policy_id][account].write(write, value)
     }
 }
 
@@ -1057,6 +1111,7 @@ mod tests {
 
             // Create a whitelist policy
             let result = registry.create_policy(
+                &mut crate::storage::StorageCtx::test_writable(),
                 admin,
                 ITIP403Registry::createPolicyCall {
                     admin,
@@ -1120,6 +1175,7 @@ mod tests {
         StorageCtx::enter(&mut storage, || {
             let mut registry = TIP403Registry::new();
             let whitelist_id = registry.create_policy(
+                &mut crate::storage::StorageCtx::test_writable(),
                 admin,
                 ITIP403Registry::createPolicyCall {
                     admin,
@@ -1127,6 +1183,7 @@ mod tests {
                 },
             )?;
             let blacklist_id = registry.create_policy(
+                &mut crate::storage::StorageCtx::test_writable(),
                 admin,
                 ITIP403Registry::createPolicyCall {
                     admin,
@@ -1134,6 +1191,7 @@ mod tests {
                 },
             )?;
             let compound_id = registry.create_compound_policy(
+                &mut crate::storage::StorageCtx::test_writable(),
                 admin,
                 ITIP403Registry::createCompoundPolicyCall {
                     senderPolicyId: REJECT_ALL_POLICY_ID,
@@ -1143,6 +1201,7 @@ mod tests {
             )?;
 
             registry.modify_policy_blacklist(
+                &mut crate::storage::StorageCtx::test_writable(),
                 admin,
                 ITIP403Registry::modifyPolicyBlacklistCall {
                     policyId: blacklist_id,
@@ -1179,6 +1238,7 @@ mod tests {
 
             // Create whitelist policy
             let policy_id = registry.create_policy(
+                &mut crate::storage::StorageCtx::test_writable(),
                 admin,
                 ITIP403Registry::createPolicyCall {
                     admin,
@@ -1191,6 +1251,7 @@ mod tests {
 
             // Add user to whitelist
             registry.modify_policy_whitelist(
+                &mut crate::storage::StorageCtx::test_writable(),
                 admin,
                 ITIP403Registry::modifyPolicyWhitelistCall {
                     policyId: policy_id,
@@ -1216,6 +1277,7 @@ mod tests {
 
             // Create blacklist policy
             let policy_id = registry.create_policy(
+                &mut crate::storage::StorageCtx::test_writable(),
                 admin,
                 ITIP403Registry::createPolicyCall {
                     admin,
@@ -1228,6 +1290,7 @@ mod tests {
 
             // Add user to blacklist
             registry.modify_policy_blacklist(
+                &mut crate::storage::StorageCtx::test_writable(),
                 admin,
                 ITIP403Registry::modifyPolicyBlacklistCall {
                     policyId: policy_id,
@@ -1338,6 +1401,7 @@ mod tests {
             let mut registry = TIP403Registry::new();
 
             registry.set_receive_policy(
+                &mut crate::storage::StorageCtx::test_writable(),
                 account,
                 ITIP403Registry::setReceivePolicyCall {
                     senderPolicyId: REJECT_ALL_POLICY_ID,
@@ -1384,6 +1448,7 @@ mod tests {
             let mut registry = TIP403Registry::new();
 
             let virtual_result = registry.set_receive_policy(
+                &mut crate::storage::StorageCtx::test_writable(),
                 Address::new_virtual(MasterId::ZERO, UserTag::ZERO),
                 ITIP403Registry::setReceivePolicyCall {
                     senderPolicyId: REJECT_ALL_POLICY_ID,
@@ -1418,6 +1483,7 @@ mod tests {
 
             for recovery_address in rejected {
                 let result = registry.set_receive_policy(
+                    &mut crate::storage::StorageCtx::test_writable(),
                     account,
                     ITIP403Registry::setReceivePolicyCall {
                         senderPolicyId: REJECT_ALL_POLICY_ID,
@@ -1433,6 +1499,7 @@ mod tests {
 
             // Zero is the originator-recovery sentinel; the caller's own address selects receiver recovery.
             registry.set_receive_policy(
+                &mut crate::storage::StorageCtx::test_writable(),
                 account,
                 ITIP403Registry::setReceivePolicyCall {
                     senderPolicyId: REJECT_ALL_POLICY_ID,
@@ -1441,6 +1508,7 @@ mod tests {
                 },
             )?;
             registry.set_receive_policy(
+                &mut crate::storage::StorageCtx::test_writable(),
                 account,
                 ITIP403Registry::setReceivePolicyCall {
                     senderPolicyId: REJECT_ALL_POLICY_ID,
@@ -1468,6 +1536,7 @@ mod tests {
             let mut registry = TIP403Registry::new();
 
             let missing_result = registry.set_receive_policy(
+                &mut crate::storage::StorageCtx::test_writable(),
                 account,
                 ITIP403Registry::setReceivePolicyCall {
                     senderPolicyId: 99,
@@ -1483,6 +1552,7 @@ mod tests {
             ));
 
             let compound_id = registry.create_compound_policy(
+                &mut crate::storage::StorageCtx::test_writable(),
                 creator,
                 ITIP403Registry::createCompoundPolicyCall {
                     senderPolicyId: REJECT_ALL_POLICY_ID,
@@ -1491,6 +1561,7 @@ mod tests {
                 },
             )?;
             let compound_result = registry.set_receive_policy(
+                &mut crate::storage::StorageCtx::test_writable(),
                 account,
                 ITIP403Registry::setReceivePolicyCall {
                     senderPolicyId: compound_id,
@@ -1516,6 +1587,7 @@ mod tests {
         StorageCtx::enter(&mut storage, || {
             let mut registry = TIP403Registry::new();
             registry.set_receive_policy(
+                &mut crate::storage::StorageCtx::test_writable(),
                 receiver,
                 ITIP403Registry::setReceivePolicyCall {
                     senderPolicyId: REJECT_ALL_POLICY_ID,
@@ -1540,6 +1612,7 @@ mod tests {
         StorageCtx::enter(&mut storage, || {
             let mut registry = TIP403Registry::new();
             registry.set_receive_policy(
+                &mut crate::storage::StorageCtx::test_writable(),
                 receiver,
                 ITIP403Registry::setReceivePolicyCall {
                     senderPolicyId: REJECT_ALL_POLICY_ID,
@@ -1581,6 +1654,7 @@ mod tests {
             let mut created_policy_ids = Vec::new();
             for i in 0..50 {
                 let policy_id = registry.create_policy(
+                    &mut crate::storage::StorageCtx::test_writable(),
                     admin,
                     ITIP403Registry::createPolicyCall {
                         admin,
@@ -1619,6 +1693,7 @@ mod tests {
 
             // Create two simple policies to reference
             let sender_policy = registry.create_policy(
+                &mut crate::storage::StorageCtx::test_writable(),
                 admin,
                 ITIP403Registry::createPolicyCall {
                     admin,
@@ -1626,6 +1701,7 @@ mod tests {
                 },
             )?;
             let recipient_policy = registry.create_policy(
+                &mut crate::storage::StorageCtx::test_writable(),
                 admin,
                 ITIP403Registry::createPolicyCall {
                     admin,
@@ -1633,6 +1709,7 @@ mod tests {
                 },
             )?;
             let mint_recipient_policy = registry.create_policy(
+                &mut crate::storage::StorageCtx::test_writable(),
                 admin,
                 ITIP403Registry::createPolicyCall {
                     admin,
@@ -1642,6 +1719,7 @@ mod tests {
 
             // Create compound policy
             let compound_id = registry.create_compound_policy(
+                &mut crate::storage::StorageCtx::test_writable(),
                 creator,
                 ITIP403Registry::createCompoundPolicyCall {
                     senderPolicyId: sender_policy,
@@ -1684,6 +1762,7 @@ mod tests {
 
             // Try to create compound policy with non-existent policy IDs
             let result = registry.create_compound_policy(
+                &mut crate::storage::StorageCtx::test_writable(),
                 creator,
                 ITIP403Registry::createCompoundPolicyCall {
                     senderPolicyId: 999,
@@ -1707,6 +1786,7 @@ mod tests {
 
             // Create a simple policy
             let simple_policy = registry.create_policy(
+                &mut crate::storage::StorageCtx::test_writable(),
                 admin,
                 ITIP403Registry::createPolicyCall {
                     admin,
@@ -1716,6 +1796,7 @@ mod tests {
 
             // Create a compound policy
             let compound_id = registry.create_compound_policy(
+                &mut crate::storage::StorageCtx::test_writable(),
                 creator,
                 ITIP403Registry::createCompoundPolicyCall {
                     senderPolicyId: 1,
@@ -1726,6 +1807,7 @@ mod tests {
 
             // Try to create another compound policy referencing the first compound
             let result = registry.create_compound_policy(
+                &mut crate::storage::StorageCtx::test_writable(),
                 creator,
                 ITIP403Registry::createCompoundPolicyCall {
                     senderPolicyId: compound_id, // This should fail - can't reference compound
@@ -1751,6 +1833,7 @@ mod tests {
 
             // Create sender whitelist (only Alice can send)
             let sender_policy = registry.create_policy(
+                &mut crate::storage::StorageCtx::test_writable(),
                 admin,
                 ITIP403Registry::createPolicyCall {
                     admin,
@@ -1758,6 +1841,7 @@ mod tests {
                 },
             )?;
             registry.modify_policy_whitelist(
+                &mut crate::storage::StorageCtx::test_writable(),
                 admin,
                 ITIP403Registry::modifyPolicyWhitelistCall {
                     policyId: sender_policy,
@@ -1768,6 +1852,7 @@ mod tests {
 
             // Create recipient whitelist (only Bob can receive)
             let recipient_policy = registry.create_policy(
+                &mut crate::storage::StorageCtx::test_writable(),
                 admin,
                 ITIP403Registry::createPolicyCall {
                     admin,
@@ -1775,6 +1860,7 @@ mod tests {
                 },
             )?;
             registry.modify_policy_whitelist(
+                &mut crate::storage::StorageCtx::test_writable(),
                 admin,
                 ITIP403Registry::modifyPolicyWhitelistCall {
                     policyId: recipient_policy,
@@ -1785,6 +1871,7 @@ mod tests {
 
             // Create compound policy
             let compound_id = registry.create_compound_policy(
+                &mut crate::storage::StorageCtx::test_writable(),
                 creator,
                 ITIP403Registry::createCompoundPolicyCall {
                     senderPolicyId: sender_policy,
@@ -1824,6 +1911,7 @@ mod tests {
 
             // Create sender whitelist with user
             let sender_policy = registry.create_policy(
+                &mut crate::storage::StorageCtx::test_writable(),
                 admin,
                 ITIP403Registry::createPolicyCall {
                     admin,
@@ -1831,6 +1919,7 @@ mod tests {
                 },
             )?;
             registry.modify_policy_whitelist(
+                &mut crate::storage::StorageCtx::test_writable(),
                 admin,
                 ITIP403Registry::modifyPolicyWhitelistCall {
                     policyId: sender_policy,
@@ -1841,6 +1930,7 @@ mod tests {
 
             // Create recipient whitelist WITHOUT user
             let recipient_policy = registry.create_policy(
+                &mut crate::storage::StorageCtx::test_writable(),
                 admin,
                 ITIP403Registry::createPolicyCall {
                     admin,
@@ -1850,6 +1940,7 @@ mod tests {
 
             // Create compound policy
             let compound_id = registry.create_compound_policy(
+                &mut crate::storage::StorageCtx::test_writable(),
                 creator,
                 ITIP403Registry::createCompoundPolicyCall {
                     senderPolicyId: sender_policy,
@@ -1868,6 +1959,7 @@ mod tests {
 
             // Now add user to recipient whitelist
             registry.modify_policy_whitelist(
+                &mut crate::storage::StorageCtx::test_writable(),
                 admin,
                 ITIP403Registry::modifyPolicyWhitelistCall {
                     policyId: recipient_policy,
@@ -1897,6 +1989,7 @@ mod tests {
 
                 // Create sender and recipient whitelists
                 let sender_policy = registry.create_policy(
+                    &mut crate::storage::StorageCtx::test_writable(),
                     admin,
                     ITIP403Registry::createPolicyCall {
                         admin,
@@ -1904,6 +1997,7 @@ mod tests {
                     },
                 )?;
                 let recipient_policy = registry.create_policy(
+                    &mut crate::storage::StorageCtx::test_writable(),
                     admin,
                     ITIP403Registry::createPolicyCall {
                         admin,
@@ -1913,6 +2007,7 @@ mod tests {
 
                 // Create compound policy
                 let compound_id = registry.create_compound_policy(
+                    &mut crate::storage::StorageCtx::test_writable(),
                     creator,
                     ITIP403Registry::createCompoundPolicyCall {
                         senderPolicyId: sender_policy,
@@ -1923,6 +2018,7 @@ mod tests {
 
                 // User not in sender whitelist, but in recipient whitelist
                 registry.modify_policy_whitelist(
+                    &mut crate::storage::StorageCtx::test_writable(),
                     admin,
                     ITIP403Registry::modifyPolicyWhitelistCall {
                         policyId: recipient_policy,
@@ -1934,6 +2030,7 @@ mod tests {
 
                 // User in sender whitelist, not in recipient whitelist
                 registry.modify_policy_whitelist(
+                    &mut crate::storage::StorageCtx::test_writable(),
                     admin,
                     ITIP403Registry::modifyPolicyWhitelistCall {
                         policyId: sender_policy,
@@ -1942,6 +2039,7 @@ mod tests {
                     },
                 )?;
                 registry.modify_policy_whitelist(
+                    &mut crate::storage::StorageCtx::test_writable(),
                     admin,
                     ITIP403Registry::modifyPolicyWhitelistCall {
                         policyId: recipient_policy,
@@ -1953,6 +2051,7 @@ mod tests {
 
                 // User in both whitelists
                 registry.modify_policy_whitelist(
+                    &mut crate::storage::StorageCtx::test_writable(),
                     admin,
                     ITIP403Registry::modifyPolicyWhitelistCall {
                         policyId: recipient_policy,
@@ -1979,6 +2078,7 @@ mod tests {
 
             // Create a simple whitelist policy with user
             let policy_id = registry.create_policy(
+                &mut crate::storage::StorageCtx::test_writable(),
                 admin,
                 ITIP403Registry::createPolicyCall {
                     admin,
@@ -1986,6 +2086,7 @@ mod tests {
                 },
             )?;
             registry.modify_policy_whitelist(
+                &mut crate::storage::StorageCtx::test_writable(),
                 admin,
                 ITIP403Registry::modifyPolicyWhitelistCall {
                     policyId: policy_id,
@@ -2023,6 +2124,7 @@ mod tests {
             // recipientPolicyId = 0 (always-reject)
             // mintRecipientPolicyId = 1 (always-allow)
             let compound_id = registry.create_compound_policy(
+                &mut crate::storage::StorageCtx::test_writable(),
                 creator,
                 ITIP403Registry::createCompoundPolicyCall {
                     senderPolicyId: 1,
@@ -2059,6 +2161,7 @@ mod tests {
 
             // Create vendor whitelist (only vendor can receive transfers)
             let vendor_whitelist = registry.create_policy(
+                &mut crate::storage::StorageCtx::test_writable(),
                 admin,
                 ITIP403Registry::createPolicyCall {
                     admin,
@@ -2066,6 +2169,7 @@ mod tests {
                 },
             )?;
             registry.modify_policy_whitelist(
+                &mut crate::storage::StorageCtx::test_writable(),
                 admin,
                 ITIP403Registry::modifyPolicyWhitelistCall {
                     policyId: vendor_whitelist,
@@ -2079,6 +2183,7 @@ mod tests {
             // - Only vendor can receive transfers (recipientPolicyId = vendor_whitelist)
             // - Anyone can receive mints (mintRecipientPolicyId = 1)
             let compound_id = registry.create_compound_policy(
+                &mut crate::storage::StorageCtx::test_writable(),
                 creator,
                 ITIP403Registry::createCompoundPolicyCall {
                     senderPolicyId: 1,                   // anyone can send
@@ -2111,6 +2216,7 @@ mod tests {
         let compound_id = StorageCtx::enter(&mut storage, || {
             let mut registry = TIP403Registry::new();
             registry.create_compound_policy(
+                &mut crate::storage::StorageCtx::test_writable(),
                 creator,
                 ITIP403Registry::createCompoundPolicyCall {
                     senderPolicyId: 1,
@@ -2148,6 +2254,7 @@ mod tests {
                 ITIP403Registry::PolicyType::__Invalid,
             ] {
                 let result = registry.create_policy(
+                    &mut crate::storage::StorageCtx::test_writable(),
                     admin,
                     ITIP403Registry::createPolicyCall {
                         admin,
@@ -2179,6 +2286,7 @@ mod tests {
                 ITIP403Registry::PolicyType::__Invalid,
             ] {
                 let result = registry.create_policy_with_accounts(
+                    &mut crate::storage::StorageCtx::test_writable(),
                     admin,
                     ITIP403Registry::createPolicyWithAccountsCall {
                         admin,
@@ -2215,6 +2323,7 @@ mod tests {
                 ITIP403Registry::PolicyType::__Invalid,
             ] {
                 let policy_id = registry.create_policy(
+                    &mut crate::storage::StorageCtx::test_writable(),
                     admin,
                     ITIP403Registry::createPolicyCall {
                         admin,
@@ -2245,6 +2354,7 @@ mod tests {
 
             // WHITELIST should store as 0
             let whitelist_id = registry.create_policy(
+                &mut crate::storage::StorageCtx::test_writable(),
                 admin,
                 ITIP403Registry::createPolicyCall {
                     admin,
@@ -2256,6 +2366,7 @@ mod tests {
 
             // BLACKLIST should store as 1
             let blacklist_id = registry.create_policy(
+                &mut crate::storage::StorageCtx::test_writable(),
                 admin,
                 ITIP403Registry::createPolicyCall {
                     admin,
@@ -2283,6 +2394,7 @@ mod tests {
                 ITIP403Registry::PolicyType::__Invalid,
             ] {
                 let result = registry.create_policy_with_accounts(
+                    &mut crate::storage::StorageCtx::test_writable(),
                     admin,
                     ITIP403Registry::createPolicyWithAccountsCall {
                         admin,
@@ -2300,6 +2412,7 @@ mod tests {
 
             // With empty accounts: succeeds (loop never enters revert path)
             let policy_id = registry.create_policy_with_accounts(
+                &mut crate::storage::StorageCtx::test_writable(),
                 admin,
                 ITIP403Registry::createPolicyWithAccountsCall {
                     admin,
@@ -2323,6 +2436,7 @@ mod tests {
 
             // Create a policy with COMPOUND type (will be stored as 255)
             let policy_id = registry.create_policy(
+                &mut crate::storage::StorageCtx::test_writable(),
                 admin,
                 ITIP403Registry::createPolicyCall {
                     admin,
@@ -2351,6 +2465,7 @@ mod tests {
 
             // Create a policy with COMPOUND type (stored as 255)
             let policy_id = registry.create_policy(
+                &mut crate::storage::StorageCtx::test_writable(),
                 admin,
                 ITIP403Registry::createPolicyCall {
                     admin,
@@ -2377,6 +2492,7 @@ mod tests {
         let policy_id = StorageCtx::enter(&mut storage, || {
             let mut registry = TIP403Registry::new();
             registry.create_policy(
+                &mut crate::storage::StorageCtx::test_writable(),
                 admin,
                 ITIP403Registry::createPolicyCall {
                     admin,
@@ -2422,6 +2538,7 @@ mod tests {
         let invalid_policy_id = StorageCtx::enter(&mut storage, || {
             let mut registry = TIP403Registry::new();
             registry.create_policy(
+                &mut crate::storage::StorageCtx::test_writable(),
                 admin,
                 ITIP403Registry::createPolicyCall {
                     admin,
@@ -2436,6 +2553,7 @@ mod tests {
             let mut registry = TIP403Registry::new();
 
             let valid_policy_id = registry.create_policy(
+                &mut crate::storage::StorageCtx::test_writable(),
                 admin,
                 ITIP403Registry::createPolicyCall {
                     admin,
@@ -2445,6 +2563,7 @@ mod tests {
 
             // Attempting to create a compound policy referencing the legacy 255 policy should fail
             let result = registry.create_compound_policy(
+                &mut crate::storage::StorageCtx::test_writable(),
                 creator,
                 ITIP403Registry::createCompoundPolicyCall {
                     senderPolicyId: invalid_policy_id,
@@ -2470,6 +2589,7 @@ mod tests {
 
             // WHITELIST should store as 0
             let whitelist_id = registry.create_policy(
+                &mut crate::storage::StorageCtx::test_writable(),
                 admin,
                 ITIP403Registry::createPolicyCall {
                     admin,
@@ -2481,6 +2601,7 @@ mod tests {
 
             // BLACKLIST should store as 1
             let blacklist_id = registry.create_policy(
+                &mut crate::storage::StorageCtx::test_writable(),
                 admin,
                 ITIP403Registry::createPolicyCall {
                     admin,
@@ -2507,6 +2628,7 @@ mod tests {
         let policy_id = StorageCtx::enter(&mut storage, || {
             let mut registry = TIP403Registry::new();
             registry.create_policy(
+                &mut crate::storage::StorageCtx::test_writable(),
                 admin,
                 ITIP403Registry::createPolicyCall {
                     admin,
@@ -2540,6 +2662,7 @@ mod tests {
 
             // Create and test whitelist on pre-T1
             let whitelist_id = registry.create_policy(
+                &mut crate::storage::StorageCtx::test_writable(),
                 admin,
                 ITIP403Registry::createPolicyCall {
                     admin,
@@ -2552,6 +2675,7 @@ mod tests {
 
             // Add to whitelist
             registry.modify_policy_whitelist(
+                &mut crate::storage::StorageCtx::test_writable(),
                 admin,
                 ITIP403Registry::modifyPolicyWhitelistCall {
                     policyId: whitelist_id,
@@ -2565,6 +2689,7 @@ mod tests {
 
             // Create and test blacklist on pre-T1
             let blacklist_id = registry.create_policy(
+                &mut crate::storage::StorageCtx::test_writable(),
                 admin,
                 ITIP403Registry::createPolicyCall {
                     admin,
@@ -2577,6 +2702,7 @@ mod tests {
 
             // Add to blacklist
             registry.modify_policy_blacklist(
+                &mut crate::storage::StorageCtx::test_writable(),
                 admin,
                 ITIP403Registry::modifyPolicyBlacklistCall {
                     policyId: blacklist_id,
@@ -2601,6 +2727,7 @@ mod tests {
             let mut registry = TIP403Registry::new();
 
             let policy_id = registry.create_policy(
+                &mut crate::storage::StorageCtx::test_writable(),
                 admin,
                 ITIP403Registry::createPolicyCall {
                     admin,
@@ -2641,6 +2768,7 @@ mod tests {
                 ITIP403Registry::PolicyType::__Invalid,
             ] {
                 let result = registry.create_policy(
+                    &mut crate::storage::StorageCtx::test_writable(),
                     admin,
                     ITIP403Registry::createPolicyCall {
                         admin,
@@ -2668,6 +2796,7 @@ mod tests {
             let mut registry = TIP403Registry::new();
 
             registry.create_policy(
+                &mut crate::storage::StorageCtx::test_writable(),
                 admin,
                 ITIP403Registry::createPolicyCall {
                     admin,
@@ -2676,6 +2805,7 @@ mod tests {
             )?;
 
             registry.create_policy(
+                &mut crate::storage::StorageCtx::test_writable(),
                 admin,
                 ITIP403Registry::createPolicyCall {
                     admin,
@@ -2731,6 +2861,7 @@ mod tests {
 
             // Simple policy should return IncompatiblePolicyType
             let simple_policy_id = registry.create_policy(
+                &mut crate::storage::StorageCtx::test_writable(),
                 admin,
                 ITIP403Registry::createPolicyCall {
                     admin,
@@ -2761,6 +2892,7 @@ mod tests {
         let policy_id = StorageCtx::enter(&mut storage, || {
             let mut registry = TIP403Registry::new();
             registry.create_policy(
+                &mut crate::storage::StorageCtx::test_writable(),
                 admin,
                 ITIP403Registry::createPolicyCall {
                     admin,
@@ -2817,7 +2949,7 @@ mod tests {
             assert!(!registry.is_initialized()?);
 
             // Initialize
-            registry.initialize()?;
+            registry.initialize(&mut crate::storage::StorageCtx::test_writable())?;
 
             // After init, should be initialized
             assert!(registry.is_initialized()?);
@@ -2839,6 +2971,7 @@ mod tests {
 
             // Create a policy to get policy_id = 2 (counter starts at 2)
             let policy_id = registry.create_policy(
+                &mut crate::storage::StorageCtx::test_writable(),
                 admin,
                 ITIP403Registry::createPolicyCall {
                     admin,
@@ -2912,6 +3045,7 @@ mod tests {
         StorageCtx::enter(&mut storage, || {
             let mut registry = TIP403Registry::new();
             let policy_id = registry.create_policy(
+                &mut crate::storage::StorageCtx::test_writable(),
                 admin,
                 ITIP403Registry::createPolicyCall {
                     admin,
@@ -2920,6 +3054,7 @@ mod tests {
             )?;
 
             let result = registry.modify_policy_whitelist(
+                &mut crate::storage::StorageCtx::test_writable(),
                 admin,
                 ITIP403Registry::modifyPolicyWhitelistCall {
                     policyId: policy_id,
@@ -2946,6 +3081,7 @@ mod tests {
         StorageCtx::enter(&mut storage, || {
             let mut registry = TIP403Registry::new();
             let policy_id = registry.create_policy(
+                &mut crate::storage::StorageCtx::test_writable(),
                 admin,
                 ITIP403Registry::createPolicyCall {
                     admin,
@@ -2954,6 +3090,7 @@ mod tests {
             )?;
 
             let result = registry.modify_policy_blacklist(
+                &mut crate::storage::StorageCtx::test_writable(),
                 admin,
                 ITIP403Registry::modifyPolicyBlacklistCall {
                     policyId: policy_id,
@@ -2981,6 +3118,7 @@ mod tests {
             let mut registry = TIP403Registry::new();
 
             let result = registry.create_policy_with_accounts(
+                &mut crate::storage::StorageCtx::test_writable(),
                 admin,
                 ITIP403Registry::createPolicyWithAccountsCall {
                     admin,

@@ -57,13 +57,55 @@ fn test_array_storage() {
             address!("0x0000000000000000000000000000000000000033"),
         ];
 
-        layout.field_a.write(U256::ONE).unwrap();
-        layout.small_array.write(small_array).unwrap();
-        layout.field_b.write(U256::from(2)).unwrap();
-        layout.large_array.write(large_array).unwrap();
-        layout.field_c.write(U256::from(3)).unwrap();
-        layout.auto_array.write(auto_array).unwrap();
-        layout.field_d.write(U256::from(4)).unwrap();
+        layout
+            .field_a
+            .write(
+                &mut tempo_precompiles::storage::StorageCtx::test_writable(),
+                U256::ONE,
+            )
+            .unwrap();
+        layout
+            .small_array
+            .write(
+                &mut tempo_precompiles::storage::StorageCtx::test_writable(),
+                small_array,
+            )
+            .unwrap();
+        layout
+            .field_b
+            .write(
+                &mut tempo_precompiles::storage::StorageCtx::test_writable(),
+                U256::from(2),
+            )
+            .unwrap();
+        layout
+            .large_array
+            .write(
+                &mut tempo_precompiles::storage::StorageCtx::test_writable(),
+                large_array,
+            )
+            .unwrap();
+        layout
+            .field_c
+            .write(
+                &mut tempo_precompiles::storage::StorageCtx::test_writable(),
+                U256::from(3),
+            )
+            .unwrap();
+        layout
+            .auto_array
+            .write(
+                &mut tempo_precompiles::storage::StorageCtx::test_writable(),
+                auto_array,
+            )
+            .unwrap();
+        layout
+            .field_d
+            .write(
+                &mut tempo_precompiles::storage::StorageCtx::test_writable(),
+                U256::from(4),
+            )
+            .unwrap();
 
         // Verify data is properly stored
         assert_eq!(layout.field_a.read().unwrap(), U256::ONE);
@@ -75,15 +117,28 @@ fn test_array_storage() {
         assert_eq!(layout.field_d.read().unwrap(), U256::from(4));
 
         // Test individual element access
-        layout.large_array[1].delete().unwrap();
-        layout.large_array[2].write(U256::from(222)).unwrap();
+        layout.large_array[1]
+            .delete(&mut tempo_precompiles::storage::StorageCtx::test_writable())
+            .unwrap();
+        layout.large_array[2]
+            .write(
+                &mut tempo_precompiles::storage::StorageCtx::test_writable(),
+                U256::from(222),
+            )
+            .unwrap();
         assert_eq!(layout.large_array[0].read().unwrap(), U256::from(100));
         assert_eq!(layout.large_array[1].read().unwrap(), U256::ZERO);
         assert_eq!(layout.large_array[2].read().unwrap(), U256::from(222));
 
         // Test delete
-        layout.large_array.delete().unwrap();
-        layout.auto_array.delete().unwrap();
+        layout
+            .large_array
+            .delete(&mut tempo_precompiles::storage::StorageCtx::test_writable())
+            .unwrap();
+        layout
+            .auto_array
+            .delete(&mut tempo_precompiles::storage::StorageCtx::test_writable())
+            .unwrap();
 
         // Verify array slots are zeroed
         assert_eq!(layout.large_array.read().unwrap(), <[U256; 5]>::default());
@@ -115,7 +170,13 @@ fn test_array_element_access() {
     StorageCtx::enter(&mut storage, || {
         // Test packed array element access (u8 elements, T::BYTES = 1 <= 16)
         let small_data = [42u8; 32];
-        layout.small_array.write(small_data).unwrap();
+        layout
+            .small_array
+            .write(
+                &mut tempo_precompiles::storage::StorageCtx::test_writable(),
+                small_data,
+            )
+            .unwrap();
 
         // Read individual elements from packed array
         assert_eq!(layout.small_array[0].read().unwrap(), 42_u8);
@@ -123,8 +184,15 @@ fn test_array_element_access() {
         assert_eq!(layout.small_array[31].read().unwrap(), 42_u8);
 
         // Write individual element in packed array
-        layout.small_array[10].write(99u8).unwrap();
-        layout.small_array[11].delete().unwrap();
+        layout.small_array[10]
+            .write(
+                &mut tempo_precompiles::storage::StorageCtx::test_writable(),
+                99u8,
+            )
+            .unwrap();
+        layout.small_array[11]
+            .delete(&mut tempo_precompiles::storage::StorageCtx::test_writable())
+            .unwrap();
         assert_eq!(layout.small_array[9].read().unwrap(), 42_u8);
         assert_eq!(layout.small_array[10].read().unwrap(), 99_u8);
         assert_eq!(layout.small_array[11].read().unwrap(), 0_u8);
@@ -137,7 +205,13 @@ fn test_array_element_access() {
             U256::from(400),
             U256::from(500),
         ];
-        layout.large_array.write(large_data).unwrap();
+        layout
+            .large_array
+            .write(
+                &mut tempo_precompiles::storage::StorageCtx::test_writable(),
+                large_data,
+            )
+            .unwrap();
 
         // Read individual elements from unpacked array
         assert_eq!(layout.large_array[0].read().unwrap(), U256::from(100));
@@ -145,14 +219,21 @@ fn test_array_element_access() {
         assert_eq!(layout.large_array[4].read().unwrap(), U256::from(500));
 
         // Write individual element in unpacked array
-        layout.large_array[2].write(U256::from(999)).unwrap();
+        layout.large_array[2]
+            .write(
+                &mut tempo_precompiles::storage::StorageCtx::test_writable(),
+                U256::from(999),
+            )
+            .unwrap();
         assert_eq!(layout.large_array[2].read().unwrap(), U256::from(999));
         // Verify other elements unchanged
         assert_eq!(layout.large_array[1].read().unwrap(), U256::from(200));
         assert_eq!(layout.large_array[3].read().unwrap(), U256::from(400));
 
         // Delete individual element in unpacked array
-        layout.large_array[2].delete().unwrap();
+        layout.large_array[2]
+            .delete(&mut tempo_precompiles::storage::StorageCtx::test_writable())
+            .unwrap();
         assert_eq!(layout.large_array[2].read().unwrap(), U256::ZERO);
         assert_eq!(layout.large_array[1].read().unwrap(), U256::from(200));
 
@@ -189,11 +270,11 @@ proptest! {
 
         StorageCtx::enter(&mut storage, || {
             // Store random values
-            layout.field_a.write(field_a_val)?;
-        layout.small_array.write(small_array)?;
-        layout.field_b.write(field_b_val)?;
-        layout.large_array.write(large_array)?;
-        layout.field_c.write(field_c_val)?;
+            layout.field_a.write(&mut tempo_precompiles::storage::StorageCtx::test_writable(), field_a_val)?;
+        layout.small_array.write(&mut tempo_precompiles::storage::StorageCtx::test_writable(), small_array)?;
+        layout.field_b.write(&mut tempo_precompiles::storage::StorageCtx::test_writable(), field_b_val)?;
+        layout.large_array.write(&mut tempo_precompiles::storage::StorageCtx::test_writable(), large_array)?;
+        layout.field_c.write(&mut tempo_precompiles::storage::StorageCtx::test_writable(), field_c_val)?;
 
         // Roundtrip property
         prop_assert_eq!(layout.field_a.read()?, field_a_val);
@@ -204,11 +285,11 @@ proptest! {
 
         // Test individual element access
         prop_assert_eq!(layout.large_array[2].read()?, large_array[2]);
-        layout.small_array[5].write(small_array[5])?;
+        layout.small_array[5].write(&mut tempo_precompiles::storage::StorageCtx::test_writable(), small_array[5])?;
         prop_assert_eq!(layout.small_array[5].read()?, small_array[5]);
 
         // Delete property for large_array
-        layout.large_array.delete()?;
+        layout.large_array.delete(&mut tempo_precompiles::storage::StorageCtx::test_writable())?;
         let default_array = [U256::ZERO; 5];
         prop_assert_eq!(layout.large_array.read()?, default_array);
 

@@ -155,12 +155,12 @@ fn gen_rust_unsigned_tests() -> TokenStream {
                         let mut slot = Slot::<#type_name>::new(base_slot, address);
 
                         // Verify store → load roundtrip
-                        slot.write(value).unwrap();
+                        slot.write(&mut StorageCtx::test_writable(), value).unwrap();
                         let loaded = slot.read().unwrap();
                         assert_eq!(value, loaded, concat!(#label, " roundtrip failed"));
 
                         // Verify delete works
-                        slot.delete().unwrap();
+                        slot.delete(&mut StorageCtx::test_writable()).unwrap();
                         let after_delete = slot.read().unwrap();
                         assert_eq!(after_delete, 0, concat!(#label, " not zero after delete"));
 
@@ -204,12 +204,12 @@ fn gen_rust_signed_tests() -> TokenStream {
                             let mut slot = Slot::<#type_name>::new(base_slot, address);
 
                             // Verify store → load roundtrip
-                            slot.write(value).unwrap();
+                            slot.write(&mut StorageCtx::test_writable(), value).unwrap();
                             let loaded = slot.read().unwrap();
                             assert_eq!(value, loaded, concat!(#label, " positive roundtrip failed"));
 
                             // Verify delete works
-                            slot.delete().unwrap();
+                            slot.delete(&mut StorageCtx::test_writable()).unwrap();
                             let after_delete = slot.read().unwrap();
                             assert_eq!(after_delete, 0, concat!(#label, " not zero after delete"));
 
@@ -229,12 +229,12 @@ fn gen_rust_signed_tests() -> TokenStream {
                             let mut slot = Slot::<#type_name>::new(base_slot, address);
 
                             // Verify store → load roundtrip
-                            slot.write(value).unwrap();
+                            slot.write(&mut StorageCtx::test_writable(), value).unwrap();
                             let loaded = slot.read().unwrap();
                             assert_eq!(value, loaded, concat!(#label, " negative roundtrip failed"));
 
                             // Verify delete works
-                            slot.delete().unwrap();
+                            slot.delete(&mut StorageCtx::test_writable()).unwrap();
                             let after_delete = slot.read().unwrap();
                             assert_eq!(after_delete, 0, concat!(#label, " not zero after delete"));
 
@@ -276,12 +276,12 @@ fn gen_alloy_unsigned_tests() -> TokenStream {
                         let mut slot = Slot::<::alloy::primitives::aliases::#type_name>::new(base_slot, address);
 
                         // Verify store → load roundtrip
-                        slot.write(value).unwrap();
+                        slot.write(&mut StorageCtx::test_writable(), value).unwrap();
                         let loaded = slot.read().unwrap();
                         assert_eq!(value, loaded, concat!(#label, " roundtrip failed"));
 
                         // Verify delete works
-                        slot.delete().unwrap();
+                        slot.delete(&mut StorageCtx::test_writable()).unwrap();
                         let after_delete = slot.read().unwrap();
                         assert_eq!(
                             after_delete,
@@ -331,12 +331,12 @@ fn gen_alloy_signed_tests() -> TokenStream {
                             let mut slot = Slot::<::alloy::primitives::aliases::#type_name>::new(base_slot, address);
 
                             // Verify store → load roundtrip
-                            slot.write(value).unwrap();
+                            slot.write(&mut StorageCtx::test_writable(), value).unwrap();
                             let loaded = slot.read().unwrap();
                             assert_eq!(value, loaded, concat!(#label, " positive roundtrip failed"));
 
                             // Verify delete works
-                            slot.delete().unwrap();
+                            slot.delete(&mut StorageCtx::test_writable()).unwrap();
                             let after_delete = slot.read().unwrap();
                             assert_eq!(
                                 after_delete,
@@ -360,12 +360,12 @@ fn gen_alloy_signed_tests() -> TokenStream {
                             let mut slot = Slot::<::alloy::primitives::aliases::#type_name>::new(base_slot, address);
 
                             // Verify store → load roundtrip
-                            slot.write(value).unwrap();
+                            slot.write(&mut StorageCtx::test_writable(), value).unwrap();
                             let loaded = slot.read().unwrap();
                             assert_eq!(value, loaded, concat!(#label, " negative roundtrip failed"));
 
                             // Verify delete works
-                            slot.delete().unwrap();
+                            slot.delete(&mut StorageCtx::test_writable()).unwrap();
                             let after_delete = slot.read().unwrap();
                             assert_eq!(
                                 after_delete,
@@ -409,7 +409,7 @@ fn gen_fixed_bytes_tests() -> TokenStream {
                         let mut slot = Slot::<::alloy::primitives::FixedBytes<#size>>::new(base_slot, address);
 
                         // Verify store → load roundtrip
-                        slot.write(value).unwrap();
+                        slot.write(&mut StorageCtx::test_writable(), value).unwrap();
                         let loaded = slot.read().unwrap();
                         assert_eq!(
                             value, loaded,
@@ -417,7 +417,7 @@ fn gen_fixed_bytes_tests() -> TokenStream {
                         );
 
                         // Verify delete works
-                        slot.delete().unwrap();
+                        slot.delete(&mut StorageCtx::test_writable()).unwrap();
                         let after_delete = slot.read().unwrap();
                         assert_eq!(
                             after_delete,

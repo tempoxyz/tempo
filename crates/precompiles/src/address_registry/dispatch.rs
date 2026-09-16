@@ -17,8 +17,8 @@ impl Precompile for AddressRegistry {
             |call| match call {
                 IAddressRegistry::IAddressRegistryCalls {
                     // Registration
-                    registerVirtualMaster(call) => mutate(call, msg_sender, |s, c| {
-                        self.register_virtual_master(s, c)
+                    registerVirtualMaster(call) => mutate(call, msg_sender, |write, s, c| {
+                        self.register_virtual_master(write, s, c)
                     }),
                     // View functions
                     getMaster(call) => view(call, |c| {

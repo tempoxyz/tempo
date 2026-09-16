@@ -200,19 +200,19 @@ pub trait Handler<T: Storable> {
     fn read(&self) -> Result<T>;
 
     /// Writes the value to storage.
-    fn write(&mut self, value: T) -> Result<()>;
+    fn write(&mut self, write: &mut crate::storage::WriteCtx, value: T) -> Result<()>;
 
     /// Deletes the value from storage (sets to zero).
-    fn delete(&mut self) -> Result<()>;
+    fn delete(&mut self, write: &mut crate::storage::WriteCtx) -> Result<()>;
 
     /// Reads the value from storage.
     fn t_read(&self) -> Result<T>;
 
     /// Writes the value to storage.
-    fn t_write(&mut self, value: T) -> Result<()>;
+    fn t_write(&mut self, write: &mut crate::storage::WriteCtx, value: T) -> Result<()>;
 
     /// Deletes the value from storage (sets to zero).
-    fn t_delete(&mut self) -> Result<()>;
+    fn t_delete(&mut self, write: &mut crate::storage::WriteCtx) -> Result<()>;
 }
 
 /// High-level storage operations for storable types.
@@ -221,7 +221,11 @@ pub trait Handler<T: Storable> {
 /// Types implement their own logic for handling packed vs full-slot contexts.
 pub trait Storable: StorableType + Sized {
     /// Load this type from storage at the given slot.
-    fn load<S: StorageOps>(storage: &S, slot: U256, ctx: LayoutCtx) -> Result<Self>;
+    fn load<S: crate::storage::StorageRead>(
+        storage: &S,
+        slot: U256,
+        ctx: LayoutCtx,
+    ) -> Result<Self>;
 
     /// Store this type to storage at the given slot.
     fn store<S: StorageOps>(&self, storage: &mut S, slot: U256, ctx: LayoutCtx) -> Result<()>;
@@ -296,7 +300,11 @@ pub trait FromWord: sealed::OnlyPrimitives {
 /// handling both full-slot and packed contexts automatically.
 impl<T: Packable> Storable for T {
     #[inline]
-    fn load<S: StorageOps>(storage: &S, slot: U256, ctx: LayoutCtx) -> Result<Self> {
+    fn load<S: crate::storage::StorageRead>(
+        storage: &S,
+        slot: U256,
+        ctx: LayoutCtx,
+    ) -> Result<Self> {
         const { assert!(T::IS_PACKABLE, "Packable requires IS_PACKABLE to be true") };
 
         match ctx.packed_offset() {

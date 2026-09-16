@@ -50,8 +50,8 @@ pub struct NonceManager {
 
 impl NonceManager {
     /// Initializes the nonce manager precompile storage layout.
-    pub fn initialize(&mut self) -> Result<()> {
-        self.__initialize()
+    pub fn initialize(&mut self, write: &mut crate::storage::WriteCtx) -> Result<()> {
+        self.__initialize(write)
     }
 
     /// Returns the current nonce for `account` at the given `nonceKey`.
@@ -75,7 +75,12 @@ impl NonceManager {
     /// # Errors
     /// - `InvalidNonceKey` — `nonce_key` is 0, which is reserved for the protocol nonce
     /// - `NonceOverflow` — the current nonce value is `u64::MAX` and cannot be incremented
-    pub fn increment_nonce(&mut self, account: Address, nonce_key: U256) -> Result<u64> {
+    pub fn increment_nonce(
+        &mut self,
+        write: &mut crate::storage::WriteCtx,
+        account: Address,
+        nonce_key: U256,
+    ) -> Result<u64> {
         if nonce_key == 0 {
             return Err(NonceError::invalid_nonce_key().into());
         }
@@ -86,9 +91,12 @@ impl NonceManager {
             .checked_add(1)
             .ok_or_else(NonceError::nonce_overflow)?;
 
-        self.nonces[account][nonce_key].write(new_nonce)?;
+        self.nonces[account][nonce_key].write(write, new_nonce)?;
 
-        self.emit_event(NonceEvent::nonce_incremented(account, nonce_key, new_nonce))?;
+        self.emit_event(
+            write,
+            NonceEvent::nonce_incremented(account, nonce_key, new_nonce),
+        )?;
 
         Ok(new_nonce)
     }
@@ -122,6 +130,7 @@ impl NonceManager {
     /// - `ExpiringNonceSetFull` — the circular buffer slot holds an unexpired entry that can't be evicted
     pub fn check_and_mark_expiring_nonce(
         &mut self,
+        write: &mut crate::storage::WriteCtx,
         expiring_nonce_hash: B256,
         valid_before: u64,
     ) -> Result<()> {
@@ -156,16 +165,16 @@ impl NonceManager {
                 return Err(NonceError::expiring_nonce_set_full().into());
             }
             // Clear the old entry from seen set
-            self.expiring_nonce_seen[old_hash].write(0)?;
+            self.expiring_nonce_seen[old_hash].write(write, 0)?;
         }
 
         // 5. Insert new entry
-        self.expiring_nonce_ring[idx].write(expiring_nonce_hash)?;
-        self.expiring_nonce_seen[expiring_nonce_hash].write(valid_before)?;
+        self.expiring_nonce_ring[idx].write(write, expiring_nonce_hash)?;
+        self.expiring_nonce_seen[expiring_nonce_hash].write(write, valid_before)?;
 
         // 6. Advance pointer (wraps at CAPACITY, not u32::MAX)
         let next = if ptr + 1 >= capacity { 0 } else { ptr + 1 };
-        self.expiring_nonce_ring_ptr.write(next)?;
+        self.expiring_nonce_ring_ptr.write(write, next)?;
 
         Ok(())
     }
@@ -238,11 +247,19 @@ mod tests {
             let account = address!("0x1111111111111111111111111111111111111111");
             let nonce_key = U256::from(5);
 
-            let new_nonce = mgr.increment_nonce(account, nonce_key)?;
+            let new_nonce = mgr.increment_nonce(
+                &mut crate::storage::StorageCtx::test_writable(),
+                account,
+                nonce_key,
+            )?;
             assert_eq!(new_nonce, 1);
             assert_eq!(mgr.emitted_events().len(), 1);
 
-            let new_nonce = mgr.increment_nonce(account, nonce_key)?;
+            let new_nonce = mgr.increment_nonce(
+                &mut crate::storage::StorageCtx::test_writable(),
+                account,
+                nonce_key,
+            )?;
             assert_eq!(new_nonce, 2);
             mgr.assert_emitted_events(vec![
                 INonce::NonceIncremented {
@@ -272,10 +289,18 @@ mod tests {
             let nonce_key = U256::from(5);
 
             for _ in 0..10 {
-                mgr.increment_nonce(account1, nonce_key)?;
+                mgr.increment_nonce(
+                    &mut crate::storage::StorageCtx::test_writable(),
+                    account1,
+                    nonce_key,
+                )?;
             }
             for _ in 0..20 {
-                mgr.increment_nonce(account2, nonce_key)?;
+                mgr.increment_nonce(
+                    &mut crate::storage::StorageCtx::test_writable(),
+                    account2,
+                    nonce_key,
+                )?;
             }
 
             let nonce1 = mgr.get_nonce(INonce::getNonceCall {
@@ -307,10 +332,18 @@ mod tests {
             let valid_before = now + 20; // 20s in future, within 30s window
 
             // First tx should succeed
-            mgr.check_and_mark_expiring_nonce(tx_hash, valid_before)?;
+            mgr.check_and_mark_expiring_nonce(
+                &mut crate::storage::StorageCtx::test_writable(),
+                tx_hash,
+                valid_before,
+            )?;
 
             // Same tx hash should fail (replay)
-            let result = mgr.check_and_mark_expiring_nonce(tx_hash, valid_before);
+            let result = mgr.check_and_mark_expiring_nonce(
+                &mut crate::storage::StorageCtx::test_writable(),
+                tx_hash,
+                valid_before,
+            );
             assert_eq!(
                 result.unwrap_err(),
                 TempoPrecompileError::NonceError(NonceError::expiring_nonce_replay())
@@ -331,28 +364,44 @@ mod tests {
             let tx_hash = B256::repeat_byte(0x22);
 
             // valid_before in the past should fail
-            let result = mgr.check_and_mark_expiring_nonce(tx_hash, now - 1);
+            let result = mgr.check_and_mark_expiring_nonce(
+                &mut crate::storage::StorageCtx::test_writable(),
+                tx_hash,
+                now - 1,
+            );
             assert_eq!(
                 result.unwrap_err(),
                 TempoPrecompileError::NonceError(NonceError::invalid_expiring_nonce_expiry())
             );
 
             // valid_before exactly at now should fail
-            let result = mgr.check_and_mark_expiring_nonce(tx_hash, now);
+            let result = mgr.check_and_mark_expiring_nonce(
+                &mut crate::storage::StorageCtx::test_writable(),
+                tx_hash,
+                now,
+            );
             assert_eq!(
                 result.unwrap_err(),
                 TempoPrecompileError::NonceError(NonceError::invalid_expiring_nonce_expiry())
             );
 
             // valid_before too far in future should fail before T11.
-            let result = mgr.check_and_mark_expiring_nonce(tx_hash, now + 31);
+            let result = mgr.check_and_mark_expiring_nonce(
+                &mut crate::storage::StorageCtx::test_writable(),
+                tx_hash,
+                now + 31,
+            );
             assert_eq!(
                 result.unwrap_err(),
                 TempoPrecompileError::NonceError(NonceError::invalid_expiring_nonce_expiry())
             );
 
             // valid_before at exactly the pre-T11 maximum should succeed
-            mgr.check_and_mark_expiring_nonce(tx_hash, now + 30)?;
+            mgr.check_and_mark_expiring_nonce(
+                &mut crate::storage::StorageCtx::test_writable(),
+                tx_hash,
+                now + 30,
+            )?;
 
             Ok(())
         })
@@ -366,10 +415,18 @@ mod tests {
         StorageCtx::enter(&mut storage, || {
             let mut mgr = NonceManager::new();
 
-            mgr.check_and_mark_expiring_nonce(B256::repeat_byte(0x22), now + 300)?;
+            mgr.check_and_mark_expiring_nonce(
+                &mut crate::storage::StorageCtx::test_writable(),
+                B256::repeat_byte(0x22),
+                now + 300,
+            )?;
             assert_eq!(
-                mgr.check_and_mark_expiring_nonce(B256::repeat_byte(0x23), now + 301)
-                    .unwrap_err(),
+                mgr.check_and_mark_expiring_nonce(
+                    &mut crate::storage::StorageCtx::test_writable(),
+                    B256::repeat_byte(0x23),
+                    now + 301
+                )
+                .unwrap_err(),
                 TempoPrecompileError::NonceError(NonceError::invalid_expiring_nonce_expiry())
             );
 
@@ -389,7 +446,11 @@ mod tests {
             let tx_hash1 = B256::repeat_byte(0x33);
 
             // Insert first tx
-            mgr.check_and_mark_expiring_nonce(tx_hash1, valid_before)?;
+            mgr.check_and_mark_expiring_nonce(
+                &mut crate::storage::StorageCtx::test_writable(),
+                tx_hash1,
+                valid_before,
+            )?;
 
             // Verify it's seen
             assert!(mgr.is_expiring_nonce_seen(tx_hash1, now)?);
@@ -408,7 +469,11 @@ mod tests {
             let mut mgr = NonceManager::new();
 
             let tx_hash2 = B256::repeat_byte(0x44);
-            mgr.check_and_mark_expiring_nonce(tx_hash2, new_valid_before)?;
+            mgr.check_and_mark_expiring_nonce(
+                &mut crate::storage::StorageCtx::test_writable(),
+                tx_hash2,
+                new_valid_before,
+            )?;
 
             // tx_hash1 should now be fully evicted (since it was at ring position 0)
             // and tx_hash2 replaces it
@@ -427,12 +492,19 @@ mod tests {
             let mut mgr = NonceManager::new();
 
             // Manually set pointer to just before capacity to test wrap
-            mgr.expiring_nonce_ring_ptr.write(capacity - 1)?;
+            mgr.expiring_nonce_ring_ptr.write(
+                &mut crate::storage::StorageCtx::test_writable(),
+                capacity - 1,
+            )?;
 
             // Insert a tx - pointer should wrap to 0
             let tx_hash = B256::repeat_byte(0x77);
             let valid_before = now + 20;
-            mgr.check_and_mark_expiring_nonce(tx_hash, valid_before)?;
+            mgr.check_and_mark_expiring_nonce(
+                &mut crate::storage::StorageCtx::test_writable(),
+                tx_hash,
+                valid_before,
+            )?;
 
             // Pointer should now be 0 (wrapped at capacity)
             let ptr = mgr.expiring_nonce_ring_ptr.read()?;
@@ -440,7 +512,11 @@ mod tests {
 
             // Insert another tx - pointer should be 1
             let tx_hash2 = B256::repeat_byte(0x88);
-            mgr.check_and_mark_expiring_nonce(tx_hash2, valid_before)?;
+            mgr.check_and_mark_expiring_nonce(
+                &mut crate::storage::StorageCtx::test_writable(),
+                tx_hash2,
+                valid_before,
+            )?;
 
             let ptr = mgr.expiring_nonce_ring_ptr.read()?;
             assert_eq!(ptr, 1, "Pointer should increment to 1 after wrap");
@@ -469,7 +545,7 @@ mod tests {
             assert!(!mgr.is_initialized()?);
 
             // Initialize
-            mgr.initialize()?;
+            mgr.initialize(&mut crate::storage::StorageCtx::test_writable())?;
 
             // After initialization, contract should be initialized
             assert!(mgr.is_initialized()?);

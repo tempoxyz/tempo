@@ -25,13 +25,42 @@ fn test_mixed_slot_allocation() {
 
     StorageCtx::enter(&mut storage, || {
         // Set all fields
-        mixed.field_a.write(U256::from(1)).unwrap();
-        mixed.field_b.write(U256::from(2)).unwrap();
-        mixed.field_c.write(U256::from(3)).unwrap();
-        mixed.field_d.write(U256::from(4)).unwrap();
+        mixed
+            .field_a
+            .write(
+                &mut tempo_precompiles::storage::StorageCtx::test_writable(),
+                U256::from(1),
+            )
+            .unwrap();
+        mixed
+            .field_b
+            .write(
+                &mut tempo_precompiles::storage::StorageCtx::test_writable(),
+                U256::from(2),
+            )
+            .unwrap();
+        mixed
+            .field_c
+            .write(
+                &mut tempo_precompiles::storage::StorageCtx::test_writable(),
+                U256::from(3),
+            )
+            .unwrap();
+        mixed
+            .field_d
+            .write(
+                &mut tempo_precompiles::storage::StorageCtx::test_writable(),
+                U256::from(4),
+            )
+            .unwrap();
 
         let addr_at = Address::random();
-        mixed.field_e[addr_at].write(U256::from(5)).unwrap();
+        mixed.field_e[addr_at]
+            .write(
+                &mut tempo_precompiles::storage::StorageCtx::test_writable(),
+                U256::from(5),
+            )
+            .unwrap();
 
         // Verify values
         assert_eq!(mixed.field_a.read().unwrap(), U256::from(1));
@@ -111,13 +140,55 @@ fn test_base_slots() {
 
     StorageCtx::enter(&mut storage, || {
         // Set values to verify slot assignments
-        layout.field_a.write(U256::ONE).unwrap();
-        layout.field_b.write(U256::from(2)).unwrap();
-        layout.field_c.write(U256::from(3)).unwrap();
-        layout.field_d.write(U256::from(4)).unwrap();
-        layout.field_e.write(U256::from(5)).unwrap();
-        layout.field_f.write(U256::from(6)).unwrap();
-        layout.field_g.write(U256::from(7)).unwrap();
+        layout
+            .field_a
+            .write(
+                &mut tempo_precompiles::storage::StorageCtx::test_writable(),
+                U256::ONE,
+            )
+            .unwrap();
+        layout
+            .field_b
+            .write(
+                &mut tempo_precompiles::storage::StorageCtx::test_writable(),
+                U256::from(2),
+            )
+            .unwrap();
+        layout
+            .field_c
+            .write(
+                &mut tempo_precompiles::storage::StorageCtx::test_writable(),
+                U256::from(3),
+            )
+            .unwrap();
+        layout
+            .field_d
+            .write(
+                &mut tempo_precompiles::storage::StorageCtx::test_writable(),
+                U256::from(4),
+            )
+            .unwrap();
+        layout
+            .field_e
+            .write(
+                &mut tempo_precompiles::storage::StorageCtx::test_writable(),
+                U256::from(5),
+            )
+            .unwrap();
+        layout
+            .field_f
+            .write(
+                &mut tempo_precompiles::storage::StorageCtx::test_writable(),
+                U256::from(6),
+            )
+            .unwrap();
+        layout
+            .field_g
+            .write(
+                &mut tempo_precompiles::storage::StorageCtx::test_writable(),
+                U256::from(7),
+            )
+            .unwrap();
 
         // Verify values
         assert_eq!(layout.field_a.read().unwrap(), U256::ONE);
@@ -168,11 +239,41 @@ fn test_base_slot_with_regular_slot() {
     let mut layout = Layout::__new(address);
 
     StorageCtx::enter(&mut storage, || {
-        layout.field_a.write(U256::ONE).unwrap();
-        layout.field_b.write(U256::from(2)).unwrap();
-        layout.field_c.write(U256::from(3)).unwrap();
-        layout.field_d.write(U256::from(4)).unwrap();
-        layout.field_e.write(U256::from(5)).unwrap();
+        layout
+            .field_a
+            .write(
+                &mut tempo_precompiles::storage::StorageCtx::test_writable(),
+                U256::ONE,
+            )
+            .unwrap();
+        layout
+            .field_b
+            .write(
+                &mut tempo_precompiles::storage::StorageCtx::test_writable(),
+                U256::from(2),
+            )
+            .unwrap();
+        layout
+            .field_c
+            .write(
+                &mut tempo_precompiles::storage::StorageCtx::test_writable(),
+                U256::from(3),
+            )
+            .unwrap();
+        layout
+            .field_d
+            .write(
+                &mut tempo_precompiles::storage::StorageCtx::test_writable(),
+                U256::from(4),
+            )
+            .unwrap();
+        layout
+            .field_e
+            .write(
+                &mut tempo_precompiles::storage::StorageCtx::test_writable(),
+                U256::from(5),
+            )
+            .unwrap();
 
         // Verify values
         assert_eq!(layout.field_a.read().unwrap(), U256::ONE);
@@ -213,7 +314,13 @@ fn test_string_literal_slots() {
 
     StorageCtx::enter(&mut storage, || {
         // Set value
-        layout.field.write(U256::ONE).unwrap();
+        layout
+            .field
+            .write(
+                &mut tempo_precompiles::storage::StorageCtx::test_writable(),
+                U256::ONE,
+            )
+            .unwrap();
 
         // Verify value
         assert_eq!(layout.field.read().unwrap(), U256::ONE);

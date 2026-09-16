@@ -41,7 +41,11 @@ impl<T> Storable for Vec<T>
 where
     T: Storable,
 {
-    fn load<S: StorageOps>(storage: &S, len_slot: U256, ctx: LayoutCtx) -> Result<Self> {
+    fn load<S: crate::storage::StorageRead>(
+        storage: &S,
+        len_slot: U256,
+        ctx: LayoutCtx,
+    ) -> Result<Self> {
         debug_assert!(ctx.is_full(), "Dynamic arrays cannot be packed");
 
         // Read length from base slot
@@ -161,14 +165,14 @@ where
 
     /// Writes the entire vector to storage.
     #[inline]
-    fn write(&mut self, value: Vec<T>) -> Result<()> {
-        self.as_slot().write(value)
+    fn write(&mut self, write: &mut crate::storage::WriteCtx, value: Vec<T>) -> Result<()> {
+        self.as_slot().write(write, value)
     }
 
     /// Deletes the entire vector from storage (clears length and all elements).
     #[inline]
-    fn delete(&mut self) -> Result<()> {
-        self.as_slot().delete()
+    fn delete(&mut self, write: &mut crate::storage::WriteCtx) -> Result<()> {
+        self.as_slot().delete(write)
     }
 
     /// Reads the entire vector from transient storage.
@@ -179,14 +183,14 @@ where
 
     /// Writes the entire vector to transient storage.
     #[inline]
-    fn t_write(&mut self, value: Vec<T>) -> Result<()> {
-        self.as_slot().t_write(value)
+    fn t_write(&mut self, write: &mut crate::storage::WriteCtx, value: Vec<T>) -> Result<()> {
+        self.as_slot().t_write(write, value)
     }
 
     /// Deletes the entire vector from transient storage.
     #[inline]
-    fn t_delete(&mut self) -> Result<()> {
-        self.as_slot().t_delete()
+    fn t_delete(&mut self, write: &mut crate::storage::WriteCtx) -> Result<()> {
+        self.as_slot().t_delete(write)
     }
 }
 
@@ -290,7 +294,7 @@ where
     ///
     /// Returns `Err` if the vector has reached its maximum capacity.
     #[inline]
-    pub fn push(&self, value: T) -> Result<()>
+    pub fn push(&self, write: &mut crate::storage::WriteCtx, value: T) -> Result<()>
     where
         T: Storable,
         T::Handler: Handler<T>,
@@ -304,18 +308,18 @@ where
         // Write element at the end. The tail slot is empty by construction.
         if T::BYTES <= 16 {
             let mut elem_slot = Self::compute_handler(self.data_slot(), self.address, length);
-            elem_slot.write(value)?;
+            elem_slot.write(write, value)?;
         } else {
             // Handlers always use `FULL` ctx. Since the slot we push to is guaranteed empty,
             // call `T::store` with `INIT` to skip tail-cleanup SLOADs for dynamic types.
             let elem_slot = self.data_slot() + U256::from(length * T::SLOTS);
-            let mut storage = Slot::<T>::new(elem_slot, self.address);
+            let mut storage = write.at_address(self.address);
             value.store(&mut storage, elem_slot, LayoutCtx::INIT)?;
         }
 
         // Increment length
         let mut length_slot = Slot::<U256>::new(self.len_slot, self.address);
-        length_slot.write(U256::from(length + 1))
+        length_slot.write(write, U256::from(length + 1))
     }
 
     /// Pops the last element from the vector.
@@ -323,7 +327,7 @@ where
     /// Returns `None` if the vector is empty. Automatically decrements the length
     /// and zeros out the popped element's storage slot.
     #[inline]
-    pub fn pop(&self) -> Result<Option<T>>
+    pub fn pop(&self, write: &mut crate::storage::WriteCtx) -> Result<Option<T>>
     where
         T: Storable,
         T::Handler: Handler<T>,
@@ -340,11 +344,11 @@ where
         let element = elem_slot.read()?;
 
         // Zero out the element's storage
-        elem_slot.delete()?;
+        elem_slot.delete(write)?;
 
         // Decrement length
         let mut length_slot = Slot::<U256>::new(self.len_slot, self.address);
-        length_slot.write(U256::from(last_index))?;
+        length_slot.write(write, U256::from(last_index))?;
 
         Ok(Some(element))
     }
@@ -384,7 +388,7 @@ where
 
 /// Loads a raw U256 from storage and interprets it as a length.
 #[inline]
-fn load_checked_len<S: StorageOps>(storage: &S, slot: U256) -> Result<usize> {
+fn load_checked_len<S: crate::storage::StorageRead>(storage: &S, slot: U256) -> Result<usize> {
     let raw = storage.load(slot)?;
     if raw > U256::from(u32::MAX) {
         return Err(TempoPrecompileError::under_overflow());
@@ -442,7 +446,7 @@ fn clear_elements<T: Storable, S: StorageOps>(
 /// Load packed elements from storage.
 ///
 /// Used when `T::BYTES <= 16`, allowing multiple elements per slot.
-fn load_packed_elements<T: Storable, S: StorageOps>(
+fn load_packed_elements<T: Storable, S: crate::storage::StorageRead>(
     storage: &S,
     data_start: U256,
     length: usize,
@@ -541,7 +545,7 @@ fn build_packed_slot<T: Storable>(elements: &[T], byte_count: usize) -> Result<U
 ///
 /// Used when elements don't pack efficiently (32 bytes or multi-slot types).
 /// Each element occupies `T::SLOTS` consecutive slots.
-fn load_unpacked_elements<T: Storable, S: StorageOps>(
+fn load_unpacked_elements<T: Storable, S: crate::storage::StorageRead>(
     storage: &S,
     data_start: U256,
     length: usize,
@@ -738,7 +742,11 @@ mod tests {
 
             let data: Vec<u8> = vec![];
             let mut slot = Slot::<Vec<u8>>::new(len_slot, address);
-            slot.write(data.clone()).unwrap();
+            slot.write(
+                &mut crate::storage::StorageCtx::test_writable(),
+                data.clone(),
+            )
+            .unwrap();
 
             let loaded: Vec<u8> = slot.read().unwrap();
             assert_eq!(loaded, data, "Empty vec roundtrip failed");
@@ -756,7 +764,11 @@ mod tests {
             // Nested Vec<Vec<u8>>
             let data = vec![vec![1u8, 2, 3], vec![4, 5], vec![6, 7, 8, 9]];
             let mut slot = Slot::<Vec<Vec<u8>>>::new(len_slot, address);
-            slot.write(data.clone()).unwrap();
+            slot.write(
+                &mut crate::storage::StorageCtx::test_writable(),
+                data.clone(),
+            )
+            .unwrap();
 
             let loaded: Vec<Vec<u8>> = slot.read().unwrap();
             assert_eq!(loaded, data, "Nested Vec<Vec<u8>> roundtrip failed");
@@ -773,7 +785,11 @@ mod tests {
 
             // Test 1: Exactly 32 bools (fills exactly 1 slot: 32 * 1 byte = 32 bytes)
             let data_exact: Vec<bool> = (0..32).map(|i| i % 2 == 0).collect();
-            slot.write(data_exact.clone()).unwrap();
+            slot.write(
+                &mut crate::storage::StorageCtx::test_writable(),
+                data_exact.clone(),
+            )
+            .unwrap();
 
             // Verify length stored in base slot
             let length_value = U256::handle(len_slot, LayoutCtx::FULL, address)
@@ -789,7 +805,11 @@ mod tests {
 
             // Test 2: 35 bools (requires 2 slots: 32 + 3)
             let data_overflow: Vec<bool> = (0..35).map(|i| i % 3 == 0).collect();
-            slot.write(data_overflow.clone()).unwrap();
+            slot.write(
+                &mut crate::storage::StorageCtx::test_writable(),
+                data_overflow.clone(),
+            )
+            .unwrap();
 
             let loaded: Vec<bool> = slot.read().unwrap();
             assert_eq!(
@@ -811,7 +831,10 @@ mod tests {
 
             // Store exactly 5 u8 elements (should fit in 1 slot with 27 unused bytes)
             <Vec<u8>>::handle(len_slot, LayoutCtx::FULL, address)
-                .write(data.clone())
+                .write(
+                    &mut crate::storage::StorageCtx::test_writable(),
+                    data.clone(),
+                )
                 .unwrap();
 
             // Verify length stored in base slot
@@ -864,7 +887,12 @@ mod tests {
 
             // Test 1: Exactly 16 u16 elements (fills exactly 1 slot: 16 * 2 bytes = 32 bytes)
             let data_exact: Vec<u16> = (0..16).map(|i| i * 100).collect();
-            vec_slot.write(data_exact.clone()).unwrap();
+            vec_slot
+                .write(
+                    &mut crate::storage::StorageCtx::test_writable(),
+                    data_exact.clone(),
+                )
+                .unwrap();
 
             let data_start = calc_data_slot(len_slot);
             let slot0_value = U256::handle(data_start, LayoutCtx::FULL, address)
@@ -906,7 +934,12 @@ mod tests {
 
             // Test 2: 17 u16 elements (requires 2 slots)
             let data_overflow: Vec<u16> = (0..17).map(|i| i * 100).collect();
-            vec_slot.write(data_overflow).unwrap();
+            vec_slot
+                .write(
+                    &mut crate::storage::StorageCtx::test_writable(),
+                    data_overflow,
+                )
+                .unwrap();
 
             // Verify slot 0 still matches (first 16 elements)
             let slot0_value = U256::handle(data_start, LayoutCtx::FULL, address)
@@ -951,7 +984,9 @@ mod tests {
             // - Slot 1: 3 elements (elements 33-35) + 29 zeros
             let data: Vec<u8> = (0..35).map(|i| (i + 1) as u8).collect();
             let mut vec_slot = Slot::<Vec<u8>>::new(len_slot, address);
-            vec_slot.write(data).unwrap();
+            vec_slot
+                .write(&mut crate::storage::StorageCtx::test_writable(), data)
+                .unwrap();
             let data_start = calc_data_slot(len_slot);
             let slot0_value = U256::handle(data_start, LayoutCtx::FULL, address)
                 .read()
@@ -1042,7 +1077,12 @@ mod tests {
                 U256::from(0x3333333333333333u64),
             ];
             let mut vec_slot = Slot::<Vec<U256>>::new(len_slot, address);
-            vec_slot.write(data.clone()).unwrap();
+            vec_slot
+                .write(
+                    &mut crate::storage::StorageCtx::test_writable(),
+                    data.clone(),
+                )
+                .unwrap();
 
             let data_start = calc_data_slot(len_slot);
 
@@ -1077,7 +1117,12 @@ mod tests {
                 Address::repeat_byte(0xCC),
             ];
             let mut vec_slot = Slot::<Vec<Address>>::new(len_slot, address);
-            vec_slot.write(data.clone()).unwrap();
+            vec_slot
+                .write(
+                    &mut crate::storage::StorageCtx::test_writable(),
+                    data.clone(),
+                )
+                .unwrap();
 
             let data_start = calc_data_slot(len_slot);
 
@@ -1143,7 +1188,12 @@ mod tests {
                 TestStruct { a: 300, b: 3 },
             ];
             let mut vec_slot = Slot::<Vec<TestStruct>>::new(len_slot, address);
-            vec_slot.write(data.clone()).unwrap();
+            vec_slot
+                .write(
+                    &mut crate::storage::StorageCtx::test_writable(),
+                    data.clone(),
+                )
+                .unwrap();
 
             let data_start = calc_data_slot(len_slot);
 
@@ -1245,7 +1295,12 @@ mod tests {
                 },
             ];
             let mut vec_slot = Slot::<Vec<SmallStruct>>::new(len_slot, address);
-            vec_slot.write(data.clone()).unwrap();
+            vec_slot
+                .write(
+                    &mut crate::storage::StorageCtx::test_writable(),
+                    data.clone(),
+                )
+                .unwrap();
 
             // Verify length stored in base slot
             let length_value = U256::handle(len_slot, LayoutCtx::FULL, address)
@@ -1315,7 +1370,12 @@ mod tests {
             // Store a vec with 3 u8 elements
             let data = vec![100u8, 200, 250];
             let mut vec_slot = Slot::<Vec<u8>>::new(len_slot, address);
-            vec_slot.write(data.clone()).unwrap();
+            vec_slot
+                .write(
+                    &mut crate::storage::StorageCtx::test_writable(),
+                    data.clone(),
+                )
+                .unwrap();
 
             // Verify base slot contains length
             let length_value = U256::handle(len_slot, LayoutCtx::FULL, address)
@@ -1368,7 +1428,9 @@ mod tests {
 
             // Store a vec with 5 u8 elements (requires 1 slot)
             let data_long = vec![1u8, 2, 3, 4, 5];
-            vec_slot.write(data_long).unwrap();
+            vec_slot
+                .write(&mut crate::storage::StorageCtx::test_writable(), data_long)
+                .unwrap();
 
             let data_start = calc_data_slot(len_slot);
 
@@ -1380,7 +1442,12 @@ mod tests {
 
             // Overwrite with a shorter vec (3 elements)
             let data_short = vec![10u8, 20, 30];
-            vec_slot.write(data_short.clone()).unwrap();
+            vec_slot
+                .write(
+                    &mut crate::storage::StorageCtx::test_writable(),
+                    data_short.clone(),
+                )
+                .unwrap();
 
             // Verify length updated
             let length_value = U256::handle(len_slot, LayoutCtx::FULL, address)
@@ -1406,8 +1473,15 @@ mod tests {
             assert_eq!(loaded.len(), 3, "Length should be 3");
 
             // For full cleanup, delete first, then store
-            vec_slot.delete().unwrap();
-            vec_slot.write(data_short.clone()).unwrap();
+            vec_slot
+                .delete(&mut crate::storage::StorageCtx::test_writable())
+                .unwrap();
+            vec_slot
+                .write(
+                    &mut crate::storage::StorageCtx::test_writable(),
+                    data_short.clone(),
+                )
+                .unwrap();
 
             // Verify slot matches expected Solidity byte layout after delete+store
             let slot0_after_delete = U256::handle(data_start, LayoutCtx::FULL, address)
@@ -1474,7 +1548,12 @@ mod tests {
 
             // Test write and read
             let data = vec![U256::random(), U256::random(), U256::random()];
-            handler.write(data.clone()).unwrap();
+            handler
+                .write(
+                    &mut crate::storage::StorageCtx::test_writable(),
+                    data.clone(),
+                )
+                .unwrap();
 
             let loaded = handler.read().unwrap();
             assert_eq!(loaded, data, "Vec read/write roundtrip failed");
@@ -1490,11 +1569,18 @@ mod tests {
             let mut handler = VecHandler::<u8>::new(len_slot, address);
 
             // Write some data
-            handler.write(vec![1, 2, 3, 4, 5]).unwrap();
+            handler
+                .write(
+                    &mut crate::storage::StorageCtx::test_writable(),
+                    vec![1, 2, 3, 4, 5],
+                )
+                .unwrap();
             assert_eq!(handler.read().unwrap().len(), 5);
 
             // Delete
-            handler.delete().unwrap();
+            handler
+                .delete(&mut crate::storage::StorageCtx::test_writable())
+                .unwrap();
 
             // Verify empty
             let loaded = handler.read().unwrap();
@@ -1519,7 +1605,9 @@ mod tests {
             // Write full vector first
             let data = vec![U256::from(10), U256::from(20), U256::from(30)];
             let mut vec_slot = Slot::<Vec<U256>>::new(len_slot, address);
-            vec_slot.write(data).unwrap();
+            vec_slot
+                .write(&mut crate::storage::StorageCtx::test_writable(), data)
+                .unwrap();
 
             // Test reading individual elements via at()
             let elem0 = handler[0].read().unwrap();
@@ -1531,7 +1619,12 @@ mod tests {
             assert_eq!(elem2, U256::from(30));
 
             // Test writing individual elements via at()
-            handler[1].write(U256::from(99)).unwrap();
+            handler[1]
+                .write(
+                    &mut crate::storage::StorageCtx::test_writable(),
+                    U256::from(99),
+                )
+                .unwrap();
 
             // Verify via read
             let updated = handler.read().unwrap();
@@ -1555,17 +1648,43 @@ mod tests {
             let val3 = U256::random();
 
             // Test push
-            handler.push(val1).unwrap();
-            handler.push(val2).unwrap();
-            handler.push(val3).unwrap();
+            handler
+                .push(&mut crate::storage::StorageCtx::test_writable(), val1)
+                .unwrap();
+            handler
+                .push(&mut crate::storage::StorageCtx::test_writable(), val2)
+                .unwrap();
+            handler
+                .push(&mut crate::storage::StorageCtx::test_writable(), val3)
+                .unwrap();
 
             assert_eq!(handler.len().unwrap(), 3);
 
             // Test pop
-            assert_eq!(handler.pop().unwrap(), Some(val3));
-            assert_eq!(handler.pop().unwrap(), Some(val2));
-            assert_eq!(handler.pop().unwrap(), Some(val1));
-            assert_eq!(handler.pop().unwrap(), None);
+            assert_eq!(
+                handler
+                    .pop(&mut crate::storage::StorageCtx::test_writable())
+                    .unwrap(),
+                Some(val3)
+            );
+            assert_eq!(
+                handler
+                    .pop(&mut crate::storage::StorageCtx::test_writable())
+                    .unwrap(),
+                Some(val2)
+            );
+            assert_eq!(
+                handler
+                    .pop(&mut crate::storage::StorageCtx::test_writable())
+                    .unwrap(),
+                Some(val1)
+            );
+            assert_eq!(
+                handler
+                    .pop(&mut crate::storage::StorageCtx::test_writable())
+                    .unwrap(),
+                None
+            );
 
             assert_eq!(handler.len().unwrap(), 0);
         });
@@ -1583,17 +1702,34 @@ mod tests {
             assert_eq!(handler.len().unwrap(), 0);
 
             // Push elements and verify length
-            handler.push(Address::random()).unwrap();
+            handler
+                .push(
+                    &mut crate::storage::StorageCtx::test_writable(),
+                    Address::random(),
+                )
+                .unwrap();
             assert_eq!(handler.len().unwrap(), 1);
 
-            handler.push(Address::random()).unwrap();
+            handler
+                .push(
+                    &mut crate::storage::StorageCtx::test_writable(),
+                    Address::random(),
+                )
+                .unwrap();
             assert_eq!(handler.len().unwrap(), 2);
 
-            handler.push(Address::random()).unwrap();
+            handler
+                .push(
+                    &mut crate::storage::StorageCtx::test_writable(),
+                    Address::random(),
+                )
+                .unwrap();
             assert_eq!(handler.len().unwrap(), 3);
 
             // Pop and verify length decreases
-            handler.pop().unwrap();
+            handler
+                .pop(&mut crate::storage::StorageCtx::test_writable())
+                .unwrap();
             assert_eq!(handler.len().unwrap(), 2);
         });
     }
@@ -1608,7 +1744,9 @@ mod tests {
 
             // Push 35 elements (crosses slot boundary: 32 in slot 0, 3 in slot 1)
             for i in 0..35 {
-                handler.push(i as u8).unwrap();
+                handler
+                    .push(&mut crate::storage::StorageCtx::test_writable(), i as u8)
+                    .unwrap();
             }
 
             assert_eq!(handler.len().unwrap(), 35);
@@ -1621,7 +1759,9 @@ mod tests {
 
             // Pop all and verify
             for i in (0..35).rev() {
-                let popped = handler.pop().unwrap();
+                let popped = handler
+                    .pop(&mut crate::storage::StorageCtx::test_writable())
+                    .unwrap();
                 assert_eq!(popped, Some(i as u8));
             }
 
@@ -1641,8 +1781,14 @@ mod tests {
             assert!(handler.at(0)?.is_none());
 
             // Push 2 elements
-            handler.push(U256::from(10))?;
-            handler.push(U256::from(20))?;
+            handler.push(
+                &mut crate::storage::StorageCtx::test_writable(),
+                U256::from(10),
+            )?;
+            handler.push(
+                &mut crate::storage::StorageCtx::test_writable(),
+                U256::from(20),
+            )?;
 
             // Valid indices should return Some and read the correct values
             assert!(handler.at(0)?.is_some());
@@ -1668,19 +1814,31 @@ mod tests {
             let handler = VecHandler::<u32>::new(U256::ZERO, address);
 
             // PoC value from audit: must be rejected with under_overflow
-            len_slot.write(U256::from(0x0004000000000000u64))?;
+            len_slot.write(
+                &mut crate::storage::StorageCtx::test_writable(),
+                U256::from(0x0004000000000000u64),
+            )?;
             assert_eq!(handler.len(), Err(TempoPrecompileError::under_overflow()));
 
             // Boundary: u32::MAX is accepted
-            len_slot.write(U256::from(u32::MAX))?;
+            len_slot.write(
+                &mut crate::storage::StorageCtx::test_writable(),
+                U256::from(u32::MAX),
+            )?;
             assert_eq!(handler.len()?, u32::MAX as usize);
 
             // Boundary: u32::MAX + 1 is rejected with under_overflow
-            len_slot.write(U256::from(u64::from(u32::MAX) + 1))?;
+            len_slot.write(
+                &mut crate::storage::StorageCtx::test_writable(),
+                U256::from(u64::from(u32::MAX) + 1),
+            )?;
             assert_eq!(handler.len(), Err(TempoPrecompileError::under_overflow()));
 
             // Large but valid values below u32::MAX are accepted (no arbitrary cap)
-            len_slot.write(U256::from(100_000u64))?;
+            len_slot.write(
+                &mut crate::storage::StorageCtx::test_writable(),
+                U256::from(100_000u64),
+            )?;
             assert_eq!(handler.len()?, 100_000);
 
             Ok(())
@@ -1698,27 +1856,41 @@ mod tests {
             let handler = VecHandler::<u32>::new(U256::ZERO, address);
             let max_index = u32::MAX as usize / u32::BYTES;
 
-            len_slot.write(U256::from(max_index - 1))?;
-            handler.push(1)?;
+            len_slot.write(
+                &mut crate::storage::StorageCtx::test_writable(),
+                U256::from(max_index - 1),
+            )?;
+            handler.push(&mut crate::storage::StorageCtx::test_writable(), 1)?;
             assert_eq!(handler.len()?, max_index);
 
             let elem = handler.at(max_index - 1)?;
             assert_eq!(elem.map(|e| e.read()).transpose()?, Some(1));
 
-            assert!(handler.push(1).is_err());
+            assert!(
+                handler
+                    .push(&mut crate::storage::StorageCtx::test_writable(), 1)
+                    .is_err()
+            );
 
             // -- unpacked type (U256: 32 bytes) --
             let handler = VecHandler::<U256>::new(U256::ZERO, address);
             let max_index = u32::MAX as usize;
             let value = U256::random();
 
-            len_slot.write(U256::from(max_index - 1))?;
-            handler.push(value)?;
+            len_slot.write(
+                &mut crate::storage::StorageCtx::test_writable(),
+                U256::from(max_index - 1),
+            )?;
+            handler.push(&mut crate::storage::StorageCtx::test_writable(), value)?;
             assert_eq!(handler.len()?, max_index);
 
             let elem = handler.at(max_index - 1)?;
             assert_eq!(elem.map(|e| e.read()).transpose()?, Some(value));
-            assert!(handler.push(value).is_err());
+            assert!(
+                handler
+                    .push(&mut crate::storage::StorageCtx::test_writable(), value)
+                    .is_err()
+            );
 
             Ok(())
         })
@@ -1798,12 +1970,12 @@ mod tests {
             let mut vec_slot = Slot::<Vec<u8>>::new(len_slot, address);
 
             // Store → Load roundtrip
-            vec_slot.write(data.clone())?;
+            vec_slot.write(&mut crate::storage::StorageCtx::test_writable(), data.clone())?;
             let loaded: Vec<u8> = vec_slot.read()?;
             prop_assert_eq!(&loaded, &data, "Vec<u8> roundtrip failed");
 
             // Delete + verify cleanup
-            vec_slot.delete()?;
+            vec_slot.delete(&mut crate::storage::StorageCtx::test_writable())?;
             let after_delete: Vec<u8> = vec_slot.read()?;
             prop_assert!(after_delete.is_empty(), "Vec not empty after delete");
 
@@ -1832,12 +2004,12 @@ mod tests {
             let mut vec_slot = Slot::<Vec<u16>>::new(len_slot, address);
 
             // Store → Load roundtrip
-            vec_slot.write(data.clone())?;
+            vec_slot.write(&mut crate::storage::StorageCtx::test_writable(), data.clone())?;
             let loaded: Vec<u16> = vec_slot.read()?;
             prop_assert_eq!(&loaded, &data, "Vec<u16> roundtrip failed");
 
             // Delete + verify cleanup
-            vec_slot.delete()?;
+            vec_slot.delete(&mut crate::storage::StorageCtx::test_writable())?;
             let after_delete: Vec<u16> = vec_slot.read()?;
             prop_assert!(after_delete.is_empty(), "Vec not empty after delete");
 
@@ -1866,12 +2038,12 @@ mod tests {
             let mut vec_slot = Slot::<Vec<u32>>::new(len_slot, address);
 
             // Store → Load roundtrip
-            vec_slot.write(data.clone())?;
+            vec_slot.write(&mut crate::storage::StorageCtx::test_writable(), data.clone())?;
             let loaded: Vec<u32> = vec_slot.read()?;
             prop_assert_eq!(&loaded, &data, "Vec<u32> roundtrip failed");
 
             // Delete + verify cleanup
-            vec_slot.delete()?;
+            vec_slot.delete(&mut crate::storage::StorageCtx::test_writable())?;
             let after_delete: Vec<u32> = vec_slot.read()?;
             prop_assert!(after_delete.is_empty(), "Vec not empty after delete");
 
@@ -1900,12 +2072,12 @@ mod tests {
             let mut vec_slot = Slot::<Vec<u64>>::new(len_slot, address);
 
             // Store → Load roundtrip
-            vec_slot.write(data.clone())?;
+            vec_slot.write(&mut crate::storage::StorageCtx::test_writable(), data.clone())?;
             let loaded: Vec<u64> = vec_slot.read()?;
             prop_assert_eq!(&loaded, &data, "Vec<u64> roundtrip failed");
 
             // Delete + verify cleanup
-            vec_slot.delete()?;
+            vec_slot.delete(&mut crate::storage::StorageCtx::test_writable())?;
             let after_delete: Vec<u64> = vec_slot.read()?;
             prop_assert!(after_delete.is_empty(), "Vec not empty after delete");
 
@@ -1934,12 +2106,12 @@ mod tests {
             let mut vec_slot = Slot::<Vec<u128>>::new(len_slot, address);
 
             // Store → Load roundtrip
-            vec_slot.write(data.clone())?;
+            vec_slot.write(&mut crate::storage::StorageCtx::test_writable(), data.clone())?;
             let loaded: Vec<u128> = vec_slot.read()?;
             prop_assert_eq!(&loaded, &data, "Vec<u128> roundtrip failed");
 
             // Delete + verify cleanup
-            vec_slot.delete()?;
+            vec_slot.delete(&mut crate::storage::StorageCtx::test_writable())?;
             let after_delete: Vec<u128> = vec_slot.read()?;
             prop_assert!(after_delete.is_empty(), "Vec not empty after delete");
 
@@ -1968,12 +2140,12 @@ mod tests {
             let mut vec_slot = Slot::<Vec<U256>>::new(len_slot, address);
 
             // Store → Load roundtrip
-            vec_slot.write(data.clone())?;
+            vec_slot.write(&mut crate::storage::StorageCtx::test_writable(), data.clone())?;
             let loaded: Vec<U256> = vec_slot.read()?;
             prop_assert_eq!(&loaded, &data, "Vec<U256> roundtrip failed");
 
             // Delete + verify cleanup
-            vec_slot.delete()?;
+            vec_slot.delete(&mut crate::storage::StorageCtx::test_writable())?;
             let after_delete: Vec<U256> = vec_slot.read()?;
             prop_assert!(after_delete.is_empty(), "Vec not empty after delete");
 
@@ -2000,12 +2172,12 @@ mod tests {
             let mut vec_slot = Slot::<Vec<Address>>::new(len_slot, address);
 
             // Store → Load roundtrip
-            vec_slot.write(data.clone())?;
+            vec_slot.write(&mut crate::storage::StorageCtx::test_writable(), data.clone())?;
             let loaded: Vec<Address> = vec_slot.read()?;
             prop_assert_eq!(&loaded, &data, "Vec<Address> roundtrip failed");
 
             // Delete + verify cleanup
-            vec_slot.delete()?;
+            vec_slot.delete(&mut crate::storage::StorageCtx::test_writable())?;
             let after_delete: Vec<Address> = vec_slot.read()?;
             prop_assert!(after_delete.is_empty(), "Vec not empty after delete");
 
@@ -2032,10 +2204,10 @@ mod tests {
                 let mut vec_slot = Slot::<Vec<u8>>::new(len_slot, address);
 
             // Store data
-            vec_slot.write(data.clone())?;
+            vec_slot.write(&mut crate::storage::StorageCtx::test_writable(), data.clone())?;
 
             // Delete
-            vec_slot.delete()?;
+            vec_slot.delete(&mut crate::storage::StorageCtx::test_writable())?;
 
             // Verify empty after delete
             let loaded: Vec<u8> = vec_slot.read()?;
@@ -2066,12 +2238,12 @@ mod tests {
             let mut vec_slot = Slot::<Vec<TestStruct>>::new(len_slot, address);
 
             // Store → Load roundtrip
-            vec_slot.write(data.clone())?;
+            vec_slot.write(&mut crate::storage::StorageCtx::test_writable(), data.clone())?;
             let loaded: Vec<TestStruct> = vec_slot.read()?;
             prop_assert_eq!(&loaded, &data, "Vec<TestStruct> roundtrip failed");
 
             // Delete + verify cleanup
-            vec_slot.delete()?;
+            vec_slot.delete(&mut crate::storage::StorageCtx::test_writable())?;
             let after_delete: Vec<TestStruct> = vec_slot.read()?;
             prop_assert!(after_delete.is_empty(), "Vec not empty after delete");
 

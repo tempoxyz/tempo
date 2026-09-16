@@ -171,8 +171,13 @@ impl TipFeeManager {
 
     /// Reserves pool liquidity in transient storage for a pending fee swap.
     #[inline]
-    pub fn reserve_pool_liquidity(&mut self, pool_id: B256, amount: u128) -> Result<()> {
-        self.pending_fee_swap_reservation[pool_id].t_write(amount)
+    pub fn reserve_pool_liquidity(
+        &mut self,
+        write: &mut crate::storage::WriteCtx,
+        pool_id: B256,
+        amount: u128,
+    ) -> Result<()> {
+        self.pending_fee_swap_reservation[pool_id].t_write(write, amount)
     }
 
     /// Executes a rebalance swap: sells `amount_out` of user-token from the pool in exchange for
@@ -185,6 +190,7 @@ impl TipFeeManager {
     /// - `UnderOverflow` — arithmetic overflow computing `amount_in`
     pub fn rebalance_swap(
         &mut self,
+        write: &mut crate::storage::WriteCtx,
         msg_sender: Address,
         user_token: Address,
         validator_token: Address,
@@ -230,17 +236,18 @@ impl TipFeeManager {
             }
         }
 
-        self.pools[pool_id].write(pool)?;
+        self.pools[pool_id].write(write, pool)?;
 
         let amount_in = U256::from(amount_in);
         let amount_out = U256::from(amount_out);
         let mut validator_token = TIP20Token::from_address(validator_token)?;
-        validator_token.system_transfer_from(self.address, msg_sender, amount_in)?;
+        validator_token.system_transfer_from(write, self.address, msg_sender, amount_in)?;
 
         // collect_fee_pre_tx creates FeeManager balance slots for free; do not convert them into storage credits.
         StorageCtx.set_tip1060_storage_credit_minting(false);
         let mut user_token = TIP20Token::from_address(user_token)?;
         user_token.transfer(
+            write,
             self.address,
             ITIP20::transferCall {
                 to,
@@ -248,13 +255,16 @@ impl TipFeeManager {
             },
         )?;
 
-        self.emit_event(TIPFeeAMMEvent::rebalance_swap(
-            user_token.address(),
-            validator_token.address(),
-            msg_sender,
-            amount_in,
-            amount_out,
-        ))?;
+        self.emit_event(
+            write,
+            TIPFeeAMMEvent::rebalance_swap(
+                user_token.address(),
+                validator_token.address(),
+                msg_sender,
+                amount_in,
+                amount_out,
+            ),
+        )?;
 
         Ok(amount_in)
     }
@@ -279,6 +289,7 @@ impl TipFeeManager {
     /// - `UnderOverflow` — supply or balance overflow
     pub fn mint(
         &mut self,
+        write: &mut crate::storage::WriteCtx,
         msg_sender: Address,
         user_token: Address,
         validator_token: Address,
@@ -324,7 +335,7 @@ impl TipFeeManager {
             total_supply = total_supply
                 .checked_add(MIN_LIQUIDITY)
                 .ok_or(TempoPrecompileError::under_overflow())?;
-            self.set_total_supply(pool_id, total_supply)?;
+            self.set_total_supply(write, pool_id, total_supply)?;
 
             half_amount
                 .checked_sub(MIN_LIQUIDITY)
@@ -357,6 +368,7 @@ impl TipFeeManager {
 
         // Transfer validator tokens from user
         let _ = validator_token.system_transfer_from(
+            write,
             self.address,
             msg_sender,
             amount_validator_token,
@@ -372,10 +384,11 @@ impl TipFeeManager {
             .checked_add(validator_amount)
             .ok_or(TIPFeeAMMError::invalid_amount())?;
 
-        self.pools[pool_id].write(pool)?;
+        self.pools[pool_id].write(write, pool)?;
 
         // Mint LP tokens
         self.set_total_supply(
+            write,
             pool_id,
             total_supply
                 .checked_add(liquidity)
@@ -384,6 +397,7 @@ impl TipFeeManager {
 
         let balance = self.get_liquidity_balances(pool_id, to)?;
         self.set_liquidity_balances(
+            write,
             pool_id,
             to,
             balance
@@ -392,14 +406,17 @@ impl TipFeeManager {
         )?;
 
         // Emit Mint event
-        self.emit_event(TIPFeeAMMEvent::mint(
-            msg_sender,
-            to,
-            user_token.address(),
-            validator_token.address(),
-            amount_validator_token,
-            liquidity,
-        ))?;
+        self.emit_event(
+            write,
+            TIPFeeAMMEvent::mint(
+                msg_sender,
+                to,
+                user_token.address(),
+                validator_token.address(),
+                amount_validator_token,
+                liquidity,
+            ),
+        )?;
 
         Ok(liquidity)
     }
@@ -419,6 +436,7 @@ impl TipFeeManager {
     /// - `UnderOverflow` — supply or balance arithmetic overflows
     pub fn burn(
         &mut self,
+        write: &mut crate::storage::WriteCtx,
         msg_sender: Address,
         user_token: Address,
         validator_token: Address,
@@ -474,6 +492,7 @@ impl TipFeeManager {
 
         // Burn LP tokens
         self.set_liquidity_balances(
+            write,
             pool_id,
             msg_sender,
             balance
@@ -482,6 +501,7 @@ impl TipFeeManager {
         )?;
         let total_supply = self.get_total_supply(pool_id)?;
         self.set_total_supply(
+            write,
             pool_id,
             total_supply
                 .checked_sub(liquidity)
@@ -504,10 +524,11 @@ impl TipFeeManager {
             .reserve_validator_token
             .checked_sub(validator_amount)
             .ok_or(TIPFeeAMMError::insufficient_reserves())?;
-        self.pools[pool_id].write(pool)?;
+        self.pools[pool_id].write(write, pool)?;
 
         // Transfer tokens to user
         let _ = user_token.transfer(
+            write,
             self.address,
             ITIP20::transferCall {
                 to,
@@ -516,6 +537,7 @@ impl TipFeeManager {
         )?;
 
         let _ = validator_token.transfer(
+            write,
             self.address,
             ITIP20::transferCall {
                 to,
@@ -524,15 +546,18 @@ impl TipFeeManager {
         )?;
 
         // Emit Burn event
-        self.emit_event(TIPFeeAMMEvent::burn(
-            msg_sender,
-            user_token.address(),
-            validator_token.address(),
-            amount_user_token,
-            amount_validator_token,
-            liquidity,
-            to,
-        ))?;
+        self.emit_event(
+            write,
+            TIPFeeAMMEvent::burn(
+                msg_sender,
+                user_token.address(),
+                validator_token.address(),
+                amount_user_token,
+                amount_validator_token,
+                liquidity,
+                to,
+            ),
+        )?;
 
         Ok((amount_user_token, amount_validator_token))
     }
@@ -663,6 +688,7 @@ impl TipFeeManager {
     /// - `UnderOverflow` — reserve arithmetic overflows or amounts exceed `u128`
     pub fn execute_fee_swap(
         &mut self,
+        write: &mut crate::storage::WriteCtx,
         user_token: Address,
         validator_token: Address,
         amount_in: U256,
@@ -677,7 +703,7 @@ impl TipFeeManager {
             let mut pool = self.pools[pool_id].read()?;
             let pool_slot = pool.encode_to_slot()?;
             pool.apply_swap(amount_in, amount_out)?;
-            self.pools[pool_id].write(pool)?;
+            self.pools[pool_id].write(write, pool)?;
 
             actions.record_always(StorageAction::FeeAmmSwap(
                 pool_id.mapping_slot(self.pools.slot()),
@@ -695,8 +721,13 @@ impl TipFeeManager {
     }
 
     /// Set total supply of LP tokens for a pool
-    fn set_total_supply(&mut self, pool_id: B256, total_supply: U256) -> Result<()> {
-        self.total_supply[pool_id].write(total_supply)
+    fn set_total_supply(
+        &mut self,
+        write: &mut crate::storage::WriteCtx,
+        pool_id: B256,
+        total_supply: U256,
+    ) -> Result<()> {
+        self.total_supply[pool_id].write(write, total_supply)
     }
 
     /// Returns the LP token balance for `user` in the given pool.
@@ -707,11 +738,12 @@ impl TipFeeManager {
     /// Set user's LP token balance
     fn set_liquidity_balances(
         &mut self,
+        write: &mut crate::storage::WriteCtx,
         pool_id: B256,
         user: Address,
         balance: U256,
     ) -> Result<()> {
-        self.liquidity_balances[pool_id][user].write(balance)
+        self.liquidity_balances[pool_id][user].write(write, balance)
     }
 }
 
@@ -758,9 +790,10 @@ mod tests {
             reserve_user_token: user_amount.try_into().unwrap(),
             reserve_validator_token: validator_amount.try_into().unwrap(),
         };
-        amm.pools[pool_id].write(pool)?;
+        amm.pools[pool_id].write(&mut crate::storage::StorageCtx::test_writable(), pool)?;
         let liquidity = sqrt(user_amount * validator_amount);
-        amm.total_supply[pool_id].write(liquidity)?;
+        amm.total_supply[pool_id]
+            .write(&mut crate::storage::StorageCtx::test_writable(), liquidity)?;
         Ok(pool_id)
     }
 
@@ -770,8 +803,9 @@ mod tests {
         accounts: Vec<Address>,
     ) -> Result<u64> {
         let mut registry = TIP403Registry::new();
-        registry.initialize()?;
+        registry.initialize(&mut crate::storage::StorageCtx::test_writable())?;
         let policy_id = registry.create_policy_with_accounts(
+            &mut crate::storage::StorageCtx::test_writable(),
             admin,
             ITIP403Registry::createPolicyWithAccountsCall {
                 admin,
@@ -780,6 +814,7 @@ mod tests {
             },
         )?;
         token.change_transfer_policy_id(
+            &mut crate::storage::StorageCtx::test_writable(),
             admin,
             ITIP20::changeTransferPolicyIdCall {
                 newPolicyId: policy_id,
@@ -796,6 +831,7 @@ mod tests {
             let token = TIP20Setup::create("Test", "TST", admin).apply()?;
             let mut amm = TipFeeManager::new();
             let result = amm.mint(
+                &mut crate::storage::StorageCtx::test_writable(),
                 admin,
                 token.address(),
                 token.address(),
@@ -820,6 +856,7 @@ mod tests {
             let token = TIP20Setup::create("Test", "TST", admin).apply()?;
             let mut amm = TipFeeManager::new();
             let result = amm.burn(
+                &mut crate::storage::StorageCtx::test_writable(),
                 admin,
                 token.address(),
                 token.address(),
@@ -856,6 +893,7 @@ mod tests {
             )?;
 
             let result = amm.rebalance_swap(
+                &mut crate::storage::StorageCtx::test_writable(),
                 admin,
                 user_token.address(),
                 validator_token.address(),
@@ -884,6 +922,7 @@ mod tests {
             let mut amm = TipFeeManager::new();
 
             let result = amm.mint(
+                &mut crate::storage::StorageCtx::test_writable(),
                 admin,
                 eur_token.address(),
                 usd_token.address(),
@@ -896,6 +935,7 @@ mod tests {
             ));
 
             let result = amm.mint(
+                &mut crate::storage::StorageCtx::test_writable(),
                 admin,
                 usd_token.address(),
                 eur_token.address(),
@@ -924,6 +964,7 @@ mod tests {
 
             let mut amm = TipFeeManager::new();
             let result = amm.mint(
+                &mut crate::storage::StorageCtx::test_writable(),
                 admin,
                 user_token.address(),
                 validator_token.address(),
@@ -955,6 +996,7 @@ mod tests {
 
             let mut amm = TipFeeManager::new();
             let result = amm.mint(
+                &mut crate::storage::StorageCtx::test_writable(),
                 caller,
                 user_token.address(),
                 validator_token.address(),
@@ -986,6 +1028,7 @@ mod tests {
 
             let mut amm = TipFeeManager::new();
             let result = amm.mint(
+                &mut crate::storage::StorageCtx::test_writable(),
                 admin,
                 user_token.address(),
                 validator_token.address(),
@@ -1026,6 +1069,7 @@ mod tests {
 
             let mut amm = TipFeeManager::new();
             let result = amm.mint(
+                &mut crate::storage::StorageCtx::test_writable(),
                 admin,
                 user_token.address(),
                 validator_token.address(),
@@ -1053,6 +1097,7 @@ mod tests {
             let mut amm = TipFeeManager::new();
 
             let result = amm.burn(
+                &mut crate::storage::StorageCtx::test_writable(),
                 admin,
                 eur_token.address(),
                 usd_token.address(),
@@ -1065,6 +1110,7 @@ mod tests {
             ));
 
             let result = amm.burn(
+                &mut crate::storage::StorageCtx::test_writable(),
                 admin,
                 usd_token.address(),
                 eur_token.address(),
@@ -1104,9 +1150,15 @@ mod tests {
                 U256::from(10000),
                 U256::from(10000),
             )?;
-            amm.set_liquidity_balances(pool_id, lp, U256::from(10000))?;
+            amm.set_liquidity_balances(
+                &mut crate::storage::StorageCtx::test_writable(),
+                pool_id,
+                lp,
+                U256::from(10000),
+            )?;
 
             let result = amm.burn(
+                &mut crate::storage::StorageCtx::test_writable(),
                 lp,
                 user_token.address(),
                 validator_token.address(),
@@ -1151,9 +1203,15 @@ mod tests {
                 U256::from(10000),
                 U256::from(10000),
             )?;
-            amm.set_liquidity_balances(pool_id, lp, U256::from(10000))?;
+            amm.set_liquidity_balances(
+                &mut crate::storage::StorageCtx::test_writable(),
+                pool_id,
+                lp,
+                U256::from(10000),
+            )?;
 
             let result = amm.burn(
+                &mut crate::storage::StorageCtx::test_writable(),
                 lp,
                 user_token.address(),
                 validator_token.address(),
@@ -1181,6 +1239,7 @@ mod tests {
             // MIN_LIQUIDITY = 1000, amount/2 must be > 1000, so 2000 should fail
             let insufficient = uint!(2000_U256);
             let result = amm.mint(
+                &mut crate::storage::StorageCtx::test_writable(),
                 admin,
                 user_token.address(),
                 validator_token.address(),
@@ -1217,7 +1276,14 @@ mod tests {
 
             let mut amm = TipFeeManager::new();
             let amount = uint!(10000_U256);
-            let result = amm.mint(admin, token1, token2, amount, admin)?;
+            let result = amm.mint(
+                &mut crate::storage::StorageCtx::test_writable(),
+                admin,
+                token1,
+                token2,
+                amount,
+                admin,
+            )?;
             let expected_mean = amount / uint!(2_U256);
             let expected_liquidity = expected_mean - MIN_LIQUIDITY;
 
@@ -1239,7 +1305,11 @@ mod tests {
                 reserve_validator_token: 1000,
             };
             let pool_id = B256::ZERO;
-            amm.set_total_supply(pool_id, uint!(1000000000000000_U256))?;
+            amm.set_total_supply(
+                &mut crate::storage::StorageCtx::test_writable(),
+                pool_id,
+                uint!(1000000000000000_U256),
+            )?;
 
             let liquidity = uint!(1_U256);
             let result = amm.calculate_burn_amounts(&pool, pool_id, liquidity);
@@ -1283,7 +1353,12 @@ mod tests {
             let amount_in = uint!(100_U256);
             let expected_out = (amount_in * M) / SCALE; // 100 * 9970 / 10000 = 99
 
-            let amount_out = amm.execute_fee_swap(user_token, validator_token, amount_in)?;
+            let amount_out = amm.execute_fee_swap(
+                &mut crate::storage::StorageCtx::test_writable(),
+                user_token,
+                validator_token,
+                amount_in,
+            )?;
 
             assert_eq!(amount_out, expected_out);
 
@@ -1331,7 +1406,12 @@ mod tests {
             // Try to swap 200 tokens (would need ~199 output, but only 100 available)
             let too_large_amount = uint!(200_U256);
 
-            let result = amm.execute_fee_swap(user_token, validator_token, too_large_amount);
+            let result = amm.execute_fee_swap(
+                &mut crate::storage::StorageCtx::test_writable(),
+                user_token,
+                validator_token,
+                too_large_amount,
+            );
 
             assert!(matches!(
                 result,
@@ -1371,7 +1451,12 @@ mod tests {
             let amount_in = uint!(10000_U256) * uint!(10_U256).pow(U256::from(6));
             let expected_out = (amount_in * M) / SCALE;
 
-            let actual_out = amm.execute_fee_swap(user_token, validator_token, amount_in)?;
+            let actual_out = amm.execute_fee_swap(
+                &mut crate::storage::StorageCtx::test_writable(),
+                user_token,
+                validator_token,
+                amount_in,
+            )?;
             assert_eq!(actual_out, expected_out, "Output should match expected");
 
             let pool = amm.pools[pool_id].read()?;
@@ -1413,9 +1498,24 @@ mod tests {
             let swap2 = uint!(2000_U256) * uint!(10_U256).pow(U256::from(6));
             let swap3 = uint!(3000_U256) * uint!(10_U256).pow(U256::from(6));
 
-            let out1 = amm.execute_fee_swap(user_token, validator_token, swap1)?;
-            let out2 = amm.execute_fee_swap(user_token, validator_token, swap2)?;
-            let out3 = amm.execute_fee_swap(user_token, validator_token, swap3)?;
+            let out1 = amm.execute_fee_swap(
+                &mut crate::storage::StorageCtx::test_writable(),
+                user_token,
+                validator_token,
+                swap1,
+            )?;
+            let out2 = amm.execute_fee_swap(
+                &mut crate::storage::StorageCtx::test_writable(),
+                user_token,
+                validator_token,
+                swap2,
+            )?;
+            let out3 = amm.execute_fee_swap(
+                &mut crate::storage::StorageCtx::test_writable(),
+                user_token,
+                validator_token,
+                swap3,
+            )?;
 
             let total_in = swap1 + swap2 + swap3;
             let total_out = out1 + out2 + out3;
@@ -1490,7 +1590,14 @@ mod tests {
 
             let mut amm = TipFeeManager::new();
 
-            let result = amm.burn(admin, user_token, validator_token, U256::ZERO, admin);
+            let result = amm.burn(
+                &mut crate::storage::StorageCtx::test_writable(),
+                admin,
+                user_token,
+                validator_token,
+                U256::ZERO,
+                admin,
+            );
 
             assert!(matches!(
                 result,
@@ -1519,7 +1626,14 @@ mod tests {
 
             let mut amm = TipFeeManager::new();
 
-            let result = amm.mint(admin, user_token, validator_token, U256::ZERO, admin);
+            let result = amm.mint(
+                &mut crate::storage::StorageCtx::test_writable(),
+                admin,
+                user_token,
+                validator_token,
+                U256::ZERO,
+                admin,
+            );
 
             assert!(matches!(
                 result,
@@ -1567,8 +1681,14 @@ mod tests {
             let amount_out = uint!(1000_U256);
             let expected_in = (amount_out * N) / SCALE + U256::ONE;
 
-            let amount_in =
-                amm.rebalance_swap(admin, user_token, validator_token, amount_out, recipient)?;
+            let amount_in = amm.rebalance_swap(
+                &mut crate::storage::StorageCtx::test_writable(),
+                admin,
+                user_token,
+                validator_token,
+                amount_out,
+                recipient,
+            )?;
 
             assert_eq!(amount_in, expected_in);
 
@@ -1607,8 +1727,14 @@ mod tests {
             let mut amm = TipFeeManager::new();
 
             let initial_amount = uint!(100000_U256);
-            let first_liquidity =
-                amm.mint(admin, user_token, validator_token, initial_amount, admin)?;
+            let first_liquidity = amm.mint(
+                &mut crate::storage::StorageCtx::test_writable(),
+                admin,
+                user_token,
+                validator_token,
+                initial_amount,
+                admin,
+            )?;
 
             let expected_first_liquidity = initial_amount / uint!(2_U256) - MIN_LIQUIDITY;
             assert_eq!(first_liquidity, expected_first_liquidity);
@@ -1622,6 +1748,7 @@ mod tests {
 
             let second_amount = uint!(50000_U256);
             let second_liquidity = amm.mint(
+                &mut crate::storage::StorageCtx::test_writable(),
                 second_user,
                 user_token,
                 validator_token,
@@ -1669,7 +1796,14 @@ mod tests {
             let mut amm = TipFeeManager::new();
 
             let deposit_amount = uint!(100000_U256);
-            let liquidity = amm.mint(admin, user_token, validator_token, deposit_amount, admin)?;
+            let liquidity = amm.mint(
+                &mut crate::storage::StorageCtx::test_writable(),
+                admin,
+                user_token,
+                validator_token,
+                deposit_amount,
+                admin,
+            )?;
 
             let expected_liquidity = deposit_amount / uint!(2_U256) - MIN_LIQUIDITY;
             assert_eq!(liquidity, expected_liquidity);
@@ -1679,8 +1813,14 @@ mod tests {
             let total_supply_before = amm.get_total_supply(pool_id)?;
 
             let burn_amount = liquidity / uint!(2_U256);
-            let (amount_user, amount_validator) =
-                amm.burn(admin, user_token, validator_token, burn_amount, recipient)?;
+            let (amount_user, amount_validator) = amm.burn(
+                &mut crate::storage::StorageCtx::test_writable(),
+                admin,
+                user_token,
+                validator_token,
+                burn_amount,
+                recipient,
+            )?;
 
             let expected_user =
                 burn_amount * U256::from(pool_before.reserve_user_token) / total_supply_before;
@@ -1732,9 +1872,17 @@ mod tests {
             let mut amm = TipFeeManager::new();
 
             let deposit_amount = uint!(100000_U256);
-            let liquidity = amm.mint(admin, user_token, validator_token, deposit_amount, admin)?;
+            let liquidity = amm.mint(
+                &mut crate::storage::StorageCtx::test_writable(),
+                admin,
+                user_token,
+                validator_token,
+                deposit_amount,
+                admin,
+            )?;
 
             let result = amm.burn(
+                &mut crate::storage::StorageCtx::test_writable(),
                 other_user,
                 user_token,
                 validator_token,
@@ -1770,7 +1918,14 @@ mod tests {
 
             let mut amm = TipFeeManager::new();
 
-            let result = amm.rebalance_swap(admin, user_token, validator_token, U256::ZERO, to);
+            let result = amm.rebalance_swap(
+                &mut crate::storage::StorageCtx::test_writable(),
+                admin,
+                user_token,
+                validator_token,
+                U256::ZERO,
+                to,
+            );
 
             assert!(matches!(
                 result,
@@ -1813,7 +1968,11 @@ mod tests {
 
             let max_amount = uint!(10000_U256);
             let amount_out: u128 = compute_amount_out(max_amount)?.try_into().unwrap();
-            amm.reserve_pool_liquidity(pool_id, amount_out)?;
+            amm.reserve_pool_liquidity(
+                &mut crate::storage::StorageCtx::test_writable(),
+                pool_id,
+                amount_out,
+            )?;
 
             let reserved = amm.pending_fee_swap_reservation[pool_id].t_read()?;
             let expected_reserved: u128 = compute_amount_out(max_amount)?.try_into().unwrap();
@@ -1845,7 +2004,14 @@ mod tests {
             let mut amm = TipFeeManager::new();
 
             let deposit_amount = uint!(100000_U256);
-            let liquidity = amm.mint(admin, user_token, validator_token, deposit_amount, admin)?;
+            let liquidity = amm.mint(
+                &mut crate::storage::StorageCtx::test_writable(),
+                admin,
+                user_token,
+                validator_token,
+                deposit_amount,
+                admin,
+            )?;
 
             let pool_id = amm.pool_id(user_token, validator_token);
             let pool = amm.pools[pool_id].read()?;
@@ -1853,9 +2019,20 @@ mod tests {
             // Reserve most of the validator token liquidity
             let reserve_amount = U256::from(pool.reserve_validator_token) - uint!(100_U256);
             let amount_out: u128 = compute_amount_out(reserve_amount)?.try_into().unwrap();
-            amm.reserve_pool_liquidity(pool_id, amount_out)?;
+            amm.reserve_pool_liquidity(
+                &mut crate::storage::StorageCtx::test_writable(),
+                pool_id,
+                amount_out,
+            )?;
 
-            let result = amm.burn(admin, user_token, validator_token, liquidity, recipient);
+            let result = amm.burn(
+                &mut crate::storage::StorageCtx::test_writable(),
+                admin,
+                user_token,
+                validator_token,
+                liquidity,
+                recipient,
+            );
             assert!(matches!(
                 result,
                 Err(TempoPrecompileError::TIPFeeAMMError(
@@ -1889,15 +2066,33 @@ mod tests {
             let mut amm = TipFeeManager::new();
 
             let deposit_amount = uint!(100000_U256);
-            let liquidity = amm.mint(admin, user_token, validator_token, deposit_amount, admin)?;
+            let liquidity = amm.mint(
+                &mut crate::storage::StorageCtx::test_writable(),
+                admin,
+                user_token,
+                validator_token,
+                deposit_amount,
+                admin,
+            )?;
 
             let pool_id = amm.pool_id(user_token, validator_token);
             let small_reserve = uint!(1000_U256);
             let amount_out: u128 = compute_amount_out(small_reserve)?.try_into().unwrap();
-            amm.reserve_pool_liquidity(pool_id, amount_out)?;
+            amm.reserve_pool_liquidity(
+                &mut crate::storage::StorageCtx::test_writable(),
+                pool_id,
+                amount_out,
+            )?;
 
             let small_burn = liquidity / uint!(10_U256);
-            let result = amm.burn(admin, user_token, validator_token, small_burn, recipient);
+            let result = amm.burn(
+                &mut crate::storage::StorageCtx::test_writable(),
+                admin,
+                user_token,
+                validator_token,
+                small_burn,
+                recipient,
+            );
 
             assert!(result.is_ok());
 
@@ -1932,9 +2127,20 @@ mod tests {
                 setup_pool_with_liquidity(&mut amm, user_token, validator_token, liq, liq)?;
 
             let amount_out: u128 = compute_amount_out(uint!(50000_U256))?.try_into().unwrap();
-            amm.reserve_pool_liquidity(pool_id, amount_out)?;
+            amm.reserve_pool_liquidity(
+                &mut crate::storage::StorageCtx::test_writable(),
+                pool_id,
+                amount_out,
+            )?;
 
-            amm.rebalance_swap(admin, user_token, validator_token, uint!(5000_U256), to)?;
+            amm.rebalance_swap(
+                &mut crate::storage::StorageCtx::test_writable(),
+                admin,
+                user_token,
+                validator_token,
+                uint!(5000_U256),
+                to,
+            )?;
             let pool = amm.pools[pool_id].read()?;
             let reserved = amm.pending_fee_swap_reservation[pool_id].t_read()?;
             assert!(pool.reserve_validator_token >= reserved);
@@ -1968,8 +2174,15 @@ mod tests {
             let liq = uint!(100000_U256);
             setup_pool_with_liquidity(&mut amm, user_token, validator_token, liq, liq)?;
             assert!(
-                amm.rebalance_swap(admin, user_token, validator_token, uint!(5000_U256), to)
-                    .is_ok()
+                amm.rebalance_swap(
+                    &mut crate::storage::StorageCtx::test_writable(),
+                    admin,
+                    user_token,
+                    validator_token,
+                    uint!(5000_U256),
+                    to
+                )
+                .is_ok()
             );
 
             Ok(())
@@ -1998,9 +2211,23 @@ mod tests {
             let mut amm = TipFeeManager::new();
 
             let deposit_amount = uint!(100000_U256);
-            let liquidity = amm.mint(admin, user_token, validator_token, deposit_amount, admin)?;
+            let liquidity = amm.mint(
+                &mut crate::storage::StorageCtx::test_writable(),
+                admin,
+                user_token,
+                validator_token,
+                deposit_amount,
+                admin,
+            )?;
 
-            let result = amm.burn(admin, user_token, validator_token, liquidity, recipient);
+            let result = amm.burn(
+                &mut crate::storage::StorageCtx::test_writable(),
+                admin,
+                user_token,
+                validator_token,
+                liquidity,
+                recipient,
+            );
             assert!(result.is_ok());
 
             Ok(())

@@ -279,6 +279,7 @@ impl TIP20Setup {
             .expect("pathUSD is uninitialized and requires an admin");
 
         Self::factory()?.create_token_reserved_address(
+            &mut crate::storage::StorageCtx::test_writable(),
             PATH_USD_ADDRESS,
             "pathUSD",
             "pathUSD",
@@ -294,7 +295,7 @@ impl TIP20Setup {
     pub fn factory() -> Result<TIP20Factory> {
         let mut factory = TIP20Factory::new();
         if !is_initialized(TIP20_FACTORY_ADDRESS)? {
-            factory.initialize()?;
+            factory.initialize(&mut crate::storage::StorageCtx::test_writable())?;
         }
         Ok(factory)
     }
@@ -315,6 +316,7 @@ impl TIP20Setup {
                 let quote = self.quote_token.unwrap_or(PATH_USD_ADDRESS);
                 let salt = self.salt.unwrap_or_else(B256::random);
                 let token_address = factory.create_token(
+                    &mut crate::storage::StorageCtx::test_writable(),
                     admin,
                     tip20_factory::createTokenCall {
                         name: name.to_string(),
@@ -338,7 +340,11 @@ impl TIP20Setup {
 
         // Apply roles
         for (account, role) in self.roles {
-            token.grant_role_internal(account, role)?;
+            token.grant_role_internal(
+                &mut crate::storage::StorageCtx::test_writable(),
+                account,
+                role,
+            )?;
         }
 
         // Apply mints
@@ -346,17 +352,29 @@ impl TIP20Setup {
             let admin = self.admin.unwrap_or_else(|| {
                 get_tip20_admin(token.address()).expect("unable to get token admin")
             });
-            token.mint(admin, ITIP20::mintCall { to, amount })?;
+            token.mint(
+                &mut crate::storage::StorageCtx::test_writable(),
+                admin,
+                ITIP20::mintCall { to, amount },
+            )?;
         }
 
         // Apply approvals
         for (owner, spender, amount) in self.approvals {
-            token.approve(owner, ITIP20::approveCall { spender, amount })?;
+            token.approve(
+                &mut crate::storage::StorageCtx::test_writable(),
+                owner,
+                ITIP20::approveCall { spender, amount },
+            )?;
         }
 
         // Apply reward opt-ins
         for user in self.reward_opt_ins {
-            token.set_reward_recipient(user, ITIP20::setRewardRecipientCall { recipient: user })?;
+            token.set_reward_recipient(
+                &mut crate::storage::StorageCtx::test_writable(),
+                user,
+                ITIP20::setRewardRecipientCall { recipient: user },
+            )?;
         }
 
         // Distribute rewards
@@ -364,7 +382,11 @@ impl TIP20Setup {
             let admin = self.admin.unwrap_or_else(|| {
                 get_tip20_admin(token.address()).expect("unable to get token admin")
             });
-            token.distribute_reward(admin, ITIP20::distributeRewardCall { amount })?;
+            token.distribute_reward(
+                &mut crate::storage::StorageCtx::test_writable(),
+                admin,
+                ITIP20::distributeRewardCall { amount },
+            )?;
         }
 
         if self.clear_events {
@@ -475,6 +497,7 @@ pub const VIRTUAL_SALT: [u8; 32] =
 /// Registers [`VIRTUAL_MASTER`] and returns `(master_id, virtual_address)`.
 pub fn register_virtual_master(registry: &mut AddressRegistry) -> Result<(MasterId, Address)> {
     let master_id = registry.register_virtual_master(
+        &mut crate::storage::StorageCtx::test_writable(),
         VIRTUAL_MASTER,
         IAddressRegistry::registerVirtualMasterCall {
             salt: VIRTUAL_SALT.into(),

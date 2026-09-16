@@ -872,6 +872,15 @@ mod tests {
             ctx.cfg.gas_params.clone(),
         );
 
+        let gas_used = provider.gas_used();
+        let result = crate::storage::StorageCtx::enter_writable(&mut provider, |_| {
+            panic!("static execution must never receive a writable context")
+        });
+        assert_eq!(
+            result,
+            Err::<(), _>(TempoPrecompileError::StaticCallNotAllowed)
+        );
+
         let (address, key, value) = (Address::ZERO, U256::ZERO, U256::ZERO);
         let results = [
             provider.set_code(address, Bytecode::default()),
@@ -889,6 +898,7 @@ mod tests {
                 .into_iter()
                 .all(|result| { result == Err(TempoPrecompileError::StaticCallNotAllowed) })
         );
+        assert_eq!(provider.gas_used(), gas_used);
     }
 
     #[test]

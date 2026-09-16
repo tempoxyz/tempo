@@ -75,10 +75,11 @@ fn seed_dex_cache_db(
         &ctx.cfg,
         &ctx.tx,
         StorageActions::disabled(),
-        || {
-            TIP403Registry::new().initialize()?;
-            TIP20Factory::new().initialize()?;
+        |write| {
+            TIP403Registry::new().initialize(write)?;
+            TIP20Factory::new().initialize(write)?;
             TIP20Factory::new().create_token_reserved_address(
+                write,
                 PATH_USD_ADDRESS,
                 "pathUSD",
                 "pathUSD",
@@ -88,9 +89,10 @@ fn seed_dex_cache_db(
             )?;
 
             let mut quote = TIP20Token::from_address(PATH_USD_ADDRESS)?;
-            quote.grant_role_internal(admin, ISSUER_ROLE)?;
+            quote.grant_role_internal(write, admin, ISSUER_ROLE)?;
 
             let base_token = TIP20Factory::new().create_token(
+                write,
                 admin,
                 createTokenCall {
                     name: "benchBASE".to_string(),
@@ -102,20 +104,20 @@ fn seed_dex_cache_db(
                 },
             )?;
             let mut base = TIP20Token::from_address(base_token)?;
-            base.grant_role_internal(admin, ISSUER_ROLE)?;
+            base.grant_role_internal(write, admin, ISSUER_ROLE)?;
 
             for participant in participants {
                 let mint = ITIP20::mintCall {
                     to: *participant,
                     amount: U256::from(PARTICIPANT_MINT_AMOUNT),
                 };
-                quote.mint(admin, mint.clone())?;
-                base.mint(admin, mint)?;
+                quote.mint(write, admin, mint.clone())?;
+                base.mint(write, admin, mint)?;
             }
 
-            StablecoinDEX::new().initialize()?;
-            TipFeeManager::new().initialize()?;
-            NonceManager::new().initialize()?;
+            StablecoinDEX::new().initialize(write)?;
+            TipFeeManager::new().initialize(write)?;
+            NonceManager::new().initialize(write)?;
             Ok::<(), TempoPrecompileError>(())
         },
     )

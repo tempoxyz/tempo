@@ -223,7 +223,12 @@ fn test_unit_enum_storage_roundtrip_and_packing() {
 
     StorageCtx::enter(&mut storage, || {
         let mut packed_slot = Slot::<EnumPacked>::new(base_slot, address);
-        packed_slot.write(value.clone()).unwrap();
+        packed_slot
+            .write(
+                &mut tempo_precompiles::storage::StorageCtx::test_writable(),
+                value.clone(),
+            )
+            .unwrap();
         assert_eq!(packed_slot.read().unwrap(), value);
 
         let raw_word = Slot::<U256>::new(base_slot, address).read().unwrap();
@@ -238,10 +243,17 @@ fn test_unit_enum_storage_roundtrip_and_packing() {
         assert_eq!(stored_other_status, 1);
 
         let mut enum_slot = Slot::<PackedStatus>::new(base_slot + U256::from(1), address);
-        enum_slot.write(PackedStatus::Active).unwrap();
+        enum_slot
+            .write(
+                &mut tempo_precompiles::storage::StorageCtx::test_writable(),
+                PackedStatus::Active,
+            )
+            .unwrap();
         assert_eq!(enum_slot.read().unwrap(), PackedStatus::Active);
 
-        enum_slot.delete().unwrap();
+        enum_slot
+            .delete(&mut tempo_precompiles::storage::StorageCtx::test_writable())
+            .unwrap();
         assert_eq!(enum_slot.read().unwrap(), PackedStatus::Pending);
     });
 }
@@ -252,7 +264,12 @@ fn test_unit_enum_storage_rejects_invalid_discriminant() {
     let base_slot = U256::from(5678);
 
     StorageCtx::enter(&mut storage, || {
-        Slot::<u8>::new(base_slot, address).write(99).unwrap();
+        Slot::<u8>::new(base_slot, address)
+            .write(
+                &mut tempo_precompiles::storage::StorageCtx::test_writable(),
+                99,
+            )
+            .unwrap();
 
         let enum_slot = Slot::<PackedStatus>::new(base_slot, address);
         assert_eq!(
@@ -452,10 +469,13 @@ fn test_packed_two_slot_contents() {
 
         // Write the struct to storage
         PackedTwo::handle(base_slot, LayoutCtx::FULL, address)
-            .write(PackedTwo {
-                addr: Address::from([0x12; 20]),
-                count: 0x1234567890ABCDEF,
-            })
+            .write(
+                &mut tempo_precompiles::storage::StorageCtx::test_writable(),
+                PackedTwo {
+                    addr: Address::from([0x12; 20]),
+                    count: 0x1234567890ABCDEF,
+                },
+            )
             .unwrap();
 
         // PackedTwo should occupy 1 slot with addr (20 bytes) + count (8 bytes)
@@ -487,7 +507,10 @@ fn test_packed_three_slot_contents() {
         };
 
         PackedThree::handle(base_slot, LayoutCtx::FULL, address)
-            .write(value)
+            .write(
+                &mut tempo_precompiles::storage::StorageCtx::test_writable(),
+                value,
+            )
             .unwrap();
 
         // PackedThree should occupy exactly 1 slot with three u64s (24 bytes total)
@@ -524,7 +547,10 @@ fn test_rule2_slot_contents() {
         };
 
         Rule2Test::handle(base_slot, LayoutCtx::FULL, address)
-            .write(value)
+            .write(
+                &mut tempo_precompiles::storage::StorageCtx::test_writable(),
+                value,
+            )
             .unwrap();
 
         // Rule2Test packs all fields into slot 0 (15 bytes total)
@@ -563,7 +589,10 @@ fn test_partially_packed_slot_contents() {
         };
 
         PartiallyPacked::handle(base_slot, LayoutCtx::FULL, address)
-            .write(value.clone())
+            .write(
+                &mut tempo_precompiles::storage::StorageCtx::test_writable(),
+                value.clone(),
+            )
             .unwrap();
 
         // PartiallyPacked layout:
@@ -615,7 +644,10 @@ fn test_partial_update_preserves_adjacent_fields() {
             c: 0x3333333333333333,
         };
         PackedThree::handle(base_slot, LayoutCtx::FULL, address)
-            .write(initial)
+            .write(
+                &mut tempo_precompiles::storage::StorageCtx::test_writable(),
+                initial,
+            )
             .unwrap();
 
         // Update only field b
@@ -625,7 +657,10 @@ fn test_partial_update_preserves_adjacent_fields() {
             c: 0x3333333333333333,
         };
         PackedThree::handle(base_slot, LayoutCtx::FULL, address)
-            .write(updated)
+            .write(
+                &mut tempo_precompiles::storage::StorageCtx::test_writable(),
+                updated,
+            )
             .unwrap();
 
         // Verify that fields a and c are unchanged
@@ -660,7 +695,10 @@ fn test_delete_zeros_all_slots() {
 
         // Store the value (uses 3 slots)
         PartiallyPacked::handle(base_slot, LayoutCtx::FULL, address)
-            .write(value)
+            .write(
+                &mut tempo_precompiles::storage::StorageCtx::test_writable(),
+                value,
+            )
             .unwrap();
 
         // Verify slots are non-zero
@@ -692,7 +730,7 @@ fn test_delete_zeros_all_slots() {
 
         // Delete the value
         PartiallyPacked::handle(base_slot, LayoutCtx::FULL, address)
-            .delete()
+            .delete(&mut tempo_precompiles::storage::StorageCtx::test_writable())
             .unwrap();
 
         // Verify all slots are now zero
@@ -726,7 +764,10 @@ fn test_slot_boundary_at_32_bytes() {
         };
 
         ExactFit::handle(base_slot, LayoutCtx::FULL, address)
-            .write(value.clone())
+            .write(
+                &mut tempo_precompiles::storage::StorageCtx::test_writable(),
+                value.clone(),
+            )
             .unwrap();
 
         // Slot 0: data (32 bytes) - fills entire slot
@@ -827,11 +868,17 @@ fn test_t4_store_packed_struct_skips_sload() -> eyre::Result<()> {
     let mut storage = HashMapStorageProvider::new_with_spec(1, TempoHardfork::T0);
     StorageCtx::enter(&mut storage, || {
         // Pre-fill the slot with garbage
-        U256::handle(base_slot, LayoutCtx::FULL, address).write(garbage)?;
+        U256::handle(base_slot, LayoutCtx::FULL, address).write(
+            &mut tempo_precompiles::storage::StorageCtx::test_writable(),
+            garbage,
+        )?;
         StorageCtx.reset_counters();
 
         // Store the packed struct (SLOAD reads back the garbage first)
-        PackedTwo::handle(base_slot, LayoutCtx::FULL, address).write(packed.clone())?;
+        PackedTwo::handle(base_slot, LayoutCtx::FULL, address).write(
+            &mut tempo_precompiles::storage::StorageCtx::test_writable(),
+            packed.clone(),
+        )?;
 
         // 1 SLOAD (reads existing slot), 1 SSTORE
         assert_eq!(StorageCtx.counter_sload(), 1);
@@ -849,11 +896,17 @@ fn test_t4_store_packed_struct_skips_sload() -> eyre::Result<()> {
     let mut storage = HashMapStorageProvider::new_with_spec(1, TempoHardfork::T4);
     StorageCtx::enter(&mut storage, || {
         // Pre-fill the slot with garbage
-        U256::handle(base_slot, LayoutCtx::FULL, address).write(garbage)?;
+        U256::handle(base_slot, LayoutCtx::FULL, address).write(
+            &mut tempo_precompiles::storage::StorageCtx::test_writable(),
+            garbage,
+        )?;
         StorageCtx.reset_counters();
 
         // Store the packed struct (should NOT read back the garbage)
-        PackedTwo::handle(base_slot, LayoutCtx::FULL, address).write(packed.clone())?;
+        PackedTwo::handle(base_slot, LayoutCtx::FULL, address).write(
+            &mut tempo_precompiles::storage::StorageCtx::test_writable(),
+            packed.clone(),
+        )?;
 
         // 0 SLOADs (the optimization), 1 SSTORE for the single packed slot
         assert_eq!(StorageCtx.counter_sload(), 0,);
@@ -892,7 +945,10 @@ fn test_t4_struct_store_preserves_neighbor_slots() -> eyre::Result<()> {
             },
             after: 0xFF,
         };
-        Rule4Test::handle(base_slot, LayoutCtx::FULL, address).write(original)?;
+        Rule4Test::handle(base_slot, LayoutCtx::FULL, address).write(
+            &mut tempo_precompiles::storage::StorageCtx::test_writable(),
+            original,
+        )?;
 
         // Snapshot neighbor slot values
         let slot0 = U256::handle(base_slot, LayoutCtx::FULL, address).read()?;
@@ -910,7 +966,10 @@ fn test_t4_struct_store_preserves_neighbor_slots() -> eyre::Result<()> {
             },
             after: 0xFF, // same
         };
-        Rule4Test::handle(base_slot, LayoutCtx::FULL, address).write(updated)?;
+        Rule4Test::handle(base_slot, LayoutCtx::FULL, address).write(
+            &mut tempo_precompiles::storage::StorageCtx::test_writable(),
+            updated,
+        )?;
 
         // Verify neighbor slots are untouched
         let slot0_after = U256::handle(base_slot, LayoutCtx::FULL, address).read()?;
@@ -953,11 +1012,20 @@ fn test_t4_store_multi_slot_packed_skips_sload() -> eyre::Result<()> {
     let mut storage = HashMapStorageProvider::new_with_spec(1, TempoHardfork::T0);
     StorageCtx::enter(&mut storage, || {
         // Pre-fill both slots with garbage
-        U256::handle(base_slot, LayoutCtx::FULL, address).write(garbage)?;
-        U256::handle(base_slot + U256::from(1), LayoutCtx::FULL, address).write(garbage)?;
+        U256::handle(base_slot, LayoutCtx::FULL, address).write(
+            &mut tempo_precompiles::storage::StorageCtx::test_writable(),
+            garbage,
+        )?;
+        U256::handle(base_slot + U256::from(1), LayoutCtx::FULL, address).write(
+            &mut tempo_precompiles::storage::StorageCtx::test_writable(),
+            garbage,
+        )?;
         StorageCtx.reset_counters();
 
-        Rule3TestPartial::handle(base_slot, LayoutCtx::FULL, address).write(value.clone())?;
+        Rule3TestPartial::handle(base_slot, LayoutCtx::FULL, address).write(
+            &mut tempo_precompiles::storage::StorageCtx::test_writable(),
+            value.clone(),
+        )?;
 
         // Pre-T4: 2 SLOADs (one per packed slot), 2 SSTOREs
         assert_eq!(
@@ -982,11 +1050,20 @@ fn test_t4_store_multi_slot_packed_skips_sload() -> eyre::Result<()> {
     let mut storage = HashMapStorageProvider::new_with_spec(1, TempoHardfork::T4);
     StorageCtx::enter(&mut storage, || {
         // Pre-fill both slots with garbage
-        U256::handle(base_slot, LayoutCtx::FULL, address).write(garbage)?;
-        U256::handle(base_slot + U256::from(1), LayoutCtx::FULL, address).write(garbage)?;
+        U256::handle(base_slot, LayoutCtx::FULL, address).write(
+            &mut tempo_precompiles::storage::StorageCtx::test_writable(),
+            garbage,
+        )?;
+        U256::handle(base_slot + U256::from(1), LayoutCtx::FULL, address).write(
+            &mut tempo_precompiles::storage::StorageCtx::test_writable(),
+            garbage,
+        )?;
         StorageCtx.reset_counters();
 
-        Rule3TestPartial::handle(base_slot, LayoutCtx::FULL, address).write(value)?;
+        Rule3TestPartial::handle(base_slot, LayoutCtx::FULL, address).write(
+            &mut tempo_precompiles::storage::StorageCtx::test_writable(),
+            value,
+        )?;
 
         // T4: 0 SLOADs (elided for both slots), 2 SSTOREs
         assert_eq!(
@@ -1027,7 +1104,10 @@ fn test_t4_multi_slot_packed_preserves_neighbor_slots() -> eyre::Result<()> {
             owner: Address::from([0xAA; 20]),
             active: true,
         };
-        PackedThreeSlot::handle(base_slot, LayoutCtx::FULL, address).write(original)?;
+        PackedThreeSlot::handle(base_slot, LayoutCtx::FULL, address).write(
+            &mut tempo_precompiles::storage::StorageCtx::test_writable(),
+            original,
+        )?;
 
         // Snapshot all three slot values
         let slot0 = U256::handle(base_slot, LayoutCtx::FULL, address).read()?;
@@ -1044,7 +1124,10 @@ fn test_t4_multi_slot_packed_preserves_neighbor_slots() -> eyre::Result<()> {
             owner: Address::from([0xBB; 20]), // slot 2, different
             active: false,                    // slot 2, different
         };
-        PackedThreeSlot::handle(base_slot, LayoutCtx::FULL, address).write(updated)?;
+        PackedThreeSlot::handle(base_slot, LayoutCtx::FULL, address).write(
+            &mut tempo_precompiles::storage::StorageCtx::test_writable(),
+            updated,
+        )?;
 
         // Slot 0 should be unchanged (non-packable U256, direct store)
         let slot0_after = U256::handle(base_slot, LayoutCtx::FULL, address).read()?;

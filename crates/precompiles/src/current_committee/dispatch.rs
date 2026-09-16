@@ -21,7 +21,7 @@ impl Precompile for CurrentCommittee {
                 ICurrentCommittee::ICurrentCommitteeCalls {
                     getCommitteeMembers(call) => view(call, |_| self.get_committee_members()),
                     setCommitteeMembers(call) => {
-                        mutate_void(call, msg_sender, |s, c| self.set_committee_members(s, c))
+                        mutate_void(call, msg_sender, |write, s, c| self.set_committee_members(write, s, c))
                     }
                 }
             }
@@ -97,6 +97,7 @@ mod tests {
             assert!(empty.publicKeys.is_empty());
 
             committee.set_committee_members(
+                &mut crate::storage::StorageCtx::test_writable(),
                 Address::ZERO,
                 ICurrentCommittee::setCommitteeMembersCall {
                     epoch: 1,
@@ -104,6 +105,7 @@ mod tests {
                 },
             )?;
             committee.set_committee_members(
+                &mut crate::storage::StorageCtx::test_writable(),
                 Address::ZERO,
                 ICurrentCommittee::setCommitteeMembersCall {
                     epoch: 2,
@@ -124,6 +126,7 @@ mod tests {
         StorageCtx::enter(&mut storage, || {
             let mut committee = CurrentCommittee::new();
             committee.set_committee_members(
+                &mut crate::storage::StorageCtx::test_writable(),
                 Address::ZERO,
                 ICurrentCommittee::setCommitteeMembersCall {
                     epoch: 1,
@@ -131,6 +134,7 @@ mod tests {
                 },
             )?;
             committee.set_committee_members(
+                &mut crate::storage::StorageCtx::test_writable(),
                 Address::ZERO,
                 ICurrentCommittee::setCommitteeMembersCall {
                     epoch: 2,

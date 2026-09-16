@@ -680,7 +680,7 @@ mod tests {
         initialize_zone_factory(&mut db, owner);
         let mut evm = TempoEvm::new(db, evm_env_with_spec(TempoHardfork::T10));
 
-        StorageCtx::enter_ctx(evm.ctx_mut(), StorageActions::disabled(), || {
+        StorageCtx::enter_ctx(evm.ctx_mut(), StorageActions::disabled(), |write| {
             TIP20Setup::path_usd(admin).apply()
         })
         .unwrap();
@@ -759,7 +759,7 @@ mod tests {
         let second_token = StorageCtx::enter_ctx(
             evm.ctx_mut(),
             StorageActions::disabled(),
-            || -> Result<_, TempoPrecompileError> {
+            |write| -> Result<_, TempoPrecompileError> {
                 TIP20Setup::path_usd(admin).apply()?;
                 Ok(TIP20Setup::create("Second Token", "SECOND", admin)
                     .apply()?
@@ -1036,7 +1036,7 @@ mod tests {
         initialize_zone_factory(&mut db, owner);
         let mut evm = TempoEvm::new(db, evm_env_with_spec(TempoHardfork::T10));
 
-        StorageCtx::enter_ctx(evm.ctx_mut(), StorageActions::disabled(), || {
+        StorageCtx::enter_ctx(evm.ctx_mut(), StorageActions::disabled(), |write| {
             TIP20Setup::path_usd(admin)
                 .with_issuer(admin)
                 .with_mint(ZONE_MESSENGER_ADDRESS, U256::from(100))
@@ -1112,7 +1112,7 @@ mod tests {
         initialize_zone_factory(&mut db, owner);
         let mut evm = TempoEvm::new(db, env);
 
-        StorageCtx::enter_ctx(evm.ctx_mut(), StorageActions::disabled(), || {
+        StorageCtx::enter_ctx(evm.ctx_mut(), StorageActions::disabled(), |write| {
             TIP20Setup::path_usd(admin).apply()
         })
         .unwrap();
@@ -1156,7 +1156,7 @@ mod tests {
         );
         evm.db_mut().commit(result.state);
 
-        StorageCtx::enter_ctx(evm.ctx_mut(), StorageActions::disabled(), || {
+        StorageCtx::enter_ctx(evm.ctx_mut(), StorageActions::disabled(), |write| {
             let factory = ZoneFactory::new();
             assert_eq!(factory.next_zone_id()?, 1);
             assert!(!factory.is_zone_portal(portal_address(1))?);
@@ -1424,7 +1424,7 @@ mod tests {
             );
 
             let (fee_token, two_hop_fee_token) =
-                StorageCtx::enter_ctx(evm.ctx_mut(), StorageActions::disabled(), || {
+                StorageCtx::enter_ctx(evm.ctx_mut(), StorageActions::disabled(), |write| {
                     TIP20Setup::path_usd(sender)
                         .with_issuer(sender)
                         .with_mint(sender, starting_balance)
@@ -1444,12 +1444,14 @@ mod tests {
 
                     let mut fee_manager = TipFeeManager::new();
                     fee_manager.set_user_token(
+                        &mut tempo_precompiles::storage::StorageCtx::test_writable(),
                         sender,
                         IFeeManager::setUserTokenCall {
                             token: fee_token.address(),
                         },
                     )?;
                     fee_manager.mint(
+                        &mut tempo_precompiles::storage::StorageCtx::test_writable(),
                         sender,
                         fee_token.address(),
                         PATH_USD_ADDRESS,
@@ -1461,7 +1463,7 @@ mod tests {
                     let two_hop_first_pool_slot =
                         U256::from_be_bytes::<32>(two_hop_first_pool_id.into())
                             .mapping_slot(fee_manager_slots::POOLS);
-                    StorageCtx.sstore(
+                    write.sstore(
                         TIP_FEE_MANAGER_ADDRESS,
                         two_hop_first_pool_slot,
                         Pool {

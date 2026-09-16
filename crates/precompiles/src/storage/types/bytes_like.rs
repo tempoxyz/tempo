@@ -86,13 +86,13 @@ impl<T: Storable> Handler<T> for BytesLikeHandler<T> {
     }
 
     #[inline]
-    fn write(&mut self, value: T) -> Result<()> {
-        self.as_slot().write(value)
+    fn write(&mut self, write: &mut crate::storage::WriteCtx, value: T) -> Result<()> {
+        self.as_slot().write(write, value)
     }
 
     #[inline]
-    fn delete(&mut self) -> Result<()> {
-        self.as_slot().delete()
+    fn delete(&mut self, write: &mut crate::storage::WriteCtx) -> Result<()> {
+        self.as_slot().delete(write)
     }
 
     #[inline]
@@ -101,13 +101,13 @@ impl<T: Storable> Handler<T> for BytesLikeHandler<T> {
     }
 
     #[inline]
-    fn t_write(&mut self, value: T) -> Result<()> {
-        self.as_slot().t_write(value)
+    fn t_write(&mut self, write: &mut crate::storage::WriteCtx, value: T) -> Result<()> {
+        self.as_slot().t_write(write, value)
     }
 
     #[inline]
-    fn t_delete(&mut self) -> Result<()> {
-        self.as_slot().t_delete()
+    fn t_delete(&mut self, write: &mut crate::storage::WriteCtx) -> Result<()> {
+        self.as_slot().t_delete(write)
     }
 }
 
@@ -115,7 +115,11 @@ impl<T: Storable> Handler<T> for BytesLikeHandler<T> {
 
 impl Storable for Bytes {
     #[inline]
-    fn load<S: StorageOps>(storage: &S, slot: U256, ctx: LayoutCtx) -> Result<Self> {
+    fn load<S: crate::storage::StorageRead>(
+        storage: &S,
+        slot: U256,
+        ctx: LayoutCtx,
+    ) -> Result<Self> {
         debug_assert!(ctx.is_full(), "Bytes cannot be packed");
         load_bytes_like(storage, slot, |data| Ok(Self::from(data)))
     }
@@ -136,7 +140,11 @@ impl Storable for Bytes {
 
 impl Storable for String {
     #[inline]
-    fn load<S: StorageOps>(storage: &S, slot: U256, ctx: LayoutCtx) -> Result<Self> {
+    fn load<S: crate::storage::StorageRead>(
+        storage: &S,
+        slot: U256,
+        ctx: LayoutCtx,
+    ) -> Result<Self> {
         debug_assert!(ctx.is_full(), "String cannot be packed");
         load_bytes_like(storage, slot, |data| {
             Self::from_utf8(data).map_err(|e| {
@@ -165,7 +173,7 @@ impl Storable for String {
 #[inline]
 fn load_bytes_like<T, S, F>(storage: &S, base_slot: U256, into: F) -> Result<T>
 where
-    S: StorageOps,
+    S: crate::storage::StorageRead,
     F: FnOnce(Vec<u8>) -> Result<T>,
 {
     let base_value = storage.load(base_slot)?;
@@ -617,12 +625,12 @@ mod tests {
                 let mut slot = BytesLikeHandler::<String>::new(base_slot, address);
 
                 // Verify store → load roundtrip
-                slot.write(s.clone()).unwrap();
+                slot.write(&mut crate::storage::StorageCtx::test_writable(), s.clone()).unwrap();
                 let loaded = slot.read().unwrap();
                 prop_assert_eq!(&s, &loaded, "Short string roundtrip failed");
 
                 // Verify delete works
-                slot.delete().unwrap();
+                slot.delete(&mut crate::storage::StorageCtx::test_writable()).unwrap();
                 let after_delete = slot.read().unwrap();
                 prop_assert_eq!(after_delete, String::new(), "Short string not empty after delete");
 
@@ -641,12 +649,12 @@ mod tests {
                 let mut slot = BytesLikeHandler::<String>::new(base_slot, address);
 
                 // Verify store → load roundtrip
-                slot.write(s.clone()).unwrap();
+                slot.write(&mut crate::storage::StorageCtx::test_writable(), s.clone()).unwrap();
                 let loaded = slot.read().unwrap();
                 prop_assert_eq!(s.clone(), loaded, "32-byte string roundtrip failed");
 
                 // Verify delete works
-                slot.delete().unwrap();
+                slot.delete(&mut crate::storage::StorageCtx::test_writable()).unwrap();
                 let after_delete = slot.read().unwrap();
                 prop_assert_eq!(after_delete, String::new(), "32-byte string not empty after delete");
 
@@ -661,7 +669,7 @@ mod tests {
                 let mut slot = BytesLikeHandler::<String>::new(base_slot, address);
 
                 // Verify store → load roundtrip
-                slot.write(s.clone()).unwrap();
+                slot.write(&mut crate::storage::StorageCtx::test_writable(), s.clone()).unwrap();
                 let loaded = slot.read().unwrap();
                 prop_assert_eq!(&s, &loaded, "Long string roundtrip failed for length: {}", s.len());
 
@@ -669,7 +677,7 @@ mod tests {
                 let chunks = calc_chunks(s.len());
 
                 // Verify delete works (clears both main slot and keccak256-addressed data)
-                slot.delete().unwrap();
+                slot.delete(&mut crate::storage::StorageCtx::test_writable()).unwrap();
                 let after_delete = slot.read().unwrap();
                 prop_assert_eq!(after_delete, String::new(), "Long string not empty after delete");
 
@@ -692,12 +700,12 @@ mod tests {
                 let mut slot = BytesLikeHandler::<Bytes>::new(base_slot, address);
 
                 // Verify store → load roundtrip
-                slot.write(b.clone()).unwrap();
+                slot.write(&mut crate::storage::StorageCtx::test_writable(), b.clone()).unwrap();
                 let loaded = slot.read().unwrap();
                 prop_assert_eq!(&b, &loaded, "Short bytes roundtrip failed for length: {}", b.len());
 
                 // Verify delete works
-                slot.delete().unwrap();
+                slot.delete(&mut crate::storage::StorageCtx::test_writable()).unwrap();
                 let after_delete = slot.read().unwrap();
                 prop_assert_eq!(after_delete, Bytes::new(), "Short bytes not empty after delete");
 
@@ -715,12 +723,12 @@ mod tests {
                 let mut slot = BytesLikeHandler::<Bytes>::new(base_slot, address);
 
                 // Verify store → load roundtrip
-                slot.write(b.clone()).unwrap();
+                slot.write(&mut crate::storage::StorageCtx::test_writable(), b.clone()).unwrap();
                 let loaded = slot.read().unwrap();
                 prop_assert_eq!(&b, &loaded, "32-byte bytes roundtrip failed");
 
                 // Verify delete works
-                slot.delete().unwrap();
+                slot.delete(&mut crate::storage::StorageCtx::test_writable()).unwrap();
                 let after_delete = slot.read().unwrap();
                 prop_assert_eq!(after_delete, Bytes::new(), "32-byte bytes not empty after delete");
 
@@ -735,7 +743,7 @@ mod tests {
                 let mut slot = BytesLikeHandler::<Bytes>::new(base_slot, address);
 
                 // Verify store → load roundtrip
-                slot.write(b.clone()).unwrap();
+                slot.write(&mut crate::storage::StorageCtx::test_writable(), b.clone()).unwrap();
                 let loaded = slot.read().unwrap();
                 prop_assert_eq!(&b, &loaded, "Long bytes roundtrip failed for length: {}", b.len());
 
@@ -743,7 +751,7 @@ mod tests {
                 let chunks = calc_chunks(b.len());
 
                 // Verify delete works (clears both main slot and keccak256-addressed data)
-                slot.delete().unwrap();
+                slot.delete(&mut crate::storage::StorageCtx::test_writable()).unwrap();
                 let after_delete = slot.read().unwrap();
                 prop_assert_eq!(after_delete, Bytes::new(), "Long bytes not empty after delete");
 
@@ -770,12 +778,12 @@ mod tests {
                 prop_assert!(slot.is_empty().unwrap(), "Empty string should be empty");
 
                 // Write string and verify len matches
-                slot.write(s.clone()).unwrap();
+                slot.write(&mut crate::storage::StorageCtx::test_writable(), s.clone()).unwrap();
                 prop_assert_eq!(slot.len().unwrap(), s.len(), "len() should match string byte length");
                 prop_assert_eq!(slot.is_empty().unwrap(), s.is_empty(), "is_empty() should match");
 
                 // After delete, len should be 0 again
-                slot.delete().unwrap();
+                slot.delete(&mut crate::storage::StorageCtx::test_writable()).unwrap();
                 prop_assert_eq!(slot.len().unwrap(), 0, "Deleted string should have len 0");
 
                 Ok(())

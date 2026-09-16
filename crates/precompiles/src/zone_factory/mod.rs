@@ -85,6 +85,7 @@ impl ZoneFactory {
     /// Atomically transfers zone-creation authority.
     pub fn transfer_ownership(
         &mut self,
+        write: &mut crate::storage::WriteCtx,
         msg_sender: Address,
         call: IZoneFactory::transferOwnershipCall,
     ) -> Result<()> {
@@ -92,16 +93,17 @@ impl ZoneFactory {
         if msg_sender != previous_owner {
             return Err(ZoneFactoryError::not_owner().into());
         }
-        self.owner.write(call.newOwner)?;
-        self.emit_event(ZoneFactoryEvent::ownership_transferred(
-            previous_owner,
-            call.newOwner,
-        ))
+        self.owner.write(write, call.newOwner)?;
+        self.emit_event(
+            write,
+            ZoneFactoryEvent::ownership_transferred(previous_owner, call.newOwner),
+        )
     }
 
     /// Creates and initializes a deterministic ZonePortal account.
     pub fn create_zone(
         &mut self,
+        write: &mut crate::storage::WriteCtx,
         msg_sender: Address,
         call: IZoneFactory::createZoneCall,
     ) -> Result<IZoneFactory::createZoneReturn> {
@@ -153,27 +155,36 @@ impl ZoneFactory {
         );
 
         self.next_zone_id.write(
+            write,
             zone_id
                 .checked_add(1)
                 .ok_or(TempoPrecompileError::under_overflow())?,
         )?;
         // TIP-1091 deliberately etches the canonical runtime unconditionally. The 96-bit portal
         // prefix makes pre-existing state computationally infeasible to target with CREATE2.
-        ZonePortalStorage::new(portal).initialize(zone_id, &call.params, token_enablement_hash)?;
-
-        self.zones[zone_id].write(ZoneInfoStorage {
+        ZonePortalStorage::new(portal).initialize(
+            write,
             zone_id,
-            portal,
-            access_mode: call.params.accessMode,
-            gateway_mode: call.params.gatewayMode,
-            admin: call.params.admin,
-            sequencers: call.params.sequencers.clone(),
-            threshold: call.params.threshold,
-            verifier: ZONE_VERIFIER_ADDRESS,
-            rpc_url: call.params.rpcUrl.clone(),
-        })?;
+            &call.params,
+            token_enablement_hash,
+        )?;
 
-        self.storage.emit_event(
+        self.zones[zone_id].write(
+            write,
+            ZoneInfoStorage {
+                zone_id,
+                portal,
+                access_mode: call.params.accessMode,
+                gateway_mode: call.params.gatewayMode,
+                admin: call.params.admin,
+                sequencers: call.params.sequencers.clone(),
+                threshold: call.params.threshold,
+                verifier: ZONE_VERIFIER_ADDRESS,
+                rpc_url: call.params.rpcUrl.clone(),
+            },
+        )?;
+
+        write.emit_event(
             portal,
             ZonePortalEvent::enforcement_modes_updated(
                 call.params.accessMode,
@@ -182,7 +193,7 @@ impl ZoneFactory {
             .into_log_data(),
         )?;
 
-        self.storage.emit_event(
+        write.emit_event(
             portal,
             ZonePortalEvent::sequencer_set_updated(
                 0,
@@ -192,7 +203,7 @@ impl ZoneFactory {
             .into_log_data(),
         )?;
 
-        self.storage.emit_event(
+        write.emit_event(
             portal,
             ZonePortalEvent::leader_updated(
                 Address::ZERO,
@@ -208,7 +219,7 @@ impl ZoneFactory {
             let previous = emitted_roles
                 .insert(*gateway, ZonePortalRole::CallbackGateway)
                 .unwrap_or(ZonePortalRole::None);
-            self.storage.emit_event(
+            write.emit_event(
                 portal,
                 ZonePortalEvent::role_updated(*gateway, previous, ZonePortalRole::CallbackGateway)
                     .into_log_data(),
@@ -219,14 +230,14 @@ impl ZoneFactory {
             let previous = emitted_roles
                 .insert(*account, ZonePortalRole::Account)
                 .unwrap_or(ZonePortalRole::None);
-            self.storage.emit_event(
+            write.emit_event(
                 portal,
                 ZonePortalEvent::role_updated(*account, previous, ZonePortalRole::Account)
                     .into_log_data(),
             )?;
         }
 
-        self.storage.emit_event(
+        write.emit_event(
             portal,
             ZonePortalEvent::token_enabled(
                 call.params.initialToken,
@@ -237,17 +248,20 @@ impl ZoneFactory {
             .into_log_data(),
         )?;
 
-        self.emit_event(ZoneFactoryEvent::zone_created(
-            zone_id,
-            portal,
-            call.params.initialToken,
-            call.params.accessMode,
-            call.params.gatewayMode,
-            call.params.admin,
-            call.params.sequencers.clone(),
-            call.params.threshold,
-            ZONE_VERIFIER_ADDRESS,
-        ))?;
+        self.emit_event(
+            write,
+            ZoneFactoryEvent::zone_created(
+                zone_id,
+                portal,
+                call.params.initialToken,
+                call.params.accessMode,
+                call.params.gatewayMode,
+                call.params.admin,
+                call.params.sequencers.clone(),
+                call.params.threshold,
+                ZONE_VERIFIER_ADDRESS,
+            ),
+        )?;
 
         Ok(IZoneFactory::createZoneReturn {
             zoneId: zone_id,
@@ -389,8 +403,12 @@ mod tests {
 
     fn factory_with_owner(owner: Address) -> Result<ZoneFactory> {
         let mut factory = ZoneFactory::new();
-        factory.next_zone_id.write(1)?;
-        factory.owner.write(owner)?;
+        factory
+            .next_zone_id
+            .write(&mut crate::storage::StorageCtx::test_writable(), 1)?;
+        factory
+            .owner
+            .write(&mut crate::storage::StorageCtx::test_writable(), owner)?;
         Ok(factory)
     }
 
@@ -416,6 +434,7 @@ mod tests {
 
             let params = create_params(PATH_USD_ADDRESS);
             let created = factory.create_zone(
+                &mut crate::storage::StorageCtx::test_writable(),
                 OWNER,
                 IZoneFactory::createZoneCall {
                     params: params.clone(),
@@ -593,7 +612,12 @@ mod tests {
 
             // Ensure portal can't be re-initialized
             assert_eq!(
-                portal.initialize(1, &params, B256::ZERO),
+                portal.initialize(
+                    &mut crate::storage::StorageCtx::test_writable(),
+                    1,
+                    &params,
+                    B256::ZERO
+                ),
                 Err(ZoneFactoryError::already_initialized().into())
             );
             Ok(())
@@ -608,6 +632,7 @@ mod tests {
                 TIP20Setup::path_usd(ADMIN).apply()?;
                 let mut factory = factory_with_owner(OWNER)?;
                 let created = factory.create_zone(
+                    &mut crate::storage::StorageCtx::test_writable(),
                     OWNER,
                     IZoneFactory::createZoneCall {
                         params: create_params(PATH_USD_ADDRESS),
@@ -651,6 +676,7 @@ mod tests {
             for token in [long_name, long_symbol, long_currency] {
                 let err = factory
                     .create_zone(
+                        &mut crate::storage::StorageCtx::test_writable(),
                         OWNER,
                         IZoneFactory::createZoneCall {
                             params: create_params(token),
@@ -676,7 +702,11 @@ mod tests {
             params.allowedAccounts = vec![ALLOWED_ACCOUNT, ALLOWED_ACCOUNT];
 
             Ok(factory
-                .create_zone(OWNER, IZoneFactory::createZoneCall { params })?
+                .create_zone(
+                    &mut crate::storage::StorageCtx::test_writable(),
+                    OWNER,
+                    IZoneFactory::createZoneCall { params },
+                )?
                 .portal)
         })?;
 
@@ -729,7 +759,11 @@ mod tests {
             params.allowedAccounts = vec![ALLOWED_ACCOUNT, ALLOWED_ACCOUNT];
 
             let err = factory
-                .create_zone(OWNER, IZoneFactory::createZoneCall { params })
+                .create_zone(
+                    &mut crate::storage::StorageCtx::test_writable(),
+                    OWNER,
+                    IZoneFactory::createZoneCall { params },
+                )
                 .unwrap_err();
             assert_eq!(err, ZoneFactoryError::invalid_closed_loop_config().into());
             Ok(())
@@ -747,6 +781,7 @@ mod tests {
             params.allowedAccounts.clear();
             params.zoneGateways.clear();
             let closed = factory.create_zone(
+                &mut crate::storage::StorageCtx::test_writable(),
                 OWNER,
                 IZoneFactory::createZoneCall {
                     params: params.clone(),
@@ -758,7 +793,11 @@ mod tests {
 
             params.accessMode = false;
             params.gatewayMode = false;
-            let open = factory.create_zone(OWNER, IZoneFactory::createZoneCall { params })?;
+            let open = factory.create_zone(
+                &mut crate::storage::StorageCtx::test_writable(),
+                OWNER,
+                IZoneFactory::createZoneCall { params },
+            )?;
             let open_portal = ZonePortalStorage::new(open.portal);
             assert!(!open_portal.is_access_enforced.read()?);
             assert!(!open_portal.is_gateway_enforced.read()?);
@@ -785,7 +824,11 @@ mod tests {
                 params.allowedAccounts = allowed_accounts;
                 params.zoneGateways = zone_gateways;
                 let err = factory
-                    .create_zone(OWNER, IZoneFactory::createZoneCall { params })
+                    .create_zone(
+                        &mut crate::storage::StorageCtx::test_writable(),
+                        OWNER,
+                        IZoneFactory::createZoneCall { params },
+                    )
                     .unwrap_err();
                 assert_eq!(
                     err,
@@ -816,7 +859,11 @@ mod tests {
                 params.sequencers = sequencers;
                 params.threshold = threshold;
                 let err = factory
-                    .create_zone(OWNER, IZoneFactory::createZoneCall { params })
+                    .create_zone(
+                        &mut crate::storage::StorageCtx::test_writable(),
+                        OWNER,
+                        IZoneFactory::createZoneCall { params },
+                    )
                     .unwrap_err();
                 assert_eq!(
                     err,
@@ -827,7 +874,11 @@ mod tests {
 
             let mut params = create_params(PATH_USD_ADDRESS);
             params.sequencers = vec![SEQUENCER_B, SEQUENCER_A];
-            factory.create_zone(OWNER, IZoneFactory::createZoneCall { params })?;
+            factory.create_zone(
+                &mut crate::storage::StorageCtx::test_writable(),
+                OWNER,
+                IZoneFactory::createZoneCall { params },
+            )?;
             assert_eq!(factory.zone(1)?.sequencers, vec![SEQUENCER_B, SEQUENCER_A]);
             Ok(())
         })
@@ -843,7 +894,11 @@ mod tests {
             params.sequencers = vec![ADMIN];
             params.threshold = 1;
 
-            let created = factory.create_zone(OWNER, IZoneFactory::createZoneCall { params })?;
+            let created = factory.create_zone(
+                &mut crate::storage::StorageCtx::test_writable(),
+                OWNER,
+                IZoneFactory::createZoneCall { params },
+            )?;
 
             assert_eq!(factory.zone(created.zoneId)?.admin, ADMIN);
             assert_eq!(factory.zone(created.zoneId)?.sequencers, vec![ADMIN]);
@@ -868,6 +923,7 @@ mod tests {
 
             let err = factory
                 .create_zone(
+                    &mut crate::storage::StorageCtx::test_writable(),
                     OWNER,
                     IZoneFactory::createZoneCall {
                         params: create_params(PATH_USD_ADDRESS),
@@ -881,8 +937,13 @@ mod tests {
             assert_eq!(factory.next_zone_id()?, 1);
             assert!(!factory.is_zone_portal(portal_address(1))?);
 
-            TIP403Registry::new().set_token_transfer_policy(PATH_USD_ADDRESS, 1)?;
+            TIP403Registry::new().set_token_transfer_policy(
+                &mut crate::storage::StorageCtx::test_writable(),
+                PATH_USD_ADDRESS,
+                1,
+            )?;
             factory.create_zone(
+                &mut crate::storage::StorageCtx::test_writable(),
                 OWNER,
                 IZoneFactory::createZoneCall {
                     params: create_params(PATH_USD_ADDRESS),
@@ -903,6 +964,7 @@ mod tests {
 
             let err = factory
                 .create_zone(
+                    &mut crate::storage::StorageCtx::test_writable(),
                     ADMIN,
                     IZoneFactory::createZoneCall {
                         params: create_params(PATH_USD_ADDRESS),

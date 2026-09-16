@@ -30,16 +30,16 @@ impl Precompile for ValidatorConfig {
                     validatorCount(call) => view(call, |_| self.validator_count()),
 
                     // Mutate functions
-                    addValidator(call) => mutate_void(call, msg_sender, |s, c| self.add_validator(s, c)),
-                    updateValidator(call) => mutate_void(call, msg_sender, |s, c| self.update_validator(s, c)),
-                    changeValidatorStatus(call) => mutate_void(call, msg_sender, |s, c| self.change_validator_status(s, c)),
+                    addValidator(call) => mutate_void(call, msg_sender, |write, s, c| self.add_validator(write, s, c)),
+                    updateValidator(call) => mutate_void(call, msg_sender, |write, s, c| self.update_validator(write, s, c)),
+                    changeValidatorStatus(call) => mutate_void(call, msg_sender, |write, s, c| self.change_validator_status(write, s, c)),
                     #[schedule(since = T1)]
-                    changeValidatorStatusByIndex(call) => mutate_void(call, msg_sender, |s, c| {
-                        self.change_validator_status_by_index(s, c)
+                    changeValidatorStatusByIndex(call) => mutate_void(call, msg_sender, |write, s, c| {
+                        self.change_validator_status_by_index(write, s, c)
                     }),
-                    changeOwner(call) => mutate_void(call, msg_sender, |s, c| self.change_owner(s, c)),
-                    setNextFullDkgCeremony(call) => mutate_void(call, msg_sender, |s, c| {
-                        self.set_next_full_dkg_ceremony(s, c)
+                    changeOwner(call) => mutate_void(call, msg_sender, |write, s, c| self.change_owner(write, s, c)),
+                    setNextFullDkgCeremony(call) => mutate_void(call, msg_sender, |write, s, c| {
+                        self.set_next_full_dkg_ceremony(write, s, c)
                     })
                 }
             }
@@ -74,7 +74,7 @@ mod tests {
         let mut storage = HashMapStorageProvider::new_with_spec(1, TempoHardfork::T1);
         StorageCtx::enter(&mut storage, || -> eyre::Result<()> {
             let mut validator_config = ValidatorConfig::new();
-            validator_config.initialize(owner)?;
+            validator_config.initialize(&mut crate::storage::StorageCtx::test_writable(), owner)?;
 
             let result = validator_config.call(&[0x12, 0x34, 0x56, 0x78], sender)?;
             assert!(result.is_revert());
@@ -90,7 +90,7 @@ mod tests {
         let mut storage = HashMapStorageProvider::new_with_spec(1, TempoHardfork::T0);
         StorageCtx::enter(&mut storage, || {
             let mut validator_config = ValidatorConfig::new();
-            validator_config.initialize(owner)?;
+            validator_config.initialize(&mut crate::storage::StorageCtx::test_writable(), owner)?;
 
             let result = validator_config.call(&[0x12, 0x34], sender);
             let output = result.expect("expected Ok(halt) for short calldata");
@@ -109,7 +109,7 @@ mod tests {
             let mut validator_config = ValidatorConfig::new();
 
             // Initialize with owner
-            validator_config.initialize(owner)?;
+            validator_config.initialize(&mut crate::storage::StorageCtx::test_writable(), owner)?;
 
             // Call owner() via dispatch
             let owner_call = IValidatorConfig::ownerCall {};
@@ -136,7 +136,7 @@ mod tests {
             let mut validator_config = ValidatorConfig::new();
 
             // Initialize with owner
-            validator_config.initialize(owner)?;
+            validator_config.initialize(&mut crate::storage::StorageCtx::test_writable(), owner)?;
 
             // Add validator via dispatch
             let public_key = FixedBytes::<32>::from([0x42; 32]);
@@ -177,7 +177,7 @@ mod tests {
             let mut validator_config = ValidatorConfig::new();
 
             // Initialize with owner
-            validator_config.initialize(owner)?;
+            validator_config.initialize(&mut crate::storage::StorageCtx::test_writable(), owner)?;
 
             // Try to add validator as non-owner
             let public_key = FixedBytes::<32>::from([0x42; 32]);
@@ -229,10 +229,11 @@ mod tests {
         let mut storage = HashMapStorageProvider::new_with_spec(1, TempoHardfork::T0);
         StorageCtx::enter(&mut storage, || -> eyre::Result<()> {
             let mut validator_config = ValidatorConfig::new();
-            validator_config.initialize(owner)?;
+            validator_config.initialize(&mut crate::storage::StorageCtx::test_writable(), owner)?;
 
             // Add a validator first
             validator_config.add_validator(
+                &mut crate::storage::StorageCtx::test_writable(),
                 owner,
                 IValidatorConfig::addValidatorCall {
                     newValidatorAddress: validator,
@@ -265,10 +266,11 @@ mod tests {
         let mut storage = HashMapStorageProvider::new_with_spec(1, TempoHardfork::T1);
         StorageCtx::enter(&mut storage, || -> eyre::Result<()> {
             let mut validator_config = ValidatorConfig::new();
-            validator_config.initialize(owner)?;
+            validator_config.initialize(&mut crate::storage::StorageCtx::test_writable(), owner)?;
 
             // Add a validator first
             validator_config.add_validator(
+                &mut crate::storage::StorageCtx::test_writable(),
                 owner,
                 IValidatorConfig::addValidatorCall {
                     newValidatorAddress: validator,

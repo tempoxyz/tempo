@@ -22,29 +22,29 @@ impl Precompile for TIP20ChannelReserve {
                         Ok(CLOSE_GRACE_PERIOD)
                     }),
                     VOUCHER_TYPEHASH(_) => metadata::<ITIP20ChannelReserve::VOUCHER_TYPEHASHCall>(|| Ok(VOUCHER_TYPEHASH)),
-                    open(call) => mutate(call, msg_sender, |sender, c| {
-                        preserve_storage_credits(self.address)?;
-                        self.open(sender, c)
+                    open(call) => mutate(call, msg_sender, |write, sender, c| {
+                        preserve_storage_credits(write, self.address)?;
+                        self.open(write, sender, c)
                     }),
-                    settle(call) => mutate_void(call, msg_sender, |sender, c| {
-                        preserve_storage_credits(self.address)?;
-                        self.settle(sender, c)
+                    settle(call) => mutate_void(call, msg_sender, |write, sender, c| {
+                        preserve_storage_credits(write, self.address)?;
+                        self.settle(write, sender, c)
                     }),
-                    topUp(call) => mutate_void(call, msg_sender, |sender, c| {
-                        preserve_storage_credits(self.address)?;
-                        self.top_up(sender, c)
+                    topUp(call) => mutate_void(call, msg_sender, |write, sender, c| {
+                        preserve_storage_credits(write, self.address)?;
+                        self.top_up(write, sender, c)
                     }),
-                    close(call) => mutate_void(call, msg_sender, |sender, c| {
-                        preserve_storage_credits(self.address)?;
-                        self.close(sender, c)
+                    close(call) => mutate_void(call, msg_sender, |write, sender, c| {
+                        preserve_storage_credits(write, self.address)?;
+                        self.close(write, sender, c)
                     }),
-                    requestClose(call) => mutate_void(call, msg_sender, |sender, c| {
-                        preserve_storage_credits(self.address)?;
-                        self.request_close(sender, c)
+                    requestClose(call) => mutate_void(call, msg_sender, |write, sender, c| {
+                        preserve_storage_credits(write, self.address)?;
+                        self.request_close(write, sender, c)
                     }),
-                    withdraw(call) => mutate_void(call, msg_sender, |sender, c| {
-                        preserve_storage_credits(self.address)?;
-                        self.withdraw(sender, c)
+                    withdraw(call) => mutate_void(call, msg_sender, |write, sender, c| {
+                        preserve_storage_credits(write, self.address)?;
+                        self.withdraw(write, sender, c)
                     }),
                     getChannel(call) => view(call, |c| self.get_channel(c)),
                     getChannelState(call) => view(call, |c| self.get_channel_state(c)),

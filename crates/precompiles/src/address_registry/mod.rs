@@ -83,8 +83,8 @@ impl RegistryData {
 
 impl AddressRegistry {
     /// Initializes the registry contract by setting its bytecode marker.
-    pub fn initialize(&mut self) -> Result<()> {
-        self.__initialize()
+    pub fn initialize(&mut self, write: &mut crate::storage::WriteCtx) -> Result<()> {
+        self.__initialize(write)
     }
 
     // ────────────────── Registration ──────────────────
@@ -100,6 +100,7 @@ impl AddressRegistry {
     /// - `MasterIdCollision` — the derived `masterId` is already registered
     pub fn register_virtual_master(
         &mut self,
+        write: &mut crate::storage::WriteCtx,
         msg_sender: Address,
         call: IAddressRegistry::registerVirtualMasterCall,
     ) -> Result<MasterId> {
@@ -125,14 +126,20 @@ impl AddressRegistry {
         }
 
         // Store the registration
-        self.data[master_id].write(RegistryData {
-            master_address: msg_sender,
-            reserved: FixedBytes::ZERO,
-            ty: 0,
-        })?;
+        self.data[master_id].write(
+            write,
+            RegistryData {
+                master_address: msg_sender,
+                reserved: FixedBytes::ZERO,
+                ty: 0,
+            },
+        )?;
 
         // Emit event
-        self.emit_event(AddrRegistryEvent::master_registered(master_id, msg_sender))?;
+        self.emit_event(
+            write,
+            AddrRegistryEvent::master_registered(master_id, msg_sender),
+        )?;
 
         Ok(master_id)
     }
@@ -229,6 +236,7 @@ mod tests {
             let mut registry = AddressRegistry::new();
 
             let master_id = registry.register_virtual_master(
+                &mut crate::storage::StorageCtx::test_writable(),
                 master,
                 IAddressRegistry::registerVirtualMasterCall { salt },
             )?;
@@ -249,6 +257,7 @@ mod tests {
             let mut registry = AddressRegistry::new();
 
             let result = registry.register_virtual_master(
+                &mut crate::storage::StorageCtx::test_writable(),
                 master,
                 IAddressRegistry::registerVirtualMasterCall { salt: bad_salt },
             );
@@ -269,6 +278,7 @@ mod tests {
             let mut registry = AddressRegistry::new();
 
             let result = registry.register_virtual_master(
+                &mut crate::storage::StorageCtx::test_writable(),
                 Address::ZERO,
                 IAddressRegistry::registerVirtualMasterCall {
                     salt: FixedBytes::ZERO,
@@ -291,6 +301,7 @@ mod tests {
             let mut registry = AddressRegistry::new();
 
             let result = registry.register_virtual_master(
+                &mut crate::storage::StorageCtx::test_writable(),
                 Address::new_virtual(MasterId::ZERO, UserTag::ZERO),
                 IAddressRegistry::registerVirtualMasterCall {
                     salt: FixedBytes::ZERO,
@@ -314,6 +325,7 @@ mod tests {
             let mut registry = AddressRegistry::new();
 
             let result = registry.register_virtual_master(
+                &mut crate::storage::StorageCtx::test_writable(),
                 tip20_addr,
                 IAddressRegistry::registerVirtualMasterCall {
                     salt: FixedBytes::ZERO,
@@ -338,12 +350,14 @@ mod tests {
 
             // First registration succeeds
             registry.register_virtual_master(
+                &mut crate::storage::StorageCtx::test_writable(),
                 master,
                 IAddressRegistry::registerVirtualMasterCall { salt },
             )?;
 
             // Second registration with same (address, salt) reverts
             let result = registry.register_virtual_master(
+                &mut crate::storage::StorageCtx::test_writable(),
                 master,
                 IAddressRegistry::registerVirtualMasterCall { salt },
             );
@@ -419,6 +433,7 @@ mod tests {
             let mut registry = AddressRegistry::new();
 
             let master_id = registry.register_virtual_master(
+                &mut crate::storage::StorageCtx::test_writable(),
                 master,
                 IAddressRegistry::registerVirtualMasterCall { salt },
             )?;
@@ -455,6 +470,7 @@ mod tests {
 
             // Registered virtual → master
             let master_id = registry.register_virtual_master(
+                &mut crate::storage::StorageCtx::test_writable(),
                 master,
                 IAddressRegistry::registerVirtualMasterCall { salt },
             )?;

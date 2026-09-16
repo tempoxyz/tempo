@@ -16,27 +16,57 @@ fn test_string() {
         let mut layout = Layout::__new(address);
 
         // Test empty string
-        layout.another_string.write(String::new()).unwrap();
+        layout
+            .another_string
+            .write(
+                &mut tempo_precompiles::storage::StorageCtx::test_writable(),
+                String::new(),
+            )
+            .unwrap();
         assert_eq!(layout.another_string.read().unwrap(), "");
 
         // Test short string
         let short = "Hello Tempo!".to_string();
-        layout.one_string.write(short.clone()).unwrap();
+        layout
+            .one_string
+            .write(
+                &mut tempo_precompiles::storage::StorageCtx::test_writable(),
+                short.clone(),
+            )
+            .unwrap();
         assert_eq!(layout.one_string.read().unwrap(), short);
 
         // Test max length (31 bytes)
         let short_max = "a".repeat(31);
-        layout.one_string.write(short_max.clone()).unwrap();
+        layout
+            .one_string
+            .write(
+                &mut tempo_precompiles::storage::StorageCtx::test_writable(),
+                short_max.clone(),
+            )
+            .unwrap();
         assert_eq!(layout.one_string.read().unwrap(), short_max);
 
         // Test long string (32 bytes)
         let long_min = "b".repeat(32);
-        layout.one_string.write(long_min.clone()).unwrap();
+        layout
+            .one_string
+            .write(
+                &mut tempo_precompiles::storage::StorageCtx::test_writable(),
+                long_min.clone(),
+            )
+            .unwrap();
         assert_eq!(layout.one_string.read().unwrap(), long_min);
 
         // Test long string (100 bytes)
         let long = "c".repeat(100);
-        layout.one_string.write(long.clone()).unwrap();
+        layout
+            .one_string
+            .write(
+                &mut tempo_precompiles::storage::StorageCtx::test_writable(),
+                long.clone(),
+            )
+            .unwrap();
         assert_eq!(layout.one_string.read().unwrap(), long);
 
         Ok::<(), Box<dyn std::error::Error>>(())
@@ -64,15 +94,15 @@ proptest! {
             let mut layout = Layout::__new(address);
 
             // Store arbitrary strings
-            layout.one_string.write(str1.clone())?;
-            layout.another_string.write(str2.clone())?;
+            layout.one_string.write(&mut tempo_precompiles::storage::StorageCtx::test_writable(), str1.clone())?;
+            layout.another_string.write(&mut tempo_precompiles::storage::StorageCtx::test_writable(), str2.clone())?;
 
             // Roundtrip property
             prop_assert_eq!(layout.one_string.read()?, str1);
             prop_assert_eq!(layout.another_string.read()?, str2.clone());
 
             // Delete property
-            layout.one_string.delete()?;
+            layout.one_string.delete(&mut tempo_precompiles::storage::StorageCtx::test_writable())?;
             prop_assert_eq!(layout.one_string.read()?, String::new());
 
             // Other field should be unaffected (isolation)
@@ -95,8 +125,14 @@ fn test_string_overwrite_long_to_short_cleans_tail() -> error::Result<()> {
             let mut handler = Slot::<String>::new(base_slot, address);
 
             // 100 bytes -> ceil(100/32) = 4 tail chunks.
-            handler.write("x".repeat(100))?;
-            handler.write("hi".to_string())?;
+            handler.write(
+                &mut tempo_precompiles::storage::StorageCtx::test_writable(),
+                "x".repeat(100),
+            )?;
+            handler.write(
+                &mut tempo_precompiles::storage::StorageCtx::test_writable(),
+                "hi".to_string(),
+            )?;
             assert_eq!(handler.read()?, "hi");
 
             for i in 0..4 {
@@ -123,9 +159,15 @@ fn test_string_overwrite_long_to_shorter_long_cleans_only_excess() -> error::Res
             let mut handler = Slot::<String>::new(base_slot, address);
 
             // 200 bytes -> 7 chunks; shrink to 64 bytes -> 2 chunks.
-            handler.write("a".repeat(200))?;
+            handler.write(
+                &mut tempo_precompiles::storage::StorageCtx::test_writable(),
+                "a".repeat(200),
+            )?;
             let new_value = "b".repeat(64);
-            handler.write(new_value.clone())?;
+            handler.write(
+                &mut tempo_precompiles::storage::StorageCtx::test_writable(),
+                new_value.clone(),
+            )?;
             assert_eq!(handler.read()?, new_value);
 
             // Chunks 0..2 are overwritten with new data (non-zero) on both forks.

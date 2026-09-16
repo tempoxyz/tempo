@@ -191,7 +191,7 @@ fn gen_complete_impl_set(config: &TypeConfig) -> TokenStream {
             impl crate::storage::types::sealed::OnlyPrimitives for #type_path {}
             impl crate::storage::Storable for #type_path {
                 #[inline]
-                fn load<S: crate::storage::StorageOps>(
+                fn load<S: crate::storage::StorageRead>(
                     storage: &S,
                     slot: ::alloy::primitives::U256,
                     _ctx: crate::storage::LayoutCtx
@@ -383,7 +383,7 @@ fn gen_array_impl(config: &ArrayConfig) -> TokenStream {
         // Implement Storable with full I/O logic
         impl crate::storage::Storable for [#elem_type; #array_size] {
             #[inline]
-            fn load<S: crate::storage::StorageOps>(storage: &S, slot: ::alloy::primitives::U256, ctx: crate::storage::LayoutCtx) -> crate::error::Result<Self> {
+            fn load<S: crate::storage::StorageRead>(storage: &S, slot: ::alloy::primitives::U256, ctx: crate::storage::LayoutCtx) -> crate::error::Result<Self> {
                 debug_assert!(
                     ctx.is_full(),
                     "Arrays can only be loaded with a full-slot LayoutCtx (FULL or INIT)"
@@ -673,7 +673,7 @@ fn gen_struct_array_impl(struct_type: &TokenStream, array_size: usize) -> TokenS
         // Implement Storable with full I/O logic
         impl crate::storage::Storable for [#struct_type; #array_size] {
             #[inline]
-            fn load<S: crate::storage::StorageOps>(storage: &S, slot: ::alloy::primitives::U256, ctx: crate::storage::LayoutCtx) -> crate::error::Result<Self> {
+            fn load<S: crate::storage::StorageRead>(storage: &S, slot: ::alloy::primitives::U256, ctx: crate::storage::LayoutCtx) -> crate::error::Result<Self> {
                 debug_assert!(
                     ctx.is_full(),
                     "Struct arrays can only be loaded with a full-slot LayoutCtx (FULL or INIT)"

@@ -47,9 +47,27 @@ fn test_struct_storage() {
             field3: 3000,
         };
 
-        layout.field_a.write(U256::from(100)).unwrap();
-        layout.field_b.write(U256::from(200)).unwrap();
-        layout.block.write(block.clone()).unwrap();
+        layout
+            .field_a
+            .write(
+                &mut tempo_precompiles::storage::StorageCtx::test_writable(),
+                U256::from(100),
+            )
+            .unwrap();
+        layout
+            .field_b
+            .write(
+                &mut tempo_precompiles::storage::StorageCtx::test_writable(),
+                U256::from(200),
+            )
+            .unwrap();
+        layout
+            .block
+            .write(
+                &mut tempo_precompiles::storage::StorageCtx::test_writable(),
+                block.clone(),
+            )
+            .unwrap();
 
         assert_eq!(layout.field_a.read().unwrap(), U256::from(100));
         assert_eq!(layout.field_b.read().unwrap(), U256::from(200));
@@ -61,9 +79,24 @@ fn test_struct_storage() {
         let addr3 = test_address(30);
 
         let mut addr_map = layout.address_mapping;
-        addr_map[addr1].write(U256::from(1000)).unwrap();
-        addr_map[addr2].write(U256::from(2000)).unwrap();
-        addr_map[addr3].write(U256::from(3000)).unwrap();
+        addr_map[addr1]
+            .write(
+                &mut tempo_precompiles::storage::StorageCtx::test_writable(),
+                U256::from(1000),
+            )
+            .unwrap();
+        addr_map[addr2]
+            .write(
+                &mut tempo_precompiles::storage::StorageCtx::test_writable(),
+                U256::from(2000),
+            )
+            .unwrap();
+        addr_map[addr3]
+            .write(
+                &mut tempo_precompiles::storage::StorageCtx::test_writable(),
+                U256::from(3000),
+            )
+            .unwrap();
 
         assert_eq!(addr_map[addr1].read().unwrap(), U256::from(1000));
         assert_eq!(addr_map[addr2].read().unwrap(), U256::from(2000));
@@ -81,8 +114,18 @@ fn test_struct_storage() {
             field3: 666,
         };
 
-        layout.block_mapping[1].write(block1.clone()).unwrap();
-        layout.block_mapping[2].write(block2.clone()).unwrap();
+        layout.block_mapping[1]
+            .write(
+                &mut tempo_precompiles::storage::StorageCtx::test_writable(),
+                block1.clone(),
+            )
+            .unwrap();
+        layout.block_mapping[2]
+            .write(
+                &mut tempo_precompiles::storage::StorageCtx::test_writable(),
+                block2.clone(),
+            )
+            .unwrap();
         assert_eq!(layout.block_mapping[1].read().unwrap(), block1);
         assert_eq!(layout.block_mapping[2].read().unwrap(), block2);
 
@@ -126,16 +169,37 @@ fn test_delete_struct_field_in_contract() {
         };
 
         // Write and verify data
-        layout.field_a.write(U256::from(100)).unwrap();
-        layout.field_b.write(U256::from(200)).unwrap();
-        layout.block.write(block.clone()).unwrap();
+        layout
+            .field_a
+            .write(
+                &mut tempo_precompiles::storage::StorageCtx::test_writable(),
+                U256::from(100),
+            )
+            .unwrap();
+        layout
+            .field_b
+            .write(
+                &mut tempo_precompiles::storage::StorageCtx::test_writable(),
+                U256::from(200),
+            )
+            .unwrap();
+        layout
+            .block
+            .write(
+                &mut tempo_precompiles::storage::StorageCtx::test_writable(),
+                block.clone(),
+            )
+            .unwrap();
 
         assert_eq!(layout.field_a.read().unwrap(), U256::from(100));
         assert_eq!(layout.field_b.read().unwrap(), U256::from(200));
         assert_eq!(layout.block.read().unwrap(), block);
 
         // Delete the block field
-        layout.block.delete().unwrap();
+        layout
+            .block
+            .delete(&mut tempo_precompiles::storage::StorageCtx::test_writable())
+            .unwrap();
 
         // Verify block returns default values after deletion
         assert_eq!(
@@ -173,16 +237,37 @@ fn test_user_profile_struct_in_contract() {
         };
 
         // Write and verify data
-        layout.counter.write(U256::from(5)).unwrap();
-        layout.profile.write(profile.clone()).unwrap();
-        layout.flag.write(true).unwrap();
+        layout
+            .counter
+            .write(
+                &mut tempo_precompiles::storage::StorageCtx::test_writable(),
+                U256::from(5),
+            )
+            .unwrap();
+        layout
+            .profile
+            .write(
+                &mut tempo_precompiles::storage::StorageCtx::test_writable(),
+                profile.clone(),
+            )
+            .unwrap();
+        layout
+            .flag
+            .write(
+                &mut tempo_precompiles::storage::StorageCtx::test_writable(),
+                true,
+            )
+            .unwrap();
 
         assert_eq!(layout.counter.read().unwrap(), U256::from(5));
         assert_eq!(layout.profile.read().unwrap(), profile);
         assert!(layout.flag.read().unwrap());
 
         // Delete the profile
-        layout.profile.delete().unwrap();
+        layout
+            .profile
+            .delete(&mut tempo_precompiles::storage::StorageCtx::test_writable())
+            .unwrap();
 
         // Verify profile returns default values after deletion
         assert_eq!(
@@ -222,9 +307,9 @@ proptest! {
         let mut layout = Layout::__new(address);
         StorageCtx::enter(&mut storage, || {
             // Store random values
-            layout.field_a.write(field_a_val)?;
-            layout.block.write(block.clone())?;
-            layout.field_b.write(field_b_val)?;
+            layout.field_a.write(&mut tempo_precompiles::storage::StorageCtx::test_writable(), field_a_val)?;
+            layout.block.write(&mut tempo_precompiles::storage::StorageCtx::test_writable(), block.clone())?;
+            layout.field_b.write(&mut tempo_precompiles::storage::StorageCtx::test_writable(), field_b_val)?;
 
             // Roundtrip property
             prop_assert_eq!(layout.field_a.read()?, field_a_val);
@@ -232,7 +317,7 @@ proptest! {
             prop_assert_eq!(layout.field_b.read()?, field_b_val);
 
             // Delete property for struct
-            layout.block.delete()?;
+            layout.block.delete(&mut tempo_precompiles::storage::StorageCtx::test_writable())?;
             let default_block = TestBlock {
                 field1: U256::ZERO,
                 field2: U256::ZERO,
@@ -266,9 +351,9 @@ proptest! {
         let mut layout = Layout::__new(address);
         StorageCtx::enter(&mut storage, || {
             // Store random values
-            layout.counter.write(counter_val)?;
-            layout.profile.write(profile.clone())?;
-            layout.flag.write(flag_val)?;
+            layout.counter.write(&mut tempo_precompiles::storage::StorageCtx::test_writable(), counter_val)?;
+            layout.profile.write(&mut tempo_precompiles::storage::StorageCtx::test_writable(), profile.clone())?;
+            layout.flag.write(&mut tempo_precompiles::storage::StorageCtx::test_writable(), flag_val)?;
 
             // Roundtrip property
             prop_assert_eq!(layout.counter.read()?, counter_val);
@@ -276,7 +361,7 @@ proptest! {
             prop_assert_eq!(layout.flag.read()?, flag_val);
 
             // Delete property
-            layout.profile.delete()?;
+            layout.profile.delete(&mut tempo_precompiles::storage::StorageCtx::test_writable())?;
             let default_profile = UserProfile {
                 owner: Address::ZERO,
                 active: false,
@@ -315,20 +400,26 @@ fn test_struct_overwrite_cleans_dyn_field_tails() -> error::Result<()> {
             let outbound_slot = base_slot + U256::from(2);
 
             // Initial: long strings in both dynamic fields.
-            handler.write(DynStringRecord {
-                static_a: U256::from(1),
-                inbound: "x".repeat(100), // 4 tail chunks
-                outbound: "y".repeat(80), // 3 tail chunks
-                static_b: 42,
-            })?;
+            handler.write(
+                &mut tempo_precompiles::storage::StorageCtx::test_writable(),
+                DynStringRecord {
+                    static_a: U256::from(1),
+                    inbound: "x".repeat(100), // 4 tail chunks
+                    outbound: "y".repeat(80), // 3 tail chunks
+                    static_b: 42,
+                },
+            )?;
 
             // Overwrite with shorter strings (validator-config-shaped path).
-            handler.write(DynStringRecord {
-                static_a: U256::from(2),
-                inbound: "1.2.3.4:30303".to_string(),  // short
-                outbound: "5.6.7.8:30303".to_string(), // short
-                static_b: 84,
-            })?;
+            handler.write(
+                &mut tempo_precompiles::storage::StorageCtx::test_writable(),
+                DynStringRecord {
+                    static_a: U256::from(2),
+                    inbound: "1.2.3.4:30303".to_string(), // short
+                    outbound: "5.6.7.8:30303".to_string(), // short
+                    static_b: 84,
+                },
+            )?;
 
             // Logical reads return the new values.
             let loaded = handler.read()?;

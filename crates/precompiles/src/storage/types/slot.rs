@@ -3,7 +3,10 @@ use std::marker::PhantomData;
 
 use crate::{
     error::Result,
-    storage::{FieldLocation, Handler, LayoutCtx, Storable, StorableType, StorageCtx, StorageOps},
+    storage::{
+        FieldLocation, Handler, LayoutCtx, Storable, StorableType, StorageCtx, StorageOps,
+        StorageRead, Writable,
+    },
 };
 
 /// Type-safe wrapper for a single EVM storage slot.
@@ -126,39 +129,24 @@ impl<T> Slot<T> {
     }
 }
 
-impl<T> StorageOps for Slot<T> {
+impl<T> StorageRead for Slot<T> {
     fn load(&self, slot: U256) -> Result<U256> {
         let storage = StorageCtx;
         storage.sload(self.address, slot)
-    }
-
-    fn store(&mut self, slot: U256, value: U256) -> Result<()> {
-        let mut storage = StorageCtx;
-        storage.sstore(self.address, slot, value)
-    }
-
-    fn sinc(&mut self, slot: U256, delta: U256) -> Result<()> {
-        let mut storage = StorageCtx;
-        storage.sinc(self.address, slot, delta)
-    }
-
-    fn sdec(&mut self, slot: U256, delta: U256) -> Result<()> {
-        let mut storage = StorageCtx;
-        storage.sdec(self.address, slot, delta)
     }
 }
 
 impl Slot<U256> {
     /// Increments this slot by `delta`.
     #[inline]
-    pub fn sinc(&mut self, delta: U256) -> Result<()> {
-        <Self as StorageOps>::sinc(self, self.slot, delta)
+    pub fn sinc(&mut self, write: &mut StorageCtx<Writable>, delta: U256) -> Result<()> {
+        write.sinc(self.address, self.slot, delta)
     }
 
     /// Decrements this slot by `delta`.
     #[inline]
-    pub fn sdec(&mut self, delta: U256) -> Result<()> {
-        <Self as StorageOps>::sdec(self, self.slot, delta)
+    pub fn sdec(&mut self, write: &mut StorageCtx<Writable>, delta: U256) -> Result<()> {
+        write.sdec(self.address, self.slot, delta)
     }
 }
 
@@ -169,15 +157,61 @@ struct TransientOps {
     address: Address,
 }
 
-impl StorageOps for TransientOps {
+impl StorageRead for TransientOps {
     fn load(&self, slot: U256) -> Result<U256> {
         let storage = StorageCtx;
         storage.tload(self.address, slot)
     }
+}
 
+/// Address-scoped storage writes borrowed from a checked execution capability.
+pub struct WritableStorage<'a> {
+    write: &'a mut StorageCtx<Writable>,
+    address: Address,
+    transient: bool,
+}
+
+impl StorageCtx<Writable> {
+    /// Borrow persistent storage at `address` for generic storable operations.
+    #[inline]
+    pub fn at_address(&mut self, address: Address) -> WritableStorage<'_> {
+        WritableStorage {
+            write: self,
+            address,
+            transient: false,
+        }
+    }
+
+    /// Borrow transient storage at `address` for generic storable operations.
+    #[inline]
+    pub fn at_transient_address(&mut self, address: Address) -> WritableStorage<'_> {
+        WritableStorage {
+            write: self,
+            address,
+            transient: true,
+        }
+    }
+}
+
+impl StorageRead for WritableStorage<'_> {
+    #[inline]
+    fn load(&self, slot: U256) -> Result<U256> {
+        if self.transient {
+            StorageCtx.tload(self.address, slot)
+        } else {
+            StorageCtx.sload(self.address, slot)
+        }
+    }
+}
+
+impl StorageOps for WritableStorage<'_> {
+    #[inline]
     fn store(&mut self, slot: U256, value: U256) -> Result<()> {
-        let mut storage = StorageCtx;
-        storage.tstore(self.address, slot, value)
+        if self.transient {
+            self.write.tstore(self.address, slot, value)
+        } else {
+            self.write.sstore(self.address, slot, value)
+        }
     }
 }
 
@@ -223,8 +257,8 @@ impl<T: Storable> Handler<T> for Slot<T> {
     /// name_slot.write("MyToken".to_string()).unwrap();
     /// ```
     #[inline]
-    fn write(&mut self, value: T) -> Result<()> {
-        value.store(self, self.slot, self.ctx)
+    fn write(&mut self, write: &mut StorageCtx<Writable>, value: T) -> Result<()> {
+        value.store(&mut write.at_address(self.address), self.slot, self.ctx)
     }
 
     /// Deletes the value at this slot (sets all slots to zero).
@@ -241,8 +275,8 @@ impl<T: Storable> Handler<T> for Slot<T> {
     /// name_slot.delete().unwrap();
     /// ```
     #[inline]
-    fn delete(&mut self) -> Result<()> {
-        T::delete(self, self.slot, self.ctx)
+    fn delete(&mut self, write: &mut StorageCtx<Writable>) -> Result<()> {
+        T::delete(&mut write.at_address(self.address), self.slot, self.ctx)
     }
 
     /// Reads a value from transient storage at this slot.
@@ -253,14 +287,22 @@ impl<T: Storable> Handler<T> for Slot<T> {
 
     /// Writes a value to transient storage at this slot.
     #[inline]
-    fn t_write(&mut self, value: T) -> Result<()> {
-        value.store(&mut self.transient(), self.slot, self.ctx)
+    fn t_write(&mut self, write: &mut StorageCtx<Writable>, value: T) -> Result<()> {
+        value.store(
+            &mut write.at_transient_address(self.address),
+            self.slot,
+            self.ctx,
+        )
     }
 
     /// Deletes the value at this slot in transient storage (sets to zero).
     #[inline]
-    fn t_delete(&mut self) -> Result<()> {
-        T::delete(&mut self.transient(), self.slot, self.ctx)
+    fn t_delete(&mut self, write: &mut StorageCtx<Writable>) -> Result<()> {
+        T::delete(
+            &mut write.at_transient_address(self.address),
+            self.slot,
+            self.ctx,
+        )
     }
 }
 
@@ -315,14 +357,14 @@ mod tests {
             let mut slot_zero = Slot::<U256>::new(U256::ZERO, address);
             assert_eq!(slot_zero.slot(), U256::ZERO);
             let value_zero = U256::random();
-            slot_zero.write(value_zero)?;
+            slot_zero.write(&mut crate::storage::StorageCtx::test_writable(), value_zero)?;
             assert_eq!(slot_zero.read()?, value_zero);
 
             // U256::MAX slot
             let mut slot_max = Slot::<U256>::new(U256::MAX, address);
             assert_eq!(slot_max.slot(), U256::MAX);
             let value_max = U256::random();
-            slot_max.write(value_max)?;
+            slot_max.write(&mut crate::storage::StorageCtx::test_writable(), value_max)?;
             assert_eq!(slot_max.read()?, value_max);
 
             Ok(())
@@ -338,25 +380,28 @@ mod tests {
         StorageCtx::enter(&mut storage, || -> eyre::Result<()> {
             // U256
             let mut u256_slot = Slot::<U256>::new(slot_num, address);
-            u256_slot.write(test_value)?;
+            u256_slot.write(&mut crate::storage::StorageCtx::test_writable(), test_value)?;
             assert_eq!(u256_slot.read()?, test_value);
 
             // Address
             let test_addr = Address::random();
             let mut addr_slot = Slot::<Address>::new(U256::from(1), address);
-            addr_slot.write(test_addr)?;
+            addr_slot.write(&mut crate::storage::StorageCtx::test_writable(), test_addr)?;
             assert_eq!(addr_slot.read()?, test_addr);
 
             // bool
             let mut bool_slot = Slot::<bool>::new(U256::from(2), address);
-            bool_slot.write(true)?;
+            bool_slot.write(&mut crate::storage::StorageCtx::test_writable(), true)?;
             assert!(bool_slot.read()?);
-            bool_slot.write(false)?;
+            bool_slot.write(&mut crate::storage::StorageCtx::test_writable(), false)?;
             assert!(!bool_slot.read()?);
 
             // String
             let mut str_slot = Slot::<String>::new(U256::from(3), address);
-            str_slot.write("TestToken".to_string())?;
+            str_slot.write(
+                &mut crate::storage::StorageCtx::test_writable(),
+                "TestToken".to_string(),
+            )?;
             assert_eq!(str_slot.read()?, "TestToken");
 
             Ok(())
@@ -375,10 +420,16 @@ mod tests {
         StorageCtx::enter(&mut storage, || -> eyre::Result<()> {
             let mut slot = Slot::<U256>::new(U256::from(7), address);
 
-            slot.sinc(U256::from(10))?;
+            slot.sinc(
+                &mut crate::storage::StorageCtx::test_writable(),
+                U256::from(10),
+            )?;
             assert_eq!(slot.read()?, U256::from(10));
 
-            slot.sdec(U256::from(3))?;
+            slot.sdec(
+                &mut crate::storage::StorageCtx::test_writable(),
+                U256::from(3),
+            )?;
             assert_eq!(slot.read()?, U256::from(7));
 
             Ok(())
@@ -394,9 +445,9 @@ mod tests {
             assert_eq!(slot.read()?, 0);
 
             // Write and overwrite
-            slot.write(100)?;
+            slot.write(&mut crate::storage::StorageCtx::test_writable(), 100)?;
             assert_eq!(slot.read()?, 100);
-            slot.write(200)?;
+            slot.write(&mut crate::storage::StorageCtx::test_writable(), 200)?;
             assert_eq!(slot.read()?, 200);
 
             Ok(())
@@ -413,12 +464,12 @@ mod tests {
                 let mut slot = Slot::<U256>::new(slot, address);
 
                 // Write and read back
-                slot.write(value).unwrap();
+                slot.write(&mut crate::storage::StorageCtx::test_writable(), value).unwrap();
                 let loaded = slot.read().unwrap();
                 prop_assert_eq!(loaded, value, "roundtrip failed");
 
                 // Delete and verify
-                slot.delete().unwrap();
+                slot.delete(&mut crate::storage::StorageCtx::test_writable()).unwrap();
                 let after_delete = slot.read().unwrap();
                 prop_assert_eq!(after_delete, U256::ZERO, "not zero after delete");
                 Ok(())
@@ -432,7 +483,7 @@ mod tests {
                 let mut slot = Slot::<Address>::new(slot, address);
 
                 // Write and read back
-                slot.write(addr_value).unwrap();
+                slot.write(&mut crate::storage::StorageCtx::test_writable(), addr_value).unwrap();
                 let loaded = slot.read().unwrap();
                 prop_assert_eq!(loaded, addr_value, "address roundtrip failed");
                 Ok(())
@@ -446,8 +497,8 @@ mod tests {
                 let mut slot1 = Slot::<U256>::new(slot1, address);
                 let mut slot2 = Slot::<U256>::new(slot2, address);
 
-                slot1.write(value1).unwrap();
-                slot2.write(value2).unwrap();
+                slot1.write(&mut crate::storage::StorageCtx::test_writable(), value1).unwrap();
+                slot2.write(&mut crate::storage::StorageCtx::test_writable(), value2).unwrap();
 
                 // Verify both slots retain their independent values
                 let loaded1 = slot1.read().unwrap();
@@ -457,7 +508,7 @@ mod tests {
                 prop_assert_eq!(loaded2, value2, "slot 2 value changed");
 
                 // Delete slot 1, verify slot 2 unaffected
-                slot1.delete().unwrap();
+                slot1.delete(&mut crate::storage::StorageCtx::test_writable()).unwrap();
                 let after_delete1 = slot1.read().unwrap();
                 let after_delete2 = slot2.read().unwrap();
 
@@ -480,9 +531,9 @@ mod tests {
 
             // Write, read, delete
             let mut slot = Slot::<Address>::new_at_offset(base, 0, address);
-            slot.write(test_addr)?;
+            slot.write(&mut crate::storage::StorageCtx::test_writable(), test_addr)?;
             assert_eq!(slot.read()?, test_addr);
-            slot.delete()?;
+            slot.delete(&mut crate::storage::StorageCtx::test_writable())?;
             assert_eq!(slot.read()?, Address::ZERO);
 
             Ok(())
@@ -500,9 +551,12 @@ mod tests {
             let field_1: u64 = (U256::random() % U256::from(u64::MAX)).to();
             let field_2 = U256::random();
 
-            Slot::<Address>::new_at_offset(base, 0, address).write(field_0)?;
-            Slot::<u64>::new_at_offset(base, 1, address).write(field_1)?;
-            Slot::<U256>::new_at_offset(base, 2, address).write(field_2)?;
+            Slot::<Address>::new_at_offset(base, 0, address)
+                .write(&mut crate::storage::StorageCtx::test_writable(), field_0)?;
+            Slot::<u64>::new_at_offset(base, 1, address)
+                .write(&mut crate::storage::StorageCtx::test_writable(), field_1)?;
+            Slot::<U256>::new_at_offset(base, 2, address)
+                .write(&mut crate::storage::StorageCtx::test_writable(), field_2)?;
 
             assert_eq!(
                 Slot::<Address>::new_at_offset(base, 0, address).read()?,
@@ -533,11 +587,11 @@ mod tests {
 
             let num1 = U256::random();
             let num2 = U256::random();
-            u256_slot.t_write(num1)?;
+            u256_slot.t_write(&mut crate::storage::StorageCtx::test_writable(), num1)?;
             assert_eq!(u256_slot.t_read()?, num1);
-            u256_slot.t_write(num2)?;
+            u256_slot.t_write(&mut crate::storage::StorageCtx::test_writable(), num2)?;
             assert_eq!(u256_slot.t_read()?, num2);
-            u256_slot.t_delete()?;
+            u256_slot.t_delete(&mut crate::storage::StorageCtx::test_writable())?;
             assert_eq!(u256_slot.t_read()?, U256::ZERO);
 
             // Address: default, roundtrip, overwrite, delete
@@ -546,22 +600,22 @@ mod tests {
 
             let addr1 = Address::random();
             let addr2 = Address::random();
-            addr_slot.t_write(addr1)?;
+            addr_slot.t_write(&mut crate::storage::StorageCtx::test_writable(), addr1)?;
             assert_eq!(addr_slot.t_read()?, addr1);
-            addr_slot.t_write(addr2)?;
+            addr_slot.t_write(&mut crate::storage::StorageCtx::test_writable(), addr2)?;
             assert_eq!(addr_slot.t_read()?, addr2);
-            addr_slot.t_delete()?;
+            addr_slot.t_delete(&mut crate::storage::StorageCtx::test_writable())?;
             assert_eq!(addr_slot.t_read()?, Address::ZERO);
 
             // bool: default, roundtrip, overwrite, delete
             let mut bool_slot = Slot::<bool>::new(U256::from(3), address);
             assert!(!bool_slot.t_read()?);
 
-            bool_slot.t_write(true)?;
+            bool_slot.t_write(&mut crate::storage::StorageCtx::test_writable(), true)?;
             assert!(bool_slot.t_read()?);
-            bool_slot.t_write(false)?;
+            bool_slot.t_write(&mut crate::storage::StorageCtx::test_writable(), false)?;
             assert!(!bool_slot.t_read()?);
-            bool_slot.t_delete()?;
+            bool_slot.t_delete(&mut crate::storage::StorageCtx::test_writable())?;
             assert!(!bool_slot.t_read()?);
 
             Ok(())
@@ -579,18 +633,18 @@ mod tests {
             let mut slot = Slot::<U256>::new(slot_num, address);
 
             // Write different values to each storage type
-            slot.write(s_value)?;
-            slot.t_write(t_value)?;
+            slot.write(&mut crate::storage::StorageCtx::test_writable(), s_value)?;
+            slot.t_write(&mut crate::storage::StorageCtx::test_writable(), t_value)?;
             assert_eq!(slot.read()?, s_value);
             assert_eq!(slot.t_read()?, t_value);
 
             // Delete transient, persistent remains
-            slot.t_delete()?;
+            slot.t_delete(&mut crate::storage::StorageCtx::test_writable())?;
             assert_eq!(slot.read()?, s_value);
             assert_eq!(slot.t_read()?, U256::ZERO);
 
             // Restore transient value
-            slot.t_write(t_value)?;
+            slot.t_write(&mut crate::storage::StorageCtx::test_writable(), t_value)?;
             assert_eq!(slot.t_read()?, t_value);
 
             Ok(())

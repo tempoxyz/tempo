@@ -38,7 +38,10 @@ impl<DB: alloy_evm::Database> ProtocolFeeContext<'_, DB> {
     /// Installs Tempo's ordinary protocol storage context and executes `f`.
     ///
     /// TIP-1060 accounting is disabled because protocol fee storage is charged externally.
-    pub fn enter<R>(self, f: impl FnOnce() -> R) -> R {
+    pub fn enter<R>(
+        self,
+        f: impl FnOnce(&mut StorageCtx<tempo_precompiles::storage::Writable>) -> R,
+    ) -> R {
         StorageCtx::enter_evm_without_tip1060_accounting(
             self.journal,
             self.block_env,
@@ -166,8 +169,9 @@ impl<DB: alloy_evm::Database> ProtocolFeeManager<DB> for TempoFeeManager {
         beneficiary: Address,
         skip_liquidity_check: bool,
     ) -> TempoResult<Address> {
-        ctx.enter(|| {
+        ctx.enter(|write| {
             TipFeeManager::new().collect_fee_pre_tx(
+                write,
                 fee_payer,
                 user_token,
                 max_amount,
@@ -186,8 +190,9 @@ impl<DB: alloy_evm::Database> ProtocolFeeManager<DB> for TempoFeeManager {
         fee_token: Address,
         beneficiary: Address,
     ) -> TempoResult<U256> {
-        ctx.enter(|| {
+        ctx.enter(|write| {
             TipFeeManager::new().collect_fee_post_tx(
+                write,
                 fee_payer,
                 actual_spending,
                 refund_amount,

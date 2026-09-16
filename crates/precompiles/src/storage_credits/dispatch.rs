@@ -20,11 +20,11 @@ impl Precompile for StorageCredits {
                     balanceOf(call) => view(call, |c| self.balance_of(c.account)),
                     modeOf(call) => view(call, |c| self.mode_of(c.account).map(Into::into)),
                     budgetOf(call) => view(call, |c| self.budget_of(c.account)),
-                    setMode(call) => mutate_void(call, msg_sender, |sender, c| {
-                        self.set_mode(sender, c.newMode)
+                    setMode(call) => mutate_void(call, msg_sender, |write, sender, c| {
+                        self.set_mode(write, sender, c.newMode)
                     }),
-                    setBudget(call) => mutate_void(call, msg_sender, |sender, c| {
-                        self.set_budget(sender, c.credits)
+                    setBudget(call) => mutate_void(call, msg_sender, |write, sender, c| {
+                        self.set_budget(write, sender, c.credits)
                     })
                 }
             }

@@ -28,13 +28,13 @@ impl Precompile for TipFeeManager {
                     collectedFees(call) => view(call, |c| self.collected_fees[c.validator][c.token].read()),
 
                     // IFeeManager mutate functions
-                    setValidatorToken(call) => mutate_void(call, msg_sender, |s, c| {
+                    setValidatorToken(call) => mutate_void(call, msg_sender, |write, s, c| {
                         let beneficiary = self.storage.beneficiary();
-                        self.set_validator_token(s, c, beneficiary)
+                        self.set_validator_token(write, s, c, beneficiary)
                     }),
-                    setUserToken(call) => mutate_void(call, msg_sender, |s, c| self.set_user_token(s, c)),
-                    distributeFees(call) => mutate_void(call, msg_sender, |_, c| {
-                        self.distribute_fees(c.validator, c.token)
+                    setUserToken(call) => mutate_void(call, msg_sender, |write, s, c| self.set_user_token(write, s, c)),
+                    distributeFees(call) => mutate_void(call, msg_sender, |write, _, c| {
+                        self.distribute_fees(write, c.validator, c.token)
                     })
 
                 }
@@ -53,19 +53,19 @@ impl Precompile for TipFeeManager {
                     liquidityBalances(call) => view(call, |c| self.liquidity_balances[c.poolId][c.user].read()),
 
                     // ITIPFeeAMM mutate functions
-                    mint(call) => mutate(call, msg_sender, |s, c| {
-                        self.mint(s, c.userToken, c.validatorToken, c.amountValidatorToken, c.to)
+                    mint(call) => mutate(call, msg_sender, |write, s, c| {
+                        self.mint(write, s, c.userToken, c.validatorToken, c.amountValidatorToken, c.to)
                     }),
-                    burn(call) => mutate(call, msg_sender, |s, c| {
+                    burn(call) => mutate(call, msg_sender, |write, s, c| {
                         let (amount_user_token, amount_validator_token) =
-                            self.burn(s, c.userToken, c.validatorToken, c.liquidity, c.to)?;
+                            self.burn(write, s, c.userToken, c.validatorToken, c.liquidity, c.to)?;
                         Ok(ITIPFeeAMM::burnReturn {
                             amountUserToken: amount_user_token,
                             amountValidatorToken: amount_validator_token,
                         })
                     }),
-                    rebalanceSwap(call) => mutate(call, msg_sender, |s, c| {
-                        self.rebalance_swap(s, c.userToken, c.validatorToken, c.amountOut, c.to)
+                    rebalanceSwap(call) => mutate(call, msg_sender, |write, s, c| {
+                        self.rebalance_swap(write, s, c.userToken, c.validatorToken, c.amountOut, c.to)
                     })
                 }
             }

@@ -225,8 +225,8 @@ impl AccountKeychain {
     }
 
     /// Initializes the account keychain precompile.
-    pub fn initialize(&mut self) -> Result<()> {
-        self.__initialize()
+    pub fn initialize(&mut self, write: &mut crate::storage::WriteCtx) -> Result<()> {
+        self.__initialize(write)
     }
 
     /// Registers a new access key with signature type, expiry, and optional per-token spending
@@ -242,17 +242,27 @@ impl AccountKeychain {
     /// - `InvalidSignatureType` — must be Secp256k1, P256, or WebAuthn
     pub fn authorize_key(
         &mut self,
+        write: &mut crate::storage::WriteCtx,
         msg_sender: Address,
         key_id: Address,
         signature_type: SignatureType,
         config: KeyRestrictions,
         witness: Option<B256>,
     ) -> Result<()> {
-        self.authorize_key_internal(msg_sender, key_id, signature_type, config, witness, false)
+        self.authorize_key_internal(
+            write,
+            msg_sender,
+            key_id,
+            signature_type,
+            config,
+            witness,
+            false,
+        )
     }
 
     fn authorize_key_internal(
         &mut self,
+        write: &mut crate::storage::WriteCtx,
         msg_sender: Address,
         key_id: Address,
         signature_type: SignatureType,
@@ -340,7 +350,7 @@ impl AccountKeychain {
             is_admin,
         };
 
-        self.keys[msg_sender][key_id].write(new_key)?;
+        self.keys[msg_sender][key_id].write(write, new_key)?;
 
         if !is_admin {
             let limits = config
@@ -350,6 +360,7 @@ impl AccountKeychain {
                 .flatten();
 
             self.apply_key_authorization_restrictions(
+                write,
                 msg_sender,
                 key_id,
                 limits,
@@ -358,21 +369,27 @@ impl AccountKeychain {
         }
 
         if let Some(witness) = witness {
-            self.emit_event(AccountKeychainEvent::KeyAuthorizationWitness(
-                IAccountKeychain::KeyAuthorizationWitness {
-                    account: msg_sender,
-                    witness,
-                },
-            ))?;
+            self.emit_event(
+                write,
+                AccountKeychainEvent::KeyAuthorizationWitness(
+                    IAccountKeychain::KeyAuthorizationWitness {
+                        account: msg_sender,
+                        witness,
+                    },
+                ),
+            )?;
         }
 
         // Emit event
-        self.emit_event(AccountKeychainEvent::key_authorized(
-            msg_sender,
-            key_id,
-            signature_type as u8,
-            config.expiry,
-        ))?;
+        self.emit_event(
+            write,
+            AccountKeychainEvent::key_authorized(
+                msg_sender,
+                key_id,
+                signature_type as u8,
+                config.expiry,
+            ),
+        )?;
 
         Ok(())
     }
@@ -381,12 +398,14 @@ impl AccountKeychain {
     /// admin keys; existing or previously revoked keys must not be upgraded in place.
     pub fn authorize_admin_key(
         &mut self,
+        write: &mut crate::storage::WriteCtx,
         msg_sender: Address,
         key_id: Address,
         signature_type: SignatureType,
         witness: Option<B256>,
     ) -> Result<()> {
         self.authorize_key_internal(
+            write,
             msg_sender,
             key_id,
             signature_type,
@@ -400,19 +419,21 @@ impl AccountKeychain {
             witness,
             true,
         )?;
-        self.emit_event(AccountKeychainEvent::admin_key_authorized(
-            msg_sender, key_id,
-        ))
+        self.emit_event(
+            write,
+            AccountKeychainEvent::admin_key_authorized(msg_sender, key_id),
+        )
     }
 
     /// Burns a TIP-1053 witness without authorizing a key.
     pub fn burn_key_authorization_witness(
         &mut self,
+        write: &mut crate::storage::WriteCtx,
         msg_sender: Address,
         call: burnKeyAuthorizationWitnessCall,
     ) -> Result<()> {
         self.ensure_admin_caller(msg_sender)?;
-        self.burn_key_authorization_witness_value(msg_sender, call.witness)
+        self.burn_key_authorization_witness_value(write, msg_sender, call.witness)
     }
 
     /// Permanently revokes an access key. Once revoked, a key ID can never be re-authorized for
@@ -422,7 +443,12 @@ impl AccountKeychain {
     /// - `UnauthorizedCaller` — only the root key or, on T6+, an admin access key can revoke;
     ///   for contract callers on T2+, `msg.sender` must match `tx.origin`
     /// - `KeyNotFound` — no key registered with this ID
-    pub fn revoke_key(&mut self, msg_sender: Address, call: revokeKeyCall) -> Result<()> {
+    pub fn revoke_key(
+        &mut self,
+        write: &mut crate::storage::WriteCtx,
+        msg_sender: Address,
+        call: revokeKeyCall,
+    ) -> Result<()> {
         self.ensure_admin_caller(msg_sender)?;
 
         let key = self.keys[msg_sender][call.keyId].read()?;
@@ -439,12 +465,15 @@ impl AccountKeychain {
             is_revoked: true,
             ..Default::default()
         };
-        self.keys[msg_sender][call.keyId].write(revoked_key)?;
+        self.keys[msg_sender][call.keyId].write(write, revoked_key)?;
 
         // Note: We don't clear spending limits here - they become inaccessible
 
         // Emit event
-        self.emit_event(AccountKeychainEvent::key_revoked(msg_sender, call.keyId))
+        self.emit_event(
+            write,
+            AccountKeychainEvent::key_revoked(msg_sender, call.keyId),
+        )
     }
 
     /// Updates the spending limit for a key-token pair. Can also convert an unlimited key into a
@@ -459,6 +488,7 @@ impl AccountKeychain {
     /// - `KeyExpired` — the key's expiry is at or before the current block timestamp
     pub fn update_spending_limit(
         &mut self,
+        write: &mut crate::storage::WriteCtx,
         msg_sender: Address,
         call: updateSpendingLimitCall,
     ) -> Result<()> {
@@ -473,7 +503,7 @@ impl AccountKeychain {
         // If this key had unlimited spending (enforce_limits=false), enable limits now
         if !key.enforce_limits {
             key.enforce_limits = true;
-            self.keys[msg_sender][call.keyId].write(key)?;
+            self.keys[msg_sender][call.keyId].write(write, key)?;
         }
 
         // Update the spending limit
@@ -484,20 +514,23 @@ impl AccountKeychain {
             let mut limit_state = self.spending_limits[limit_key][call.token].read()?;
             limit_state.remaining = call.newLimit;
             limit_state.max = Self::t3_spending_limit_cap(call.newLimit)?;
-            self.spending_limits[limit_key][call.token].write(limit_state)?;
+            self.spending_limits[limit_key][call.token].write(write, limit_state)?;
         } else {
             self.spending_limits[limit_key][call.token]
                 .remaining
-                .write(call.newLimit)?;
+                .write(write, call.newLimit)?;
         }
 
         // Emit event
-        self.emit_event(AccountKeychainEvent::spending_limit_updated(
-            msg_sender,
-            call.keyId,
-            call.token,
-            call.newLimit,
-        ))
+        self.emit_event(
+            write,
+            AccountKeychainEvent::spending_limit_updated(
+                msg_sender,
+                call.keyId,
+                call.token,
+                call.newLimit,
+            ),
+        )
     }
 
     /// Returns key info for the given account-key pair, or a blank entry if inexistent or revoked.
@@ -565,6 +598,7 @@ impl AccountKeychain {
     /// Root/admin-only create-or-replace updates for one or more target call scopes.
     pub fn set_allowed_calls(
         &mut self,
+        write: &mut crate::storage::WriteCtx,
         msg_sender: Address,
         call: setAllowedCallsCall,
     ) -> Result<()> {
@@ -590,15 +624,16 @@ impl AccountKeychain {
         self.validate_call_scopes(&scopes)?;
 
         for scope in &scopes {
-            self.upsert_target_scope(key_hash, scope)?;
+            self.upsert_target_scope(write, key_hash, scope)?;
         }
 
-        self.key_scopes[key_hash].is_scoped.write(true)
+        self.key_scopes[key_hash].is_scoped.write(write, true)
     }
 
     /// Root/admin-only removal of one target call scope.
     pub fn remove_allowed_calls(
         &mut self,
+        write: &mut crate::storage::WriteCtx,
         msg_sender: Address,
         call: removeAllowedCallsCall,
     ) -> Result<()> {
@@ -616,7 +651,7 @@ impl AccountKeychain {
             return Ok(());
         }
 
-        self.remove_target_scope(key_hash, call.target)?;
+        self.remove_target_scope(write, key_hash, call.target)?;
 
         Ok(())
     }
@@ -725,16 +760,24 @@ impl AccountKeychain {
     /// root/admin checks can distinguish root-signed transactions from access-key-signed
     /// transactions.
     /// Uses transient storage, so the key is automatically cleared after the transaction.
-    pub fn set_transaction_key(&mut self, key_id: Address) -> Result<()> {
-        self.transaction_key.t_write(key_id)
+    pub fn set_transaction_key(
+        &mut self,
+        write: &mut crate::storage::WriteCtx,
+        key_id: Address,
+    ) -> Result<()> {
+        self.transaction_key.t_write(write, key_id)
     }
 
     /// Sets the transaction origin (tx.origin) for the current transaction.
     ///
     /// Called by the handler before transaction execution.
     /// Uses transient storage, so it's automatically cleared after the transaction.
-    pub fn set_tx_origin(&mut self, origin: Address) -> Result<()> {
-        self.tx_origin.t_write(origin)
+    pub fn set_tx_origin(
+        &mut self,
+        write: &mut crate::storage::WriteCtx,
+        origin: Address,
+    ) -> Result<()> {
+        self.tx_origin.t_write(write, origin)
     }
 
     /// Persists the authorization-time restrictions for a freshly created key.
@@ -743,6 +786,7 @@ impl AccountKeychain {
     /// the key's call-scope tree in one pass.
     fn apply_key_authorization_restrictions<'a>(
         &mut self,
+        write: &mut crate::storage::WriteCtx,
         account: Address,
         key_id: Address,
         limits: impl IntoIterator<Item = &'a TokenLimit>,
@@ -762,16 +806,19 @@ impl AccountKeychain {
                     now.saturating_add(limit.period)
                 };
 
-                self.spending_limits[limit_key][limit.token].write(SpendingLimitState {
-                    remaining: limit.amount,
-                    max: Self::t3_spending_limit_cap(limit.amount)?,
-                    period: limit.period,
-                    period_end,
-                })?;
+                self.spending_limits[limit_key][limit.token].write(
+                    write,
+                    SpendingLimitState {
+                        remaining: limit.amount,
+                        max: Self::t3_spending_limit_cap(limit.amount)?,
+                        period: limit.period,
+                        period_end,
+                    },
+                )?;
             } else {
                 self.spending_limits[limit_key][limit.token]
                     .remaining
-                    .write(limit.amount)?;
+                    .write(write, limit.amount)?;
             }
         }
 
@@ -779,7 +826,7 @@ impl AccountKeychain {
             return Ok(());
         }
 
-        self.replace_allowed_calls(limit_key, allowed_calls)
+        self.replace_allowed_calls(write, limit_key, allowed_calls)
     }
 
     /// Validates a top-level call against scoped permissions for this key.
@@ -879,6 +926,7 @@ impl AccountKeychain {
     /// child sets mean "no further restriction".
     fn replace_allowed_calls(
         &mut self,
+        write: &mut crate::storage::WriteCtx,
         account_key: B256,
         allowed_calls: Option<&[CallScope]>,
     ) -> Result<()> {
@@ -886,15 +934,15 @@ impl AccountKeychain {
         // `authorize_key` rejects both existing and previously revoked keys before reaching this
         // path. We still clear the scope tree first as a defense-in-depth measure against stale or
         // out-of-band state, and keep it because the valid-path cost is low (empty target set).
-        self.clear_all_target_scopes(account_key)?;
+        self.clear_all_target_scopes(write, account_key)?;
 
         match allowed_calls {
             None => {
-                self.key_scopes[account_key].is_scoped.write(false)?;
+                self.key_scopes[account_key].is_scoped.write(write, false)?;
                 Ok(())
             }
             Some(scopes) => {
-                self.key_scopes[account_key].is_scoped.write(true)?;
+                self.key_scopes[account_key].is_scoped.write(write, true)?;
 
                 if scopes.is_empty() {
                     return Ok(());
@@ -903,7 +951,7 @@ impl AccountKeychain {
                 self.validate_call_scopes(scopes)?;
 
                 for scope in scopes {
-                    self.upsert_target_scope(account_key, scope)?;
+                    self.upsert_target_scope(write, account_key, scope)?;
                 }
 
                 Ok(())
@@ -912,42 +960,64 @@ impl AccountKeychain {
     }
 
     /// Deletes every persisted target scope under an account key.
-    fn clear_all_target_scopes(&mut self, account_key: B256) -> Result<()> {
+    fn clear_all_target_scopes(
+        &mut self,
+        write: &mut crate::storage::WriteCtx,
+        account_key: B256,
+    ) -> Result<()> {
         let targets = self.key_scopes[account_key].targets.read()?;
         for target in targets {
-            self.clear_target_selectors(account_key, target)?;
+            self.clear_target_selectors(write, account_key, target)?;
         }
 
-        self.key_scopes[account_key].targets.delete()
+        self.key_scopes[account_key].targets.delete(write)
     }
 
     /// Deletes one target scope and all nested selector/recipient rows beneath it.
-    fn remove_target_scope(&mut self, account_key: B256, target: Address) -> Result<()> {
-        if !self.key_scopes[account_key].targets.remove(&target)? {
+    fn remove_target_scope(
+        &mut self,
+        write: &mut crate::storage::WriteCtx,
+        account_key: B256,
+        target: Address,
+    ) -> Result<()> {
+        if !self.key_scopes[account_key]
+            .targets
+            .remove(write, &target)?
+        {
             return Ok(());
         }
 
-        self.clear_target_selectors(account_key, target)
+        self.clear_target_selectors(write, account_key, target)
     }
 
     /// Clears every selector scope stored under one target.
-    fn clear_target_selectors(&mut self, account_key: B256, target: Address) -> Result<()> {
+    fn clear_target_selectors(
+        &mut self,
+        write: &mut crate::storage::WriteCtx,
+        account_key: B256,
+        target: Address,
+    ) -> Result<()> {
         let selectors = self.key_scopes[account_key].target_scopes[target]
             .selectors
             .read()?;
         for selector in selectors {
             self.key_scopes[account_key].target_scopes[target].selector_scopes[selector]
                 .recipients
-                .delete()?;
+                .delete(write)?;
         }
 
         self.key_scopes[account_key].target_scopes[target]
             .selectors
-            .delete()
+            .delete(write)
     }
 
     /// Creates or replaces one target scope, including all nested selector rules.
-    fn upsert_target_scope(&mut self, account_key: B256, scope: &CallScope) -> Result<()> {
+    fn upsert_target_scope(
+        &mut self,
+        write: &mut crate::storage::WriteCtx,
+        account_key: B256,
+        scope: &CallScope,
+    ) -> Result<()> {
         let target = scope.target;
 
         // Pre-T4: validate call scopes inline
@@ -955,8 +1025,8 @@ impl AccountKeychain {
             self.validate_call_scope(scope)?;
         }
 
-        self.key_scopes[account_key].targets.insert(target)?;
-        self.clear_target_selectors(account_key, target)?;
+        self.key_scopes[account_key].targets.insert(write, target)?;
+        self.clear_target_selectors(write, account_key, target)?;
 
         if scope.selectorRules.is_empty() {
             // Keeping the target while clearing nested selector rows intentionally widens this
@@ -969,7 +1039,7 @@ impl AccountKeychain {
             let selector = rule.selector;
             self.key_scopes[account_key].target_scopes[target]
                 .selectors
-                .insert(selector)?;
+                .insert(write, selector)?;
 
             if rule.recipients.is_empty() {
                 if !self.storage.spec().is_t4() {
@@ -978,13 +1048,13 @@ impl AccountKeychain {
                     // changing persisted state.
                     self.key_scopes[account_key].target_scopes[target].selector_scopes[selector]
                         .recipients
-                        .delete()?;
+                        .delete(write)?;
                 }
             } else {
                 // `validate_selector_rules` already rejected duplicates.
                 self.key_scopes[account_key].target_scopes[target].selector_scopes[selector]
                     .recipients
-                    .write(Set::new_unchecked(rule.recipients.clone()))?;
+                    .write(write, Set::new_unchecked(rule.recipients.clone()))?;
             }
         }
 
@@ -1167,15 +1237,19 @@ impl AccountKeychain {
 
     fn burn_key_authorization_witness_value(
         &mut self,
+        write: &mut crate::storage::WriteCtx,
         account: Address,
         witness: B256,
     ) -> Result<()> {
         self.ensure_key_authorization_witness_not_burned(account, witness)?;
 
-        self.key_authorization_witnesses[account][witness].write(true)?;
-        self.emit_event(AccountKeychainEvent::KeyAuthorizationWitnessBurned(
-            IAccountKeychain::KeyAuthorizationWitnessBurned { account, witness },
-        ))
+        self.key_authorization_witnesses[account][witness].write(write, true)?;
+        self.emit_event(
+            write,
+            AccountKeychainEvent::KeyAuthorizationWitnessBurned(
+                IAccountKeychain::KeyAuthorizationWitnessBurned { account, witness },
+            ),
+        )
     }
 
     /// Load and validate a key exists, is not revoked, and is not expired.
@@ -1352,6 +1426,7 @@ impl AccountKeychain {
     /// - `SpendingLimitExceeded` — `amount` exceeds the key's remaining limit for `token`
     pub fn verify_and_update_spending(
         &mut self,
+        write: &mut crate::storage::WriteCtx,
         account: Address,
         key_id: Address,
         token: Address,
@@ -1382,7 +1457,7 @@ impl AccountKeychain {
             let new_remaining = remaining - amount;
             self.spending_limits[limit_key][token]
                 .remaining
-                .write(new_remaining)?;
+                .write(write, new_remaining)?;
             return Ok(());
         }
 
@@ -1416,20 +1491,17 @@ impl AccountKeychain {
             } else {
                 limit_state.remaining = new_remaining;
             }
-            self.spending_limits[limit_key][token].write(limit_state)?;
+            self.spending_limits[limit_key][token].write(write, limit_state)?;
         } else {
             self.spending_limits[limit_key][token]
                 .remaining
-                .write(new_remaining)?;
+                .write(write, new_remaining)?;
         }
 
-        self.emit_event(AccountKeychainEvent::access_key_spend(
-            account,
-            key_id,
-            token,
-            amount,
-            new_remaining,
-        ))?;
+        self.emit_event(
+            write,
+            AccountKeychainEvent::access_key_spend(account, key_id, token, amount, new_remaining),
+        )?;
 
         Ok(())
     }
@@ -1442,6 +1514,7 @@ impl AccountKeychain {
     /// but we still clamp as defense in depth in case a future caller violates that invariant.
     pub fn refund_spending_limit(
         &mut self,
+        write: &mut crate::storage::WriteCtx,
         account: Address,
         token: Address,
         amount: U256,
@@ -1476,7 +1549,7 @@ impl AccountKeychain {
             let refunded = remaining.saturating_add(amount);
             return self.spending_limits[limit_key][token]
                 .remaining
-                .write(refunded);
+                .write(write, refunded);
         }
 
         let mut limit_state = self.spending_limits[limit_key][token].read()?;
@@ -1499,7 +1572,7 @@ impl AccountKeychain {
             refunded.min(U256::from(limit_state.max))
         };
 
-        self.spending_limits[limit_key][token].write(limit_state)
+        self.spending_limits[limit_key][token].write(write, limit_state)
     }
 
     /// Authorize a token transfer with access key spending limits.
@@ -1514,6 +1587,7 @@ impl AccountKeychain {
     /// - `SpendingLimitExceeded` — `amount` exceeds the key's remaining limit for `token`
     pub fn authorize_transfer(
         &mut self,
+        write: &mut crate::storage::WriteCtx,
         account: Address,
         token: Address,
         amount: U256,
@@ -1533,7 +1607,7 @@ impl AccountKeychain {
         }
 
         // Verify and update spending limits for this access key
-        self.verify_and_update_spending(account, transaction_key, token, amount)
+        self.verify_and_update_spending(write, account, transaction_key, token, amount)
     }
 
     /// Authorize a token approval with access key spending limits.
@@ -1548,6 +1622,7 @@ impl AccountKeychain {
     /// - `SpendingLimitExceeded` — the approval increase exceeds the remaining limit for `token`
     pub fn authorize_approve(
         &mut self,
+        write: &mut crate::storage::WriteCtx,
         account: Address,
         token: Address,
         old_approval: U256,
@@ -1578,7 +1653,7 @@ impl AccountKeychain {
         }
 
         // Verify and update spending limits for this access key
-        self.verify_and_update_spending(account, transaction_key, token, approval_increase)
+        self.verify_and_update_spending(write, account, transaction_key, token, approval_increase)
     }
 }
 
@@ -1602,6 +1677,7 @@ mod tests {
     ) -> Result<()> {
         AccountKeychain::authorize_key(
             keychain,
+            &mut crate::storage::StorageCtx::test_writable(),
             msg_sender,
             call.keyId,
             call.signatureType,
@@ -1617,6 +1693,7 @@ mod tests {
     ) -> Result<()> {
         AccountKeychain::authorize_key(
             keychain,
+            &mut crate::storage::StorageCtx::test_writable(),
             msg_sender,
             call.keyId,
             call.signatureType,
@@ -1751,10 +1828,16 @@ mod tests {
 
         StorageCtx::enter(&mut storage, || {
             let mut keychain = AccountKeychain::new();
-            keychain.initialize()?;
-            keychain.set_tx_origin(account)?;
+            keychain.initialize(&mut crate::storage::StorageCtx::test_writable())?;
+            keychain.set_tx_origin(&mut crate::storage::StorageCtx::test_writable(), account)?;
 
-            keychain.authorize_admin_key(account, admin_key, SignatureType::P256, None)?;
+            keychain.authorize_admin_key(
+                &mut crate::storage::StorageCtx::test_writable(),
+                account,
+                admin_key,
+                SignatureType::P256,
+                None,
+            )?;
 
             let key = keychain.keys[account][admin_key].read()?;
             assert_eq!(key.signature_type, StoredSignatureType::P256);
@@ -1782,36 +1865,48 @@ mod tests {
 
         StorageCtx::enter(&mut storage, || {
             let mut keychain = AccountKeychain::new();
-            keychain.initialize()?;
+            keychain.initialize(&mut crate::storage::StorageCtx::test_writable())?;
 
-            keychain.keys[account][active_admin_key].write(AuthorizedKey {
-                signature_type: StoredSignatureType::Secp256k1,
-                expiry: u64::MAX,
-                enforce_limits: false,
-                is_revoked: false,
-                is_admin: true,
-            })?;
-            keychain.keys[account][non_admin_key].write(AuthorizedKey {
-                signature_type: StoredSignatureType::Secp256k1,
-                expiry: u64::MAX,
-                enforce_limits: false,
-                is_revoked: false,
-                is_admin: false,
-            })?;
-            keychain.keys[account][revoked_admin_key].write(AuthorizedKey {
-                signature_type: StoredSignatureType::Secp256k1,
-                expiry: u64::MAX,
-                enforce_limits: false,
-                is_revoked: true,
-                is_admin: true,
-            })?;
-            keychain.keys[account][expired_admin_key].write(AuthorizedKey {
-                signature_type: StoredSignatureType::Secp256k1,
-                expiry: 100,
-                enforce_limits: false,
-                is_revoked: false,
-                is_admin: true,
-            })?;
+            keychain.keys[account][active_admin_key].write(
+                &mut crate::storage::StorageCtx::test_writable(),
+                AuthorizedKey {
+                    signature_type: StoredSignatureType::Secp256k1,
+                    expiry: u64::MAX,
+                    enforce_limits: false,
+                    is_revoked: false,
+                    is_admin: true,
+                },
+            )?;
+            keychain.keys[account][non_admin_key].write(
+                &mut crate::storage::StorageCtx::test_writable(),
+                AuthorizedKey {
+                    signature_type: StoredSignatureType::Secp256k1,
+                    expiry: u64::MAX,
+                    enforce_limits: false,
+                    is_revoked: false,
+                    is_admin: false,
+                },
+            )?;
+            keychain.keys[account][revoked_admin_key].write(
+                &mut crate::storage::StorageCtx::test_writable(),
+                AuthorizedKey {
+                    signature_type: StoredSignatureType::Secp256k1,
+                    expiry: u64::MAX,
+                    enforce_limits: false,
+                    is_revoked: true,
+                    is_admin: true,
+                },
+            )?;
+            keychain.keys[account][expired_admin_key].write(
+                &mut crate::storage::StorageCtx::test_writable(),
+                AuthorizedKey {
+                    signature_type: StoredSignatureType::Secp256k1,
+                    expiry: 100,
+                    enforce_limits: false,
+                    is_revoked: false,
+                    is_admin: true,
+                },
+            )?;
 
             assert!(keychain.is_admin_key(account, account)?);
             assert!(keychain.is_admin_key(account, active_admin_key)?);
@@ -1834,10 +1929,11 @@ mod tests {
 
         StorageCtx::enter(&mut storage, || {
             let mut keychain = AccountKeychain::new();
-            keychain.initialize()?;
-            keychain.set_tx_origin(account)?;
+            keychain.initialize(&mut crate::storage::StorageCtx::test_writable())?;
+            keychain.set_tx_origin(&mut crate::storage::StorageCtx::test_writable(), account)?;
 
             keychain.authorize_admin_key(
+                &mut crate::storage::StorageCtx::test_writable(),
                 account,
                 first_admin_key,
                 SignatureType::Secp256k1,
@@ -1848,10 +1944,12 @@ mod tests {
             )?);
 
             keychain.burn_key_authorization_witness(
+                &mut crate::storage::StorageCtx::test_writable(),
                 account,
                 burnKeyAuthorizationWitnessCall { witness },
             )?;
             let result = keychain.authorize_admin_key(
+                &mut crate::storage::StorageCtx::test_writable(),
                 account,
                 second_admin_key,
                 SignatureType::Secp256k1,
@@ -1875,11 +1973,18 @@ mod tests {
 
         StorageCtx::enter(&mut storage, || {
             let mut keychain = AccountKeychain::new();
-            keychain.initialize()?;
-            keychain.set_tx_origin(account)?;
-            keychain.authorize_admin_key(account, admin_key, SignatureType::Secp256k1, None)?;
+            keychain.initialize(&mut crate::storage::StorageCtx::test_writable())?;
+            keychain.set_tx_origin(&mut crate::storage::StorageCtx::test_writable(), account)?;
+            keychain.authorize_admin_key(
+                &mut crate::storage::StorageCtx::test_writable(),
+                account,
+                admin_key,
+                SignatureType::Secp256k1,
+                None,
+            )?;
 
-            keychain.set_transaction_key(admin_key)?;
+            keychain
+                .set_transaction_key(&mut crate::storage::StorageCtx::test_writable(), admin_key)?;
             authorize_key(
                 &mut keychain,
                 account,
@@ -1891,7 +1996,11 @@ mod tests {
             )?;
             assert!(keychain.keys[account][child_key].read()?.expiry > 0);
 
-            keychain.revoke_key(account, revokeKeyCall { keyId: admin_key })?;
+            keychain.revoke_key(
+                &mut crate::storage::StorageCtx::test_writable(),
+                account,
+                revokeKeyCall { keyId: admin_key },
+            )?;
             assert!(!keychain.is_admin_key(account, admin_key)?);
 
             Ok(())
@@ -1907,8 +2016,8 @@ mod tests {
 
         StorageCtx::enter(&mut storage, || {
             let mut keychain = AccountKeychain::new();
-            keychain.initialize()?;
-            keychain.set_tx_origin(account)?;
+            keychain.initialize(&mut crate::storage::StorageCtx::test_writable())?;
+            keychain.set_tx_origin(&mut crate::storage::StorageCtx::test_writable(), account)?;
             authorize_key(
                 &mut keychain,
                 account,
@@ -1919,7 +2028,10 @@ mod tests {
                 },
             )?;
 
-            keychain.set_transaction_key(access_key)?;
+            keychain.set_transaction_key(
+                &mut crate::storage::StorageCtx::test_writable(),
+                access_key,
+            )?;
             let result = authorize_key(
                 &mut keychain,
                 account,
@@ -1944,13 +2056,20 @@ mod tests {
 
         StorageCtx::enter(&mut storage, || {
             let mut keychain = AccountKeychain::new();
-            keychain.initialize()?;
-            keychain.set_tx_origin(account)?;
-            keychain.authorize_admin_key(account, admin_key, SignatureType::Secp256k1, None)?;
+            keychain.initialize(&mut crate::storage::StorageCtx::test_writable())?;
+            keychain.set_tx_origin(&mut crate::storage::StorageCtx::test_writable(), account)?;
+            keychain.authorize_admin_key(
+                &mut crate::storage::StorageCtx::test_writable(),
+                account,
+                admin_key,
+                SignatureType::Secp256k1,
+                None,
+            )?;
 
             assert_invalid_key_id(
                 keychain
                     .update_spending_limit(
+                        &mut crate::storage::StorageCtx::test_writable(),
                         account,
                         updateSpendingLimitCall {
                             keyId: admin_key,
@@ -1963,7 +2082,13 @@ mod tests {
 
             assert_invalid_key_id(
                 keychain
-                    .authorize_admin_key(account, account, SignatureType::Secp256k1, None)
+                    .authorize_admin_key(
+                        &mut crate::storage::StorageCtx::test_writable(),
+                        account,
+                        account,
+                        SignatureType::Secp256k1,
+                        None,
+                    )
                     .expect_err("root key cannot be registered as an admin access key"),
             );
 
@@ -1980,18 +2105,23 @@ mod tests {
 
         StorageCtx::enter(&mut storage, || {
             let mut keychain = AccountKeychain::new();
-            keychain.initialize()?;
-            keychain.set_tx_origin(account)?;
+            keychain.initialize(&mut crate::storage::StorageCtx::test_writable())?;
+            keychain.set_tx_origin(&mut crate::storage::StorageCtx::test_writable(), account)?;
 
             assert_key_not_found(
                 keychain
-                    .revoke_key(account, revokeKeyCall { keyId: account })
+                    .revoke_key(
+                        &mut crate::storage::StorageCtx::test_writable(),
+                        account,
+                        revokeKeyCall { keyId: account },
+                    )
                     .expect_err("missing self-key row cannot be revoked"),
             );
 
             assert_key_not_found(
                 keychain
                     .update_spending_limit(
+                        &mut crate::storage::StorageCtx::test_writable(),
                         account,
                         updateSpendingLimitCall {
                             keyId: account,
@@ -2005,6 +2135,7 @@ mod tests {
             assert_key_not_found(
                 keychain
                     .set_allowed_calls(
+                        &mut crate::storage::StorageCtx::test_writable(),
                         account,
                         setAllowedCallsCall {
                             keyId: account,
@@ -2020,6 +2151,7 @@ mod tests {
             assert_key_not_found(
                 keychain
                     .remove_allowed_calls(
+                        &mut crate::storage::StorageCtx::test_writable(),
                         account,
                         removeAllowedCallsCall {
                             keyId: account,
@@ -2029,15 +2161,19 @@ mod tests {
                     .expect_err("missing self-key row cannot remove call scopes"),
             );
 
-            keychain.keys[account][account].write(AuthorizedKey {
-                signature_type: StoredSignatureType::Secp256k1,
-                expiry: u64::MAX,
-                enforce_limits: false,
-                is_revoked: false,
-                is_admin: false,
-            })?;
+            keychain.keys[account][account].write(
+                &mut crate::storage::StorageCtx::test_writable(),
+                AuthorizedKey {
+                    signature_type: StoredSignatureType::Secp256k1,
+                    expiry: u64::MAX,
+                    enforce_limits: false,
+                    is_revoked: false,
+                    is_admin: false,
+                },
+            )?;
 
             keychain.update_spending_limit(
+                &mut crate::storage::StorageCtx::test_writable(),
                 account,
                 updateSpendingLimitCall {
                     keyId: account,
@@ -2055,6 +2191,7 @@ mod tests {
             );
 
             keychain.set_allowed_calls(
+                &mut crate::storage::StorageCtx::test_writable(),
                 account,
                 setAllowedCallsCall {
                     keyId: account,
@@ -2073,6 +2210,7 @@ mod tests {
             assert_eq!(allowed_calls.scopes[0].target, target);
 
             keychain.remove_allowed_calls(
+                &mut crate::storage::StorageCtx::test_writable(),
                 account,
                 removeAllowedCallsCall {
                     keyId: account,
@@ -2086,7 +2224,11 @@ mod tests {
             assert!(allowed_calls.isScoped);
             assert!(allowed_calls.scopes.is_empty());
 
-            keychain.revoke_key(account, revokeKeyCall { keyId: account })?;
+            keychain.revoke_key(
+                &mut crate::storage::StorageCtx::test_writable(),
+                account,
+                revokeKeyCall { keyId: account },
+            )?;
             assert!(keychain.keys[account][account].read()?.is_revoked);
             assert!(keychain.is_admin_key(account, account)?);
 
@@ -2102,8 +2244,8 @@ mod tests {
 
         StorageCtx::enter(&mut storage, || {
             let mut keychain = AccountKeychain::new();
-            keychain.initialize()?;
-            keychain.set_tx_origin(account)?;
+            keychain.initialize(&mut crate::storage::StorageCtx::test_writable())?;
+            keychain.set_tx_origin(&mut crate::storage::StorageCtx::test_writable(), account)?;
             authorize_key(
                 &mut keychain,
                 account,
@@ -2114,8 +2256,13 @@ mod tests {
                 },
             )?;
 
-            let result =
-                keychain.authorize_admin_key(account, access_key, SignatureType::Secp256k1, None);
+            let result = keychain.authorize_admin_key(
+                &mut crate::storage::StorageCtx::test_writable(),
+                account,
+                access_key,
+                SignatureType::Secp256k1,
+                None,
+            );
             assert_eq!(
                 result.expect_err("existing key must not become admin"),
                 AccountKeychainError::key_already_exists().into()
@@ -2135,8 +2282,8 @@ mod tests {
 
         StorageCtx::enter(&mut storage, || {
             let mut keychain = AccountKeychain::new();
-            keychain.initialize()?;
-            keychain.set_tx_origin(account)?;
+            keychain.initialize(&mut crate::storage::StorageCtx::test_writable())?;
+            keychain.set_tx_origin(&mut crate::storage::StorageCtx::test_writable(), account)?;
 
             authorize_key_with_witness(
                 &mut keychain,
@@ -2177,10 +2324,11 @@ mod tests {
 
         StorageCtx::enter(&mut storage, || {
             let mut keychain = AccountKeychain::new();
-            keychain.initialize()?;
-            keychain.set_tx_origin(account)?;
+            keychain.initialize(&mut crate::storage::StorageCtx::test_writable())?;
+            keychain.set_tx_origin(&mut crate::storage::StorageCtx::test_writable(), account)?;
 
             keychain.burn_key_authorization_witness(
+                &mut crate::storage::StorageCtx::test_writable(),
                 account,
                 burnKeyAuthorizationWitnessCall { witness },
             )?;
@@ -2217,8 +2365,8 @@ mod tests {
 
         StorageCtx::enter(&mut storage, || {
             let mut keychain = AccountKeychain::new();
-            keychain.initialize()?;
-            keychain.set_tx_origin(account)?;
+            keychain.initialize(&mut crate::storage::StorageCtx::test_writable())?;
+            keychain.set_tx_origin(&mut crate::storage::StorageCtx::test_writable(), account)?;
 
             authorize_key(
                 &mut keychain,
@@ -2230,8 +2378,12 @@ mod tests {
                 },
             )?;
 
-            keychain.set_transaction_key(access_key)?;
+            keychain.set_transaction_key(
+                &mut crate::storage::StorageCtx::test_writable(),
+                access_key,
+            )?;
             let result = keychain.burn_key_authorization_witness(
+                &mut crate::storage::StorageCtx::test_writable(),
                 account,
                 burnKeyAuthorizationWitnessCall { witness },
             );
@@ -2264,7 +2416,10 @@ mod tests {
             );
 
             // Test 2: Set transaction key to an access key address
-            keychain.set_transaction_key(access_key_addr)?;
+            keychain.set_transaction_key(
+                &mut crate::storage::StorageCtx::test_writable(),
+                access_key_addr,
+            )?;
 
             // Test 3: Verify it was stored
             let loaded_key = keychain.transaction_key.t_read()?;
@@ -2279,7 +2434,10 @@ mod tests {
             );
 
             // Test 5: Clear transaction key
-            keychain.set_transaction_key(Address::ZERO)?;
+            keychain.set_transaction_key(
+                &mut crate::storage::StorageCtx::test_writable(),
+                Address::ZERO,
+            )?;
             let cleared_key = keychain.transaction_key.t_read()?;
             assert_eq!(
                 cleared_key,
@@ -2302,10 +2460,13 @@ mod tests {
         StorageCtx::enter(&mut storage, || {
             // Initialize the keychain
             let mut keychain = AccountKeychain::new();
-            keychain.initialize()?;
+            keychain.initialize(&mut crate::storage::StorageCtx::test_writable())?;
 
             // First, authorize a key with main key (transaction_key = 0) to set up the test
-            keychain.set_transaction_key(Address::ZERO)?;
+            keychain.set_transaction_key(
+                &mut crate::storage::StorageCtx::test_writable(),
+                Address::ZERO,
+            )?;
             let setup_call = authorizeKeyCall {
                 keyId: existing_key,
                 signatureType: SignatureType::Secp256k1,
@@ -2320,7 +2481,10 @@ mod tests {
             authorize_key(&mut keychain, msg_sender, setup_call)?;
 
             // Now set transaction key to non-zero (simulating access key usage)
-            keychain.set_transaction_key(access_key)?;
+            keychain.set_transaction_key(
+                &mut crate::storage::StorageCtx::test_writable(),
+                access_key,
+            )?;
 
             // Test 1: authorize_key should fail with access key
             let auth_call = authorizeKeyCall {
@@ -2345,7 +2509,11 @@ mod tests {
             let revoke_call = revokeKeyCall {
                 keyId: existing_key,
             };
-            let revoke_result = keychain.revoke_key(msg_sender, revoke_call);
+            let revoke_result = keychain.revoke_key(
+                &mut crate::storage::StorageCtx::test_writable(),
+                msg_sender,
+                revoke_call,
+            );
             assert!(
                 revoke_result.is_err(),
                 "revoke_key should fail when using access key"
@@ -2358,7 +2526,11 @@ mod tests {
                 token,
                 newLimit: U256::from(1000),
             };
-            let update_result = keychain.update_spending_limit(msg_sender, update_call);
+            let update_result = keychain.update_spending_limit(
+                &mut crate::storage::StorageCtx::test_writable(),
+                msg_sender,
+                update_call,
+            );
             assert!(
                 update_result.is_err(),
                 "update_spending_limit should fail when using access key"
@@ -2380,16 +2552,21 @@ mod tests {
 
         StorageCtx::enter(&mut storage, || {
             let mut keychain = AccountKeychain::new();
-            keychain.initialize()?;
+            keychain.initialize(&mut crate::storage::StorageCtx::test_writable())?;
 
             // Mark delegated sender as a contract account to model the confused-deputy path.
-            keychain
-                .storage
+            (&mut crate::storage::StorageCtx::test_writable())
                 .set_code(delegated_sender, Bytecode::new_raw(vec![0x60, 0x00].into()))?;
 
             // Setup a key for delegated_sender under a direct-root call.
-            keychain.set_transaction_key(Address::ZERO)?;
-            keychain.set_tx_origin(delegated_sender)?;
+            keychain.set_transaction_key(
+                &mut crate::storage::StorageCtx::test_writable(),
+                Address::ZERO,
+            )?;
+            keychain.set_tx_origin(
+                &mut crate::storage::StorageCtx::test_writable(),
+                delegated_sender,
+            )?;
             authorize_key(
                 &mut keychain,
                 delegated_sender,
@@ -2407,7 +2584,7 @@ mod tests {
             )?;
 
             // Simulate a contract-mediated call where tx.origin != msg.sender.
-            keychain.set_tx_origin(tx_origin)?;
+            keychain.set_tx_origin(&mut crate::storage::StorageCtx::test_writable(), tx_origin)?;
 
             let auth_result = authorize_key(
                 &mut keychain,
@@ -2428,6 +2605,7 @@ mod tests {
             assert_unauthorized_error(auth_result.unwrap_err());
 
             let revoke_result = keychain.revoke_key(
+                &mut crate::storage::StorageCtx::test_writable(),
                 delegated_sender,
                 revokeKeyCall {
                     keyId: existing_key,
@@ -2437,6 +2615,7 @@ mod tests {
             assert_unauthorized_error(revoke_result.unwrap_err());
 
             let update_result = keychain.update_spending_limit(
+                &mut crate::storage::StorageCtx::test_writable(),
                 delegated_sender,
                 updateSpendingLimitCall {
                     keyId: existing_key,
@@ -2460,16 +2639,21 @@ mod tests {
 
         StorageCtx::enter(&mut storage, || {
             let mut keychain = AccountKeychain::new();
-            keychain.initialize()?;
+            keychain.initialize(&mut crate::storage::StorageCtx::test_writable())?;
 
-            keychain
-                .storage
+            (&mut crate::storage::StorageCtx::test_writable())
                 .set_code(contract_sender, Bytecode::new_raw(vec![0x60, 0x00].into()))?;
 
             // On T2, contract callers are allowed for admin operations only when
             // `msg.sender == tx.origin`.
-            keychain.set_transaction_key(Address::ZERO)?;
-            keychain.set_tx_origin(contract_sender)?;
+            keychain.set_transaction_key(
+                &mut crate::storage::StorageCtx::test_writable(),
+                Address::ZERO,
+            )?;
+            keychain.set_tx_origin(
+                &mut crate::storage::StorageCtx::test_writable(),
+                contract_sender,
+            )?;
 
             authorize_key(
                 &mut keychain,
@@ -2492,6 +2676,7 @@ mod tests {
             )?;
 
             keychain.update_spending_limit(
+                &mut crate::storage::StorageCtx::test_writable(),
                 contract_sender,
                 updateSpendingLimitCall {
                     keyId: key_id,
@@ -2509,7 +2694,11 @@ mod tests {
                 U256::from(200)
             );
 
-            keychain.revoke_key(contract_sender, revokeKeyCall { keyId: key_id })?;
+            keychain.revoke_key(
+                &mut crate::storage::StorageCtx::test_writable(),
+                contract_sender,
+                revokeKeyCall { keyId: key_id },
+            )?;
 
             let key_info = keychain.get_key(getKeyCall {
                 account: contract_sender,
@@ -2531,11 +2720,17 @@ mod tests {
 
         StorageCtx::enter(&mut storage, || {
             let mut keychain = AccountKeychain::new();
-            keychain.initialize()?;
+            keychain.initialize(&mut crate::storage::StorageCtx::test_writable())?;
 
             // Pre-T2, admin operations do not enforce msg.sender == tx.origin.
-            keychain.set_transaction_key(Address::ZERO)?;
-            keychain.set_tx_origin(other_origin)?;
+            keychain.set_transaction_key(
+                &mut crate::storage::StorageCtx::test_writable(),
+                Address::ZERO,
+            )?;
+            keychain.set_tx_origin(
+                &mut crate::storage::StorageCtx::test_writable(),
+                other_origin,
+            )?;
 
             authorize_key(
                 &mut keychain,
@@ -2558,6 +2753,7 @@ mod tests {
             )?;
 
             keychain.update_spending_limit(
+                &mut crate::storage::StorageCtx::test_writable(),
                 msg_sender,
                 updateSpendingLimitCall {
                     keyId: key_id,
@@ -2566,7 +2762,11 @@ mod tests {
                 },
             )?;
 
-            keychain.revoke_key(msg_sender, revokeKeyCall { keyId: key_id })?;
+            keychain.revoke_key(
+                &mut crate::storage::StorageCtx::test_writable(),
+                msg_sender,
+                revokeKeyCall { keyId: key_id },
+            )?;
 
             let key_info = keychain.get_key(getKeyCall {
                 account: msg_sender,
@@ -2588,11 +2788,14 @@ mod tests {
 
         StorageCtx::enter(&mut storage, || {
             let mut keychain = AccountKeychain::new();
-            keychain.initialize()?;
+            keychain.initialize(&mut crate::storage::StorageCtx::test_writable())?;
 
             // Setup under matching tx.origin first.
-            keychain.set_transaction_key(Address::ZERO)?;
-            keychain.set_tx_origin(account)?;
+            keychain.set_transaction_key(
+                &mut crate::storage::StorageCtx::test_writable(),
+                Address::ZERO,
+            )?;
+            keychain.set_tx_origin(&mut crate::storage::StorageCtx::test_writable(), account)?;
             authorize_key(
                 &mut keychain,
                 account,
@@ -2614,8 +2817,12 @@ mod tests {
             )?;
 
             // On T2+, admin ops require `msg.sender == tx.origin`.
-            keychain.set_tx_origin(other_origin)?;
+            keychain.set_tx_origin(
+                &mut crate::storage::StorageCtx::test_writable(),
+                other_origin,
+            )?;
             let result = keychain.update_spending_limit(
+                &mut crate::storage::StorageCtx::test_writable(),
                 account,
                 updateSpendingLimitCall {
                     keyId: key_id,
@@ -2643,11 +2850,14 @@ mod tests {
 
         StorageCtx::enter(&mut storage, || {
             let mut keychain = AccountKeychain::new();
-            keychain.initialize()?;
+            keychain.initialize(&mut crate::storage::StorageCtx::test_writable())?;
 
             // Bootstrap: seed origin so we can authorize a key for later revoke/update tests.
-            keychain.set_transaction_key(Address::ZERO)?;
-            keychain.set_tx_origin(account)?;
+            keychain.set_transaction_key(
+                &mut crate::storage::StorageCtx::test_writable(),
+                Address::ZERO,
+            )?;
+            keychain.set_tx_origin(&mut crate::storage::StorageCtx::test_writable(), account)?;
             authorize_key(
                 &mut keychain,
                 account,
@@ -2670,7 +2880,10 @@ mod tests {
 
             // Clear tx_origin back to zero — simulates an execution path that
             // never called seed_tx_origin.
-            keychain.set_tx_origin(Address::ZERO)?;
+            keychain.set_tx_origin(
+                &mut crate::storage::StorageCtx::test_writable(),
+                Address::ZERO,
+            )?;
 
             // authorize_key must reject
             let auth_result = authorize_key(
@@ -2695,7 +2908,11 @@ mod tests {
             assert_unauthorized_error(auth_result.unwrap_err());
 
             // revoke_key must reject
-            let revoke_result = keychain.revoke_key(account, revokeKeyCall { keyId: key_id });
+            let revoke_result = keychain.revoke_key(
+                &mut crate::storage::StorageCtx::test_writable(),
+                account,
+                revokeKeyCall { keyId: key_id },
+            );
             assert!(
                 revoke_result.is_err(),
                 "revoke_key must reject when tx_origin is not seeded on T2"
@@ -2704,6 +2921,7 @@ mod tests {
 
             // update_spending_limit must reject
             let update_result = keychain.update_spending_limit(
+                &mut crate::storage::StorageCtx::test_writable(),
                 account,
                 updateSpendingLimitCall {
                     keyId: key_id,
@@ -2729,11 +2947,14 @@ mod tests {
         let token = Address::random();
         StorageCtx::enter(&mut storage, || {
             let mut keychain = AccountKeychain::new();
-            keychain.initialize()?;
+            keychain.initialize(&mut crate::storage::StorageCtx::test_writable())?;
 
             // Use main key for all operations
-            keychain.set_transaction_key(Address::ZERO)?;
-            keychain.set_tx_origin(account)?;
+            keychain.set_transaction_key(
+                &mut crate::storage::StorageCtx::test_writable(),
+                Address::ZERO,
+            )?;
+            keychain.set_tx_origin(&mut crate::storage::StorageCtx::test_writable(), account)?;
 
             // Step 1: Authorize a key with a spending limit
             let auth_call = authorizeKeyCall {
@@ -2771,7 +2992,11 @@ mod tests {
 
             // Step 2: Revoke the key
             let revoke_call = revokeKeyCall { keyId: key_id };
-            keychain.revoke_key(account, revoke_call)?;
+            keychain.revoke_key(
+                &mut crate::storage::StorageCtx::test_writable(),
+                account,
+                revoke_call,
+            )?;
 
             // Verify key is revoked and remaining limit returns 0
             let key_info = keychain.get_key(getKeyCall {
@@ -2819,10 +3044,13 @@ mod tests {
         let key_id = Address::random();
         StorageCtx::enter(&mut storage, || {
             let mut keychain = AccountKeychain::new();
-            keychain.initialize()?;
+            keychain.initialize(&mut crate::storage::StorageCtx::test_writable())?;
 
             // Use main key for the operation
-            keychain.set_transaction_key(Address::ZERO)?;
+            keychain.set_transaction_key(
+                &mut crate::storage::StorageCtx::test_writable(),
+                Address::ZERO,
+            )?;
 
             // Try to authorize with expiry = 0 (in the past)
             let auth_call = authorizeKeyCall {
@@ -2889,8 +3117,11 @@ mod tests {
 
         StorageCtx::enter(&mut storage, || {
             let mut keychain = AccountKeychain::new();
-            keychain.initialize()?;
-            keychain.set_transaction_key(Address::ZERO)?;
+            keychain.initialize(&mut crate::storage::StorageCtx::test_writable())?;
+            keychain.set_transaction_key(
+                &mut crate::storage::StorageCtx::test_writable(),
+                Address::ZERO,
+            )?;
 
             let result = authorize_key(
                 &mut keychain,
@@ -2947,10 +3178,13 @@ mod tests {
         let key_id_2 = Address::random();
         StorageCtx::enter(&mut storage, || {
             let mut keychain = AccountKeychain::new();
-            keychain.initialize()?;
+            keychain.initialize(&mut crate::storage::StorageCtx::test_writable())?;
 
             // Use main key for all operations
-            keychain.set_transaction_key(Address::ZERO)?;
+            keychain.set_transaction_key(
+                &mut crate::storage::StorageCtx::test_writable(),
+                Address::ZERO,
+            )?;
 
             // Authorize key 1
             let auth_call_1 = authorizeKeyCall {
@@ -2967,7 +3201,11 @@ mod tests {
             authorize_key(&mut keychain, account, auth_call_1)?;
 
             // Revoke key 1
-            keychain.revoke_key(account, revokeKeyCall { keyId: key_id_1 })?;
+            keychain.revoke_key(
+                &mut crate::storage::StorageCtx::test_writable(),
+                account,
+                revokeKeyCall { keyId: key_id_1 },
+            )?;
 
             // Authorizing a different key (key 2) should still work
             let auth_call_2 = authorizeKeyCall {
@@ -3006,11 +3244,14 @@ mod tests {
 
         StorageCtx::enter(&mut storage, || {
             let mut keychain = AccountKeychain::new();
-            keychain.initialize()?;
+            keychain.initialize(&mut crate::storage::StorageCtx::test_writable())?;
 
             // authorize access key with 100 token spending limit
-            keychain.set_transaction_key(Address::ZERO)?;
-            keychain.set_tx_origin(eoa)?;
+            keychain.set_transaction_key(
+                &mut crate::storage::StorageCtx::test_writable(),
+                Address::ZERO,
+            )?;
+            keychain.set_tx_origin(&mut crate::storage::StorageCtx::test_writable(), eoa)?;
 
             let auth_call = authorizeKeyCall {
                 keyId: access_key,
@@ -3037,10 +3278,19 @@ mod tests {
             assert_eq!(initial_limit, U256::from(100));
 
             // Switch to access key for remaining tests
-            keychain.set_transaction_key(access_key)?;
+            keychain.set_transaction_key(
+                &mut crate::storage::StorageCtx::test_writable(),
+                access_key,
+            )?;
 
             // Increase approval by 30, which deducts from the limit
-            keychain.authorize_approve(eoa, token, U256::ZERO, U256::from(30))?;
+            keychain.authorize_approve(
+                &mut crate::storage::StorageCtx::test_writable(),
+                eoa,
+                token,
+                U256::ZERO,
+                U256::from(30),
+            )?;
 
             let limit_after = keychain.get_remaining_limit(getRemainingLimitCall {
                 account: eoa,
@@ -3050,7 +3300,13 @@ mod tests {
             assert_eq!(limit_after, U256::from(70));
 
             // Decrease approval to 20, does not affect limit
-            keychain.authorize_approve(eoa, token, U256::from(30), U256::from(20))?;
+            keychain.authorize_approve(
+                &mut crate::storage::StorageCtx::test_writable(),
+                eoa,
+                token,
+                U256::from(30),
+                U256::from(20),
+            )?;
 
             let limit_unchanged = keychain.get_remaining_limit(getRemainingLimitCall {
                 account: eoa,
@@ -3060,7 +3316,13 @@ mod tests {
             assert_eq!(limit_unchanged, U256::from(70));
 
             // Increase from 20 to 50, reducing the limit by 30
-            keychain.authorize_approve(eoa, token, U256::from(20), U256::from(50))?;
+            keychain.authorize_approve(
+                &mut crate::storage::StorageCtx::test_writable(),
+                eoa,
+                token,
+                U256::from(20),
+                U256::from(50),
+            )?;
 
             let limit_after_increase = keychain.get_remaining_limit(getRemainingLimitCall {
                 account: eoa,
@@ -3070,7 +3332,13 @@ mod tests {
             assert_eq!(limit_after_increase, U256::from(40));
 
             // Assert that spending limits only applied when account is tx origin
-            keychain.authorize_approve(contract, token, U256::ZERO, U256::from(1000))?;
+            keychain.authorize_approve(
+                &mut crate::storage::StorageCtx::test_writable(),
+                contract,
+                token,
+                U256::ZERO,
+                U256::from(1000),
+            )?;
 
             let limit_after_contract = keychain.get_remaining_limit(getRemainingLimitCall {
                 account: eoa,
@@ -3080,7 +3348,13 @@ mod tests {
             assert_eq!(limit_after_contract, U256::from(40)); // unchanged
 
             // Assert that exceeding remaining limit fails
-            let exceed_result = keychain.authorize_approve(eoa, token, U256::ZERO, U256::from(50));
+            let exceed_result = keychain.authorize_approve(
+                &mut crate::storage::StorageCtx::test_writable(),
+                eoa,
+                token,
+                U256::ZERO,
+                U256::from(50),
+            );
             assert!(matches!(
                 exceed_result,
                 Err(TempoPrecompileError::AccountKeychainError(
@@ -3089,8 +3363,17 @@ mod tests {
             ));
 
             // Assert that the main key bypasses spending limits, does not affect existing limits
-            keychain.set_transaction_key(Address::ZERO)?;
-            keychain.authorize_approve(eoa, token, U256::ZERO, U256::from(1000))?;
+            keychain.set_transaction_key(
+                &mut crate::storage::StorageCtx::test_writable(),
+                Address::ZERO,
+            )?;
+            keychain.authorize_approve(
+                &mut crate::storage::StorageCtx::test_writable(),
+                eoa,
+                token,
+                U256::ZERO,
+                U256::from(1000),
+            )?;
 
             let limit_main_key = keychain.get_remaining_limit(getRemainingLimitCall {
                 account: eoa,
@@ -3123,11 +3406,14 @@ mod tests {
 
         StorageCtx::enter(&mut storage, || {
             let mut keychain = AccountKeychain::new();
-            keychain.initialize()?;
+            keychain.initialize(&mut crate::storage::StorageCtx::test_writable())?;
 
             // Setup: Alice authorizes an access key with a spending limit of 100 tokens
-            keychain.set_transaction_key(Address::ZERO)?; // Use main key for setup
-            keychain.set_tx_origin(eoa_alice)?;
+            keychain.set_transaction_key(
+                &mut crate::storage::StorageCtx::test_writable(),
+                Address::ZERO,
+            )?; // Use main key for setup
+            keychain.set_tx_origin(&mut crate::storage::StorageCtx::test_writable(), eoa_alice)?;
 
             let auth_call = authorizeKeyCall {
                 keyId: access_key,
@@ -3159,12 +3445,20 @@ mod tests {
             );
 
             // Now simulate a transaction where Alice uses her access key
-            keychain.set_transaction_key(access_key)?;
-            keychain.set_tx_origin(eoa_alice)?;
+            keychain.set_transaction_key(
+                &mut crate::storage::StorageCtx::test_writable(),
+                access_key,
+            )?;
+            keychain.set_tx_origin(&mut crate::storage::StorageCtx::test_writable(), eoa_alice)?;
 
             // Test 1: When msg_sender == tx_origin (Alice directly transfers)
             // Spending limit SHOULD be enforced
-            keychain.authorize_transfer(eoa_alice, token, U256::from(30))?;
+            keychain.authorize_transfer(
+                &mut crate::storage::StorageCtx::test_writable(),
+                eoa_alice,
+                token,
+                U256::from(30),
+            )?;
 
             let limit_after = keychain.get_remaining_limit(getRemainingLimitCall {
                 account: eoa_alice,
@@ -3179,7 +3473,12 @@ mod tests {
 
             // Test 2: When msg_sender != tx_origin (contract transfers its own tokens)
             // Spending limit should NOT be enforced - the contract isn't spending Alice's tokens
-            keychain.authorize_transfer(contract_address, token, U256::from(1000))?;
+            keychain.authorize_transfer(
+                &mut crate::storage::StorageCtx::test_writable(),
+                contract_address,
+                token,
+                U256::from(1000),
+            )?;
 
             let limit_unchanged = keychain.get_remaining_limit(getRemainingLimitCall {
                 account: eoa_alice,
@@ -3193,7 +3492,12 @@ mod tests {
             );
 
             // Test 3: Alice can still spend her remaining limit
-            keychain.authorize_transfer(eoa_alice, token, U256::from(70))?;
+            keychain.authorize_transfer(
+                &mut crate::storage::StorageCtx::test_writable(),
+                eoa_alice,
+                token,
+                U256::from(70),
+            )?;
 
             let limit_depleted = keychain.get_remaining_limit(getRemainingLimitCall {
                 account: eoa_alice,
@@ -3207,15 +3511,24 @@ mod tests {
             );
 
             // Test 4: Alice cannot exceed her spending limit
-            let exceed_result = keychain.authorize_transfer(eoa_alice, token, U256::from(1));
+            let exceed_result = keychain.authorize_transfer(
+                &mut crate::storage::StorageCtx::test_writable(),
+                eoa_alice,
+                token,
+                U256::from(1),
+            );
             assert!(
                 exceed_result.is_err(),
                 "Should fail when Alice tries to exceed spending limit"
             );
 
             // Test 5: But contracts can still transfer (they're not subject to Alice's limits)
-            let contract_result =
-                keychain.authorize_transfer(contract_address, token, U256::from(999999));
+            let contract_result = keychain.authorize_transfer(
+                &mut crate::storage::StorageCtx::test_writable(),
+                contract_address,
+                token,
+                U256::from(999999),
+            );
             assert!(
                 contract_result.is_ok(),
                 "Contract should still be able to transfer even though Alice's limit is depleted"
@@ -3233,8 +3546,11 @@ mod tests {
         let key_id = Address::random();
         StorageCtx::enter(&mut storage, || {
             let mut keychain = AccountKeychain::new();
-            keychain.initialize()?;
-            keychain.set_transaction_key(Address::ZERO)?;
+            keychain.initialize(&mut crate::storage::StorageCtx::test_writable())?;
+            keychain.set_transaction_key(
+                &mut crate::storage::StorageCtx::test_writable(),
+                Address::ZERO,
+            )?;
 
             // Authorize a key with expiry = 1 (minimal positive value)
             let auth_call = authorizeKeyCall {
@@ -3319,10 +3635,13 @@ mod tests {
             let mut keychain = AccountKeychain::new();
 
             // Before initialize: operations should work after init
-            keychain.initialize()?;
+            keychain.initialize(&mut crate::storage::StorageCtx::test_writable())?;
 
             // Verify we can perform operations after initialize
-            keychain.set_transaction_key(Address::ZERO)?;
+            keychain.set_transaction_key(
+                &mut crate::storage::StorageCtx::test_writable(),
+                Address::ZERO,
+            )?;
 
             let account = Address::random();
             let key_id = Address::random();
@@ -3358,8 +3677,11 @@ mod tests {
         let key_id = Address::random();
         StorageCtx::enter(&mut storage, || {
             let mut keychain = AccountKeychain::new();
-            keychain.initialize()?;
-            keychain.set_transaction_key(Address::ZERO)?;
+            keychain.initialize(&mut crate::storage::StorageCtx::test_writable())?;
+            keychain.set_transaction_key(
+                &mut crate::storage::StorageCtx::test_writable(),
+                Address::ZERO,
+            )?;
 
             // Authorize with WebAuthn signature type
             let auth_call = authorizeKeyCall {
@@ -3409,8 +3731,11 @@ mod tests {
         let token = Address::random();
         StorageCtx::enter(&mut storage, || {
             let mut keychain = AccountKeychain::new();
-            keychain.initialize()?;
-            keychain.set_transaction_key(Address::ZERO)?;
+            keychain.initialize(&mut crate::storage::StorageCtx::test_writable())?;
+            keychain.set_transaction_key(
+                &mut crate::storage::StorageCtx::test_writable(),
+                Address::ZERO,
+            )?;
 
             // Authorize a key with expiry far in the future
             let auth_call = authorizeKeyCall {
@@ -3436,7 +3761,11 @@ mod tests {
                 token,
                 newLimit: U256::from(200),
             };
-            let result = keychain.update_spending_limit(account, update_call);
+            let result = keychain.update_spending_limit(
+                &mut crate::storage::StorageCtx::test_writable(),
+                account,
+                update_call,
+            );
             assert!(
                 result.is_ok(),
                 "Update should succeed when key not expired: {result:?}"
@@ -3462,8 +3791,11 @@ mod tests {
         let token = Address::random();
         StorageCtx::enter(&mut storage, || {
             let mut keychain = AccountKeychain::new();
-            keychain.initialize()?;
-            keychain.set_transaction_key(Address::ZERO)?;
+            keychain.initialize(&mut crate::storage::StorageCtx::test_writable())?;
+            keychain.set_transaction_key(
+                &mut crate::storage::StorageCtx::test_writable(),
+                Address::ZERO,
+            )?;
 
             // Case 1: Key with enforce_limits = false
             let auth_call = authorizeKeyCall {
@@ -3495,7 +3827,11 @@ mod tests {
                 token,
                 newLimit: U256::from(500),
             };
-            keychain.update_spending_limit(account, update_call)?;
+            keychain.update_spending_limit(
+                &mut crate::storage::StorageCtx::test_writable(),
+                account,
+                update_call,
+            )?;
 
             // Verify enforce_limits is now true
             let key_after = keychain.get_key(getKeyCall {
@@ -3528,8 +3864,11 @@ mod tests {
         let key_id_never_existed = Address::random();
         StorageCtx::enter(&mut storage, || {
             let mut keychain = AccountKeychain::new();
-            keychain.initialize()?;
-            keychain.set_transaction_key(Address::ZERO)?;
+            keychain.initialize(&mut crate::storage::StorageCtx::test_writable())?;
+            keychain.set_transaction_key(
+                &mut crate::storage::StorageCtx::test_writable(),
+                Address::ZERO,
+            )?;
 
             // Setup: Create and revoke a key
             let auth_call = authorizeKeyCall {
@@ -3545,6 +3884,7 @@ mod tests {
             };
             authorize_key(&mut keychain, account, auth_call)?;
             keychain.revoke_key(
+                &mut crate::storage::StorageCtx::test_writable(),
                 account,
                 revokeKeyCall {
                     keyId: key_id_revoked,
@@ -3624,8 +3964,11 @@ mod tests {
         let key_webauthn = Address::random();
         StorageCtx::enter(&mut storage, || {
             let mut keychain = AccountKeychain::new();
-            keychain.initialize()?;
-            keychain.set_transaction_key(Address::ZERO)?;
+            keychain.initialize(&mut crate::storage::StorageCtx::test_writable())?;
+            keychain.set_transaction_key(
+                &mut crate::storage::StorageCtx::test_writable(),
+                Address::ZERO,
+            )?;
 
             // Create keys with each signature type
             authorize_key(
@@ -3723,10 +4066,13 @@ mod tests {
         let key_id = Address::random();
         StorageCtx::enter(&mut storage, || {
             let mut keychain = AccountKeychain::new();
-            keychain.initialize()?;
+            keychain.initialize(&mut crate::storage::StorageCtx::test_writable())?;
 
             // Use main key for authorization
-            keychain.set_transaction_key(Address::ZERO)?;
+            keychain.set_transaction_key(
+                &mut crate::storage::StorageCtx::test_writable(),
+                Address::ZERO,
+            )?;
 
             // Authorize a P256 key
             let auth_call = authorizeKeyCall {
@@ -3794,9 +4140,12 @@ mod tests {
 
         StorageCtx::enter(&mut storage, || {
             let mut keychain = AccountKeychain::new();
-            keychain.initialize()?;
+            keychain.initialize(&mut crate::storage::StorageCtx::test_writable())?;
 
-            keychain.set_transaction_key(Address::ZERO)?;
+            keychain.set_transaction_key(
+                &mut crate::storage::StorageCtx::test_writable(),
+                Address::ZERO,
+            )?;
 
             let auth_call = authorizeKeyCall {
                 keyId: access_key,
@@ -3815,10 +4164,18 @@ mod tests {
             };
             authorize_key(&mut keychain, eoa, auth_call)?;
 
-            keychain.set_transaction_key(access_key)?;
-            keychain.set_tx_origin(eoa)?;
+            keychain.set_transaction_key(
+                &mut crate::storage::StorageCtx::test_writable(),
+                access_key,
+            )?;
+            keychain.set_tx_origin(&mut crate::storage::StorageCtx::test_writable(), eoa)?;
 
-            keychain.authorize_transfer(eoa, token, U256::from(60))?;
+            keychain.authorize_transfer(
+                &mut crate::storage::StorageCtx::test_writable(),
+                eoa,
+                token,
+                U256::from(60),
+            )?;
 
             let remaining = keychain.get_remaining_limit(getRemainingLimitCall {
                 account: eoa,
@@ -3827,7 +4184,12 @@ mod tests {
             })?;
             assert_eq!(remaining, U256::from(40));
 
-            keychain.refund_spending_limit(eoa, token, U256::from(25))?;
+            keychain.refund_spending_limit(
+                &mut crate::storage::StorageCtx::test_writable(),
+                eoa,
+                token,
+                U256::from(25),
+            )?;
 
             let after_refund = keychain.get_remaining_limit(getRemainingLimitCall {
                 account: eoa,
@@ -3848,12 +4210,20 @@ mod tests {
 
         StorageCtx::enter(&mut storage, || {
             let mut keychain = AccountKeychain::new();
-            keychain.initialize()?;
+            keychain.initialize(&mut crate::storage::StorageCtx::test_writable())?;
 
-            keychain.set_transaction_key(Address::ZERO)?;
-            keychain.set_tx_origin(eoa)?;
+            keychain.set_transaction_key(
+                &mut crate::storage::StorageCtx::test_writable(),
+                Address::ZERO,
+            )?;
+            keychain.set_tx_origin(&mut crate::storage::StorageCtx::test_writable(), eoa)?;
 
-            let result = keychain.refund_spending_limit(eoa, token, U256::from(50));
+            let result = keychain.refund_spending_limit(
+                &mut crate::storage::StorageCtx::test_writable(),
+                eoa,
+                token,
+                U256::from(50),
+            );
             assert!(result.is_ok());
 
             Ok(())
@@ -3869,9 +4239,12 @@ mod tests {
 
         StorageCtx::enter(&mut storage, || {
             let mut keychain = AccountKeychain::new();
-            keychain.initialize()?;
+            keychain.initialize(&mut crate::storage::StorageCtx::test_writable())?;
 
-            keychain.set_transaction_key(Address::ZERO)?;
+            keychain.set_transaction_key(
+                &mut crate::storage::StorageCtx::test_writable(),
+                Address::ZERO,
+            )?;
 
             let auth_call = authorizeKeyCall {
                 keyId: access_key,
@@ -3890,10 +4263,18 @@ mod tests {
             };
             authorize_key(&mut keychain, eoa, auth_call)?;
 
-            keychain.set_transaction_key(access_key)?;
-            keychain.set_tx_origin(eoa)?;
+            keychain.set_transaction_key(
+                &mut crate::storage::StorageCtx::test_writable(),
+                access_key,
+            )?;
+            keychain.set_tx_origin(&mut crate::storage::StorageCtx::test_writable(), eoa)?;
 
-            keychain.authorize_transfer(eoa, token, U256::from(60))?;
+            keychain.authorize_transfer(
+                &mut crate::storage::StorageCtx::test_writable(),
+                eoa,
+                token,
+                U256::from(60),
+            )?;
 
             let remaining = keychain.get_remaining_limit(getRemainingLimitCall {
                 account: eoa,
@@ -3902,12 +4283,27 @@ mod tests {
             })?;
             assert_eq!(remaining, U256::from(40));
 
-            keychain.set_transaction_key(Address::ZERO)?;
-            keychain.revoke_key(eoa, revokeKeyCall { keyId: access_key })?;
+            keychain.set_transaction_key(
+                &mut crate::storage::StorageCtx::test_writable(),
+                Address::ZERO,
+            )?;
+            keychain.revoke_key(
+                &mut crate::storage::StorageCtx::test_writable(),
+                eoa,
+                revokeKeyCall { keyId: access_key },
+            )?;
 
-            keychain.set_transaction_key(access_key)?;
+            keychain.set_transaction_key(
+                &mut crate::storage::StorageCtx::test_writable(),
+                access_key,
+            )?;
 
-            let result = keychain.refund_spending_limit(eoa, token, U256::from(25));
+            let result = keychain.refund_spending_limit(
+                &mut crate::storage::StorageCtx::test_writable(),
+                eoa,
+                token,
+                U256::from(25),
+            );
             assert!(result.is_ok());
 
             let after_refund = keychain.get_remaining_limit(getRemainingLimitCall {
@@ -3935,9 +4331,12 @@ mod tests {
         storage.set_timestamp(U256::from(100u64));
         StorageCtx::enter(&mut storage, || {
             let mut keychain = AccountKeychain::new();
-            keychain.initialize()?;
+            keychain.initialize(&mut crate::storage::StorageCtx::test_writable())?;
 
-            keychain.set_transaction_key(Address::ZERO)?;
+            keychain.set_transaction_key(
+                &mut crate::storage::StorageCtx::test_writable(),
+                Address::ZERO,
+            )?;
 
             let auth_call = authorizeKeyCall {
                 keyId: access_key,
@@ -3956,9 +4355,17 @@ mod tests {
             };
             authorize_key(&mut keychain, eoa, auth_call)?;
 
-            keychain.set_transaction_key(access_key)?;
-            keychain.set_tx_origin(eoa)?;
-            keychain.authorize_transfer(eoa, token, U256::from(60))?;
+            keychain.set_transaction_key(
+                &mut crate::storage::StorageCtx::test_writable(),
+                access_key,
+            )?;
+            keychain.set_tx_origin(&mut crate::storage::StorageCtx::test_writable(), eoa)?;
+            keychain.authorize_transfer(
+                &mut crate::storage::StorageCtx::test_writable(),
+                eoa,
+                token,
+                U256::from(60),
+            )?;
 
             Ok::<_, eyre::Report>(())
         })?;
@@ -3966,10 +4373,18 @@ mod tests {
         storage.set_timestamp(U256::from(200u64));
         StorageCtx::enter(&mut storage, || {
             let mut keychain = AccountKeychain::new();
-            keychain.set_transaction_key(access_key)?;
-            keychain.set_tx_origin(eoa)?;
+            keychain.set_transaction_key(
+                &mut crate::storage::StorageCtx::test_writable(),
+                access_key,
+            )?;
+            keychain.set_tx_origin(&mut crate::storage::StorageCtx::test_writable(), eoa)?;
 
-            let result = keychain.refund_spending_limit(eoa, token, U256::from(25));
+            let result = keychain.refund_spending_limit(
+                &mut crate::storage::StorageCtx::test_writable(),
+                eoa,
+                token,
+                U256::from(25),
+            );
             assert!(result.is_ok());
 
             let after_refund = keychain.get_remaining_limit(getRemainingLimitCall {
@@ -3996,9 +4411,12 @@ mod tests {
 
         let key_slot = StorageCtx::enter(&mut storage, || {
             let mut keychain = AccountKeychain::new();
-            keychain.initialize()?;
+            keychain.initialize(&mut crate::storage::StorageCtx::test_writable())?;
 
-            keychain.set_transaction_key(Address::ZERO)?;
+            keychain.set_transaction_key(
+                &mut crate::storage::StorageCtx::test_writable(),
+                Address::ZERO,
+            )?;
 
             let auth_call = authorizeKeyCall {
                 keyId: access_key,
@@ -4017,9 +4435,17 @@ mod tests {
             };
             authorize_key(&mut keychain, eoa, auth_call)?;
 
-            keychain.set_transaction_key(access_key)?;
-            keychain.set_tx_origin(eoa)?;
-            keychain.authorize_transfer(eoa, token, U256::from(60))?;
+            keychain.set_transaction_key(
+                &mut crate::storage::StorageCtx::test_writable(),
+                access_key,
+            )?;
+            keychain.set_tx_origin(&mut crate::storage::StorageCtx::test_writable(), eoa)?;
+            keychain.authorize_transfer(
+                &mut crate::storage::StorageCtx::test_writable(),
+                eoa,
+                token,
+                U256::from(60),
+            )?;
 
             Ok::<_, TempoPrecompileError>(keychain.keys[eoa][access_key].as_slot().slot())
         })?;
@@ -4028,11 +4454,19 @@ mod tests {
 
         StorageCtx::enter(&mut storage, || {
             let mut keychain = AccountKeychain::new();
-            keychain.set_transaction_key(access_key)?;
-            keychain.set_tx_origin(eoa)?;
+            keychain.set_transaction_key(
+                &mut crate::storage::StorageCtx::test_writable(),
+                access_key,
+            )?;
+            keychain.set_tx_origin(&mut crate::storage::StorageCtx::test_writable(), eoa)?;
 
             let err = keychain
-                .refund_spending_limit(eoa, token, U256::from(25))
+                .refund_spending_limit(
+                    &mut crate::storage::StorageCtx::test_writable(),
+                    eoa,
+                    token,
+                    U256::from(25),
+                )
                 .unwrap_err();
 
             assert!(matches!(err, TempoPrecompileError::Fatal(_)));
@@ -4051,9 +4485,12 @@ mod tests {
 
         StorageCtx::enter(&mut storage, || {
             let mut keychain = AccountKeychain::new();
-            keychain.initialize()?;
+            keychain.initialize(&mut crate::storage::StorageCtx::test_writable())?;
 
-            keychain.set_transaction_key(Address::ZERO)?;
+            keychain.set_transaction_key(
+                &mut crate::storage::StorageCtx::test_writable(),
+                Address::ZERO,
+            )?;
 
             let auth_call = authorizeKeyCall {
                 keyId: access_key,
@@ -4072,10 +4509,18 @@ mod tests {
             };
             authorize_key(&mut keychain, eoa, auth_call)?;
 
-            keychain.set_transaction_key(access_key)?;
-            keychain.set_tx_origin(eoa)?;
+            keychain.set_transaction_key(
+                &mut crate::storage::StorageCtx::test_writable(),
+                access_key,
+            )?;
+            keychain.set_tx_origin(&mut crate::storage::StorageCtx::test_writable(), eoa)?;
 
-            keychain.authorize_transfer(eoa, token, U256::from(10))?;
+            keychain.authorize_transfer(
+                &mut crate::storage::StorageCtx::test_writable(),
+                eoa,
+                token,
+                U256::from(10),
+            )?;
 
             let remaining = keychain.get_remaining_limit(getRemainingLimitCall {
                 account: eoa,
@@ -4084,7 +4529,12 @@ mod tests {
             })?;
             assert_eq!(remaining, U256::from(90));
 
-            keychain.refund_spending_limit(eoa, token, U256::from(50))?;
+            keychain.refund_spending_limit(
+                &mut crate::storage::StorageCtx::test_writable(),
+                eoa,
+                token,
+                U256::from(50),
+            )?;
 
             let after_refund = keychain.get_remaining_limit(getRemainingLimitCall {
                 account: eoa,
@@ -4111,10 +4561,13 @@ mod tests {
 
         StorageCtx::enter(&mut storage, || {
             let mut keychain = AccountKeychain::new();
-            keychain.initialize()?;
+            keychain.initialize(&mut crate::storage::StorageCtx::test_writable())?;
 
-            keychain.set_transaction_key(Address::ZERO)?;
-            keychain.set_tx_origin(eoa)?;
+            keychain.set_transaction_key(
+                &mut crate::storage::StorageCtx::test_writable(),
+                Address::ZERO,
+            )?;
+            keychain.set_tx_origin(&mut crate::storage::StorageCtx::test_writable(), eoa)?;
 
             let auth_call = authorizeKeyCall {
                 keyId: access_key,
@@ -4133,11 +4586,24 @@ mod tests {
             };
             authorize_key(&mut keychain, eoa, auth_call)?;
 
-            keychain.set_transaction_key(access_key)?;
-            keychain.set_tx_origin(eoa)?;
+            keychain.set_transaction_key(
+                &mut crate::storage::StorageCtx::test_writable(),
+                access_key,
+            )?;
+            keychain.set_tx_origin(&mut crate::storage::StorageCtx::test_writable(), eoa)?;
 
-            keychain.authorize_transfer(eoa, token, U256::from(60))?;
-            keychain.refund_spending_limit(eoa, token, U256::from(30))?;
+            keychain.authorize_transfer(
+                &mut crate::storage::StorageCtx::test_writable(),
+                eoa,
+                token,
+                U256::from(60),
+            )?;
+            keychain.refund_spending_limit(
+                &mut crate::storage::StorageCtx::test_writable(),
+                eoa,
+                token,
+                U256::from(30),
+            )?;
 
             let after_partial_refund = keychain.get_remaining_limit(getRemainingLimitCall {
                 account: eoa,
@@ -4150,7 +4616,12 @@ mod tests {
                 "refund should restore the spent amount without forcing the max"
             );
 
-            keychain.refund_spending_limit(eoa, token, U256::from(50))?;
+            keychain.refund_spending_limit(
+                &mut crate::storage::StorageCtx::test_writable(),
+                eoa,
+                token,
+                U256::from(50),
+            )?;
 
             let after_refund = keychain.get_remaining_limit(getRemainingLimitCall {
                 account: eoa,
@@ -4175,26 +4646,40 @@ mod tests {
 
         StorageCtx::enter(&mut storage, || {
             let mut keychain = AccountKeychain::new();
-            keychain.initialize()?;
+            keychain.initialize(&mut crate::storage::StorageCtx::test_writable())?;
 
             let limit_key = AccountKeychain::spending_limit_key(eoa, access_key);
-            keychain.keys[eoa][access_key].write(AuthorizedKey {
-                signature_type: StoredSignatureType::Secp256k1,
-                expiry: u64::MAX,
-                enforce_limits: true,
-                is_revoked: false,
-                is_admin: false,
-            })?;
-            keychain.spending_limits[limit_key][token].write(SpendingLimitState {
-                remaining: U256::from(90),
-                max: 0,
-                period: 0,
-                period_end: 0,
-            })?;
+            keychain.keys[eoa][access_key].write(
+                &mut crate::storage::StorageCtx::test_writable(),
+                AuthorizedKey {
+                    signature_type: StoredSignatureType::Secp256k1,
+                    expiry: u64::MAX,
+                    enforce_limits: true,
+                    is_revoked: false,
+                    is_admin: false,
+                },
+            )?;
+            keychain.spending_limits[limit_key][token].write(
+                &mut crate::storage::StorageCtx::test_writable(),
+                SpendingLimitState {
+                    remaining: U256::from(90),
+                    max: 0,
+                    period: 0,
+                    period_end: 0,
+                },
+            )?;
 
-            keychain.set_transaction_key(access_key)?;
-            keychain.set_tx_origin(eoa)?;
-            keychain.refund_spending_limit(eoa, token, U256::from(10))?;
+            keychain.set_transaction_key(
+                &mut crate::storage::StorageCtx::test_writable(),
+                access_key,
+            )?;
+            keychain.set_tx_origin(&mut crate::storage::StorageCtx::test_writable(), eoa)?;
+            keychain.refund_spending_limit(
+                &mut crate::storage::StorageCtx::test_writable(),
+                eoa,
+                token,
+                U256::from(10),
+            )?;
 
             let after_refund = keychain.get_remaining_limit(getRemainingLimitCall {
                 account: eoa,
@@ -4220,9 +4705,12 @@ mod tests {
 
         StorageCtx::enter(&mut storage, || {
             let mut keychain = AccountKeychain::new();
-            keychain.initialize()?;
-            keychain.set_transaction_key(Address::ZERO)?;
-            keychain.set_tx_origin(account)?;
+            keychain.initialize(&mut crate::storage::StorageCtx::test_writable())?;
+            keychain.set_transaction_key(
+                &mut crate::storage::StorageCtx::test_writable(),
+                Address::ZERO,
+            )?;
+            keychain.set_tx_origin(&mut crate::storage::StorageCtx::test_writable(), account)?;
 
             authorize_key(
                 &mut keychain,
@@ -4274,9 +4762,12 @@ mod tests {
 
         StorageCtx::enter(&mut storage, || {
             let mut keychain = AccountKeychain::new();
-            keychain.initialize()?;
-            keychain.set_transaction_key(Address::ZERO)?;
-            keychain.set_tx_origin(account)?;
+            keychain.initialize(&mut crate::storage::StorageCtx::test_writable())?;
+            keychain.set_transaction_key(
+                &mut crate::storage::StorageCtx::test_writable(),
+                Address::ZERO,
+            )?;
+            keychain.set_tx_origin(&mut crate::storage::StorageCtx::test_writable(), account)?;
 
             let authorize_result = authorize_key(
                 &mut keychain,
@@ -4329,6 +4820,7 @@ mod tests {
             )?;
 
             let update_result = keychain.update_spending_limit(
+                &mut crate::storage::StorageCtx::test_writable(),
                 account,
                 updateSpendingLimitCall {
                     keyId: valid_key_id,
@@ -4360,9 +4852,12 @@ mod tests {
 
         StorageCtx::enter(&mut storage, || {
             let mut keychain = AccountKeychain::new();
-            keychain.initialize()?;
-            keychain.set_transaction_key(Address::ZERO)?;
-            keychain.set_tx_origin(account)?;
+            keychain.initialize(&mut crate::storage::StorageCtx::test_writable())?;
+            keychain.set_transaction_key(
+                &mut crate::storage::StorageCtx::test_writable(),
+                Address::ZERO,
+            )?;
+            keychain.set_tx_origin(&mut crate::storage::StorageCtx::test_writable(), account)?;
 
             let result = authorize_key(
                 &mut keychain,
@@ -4420,9 +4915,12 @@ mod tests {
 
         StorageCtx::enter(&mut storage, || {
             let mut keychain = AccountKeychain::new();
-            keychain.initialize()?;
-            keychain.set_transaction_key(Address::ZERO)?;
-            keychain.set_tx_origin(account)?;
+            keychain.initialize(&mut crate::storage::StorageCtx::test_writable())?;
+            keychain.set_transaction_key(
+                &mut crate::storage::StorageCtx::test_writable(),
+                Address::ZERO,
+            )?;
+            keychain.set_tx_origin(&mut crate::storage::StorageCtx::test_writable(), account)?;
 
             authorize_key(
                 &mut keychain,
@@ -4466,9 +4964,12 @@ mod tests {
 
         StorageCtx::enter(&mut storage, || {
             let mut keychain = AccountKeychain::new();
-            keychain.initialize()?;
-            keychain.set_transaction_key(Address::ZERO)?;
-            keychain.set_tx_origin(account)?;
+            keychain.initialize(&mut crate::storage::StorageCtx::test_writable())?;
+            keychain.set_transaction_key(
+                &mut crate::storage::StorageCtx::test_writable(),
+                Address::ZERO,
+            )?;
+            keychain.set_tx_origin(&mut crate::storage::StorageCtx::test_writable(), account)?;
 
             let err = authorize_key(
                 &mut keychain,
@@ -4511,17 +5012,20 @@ mod tests {
 
         StorageCtx::enter(&mut storage, || {
             let mut keychain = AccountKeychain::new();
-            keychain.initialize()?;
+            keychain.initialize(&mut crate::storage::StorageCtx::test_writable())?;
 
             let limit_key = AccountKeychain::spending_limit_key(account, key_id);
             let handler = &mut keychain.spending_limits[limit_key][token];
             let remaining = U256::from(123u64);
-            handler.write(SpendingLimitState {
-                remaining,
-                max: 456,
-                period: 60,
-                period_end: 120,
-            })?;
+            handler.write(
+                &mut crate::storage::StorageCtx::test_writable(),
+                SpendingLimitState {
+                    remaining,
+                    max: 456,
+                    period: 60,
+                    period_end: 120,
+                },
+            )?;
 
             assert_eq!(
                 StorageCtx.sload(ACCOUNT_KEYCHAIN_ADDRESS, handler.as_slot().slot())?,
@@ -4546,9 +5050,12 @@ mod tests {
 
         StorageCtx::enter(&mut storage, || {
             let mut keychain = AccountKeychain::new();
-            keychain.initialize()?;
-            keychain.set_transaction_key(Address::ZERO)?;
-            keychain.set_tx_origin(account)?;
+            keychain.initialize(&mut crate::storage::StorageCtx::test_writable())?;
+            keychain.set_transaction_key(
+                &mut crate::storage::StorageCtx::test_writable(),
+                Address::ZERO,
+            )?;
+            keychain.set_tx_origin(&mut crate::storage::StorageCtx::test_writable(), account)?;
 
             authorize_key(
                 &mut keychain,
@@ -4568,6 +5075,7 @@ mod tests {
 
             let err = keychain
                 .apply_key_authorization_restrictions(
+                    &mut crate::storage::StorageCtx::test_writable(),
                     account,
                     key_id,
                     &[],
@@ -4603,9 +5111,12 @@ mod tests {
 
         StorageCtx::enter(&mut storage, || {
             let mut keychain = AccountKeychain::new();
-            keychain.initialize()?;
-            keychain.set_transaction_key(Address::ZERO)?;
-            keychain.set_tx_origin(account)?;
+            keychain.initialize(&mut crate::storage::StorageCtx::test_writable())?;
+            keychain.set_transaction_key(
+                &mut crate::storage::StorageCtx::test_writable(),
+                Address::ZERO,
+            )?;
+            keychain.set_tx_origin(&mut crate::storage::StorageCtx::test_writable(), account)?;
             TIP20Setup::path_usd(account).apply()?;
 
             authorize_key(
@@ -4629,6 +5140,7 @@ mod tests {
             )?;
 
             keychain.apply_key_authorization_restrictions(
+                &mut crate::storage::StorageCtx::test_writable(),
                 account,
                 key_id,
                 &[TokenLimit {
@@ -4639,8 +5151,14 @@ mod tests {
                 None,
             )?;
 
-            keychain.set_transaction_key(key_id)?;
-            keychain.authorize_transfer(account, token, U256::from(80))?;
+            keychain
+                .set_transaction_key(&mut crate::storage::StorageCtx::test_writable(), key_id)?;
+            keychain.authorize_transfer(
+                &mut crate::storage::StorageCtx::test_writable(),
+                account,
+                token,
+                U256::from(80),
+            )?;
 
             let remaining = keychain.get_remaining_limit(getRemainingLimitCall {
                 account,
@@ -4655,10 +5173,16 @@ mod tests {
         storage.set_timestamp(U256::from(1_070u64));
         StorageCtx::enter(&mut storage, || {
             let mut keychain = AccountKeychain::new();
-            keychain.set_transaction_key(key_id)?;
-            keychain.set_tx_origin(account)?;
+            keychain
+                .set_transaction_key(&mut crate::storage::StorageCtx::test_writable(), key_id)?;
+            keychain.set_tx_origin(&mut crate::storage::StorageCtx::test_writable(), account)?;
 
-            keychain.authorize_transfer(account, token, U256::from(10))?;
+            keychain.authorize_transfer(
+                &mut crate::storage::StorageCtx::test_writable(),
+                account,
+                token,
+                U256::from(10),
+            )?;
 
             let remaining = keychain.get_remaining_limit(getRemainingLimitCall {
                 account,
@@ -4681,9 +5205,12 @@ mod tests {
 
         StorageCtx::enter(&mut storage, || {
             let mut keychain = AccountKeychain::new();
-            keychain.initialize()?;
-            keychain.set_transaction_key(Address::ZERO)?;
-            keychain.set_tx_origin(account)?;
+            keychain.initialize(&mut crate::storage::StorageCtx::test_writable())?;
+            keychain.set_transaction_key(
+                &mut crate::storage::StorageCtx::test_writable(),
+                Address::ZERO,
+            )?;
+            keychain.set_tx_origin(&mut crate::storage::StorageCtx::test_writable(), account)?;
 
             authorize_key(
                 &mut keychain,
@@ -4705,7 +5232,13 @@ mod tests {
                 },
             )?;
 
-            keychain.verify_and_update_spending(account, key_id, token, U256::from(40))?;
+            keychain.verify_and_update_spending(
+                &mut crate::storage::StorageCtx::test_writable(),
+                account,
+                key_id,
+                token,
+                U256::from(40),
+            )?;
 
             let key = keychain.keys[account][key_id].read()?;
             assert_eq!(
@@ -4732,9 +5265,12 @@ mod tests {
 
         StorageCtx::enter(&mut storage, || {
             let mut keychain = AccountKeychain::new();
-            keychain.initialize()?;
-            keychain.set_transaction_key(Address::ZERO)?;
-            keychain.set_tx_origin(account)?;
+            keychain.initialize(&mut crate::storage::StorageCtx::test_writable())?;
+            keychain.set_transaction_key(
+                &mut crate::storage::StorageCtx::test_writable(),
+                Address::ZERO,
+            )?;
+            keychain.set_tx_origin(&mut crate::storage::StorageCtx::test_writable(), account)?;
 
             authorize_key(
                 &mut keychain,
@@ -4757,7 +5293,13 @@ mod tests {
             )?;
             keychain.clear_emitted_events();
 
-            keychain.verify_and_update_spending(account, key_id, token, U256::from(100))?;
+            keychain.verify_and_update_spending(
+                &mut crate::storage::StorageCtx::test_writable(),
+                account,
+                key_id,
+                token,
+                U256::from(100),
+            )?;
 
             let limit_key = AccountKeychain::spending_limit_key(account, key_id);
             assert_eq!(
@@ -4790,8 +5332,14 @@ mod tests {
                 "public period getter must decode the T7 zero sentinel"
             );
 
-            keychain.set_transaction_key(key_id)?;
-            keychain.refund_spending_limit(account, token, U256::from(40))?;
+            keychain
+                .set_transaction_key(&mut crate::storage::StorageCtx::test_writable(), key_id)?;
+            keychain.refund_spending_limit(
+                &mut crate::storage::StorageCtx::test_writable(),
+                account,
+                token,
+                U256::from(40),
+            )?;
             assert_eq!(
                 keychain.get_remaining_limit(getRemainingLimitCall {
                     account,
@@ -4813,9 +5361,12 @@ mod tests {
 
         StorageCtx::enter(&mut storage, || {
             let mut keychain = AccountKeychain::new();
-            keychain.initialize()?;
-            keychain.set_transaction_key(Address::ZERO)?;
-            keychain.set_tx_origin(account)?;
+            keychain.initialize(&mut crate::storage::StorageCtx::test_writable())?;
+            keychain.set_transaction_key(
+                &mut crate::storage::StorageCtx::test_writable(),
+                Address::ZERO,
+            )?;
+            keychain.set_tx_origin(&mut crate::storage::StorageCtx::test_writable(), account)?;
 
             authorize_key(
                 &mut keychain,
@@ -4840,7 +5391,13 @@ mod tests {
             assert!(!scopes.isScoped);
             assert!(scopes.scopes.is_empty());
 
-            keychain.apply_key_authorization_restrictions(account, key_id, &[], Some(&[]))?;
+            keychain.apply_key_authorization_restrictions(
+                &mut crate::storage::StorageCtx::test_writable(),
+                account,
+                key_id,
+                &[],
+                Some(&[]),
+            )?;
 
             let deny_all = keychain.get_allowed_calls(getAllowedCallsCall {
                 account,
@@ -4864,9 +5421,12 @@ mod tests {
         storage.set_timestamp(U256::from(1_000u64));
         StorageCtx::enter(&mut storage, || {
             let mut keychain = AccountKeychain::new();
-            keychain.initialize()?;
-            keychain.set_transaction_key(Address::ZERO)?;
-            keychain.set_tx_origin(account)?;
+            keychain.initialize(&mut crate::storage::StorageCtx::test_writable())?;
+            keychain.set_transaction_key(
+                &mut crate::storage::StorageCtx::test_writable(),
+                Address::ZERO,
+            )?;
+            keychain.set_tx_origin(&mut crate::storage::StorageCtx::test_writable(), account)?;
 
             for (key_id, expiry) in [(revoked_key, u64::MAX), (expiring_key, 1_005)] {
                 authorize_key(
@@ -4889,7 +5449,11 @@ mod tests {
                 )?;
             }
 
-            keychain.revoke_key(account, revokeKeyCall { keyId: revoked_key })?;
+            keychain.revoke_key(
+                &mut crate::storage::StorageCtx::test_writable(),
+                account,
+                revokeKeyCall { keyId: revoked_key },
+            )?;
 
             let revoked = keychain.get_allowed_calls(getAllowedCallsCall {
                 account,
@@ -4934,9 +5498,13 @@ mod tests {
             storage.set_timestamp(U256::from(1_000u64));
             StorageCtx::enter(&mut storage, || {
                 let mut keychain = AccountKeychain::new();
-                keychain.initialize()?;
-                keychain.set_transaction_key(Address::ZERO)?;
-                keychain.set_tx_origin(account)?;
+                keychain.initialize(&mut crate::storage::StorageCtx::test_writable())?;
+                keychain.set_transaction_key(
+                    &mut crate::storage::StorageCtx::test_writable(),
+                    Address::ZERO,
+                )?;
+                keychain
+                    .set_tx_origin(&mut crate::storage::StorageCtx::test_writable(), account)?;
 
                 authorize_key(
                     &mut keychain,
@@ -5013,9 +5581,13 @@ mod tests {
 
             StorageCtx::enter(&mut storage, || {
                 let mut keychain = AccountKeychain::new();
-                keychain.initialize()?;
-                keychain.set_transaction_key(Address::ZERO)?;
-                keychain.set_tx_origin(account)?;
+                keychain.initialize(&mut crate::storage::StorageCtx::test_writable())?;
+                keychain.set_transaction_key(
+                    &mut crate::storage::StorageCtx::test_writable(),
+                    Address::ZERO,
+                )?;
+                keychain
+                    .set_tx_origin(&mut crate::storage::StorageCtx::test_writable(), account)?;
 
                 authorize_key(
                     &mut keychain,
@@ -5038,7 +5610,11 @@ mod tests {
                 )?;
 
                 // revoke key auth
-                keychain.revoke_key(account, revokeKeyCall { keyId: key_id })?;
+                keychain.revoke_key(
+                    &mut crate::storage::StorageCtx::test_writable(),
+                    account,
+                    revokeKeyCall { keyId: key_id },
+                )?;
 
                 let sload_before = StorageCtx.counter_sload();
                 if hardfork.is_t2() {
@@ -5083,7 +5659,7 @@ mod tests {
             let mut storage = HashMapStorageProvider::new_with_spec(1, hardfork);
             StorageCtx::enter(&mut storage, || {
                 let mut keychain = AccountKeychain::new();
-                let _ = keychain.initialize();
+                let _ = keychain.initialize(&mut crate::storage::StorageCtx::test_writable());
 
                 let sloads_before = StorageCtx.counter_sload();
                 assert_eq!(
@@ -5116,9 +5692,12 @@ mod tests {
 
         StorageCtx::enter(&mut storage, || {
             let mut keychain = AccountKeychain::new();
-            keychain.initialize()?;
-            keychain.set_transaction_key(Address::ZERO)?;
-            keychain.set_tx_origin(account)?;
+            keychain.initialize(&mut crate::storage::StorageCtx::test_writable())?;
+            keychain.set_transaction_key(
+                &mut crate::storage::StorageCtx::test_writable(),
+                Address::ZERO,
+            )?;
+            keychain.set_tx_origin(&mut crate::storage::StorageCtx::test_writable(), account)?;
 
             authorize_key(
                 &mut keychain,
@@ -5138,6 +5717,7 @@ mod tests {
 
             let err = keychain
                 .set_allowed_calls(
+                    &mut crate::storage::StorageCtx::test_writable(),
                     account,
                     setAllowedCallsCall {
                         keyId: key_id,
@@ -5162,9 +5742,12 @@ mod tests {
 
         StorageCtx::enter(&mut storage, || {
             let mut keychain = AccountKeychain::new();
-            keychain.initialize()?;
-            keychain.set_transaction_key(Address::ZERO)?;
-            keychain.set_tx_origin(account)?;
+            keychain.initialize(&mut crate::storage::StorageCtx::test_writable())?;
+            keychain.set_transaction_key(
+                &mut crate::storage::StorageCtx::test_writable(),
+                Address::ZERO,
+            )?;
+            keychain.set_tx_origin(&mut crate::storage::StorageCtx::test_writable(), account)?;
 
             authorize_key(
                 &mut keychain,
@@ -5184,6 +5767,7 @@ mod tests {
 
             let err = keychain
                 .set_allowed_calls(
+                    &mut crate::storage::StorageCtx::test_writable(),
                     account,
                     setAllowedCallsCall {
                         keyId: key_id,
@@ -5213,9 +5797,12 @@ mod tests {
 
         StorageCtx::enter(&mut storage, || {
             let mut keychain = AccountKeychain::new();
-            keychain.initialize()?;
-            keychain.set_transaction_key(Address::ZERO)?;
-            keychain.set_tx_origin(account)?;
+            keychain.initialize(&mut crate::storage::StorageCtx::test_writable())?;
+            keychain.set_transaction_key(
+                &mut crate::storage::StorageCtx::test_writable(),
+                Address::ZERO,
+            )?;
+            keychain.set_tx_origin(&mut crate::storage::StorageCtx::test_writable(), account)?;
 
             authorize_key(
                 &mut keychain,
@@ -5234,6 +5821,7 @@ mod tests {
             )?;
 
             keychain.set_allowed_calls(
+                &mut crate::storage::StorageCtx::test_writable(),
                 account,
                 setAllowedCallsCall {
                     keyId: key_id,
@@ -5270,6 +5858,7 @@ mod tests {
             assert!(allow.is_ok());
 
             keychain.remove_allowed_calls(
+                &mut crate::storage::StorageCtx::test_writable(),
                 account,
                 removeAllowedCallsCall {
                     keyId: key_id,
@@ -5307,9 +5896,12 @@ mod tests {
 
         StorageCtx::enter(&mut storage, || {
             let mut keychain = AccountKeychain::new();
-            keychain.initialize()?;
-            keychain.set_transaction_key(Address::ZERO)?;
-            keychain.set_tx_origin(account)?;
+            keychain.initialize(&mut crate::storage::StorageCtx::test_writable())?;
+            keychain.set_transaction_key(
+                &mut crate::storage::StorageCtx::test_writable(),
+                Address::ZERO,
+            )?;
+            keychain.set_tx_origin(&mut crate::storage::StorageCtx::test_writable(), account)?;
 
             authorize_key(
                 &mut keychain,
@@ -5328,6 +5920,7 @@ mod tests {
             )?;
 
             keychain.set_allowed_calls(
+                &mut crate::storage::StorageCtx::test_writable(),
                 account,
                 setAllowedCallsCall {
                     keyId: key_id,
@@ -5375,9 +5968,13 @@ mod tests {
             let mut storage = HashMapStorageProvider::new_with_spec(1, hardfork);
             StorageCtx::enter(&mut storage, || {
                 let mut keychain = AccountKeychain::new();
-                keychain.initialize()?;
-                keychain.set_transaction_key(Address::ZERO)?;
-                keychain.set_tx_origin(account)?;
+                keychain.initialize(&mut crate::storage::StorageCtx::test_writable())?;
+                keychain.set_transaction_key(
+                    &mut crate::storage::StorageCtx::test_writable(),
+                    Address::ZERO,
+                )?;
+                keychain
+                    .set_tx_origin(&mut crate::storage::StorageCtx::test_writable(), account)?;
 
                 authorize_key(
                     &mut keychain,
@@ -5397,6 +5994,7 @@ mod tests {
 
                 let before = StorageCtx.counter_sstore();
                 keychain.set_allowed_calls(
+                    &mut crate::storage::StorageCtx::test_writable(),
                     account,
                     setAllowedCallsCall {
                         keyId: key_id,
@@ -5443,9 +6041,12 @@ mod tests {
 
         StorageCtx::enter(&mut storage, || {
             let mut keychain = AccountKeychain::new();
-            keychain.initialize()?;
-            keychain.set_transaction_key(Address::ZERO)?;
-            keychain.set_tx_origin(account)?;
+            keychain.initialize(&mut crate::storage::StorageCtx::test_writable())?;
+            keychain.set_transaction_key(
+                &mut crate::storage::StorageCtx::test_writable(),
+                Address::ZERO,
+            )?;
+            keychain.set_tx_origin(&mut crate::storage::StorageCtx::test_writable(), account)?;
             TIP20Setup::path_usd(account).apply()?;
 
             authorize_key(
@@ -5465,6 +6066,7 @@ mod tests {
             )?;
 
             keychain.apply_key_authorization_restrictions(
+                &mut crate::storage::StorageCtx::test_writable(),
                 account,
                 key_id,
                 &[],
@@ -5526,9 +6128,12 @@ mod tests {
 
         StorageCtx::enter(&mut storage, || {
             let mut keychain = AccountKeychain::new();
-            keychain.initialize()?;
-            keychain.set_transaction_key(Address::ZERO)?;
-            keychain.set_tx_origin(account)?;
+            keychain.initialize(&mut crate::storage::StorageCtx::test_writable())?;
+            keychain.set_transaction_key(
+                &mut crate::storage::StorageCtx::test_writable(),
+                Address::ZERO,
+            )?;
+            keychain.set_tx_origin(&mut crate::storage::StorageCtx::test_writable(), account)?;
 
             authorize_key(
                 &mut keychain,

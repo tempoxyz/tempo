@@ -117,12 +117,12 @@ mod tests {
                 let mut slot = Address::handle(base_slot, LayoutCtx::FULL, address);
 
                 // Verify store → load roundtrip
-                slot.write(addr).unwrap();
+                slot.write(&mut crate::storage::StorageCtx::test_writable(), addr).unwrap();
                 let loaded = slot.read().unwrap();
                 assert_eq!(addr, loaded, "Address roundtrip failed");
 
                 // Verify delete works
-                slot.delete().unwrap();
+                slot.delete(&mut crate::storage::StorageCtx::test_writable()).unwrap();
                 let after_delete = slot.read().unwrap();
                 assert_eq!(after_delete, Address::ZERO, "Address not zero after delete");
 
@@ -140,12 +140,12 @@ mod tests {
                 let mut slot = bool::handle(base_slot, LayoutCtx::FULL, address);
 
                 // Verify store → load roundtrip
-                slot.write(b).unwrap();
+                slot.write(&mut crate::storage::StorageCtx::test_writable(), b).unwrap();
                 let loaded = slot.read().unwrap();
                 assert_eq!(b, loaded, "Bool roundtrip failed for value: {b}");
 
                 // Verify delete works
-                slot.delete().unwrap();
+                slot.delete(&mut crate::storage::StorageCtx::test_writable()).unwrap();
                 let after_delete = slot.read().unwrap();
                 assert!(!after_delete, "Bool not false after delete");
 
@@ -259,7 +259,9 @@ mod tests {
         let val0: u8 = 0x42;
         StorageCtx::enter(&mut storage, || {
             let mut slot0 = u8::handle(base_slot, LayoutCtx::packed(0), address);
-            slot0.write(val0).unwrap();
+            slot0
+                .write(&mut crate::storage::StorageCtx::test_writable(), val0)
+                .unwrap();
 
             // Verify with Slot read
             let read_val = slot0.read().unwrap();
@@ -272,7 +274,9 @@ mod tests {
         assert_eq!(loaded_slot, expected);
 
         // Clear with low-level write
-        storage.sstore(address, base_slot, U256::ZERO).unwrap();
+        (&mut crate::storage::StorageCtx::test_writable())
+            .sstore(address, base_slot, U256::ZERO)
+            .unwrap();
 
         // Verify with Slot read
         StorageCtx::enter(&mut storage, || {
@@ -285,7 +289,9 @@ mod tests {
         let val15: u8 = 0xAB;
         StorageCtx::enter(&mut storage, || {
             let mut slot15 = u8::handle(base_slot + U256::ONE, LayoutCtx::packed(15), address);
-            slot15.write(val15).unwrap();
+            slot15
+                .write(&mut crate::storage::StorageCtx::test_writable(), val15)
+                .unwrap();
 
             // Verify with Slot read
             let read_val = slot15.read().unwrap();
@@ -301,7 +307,7 @@ mod tests {
         assert_eq!(loaded_slot, expected);
 
         // Clear with low-level write
-        storage
+        (&mut crate::storage::StorageCtx::test_writable())
             .sstore(address, base_slot + U256::ONE, U256::ZERO)
             .unwrap();
 
@@ -316,7 +322,9 @@ mod tests {
         let val31: u8 = 0xFF;
         StorageCtx::enter(&mut storage, || {
             let mut slot31 = u8::handle(base_slot + U256::from(2), LayoutCtx::packed(31), address);
-            slot31.write(val31).unwrap();
+            slot31
+                .write(&mut crate::storage::StorageCtx::test_writable(), val31)
+                .unwrap();
 
             // Verify with Slot read
             let read_val = slot31.read().unwrap();
@@ -332,7 +340,7 @@ mod tests {
         assert_eq!(loaded_slot, expected);
 
         // Clear with low-level write
-        storage
+        (&mut crate::storage::StorageCtx::test_writable())
             .sstore(address, base_slot + U256::from(2), U256::ZERO)
             .unwrap();
 
@@ -353,7 +361,9 @@ mod tests {
         let val0: u16 = 0x1234;
         StorageCtx::enter(&mut storage, || {
             let mut slot0 = u16::handle(base_slot, LayoutCtx::packed(0), address);
-            slot0.write(val0).unwrap();
+            slot0
+                .write(&mut crate::storage::StorageCtx::test_writable(), val0)
+                .unwrap();
 
             // Verify with Slot read
             let read_val = slot0.read().unwrap();
@@ -366,7 +376,9 @@ mod tests {
         assert_eq!(loaded_slot, expected);
 
         // Clear with low-level write
-        storage.sstore(address, base_slot, U256::ZERO).unwrap();
+        (&mut crate::storage::StorageCtx::test_writable())
+            .sstore(address, base_slot, U256::ZERO)
+            .unwrap();
 
         // Verify with Slot read
         StorageCtx::enter(&mut storage, || {
@@ -379,7 +391,9 @@ mod tests {
         let val15: u16 = 0xABCD;
         StorageCtx::enter(&mut storage, || {
             let mut slot15 = u16::handle(base_slot + U256::ONE, LayoutCtx::packed(15), address);
-            slot15.write(val15).unwrap();
+            slot15
+                .write(&mut crate::storage::StorageCtx::test_writable(), val15)
+                .unwrap();
 
             // Verify with Slot read
             let read_val = slot15.read().unwrap();
@@ -395,7 +409,7 @@ mod tests {
         assert_eq!(loaded_slot, expected);
 
         // Clear with low-level write
-        storage
+        (&mut crate::storage::StorageCtx::test_writable())
             .sstore(address, base_slot + U256::ONE, U256::ZERO)
             .unwrap();
 
@@ -410,7 +424,9 @@ mod tests {
         let val30: u16 = 0xFFEE;
         StorageCtx::enter(&mut storage, || {
             let mut slot30 = u16::handle(base_slot + U256::from(2), LayoutCtx::packed(30), address);
-            slot30.write(val30).unwrap();
+            slot30
+                .write(&mut crate::storage::StorageCtx::test_writable(), val30)
+                .unwrap();
 
             // Verify with Slot read
             let read_val = slot30.read().unwrap();
@@ -426,7 +442,7 @@ mod tests {
         assert_eq!(loaded_slot, expected);
 
         // Clear with low-level write
-        storage
+        (&mut crate::storage::StorageCtx::test_writable())
             .sstore(address, base_slot + U256::from(2), U256::ZERO)
             .unwrap();
 
@@ -447,7 +463,9 @@ mod tests {
         let val0: u32 = 0x12345678;
         StorageCtx::enter(&mut storage, || {
             let mut slot0 = u32::handle(base_slot, LayoutCtx::packed(0), address);
-            slot0.write(val0).unwrap();
+            slot0
+                .write(&mut crate::storage::StorageCtx::test_writable(), val0)
+                .unwrap();
 
             // Verify with Slot read
             let read_val = slot0.read().unwrap();
@@ -460,7 +478,9 @@ mod tests {
         assert_eq!(loaded_slot, expected);
 
         // Clear with low-level write
-        storage.sstore(address, base_slot, U256::ZERO).unwrap();
+        (&mut crate::storage::StorageCtx::test_writable())
+            .sstore(address, base_slot, U256::ZERO)
+            .unwrap();
 
         // Verify with Slot read
         StorageCtx::enter(&mut storage, || {
@@ -473,7 +493,9 @@ mod tests {
         let val14: u32 = 0xABCDEF01;
         StorageCtx::enter(&mut storage, || {
             let mut slot14 = u32::handle(base_slot + U256::ONE, LayoutCtx::packed(14), address);
-            slot14.write(val14).unwrap();
+            slot14
+                .write(&mut crate::storage::StorageCtx::test_writable(), val14)
+                .unwrap();
 
             // Verify with Slot read
             let read_val = slot14.read().unwrap();
@@ -489,7 +511,7 @@ mod tests {
         assert_eq!(loaded_slot, expected);
 
         // Clear with low-level write
-        storage
+        (&mut crate::storage::StorageCtx::test_writable())
             .sstore(address, base_slot + U256::ONE, U256::ZERO)
             .unwrap();
 
@@ -504,7 +526,9 @@ mod tests {
         let val28: u32 = 0xFFEEDDCC;
         StorageCtx::enter(&mut storage, || {
             let mut slot28 = u32::handle(base_slot + U256::from(2), LayoutCtx::packed(28), address);
-            slot28.write(val28).unwrap();
+            slot28
+                .write(&mut crate::storage::StorageCtx::test_writable(), val28)
+                .unwrap();
 
             // Verify with Slot read
             let read_val = slot28.read().unwrap();
@@ -520,7 +544,7 @@ mod tests {
         assert_eq!(loaded_slot, expected);
 
         // Clear with low-level write
-        storage
+        (&mut crate::storage::StorageCtx::test_writable())
             .sstore(address, base_slot + U256::from(2), U256::ZERO)
             .unwrap();
 
@@ -541,7 +565,9 @@ mod tests {
         let val0: u64 = 0x123456789ABCDEF0;
         StorageCtx::enter(&mut storage, || {
             let mut slot0 = u64::handle(base_slot, LayoutCtx::packed(0), address);
-            slot0.write(val0).unwrap();
+            slot0
+                .write(&mut crate::storage::StorageCtx::test_writable(), val0)
+                .unwrap();
 
             // Verify with Slot read
             let read_val = slot0.read().unwrap();
@@ -554,7 +580,9 @@ mod tests {
         assert_eq!(loaded_slot, expected);
 
         // Clear with low-level write
-        storage.sstore(address, base_slot, U256::ZERO).unwrap();
+        (&mut crate::storage::StorageCtx::test_writable())
+            .sstore(address, base_slot, U256::ZERO)
+            .unwrap();
 
         // Verify with Slot read
         StorageCtx::enter(&mut storage, || {
@@ -567,7 +595,9 @@ mod tests {
         let val12: u64 = 0xFEDCBA9876543210;
         StorageCtx::enter(&mut storage, || {
             let mut slot12 = u64::handle(base_slot + U256::ONE, LayoutCtx::packed(12), address);
-            slot12.write(val12).unwrap();
+            slot12
+                .write(&mut crate::storage::StorageCtx::test_writable(), val12)
+                .unwrap();
 
             // Verify with Slot read
             let read_val = slot12.read().unwrap();
@@ -583,7 +613,7 @@ mod tests {
         assert_eq!(loaded_slot, expected);
 
         // Clear with low-level write
-        storage
+        (&mut crate::storage::StorageCtx::test_writable())
             .sstore(address, base_slot + U256::ONE, U256::ZERO)
             .unwrap();
 
@@ -598,7 +628,9 @@ mod tests {
         let val24: u64 = 0xAAAABBBBCCCCDDDD;
         StorageCtx::enter(&mut storage, || {
             let mut slot24 = u64::handle(base_slot + U256::from(2), LayoutCtx::packed(24), address);
-            slot24.write(val24).unwrap();
+            slot24
+                .write(&mut crate::storage::StorageCtx::test_writable(), val24)
+                .unwrap();
 
             // Verify with Slot read
             let read_val = slot24.read().unwrap();
@@ -614,7 +646,7 @@ mod tests {
         assert_eq!(loaded_slot, expected);
 
         // Clear with low-level write
-        storage
+        (&mut crate::storage::StorageCtx::test_writable())
             .sstore(address, base_slot + U256::from(2), U256::ZERO)
             .unwrap();
 
@@ -635,7 +667,9 @@ mod tests {
         let val0: u128 = 0x123456789ABCDEF0_FEDCBA9876543210;
         StorageCtx::enter(&mut storage, || {
             let mut slot0 = u128::handle(base_slot, LayoutCtx::packed(0), address);
-            slot0.write(val0).unwrap();
+            slot0
+                .write(&mut crate::storage::StorageCtx::test_writable(), val0)
+                .unwrap();
 
             // Verify with Slot read
             let read_val = slot0.read().unwrap();
@@ -648,7 +682,9 @@ mod tests {
         assert_eq!(loaded_slot, expected);
 
         // Clear with low-level write
-        storage.sstore(address, base_slot, U256::ZERO).unwrap();
+        (&mut crate::storage::StorageCtx::test_writable())
+            .sstore(address, base_slot, U256::ZERO)
+            .unwrap();
 
         // Verify with Slot read
         StorageCtx::enter(&mut storage, || {
@@ -661,7 +697,9 @@ mod tests {
         let val16: u128 = 0xAAAABBBBCCCCDDDD_1111222233334444;
         StorageCtx::enter(&mut storage, || {
             let mut slot16 = u128::handle(base_slot + U256::ONE, LayoutCtx::packed(16), address);
-            slot16.write(val16).unwrap();
+            slot16
+                .write(&mut crate::storage::StorageCtx::test_writable(), val16)
+                .unwrap();
 
             // Verify with Slot read
             let read_val = slot16.read().unwrap();
@@ -677,7 +715,7 @@ mod tests {
         assert_eq!(loaded_slot, expected);
 
         // Clear with low-level write
-        storage
+        (&mut crate::storage::StorageCtx::test_writable())
             .sstore(address, base_slot + U256::ONE, U256::ZERO)
             .unwrap();
 
@@ -698,7 +736,9 @@ mod tests {
         let addr0 = Address::from([0x12; 20]);
         StorageCtx::enter(&mut storage, || {
             let mut slot0 = Address::handle(base_slot, LayoutCtx::packed(0), address);
-            slot0.write(addr0).unwrap();
+            slot0
+                .write(&mut crate::storage::StorageCtx::test_writable(), addr0)
+                .unwrap();
 
             // Verify with Slot read
             let read_val = slot0.read().unwrap();
@@ -711,7 +751,9 @@ mod tests {
         assert_eq!(loaded_slot, expected);
 
         // Clear with low-level write
-        storage.sstore(address, base_slot, U256::ZERO).unwrap();
+        (&mut crate::storage::StorageCtx::test_writable())
+            .sstore(address, base_slot, U256::ZERO)
+            .unwrap();
 
         // Verify with Slot read
         StorageCtx::enter(&mut storage, || {
@@ -724,7 +766,9 @@ mod tests {
         let addr12 = Address::from([0xAB; 20]);
         StorageCtx::enter(&mut storage, || {
             let mut slot12 = Address::handle(base_slot + U256::ONE, LayoutCtx::packed(12), address);
-            slot12.write(addr12).unwrap();
+            slot12
+                .write(&mut crate::storage::StorageCtx::test_writable(), addr12)
+                .unwrap();
 
             // Verify with Slot read
             let read_val = slot12.read().unwrap();
@@ -740,7 +784,7 @@ mod tests {
         assert_eq!(loaded_slot, expected);
 
         // Clear with low-level write
-        storage
+        (&mut crate::storage::StorageCtx::test_writable())
             .sstore(address, base_slot + U256::ONE, U256::ZERO)
             .unwrap();
 
@@ -761,7 +805,9 @@ mod tests {
         let val0 = true;
         StorageCtx::enter(&mut storage, || {
             let mut slot0 = bool::handle(base_slot, LayoutCtx::packed(0), address);
-            slot0.write(val0).unwrap();
+            slot0
+                .write(&mut crate::storage::StorageCtx::test_writable(), val0)
+                .unwrap();
 
             // Verify with Slot read
             let read_val = slot0.read().unwrap();
@@ -774,7 +820,9 @@ mod tests {
         assert_eq!(loaded_slot, expected);
 
         // Clear with low-level write
-        storage.sstore(address, base_slot, U256::ZERO).unwrap();
+        (&mut crate::storage::StorageCtx::test_writable())
+            .sstore(address, base_slot, U256::ZERO)
+            .unwrap();
 
         // Verify with Slot read
         StorageCtx::enter(&mut storage, || {
@@ -787,7 +835,9 @@ mod tests {
         let val31 = false;
         StorageCtx::enter(&mut storage, || {
             let mut slot31 = bool::handle(base_slot + U256::ONE, LayoutCtx::packed(31), address);
-            slot31.write(val31).unwrap();
+            slot31
+                .write(&mut crate::storage::StorageCtx::test_writable(), val31)
+                .unwrap();
 
             // Verify with Slot read
             let read_val = slot31.read().unwrap();
@@ -803,7 +853,7 @@ mod tests {
         assert_eq!(loaded_slot, expected);
 
         // Clear with low-level write
-        storage
+        (&mut crate::storage::StorageCtx::test_writable())
             .sstore(address, base_slot + U256::ONE, U256::ZERO)
             .unwrap();
 
@@ -824,7 +874,8 @@ mod tests {
         let val = U256::from(0x123456789ABCDEFu64);
         StorageCtx::enter(&mut storage, || {
             let mut slot = Slot::<U256>::new(base_slot, address);
-            slot.write(val).unwrap();
+            slot.write(&mut crate::storage::StorageCtx::test_writable(), val)
+                .unwrap();
         });
 
         let loaded_slot = storage.sload(address, base_slot).unwrap();
@@ -847,7 +898,8 @@ mod tests {
         let val: u64 = 0x123456789ABCDEF0;
         StorageCtx::enter(&mut storage, || {
             let mut slot = Slot::<u64>::new(base_slot, address);
-            slot.write(val).unwrap();
+            slot.write(&mut crate::storage::StorageCtx::test_writable(), val)
+                .unwrap();
         });
 
         // Verify slot is non-zero
@@ -861,7 +913,8 @@ mod tests {
         // Delete the value
         StorageCtx::enter(&mut storage, || {
             let mut slot = Slot::<u64>::new(base_slot, address);
-            slot.delete().unwrap();
+            slot.delete(&mut crate::storage::StorageCtx::test_writable())
+                .unwrap();
         });
 
         // Verify slot is now zero

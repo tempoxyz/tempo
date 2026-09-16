@@ -22,8 +22,8 @@ const WEBAUTHN_VERIFY_GAS: u64 = 8_000;
 pub struct SignatureVerifier {}
 
 impl SignatureVerifier {
-    pub fn initialize(&mut self) -> Result<()> {
-        self.__initialize()
+    pub fn initialize(&mut self, write: &mut crate::storage::WriteCtx) -> Result<()> {
+        self.__initialize(write)
     }
 
     pub fn recover(&mut self, hash: B256, signature: Bytes) -> Result<Address> {

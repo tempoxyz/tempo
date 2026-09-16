@@ -175,7 +175,7 @@ where
         &ctx.cfg,
         &ctx.tx,
         StorageActions::disabled(),
-        || read_fn(&C::default()),
+        |write| read_fn(&C::default()),
     )?;
     Ok((header.number(), block_hash, res))
 }

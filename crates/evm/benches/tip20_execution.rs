@@ -108,10 +108,11 @@ fn seed_in_memory_cache_db(
         &ctx.cfg,
         &ctx.tx,
         StorageActions::disabled(),
-        || {
-            TIP403Registry::new().initialize()?;
-            TIP20Factory::new().initialize()?;
+        |write| {
+            TIP403Registry::new().initialize(write)?;
+            TIP20Factory::new().initialize(write)?;
             TIP20Factory::new().create_token_reserved_address(
+                write,
                 PATH_USD_ADDRESS,
                 "pathUSD",
                 "pathUSD",
@@ -121,9 +122,10 @@ fn seed_in_memory_cache_db(
             )?;
 
             let mut token = TIP20Token::from_address(PATH_USD_ADDRESS)?;
-            token.grant_role_internal(admin, ISSUER_ROLE)?;
+            token.grant_role_internal(write, admin, ISSUER_ROLE)?;
             for participant in participants {
                 token.mint(
+                    write,
                     admin,
                     ITIP20::mintCall {
                         to: *participant,
@@ -133,11 +135,11 @@ fn seed_in_memory_cache_db(
             }
 
             if let Some((delegates, kind)) = reward_seed {
-                seed_reward_bench_state(&mut token, admin, participants, delegates, kind)?;
+                seed_reward_bench_state(write, &mut token, admin, participants, delegates, kind)?;
             }
 
-            TipFeeManager::new().initialize()?;
-            NonceManager::new().initialize()?;
+            TipFeeManager::new().initialize(write)?;
+            NonceManager::new().initialize(write)?;
             Ok::<(), TempoPrecompileError>(())
         },
     )
@@ -149,6 +151,7 @@ fn seed_in_memory_cache_db(
 }
 
 fn seed_reward_bench_state(
+    write: &mut tempo_precompiles::storage::WriteCtx,
     token: &mut TIP20Token,
     admin: Address,
     participants: &[Address],
@@ -163,14 +166,15 @@ fn seed_reward_bench_state(
         } => {
             for chunk in participants.chunks(2) {
                 if let Some(sender_addr) = chunk.first().copied() {
-                    apply_seed_reward_mode(token, sender_addr, sender, delegates)?;
+                    apply_seed_reward_mode(write, token, sender_addr, sender, delegates)?;
                 }
                 if let Some(recipient_addr) = chunk.get(1).copied() {
-                    apply_seed_reward_mode(token, recipient_addr, recipient, delegates)?;
+                    apply_seed_reward_mode(write, token, recipient_addr, recipient, delegates)?;
                 }
             }
             if reward_delta {
                 token.distribute_reward(
+                    write,
                     admin,
                     ITIP20::distributeRewardCall {
                         amount: U256::from(REWARD_DISTRIBUTION_AMOUNT),
@@ -181,6 +185,7 @@ fn seed_reward_bench_state(
         RewardBenchKind::ClaimRewards => {
             for participant in participants {
                 token.set_reward_recipient(
+                    write,
                     *participant,
                     ITIP20::setRewardRecipientCall {
                         recipient: *participant,
@@ -188,18 +193,20 @@ fn seed_reward_bench_state(
                 )?;
             }
             token.distribute_reward(
+                write,
                 admin,
                 ITIP20::distributeRewardCall {
                     amount: U256::from(REWARD_DISTRIBUTION_AMOUNT),
                 },
             )?;
             for participant in participants {
-                token.update_rewards(*participant)?;
+                token.update_rewards(write, *participant)?;
             }
         }
         RewardBenchKind::DistributeReward { opted_in_accounts } => {
             for participant in participants.iter().take(opted_in_accounts) {
                 token.set_reward_recipient(
+                    write,
                     *participant,
                     ITIP20::setRewardRecipientCall {
                         recipient: *participant,
@@ -212,6 +219,7 @@ fn seed_reward_bench_state(
 }
 
 fn apply_seed_reward_mode(
+    write: &mut tempo_precompiles::storage::WriteCtx,
     token: &mut TIP20Token,
     account: Address,
     mode: RewardSeedMode,
@@ -225,7 +233,7 @@ fn apply_seed_reward_mode(
             delegates[account.as_slice()[19] as usize % delegates.len()]
         }
     };
-    token.set_reward_recipient(account, ITIP20::setRewardRecipientCall { recipient })?;
+    token.set_reward_recipient(write, account, ITIP20::setRewardRecipientCall { recipient })?;
     Ok(())
 }
 

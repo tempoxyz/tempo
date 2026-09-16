@@ -150,7 +150,7 @@ impl Builder {
                 &cx.cfg,
                 &cx.tx,
                 StorageActions::disabled(),
-                || {
+                |write| {
                     let mut validator_config_v2 = ValidatorConfigV2::new();
                     validator_config_v2
                         .initialize(admin())

@@ -12,7 +12,10 @@ pub mod hashmap;
 
 pub mod thread_local;
 use alloy::primitives::keccak256;
-pub use thread_local::{CheckpointGuard, StorageCtx};
+pub use thread_local::{CheckpointGuard, ReadOnly, StorageCtx, Writable};
+
+/// The write permission passed through mutating contracts and storage handlers.
+pub type WriteCtx = StorageCtx<Writable>;
 
 mod types;
 pub use types::*;
@@ -41,8 +44,9 @@ use crate::error::{Result, TempoPrecompileError};
 ///
 /// # Sync with `[StorageCtx]`
 ///
-/// `StorageCtx` mirrors these methods with split mutability for read (staticcall) vs write (call).
-/// When adding new methods here, remember to add corresponding methods to `StorageCtx`.
+/// `StorageCtx<ReadOnly>` exposes reads and metering; `StorageCtx<Writable>` adds
+/// state mutation. New mutation methods must require the writable specialization.
+/// Providers remain the runtime boundary and must enforce their static flag.
 pub trait PrecompileStorageProvider {
     /// Returns the chain ID.
     fn chain_id(&self) -> u64;
@@ -225,11 +229,15 @@ pub trait PrecompileStorageProvider {
 ///
 /// Abstracts over persistent storage (SLOAD/SSTORE) and transient storage (TLOAD/TSTORE).
 /// Implementors must route to the appropriate opcode.
-pub trait StorageOps {
-    /// Stores a value at the provided slot.
-    fn store(&mut self, slot: U256, value: U256) -> Result<()>;
+pub trait StorageRead {
     /// Loads a value from the provided slot.
     fn load(&self, slot: U256) -> Result<U256>;
+}
+
+/// Storage that permits writes. EVM implementations require a writable context.
+pub trait StorageOps: StorageRead {
+    /// Stores a value at the provided slot.
+    fn store(&mut self, slot: U256, value: U256) -> Result<()>;
 
     /// Increments a value at the provided slot by `delta`.
     ///

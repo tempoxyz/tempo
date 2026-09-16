@@ -176,14 +176,14 @@ where
 
     /// Writes the entire array to storage.
     #[inline]
-    fn write(&mut self, value: [T; N]) -> Result<()> {
-        self.as_slot().write(value)
+    fn write(&mut self, write: &mut crate::storage::WriteCtx, value: [T; N]) -> Result<()> {
+        self.as_slot().write(write, value)
     }
 
     /// Deletes the entire array from storage (clears all elements).
     #[inline]
-    fn delete(&mut self) -> Result<()> {
-        self.as_slot().delete()
+    fn delete(&mut self, write: &mut crate::storage::WriteCtx) -> Result<()> {
+        self.as_slot().delete(write)
     }
 
     /// Reads the entire array from transient storage.
@@ -194,14 +194,14 @@ where
 
     /// Writes the entire array to transient storage.
     #[inline]
-    fn t_write(&mut self, value: [T; N]) -> Result<()> {
-        self.as_slot().t_write(value)
+    fn t_write(&mut self, write: &mut crate::storage::WriteCtx, value: [T; N]) -> Result<()> {
+        self.as_slot().t_write(write, value)
     }
 
     /// Deletes the entire array from transient storage (clears all elements).
     #[inline]
-    fn t_delete(&mut self) -> Result<()> {
-        self.as_slot().t_delete()
+    fn t_delete(&mut self, write: &mut crate::storage::WriteCtx) -> Result<()> {
+        self.as_slot().t_delete(write)
     }
 }
 
@@ -240,12 +240,14 @@ mod tests {
         // Store and load
         StorageCtx::enter(&mut storage, || {
             let mut slot = <[u8; 32]>::handle(base_slot, LayoutCtx::FULL, address);
-            slot.write(data).unwrap();
+            slot.write(&mut crate::storage::StorageCtx::test_writable(), data)
+                .unwrap();
             let loaded = slot.read().unwrap();
             assert_eq!(loaded, data, "[u8; 32] roundtrip failed");
 
             // Verify delete
-            slot.delete().unwrap();
+            slot.delete(&mut crate::storage::StorageCtx::test_writable())
+                .unwrap();
         });
         let slot_value = storage.sload(address, base_slot).unwrap();
         assert_eq!(slot_value, U256::ZERO, "Slot not cleared after delete");
@@ -265,7 +267,8 @@ mod tests {
         // Store and load
         StorageCtx::enter(&mut storage, || {
             let mut slot = <[u64; 5]>::handle(base_slot, LayoutCtx::FULL, address);
-            slot.write(data).unwrap();
+            slot.write(&mut crate::storage::StorageCtx::test_writable(), data)
+                .unwrap();
             let loaded = slot.read().unwrap();
             assert_eq!(loaded, data, "[u64; 5] roundtrip failed");
         });
@@ -279,7 +282,8 @@ mod tests {
         // Verify delete clears both slots
         StorageCtx::enter(&mut storage, || {
             let mut slot = <[u64; 5]>::handle(base_slot, LayoutCtx::FULL, address);
-            slot.delete().unwrap();
+            slot.delete(&mut crate::storage::StorageCtx::test_writable())
+                .unwrap();
         });
         let slot0_after = storage.sload(address, base_slot).unwrap();
         let slot1_after = storage.sload(address, base_slot + U256::ONE).unwrap();
@@ -301,7 +305,8 @@ mod tests {
         // Store and load
         StorageCtx::enter(&mut storage, || {
             let mut slot = <[u16; 16]>::handle(base_slot, LayoutCtx::FULL, address);
-            slot.write(data).unwrap();
+            slot.write(&mut crate::storage::StorageCtx::test_writable(), data)
+                .unwrap();
             let loaded = slot.read().unwrap();
             assert_eq!(loaded, data, "[u16; 16] roundtrip failed");
         });
@@ -321,7 +326,8 @@ mod tests {
         // Store and load
         StorageCtx::enter(&mut storage, || {
             let mut slot = <[U256; 3]>::handle(base_slot, LayoutCtx::FULL, address);
-            slot.write(data).unwrap();
+            slot.write(&mut crate::storage::StorageCtx::test_writable(), data)
+                .unwrap();
             let loaded = slot.read().unwrap();
             assert_eq!(loaded, data, "[U256; 3] roundtrip failed");
         });
@@ -351,7 +357,8 @@ mod tests {
         // Store and load
         StorageCtx::enter(&mut storage, || {
             let mut slot = <[Address; 3]>::handle(base_slot, LayoutCtx::FULL, address);
-            slot.write(data).unwrap();
+            slot.write(&mut crate::storage::StorageCtx::test_writable(), data)
+                .unwrap();
             let loaded = slot.read().unwrap();
             assert_eq!(loaded, data, "[Address; 3] roundtrip failed");
         });
@@ -363,7 +370,12 @@ mod tests {
 
         StorageCtx::enter(&mut storage, || {
             let mut handler = <[U96; 2]>::handle(base_slot, LayoutCtx::FULL, address);
-            handler.write([U96::from(1), U96::from(2)]).unwrap();
+            handler
+                .write(
+                    &mut crate::storage::StorageCtx::test_writable(),
+                    [U96::from(1), U96::from(2)],
+                )
+                .unwrap();
         });
 
         // Both elements packed in slot 0: low 12 bytes = elem 0, next 12 bytes = elem 1.
@@ -381,7 +393,12 @@ mod tests {
             assert_eq!(handler.at(1).unwrap().read().unwrap(), U96::from(2));
 
             // Indexed write to elem 1 only modifies bytes 12..23 of slot 0.
-            handler[1].write(U96::from(3)).unwrap();
+            handler[1]
+                .write(
+                    &mut crate::storage::StorageCtx::test_writable(),
+                    U96::from(3),
+                )
+                .unwrap();
         });
 
         let after = U256::from(1) | (U256::from(3) << 96);
@@ -414,7 +431,9 @@ mod tests {
 
         StorageCtx::enter(&mut storage, || {
             let mut handler = <[U96; 5]>::handle(base_slot, LayoutCtx::FULL, address);
-            handler.write(data).unwrap();
+            handler
+                .write(&mut crate::storage::StorageCtx::test_writable(), data)
+                .unwrap();
         });
 
         // Slot 0: elem0 in low 12 bytes, elem1 in next 12 bytes.
@@ -468,7 +487,12 @@ mod tests {
             }
 
             // Indexed write to elem 4 must hit slot base+2 only.
-            handler[4].write(U96::from(99u64)).unwrap();
+            handler[4]
+                .write(
+                    &mut crate::storage::StorageCtx::test_writable(),
+                    U96::from(99u64),
+                )
+                .unwrap();
         });
         assert_eq!(
             storage
@@ -503,7 +527,8 @@ mod tests {
         // Store and load
         StorageCtx::enter(&mut storage, || {
             let mut slot = <[u8; 1]>::handle(base_slot, LayoutCtx::FULL, address);
-            slot.write(data).unwrap();
+            slot.write(&mut crate::storage::StorageCtx::test_writable(), data)
+                .unwrap();
             let loaded = slot.read().unwrap();
             assert_eq!(loaded, data, "[u8; 1] roundtrip failed");
         });
@@ -534,12 +559,14 @@ mod tests {
         // Store and load
         StorageCtx::enter(&mut storage, || {
             let mut slot = <[[u8; 4]; 8]>::handle(base_slot, LayoutCtx::FULL, address);
-            slot.write(data).unwrap();
+            slot.write(&mut crate::storage::StorageCtx::test_writable(), data)
+                .unwrap();
             let loaded = slot.read().unwrap();
             assert_eq!(loaded, data, "[[u8; 4]; 8] roundtrip failed");
 
             // Verify delete clears all 8 slots
-            slot.delete().unwrap();
+            slot.delete(&mut crate::storage::StorageCtx::test_writable())
+                .unwrap();
         });
         for i in 0..8 {
             let slot_value = storage.sload(address, base_slot + U256::from(i)).unwrap();
@@ -573,12 +600,14 @@ mod tests {
         // Store and load
         StorageCtx::enter(&mut storage, || {
             let mut slot = <[[u16; 2]; 8]>::handle(base_slot, LayoutCtx::FULL, address);
-            slot.write(data).unwrap();
+            slot.write(&mut crate::storage::StorageCtx::test_writable(), data)
+                .unwrap();
             let loaded = slot.read().unwrap();
             assert_eq!(loaded, data, "[[u16; 2]; 8] roundtrip failed");
 
             // Verify delete clears all 8 slots
-            slot.delete().unwrap();
+            slot.delete(&mut crate::storage::StorageCtx::test_writable())
+                .unwrap();
         });
         for i in 0..8 {
             let slot_value = storage.sload(address, base_slot + U256::from(i)).unwrap();
@@ -599,12 +628,12 @@ mod tests {
             // Store and load
             StorageCtx::enter(&mut storage, || {
                 let mut slot = <[u8; 32]>::handle(base_slot, LayoutCtx::FULL, address);
-                slot.write(data).unwrap();
+                slot.write(&mut crate::storage::StorageCtx::test_writable(), data).unwrap();
                 let loaded = slot.read().unwrap();
                 prop_assert_eq!(&loaded, &data, "[u8; 32] roundtrip failed");
 
                 // Delete
-                slot.delete().unwrap();
+                slot.delete(&mut crate::storage::StorageCtx::test_writable()).unwrap();
                 Ok(())
             })?;
             let slot_value = storage.sload(address, base_slot).unwrap();
@@ -621,7 +650,7 @@ mod tests {
             // Store and load
             StorageCtx::enter(&mut storage, || {
                 let mut slot = <[u16; 16]>::handle(base_slot, LayoutCtx::FULL, address);
-                slot.write(data).unwrap();
+                slot.write(&mut crate::storage::StorageCtx::test_writable(), data).unwrap();
                 let loaded = slot.read().unwrap();
                 prop_assert_eq!(&loaded, &data, "[u16; 16] roundtrip failed");
                 Ok(())
@@ -638,7 +667,7 @@ mod tests {
             // Store and load
             StorageCtx::enter(&mut storage, || {
                 let mut slot = <[U256; 5]>::handle(base_slot, LayoutCtx::FULL, address);
-                slot.write(data).unwrap();
+                slot.write(&mut crate::storage::StorageCtx::test_writable(), data).unwrap();
                 let loaded = slot.read().unwrap();
                 prop_assert_eq!(&loaded, &data, "[U256; 5] roundtrip failed");
                 Ok(())
@@ -653,7 +682,7 @@ mod tests {
             // Delete
             StorageCtx::enter(&mut storage, || {
                 let mut slot = <[U256; 5]>::handle(base_slot, LayoutCtx::FULL, address);
-                slot.delete().unwrap();
+                slot.delete(&mut crate::storage::StorageCtx::test_writable()).unwrap();
                 Ok::<(), proptest::test_runner::TestCaseError>(())
             })?;
             for i in 0..5 {

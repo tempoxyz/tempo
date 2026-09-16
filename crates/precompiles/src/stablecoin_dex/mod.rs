@@ -67,9 +67,9 @@ impl StablecoinDEX {
     }
 
     /// Initializes the stablecoin DEX precompile.
-    pub fn initialize(&mut self) -> Result<()> {
+    pub fn initialize(&mut self, write: &mut crate::storage::WriteCtx) -> Result<()> {
         // must ensure the account is not empty, by setting some code
-        self.__initialize()
+        self.__initialize(write)
     }
 
     /// Read next order ID (always at least 1)
@@ -78,9 +78,9 @@ impl StablecoinDEX {
     }
 
     /// Increment next order ID
-    fn increment_next_order_id(&mut self) -> Result<()> {
+    fn increment_next_order_id(&mut self, write: &mut crate::storage::WriteCtx) -> Result<()> {
         let next_order_id = self.next_order_id()?;
-        self.next_order_id.write(next_order_id + 1)
+        self.next_order_id.write(write, next_order_id + 1)
     }
 
     /// Returns the user's DEX balance for `token`.
@@ -94,7 +94,12 @@ impl StablecoinDEX {
     }
 
     /// Adds reusable-order storage credits for `user`.
-    fn credit_dex_storage_slots(&mut self, user: Address, slots: u64) -> Result<()> {
+    fn credit_dex_storage_slots(
+        &mut self,
+        write: &mut crate::storage::WriteCtx,
+        user: Address,
+        slots: u64,
+    ) -> Result<()> {
         if slots == 0 || !self.storage.spec().is_t7() {
             return Ok(());
         }
@@ -103,15 +108,15 @@ impl StablecoinDEX {
         let updated = current.saturating_add(slots);
 
         if current != 0 {
-            return self.dex_storage_credits[user].write(updated);
+            return self.dex_storage_credits[user].write(write, updated);
         }
 
         // Initializing this counter spends one DEX-owned credit from the newly granted slots.
         // We still store the full logical balance: the DEX balance is one credit short while the
         // counter exists, then gets that credit back when the counter is cleared.
         let mut storage_credits = StorageCredits::new();
-        let (_, delta) = storage_credits.with_budget(self.address, 1, || {
-            self.dex_storage_credits[user].write(updated)
+        let (_, delta) = storage_credits.with_budget(write, self.address, 1, |write| {
+            self.dex_storage_credits[user].write(write, updated)
         })?;
 
         if delta != -1 {
@@ -124,17 +129,22 @@ impl StablecoinDEX {
     }
 
     /// Deletes an order and returns the number of DEX TIP-1060 credits minted.
-    fn delete_order(&mut self, order: &Order) -> Result<u64> {
+    fn delete_order(&mut self, write: &mut crate::storage::WriteCtx, order: &Order) -> Result<u64> {
         StorageCredits::new()
-            .track_minted_credits(self.address, || self.orders[order.order_id()].delete())
+            .track_minted_credits(self.address, || self.orders[order.order_id()].delete(write))
             .map(|(_, credits)| credits)
     }
 
     /// Rewrites an order and returns the number of DEX TIP-1060 credits minted.
-    fn rewrite_order(&mut self, order: Order, id: BookId) -> Result<u64> {
+    fn rewrite_order(
+        &mut self,
+        write: &mut crate::storage::WriteCtx,
+        order: Order,
+        id: BookId,
+    ) -> Result<u64> {
         StorageCredits::new()
             .track_minted_credits(self.address, || {
-                self.orders[order.order_id()].write_in_book(order, id)
+                self.orders[order.order_id()].write_in_book(write, order, id)
             })
             .map(|(_, credits)| credits)
     }
@@ -142,26 +152,28 @@ impl StablecoinDEX {
     /// Updates an unlinked neighbor order-record and credits its maker for any minted credits.
     fn unlink_neighbor_and_credit_maker(
         &mut self,
+        write: &mut crate::storage::WriteCtx,
         order_id: u128,
-        update: impl FnOnce(&mut Self) -> Result<()>,
+        update: impl FnOnce(&mut crate::storage::WriteCtx, &mut Self) -> Result<()>,
     ) -> Result<()> {
         let (_, credits) =
-            StorageCredits::new().track_minted_credits(self.address, || update(self))?;
+            StorageCredits::new().track_minted_credits(self.address, || update(write, self))?;
         if credits == 0 {
             return Ok(());
         }
 
         let maker = self.orders[order_id].maker()?;
-        self.credit_dex_storage_slots(maker, credits)
+        self.credit_dex_storage_slots(write, maker, credits)
     }
 
     /// Deletes an order and tracks the maker's minted DEX TIP-1060 credits for deferred flush.
     fn delete_order_and_track_deltas(
         &mut self,
+        write: &mut crate::storage::WriteCtx,
         storage_credits: &mut StorageCreditDeltas,
         order: &Order,
     ) -> Result<()> {
-        let credits = self.delete_order(order)?;
+        let credits = self.delete_order(write, order)?;
         storage_credits.credit_slots(order.maker(), credits);
         Ok(())
     }
@@ -170,24 +182,30 @@ impl StablecoinDEX {
     ///
     /// Credits are scoped to the physical `Order` record. Shared book metadata writes performed by
     /// `commit_order_to_book` remain outside this budget and stay in preserve mode.
-    fn write_order_spending_dex_storage_credits(&mut self, order: Order, id: BookId) -> Result<()> {
+    fn write_order_spending_dex_storage_credits(
+        &mut self,
+        write: &mut crate::storage::WriteCtx,
+        order: Order,
+        id: BookId,
+    ) -> Result<()> {
         let user = order.maker();
         let user_credits = self.dex_storage_credits[user].read()?;
         if user_credits == 0 {
-            return self.orders[order.order_id()].write_in_book(order, id);
+            return self.orders[order.order_id()].write_in_book(write, order, id);
         }
 
         // Clear the user's bookkeeping slot before writing the order record. This makes the
         // TIP-1060 credit represented by that bookkeeping slot available to the direct budget.
-        self.dex_storage_credits[user].delete()?;
+        self.dex_storage_credits[user].delete(write)?;
 
         let mut storage_credits = StorageCredits::new();
-        let (_, delta) = storage_credits.with_budget(self.address, user_credits, || {
-            self.orders[order.order_id()].write_in_book(order, id)
-        })?;
+        let (_, delta) =
+            storage_credits.with_budget(write, self.address, user_credits, |write| {
+                self.orders[order.order_id()].write_in_book(write, order, id)
+            })?;
         let spent_credits = if delta < 0 { (-delta) as u64 } else { 0 };
 
-        self.credit_dex_storage_slots(user, user_credits.saturating_sub(spent_credits))?;
+        self.credit_dex_storage_slots(write, user, user_credits.saturating_sub(spent_credits))?;
 
         Ok(())
     }
@@ -203,9 +221,14 @@ impl StablecoinDEX {
     }
 
     /// Validates that a trading pair exists or creates the pair
-    fn validate_or_create_pair(&mut self, book: &Orderbook, token: Address) -> Result<()> {
+    fn validate_or_create_pair(
+        &mut self,
+        write: &mut crate::storage::WriteCtx,
+        book: &Orderbook,
+        token: Address,
+    ) -> Result<()> {
         if !book.is_initialized() {
-            self.create_pair(token)?;
+            self.create_pair(write, token)?;
         }
         Ok(())
     }
@@ -227,14 +250,27 @@ impl StablecoinDEX {
     }
 
     /// Set user's balance for a specific token
-    fn set_balance(&mut self, user: Address, token: Address, amount: u128) -> Result<()> {
-        self.balances[user][token].write(amount)
+    fn set_balance(
+        &mut self,
+        write: &mut crate::storage::WriteCtx,
+        user: Address,
+        token: Address,
+        amount: u128,
+    ) -> Result<()> {
+        self.balances[user][token].write(write, amount)
     }
 
     /// Add to user's balance
-    fn increment_balance(&mut self, user: Address, token: Address, amount: u128) -> Result<()> {
+    fn increment_balance(
+        &mut self,
+        write: &mut crate::storage::WriteCtx,
+        user: Address,
+        token: Address,
+        amount: u128,
+    ) -> Result<()> {
         let current = self.balance_of(user, token)?;
         self.set_balance(
+            write,
             user,
             token,
             current
@@ -244,9 +280,16 @@ impl StablecoinDEX {
     }
 
     /// Subtract from user's balance.
-    fn sub_balance(&mut self, user: Address, token: Address, amount: u128) -> Result<()> {
+    fn sub_balance(
+        &mut self,
+        write: &mut crate::storage::WriteCtx,
+        user: Address,
+        token: Address,
+        amount: u128,
+    ) -> Result<()> {
         let current = self.balance_of(user, token)?;
         self.set_balance(
+            write,
             user,
             token,
             current
@@ -258,26 +301,31 @@ impl StablecoinDEX {
     /// Emit the appropriate OrderFilled event
     fn emit_order_filled(
         &mut self,
+        write: &mut crate::storage::WriteCtx,
         order_id: u128,
         maker: Address,
         taker: Address,
         amount_filled: u128,
         partial_fill: bool,
     ) -> Result<()> {
-        self.emit_event(StablecoinDEXEvents::order_filled(
-            order_id,
-            maker,
-            taker,
-            amount_filled,
-            partial_fill,
-        ))?;
+        self.emit_event(
+            write,
+            StablecoinDEXEvents::order_filled(order_id, maker, taker, amount_filled, partial_fill),
+        )?;
 
         Ok(())
     }
 
     /// Transfer tokens, accounting for pathUSD
-    fn transfer(&mut self, token: Address, to: Address, amount: u128) -> Result<()> {
+    fn transfer(
+        &mut self,
+        write: &mut crate::storage::WriteCtx,
+        token: Address,
+        to: Address,
+        amount: u128,
+    ) -> Result<()> {
         TIP20Token::from_address(token)?.transfer(
+            write,
             self.address,
             ITIP20::transferCall {
                 to,
@@ -288,15 +336,23 @@ impl StablecoinDEX {
     }
 
     /// Transfer tokens from user, accounting for pathUSD
-    fn transfer_from(&mut self, token: Address, sender: Address, amount: u128) -> Result<()> {
+    fn transfer_from(
+        &mut self,
+        write: &mut crate::storage::WriteCtx,
+        token: Address,
+        sender: Address,
+        amount: u128,
+    ) -> Result<()> {
         if self.storage.spec().is_t5() {
             TIP20Token::from_address(token)?.system_transfer_from(
+                write,
                 self.address,
                 sender,
                 U256::from(amount),
             )?;
         } else {
             TIP20Token::from_address(token)?.transfer_from(
+                write,
                 self.address,
                 ITIP20::transferFromCall {
                     from: sender,
@@ -316,6 +372,7 @@ impl StablecoinDEX {
     /// redundant SLOAD.
     fn decrement_balance_or_transfer_from(
         &mut self,
+        write: &mut crate::storage::WriteCtx,
         sender: Address,
         token: Address,
         amount: u128,
@@ -332,14 +389,14 @@ impl StablecoinDEX {
             if check_pause && self.storage.spec().is_t4() {
                 tip20.check_not_paused()?;
             }
-            self.sub_balance(sender, token, amount)
+            self.sub_balance(write, sender, token, amount)
         } else {
             let remaining = amount
                 .checked_sub(user_balance)
                 .ok_or(TempoPrecompileError::under_overflow())?;
 
-            self.transfer_from(token, sender, remaining)?;
-            self.set_balance(sender, token, 0)
+            self.transfer_from(write, token, sender, remaining)?;
+            self.set_balance(write, sender, token, 0)
         }
     }
 
@@ -406,6 +463,7 @@ impl StablecoinDEX {
     /// - `InsufficientBalance` — sender balance lower than required input
     pub fn swap_exact_amount_in(
         &mut self,
+        write: &mut crate::storage::WriteCtx,
         sender: Address,
         token_in: Address,
         token_out: Address,
@@ -417,7 +475,7 @@ impl StablecoinDEX {
 
         // Deduct input tokens from sender (only once, at the start)
         // Pause already checked in validate_and_build_route
-        self.decrement_balance_or_transfer_from(sender, token_in, amount_in, false)?;
+        self.decrement_balance_or_transfer_from(write, sender, token_in, amount_in, false)?;
 
         // Execute swaps for each hop - intermediate balances are transitory
         let mut amount = amount_in;
@@ -425,6 +483,7 @@ impl StablecoinDEX {
         for (book_key, base_for_quote) in route {
             // Fill orders for this hop - no min check on intermediate hops
             amount = self.fill_orders_exact_in(
+                write,
                 &mut storage_credits,
                 book_key,
                 base_for_quote,
@@ -438,8 +497,8 @@ impl StablecoinDEX {
             return Err(StablecoinDEXError::insufficient_output().into());
         }
 
-        self.transfer(token_out, sender, amount)?;
-        storage_credits.flush(|user, slots| self.credit_dex_storage_slots(user, slots))?;
+        self.transfer(write, token_out, sender, amount)?;
+        storage_credits.flush(|user, slots| self.credit_dex_storage_slots(write, user, slots))?;
 
         Ok(amount)
     }
@@ -455,6 +514,7 @@ impl StablecoinDEX {
     /// - `InsufficientBalance` — sender balance lower than required input
     pub fn swap_exact_amount_out(
         &mut self,
+        write: &mut crate::storage::WriteCtx,
         sender: Address,
         token_in: Address,
         token_out: Address,
@@ -469,6 +529,7 @@ impl StablecoinDEX {
         let mut storage_credits = StorageCreditDeltas::new();
         for (book_key, base_for_quote) in route.iter().rev() {
             amount = self.fill_orders_exact_out(
+                write,
                 &mut storage_credits,
                 *book_key,
                 *base_for_quote,
@@ -483,11 +544,11 @@ impl StablecoinDEX {
 
         // Deduct input tokens ONCE at end
         // Pause already checked in validate_and_build_route
-        self.decrement_balance_or_transfer_from(sender, token_in, amount, false)?;
+        self.decrement_balance_or_transfer_from(write, sender, token_in, amount, false)?;
 
         // Transfer only final output ONCE at end
-        self.transfer(token_out, sender, amount_out)?;
-        storage_credits.flush(|user, slots| self.credit_dex_storage_slots(user, slots))?;
+        self.transfer(write, token_out, sender, amount_out)?;
+        storage_credits.flush(|user, slots| self.credit_dex_storage_slots(write, user, slots))?;
 
         Ok(amount)
     }
@@ -551,7 +612,11 @@ impl StablecoinDEX {
     }
 
     /// Persists the `book_keys` vector index for an existing orderbook.
-    pub fn set_book_index(&mut self, index: u32) -> Result<()> {
+    pub fn set_book_index(
+        &mut self,
+        write: &mut crate::storage::WriteCtx,
+        index: u32,
+    ) -> Result<()> {
         let book_key = self.book_key_for_index(index)?;
         if let Some(current_index) = self.book_key_index(book_key)? {
             if index == current_index {
@@ -562,7 +627,7 @@ impl StablecoinDEX {
 
         self.books[book_key]
             .book_id
-            .write(*BookId::from_index(index))
+            .write(write, *BookId::from_index(index))
     }
 
     /// Converts a relative tick to a scaled price. On T2+ validates [`TICK_SPACING`] alignment.
@@ -600,7 +665,11 @@ impl StablecoinDEX {
     /// - `InvalidBaseToken` — token address does not have a valid TIP-20 prefix
     /// - `InvalidCurrency` — both tokens must be USD-denominated (validated via [`TIP20Factory`]).
     /// - `PairAlreadyExists` — an orderbook for this pair is already initialized
-    pub fn create_pair(&mut self, base: Address) -> Result<B256> {
+    pub fn create_pair(
+        &mut self,
+        write: &mut crate::storage::WriteCtx,
+        base: Address,
+    ) -> Result<B256> {
         // Validate that base is a TIP20 token
         if !TIP20Factory::new().is_tip20(base)? {
             return Err(StablecoinDEXError::invalid_base_token().into());
@@ -621,11 +690,14 @@ impl StablecoinDEX {
         } else {
             Orderbook::new(base, quote)
         };
-        self.books[book_key].write(book)?;
-        self.book_keys.push(book_key)?;
+        self.books[book_key].write(write, book)?;
+        self.book_keys.push(write, book_key)?;
 
         // Emit PairCreated event
-        self.emit_event(StablecoinDEXEvents::pair_created(book_key, base, quote))?;
+        self.emit_event(
+            write,
+            StablecoinDEXEvents::pair_created(book_key, base, quote),
+        )?;
 
         Ok(book_key)
     }
@@ -646,6 +718,7 @@ impl StablecoinDEX {
     /// The assigned order ID
     pub fn place(
         &mut self,
+        write: &mut crate::storage::WriteCtx,
         sender: Address,
         token: Address,
         amount: u128,
@@ -658,7 +731,7 @@ impl StablecoinDEX {
         let book_key = compute_book_key(token, quote_token);
 
         let book = self.books[book_key].read()?;
-        self.validate_or_create_pair(&book, token)?;
+        self.validate_or_create_pair(write, &book, token)?;
 
         // Validate tick is within bounds
         if !(MIN_TICK..=MAX_TICK).contains(&tick) {
@@ -699,22 +772,25 @@ impl StablecoinDEX {
         }
 
         // Debit from user's balance or transfer from wallet
-        self.decrement_balance_or_transfer_from(sender, escrow_token, escrow_amount, true)?;
+        self.decrement_balance_or_transfer_from(write, sender, escrow_token, escrow_amount, true)?;
 
         // Create the order
         let order_id = self.next_order_id()?;
-        self.increment_next_order_id()?;
+        self.increment_next_order_id(write)?;
         let order = if is_bid {
             Order::new_bid(order_id, sender, book_key, amount, tick)
         } else {
             Order::new_ask(order_id, sender, book_key, amount, tick)
         };
-        self.commit_order_to_book(order, true)?;
+        self.commit_order_to_book(write, order, true)?;
 
         // Emit OrderPlaced event
-        self.emit_event(StablecoinDEXEvents::order_placed(
-            order_id, sender, token, amount, is_bid, tick, false, 0,
-        ))?;
+        self.emit_event(
+            write,
+            StablecoinDEXEvents::order_placed(
+                order_id, sender, token, amount, is_bid, tick, false, 0,
+            ),
+        )?;
 
         Ok(order_id)
     }
@@ -723,7 +799,12 @@ impl StablecoinDEX {
     ///
     /// On T7+, `charge_credits` spends maker credits. Keep it `false` for taker-triggered flips
     /// so takers cannot consume the maker's credit balance.
-    fn commit_order_to_book(&mut self, mut order: Order, charge_credits: bool) -> Result<()> {
+    fn commit_order_to_book(
+        &mut self,
+        write: &mut crate::storage::WriteCtx,
+        mut order: Order,
+        charge_credits: bool,
+    ) -> Result<()> {
         let orderbook = self.books[order.book_key()].read()?;
         let book_id = orderbook.id();
         let mut level = self.books[order.book_key()]
@@ -735,27 +816,29 @@ impl StablecoinDEX {
             level.links.head = order.order_id();
             level.links.tail = order.order_id();
 
-            self.books[order.book_key()].set_tick_bit(order.tick(), order.is_bid())?;
+            self.books[order.book_key()].set_tick_bit(write, order.tick(), order.is_bid())?;
 
             if order.is_bid() {
                 if order.tick() > orderbook.best_bid_tick {
                     self.books[order.book_key()]
                         .best_bid_tick
-                        .write(order.tick())?;
+                        .write(write, order.tick())?;
                 }
             } else if order.tick() < orderbook.best_ask_tick {
                 self.books[order.book_key()]
                     .best_ask_tick
-                    .write(order.tick())?;
+                    .write(write, order.tick())?;
             }
         } else {
             // Update previous tail's next pointer.
             if self.storage.spec().is_t8() {
-                self.orders[prev_tail].next()?.write(order.order_id())?;
+                self.orders[prev_tail]
+                    .next()?
+                    .write(write, order.order_id())?;
             } else {
                 let mut prev_order = self.orders[prev_tail].read_in_book(order.book_key())?;
                 prev_order.next = order.order_id();
-                self.orders[prev_tail].write_in_book(prev_order, book_id)?;
+                self.orders[prev_tail].write_in_book(write, prev_order, book_id)?;
             }
 
             // Set current order's prev pointer
@@ -772,20 +855,20 @@ impl StablecoinDEX {
 
         self.books[order.book_key()]
             .tick_level_handler_mut(order.tick(), order.is_bid())
-            .write(level)?;
+            .write(write, level)?;
 
         match (charge_credits, self.storage.spec()) {
             // User placements: T7+ can spend maker credits for new reusable order storage.
             (true, spec) if spec.is_t7() => {
-                self.write_order_spending_dex_storage_credits(order, book_id)
+                self.write_order_spending_dex_storage_credits(write, order, book_id)
             }
             // T8+ flip rewrites credit deleted order slots without spending maker credits.
             (false, spec) if spec.is_t8() => {
-                let (maker, credits) = (order.maker(), self.rewrite_order(order, book_id)?);
-                self.credit_dex_storage_slots(maker, credits)
+                let (maker, credits) = (order.maker(), self.rewrite_order(write, order, book_id)?);
+                self.credit_dex_storage_slots(write, maker, credits)
             }
             // Pre-T7 has no DEX credits; T7 non-charged writes never change credits behavior.
-            _ => self.orders[order.order_id()].write_in_book(order, book_id),
+            _ => self.orders[order.order_id()].write_in_book(write, order, book_id),
         }
     }
 
@@ -806,6 +889,7 @@ impl StablecoinDEX {
     #[allow(clippy::too_many_arguments)]
     pub fn place_flip(
         &mut self,
+        write: &mut crate::storage::WriteCtx,
         sender: Address,
         token: Address,
         amount: u128,
@@ -825,7 +909,7 @@ impl StablecoinDEX {
 
         // Check book existence
         let book = self.books[book_key].read()?;
-        self.validate_or_create_pair(&book, token)?;
+        self.validate_or_create_pair(write, &book, token)?;
 
         // Validate tick and flip_tick are within bounds
         if !(MIN_TICK..=MAX_TICK).contains(&tick) {
@@ -900,9 +984,15 @@ impl StablecoinDEX {
             if user_balance < escrow_amount {
                 return Err(StablecoinDEXError::insufficient_balance().into());
             }
-            self.sub_balance(sender, escrow_token, escrow_amount)?;
+            self.sub_balance(write, sender, escrow_token, escrow_amount)?;
         } else {
-            self.decrement_balance_or_transfer_from(sender, escrow_token, escrow_amount, true)?;
+            self.decrement_balance_or_transfer_from(
+                write,
+                sender,
+                escrow_token,
+                escrow_amount,
+                true,
+            )?;
         }
 
         // Create the flip order
@@ -922,16 +1012,19 @@ impl StablecoinDEX {
         // Commit the flip order
         if self.storage.spec().is_t1c() {
             // PERF: skip 1 redundant SLOAD
-            self.next_order_id.write(order_id + 1)?;
+            self.next_order_id.write(write, order_id + 1)?;
         } else {
-            self.increment_next_order_id()?;
+            self.increment_next_order_id(write)?;
         }
-        self.commit_order_to_book(order, true)?;
+        self.commit_order_to_book(write, order, true)?;
 
         // Emit OrderPlaced event for flip order
-        self.emit_event(StablecoinDEXEvents::order_placed(
-            order_id, sender, token, amount, is_bid, tick, true, flip_tick,
-        ))?;
+        self.emit_event(
+            write,
+            StablecoinDEXEvents::order_placed(
+                order_id, sender, token, amount, is_bid, tick, true, flip_tick,
+            ),
+        )?;
 
         // CHECKPOINT END: commit the state-changing batch
         batch.commit();
@@ -941,6 +1034,7 @@ impl StablecoinDEX {
 
     fn flip_in_place(
         &mut self,
+        write: &mut crate::storage::WriteCtx,
         order: &Order,
         base_token: Address,
         quote_token: Address,
@@ -980,16 +1074,17 @@ impl StablecoinDEX {
         non_escrow_tip20.check_not_paused()?;
         non_escrow_tip20.ensure_transfer_authorized(self.address, flipped.maker)?;
 
-        self.sub_balance(flipped.maker, escrow_token, escrow_amount)?;
+        self.sub_balance(write, flipped.maker, escrow_token, escrow_amount)?;
 
         debug_assert_eq!(order.order_id(), flipped.order_id());
         debug_assert_eq!(order.book_key(), flipped.book_key());
         // In-place flips are taker-triggered, so don't spend maker credits.
-        self.commit_order_to_book(flipped, false)?;
+        self.commit_order_to_book(write, flipped, false)?;
 
         // Emit OrderFlipped event for flip order
-        self.emit_event(StablecoinDEXEvents::OrderFlipped(
-            IStablecoinDEX::OrderFlipped {
+        self.emit_event(
+            write,
+            StablecoinDEXEvents::OrderFlipped(IStablecoinDEX::OrderFlipped {
                 orderId: flipped.order_id,
                 maker: flipped.maker,
                 token: base_token,
@@ -997,8 +1092,8 @@ impl StablecoinDEX {
                 isBid: flipped.is_bid,
                 tick: flipped.tick,
                 flipTick: flipped.flip_tick,
-            },
-        ))?;
+            }),
+        )?;
 
         // CHECKPOINT END: commit the state-changing batch
         batch.commit();
@@ -1009,6 +1104,7 @@ impl StablecoinDEX {
     /// Partially fill an order with the specified amount. Fill amount is denominated in base token.
     fn partial_fill_order(
         &mut self,
+        write: &mut crate::storage::WriteCtx,
         order: &mut Order,
         level: &mut TickLevel,
         fill_amount: u128,
@@ -1020,17 +1116,17 @@ impl StablecoinDEX {
         let new_remaining = order.remaining() - fill_amount;
         self.orders[order.order_id()]
             .remaining()?
-            .write(new_remaining)?;
+            .write(write, new_remaining)?;
         order.remaining = new_remaining;
 
         if order.is_bid() {
             // Bid order maker receives base tokens (exact amount).
-            self.increment_balance(order.maker(), orderbook.base, fill_amount)?;
+            self.increment_balance(write, order.maker(), orderbook.base, fill_amount)?;
         } else {
             // Ask order maker receives quote tokens, rounded up to favor the maker.
             let quote_amount = base_to_quote(fill_amount, order.tick(), RoundingDirection::Up)
                 .ok_or(TempoPrecompileError::under_overflow())?;
-            self.increment_balance(order.maker(), orderbook.quote, quote_amount)?;
+            self.increment_balance(write, order.maker(), orderbook.quote, quote_amount)?;
         }
 
         // Update price level total liquidity
@@ -1042,11 +1138,18 @@ impl StablecoinDEX {
 
             self.books[order.book_key()]
                 .tick_level_handler_mut(order.tick(), order.is_bid())
-                .write(*level)?;
+                .write(write, *level)?;
         }
 
         // Emit OrderFilled event for partial fill
-        self.emit_order_filled(order.order_id(), order.maker(), taker, fill_amount, true)?;
+        self.emit_order_filled(
+            write,
+            order.order_id(),
+            order.maker(),
+            taker,
+            fill_amount,
+            true,
+        )?;
 
         Ok(())
     }
@@ -1058,6 +1161,7 @@ impl StablecoinDEX {
     /// [`cancel_stale_order`](Self::cancel_stale_order) can be used to remove orders.
     fn fill_order(
         &mut self,
+        write: &mut crate::storage::WriteCtx,
         storage_credits: &mut StorageCreditDeltas,
         book_key: B256,
         order: &mut Order,
@@ -1072,15 +1176,22 @@ impl StablecoinDEX {
         // Maker settlement: bid maker receives base (exact), ask maker receives quote
         // rounded UP to favor the maker.
         if order.is_bid() {
-            self.increment_balance(order.maker(), orderbook.base, fill_amount)?;
+            self.increment_balance(write, order.maker(), orderbook.base, fill_amount)?;
         } else {
             let quote_amount = base_to_quote(fill_amount, order.tick(), RoundingDirection::Up)
                 .ok_or(TempoPrecompileError::under_overflow())?;
-            self.increment_balance(order.maker(), orderbook.quote, quote_amount)?;
+            self.increment_balance(write, order.maker(), orderbook.quote, quote_amount)?;
         }
 
         // Emit OrderFilled event for complete fill
-        self.emit_order_filled(order.order_id(), order.maker(), taker, fill_amount, false)?;
+        self.emit_order_filled(
+            write,
+            order.order_id(),
+            order.maker(),
+            taker,
+            fill_amount,
+            false,
+        )?;
 
         if order.is_flip() {
             // Create a new flip order with flipped side and swapped ticks.
@@ -1089,9 +1200,10 @@ impl StablecoinDEX {
             // Uses internal balance only, does not transfer from wallet.
             let res = if self.storage.spec().is_t5() {
                 // Post T5: flip the order in place, without creating a new one.
-                self.flip_in_place(order, orderbook.base, orderbook.quote)
+                self.flip_in_place(write, order, orderbook.base, orderbook.quote)
             } else {
                 self.place_flip(
+                    write,
                     order.maker(),
                     orderbook.base,
                     order.amount(),
@@ -1111,11 +1223,14 @@ impl StablecoinDEX {
                 }
 
                 if self.storage.spec().is_t5() {
-                    self.emit_event(StablecoinDEXEvents::flip_failed(
-                        order.order_id(),
-                        order.maker(),
-                        err.selector(),
-                    ))?;
+                    self.emit_event(
+                        write,
+                        StablecoinDEXEvents::flip_failed(
+                            order.order_id(),
+                            order.maker(),
+                            err.selector(),
+                        ),
+                    )?;
                 }
             }
 
@@ -1125,19 +1240,19 @@ impl StablecoinDEX {
             // record must be deleted to avoid leaving an orphan in storage.
             let keep_record = self.storage.spec().is_t5() && res.is_ok();
             if !keep_record {
-                self.delete_order_and_track_deltas(storage_credits, order)?;
+                self.delete_order_and_track_deltas(write, storage_credits, order)?;
             }
         } else {
             // Non-flip filled order: always delete.
-            self.delete_order_and_track_deltas(storage_credits, order)?;
+            self.delete_order_and_track_deltas(write, storage_credits, order)?;
         }
 
         // Advance tick if liquidity is exhausted
         let next_tick_info = if order.next() == 0 {
             self.books[book_key]
                 .tick_level_handler_mut(order.tick(), order.is_bid())
-                .delete()?;
-            self.books[book_key].delete_tick_bit(order.tick(), order.is_bid())?;
+                .delete(write)?;
+            self.books[book_key].delete_tick_bit(write, order.tick(), order.is_bid())?;
 
             let (tick, has_liquidity) =
                 self.books[book_key].next_initialized_tick(order.tick(), order.is_bid())?;
@@ -1145,10 +1260,10 @@ impl StablecoinDEX {
             // Update best_tick when tick is exhausted
             if order.is_bid() {
                 let new_best = if has_liquidity { tick } else { i16::MIN };
-                self.books[book_key].best_bid_tick.write(new_best)?;
+                self.books[book_key].best_bid_tick.write(write, new_best)?;
             } else {
                 let new_best = if has_liquidity { tick } else { i16::MAX };
-                self.books[book_key].best_ask_tick.write(new_best)?;
+                self.books[book_key].best_ask_tick.write(write, new_best)?;
             }
 
             if !has_liquidity {
@@ -1166,7 +1281,7 @@ impl StablecoinDEX {
             // If there are subsequent orders at tick, advance to next order
             level.links.head = order.next();
             let (_, credits) = StorageCredits::new().track_minted_credits(self.address, || {
-                self.orders[order.next()].prev()?.delete()
+                self.orders[order.next()].prev()?.delete(write)
             })?;
 
             if !self.storage.spec().is_t12() {
@@ -1178,7 +1293,7 @@ impl StablecoinDEX {
 
             self.books[book_key]
                 .tick_level_handler_mut(order.tick(), order.is_bid())
-                .write(level)?;
+                .write(write, level)?;
 
             let new_order = self.orders[order.next()].read_in_book(book_key)?;
             storage_credits.credit_slots(new_order.maker(), credits);
@@ -1192,6 +1307,7 @@ impl StablecoinDEX {
     /// Fill orders for exact output amount
     fn fill_orders_exact_out(
         &mut self,
+        write: &mut crate::storage::WriteCtx,
         storage_credits: &mut StorageCreditDeltas,
         book_key: B256,
         is_bid: bool,
@@ -1203,13 +1319,22 @@ impl StablecoinDEX {
 
         // Returns the total input spent to receive `amount_out`.
         walk_resting_orders(order, amount_out, is_bid, step_exact_out, |order, fill| {
-            self.settle_fill(storage_credits, book_key, taker, &mut level, order, fill)
+            self.settle_fill(
+                write,
+                storage_credits,
+                book_key,
+                taker,
+                &mut level,
+                order,
+                fill,
+            )
         })
     }
 
     /// Fill orders with exact amount in
     fn fill_orders_exact_in(
         &mut self,
+        write: &mut crate::storage::WriteCtx,
         storage_credits: &mut StorageCreditDeltas,
         book_key: B256,
         is_bid: bool,
@@ -1221,7 +1346,15 @@ impl StablecoinDEX {
 
         // Returns the total output received for spending `amount_in`.
         walk_resting_orders(order, amount_in, is_bid, step_exact_in, |order, fill| {
-            self.settle_fill(storage_credits, book_key, taker, &mut level, order, fill)
+            self.settle_fill(
+                write,
+                storage_credits,
+                book_key,
+                taker,
+                &mut level,
+                order,
+                fill,
+            )
         })
     }
 
@@ -1230,6 +1363,7 @@ impl StablecoinDEX {
     /// exact-in and exact-out swap walks so their settlement cannot diverge.
     fn settle_fill(
         &mut self,
+        write: &mut crate::storage::WriteCtx,
         storage_credits: &mut StorageCreditDeltas,
         book_key: B256,
         taker: Address,
@@ -1239,11 +1373,12 @@ impl StablecoinDEX {
     ) -> Result<Option<Order>> {
         match fill {
             Fill::Partial(fill_amount) => {
-                self.partial_fill_order(&mut order, level, fill_amount, taker)?;
+                self.partial_fill_order(write, &mut order, level, fill_amount, taker)?;
                 Ok(None)
             }
             Fill::Full => {
-                let next = self.fill_order(storage_credits, book_key, &mut order, *level, taker)?;
+                let next =
+                    self.fill_order(write, storage_credits, book_key, &mut order, *level, taker)?;
                 match next {
                     Some((new_level, new_order)) => {
                         *level = new_level;
@@ -1313,7 +1448,12 @@ impl StablecoinDEX {
     /// # Errors
     /// - `OrderDoesNotExist` — order ID not found or already fully filled
     /// - `Unauthorized` — only the order maker can cancel their order
-    pub fn cancel(&mut self, sender: Address, order_id: u128) -> Result<()> {
+    pub fn cancel(
+        &mut self,
+        write: &mut crate::storage::WriteCtx,
+        sender: Address,
+        order_id: u128,
+    ) -> Result<()> {
         let order = self.orders[order_id].read()?;
 
         if order.maker().is_zero() {
@@ -1328,27 +1468,31 @@ impl StablecoinDEX {
             return Err(StablecoinDEXError::order_does_not_exist().into());
         }
 
-        self.cancel_active_order(order)
+        self.cancel_active_order(write, order)
     }
 
     /// Cancel an active order (already in the orderbook)
-    fn cancel_active_order(&mut self, order: Order) -> Result<()> {
+    fn cancel_active_order(
+        &mut self,
+        write: &mut crate::storage::WriteCtx,
+        order: Order,
+    ) -> Result<()> {
         let mut level = self.books[order.book_key()]
             .tick_level_handler(order.tick(), order.is_bid())
             .read()?;
 
         // Update linked list
         if order.prev() != 0 {
-            self.unlink_neighbor_and_credit_maker(order.prev(), |s| {
-                s.orders[order.prev()].next()?.write(order.next())
+            self.unlink_neighbor_and_credit_maker(write, order.prev(), |write, s| {
+                s.orders[order.prev()].next()?.write(write, order.next())
             })?;
         } else {
             level.links.head = order.next();
         }
 
         if order.next() != 0 {
-            self.unlink_neighbor_and_credit_maker(order.next(), |s| {
-                s.orders[order.next()].prev()?.write(order.prev())
+            self.unlink_neighbor_and_credit_maker(write, order.next(), |write, s| {
+                s.orders[order.next()].prev()?.write(write, order.prev())
             })?;
         } else {
             level.links.tail = order.prev();
@@ -1368,7 +1512,7 @@ impl StablecoinDEX {
 
         // If this was the last order at this tick, clear the bitmap bit
         if level.links.head == 0 {
-            self.books[order.book_key()].delete_tick_bit(order.tick(), order.is_bid())?;
+            self.books[order.book_key()].delete_tick_bit(write, order.tick(), order.is_bid())?;
 
             // If this was the best tick, update it
             let orderbook = self.books[order.book_key()].read()?;
@@ -1384,10 +1528,14 @@ impl StablecoinDEX {
 
                 if order.is_bid() {
                     let new_best = if has_liquidity { next_tick } else { i16::MIN };
-                    self.books[order.book_key()].best_bid_tick.write(new_best)?;
+                    self.books[order.book_key()]
+                        .best_bid_tick
+                        .write(write, new_best)?;
                 } else {
                     let new_best = if has_liquidity { next_tick } else { i16::MAX };
-                    self.books[order.book_key()].best_ask_tick.write(new_best)?;
+                    self.books[order.book_key()]
+                        .best_ask_tick
+                        .write(write, new_best)?;
                 }
             }
         }
@@ -1395,7 +1543,7 @@ impl StablecoinDEX {
         if has_level_changed {
             self.books[order.book_key()]
                 .tick_level_handler_mut(order.tick(), order.is_bid())
-                .write(level)?;
+                .write(write, level)?;
         }
 
         // Refund tokens to maker - must match the escrow amount
@@ -1407,18 +1555,21 @@ impl StablecoinDEX {
                 base_to_quote(order.remaining(), order.tick(), RoundingDirection::Up)
                     .ok_or(TempoPrecompileError::under_overflow())?;
 
-            self.increment_balance(order.maker(), orderbook.quote, quote_amount)?;
+            self.increment_balance(write, order.maker(), orderbook.quote, quote_amount)?;
         } else {
             // Ask orders are in base token, refund base amount (exact)
-            self.increment_balance(order.maker(), orderbook.base, order.remaining())?;
+            self.increment_balance(write, order.maker(), orderbook.base, order.remaining())?;
         }
 
         // Clear the order from storage
-        let credits = self.delete_order(&order)?;
-        self.credit_dex_storage_slots(order.maker(), credits)?;
+        let credits = self.delete_order(write, &order)?;
+        self.credit_dex_storage_slots(write, order.maker(), credits)?;
 
         // Emit OrderCancelled event
-        self.emit_event(StablecoinDEXEvents::order_cancelled(order.order_id()))
+        self.emit_event(
+            write,
+            StablecoinDEXEvents::order_cancelled(order.order_id()),
+        )
     }
 
     /// Cancels an order whose maker is blocked by [`TIP403Registry`] policy, allowing anyone to
@@ -1432,7 +1583,11 @@ impl StablecoinDEX {
     /// # Errors
     /// - `OrderDoesNotExist` — order ID not found or already fully filled
     /// - `OrderNotStale` — order maker is still authorized by TIP-403 policy
-    pub fn cancel_stale_order(&mut self, order_id: u128) -> Result<()> {
+    pub fn cancel_stale_order(
+        &mut self,
+        write: &mut crate::storage::WriteCtx,
+        order_id: u128,
+    ) -> Result<()> {
         let order = self.orders[order_id].read()?;
 
         if order.maker().is_zero() {
@@ -1442,7 +1597,7 @@ impl StablecoinDEX {
         if self.is_maker_authorized(&order)? {
             Err(StablecoinDEXError::order_not_stale().into())
         } else {
-            self.cancel_active_order(order)
+            self.cancel_active_order(write, order)
         }
     }
 
@@ -1475,13 +1630,19 @@ impl StablecoinDEX {
     ///
     /// # Errors
     /// - `InsufficientBalance` — DEX balance lower than withdrawal amount
-    pub fn withdraw(&mut self, user: Address, token: Address, amount: u128) -> Result<()> {
+    pub fn withdraw(
+        &mut self,
+        write: &mut crate::storage::WriteCtx,
+        user: Address,
+        token: Address,
+        amount: u128,
+    ) -> Result<()> {
         let current_balance = self.balance_of(user, token)?;
         if current_balance < amount {
             return Err(StablecoinDEXError::insufficient_balance().into());
         }
-        self.sub_balance(user, token, amount)?;
-        self.transfer(token, user, amount)?;
+        self.sub_balance(write, user, token, amount)?;
+        self.transfer(write, token, user, amount)?;
 
         Ok(())
     }
@@ -1910,19 +2071,19 @@ mod tests {
         let mut storage = HashMapStorageProvider::new_with_spec(1, TempoHardfork::T8);
         StorageCtx::enter(&mut storage, || {
             let mut exchange = StablecoinDEX::new();
-            exchange.initialize()?;
+            exchange.initialize(&mut crate::storage::StorageCtx::test_writable())?;
 
             let admin = Address::random();
             let user = Address::random();
             let (base, quote) = setup_test_tokens(admin, user, exchange.address, 0)?;
             let book_key = compute_book_key(base, quote);
 
-            exchange.create_pair(base)?;
+            exchange.create_pair(&mut crate::storage::StorageCtx::test_writable(), base)?;
 
             assert_eq!(exchange.book_key_index(book_key)?, Some(0));
             assert_eq!(exchange.book_key_for_index(0)?, book_key);
 
-            exchange.set_book_index(0)?;
+            exchange.set_book_index(&mut crate::storage::StorageCtx::test_writable(), 0)?;
             assert_eq!(exchange.book_key_index(book_key)?, Some(0));
 
             Ok(())
@@ -1939,11 +2100,26 @@ mod tests {
 
         let (base, quote, book_key, first_order) = StorageCtx::enter(&mut storage, || {
             let mut exchange = StablecoinDEX::new();
-            exchange.initialize()?;
+            exchange.initialize(&mut crate::storage::StorageCtx::test_writable())?;
             let (base, quote) = setup_test_tokens(admin, maker, exchange.address, amount * 4)?;
-            let book_key = exchange.create_pair(base)?;
-            let first_order = exchange.place(maker, base, amount, true, tick)?;
-            exchange.place(maker, base, amount, true, tick)?;
+            let book_key =
+                exchange.create_pair(&mut crate::storage::StorageCtx::test_writable(), base)?;
+            let first_order = exchange.place(
+                &mut crate::storage::StorageCtx::test_writable(),
+                maker,
+                base,
+                amount,
+                true,
+                tick,
+            )?;
+            exchange.place(
+                &mut crate::storage::StorageCtx::test_writable(),
+                maker,
+                base,
+                amount,
+                true,
+                tick,
+            )?;
 
             let stored = exchange.books[book_key]
                 .tick_level_handler(tick, true)
@@ -1968,7 +2144,11 @@ mod tests {
                 "T12 must derive the same liquidity at the fork boundary"
             );
 
-            exchange.cancel(maker, first_order)?;
+            exchange.cancel(
+                &mut crate::storage::StorageCtx::test_writable(),
+                maker,
+                first_order,
+            )?;
 
             let stored = Handler::<TickLevel>::read(
                 exchange.books[book_key].tick_level_handler(tick, true),
@@ -1984,7 +2164,14 @@ mod tests {
                 "T12 must derive liquidity from the remaining order"
             );
 
-            exchange.place(maker, base, amount * 2, true, tick)?;
+            exchange.place(
+                &mut crate::storage::StorageCtx::test_writable(),
+                maker,
+                base,
+                amount * 2,
+                true,
+                tick,
+            )?;
             let stored = Handler::<TickLevel>::read(
                 exchange.books[book_key].tick_level_handler(tick, true),
             )?;
@@ -1998,7 +2185,14 @@ mod tests {
                 amount * 3
             );
 
-            exchange.swap_exact_amount_in(maker, base, quote, amount * 3, 0)?;
+            exchange.swap_exact_amount_in(
+                &mut crate::storage::StorageCtx::test_writable(),
+                maker,
+                base,
+                quote,
+                amount * 3,
+                0,
+            )?;
             let stored = Handler::<TickLevel>::read(
                 exchange.books[book_key].tick_level_handler(tick, true),
             )?;
@@ -2021,6 +2215,7 @@ mod tests {
             let mut quote_token = TIP20Token::from_address(quote)?;
             for maker in [maker_1, maker_2] {
                 quote_token.mint(
+                    &mut crate::storage::StorageCtx::test_writable(),
                     admin,
                     ITIP20::mintCall {
                         to: maker,
@@ -2028,6 +2223,7 @@ mod tests {
                     },
                 )?;
                 quote_token.approve(
+                    &mut crate::storage::StorageCtx::test_writable(),
                     maker,
                     ITIP20::approveCall {
                         spender: exchange.address,
@@ -2035,8 +2231,22 @@ mod tests {
                     },
                 )?;
             }
-            let head = exchange.place(maker_1, base, overflow_amount, true, MIN_TICK)?;
-            let tail = exchange.place(maker_2, base, overflow_amount, true, MIN_TICK)?;
+            let head = exchange.place(
+                &mut crate::storage::StorageCtx::test_writable(),
+                maker_1,
+                base,
+                overflow_amount,
+                true,
+                MIN_TICK,
+            )?;
+            let tail = exchange.place(
+                &mut crate::storage::StorageCtx::test_writable(),
+                maker_2,
+                base,
+                overflow_amount,
+                true,
+                MIN_TICK,
+            )?;
 
             let links_before = exchange.books[book_key]
                 .tick_level_handler(MIN_TICK, true)
@@ -2065,10 +2275,12 @@ mod tests {
         let mut storage = HashMapStorageProvider::new_with_spec(1, TempoHardfork::T8);
         StorageCtx::enter(&mut storage, || {
             let mut exchange = StablecoinDEX::new();
-            exchange.initialize()?;
+            exchange.initialize(&mut crate::storage::StorageCtx::test_writable())?;
 
             let book_key = B256::random();
-            exchange.book_keys.push(book_key)?;
+            exchange
+                .book_keys
+                .push(&mut crate::storage::StorageCtx::test_writable(), book_key)?;
 
             assert!(matches!(
                 exchange.book_key_index(book_key),
@@ -2077,7 +2289,7 @@ mod tests {
                 ))
             ));
             assert!(matches!(
-                exchange.set_book_index(0),
+                exchange.set_book_index(&mut crate::storage::StorageCtx::test_writable(), 0),
                 Err(TempoPrecompileError::StablecoinDEX(
                     StablecoinDEXError::PairDoesNotExist(_)
                 ))
@@ -2179,7 +2391,7 @@ mod tests {
         let mut storage = HashMapStorageProvider::new(1);
         StorageCtx::enter(&mut storage, || {
             let mut exchange = StablecoinDEX::new();
-            exchange.initialize()?;
+            exchange.initialize(&mut crate::storage::StorageCtx::test_writable())?;
 
             let alice = Address::random();
             let bob = Address::random();
@@ -2214,14 +2426,28 @@ mod tests {
                 .with_approval(bob, exchange.address, U256::MAX)
                 .apply()?;
 
-            exchange.create_pair(base_token)?;
+            exchange.create_pair(&mut crate::storage::StorageCtx::test_writable(), base_token)?;
 
-            exchange.place(alice, base_token, base_amount, false, tick)?;
+            exchange.place(
+                &mut crate::storage::StorageCtx::test_writable(),
+                alice,
+                base_token,
+                base_amount,
+                false,
+                tick,
+            )?;
 
             let alice_quote_before = exchange.balance_of(alice, quote_token)?;
             assert_eq!(alice_quote_before, 0);
 
-            exchange.swap_exact_amount_in(bob, quote_token, base_token, expected_quote_ceil, 0)?;
+            exchange.swap_exact_amount_in(
+                &mut crate::storage::StorageCtx::test_writable(),
+                bob,
+                quote_token,
+                base_token,
+                expected_quote_ceil,
+                0,
+            )?;
 
             let alice_quote_after = exchange.balance_of(alice, quote_token)?;
 
@@ -2245,7 +2471,7 @@ mod tests {
         let mut storage = HashMapStorageProvider::new(1);
         StorageCtx::enter(&mut storage, || {
             let mut exchange = StablecoinDEX::new();
-            exchange.initialize()?;
+            exchange.initialize(&mut crate::storage::StorageCtx::test_writable())?;
 
             let alice = Address::random();
             let admin = Address::random();
@@ -2269,9 +2495,16 @@ mod tests {
                 .with_approval(alice, exchange.address, U256::MAX)
                 .apply()?;
 
-            exchange.create_pair(base_token)?;
+            exchange.create_pair(&mut crate::storage::StorageCtx::test_writable(), base_token)?;
 
-            let order_id = exchange.place(alice, base_token, base_amount, true, tick)?;
+            let order_id = exchange.place(
+                &mut crate::storage::StorageCtx::test_writable(),
+                alice,
+                base_token,
+                base_amount,
+                true,
+                tick,
+            )?;
 
             // Verify escrow was taken
             let alice_balance_after_place = exchange.balance_of(alice, quote_token)?;
@@ -2280,7 +2513,11 @@ mod tests {
                 "All quote tokens should be escrowed"
             );
 
-            exchange.cancel(alice, order_id)?;
+            exchange.cancel(
+                &mut crate::storage::StorageCtx::test_writable(),
+                alice,
+                order_id,
+            )?;
 
             let alice_refund = exchange.balance_of(alice, quote_token)?;
 
@@ -2300,7 +2537,7 @@ mod tests {
         let mut storage = HashMapStorageProvider::new_with_spec(1, TempoHardfork::T7);
         StorageCtx::enter(&mut storage, || {
             let mut exchange = StablecoinDEX::new();
-            exchange.initialize()?;
+            exchange.initialize(&mut crate::storage::StorageCtx::test_writable())?;
 
             let alice = Address::random();
             let admin = Address::random();
@@ -2309,17 +2546,35 @@ mod tests {
 
             let (base_token, _quote_token) =
                 setup_test_tokens(admin, alice, exchange.address, amount)?;
-            exchange.create_pair(base_token)?;
+            exchange.create_pair(&mut crate::storage::StorageCtx::test_writable(), base_token)?;
 
-            let order_id = exchange.place(alice, base_token, amount, true, tick)?;
+            let order_id = exchange.place(
+                &mut crate::storage::StorageCtx::test_writable(),
+                alice,
+                base_token,
+                amount,
+                true,
+                tick,
+            )?;
             assert_eq!(exchange.storage_credits(alice)?, 0);
 
-            exchange.cancel(alice, order_id)?;
+            exchange.cancel(
+                &mut crate::storage::StorageCtx::test_writable(),
+                alice,
+                order_id,
+            )?;
             let alice_credits = exchange.storage_credits(alice)?;
             let alice_order_slots = <Order as crate::storage::StorableType>::SLOTS as u64;
             assert!(alice_credits > 0 && alice_credits <= alice_order_slots);
 
-            exchange.place(alice, base_token, amount, true, tick)?;
+            exchange.place(
+                &mut crate::storage::StorageCtx::test_writable(),
+                alice,
+                base_token,
+                amount,
+                true,
+                tick,
+            )?;
             assert_eq!(exchange.storage_credits(alice)?, 0);
 
             Ok(())
@@ -2331,7 +2586,7 @@ mod tests {
         let mut storage = HashMapStorageProvider::new_with_spec(1, TempoHardfork::T7);
         StorageCtx::enter(&mut storage, || {
             let mut exchange = StablecoinDEX::new();
-            exchange.initialize()?;
+            exchange.initialize(&mut crate::storage::StorageCtx::test_writable())?;
 
             let alice = Address::random();
             let bob = Address::random();
@@ -2352,15 +2607,33 @@ mod tests {
                 .with_approval(bob, exchange.address, U256::MAX)
                 .apply()?;
 
-            exchange.create_pair(base_token)?;
+            exchange.create_pair(&mut crate::storage::StorageCtx::test_writable(), base_token)?;
 
-            let alice_order_id = exchange.place(alice, base_token, amount, true, tick)?;
-            let bob_order_id = exchange.place(bob, base_token, amount, true, tick)?;
+            let alice_order_id = exchange.place(
+                &mut crate::storage::StorageCtx::test_writable(),
+                alice,
+                base_token,
+                amount,
+                true,
+                tick,
+            )?;
+            let bob_order_id = exchange.place(
+                &mut crate::storage::StorageCtx::test_writable(),
+                bob,
+                base_token,
+                amount,
+                true,
+                tick,
+            )?;
 
             let alice_linked_order = exchange.orders[alice_order_id].read()?;
             assert_eq!(alice_linked_order.next(), bob_order_id);
 
-            exchange.cancel(alice, alice_order_id)?;
+            exchange.cancel(
+                &mut crate::storage::StorageCtx::test_writable(),
+                alice,
+                alice_order_id,
+            )?;
 
             let alice_credits = exchange.storage_credits(alice)?;
             let alice_order_slots = <Order as crate::storage::StorableType>::SLOTS as u64;
@@ -2376,7 +2649,7 @@ mod tests {
         let mut storage = HashMapStorageProvider::new_with_spec(1, TempoHardfork::T7);
         StorageCtx::enter(&mut storage, || {
             let mut exchange = StablecoinDEX::new();
-            exchange.initialize()?;
+            exchange.initialize(&mut crate::storage::StorageCtx::test_writable())?;
 
             let alice = Address::random();
             let bob = Address::random();
@@ -2401,15 +2674,36 @@ mod tests {
                 .with_approval(taker, exchange.address, U256::MAX)
                 .apply()?;
 
-            exchange.create_pair(base_token)?;
+            exchange.create_pair(&mut crate::storage::StorageCtx::test_writable(), base_token)?;
 
-            let alice_order_id = exchange.place(alice, base_token, amount, false, tick)?;
-            let bob_order_id = exchange.place(bob, base_token, amount, false, tick)?;
+            let alice_order_id = exchange.place(
+                &mut crate::storage::StorageCtx::test_writable(),
+                alice,
+                base_token,
+                amount,
+                false,
+                tick,
+            )?;
+            let bob_order_id = exchange.place(
+                &mut crate::storage::StorageCtx::test_writable(),
+                bob,
+                base_token,
+                amount,
+                false,
+                tick,
+            )?;
 
             let alice_linked_order = exchange.orders[alice_order_id].read()?;
             assert_eq!(alice_linked_order.next(), bob_order_id);
 
-            exchange.swap_exact_amount_in(taker, quote_token, base_token, amount, 0)?;
+            exchange.swap_exact_amount_in(
+                &mut crate::storage::StorageCtx::test_writable(),
+                taker,
+                quote_token,
+                base_token,
+                amount,
+                0,
+            )?;
 
             let alice_credits = exchange.storage_credits(alice)?;
             let alice_order_slots = <Order as crate::storage::StorableType>::SLOTS as u64;
@@ -2425,7 +2719,7 @@ mod tests {
         let mut storage = HashMapStorageProvider::new_with_spec(1, TempoHardfork::T7);
         StorageCtx::enter(&mut storage, || {
             let mut exchange = StablecoinDEX::new();
-            exchange.initialize()?;
+            exchange.initialize(&mut crate::storage::StorageCtx::test_writable())?;
 
             let alice = Address::random();
             let bob = Address::random();
@@ -2446,10 +2740,24 @@ mod tests {
                 .with_approval(bob, exchange.address, U256::MAX)
                 .apply()?;
 
-            exchange.create_pair(base_token)?;
+            exchange.create_pair(&mut crate::storage::StorageCtx::test_writable(), base_token)?;
 
-            let alice_order_id = exchange.place(alice, base_token, amount, true, tick)?;
-            let bob_order_id = exchange.place(bob, base_token, amount, true, tick)?;
+            let alice_order_id = exchange.place(
+                &mut crate::storage::StorageCtx::test_writable(),
+                alice,
+                base_token,
+                amount,
+                true,
+                tick,
+            )?;
+            let bob_order_id = exchange.place(
+                &mut crate::storage::StorageCtx::test_writable(),
+                bob,
+                base_token,
+                amount,
+                true,
+                tick,
+            )?;
 
             assert_eq!(
                 exchange.orders[alice_order_id].next()?.read()?,
@@ -2457,7 +2765,11 @@ mod tests {
             );
             assert_eq!(exchange.storage_credits(alice)?, 0);
 
-            exchange.cancel(bob, bob_order_id)?;
+            exchange.cancel(
+                &mut crate::storage::StorageCtx::test_writable(),
+                bob,
+                bob_order_id,
+            )?;
 
             assert_eq!(exchange.orders[alice_order_id].next()?.read()?, 0);
             assert_eq!(exchange.storage_credits(alice)?, 1);
@@ -2471,7 +2783,7 @@ mod tests {
         let mut storage = HashMapStorageProvider::new(1);
         StorageCtx::enter(&mut storage, || {
             let mut exchange = StablecoinDEX::new();
-            exchange.initialize()?;
+            exchange.initialize(&mut crate::storage::StorageCtx::test_writable())?;
 
             let alice = Address::random();
             let admin = Address::random();
@@ -2486,7 +2798,14 @@ mod tests {
                 setup_test_tokens(admin, alice, exchange.address, expected_escrow)?;
 
             // Pair is auto-created when placing order
-            let result = exchange.place(alice, base_token, min_order_amount, true, tick);
+            let result = exchange.place(
+                &mut crate::storage::StorageCtx::test_writable(),
+                alice,
+                base_token,
+                min_order_amount,
+                true,
+                tick,
+            );
             assert!(result.is_ok());
 
             Ok(())
@@ -2498,7 +2817,7 @@ mod tests {
         let mut storage = HashMapStorageProvider::new(1);
         StorageCtx::enter(&mut storage, || {
             let mut exchange = StablecoinDEX::new();
-            exchange.initialize()?;
+            exchange.initialize(&mut crate::storage::StorageCtx::test_writable())?;
 
             let alice = Address::random();
             let admin = Address::random();
@@ -2515,11 +2834,18 @@ mod tests {
 
             // Create the pair
             exchange
-                .create_pair(base_token)
+                .create_pair(&mut crate::storage::StorageCtx::test_writable(), base_token)
                 .expect("Could not create pair");
 
             // Try to place an order below minimum amount
-            let result = exchange.place(alice, base_token, below_minimum, true, tick);
+            let result = exchange.place(
+                &mut crate::storage::StorageCtx::test_writable(),
+                alice,
+                base_token,
+                below_minimum,
+                true,
+                tick,
+            );
             assert_eq!(
                 result,
                 Err(StablecoinDEXError::below_minimum_order_size(below_minimum).into())
@@ -2534,7 +2860,7 @@ mod tests {
         let mut storage = HashMapStorageProvider::new(1);
         StorageCtx::enter(&mut storage, || {
             let mut exchange = StablecoinDEX::new();
-            exchange.initialize()?;
+            exchange.initialize(&mut crate::storage::StorageCtx::test_writable())?;
 
             let alice = Address::random();
             let admin = Address::random();
@@ -2551,12 +2877,19 @@ mod tests {
 
             // Create the pair before placing orders
             exchange
-                .create_pair(base_token)
+                .create_pair(&mut crate::storage::StorageCtx::test_writable(), base_token)
                 .expect("Could not create pair");
 
             // Place the bid order
             let order_id = exchange
-                .place(alice, base_token, min_order_amount, true, tick)
+                .place(
+                    &mut crate::storage::StorageCtx::test_writable(),
+                    alice,
+                    base_token,
+                    min_order_amount,
+                    true,
+                    tick,
+                )
                 .expect("Place bid order should succeed");
 
             assert_eq!(order_id, 1);
@@ -2600,7 +2933,7 @@ mod tests {
         let mut storage = HashMapStorageProvider::new(1);
         StorageCtx::enter(&mut storage, || {
             let mut exchange = StablecoinDEX::new();
-            exchange.initialize()?;
+            exchange.initialize(&mut crate::storage::StorageCtx::test_writable())?;
 
             let alice = Address::random();
             let admin = Address::random();
@@ -2612,11 +2945,18 @@ mod tests {
                 setup_test_tokens(admin, alice, exchange.address, min_order_amount)?;
             // Create the pair before placing orders
             exchange
-                .create_pair(base_token)
+                .create_pair(&mut crate::storage::StorageCtx::test_writable(), base_token)
                 .expect("Could not create pair");
 
             let order_id = exchange
-                .place(alice, base_token, min_order_amount, false, tick) // is_bid = false for ask
+                .place(
+                    &mut crate::storage::StorageCtx::test_writable(),
+                    alice,
+                    base_token,
+                    min_order_amount,
+                    false,
+                    tick,
+                ) // is_bid = false for ask
                 .expect("Place ask order should succeed");
 
             assert_eq!(order_id, 1);
@@ -2660,7 +3000,7 @@ mod tests {
         let mut storage = HashMapStorageProvider::new(1);
         StorageCtx::enter(&mut storage, || {
             let mut exchange = StablecoinDEX::new();
-            exchange.initialize()?;
+            exchange.initialize(&mut crate::storage::StorageCtx::test_writable())?;
 
             let alice = Address::random();
             let admin = Address::random();
@@ -2678,11 +3018,12 @@ mod tests {
 
             // Create the pair
             exchange
-                .create_pair(base_token)
+                .create_pair(&mut crate::storage::StorageCtx::test_writable(), base_token)
                 .expect("Could not create pair");
 
             // Try to place a flip order below minimum amount
             let result = exchange.place_flip(
+                &mut crate::storage::StorageCtx::test_writable(),
                 alice,
                 base_token,
                 below_minimum,
@@ -2705,7 +3046,7 @@ mod tests {
         let mut storage = HashMapStorageProvider::new(1);
         StorageCtx::enter(&mut storage, || {
             let mut exchange = StablecoinDEX::new();
-            exchange.initialize()?;
+            exchange.initialize(&mut crate::storage::StorageCtx::test_writable())?;
 
             let admin = Address::random();
             let user = Address::random();
@@ -2722,6 +3063,7 @@ mod tests {
             // Transfer tokens to exchange first
             let mut base = TIP20Token::from_address(base_token)?;
             base.transfer(
+                &mut crate::storage::StorageCtx::test_writable(),
                 user,
                 ITIP20::transferCall {
                     to: exchange.address,
@@ -2731,7 +3073,16 @@ mod tests {
             .expect("Base token transfer failed");
 
             // Place a flip order which should also create the pair
-            exchange.place_flip(user, base_token, MIN_ORDER_AMOUNT, true, 0, 10, false)?;
+            exchange.place_flip(
+                &mut crate::storage::StorageCtx::test_writable(),
+                user,
+                base_token,
+                MIN_ORDER_AMOUNT,
+                true,
+                0,
+                10,
+                false,
+            )?;
 
             let book_after = exchange.books[book_key].read()?;
             assert_eq!(book_after.base, base_token);
@@ -2754,7 +3105,7 @@ mod tests {
         let mut storage = HashMapStorageProvider::new(1);
         StorageCtx::enter(&mut storage, || {
             let mut exchange = StablecoinDEX::new();
-            exchange.initialize()?;
+            exchange.initialize(&mut crate::storage::StorageCtx::test_writable())?;
 
             let alice = Address::random();
             let admin = Address::random();
@@ -2771,11 +3122,12 @@ mod tests {
             let (base_token, quote_token) =
                 setup_test_tokens(admin, alice, exchange.address, expected_escrow)?;
             exchange
-                .create_pair(base_token)
+                .create_pair(&mut crate::storage::StorageCtx::test_writable(), base_token)
                 .expect("Could not create pair");
 
             let order_id = exchange
                 .place_flip(
+                    &mut crate::storage::StorageCtx::test_writable(),
                     alice,
                     base_token,
                     min_order_amount,
@@ -2831,7 +3183,7 @@ mod tests {
             let mut storage = HashMapStorageProvider::new_with_spec(1, spec);
             StorageCtx::enter(&mut storage, || {
                 let mut exchange = StablecoinDEX::new();
-                exchange.initialize()?;
+                exchange.initialize(&mut crate::storage::StorageCtx::test_writable())?;
 
                 let alice = Address::random();
                 let admin = Address::random();
@@ -2842,9 +3194,11 @@ mod tests {
                     (MIN_ORDER_AMOUNT * u128::from(price)) / u128::from(orderbook::PRICE_SCALE);
 
                 let (base_token, _) = setup_test_tokens(admin, alice, exchange.address, escrow)?;
-                exchange.create_pair(base_token)?;
+                exchange
+                    .create_pair(&mut crate::storage::StorageCtx::test_writable(), base_token)?;
 
                 let result = exchange.place_flip(
+                    &mut crate::storage::StorageCtx::test_writable(),
                     alice,
                     base_token,
                     MIN_ORDER_AMOUNT,
@@ -2880,7 +3234,7 @@ mod tests {
         let mut storage = HashMapStorageProvider::new_with_spec(1, TempoHardfork::T5);
         StorageCtx::enter(&mut storage, || {
             let mut exchange = StablecoinDEX::new();
-            exchange.initialize()?;
+            exchange.initialize(&mut crate::storage::StorageCtx::test_writable())?;
 
             let alice = Address::random();
             let admin = Address::random();
@@ -2891,10 +3245,11 @@ mod tests {
                 (MIN_ORDER_AMOUNT * u128::from(price)) / u128::from(orderbook::PRICE_SCALE);
 
             let (base_token, _) = setup_test_tokens(admin, alice, exchange.address, escrow)?;
-            exchange.create_pair(base_token)?;
+            exchange.create_pair(&mut crate::storage::StorageCtx::test_writable(), base_token)?;
 
             // Bid with flip_tick < tick is still rejected on T5.
             let bid_result = exchange.place_flip(
+                &mut crate::storage::StorageCtx::test_writable(),
                 alice,
                 base_token,
                 MIN_ORDER_AMOUNT,
@@ -2910,6 +3265,7 @@ mod tests {
 
             // Ask with flip_tick > tick is still rejected on T5.
             let ask_result = exchange.place_flip(
+                &mut crate::storage::StorageCtx::test_writable(),
                 alice,
                 base_token,
                 MIN_ORDER_AMOUNT,
@@ -2943,7 +3299,7 @@ mod tests {
         let mut storage = HashMapStorageProvider::new_with_spec(1, TempoHardfork::T5);
         StorageCtx::enter(&mut storage, || {
             let mut exchange = StablecoinDEX::new();
-            exchange.initialize()?;
+            exchange.initialize(&mut crate::storage::StorageCtx::test_writable())?;
 
             let alice = Address::random();
             let bob = Address::random();
@@ -2975,24 +3331,47 @@ mod tests {
                 .with_approval(bob, exchange.address, U256::MAX)
                 .apply()?;
 
-            exchange.create_pair(base_token)?;
+            exchange.create_pair(&mut crate::storage::StorageCtx::test_writable(), base_token)?;
 
             // Place same-tick flip bid FIRST so it sits at the head of the bid
             // level and is the order consumed by the next swap-sell.
             let flip_id = exchange
-                .place_flip(alice, base_token, amount, true, tick, tick, false)
+                .place_flip(
+                    &mut crate::storage::StorageCtx::test_writable(),
+                    alice,
+                    base_token,
+                    amount,
+                    true,
+                    tick,
+                    tick,
+                    false,
+                )
                 .expect("same-tick flip should succeed on T5");
 
             // Place a regular bid at the same tick. It will remain after the
             // flip is consumed, keeping `best_bid_tick == tick`.
             let resting_bid_id = exchange
-                .place(alice, base_token, amount, true, tick)
+                .place(
+                    &mut crate::storage::StorageCtx::test_writable(),
+                    alice,
+                    base_token,
+                    amount,
+                    true,
+                    tick,
+                )
                 .expect("regular bid should succeed");
 
             // Bob sells exactly `amount` base, which fully consumes only the
             // flip bid (FIFO) and triggers the post-fill flip into an ask at
             // the same tick.
-            exchange.swap_exact_amount_in(bob, base_token, quote_token, amount, 0)?;
+            exchange.swap_exact_amount_in(
+                &mut crate::storage::StorageCtx::test_writable(),
+                bob,
+                base_token,
+                quote_token,
+                amount,
+                0,
+            )?;
 
             // TIP-1056: regular bid remains untouched; the flip order keeps
             // its orderId and is rewritten in place as the new ask.
@@ -3042,7 +3421,14 @@ mod tests {
             // TIP-1030 MEV implications section calls out.
             let quote_in =
                 base_to_quote(amount, tick, RoundingDirection::Up).expect("quote_in should fit");
-            exchange.swap_exact_amount_in(bob, quote_token, base_token, quote_in, 0)?;
+            exchange.swap_exact_amount_in(
+                &mut crate::storage::StorageCtx::test_writable(),
+                bob,
+                quote_token,
+                base_token,
+                quote_in,
+                0,
+            )?;
 
             // Resting bid still untouched.
             let resting_after = exchange.orders[resting_bid_id].read()?;
@@ -3083,7 +3469,7 @@ mod tests {
         let mut storage = HashMapStorageProvider::new(1);
         StorageCtx::enter(&mut storage, || {
             let mut exchange = StablecoinDEX::new();
-            exchange.initialize()?;
+            exchange.initialize(&mut crate::storage::StorageCtx::test_writable())?;
 
             let alice = Address::random();
             let admin = Address::random();
@@ -3097,23 +3483,39 @@ mod tests {
             let (base_token, quote_token) =
                 setup_test_tokens(admin, alice, exchange.address, expected_escrow)?;
             exchange
-                .create_pair(base_token)
+                .create_pair(&mut crate::storage::StorageCtx::test_writable(), base_token)
                 .expect("Could not create pair");
 
             // Place the bid order and cancel
             let order_id = exchange
-                .place(alice, base_token, min_order_amount, true, tick)
+                .place(
+                    &mut crate::storage::StorageCtx::test_writable(),
+                    alice,
+                    base_token,
+                    min_order_amount,
+                    true,
+                    tick,
+                )
                 .expect("Place bid order should succeed");
 
             exchange
-                .cancel(alice, order_id)
+                .cancel(
+                    &mut crate::storage::StorageCtx::test_writable(),
+                    alice,
+                    order_id,
+                )
                 .expect("Cancel pending order should succeed");
 
             assert_eq!(exchange.balance_of(alice, quote_token)?, expected_escrow);
 
             // Get balances before withdrawal
             exchange
-                .withdraw(alice, quote_token, expected_escrow)
+                .withdraw(
+                    &mut crate::storage::StorageCtx::test_writable(),
+                    alice,
+                    quote_token,
+                    expected_escrow,
+                )
                 .expect("Withdraw should succeed");
             assert_eq!(exchange.balance_of(alice, quote_token)?, 0);
 
@@ -3139,7 +3541,7 @@ mod tests {
         let mut storage = HashMapStorageProvider::new(1);
         StorageCtx::enter(&mut storage, || {
             let mut exchange = StablecoinDEX::new();
-            exchange.initialize()?;
+            exchange.initialize(&mut crate::storage::StorageCtx::test_writable())?;
 
             let alice = Address::random();
             let admin = Address::random();
@@ -3152,7 +3554,12 @@ mod tests {
             assert_eq!(exchange.balance_of(alice, quote_token)?, 0);
 
             // Try to withdraw more than balance
-            let result = exchange.withdraw(alice, quote_token, 100u128);
+            let result = exchange.withdraw(
+                &mut crate::storage::StorageCtx::test_writable(),
+                alice,
+                quote_token,
+                100u128,
+            );
 
             assert_eq!(
                 result,
@@ -3168,7 +3575,7 @@ mod tests {
         let mut storage = HashMapStorageProvider::new(1);
         StorageCtx::enter(&mut storage, || {
             let mut exchange = StablecoinDEX::new();
-            exchange.initialize()?;
+            exchange.initialize(&mut crate::storage::StorageCtx::test_writable())?;
 
             let alice = Address::random();
             let admin = Address::random();
@@ -3179,12 +3586,19 @@ mod tests {
             let (base_token, quote_token) =
                 setup_test_tokens(admin, alice, exchange.address, 200_000_000u128)?;
             exchange
-                .create_pair(base_token)
+                .create_pair(&mut crate::storage::StorageCtx::test_writable(), base_token)
                 .expect("Could not create pair");
 
             let order_amount = min_order_amount;
             exchange
-                .place(alice, base_token, order_amount, false, tick)
+                .place(
+                    &mut crate::storage::StorageCtx::test_writable(),
+                    alice,
+                    base_token,
+                    order_amount,
+                    false,
+                    tick,
+                )
                 .expect("Order should succeed");
 
             let amount_in = exchange
@@ -3205,7 +3619,7 @@ mod tests {
         let mut storage = HashMapStorageProvider::new(1);
         StorageCtx::enter(&mut storage, || {
             let mut exchange = StablecoinDEX::new();
-            exchange.initialize()?;
+            exchange.initialize(&mut crate::storage::StorageCtx::test_writable())?;
 
             let alice = Address::random();
             let admin = Address::random();
@@ -3216,12 +3630,19 @@ mod tests {
             let (base_token, quote_token) =
                 setup_test_tokens(admin, alice, exchange.address, 200_000_000u128)?;
             exchange
-                .create_pair(base_token)
+                .create_pair(&mut crate::storage::StorageCtx::test_writable(), base_token)
                 .expect("Could not create pair");
 
             let order_amount = min_order_amount;
             exchange
-                .place(alice, base_token, order_amount, true, tick)
+                .place(
+                    &mut crate::storage::StorageCtx::test_writable(),
+                    alice,
+                    base_token,
+                    order_amount,
+                    true,
+                    tick,
+                )
                 .expect("Place bid order should succeed");
 
             let amount_out = exchange
@@ -3243,7 +3664,7 @@ mod tests {
         let mut storage = HashMapStorageProvider::new(1);
         StorageCtx::enter(&mut storage, || {
             let mut exchange = StablecoinDEX::new();
-            exchange.initialize()?;
+            exchange.initialize(&mut crate::storage::StorageCtx::test_writable())?;
 
             let alice = Address::random();
             let admin = Address::random();
@@ -3254,13 +3675,20 @@ mod tests {
             let (base_token, quote_token) =
                 setup_test_tokens(admin, alice, exchange.address, 200_000_000u128)?;
             exchange
-                .create_pair(base_token)
+                .create_pair(&mut crate::storage::StorageCtx::test_writable(), base_token)
                 .expect("Could not create pair");
 
             // Alice places a bid: willing to BUY base using quote
             let order_amount = min_order_amount;
             exchange
-                .place(alice, base_token, order_amount, true, tick)
+                .place(
+                    &mut crate::storage::StorageCtx::test_writable(),
+                    alice,
+                    base_token,
+                    order_amount,
+                    true,
+                    tick,
+                )
                 .expect("Place bid order should succeed");
 
             // Quote: sell base to get quote
@@ -3284,18 +3712,25 @@ mod tests {
         let mut storage = HashMapStorageProvider::new(1);
         StorageCtx::enter(&mut storage, || {
             let mut exchange = StablecoinDEX::new();
-            exchange.initialize()?;
+            exchange.initialize(&mut crate::storage::StorageCtx::test_writable())?;
 
             let alice = Address::random();
             let admin = Address::random();
 
             let (base_token, quote_token) =
                 setup_test_tokens(admin, alice, exchange.address, 200_000_000u128)?;
-            exchange.create_pair(base_token)?;
+            exchange.create_pair(&mut crate::storage::StorageCtx::test_writable(), base_token)?;
 
             let tick = 10;
             let order_amount = MIN_ORDER_AMOUNT;
-            exchange.place(alice, base_token, order_amount, true, tick)?;
+            exchange.place(
+                &mut crate::storage::StorageCtx::test_writable(),
+                alice,
+                base_token,
+                order_amount,
+                true,
+                tick,
+            )?;
 
             for amount_out in [100_001u128, 100_003, 100_007, 100_009, 100_011] {
                 let amount_in = exchange
@@ -3321,7 +3756,7 @@ mod tests {
         let mut storage = HashMapStorageProvider::new(1);
         StorageCtx::enter(&mut storage, || {
             let mut exchange = StablecoinDEX::new();
-            exchange.initialize()?;
+            exchange.initialize(&mut crate::storage::StorageCtx::test_writable())?;
 
             let alice = Address::random();
             let bob = Address::random();
@@ -3333,16 +3768,28 @@ mod tests {
             let (base_token, quote_token) =
                 setup_test_tokens(admin, alice, exchange.address, 200_000_000u128)?;
             exchange
-                .create_pair(base_token)
+                .create_pair(&mut crate::storage::StorageCtx::test_writable(), base_token)
                 .expect("Could not create pair");
 
             let order_amount = min_order_amount;
             exchange
-                .place(alice, base_token, order_amount, false, tick)
+                .place(
+                    &mut crate::storage::StorageCtx::test_writable(),
+                    alice,
+                    base_token,
+                    order_amount,
+                    false,
+                    tick,
+                )
                 .expect("Order should succeed");
 
             exchange
-                .set_balance(bob, quote_token, 200_000_000u128)
+                .set_balance(
+                    &mut crate::storage::StorageCtx::test_writable(),
+                    bob,
+                    quote_token,
+                    200_000_000u128,
+                )
                 .expect("Could not set balance");
 
             let price = orderbook::tick_to_price(tick);
@@ -3350,7 +3797,14 @@ mod tests {
                 (amount_out * u128::from(price)) / u128::from(orderbook::PRICE_SCALE);
 
             let amount_in = exchange
-                .swap_exact_amount_out(bob, quote_token, base_token, amount_out, max_amount_in)
+                .swap_exact_amount_out(
+                    &mut crate::storage::StorageCtx::test_writable(),
+                    bob,
+                    quote_token,
+                    base_token,
+                    amount_out,
+                    max_amount_in,
+                )
                 .expect("Swap should succeed");
 
             let base_tip20 = TIP20Token::from_address(base_token)?;
@@ -3369,7 +3823,7 @@ mod tests {
         let mut storage = HashMapStorageProvider::new(1);
         StorageCtx::enter(&mut storage, || {
             let mut exchange = StablecoinDEX::new();
-            exchange.initialize()?;
+            exchange.initialize(&mut crate::storage::StorageCtx::test_writable())?;
 
             let alice = Address::random();
             let bob = Address::random();
@@ -3381,16 +3835,28 @@ mod tests {
             let (base_token, quote_token) =
                 setup_test_tokens(admin, alice, exchange.address, 200_000_000u128)?;
             exchange
-                .create_pair(base_token)
+                .create_pair(&mut crate::storage::StorageCtx::test_writable(), base_token)
                 .expect("Could not create pair");
 
             let order_amount = min_order_amount;
             exchange
-                .place(alice, base_token, order_amount, true, tick)
+                .place(
+                    &mut crate::storage::StorageCtx::test_writable(),
+                    alice,
+                    base_token,
+                    order_amount,
+                    true,
+                    tick,
+                )
                 .expect("Order should succeed");
 
             exchange
-                .set_balance(bob, base_token, 200_000_000u128)
+                .set_balance(
+                    &mut crate::storage::StorageCtx::test_writable(),
+                    bob,
+                    base_token,
+                    200_000_000u128,
+                )
                 .expect("Could not set balance");
 
             let price = orderbook::tick_to_price(tick);
@@ -3398,7 +3864,14 @@ mod tests {
                 (amount_in * u128::from(price)) / u128::from(orderbook::PRICE_SCALE);
 
             let amount_out = exchange
-                .swap_exact_amount_in(bob, base_token, quote_token, amount_in, min_amount_out)
+                .swap_exact_amount_in(
+                    &mut crate::storage::StorageCtx::test_writable(),
+                    bob,
+                    base_token,
+                    quote_token,
+                    amount_in,
+                    min_amount_out,
+                )
                 .expect("Swap should succeed");
 
             let quote_tip20 = TIP20Token::from_address(quote_token)?;
@@ -3418,7 +3891,7 @@ mod tests {
         let mut storage = HashMapStorageProvider::new(1);
         StorageCtx::enter(&mut storage, || {
             let mut exchange = StablecoinDEX::new();
-            exchange.initialize()?;
+            exchange.initialize(&mut crate::storage::StorageCtx::test_writable())?;
 
             let alice = Address::random();
             let bob = Address::random();
@@ -3434,20 +3907,41 @@ mod tests {
             let (base_token, quote_token) =
                 setup_test_tokens(admin, alice, exchange.address, expected_escrow * 2)?;
             exchange
-                .create_pair(base_token)
+                .create_pair(&mut crate::storage::StorageCtx::test_writable(), base_token)
                 .expect("Could not create pair");
 
             // Place a flip bid order
             let flip_order_id = exchange
-                .place_flip(alice, base_token, amount, true, tick, flip_tick, false)
+                .place_flip(
+                    &mut crate::storage::StorageCtx::test_writable(),
+                    alice,
+                    base_token,
+                    amount,
+                    true,
+                    tick,
+                    flip_tick,
+                    false,
+                )
                 .expect("Place flip order should succeed");
 
             exchange
-                .set_balance(bob, base_token, amount)
+                .set_balance(
+                    &mut crate::storage::StorageCtx::test_writable(),
+                    bob,
+                    base_token,
+                    amount,
+                )
                 .expect("Could not set balance");
 
             exchange
-                .swap_exact_amount_in(bob, base_token, quote_token, amount, 0)
+                .swap_exact_amount_in(
+                    &mut crate::storage::StorageCtx::test_writable(),
+                    bob,
+                    base_token,
+                    quote_token,
+                    amount,
+                    0,
+                )
                 .expect("Swap should succeed");
 
             // Assert that the order has filled (remaining should be 0)
@@ -3480,7 +3974,7 @@ mod tests {
         let mut storage = HashMapStorageProvider::new_with_spec(1, TempoHardfork::T5);
         StorageCtx::enter(&mut storage, || {
             let mut exchange = StablecoinDEX::new();
-            exchange.initialize()?;
+            exchange.initialize(&mut crate::storage::StorageCtx::test_writable())?;
 
             let alice = Address::random();
             let bob = Address::random();
@@ -3495,14 +3989,34 @@ mod tests {
 
             let (base_token, quote_token) =
                 setup_test_tokens(admin, alice, exchange.address, expected_escrow * 2)?;
-            exchange.create_pair(base_token)?;
+            exchange.create_pair(&mut crate::storage::StorageCtx::test_writable(), base_token)?;
 
-            let flip_order_id =
-                exchange.place_flip(alice, base_token, amount, true, tick, flip_tick, false)?;
+            let flip_order_id = exchange.place_flip(
+                &mut crate::storage::StorageCtx::test_writable(),
+                alice,
+                base_token,
+                amount,
+                true,
+                tick,
+                flip_tick,
+                false,
+            )?;
 
-            exchange.set_balance(bob, base_token, amount)?;
+            exchange.set_balance(
+                &mut crate::storage::StorageCtx::test_writable(),
+                bob,
+                base_token,
+                amount,
+            )?;
             let next_order_id_before = exchange.next_order_id()?;
-            exchange.swap_exact_amount_in(bob, base_token, quote_token, amount, 0)?;
+            exchange.swap_exact_amount_in(
+                &mut crate::storage::StorageCtx::test_writable(),
+                bob,
+                base_token,
+                quote_token,
+                amount,
+                0,
+            )?;
 
             // TIP-1056: the original flip bid is rewritten in place as the
             // new ask under the same orderId. `next_order_id` does not advance.
@@ -3560,9 +4074,21 @@ mod tests {
             let next_order_id_before = exchange.next_order_id()?;
 
             // Fund bob and consume the flip bid in full.
-            exchange.set_balance(bob, base_token, amount)?;
+            exchange.set_balance(
+                &mut crate::storage::StorageCtx::test_writable(),
+                bob,
+                base_token,
+                amount,
+            )?;
             let events_before = exchange.emitted_events().len();
-            exchange.swap_exact_amount_in(bob, base_token, quote_token, amount, 0)?;
+            exchange.swap_exact_amount_in(
+                &mut crate::storage::StorageCtx::test_writable(),
+                bob,
+                base_token,
+                quote_token,
+                amount,
+                0,
+            )?;
 
             // Same orderId, no `next_order_id` advance.
             assert_eq!(exchange.next_order_id()?, next_order_id_before);
@@ -3596,7 +4122,11 @@ mod tests {
             // cancel(orderId) targets the currently-active (flipped) order
             // and refunds its escrow (base, since flipped is an ask).
             let alice_base_before = exchange.balance_of(alice, base_token)?;
-            exchange.cancel(alice, flip_order_id)?;
+            exchange.cancel(
+                &mut crate::storage::StorageCtx::test_writable(),
+                alice,
+                flip_order_id,
+            )?;
             let alice_base_after = exchange.balance_of(alice, base_token)?;
             assert_eq!(alice_base_after, alice_base_before + amount);
 
@@ -3642,6 +4172,7 @@ mod tests {
             // logic error → silently swallowed by fill_order).
             let mut registry = TIP403Registry::new();
             let policy_id = registry.create_policy(
+                &mut crate::storage::StorageCtx::test_writable(),
                 admin,
                 ITIP403Registry::createPolicyCall {
                     admin,
@@ -3650,12 +4181,14 @@ mod tests {
             )?;
             let mut base = TIP20Token::from_address(base_token)?;
             base.change_transfer_policy_id(
+                &mut crate::storage::StorageCtx::test_writable(),
                 admin,
                 ITIP20::changeTransferPolicyIdCall {
                     newPolicyId: policy_id,
                 },
             )?;
             registry.modify_policy_blacklist(
+                &mut crate::storage::StorageCtx::test_writable(),
                 admin,
                 ITIP403Registry::modifyPolicyBlacklistCall {
                     policyId: policy_id,
@@ -3664,10 +4197,22 @@ mod tests {
                 },
             )?;
 
-            exchange.set_balance(bob, base_token, amount)?;
+            exchange.set_balance(
+                &mut crate::storage::StorageCtx::test_writable(),
+                bob,
+                base_token,
+                amount,
+            )?;
             let events_before = exchange.emitted_events().len();
             // Swap succeeds — flip failure is swallowed after emitting FlipFailed.
-            exchange.swap_exact_amount_in(bob, base_token, quote_token, amount, 0)?;
+            exchange.swap_exact_amount_in(
+                &mut crate::storage::StorageCtx::test_writable(),
+                bob,
+                base_token,
+                quote_token,
+                amount,
+                0,
+            )?;
 
             let new_events = &exchange.emitted_events()[events_before..];
             let flip_failed = new_events
@@ -3688,7 +4233,15 @@ mod tests {
                 exchange.get_order(flip_order_id).is_err(),
                 "filled flip order must not remain in storage after a failed flip"
             );
-            assert!(exchange.cancel(alice, flip_order_id).is_err());
+            assert!(
+                exchange
+                    .cancel(
+                        &mut crate::storage::StorageCtx::test_writable(),
+                        alice,
+                        flip_order_id
+                    )
+                    .is_err()
+            );
 
             // Both sides of the book are empty at the relevant ticks: the
             // source bid was the only order at its tick (level dropped during
@@ -3711,7 +4264,7 @@ mod tests {
         let mut storage = HashMapStorageProvider::new(1);
         StorageCtx::enter(&mut storage, || {
             let mut exchange = StablecoinDEX::new();
-            exchange.initialize()?;
+            exchange.initialize(&mut crate::storage::StorageCtx::test_writable())?;
 
             let admin = Address::random();
             let alice = Address::random();
@@ -3723,7 +4276,7 @@ mod tests {
 
             // Create the pair
             let key = exchange
-                .create_pair(base_token)
+                .create_pair(&mut crate::storage::StorageCtx::test_writable(), base_token)
                 .expect("Could not create pair");
 
             // Verify PairCreated event was emitted
@@ -3742,7 +4295,7 @@ mod tests {
         let mut storage = HashMapStorageProvider::new(1);
         StorageCtx::enter(&mut storage, || {
             let mut exchange = StablecoinDEX::new();
-            exchange.initialize()?;
+            exchange.initialize(&mut crate::storage::StorageCtx::test_writable())?;
 
             let admin = Address::random();
             let alice = Address::random();
@@ -3753,10 +4306,11 @@ mod tests {
                 setup_test_tokens(admin, alice, exchange.address, min_order_amount)?;
 
             exchange
-                .create_pair(base_token)
+                .create_pair(&mut crate::storage::StorageCtx::test_writable(), base_token)
                 .expect("Could not create pair");
 
-            let result = exchange.create_pair(base_token);
+            let result =
+                exchange.create_pair(&mut crate::storage::StorageCtx::test_writable(), base_token);
             assert_eq!(
                 result,
                 Err(StablecoinDEXError::pair_already_exists().into())
@@ -3791,7 +4345,7 @@ mod tests {
         let mut storage = HashMapStorageProvider::new(1);
         StorageCtx::enter(&mut storage, || {
             let mut exchange = StablecoinDEX::new();
-            exchange.initialize()?;
+            exchange.initialize(&mut crate::storage::StorageCtx::test_writable())?;
 
             let admin = Address::random();
 
@@ -3819,7 +4373,7 @@ mod tests {
         let mut storage = HashMapStorageProvider::new(1);
         StorageCtx::enter(&mut storage, || {
             let mut exchange = StablecoinDEX::new();
-            exchange.initialize()?;
+            exchange.initialize(&mut crate::storage::StorageCtx::test_writable())?;
 
             let admin = Address::random();
             let user = Address::random();
@@ -3844,7 +4398,7 @@ mod tests {
         let mut storage = HashMapStorageProvider::new(1);
         StorageCtx::enter(&mut storage, || {
             let mut exchange = StablecoinDEX::new();
-            exchange.initialize()?;
+            exchange.initialize(&mut crate::storage::StorageCtx::test_writable())?;
 
             let admin = Address::random();
             let user = Address::random();
@@ -3855,7 +4409,9 @@ mod tests {
                 setup_test_tokens(admin, user, exchange.address, min_order_amount)?;
 
             // Create the pair first
-            exchange.create_pair(token).expect("Failed to create pair");
+            exchange
+                .create_pair(&mut crate::storage::StorageCtx::test_writable(), token)
+                .expect("Failed to create pair");
 
             // Trade token -> path_usd (direct pair)
             let route = exchange
@@ -3875,7 +4431,7 @@ mod tests {
         let mut storage = HashMapStorageProvider::new(1);
         StorageCtx::enter(&mut storage, || {
             let mut exchange = StablecoinDEX::new();
-            exchange.initialize()?;
+            exchange.initialize(&mut crate::storage::StorageCtx::test_writable())?;
 
             let admin = Address::random();
             let user = Address::random();
@@ -3886,7 +4442,9 @@ mod tests {
                 setup_test_tokens(admin, user, exchange.address, min_order_amount)?;
 
             // Create the pair first
-            exchange.create_pair(token).expect("Failed to create pair");
+            exchange
+                .create_pair(&mut crate::storage::StorageCtx::test_writable(), token)
+                .expect("Failed to create pair");
 
             // Trade path_usd -> token (reverse direction)
             let route = exchange
@@ -3906,7 +4464,7 @@ mod tests {
         let mut storage = HashMapStorageProvider::new(1);
         StorageCtx::enter(&mut storage, || {
             let mut exchange = StablecoinDEX::new();
-            exchange.initialize()?;
+            exchange.initialize(&mut crate::storage::StorageCtx::test_writable())?;
 
             let admin = Address::random();
 
@@ -3917,8 +4475,14 @@ mod tests {
             let eurc = TIP20Setup::create("EURC", "EURC", admin).apply()?;
 
             // Create pairs first
-            exchange.create_pair(usdc.address())?;
-            exchange.create_pair(eurc.address())?;
+            exchange.create_pair(
+                &mut crate::storage::StorageCtx::test_writable(),
+                usdc.address(),
+            )?;
+            exchange.create_pair(
+                &mut crate::storage::StorageCtx::test_writable(),
+                eurc.address(),
+            )?;
 
             // Trade USDC -> EURC should go through pathUSD
             let route = exchange.find_trade_path(usdc.address(), eurc.address())?;
@@ -3937,7 +4501,7 @@ mod tests {
         let mut storage = HashMapStorageProvider::new(1);
         StorageCtx::enter(&mut storage, || {
             let mut exchange = StablecoinDEX::new();
-            exchange.initialize()?;
+            exchange.initialize(&mut crate::storage::StorageCtx::test_writable())?;
 
             let admin = Address::random();
             let alice = Address::random();
@@ -3968,10 +4532,24 @@ mod tests {
             // - Second hop needs: ask on EURC (someone selling EURC for pathUSD)
 
             // USDC bid: buy USDC with pathUSD
-            exchange.place(alice, usdc.address(), min_order_amount * 5, true, 0)?;
+            exchange.place(
+                &mut crate::storage::StorageCtx::test_writable(),
+                alice,
+                usdc.address(),
+                min_order_amount * 5,
+                true,
+                0,
+            )?;
 
             // EURC ask: sell EURC for pathUSD
-            exchange.place(alice, eurc.address(), min_order_amount * 5, false, 0)?;
+            exchange.place(
+                &mut crate::storage::StorageCtx::test_writable(),
+                alice,
+                eurc.address(),
+                min_order_amount * 5,
+                false,
+                0,
+            )?;
 
             // Quote multi-hop: USDC -> pathUSD -> EURC
             let amount_in = min_order_amount;
@@ -3993,7 +4571,7 @@ mod tests {
         let mut storage = HashMapStorageProvider::new(1);
         StorageCtx::enter(&mut storage, || {
             let mut exchange = StablecoinDEX::new();
-            exchange.initialize()?;
+            exchange.initialize(&mut crate::storage::StorageCtx::test_writable())?;
 
             let admin = Address::random();
             let alice = Address::random();
@@ -4019,8 +4597,22 @@ mod tests {
                 .apply()?;
 
             // Place orders at 1:1 rate
-            exchange.place(alice, usdc.address(), min_order_amount * 5, true, 0)?;
-            exchange.place(alice, eurc.address(), min_order_amount * 5, false, 0)?;
+            exchange.place(
+                &mut crate::storage::StorageCtx::test_writable(),
+                alice,
+                usdc.address(),
+                min_order_amount * 5,
+                true,
+                0,
+            )?;
+            exchange.place(
+                &mut crate::storage::StorageCtx::test_writable(),
+                alice,
+                eurc.address(),
+                min_order_amount * 5,
+                false,
+                0,
+            )?;
 
             // Quote multi-hop for exact output: USDC -> pathUSD -> EURC
             let amount_out = min_order_amount;
@@ -4043,7 +4635,7 @@ mod tests {
         let mut storage = HashMapStorageProvider::new(1);
         StorageCtx::enter(&mut storage, || {
             let mut exchange = StablecoinDEX::new();
-            exchange.initialize()?;
+            exchange.initialize(&mut crate::storage::StorageCtx::test_writable())?;
 
             let admin = Address::random();
             let alice = Address::random();
@@ -4078,8 +4670,22 @@ mod tests {
                 .apply()?;
 
             // Place liquidity orders at 1:1
-            exchange.place(alice, usdc.address(), min_order_amount * 5, true, 0)?;
-            exchange.place(alice, eurc.address(), min_order_amount * 5, false, 0)?;
+            exchange.place(
+                &mut crate::storage::StorageCtx::test_writable(),
+                alice,
+                usdc.address(),
+                min_order_amount * 5,
+                true,
+                0,
+            )?;
+            exchange.place(
+                &mut crate::storage::StorageCtx::test_writable(),
+                alice,
+                eurc.address(),
+                min_order_amount * 5,
+                false,
+                0,
+            )?;
 
             // Check bob's balances before swap
             let bob_usdc_before = usdc.balance_of(ITIP20::balanceOfCall { account: bob })?;
@@ -4088,6 +4694,7 @@ mod tests {
             // Execute multi-hop swap: USDC -> pathUSD -> EURC
             let amount_in = min_order_amount;
             let amount_out = exchange.swap_exact_amount_in(
+                &mut crate::storage::StorageCtx::test_writable(),
                 bob,
                 usdc.address(),
                 eurc.address(),
@@ -4135,7 +4742,7 @@ mod tests {
         let mut storage = HashMapStorageProvider::new(1);
         StorageCtx::enter(&mut storage, || {
             let mut exchange = StablecoinDEX::new();
-            exchange.initialize()?;
+            exchange.initialize(&mut crate::storage::StorageCtx::test_writable())?;
 
             let admin = Address::random();
             let alice = Address::random();
@@ -4170,8 +4777,22 @@ mod tests {
                 .apply()?;
 
             // Place liquidity orders at 1:1
-            exchange.place(alice, usdc.address(), min_order_amount * 5, true, 0)?;
-            exchange.place(alice, eurc.address(), min_order_amount * 5, false, 0)?;
+            exchange.place(
+                &mut crate::storage::StorageCtx::test_writable(),
+                alice,
+                usdc.address(),
+                min_order_amount * 5,
+                true,
+                0,
+            )?;
+            exchange.place(
+                &mut crate::storage::StorageCtx::test_writable(),
+                alice,
+                eurc.address(),
+                min_order_amount * 5,
+                false,
+                0,
+            )?;
 
             // Check bob's balances before swap
             let bob_usdc_before = usdc.balance_of(ITIP20::balanceOfCall { account: bob })?;
@@ -4180,6 +4801,7 @@ mod tests {
             // Execute multi-hop swap: USDC -> pathUSD -> EURC (exact output)
             let amount_out = 90u128;
             let amount_in = exchange.swap_exact_amount_out(
+                &mut crate::storage::StorageCtx::test_writable(),
                 bob,
                 usdc.address(),
                 eurc.address(),
@@ -4236,10 +4858,13 @@ mod tests {
                 .apply()?;
 
             let mut exchange = StablecoinDEX::new();
-            exchange.initialize()?;
+            exchange.initialize(&mut crate::storage::StorageCtx::test_writable())?;
 
             // Test: create_pair should reject non-USD token (EUR token has EUR currency)
-            let result = exchange.create_pair(token_0.address());
+            let result = exchange.create_pair(
+                &mut crate::storage::StorageCtx::test_writable(),
+                token_0.address(),
+            );
             assert!(matches!(
                 result,
                 Err(TempoPrecompileError::TIP20(TIP20Error::InvalidCurrency(_)))
@@ -4257,11 +4882,14 @@ mod tests {
             let _path_usd = TIP20Setup::path_usd(admin).apply()?;
 
             let mut exchange = StablecoinDEX::new();
-            exchange.initialize()?;
+            exchange.initialize(&mut crate::storage::StorageCtx::test_writable())?;
 
             // Test: create_pair should reject non-TIP20 address (random address without TIP20 prefix)
             let non_tip20_address = Address::random();
-            let result = exchange.create_pair(non_tip20_address);
+            let result = exchange.create_pair(
+                &mut crate::storage::StorageCtx::test_writable(),
+                non_tip20_address,
+            );
             assert!(matches!(
                 result,
                 Err(TempoPrecompileError::StablecoinDEX(
@@ -4278,7 +4906,7 @@ mod tests {
         let mut storage = HashMapStorageProvider::new(1);
         StorageCtx::enter(&mut storage, || {
             let mut exchange = StablecoinDEX::new();
-            exchange.initialize()?;
+            exchange.initialize(&mut crate::storage::StorageCtx::test_writable())?;
 
             let alice = Address::random();
             let bob = Address::random();
@@ -4286,16 +4914,35 @@ mod tests {
 
             let (base_token, quote_token) =
                 setup_test_tokens(admin, alice, exchange.address, 200_000_000u128)?;
-            exchange.create_pair(base_token)?;
+            exchange.create_pair(&mut crate::storage::StorageCtx::test_writable(), base_token)?;
 
             let tick_50 = 50i16;
             let tick_100 = 100i16;
             let order_amount = MIN_ORDER_AMOUNT;
 
-            exchange.place(alice, base_token, order_amount, false, tick_50)?;
-            exchange.place(alice, base_token, order_amount, false, tick_100)?;
+            exchange.place(
+                &mut crate::storage::StorageCtx::test_writable(),
+                alice,
+                base_token,
+                order_amount,
+                false,
+                tick_50,
+            )?;
+            exchange.place(
+                &mut crate::storage::StorageCtx::test_writable(),
+                alice,
+                base_token,
+                order_amount,
+                false,
+                tick_100,
+            )?;
 
-            exchange.set_balance(bob, quote_token, 200_000_000u128)?;
+            exchange.set_balance(
+                &mut crate::storage::StorageCtx::test_writable(),
+                bob,
+                quote_token,
+                200_000_000u128,
+            )?;
 
             let price_50 = orderbook::tick_to_price(tick_50);
             let price_100 = orderbook::tick_to_price(tick_100);
@@ -4307,6 +4954,7 @@ mod tests {
             let total_needed = quote_for_first + quote_for_partial_second;
 
             let result = exchange.swap_exact_amount_out(
+                &mut crate::storage::StorageCtx::test_writable(),
                 bob,
                 quote_token,
                 base_token,
@@ -4324,7 +4972,7 @@ mod tests {
         let mut storage = HashMapStorageProvider::new(1);
         StorageCtx::enter(&mut storage, || {
             let mut exchange = StablecoinDEX::new();
-            exchange.initialize()?;
+            exchange.initialize(&mut crate::storage::StorageCtx::test_writable())?;
 
             let alice = Address::random();
             let bob = Address::random();
@@ -4332,21 +4980,34 @@ mod tests {
 
             let (base_token, quote_token) =
                 setup_test_tokens(admin, alice, exchange.address, 1_000_000_000u128)?;
-            exchange.create_pair(base_token)?;
+            exchange.create_pair(&mut crate::storage::StorageCtx::test_writable(), base_token)?;
 
             let tick = 1000i16;
             let price = tick_to_price(tick);
             let order_amount_base = MIN_ORDER_AMOUNT;
 
-            exchange.place(alice, base_token, order_amount_base, true, tick)?;
+            exchange.place(
+                &mut crate::storage::StorageCtx::test_writable(),
+                alice,
+                base_token,
+                order_amount_base,
+                true,
+                tick,
+            )?;
 
             let amount_out_quote = 5_000_000u128;
             let base_needed = (amount_out_quote * u128::from(PRICE_SCALE)) / u128::from(price);
             let max_amount_in = base_needed + 10000;
 
-            exchange.set_balance(bob, base_token, max_amount_in * 2)?;
+            exchange.set_balance(
+                &mut crate::storage::StorageCtx::test_writable(),
+                bob,
+                base_token,
+                max_amount_in * 2,
+            )?;
 
             let _amount_in = exchange.swap_exact_amount_out(
+                &mut crate::storage::StorageCtx::test_writable(),
                 bob,
                 base_token,
                 quote_token,
@@ -4368,7 +5029,7 @@ mod tests {
         let mut storage = HashMapStorageProvider::new(1);
         StorageCtx::enter(&mut storage, || {
             let mut exchange = StablecoinDEX::new();
-            exchange.initialize()?;
+            exchange.initialize(&mut crate::storage::StorageCtx::test_writable())?;
 
             let alice = Address::random();
             let bob = Address::random();
@@ -4376,20 +5037,33 @@ mod tests {
 
             let (base_token, quote_token) =
                 setup_test_tokens(admin, alice, exchange.address, 1_000_000_000u128)?;
-            exchange.create_pair(base_token)?;
+            exchange.create_pair(&mut crate::storage::StorageCtx::test_writable(), base_token)?;
 
             let tick = 1000i16;
             let price = tick_to_price(tick);
             let order_amount_base = MIN_ORDER_AMOUNT;
 
-            exchange.place(alice, base_token, order_amount_base, false, tick)?;
+            exchange.place(
+                &mut crate::storage::StorageCtx::test_writable(),
+                alice,
+                base_token,
+                order_amount_base,
+                false,
+                tick,
+            )?;
 
             let amount_in_quote = 5_000_000u128;
             let min_amount_out = 0;
 
-            exchange.set_balance(bob, quote_token, amount_in_quote * 2)?;
+            exchange.set_balance(
+                &mut crate::storage::StorageCtx::test_writable(),
+                bob,
+                quote_token,
+                amount_in_quote * 2,
+            )?;
 
             let amount_out = exchange.swap_exact_amount_in(
+                &mut crate::storage::StorageCtx::test_writable(),
                 bob,
                 quote_token,
                 base_token,
@@ -4412,7 +5086,7 @@ mod tests {
         let mut storage = HashMapStorageProvider::new(1);
         StorageCtx::enter(&mut storage, || {
             let mut exchange = StablecoinDEX::new();
-            exchange.initialize()?;
+            exchange.initialize(&mut crate::storage::StorageCtx::test_writable())?;
 
             let alice = Address::random();
             let bob = Address::random();
@@ -4421,7 +5095,7 @@ mod tests {
 
             let (base_token, quote_token) =
                 setup_test_tokens(admin, alice, exchange.address, AMOUNT)?;
-            exchange.create_pair(base_token)?;
+            exchange.create_pair(&mut crate::storage::StorageCtx::test_writable(), base_token)?;
 
             // Give bob base tokens and carol quote tokens
             TIP20Setup::config(base_token)
@@ -4439,8 +5113,22 @@ mod tests {
             let order1_amount = MIN_ORDER_AMOUNT;
             let order2_amount = MIN_ORDER_AMOUNT;
 
-            let order1_id = exchange.place(alice, base_token, order1_amount, false, tick)?;
-            let order2_id = exchange.place(bob, base_token, order2_amount, false, tick)?;
+            let order1_id = exchange.place(
+                &mut crate::storage::StorageCtx::test_writable(),
+                alice,
+                base_token,
+                order1_amount,
+                false,
+                tick,
+            )?;
+            let order2_id = exchange.place(
+                &mut crate::storage::StorageCtx::test_writable(),
+                bob,
+                base_token,
+                order2_amount,
+                false,
+                tick,
+            )?;
 
             // Verify linked list is set up correctly
             let order1 = exchange.orders[order1_id].read()?;
@@ -4451,6 +5139,7 @@ mod tests {
             // Swap to fill order1 completely
             let swap_amount = order1_amount;
             exchange.swap_exact_amount_out(
+                &mut crate::storage::StorageCtx::test_writable(),
                 carol,
                 quote_token,
                 base_token,
@@ -4475,7 +5164,7 @@ mod tests {
         let mut storage = HashMapStorageProvider::new(1);
         StorageCtx::enter(&mut storage, || {
             let mut exchange = StablecoinDEX::new();
-            exchange.initialize()?;
+            exchange.initialize(&mut crate::storage::StorageCtx::test_writable())?;
 
             let alice = Address::random();
             let bob = Address::random();
@@ -4497,20 +5186,48 @@ mod tests {
 
             let (base_token, quote_token) =
                 setup_test_tokens(admin, alice, exchange.address, total_bid_escrow)?;
-            exchange.create_pair(base_token)?;
+            exchange.create_pair(&mut crate::storage::StorageCtx::test_writable(), base_token)?;
             let book_key = compute_book_key(base_token, quote_token);
 
             // Place bid orders at two different ticks
-            exchange.place(alice, base_token, amount, true, bid_tick_1)?;
-            exchange.place(alice, base_token, amount, true, bid_tick_2)?;
+            exchange.place(
+                &mut crate::storage::StorageCtx::test_writable(),
+                alice,
+                base_token,
+                amount,
+                true,
+                bid_tick_1,
+            )?;
+            exchange.place(
+                &mut crate::storage::StorageCtx::test_writable(),
+                alice,
+                base_token,
+                amount,
+                true,
+                bid_tick_2,
+            )?;
 
             // Place ask orders at two different ticks
             TIP20Setup::config(base_token)
                 .with_mint(alice, U256::from(amount * 2))
                 .with_approval(alice, exchange.address, U256::from(amount * 2))
                 .apply()?;
-            exchange.place(alice, base_token, amount, false, ask_tick_1)?;
-            exchange.place(alice, base_token, amount, false, ask_tick_2)?;
+            exchange.place(
+                &mut crate::storage::StorageCtx::test_writable(),
+                alice,
+                base_token,
+                amount,
+                false,
+                ask_tick_1,
+            )?;
+            exchange.place(
+                &mut crate::storage::StorageCtx::test_writable(),
+                alice,
+                base_token,
+                amount,
+                false,
+                ask_tick_2,
+            )?;
 
             // Verify initial best ticks
             let orderbook = exchange.books[book_key].read()?;
@@ -4518,16 +5235,40 @@ mod tests {
             assert_eq!(orderbook.best_ask_tick, ask_tick_1);
 
             // Fill all bids at tick 100 (bob sells base)
-            exchange.set_balance(bob, base_token, amount)?;
-            exchange.swap_exact_amount_in(bob, base_token, quote_token, amount, 0)?;
+            exchange.set_balance(
+                &mut crate::storage::StorageCtx::test_writable(),
+                bob,
+                base_token,
+                amount,
+            )?;
+            exchange.swap_exact_amount_in(
+                &mut crate::storage::StorageCtx::test_writable(),
+                bob,
+                base_token,
+                quote_token,
+                amount,
+                0,
+            )?;
             // Verify best_bid_tick moved to tick 90, best_ask_tick unchanged
             let orderbook = exchange.books[book_key].read()?;
             assert_eq!(orderbook.best_bid_tick, bid_tick_2);
             assert_eq!(orderbook.best_ask_tick, ask_tick_1);
 
             // Fill remaining bid at tick 90
-            exchange.set_balance(bob, base_token, amount)?;
-            exchange.swap_exact_amount_in(bob, base_token, quote_token, amount, 0)?;
+            exchange.set_balance(
+                &mut crate::storage::StorageCtx::test_writable(),
+                bob,
+                base_token,
+                amount,
+            )?;
+            exchange.swap_exact_amount_in(
+                &mut crate::storage::StorageCtx::test_writable(),
+                bob,
+                base_token,
+                quote_token,
+                amount,
+                0,
+            )?;
             // Verify best_bid_tick is now i16::MIN, best_ask_tick unchanged
             let orderbook = exchange.books[book_key].read()?;
             assert_eq!(orderbook.best_bid_tick, i16::MIN);
@@ -4537,8 +5278,20 @@ mod tests {
             let ask_price_1 = orderbook::tick_to_price(ask_tick_1);
             let quote_needed =
                 (amount * u128::from(ask_price_1)) / u128::from(orderbook::PRICE_SCALE);
-            exchange.set_balance(bob, quote_token, quote_needed)?;
-            exchange.swap_exact_amount_in(bob, quote_token, base_token, quote_needed, 0)?;
+            exchange.set_balance(
+                &mut crate::storage::StorageCtx::test_writable(),
+                bob,
+                quote_token,
+                quote_needed,
+            )?;
+            exchange.swap_exact_amount_in(
+                &mut crate::storage::StorageCtx::test_writable(),
+                bob,
+                quote_token,
+                base_token,
+                quote_needed,
+                0,
+            )?;
             // Verify best_ask_tick moved to tick 60, best_bid_tick unchanged
             let orderbook = exchange.books[book_key].read()?;
             assert_eq!(orderbook.best_ask_tick, ask_tick_2);
@@ -4553,7 +5306,7 @@ mod tests {
         let mut storage = HashMapStorageProvider::new(1);
         StorageCtx::enter(&mut storage, || {
             let mut exchange = StablecoinDEX::new();
-            exchange.initialize()?;
+            exchange.initialize(&mut crate::storage::StorageCtx::test_writable())?;
 
             let alice = Address::random();
             let admin = Address::random();
@@ -4571,21 +5324,56 @@ mod tests {
 
             let (base_token, quote_token) =
                 setup_test_tokens(admin, alice, exchange.address, total_escrow)?;
-            exchange.create_pair(base_token)?;
+            exchange.create_pair(&mut crate::storage::StorageCtx::test_writable(), base_token)?;
             let book_key = compute_book_key(base_token, quote_token);
 
             // Place 2 bid orders at tick 100, 1 at tick 90
-            let bid_order_1 = exchange.place(alice, base_token, amount, true, bid_tick_1)?;
-            let bid_order_2 = exchange.place(alice, base_token, amount, true, bid_tick_1)?;
-            let bid_order_3 = exchange.place(alice, base_token, amount, true, bid_tick_2)?;
+            let bid_order_1 = exchange.place(
+                &mut crate::storage::StorageCtx::test_writable(),
+                alice,
+                base_token,
+                amount,
+                true,
+                bid_tick_1,
+            )?;
+            let bid_order_2 = exchange.place(
+                &mut crate::storage::StorageCtx::test_writable(),
+                alice,
+                base_token,
+                amount,
+                true,
+                bid_tick_1,
+            )?;
+            let bid_order_3 = exchange.place(
+                &mut crate::storage::StorageCtx::test_writable(),
+                alice,
+                base_token,
+                amount,
+                true,
+                bid_tick_2,
+            )?;
 
             // Place 2 ask orders at tick 50 and tick 60
             TIP20Setup::config(base_token)
                 .with_mint(alice, U256::from(amount * 2))
                 .with_approval(alice, exchange.address, U256::from(amount * 2))
                 .apply()?;
-            let ask_order_1 = exchange.place(alice, base_token, amount, false, ask_tick_1)?;
-            let ask_order_2 = exchange.place(alice, base_token, amount, false, ask_tick_2)?;
+            let ask_order_1 = exchange.place(
+                &mut crate::storage::StorageCtx::test_writable(),
+                alice,
+                base_token,
+                amount,
+                false,
+                ask_tick_1,
+            )?;
+            let ask_order_2 = exchange.place(
+                &mut crate::storage::StorageCtx::test_writable(),
+                alice,
+                base_token,
+                amount,
+                false,
+                ask_tick_2,
+            )?;
 
             // Verify initial best ticks
             let orderbook = exchange.books[book_key].read()?;
@@ -4593,35 +5381,55 @@ mod tests {
             assert_eq!(orderbook.best_ask_tick, ask_tick_1);
 
             // Cancel one bid at tick 100
-            exchange.cancel(alice, bid_order_1)?;
+            exchange.cancel(
+                &mut crate::storage::StorageCtx::test_writable(),
+                alice,
+                bid_order_1,
+            )?;
             // Verify best_bid_tick remains 100, best_ask_tick unchanged
             let orderbook = exchange.books[book_key].read()?;
             assert_eq!(orderbook.best_bid_tick, bid_tick_1);
             assert_eq!(orderbook.best_ask_tick, ask_tick_1);
 
             // Cancel remaining bid at tick 100
-            exchange.cancel(alice, bid_order_2)?;
+            exchange.cancel(
+                &mut crate::storage::StorageCtx::test_writable(),
+                alice,
+                bid_order_2,
+            )?;
             // Verify best_bid_tick moved to 90, best_ask_tick unchanged
             let orderbook = exchange.books[book_key].read()?;
             assert_eq!(orderbook.best_bid_tick, bid_tick_2);
             assert_eq!(orderbook.best_ask_tick, ask_tick_1);
 
             // Cancel ask at tick 50
-            exchange.cancel(alice, ask_order_1)?;
+            exchange.cancel(
+                &mut crate::storage::StorageCtx::test_writable(),
+                alice,
+                ask_order_1,
+            )?;
             // Verify best_ask_tick moved to 60, best_bid_tick unchanged
             let orderbook = exchange.books[book_key].read()?;
             assert_eq!(orderbook.best_bid_tick, bid_tick_2);
             assert_eq!(orderbook.best_ask_tick, ask_tick_2);
 
             // Cancel bid at tick 90
-            exchange.cancel(alice, bid_order_3)?;
+            exchange.cancel(
+                &mut crate::storage::StorageCtx::test_writable(),
+                alice,
+                bid_order_3,
+            )?;
             // Verify best_bid_tick is now i16::MIN, best_ask_tick unchanged
             let orderbook = exchange.books[book_key].read()?;
             assert_eq!(orderbook.best_bid_tick, i16::MIN);
             assert_eq!(orderbook.best_ask_tick, ask_tick_2);
 
             // Cancel ask at tick 60
-            exchange.cancel(alice, ask_order_2)?;
+            exchange.cancel(
+                &mut crate::storage::StorageCtx::test_writable(),
+                alice,
+                ask_order_2,
+            )?;
             // Verify best_ask_tick is now i16::MAX, best_bid_tick unchanged
             let orderbook = exchange.books[book_key].read()?;
             assert_eq!(orderbook.best_bid_tick, i16::MIN);
@@ -4638,14 +5446,14 @@ mod tests {
         let mut storage = HashMapStorageProvider::new(1);
         StorageCtx::enter(&mut storage, || {
             let mut exchange = StablecoinDEX::new();
-            exchange.initialize()?;
+            exchange.initialize(&mut crate::storage::StorageCtx::test_writable())?;
 
             let alice = Address::random();
             let admin = Address::random();
 
             let (base_token, _quote_token) =
                 setup_test_tokens(admin, alice, exchange.address, AMOUNT)?;
-            exchange.create_pair(base_token)?;
+            exchange.create_pair(&mut crate::storage::StorageCtx::test_writable(), base_token)?;
 
             // Give alice base tokens
             TIP20Setup::config(base_token)
@@ -4655,7 +5463,14 @@ mod tests {
 
             // Test invalid tick spacing
             let invalid_tick = 15i16;
-            let result = exchange.place(alice, base_token, MIN_ORDER_AMOUNT, true, invalid_tick);
+            let result = exchange.place(
+                &mut crate::storage::StorageCtx::test_writable(),
+                alice,
+                base_token,
+                MIN_ORDER_AMOUNT,
+                true,
+                invalid_tick,
+            );
 
             let error = result.unwrap_err();
             assert!(matches!(
@@ -4665,7 +5480,14 @@ mod tests {
 
             // Test valid tick spacing
             let valid_tick = -20i16;
-            let result = exchange.place(alice, base_token, MIN_ORDER_AMOUNT, true, valid_tick);
+            let result = exchange.place(
+                &mut crate::storage::StorageCtx::test_writable(),
+                alice,
+                base_token,
+                MIN_ORDER_AMOUNT,
+                true,
+                valid_tick,
+            );
             assert!(result.is_ok());
 
             Ok(())
@@ -4679,14 +5501,14 @@ mod tests {
         let mut storage = HashMapStorageProvider::new(1);
         StorageCtx::enter(&mut storage, || {
             let mut exchange = StablecoinDEX::new();
-            exchange.initialize()?;
+            exchange.initialize(&mut crate::storage::StorageCtx::test_writable())?;
 
             let alice = Address::random();
             let admin = Address::random();
 
             let (base_token, _quote_token) =
                 setup_test_tokens(admin, alice, exchange.address, AMOUNT)?;
-            exchange.create_pair(base_token)?;
+            exchange.create_pair(&mut crate::storage::StorageCtx::test_writable(), base_token)?;
 
             // Give alice base tokens
             TIP20Setup::config(base_token)
@@ -4698,6 +5520,7 @@ mod tests {
             let invalid_tick = 15i16;
             let invalid_flip_tick = 25i16;
             let result = exchange.place_flip(
+                &mut crate::storage::StorageCtx::test_writable(),
                 alice,
                 base_token,
                 MIN_ORDER_AMOUNT,
@@ -4717,6 +5540,7 @@ mod tests {
             let valid_tick = 20i16;
             let invalid_flip_tick = 25i16;
             let result = exchange.place_flip(
+                &mut crate::storage::StorageCtx::test_writable(),
                 alice,
                 base_token,
                 MIN_ORDER_AMOUNT,
@@ -4734,6 +5558,7 @@ mod tests {
 
             let valid_flip_tick = 30i16;
             let result = exchange.place_flip(
+                &mut crate::storage::StorageCtx::test_writable(),
                 alice,
                 base_token,
                 MIN_ORDER_AMOUNT,
@@ -4753,7 +5578,7 @@ mod tests {
         let mut storage = HashMapStorageProvider::new(1);
         StorageCtx::enter(&mut storage, || {
             let mut exchange = StablecoinDEX::new();
-            exchange.initialize()?;
+            exchange.initialize(&mut crate::storage::StorageCtx::test_writable())?;
 
             let admin = Address::random();
             let user = Address::random();
@@ -4782,7 +5607,7 @@ mod tests {
         let mut storage = HashMapStorageProvider::new(1);
         StorageCtx::enter(&mut storage, || {
             let mut exchange = StablecoinDEX::new();
-            exchange.initialize()?;
+            exchange.initialize(&mut crate::storage::StorageCtx::test_writable())?;
 
             let alice = Address::random();
             let admin = Address::random();
@@ -4801,11 +5626,18 @@ mod tests {
                 .with_approval(alice, exchange.address, U256::from(amount))
                 .apply()?;
 
-            exchange.create_pair(base_token)?;
+            exchange.create_pair(&mut crate::storage::StorageCtx::test_writable(), base_token)?;
             let book_key = compute_book_key(base_token, quote_token);
 
             // Place a bid order (alice wants to buy base with quote)
-            exchange.place(alice, base_token, amount, true, tick)?;
+            exchange.place(
+                &mut crate::storage::StorageCtx::test_writable(),
+                alice,
+                base_token,
+                amount,
+                true,
+                tick,
+            )?;
 
             // Test is_bid == true: base -> quote
             let quoted_out_bid = exchange.quote_exact_in(book_key, amount, true)?;
@@ -4819,7 +5651,14 @@ mod tests {
             );
 
             // Place an ask order (alice wants to sell base for quote)
-            exchange.place(alice, base_token, amount, false, tick)?;
+            exchange.place(
+                &mut crate::storage::StorageCtx::test_writable(),
+                alice,
+                base_token,
+                amount,
+                false,
+                tick,
+            )?;
 
             // Test is_bid == false: quote -> base
             let quote_in = (amount * u128::from(price)) / u128::from(orderbook::PRICE_SCALE);
@@ -4842,7 +5681,7 @@ mod tests {
         let mut storage = HashMapStorageProvider::new(1);
         StorageCtx::enter(&mut storage, || {
             let mut exchange = StablecoinDEX::new();
-            exchange.initialize()?;
+            exchange.initialize(&mut crate::storage::StorageCtx::test_writable())?;
             let admin = Address::random();
             let user = Address::random();
 
@@ -4858,6 +5697,7 @@ mod tests {
             // Transfer tokens to exchange first
             let mut base = TIP20Token::from_address(base_token)?;
             base.transfer(
+                &mut crate::storage::StorageCtx::test_writable(),
                 user,
                 ITIP20::transferCall {
                     to: exchange.address,
@@ -4867,7 +5707,14 @@ mod tests {
             .expect("Base token transfer failed");
 
             // Place an order which should also create the pair
-            exchange.place(user, base_token, MIN_ORDER_AMOUNT, true, 0)?;
+            exchange.place(
+                &mut crate::storage::StorageCtx::test_writable(),
+                user,
+                base_token,
+                MIN_ORDER_AMOUNT,
+                true,
+                0,
+            )?;
 
             let book_after = exchange.books[book_key].read()?;
             assert_eq!(book_after.base, base_token);
@@ -4890,7 +5737,7 @@ mod tests {
         let mut storage = HashMapStorageProvider::new(1);
         StorageCtx::enter(&mut storage, || {
             let mut exchange = StablecoinDEX::new();
-            exchange.initialize()?;
+            exchange.initialize(&mut crate::storage::StorageCtx::test_writable())?;
 
             let admin = Address::random();
             let alice = Address::random();
@@ -4898,15 +5745,30 @@ mod tests {
             let base = TIP20Setup::create("BASE", "BASE", admin).apply()?;
             let base_address = base.address();
 
-            exchange.create_pair(base_address)?;
+            exchange.create_pair(
+                &mut crate::storage::StorageCtx::test_writable(),
+                base_address,
+            )?;
 
             let internal_balance = MIN_ORDER_AMOUNT / 2;
-            exchange.set_balance(alice, base_address, internal_balance)?;
+            exchange.set_balance(
+                &mut crate::storage::StorageCtx::test_writable(),
+                alice,
+                base_address,
+                internal_balance,
+            )?;
 
             assert_eq!(exchange.balance_of(alice, base_address)?, internal_balance);
 
             let tick = 0i16;
-            let result = exchange.place(alice, base_address, MIN_ORDER_AMOUNT * 2, false, tick);
+            let result = exchange.place(
+                &mut crate::storage::StorageCtx::test_writable(),
+                alice,
+                base_address,
+                MIN_ORDER_AMOUNT * 2,
+                false,
+                tick,
+            );
 
             assert!(result.is_err());
             assert_eq!(exchange.balance_of(alice, base_address)?, internal_balance);
@@ -4920,7 +5782,7 @@ mod tests {
         let mut storage = HashMapStorageProvider::new(1);
         StorageCtx::enter(&mut storage, || {
             let mut exchange = StablecoinDEX::new();
-            exchange.initialize()?;
+            exchange.initialize(&mut crate::storage::StorageCtx::test_writable())?;
 
             let admin = Address::random();
             let alice = Address::random();
@@ -4941,9 +5803,16 @@ mod tests {
             let base_token = base.address();
             let quote_token = base.quote_token()?;
 
-            exchange.create_pair(base_token)?;
+            exchange.create_pair(&mut crate::storage::StorageCtx::test_writable(), base_token)?;
 
-            let order_id = exchange.place(alice, base_token, min_order_amount, true, tick)?;
+            let order_id = exchange.place(
+                &mut crate::storage::StorageCtx::test_writable(),
+                alice,
+                base_token,
+                min_order_amount,
+                true,
+                tick,
+            )?;
 
             assert_eq!(order_id, 1);
 
@@ -4972,7 +5841,7 @@ mod tests {
         let mut storage = HashMapStorageProvider::new(1);
         StorageCtx::enter(&mut storage, || {
             let mut exchange = StablecoinDEX::new();
-            exchange.initialize()?;
+            exchange.initialize(&mut crate::storage::StorageCtx::test_writable())?;
 
             let admin = Address::random();
             let alice = Address::random();
@@ -4994,9 +5863,10 @@ mod tests {
             let base_token = base.address();
             let quote_token = base.quote_token()?;
 
-            exchange.create_pair(base_token)?;
+            exchange.create_pair(&mut crate::storage::StorageCtx::test_writable(), base_token)?;
 
             let order_id = exchange.place_flip(
+                &mut crate::storage::StorageCtx::test_writable(),
                 alice,
                 base_token,
                 min_order_amount,
@@ -5041,7 +5911,7 @@ mod tests {
         let mut storage = HashMapStorageProvider::new(1);
         StorageCtx::enter(&mut storage, || {
             let mut exchange = StablecoinDEX::new();
-            exchange.initialize()?;
+            exchange.initialize(&mut crate::storage::StorageCtx::test_writable())?;
 
             let admin = Address::random();
             let alice = Address::random();
@@ -5062,9 +5932,16 @@ mod tests {
             let base_token = base.address();
             let quote_token = base.quote_token()?;
 
-            exchange.create_pair(base_token)?;
+            exchange.create_pair(&mut crate::storage::StorageCtx::test_writable(), base_token)?;
 
-            let order_id = exchange.place(alice, base_token, min_order_amount, true, tick)?;
+            let order_id = exchange.place(
+                &mut crate::storage::StorageCtx::test_writable(),
+                alice,
+                base_token,
+                min_order_amount,
+                true,
+                tick,
+            )?;
 
             let stored_order = exchange.orders[order_id].read()?;
             assert_eq!(stored_order.maker(), alice);
@@ -5096,7 +5973,7 @@ mod tests {
         let mut storage = HashMapStorageProvider::new(1);
         StorageCtx::enter(&mut storage, || {
             let mut exchange = StablecoinDEX::new();
-            exchange.initialize()?;
+            exchange.initialize(&mut crate::storage::StorageCtx::test_writable())?;
 
             let alice = Address::random();
             let admin = Address::random();
@@ -5104,6 +5981,7 @@ mod tests {
             // Create a blacklist policy
             let mut registry = TIP403Registry::new();
             let policy_id = registry.create_policy(
+                &mut crate::storage::StorageCtx::test_writable(),
                 admin,
                 ITIP403Registry::createPolicyCall {
                     admin,
@@ -5115,6 +5993,7 @@ mod tests {
             let mut quote = TIP20Setup::path_usd(admin).with_issuer(admin).apply()?;
 
             quote.change_transfer_policy_id(
+                &mut crate::storage::StorageCtx::test_writable(),
                 admin,
                 ITIP20::changeTransferPolicyIdCall {
                     newPolicyId: policy_id,
@@ -5128,21 +6007,31 @@ mod tests {
             let base_address = base.address();
 
             base.change_transfer_policy_id(
+                &mut crate::storage::StorageCtx::test_writable(),
                 admin,
                 ITIP20::changeTransferPolicyIdCall {
                     newPolicyId: policy_id,
                 },
             )?;
 
-            exchange.create_pair(base_address)?;
+            exchange.create_pair(
+                &mut crate::storage::StorageCtx::test_writable(),
+                base_address,
+            )?;
 
             // Set up internal balance for alice
             let internal_balance = MIN_ORDER_AMOUNT * 2;
-            exchange.set_balance(alice, base_address, internal_balance)?;
+            exchange.set_balance(
+                &mut crate::storage::StorageCtx::test_writable(),
+                alice,
+                base_address,
+                internal_balance,
+            )?;
             assert_eq!(exchange.balance_of(alice, base_address)?, internal_balance);
 
             // Blacklist alice
             registry.modify_policy_blacklist(
+                &mut crate::storage::StorageCtx::test_writable(),
                 admin,
                 ITIP403Registry::modifyPolicyBlacklistCall {
                     policyId: policy_id,
@@ -5154,7 +6043,14 @@ mod tests {
 
             // Attempt to place order using internal balance - should fail
             let tick = 0i16;
-            let result = exchange.place(alice, base_address, MIN_ORDER_AMOUNT, false, tick);
+            let result = exchange.place(
+                &mut crate::storage::StorageCtx::test_writable(),
+                alice,
+                base_address,
+                MIN_ORDER_AMOUNT,
+                false,
+                tick,
+            );
 
             assert!(
                 result.is_err(),
@@ -5179,13 +6075,14 @@ mod tests {
         let mut storage = HashMapStorageProvider::new(1);
         StorageCtx::enter(&mut storage, || {
             let mut exchange = StablecoinDEX::new();
-            exchange.initialize()?;
+            exchange.initialize(&mut crate::storage::StorageCtx::test_writable())?;
 
             let alice = Address::random();
             let admin = Address::random();
 
             let mut registry = TIP403Registry::new();
             let policy_id = registry.create_policy(
+                &mut crate::storage::StorageCtx::test_writable(),
                 admin,
                 ITIP403Registry::createPolicyCall {
                     admin,
@@ -5199,16 +6096,28 @@ mod tests {
                 .with_approval(alice, exchange.address, U256::from(MIN_ORDER_AMOUNT * 2))
                 .apply()?;
             base.change_transfer_policy_id(
+                &mut crate::storage::StorageCtx::test_writable(),
                 admin,
                 ITIP20::changeTransferPolicyIdCall {
                     newPolicyId: policy_id,
                 },
             )?;
 
-            exchange.create_pair(base.address())?;
-            let order_id = exchange.place(alice, base.address(), MIN_ORDER_AMOUNT, false, 0)?;
+            exchange.create_pair(
+                &mut crate::storage::StorageCtx::test_writable(),
+                base.address(),
+            )?;
+            let order_id = exchange.place(
+                &mut crate::storage::StorageCtx::test_writable(),
+                alice,
+                base.address(),
+                MIN_ORDER_AMOUNT,
+                false,
+                0,
+            )?;
 
             registry.modify_policy_blacklist(
+                &mut crate::storage::StorageCtx::test_writable(),
                 admin,
                 ITIP403Registry::modifyPolicyBlacklistCall {
                     policyId: policy_id,
@@ -5217,7 +6126,8 @@ mod tests {
                 },
             )?;
 
-            exchange.cancel_stale_order(order_id)?;
+            exchange
+                .cancel_stale_order(&mut crate::storage::StorageCtx::test_writable(), order_id)?;
 
             assert_eq!(
                 exchange.balance_of(alice, base.address())?,
@@ -5233,13 +6143,14 @@ mod tests {
         let mut storage = HashMapStorageProvider::new(1);
         StorageCtx::enter(&mut storage, || {
             let mut exchange = StablecoinDEX::new();
-            exchange.initialize()?;
+            exchange.initialize(&mut crate::storage::StorageCtx::test_writable())?;
 
             let alice = Address::random();
             let admin = Address::random();
 
             let mut registry = TIP403Registry::new();
             let policy_id = registry.create_policy(
+                &mut crate::storage::StorageCtx::test_writable(),
                 admin,
                 ITIP403Registry::createPolicyCall {
                     admin,
@@ -5253,16 +6164,28 @@ mod tests {
                 .with_approval(alice, exchange.address, U256::from(MIN_ORDER_AMOUNT * 2))
                 .apply()?;
             base.change_transfer_policy_id(
+                &mut crate::storage::StorageCtx::test_writable(),
                 admin,
                 ITIP20::changeTransferPolicyIdCall {
                     newPolicyId: policy_id,
                 },
             )?;
 
-            exchange.create_pair(base.address())?;
-            let order_id = exchange.place(alice, base.address(), MIN_ORDER_AMOUNT, false, 0)?;
+            exchange.create_pair(
+                &mut crate::storage::StorageCtx::test_writable(),
+                base.address(),
+            )?;
+            let order_id = exchange.place(
+                &mut crate::storage::StorageCtx::test_writable(),
+                alice,
+                base.address(),
+                MIN_ORDER_AMOUNT,
+                false,
+                0,
+            )?;
 
-            let result = exchange.cancel_stale_order(order_id);
+            let result = exchange
+                .cancel_stale_order(&mut crate::storage::StorageCtx::test_writable(), order_id);
             assert!(result.is_err());
             assert!(matches!(
                 result.unwrap_err(),
@@ -5289,7 +6212,7 @@ mod tests {
             let (order_id, base_token, invalid_policy_id) =
                 StorageCtx::enter(&mut storage, || {
                     let mut exchange = StablecoinDEX::new();
-                    exchange.initialize()?;
+                    exchange.initialize(&mut crate::storage::StorageCtx::test_writable())?;
 
                     let mut base = TIP20Setup::create("USDC", "USDC", admin)
                         .with_issuer(admin)
@@ -5297,14 +6220,24 @@ mod tests {
                         .with_approval(alice, exchange.address, U256::from(MIN_ORDER_AMOUNT * 2))
                         .apply()?;
 
-                    exchange.create_pair(base.address())?;
-                    let order_id =
-                        exchange.place(alice, base.address(), MIN_ORDER_AMOUNT, false, 0)?;
+                    exchange.create_pair(
+                        &mut crate::storage::StorageCtx::test_writable(),
+                        base.address(),
+                    )?;
+                    let order_id = exchange.place(
+                        &mut crate::storage::StorageCtx::test_writable(),
+                        alice,
+                        base.address(),
+                        MIN_ORDER_AMOUNT,
+                        false,
+                        0,
+                    )?;
 
                     // Create an invalid policy (COMPOUND on T0 stores as __Invalid = 255)
                     // and reassign the token to it, simulating a legacy-broken policy reference.
                     let mut registry = TIP403Registry::new();
                     let invalid_policy_id = registry.create_policy(
+                        &mut crate::storage::StorageCtx::test_writable(),
                         admin,
                         ITIP403Registry::createPolicyCall {
                             admin,
@@ -5312,6 +6245,7 @@ mod tests {
                         },
                     )?;
                     base.change_transfer_policy_id(
+                        &mut crate::storage::StorageCtx::test_writable(),
                         admin,
                         ITIP20::changeTransferPolicyIdCall {
                             newPolicyId: invalid_policy_id,
@@ -5336,7 +6270,10 @@ mod tests {
                 );
 
                 // cancel_stale_order must succeed — the domain error means "policy gone → stale"
-                exchange.cancel_stale_order(order_id)?;
+                exchange.cancel_stale_order(
+                    &mut crate::storage::StorageCtx::test_writable(),
+                    order_id,
+                )?;
 
                 assert_eq!(
                     exchange.balance_of(alice, base_token)?,
@@ -5355,13 +6292,14 @@ mod tests {
         let mut storage = HashMapStorageProvider::new_with_spec(1, TempoHardfork::T3);
         StorageCtx::enter(&mut storage, || {
             let mut exchange = StablecoinDEX::new();
-            exchange.initialize()?;
+            exchange.initialize(&mut crate::storage::StorageCtx::test_writable())?;
 
             let alice = Address::random();
             let admin = Address::random();
 
             let mut registry = TIP403Registry::new();
             let policy_id = registry.create_policy(
+                &mut crate::storage::StorageCtx::test_writable(),
                 admin,
                 ITIP403Registry::createPolicyCall {
                     admin,
@@ -5372,11 +6310,19 @@ mod tests {
             let (base_addr, quote_addr) =
                 setup_test_tokens(admin, alice, exchange.address, MIN_ORDER_AMOUNT * 2)?;
 
-            exchange.create_pair(base_addr)?;
-            let order_id = exchange.place(alice, base_addr, MIN_ORDER_AMOUNT, false, 0)?;
+            exchange.create_pair(&mut crate::storage::StorageCtx::test_writable(), base_addr)?;
+            let order_id = exchange.place(
+                &mut crate::storage::StorageCtx::test_writable(),
+                alice,
+                base_addr,
+                MIN_ORDER_AMOUNT,
+                false,
+                0,
+            )?;
 
             let mut quote = TIP20Token::from_address(quote_addr)?;
             quote.change_transfer_policy_id(
+                &mut crate::storage::StorageCtx::test_writable(),
                 admin,
                 ITIP20::changeTransferPolicyIdCall {
                     newPolicyId: policy_id,
@@ -5384,6 +6330,7 @@ mod tests {
             )?;
 
             registry.modify_policy_blacklist(
+                &mut crate::storage::StorageCtx::test_writable(),
                 admin,
                 ITIP403Registry::modifyPolicyBlacklistCall {
                     policyId: policy_id,
@@ -5393,7 +6340,8 @@ mod tests {
             )?;
 
             // Pre-T4: recipient check on payout token is not performed, order is not stale
-            let result = exchange.cancel_stale_order(order_id);
+            let result = exchange
+                .cancel_stale_order(&mut crate::storage::StorageCtx::test_writable(), order_id);
             assert!(result.is_err());
             assert!(matches!(
                 result.unwrap_err(),
@@ -5409,13 +6357,14 @@ mod tests {
         let mut storage = HashMapStorageProvider::new_with_spec(1, TempoHardfork::T4);
         StorageCtx::enter(&mut storage, || {
             let mut exchange = StablecoinDEX::new();
-            exchange.initialize()?;
+            exchange.initialize(&mut crate::storage::StorageCtx::test_writable())?;
 
             let alice = Address::random();
             let admin = Address::random();
 
             let mut registry = TIP403Registry::new();
             let policy_id = registry.create_policy(
+                &mut crate::storage::StorageCtx::test_writable(),
                 admin,
                 ITIP403Registry::createPolicyCall {
                     admin,
@@ -5426,11 +6375,19 @@ mod tests {
             let (base_addr, quote_addr) =
                 setup_test_tokens(admin, alice, exchange.address, MIN_ORDER_AMOUNT * 2)?;
 
-            exchange.create_pair(base_addr)?;
-            let order_id = exchange.place(alice, base_addr, MIN_ORDER_AMOUNT, false, 0)?;
+            exchange.create_pair(&mut crate::storage::StorageCtx::test_writable(), base_addr)?;
+            let order_id = exchange.place(
+                &mut crate::storage::StorageCtx::test_writable(),
+                alice,
+                base_addr,
+                MIN_ORDER_AMOUNT,
+                false,
+                0,
+            )?;
 
             let mut quote = TIP20Token::from_address(quote_addr)?;
             quote.change_transfer_policy_id(
+                &mut crate::storage::StorageCtx::test_writable(),
                 admin,
                 ITIP20::changeTransferPolicyIdCall {
                     newPolicyId: policy_id,
@@ -5438,6 +6395,7 @@ mod tests {
             )?;
 
             registry.modify_policy_blacklist(
+                &mut crate::storage::StorageCtx::test_writable(),
                 admin,
                 ITIP403Registry::modifyPolicyBlacklistCall {
                     policyId: policy_id,
@@ -5447,7 +6405,8 @@ mod tests {
             )?;
 
             // T4+: recipient check on payout token kicks in, order is stale
-            exchange.cancel_stale_order(order_id)?;
+            exchange
+                .cancel_stale_order(&mut crate::storage::StorageCtx::test_writable(), order_id)?;
 
             assert_eq!(exchange.balance_of(alice, base_addr)?, MIN_ORDER_AMOUNT);
 
@@ -5460,7 +6419,7 @@ mod tests {
         let mut storage = HashMapStorageProvider::new(1);
         StorageCtx::enter(&mut storage, || {
             let mut exchange = StablecoinDEX::new();
-            exchange.initialize()?;
+            exchange.initialize(&mut crate::storage::StorageCtx::test_writable())?;
 
             let alice = Address::random();
             let admin = Address::random();
@@ -5468,6 +6427,7 @@ mod tests {
             // Setup TIP403 registry and create blacklist policy
             let mut registry = TIP403Registry::new();
             let policy_id = registry.create_policy(
+                &mut crate::storage::StorageCtx::test_writable(),
                 admin,
                 ITIP403Registry::createPolicyCall {
                     admin,
@@ -5482,6 +6442,7 @@ mod tests {
             // Get the base token and apply blacklist policy
             let mut base = TIP20Token::from_address(base_addr)?;
             base.change_transfer_policy_id(
+                &mut crate::storage::StorageCtx::test_writable(),
                 admin,
                 ITIP20::changeTransferPolicyIdCall {
                     newPolicyId: policy_id,
@@ -5490,6 +6451,7 @@ mod tests {
 
             // Blacklist alice in the base token
             registry.modify_policy_blacklist(
+                &mut crate::storage::StorageCtx::test_writable(),
                 admin,
                 ITIP403Registry::modifyPolicyBlacklistCall {
                     policyId: policy_id,
@@ -5498,10 +6460,17 @@ mod tests {
                 },
             )?;
 
-            exchange.create_pair(base_addr)?;
+            exchange.create_pair(&mut crate::storage::StorageCtx::test_writable(), base_addr)?;
 
             // Test place bid order (alice wants to buy base token) - should fail
-            let result = exchange.place(alice, base_addr, MIN_ORDER_AMOUNT, true, 0);
+            let result = exchange.place(
+                &mut crate::storage::StorageCtx::test_writable(),
+                alice,
+                base_addr,
+                MIN_ORDER_AMOUNT,
+                true,
+                0,
+            );
             assert!(result.is_err());
             assert!(matches!(
                 result.unwrap_err(),
@@ -5509,8 +6478,16 @@ mod tests {
             ));
 
             // Test placeFlip bid order - should also fail
-            let result =
-                exchange.place_flip(alice, base_addr, MIN_ORDER_AMOUNT, true, 0, 100, false);
+            let result = exchange.place_flip(
+                &mut crate::storage::StorageCtx::test_writable(),
+                alice,
+                base_addr,
+                MIN_ORDER_AMOUNT,
+                true,
+                0,
+                100,
+                false,
+            );
             assert!(result.is_err());
             assert!(matches!(
                 result.unwrap_err(),
@@ -5526,7 +6503,7 @@ mod tests {
         let mut storage = HashMapStorageProvider::new(1);
         StorageCtx::enter(&mut storage, || {
             let mut exchange = StablecoinDEX::new();
-            exchange.initialize()?;
+            exchange.initialize(&mut crate::storage::StorageCtx::test_writable())?;
 
             let alice = Address::random();
             let admin = Address::random();
@@ -5534,6 +6511,7 @@ mod tests {
             // Setup TIP403 registry and create blacklist policy
             let mut registry = TIP403Registry::new();
             let policy_id = registry.create_policy(
+                &mut crate::storage::StorageCtx::test_writable(),
                 admin,
                 ITIP403Registry::createPolicyCall {
                     admin,
@@ -5548,6 +6526,7 @@ mod tests {
             // Get the quote token and apply blacklist policy
             let mut quote = TIP20Token::from_address(quote_addr)?;
             quote.change_transfer_policy_id(
+                &mut crate::storage::StorageCtx::test_writable(),
                 admin,
                 ITIP20::changeTransferPolicyIdCall {
                     newPolicyId: policy_id,
@@ -5556,6 +6535,7 @@ mod tests {
 
             // Blacklist alice in the quote token
             registry.modify_policy_blacklist(
+                &mut crate::storage::StorageCtx::test_writable(),
                 admin,
                 ITIP403Registry::modifyPolicyBlacklistCall {
                     policyId: policy_id,
@@ -5564,10 +6544,17 @@ mod tests {
                 },
             )?;
 
-            exchange.create_pair(base_addr)?;
+            exchange.create_pair(&mut crate::storage::StorageCtx::test_writable(), base_addr)?;
 
             // Test place ask order (alice wants to sell base for quote) - should fail
-            let result = exchange.place(alice, base_addr, MIN_ORDER_AMOUNT, false, 0);
+            let result = exchange.place(
+                &mut crate::storage::StorageCtx::test_writable(),
+                alice,
+                base_addr,
+                MIN_ORDER_AMOUNT,
+                false,
+                0,
+            );
             assert!(result.is_err());
             assert!(matches!(
                 result.unwrap_err(),
@@ -5575,8 +6562,16 @@ mod tests {
             ));
 
             // Test placeFlip ask order - should also fail
-            let result =
-                exchange.place_flip(alice, base_addr, MIN_ORDER_AMOUNT, false, 100, 0, false);
+            let result = exchange.place_flip(
+                &mut crate::storage::StorageCtx::test_writable(),
+                alice,
+                base_addr,
+                MIN_ORDER_AMOUNT,
+                false,
+                100,
+                0,
+                false,
+            );
             assert!(result.is_err());
             assert!(matches!(
                 result.unwrap_err(),
@@ -5592,7 +6587,7 @@ mod tests {
         let mut storage = HashMapStorageProvider::new_with_spec(1, TempoHardfork::T2);
         StorageCtx::enter(&mut storage, || {
             let mut exchange = StablecoinDEX::new();
-            exchange.initialize()?;
+            exchange.initialize(&mut crate::storage::StorageCtx::test_writable())?;
 
             let (alice, admin) = (Address::random(), Address::random());
             let mut registry = TIP403Registry::new();
@@ -5600,6 +6595,7 @@ mod tests {
             // Create a sender policy that allows anyone (always-allow = policy 1)
             // Create a recipient whitelist that does NOT include alice
             let recipient_policy = registry.create_policy(
+                &mut crate::storage::StorageCtx::test_writable(),
                 admin,
                 ITIP403Registry::createPolicyCall {
                     admin,
@@ -5610,6 +6606,7 @@ mod tests {
 
             // Create compound policy: anyone can send, but only whitelisted can receive
             let compound_id = registry.create_compound_policy(
+                &mut crate::storage::StorageCtx::test_writable(),
                 admin,
                 ITIP403Registry::createCompoundPolicyCall {
                     senderPolicyId: 1,                   // always-allow: anyone can send
@@ -5625,21 +6622,37 @@ mod tests {
             // Apply compound policy to quote token (the non-escrow token for asks)
             let mut quote = TIP20Token::from_address(quote_addr)?;
             quote.change_transfer_policy_id(
+                &mut crate::storage::StorageCtx::test_writable(),
                 admin,
                 ITIP20::changeTransferPolicyIdCall {
                     newPolicyId: compound_id,
                 },
             )?;
 
-            exchange.create_pair(base_addr)?;
+            exchange.create_pair(&mut crate::storage::StorageCtx::test_writable(), base_addr)?;
 
             // Alice places an ask order: sells base token, receives quote token when filled
             // Since alice is NOT in the recipient whitelist for quote token,
             // and the non-escrow token (quote) flows DEX → alice, this should FAIL.
-            let res_ask = exchange.place(alice, base_addr, MIN_ORDER_AMOUNT, false, 0);
+            let res_ask = exchange.place(
+                &mut crate::storage::StorageCtx::test_writable(),
+                alice,
+                base_addr,
+                MIN_ORDER_AMOUNT,
+                false,
+                0,
+            );
             // Same for flip orders
-            let res_flip =
-                exchange.place_flip(alice, base_addr, MIN_ORDER_AMOUNT, false, 100, 0, false);
+            let res_flip = exchange.place_flip(
+                &mut crate::storage::StorageCtx::test_writable(),
+                alice,
+                base_addr,
+                MIN_ORDER_AMOUNT,
+                false,
+                100,
+                0,
+                false,
+            );
 
             for res in [res_ask, res_flip] {
                 assert!(
@@ -5659,7 +6672,7 @@ mod tests {
         let mut storage = HashMapStorageProvider::new(1);
         StorageCtx::enter(&mut storage, || {
             let mut exchange = StablecoinDEX::new();
-            exchange.initialize()?;
+            exchange.initialize(&mut crate::storage::StorageCtx::test_writable())?;
 
             let alice = Address::random();
             let bob = Address::random();
@@ -5669,7 +6682,7 @@ mod tests {
             let (base_token, quote_token) =
                 setup_test_tokens(admin, alice, exchange.address, 200_000_000u128)?;
             exchange
-                .create_pair(base_token)
+                .create_pair(&mut crate::storage::StorageCtx::test_writable(), base_token)
                 .expect("Could not create pair");
 
             let order_amount = 100000000u128;
@@ -5679,7 +6692,14 @@ mod tests {
                 tip20_quote_token.balance_of(ITIP20::balanceOfCall { account: alice })?;
 
             exchange
-                .place(alice, base_token, order_amount, true, tick)
+                .place(
+                    &mut crate::storage::StorageCtx::test_writable(),
+                    alice,
+                    base_token,
+                    order_amount,
+                    true,
+                    tick,
+                )
                 .expect("Order should succeed");
 
             let alice_balance_after_place =
@@ -5688,11 +6708,23 @@ mod tests {
             assert_eq!(escrowed, U256::from(100010000u128));
 
             exchange
-                .set_balance(bob, base_token, 200_000_000u128)
+                .set_balance(
+                    &mut crate::storage::StorageCtx::test_writable(),
+                    bob,
+                    base_token,
+                    200_000_000u128,
+                )
                 .expect("Could not set balance");
 
             exchange
-                .swap_exact_amount_out(bob, base_token, quote_token, 100009999, u128::MAX)
+                .swap_exact_amount_out(
+                    &mut crate::storage::StorageCtx::test_writable(),
+                    bob,
+                    base_token,
+                    quote_token,
+                    100009999,
+                    u128::MAX,
+                )
                 .expect("Swap should succeed");
 
             Ok(())
@@ -5719,7 +6751,7 @@ mod tests {
             assert!(!exchange.is_initialized()?);
 
             // Initialize
-            exchange.initialize()?;
+            exchange.initialize(&mut crate::storage::StorageCtx::test_writable())?;
 
             // After init, should be initialized
             assert!(exchange.is_initialized()?);
@@ -5737,7 +6769,7 @@ mod tests {
         let mut storage = HashMapStorageProvider::new(1);
         StorageCtx::enter(&mut storage, || {
             let mut exchange = StablecoinDEX::new();
-            exchange.initialize()?;
+            exchange.initialize(&mut crate::storage::StorageCtx::test_writable())?;
 
             let admin = Address::random();
             let alice = Address::random();
@@ -5750,9 +6782,16 @@ mod tests {
 
             let (base_token, _quote_token) =
                 setup_test_tokens(admin, alice, exchange.address, escrow)?;
-            exchange.create_pair(base_token)?;
+            exchange.create_pair(&mut crate::storage::StorageCtx::test_writable(), base_token)?;
 
-            let order_id = exchange.place(alice, base_token, min_order_amount, true, tick)?;
+            let order_id = exchange.place(
+                &mut crate::storage::StorageCtx::test_writable(),
+                alice,
+                base_token,
+                min_order_amount,
+                true,
+                tick,
+            )?;
 
             // Valid order should be retrievable
             let order = exchange.get_order(order_id)?;
@@ -5797,7 +6836,7 @@ mod tests {
     /// Sets up a [`StablecoinDEX`] with a flip bid order ready to be filled.
     fn setup_flip_order_test() -> eyre::Result<FlipOrderTestCtx> {
         let mut exchange = StablecoinDEX::new();
-        exchange.initialize()?;
+        exchange.initialize(&mut crate::storage::StorageCtx::test_writable())?;
 
         let alice = Address::random();
         let bob = Address::random();
@@ -5811,12 +6850,21 @@ mod tests {
 
         let (base_token, quote_token) =
             setup_test_tokens(admin, alice, exchange.address, expected_escrow * 2)?;
-        exchange.create_pair(base_token)?;
+        exchange.create_pair(&mut crate::storage::StorageCtx::test_writable(), base_token)?;
 
         let book_key = compute_book_key(base_token, quote_token);
 
         // Place a flip bid order: when filled, it should flip to an ask at flip_tick
-        exchange.place_flip(alice, base_token, amount, true, tick, flip_tick, false)?;
+        exchange.place_flip(
+            &mut crate::storage::StorageCtx::test_writable(),
+            alice,
+            base_token,
+            amount,
+            true,
+            tick,
+            flip_tick,
+            false,
+        )?;
 
         Ok(FlipOrderTestCtx {
             exchange,
@@ -5854,6 +6902,7 @@ mod tests {
                 // on the base token will fail with PolicyForbids — a business logic error.
                 let mut registry = TIP403Registry::new();
                 let policy_id = registry.create_policy(
+                    &mut crate::storage::StorageCtx::test_writable(),
                     admin,
                     ITIP403Registry::createPolicyCall {
                         admin,
@@ -5863,6 +6912,7 @@ mod tests {
 
                 let mut base = TIP20Token::from_address(base_token)?;
                 base.change_transfer_policy_id(
+                    &mut crate::storage::StorageCtx::test_writable(),
                     admin,
                     ITIP20::changeTransferPolicyIdCall {
                         newPolicyId: policy_id,
@@ -5870,6 +6920,7 @@ mod tests {
                 )?;
 
                 registry.modify_policy_blacklist(
+                    &mut crate::storage::StorageCtx::test_writable(),
                     admin,
                     ITIP403Registry::modifyPolicyBlacklistCall {
                         policyId: policy_id,
@@ -5879,10 +6930,22 @@ mod tests {
                 )?;
 
                 // Fund bob to fill the order
-                exchange.set_balance(bob, base_token, amount)?;
+                exchange.set_balance(
+                    &mut crate::storage::StorageCtx::test_writable(),
+                    bob,
+                    base_token,
+                    amount,
+                )?;
 
                 // The swap must succeed — PolicyForbids is not a system error, so it's ignored
-                let result = exchange.swap_exact_amount_in(bob, base_token, quote_token, amount, 0);
+                let result = exchange.swap_exact_amount_in(
+                    &mut crate::storage::StorageCtx::test_writable(),
+                    bob,
+                    base_token,
+                    quote_token,
+                    amount,
+                    0,
+                );
                 assert!(
                     result.is_ok(),
                     "[{spec:?}] Swap should succeed when flip hits a business logic error"
@@ -5930,12 +6993,27 @@ mod tests {
                 let poisoned_level = TickLevel::with_values(0, 0, u128::MAX);
                 exchange.books[book_key]
                     .tick_level_handler_mut(flip_tick, false)
-                    .write(poisoned_level)?;
+                    .write(
+                        &mut crate::storage::StorageCtx::test_writable(),
+                        poisoned_level,
+                    )?;
 
                 // Fund bob to fill the order
-                exchange.set_balance(bob, base_token, amount)?;
+                exchange.set_balance(
+                    &mut crate::storage::StorageCtx::test_writable(),
+                    bob,
+                    base_token,
+                    amount,
+                )?;
 
-                let result = exchange.swap_exact_amount_in(bob, base_token, quote_token, amount, 0);
+                let result = exchange.swap_exact_amount_in(
+                    &mut crate::storage::StorageCtx::test_writable(),
+                    bob,
+                    base_token,
+                    quote_token,
+                    amount,
+                    0,
+                );
 
                 if spec.is_t1a() {
                     // T1A+: system errors propagate — swap must revert
@@ -5970,7 +7048,7 @@ mod tests {
         let mut storage = HashMapStorageProvider::new(1);
         StorageCtx::enter(&mut storage, || {
             let mut exchange = StablecoinDEX::new();
-            exchange.initialize()?;
+            exchange.initialize(&mut crate::storage::StorageCtx::test_writable())?;
 
             // Verify initial next_order_id is 1
             assert_eq!(exchange.next_order_id()?, 1);
@@ -6003,12 +7081,26 @@ mod tests {
                 .apply()?;
 
             let book_key = compute_book_key(base_token, quote_token);
-            exchange.create_pair(base_token)?;
+            exchange.create_pair(&mut crate::storage::StorageCtx::test_writable(), base_token)?;
 
             // Place a bid and an ask
-            let bid_id = exchange.place(alice, base_token, amount, true, tick)?;
+            let bid_id = exchange.place(
+                &mut crate::storage::StorageCtx::test_writable(),
+                alice,
+                base_token,
+                amount,
+                true,
+                tick,
+            )?;
             assert_eq!(bid_id, 1);
-            let ask_id = exchange.place(bob, base_token, amount, false, tick)?;
+            let ask_id = exchange.place(
+                &mut crate::storage::StorageCtx::test_writable(),
+                bob,
+                base_token,
+                amount,
+                false,
+                tick,
+            )?;
             assert_eq!(ask_id, 2);
 
             // Verify book has liquidity
@@ -6017,10 +7109,24 @@ mod tests {
             assert_eq!(book.best_ask_tick, tick);
 
             // Fill the bid by selling base into it
-            exchange.swap_exact_amount_in(bob, base_token, quote_token, amount, 0)?;
+            exchange.swap_exact_amount_in(
+                &mut crate::storage::StorageCtx::test_writable(),
+                bob,
+                base_token,
+                quote_token,
+                amount,
+                0,
+            )?;
 
             // Fill the ask by buying base from it
-            exchange.swap_exact_amount_in(alice, quote_token, base_token, quote_amount, 0)?;
+            exchange.swap_exact_amount_in(
+                &mut crate::storage::StorageCtx::test_writable(),
+                alice,
+                quote_token,
+                base_token,
+                quote_amount,
+                0,
+            )?;
 
             // Verify sentinel values are restored
             let book = exchange.books[book_key].read()?;
@@ -6065,15 +7171,28 @@ mod tests {
 
             // Verify swaps against drained book return insufficient_liquidity
             // Sell base into (empty) bids
-            let result = exchange.swap_exact_amount_in(bob, base_token, quote_token, amount, 0);
+            let result = exchange.swap_exact_amount_in(
+                &mut crate::storage::StorageCtx::test_writable(),
+                bob,
+                base_token,
+                quote_token,
+                amount,
+                0,
+            );
             assert_eq!(
                 result,
                 Err(StablecoinDEXError::insufficient_liquidity().into()),
                 "swap against drained bid side must fail"
             );
             // Buy base from (empty) asks
-            let result =
-                exchange.swap_exact_amount_in(alice, quote_token, base_token, quote_amount, 0);
+            let result = exchange.swap_exact_amount_in(
+                &mut crate::storage::StorageCtx::test_writable(),
+                alice,
+                quote_token,
+                base_token,
+                quote_amount,
+                0,
+            );
             assert_eq!(
                 result,
                 Err(StablecoinDEXError::insufficient_liquidity().into()),
@@ -6089,7 +7208,7 @@ mod tests {
         let mut storage = HashMapStorageProvider::new(1);
         StorageCtx::enter(&mut storage, || {
             let mut exchange = StablecoinDEX::new();
-            exchange.initialize()?;
+            exchange.initialize(&mut crate::storage::StorageCtx::test_writable())?;
 
             let alice = Address::random();
             let admin = Address::random();
@@ -6114,15 +7233,37 @@ mod tests {
                 .apply()?;
 
             let book_key = compute_book_key(base_token, quote_token);
-            exchange.create_pair(base_token)?;
+            exchange.create_pair(&mut crate::storage::StorageCtx::test_writable(), base_token)?;
 
             // Place a bid and an ask
-            let bid_id = exchange.place(alice, base_token, amount, true, tick)?;
-            let ask_id = exchange.place(alice, base_token, amount, false, tick)?;
+            let bid_id = exchange.place(
+                &mut crate::storage::StorageCtx::test_writable(),
+                alice,
+                base_token,
+                amount,
+                true,
+                tick,
+            )?;
+            let ask_id = exchange.place(
+                &mut crate::storage::StorageCtx::test_writable(),
+                alice,
+                base_token,
+                amount,
+                false,
+                tick,
+            )?;
 
             // Cancel both
-            exchange.cancel(alice, bid_id)?;
-            exchange.cancel(alice, ask_id)?;
+            exchange.cancel(
+                &mut crate::storage::StorageCtx::test_writable(),
+                alice,
+                bid_id,
+            )?;
+            exchange.cancel(
+                &mut crate::storage::StorageCtx::test_writable(),
+                alice,
+                ask_id,
+            )?;
 
             // Verify sentinel values are restored
             let book = exchange.books[book_key].read()?;
@@ -6153,7 +7294,14 @@ mod tests {
             assert_eq!(ask_level.total_liquidity, 0, "ask liquidity must be 0");
 
             // Verify swap against drained book fails
-            let result = exchange.swap_exact_amount_in(alice, base_token, quote_token, amount, 0);
+            let result = exchange.swap_exact_amount_in(
+                &mut crate::storage::StorageCtx::test_writable(),
+                alice,
+                base_token,
+                quote_token,
+                amount,
+                0,
+            );
             assert_eq!(
                 result,
                 Err(StablecoinDEXError::insufficient_liquidity().into()),
@@ -6169,7 +7317,7 @@ mod tests {
         let mut storage = HashMapStorageProvider::new(1);
         StorageCtx::enter(&mut storage, || {
             let mut exchange = StablecoinDEX::new();
-            exchange.initialize()?;
+            exchange.initialize(&mut crate::storage::StorageCtx::test_writable())?;
 
             let user = Address::random();
             let admin = Address::random();
@@ -6180,11 +7328,21 @@ mod tests {
             let token = base.address();
 
             // Set a balance of 100
-            exchange.set_balance(user, token, 100)?;
+            exchange.set_balance(
+                &mut crate::storage::StorageCtx::test_writable(),
+                user,
+                token,
+                100,
+            )?;
             assert_eq!(exchange.balance_of(user, token)?, 100);
 
             // Subtracting more than the balance should error, not silently clamp to 0
-            let result = exchange.sub_balance(user, token, 101);
+            let result = exchange.sub_balance(
+                &mut crate::storage::StorageCtx::test_writable(),
+                user,
+                token,
+                101,
+            );
             assert_eq!(
                 result,
                 Err(TempoPrecompileError::under_overflow()),
@@ -6227,12 +7385,24 @@ mod tests {
                 let poisoned = TickLevel::with_values(0, 0, u128::MAX);
                 exchange.books[book_key]
                     .tick_level_handler_mut(flip_tick, false)
-                    .write(poisoned)?;
+                    .write(&mut crate::storage::StorageCtx::test_writable(), poisoned)?;
 
                 // Fund bob to fill the order
-                exchange.set_balance(bob, base_token, amount)?;
+                exchange.set_balance(
+                    &mut crate::storage::StorageCtx::test_writable(),
+                    bob,
+                    base_token,
+                    amount,
+                )?;
 
-                let result = exchange.swap_exact_amount_in(bob, base_token, quote_token, amount, 0);
+                let result = exchange.swap_exact_amount_in(
+                    &mut crate::storage::StorageCtx::test_writable(),
+                    bob,
+                    base_token,
+                    quote_token,
+                    amount,
+                    0,
+                );
                 assert!(result.is_err(), "[{spec:?}] swap should fail");
 
                 // 1. `fill_order` credited alice `amount` base before `place_flip`
@@ -6270,7 +7440,7 @@ mod tests {
             let mut storage = HashMapStorageProvider::new_with_spec(1, spec);
             StorageCtx::enter(&mut storage, || {
                 let mut exchange = StablecoinDEX::new();
-                exchange.initialize()?;
+                exchange.initialize(&mut crate::storage::StorageCtx::test_writable())?;
 
                 let (alice, bob, admin) = (Address::random(), Address::random(), Address::random());
                 let amount_in = 500_000u128;
@@ -6278,22 +7448,50 @@ mod tests {
 
                 let (base_token, quote_token) =
                     setup_test_tokens(admin, alice, exchange.address, 500_000_000u128)?;
-                exchange.create_pair(base_token)?;
+                exchange
+                    .create_pair(&mut crate::storage::StorageCtx::test_writable(), base_token)?;
 
                 // Alice places orders so Bob can swap base→quote (enough for both swaps)
-                exchange.place(alice, base_token, MIN_ORDER_AMOUNT * 2, true, tick)?;
+                exchange.place(
+                    &mut crate::storage::StorageCtx::test_writable(),
+                    alice,
+                    base_token,
+                    MIN_ORDER_AMOUNT * 2,
+                    true,
+                    tick,
+                )?;
 
                 // Give Bob internal DEX balance (enough for both swaps)
-                exchange.set_balance(bob, base_token, amount_in * 2)?;
+                exchange.set_balance(
+                    &mut crate::storage::StorageCtx::test_writable(),
+                    bob,
+                    base_token,
+                    amount_in * 2,
+                )?;
 
                 // Pause the base token
                 let mut base_tip20 = TIP20Token::from_address(base_token)?;
-                base_tip20.grant_role_internal(admin, PAUSE_ROLE)?;
-                base_tip20.pause(admin, ITIP20::pauseCall {})?;
+                base_tip20.grant_role_internal(
+                    &mut crate::storage::StorageCtx::test_writable(),
+                    admin,
+                    PAUSE_ROLE,
+                )?;
+                base_tip20.pause(
+                    &mut crate::storage::StorageCtx::test_writable(),
+                    admin,
+                    ITIP20::pauseCall {},
+                )?;
 
-                let res_in =
-                    exchange.swap_exact_amount_in(bob, base_token, quote_token, amount_in, 0);
+                let res_in = exchange.swap_exact_amount_in(
+                    &mut crate::storage::StorageCtx::test_writable(),
+                    bob,
+                    base_token,
+                    quote_token,
+                    amount_in,
+                    0,
+                );
                 let res_out = exchange.swap_exact_amount_out(
+                    &mut crate::storage::StorageCtx::test_writable(),
                     bob,
                     base_token,
                     quote_token,
@@ -6331,18 +7529,24 @@ mod tests {
             let mut storage = HashMapStorageProvider::new_with_spec(1, spec);
             StorageCtx::enter(&mut storage, || {
                 let mut exchange = StablecoinDEX::new();
-                exchange.initialize()?;
+                exchange.initialize(&mut crate::storage::StorageCtx::test_writable())?;
 
                 let (alice, admin) = (Address::random(), Address::random());
                 let amount = MIN_ORDER_AMOUNT;
 
                 let (base_token, quote_token) =
                     setup_test_tokens(admin, alice, exchange.address, 500_000_000u128)?;
-                exchange.create_pair(base_token)?;
+                exchange
+                    .create_pair(&mut crate::storage::StorageCtx::test_writable(), base_token)?;
 
                 let escrow_token = if is_bid { quote_token } else { base_token };
                 let non_escrow_token = if is_bid { base_token } else { quote_token };
-                exchange.set_balance(alice, escrow_token, internal_balance_amount)?;
+                exchange.set_balance(
+                    &mut crate::storage::StorageCtx::test_writable(),
+                    alice,
+                    escrow_token,
+                    internal_balance_amount,
+                )?;
 
                 let token_to_pause = if pause_escrow_side {
                     escrow_token
@@ -6350,8 +7554,16 @@ mod tests {
                     non_escrow_token
                 };
                 let mut tip20 = TIP20Token::from_address(token_to_pause)?;
-                tip20.grant_role_internal(admin, PAUSE_ROLE)?;
-                tip20.pause(admin, ITIP20::pauseCall {})?;
+                tip20.grant_role_internal(
+                    &mut crate::storage::StorageCtx::test_writable(),
+                    admin,
+                    PAUSE_ROLE,
+                )?;
+                tip20.pause(
+                    &mut crate::storage::StorageCtx::test_writable(),
+                    admin,
+                    ITIP20::pauseCall {},
+                )?;
 
                 let next_order_id_before = exchange.next_order_id()?;
                 let escrow_balance_before = exchange.balance_of(alice, escrow_token)?;
@@ -6398,20 +7610,15 @@ mod tests {
             true,
             MIN_ORDER_AMOUNT,
             false,
-            |exchange, alice, base, amount| exchange.place(alice, base, amount, false, 0),
-        )?;
-        assert_paused_token_order(
-            true,
-            MIN_ORDER_AMOUNT,
-            true,
-            |exchange, alice, base, amount| exchange.place(alice, base, amount, true, 0),
-        )?;
-        assert_paused_token_order(
-            true,
-            MIN_ORDER_AMOUNT,
-            false,
             |exchange, alice, base, amount| {
-                exchange.place_flip(alice, base, amount, false, 100, 0, true)
+                exchange.place(
+                    &mut crate::storage::StorageCtx::test_writable(),
+                    alice,
+                    base,
+                    amount,
+                    false,
+                    0,
+                )
             },
         )?;
         assert_paused_token_order(
@@ -6419,7 +7626,48 @@ mod tests {
             MIN_ORDER_AMOUNT,
             true,
             |exchange, alice, base, amount| {
-                exchange.place_flip(alice, base, amount, true, 0, 100, true)
+                exchange.place(
+                    &mut crate::storage::StorageCtx::test_writable(),
+                    alice,
+                    base,
+                    amount,
+                    true,
+                    0,
+                )
+            },
+        )?;
+        assert_paused_token_order(
+            true,
+            MIN_ORDER_AMOUNT,
+            false,
+            |exchange, alice, base, amount| {
+                exchange.place_flip(
+                    &mut crate::storage::StorageCtx::test_writable(),
+                    alice,
+                    base,
+                    amount,
+                    false,
+                    100,
+                    0,
+                    true,
+                )
+            },
+        )?;
+        assert_paused_token_order(
+            true,
+            MIN_ORDER_AMOUNT,
+            true,
+            |exchange, alice, base, amount| {
+                exchange.place_flip(
+                    &mut crate::storage::StorageCtx::test_writable(),
+                    alice,
+                    base,
+                    amount,
+                    true,
+                    0,
+                    100,
+                    true,
+                )
             },
         )?;
 
@@ -6429,20 +7677,15 @@ mod tests {
             true,
             partial_internal_balance,
             false,
-            |exchange, alice, base, amount| exchange.place(alice, base, amount, false, 0),
-        )?;
-        assert_paused_token_order(
-            true,
-            partial_internal_balance,
-            true,
-            |exchange, alice, base, amount| exchange.place(alice, base, amount, true, 0),
-        )?;
-        assert_paused_token_order(
-            true,
-            partial_internal_balance,
-            false,
             |exchange, alice, base, amount| {
-                exchange.place_flip(alice, base, amount, false, 100, 0, false)
+                exchange.place(
+                    &mut crate::storage::StorageCtx::test_writable(),
+                    alice,
+                    base,
+                    amount,
+                    false,
+                    0,
+                )
             },
         )?;
         assert_paused_token_order(
@@ -6450,7 +7693,48 @@ mod tests {
             partial_internal_balance,
             true,
             |exchange, alice, base, amount| {
-                exchange.place_flip(alice, base, amount, true, 0, 100, false)
+                exchange.place(
+                    &mut crate::storage::StorageCtx::test_writable(),
+                    alice,
+                    base,
+                    amount,
+                    true,
+                    0,
+                )
+            },
+        )?;
+        assert_paused_token_order(
+            true,
+            partial_internal_balance,
+            false,
+            |exchange, alice, base, amount| {
+                exchange.place_flip(
+                    &mut crate::storage::StorageCtx::test_writable(),
+                    alice,
+                    base,
+                    amount,
+                    false,
+                    100,
+                    0,
+                    false,
+                )
+            },
+        )?;
+        assert_paused_token_order(
+            true,
+            partial_internal_balance,
+            true,
+            |exchange, alice, base, amount| {
+                exchange.place_flip(
+                    &mut crate::storage::StorageCtx::test_writable(),
+                    alice,
+                    base,
+                    amount,
+                    true,
+                    0,
+                    100,
+                    false,
+                )
             },
         )
     }
@@ -6459,18 +7743,50 @@ mod tests {
     fn test_place_orders_on_paused_non_escrow_token_blocked_on_t4() -> eyre::Result<()> {
         // place: ask + bid (transferFrom path, escrow is unpaused so this succeeds pre-T4)
         assert_paused_token_order(false, 0, false, |exchange, alice, base, amount| {
-            exchange.place(alice, base, amount, false, 0)
+            exchange.place(
+                &mut crate::storage::StorageCtx::test_writable(),
+                alice,
+                base,
+                amount,
+                false,
+                0,
+            )
         })?;
         assert_paused_token_order(false, 0, true, |exchange, alice, base, amount| {
-            exchange.place(alice, base, amount, true, 0)
+            exchange.place(
+                &mut crate::storage::StorageCtx::test_writable(),
+                alice,
+                base,
+                amount,
+                true,
+                0,
+            )
         })?;
 
         // place_flip non-internal-only: ask + bid
         assert_paused_token_order(false, 0, false, |exchange, alice, base, amount| {
-            exchange.place_flip(alice, base, amount, false, 100, 0, false)
+            exchange.place_flip(
+                &mut crate::storage::StorageCtx::test_writable(),
+                alice,
+                base,
+                amount,
+                false,
+                100,
+                0,
+                false,
+            )
         })?;
         assert_paused_token_order(false, 0, true, |exchange, alice, base, amount| {
-            exchange.place_flip(alice, base, amount, true, 0, 100, false)
+            exchange.place_flip(
+                &mut crate::storage::StorageCtx::test_writable(),
+                alice,
+                base,
+                amount,
+                true,
+                0,
+                100,
+                false,
+            )
         })?;
 
         // place_flip internal-only: ask + bid (requires escrow internal balance)
@@ -6479,7 +7795,16 @@ mod tests {
             MIN_ORDER_AMOUNT,
             false,
             |exchange, alice, base, amount| {
-                exchange.place_flip(alice, base, amount, false, 100, 0, true)
+                exchange.place_flip(
+                    &mut crate::storage::StorageCtx::test_writable(),
+                    alice,
+                    base,
+                    amount,
+                    false,
+                    100,
+                    0,
+                    true,
+                )
             },
         )?;
         assert_paused_token_order(
@@ -6487,7 +7812,16 @@ mod tests {
             MIN_ORDER_AMOUNT,
             true,
             |exchange, alice, base, amount| {
-                exchange.place_flip(alice, base, amount, true, 0, 100, true)
+                exchange.place_flip(
+                    &mut crate::storage::StorageCtx::test_writable(),
+                    alice,
+                    base,
+                    amount,
+                    true,
+                    0,
+                    100,
+                    true,
+                )
             },
         )
     }
@@ -6498,7 +7832,7 @@ mod tests {
             let mut storage = HashMapStorageProvider::new_with_spec(1, spec);
             StorageCtx::enter(&mut storage, || {
                 let mut exchange = StablecoinDEX::new();
-                exchange.initialize()?;
+                exchange.initialize(&mut crate::storage::StorageCtx::test_writable())?;
 
                 let admin = Address::random();
                 let alice = Address::random();
@@ -6529,16 +7863,39 @@ mod tests {
                     .apply()?;
 
                 // Alice provides liquidity on both books
-                exchange.place(alice, usdc.address(), MIN_ORDER_AMOUNT * 5, true, 0)?;
-                exchange.place(alice, eurc.address(), MIN_ORDER_AMOUNT * 5, false, 0)?;
+                exchange.place(
+                    &mut crate::storage::StorageCtx::test_writable(),
+                    alice,
+                    usdc.address(),
+                    MIN_ORDER_AMOUNT * 5,
+                    true,
+                    0,
+                )?;
+                exchange.place(
+                    &mut crate::storage::StorageCtx::test_writable(),
+                    alice,
+                    eurc.address(),
+                    MIN_ORDER_AMOUNT * 5,
+                    false,
+                    0,
+                )?;
 
                 // Pause pathUSD (the intermediate token)
                 let mut path_usd_tip20 = TIP20Token::from_address(path_usd.address())?;
-                path_usd_tip20.grant_role_internal(admin, PAUSE_ROLE)?;
-                path_usd_tip20.pause(admin, ITIP20::pauseCall {})?;
+                path_usd_tip20.grant_role_internal(
+                    &mut crate::storage::StorageCtx::test_writable(),
+                    admin,
+                    PAUSE_ROLE,
+                )?;
+                path_usd_tip20.pause(
+                    &mut crate::storage::StorageCtx::test_writable(),
+                    admin,
+                    ITIP20::pauseCall {},
+                )?;
 
                 // Bob tries multi-hop swap: USDC -> pathUSD -> EURC
                 let res_in = exchange.swap_exact_amount_in(
+                    &mut crate::storage::StorageCtx::test_writable(),
                     bob,
                     usdc.address(),
                     eurc.address(),
@@ -6546,6 +7903,7 @@ mod tests {
                     0,
                 );
                 let res_out = exchange.swap_exact_amount_out(
+                    &mut crate::storage::StorageCtx::test_writable(),
                     bob,
                     usdc.address(),
                     eurc.address(),
@@ -6598,7 +7956,7 @@ mod tests {
         let mut storage = HashMapStorageProvider::new_with_spec(1, spec);
         StorageCtx::enter(&mut storage, || {
             let mut exchange = StablecoinDEX::new();
-            exchange.initialize()?;
+            exchange.initialize(&mut crate::storage::StorageCtx::test_writable())?;
             let admin = Address::random();
             let taker = Address::random();
             let makers: Vec<(Address, u128, i16)> = book
@@ -6628,9 +7986,16 @@ mod tests {
             )
             .apply()?;
 
-            exchange.create_pair(base_token)?;
+            exchange.create_pair(&mut crate::storage::StorageCtx::test_writable(), base_token)?;
             for (m, size, tick) in &makers {
-                exchange.place(*m, base_token, *size, maker_is_bid, *tick)?;
+                exchange.place(
+                    &mut crate::storage::StorageCtx::test_writable(),
+                    *m,
+                    base_token,
+                    *size,
+                    maker_is_bid,
+                    *tick,
+                )?;
             }
 
             body(&mut exchange, base_token, quote_token, taker)
@@ -6645,7 +8010,7 @@ mod tests {
         let mut storage = HashMapStorageProvider::new_with_spec(1, TempoHardfork::T12);
         StorageCtx::enter(&mut storage, || {
             let mut exchange = StablecoinDEX::new();
-            exchange.initialize()?;
+            exchange.initialize(&mut crate::storage::StorageCtx::test_writable())?;
 
             let admin = Address::random();
             let taker = Address::random();
@@ -6682,16 +8047,50 @@ mod tests {
             )
             .apply()?;
 
-            exchange.create_pair(token_a.address())?;
-            exchange.create_pair(token_b.address())?;
+            exchange.create_pair(
+                &mut crate::storage::StorageCtx::test_writable(),
+                token_a.address(),
+            )?;
+            exchange.create_pair(
+                &mut crate::storage::StorageCtx::test_writable(),
+                token_b.address(),
+            )?;
 
             // TOKEN_A -> pathUSD consumes bids on TOKEN_A.
-            exchange.place(makers[0], token_a.address(), 100_006_000, true, 10)?;
-            exchange.place(makers[1], token_a.address(), 100_006_000, true, 10)?;
+            exchange.place(
+                &mut crate::storage::StorageCtx::test_writable(),
+                makers[0],
+                token_a.address(),
+                100_006_000,
+                true,
+                10,
+            )?;
+            exchange.place(
+                &mut crate::storage::StorageCtx::test_writable(),
+                makers[1],
+                token_a.address(),
+                100_006_000,
+                true,
+                10,
+            )?;
 
             // pathUSD -> TOKEN_B consumes asks on TOKEN_B.
-            exchange.place(makers[2], token_b.address(), 100_000_003, false, 20)?;
-            exchange.place(makers[3], token_b.address(), 150_000_009, false, 20)?;
+            exchange.place(
+                &mut crate::storage::StorageCtx::test_writable(),
+                makers[2],
+                token_b.address(),
+                100_000_003,
+                false,
+                20,
+            )?;
+            exchange.place(
+                &mut crate::storage::StorageCtx::test_writable(),
+                makers[3],
+                token_b.address(),
+                150_000_009,
+                false,
+                20,
+            )?;
 
             let result = body(&mut exchange, token_a.address(), token_b.address(), taker)?;
             assert_eq!(path_usd.address(), PATH_USD_ADDRESS);
@@ -6717,7 +8116,14 @@ mod tests {
                 true,
                 |dex, base, quote, taker| {
                     let quoted = dex.quote_swap_exact_amount_in(base, quote, 200_012_000)?;
-                    let executed = dex.swap_exact_amount_in(taker, base, quote, 200_012_000, 0)?;
+                    let executed = dex.swap_exact_amount_in(
+                        &mut crate::storage::StorageCtx::test_writable(),
+                        taker,
+                        base,
+                        quote,
+                        200_012_000,
+                        0,
+                    )?;
                     Ok((quoted, executed))
                 },
             )
@@ -6744,7 +8150,14 @@ mod tests {
         with_fragmented_two_hop_books(|dex, token_a, token_b, taker| {
             let amount_in = 200_012_000;
             let quoted = dex.quote_swap_exact_amount_in(token_a, token_b, amount_in)?;
-            let executed = dex.swap_exact_amount_in(taker, token_a, token_b, amount_in, quoted)?;
+            let executed = dex.swap_exact_amount_in(
+                &mut crate::storage::StorageCtx::test_writable(),
+                taker,
+                token_a,
+                token_b,
+                amount_in,
+                quoted,
+            )?;
             assert_eq!(quoted, executed, "multi-hop exact-in quote/swap parity");
             Ok(())
         })?;
@@ -6752,8 +8165,14 @@ mod tests {
         with_fragmented_two_hop_books(|dex, token_a, token_b, taker| {
             let amount_out = 150_000_000;
             let quoted = dex.quote_swap_exact_amount_out(token_a, token_b, amount_out)?;
-            let executed =
-                dex.swap_exact_amount_out(taker, token_a, token_b, amount_out, quoted)?;
+            let executed = dex.swap_exact_amount_out(
+                &mut crate::storage::StorageCtx::test_writable(),
+                taker,
+                token_a,
+                token_b,
+                amount_out,
+                quoted,
+            )?;
             assert_eq!(quoted, executed, "multi-hop exact-out quote/swap parity");
             Ok(())
         })
@@ -6764,7 +8183,7 @@ mod tests {
         let mut storage = HashMapStorageProvider::new_with_spec(1, TempoHardfork::T12);
         StorageCtx::enter(&mut storage, || {
             let mut exchange = StablecoinDEX::new();
-            exchange.initialize()?;
+            exchange.initialize(&mut crate::storage::StorageCtx::test_writable())?;
 
             let admin = Address::random();
             let maker_1 = Address::random();
@@ -6792,9 +8211,24 @@ mod tests {
                 .with_approval(maker_2, exchange.address, U256::MAX)
                 .apply()?;
 
-            let book_key = exchange.create_pair(base_token)?;
-            let order_1 = exchange.place(maker_1, base_token, size_1, true, tick)?;
-            let order_2 = exchange.place(maker_2, base_token, size_2, true, tick)?;
+            let book_key = exchange
+                .create_pair(&mut crate::storage::StorageCtx::test_writable(), base_token)?;
+            let order_1 = exchange.place(
+                &mut crate::storage::StorageCtx::test_writable(),
+                maker_1,
+                base_token,
+                size_1,
+                true,
+                tick,
+            )?;
+            let order_2 = exchange.place(
+                &mut crate::storage::StorageCtx::test_writable(),
+                maker_2,
+                base_token,
+                size_2,
+                true,
+                tick,
+            )?;
 
             let quoted = exchange.quote_swap_exact_amount_in(base_token, quote_token, amount_in)?;
             let expected_out = base_to_quote(size_1, tick, RoundingDirection::Down)
@@ -6807,8 +8241,14 @@ mod tests {
             );
 
             let events_before = exchange.emitted_events().len();
-            let executed =
-                exchange.swap_exact_amount_in(taker, base_token, quote_token, amount_in, quoted)?;
+            let executed = exchange.swap_exact_amount_in(
+                &mut crate::storage::StorageCtx::test_writable(),
+                taker,
+                base_token,
+                quote_token,
+                amount_in,
+                quoted,
+            )?;
             assert_eq!(executed, quoted);
 
             assert_eq!(exchange.balance_of(maker_1, base_token)?, size_1);
@@ -6865,9 +8305,29 @@ mod tests {
 
         with_fragmented_book(TempoHardfork::T12, book, true, |dex, base, quote, taker| {
             assert_eq!(dex.quote_swap_exact_amount_in(base, quote, 0)?, 0);
-            assert_eq!(dex.swap_exact_amount_in(taker, base, quote, 0, 0)?, 0);
+            assert_eq!(
+                dex.swap_exact_amount_in(
+                    &mut crate::storage::StorageCtx::test_writable(),
+                    taker,
+                    base,
+                    quote,
+                    0,
+                    0
+                )?,
+                0
+            );
             assert_eq!(dex.quote_swap_exact_amount_out(base, quote, 0)?, 0);
-            assert_eq!(dex.swap_exact_amount_out(taker, base, quote, 0, 0)?, 0);
+            assert_eq!(
+                dex.swap_exact_amount_out(
+                    &mut crate::storage::StorageCtx::test_writable(),
+                    taker,
+                    base,
+                    quote,
+                    0,
+                    0
+                )?,
+                0
+            );
             Ok(())
         })?;
 
@@ -6877,9 +8337,29 @@ mod tests {
             false,
             |dex, base, quote, taker| {
                 assert_eq!(dex.quote_swap_exact_amount_in(quote, base, 0)?, 0);
-                assert_eq!(dex.swap_exact_amount_in(taker, quote, base, 0, 0)?, 0);
+                assert_eq!(
+                    dex.swap_exact_amount_in(
+                        &mut crate::storage::StorageCtx::test_writable(),
+                        taker,
+                        quote,
+                        base,
+                        0,
+                        0
+                    )?,
+                    0
+                );
                 assert_eq!(dex.quote_swap_exact_amount_out(quote, base, 0)?, 0);
-                assert_eq!(dex.swap_exact_amount_out(taker, quote, base, 0, 0)?, 0);
+                assert_eq!(
+                    dex.swap_exact_amount_out(
+                        &mut crate::storage::StorageCtx::test_writable(),
+                        taker,
+                        quote,
+                        base,
+                        0,
+                        0
+                    )?,
+                    0
+                );
                 Ok(())
             },
         )
@@ -6913,7 +8393,14 @@ mod tests {
             for amount_in in [total_base, partial] {
                 with_fragmented_book(TempoHardfork::T12, book, true, |dex, base, quote, taker| {
                     let q = dex.quote_swap_exact_amount_in(base, quote, amount_in)?;
-                    let ex = dex.swap_exact_amount_in(taker, base, quote, amount_in, 0)?;
+                    let ex = dex.swap_exact_amount_in(
+                        &mut crate::storage::StorageCtx::test_writable(),
+                        taker,
+                        base,
+                        quote,
+                        amount_in,
+                        0,
+                    )?;
                     assert_eq!(
                         q, ex,
                         "bid exact-in parity (book={i}, amount_in={amount_in})"
@@ -6930,8 +8417,14 @@ mod tests {
                     false,
                     |dex, base, quote, taker| {
                         let q = dex.quote_swap_exact_amount_out(quote, base, amount_out)?;
-                        let ex =
-                            dex.swap_exact_amount_out(taker, quote, base, amount_out, u128::MAX)?;
+                        let ex = dex.swap_exact_amount_out(
+                            &mut crate::storage::StorageCtx::test_writable(),
+                            taker,
+                            quote,
+                            base,
+                            amount_out,
+                            u128::MAX,
+                        )?;
                         assert_eq!(
                             q, ex,
                             "ask exact-out parity (book={i}, amount_out={amount_out})"
@@ -6950,7 +8443,14 @@ mod tests {
                     // Quote (T12-exact) the input needed to buy all base, then spend it.
                     let amount_in = dex.quote_swap_exact_amount_out(quote, base, total_base)?;
                     let q = dex.quote_swap_exact_amount_in(quote, base, amount_in)?;
-                    let ex = dex.swap_exact_amount_in(taker, quote, base, amount_in, 0)?;
+                    let ex = dex.swap_exact_amount_in(
+                        &mut crate::storage::StorageCtx::test_writable(),
+                        taker,
+                        quote,
+                        base,
+                        amount_in,
+                        0,
+                    )?;
                     assert_eq!(q, ex, "ask exact-in parity (book={i})");
                     Ok(())
                 },
@@ -6961,7 +8461,14 @@ mod tests {
                 // Target a quote output achievable with roughly half the base liquidity.
                 let amount_out = dex.quote_swap_exact_amount_in(base, quote, total_base / 2)?;
                 let q = dex.quote_swap_exact_amount_out(base, quote, amount_out)?;
-                let ex = dex.swap_exact_amount_out(taker, base, quote, amount_out, u128::MAX)?;
+                let ex = dex.swap_exact_amount_out(
+                    &mut crate::storage::StorageCtx::test_writable(),
+                    taker,
+                    base,
+                    quote,
+                    amount_out,
+                    u128::MAX,
+                )?;
                 assert_eq!(q, ex, "bid exact-out parity (book={i})");
                 Ok(())
             })?;
@@ -7008,7 +8515,14 @@ mod tests {
         with_fragmented_book(TempoHardfork::T12, book, true, |dex, base, quote, taker| {
             let quoted = dex.quote_swap_exact_amount_in(base, quote, target_base)?;
             assert_eq!(
-                dex.swap_exact_amount_in(taker, base, quote, target_base, quoted)?,
+                dex.swap_exact_amount_in(
+                    &mut crate::storage::StorageCtx::test_writable(),
+                    taker,
+                    base,
+                    quote,
+                    target_base,
+                    quoted
+                )?,
                 quoted
             );
             Ok(())
@@ -7017,7 +8531,14 @@ mod tests {
         with_fragmented_book(TempoHardfork::T12, book, true, |dex, base, quote, taker| {
             let quoted = dex.quote_swap_exact_amount_in(base, quote, target_base)?;
             let err = dex
-                .swap_exact_amount_in(taker, base, quote, target_base, quoted + 1)
+                .swap_exact_amount_in(
+                    &mut crate::storage::StorageCtx::test_writable(),
+                    taker,
+                    base,
+                    quote,
+                    target_base,
+                    quoted + 1,
+                )
                 .unwrap_err();
             assert_eq!(err, StablecoinDEXError::insufficient_output().into());
             Ok(())
@@ -7027,7 +8548,14 @@ mod tests {
             let amount_out = dex.quote_swap_exact_amount_in(base, quote, target_base)?;
             let quoted = dex.quote_swap_exact_amount_out(base, quote, amount_out)?;
             assert_eq!(
-                dex.swap_exact_amount_out(taker, base, quote, amount_out, quoted)?,
+                dex.swap_exact_amount_out(
+                    &mut crate::storage::StorageCtx::test_writable(),
+                    taker,
+                    base,
+                    quote,
+                    amount_out,
+                    quoted
+                )?,
                 quoted
             );
             Ok(())
@@ -7037,7 +8565,14 @@ mod tests {
             let amount_out = dex.quote_swap_exact_amount_in(base, quote, target_base)?;
             let quoted = dex.quote_swap_exact_amount_out(base, quote, amount_out)?;
             let err = dex
-                .swap_exact_amount_out(taker, base, quote, amount_out, quoted - 1)
+                .swap_exact_amount_out(
+                    &mut crate::storage::StorageCtx::test_writable(),
+                    taker,
+                    base,
+                    quote,
+                    amount_out,
+                    quoted - 1,
+                )
                 .unwrap_err();
             assert_eq!(err, StablecoinDEXError::max_input_exceeded().into());
             Ok(())
@@ -7051,7 +8586,14 @@ mod tests {
                 let amount_in = dex.quote_swap_exact_amount_out(quote, base, target_base)?;
                 let quoted = dex.quote_swap_exact_amount_in(quote, base, amount_in)?;
                 assert_eq!(
-                    dex.swap_exact_amount_in(taker, quote, base, amount_in, quoted)?,
+                    dex.swap_exact_amount_in(
+                        &mut crate::storage::StorageCtx::test_writable(),
+                        taker,
+                        quote,
+                        base,
+                        amount_in,
+                        quoted
+                    )?,
                     quoted
                 );
                 Ok(())
@@ -7066,7 +8608,14 @@ mod tests {
                 let amount_in = dex.quote_swap_exact_amount_out(quote, base, target_base)?;
                 let quoted = dex.quote_swap_exact_amount_in(quote, base, amount_in)?;
                 let err = dex
-                    .swap_exact_amount_in(taker, quote, base, amount_in, quoted + 1)
+                    .swap_exact_amount_in(
+                        &mut crate::storage::StorageCtx::test_writable(),
+                        taker,
+                        quote,
+                        base,
+                        amount_in,
+                        quoted + 1,
+                    )
                     .unwrap_err();
                 assert_eq!(err, StablecoinDEXError::insufficient_output().into());
                 Ok(())
@@ -7080,7 +8629,14 @@ mod tests {
             |dex, base, quote, taker| {
                 let quoted = dex.quote_swap_exact_amount_out(quote, base, target_base)?;
                 assert_eq!(
-                    dex.swap_exact_amount_out(taker, quote, base, target_base, quoted)?,
+                    dex.swap_exact_amount_out(
+                        &mut crate::storage::StorageCtx::test_writable(),
+                        taker,
+                        quote,
+                        base,
+                        target_base,
+                        quoted
+                    )?,
                     quoted
                 );
                 Ok(())
@@ -7094,7 +8650,14 @@ mod tests {
             |dex, base, quote, taker| {
                 let quoted = dex.quote_swap_exact_amount_out(quote, base, target_base)?;
                 let err = dex
-                    .swap_exact_amount_out(taker, quote, base, target_base, quoted - 1)
+                    .swap_exact_amount_out(
+                        &mut crate::storage::StorageCtx::test_writable(),
+                        taker,
+                        quote,
+                        base,
+                        target_base,
+                        quoted - 1,
+                    )
                     .unwrap_err();
                 assert_eq!(err, StablecoinDEXError::max_input_exceeded().into());
                 Ok(())
@@ -7107,7 +8670,7 @@ mod tests {
         let mut storage = HashMapStorageProvider::new_with_spec(1, TempoHardfork::T12);
         StorageCtx::enter(&mut storage, || {
             let mut exchange = StablecoinDEX::new();
-            exchange.initialize()?;
+            exchange.initialize(&mut crate::storage::StorageCtx::test_writable())?;
 
             let admin = Address::random();
             let maker_flip = Address::random();
@@ -7137,10 +8700,26 @@ mod tests {
             )
             .apply()?;
 
-            let book_key = exchange.create_pair(base_token)?;
-            let flip_order = exchange
-                .place_flip(maker_flip, base_token, amount, true, tick, flip_tick, false)?;
-            let next_order = exchange.place(maker_next, base_token, amount + 7, true, tick)?;
+            let book_key = exchange
+                .create_pair(&mut crate::storage::StorageCtx::test_writable(), base_token)?;
+            let flip_order = exchange.place_flip(
+                &mut crate::storage::StorageCtx::test_writable(),
+                maker_flip,
+                base_token,
+                amount,
+                true,
+                tick,
+                flip_tick,
+                false,
+            )?;
+            let next_order = exchange.place(
+                &mut crate::storage::StorageCtx::test_writable(),
+                maker_next,
+                base_token,
+                amount + 7,
+                true,
+                tick,
+            )?;
 
             let bid_level_before = exchange.books[book_key]
                 .tick_level_handler(tick, true)
@@ -7167,8 +8746,14 @@ mod tests {
                 bid_level_before
             );
 
-            let executed =
-                exchange.swap_exact_amount_in(taker, base_token, quote_token, amount_in, quoted)?;
+            let executed = exchange.swap_exact_amount_in(
+                &mut crate::storage::StorageCtx::test_writable(),
+                taker,
+                base_token,
+                quote_token,
+                amount_in,
+                quoted,
+            )?;
             assert_eq!(executed, quoted);
 
             let flipped = exchange.get_order(flip_order)?;
@@ -7215,30 +8800,54 @@ mod tests {
                 match (maker_is_bid, exact_in) {
                     (true, true) => {
                         let quoted = dex.quote_swap_exact_amount_in(base, quote, target_base)?;
-                        let executed =
-                            dex.swap_exact_amount_in(taker, base, quote, target_base, quoted)?;
+                        let executed = dex.swap_exact_amount_in(
+                            &mut crate::storage::StorageCtx::test_writable(),
+                            taker,
+                            base,
+                            quote,
+                            target_base,
+                            quoted,
+                        )?;
                         assert_eq!(quoted, executed);
                     }
                     (true, false) => {
                         let amount_out =
                             dex.quote_swap_exact_amount_in(base, quote, target_base)?;
                         let quoted = dex.quote_swap_exact_amount_out(base, quote, amount_out)?;
-                        let executed =
-                            dex.swap_exact_amount_out(taker, base, quote, amount_out, quoted)?;
+                        let executed = dex.swap_exact_amount_out(
+                            &mut crate::storage::StorageCtx::test_writable(),
+                            taker,
+                            base,
+                            quote,
+                            amount_out,
+                            quoted,
+                        )?;
                         assert_eq!(quoted, executed);
                     }
                     (false, true) => {
                         let amount_in =
                             dex.quote_swap_exact_amount_out(quote, base, target_base)?;
                         let quoted = dex.quote_swap_exact_amount_in(quote, base, amount_in)?;
-                        let executed =
-                            dex.swap_exact_amount_in(taker, quote, base, amount_in, quoted)?;
+                        let executed = dex.swap_exact_amount_in(
+                            &mut crate::storage::StorageCtx::test_writable(),
+                            taker,
+                            quote,
+                            base,
+                            amount_in,
+                            quoted,
+                        )?;
                         assert_eq!(quoted, executed);
                     }
                     (false, false) => {
                         let quoted = dex.quote_swap_exact_amount_out(quote, base, target_base)?;
-                        let executed =
-                            dex.swap_exact_amount_out(taker, quote, base, target_base, quoted)?;
+                        let executed = dex.swap_exact_amount_out(
+                            &mut crate::storage::StorageCtx::test_writable(),
+                            taker,
+                            quote,
+                            base,
+                            target_base,
+                            quoted,
+                        )?;
                         assert_eq!(quoted, executed);
                     }
                 }
@@ -7291,7 +8900,14 @@ mod tests {
         with_fragmented_book(TempoHardfork::T12, book, true, |dex, base, quote, taker| {
             let over = total_base + 1;
             let q = dex.quote_swap_exact_amount_in(base, quote, over);
-            let ex = dex.swap_exact_amount_in(taker, base, quote, over, 0);
+            let ex = dex.swap_exact_amount_in(
+                &mut crate::storage::StorageCtx::test_writable(),
+                taker,
+                base,
+                quote,
+                over,
+                0,
+            );
             assert_eq!(q.unwrap_err(), expected, "quote error parity");
             assert_eq!(ex.unwrap_err(), expected, "swap error parity");
             Ok(())
@@ -7304,7 +8920,14 @@ mod tests {
                 .map(|(size, tick)| base_to_quote(*size, *tick, RoundingDirection::Down).unwrap())
                 .sum::<u128>();
             let q = dex.quote_swap_exact_amount_out(base, quote, max_quote_out + 1);
-            let ex = dex.swap_exact_amount_out(taker, base, quote, max_quote_out + 1, u128::MAX);
+            let ex = dex.swap_exact_amount_out(
+                &mut crate::storage::StorageCtx::test_writable(),
+                taker,
+                base,
+                quote,
+                max_quote_out + 1,
+                u128::MAX,
+            );
             assert_eq!(q.unwrap_err(), expected, "quote error parity");
             assert_eq!(ex.unwrap_err(), expected, "swap error parity");
             Ok(())
@@ -7319,7 +8942,14 @@ mod tests {
                 let over_quote = base_to_quote(total_base * 2, book[0].1, RoundingDirection::Up)
                     .expect("over-liquidity quote should fit");
                 let q = dex.quote_swap_exact_amount_in(quote, base, over_quote);
-                let ex = dex.swap_exact_amount_in(taker, quote, base, over_quote, 0);
+                let ex = dex.swap_exact_amount_in(
+                    &mut crate::storage::StorageCtx::test_writable(),
+                    taker,
+                    quote,
+                    base,
+                    over_quote,
+                    0,
+                );
                 assert_eq!(q.unwrap_err(), expected, "quote error parity");
                 assert_eq!(ex.unwrap_err(), expected, "swap error parity");
                 Ok(())
@@ -7334,7 +8964,14 @@ mod tests {
             |dex, base, quote, taker| {
                 let over = total_base + 1;
                 let q = dex.quote_swap_exact_amount_out(quote, base, over);
-                let ex = dex.swap_exact_amount_out(taker, quote, base, over, u128::MAX);
+                let ex = dex.swap_exact_amount_out(
+                    &mut crate::storage::StorageCtx::test_writable(),
+                    taker,
+                    quote,
+                    base,
+                    over,
+                    u128::MAX,
+                );
                 assert_eq!(q.unwrap_err(), expected, "quote error parity");
                 assert_eq!(ex.unwrap_err(), expected, "swap error parity");
                 Ok(())

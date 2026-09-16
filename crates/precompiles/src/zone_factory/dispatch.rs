@@ -19,12 +19,12 @@ impl Precompile for ZoneFactory {
                 IZoneFactory::IZoneFactoryCalls {
                     owner(call) => view(call, |_| self.owner()),
                     transferOwnership(call) => {
-                        mutate_void(call, msg_sender, |sender, call| {
-                            self.transfer_ownership(sender, call)
+                        mutate_void(call, msg_sender, |write, sender, call| {
+                            self.transfer_ownership(write, sender, call)
                         })
                     },
                     createZone(call) => {
-                        mutate(call, msg_sender, |sender, call| self.create_zone(sender, call))
+                        mutate(call, msg_sender, |write, sender, call| self.create_zone(write, sender, call))
                     },
                     nextZoneId(call) => view(call, |_| self.next_zone_id()),
                     zones(call) => view(call, |call| self.zone(call.id)),

@@ -211,7 +211,11 @@ where
     T: Storable + StorageKey + Hash + Eq + Clone,
     T::Handler: Handler<T>,
 {
-    fn load<S: StorageOps>(storage: &S, slot: U256, _ctx: LayoutCtx) -> Result<Self> {
+    fn load<S: crate::storage::StorageRead>(
+        storage: &S,
+        slot: U256,
+        _ctx: LayoutCtx,
+    ) -> Result<Self> {
         let values: Vec<T> = Vec::load(storage, slot, LayoutCtx::FULL)?;
         Ok(Self(values))
     }
@@ -294,7 +298,7 @@ where
     /// Returns `true` if the value was inserted (not already present).
     /// Returns `false` if the value was already in the set.
     #[inline]
-    pub fn insert(&mut self, value: T) -> Result<bool>
+    pub fn insert(&mut self, write: &mut crate::storage::WriteCtx, value: T) -> Result<bool>
     where
         T: StorageKey + Hash + Eq + Clone,
         T::Handler: Handler<T>,
@@ -308,10 +312,10 @@ where
         let length = self.values.len()?;
         self.positions
             .at_mut(&value)
-            .write(checked_position(length)?)?;
+            .write(write, checked_position(length)?)?;
 
         // Push value to the array
-        self.values.push(value)?;
+        self.values.push(write, value)?;
 
         Ok(true)
     }
@@ -320,7 +324,7 @@ where
     ///
     /// Returns `true` if the value was removed. Otherwise, returns `false`.
     #[inline]
-    pub fn remove(&mut self, value: &T) -> Result<bool>
+    pub fn remove(&mut self, write: &mut crate::storage::WriteCtx, value: &T) -> Result<bool>
     where
         T: StorageKey + Hash + Eq + Clone,
         T::Handler: Handler<T>,
@@ -345,17 +349,18 @@ where
         // Swap with last element if not already last
         if index != last_index {
             let last_value = self.values[last_index].read()?;
-            self.positions.at_mut(&last_value).write(position)?;
-            self.values[index].write(last_value)?;
+            self.positions.at_mut(&last_value).write(write, position)?;
+            self.values[index].write(write, last_value)?;
         }
 
         // Delete the last element and decrement its length.
         // Equivalent to `self.values.pop()`, but without the OOB checks.
-        self.values[last_index].delete()?;
-        Slot::<U256>::new(self.values.len_slot(), self.address).write(U256::from(last_index))?;
+        self.values[last_index].delete(write)?;
+        Slot::<U256>::new(self.values.len_slot(), self.address)
+            .write(write, U256::from(last_index))?;
 
         // Clear removed value's position
-        self.positions.at_mut(value).delete()?;
+        self.positions.at_mut(value).delete(write)?;
 
         Ok(true)
     }
@@ -417,30 +422,31 @@ where
     /// Replaces the entire set with new contents.
     ///
     /// The input Set is deduplicated by the `From<Vec<T>>` conversion.
-    fn write(&mut self, value: Set<T>) -> Result<()> {
+    fn write(&mut self, write: &mut crate::storage::WriteCtx, value: Set<T>) -> Result<()> {
         let old_len = self.values.len()?;
         let new_len = value.0.len();
 
         // Clear old positions
         for i in 0..old_len {
             let old_value = self.values[i].read()?;
-            self.positions.at_mut(&old_value).delete()?;
+            self.positions.at_mut(&old_value).delete(write)?;
         }
 
         // Write new values and positions (1-indexed)
         for (index, new_value) in value.0.into_iter().enumerate() {
             self.positions
                 .at_mut(&new_value)
-                .write(checked_position(index)?)?;
-            self.values[index].write(new_value)?;
+                .write(write, checked_position(index)?)?;
+            self.values[index].write(write, new_value)?;
         }
 
         // Update length
-        Slot::<U256>::new(self.values.len_slot(), self.address).write(U256::from(new_len))?;
+        Slot::<U256>::new(self.values.len_slot(), self.address)
+            .write(write, U256::from(new_len))?;
 
         // Clear leftover value slots if shrinking
         for i in new_len..old_len {
-            self.values[i].delete()?;
+            self.values[i].delete(write)?;
         }
 
         Ok(())
@@ -449,17 +455,17 @@ where
     /// Deletes all elements from the set.
     ///
     /// Clears both the values array and all position entries.
-    fn delete(&mut self) -> Result<()> {
+    fn delete(&mut self, write: &mut crate::storage::WriteCtx) -> Result<()> {
         let len = self.len()?;
 
         // Clear all position entries
         for i in 0..len {
             let value = self.values[i].read()?;
-            self.positions.at_mut(&value).delete()?;
+            self.positions.at_mut(&value).delete(write)?;
         }
 
         // Delete the underlying vector (clears length and data slots)
-        self.values.delete()
+        self.values.delete(write)
     }
 
     fn t_read(&self) -> Result<Set<T>> {
@@ -468,13 +474,13 @@ where
         ))
     }
 
-    fn t_write(&mut self, _value: Set<T>) -> Result<()> {
+    fn t_write(&mut self, write: &mut crate::storage::WriteCtx, _value: Set<T>) -> Result<()> {
         Err(TempoPrecompileError::Fatal(
             "Set types don't support transient storage".into(),
         ))
     }
 
-    fn t_delete(&mut self) -> Result<()> {
+    fn t_delete(&mut self, write: &mut crate::storage::WriteCtx) -> Result<()> {
         Err(TempoPrecompileError::Fatal(
             "Set types don't support transient storage".into(),
         ))
@@ -600,9 +606,15 @@ mod tests {
         StorageCtx::enter(&mut storage, || {
             let mut handler = SetHandler::<U256>::new(U256::ZERO, address);
 
-            handler.insert(U256::ONE)?;
-            handler.insert(U256::from(2))?;
-            handler.insert(U256::from(3))?;
+            handler.insert(&mut crate::storage::StorageCtx::test_writable(), U256::ONE)?;
+            handler.insert(
+                &mut crate::storage::StorageCtx::test_writable(),
+                U256::from(2),
+            )?;
+            handler.insert(
+                &mut crate::storage::StorageCtx::test_writable(),
+                U256::from(3),
+            )?;
 
             // Read, convert to Vec, mutate, convert back, write
             let mut vec: Vec<U256> = handler.read()?.into();
@@ -610,7 +622,7 @@ mod tests {
             vec.push(U256::from(5));
             vec.retain(|&x| x != U256::from(2));
 
-            handler.write(vec.into())?;
+            handler.write(&mut crate::storage::StorageCtx::test_writable(), vec.into())?;
 
             assert_eq!(handler.len()?, 4);
             assert!(handler.contains(&U256::ONE)?);
@@ -652,7 +664,7 @@ mod tests {
             assert!(handler.is_empty()?);
             assert_eq!(handler.len()?, 0);
             assert!(!handler.contains(&U256::ONE)?);
-            assert!(!handler.remove(&U256::ONE)?);
+            assert!(!handler.remove(&mut crate::storage::StorageCtx::test_writable(), &U256::ONE)?);
             assert_eq!(handler.at(0)?, None);
             assert_eq!(handler.at(100)?, None);
             assert!(handler.read()?.is_empty());
@@ -669,18 +681,30 @@ mod tests {
         StorageCtx::enter(&mut storage, || {
             let mut handler = SetHandler::<U256>::new(U256::ZERO, address);
 
-            assert!(handler.insert(U256::ONE)?);
-            assert!(!handler.insert(U256::ONE)?);
+            assert!(handler.insert(&mut crate::storage::StorageCtx::test_writable(), U256::ONE)?);
+            assert!(!handler.insert(&mut crate::storage::StorageCtx::test_writable(), U256::ONE)?);
             assert_eq!(handler.len()?, 1);
 
-            assert!(handler.remove(&U256::ONE)?);
+            assert!(handler.remove(&mut crate::storage::StorageCtx::test_writable(), &U256::ONE)?);
             assert!(handler.is_empty()?);
             assert!(!handler.contains(&U256::ONE)?);
 
-            handler.insert(U256::from(1))?;
-            handler.insert(U256::from(2))?;
-            handler.remove(&U256::from(1))?;
-            handler.insert(U256::from(3))?;
+            handler.insert(
+                &mut crate::storage::StorageCtx::test_writable(),
+                U256::from(1),
+            )?;
+            handler.insert(
+                &mut crate::storage::StorageCtx::test_writable(),
+                U256::from(2),
+            )?;
+            handler.remove(
+                &mut crate::storage::StorageCtx::test_writable(),
+                &U256::from(1),
+            )?;
+            handler.insert(
+                &mut crate::storage::StorageCtx::test_writable(),
+                U256::from(3),
+            )?;
             assert_eq!(handler.len()?, 2);
             assert!(handler.contains(&U256::from(2))?);
             assert!(handler.contains(&U256::from(3))?);
@@ -697,21 +721,42 @@ mod tests {
         StorageCtx::enter(&mut storage, || {
             let mut handler = SetHandler::<U256>::new(U256::ZERO, address);
 
-            handler.insert(U256::from(10))?;
-            handler.insert(U256::from(20))?;
-            handler.insert(U256::from(30))?;
+            handler.insert(
+                &mut crate::storage::StorageCtx::test_writable(),
+                U256::from(10),
+            )?;
+            handler.insert(
+                &mut crate::storage::StorageCtx::test_writable(),
+                U256::from(20),
+            )?;
+            handler.insert(
+                &mut crate::storage::StorageCtx::test_writable(),
+                U256::from(30),
+            )?;
 
             // Remove last: no swap needed
-            assert!(handler.remove(&U256::from(30))?);
+            assert!(handler.remove(
+                &mut crate::storage::StorageCtx::test_writable(),
+                &U256::from(30)
+            )?);
             assert_eq!(&handler.read()?[..], &[U256::from(10), U256::from(20)]);
 
             // Re-add and remove first: last swaps into position 0
-            handler.insert(U256::from(30))?;
-            assert!(handler.remove(&U256::from(10))?);
+            handler.insert(
+                &mut crate::storage::StorageCtx::test_writable(),
+                U256::from(30),
+            )?;
+            assert!(handler.remove(
+                &mut crate::storage::StorageCtx::test_writable(),
+                &U256::from(10)
+            )?);
             assert_eq!(&handler.read()?[..], &[U256::from(30), U256::from(20)]);
 
             // Remove first of two
-            assert!(handler.remove(&U256::from(30))?);
+            assert!(handler.remove(
+                &mut crate::storage::StorageCtx::test_writable(),
+                &U256::from(30)
+            )?);
             assert_eq!(handler.len()?, 1);
             assert!(handler.contains(&U256::from(20))?);
 
@@ -726,9 +771,18 @@ mod tests {
         StorageCtx::enter(&mut storage, || {
             let mut handler = SetHandler::<U256>::new(U256::ZERO, address);
 
-            handler.insert(U256::from(10))?;
-            handler.insert(U256::from(20))?;
-            handler.insert(U256::from(30))?;
+            handler.insert(
+                &mut crate::storage::StorageCtx::test_writable(),
+                U256::from(10),
+            )?;
+            handler.insert(
+                &mut crate::storage::StorageCtx::test_writable(),
+                U256::from(20),
+            )?;
+            handler.insert(
+                &mut crate::storage::StorageCtx::test_writable(),
+                U256::from(30),
+            )?;
 
             assert_eq!(handler.at(0)?, Some(U256::from(10)));
             assert_eq!(handler.at(1)?, Some(U256::from(20)));
@@ -750,7 +804,10 @@ mod tests {
             let mut handler = SetHandler::<U256>::new(U256::ZERO, address);
 
             for i in 0..5 {
-                handler.insert(U256::from(i))?;
+                handler.insert(
+                    &mut crate::storage::StorageCtx::test_writable(),
+                    U256::from(i),
+                )?;
             }
 
             assert_eq!(
@@ -774,23 +831,28 @@ mod tests {
             let mut handler = SetHandler::<U256>::new(U256::ZERO, address);
 
             // Write to grow (1 → 3)
-            handler.insert(U256::from(1))?;
-            handler.write(Set::from(vec![
-                U256::from(10),
-                U256::from(20),
-                U256::from(30),
-            ]))?;
+            handler.insert(
+                &mut crate::storage::StorageCtx::test_writable(),
+                U256::from(1),
+            )?;
+            handler.write(
+                &mut crate::storage::StorageCtx::test_writable(),
+                Set::from(vec![U256::from(10), U256::from(20), U256::from(30)]),
+            )?;
             assert_eq!(handler.len()?, 3);
             assert!(!handler.contains(&U256::from(1))?);
             assert!(handler.contains(&U256::from(10))?);
 
             // Write to shrink (3 → 2)
-            handler.write(Set::from(vec![U256::from(40), U256::from(50)]))?;
+            handler.write(
+                &mut crate::storage::StorageCtx::test_writable(),
+                Set::from(vec![U256::from(40), U256::from(50)]),
+            )?;
             assert_eq!(handler.len()?, 2);
             assert!(!handler.contains(&U256::from(10))?);
 
             // Write empty
-            handler.write(Set::new())?;
+            handler.write(&mut crate::storage::StorageCtx::test_writable(), Set::new())?;
             assert!(handler.is_empty()?);
 
             Ok(())
@@ -805,17 +867,23 @@ mod tests {
             let mut handler = SetHandler::<U256>::new(U256::ZERO, address);
 
             for i in 1..=3 {
-                handler.insert(U256::from(i))?;
+                handler.insert(
+                    &mut crate::storage::StorageCtx::test_writable(),
+                    U256::from(i),
+                )?;
             }
 
-            handler.delete()?;
+            handler.delete(&mut crate::storage::StorageCtx::test_writable())?;
             assert!(handler.is_empty()?);
             for i in 1..=3 {
                 assert!(!handler.contains(&U256::from(i))?);
             }
 
             // Re-insert after delete: positions were properly cleared
-            handler.insert(U256::from(2))?;
+            handler.insert(
+                &mut crate::storage::StorageCtx::test_writable(),
+                U256::from(2),
+            )?;
             assert_eq!(handler.at(0)?, Some(U256::from(2)));
             assert_eq!(handler.len()?, 1);
 
@@ -830,8 +898,16 @@ mod tests {
         StorageCtx::enter(&mut storage, || {
             let mut handler = SetHandler::<U256>::new(U256::ZERO, address);
             assert!(handler.t_read().is_err());
-            assert!(handler.t_write(Set::new()).is_err());
-            assert!(handler.t_delete().is_err());
+            assert!(
+                handler
+                    .t_write(&mut crate::storage::StorageCtx::test_writable(), Set::new())
+                    .is_err()
+            );
+            assert!(
+                handler
+                    .t_delete(&mut crate::storage::StorageCtx::test_writable())
+                    .is_err()
+            );
             Ok(())
         })
     }
@@ -858,8 +934,15 @@ mod tests {
 
             // Simulate a full set by writing u32::MAX directly to the length slot.
             // insert() must propagate an overflow error rather than wrapping position to 0.
-            Slot::<U256>::new(handler.base_slot(), address).write(U256::from(u32::MAX))?;
-            assert!(handler.insert(U256::ONE).is_err());
+            Slot::<U256>::new(handler.base_slot(), address).write(
+                &mut crate::storage::StorageCtx::test_writable(),
+                U256::from(u32::MAX),
+            )?;
+            assert!(
+                handler
+                    .insert(&mut crate::storage::StorageCtx::test_writable(), U256::ONE)
+                    .is_err()
+            );
 
             Ok(())
         })
@@ -888,11 +971,11 @@ mod tests {
             let [a1, a2, a3] = [[1u8; 20], [2u8; 20], [3u8; 20]].map(Address::from);
 
             for a in [a1, a2, a3] {
-                handler.insert(a)?;
+                handler.insert(&mut crate::storage::StorageCtx::test_writable(), a)?;
             }
             assert_eq!(handler.len()?, 3);
 
-            handler.remove(&a2)?;
+            handler.remove(&mut crate::storage::StorageCtx::test_writable(), &a2)?;
             assert_eq!(handler.len()?, 2);
             assert!(!handler.contains(&a2)?);
             assert_eq!(handler.at(0)?, Some(a1));
@@ -910,15 +993,24 @@ mod tests {
             let mut handler = SetHandler::<U256>::new(U256::ZERO, address);
 
             for i in 0..5 {
-                handler.insert(U256::from(i))?;
+                handler.insert(
+                    &mut crate::storage::StorageCtx::test_writable(),
+                    U256::from(i),
+                )?;
             }
             for i in 0..5 {
-                assert!(handler.remove(&U256::from(i))?);
+                assert!(handler.remove(
+                    &mut crate::storage::StorageCtx::test_writable(),
+                    &U256::from(i)
+                )?);
             }
             assert!(handler.is_empty()?);
 
             for i in 10..15 {
-                handler.insert(U256::from(i))?;
+                handler.insert(
+                    &mut crate::storage::StorageCtx::test_writable(),
+                    U256::from(i),
+                )?;
             }
             assert_eq!(handler.len()?, 5);
             for i in 10..15 {
@@ -946,7 +1038,7 @@ mod tests {
                 let mut handler = SetHandler::<Address>::new(U256::ZERO, address);
 
                 for addr in &addresses {
-                    handler.insert(*addr)?;
+                    handler.insert(&mut crate::storage::StorageCtx::test_writable(), *addr)?;
                 }
 
                 let set = handler.read()?;
@@ -976,14 +1068,14 @@ mod tests {
                     let value = U256::from(val % 20); // keep key space small for collisions
                     if insert {
                         let was_new = !reference.contains(&value);
-                        let result = handler.insert(value)?;
+                        let result = handler.insert(&mut crate::storage::StorageCtx::test_writable(), value)?;
                         prop_assert_eq!(result, was_new);
                         if was_new {
                             reference.push(value);
                         }
                     } else {
                         let existed = reference.contains(&value);
-                        let result = handler.remove(&value)?;
+                        let result = handler.remove(&mut crate::storage::StorageCtx::test_writable(), &value)?;
                         prop_assert_eq!(result, existed);
                         if existed {
                             reference.retain(|v| v != &value);

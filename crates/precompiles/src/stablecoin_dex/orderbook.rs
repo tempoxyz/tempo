@@ -347,21 +347,25 @@ impl TickLevelHandler {
 
     /// Writes only the live linked-list slot at T12 while preserving the legacy layout below T12.
     #[inline]
-    pub(crate) fn write(&mut self, level: TickLevel) -> Result<()> {
+    pub(crate) fn write(
+        &mut self,
+        write: &mut crate::storage::WriteCtx,
+        level: TickLevel,
+    ) -> Result<()> {
         if StorageCtx.spec().is_t12() {
-            self.links.write(level.links)
+            self.links.write(write, level.links)
         } else {
-            <Self as Handler<TickLevel>>::write(self, level)
+            <Self as Handler<TickLevel>>::write(self, write, level)
         }
     }
 
     /// Deletes only the live linked-list slot at T12 while preserving the stale aggregate.
     #[inline]
-    pub(crate) fn delete(&mut self) -> Result<()> {
+    pub(crate) fn delete(&mut self, write: &mut crate::storage::WriteCtx) -> Result<()> {
         if StorageCtx.spec().is_t12() {
-            self.links.delete()
+            self.links.delete(write)
         } else {
-            <Self as Handler<TickLevel>>::delete(self)
+            <Self as Handler<TickLevel>>::delete(self, write)
         }
     }
 }
@@ -494,7 +498,12 @@ impl OrderbookHandler {
     ///
     /// # Errors
     /// - `InvalidTick` — tick is outside `[MIN_TICK, MAX_TICK]`
-    pub fn set_tick_bit(&mut self, tick: i16, is_bid: bool) -> Result<()> {
+    pub fn set_tick_bit(
+        &mut self,
+        write: &mut crate::storage::WriteCtx,
+        tick: i16,
+        is_bid: bool,
+    ) -> Result<()> {
         let word_index = self.calc_tick_word_idx(tick)?;
         let bitmap = if is_bid {
             &mut self.bid_bitmap[word_index]
@@ -510,14 +519,19 @@ impl OrderbookHandler {
         let mask = U256::from(1u8) << bit_index;
 
         // Set the bit
-        bitmap.write(current_word | mask)
+        bitmap.write(write, current_word | mask)
     }
 
     /// Clears the bitmap bit for `tick` to mark it as inactive on the given side.
     ///
     /// # Errors
     /// - `InvalidTick` — tick is outside `[MIN_TICK, MAX_TICK]`
-    pub fn delete_tick_bit(&mut self, tick: i16, is_bid: bool) -> Result<()> {
+    pub fn delete_tick_bit(
+        &mut self,
+        write: &mut crate::storage::WriteCtx,
+        tick: i16,
+        is_bid: bool,
+    ) -> Result<()> {
         let word_index = self.calc_tick_word_idx(tick)?;
         let bitmap = if is_bid {
             &mut self.bid_bitmap[word_index]
@@ -533,7 +547,7 @@ impl OrderbookHandler {
         let mask = !(U256::from(1u8) << bit_index);
 
         // Set the bit
-        bitmap.write(current_word & mask)
+        bitmap.write(write, current_word & mask)
     }
 
     /// Returns `true` if the given `tick` has active orders on the specified side.
@@ -792,7 +806,11 @@ mod tests {
             let is_t12 = spec.is_t12();
             let mut storage = HashMapStorageProvider::new_with_spec(1, spec);
             StorageCtx::enter(&mut storage, || {
-                Handler::<TickLevel>::write(&mut TickLevelHandler::new(slot, address), legacy)
+                Handler::<TickLevel>::write(
+                    &mut TickLevelHandler::new(slot, address),
+                    &mut crate::storage::StorageCtx::test_writable(),
+                    legacy,
+                )
             })?;
 
             storage.reset_counters();
@@ -805,14 +823,16 @@ mod tests {
 
             storage.reset_counters();
             StorageCtx::enter(&mut storage, || {
-                TickLevelHandler::new(slot, address).write(updated)
+                TickLevelHandler::new(slot, address)
+                    .write(&mut crate::storage::StorageCtx::test_writable(), updated)
             })?;
             assert_eq!(storage.counter_sload(), if spec.is_t4() { 0 } else { 2 });
             assert_eq!(storage.counter_sstore(), if is_t12 { 1 } else { 2 });
 
             storage.reset_counters();
             StorageCtx::enter(&mut storage, || {
-                TickLevelHandler::new(slot, address).delete()
+                TickLevelHandler::new(slot, address)
+                    .delete(&mut crate::storage::StorageCtx::test_writable())
             })?;
             assert_eq!(storage.counter_sload(), 0);
             assert_eq!(storage.counter_sstore(), if is_t12 { 1 } else { 2 });
@@ -960,7 +980,7 @@ mod tests {
             let mut storage = HashMapStorageProvider::new(1);
             StorageCtx::enter(&mut storage, || {
                 let mut exchange = StablecoinDEX::new();
-                exchange.initialize()?;
+                exchange.initialize(&mut crate::storage::StorageCtx::test_writable())?;
                 let book_handler = &mut exchange.books[BOOK_KEY];
 
                 // Test full lifecycle (set, check, clear, check) for positive and negative ticks
@@ -978,7 +998,11 @@ mod tests {
                     );
 
                     // Set the bit
-                    book_handler.set_tick_bit(tick, true)?;
+                    book_handler.set_tick_bit(
+                        &mut crate::storage::StorageCtx::test_writable(),
+                        tick,
+                        true,
+                    )?;
 
                     assert!(
                         book_handler.is_tick_initialized(tick, true)?,
@@ -986,7 +1010,11 @@ mod tests {
                     );
 
                     // Clear the bit
-                    book_handler.delete_tick_bit(tick, true)?;
+                    book_handler.delete_tick_bit(
+                        &mut crate::storage::StorageCtx::test_writable(),
+                        tick,
+                        true,
+                    )?;
 
                     assert!(
                         !book_handler.is_tick_initialized(tick, true)?,
@@ -1003,11 +1031,15 @@ mod tests {
             let mut storage = HashMapStorageProvider::new(1);
             StorageCtx::enter(&mut storage, || {
                 let mut exchange = StablecoinDEX::new();
-                exchange.initialize()?;
+                exchange.initialize(&mut crate::storage::StorageCtx::test_writable())?;
                 let book_handler = &mut exchange.books[BOOK_KEY];
 
                 // Test MIN_TICK
-                book_handler.set_tick_bit(MIN_TICK, true)?;
+                book_handler.set_tick_bit(
+                    &mut crate::storage::StorageCtx::test_writable(),
+                    MIN_TICK,
+                    true,
+                )?;
 
                 assert!(
                     book_handler.is_tick_initialized(MIN_TICK, true)?,
@@ -1015,7 +1047,11 @@ mod tests {
                 );
 
                 // Test MAX_TICK (use different storage for ask side)
-                book_handler.set_tick_bit(MAX_TICK, false)?;
+                book_handler.set_tick_bit(
+                    &mut crate::storage::StorageCtx::test_writable(),
+                    MAX_TICK,
+                    false,
+                )?;
 
                 assert!(
                     book_handler.is_tick_initialized(MAX_TICK, false)?,
@@ -1023,7 +1059,11 @@ mod tests {
                 );
 
                 // Clear MIN_TICK
-                book_handler.delete_tick_bit(MIN_TICK, true)?;
+                book_handler.delete_tick_bit(
+                    &mut crate::storage::StorageCtx::test_writable(),
+                    MIN_TICK,
+                    true,
+                )?;
 
                 assert!(
                     !book_handler.is_tick_initialized(MIN_TICK, true)?,
@@ -1038,13 +1078,17 @@ mod tests {
             let mut storage = HashMapStorageProvider::new(1);
             StorageCtx::enter(&mut storage, || {
                 let mut exchange = StablecoinDEX::new();
-                exchange.initialize()?;
+                exchange.initialize(&mut crate::storage::StorageCtx::test_writable())?;
                 let book_handler = &mut exchange.books[BOOK_KEY];
 
                 let tick = 100;
 
                 // Set as bid
-                book_handler.set_tick_bit(tick, true)?;
+                book_handler.set_tick_bit(
+                    &mut crate::storage::StorageCtx::test_writable(),
+                    tick,
+                    true,
+                )?;
 
                 assert!(
                     book_handler.is_tick_initialized(tick, true)?,
@@ -1056,7 +1100,11 @@ mod tests {
                 );
 
                 // Set as ask
-                book_handler.set_tick_bit(tick, false)?;
+                book_handler.set_tick_bit(
+                    &mut crate::storage::StorageCtx::test_writable(),
+                    tick,
+                    false,
+                )?;
 
                 assert!(
                     book_handler.is_tick_initialized(tick, true)?,
@@ -1075,12 +1123,20 @@ mod tests {
             let mut storage = HashMapStorageProvider::new(1);
             StorageCtx::enter(&mut storage, || {
                 let mut exchange = StablecoinDEX::new();
-                exchange.initialize()?;
+                exchange.initialize(&mut crate::storage::StorageCtx::test_writable())?;
                 let book_handler = &mut exchange.books[BOOK_KEY];
 
                 // Ticks that span word boundary at 256
-                book_handler.set_tick_bit(255, true)?; // word_index = 0, bit_index = 255
-                book_handler.set_tick_bit(256, true)?; // word_index = 1, bit_index = 0
+                book_handler.set_tick_bit(
+                    &mut crate::storage::StorageCtx::test_writable(),
+                    255,
+                    true,
+                )?; // word_index = 0, bit_index = 255
+                book_handler.set_tick_bit(
+                    &mut crate::storage::StorageCtx::test_writable(),
+                    256,
+                    true,
+                )?; // word_index = 1, bit_index = 0
 
                 assert!(book_handler.is_tick_initialized(255, true)?);
                 assert!(book_handler.is_tick_initialized(256, true)?);
@@ -1093,22 +1149,54 @@ mod tests {
             let mut storage = HashMapStorageProvider::new(1);
             StorageCtx::enter(&mut storage, || {
                 let mut exchange = StablecoinDEX::new();
-                exchange.initialize()?;
+                exchange.initialize(&mut crate::storage::StorageCtx::test_writable())?;
                 let book_handler = &mut exchange.books[BOOK_KEY];
 
                 // Test ticks in different words (both positive and negative)
 
                 // Negative ticks in different words
-                book_handler.set_tick_bit(-1, true)?; // word_index = -1, bit_index = 255
-                book_handler.set_tick_bit(-100, true)?; // word_index = -1, bit_index = 156
-                book_handler.set_tick_bit(-256, true)?; // word_index = -1, bit_index = 0
-                book_handler.set_tick_bit(-257, true)?; // word_index = -2, bit_index = 255
+                book_handler.set_tick_bit(
+                    &mut crate::storage::StorageCtx::test_writable(),
+                    -1,
+                    true,
+                )?; // word_index = -1, bit_index = 255
+                book_handler.set_tick_bit(
+                    &mut crate::storage::StorageCtx::test_writable(),
+                    -100,
+                    true,
+                )?; // word_index = -1, bit_index = 156
+                book_handler.set_tick_bit(
+                    &mut crate::storage::StorageCtx::test_writable(),
+                    -256,
+                    true,
+                )?; // word_index = -1, bit_index = 0
+                book_handler.set_tick_bit(
+                    &mut crate::storage::StorageCtx::test_writable(),
+                    -257,
+                    true,
+                )?; // word_index = -2, bit_index = 255
 
                 // Positive ticks in different words
-                book_handler.set_tick_bit(1, true)?; // word_index = 0, bit_index = 1
-                book_handler.set_tick_bit(100, true)?; // word_index = 0, bit_index = 100
-                book_handler.set_tick_bit(256, true)?; // word_index = 1, bit_index = 0
-                book_handler.set_tick_bit(512, true)?; // word_index = 2, bit_index = 0
+                book_handler.set_tick_bit(
+                    &mut crate::storage::StorageCtx::test_writable(),
+                    1,
+                    true,
+                )?; // word_index = 0, bit_index = 1
+                book_handler.set_tick_bit(
+                    &mut crate::storage::StorageCtx::test_writable(),
+                    100,
+                    true,
+                )?; // word_index = 0, bit_index = 100
+                book_handler.set_tick_bit(
+                    &mut crate::storage::StorageCtx::test_writable(),
+                    256,
+                    true,
+                )?; // word_index = 1, bit_index = 0
+                book_handler.set_tick_bit(
+                    &mut crate::storage::StorageCtx::test_writable(),
+                    512,
+                    true,
+                )?; // word_index = 2, bit_index = 0
 
                 // Verify negative ticks
                 assert!(book_handler.is_tick_initialized(-1, true)?);
@@ -1140,11 +1228,15 @@ mod tests {
             let mut storage = HashMapStorageProvider::new(1);
             StorageCtx::enter(&mut storage, || {
                 let mut exchange = StablecoinDEX::new();
-                exchange.initialize()?;
+                exchange.initialize(&mut crate::storage::StorageCtx::test_writable())?;
                 let book_handler = &mut exchange.books[BOOK_KEY];
 
                 // Test tick above MAX_TICK
-                let result = book_handler.set_tick_bit(MAX_TICK + 1, true);
+                let result = book_handler.set_tick_bit(
+                    &mut crate::storage::StorageCtx::test_writable(),
+                    MAX_TICK + 1,
+                    true,
+                );
                 assert!(result.is_err());
                 assert!(matches!(
                     result.unwrap_err(),
@@ -1152,7 +1244,11 @@ mod tests {
                 ));
 
                 // Test tick below MIN_TICK
-                let result = book_handler.set_tick_bit(MIN_TICK - 1, true);
+                let result = book_handler.set_tick_bit(
+                    &mut crate::storage::StorageCtx::test_writable(),
+                    MIN_TICK - 1,
+                    true,
+                );
                 assert!(result.is_err());
                 assert!(matches!(
                     result.unwrap_err(),
@@ -1167,11 +1263,15 @@ mod tests {
             let mut storage = HashMapStorageProvider::new(1);
             StorageCtx::enter(&mut storage, || {
                 let mut exchange = StablecoinDEX::new();
-                exchange.initialize()?;
+                exchange.initialize(&mut crate::storage::StorageCtx::test_writable())?;
                 let book_handler = &mut exchange.books[BOOK_KEY];
 
                 // Test tick above MAX_TICK
-                let result = book_handler.delete_tick_bit(MAX_TICK + 1, true);
+                let result = book_handler.delete_tick_bit(
+                    &mut crate::storage::StorageCtx::test_writable(),
+                    MAX_TICK + 1,
+                    true,
+                );
                 assert!(result.is_err());
                 assert!(matches!(
                     result.unwrap_err(),
@@ -1179,7 +1279,11 @@ mod tests {
                 ));
 
                 // Test tick below MIN_TICK
-                let result = book_handler.delete_tick_bit(MIN_TICK - 1, true);
+                let result = book_handler.delete_tick_bit(
+                    &mut crate::storage::StorageCtx::test_writable(),
+                    MIN_TICK - 1,
+                    true,
+                );
                 assert!(result.is_err());
                 assert!(matches!(
                     result.unwrap_err(),
@@ -1220,12 +1324,20 @@ mod tests {
             let mut storage = HashMapStorageProvider::new(1);
             StorageCtx::enter(&mut storage, || {
                 let mut exchange = StablecoinDEX::new();
-                exchange.initialize()?;
+                exchange.initialize(&mut crate::storage::StorageCtx::test_writable())?;
                 let book_handler = &mut exchange.books[BOOK_KEY];
 
                 // Set ticks 10 and 50 (both in word 0)
-                book_handler.set_tick_bit(10, false)?;
-                book_handler.set_tick_bit(50, false)?;
+                book_handler.set_tick_bit(
+                    &mut crate::storage::StorageCtx::test_writable(),
+                    10,
+                    false,
+                )?;
+                book_handler.set_tick_bit(
+                    &mut crate::storage::StorageCtx::test_writable(),
+                    50,
+                    false,
+                )?;
 
                 // From tick 0, should find tick 10
                 let (next, found) = book_handler.next_initialized_tick(0, false)?;
@@ -1251,13 +1363,25 @@ mod tests {
             let mut storage = HashMapStorageProvider::new(1);
             StorageCtx::enter(&mut storage, || {
                 let mut exchange = StablecoinDEX::new();
-                exchange.initialize()?;
+                exchange.initialize(&mut crate::storage::StorageCtx::test_writable())?;
                 let book_handler = &mut exchange.books[BOOK_KEY];
 
                 // Set ticks in different words: 100 (word 0), 300 (word 1), 600 (word 2)
-                book_handler.set_tick_bit(100, false)?;
-                book_handler.set_tick_bit(300, false)?;
-                book_handler.set_tick_bit(600, false)?;
+                book_handler.set_tick_bit(
+                    &mut crate::storage::StorageCtx::test_writable(),
+                    100,
+                    false,
+                )?;
+                book_handler.set_tick_bit(
+                    &mut crate::storage::StorageCtx::test_writable(),
+                    300,
+                    false,
+                )?;
+                book_handler.set_tick_bit(
+                    &mut crate::storage::StorageCtx::test_writable(),
+                    600,
+                    false,
+                )?;
 
                 // From tick 0, should find tick 100 (same word)
                 let (next, found) = book_handler.next_initialized_tick(0, false)?;
@@ -1283,12 +1407,20 @@ mod tests {
             let mut storage = HashMapStorageProvider::new(1);
             StorageCtx::enter(&mut storage, || {
                 let mut exchange = StablecoinDEX::new();
-                exchange.initialize()?;
+                exchange.initialize(&mut crate::storage::StorageCtx::test_writable())?;
                 let book_handler = &mut exchange.books[BOOK_KEY];
 
                 // Set ticks 10 and 50 (both in word 0) for bids
-                book_handler.set_tick_bit(10, true)?;
-                book_handler.set_tick_bit(50, true)?;
+                book_handler.set_tick_bit(
+                    &mut crate::storage::StorageCtx::test_writable(),
+                    10,
+                    true,
+                )?;
+                book_handler.set_tick_bit(
+                    &mut crate::storage::StorageCtx::test_writable(),
+                    50,
+                    true,
+                )?;
 
                 // From tick 100, should find tick 50
                 let (next, found) = book_handler.next_initialized_tick(100, true)?;
@@ -1314,13 +1446,25 @@ mod tests {
             let mut storage = HashMapStorageProvider::new(1);
             StorageCtx::enter(&mut storage, || {
                 let mut exchange = StablecoinDEX::new();
-                exchange.initialize()?;
+                exchange.initialize(&mut crate::storage::StorageCtx::test_writable())?;
                 let book_handler = &mut exchange.books[BOOK_KEY];
 
                 // Set ticks in different words for bids: 600 (word 2), 300 (word 1), 100 (word 0)
-                book_handler.set_tick_bit(600, true)?;
-                book_handler.set_tick_bit(300, true)?;
-                book_handler.set_tick_bit(100, true)?;
+                book_handler.set_tick_bit(
+                    &mut crate::storage::StorageCtx::test_writable(),
+                    600,
+                    true,
+                )?;
+                book_handler.set_tick_bit(
+                    &mut crate::storage::StorageCtx::test_writable(),
+                    300,
+                    true,
+                )?;
+                book_handler.set_tick_bit(
+                    &mut crate::storage::StorageCtx::test_writable(),
+                    100,
+                    true,
+                )?;
 
                 // From tick 700, should find tick 600 (same word)
                 let (next, found) = book_handler.next_initialized_tick(700, true)?;
@@ -1346,13 +1490,25 @@ mod tests {
             let mut storage = HashMapStorageProvider::new(1);
             StorageCtx::enter(&mut storage, || {
                 let mut exchange = StablecoinDEX::new();
-                exchange.initialize()?;
+                exchange.initialize(&mut crate::storage::StorageCtx::test_writable())?;
                 let book_handler = &mut exchange.books[BOOK_KEY];
 
                 // Set negative ticks for asks
-                book_handler.set_tick_bit(-500, false)?;
-                book_handler.set_tick_bit(-100, false)?;
-                book_handler.set_tick_bit(50, false)?;
+                book_handler.set_tick_bit(
+                    &mut crate::storage::StorageCtx::test_writable(),
+                    -500,
+                    false,
+                )?;
+                book_handler.set_tick_bit(
+                    &mut crate::storage::StorageCtx::test_writable(),
+                    -100,
+                    false,
+                )?;
+                book_handler.set_tick_bit(
+                    &mut crate::storage::StorageCtx::test_writable(),
+                    50,
+                    false,
+                )?;
 
                 // From -600, should find -500
                 let (next, found) = book_handler.next_initialized_tick(-600, false)?;
@@ -1370,8 +1526,16 @@ mod tests {
                 assert_eq!(next, 50);
 
                 // Set negative ticks for bids
-                book_handler.set_tick_bit(-100, true)?;
-                book_handler.set_tick_bit(-500, true)?;
+                book_handler.set_tick_bit(
+                    &mut crate::storage::StorageCtx::test_writable(),
+                    -100,
+                    true,
+                )?;
+                book_handler.set_tick_bit(
+                    &mut crate::storage::StorageCtx::test_writable(),
+                    -500,
+                    true,
+                )?;
 
                 // From 0, should find -100
                 let (next, found) = book_handler.next_initialized_tick(0, true)?;
@@ -1392,12 +1556,20 @@ mod tests {
             let mut storage = HashMapStorageProvider::new(1);
             StorageCtx::enter(&mut storage, || {
                 let mut exchange = StablecoinDEX::new();
-                exchange.initialize()?;
+                exchange.initialize(&mut crate::storage::StorageCtx::test_writable())?;
                 let book_handler = &mut exchange.books[BOOK_KEY];
 
                 // Test exact word boundaries (256, 512, -256, -512)
-                book_handler.set_tick_bit(255, false)?; // Last bit of word 0
-                book_handler.set_tick_bit(256, false)?; // First bit of word 1
+                book_handler.set_tick_bit(
+                    &mut crate::storage::StorageCtx::test_writable(),
+                    255,
+                    false,
+                )?; // Last bit of word 0
+                book_handler.set_tick_bit(
+                    &mut crate::storage::StorageCtx::test_writable(),
+                    256,
+                    false,
+                )?; // First bit of word 1
 
                 // From 254, should find 255
                 let (next, found) = book_handler.next_initialized_tick(254, false)?;
@@ -1410,8 +1582,16 @@ mod tests {
                 assert_eq!(next, 256);
 
                 // Test bid direction at word boundary
-                book_handler.set_tick_bit(256, true)?;
-                book_handler.set_tick_bit(255, true)?;
+                book_handler.set_tick_bit(
+                    &mut crate::storage::StorageCtx::test_writable(),
+                    256,
+                    true,
+                )?;
+                book_handler.set_tick_bit(
+                    &mut crate::storage::StorageCtx::test_writable(),
+                    255,
+                    true,
+                )?;
 
                 // From 257, should find 256
                 let (next, found) = book_handler.next_initialized_tick(257, true)?;
