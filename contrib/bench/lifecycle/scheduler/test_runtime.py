@@ -4,9 +4,10 @@ import json
 from pathlib import Path
 import tempfile
 import unittest
+from unittest.mock import patch
 
 from diagnostic import decode, marker_call, marker_slots
-from runtime import failure_summary, final_cutoff, program_for
+from runtime import failure_summary, final_cutoff, program_for, publish_capture
 from test_diagnostic import fixture, stream
 # Avoid confusing this module with the parent lifecycle report module.
 spec = importlib.util.spec_from_file_location('scheduler_report', Path(__file__).with_name('report.py'))
@@ -22,6 +23,26 @@ def example(process=1):
 
 
 class RuntimeTests(unittest.TestCase):
+    def test_capture_is_visible_only_after_complete_serialization(self):
+        with tempfile.TemporaryDirectory() as name:
+            output = Path(name)/'scheduler-a.json'
+            original_dump = json.dump
+            def slow_dump(value, destination, **kwargs):
+                self.assertFalse(output.exists())
+                original_dump(value, destination, **kwargs)
+                destination.flush()
+                self.assertFalse(output.exists())
+            with patch('runtime.json.dump', side_effect=slow_dump):
+                publish_capture(output, {'complete':True})
+            self.assertEqual(json.loads(output.read_text()), {'complete':True})
+            self.assertFalse(output.with_suffix('.partial').exists())
+            output.unlink()
+            with patch('runtime.json.dump', side_effect=OSError('private details')):
+                with self.assertRaises(OSError):
+                    publish_capture(output, {})
+            self.assertFalse(output.exists())
+            self.assertFalse(output.with_suffix('.partial').exists())
+
     def test_marker_verifies_direct_or_exact_relocated_indirect_call(self):
         symbols = '00001000 T marker\n00002000 T other\n'
         relocations = '00003000 00000008 R_X86_64_RELATIVE 1000\n00004000 00000008 R_X86_64_RELATIVE 2000\n'

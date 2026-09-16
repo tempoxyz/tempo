@@ -32,6 +32,17 @@ def failure_summary(directory):
     return rows
 
 
+def publish_capture(output, result):
+    temporary = output.with_suffix('.partial')
+    try:
+        with temporary.open('x') as destination:
+            json.dump(result, destination, separators=(',', ':'))
+            destination.write('\n')
+        temporary.replace(output)
+    finally:
+        temporary.unlink(missing_ok=True)
+
+
 def capture(command, pass_fds=()):
     """Drain both pipes without persisting tool output, with bounded retention."""
     process = subprocess.Popen(command, stdout=subprocess.PIPE, stderr=subprocess.PIPE, pass_fds=pass_fds)
@@ -164,9 +175,7 @@ def main():
         result.update(scope='registered validator thread windows only', process=1 if args.role == 'a' else 2,
                       cutoff_reason=reason, registration='registered_threads_v1')
         stage = 'publish'
-        with output.open('x') as destination:
-            json.dump(result, destination, separators=(',', ':'))
-            destination.write('\n')
+        publish_capture(output, result)
         return 0
     except (ValueError, OSError, KeyError, subprocess.SubprocessError):
         # Neither exception strings nor commands can escape: either can contain
