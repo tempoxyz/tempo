@@ -32,6 +32,7 @@ pub mod init_state;
 mod overrides;
 pub mod p2p_proxy;
 pub mod regenesis;
+pub mod shadow_replay;
 mod snapshot_download;
 mod snapshot_manifest;
 pub mod tempo_cmd;
@@ -714,6 +715,26 @@ mod tests {
             args.node_args.shadow_replay_hardfork,
             Some(tempo_chainspec::hardfork::TempoHardfork::T13)
         );
+    }
+
+    #[test]
+    fn historical_shadow_replay_subcommand_parses() {
+        let cli = TempoCli::try_parse_from([
+            "tempo",
+            "shadow-replay",
+            "--from",
+            "100",
+            "--to",
+            "200",
+            "--hardfork",
+            "T13",
+            "--fail-on-findings",
+        ])
+        .unwrap();
+        assert!(matches!(
+            cli.command,
+            Commands::Ext(crate::tempo_cmd::TempoSubcommand::ShadowReplay(_))
+        ));
     }
 
     #[test]
