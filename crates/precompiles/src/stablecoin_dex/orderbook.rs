@@ -38,10 +38,12 @@ pub struct OrderStep {
     pub fill_amount: u128,
     /// Amount accumulated into the running total for this fill: taker output for
     /// exact-in trades, taker input for exact-out trades.
-    pub accumulate: u128,
+    /// Kept fallible so pre-T12 execution checks this after settlement.
+    pub accumulate: Option<u128>,
     /// Input (exact-in) or output (exact-out) left after fully consuming this
     /// order. Only meaningful on a full fill.
-    pub next_amount: u128,
+    /// Kept fallible so pre-T12 execution checks this after accumulation.
+    pub next_amount: Option<u128>,
 }
 
 /// How the current resting order is consumed by [`walk_resting_orders`].
@@ -65,39 +67,52 @@ pub(crate) fn walk_resting_orders(
     mut order: Order,
     mut amount: u128,
     is_bid: bool,
-    step: impl Fn(u128, u128, i16, bool) -> Option<OrderStep>,
+    is_t12: bool,
+    step: impl Fn(u128, u128, i16, bool, bool) -> Option<OrderStep>,
     mut settle: impl FnMut(Order, Fill) -> Result<Option<Order>>,
 ) -> Result<u128> {
     let mut total: u128 = 0;
 
     while amount > 0 {
         let remaining = order.remaining();
-        let s = step(amount, remaining, order.tick(), is_bid)
+        // Before T12, settlement paid according to the stored order's side,
+        // even if book links lead to an order on the other side.
+        let output_is_bid = if is_t12 { is_bid } else { order.is_bid() };
+        let s = step(amount, remaining, order.tick(), is_bid, output_is_bid)
             .ok_or(TempoPrecompileError::under_overflow())?;
+        if is_t12 {
+            // T12 computes all per-order arithmetic before settlement.
+            s.accumulate
+                .zip(s.next_amount)
+                .ok_or(TempoPrecompileError::under_overflow())?;
+        }
         // Preserve historical settlement-before-overflow ordering for replay gas.
         if s.fill_amount < remaining {
             // Partial fill terminates the trade.
             settle(order, Fill::Partial(s.fill_amount))?;
             total = total
-                .checked_add(s.accumulate)
+                .checked_add(s.accumulate.ok_or(TempoPrecompileError::under_overflow())?)
                 .ok_or(TempoPrecompileError::under_overflow())?;
             break;
         }
 
         let next = settle(order, Fill::Full)?;
         total = total
-            .checked_add(s.accumulate)
+            .checked_add(s.accumulate.ok_or(TempoPrecompileError::under_overflow())?)
+            .ok_or(TempoPrecompileError::under_overflow())?;
+        let next_amount = s
+            .next_amount
             .ok_or(TempoPrecompileError::under_overflow())?;
         match next {
             Some(next) => order = next,
             None => {
-                if s.next_amount > 0 {
+                if next_amount > 0 {
                     return Err(StablecoinDEXError::insufficient_liquidity().into());
                 }
                 break;
             }
         }
-        amount = s.next_amount;
+        amount = next_amount;
     }
 
     Ok(total)
@@ -173,48 +188,52 @@ pub fn taker_output(fill_amount: u128, tick: i16, is_bid: bool) -> Option<u128> 
     }
 }
 
-/// Per-order arithmetic for an exact-input trade. Pure: depends only on the
-/// order's `remaining`, `tick`, and side. The caller compares `fill_amount`
-/// against `remaining` to decide whether the order is partially or fully consumed.
+/// Per-order arithmetic for an exact-input trade. `is_bid` is the route side;
+/// `output_is_bid` is the settlement side (the stored order side before T12).
+/// Only fill-sizing failures return `None`; payout and continuation failures
+/// are carried in the step so the walker can preserve fork-specific ordering.
 pub fn step_exact_in(
     amount_in: u128,
     remaining: u128,
     tick: i16,
     is_bid: bool,
+    output_is_bid: bool,
 ) -> Option<OrderStep> {
     let (fill_amount, next_amount) = if is_bid {
         // Selling base: input is base, fill in base.
         (
             amount_in.min(remaining),
-            amount_in.saturating_sub(remaining),
+            Some(amount_in.saturating_sub(remaining)),
         )
     } else {
         // Buying base: input is quote, convert to base (round down, favors protocol).
         let base_out = quote_to_base(amount_in, tick, RoundingDirection::Down)?;
         let next_amount = if base_out > remaining {
             // Quote consumed = what the maker receives, rounded up (zero-sum with maker).
-            let quote_needed = base_to_quote(remaining, tick, RoundingDirection::Up)?;
-            amount_in.checked_sub(quote_needed)?
+            base_to_quote(remaining, tick, RoundingDirection::Up)
+                .and_then(|quote_needed| amount_in.checked_sub(quote_needed))
         } else {
-            0
+            Some(0)
         };
         (base_out.min(remaining), next_amount)
     };
 
     Some(OrderStep {
         fill_amount,
-        accumulate: taker_output(fill_amount, tick, is_bid)?,
+        accumulate: taker_output(fill_amount, tick, output_is_bid),
         next_amount,
     })
 }
 
-/// Per-order arithmetic for an exact-output trade. Pure: depends only on the
-/// order's `remaining`, `tick`, and side.
+/// Per-order arithmetic for an exact-output trade. The route side sizes the fill
+/// and input; the settlement side determines the output deducted on continuation.
+/// Fill-sizing/input failures return `None`; continuation failures are deferred.
 pub fn step_exact_out(
     amount_out: u128,
     remaining: u128,
     tick: i16,
     is_bid: bool,
+    output_is_bid: bool,
 ) -> Option<OrderStep> {
     let (fill_amount, accumulate, demand) = if is_bid {
         // Receiving quote: round up the base needed to cover the exact output.
@@ -232,15 +251,15 @@ pub fn step_exact_out(
     // bid that is the base needed to cover the output, for an ask the output
     // itself. The carried amount is the output still owed after this full fill.
     let next_amount = if demand > remaining {
-        let amount_out_received = taker_output(remaining, tick, is_bid)?;
-        amount_out.checked_sub(amount_out_received)?
+        taker_output(remaining, tick, output_is_bid)
+            .and_then(|amount_out_received| amount_out.checked_sub(amount_out_received))
     } else {
-        0
+        Some(0)
     };
 
     Some(OrderStep {
         fill_amount,
-        accumulate,
+        accumulate: Some(accumulate),
         next_amount,
     })
 }
@@ -743,11 +762,12 @@ mod tests {
                 first,
                 3,
                 false,
-                |amount, remaining, _, _| {
+                false,
+                |amount, remaining, _, _, _| {
                     Some(OrderStep {
                         fill_amount: amount.min(remaining),
-                        accumulate: if remaining == 1 { u128::MAX } else { 1 },
-                        next_amount: amount.saturating_sub(remaining),
+                        accumulate: Some(if remaining == 1 { u128::MAX } else { 1 }),
+                        next_amount: Some(amount.saturating_sub(remaining)),
                     })
                 },
                 |order, fill| {
@@ -762,6 +782,115 @@ mod tests {
 
             assert_eq!(result.unwrap_err(), TempoPrecompileError::under_overflow());
             assert_eq!(settled, [1, 2]);
+        }
+    }
+
+    #[test]
+    fn test_walk_pre_t12_uses_stored_side_for_payout() {
+        for is_t12 in [false, true] {
+            for route_is_bid in [false, true] {
+                for full in [false, true] {
+                    let order = if route_is_bid {
+                        Order::new_ask(1, Address::ZERO, B256::ZERO, 100_000, 1000)
+                    } else {
+                        Order::new_bid(1, Address::ZERO, B256::ZERO, 100_000, 1000)
+                    };
+                    let fill_amount = if full { 100_000 } else { 50_000 };
+                    let amount_in = if route_is_bid {
+                        fill_amount
+                    } else {
+                        fill_amount * 101 / 100
+                    };
+                    let output_is_bid = if is_t12 { route_is_bid } else { order.is_bid() };
+                    let expected = if output_is_bid {
+                        fill_amount * 101 / 100
+                    } else {
+                        fill_amount
+                    };
+                    let result = walk_resting_orders(
+                        order,
+                        amount_in,
+                        route_is_bid,
+                        is_t12,
+                        step_exact_in,
+                        |_, fill| {
+                            assert_eq!(matches!(fill, Fill::Full), full);
+                            Ok(None)
+                        },
+                    )
+                    .unwrap();
+                    assert_eq!(result, expected);
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn test_walk_pre_t12_exact_out_carries_settlement_output() {
+        for is_t12 in [false, true] {
+            for route_is_bid in [false, true] {
+                let first = if route_is_bid {
+                    Order::new_ask(1, Address::ZERO, B256::ZERO, 100_000, 1000)
+                } else {
+                    Order::new_bid(1, Address::ZERO, B256::ZERO, 100_000, 1000)
+                };
+                let second = if route_is_bid {
+                    Order::new_bid(2, Address::ZERO, B256::ZERO, 100_000, 0)
+                } else {
+                    Order::new_ask(2, Address::ZERO, B256::ZERO, 100_000, 0)
+                };
+                let result = walk_resting_orders(
+                    first,
+                    150_000,
+                    route_is_bid,
+                    is_t12,
+                    step_exact_out,
+                    |order, _| Ok((order.order_id() == 1).then_some(second)),
+                )
+                .unwrap();
+                let expected = match (is_t12, route_is_bid) {
+                    (false, _) => 150_000,
+                    (true, true) => 149_000,
+                    (true, false) => 151_000,
+                };
+                assert_eq!(result, expected);
+            }
+        }
+    }
+
+    #[test]
+    fn test_walk_pre_t12_defers_arithmetic_errors_until_after_settlement() {
+        for is_t12 in [false, true] {
+            for full in [false, true] {
+                for accumulation_error in [false, true] {
+                    let order = Order::new_ask(1, Address::ZERO, B256::ZERO, 2, 0);
+                    let mut settled = false;
+                    let result = walk_resting_orders(
+                        order,
+                        2,
+                        false,
+                        is_t12,
+                        |_, _, _, _, _| {
+                            Some(OrderStep {
+                                fill_amount: if full { 2 } else { 1 },
+                                accumulate: (!accumulation_error).then_some(1),
+                                next_amount: accumulation_error.then_some(0),
+                            })
+                        },
+                        |_, _| {
+                            settled = true;
+                            Ok(None)
+                        },
+                    );
+                    assert_eq!(settled, !is_t12);
+                    if !is_t12 && !full && !accumulation_error {
+                        // Partial fills never inspect the continuation amount.
+                        assert_eq!(result.unwrap(), 1);
+                    } else {
+                        assert_eq!(result.unwrap_err(), TempoPrecompileError::under_overflow());
+                    }
+                }
+            }
         }
     }
 

@@ -1023,6 +1023,13 @@ impl StablecoinDEX {
             .write(new_remaining)?;
         order.remaining = new_remaining;
 
+        // Pre-T12 calculated the bid payout after updating remaining, before
+        // crediting the maker. Keep that overflow boundary for historical gas.
+        if !self.storage.spec().is_t12() && order.is_bid() {
+            taker_output(fill_amount, order.tick(), true)
+                .ok_or(TempoPrecompileError::under_overflow())?;
+        }
+
         if order.is_bid() {
             // Bid order maker receives base tokens (exact amount).
             self.increment_balance(order.maker(), orderbook.base, fill_amount)?;
@@ -1073,6 +1080,12 @@ impl StablecoinDEX {
         // rounded UP to favor the maker.
         if order.is_bid() {
             self.increment_balance(order.maker(), orderbook.base, fill_amount)?;
+            // Full fills historically checked the payout after maker credit,
+            // but before emitting events or advancing the orderbook.
+            if !self.storage.spec().is_t12() {
+                taker_output(fill_amount, order.tick(), true)
+                    .ok_or(TempoPrecompileError::under_overflow())?;
+            }
         } else {
             let quote_amount = base_to_quote(fill_amount, order.tick(), RoundingDirection::Up)
                 .ok_or(TempoPrecompileError::under_overflow())?;
@@ -1202,9 +1215,16 @@ impl StablecoinDEX {
         let order = self.orders[level.links.head].read_in_book(book_key)?;
 
         // Returns the total input spent to receive `amount_out`.
-        walk_resting_orders(order, amount_out, is_bid, step_exact_out, |order, fill| {
-            self.settle_fill(storage_credits, book_key, taker, &mut level, order, fill)
-        })
+        walk_resting_orders(
+            order,
+            amount_out,
+            is_bid,
+            self.storage.spec().is_t12(),
+            step_exact_out,
+            |order, fill| {
+                self.settle_fill(storage_credits, book_key, taker, &mut level, order, fill)
+            },
+        )
     }
 
     /// Fill orders with exact amount in
@@ -1220,9 +1240,16 @@ impl StablecoinDEX {
         let order = self.orders[level.links.head].read_in_book(book_key)?;
 
         // Returns the total output received for spending `amount_in`.
-        walk_resting_orders(order, amount_in, is_bid, step_exact_in, |order, fill| {
-            self.settle_fill(storage_credits, book_key, taker, &mut level, order, fill)
-        })
+        walk_resting_orders(
+            order,
+            amount_in,
+            is_bid,
+            self.storage.spec().is_t12(),
+            step_exact_in,
+            |order, fill| {
+                self.settle_fill(storage_credits, book_key, taker, &mut level, order, fill)
+            },
+        )
     }
 
     /// Applies one order fill during swap execution and returns the next order to
@@ -1509,17 +1536,24 @@ impl StablecoinDEX {
         book_key: B256,
         amount: u128,
         is_bid: bool,
-        step: impl Fn(u128, u128, i16, bool) -> Option<OrderStep>,
+        step: impl Fn(u128, u128, i16, bool, bool) -> Option<OrderStep>,
     ) -> Result<u128> {
         let level = self.get_best_price_level(book_key, is_bid)?;
         let order = self.orders[level.links.head].read_in_book(book_key)?;
 
         // Read-only walk: advance the cursor without settling, so the quote uses
         // the same per-order arithmetic and traversal as execution.
-        walk_resting_orders(order, amount, is_bid, step, |order, fill| match fill {
-            Fill::Partial(_) => Ok(None),
-            Fill::Full => self.next_order_after(book_key, &order, is_bid),
-        })
+        walk_resting_orders(
+            order,
+            amount,
+            is_bid,
+            true,
+            step,
+            |order, fill| match fill {
+                Fill::Partial(_) => Ok(None),
+                Fill::Full => self.next_order_after(book_key, &order, is_bid),
+            },
+        )
     }
 
     /// Legacy pre-T12 exact-output quote. It walks by tick-level aggregate
@@ -6635,6 +6669,113 @@ mod tests {
 
             body(&mut exchange, base_token, quote_token, taker)
         })
+    }
+
+    #[test]
+    fn test_shared_swap_settlement_across_forks() -> eyre::Result<()> {
+        for spec in [
+            TempoHardfork::T0,
+            TempoHardfork::T5,
+            TempoHardfork::T8,
+            TempoHardfork::T11,
+            TempoHardfork::T12,
+            TempoHardfork::T13,
+        ] {
+            for is_bid in [false, true] {
+                for exact_in in [false, true] {
+                    with_fragmented_book(
+                        spec,
+                        &[(MIN_ORDER_AMOUNT, 1000); 2],
+                        is_bid,
+                        |dex, base, quote, taker| {
+                            let (token_in, token_out, amount_in, amount_out) = if is_bid {
+                                (base, quote, 150_000_000, 151_500_000)
+                            } else {
+                                (quote, base, 151_500_000, 150_000_000)
+                            };
+                            let second = dex.get_order(2)?;
+                            if exact_in {
+                                assert_eq!(
+                                    dex.swap_exact_amount_in(
+                                        taker, token_in, token_out, amount_in, 0
+                                    )?,
+                                    amount_out
+                                );
+                            } else {
+                                assert_eq!(
+                                    dex.swap_exact_amount_out(
+                                        taker,
+                                        token_in,
+                                        token_out,
+                                        amount_out,
+                                        u128::MAX
+                                    )?,
+                                    amount_in
+                                );
+                            }
+                            assert_eq!(dex.get_order(2)?.remaining(), 50_000_000);
+                            assert_eq!(
+                                dex.balance_of(second.maker(), token_in)?,
+                                if is_bid { 50_000_000 } else { 50_500_000 }
+                            );
+                            assert_eq!(
+                                dex.get_price_level(base, 1000, is_bid)?.total_liquidity,
+                                50_000_000
+                            );
+                            Ok(())
+                        },
+                    )?;
+                }
+            }
+        }
+        Ok(())
+    }
+
+    #[test]
+    fn test_pre_t12_bid_payout_overflow_settlement_ordering() -> eyre::Result<()> {
+        for spec in [
+            TempoHardfork::T0,
+            TempoHardfork::T5,
+            TempoHardfork::T8,
+            TempoHardfork::T11,
+        ] {
+            for full in [false, true] {
+                with_fragmented_book(
+                    spec,
+                    &[(MIN_ORDER_AMOUNT, MAX_TICK)],
+                    true,
+                    |dex, base, quote, taker| {
+                        let book_key = compute_book_key(base, quote);
+                        let mut level = dex.get_best_price_level(book_key, true)?;
+                        let mut order = dex.orders[level.links.head].read_in_book(book_key)?;
+                        // Isolate the arithmetic failure boundary in settlement.
+                        order.remaining = u128::MAX;
+                        let result = if full {
+                            dex.fill_order(
+                                &mut StorageCreditDeltas::default(),
+                                book_key,
+                                &mut order,
+                                level,
+                                taker,
+                            )
+                            .map(|_| ())
+                        } else {
+                            dex.partial_fill_order(&mut order, &mut level, u128::MAX - 1, taker)
+                        };
+                        assert_eq!(result.unwrap_err(), TempoPrecompileError::under_overflow());
+                        assert_eq!(
+                            dex.balance_of(order.maker(), base)?,
+                            if full { u128::MAX } else { 0 }
+                        );
+                        if !full {
+                            assert_eq!(dex.get_order(order.order_id())?.remaining(), 1);
+                        }
+                        Ok(())
+                    },
+                )?;
+            }
+        }
+        Ok(())
     }
 
     /// Runs `body` against a T12 two-hop route TOKEN_A -> pathUSD -> TOKEN_B with both
