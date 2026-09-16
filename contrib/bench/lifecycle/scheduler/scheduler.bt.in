@@ -1,0 +1,32 @@
+/* Emits only registered ordinal/time/state; native keys remain inside maps. */
+BEGIN { @emitted = count(); @alive[cpid]=1; }
+uprobe:__BINARY__:lifecycle_thread_register /pid == cpid && @alive[cpid]/ {
+    $ts=nsecs(monotonic);
+    @ordinal[cpid, tid]=arg0;
+    @emitted=count(); printf("E,%llu,%llu,0,0\n",$ts,arg0);
+}
+tracepoint:sched:sched_switch {
+    $out=@ordinal[cpid, args->prev_pid];
+    if($out) { @emitted=count(); printf("E,%llu,%llu,1,%llu\n",nsecs(monotonic),$out,(uint64)args->prev_state); }
+    $in=@ordinal[cpid, args->next_pid];
+    if($in) { @emitted=count(); printf("E,%llu,%llu,2,0\n",nsecs(monotonic),$in); }
+}
+tracepoint:sched:sched_wakeup /@ordinal[cpid, args->pid]/ {
+    @emitted=count(); printf("E,%llu,%llu,3,0\n",nsecs(monotonic),@ordinal[cpid, args->pid]);
+}
+tracepoint:sched:sched_migrate_task /@ordinal[cpid, args->pid]/ {
+    @emitted=count(); printf("E,%llu,%llu,5,0\n",nsecs(monotonic),@ordinal[cpid, args->pid]);
+}
+tracepoint:sched:sched_process_exit {
+    /* Seal admission before the leader can be reaped/reused by the tracer. */
+    if(pid == cpid && tid == cpid) { delete(@alive[cpid]); }
+    $ordinal=@ordinal[cpid, tid];
+    if($ordinal) {
+        delete(@ordinal[cpid, tid]);
+        @emitted=count(); printf("E,%llu,%llu,4,0\n",nsecs(monotonic),$ordinal);
+    }
+}
+uprobe:__BINARY__:lifecycle_cutoff /pid == cpid && @alive[cpid]/ {
+    printf("C,%llu\n",arg0);
+}
+END { print(@emitted); clear(@emitted); clear(@ordinal); clear(@alive); }

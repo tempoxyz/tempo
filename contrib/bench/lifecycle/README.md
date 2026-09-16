@@ -293,3 +293,4 @@ missing workers are not zero. CPU and wall values are preserved even when a
 small interval's microsecond-resolution CPU delta exceeds elapsed wall time.
 Worker wall intervals overlap one another and execution, so neither their wall
 sum nor CPU plus execution wall is a block latency decomposition.
+The isolated `profiling=lifecycle-scheduler` mode adds anonymous scheduler context to full lifecycle traces. See [the opt-in scheduler diagnostic](scheduler/README.md) for runner preflight, strict cutoff handling and attribution limits. It is disabled by default.
