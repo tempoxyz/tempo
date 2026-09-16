@@ -204,25 +204,26 @@ impl<P: StateProviderFactory + Sync> ShadowReplayer<P> {
 
         let report = Report::analyze(&real, &shadow);
         if report.findings() == 0 && shadow.failure.is_none() {
-            debug!(target:"shadow_replay", "shadow replay match");
+            debug!(target: "shadow_replay", "shadow replay match");
             return Ok(ReplayOutcome::Match);
         }
 
-        metrics::counter!("tempo_shadow_replay_findings_total","kind"=>"divergence").increment(1);
+        metrics::counter!("tempo_shadow_replay_findings_total", "kind" => "divergence")
+            .increment(1);
         let failure = shadow.failure.as_ref();
         let after_cutoff = failure
             .zip(report.cutoff)
             .is_some_and(|(failure, cutoff)| failure.boundary > cutoff);
         error!(
-            target:"shadow_replay",
-            block_number=block.number(),
-            block_hash=?block.hash(),
-            findings=?report,
-            shadow_failure_boundary=?failure.map(|f|f.boundary),
-            shadow_failure= failure.map(|f|f.error.as_str()).unwrap_or(""),
-            failure_after_cutoff=after_cutoff,
-            real_completed_txs=real.txs.len()
-            ,shadow_completed_txs=shadow.txs.len(),
+            target: "shadow_replay",
+            block_number = block.number(),
+            block_hash = ?block.hash(),
+            findings = ?report,
+            shadow_failure_boundary = ?failure.map(|f| f.boundary),
+            shadow_failure = failure.map(|f| f.error.as_str()).unwrap_or(""),
+            failure_after_cutoff = after_cutoff,
+            real_completed_txs = real.txs.len(),
+            shadow_completed_txs = shadow.txs.len(),
             "shadow replay findings"
         );
         Ok(ReplayOutcome::Findings)
