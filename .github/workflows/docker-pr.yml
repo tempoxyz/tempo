@@ -25,7 +25,7 @@ jobs:
     runs-on: ubuntu-latest
     permissions:
       id-token: write
-      pull-requests: read
+      pull-requests: write
     steps:
       # This workflow only calls GitHub APIs; it never checks out or runs PR code.
       - name: Detect Docker command
@@ -35,6 +35,23 @@ jobs:
           script: |
             const command = context.payload.comment.body.trim();
             core.setOutput('recognized', ['/docker', '/docker nightly', '/docker profiling'].includes(command));
+
+      - name: Confirm Docker command receipt
+        id: receipt
+        if: steps.command.outputs.recognized == 'true'
+        continue-on-error: true
+        uses: actions/github-script@3a2844b7e9c422d3c10d287c895573f7108da1b3 # v9.0.0
+        with:
+          retries: 0
+          script: |
+            const command = context.payload.comment.body.trim();
+            const url = `https://github.com/${context.repo.owner}/${context.repo.repo}/actions/runs/${context.runId}`;
+            const { data: comment } = await github.rest.issues.createComment({
+              ...context.repo,
+              issue_number: context.payload.issue.number,
+              body: `Received \`${command}\`. Checking permissions and preparing the build.\n\n[Request progress](${url})`,
+            });
+            core.setOutput('comment-id', String(comment.id));
 
       - name: Fetch GitHub token via STS
         id: github-sts
@@ -127,6 +144,26 @@ jobs:
               .addLink('Open build', run.html_url)
               .addRaw('\n\nPost a new command comment to request another build. Edits and new commits alone do not trigger builds.\n')
               .write();
+
+      - name: Update Docker request receipt
+        if: always() && steps.receipt.outputs.comment-id != ''
+        continue-on-error: true
+        uses: actions/github-script@3a2844b7e9c422d3c10d287c895573f7108da1b3 # v9.0.0
+        env:
+          RECEIPT_ID: ${{ steps.receipt.outputs.comment-id }}
+          BUILD_RUN_ID: ${{ steps.build.outputs.run-id }}
+        with:
+          retries: 0
+          script: |
+            const command = context.payload.comment.body.trim();
+            const base = `https://github.com/${context.repo.owner}/${context.repo.repo}/actions/runs/`;
+            const runId = process.env.BUILD_RUN_ID;
+            const body = runId
+              ? `Received \`${command}\`. [Docker build queued](${base}${runId}); detailed build status will be posted separately.`
+              : `Received \`${command}\`, but could not confirm that a build was queued. [Check the request log](${base}${context.runId}) for details.`;
+            await github.rest.issues.updateComment({
+              ...context.repo, comment_id: Number(process.env.RECEIPT_ID), body,
+            });
 
   acknowledge:
     needs: dispatch

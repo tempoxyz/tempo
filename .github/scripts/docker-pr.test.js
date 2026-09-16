@@ -12,6 +12,8 @@ function scriptFor(name) {
     .map(line => line.replace(/^ {12}/, '')).join('\n');
 }
 const detectScript = scriptFor('Detect Docker command');
+const receiptScript = scriptFor('Confirm Docker command receipt');
+const updateReceiptScript = scriptFor('Update Docker request receipt');
 const membershipScript = scriptFor('Check org membership');
 const dispatchScript = scriptFor('Queue Docker build from comment');
 
@@ -76,6 +78,8 @@ function fixture(options = {}) {
   const calls = [];
   const links = [];
   const outputs = {};
+  const commentCalls = [];
+  const events = [];
   const summary = {
     addHeading() { return this; },
     addLink(text, url) { links.push(url); return this; },
@@ -89,6 +93,7 @@ function fixture(options = {}) {
     head: { repo: options.deleted ? null : { full_name: options.repo || 'tempoxyz/tempo' } },
   };
   const record = (method, result, error) => async args => {
+    events.push(method);
     calls.push({ method, args });
     if (error) throw error;
     return { data: result };
@@ -96,7 +101,7 @@ function fixture(options = {}) {
   let recognized = false;
   const sandbox = {
     context: {
-      repo, actor: 'requester',
+      repo, actor: 'requester', runId: 999,
       payload: { comment: { body: command, user: { login: 'comment-author' } },
         issue: { number: 123, pull_request: options.issue ? undefined : {} },
         repository: { default_branch: 'main' } },
@@ -111,7 +116,20 @@ function fixture(options = {}) {
       setFailed(message) { throw new Error(message); },
     },
     github: { rest: {
+      issues: {
+        createComment: async args => {
+          events.push('receipt');
+          commentCalls.push({ method: 'create', args });
+          if (options.receiptError) throw options.receiptError;
+          return { data: { id: 789 } };
+        },
+        updateComment: async args => {
+          commentCalls.push({ method: 'update', args });
+          if (options.updateReceiptError) throw options.updateReceiptError;
+        },
+      },
       orgs: { checkMembershipForUser: async args => {
+        events.push('membership');
         calls.push({ method: 'membership', args });
         assert.equal(args.org, 'tempoxyz');
         const who = args.username === 'comment-author' ? 'commenter' : 'author';
@@ -131,11 +149,64 @@ function fixture(options = {}) {
     if (options.issue || (options.attempt && options.attempt !== '1')) return;
     await execute(detectScript);
     if (!recognized) return;
-    await execute(membershipScript);
-    await execute(dispatchScript);
+    try { await execute(receiptScript); } catch { /* continue-on-error */ }
+    try {
+      if (options.stsError) throw options.stsError;
+      await execute(membershipScript);
+      await execute(dispatchScript);
+    } finally {
+      if (outputs['comment-id']) {
+        sandbox.process.env.RECEIPT_ID = outputs['comment-id'];
+        sandbox.process.env.BUILD_RUN_ID = outputs['run-id'] || '';
+        try { await execute(updateReceiptScript); } catch { /* continue-on-error */ }
+      }
+    }
   };
-  return { run, calls, links, outputs };
+  return { run, calls, links, outputs, commentCalls, events };
 }
+
+test('receipt is posted before authorization and updated with the queued build', async () => {
+  const f = fixture();
+  await f.run();
+  assert.equal(f.events[0], 'receipt');
+  const [created, updated] = f.commentCalls;
+  assert.equal(created.args.issue_number, 123);
+  assert.match(created.args.body, /Received `\/docker`\. Checking permissions/);
+  assert.match(created.args.body, /actions\/runs\/999/);
+  assert.equal(updated.args.comment_id, 789);
+  assert.match(updated.args.body, /Docker build queued/);
+  assert.match(updated.args.body, /actions\/runs\/456/);
+});
+
+for (const options of [
+  { stsError: new Error('STS unavailable') },
+  { commenterStatus: 403 },
+  { dispatchError: new Error('dispatch unavailable') },
+]) {
+  test(`receipt explains an unsuccessful request: ${JSON.stringify(options)}`, async () => {
+    const f = fixture(options);
+    await assert.rejects(f.run());
+    assert.equal(f.commentCalls.length, 2);
+    assert.match(f.commentCalls[1].args.body, /could not confirm that a build was queued/);
+    assert.match(f.commentCalls[1].args.body, /actions\/runs\/999/);
+  });
+}
+
+test('receipt API failure is not retried and does not block the build', async () => {
+  const f = fixture({ receiptError: new Error('comment unavailable') });
+  await f.run();
+  assert.equal(f.commentCalls.length, 1);
+  assert.equal(f.outputs['run-id'], '456');
+});
+
+test('receipt update failure does not block the acknowledgement job', async () => {
+  const f = fixture({ updateReceiptError: new Error('comment unavailable') });
+  await f.run();
+  assert.equal(f.commentCalls.length, 2);
+  assert.equal(f.outputs['run-id'], '456');
+  const step = yaml.split('      - name: Update Docker request receipt\n')[1].split('\n  acknowledge:')[0];
+  assert.ok(step.includes('continue-on-error: true'));
+});
 
 for (const [command, workflow, nightly = false] of [
   ['/docker', 'docker.yml'], ['/docker profiling', 'docker-profiling.yml'],
@@ -212,6 +283,7 @@ for (const options of [
     const f = fixture(options);
     await f.run();
     assert.equal(f.calls.length, 0);
+    assert.equal(f.commentCalls.length, 0);
   });
 }
 
