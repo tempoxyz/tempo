@@ -11,7 +11,7 @@ use alloy_evm::{
     Evm as _, EvmEnv,
     block::{BlockExecutionResult, BlockExecutor, BlockExecutorFactory, TxResult as AlloyTxResult},
 };
-use alloy_primitives::{Address, B256, Bytes, Log, U256, keccak256};
+use alloy_primitives::{Address, B256, Bytes, Log, U256};
 use core::ffi::c_int;
 use reth_chainspec::ForkCondition;
 use reth_consensus::Consensus as _;
@@ -185,11 +185,12 @@ fn execute_typed_input(input: TempoHarnessInput) -> Result<TempoHarnessOutcome, 
 }
 
 fn tempo_execution_outcome(response: BlockResult) -> TempoExecutionOutcome {
-    let state_root = state_root(&response.final_state);
     TempoExecutionOutcome {
         error: response.error,
         receipts: response.receipts,
-        state_root: Some(state_root),
+        // CacheDB does not expose the provider-backed trie root used by block import. Report the
+        // canonical final state instead of mislabelling a hash of its diagnostic serialization.
+        state_root: None,
         final_state: Some(response.final_state),
         state_diff: response.state_diff,
         invariant_failures: Vec::new(),
@@ -206,14 +207,6 @@ fn decode_tx(input: &[u8]) -> Result<TempoTxEnvelope, ErrorClass> {
         return Err(ErrorClass::Rejected);
     }
     Ok(tx)
-}
-
-fn state_root(state: &StateInput) -> [u8; 32] {
-    let encoded = bincode::serialize(state).expect("StateInput serialization should not fail");
-    let hash = keccak256(encoded);
-    let mut root = [0u8; 32];
-    root.copy_from_slice(hash.as_slice());
-    root
 }
 
 unsafe fn write_fuzz_output(
@@ -365,7 +358,33 @@ fn execute_blocks(
 ) -> ExecutionResult {
     assert_monotonic_hardforks(blocks);
 
+    let chainspec = Arc::new(fuzz_dev_chainspec(chain_spec));
+    if pre_state.accounts.iter().any(|account| {
+        chainspec
+            .inner
+            .genesis
+            .alloc
+            .contains_key(&Address::from(account.address))
+    }) {
+        return ExecutionResult {
+            accepted: false,
+            error: ErrorClass::Rejected,
+            output: BlockExecutionResultOutput::default(),
+            state_diff: StateDiff::default(),
+            final_state: pre_state.clone(),
+        };
+    }
+
     let mut db = CacheDB::new(EmptyDB::default());
+    if let Err(error_class) = seed_genesis_state(&mut db, &chainspec) {
+        return ExecutionResult {
+            accepted: false,
+            error: error_class,
+            output: BlockExecutionResultOutput::default(),
+            state_diff: StateDiff::default(),
+            final_state: pre_state.clone(),
+        };
+    }
     if let Err(error_class) = seed_state(&mut db, pre_state) {
         return ExecutionResult {
             accepted: false,
@@ -377,7 +396,6 @@ fn execute_blocks(
     }
 
     let initial_state = encode_state(&db);
-    let chainspec = Arc::new(fuzz_moderato_chainspec(chain_spec));
     let evm_config = TempoEvmConfig::new(Arc::clone(&chainspec));
     let consensus = TempoConsensus::new(chainspec);
     let mut body = format!(
@@ -677,10 +695,12 @@ fn supported_hardforks() -> Vec<u8> {
     (0..=12).collect()
 }
 
-fn fuzz_moderato_chainspec(input: &ChainSpecInput) -> TempoChainSpec {
-    let mut chainspec = TempoChainSpec::moderato();
+fn fuzz_dev_chainspec(input: &ChainSpecInput) -> TempoChainSpec {
+    let mut chainspec = tempo_chainspec::spec::DEV.as_ref().clone();
     chainspec.inner.chain = PINNED_CHAIN_ID.into();
-    chainspec.inner.hardforks.remove(&TempoHardfork::Genesis);
+    for hardfork in TempoHardfork::VARIANTS {
+        chainspec.inner.hardforks.remove(hardfork);
+    }
     chainspec
         .inner
         .hardforks
@@ -968,6 +988,37 @@ fn seed_state(db: &mut CacheDB<EmptyDB>, input: &StateInput) -> Result<(), Error
     Ok(())
 }
 
+fn seed_genesis_state(
+    db: &mut CacheDB<EmptyDB>,
+    chain_spec: &TempoChainSpec,
+) -> Result<(), ErrorClass> {
+    for (address, account) in &chain_spec.inner.genesis.alloc {
+        let mut info = AccountInfo {
+            balance: account.balance,
+            nonce: account.nonce.unwrap_or_default(),
+            ..Default::default()
+        };
+        if let Some(code) = &account.code {
+            let bytecode = Bytecode::new_raw(code.clone());
+            info.code_hash = bytecode.hash_slow();
+            info.code = Some(bytecode);
+        }
+        db.insert_account_info(*address, info);
+
+        if let Some(storage) = &account.storage {
+            for (slot, value) in storage {
+                db.insert_account_storage(
+                    *address,
+                    U256::from_be_bytes(slot.0),
+                    U256::from_be_bytes(value.0),
+                )
+                .map_err(|_| ErrorClass::Internal)?;
+            }
+        }
+    }
+    Ok(())
+}
+
 fn encode_state(db: &CacheDB<EmptyDB>) -> StateInput {
     encode_state_overlay(db, &StateInput::default())
 }
@@ -1121,6 +1172,35 @@ mod tests {
     }
 
     #[test]
+    fn protocol_genesis_accounts_cannot_be_overwritten_by_fuzz_prestate() {
+        let mut request = block_input_with_txs(&[legacy_tx(0, 0)]);
+        request.pre_state.accounts.push(AccountInput {
+            address: address_bytes(tempo_contracts::precompiles::PATH_USD_ADDRESS),
+            balance: [0; 32],
+            nonce: 0,
+            code: vec![0xef],
+            storage: Vec::new(),
+        });
+
+        let result = execute_block_input(&request);
+
+        assert!(!result.accepted);
+        assert_eq!(result.error, ErrorClass::Rejected);
+    }
+
+    #[test]
+    fn in_memory_outcome_does_not_claim_a_provider_trie_root() {
+        let final_state = StateInput::default();
+        let outcome = tempo_execution_outcome(BlockResult {
+            final_state: final_state.clone(),
+            ..Default::default()
+        });
+
+        assert_eq!(outcome.state_root, None);
+        assert_eq!(outcome.final_state, Some(final_state));
+    }
+
+    #[test]
     fn execute_block_input_runs_transaction_in_tempo_evm() {
         let tx = legacy_tx(0, 0);
         let request = block_input_with_txs(&[tx]);
@@ -1228,8 +1308,8 @@ mod tests {
     }
 
     #[test]
-    fn fuzz_chainspec_pins_moderato_t4_boundary() {
-        let chainspec = fuzz_moderato_chainspec(&tempo_fuzz_types::ChainSpecInput::default());
+    fn fuzz_chainspec_pins_requested_t4_boundary() {
+        let chainspec = fuzz_dev_chainspec(&tempo_fuzz_types::ChainSpecInput::default());
         assert_eq!(chainspec.tempo_hardfork_at(1), TempoHardfork::T0);
         assert_eq!(chainspec.tempo_hardfork_at(2), TempoHardfork::T1);
         assert_eq!(chainspec.tempo_hardfork_at(3), TempoHardfork::T2);
