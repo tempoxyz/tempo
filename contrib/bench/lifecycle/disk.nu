@@ -1,11 +1,33 @@
 # Report the filesystem used by the supplied benchmark path without changing it.
-def lifecycle-report-disk [phase: string, path: string] {
+def lifecycle-available-disk [phase: string, path: string] {
     let result = (^df -Pm $path | complete)
     if $result.exit_code != 0 {
         error make { msg: $"Unable to inspect lifecycle disk space ($phase)" }
     }
-    let available = ($result.stdout | lines | skip 1 | first | split row --regex '\s+' | get 3 | into int)
+    let available = try {
+        $result.stdout | lines | skip 1 | first | split row --regex '\s+' | get 3 | into int
+    } catch {
+        error make { msg: $"Invalid lifecycle disk-space report ($phase)" }
+    }
+    if $available < 0 {
+        error make { msg: $"Invalid lifecycle disk-space report ($phase)" }
+    }
+    $available
+}
+
+def lifecycle-report-disk [phase: string, path: string] {
+    let available = (lifecycle-available-disk $phase $path)
     print $"Lifecycle disk space ($phase): ($available) MiB available"
+}
+
+# Refuse a new build/capture before storage exhaustion can disrupt the runner.
+# Thresholds reserve headroom; they cannot predict all later disk consumption.
+def lifecycle-require-disk [phase: string, path: string, minimum_mib: int] {
+    let available = (lifecycle-available-disk $phase $path)
+    print $"Lifecycle disk space ($phase): ($available) MiB available; ($minimum_mib) MiB required"
+    if $available < $minimum_mib {
+        error make { msg: $"Insufficient lifecycle disk space ($phase): ($available) MiB available; ($minimum_mib) MiB required" }
+    }
 }
 
 # These worktrees are disposable benchmark builds. Preserve the linked executable

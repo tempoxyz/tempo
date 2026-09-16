@@ -1090,8 +1090,8 @@ def run-local-e2e-phase [run: record, ctx: record] {
     let lifecycle_report_dir = ($"($ctx.results_dir)/lifecycle/($phase)" | path expand)
     let lifecycle_key = ($"($LOCALNET_DIR)/lifecycle-key-($phase)" | path expand)
     let lifecycle_epoch = if $ctx.lifecycle {
-        lifecycle-report-disk "before capture, results filesystem" $ctx.results_dir
-        lifecycle-report-disk "before capture, runner root" "/"
+        lifecycle-require-disk "before capture, results filesystem" $ctx.results_dir 49152
+        lifecycle-require-disk "before capture, runner root" "/" 49152
         mkdir $lifecycle_dir
         ^python3 -c 'import os,sys,time; f=os.open(sys.argv[1],os.O_WRONLY|os.O_CREAT|os.O_EXCL,0o600); os.write(f,os.urandom(32)); os.close(f); print(time.monotonic_ns())' $lifecycle_key | str trim
     } else { "" }
@@ -1596,8 +1596,8 @@ def "main e2e" [
 
         let snapshot_features = (merge-e2e-features $DEFAULT_FEATURES $features)
         if $lifecycle {
-            lifecycle-report-disk "before snapshot build, workspace" "."
-            lifecycle-report-disk "before snapshot build, runner root" "/"
+            lifecycle-require-disk "before snapshot build, workspace" "." 65536
+            lifecycle-require-disk "before snapshot build, runner root" "/" 65536
         }
         build-tempo --no-default-features=$no_default_features ["tempo"] $profile $snapshot_features
         let tempo_bin = if $profile == "dev" { "./target/debug/tempo" } else { $"./target/($profile)/tempo" }
@@ -1706,8 +1706,8 @@ def "main e2e" [
     let baseline_tbc = (tracy-build-config $baseline_build_features $tracy)
     let feature_tbc = (tracy-build-config $feature_build_features $tracy)
     let effective_no_cache = $no_cache or ($tracy != "off")
-    # Build benchmark binaries in parallel with independent target/ directories,
-    # so cargo invocations don't collide.
+    # Independent target directories allow ordinary builds to run in parallel.
+    # Lifecycle builds run sequentially and trim each target to bound peak disk use.
     mut builds = []
     if $needs_baseline {
         $builds = ($builds | append { wt: $baseline_wt, ref_name: $baseline, sha: $baseline, label: "baseline", features: $baseline_tbc.features, extra_rustflags: $baseline_tbc.extra_rustflags, bench_features: $baseline_build_features })
@@ -1715,21 +1715,22 @@ def "main e2e" [
     if $needs_feature {
         $builds = ($builds | append { wt: $feature_wt, ref_name: $feature, sha: $feature, label: "feature", features: $feature_tbc.features, extra_rustflags: $feature_tbc.extra_rustflags, bench_features: $feature_build_features })
     }
-    if $lifecycle {
-        lifecycle-report-disk "before benchmark build, workspace" "."
-        lifecycle-report-disk "before benchmark build, runner root" "/"
-    }
-    $builds | par-each { |b|
+    let build_binary = { |b|
         if $effective_no_cache {
             build-in-worktree --no-cache --no-default-features=$no_default_features --extra-rustflags $b.extra_rustflags --bench-features $b.bench_features $b.wt $b.ref_name $profile $b.features $b.sha
         } else {
             build-in-worktree --no-default-features=$no_default_features $b.wt $b.ref_name $profile $b.features $b.sha
         }
-    } | ignore
+    }
     if $lifecycle {
         for build in $builds {
+            lifecycle-require-disk "before benchmark build, worktree" $build.wt 65536
+            lifecycle-require-disk "before benchmark build, runner root" "/" 65536
+            do $build_binary $build
             lifecycle-trim-worktree $build.wt $profile
         }
+    } else {
+        $builds | par-each { |build| do $build_binary $build } | ignore
     }
     let baseline_tempo = if $needs_baseline { worktree-bin $baseline_wt $profile "tempo" } else { "" }
     let feature_tempo = if $needs_feature { worktree-bin $feature_wt $profile "tempo" } else { "" }
