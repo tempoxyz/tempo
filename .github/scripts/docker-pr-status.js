@@ -5,11 +5,12 @@ const repository = 'tempoxyz/tempo';
 const imageNames = ['tempo', 'tempo-localnet', 'tempo-sidecar', 'tempo-xtask'];
 const marker = id => `<!-- tempo-docker-run:${id} -->`;
 
-async function resolve(github, context) {
+async function resolve(github, context, runId = context.payload.workflow_run?.id) {
   if (`${context.repo.owner}/${context.repo.repo}` !== repository) return null;
+  if (!Number.isSafeInteger(runId) || runId <= 0) throw new Error('Invalid build run ID');
   // Events may arrive out of order (or belong to an earlier run attempt).
   const { data: run } = await github.rest.actions.getWorkflowRun({
-    ...context.repo, run_id: context.payload.workflow_run.id,
+    ...context.repo, run_id: runId,
   });
   if (run.event !== 'workflow_dispatch' || run.head_repository?.full_name !== repository ||
       run.head_branch !== context.payload.repository.default_branch) return null;

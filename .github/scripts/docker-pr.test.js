@@ -7,7 +7,7 @@ const { test } = require('node:test');
 // Execute the workflow's inline dispatcher without checking out or running PR code.
 const yaml = fs.readFileSync(path.join(__dirname, '../workflows/docker-pr.yml'), 'utf8');
 function scriptFor(name) {
-  const step = yaml.split(`      - name: ${name}\n`)[1].split('\n      - name: ')[0];
+  const step = yaml.split(`      - name: ${name}\n`)[1].split('\n      - name: ')[0].split('\n  acknowledge:')[0];
   return step.split('          script: |\n')[1].split('\n')
     .map(line => line.replace(/^ {12}/, '')).join('\n');
 }
@@ -64,6 +64,7 @@ function fixture(options = {}) {
   const command = options.command ?? '/docker';
   const calls = [];
   const links = [];
+  const outputs = {};
   const summary = {
     addHeading() { return this; },
     addLink(text, url) { links.push(url); return this; },
@@ -92,7 +93,10 @@ function fixture(options = {}) {
     process: { env: { GITHUB_RUN_ATTEMPT: options.attempt || '1' } },
     core: {
       info() {}, summary,
-      setOutput(key, value) { if (key === 'recognized') recognized = value; },
+      setOutput(key, value) {
+        outputs[key] = value;
+        if (key === 'recognized') recognized = value;
+      },
       setFailed(message) { throw new Error(message); },
     },
     github: { rest: {
@@ -107,7 +111,7 @@ function fixture(options = {}) {
         { permission: options.permission || 'write' }, options.permissionError) },
       pulls: { get: record('pull', pr, options.pullError) },
       actions: { createWorkflowDispatch: record('dispatch',
-        { html_url: 'https://github.com/tempoxyz/tempo/actions/runs/456' }, options.dispatchError) },
+        { workflow_run_id: 456, html_url: 'https://github.com/tempoxyz/tempo/actions/runs/456' }, options.dispatchError) },
     } },
   };
   const execute = script => vm.runInNewContext(`(async () => {${script}\n})`, sandbox)();
@@ -119,7 +123,7 @@ function fixture(options = {}) {
     await execute(membershipScript);
     await execute(dispatchScript);
   };
-  return { run, calls, links };
+  return { run, calls, links, outputs };
 }
 
 for (const [command, workflow, nightly = false] of [
@@ -139,6 +143,7 @@ for (const [command, workflow, nightly = false] of [
     assert.equal(dispatch.return_run_details, true);
     assert.equal(f.calls.find(call => call.method === 'permission').args.username, 'comment-author');
     assert.deepEqual(f.links, ['https://github.com/tempoxyz/tempo/actions/runs/456']);
+    assert.equal(f.outputs['run-id'], '456');
   });
 }
 
@@ -204,5 +209,6 @@ for (const stage of ['permission', 'pull', 'dispatch']) {
     const f = fixture({ [`${stage}Error`]: new Error('API unavailable') });
     await assert.rejects(f.run(), /API unavailable/);
     assert.equal(f.calls.filter(call => call.method === 'dispatch').length, stage === 'dispatch' ? 1 : 0);
+    assert.equal(f.outputs['run-id'], undefined);
   });
 }

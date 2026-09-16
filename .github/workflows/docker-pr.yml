@@ -13,6 +13,8 @@ concurrency:
 
 jobs:
   dispatch:
+    outputs:
+      run-id: ${{ steps.build.outputs.run-id }}
     # Each new comment is one request. Post another command to retry, rather
     # than rerunning a dispatcher that may already have queued a build.
     if: >-
@@ -74,6 +76,7 @@ jobs:
             }
 
       - name: Queue Docker build from comment
+        id: build
         if: steps.command.outputs.recognized == 'true'
         uses: actions/github-script@3a2844b7e9c422d3c10d287c895573f7108da1b3 # v9.0.0
         with:
@@ -117,8 +120,21 @@ jobs:
               headers: { 'X-GitHub-Api-Version': '2022-11-28' },
             });
             core.info(`Queued ${workflow} for PR #${number}`);
+            core.setOutput('run-id', String(run.workflow_run_id));
             await core.summary
               .addHeading(`Docker build queued for PR #${number}`)
               .addLink('Open build', run.html_url)
               .addRaw('\n\nPost a new command comment to request another build. Edits and new commits alone do not trigger builds.\n')
               .write();
+
+  acknowledge:
+    needs: dispatch
+    if: needs.dispatch.outputs.run-id != ''
+    permissions:
+      contents: read
+      actions: read
+      pull-requests: write
+    # Pinned CI actionlint 1.7.12 does not support the newer $/ syntax yet.
+    uses: ./.github/workflows/docker-pr-status.yml # zizmor: ignore[self-repository]
+    with:
+      run_id: ${{ needs.dispatch.outputs.run-id }}

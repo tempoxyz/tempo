@@ -3,6 +3,12 @@ name: Docker PR Build Status
 # Trusted default-branch code only; run provenance is checked before reading
 # size-bounded, schema-validated image data in an isolated temporary directory.
 on: # zizmor: ignore[dangerous-triggers]
+  workflow_call:
+    inputs:
+      run_id:
+        description: Docker build to acknowledge after dispatch
+        type: string
+        required: true
   workflow_run:
     workflows: [Docker Build, Docker Build (Profiling)]
     types: [requested, in_progress, completed]
@@ -12,18 +18,21 @@ permissions: {}
 # Serialize upserts for each build, and fetch its current state rather than
 # trusting event ordering. New builds have separate comments and groups.
 concurrency:
-  group: docker-pr-status-${{ github.event.workflow_run.id }}
+  group: docker-pr-status-${{ inputs.run_id || github.event.workflow_run.id }}
   cancel-in-progress: false
 
 jobs:
   report:
     if: >-
       github.repository == 'tempoxyz/tempo' &&
+      (inputs.run_id != '' || (
       github.event.workflow_run.event == 'workflow_dispatch' &&
       github.event.workflow_run.head_repository.full_name == github.repository &&
-      github.event.workflow_run.head_branch == github.event.repository.default_branch
+      github.event.workflow_run.head_branch == github.event.repository.default_branch))
     runs-on: ubuntu-latest
     timeout-minutes: 5
+    env:
+      BUILD_RUN_ID: ${{ inputs.run_id || github.event.workflow_run.id }}
     permissions:
       contents: read
       actions: read
@@ -41,7 +50,7 @@ jobs:
         with:
           script: |
             const { resolve } = require('./.github/scripts/docker-pr-status.js');
-            const status = await resolve(github, context);
+            const status = await resolve(github, context, Number(process.env.BUILD_RUN_ID));
             if (!status) return;
             core.setOutput('report', JSON.stringify(status));
             core.setOutput('artifact-id', status.artifactId || '');
@@ -54,7 +63,7 @@ jobs:
         with:
           artifact-ids: ${{ steps.status.outputs.artifact-id }}
           merge-multiple: true
-          run-id: ${{ github.event.workflow_run.id }}
+          run-id: ${{ inputs.run_id || github.event.workflow_run.id }}
           github-token: ${{ github.token }}
           path: ${{ runner.temp }}/docker-pr-report
 

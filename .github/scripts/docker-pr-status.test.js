@@ -222,10 +222,14 @@ for (const problem of ['', 'invalid JSON', 'wrong tags', 'symlink', 'oversized']
   });
 }
 
-test('status workflow handles all lifecycle events with isolated trusted code and serialized comments', () => {
+test('status workflow handles acknowledgements and lifecycle events under the same lock', () => {
   const workflow = fs.readFileSync(path.join(__dirname, '../workflows/docker-pr-status.yml'), 'utf8');
   assert.match(workflow, /types: \[requested, in_progress, completed\]/);
-  assert.ok(workflow.includes('group: docker-pr-status-${{ github.event.workflow_run.id }}'));
+  assert.ok(workflow.includes('group: docker-pr-status-${{ inputs.run_id || github.event.workflow_run.id }}'));
+  assert.ok(workflow.includes('workflow_call:'));
+  const dispatcher = fs.readFileSync(path.join(__dirname, '../workflows/docker-pr.yml'), 'utf8');
+  assert.ok(dispatcher.includes('uses: ./.github/workflows/docker-pr-status.yml'));
+  assert.ok(dispatcher.includes('run_id: ${{ needs.dispatch.outputs.run-id }}'));
   assert.match(workflow, /cancel-in-progress: false/);
   assert.ok(workflow.includes('ref: ${{ github.event.repository.default_branch }}'));
   assert.ok(workflow.includes('path: ${{ runner.temp }}/docker-pr-report'));
@@ -235,6 +239,31 @@ test('status workflow handles all lifecycle events with isolated trusted code an
     assert.ok(!build.includes('pull-requests: write'));
     assert.ok(!build.includes('issues: write'));
     assert.ok(build.includes('name: docker-pr-images-${{ github.run_attempt }}'));
+  }
+});
+
+test('direct acknowledgement resolves the dispatched run and lifecycle events update its comment', async () => {
+  const f = fixture({ status: 'in_progress', conclusion: null });
+  const directContext = { ...context, payload: { repository: { default_branch: 'main' } } };
+  const actual = await resolve(f.github, directContext, 456);
+  await report(f.github, directContext, { warning() {} }, actual);
+  const created = f.calls.find(([name]) => name === 'create')[1];
+  assert.match(created.body, /Docker request accepted/);
+  assert.match(created.body, /\*\*running\*\*/);
+  const next = fixture({}, [{ id: 77, user: { login: 'github-actions[bot]', type: 'Bot' }, body: created.body }]);
+  await report(next.github, context, { warning() {} }, await resolve(next.github, context));
+  assert.equal(next.calls.find(([name]) => name === 'update')[1].comment_id, 77);
+  assert.ok(!next.calls.some(([name]) => name === 'create'));
+});
+
+test('direct acknowledgement rejects invalid IDs and retains run provenance checks', async () => {
+  for (const id of [undefined, 0, -1, NaN, 1.5]) {
+    await assert.rejects(resolve(fixture().github, { ...context, payload: {} }, id), /Invalid build run ID/);
+  }
+  for (const overrides of [{ head_branch: 'feature' }, { path: '.github/workflows/other.yml' }, { event: 'push' }]) {
+    const f = fixture(overrides);
+    assert.equal(await resolve(f.github, context, 456), null);
+    assert.equal(f.calls.length, 0);
   }
 });
 
