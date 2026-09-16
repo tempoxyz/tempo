@@ -305,27 +305,23 @@ fn accepted_payload_status_fails_the_validation() {
 }
 
 #[test_traced]
-fn new_payload_transport_error_fails_validation_but_is_not_fatal() {
+fn new_payload_engine_error_is_fatal() {
     deterministic::Runner::default().start(|context| async move {
         let h = Harness::start_at_genesis(&context);
 
+        // The engine call itself failed, not the block: the execution layer
+        // runs in-process, so this means its engine task died or its
+        // database is failing. Nothing later can succeed.
         let b1 = make_block(1, 1, GENESIS);
         h.execution
-            .script_new_payload(b1.digest(), Err("connection closed"));
-        h.execution
-            .script_new_payload(b1.digest(), Ok(PayloadStatusEnum::Valid));
+            .script_new_payload(b1.digest(), Err("engine task stopped"));
         let _ = h
-            .verify(round(1), b1.clone())
+            .verify(round(1), b1)
             .await
-            .expect_err("a new-payload transport error must fail validation");
-
-        // Validation transport failures are request-local. Once the
-        // execution layer recovers, the actor continues serving consensus.
-        let verdict = h
-            .verify(round(2), b1)
+            .expect_err("a failed new-payload call must not produce a verdict");
+        h.actor
             .await
-            .expect("verification should complete after the transport error");
-        assert!(verdict.is_some());
+            .expect("actor should shut down cleanly on a failed new-payload call");
     });
 }
 

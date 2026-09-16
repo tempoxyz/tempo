@@ -29,9 +29,18 @@
 //!
 //! # Execution failures
 //!
-//! Failed pending-head deliveries are retried. Invalid candidates are rejected;
-//! other verification and build failures end the affected request. Failed
-//! finalized deliveries and failed or non-`VALID` forkchoice updates are fatal.
+//! An INVALID block is INVALID for good, and so is every descendant: the
+//! execution layer caches the rejection. A walk therefore stops at the first
+//! INVALID. For verification that is the candidate's verdict; convergence
+//! stops until a newer consensus context selects the same head again or a
+//! finalized block is delivered. Other verification and build failures end
+//! the affected request.
+//!
+//! An engine call that fails outright, rather than answering with a payload
+//! status, is fatal wherever it happens. The execution layer runs in this
+//! process; such a failure means its engine task has died or its database is
+//! failing, and no later call can succeed. A non-`VALID` forkchoice update
+//! and a non-`VALID` finalized delivery are fatal as well.
 
 use std::{
     collections::{HashMap, VecDeque},
@@ -82,12 +91,6 @@ mod tests;
 
 /// How often to probe whether the execution layer is ready to process blocks.
 const EXECUTION_LAYER_READY_POLL_INTERVAL: Duration = Duration::from_secs(1);
-
-/// Pause before restarting pending-head delivery at the finalized boundary.
-const CONVERGENCE_BOUNDARY_RETRY_INTERVAL: Duration = Duration::from_secs(1);
-
-/// Back off after a rejected pending-head delivery or transport failure.
-const CONVERGENCE_RETRY_INTERVAL: Duration = Duration::from_secs(10);
 
 /// Delivery count at which queued finalized blocks are committed by FCU.
 /// Counts verification, convergence, finalized, and build parent deliveries.
@@ -150,10 +153,8 @@ pub(crate) struct Actor<TContext, TExecutionLayer, TMarshal> {
     /// select it as HEAD. Starts once the pending head's body is known and is
     /// dropped when the pending head changes or no longer needs delivery.
     convergence: Option<AncestryWalk>,
-    /// Wakes a convergence walk paused in [`WalkStep::Backoff`].
-    convergence_retry: OptionFuture<BoxFuture<'static, ()>>,
     /// Fetches the pending head's body before its walk exists. Ancestor
-    /// fetches live inside the walks.
+    /// fetches live inside the walks' steps.
     pending_head_fetch: OptionFuture<PendingNotarizedBlock>,
 
     /// The single execution task. A build owns the slot from fetching its parent
@@ -328,7 +329,6 @@ where
             latest_consensus_round: finalized_tip.0,
             pending_consensus_request: None,
             convergence: None,
-            convergence_retry: OptionFuture::none(),
             pending_head_fetch: OptionFuture::none(),
 
             execution_task: OptionFuture::none(),
@@ -413,27 +413,16 @@ where
                         _ => std::future::pending().await,
                     }
                 } => {
-                    match wake {
-                        VerificationWake::Canceled => self.pending_consensus_request = None,
-                        VerificationWake::Fetched(block) => self.handle_verification_fetched(block),
-                    }
+                    self.handle_verification_wake(wake);
                 }
 
-                (_, _, block) = async {
+                wake = async {
                     match &mut self.convergence {
-                        Some(walk) => (&mut walk.fetch).await,
+                        Some(walk) => walk.wake().await,
                         None => std::future::pending().await,
                     }
                 } => {
-                    self.handle_convergence_fetched(block);
-                }
-
-                () = &mut self.convergence_retry => {
-                    if let Some(walk) = &mut self.convergence
-                        && walk.step == WalkStep::Backoff
-                    {
-                        walk.reprobe();
-                    }
+                    self.handle_convergence_wake(wake);
                 }
 
                 Some(delivered) = self.payload_jobs.next() => {
@@ -510,18 +499,19 @@ where
                 // SYNCING blocks may execute later as their missing ancestors
                 // arrive, so every delivery counts toward the next update.
                 self.deliveries_since_forkchoice += 1;
-                // Failures are logged by the handlers. A failed verification
-                // delivery ends the request; a failed convergence delivery is
-                // retried after a pause.
+                // The engine call itself failing is fatal, whoever asked.
+                let (status, duration) = status.wrap_err_with(|| {
+                    format!("failed delivering block `{digest}` for {owner:?}")
+                })?;
+                // An ACCEPTED answer is logged by the handlers and ends the
+                // verification or stops the convergence walk.
                 let _logged = match owner {
                     WalkOwner::Verification(round) => {
-                        self.handle_verification_delivered(round, digest, status)
+                        self.handle_verification_delivered(round, digest, status, duration)
                     }
-                    WalkOwner::Convergence => self.handle_convergence_delivered(
-                        digest,
-                        finalized_round,
-                        status.map(|(status, _)| status),
-                    ),
+                    WalkOwner::Convergence => {
+                        self.handle_convergence_delivered(digest, finalized_round, status)
+                    }
                 };
             }
             ExecutionTaskOutcome::FinalizedDelivered { request, status } => {
@@ -576,7 +566,8 @@ where
         &mut self,
         round: Round,
         digest: Digest,
-        status: eyre::Result<(PayloadStatusEnum, Duration)>,
+        status: PayloadStatusEnum,
+        duration: Duration,
     ) -> eyre::Result<()> {
         let Some((active_round, ConsensusRequest::Verify(pending))) =
             &mut self.pending_consensus_request
@@ -586,13 +577,6 @@ where
         if *active_round != round || !pending.walk.awaits(digest) {
             return Ok(());
         }
-        let (status, duration) = match status {
-            Ok(result) => result,
-            Err(error) => {
-                self.pending_consensus_request = None;
-                return Err(error.wrap_err("failed delivering verification block"));
-            }
-        };
         pending.duration += duration;
         let finalized = (self.network_finalized_tip.1, self.network_finalized_tip.2);
         let verdict = match pending
@@ -600,12 +584,18 @@ where
             .on_status(status, finalized, self.delivered_finalized.0)
         {
             WalkOutcome::Continue => return Ok(()),
-            WalkOutcome::RetryFromTarget => {
+            WalkOutcome::NeedsParent => {
+                pending
+                    .walk
+                    .start_parent_fetch(&self.execution_node, &self.marshal);
+                return Ok(());
+            }
+            WalkOutcome::SyncingAtDeliveredFinality => {
                 pending.walk.reprobe();
                 return Ok(());
             }
             WalkOutcome::TargetValid => Some(pending.duration),
-            WalkOutcome::TargetInvalid | WalkOutcome::ConflictsWithFinality => None,
+            WalkOutcome::Invalid | WalkOutcome::ConflictsWithFinality => None,
             WalkOutcome::Accepted => {
                 self.pending_consensus_request = None;
                 bail!("payload was accepted without execution while verifying block");
@@ -627,13 +617,14 @@ where
     /// Applies an engine answer to the convergence walk, if it still waits on
     /// the block. A VALID target under the current network finalized tip makes
     /// the pending head eligible for HEAD and ends the walk. Anything else
-    /// that stops the walk pauses it for a retry.
+    /// that stops the walk leaves it stopped; a newer consensus context that
+    /// selects the same head, or a finalized delivery, restarts it.
     #[instrument(skip_all, fields(%digest), err(level = Level::WARN))]
     fn handle_convergence_delivered(
         &mut self,
         digest: Digest,
         finalized_round: Round,
-        status: eyre::Result<PayloadStatusEnum>,
+        status: PayloadStatusEnum,
     ) -> eyre::Result<()> {
         let Some(walk) = &mut self.convergence else {
             return Ok(());
@@ -641,13 +632,6 @@ where
         if !walk.awaits(digest) {
             return Ok(());
         }
-        let status = match status {
-            Ok(status) => status,
-            Err(error) => {
-                self.pause_convergence(CONVERGENCE_RETRY_INTERVAL);
-                return Err(error.wrap_err("failed delivering convergence block"));
-            }
-        };
         if status == PayloadStatusEnum::Syncing && digest == self.pending_head.digest {
             self.pending_head.executed = None;
         }
@@ -655,34 +639,26 @@ where
         let finalized = (self.network_finalized_tip.1, self.network_finalized_tip.2);
         match walk.on_status(status, finalized, self.delivered_finalized.0) {
             WalkOutcome::Continue => {}
+            WalkOutcome::NeedsParent => {
+                walk.start_parent_fetch(&self.execution_node, &self.marshal)
+            }
             WalkOutcome::TargetValid => {
                 self.convergence = None;
                 self.record_executed_convergence_target((height, digest), finalized_round);
             }
-            WalkOutcome::TargetInvalid => self.pause_convergence(CONVERGENCE_RETRY_INTERVAL),
-            WalkOutcome::RetryFromTarget | WalkOutcome::ConflictsWithFinality => {
-                self.pause_convergence(CONVERGENCE_BOUNDARY_RETRY_INTERVAL);
-            }
+            WalkOutcome::Invalid
+            | WalkOutcome::SyncingAtDeliveredFinality
+            | WalkOutcome::ConflictsWithFinality => walk.stop(),
             WalkOutcome::Accepted => {
-                self.pause_convergence(CONVERGENCE_RETRY_INTERVAL);
+                walk.stop();
                 bail!("payload was accepted without execution while delivering block");
             }
         }
         Ok(())
     }
 
-    /// Pauses the convergence walk for `delay`. The timer, or an earlier
-    /// finalized delivery, restarts it at the target.
-    fn pause_convergence(&mut self, delay: Duration) {
-        if let Some(walk) = &mut self.convergence {
-            walk.pause();
-            self.convergence_retry
-                .replace(self.context.sleep(delay).boxed());
-        }
-    }
-
     /// Finalization delivered blocks. A walk that was about to deliver or
-    /// fetch one of them restarts at its target, and so does a paused
+    /// fetch one of them restarts at its target, and so does a stopped
     /// convergence walk.
     fn restart_walks_covered_by_finality(&mut self) {
         let delivered = self.delivered_finalized.0;
@@ -691,9 +667,6 @@ where
         }
         if let Some(walk) = &mut self.convergence {
             walk.on_finalized_delivered(delivered);
-            if walk.step == WalkStep::Probe {
-                self.convergence_retry = OptionFuture::none();
-            }
         }
     }
 
@@ -734,7 +707,6 @@ where
                 .is_some_and(|walk| walk.target.digest() != self.pending_head.digest)
         {
             self.convergence = None;
-            self.convergence_retry = OptionFuture::none();
         }
     }
 
@@ -1145,6 +1117,11 @@ where
                 self.pending_head.digest = target.1;
                 self.pending_head.height = None;
                 self.pending_head.executed = None;
+            } else if let Some(walk) = &mut self.convergence
+                && matches!(walk.step, WalkStep::Stopped)
+            {
+                info!("consensus selected the head again; restarting its stopped delivery");
+                walk.reprobe();
             }
             self.pending_head.round = Round::new(round.epoch(), target.0);
         }
@@ -1162,19 +1139,16 @@ where
             .execution_task
             .as_ref()
             .is_some_and(|task| matches!(task.task_type, ExecutionTaskType::Verify));
-        if let Some((_, ConsensusRequest::Verify(pending))) = &mut self.pending_consensus_request {
-            pending
-                .walk
-                .start_parent_fetch(&self.execution_node, &self.marshal);
+        if let Some((_, ConsensusRequest::Verify(pending))) = &self.pending_consensus_request {
             let candidate = pending.candidate();
             verification_has_priority |= match pending.walk.step {
                 WalkStep::InFlight => true,
                 WalkStep::Probe if pending.walk.at_target() => true,
-                WalkStep::Probe | WalkStep::FetchParent => {
+                WalkStep::Probe | WalkStep::FetchParent(_) => {
                     candidate.digest() == self.pending_head.digest
                         || candidate.parent_digest() == self.pending_head.digest
                 }
-                WalkStep::WaitForFinalized { .. } | WalkStep::Backoff => false,
+                WalkStep::WaitForFinalized { .. } | WalkStep::Stopped => false,
             };
         }
         let building = self
@@ -1190,9 +1164,6 @@ where
             && (!verification_has_priority || self.convergence.is_some());
         if !converging {
             self.pending_head_fetch = OptionFuture::none();
-            if let Some(walk) = &mut self.convergence {
-                walk.fetch = OptionFuture::none();
-            }
             return;
         }
         if self.convergence.is_none()
@@ -1210,12 +1181,10 @@ where
             // Any other answer follows the usual walk.
             self.start_convergence(block.clone());
         }
-        match &mut self.convergence {
-            Some(walk) => {
-                self.pending_head_fetch = OptionFuture::none();
-                walk.start_parent_fetch(&self.execution_node, &self.marshal);
-            }
-            None => self.fetch_pending_head(),
+        if self.convergence.is_some() {
+            self.pending_head_fetch = OptionFuture::none();
+        } else {
+            self.fetch_pending_head();
         }
     }
 
@@ -1262,24 +1231,29 @@ where
         }
     }
 
-    fn handle_convergence_fetched(&mut self, block: Option<Arc<Block>>) {
+    fn handle_convergence_wake(&mut self, wake: WalkWake) {
         let Some(walk) = &mut self.convergence else {
             return;
         };
-        match block {
-            Some(block) => walk.on_fetched(block),
-            None => warn!("marshal dropped the ancestor subscription; retrying the fetch"),
+        match wake {
+            WalkWake::Fetched(Some(block)) => walk.on_fetched(block),
+            WalkWake::Fetched(None) => {
+                warn!("marshal dropped the ancestor subscription; retrying the fetch");
+                walk.start_parent_fetch(&self.execution_node, &self.marshal);
+            }
+            WalkWake::Canceled => {}
         }
     }
 
-    fn handle_verification_fetched(&mut self, block: Option<Arc<Block>>) {
+    fn handle_verification_wake(&mut self, wake: WalkWake) {
         let Some((_, ConsensusRequest::Verify(pending))) = &mut self.pending_consensus_request
         else {
             return;
         };
-        match block {
-            Some(block) => pending.walk.on_fetched(block),
-            None => {
+        match wake {
+            WalkWake::Canceled => self.pending_consensus_request = None,
+            WalkWake::Fetched(Some(block)) => pending.walk.on_fetched(block),
+            WalkWake::Fetched(None) => {
                 warn!(
                     "marshal dropped the verification ancestor subscription; failing the request"
                 );
@@ -1322,7 +1296,7 @@ where
             Some((round, ConsensusRequest::Verify(pending))) => {
                 // The event loop drops a canceled request; do not spend the
                 // slot on it in the meantime.
-                if pending.walk.step == WalkStep::Probe && !pending.is_canceled() {
+                if matches!(pending.walk.step, WalkStep::Probe) && !pending.is_canceled() {
                     let block = pending.walk.probe();
                     let fut = execute_delivery(
                         self.execution_node.clone(),
@@ -1376,7 +1350,7 @@ where
         }
 
         if let Some(walk) = &mut self.convergence
-            && walk.step == WalkStep::Probe
+            && matches!(walk.step, WalkStep::Probe)
         {
             let block = walk.probe();
             let fut = execute_delivery(
@@ -1551,8 +1525,9 @@ struct PendingVerification {
     duration: Duration,
 }
 
-/// Why the event loop woke up for a verification.
-enum VerificationWake {
+/// Why the event loop woke up for a walk.
+enum WalkWake {
+    /// The verification's requester went away.
     Canceled,
     /// The ancestor fetch resolved; `None` if the marshal actor dropped it.
     Fetched(Option<Arc<Block>>),
@@ -1577,8 +1552,8 @@ impl PendingVerification {
             .is_some_and(|response| response.is_canceled())
     }
 
-    /// Resolves when the requester cancels or the ancestor fetch completes.
-    async fn wake(&mut self) -> VerificationWake {
+    /// Resolves when the requester cancels or the walk's wait completes.
+    async fn wake(&mut self) -> WalkWake {
         let Self { walk, response, .. } = self;
         select! {
             biased;
@@ -1588,8 +1563,8 @@ impl PendingVerification {
                     Some(response) => response.cancellation().await,
                     None => std::future::pending().await,
                 }
-            } => VerificationWake::Canceled,
-            (_, _, block) = &mut walk.fetch => VerificationWake::Fetched(block),
+            } => WalkWake::Canceled,
+            wake = walk.wake() => wake,
         }
     }
 }
@@ -1616,39 +1591,46 @@ struct AncestryWalk {
     target: Arc<Block>,
     /// The block the walk probes next, or probed last.
     cursor: Arc<Block>,
+    /// The step owns the parent fetch while one is running. The owner starts
+    /// it, as it holds the execution layer and marshal handles.
     step: WalkStep,
-    /// The parent fetch while in [`WalkStep::FetchParent`]. Started by the
-    /// actor, which owns the execution layer and marshal handles.
-    fetch: OptionFuture<PendingNotarizedBlock>,
 }
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
 enum WalkStep {
     /// The cursor is ready for `newPayload`.
     Probe,
     /// The cursor is the current execution task.
     InFlight,
     /// The cursor returned SYNCING and its parent is above the finalized
-    /// tip. The parent is being fetched.
-    FetchParent,
+    /// tip. The parent is being fetched; `None` if the marshal actor
+    /// dropped the subscription.
+    FetchParent(BoxFuture<'static, Option<Arc<Block>>>),
     /// The cursor's parent is the finalized tip at `height`, which the
     /// finalization pipeline has not delivered yet.
     WaitForFinalized { height: Height },
-    /// The owner paused the walk. Its timer restarts the walk at the target.
-    Backoff,
+    /// The owner stopped the walk after a rejected or failed delivery. It
+    /// restarts at the target when the owner asks.
+    Stopped,
 }
 
 /// What the owner must decide after an engine answer. Every outcome other
 /// than `Continue` leaves the walk in [`WalkStep::InFlight`] for the owner
-/// to end, restart, or pause it.
+/// to end, restart, stop, or fetch for.
 enum WalkOutcome {
     /// The walk moved on by itself.
     Continue,
+    /// The cursor's parent is missing above the finalized tip; the owner
+    /// starts its fetch.
+    NeedsParent,
     TargetValid,
-    TargetInvalid,
+    /// The cursor was rejected. The execution layer caches the rejection and
+    /// answers INVALID for every descendant, so this is the target's verdict
+    /// whether the cursor is the target or an ancestor.
+    Invalid,
     /// The cursor's parent is the finalized tip and was delivered already,
-    /// yet the execution layer still says SYNCING. Only a retry can help.
-    RetryFromTarget,
+    /// yet the execution layer still says SYNCING. The walk cannot descend
+    /// further; the owner decides when to probe the target again.
+    SyncingAtDeliveredFinality,
     /// The ancestry meets finality on another branch. The target can never
     /// become canonical.
     ConflictsWithFinality,
@@ -1671,7 +1653,6 @@ impl AncestryWalk {
             cursor: target.clone(),
             target,
             step: WalkStep::Probe,
-            fetch: OptionFuture::none(),
         }
     }
 
@@ -1681,7 +1662,7 @@ impl AncestryWalk {
 
     /// Whether the walk waits for the engine's answer on `digest`.
     fn awaits(&self, digest: Digest) -> bool {
-        self.step == WalkStep::InFlight && self.cursor.digest() == digest
+        matches!(self.step, WalkStep::InFlight) && self.cursor.digest() == digest
     }
 
     /// The cursor's parent and the round it was notarized in, the fetch hint
@@ -1705,12 +1686,22 @@ impl AncestryWalk {
     fn reprobe(&mut self) {
         self.cursor = self.target.clone();
         self.step = WalkStep::Probe;
-        self.fetch = OptionFuture::none();
     }
 
-    fn pause(&mut self) {
-        self.step = WalkStep::Backoff;
-        self.fetch = OptionFuture::none();
+    fn stop(&mut self) {
+        self.step = WalkStep::Stopped;
+    }
+
+    /// Resolves when the step's fetch completes. The owner replaces the step
+    /// before the walk is polled again.
+    async fn wake(&mut self) -> WalkWake {
+        match &mut self.step {
+            WalkStep::FetchParent(fetch) => WalkWake::Fetched(fetch.await),
+            WalkStep::Probe
+            | WalkStep::InFlight
+            | WalkStep::WaitForFinalized { .. }
+            | WalkStep::Stopped => std::future::pending().await,
+        }
     }
 
     /// Interprets the engine's answer for the cursor. `finalized` is the
@@ -1734,22 +1725,16 @@ impl AncestryWalk {
                     validation_error,
                     "execution layer rejected the block",
                 );
-                if self.at_target() {
-                    WalkOutcome::TargetInvalid
-                } else {
-                    self.reprobe();
-                    WalkOutcome::Continue
-                }
+                WalkOutcome::Invalid
             }
             PayloadStatusEnum::Syncing => {
                 let parent_height = self.parent_height();
                 let parent_digest = self.cursor.parent_digest();
                 if parent_height > finalized.0 {
-                    self.step = WalkStep::FetchParent;
-                    WalkOutcome::Continue
+                    WalkOutcome::NeedsParent
                 } else if parent_digest == finalized.1 {
                     if delivered >= finalized.0 {
-                        WalkOutcome::RetryFromTarget
+                        WalkOutcome::SyncingAtDeliveredFinality
                     } else {
                         self.step = WalkStep::WaitForFinalized {
                             height: finalized.0,
@@ -1771,18 +1756,12 @@ impl AncestryWalk {
         }
     }
 
-    /// Starts the parent fetch asked for by [`WalkStep::FetchParent`], unless
-    /// one is running.
+    /// Fetches the cursor's parent, the block SYNCING asked for.
     fn start_parent_fetch(&mut self, execution_node: &impl ExecutionLayer, marshal: &impl Marshal) {
-        if self.step == WalkStep::FetchParent && self.fetch.is_none() {
-            let (round, digest) = self.parent();
-            self.fetch.replace(PendingNotarizedBlock::new(
-                execution_node,
-                marshal,
-                round,
-                digest,
-            ));
-        }
+        let (round, digest) = self.parent();
+        self.step = WalkStep::FetchParent(
+            fetch_block(execution_node.clone(), marshal.clone(), digest, round).boxed(),
+        );
     }
 
     /// Makes the fetched parent the cursor.
@@ -1792,13 +1771,13 @@ impl AncestryWalk {
     }
 
     /// Restarts at the target once finalization delivered the block the walk
-    /// was about to deliver or fetch itself. A paused walk restarts as well.
+    /// was about to deliver or fetch itself. A stopped walk restarts as well.
     fn on_finalized_delivered(&mut self, delivered: Height) {
-        let restart = match self.step {
+        let restart = match &self.step {
             WalkStep::Probe => !self.at_target() && self.cursor.height() <= delivered,
-            WalkStep::FetchParent => self.parent_height() <= delivered,
-            WalkStep::WaitForFinalized { height } => height <= delivered,
-            WalkStep::Backoff => true,
+            WalkStep::FetchParent(_) => self.parent_height() <= delivered,
+            WalkStep::WaitForFinalized { height } => *height <= delivered,
+            WalkStep::Stopped => true,
             WalkStep::InFlight => false,
         };
         if restart {
