@@ -29,8 +29,10 @@ The harness checkout is pinned to the workflow dispatch revision.
 `run-pairs: 2` counterbalances order as feature/baseline/baseline/feature;
 snapshot restoration alone does not equalize OS or device caches.
 
-Lifecycle mode requires 64 GiB of available workspace/root space before builds
-and 48 GiB before each capture. It builds sequentially and removes only disposable
+Lifecycle mode requires 64 GiB of available workspace/root space before compilation
+and 48 GiB before binary-cache retrieval and each capture. A verified cache hit
+does not require compilation headroom; misses and invalid cached executables do.
+It builds sequentially and removes only disposable
 build intermediates after verifying each executable. These checks fail early on
 undersized runners; published capture directories and shared caches are retained.
 
