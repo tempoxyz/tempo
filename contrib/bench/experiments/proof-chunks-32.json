@@ -1,0 +1,16 @@
+{
+  "feature": "d52c631b960cff8f31ae66f7578c12ac45df6ae4",
+  "feature-args": "--engine.multiproof-chunk-size 32",
+  "preset": "default",
+  "duration": "120",
+  "bloat": "100",
+  "tps": "15000",
+  "accounts": "1000",
+  "max-concurrent-requests": "100",
+  "token-count": "4",
+  "profiling": "lifecycle",
+  "otlp": "false",
+  "valscope": "false",
+  "no-slack": "true",
+  "run-pairs": "1"
+}
