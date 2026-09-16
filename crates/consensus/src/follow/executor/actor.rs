@@ -27,7 +27,6 @@ use commonware_utils::{Acknowledgement as _, acknowledgement::Exact};
 use eyre::{Report, WrapErr as _, ensure, eyre};
 use futures::{FutureExt as _, StreamExt as _, channel::mpsc, future::BoxFuture};
 use tempo_node::TempoExecutionData;
-use tempo_primitives::TempoHeader;
 use tracing::{Level, debug, error, instrument};
 
 use super::{
@@ -45,7 +44,6 @@ pub(crate) struct Actor<TContext, P, E, M = crate::alias::marshal::Mailbox> {
 
     epoch_strategy: FixedEpocher,
     floor: Height,
-    finalized_tip: Option<BoxFuture<'static, eyre::Result<TempoHeader>>>,
 
     last_fcu: Target,
     latest_tip: Target,
@@ -77,7 +75,6 @@ where
             marshal,
             epoch_strategy,
             floor,
-            finalized_tip,
             fcu_heartbeat_interval,
         } = config;
 
@@ -93,7 +90,6 @@ where
             marshal,
             epoch_strategy,
             floor,
-            finalized_tip,
             execution_provider,
             execution_engine,
 
@@ -113,13 +109,6 @@ where
     }
 
     async fn run(mut self) {
-        if let Some(validation) = self.finalized_tip.take()
-            && let Err(error) = validation.await
-        {
-            error!(%error, "failed resolving finalized tip");
-            return;
-        }
-
         let mut heartbeat = false;
         loop {
             self.start_execution_task(heartbeat);

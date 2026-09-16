@@ -39,7 +39,6 @@
 use std::{collections::BTreeMap, num::NonZeroUsize};
 
 use commonware_consensus::{
-    Reporter,
     simplex::{self, config::Floor, elector, scheme::bls12381_threshold::vrf::Scheme},
     types::{Epoch, EpochDelta, Epocher as _},
 };
@@ -66,10 +65,7 @@ use crate::{
     epoch::manager::ingress::{EpochTransition, Exit},
 };
 
-use super::{
-    Readiness,
-    ingress::{Content, Message},
-};
+use super::ingress::{Content, Message};
 
 const REPLAY_BUFFER: NonZeroUsize = NZUsize!(8 * 1024 * 1024); // 8MB
 const WRITE_BUFFER: NonZeroUsize = NZUsize!(1024 * 1024); // 1MB
@@ -151,12 +147,8 @@ where
             impl Sender<PublicKey = PublicKey>,
             impl Receiver<PublicKey = PublicKey>,
         ),
-        readiness: impl Reporter<Activity = Readiness>,
     ) -> Handle<()> {
-        spawn_cell!(
-            self.context,
-            self.run(votes, certificates, resolver, readiness)
-        )
+        spawn_cell!(self.context, self.run(votes, certificates, resolver))
     }
 
     async fn run(
@@ -173,9 +165,7 @@ where
             impl Sender<PublicKey = PublicKey>,
             impl Receiver<PublicKey = PublicKey>,
         ),
-        readiness: impl Reporter<Activity = Readiness>,
     ) {
-        let mut readiness = Some(readiness);
         let (mux, mut vote_mux, mut vote_backup) = Muxer::builder(
             self.context.child("vote_mux"),
             vote_sender,
@@ -228,7 +218,7 @@ where
                     let cause = msg.cause;
                     match msg.content {
                         Content::Enter(enter) => {
-                            let result = self
+                            if self
                                 .enter(
                                     cause,
                                     enter,
@@ -236,13 +226,10 @@ where
                                     &mut certificate_mux,
                                     &mut resolver_mux,
                                 )
-                                .await;
-                            if let Some(mut reporter) = readiness.take() {
-                                // Report readiness once after the initial epoch entry succeeds.
-                                if result.is_err() {
-                                    return;
-                                }
-                                let _ = reporter.report(Readiness);
+                                .await
+                                .is_err()
+                            {
+                                return;
                             }
                         }
                         Content::Exit(exit) => self.exit(cause, exit),

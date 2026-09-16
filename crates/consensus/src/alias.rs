@@ -2,18 +2,13 @@
 //! (primarily commonware) types.
 
 pub(crate) mod marshal {
-    use std::{
-        future::{Future, ready},
-        num::NonZeroUsize,
-        pin::Pin,
-        sync::Arc,
-    };
+    use std::{num::NonZeroUsize, sync::Arc};
 
-    use alloy_consensus::BlockHeader as _;
+    use alloy_consensus::{BlockHeader as _, Sealable as _};
     use commonware_codec::ReadExt as _;
     use commonware_consensus::{
         Epochable as _,
-        marshal::{self, core, core::DigestFallback, standard::Standard},
+        marshal::{self, core, standard::Standard},
         simplex::scheme::bls12381_threshold::vrf::Scheme,
         types::{Epoch, Epocher as _, FixedEpocher, Height, Round, ViewDelta},
     };
@@ -86,31 +81,6 @@ pub(crate) mod marshal {
         pub scheme_provider: SchemeProvider,
     }
 
-    /// Return a local header immediately, or fetch its block by the certificate's round.
-    fn recover(
-        height: Height,
-        certificate: &Certificate,
-        header: Option<TempoHeader>,
-        marshal: Mailbox,
-    ) -> Pin<Box<dyn Future<Output = eyre::Result<TempoHeader>> + Send + Sync>> {
-        if let Some(header) = header {
-            return Box::pin(ready(Ok(header)));
-        }
-
-        let digest = certificate.proposal.payload;
-        let round = certificate.proposal.round;
-        Box::pin(async move {
-            info!(%height, %digest, "fetching finalized tip header through marshal");
-            // Request the missing block explicitly: passive waiting can deadlock
-            // while executor readiness is withheld until this tip is checked.
-            let block = marshal
-                .subscribe_by_digest(digest, DigestFallback::FetchByRound { round })
-                .await
-                .wrap_err("marshal closed finalized tip subscription without a block")?;
-            Ok(block.header().clone())
-        })
-    }
-
     /// Marshal actor + mailbox + the height marshal will resume from,
     /// returned by [`init`].
     pub(crate) struct Initialized<TContext>
@@ -127,19 +97,12 @@ pub(crate) mod marshal {
         /// height and the startup floor height.
         pub finalized_floor: Height,
 
-        /// Archive tip metadata used to initialize the executor and peer manager
-        /// before header recovery. Execution remains gated on epoch readiness.
+        /// Archive tip metadata used to initialize the executor and peer manager.
         pub finalized_tip: (Round, Height, Digest),
 
-        /// The archive certificate to authenticate once its header is available.
+        /// The archive certificate to authenticate during initialization.
         /// `None` only at genesis.
         pub finalized_tip_certificate: Option<Certificate>,
-
-        /// Resolves the archive tip's header without validating it.
-        /// Poll the future after starting marshal, which may need to recover the
-        /// block from its cache or peers. `None` only at genesis.
-        pub finalized_tip_header:
-            Option<Pin<Box<dyn Future<Output = eyre::Result<TempoHeader>> + Send + Sync>>>,
     }
 
     /// Initialize the marshal actor and its backing finalized-blocks store
@@ -194,7 +157,7 @@ pub(crate) mod marshal {
         )
         .await?;
         let (tip_round, tip_height, tip_digest) = match &finalized_tip {
-            Some((height, certificate, _)) => (
+            Some((height, certificate)) => (
                 certificate.proposal.round,
                 *height,
                 certificate.proposal.payload,
@@ -273,26 +236,18 @@ pub(crate) mod marshal {
             "setting marshal sync floor"
         );
 
-        let (finalized_tip_certificate, finalized_tip_header) = finalized_tip
-            .map(|(height, certificate, header)| {
-                let header = recover(height, &certificate, header, mailbox.clone());
-                (Some(certificate), Some(header))
-            })
-            .unwrap_or_default();
-
         Ok(Initialized {
             actor,
             mailbox,
             finalized_floor: last_finalized_height,
             finalized_tip: (tip_round, tip_height, tip_digest),
-            finalized_tip_certificate,
-            finalized_tip_header,
+            finalized_tip_certificate: finalized_tip.map(|(_, certificate)| certificate),
         })
     }
 
     struct FinalizationRange {
         floor: (Height, Digest),
-        tip: Option<(Height, Certificate, Option<TempoHeader>)>,
+        tip: Option<(Height, Certificate)>,
     }
 
     async fn establish_finalization_range<TContext>(
@@ -352,11 +307,27 @@ pub(crate) mod marshal {
             .get_header(Identifier::Key(&certificate.proposal.payload))
             .await
             .wrap_err("failed reading finalized tip header")?;
+        if let Some(header) = &header {
+            verify_tip_header(height, certificate.proposal.payload, header)?;
+        }
 
         Ok(FinalizationRange {
             floor,
-            tip: Some((height, certificate, header)),
+            tip: Some((height, certificate)),
         })
+    }
+
+    fn verify_tip_header(height: Height, digest: Digest, header: &TempoHeader) -> eyre::Result<()> {
+        ensure!(
+            header.number() == height.get(),
+            "finalized tip header number `{}` does not match archive height `{height}`",
+            header.number(),
+        );
+        ensure!(
+            Digest(header.hash_slow()) == digest,
+            "finalized tip header hash does not match certificate payload at height `{height}`",
+        );
+        Ok(())
     }
 
     async fn start_from_finalized_floor<TContext>(
@@ -459,5 +430,30 @@ pub(crate) mod marshal {
                     Digest(execution_node.chain_spec().genesis_hash()),
                 )
             })
+    }
+
+    #[cfg(test)]
+    mod tests {
+        use super::*;
+
+        #[test]
+        fn startup_tip_header_must_match_archive_height_and_certificate_digest() {
+            let height = Height::new(12);
+            let mut header = TempoHeader::default();
+            header.inner.number = height.get();
+            let digest = Digest(header.hash_slow());
+            verify_tip_header(height, digest, &header).unwrap();
+
+            let error = verify_tip_header(height.next(), digest, &header).unwrap_err();
+            assert!(error.to_string().contains("does not match archive height"));
+
+            header.inner.extra_data = vec![1].into();
+            let error = verify_tip_header(height, digest, &header).unwrap_err();
+            assert!(
+                error
+                    .to_string()
+                    .contains("header hash does not match certificate payload")
+            );
+        }
     }
 }
