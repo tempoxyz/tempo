@@ -20,15 +20,15 @@ class DiagnosticTests(unittest.TestCase):
         capture = decode(stream(fixture()), '', 0, 0)
         self.assertTrue(capture['registered_window_edges_complete'])
         self.assertTrue(all(r['ts'] < 50 for r in capture['records']))
-        self.assertTrue(all(r['end'] <= 50 for r in capture['intervals']))
-        self.assertIn({'thread':3,'start':12,'end':50,'kind':'runnable_off_cpu','right_censored':True}, capture['intervals'])
+        self.assertTrue(all(r['end'] < 50 for r in capture['intervals']))
+        self.assertIn({'thread':3,'start':12,'end':49,'kind':'runnable_off_cpu','right_censored':True}, capture['intervals'])
         self.assertEqual({r['kind'] for r in capture['intervals']},
                          {'scheduled_on_cpu','blocked_before_wakeup','runnable_after_wakeup','runnable_off_cpu'})
 
     def test_cutoff_equality_pruned(self):
         result = decode(stream(fixture(), cutoff=20), '', 0, 0)
         self.assertNotIn('wakeup', [r['kind'] for r in result['records']])
-        self.assertTrue(all(r['end'] <= 20 for r in result['intervals']))
+        self.assertTrue(all(r['end'] < 20 for r in result['intervals']))
 
     def test_missing_wakeup_is_unsplit_not_blocked(self):
         rows = [r for r in fixture() if r[2] != 3]

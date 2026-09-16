@@ -71,8 +71,9 @@ def decode(stdout, stderr, returncode, origin, *, expected_threads=EXPECTED_THRE
     unknown = open_intervals = unmatched_wakeups = 0
 
     def interval(thread, start, end, kind):
-        # Intersect observed endpoints, never extrapolate an unclosed interval.
-        low, high = max(0, start), min(cutoff, end)
+        # Keep even the endpoint strictly before cutoff; discard sub-nanosecond
+        # empty results, never extrapolate an unclosed interval.
+        low, high = max(0, start), min(cutoff - 1, end)
         if low < high:
             intervals.append({"thread": thread, "start": low, "end": high, "kind": kind,
                               "right_censored": end >= cutoff})

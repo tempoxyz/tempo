@@ -53,12 +53,13 @@ class RuntimeTests(unittest.TestCase):
     def test_schema_and_cutoff_validate(self):
         capture = example()
         self.assertEqual(report.validate(capture,1,50,'backpressure'), capture)
-        for mutation in ('native_id','cutoff','at_cutoff','beyond_cutoff','overlap'):
+        for mutation in ('native_id','cutoff','at_cutoff','beyond_cutoff','endpoint_at_cutoff','overlap'):
             bad=copy.deepcopy(capture)
             if mutation=='native_id':bad['native_pid']=123
             elif mutation=='cutoff':bad['cutoff_ns']=51
             elif mutation=='at_cutoff':bad['records'][0]['ts']=50
             elif mutation=='beyond_cutoff':bad['intervals'][0]['end']=51
+            elif mutation=='endpoint_at_cutoff':bad['intervals'][0]['end']=50
             elif mutation=='overlap':bad['intervals'].append(bad['intervals'][0])
             with self.subTest(mutation=mutation),self.assertRaises(ValueError):
                 report.validate(bad,1,50,'backpressure')
