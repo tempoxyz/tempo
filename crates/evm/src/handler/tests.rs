@@ -1,5 +1,8 @@
 use super::*;
-use crate::{TempoBlockEnv, TempoEvmExt, TempoEvmTx, tempo_tx_registry};
+use crate::{
+    FeeTokenResolver, ProtocolFeeContext, ProtocolFeeManager, TempoBlockEnv, TempoEvmExt,
+    TempoEvmTx, TempoFeeManager, tempo_tx_registry,
+};
 use alloy_consensus::transaction::Recovered;
 use alloy_eips::eip2930::{AccessList, AccessListItem};
 use alloy_primitives::{B256, Bytes, Signature};
@@ -193,7 +196,7 @@ impl ProtocolFeeManager for ValidatorTokenLookupFailsFeeManager {
 
     fn collect_fee_pre_tx(
         &self,
-        _host: &mut Evm<'_, TempoEvmTypes>,
+        _ctx: ProtocolFeeContext<'_, '_>,
         _fee_payer: Address,
         _user_token: Address,
         _max_amount: U256,
@@ -209,7 +212,7 @@ impl ProtocolFeeManager for ValidatorTokenLookupFailsFeeManager {
 
     fn collect_fee_post_tx(
         &self,
-        _host: &mut Evm<'_, TempoEvmTypes>,
+        _ctx: ProtocolFeeContext<'_, '_>,
         _fee_payer: Address,
         _actual_spending: U256,
         _refund_amount: U256,

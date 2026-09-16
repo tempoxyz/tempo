@@ -1,12 +1,11 @@
 //! EVM2 transaction handler plumbing.
 
 use crate::{
-    FeePaymentError, TempoEvmTx, TempoInvalidTransaction, TempoStateAccess, TempoTx, TempoTxEnv,
-    common::is_tip20_fee_inference_call,
+    FeePaymentError, ProtocolFeeContext, ProtocolFeeManager, TempoEvmTx, TempoFeeManager,
+    TempoInvalidTransaction, TempoTxEnv,
 };
 use alloy_consensus::{Transaction, TxEip1559, TxEip2930, TxLegacy};
 use alloy_primitives::{Address, TxKind, U256};
-use alloy_sol_types::SolCall;
 use evm2::{
     Evm, EvmConfig, EvmConfigSelector, EvmFeatures, EvmTypesHost, ExecutionConfig, OpcodeConfig,
     SpecId, TxResult,
@@ -18,239 +17,18 @@ use evm2::{
 };
 use std::{cell::RefCell, rc::Rc, sync::Arc};
 use tempo_chainspec::{constants::gas::STORAGE_CREDIT_VALUE, hardfork::TempoHardfork};
-use tempo_contracts::precompiles::{
-    DEFAULT_FEE_TOKEN, IFeeManager, IStablecoinDEX, STABLECOIN_DEX_ADDRESS, TIPFeeAMMError,
-};
+use tempo_contracts::precompiles::TIPFeeAMMError;
 use tempo_precompiles::{
-    STORAGE_CREDITS_ADDRESS, TIP_FEE_MANAGER_ADDRESS,
+    STORAGE_CREDITS_ADDRESS,
     account_keychain::AccountKeychain,
     error::{Result as TempoResult, TempoPrecompileError},
-    storage::{FromWord, Handler, StorageActions, StorageCtx},
+    storage::{FromWord, StorageActions, StorageCtx},
     storage_credits::{NonCreditableSlots, TransientState},
-    tip_fee_manager::TipFeeManager,
     tip20::TIP20Error,
     tip20_channel_reserve::TIP20ChannelReserve,
 };
 use tempo_primitives::{TempoAddressExt, transaction::calc_gas_balance_spending};
 pub use tempo_primitives::{TempoBlockEnv, TempoBlockExt};
-
-/// Resolves a transaction's fee token for state consumers outside the EVM handler.
-pub trait FeeTokenResolver {
-    /// Resolves the fee token that should pay for `tx`.
-    fn resolve_fee_token<S, M>(
-        &self,
-        state: &mut S,
-        tx: &TempoTxEnv,
-        fee_payer: Address,
-        spec: TempoHardfork,
-        actions: StorageActions,
-    ) -> TempoResult<Address>
-    where
-        S: TempoStateAccess<M>;
-}
-
-/// Internal protocol fee policy used by Tempo transaction handlers.
-pub trait ProtocolFeeManager: core::fmt::Debug + Send + Sync {
-    /// Resolves the fee token that should pay for `tx`.
-    fn get_fee_token(
-        &self,
-        host: &mut Evm<'_, TempoEvmTypes>,
-        tx: &TempoTxEnv,
-        fee_payer: Address,
-        spec: TempoHardfork,
-    ) -> TempoResult<Address> {
-        let actions = host.ext().actions.clone();
-        TempoFeeManager.resolve_fee_token(host, tx, fee_payer, spec, actions)
-    }
-
-    /// Validates whether a TIP-20 can be used to pay fees.
-    ///
-    /// The handler checks the TIP-20 prefix first. Implementations define which tokens are valid.
-    /// `host` is mutable because validation reads can warm accounts and storage, but
-    /// implementations must not stage state changes here.
-    ///
-    /// Implementations charging non-zero fees in non-USD tokens must normalize them to the fee
-    /// unit used by admission, ordering, charging, and settlement.
-    fn validate_fee_token(
-        &self,
-        host: &mut Evm<'_, TempoEvmTypes>,
-        fee_token: Address,
-        spec: TempoHardfork,
-    ) -> HandlerResult<()> {
-        let actions = host.ext().actions.clone();
-        host.ensure_tip20_usd(spec, fee_token, actions)
-    }
-
-    /// Resolves the validator token used to receive protocol fees.
-    fn get_validator_token(
-        &self,
-        host: &mut Evm<'_, TempoEvmTypes>,
-        beneficiary: Address,
-    ) -> TempoResult<Address> {
-        let spec = host.config_spec_id();
-        let actions = host.ext().actions.clone();
-        host.with_read_only_storage_ctx(spec, actions, || {
-            TipFeeManager::new().get_validator_token(beneficiary)
-        })
-    }
-
-    /// Collects the maximum possible fee before transaction execution.
-    fn collect_fee_pre_tx(
-        &self,
-        host: &mut Evm<'_, TempoEvmTypes>,
-        fee_payer: Address,
-        user_token: Address,
-        max_amount: U256,
-        beneficiary: Address,
-        skip_liquidity_check: bool,
-    ) -> TempoResult<Address>;
-
-    /// Settles the final fee after transaction execution.
-    fn collect_fee_post_tx(
-        &self,
-        host: &mut Evm<'_, TempoEvmTypes>,
-        fee_payer: Address,
-        actual_spending: U256,
-        refund_amount: U256,
-        fee_token: Address,
-        beneficiary: Address,
-    ) -> TempoResult<U256>;
-}
-
-/// Default Tempo protocol fee policy.
-#[derive(Debug, Clone, Copy, Default)]
-pub struct TempoFeeManager;
-
-impl TempoFeeManager {
-    /// Creates the default Tempo protocol fee policy.
-    pub const fn new() -> Self {
-        Self
-    }
-}
-
-impl FeeTokenResolver for TempoFeeManager {
-    fn resolve_fee_token<S, M>(
-        &self,
-        state: &mut S,
-        tx: &TempoTxEnv,
-        fee_payer: Address,
-        spec: TempoHardfork,
-        actions: StorageActions,
-    ) -> TempoResult<Address>
-    where
-        S: TempoStateAccess<M>,
-    {
-        // If there is a fee token explicitly set on the tx type, use that.
-        if let Some(fee_token) = tx.fee_token() {
-            return Ok(fee_token);
-        }
-
-        // If the fee payer is also the msg.sender and the transaction is calling FeeManager to set a
-        // new preference, the newly set preference should be used immediately instead of the
-        // previously stored one
-        if !tx.is_aa()
-            && fee_payer == tx.caller()
-            && let Some((kind, input)) = tx.calls().next()
-            && kind.to() == Some(&TIP_FEE_MANAGER_ADDRESS)
-            && let Ok(call) = IFeeManager::setUserTokenCall::abi_decode(input)
-        {
-            return Ok(call.token);
-        }
-
-        // Check stored user token preference
-        let user_token = state.with_read_only_storage_ctx(spec, actions.clone(), || {
-            // ensure TIP_FEE_MANAGER_ADDRESS is loaded
-            TipFeeManager::new().user_tokens[fee_payer].read()
-        })?;
-
-        if !user_token.is_zero() {
-            return Ok(user_token);
-        }
-
-        // Check if the fee can be inferred from the TIP20 token being called
-        if let Some(to) = tx.calls().next().and_then(|(kind, _)| kind.to().copied()) {
-            let can_infer_tip20 =
-                // AA txs only when fee_payer == tx.origin.
-                if tx.is_aa() && fee_payer != tx.caller() {
-                    false
-                }
-                // Otherwise, restricted to TIP-20 calls that move the called token.
-                else {
-                    tx.calls().all(|(kind, input)| {
-                        kind.to() == Some(&to) && is_tip20_fee_inference_call(spec, input)
-                    })
-                };
-
-            if can_infer_tip20 && state.is_valid_fee_token(spec, to, actions.clone())? {
-                return Ok(to);
-            }
-        }
-
-        // If calling swapExactAmountOut() or swapExactAmountIn() on the Stablecoin DEX,
-        // use the input token as the fee token (the token that will be pulled from the user).
-        // For AA transactions, this only applies if there's exactly one call.
-        let mut calls = tx.calls();
-        if let Some((kind, input)) = calls.next()
-            && kind.to() == Some(&STABLECOIN_DEX_ADDRESS)
-            && (!tx.is_aa() || calls.next().is_none())
-        {
-            if let Ok(call) = IStablecoinDEX::swapExactAmountInCall::abi_decode(input)
-                && state.is_valid_fee_token(spec, call.tokenIn, actions.clone())?
-            {
-                return Ok(call.tokenIn);
-            } else if let Ok(call) = IStablecoinDEX::swapExactAmountOutCall::abi_decode(input)
-                && state.is_valid_fee_token(spec, call.tokenIn, actions)?
-            {
-                return Ok(call.tokenIn);
-            }
-        }
-
-        // If no fee token is found, default to the first deployed TIP20
-        Ok(DEFAULT_FEE_TOKEN)
-    }
-}
-
-impl ProtocolFeeManager for TempoFeeManager {
-    fn collect_fee_pre_tx(
-        &self,
-        host: &mut Evm<'_, TempoEvmTypes>,
-        fee_payer: Address,
-        user_token: Address,
-        max_amount: U256,
-        beneficiary: Address,
-        skip_liquidity_check: bool,
-    ) -> TempoResult<Address> {
-        StorageCtx::enter_evm_without_tip1060_accounting(host, || {
-            TipFeeManager::new().collect_fee_pre_tx(
-                fee_payer,
-                user_token,
-                max_amount,
-                beneficiary,
-                skip_liquidity_check,
-            )
-        })
-    }
-
-    fn collect_fee_post_tx(
-        &self,
-        host: &mut Evm<'_, TempoEvmTypes>,
-        fee_payer: Address,
-        actual_spending: U256,
-        refund_amount: U256,
-        fee_token: Address,
-        beneficiary: Address,
-    ) -> TempoResult<U256> {
-        StorageCtx::enter_evm_without_tip1060_accounting(host, || {
-            TipFeeManager::new().collect_fee_post_tx(
-                fee_payer,
-                actual_spending,
-                refund_amount,
-                fee_token,
-                beneficiary,
-            )
-        })
-    }
-}
 
 /// EVM2 type family used by Tempo execution.
 #[derive(Clone, Copy, Debug)]
@@ -550,7 +328,7 @@ impl TxHandlerHooks<TempoEvmTypes> for TempoHandlerHooks {
             U256::ZERO
         } else {
             map_protocol_result(fee_manager.collect_fee_post_tx(
-                host,
+                ProtocolFeeContext { host },
                 fee_payer,
                 actual_spending,
                 refund,
@@ -625,7 +403,7 @@ impl TempoHandlerHooks {
         let fee_manager = host.ext().fee_manager.clone();
         if !context.collected.is_zero()
             && let Err(error) = fee_manager.collect_fee_pre_tx(
-                host,
+                ProtocolFeeContext { host },
                 context.fee_payer,
                 context.fee_token,
                 context.collected,

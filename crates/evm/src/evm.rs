@@ -137,7 +137,8 @@ mod tests {
     };
 
     use crate::{
-        ProtocolFeeManager, TempoEvm, TempoFeeManager, TempoInvalidTransaction, TempoTxEnv,
+        ProtocolFeeContext, ProtocolFeeManager, TempoEvm, TempoFeeManager, TempoInvalidTransaction,
+        TempoTxEnv,
     };
 
     alloy_sol_types::sol! {
@@ -1121,7 +1122,7 @@ mod tests {
 
         fn collect_fee_pre_tx(
             &self,
-            host: &mut Evm<'_, TempoEvmTypes>,
+            ctx: ProtocolFeeContext<'_, '_>,
             fee_payer: Address,
             user_token: Address,
             max_amount: U256,
@@ -1129,7 +1130,7 @@ mod tests {
             skip_liquidity_check: bool,
         ) -> tempo_precompiles::error::Result<Address> {
             TempoFeeManager::new().collect_fee_pre_tx(
-                host,
+                ctx,
                 fee_payer,
                 user_token,
                 max_amount,
@@ -1140,7 +1141,7 @@ mod tests {
 
         fn collect_fee_post_tx(
             &self,
-            host: &mut Evm<'_, TempoEvmTypes>,
+            ctx: ProtocolFeeContext<'_, '_>,
             fee_payer: Address,
             actual_spending: U256,
             refund_amount: U256,
@@ -1148,7 +1149,7 @@ mod tests {
             beneficiary: Address,
         ) -> tempo_precompiles::error::Result<U256> {
             TempoFeeManager::new().collect_fee_post_tx(
-                host,
+                ctx,
                 fee_payer,
                 actual_spending,
                 refund_amount,

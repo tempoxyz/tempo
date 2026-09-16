@@ -13,6 +13,7 @@ mod context;
 mod engine;
 pub mod error;
 pub mod evm;
+mod fee_manager;
 mod handler;
 mod instructions;
 mod pool;
@@ -31,10 +32,11 @@ pub use common::{TempoStateAccess, TempoTx};
 pub use context::{TempoBlockExecutionCtx, TempoNextBlockEnvAttributes};
 pub use error::TempoEvmError;
 pub use evm::{TempoEvm, TempoEvmFactory};
+pub use fee_manager::{FeeTokenResolver, ProtocolFeeContext, ProtocolFeeManager, TempoFeeManager};
 pub use handler::{
-    FeeTokenResolver, ProtocolFeeManager, TempoBlockEnv, TempoBlockExt, TempoConfig,
-    TempoConfigSelector, TempoEvmExt, TempoEvmTypes, TempoFeeManager, TempoTxResultExt,
-    build_tempo_evm, tempo_execution_config, tempo_opcode_config, tempo_tx_registry,
+    TempoBlockEnv, TempoBlockExt, TempoConfig, TempoConfigSelector, TempoEvmExt, TempoEvmTypes,
+    TempoTxResultExt, build_tempo_evm, tempo_execution_config, tempo_opcode_config,
+    tempo_tx_registry,
 };
 pub use pool::{TempoPoolValidationError, TempoPoolValidationEvm};
 pub use transaction::{ExecutionContext, RecoveredTxEnvelope, TempoAaTx, TempoEvmTx, TempoTxEnv};
