@@ -455,7 +455,59 @@ def txgen-parse-bench-args [bench_args: string] {
 }
 
 def txgen-validate-bench-args [bench_args: string] {
-    txgen-parse-bench-args $bench_args | ignore
+    txgen-split-bench-args $bench_args | ignore
+}
+
+# Pending limits belong to the workload sender, not the generator or setup.
+def txgen-split-bench-args [bench_args: string, phase: string = ""] {
+    let args = (txgen-parse-bench-args $bench_args)
+    mut generate = []
+    mut limits = {}
+    mut index = 0
+    while $index < ($args | length) {
+        let arg = ($args | get $index)
+        let option = ($arg | split row "=" | first)
+        if $arg == "--" {
+            $generate = ($generate | append ($args | skip $index))
+            break
+        }
+        $index += 1
+        if $option not-in ["--max-pending" "--baseline-max-pending" "--feature-max-pending"] {
+            $generate = ($generate | append $arg)
+            continue
+        }
+        let value = if ($arg | str contains "=") {
+            $arg | str substring (($option | str length) + 1)..
+        } else {
+            if $index >= ($args | length) {
+                error make { msg: $"($option) requires a non-negative integer" }
+            }
+            let value = ($args | get $index)
+            $index += 1
+            $value
+        }
+        let length = ($value | str length)
+        if not ($value =~ '^(0|[1-9][0-9]*)$') or $length > 20 or ($length == 20 and $value > "18446744073709551615") {
+            error make { msg: $"($option) requires a non-negative 64-bit integer" }
+        }
+        if $option in $limits {
+            error make { msg: $"duplicate ($option)" }
+        }
+        $limits = ($limits | insert $option $value)
+    }
+    if "--max-pending" in $limits and ($limits | columns | length) > 1 {
+        error make { msg: "use either --max-pending or side-specific pending limits, not both" }
+    }
+    let selected = if ($phase | str starts-with "baseline-") {
+        $limits | get -o "--baseline-max-pending"
+    } else if ($phase | str starts-with "feature-") {
+        $limits | get -o "--feature-max-pending"
+    } else {
+        null
+    }
+    let selected = ($selected | default ($limits | get -o "--max-pending"))
+    let send = if $selected == null { [] } else { ["--max-pending" $selected] }
+    { generate: $generate, send: $send }
 }
 
 # Return the spec text with `include` entries expanded, so content checks see
@@ -864,10 +916,11 @@ def txgen-run-preset-pipeline [
         | append (if $scenario != "" { ["-m" $"scenario=($scenario)"] } else { [] })
         | append (if $pr_number != "" { ["-m" $"pr_number=($pr_number)"] } else { [] })
         | append (if $initial_db_size_bytes > 0 { ["-m" $"initial_db_size_bytes=($initial_db_size_bytes)"] } else { [] })
-    let bench_cmd = $bench_base_cmd | append $report_args | append $metadata_args
+    let extra_args = (txgen-split-bench-args $bench_args $benchmark_run)
+    let bench_cmd = $bench_base_cmd | append $report_args | append $metadata_args | append $extra_args.send
 
     let bench_env_export = if $bench_env != "" { $"export ($bench_env) && " } else { "" }
-    let txgen_extra_args = (txgen-parse-bench-args $bench_args)
+    let txgen_extra_args = $extra_args.generate
     let use_two_phase_setup = $is_vault or (txgen-spec-has-keychain-setup $spec_path)
     let txgen_cmd_str = (txgen-shell-join ($txgen_cmd | append $txgen_extra_args))
     let bench_cmd = if $use_two_phase_setup { $bench_cmd | append "--skip-setup" } else { $bench_cmd }
