@@ -254,3 +254,5 @@ is just the summed EVM transaction calls and is **not** the matching wall scope
 for this CPU measurement. Local proposal builds and the parallel BAL replay path
 do not emit these loop totals. A wall/CPU gap can indicate time this thread was
 not executing, but does not identify scheduler, kernel or I/O causes.
+
+The isolated `profiling=lifecycle-scheduler` mode adds anonymous scheduler context to full lifecycle traces. See [the opt-in scheduler diagnostic](scheduler/README.md) for runner preflight, strict cutoff handling and attribution limits. It is disabled by default.

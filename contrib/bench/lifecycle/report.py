@@ -303,7 +303,7 @@ def build(paths, warmup=5, window=None, expected_detail=None):
         receives = [e for e in group if e['stage'] == 'frame_receive']
         if len(sends) == 1 and len(receives) == 1:
             transfers.append({'from': sends[0]['node'], 'to': receives[0]['node'], 'start': sends[0]['ts'], 'end': receives[0]['ts'], 'bytes': sends[0]['bytes']})
-    return {'schema':1, 'capture_detail':detail, 'detail_valid':detail_valid,
+    return {'schema':1, 'time_origin_ns':first, 'capture_detail':detail, 'detail_valid':detail_valid,
             'boundary': dict(boundary, relative_ms=(cutoff-first)/1e6) if boundary else None, 'blocks':blocks, 'spans':rows, 'transfers':transfers, 'quality':quality,
             'representatives':representatives, 'eligible':len(eligible), 'warmup':warmup,
             'unexplained_attempts':sum(a['status'] == 'unexplained_unassociated' for a in attempt_details),
@@ -313,14 +313,21 @@ def build(paths, warmup=5, window=None, expected_detail=None):
                 'Proposal handling start on proposer → first accepted finalization certificate on a validator. Nearest-rank percentiles select actual complete blocks; initial complete blocks are excluded as warmup. When load boundaries are available, both endpoints must fall inside the load window. All views exclude data at or after the first engine persistence backpressure event on either validator; crossing spans are right-censored and crossing aggregates omitted.'}
 
 
-def write_report(paths, out, warmup=5, window=None, prune=False, expected_detail=None):
+def write_report(paths, out, warmup=5, window=None, prune=False, expected_detail=None, scheduler_dir=None):
     if prune:
         paths, window = prepare_captures(paths, out, window)
     data = build(paths, warmup, window, expected_detail)
     out.mkdir(parents=True, exist_ok=True)
+    if scheduler_dir is not None:
+        from scheduler.report import load, publish
+        if not prune or data['bad_capture'] or not data['detail_valid']:
+            raise ValueError('scheduler diagnostic requires a valid pruned lifecycle capture')
+        captures, coverage = load(scheduler_dir, out, window)
     encoded = json.dumps(data, separators=(',',':')).replace('<', '\\u003c')
     (out/'lifecycle.json').write_text(encoded)
     write_package(data, out)
+    if scheduler_dir is not None:
+        publish(data, captures, out, coverage)
     return data
 
 
@@ -329,13 +336,14 @@ if __name__ == '__main__':
     parser.add_argument('--out', type=Path, required=True)
     parser.add_argument('--warmup', type=int, default=5)
     parser.add_argument('--window', type=Path)
+    parser.add_argument('--scheduler-dir', type=Path, help='Require matching private scheduler captures')
     parser.add_argument('--prune', action='store_true', help='Publish only pre-backpressure raw captures alongside the report')
     parser.add_argument('--expected-detail', choices=('full', 'milestones'), help='Reject captures whose recorder detail does not match the requested mode')
     parser.add_argument('captures', type=Path, nargs='+')
     args = parser.parse_args()
     window = json.loads(args.window.read_text()) if args.window and args.window.exists() else (
         {'start_ns': 0, 'end_ns': 0, 'stop_reason': 'load_not_started'} if args.window else None)
-    result = write_report(args.captures, args.out, args.warmup, window, args.prune, args.expected_detail)
+    result = write_report(args.captures, args.out, args.warmup, window, args.prune, args.expected_detail, args.scheduler_dir)
     print(f"Lifecycle report: {len(result['blocks'])} blocks, {result['eligible']} complete post-warmup blocks; capture loss: {result['bad_capture']}")
     if result['bad_capture'] or not result['eligible']:
         raise SystemExit(2)
