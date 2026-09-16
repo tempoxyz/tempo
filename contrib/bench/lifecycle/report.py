@@ -5,6 +5,7 @@ import json
 import math
 from pathlib import Path
 from report_package import write_package
+from network_lineage import build_lineage
 from backpressure import first_boundary, prepare_captures
 
 BLOCK_FIELDS = ('block_hash', 'hash', 'digest', 'proposal', 'payload')
@@ -305,19 +306,9 @@ def build(paths, warmup=5, window=None, expected_detail=None):
                          'state_trie_height', 'backlog', 'queued_jobs', 'in_flight_proof_batches',
                          'pending_updates', 'pending_targets', 'result_count') and isinstance(v, (int, float))},
                      'count': s.get('count'), 'elapsed_sum_ms': s.get('elapsed_ns',0)/1e6})
-    frames = {}
-    for event in events:
-        f = event['fields']
-        if f.get('stage') in ('frame_send','frame_receive') and f.get('frame_hash'):
-            frames.setdefault(f['frame_hash'], []).append({'node':event['node'], 'ts':(event['ts']-first)/1e6, 'stage':f['stage'], 'bytes':f.get('bytes',0)})
-    transfers = []
-    for group in frames.values():
-        sends = [e for e in group if e['stage'] == 'frame_send']
-        receives = [e for e in group if e['stage'] == 'frame_receive']
-        if len(sends) == 1 and len(receives) == 1:
-            transfers.append({'from': sends[0]['node'], 'to': receives[0]['node'], 'start': sends[0]['ts'], 'end': receives[0]['ts'], 'bytes': sends[0]['bytes']})
+    transfers, network_events, network_messages = build_lineage(events, spans, aliases, first)
     return {'schema':1, 'time_origin_ns':first, 'capture_detail':detail, 'detail_valid':detail_valid,
-            'boundary': dict(boundary, relative_ms=(cutoff-first)/1e6) if boundary else None, 'blocks':blocks, 'spans':rows, 'transfers':transfers, 'quality':quality,
+            'boundary': dict(boundary, relative_ms=(cutoff-first)/1e6) if boundary else None, 'blocks':blocks, 'spans':rows, 'transfers':transfers, 'network_events':network_events, 'network_messages':network_messages, 'quality':quality,
             'representatives':representatives, 'eligible':len(eligible), 'warmup':warmup,
             'unexplained_attempts':sum(a['status'] == 'unexplained_unassociated' for a in attempt_details),
             'attempt_details':attempt_details, 'attempts':len(attempts), 'unbound_attempts':sum(not s.get('block') for s in attempts),

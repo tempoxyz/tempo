@@ -146,70 +146,70 @@ tempo-telemetry-util = { path = "crates/telemetry-util", default-features = fals
 tempo-transaction-pool = { path = "crates/transaction-pool", default-features = false }
 tempo-validator-config = { path = "crates/validator-config", default-features = false }
 
-reth-basic-payload-builder = { git = "https://github.com/joshieDo/reth", rev = "6b99652340bcfb6a2244ace53c6b1d32d3d5dab5" }
-reth-chainspec = { git = "https://github.com/joshieDo/reth", rev = "6b99652340bcfb6a2244ace53c6b1d32d3d5dab5", default-features = false }
-reth-cli = { git = "https://github.com/joshieDo/reth", rev = "6b99652340bcfb6a2244ace53c6b1d32d3d5dab5" }
-reth-cli-commands = { git = "https://github.com/joshieDo/reth", rev = "6b99652340bcfb6a2244ace53c6b1d32d3d5dab5" }
-reth-cli-runner = { git = "https://github.com/joshieDo/reth", rev = "6b99652340bcfb6a2244ace53c6b1d32d3d5dab5" }
-reth-cli-util = { git = "https://github.com/joshieDo/reth", rev = "6b99652340bcfb6a2244ace53c6b1d32d3d5dab5" }
+reth-basic-payload-builder = { git = "https://github.com/joshieDo/reth", rev = "8e2084b5f39088bc47cb9364b7a4ed1ba68090a2" }
+reth-chainspec = { git = "https://github.com/joshieDo/reth", rev = "8e2084b5f39088bc47cb9364b7a4ed1ba68090a2", default-features = false }
+reth-cli = { git = "https://github.com/joshieDo/reth", rev = "8e2084b5f39088bc47cb9364b7a4ed1ba68090a2" }
+reth-cli-commands = { git = "https://github.com/joshieDo/reth", rev = "8e2084b5f39088bc47cb9364b7a4ed1ba68090a2" }
+reth-cli-runner = { git = "https://github.com/joshieDo/reth", rev = "8e2084b5f39088bc47cb9364b7a4ed1ba68090a2" }
+reth-cli-util = { git = "https://github.com/joshieDo/reth", rev = "8e2084b5f39088bc47cb9364b7a4ed1ba68090a2" }
 reth-codecs = { version = "0.7.0", default-features = false }
-reth-consensus = { git = "https://github.com/joshieDo/reth", rev = "6b99652340bcfb6a2244ace53c6b1d32d3d5dab5" }
-reth-consensus-common = { git = "https://github.com/joshieDo/reth", rev = "6b99652340bcfb6a2244ace53c6b1d32d3d5dab5" }
-reth-db = { git = "https://github.com/joshieDo/reth", rev = "6b99652340bcfb6a2244ace53c6b1d32d3d5dab5" }
-reth-discv5 = { git = "https://github.com/joshieDo/reth", rev = "6b99652340bcfb6a2244ace53c6b1d32d3d5dab5" }
-reth-db-api = { git = "https://github.com/joshieDo/reth", rev = "6b99652340bcfb6a2244ace53c6b1d32d3d5dab5" }
-reth-e2e-test-utils = { git = "https://github.com/joshieDo/reth", rev = "6b99652340bcfb6a2244ace53c6b1d32d3d5dab5" }
-reth-engine-local = { git = "https://github.com/joshieDo/reth", rev = "6b99652340bcfb6a2244ace53c6b1d32d3d5dab5" }
-reth-engine-primitives = { git = "https://github.com/joshieDo/reth", rev = "6b99652340bcfb6a2244ace53c6b1d32d3d5dab5" }
-reth-engine-tree = { git = "https://github.com/joshieDo/reth", rev = "6b99652340bcfb6a2244ace53c6b1d32d3d5dab5" }
-reth-errors = { git = "https://github.com/joshieDo/reth", rev = "6b99652340bcfb6a2244ace53c6b1d32d3d5dab5" }
-reth-eth-wire-types = { git = "https://github.com/joshieDo/reth", rev = "6b99652340bcfb6a2244ace53c6b1d32d3d5dab5" }
-reth-etl = { git = "https://github.com/joshieDo/reth", rev = "6b99652340bcfb6a2244ace53c6b1d32d3d5dab5" }
-reth-ethereum = { git = "https://github.com/joshieDo/reth", rev = "6b99652340bcfb6a2244ace53c6b1d32d3d5dab5" }
-reth-ethereum-cli = { git = "https://github.com/joshieDo/reth", rev = "6b99652340bcfb6a2244ace53c6b1d32d3d5dab5" }
-reth-ethereum-consensus = { git = "https://github.com/joshieDo/reth", rev = "6b99652340bcfb6a2244ace53c6b1d32d3d5dab5" }
-reth-ethereum-engine-primitives = { git = "https://github.com/joshieDo/reth", rev = "6b99652340bcfb6a2244ace53c6b1d32d3d5dab5" }
-reth-ethereum-primitives = { git = "https://github.com/joshieDo/reth", rev = "6b99652340bcfb6a2244ace53c6b1d32d3d5dab5", default-features = false }
-reth-execution-cache = { git = "https://github.com/joshieDo/reth", rev = "6b99652340bcfb6a2244ace53c6b1d32d3d5dab5" }
-reth-execution-types = { git = "https://github.com/joshieDo/reth", rev = "6b99652340bcfb6a2244ace53c6b1d32d3d5dab5" }
-reth-evm = { git = "https://github.com/joshieDo/reth", rev = "6b99652340bcfb6a2244ace53c6b1d32d3d5dab5" }
-reth-evm-ethereum = { git = "https://github.com/joshieDo/reth", rev = "6b99652340bcfb6a2244ace53c6b1d32d3d5dab5" }
-reth-metrics = { git = "https://github.com/joshieDo/reth", rev = "6b99652340bcfb6a2244ace53c6b1d32d3d5dab5" }
-reth-network-api = { git = "https://github.com/joshieDo/reth", rev = "6b99652340bcfb6a2244ace53c6b1d32d3d5dab5" }
-reth-network-p2p = { git = "https://github.com/joshieDo/reth", rev = "6b99652340bcfb6a2244ace53c6b1d32d3d5dab5" }
-reth-network-peers = { git = "https://github.com/joshieDo/reth", rev = "6b99652340bcfb6a2244ace53c6b1d32d3d5dab5", default-features = false }
-reth-nippy-jar = { git = "https://github.com/joshieDo/reth", rev = "6b99652340bcfb6a2244ace53c6b1d32d3d5dab5" }
-reth-node-api = { git = "https://github.com/joshieDo/reth", rev = "6b99652340bcfb6a2244ace53c6b1d32d3d5dab5" }
-reth-node-builder = { git = "https://github.com/joshieDo/reth", rev = "6b99652340bcfb6a2244ace53c6b1d32d3d5dab5" }
-reth-node-core = { git = "https://github.com/joshieDo/reth", rev = "6b99652340bcfb6a2244ace53c6b1d32d3d5dab5" }
-reth-node-ethereum = { git = "https://github.com/joshieDo/reth", rev = "6b99652340bcfb6a2244ace53c6b1d32d3d5dab5" }
-reth-node-metrics = { git = "https://github.com/joshieDo/reth", rev = "6b99652340bcfb6a2244ace53c6b1d32d3d5dab5" }
-reth-payload-builder = { git = "https://github.com/joshieDo/reth", rev = "6b99652340bcfb6a2244ace53c6b1d32d3d5dab5" }
-reth-payload-primitives = { git = "https://github.com/joshieDo/reth", rev = "6b99652340bcfb6a2244ace53c6b1d32d3d5dab5" }
+reth-consensus = { git = "https://github.com/joshieDo/reth", rev = "8e2084b5f39088bc47cb9364b7a4ed1ba68090a2" }
+reth-consensus-common = { git = "https://github.com/joshieDo/reth", rev = "8e2084b5f39088bc47cb9364b7a4ed1ba68090a2" }
+reth-db = { git = "https://github.com/joshieDo/reth", rev = "8e2084b5f39088bc47cb9364b7a4ed1ba68090a2" }
+reth-discv5 = { git = "https://github.com/joshieDo/reth", rev = "8e2084b5f39088bc47cb9364b7a4ed1ba68090a2" }
+reth-db-api = { git = "https://github.com/joshieDo/reth", rev = "8e2084b5f39088bc47cb9364b7a4ed1ba68090a2" }
+reth-e2e-test-utils = { git = "https://github.com/joshieDo/reth", rev = "8e2084b5f39088bc47cb9364b7a4ed1ba68090a2" }
+reth-engine-local = { git = "https://github.com/joshieDo/reth", rev = "8e2084b5f39088bc47cb9364b7a4ed1ba68090a2" }
+reth-engine-primitives = { git = "https://github.com/joshieDo/reth", rev = "8e2084b5f39088bc47cb9364b7a4ed1ba68090a2" }
+reth-engine-tree = { git = "https://github.com/joshieDo/reth", rev = "8e2084b5f39088bc47cb9364b7a4ed1ba68090a2" }
+reth-errors = { git = "https://github.com/joshieDo/reth", rev = "8e2084b5f39088bc47cb9364b7a4ed1ba68090a2" }
+reth-eth-wire-types = { git = "https://github.com/joshieDo/reth", rev = "8e2084b5f39088bc47cb9364b7a4ed1ba68090a2" }
+reth-etl = { git = "https://github.com/joshieDo/reth", rev = "8e2084b5f39088bc47cb9364b7a4ed1ba68090a2" }
+reth-ethereum = { git = "https://github.com/joshieDo/reth", rev = "8e2084b5f39088bc47cb9364b7a4ed1ba68090a2" }
+reth-ethereum-cli = { git = "https://github.com/joshieDo/reth", rev = "8e2084b5f39088bc47cb9364b7a4ed1ba68090a2" }
+reth-ethereum-consensus = { git = "https://github.com/joshieDo/reth", rev = "8e2084b5f39088bc47cb9364b7a4ed1ba68090a2" }
+reth-ethereum-engine-primitives = { git = "https://github.com/joshieDo/reth", rev = "8e2084b5f39088bc47cb9364b7a4ed1ba68090a2" }
+reth-ethereum-primitives = { git = "https://github.com/joshieDo/reth", rev = "8e2084b5f39088bc47cb9364b7a4ed1ba68090a2", default-features = false }
+reth-execution-cache = { git = "https://github.com/joshieDo/reth", rev = "8e2084b5f39088bc47cb9364b7a4ed1ba68090a2" }
+reth-execution-types = { git = "https://github.com/joshieDo/reth", rev = "8e2084b5f39088bc47cb9364b7a4ed1ba68090a2" }
+reth-evm = { git = "https://github.com/joshieDo/reth", rev = "8e2084b5f39088bc47cb9364b7a4ed1ba68090a2" }
+reth-evm-ethereum = { git = "https://github.com/joshieDo/reth", rev = "8e2084b5f39088bc47cb9364b7a4ed1ba68090a2" }
+reth-metrics = { git = "https://github.com/joshieDo/reth", rev = "8e2084b5f39088bc47cb9364b7a4ed1ba68090a2" }
+reth-network-api = { git = "https://github.com/joshieDo/reth", rev = "8e2084b5f39088bc47cb9364b7a4ed1ba68090a2" }
+reth-network-p2p = { git = "https://github.com/joshieDo/reth", rev = "8e2084b5f39088bc47cb9364b7a4ed1ba68090a2" }
+reth-network-peers = { git = "https://github.com/joshieDo/reth", rev = "8e2084b5f39088bc47cb9364b7a4ed1ba68090a2", default-features = false }
+reth-nippy-jar = { git = "https://github.com/joshieDo/reth", rev = "8e2084b5f39088bc47cb9364b7a4ed1ba68090a2" }
+reth-node-api = { git = "https://github.com/joshieDo/reth", rev = "8e2084b5f39088bc47cb9364b7a4ed1ba68090a2" }
+reth-node-builder = { git = "https://github.com/joshieDo/reth", rev = "8e2084b5f39088bc47cb9364b7a4ed1ba68090a2" }
+reth-node-core = { git = "https://github.com/joshieDo/reth", rev = "8e2084b5f39088bc47cb9364b7a4ed1ba68090a2" }
+reth-node-ethereum = { git = "https://github.com/joshieDo/reth", rev = "8e2084b5f39088bc47cb9364b7a4ed1ba68090a2" }
+reth-node-metrics = { git = "https://github.com/joshieDo/reth", rev = "8e2084b5f39088bc47cb9364b7a4ed1ba68090a2" }
+reth-payload-builder = { git = "https://github.com/joshieDo/reth", rev = "8e2084b5f39088bc47cb9364b7a4ed1ba68090a2" }
+reth-payload-primitives = { git = "https://github.com/joshieDo/reth", rev = "8e2084b5f39088bc47cb9364b7a4ed1ba68090a2" }
 reth-primitives-traits = { version = "0.7.0", default-features = false }
-reth-config = { git = "https://github.com/joshieDo/reth", rev = "6b99652340bcfb6a2244ace53c6b1d32d3d5dab5" }
-reth-downloaders = { git = "https://github.com/joshieDo/reth", rev = "6b99652340bcfb6a2244ace53c6b1d32d3d5dab5" }
-reth-provider = { git = "https://github.com/joshieDo/reth", rev = "6b99652340bcfb6a2244ace53c6b1d32d3d5dab5" }
-reth-prune-types = { git = "https://github.com/joshieDo/reth", rev = "6b99652340bcfb6a2244ace53c6b1d32d3d5dab5" }
-reth-rpc = { git = "https://github.com/joshieDo/reth", rev = "6b99652340bcfb6a2244ace53c6b1d32d3d5dab5" }
-reth-rpc-api = { git = "https://github.com/joshieDo/reth", rev = "6b99652340bcfb6a2244ace53c6b1d32d3d5dab5" }
-reth-rpc-builder = { git = "https://github.com/joshieDo/reth", rev = "6b99652340bcfb6a2244ace53c6b1d32d3d5dab5" }
-reth-rpc-convert = { git = "https://github.com/joshieDo/reth", rev = "6b99652340bcfb6a2244ace53c6b1d32d3d5dab5" }
-reth-rpc-eth-api = { git = "https://github.com/joshieDo/reth", rev = "6b99652340bcfb6a2244ace53c6b1d32d3d5dab5" }
-reth-rpc-eth-types = { git = "https://github.com/joshieDo/reth", rev = "6b99652340bcfb6a2244ace53c6b1d32d3d5dab5" }
-reth-rpc-server-types = { git = "https://github.com/joshieDo/reth", rev = "6b99652340bcfb6a2244ace53c6b1d32d3d5dab5" }
-reth-stages = { git = "https://github.com/joshieDo/reth", rev = "6b99652340bcfb6a2244ace53c6b1d32d3d5dab5" }
-reth-static-file = { git = "https://github.com/joshieDo/reth", rev = "6b99652340bcfb6a2244ace53c6b1d32d3d5dab5" }
-reth-static-file-types = { git = "https://github.com/joshieDo/reth", rev = "6b99652340bcfb6a2244ace53c6b1d32d3d5dab5" }
-reth-storage-api = { git = "https://github.com/joshieDo/reth", rev = "6b99652340bcfb6a2244ace53c6b1d32d3d5dab5" }
-reth-tasks = { git = "https://github.com/joshieDo/reth", rev = "6b99652340bcfb6a2244ace53c6b1d32d3d5dab5" }
-reth-tracing = { git = "https://github.com/joshieDo/reth", rev = "6b99652340bcfb6a2244ace53c6b1d32d3d5dab5" }
-reth-transaction-pool = { git = "https://github.com/joshieDo/reth", rev = "6b99652340bcfb6a2244ace53c6b1d32d3d5dab5" }
-reth-trie = { git = "https://github.com/joshieDo/reth", rev = "6b99652340bcfb6a2244ace53c6b1d32d3d5dab5" }
-reth-trie-common = { git = "https://github.com/joshieDo/reth", rev = "6b99652340bcfb6a2244ace53c6b1d32d3d5dab5" }
-reth-trie-db = { git = "https://github.com/joshieDo/reth", rev = "6b99652340bcfb6a2244ace53c6b1d32d3d5dab5" }
+reth-config = { git = "https://github.com/joshieDo/reth", rev = "8e2084b5f39088bc47cb9364b7a4ed1ba68090a2" }
+reth-downloaders = { git = "https://github.com/joshieDo/reth", rev = "8e2084b5f39088bc47cb9364b7a4ed1ba68090a2" }
+reth-provider = { git = "https://github.com/joshieDo/reth", rev = "8e2084b5f39088bc47cb9364b7a4ed1ba68090a2" }
+reth-prune-types = { git = "https://github.com/joshieDo/reth", rev = "8e2084b5f39088bc47cb9364b7a4ed1ba68090a2" }
+reth-rpc = { git = "https://github.com/joshieDo/reth", rev = "8e2084b5f39088bc47cb9364b7a4ed1ba68090a2" }
+reth-rpc-api = { git = "https://github.com/joshieDo/reth", rev = "8e2084b5f39088bc47cb9364b7a4ed1ba68090a2" }
+reth-rpc-builder = { git = "https://github.com/joshieDo/reth", rev = "8e2084b5f39088bc47cb9364b7a4ed1ba68090a2" }
+reth-rpc-convert = { git = "https://github.com/joshieDo/reth", rev = "8e2084b5f39088bc47cb9364b7a4ed1ba68090a2" }
+reth-rpc-eth-api = { git = "https://github.com/joshieDo/reth", rev = "8e2084b5f39088bc47cb9364b7a4ed1ba68090a2" }
+reth-rpc-eth-types = { git = "https://github.com/joshieDo/reth", rev = "8e2084b5f39088bc47cb9364b7a4ed1ba68090a2" }
+reth-rpc-server-types = { git = "https://github.com/joshieDo/reth", rev = "8e2084b5f39088bc47cb9364b7a4ed1ba68090a2" }
+reth-stages = { git = "https://github.com/joshieDo/reth", rev = "8e2084b5f39088bc47cb9364b7a4ed1ba68090a2" }
+reth-static-file = { git = "https://github.com/joshieDo/reth", rev = "8e2084b5f39088bc47cb9364b7a4ed1ba68090a2" }
+reth-static-file-types = { git = "https://github.com/joshieDo/reth", rev = "8e2084b5f39088bc47cb9364b7a4ed1ba68090a2" }
+reth-storage-api = { git = "https://github.com/joshieDo/reth", rev = "8e2084b5f39088bc47cb9364b7a4ed1ba68090a2" }
+reth-tasks = { git = "https://github.com/joshieDo/reth", rev = "8e2084b5f39088bc47cb9364b7a4ed1ba68090a2" }
+reth-tracing = { git = "https://github.com/joshieDo/reth", rev = "8e2084b5f39088bc47cb9364b7a4ed1ba68090a2" }
+reth-transaction-pool = { git = "https://github.com/joshieDo/reth", rev = "8e2084b5f39088bc47cb9364b7a4ed1ba68090a2" }
+reth-trie = { git = "https://github.com/joshieDo/reth", rev = "8e2084b5f39088bc47cb9364b7a4ed1ba68090a2" }
+reth-trie-common = { git = "https://github.com/joshieDo/reth", rev = "8e2084b5f39088bc47cb9364b7a4ed1ba68090a2" }
+reth-trie-db = { git = "https://github.com/joshieDo/reth", rev = "8e2084b5f39088bc47cb9364b7a4ed1ba68090a2" }
 
-reth-revm = { git = "https://github.com/joshieDo/reth", rev = "6b99652340bcfb6a2244ace53c6b1d32d3d5dab5", features = [
+reth-revm = { git = "https://github.com/joshieDo/reth", rev = "8e2084b5f39088bc47cb9364b7a4ed1ba68090a2", features = [
   "std",
   "optional-checks",
 ] }
@@ -413,25 +413,25 @@ vergen-git2 = "10.0.1"
 
 [patch.crates-io]
 # Benchmark-only lifecycle scopes on the existing dependency versions.
-commonware-actor = { git = "https://github.com/joshieDo/monorepo", rev = "993f0af61189ffff2e3fe0a082e0bc84d188cf42" }
-commonware-broadcast = { git = "https://github.com/joshieDo/monorepo", rev = "993f0af61189ffff2e3fe0a082e0bc84d188cf42" }
-commonware-codec = { git = "https://github.com/joshieDo/monorepo", rev = "993f0af61189ffff2e3fe0a082e0bc84d188cf42" }
-commonware-codec-macros = { git = "https://github.com/joshieDo/monorepo", rev = "993f0af61189ffff2e3fe0a082e0bc84d188cf42" }
-commonware-coding = { git = "https://github.com/joshieDo/monorepo", rev = "993f0af61189ffff2e3fe0a082e0bc84d188cf42" }
-commonware-conformance = { git = "https://github.com/joshieDo/monorepo", rev = "993f0af61189ffff2e3fe0a082e0bc84d188cf42" }
-commonware-conformance-macros = { git = "https://github.com/joshieDo/monorepo", rev = "993f0af61189ffff2e3fe0a082e0bc84d188cf42" }
-commonware-consensus = { git = "https://github.com/joshieDo/monorepo", rev = "993f0af61189ffff2e3fe0a082e0bc84d188cf42" }
-commonware-cryptography = { git = "https://github.com/joshieDo/monorepo", rev = "993f0af61189ffff2e3fe0a082e0bc84d188cf42" }
-commonware-formatting = { git = "https://github.com/joshieDo/monorepo", rev = "993f0af61189ffff2e3fe0a082e0bc84d188cf42" }
-commonware-invariants = { git = "https://github.com/joshieDo/monorepo", rev = "993f0af61189ffff2e3fe0a082e0bc84d188cf42" }
-commonware-macros = { git = "https://github.com/joshieDo/monorepo", rev = "993f0af61189ffff2e3fe0a082e0bc84d188cf42" }
-commonware-macros-impl = { git = "https://github.com/joshieDo/monorepo", rev = "993f0af61189ffff2e3fe0a082e0bc84d188cf42" }
-commonware-math = { git = "https://github.com/joshieDo/monorepo", rev = "993f0af61189ffff2e3fe0a082e0bc84d188cf42" }
-commonware-p2p = { git = "https://github.com/joshieDo/monorepo", rev = "993f0af61189ffff2e3fe0a082e0bc84d188cf42" }
-commonware-parallel = { git = "https://github.com/joshieDo/monorepo", rev = "993f0af61189ffff2e3fe0a082e0bc84d188cf42" }
-commonware-resolver = { git = "https://github.com/joshieDo/monorepo", rev = "993f0af61189ffff2e3fe0a082e0bc84d188cf42" }
-commonware-runtime = { git = "https://github.com/joshieDo/monorepo", rev = "993f0af61189ffff2e3fe0a082e0bc84d188cf42" }
-commonware-runtime-macros = { git = "https://github.com/joshieDo/monorepo", rev = "993f0af61189ffff2e3fe0a082e0bc84d188cf42" }
-commonware-storage = { git = "https://github.com/joshieDo/monorepo", rev = "993f0af61189ffff2e3fe0a082e0bc84d188cf42" }
-commonware-stream = { git = "https://github.com/joshieDo/monorepo", rev = "993f0af61189ffff2e3fe0a082e0bc84d188cf42" }
-commonware-utils = { git = "https://github.com/joshieDo/monorepo", rev = "993f0af61189ffff2e3fe0a082e0bc84d188cf42" }
+commonware-actor = { git = "https://github.com/joshieDo/monorepo", rev = "4970545efa7fff27d664d11d229938c7b8c2eeef" }
+commonware-broadcast = { git = "https://github.com/joshieDo/monorepo", rev = "4970545efa7fff27d664d11d229938c7b8c2eeef" }
+commonware-codec = { git = "https://github.com/joshieDo/monorepo", rev = "4970545efa7fff27d664d11d229938c7b8c2eeef" }
+commonware-codec-macros = { git = "https://github.com/joshieDo/monorepo", rev = "4970545efa7fff27d664d11d229938c7b8c2eeef" }
+commonware-coding = { git = "https://github.com/joshieDo/monorepo", rev = "4970545efa7fff27d664d11d229938c7b8c2eeef" }
+commonware-conformance = { git = "https://github.com/joshieDo/monorepo", rev = "4970545efa7fff27d664d11d229938c7b8c2eeef" }
+commonware-conformance-macros = { git = "https://github.com/joshieDo/monorepo", rev = "4970545efa7fff27d664d11d229938c7b8c2eeef" }
+commonware-consensus = { git = "https://github.com/joshieDo/monorepo", rev = "4970545efa7fff27d664d11d229938c7b8c2eeef" }
+commonware-cryptography = { git = "https://github.com/joshieDo/monorepo", rev = "4970545efa7fff27d664d11d229938c7b8c2eeef" }
+commonware-formatting = { git = "https://github.com/joshieDo/monorepo", rev = "4970545efa7fff27d664d11d229938c7b8c2eeef" }
+commonware-invariants = { git = "https://github.com/joshieDo/monorepo", rev = "4970545efa7fff27d664d11d229938c7b8c2eeef" }
+commonware-macros = { git = "https://github.com/joshieDo/monorepo", rev = "4970545efa7fff27d664d11d229938c7b8c2eeef" }
+commonware-macros-impl = { git = "https://github.com/joshieDo/monorepo", rev = "4970545efa7fff27d664d11d229938c7b8c2eeef" }
+commonware-math = { git = "https://github.com/joshieDo/monorepo", rev = "4970545efa7fff27d664d11d229938c7b8c2eeef" }
+commonware-p2p = { git = "https://github.com/joshieDo/monorepo", rev = "4970545efa7fff27d664d11d229938c7b8c2eeef" }
+commonware-parallel = { git = "https://github.com/joshieDo/monorepo", rev = "4970545efa7fff27d664d11d229938c7b8c2eeef" }
+commonware-resolver = { git = "https://github.com/joshieDo/monorepo", rev = "4970545efa7fff27d664d11d229938c7b8c2eeef" }
+commonware-runtime = { git = "https://github.com/joshieDo/monorepo", rev = "4970545efa7fff27d664d11d229938c7b8c2eeef" }
+commonware-runtime-macros = { git = "https://github.com/joshieDo/monorepo", rev = "4970545efa7fff27d664d11d229938c7b8c2eeef" }
+commonware-storage = { git = "https://github.com/joshieDo/monorepo", rev = "4970545efa7fff27d664d11d229938c7b8c2eeef" }
+commonware-stream = { git = "https://github.com/joshieDo/monorepo", rev = "4970545efa7fff27d664d11d229938c7b8c2eeef" }
+commonware-utils = { git = "https://github.com/joshieDo/monorepo", rev = "4970545efa7fff27d664d11d229938c7b8c2eeef" }
