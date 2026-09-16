@@ -209,6 +209,9 @@ pub fn step_exact_in(amount_in: u128, order: &Order, is_bid: bool) -> Option<Ord
 
 /// Per-order arithmetic for an exact-output trade. Pure: depends only on the
 /// order's `remaining`, `tick`, and side.
+///
+/// NOTE: Output carried after a full fill uses `order.is_bid()` for the same
+/// Moderato compatibility reasons described in [`step_exact_in`].
 pub fn step_exact_out(amount_out: u128, order: &Order, is_bid: bool) -> Option<OrderStep> {
     let (remaining, tick) = (order.remaining(), order.tick());
     let (fill_amount, accumulate, demand) = if is_bid {
@@ -227,7 +230,7 @@ pub fn step_exact_out(amount_out: u128, order: &Order, is_bid: bool) -> Option<O
     // bid that is the base needed to cover the output, for an ask the output
     // itself. The carried amount is the output still owed after this full fill.
     let next_amount = if demand > remaining {
-        let amount_out_received = taker_output(remaining, tick, is_bid)?;
+        let amount_out_received = taker_output(remaining, tick, order.is_bid())?;
         amount_out.checked_sub(amount_out_received)?
     } else {
         0

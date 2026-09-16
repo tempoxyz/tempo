@@ -4446,6 +4446,24 @@ mod tests {
         })
     }
 
+    /// Regression test for Moderato's historically corrupted DEX books, where a full
+    /// exact-out fill can carry output across orders whose `is_bid` differs from the route.
+    #[test]
+    fn test_exact_out_moderato_corrupted_book_uses_order_is_bid() {
+        let remaining = 100_000_000;
+        let tick = 480;
+        let order = Order::new_ask(1, Address::ZERO, B256::ZERO, remaining, tick);
+        let amount_out = 150_000_000;
+
+        // Reproduce a bid route resolving to an order marked as an ask.
+        let step = step_exact_out(amount_out, &order, true).unwrap();
+        assert_eq!(step.fill_amount, remaining);
+        assert_eq!(step.next_amount, amount_out - remaining);
+
+        let route_side_payout = taker_output(remaining, tick, true).unwrap();
+        assert_ne!(step.next_amount, amount_out - route_side_payout);
+    }
+
     #[test]
     fn test_clear_order() -> eyre::Result<()> {
         const AMOUNT: u128 = 1_000_000_000;
