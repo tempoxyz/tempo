@@ -1,5 +1,5 @@
 {
-  "feature": "d52c631b960cff8f31ae66f7578c12ac45df6ae4",
+  "feature": "4028adc2d9afcd6fd383849b040ef226ca5da831",
   "feature-args": "--engine.multiproof-chunk-size 32",
   "preset": "default",
   "duration": "120",
