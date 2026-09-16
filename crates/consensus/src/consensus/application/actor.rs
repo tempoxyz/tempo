@@ -251,6 +251,7 @@ impl Inner<Init> {
             view = %request.round.view(),
             parent.view = %request.parent.0,
             parent.digest = %request.parent.1,
+            block_hash = tracing::field::Empty,
         ),
         err(level = Level::WARN),
     )]
@@ -343,6 +344,8 @@ impl Inner<Init> {
                     proposal_result?
                 };
 
+                tracing::Span::current()
+                    .record("block_hash", tracing::field::display(block.digest()));
                 tracing::info!(target: "lifecycle", stage = "proposal_ready", block_hash = %block.digest(), height = %block.height());
                 if let Some(proposal_return) = proposal_return {
                     let persist_start = Instant::now();
@@ -374,6 +377,9 @@ impl Inner<Init> {
                 },
 
                 res = &mut proposal => {
+                    if res.is_err() {
+                        tracing::info!(target: "lifecycle", stage = "proposal_failed");
+                    }
                     res?
                 },
             }

@@ -31,6 +31,9 @@ def trace_events(data, block_id=None):
         aggregate = bool(s.get('count'))
         args = {'block': s['block'], 'span_id': s['id'], 'parent_span_id': s['parent'],
                 'semantics': 'aggregate envelope, not continuous work' if aggregate else 'elapsed wall time, includes async waits'}
+        args.update(s.get('details', {}))
+        if s.get('attempt') is not None:
+            args['proposal_attempt'] = s['attempt']
         if aggregate:
             args.update(call_count=s['count'], elapsed_sum_ms=s['elapsed_sum_ms'])
         else:

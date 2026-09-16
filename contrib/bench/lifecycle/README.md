@@ -80,6 +80,10 @@ stage percentiles. The first five complete blocks are warmup; both endpoints
 must also lie inside the recorded load window.
 
 Incomplete blocks and attempts remain visible but do not enter the population.
+Unassociated attempts have selectable run-local IDs and explicit outcomes:
+cancelled, failed, incomplete at cutoff/shutdown, or unexplained. A proposal can
+be cancelled before a block exists; that is not itself event loss. Payload IDs
+link detached work to an attempt only when the mapping is unambiguous.
 Event loss, malformed input, I/O errors, or a missing footer disable percentile
 selection. Sample count is shown; a small-sample p99 is descriptive.
 
@@ -89,6 +93,15 @@ Captured work includes proposal/payload handoff, builder phases, roots, encoding
 construction, persistence, pacing, Marshal/cache/archive/broadcast, encrypted
 framing and codec work, sequential/BAL replay, receipts/merging, prewarm, overlays,
 cache updates, root waits, persistence, voting and certificate handling.
+
+Marshal message spans carry enqueue/dequeue markers: `marshal.queue_wait`
+measures time before the actor accepts the message. Storage scopes distinguish
+archive/journal sync initiation, waiting for prior syncs, buffered writes, blocking
+pool queue delay and filesystem sync. Engine persistence exposes batch heights
+and counts, provider acquisition, per-block state writes, hashed state/trie/history
+updates, static-file/RocksDB work, MDBX commit and BAL flush. Cache scopes separate
+update-lock acquisition, insertion, validation waiting and state-root completion.
+These are nested intervals; their durations must not be summed indiscriminately.
 
 Matching encrypted authentication-tag digests join individual send/receive frames,
 including batched writes. No message bytes are retained. Transfer spans cover
@@ -143,7 +156,7 @@ labeled context. Broad parent spans also include uninstrumented work. Neither
 blank time nor a broad span is claimed to be a fully explained CPU interval.
 
 Closing those remaining gaps requires propagating a local message envelope ID
-through fanout and batching, queue enqueue/dequeue markers, and scheduler/off-CPU
+through network fanout and batching, transport queue enqueue/dequeue markers, and scheduler/off-CPU
 profiling if kernel attribution is needed. Such IDs must remain source-filtered
 and must not alter network messages. Use this draft's coverage inventory to
 verify those additions before beginning the separate investigation phase.

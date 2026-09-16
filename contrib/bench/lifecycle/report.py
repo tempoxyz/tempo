@@ -10,7 +10,7 @@ from backpressure import first_boundary, prepare_captures
 BLOCK_FIELDS = ('block_hash', 'hash', 'digest', 'proposal', 'payload')
 STAGES = ('proposal_start', 'payload_built', 'proposal_ready', 'digest_released',
           'verify_start', 'body_ready', 'replay_start', 'replay_done', 'verify_done',
-          'notarize_vote_sent', 'notarized', 'finalize_vote_sent', 'finalized', 'finalization_received')
+          'notarize_vote_sent', 'notarized', 'finalize_vote_sent', 'finalized', 'finalization_received', 'cancelled', 'proposal_failed')
 
 
 def block_key(fields):
@@ -91,6 +91,54 @@ def read_node(path, role, cutoff=None):
         if not block_key(s['fields']) and s['fields'].get('payload_id') in payloads:
             s['fields']['block_hash'] = payloads[s['fields']['payload_id']]
 
+    # A mailbox span travels with exactly one message; timestamps delimit its queue wait.
+    queued = {}
+    next_id = min([0, *spans]) - 1
+    for event in events:
+        stage = event['fields'].get('stage')
+        if stage == 'marshal_enqueued':
+            queued[event['id']] = event['ts']
+        elif stage == 'marshal_dequeued' and event['id'] in queued:
+            start = queued.pop(event['id'])
+            if event['ts'] >= start:
+                spans[next_id] = dict(id=next_id, parent=event['id'], node=role,
+                    ts=start, end=event['ts'], thread=0, fields={}, active=[],
+                    name='marshal.queue_wait', category='lifecycle')
+                next_id -= 1
+    for span_id, start in queued.items():
+        owner = spans.get(span_id)
+        if cutoff is not None and owner and owner.get('right_censored'):
+            spans[next_id] = dict(id=next_id, parent=span_id, node=role, ts=start,
+                end=cutoff, thread=0, fields={}, active=[], right_censored=True,
+                name='marshal.queue_wait', category='lifecycle')
+            next_id -= 1
+
+    def attempt_owner(s):
+        seen = set()
+        while s and s['id'] not in seen:
+            seen.add(s['id'])
+            if s['name'] == 'handle_propose':
+                return s['id']
+            if s.get('attempt_root') is not None:
+                return s['attempt_root']
+            s = spans.get(s.get('parent'))
+        return None
+
+    # Detached payload jobs can retain their attempt identity before a block exists.
+    # Only a unique payload-to-attempt mapping is evidence; never guess by timing.
+    payload_attempts = {}
+    for span in spans.values():
+        span['attempt_root'] = attempt_owner(span)
+        payload = span['fields'].get('payload_id')
+        if payload and span['attempt_root'] is not None:
+            payload_attempts.setdefault(payload, set()).add(span['attempt_root'])
+    for span in spans.values():
+        owners = payload_attempts.get(span['fields'].get('payload_id'), set())
+        if span['attempt_root'] is None and len(owners) == 1:
+            span['attempt_root'] = next(iter(owners))
+    for span in spans.values():
+        span['attempt_root'] = attempt_owner(span)
+
     def inherited(s):
         seen = set()
         while s and s['id'] not in seen:
@@ -118,7 +166,7 @@ def operation_category(span):
         return span['category']
     for prefixes, category in ((('network.',),'network'), (('simplex.','marshal.','broadcast.','block.','proposal.'),'consensus'),
                               (('builder.',),'builder'), (('execution.','prewarm.','receipt.'),'execution'),
-                              (('state.',),'state'), (('persistence.',),'storage')):
+                              (('state.',),'state'), (('persistence.','storage.'),'storage')):
         if span['name'].startswith(prefixes):
             return category
     return 'lifecycle'
@@ -177,6 +225,27 @@ def build(paths, warmup=5, window=None):
     bad_capture = any(not q['header'] or not q['footer'] or q['dropped'] or q['io_error'] or q['invalid_lines'] for q in quality)
     # Lost events invalidate percentile completeness, even if some endpoints survived.
     representatives = {str(p): nearest_rank(eligible, p) if not bad_capture else None for p in (50,90,99)}
+    attempts = sorted((s for s in spans if s['name'] == 'handle_propose'),
+                      key=lambda s: (s['ts'], s['node'], s['id']))
+    attempt_ids = {(s['node'], s['id']): i for i, s in enumerate(attempts, 1)}
+    attempt_details = []
+    for attempt in attempts:
+        markers = [dict(stage=e['fields']['stage'], ts=(e['ts']-first)/1e6, node=e['node'])
+                   for e in events if e['node'] == attempt['node'] and e['id'] == attempt['id']
+                   and e['fields'].get('stage') in STAGES]
+        stages = {e['stage'] for e in markers}
+        status = ('cancelled' if 'cancelled' in stages else
+                  'failed' if 'proposal_failed' in stages else
+                  'cutoff_incomplete' if attempt.get('right_censored') else
+                  'shutdown_incomplete' if attempt['end'] is None else
+                  'associated' if attempt.get('block') else 'unexplained_unassociated')
+        start = (attempt['ts']-first)/1e6
+        end = (attempt['end']-first)/1e6 if attempt['end'] is not None else max(
+            [start, *(m['ts'] for m in markers)])
+        attempt_details.append(dict(id=attempt_ids[(attempt['node'], attempt['id'])],
+            node=attempt['node'], block=aliases.get(attempt.get('block')), status=status,
+            start=start, end=end, duration=end-start, markers=markers, execution_totals=[],
+            complete=status in ('cancelled', 'failed', 'associated')))
     rows = []
     for s in spans:
         if s['end'] is None or s['end'] < s['ts']:
@@ -186,6 +255,11 @@ def build(paths, warmup=5, window=None):
                      'start': (s['ts']-first)/1e6, 'end': (s['end']-first)/1e6,
                      'thread': s['thread'], 'active_ms': active_wall_ns(s['active'])/1e6,
                      'right_censored': s.get('right_censored', False),
+                     'attempt': attempt_ids.get((s['node'], s.get('attempt_root'))),
+                     'details': {k:v for k,v in s['fields'].items() if k in (
+                         'block_count', 'state_trie_block_count', 'first_block_number',
+                         'last_block_number', 'canonical_height', 'persisted_height',
+                         'state_trie_height', 'backlog') and isinstance(v, (int, float))},
                      'count': s.get('count'), 'elapsed_sum_ms': s.get('elapsed_ns',0)/1e6})
     frames = {}
     for event in events:
@@ -198,10 +272,10 @@ def build(paths, warmup=5, window=None):
         receives = [e for e in group if e['stage'] == 'frame_receive']
         if len(sends) == 1 and len(receives) == 1:
             transfers.append({'from': sends[0]['node'], 'to': receives[0]['node'], 'start': sends[0]['ts'], 'end': receives[0]['ts'], 'bytes': sends[0]['bytes']})
-    attempts = [s for s in spans if s['name'] == 'handle_propose']
     return {'schema':1, 'boundary': dict(boundary, relative_ms=(cutoff-first)/1e6) if boundary else None, 'blocks':blocks, 'spans':rows, 'transfers':transfers, 'quality':quality,
             'representatives':representatives, 'eligible':len(eligible), 'warmup':warmup,
-            'attempts':len(attempts), 'unbound_attempts':sum(not s.get('block') for s in attempts),
+            'unexplained_attempts':sum(a['status'] == 'unexplained_unassociated' for a in attempt_details),
+            'attempt_details':attempt_details, 'attempts':len(attempts), 'unbound_attempts':sum(not s.get('block') for s in attempts),
             'coverage':sorted({s['name'] for s in rows}), 'stages':list(STAGES), 'bad_capture':bad_capture,
             'definition':'Proposal handling start on proposer → first accepted finalization certificate on a validator. Nearest-rank percentiles select actual complete blocks; initial complete blocks are excluded as warmup. When load boundaries are available, both endpoints must fall inside the load window. All views exclude data at or after the first engine persistence backpressure event on either validator; crossing spans are right-censored and crossing aggregates omitted.'}
 

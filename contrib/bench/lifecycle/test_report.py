@@ -107,4 +107,60 @@ class ReportTests(unittest.TestCase):
     def test_empty_sample(self):
         self.assertIsNone(nearest_rank([],99))
 
-if __name__=='__main__':unittest.main()
+
+
+class AttributionTests(unittest.TestCase):
+    def test_attempt_outcomes_and_detached_payload_without_block(self):
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory)/'a.jsonl'
+            records = [{'type':'header','schema':1}]
+            def start(i, name='handle_propose', parent=None, fields=None):
+                return dict(type='start', id=i, ts=i*100, thread=1, name=name,
+                            category='consensus', parent=parent, fields=fields or {})
+            records += [start(i) for i in range(1, 6)]
+            records += [dict(type='event',id=i,ts=600+i,fields={'stage':stage})
+                        for i,stage in [(1,'cancelled'),(2,'proposal_failed')]]
+            records += [dict(type='end',id=i,ts=700+i) for i in (1,2,3)]
+            records += [start(6,'job',1,{'payload_id':'0123456789abcdef01234567'}),
+                        start(7,'builder',None,{'payload_id':'0123456789abcdef01234567'}),
+                        start(8,'builder.child',7),
+                        dict(type='footer',dropped=0,io_error=False)]
+            path.write_text('\n'.join(map(json.dumps,records)))
+            result = build([path],0,{'backpressure':{'ts':1000,'node':'Validator A'}})
+            self.assertEqual([a['status'] for a in result['attempt_details']],
+                             ['cancelled','failed','unexplained_unassociated','cutoff_incomplete','cutoff_incomplete'])
+            child = next(s for s in result['spans'] if s['id']==8)
+            self.assertEqual(child['attempt'],1)
+            self.assertIsNone(child['block'])
+            self.assertEqual(result['eligible'],0)
+            result = build([path],0)
+            self.assertEqual(result['attempt_details'][-1]['status'],'shutdown_incomplete')
+
+    def test_queue_pairs_and_numeric_metadata_stop_at_cutoff(self):
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory)/'a.jsonl'
+            records = [dict(type='header',schema=1),
+                dict(type='start',id=1,ts=0,thread=1,name='handle_propose',category='consensus',parent=None,fields={}),
+                dict(type='start',id=2,ts=100,thread=1,name='mailbox',category='consensus',parent=1,fields={'block_count':4,'secret':'PRIVATE'}),
+                dict(type='event',id=2,ts=200,fields={'stage':'marshal_enqueued'}),
+                dict(type='event',id=2,ts=500,fields={'stage':'marshal_dequeued'}),
+                dict(type='end',id=2,ts=600),
+                dict(type='start',id=3,ts=700,thread=1,name='mailbox',category='consensus',parent=1,fields={}),
+                dict(type='event',id=3,ts=800,fields={'stage':'marshal_enqueued'}),
+                dict(type='event',id=3,ts=1000,fields={'stage':'marshal_dequeued'}),
+                dict(type='footer',dropped=0,io_error=False)]
+            path.write_text('\n'.join(map(json.dumps,records)))
+            result = build([path],0,{'backpressure':{'ts':1000,'node':'Validator A'}})
+            waits = [s for s in result['spans'] if s['name']=='marshal.queue_wait']
+            self.assertEqual(len(waits),2)
+            self.assertAlmostEqual(waits[0]['end']-waits[0]['start'],300/1e6)
+            self.assertFalse(waits[0]['right_censored'])
+            self.assertTrue(waits[1]['right_censored'])
+            self.assertEqual(waits[1]['end'],1000/1e6)
+            self.assertEqual(waits[1]['attempt'],1)
+            self.assertEqual(next(s for s in result['spans'] if s['id']==2)['details'],{'block_count':4})
+            self.assertNotIn('PRIVATE',json.dumps(result))
+
+
+if __name__ == '__main__':
+    unittest.main()
