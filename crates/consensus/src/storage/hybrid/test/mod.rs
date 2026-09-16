@@ -844,3 +844,60 @@ fn reth_provider_errors_propagate_to_caller() {
         );
     });
 }
+
+#[test_traced]
+fn put_confirmed_rejects_duplicates_conflicts_and_evicted_insertions() {
+    deterministic::Runner::default().start(|context| async move {
+        let (mut hybrid, provider) = SetupHybrid {
+            retention: 1,
+            section_size: PER_HEIGHT_SECTION,
+        }
+        .build(&context)
+        .await;
+        let block = make_block(1, Default::default());
+        let conflict = make_block(1, alloy_primitives::B256::repeat_byte(1));
+        for (candidate, expected) in [
+            (block.clone(), true),
+            (block.clone(), false),
+            (conflict.clone(), false),
+        ] {
+            let (next, confirmed) = hybrid.put_confirmed(candidate).await.expect("put");
+            hybrid = next;
+            assert_eq!(confirmed, expected);
+            assert_eq!(
+                hybrid.get(Identifier::Index(1)).await.expect("get"),
+                Some(block.clone())
+            );
+        }
+
+        // This put succeeds, then EL-driven eviction removes its height.
+        // EL holds a conflicting block: mere height coverage is not provenance.
+        provider.add_block(&make_block(2, alloy_primitives::B256::repeat_byte(2)));
+        provider.set_reth_finalized(10);
+        let incoming = make_block(2, Default::default());
+        let (next, confirmed) = hybrid.put_confirmed(incoming.clone()).await.expect("put");
+        hybrid = next;
+        assert!(
+            !confirmed,
+            "evicted insertion cannot promote decoded provenance"
+        );
+        assert!(
+            !archive::Archive::has(&hybrid.prunable, Identifier::Index(2))
+                .await
+                .expect("has")
+        );
+        assert_ne!(
+            hybrid.get(Identifier::Index(2)).await.expect("get"),
+            Some(incoming.clone())
+        );
+
+        // Subsequent puts below that archive floor also succeed as no-ops.
+        let (hybrid, confirmed) = hybrid.put_confirmed(incoming).await.expect("put");
+        assert!(!confirmed, "pruned no-op cannot promote decoded provenance");
+        assert!(
+            !archive::Archive::has(&hybrid.prunable, Identifier::Index(2))
+                .await
+                .expect("has")
+        );
+    });
+}
