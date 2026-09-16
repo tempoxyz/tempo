@@ -89,12 +89,12 @@ class ReportTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as directory:
             path=Path(directory)/'a.jsonl';fixture(path)
             out=Path(directory)/'report';write_report([path],out,0)
-            for name in ('index.html','lifecycle.json','perfetto.json'):
+            for name in ('index.html','lifecycle.json','context-0001.json','block-50.html'):
                 text=(out/name).read_text()
                 self.assertNotIn('000000000000000000000064',text)
                 self.assertNotIn(str(directory),text)
             self.assertNotIn('__LIFECYCLE_DATA__',(out/'index.html').read_text())
-            for event in json.loads((out/'perfetto.json').read_text())['traceEvents']:
+            for event in json.loads((out/'context-0001.json').read_text())['traceEvents']:
                 self.assertIsInstance(event['pid'],int)
                 self.assertIsInstance(event['tid'],int)
 
