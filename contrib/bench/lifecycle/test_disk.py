@@ -37,6 +37,60 @@ class DiskTests(unittest.TestCase):
             capture_output=True, text=True,
         )
 
+    def require_disk(self, available, minimum, df_exit_code=0):
+        with tempfile.TemporaryDirectory() as directory:
+            mock_df = Path(directory) / 'df'
+            mock_df.write_text(
+                '#!/bin/sh\n'
+                'printf "Filesystem 1048576-blocks Used Available Capacity Mounted on\\n"\n'
+                'printf "private-filesystem 1000000 1 %s 1%% /private-mount\\n" "$LIFECYCLE_TEST_AVAILABLE"\n'
+                'exit "$LIFECYCLE_TEST_DF_EXIT"\n'
+            )
+            mock_df.chmod(0o755)
+            return subprocess.run(
+                ['nu', '--no-config-file', '-c',
+                 'source disk.nu; lifecycle-require-disk fixture . '
+                 '($env.LIFECYCLE_TEST_MINIMUM | into int); print accepted'],
+                cwd=Path(__file__).parent,
+                env=dict(os.environ, PATH=directory + os.pathsep + os.environ['PATH'],
+                         LIFECYCLE_TEST_AVAILABLE=str(available),
+                         LIFECYCLE_TEST_MINIMUM=str(minimum),
+                         LIFECYCLE_TEST_DF_EXIT=str(df_exit_code)),
+                capture_output=True, text=True,
+            )
+
+    def test_build_and_capture_thresholds_accept_exact_headroom(self):
+        for minimum in (65536, 49152):
+            with self.subTest(minimum=minimum):
+                result = self.require_disk(minimum, minimum)
+                self.assertEqual(result.returncode, 0, result.stderr)
+                self.assertIn('accepted', result.stdout)
+                self.assertIn(f'{minimum} MiB available', result.stdout)
+                self.assertNotIn('private-', result.stdout + result.stderr)
+
+    def test_build_and_capture_thresholds_reject_insufficient_headroom(self):
+        for minimum in (65536, 49152):
+            with self.subTest(minimum=minimum):
+                result = self.require_disk(minimum - 1, minimum)
+                self.assertNotEqual(result.returncode, 0)
+                self.assertIn('Insufficient lifecycle disk space', result.stderr)
+                self.assertNotIn('accepted', result.stdout)
+                self.assertNotIn('private-', result.stdout + result.stderr)
+
+    def test_failed_disk_inspection_fails_closed(self):
+        result = self.require_disk(1000000, 65536, df_exit_code=1)
+        self.assertNotEqual(result.returncode, 0)
+        self.assertIn('Unable to inspect lifecycle disk space', result.stderr)
+        self.assertNotIn('accepted', result.stdout)
+
+    def test_invalid_disk_availability_fails_closed(self):
+        for available in ('unknown', '-1'):
+            with self.subTest(available=available):
+                result = self.require_disk(available, 65536)
+                self.assertNotEqual(result.returncode, 0)
+                self.assertIn('Invalid lifecycle disk-space report', result.stderr)
+                self.assertNotIn('accepted', result.stdout)
+
     def test_trim_preserves_binary_source_other_profile_and_unrelated_files(self):
         with tempfile.TemporaryDirectory() as directory:
             worktree, profile, binary = self.fixture(directory)
