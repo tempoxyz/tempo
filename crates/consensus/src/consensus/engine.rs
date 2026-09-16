@@ -191,7 +191,9 @@ where
         );
 
         let (broadcast, broadcast_mailbox) = buffered::Engine::new(
-            context.child("broadcast"),
+            // Block decoding runs synchronously in this actor's receive poll.
+            // Keep its serial processing off the shared network/vote executor.
+            context.child("broadcast").dedicated(),
             buffered::Config {
                 public_key: self.signer.public_key(),
                 mailbox_size: self.mailbox_size,
