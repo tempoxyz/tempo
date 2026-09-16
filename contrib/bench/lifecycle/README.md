@@ -18,13 +18,20 @@ profilers and ValScope publication are disabled. The workflow uploads only the
 lifecycle directory, not ordinary benchmark logs/reports.
 
 For an optimization comparison, set both `baseline` and `feature` to explicit
-instrumented revisions and use `run-pairs: 1` (or more alternating pairs).
+instrumented revisions and use `run-pairs: 1` (feature, then baseline).
 This runs both revisions sequentially on the same physical runner, restoring
 the snapshot before each phase. Each phase has its own first-backpressure cutoff
 and pruned artifact directory. Without an explicit baseline, lifecycle mode
 continues to run only the feature revision. Both revisions must contain the
 capture instrumentation; an ordinary uninstrumented baseline is unsuitable.
 The harness checkout is pinned to the workflow dispatch revision.
+`run-pairs: 2` counterbalances order as feature/baseline/baseline/feature;
+snapshot restoration alone does not equalize OS or device caches.
+
+Lifecycle mode requires 64 GiB of available workspace/root space before builds
+and 48 GiB before each capture. It builds sequentially and removes only disposable
+build intermediates after verifying each executable. These checks fail early on
+undersized runners; published capture directories and shared caches are retained.
 
 Separate workflow jobs can land on different machines even with identical
 runner labels. Their operation counts can help identify work changes, but do
