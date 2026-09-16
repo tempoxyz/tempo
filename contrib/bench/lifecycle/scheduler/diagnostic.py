@@ -163,20 +163,50 @@ def preflight():
         raise ValueError("monotonic BPF clock could not be verified")
 
 
+def marker_slots(symbols, relocations, name):
+    """Resolve static x86-64 GOT slots; never retain runtime/native identities."""
+    addresses = set()
+    for line in symbols.splitlines():
+        words = line.split()
+        if len(words) == 3 and words[1] in ('T', 't') and words[2] == name:
+            addresses.add(int(words[0], 16))
+    if len(addresses) != 1:
+        return set()
+    slots = set()
+    for line in relocations.splitlines():
+        words = line.split()
+        if len(words) == 4 and words[2] == 'R_X86_64_RELATIVE':
+            if int(words[3], 16) in addresses:
+                slots.add(int(words[0], 16))
+    return slots
+
+
+def marker_call(line, name, slots):
+    if re.search(r"\b(?:call\w*|bl)\s+[^\n]*<" + re.escape(name) + r">", line):
+        return True
+    # Rust PIC uses call *offset(%rip). Its relocation must point exactly to
+    # the marker; finding an unused symbol or an arbitrary indirect call fails.
+    indirect = re.search(r"\bcall\w*\s+\*[^\n]*\(%rip\)\s*#\s*([0-9a-fA-F]+)\b", line)
+    return bool(indirect and int(indirect[1], 16) in slots)
+
+
 def verify_marker(binary, name):
     # A full optimized validator disassembly can be enormous. Scan it without
     # retaining or printing addresses, and stop as soon as a real call is found.
     try:
+        symbols = subprocess.run(['nm', '--defined-only', str(binary)], capture_output=True, text=True, check=True).stdout
+        relocations = subprocess.run(['readelf', '-rW', str(binary)], capture_output=True, text=True, check=True).stdout
+        slots = marker_slots(symbols, relocations, name)
+        del symbols, relocations
         process = subprocess.Popen(["objdump", "-d", str(binary)], stdout=subprocess.PIPE,
                                    stderr=subprocess.DEVNULL, text=True)
-    except OSError:
+    except (OSError, subprocess.SubprocessError):
         raise ValueError("release marker verification unavailable") from None
     found = False
     deadline = time.monotonic() + 120
-    pattern = re.compile(r"\b(?:call\w*|bl)\s+[^\n]*<" + re.escape(name) + r">")
     try:
         for line in process.stdout:
-            if pattern.search(line):
+            if marker_call(line, name, slots):
                 found = True
                 break
             if time.monotonic() > deadline:

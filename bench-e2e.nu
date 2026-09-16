@@ -1126,6 +1126,9 @@ def run-local-e2e-phase [run: record, ctx: record] {
     mut phase_exit = 0
     if ((find-tempo-pids) | length) < 2 {
         print $"Error: local e2e validators exited before readiness checks completed for ($phase)"
+        if $ctx.lifecycle_scheduler {
+            ^python3 contrib/bench/lifecycle/scheduler/runtime.py --failure-summary $lifecycle_dir
+        }
         $phase_exit = 1
     }
     if $phase_exit == 0 and not (e2e-wait-for-rpc-online $a_rpc $rpc_timeout) { $phase_exit = 1 }

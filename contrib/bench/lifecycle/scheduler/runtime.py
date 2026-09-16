@@ -16,6 +16,20 @@ sys.path.insert(0, str(ROOT.parent))
 from backpressure import first_boundary
 
 MAX_BYTES = 256 * 1024 * 1024
+FAILURE_STAGES = frozenset(('configuration', 'capability', 'marker', 'capture', 'cutoff', 'decode', 'publish'))
+
+
+def failure_summary(directory):
+    rows = []
+    for role in ('a', 'b'):
+        try:
+            with (directory / f'scheduler-{role}.failed').open() as source:
+                value = source.read(128).strip()
+        except OSError:
+            value = 'unavailable'
+        stage = value if value in FAILURE_STAGES else 'unavailable'
+        rows.append(f'Scheduler validator {role}: startup/capture failure category {stage}')
+    return rows
 
 
 def capture(command, pass_fds=()):
@@ -96,6 +110,9 @@ def program_for(binary, epoch):
 
 
 def main():
+    if len(sys.argv) == 3 and sys.argv[1] == '--failure-summary':
+        print('\n'.join(failure_summary(Path(sys.argv[2]))))
+        return 0
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument('--binary', type=Path, required=True)
     parser.add_argument('--role', choices=('a', 'b'), required=True)
@@ -105,6 +122,7 @@ def main():
     resource.setrlimit(resource.RLIMIT_CORE, (0, 0))
     output = args.directory / f'scheduler-{args.role}.json'
     failure = args.directory / f'scheduler-{args.role}.failed'
+    stage = 'configuration'
     try:
         if os.geteuid() != 0:
             raise ValueError('scheduler supervisor requires the benchmark root scope')
@@ -119,8 +137,11 @@ def main():
         binary = args.binary.resolve(strict=True)
         if any(character in str(binary) for character in '\n:\" '):
             raise ValueError('unsupported binary path')
+        stage = 'capability'
         preflight()
+        stage = 'marker'
         verify_marker(binary, 'reth_lifecycle_thread_register')
+        stage = 'capture'
         with tempfile.TemporaryDirectory(prefix='lifecycle-scheduler-') as private:
             program = Path(private) / 'scheduler.bt'
             program.write_text(program_for(binary, epoch))
@@ -136,10 +157,13 @@ def main():
                 os.close(launch)
         if status or stderr.strip():
             raise ValueError('scheduler capture tool failed')
+        stage = 'cutoff'
         cutoff, reason = final_cutoff(args.directory)
+        stage = 'decode'
         result = decode(stdout, stderr, status, epoch, expected_threads=None, cutoff_ns=cutoff)
         result.update(scope='registered validator thread windows only', process=1 if args.role == 'a' else 2,
                       cutoff_reason=reason, registration='registered_threads_v1')
+        stage = 'publish'
         with output.open('x') as destination:
             json.dump(result, destination, separators=(',', ':'))
             destination.write('\n')
@@ -148,7 +172,7 @@ def main():
         # Neither exception strings nor commands can escape: either can contain
         # a native identity, environment value, path, or child-process output.
         try:
-            failure.write_text('scheduler diagnostic unavailable\n')
+            failure.write_text(stage + '\n')
         except OSError:
             pass
         return 1
