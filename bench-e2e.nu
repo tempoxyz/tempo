@@ -1085,7 +1085,8 @@ def run-local-e2e-phase [run: record, ctx: record] {
     let a_otel = $"OTEL_RESOURCE_ATTRIBUTES=benchmark_id=($ctx.benchmark_id),benchmark_run=($phase),runner_role=a,run_type=($run_type),git_ref=($run.ref),reference_epoch=($ctx.reference_epoch) "
     let b_otel = $"OTEL_RESOURCE_ATTRIBUTES=benchmark_id=($ctx.benchmark_id),benchmark_run=($phase),runner_role=b,run_type=($run_type),git_ref=($run.ref),reference_epoch=($ctx.reference_epoch) "
 
-    let lifecycle_dir = ($"($ctx.results_dir)/lifecycle/($phase)" | path expand)
+    let lifecycle_dir = ($"($ctx.results_dir)/lifecycle-raw/($phase)" | path expand)
+    let lifecycle_report_dir = ($"($ctx.results_dir)/lifecycle/($phase)" | path expand)
     let lifecycle_key = ($"($LOCALNET_DIR)/lifecycle-key-($phase)" | path expand)
     let lifecycle_epoch = if $ctx.lifecycle {
         mkdir $lifecycle_dir
@@ -1141,7 +1142,6 @@ def run-local-e2e-phase [run: record, ctx: record] {
         $tracy_capture_started = true
     }
 
-    let scenario = $ctx.preset
     let phase_clickhouse_url = if $ctx.clickhouse_url != "" and ($ctx.clickhouse_run == "" or $ctx.clickhouse_run == $phase) {
         $ctx.clickhouse_url
     } else {
@@ -1152,45 +1152,20 @@ def run-local-e2e-phase [run: record, ctx: record] {
     let submit_rpc_url = [$a_rpc $b_rpc] | str join ","
 
     if $phase_exit == 0 {
-        let lifecycle_start = if $ctx.lifecycle { ^python3 -c 'import time,sys; print(time.monotonic_ns()-int(sys.argv[1]))' $lifecycle_epoch | str trim | into int } else { 0 }
         let phase_started_ms = ((date now | into int) / 1_000_000 | into int)
         let initial_db_size_bytes = (e2e-db-size-bytes $ctx.a.datadir)
         let sender_exit = (try {
-            let bench_result = (txgen-run-preset-pipeline
-                --txgen-tempo-bin $ctx.txgen.txgen_tempo_bin
-                --txgen-bench-bin $ctx.txgen.txgen_bench_bin
-                --preset-path $ctx.preset_path
-                --generate-rpc-url $a_rpc
-                --submit-rpc-url $submit_rpc_url
-                --metrics-url $metrics_urls
-                --report-path $"($ctx.results_dir)/report-($phase).json"
-                --tps $ctx.tps
-                --duration $ctx.duration
-                --accounts $ctx.accounts
-                --max-concurrent-requests $ctx.max_concurrent_requests
-                --bench-args $ctx.bench_args
-                --bench-env $ctx.bench_env
-                --git-ref $run.ref
-                --git-ref-label ($run | get -o ref_label | default $run.ref)
-                --build-profile $ctx.profile
-                --benchmark-mode "e2e"
-                --benchmark-id $ctx.benchmark_id
-                --benchmark-run $phase
-                --run-type $ctx.run_type
-                --benchmark-start $ctx.reference_epoch
-                --platform "tempo"
-                --scenario $scenario
-                --bloat-mib $ctx.bloat
-                --tip20-token-count $ctx.token_count
-                --bloat-token-count ($TIP20_TOKEN_IDS | length)
-                --initial-db-size-bytes $initial_db_size_bytes
-                --victoriametrics-url $ctx.victoriametrics_url
-                --clickhouse-url $phase_clickhouse_url
-                --skip-funding=($ctx.bloat > 0))
-            if not $bench_result.ok {
-                $bench_result.exit_code
+            let load_config = {ctx: $ctx, run: $run, phase: $phase, a_rpc: $a_rpc,
+                submit_rpc_url: $submit_rpc_url, metrics_urls: $metrics_urls,
+                initial_db_size_bytes: $initial_db_size_bytes, phase_clickhouse_url: $phase_clickhouse_url}
+            if $ctx.lifecycle {
+                chown-to-current-user $lifecycle_dir
+                with-env {TEMPO_LIFECYCLE_LOAD: ($load_config | to json --raw)} {
+                    ^python3 contrib/bench/lifecycle/backpressure.py --epoch $lifecycle_epoch --window $"($lifecycle_dir)/window.json" --capture $"($lifecycle_dir)/a.jsonl" --capture $"($lifecycle_dir)/b.jsonl" -- nu bench-e2e.nu lifecycle-load
+                    $env.LAST_EXIT_CODE
+                }
             } else {
-                0
+                (e2e-load $load_config).exit_code
             }
         } catch { |e|
             print $"Error: local e2e txgen sender failed for ($phase): ($e.msg)"
@@ -1203,10 +1178,6 @@ def run-local-e2e-phase [run: record, ctx: record] {
                 $report_benchmark_id | save -f $"($ctx.results_dir)/clickhouse-run-id-($phase).txt"
                 $report_benchmark_id | save -f $"($ctx.results_dir)/clickhouse-run-id.txt"
             }
-        }
-        if $ctx.lifecycle {
-            let lifecycle_end = (^python3 -c 'import time,sys; print(time.monotonic_ns()-int(sys.argv[1]))' $lifecycle_epoch | str trim | into int)
-            {start_ns: $lifecycle_start, end_ns: $lifecycle_end} | to json | save -f $"($lifecycle_dir)/window.json"
         }
         let phase_finished_ms = ((date now | into int) / 1_000_000 | into int)
         {
@@ -1247,9 +1218,11 @@ def run-local-e2e-phase [run: record, ctx: record] {
     restore-system-tuning $tuning_state
     if $ctx.lifecycle {
         rm -f $lifecycle_key
-        let report = (^python3 contrib/bench/lifecycle/report.py --out $lifecycle_dir --warmup $ctx.summary_warmup_blocks --window $"($lifecycle_dir)/window.json" $"($lifecycle_dir)/a.jsonl" $"($lifecycle_dir)/b.jsonl" | complete)
+        let report = (^python3 contrib/bench/lifecycle/report.py --prune --out $lifecycle_report_dir --warmup $ctx.summary_warmup_blocks --window $"($lifecycle_dir)/window.json" $"($lifecycle_dir)/a.jsonl" $"($lifecycle_dir)/b.jsonl" | complete)
         print $report.stdout
+        if $report.stderr != "" { print $report.stderr }
         if $report.exit_code != 0 { $phase_exit = 1 }
+        rm -rf $lifecycle_dir
     }
 
     if $phase_exit != 0 {
@@ -1257,6 +1230,56 @@ def run-local-e2e-phase [run: record, ctx: record] {
     }
     print $"=== Local e2e phase complete: ($phase) ==="
     return 0
+}
+
+# Run in a separate process group so a lifecycle stop interrupts funding, setup,
+# generation and submission together, while the parent still drains validators.
+def e2e-load [config: record] {
+    let ctx = $config.ctx
+    let run = $config.run
+    let phase = $config.phase
+    let a_rpc = $config.a_rpc
+    let submit_rpc_url = $config.submit_rpc_url
+    let metrics_urls = $config.metrics_urls
+    let initial_db_size_bytes = $config.initial_db_size_bytes
+    let phase_clickhouse_url = $config.phase_clickhouse_url
+    let scenario = $ctx.preset
+    (txgen-run-preset-pipeline
+        --txgen-tempo-bin $ctx.txgen.txgen_tempo_bin
+        --txgen-bench-bin $ctx.txgen.txgen_bench_bin
+        --preset-path $ctx.preset_path
+        --generate-rpc-url $a_rpc
+        --submit-rpc-url $submit_rpc_url
+        --metrics-url $metrics_urls
+        --report-path $"($ctx.results_dir)/report-($phase).json"
+        --tps $ctx.tps
+        --duration $ctx.duration
+        --accounts $ctx.accounts
+        --max-concurrent-requests $ctx.max_concurrent_requests
+        --bench-args $ctx.bench_args
+        --bench-env $ctx.bench_env
+        --git-ref $run.ref
+        --git-ref-label ($run | get -o ref_label | default $run.ref)
+        --build-profile $ctx.profile
+        --benchmark-mode "e2e"
+        --benchmark-id $ctx.benchmark_id
+        --benchmark-run $phase
+        --run-type $ctx.run_type
+        --benchmark-start $ctx.reference_epoch
+        --platform "tempo"
+        --scenario $scenario
+        --bloat-mib $ctx.bloat
+        --tip20-token-count $ctx.token_count
+        --bloat-token-count ($TIP20_TOKEN_IDS | length)
+        --initial-db-size-bytes $initial_db_size_bytes
+        --victoriametrics-url $ctx.victoriametrics_url
+        --clickhouse-url $phase_clickhouse_url
+        --skip-funding=($ctx.bloat > 0))
+}
+
+def "main lifecycle-load" [] {
+    let result = (e2e-load ($env.TEMPO_LIFECYCLE_LOAD | from json))
+    exit $result.exit_code
 }
 
 def e2e-run-sides [run_pairs: int, run_side: string] {

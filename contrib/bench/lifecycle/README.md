@@ -12,6 +12,32 @@ instrumentation. To run directly, use `--lifecycle --run-side feature`. Other
 profilers and ValScope publication are disabled. The workflow uploads only the
 lifecycle directory, not ordinary benchmark logs/reports.
 
+## Stop at first backpressure
+
+Lifecycle runs stop the load process group when either validator first enters
+engine **persistence backpressure**. The marker is emitted in Reth immediately
+before waiting on persistence, timestamped on the shared monotonic clock and
+flushed to the capture file. A watcher checks both streams every 50 ms; the
+cutoff uses the source timestamp, not the later detection or shutdown time.
+An intentional stop still runs validator shutdown and artifact generation.
+
+The upload directory receives only pruned copies of the captures. Raw records
+at or after the earliest marker on either validator are removed before report
+construction, including late span fields and finalization markers. Aggregate
+envelopes crossing the cutoff are omitted because their call totals cannot be
+split accurately. Their omission count appears in capture coverage. Span
+portions before the cutoff remain visible with a `cutoff` label; these do not
+claim a completed operation. Only blocks finalized strictly before the cutoff
+can enter p50/p90/p99. If none qualify, the artifacts remain available but no
+percentiles are claimed.
+
+The cutoff and capture-integrity metadata are retained in `window.json` and
+footers. No post-backpressure performance data is uploaded, including in the
+JSONL files. Temporary full captures live outside the artifact directory and
+are deleted after packaging. If there is no backpressure, the configured
+duration remains the normal limit. Startup backpressure detected before load
+launch skips the load and yields no load-window percentile samples.
+
 ## Repair or regenerate an existing Perfetto export
 
 The old exporter created one thread track per span, which could overwhelm the

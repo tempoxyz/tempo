@@ -35,9 +35,11 @@ def trace_events(data, block_id=None):
             args.update(call_count=s['count'], elapsed_sum_ms=s['elapsed_sum_ms'])
         else:
             args.update(active_wall_ms=s['active_ms'], source_thread_ordinal=s['thread'])
+        if s.get('right_censored'):
+            args.update(right_censored=True, semantics='elapsed wall time before cutoff; operation not observed complete')
         intervals.append((nodes[s['node']], s['category'], 'aggregate envelope' if aggregate else 'wall time',
                           round(s['start'] * 1_000_000), round(s['end'] * 1_000_000),
-                          s['name'] + (' [aggregate envelope]' if aggregate else ''), args))
+                          s['name'] + (' [aggregate envelope]' if aggregate else ' [cutoff]' if s.get('right_censored') else ''), args))
     for t in transfers:
         # This is a matched frame transfer, not a proven application/block dependency.
         intervals.append((nodes[t['from']], 'network', 'frame context',

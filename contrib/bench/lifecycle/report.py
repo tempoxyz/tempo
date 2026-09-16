@@ -5,6 +5,7 @@ import json
 import math
 from pathlib import Path
 from perfetto import write_exports
+from backpressure import first_boundary, prepare_captures
 
 BLOCK_FIELDS = ('block_hash', 'hash', 'digest', 'proposal', 'payload')
 STAGES = ('proposal_start', 'payload_built', 'proposal_ready', 'digest_released',
@@ -22,9 +23,10 @@ def nearest_rank(blocks, percentile):
     return ordered[max(0, math.ceil(len(ordered) * percentile / 100) - 1)]['id'] if ordered else None
 
 
-def read_node(path, role):
+def read_node(path, role, cutoff=None):
     spans, events, links, polls, aggregates = {}, [], [], {}, []
     header, footer, invalid = None, None, 0
+    excluded_aggregates = 0
     with path.open() as capture:
         for line in capture:
             try:
@@ -33,6 +35,15 @@ def read_node(path, role):
                 invalid += 1
                 continue
             kind = event.get('type')
+            # Parse structural metadata after the cutoff for capture-integrity checks,
+            # but never let later fields, identities or milestones affect the report.
+            if cutoff is not None and kind not in ('header', 'footer'):
+                if event.get('ts', cutoff) >= cutoff:
+                    continue
+                if kind == 'aggregate' and event['end'] >= cutoff:
+                    excluded_aggregates += 1
+                    continue
+
             if kind == 'header':
                 header = event
             elif kind == 'footer':
@@ -55,6 +66,16 @@ def read_node(path, role):
                 stack = polls.get((event['id'], event['thread']), [])
                 if stack and event['id'] in spans:
                     spans[event['id']]['active'].append((stack.pop(), event['ts'], event['thread']))
+    censored = 0
+    if cutoff is not None:
+        for (span_id, thread), stack in polls.items():
+            if span_id in spans:
+                spans[span_id]['active'].extend((start, cutoff, thread) for start in stack)
+        for span in spans.values():
+            if span['end'] is None:
+                span['end'] = cutoff
+                span['right_censored'] = True
+                censored += 1
     for index, event in enumerate(aggregates,1):
         spans[-index] = dict(event, id=-index, parent=event['id'] or None, node=role,
                              thread=0, fields={}, active=[])
@@ -86,8 +107,9 @@ def read_node(path, role):
         event['block'] = block_key(event['fields']) or inherited(spans.get(event['id']))
     quality = {'node': role, 'header': bool(header and header.get('schema') == 1),
                'footer': footer is not None, 'dropped': (footer or {}).get('dropped', 0),
-               'io_error': (footer or {}).get('io_error', False), 'invalid_lines': invalid,
-               'open_spans': sum(s['end'] is None for s in spans.values())}
+               'io_error': (footer or {}).get('io_error', False), 'invalid_lines': invalid + (footer or {}).get('invalid_lines', 0),
+               'open_spans': sum(s['end'] is None for s in spans.values()),
+               'cutoff_spans': censored, 'crossing_aggregates_excluded': excluded_aggregates}
     return list(spans.values()), events, quality
 
 
@@ -112,10 +134,17 @@ def active_wall_ns(intervals):
 
 def build(paths, warmup=5, window=None):
     spans, events, quality = [], [], []
+    boundary = first_boundary(paths)
+    recorded = (window or {}).get('backpressure')
+    if recorded and (boundary is None or recorded['ts'] < boundary['ts']):
+        boundary = recorded
+    cutoff = boundary['ts'] if boundary else None
     for index, path in enumerate(paths):
-        ss, es, qq = read_node(path, f'Validator {chr(65 + index)}')
+        ss, es, qq = read_node(path, f'Validator {chr(65 + index)}', cutoff)
         spans.extend(ss)
         events.extend(es)
+        pruned = next((q for q in (window or {}).get('pruning', []) if q['node'] == qq['node']), {})
+        qq['crossing_aggregates_excluded'] += pruned.get('crossing_aggregates_excluded', 0)
         quality.append(qq)
     first = min((x['ts'] for x in spans + events), default=0)
     by_block = {}
@@ -141,7 +170,7 @@ def build(paths, warmup=5, window=None):
     completed = sorted((b for b in blocks if b['complete']), key=lambda b: b['start'])
     for b in completed[:warmup]:
         b['warmup'] = True
-    eligible = [b for b in completed if not b.get('warmup') and (window is None or
+    eligible = [b for b in completed if not b.get('warmup') and (not window or 'start_ns' not in window or
                 (b['start'] >= (window['start_ns']-first)/1e6 and b['end'] <= (window['end_ns']-first)/1e6))]
     for b in blocks:
         b['in_population'] = b in eligible
@@ -156,6 +185,7 @@ def build(paths, warmup=5, window=None):
                      'name': s['name'], 'category': operation_category(s), 'block': aliases.get(s['block']),
                      'start': (s['ts']-first)/1e6, 'end': (s['end']-first)/1e6,
                      'thread': s['thread'], 'active_ms': active_wall_ns(s['active'])/1e6,
+                     'right_censored': s.get('right_censored', False),
                      'count': s.get('count'), 'elapsed_sum_ms': s.get('elapsed_ns',0)/1e6})
     frames = {}
     for event in events:
@@ -169,14 +199,16 @@ def build(paths, warmup=5, window=None):
         if len(sends) == 1 and len(receives) == 1:
             transfers.append({'from': sends[0]['node'], 'to': receives[0]['node'], 'start': sends[0]['ts'], 'end': receives[0]['ts'], 'bytes': sends[0]['bytes']})
     attempts = [s for s in spans if s['name'] == 'handle_propose']
-    return {'schema':1, 'blocks':blocks, 'spans':rows, 'transfers':transfers, 'quality':quality,
+    return {'schema':1, 'boundary': dict(boundary, relative_ms=(cutoff-first)/1e6) if boundary else None, 'blocks':blocks, 'spans':rows, 'transfers':transfers, 'quality':quality,
             'representatives':representatives, 'eligible':len(eligible), 'warmup':warmup,
             'attempts':len(attempts), 'unbound_attempts':sum(not s.get('block') for s in attempts),
             'coverage':sorted({s['name'] for s in rows}), 'stages':list(STAGES), 'bad_capture':bad_capture,
-            'definition':'Proposal handling start on proposer → first accepted finalization certificate on a validator. Nearest-rank percentiles select actual complete blocks; initial complete blocks are excluded as warmup. When load boundaries are available, both endpoints must fall inside the load window.'}
+            'definition':'Proposal handling start on proposer → first accepted finalization certificate on a validator. Nearest-rank percentiles select actual complete blocks; initial complete blocks are excluded as warmup. When load boundaries are available, both endpoints must fall inside the load window. All views exclude data at or after the first engine persistence backpressure event on either validator; crossing spans are right-censored and crossing aggregates omitted.'}
 
 
-def write_report(paths, out, warmup=5, window=None):
+def write_report(paths, out, warmup=5, window=None, prune=False):
+    if prune:
+        paths, window = prepare_captures(paths, out, window)
     data = build(paths, warmup, window)
     out.mkdir(parents=True, exist_ok=True)
     encoded = json.dumps(data, separators=(',',':')).replace('<', '\\u003c')
@@ -192,9 +224,12 @@ if __name__ == '__main__':
     parser.add_argument('--out', type=Path, required=True)
     parser.add_argument('--warmup', type=int, default=5)
     parser.add_argument('--window', type=Path)
+    parser.add_argument('--prune', action='store_true', help='Publish only pre-backpressure raw captures alongside the report')
     parser.add_argument('captures', type=Path, nargs='+')
     args = parser.parse_args()
-    result = write_report(args.captures, args.out, args.warmup, json.loads(args.window.read_text()) if args.window else None)
+    window = json.loads(args.window.read_text()) if args.window and args.window.exists() else (
+        {'start_ns': 0, 'end_ns': 0, 'stop_reason': 'load_not_started'} if args.window else None)
+    result = write_report(args.captures, args.out, args.warmup, window, args.prune)
     print(f"Lifecycle report: {len(result['blocks'])} blocks, {result['eligible']} complete post-warmup blocks; capture loss: {result['bad_capture']}")
     if result['bad_capture'] or not result['eligible']:
         raise SystemExit(2)
