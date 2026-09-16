@@ -183,11 +183,13 @@ def write_report(paths, out, warmup=5, window=None):
     (out/'index.html').write_text(template.replace('__LIFECYCLE_DATA__', encoded))
     (out/'lifecycle.json').write_text(encoded)
     trace = [{'name':s['name']+(' [aggregate envelope]' if s['count'] else ''), 'cat':s['category'], 'ph':'X', 'ts':s['start']*1000,
-              'dur':(s['end']-s['start'])*1000, 'pid':s['node'], 'tid':f"operation {s['id']}",
+              'dur':(s['end']-s['start'])*1000, 'pid':ord(s['node'][-1])-64, 'tid':2*s['id'] if s['id']>=0 else 1-2*s['id'],
               'args':{'block':s['block'], 'active_wall_ms':s['active_ms'], 'call_count':s['count'], 'elapsed_sum_ms':s['elapsed_sum_ms']}} for s in data['spans']]
+    trace += [{'name':'process_name','ph':'M','pid':index+1,'tid':0,'args':{'name':q['node']}}
+              for index,q in enumerate(data['quality'])]
     for b in data['blocks']:
-        trace += [{'name':e['stage'], 'ph':'i', 's':'p', 'ts':e['ts']*1000, 'pid':e['node'],
-                   'tid':'milestones', 'args':{'block':b['id']}} for e in b['markers']]
+        trace += [{'name':e['stage'], 'ph':'i', 's':'p', 'ts':e['ts']*1000, 'pid':ord(e['node'][-1])-64,
+                   'tid':0, 'args':{'block':b['id']}} for e in b['markers']]
     (out/'perfetto.json').write_text(json.dumps({'traceEvents':trace}, separators=(',',':')))
     return data
 

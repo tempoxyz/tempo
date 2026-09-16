@@ -54,6 +54,9 @@ class ReportTests(unittest.TestCase):
                 self.assertNotIn('000000000000000000000064',text)
                 self.assertNotIn(str(directory),text)
             self.assertNotIn('__LIFECYCLE_DATA__',(out/'index.html').read_text())
+            for event in json.loads((out/'perfetto.json').read_text())['traceEvents']:
+                self.assertIsInstance(event['pid'],int)
+                self.assertIsInstance(event['tid'],int)
 
     def test_load_window_requires_both_endpoints(self):
         with tempfile.TemporaryDirectory() as directory:
