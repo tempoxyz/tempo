@@ -4,7 +4,6 @@
 # Shared build/cache/report helpers are sourced from tempo.nu; the replacement
 # e2e topology stays isolated here.
 source tempo.nu
-source contrib/bench/lifecycle/disk.nu
 source contrib/bench/lifecycle/run-plan.nu
 
 const E2E_A_STATE_PATH = "/var/lib/schelk/a.json"
@@ -1756,15 +1755,13 @@ def "main e2e" [
     }
     let build_binary = { |b|
         if $effective_no_cache {
-            build-in-worktree --no-cache --no-default-features=$no_default_features --extra-rustflags $b.extra_rustflags --bench-features $b.bench_features $b.wt $b.ref_name $profile $b.features $b.sha
+            build-in-worktree --lifecycle-build=$lifecycle --no-cache --no-default-features=$no_default_features --extra-rustflags $b.extra_rustflags --bench-features $b.bench_features $b.wt $b.ref_name $profile $b.features $b.sha
         } else {
-            build-in-worktree --no-default-features=$no_default_features $b.wt $b.ref_name $profile $b.features $b.sha
+            build-in-worktree --lifecycle-build=$lifecycle --no-default-features=$no_default_features $b.wt $b.ref_name $profile $b.features $b.sha
         }
     }
     if $lifecycle {
         for build in $builds {
-            lifecycle-require-disk "before benchmark build, worktree" $build.wt 65536
-            lifecycle-require-disk "before benchmark build, runner root" "/" 65536
             do $build_binary $build
             lifecycle-trim-worktree $build.wt $profile
         }
