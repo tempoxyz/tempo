@@ -4,6 +4,7 @@
 # Shared build/cache/report helpers are sourced from tempo.nu; the replacement
 # e2e topology stays isolated here.
 source tempo.nu
+source contrib/bench/lifecycle/disk.nu
 
 const E2E_A_STATE_PATH = "/var/lib/schelk/a.json"
 const E2E_B_STATE_PATH = "/var/lib/schelk/b.json"
@@ -1089,6 +1090,8 @@ def run-local-e2e-phase [run: record, ctx: record] {
     let lifecycle_report_dir = ($"($ctx.results_dir)/lifecycle/($phase)" | path expand)
     let lifecycle_key = ($"($LOCALNET_DIR)/lifecycle-key-($phase)" | path expand)
     let lifecycle_epoch = if $ctx.lifecycle {
+        lifecycle-report-disk "before capture, results filesystem" $ctx.results_dir
+        lifecycle-report-disk "before capture, runner root" "/"
         mkdir $lifecycle_dir
         ^python3 -c 'import os,sys,time; f=os.open(sys.argv[1],os.O_WRONLY|os.O_CREAT|os.O_EXCL,0o600); os.write(f,os.urandom(32)); os.close(f); print(time.monotonic_ns())' $lifecycle_key | str trim
     } else { "" }
@@ -1592,6 +1595,10 @@ def "main e2e" [
         mkdir $E2E_BLOAT_TMP_DIR
 
         let snapshot_features = (merge-e2e-features $DEFAULT_FEATURES $features)
+        if $lifecycle {
+            lifecycle-report-disk "before snapshot build, workspace" "."
+            lifecycle-report-disk "before snapshot build, runner root" "/"
+        }
         build-tempo --no-default-features=$no_default_features ["tempo"] $profile $snapshot_features
         let tempo_bin = if $profile == "dev" { "./target/debug/tempo" } else { $"./target/($profile)/tempo" }
         let genesis_accounts = ([$accounts 3] | math max) + 1
@@ -1708,6 +1715,10 @@ def "main e2e" [
     if $needs_feature {
         $builds = ($builds | append { wt: $feature_wt, ref_name: $feature, sha: $feature, label: "feature", features: $feature_tbc.features, extra_rustflags: $feature_tbc.extra_rustflags, bench_features: $feature_build_features })
     }
+    if $lifecycle {
+        lifecycle-report-disk "before benchmark build, workspace" "."
+        lifecycle-report-disk "before benchmark build, runner root" "/"
+    }
     $builds | par-each { |b|
         if $effective_no_cache {
             build-in-worktree --no-cache --no-default-features=$no_default_features --extra-rustflags $b.extra_rustflags --bench-features $b.bench_features $b.wt $b.ref_name $profile $b.features $b.sha
@@ -1715,6 +1726,11 @@ def "main e2e" [
             build-in-worktree --no-default-features=$no_default_features $b.wt $b.ref_name $profile $b.features $b.sha
         }
     } | ignore
+    if $lifecycle {
+        for build in $builds {
+            lifecycle-trim-worktree $build.wt $profile
+        }
+    }
     let baseline_tempo = if $needs_baseline { worktree-bin $baseline_wt $profile "tempo" } else { "" }
     let feature_tempo = if $needs_feature { worktree-bin $feature_wt $profile "tempo" } else { "" }
     let regenesis_tempo = if $regenesis_needed {
