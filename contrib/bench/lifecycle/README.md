@@ -273,3 +273,23 @@ They count occurrences, not elapsed wait time or exact switch/fault timestamps.
 A voluntary switch does not identify a specific blocking reason, and the counters
 alone do not prove what caused an elapsed stall or how long I/O took. Several
 causes can coexist. CPU values and wall-clock boundaries are unchanged.
+
+## Proof-worker CPU accounting
+
+Full captures can report current-thread user+system CPU and elapsed wall time
+for each completed account/storage proof-worker invocation. The recorder takes
+two resource samples around `worker.run()`, never per proof job. Receive waits
+and teardown are within that interval; worker construction and error forwarding
+are outside it. Sampling requires a lifecycle capture file and full detail.
+Milestone mode, older captures, unsupported platforms and failed samples remain
+unmeasured. These extra samples have overhead and are held identical on both
+sides of an optimization comparison.
+
+The block viewer groups recorded completions by validator and proof type,
+retaining each completion in `proof_worker_totals` with its anonymous span ID.
+It shows measured/unavailable/failed counts and sums measured worker CPU. This
+is partial accounting when any worker lacks a completion before the cutoff;
+missing workers are not zero. CPU and wall values are preserved even when a
+small interval's microsecond-resolution CPU delta exceeds elapsed wall time.
+Worker wall intervals overlap one another and execution, so neither their wall
+sum nor CPU plus execution wall is a block latency decomposition.

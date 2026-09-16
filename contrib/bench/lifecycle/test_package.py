@@ -99,6 +99,28 @@ class PackageTests(unittest.TestCase):
             self.assertIn('causal ancestor', ancestor['args']['association'])
 
     @unittest.skipUnless(shutil.which('node'), 'Node.js is required for viewer helper regression')
+    def test_worker_cpu_summary_preserves_unavailable_zero_and_failure(self):
+        template = Path(__file__).with_name('viewer.html').read_text()
+        helper = template.split('// BEGIN WORKER_CPU_HELPER')[1].split('// END WORKER_CPU_HELPER')[0]
+        script = "const ms=n=>n.toFixed(3)+' ms';" + helper + """
+const base={node:'Validator A',stage:'proof_storage_worker_totals',worker_success:1};
+const unavailable={...base,worker_cpu_measured:0};
+const zero={...base,worker_cpu_measured:1,worker_thread_cpu_ns:0};
+const measured={...base,worker_cpu_measured:1,worker_thread_cpu_ns:12000000,worker_run_ns:10000000};
+console.log(JSON.stringify([[],[unavailable],[zero],[zero,unavailable,{...measured,worker_success:0}]].map(proofWorkerSummary)));
+"""
+        absent, unavailable, zero, mixed = json.loads(subprocess.check_output(['node', '-e', script], text=True))
+        self.assertIn('Not measured', absent)
+        self.assertIn('1 unavailable', unavailable)
+        self.assertIn('CPU unmeasured', unavailable)
+        self.assertIn('CPU 0.000 ms', zero)
+        self.assertIn('3 recorded completions', mixed)
+        self.assertIn('2 measured', mixed)
+        self.assertIn('1 unavailable', mixed)
+        self.assertIn('1 failed', mixed)
+        self.assertIn('CPU 12.000 ms', mixed)
+
+    @unittest.skipUnless(shutil.which('node'), 'Node.js is required for viewer helper regression')
     def test_viewer_resource_counts_are_not_durations_and_missing_is_not_zero(self):
         template = Path(__file__).with_name('viewer.html').read_text()
         helper = template.split('// BEGIN EXECUTION_LOOP_HELPER')[1].split('// END EXECUTION_LOOP_HELPER')[0]
