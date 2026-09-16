@@ -1,7 +1,3 @@
-//! An upstream provider to be used in e2e tests The [`jsonrpsee`] stack used by
-//! the standard websocket based provider requires a tokio runtime, which the tests
-//! runtime does not provide.
-
 use std::{sync::Arc, time::Duration};
 
 use commonware_consensus::{Reporter, types::Height};
@@ -28,28 +24,7 @@ use crate::{
     utils::OptionFuture,
 };
 
-use super::ingress::{Mailbox, Message};
-
-pub struct Config {
-    pub execution_node: Arc<TempoFullNode>,
-    pub feed: FeedStateHandle,
-}
-
-pub fn init<TContext>(context: TContext, config: Config) -> (Actor<TContext>, Mailbox) {
-    let (tx, rx) = mpsc::unbounded_channel();
-    let mailbox = Mailbox::new(tx);
-
-    let actor = Actor {
-        context: ContextCell::new(context),
-        config,
-        event_stream: stream::empty::<Result<Event, BroadcastStreamRecvError>>()
-            .boxed()
-            .fuse(),
-        mailbox: rx,
-        waiters: Vec::new(),
-    };
-    (actor, mailbox)
-}
+use super::{super::ingress::Message, Config};
 
 pub struct Actor<TContext> {
     context: ContextCell<TContext>,
@@ -57,6 +32,24 @@ pub struct Actor<TContext> {
     event_stream: Fuse<BoxStream<'static, Result<Event, BroadcastStreamRecvError>>>,
     mailbox: mpsc::UnboundedReceiver<Message>,
     waiters: Vec<Message>,
+}
+
+impl<TContext> Actor<TContext> {
+    pub(super) fn new(
+        context: TContext,
+        config: Config,
+        mailbox: mpsc::UnboundedReceiver<Message>,
+    ) -> Self {
+        Self {
+            context: ContextCell::new(context),
+            config,
+            event_stream: stream::empty::<Result<Event, BroadcastStreamRecvError>>()
+                .boxed()
+                .fuse(),
+            mailbox,
+            waiters: Vec::new(),
+        }
+    }
 }
 
 impl<TContext> Actor<TContext>
