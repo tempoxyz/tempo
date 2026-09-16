@@ -254,3 +254,22 @@ is just the summed EVM transaction calls and is **not** the matching wall scope
 for this CPU measurement. Local proposal builds and the parallel BAL replay path
 do not emit these loop totals. A wall/CPU gap can indicate time this thread was
 not executing, but does not identify scheduler, kernel or I/O causes.
+
+Supplemental execution-loop resources reuse those same two thread snapshots,
+without extra or per-transaction syscalls. `execution_resources_measured` is 1
+when all six optional deltas are available, or 0 with their fields omitted when
+unsupported or sampling fails. Older CPU-only captures show resource counters
+as **unmeasured**. Measured zero is preserved. Fields are:
+
+- `execution_voluntary_context_switches` and `execution_involuntary_context_switches`.
+- `execution_minor_page_faults` and `execution_major_page_faults`.
+- `execution_block_input_operations` and `execution_block_output_operations`:
+  OS-reported filesystem input/output operation counts, not blockchain block
+  counts, bytes, or counts of every read/write syscall.
+
+These are deltas on the same execution thread and loop interval as the CPU
+measurement; they exclude other workers and block initialization/finalization.
+They count occurrences, not elapsed wait time or exact switch/fault timestamps.
+A voluntary switch does not identify a specific blocking reason, and the counters
+alone do not prove what caused an elapsed stall or how long I/O took. Several
+causes can coexist. CPU values and wall-clock boundaries are unchanged.
