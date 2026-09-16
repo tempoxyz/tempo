@@ -67,6 +67,17 @@ class PerfettoTests(unittest.TestCase):
         with self.assertRaisesRegex(ValueError,'not in this capture'):
             trace_events(data,999)
 
+    def test_legacy_reference_retention_is_unknown(self):
+        data = sample([(0, 1)])
+        data['spans'][0]['retained_after_operation_ms'] = 0
+        span = next(e for e in trace_events(data) if e['ph'] == 'X')
+        self.assertIsNone(span['args']['reference_right_censored'])
+        self.assertIsNone(span['args']['retained_after_operation_ms'])
+        data['spans'][0]['reference_right_censored'] = False
+        span = next(e for e in trace_events(data) if e['ph'] == 'X')
+        self.assertFalse(span['args']['reference_right_censored'])
+        self.assertEqual(span['args']['retained_after_operation_ms'], 0)
+
     def test_invalid_capture_removes_stale_percentile_exports(self):
         data = sample([(0,1)])
         with tempfile.TemporaryDirectory() as directory:
@@ -75,6 +86,8 @@ class PerfettoTests(unittest.TestCase):
             self.assertTrue((out/'perfetto-p99.json').exists())
             invalid = copy.deepcopy(data);invalid['bad_capture'] = True
             write_exports(invalid,out)
+            self.assertFalse((out/'perfetto.json').exists())
+            write_exports(invalid,out,full=True)
             self.assertTrue((out/'perfetto.json').exists())
             self.assertFalse((out/'perfetto-p99.json').exists())
             write_exports(data,out,1)

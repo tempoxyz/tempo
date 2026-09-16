@@ -4,7 +4,7 @@ import argparse
 import json
 import math
 from pathlib import Path
-from perfetto import write_exports
+from report_package import write_package
 from backpressure import first_boundary, prepare_captures
 
 BLOCK_FIELDS = ('block_hash', 'hash', 'digest', 'proposal', 'payload')
@@ -310,10 +310,8 @@ def write_report(paths, out, warmup=5, window=None, prune=False):
     data = build(paths, warmup, window)
     out.mkdir(parents=True, exist_ok=True)
     encoded = json.dumps(data, separators=(',',':')).replace('<', '\\u003c')
-    template = Path(__file__).with_name('viewer.html').read_text()
-    (out/'index.html').write_text(template.replace('__LIFECYCLE_DATA__', encoded))
     (out/'lifecycle.json').write_text(encoded)
-    write_exports(data, out)
+    write_package(data, out)
     return data
 
 
