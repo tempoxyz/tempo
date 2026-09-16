@@ -994,6 +994,16 @@ def build-valscope-static-reports [
     }
 }
 
+# Sampling happens outside the timed workload and is identical for both binaries.
+def snapshot-e2e-file-cache [ctx: record, phase: string, point: string] {
+    let result = (sudo python3 .github/scripts/bench-cache-snapshot.py
+        --phase $phase --point $point --a $ctx.a.datadir --b $ctx.b.datadir
+        --output $"($ctx.results_dir)/cache-($phase)-($point).json" | complete)
+    if $result.exit_code != 0 {
+        print $"Warning: cache residency snapshot failed for ($phase)/($point): ($result.stderr)"
+    }
+}
+
 def run-local-e2e-phase [run: record, ctx: record] {
     let phase = $run.phase
     print $"=== Starting local e2e phase: ($phase) ==="
@@ -1141,6 +1151,7 @@ def run-local-e2e-phase [run: record, ctx: record] {
     let submit_rpc_url = [$a_rpc $b_rpc] | str join ","
 
     if $phase_exit == 0 {
+        snapshot-e2e-file-cache $ctx $phase "before"
         let phase_started_ms = ((date now | into int) / 1_000_000 | into int)
         let initial_db_size_bytes = (e2e-db-size-bytes $ctx.a.datadir)
         let sender_exit = (try {
@@ -1193,6 +1204,7 @@ def run-local-e2e-phase [run: record, ctx: record] {
             }
         }
         let phase_finished_ms = ((date now | into int) / 1_000_000 | into int)
+        snapshot-e2e-file-cache $ctx $phase "after"
         {
             phase: $phase
             started_ms: $phase_started_ms
