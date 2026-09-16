@@ -10,8 +10,7 @@ use commonware_macros::test_traced;
 use commonware_runtime::{Runner as _, deterministic};
 
 use super::harness::{
-    ForkchoiceStateExt as _, GENESIS, Harness, HarnessOptions, STARTUP_FCU, built_payload,
-    make_block, round,
+    ForkchoiceStateExt as _, GENESIS, Harness, STARTUP_FCU, built_payload, make_block, round,
 };
 
 #[test_traced]
@@ -325,10 +324,8 @@ fn stale_body_fetch_is_dropped_when_the_pending_head_moves() {
 }
 
 #[test_traced]
-fn rejected_pending_head_delivery_is_retried() {
+fn rejected_pending_head_delivery_waits_for_a_newer_context() {
     deterministic::Runner::default().start(|context| async move {
-        // The convergence retry timer wakes the actor without a new request
-        // or a forkchoice heartbeat.
         let h = Harness::start_at_genesis(&context);
 
         let b1 = make_block(1, 1, GENESIS);
@@ -347,59 +344,47 @@ fn rejected_pending_head_delivery_is_retried() {
         h.wait_until(|| h.marshal.fulfill_subscription(d1, b1.clone()))
             .await;
 
-        // The forward is rejected; the block is withheld from retries.
+        // The forward is rejected. The execution layer would answer INVALID
+        // again from its cache, so no timer retries the block.
         h.wait_until(|| h.execution.new_payloads() == vec![d1])
             .await;
-        h.run_for(Duration::from_secs(5)).await;
+        h.run_for(Duration::from_secs(30)).await;
         assert_eq!(
             h.execution.new_payloads(),
             vec![d1],
-            "a rejected block must not be retried in a tight loop",
+            "a rejected block must not be retried on its own",
         );
         assert_eq!(h.execution.head(), GENESIS);
 
-        // After the retry delay (10s) the block becomes forwardable again.
-        h.run_for(Duration::from_secs(6)).await;
+        // A newer consensus context selecting the same head restarts the
+        // delivery from the retained body.
+        drop(h.build(round(3), d1));
         h.wait_until(|| h.execution.head() == d1).await;
         assert_eq!(h.execution.new_payloads(), vec![d1, d1]);
-        h.wait_until(|| h.execution.head() == d1).await;
+        assert_eq!(h.marshal.subscribe_log().len(), 1);
     });
 }
 
 #[test_traced]
-fn new_payload_transport_error_is_withheld_then_retried() {
+fn new_payload_engine_error_is_fatal() {
     deterministic::Runner::default().start(|context| async move {
-        let h = Harness::builder()
-            .harness_options(HarnessOptions {
-                fcu_heartbeat_interval: Duration::from_millis(200),
-                ..Default::default()
-            })
-            .start(&context);
+        let h = Harness::start_at_genesis(&context);
 
         let b1 = make_block(1, 1, GENESIS);
         let d1 = b1.digest();
-        h.execution.script_new_payload(d1, Err("connection closed"));
         h.execution
-            .script_new_payload(d1, Ok(PayloadStatusEnum::Valid));
+            .script_new_payload(d1, Err("engine task stopped"));
 
         // The canceled request still selects the independent convergence target.
         drop(h.build(round(2), d1));
         h.wait_until(|| h.marshal.fulfill_subscription(d1, b1.clone()))
             .await;
 
-        h.wait_until(|| h.execution.new_payloads() == vec![d1])
-            .await;
-        h.run_for(Duration::from_secs(5)).await;
-        assert_eq!(
-            h.execution.new_payloads(),
-            vec![d1],
-            "a transport failure must not trigger a tight retry loop",
-        );
-
-        h.run_for(Duration::from_secs(6)).await;
-        h.wait_until(|| h.execution.head() == d1).await;
-        assert_eq!(h.execution.head(), d1);
-        assert_eq!(h.execution.new_payloads(), vec![d1, d1]);
+        h.actor
+            .await
+            .expect("actor should shut down cleanly on a failed convergence delivery");
+        assert_eq!(h.execution.new_payloads(), vec![d1]);
+        assert_eq!(h.execution.head(), GENESIS);
     });
 }
 

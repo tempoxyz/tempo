@@ -557,50 +557,82 @@ fn syncing_redelivers_the_parent_even_if_a_previous_verification_said_valid() {
 }
 
 #[test_traced]
-fn an_ancestors_verdict_does_not_replace_the_candidates_verdict() {
-    for ancestor_status in [
-        PayloadStatusEnum::Valid,
-        PayloadStatusEnum::Invalid {
-            validation_error: "bad ancestor".into(),
-        },
-    ] {
-        deterministic::Runner::default().start(|context| async move {
-            let h = Harness::start_at_genesis(&context);
-            // Keep independent HEAD convergence out of the verdict check.
-            drop(h.build(round(3), GENESIS));
-            let parent = make_block(1, 1, GENESIS);
-            let candidate = make_block(2, 2, parent.digest());
-            let (parent_digest, candidate_digest) = (parent.digest(), candidate.digest());
+fn a_valid_ancestor_leaves_the_verdict_to_the_candidate() {
+    deterministic::Runner::default().start(|context| async move {
+        let h = Harness::start_at_genesis(&context);
+        // Keep independent HEAD convergence out of the verdict check.
+        drop(h.build(round(3), GENESIS));
+        let parent = make_block(1, 1, GENESIS);
+        let candidate = make_block(2, 2, parent.digest());
+        let (parent_digest, candidate_digest) = (parent.digest(), candidate.digest());
+        h.execution
+            .script_new_payload(candidate_digest, Ok(PayloadStatusEnum::Syncing));
+        h.execution.script_new_payload(
+            candidate_digest,
+            Ok(PayloadStatusEnum::Invalid {
+                validation_error: "invalid candidate".into(),
+            }),
+        );
+        h.execution
+            .script_new_payload(parent_digest, Ok(PayloadStatusEnum::Valid));
+        let mut verify = Box::pin(h.verify(round(2), candidate));
+        assert!(futures::poll!(&mut verify).is_pending());
+        h.wait_until(|| {
+            h.marshal
+                .fulfill_subscription(parent_digest, parent.clone())
+        })
+        .await;
+        assert!(verify.await.unwrap().is_none());
+        assert_eq!(
+            h.execution.new_payloads(),
+            vec![candidate_digest, parent_digest, candidate_digest]
+        );
+        assert!(
             h.execution
-                .script_new_payload(candidate_digest, Ok(PayloadStatusEnum::Syncing));
-            h.execution.script_new_payload(
-                candidate_digest,
-                Ok(PayloadStatusEnum::Invalid {
-                    validation_error: "invalid candidate".into(),
-                }),
-            );
+                .fcus()
+                .iter()
+                .all(|(head, _, _)| *head != candidate_digest)
+        );
+    });
+}
+
+#[test_traced]
+fn an_invalid_ancestor_is_the_candidates_verdict() {
+    deterministic::Runner::default().start(|context| async move {
+        let h = Harness::start_at_genesis(&context);
+        // Keep independent HEAD convergence out of the verdict check.
+        drop(h.build(round(3), GENESIS));
+        let parent = make_block(1, 1, GENESIS);
+        let candidate = make_block(2, 2, parent.digest());
+        let (parent_digest, candidate_digest) = (parent.digest(), candidate.digest());
+        h.execution
+            .script_new_payload(candidate_digest, Ok(PayloadStatusEnum::Syncing));
+        h.execution.script_new_payload(
+            parent_digest,
+            Ok(PayloadStatusEnum::Invalid {
+                validation_error: "bad ancestor".into(),
+            }),
+        );
+        let mut verify = Box::pin(h.verify(round(2), candidate));
+        assert!(futures::poll!(&mut verify).is_pending());
+        h.wait_until(|| {
+            h.marshal
+                .fulfill_subscription(parent_digest, parent.clone())
+        })
+        .await;
+        assert!(verify.await.unwrap().is_none());
+        assert_eq!(
+            h.execution.new_payloads(),
+            vec![candidate_digest, parent_digest],
+            "the rejected ancestor decides; the candidate is not probed again",
+        );
+        assert!(
             h.execution
-                .script_new_payload(parent_digest, Ok(ancestor_status));
-            let mut verify = Box::pin(h.verify(round(2), candidate));
-            assert!(futures::poll!(&mut verify).is_pending());
-            h.wait_until(|| {
-                h.marshal
-                    .fulfill_subscription(parent_digest, parent.clone())
-            })
-            .await;
-            assert!(verify.await.unwrap().is_none());
-            assert_eq!(
-                h.execution.new_payloads(),
-                vec![candidate_digest, parent_digest, candidate_digest]
-            );
-            assert!(
-                h.execution
-                    .fcus()
-                    .iter()
-                    .all(|(head, _, _)| *head != candidate_digest)
-            );
-        });
-    }
+                .fcus()
+                .iter()
+                .all(|(head, _, _)| *head != candidate_digest)
+        );
+    });
 }
 
 #[test_traced]
@@ -809,21 +841,23 @@ fn dropped_ancestor_fetch_fails_verification() {
 }
 
 #[test_traced]
-fn an_ancestor_transport_error_fails_only_the_verification() {
+fn an_ancestor_engine_error_is_fatal() {
     deterministic::Runner::default().start(|context| async move {
         let h = Harness::start_at_genesis(&context);
         let parent = make_block(1, 1, GENESIS);
         let candidate = make_block(2, 2, parent.digest());
         let p = parent.digest();
-        h.execution.script_new_payload(p, Err("transport error"));
+        h.execution
+            .script_new_payload(p, Err("engine task stopped"));
         let mut verify = Box::pin(h.verify(round(2), candidate));
         assert!(futures::poll!(&mut verify).is_pending());
         h.wait_until(|| h.marshal.fulfill_subscription(p, parent.clone()))
             .await;
         let _ = verify
             .await
-            .expect_err("transport failure must release the request");
-        let sibling = make_block(3, 1, GENESIS);
-        h.verify(round(3), sibling).await.unwrap().unwrap();
+            .expect_err("a failed engine call must not produce a verdict");
+        h.actor
+            .await
+            .expect("actor should shut down cleanly on a failed ancestor delivery");
     });
 }
