@@ -142,6 +142,27 @@ impl Call {
     fn size(&self) -> usize {
         size_of::<Self>() + self.input.len()
     }
+
+    /// Decode a call list without reserving spare elements for the single-call case.
+    fn decode_list(buf: &mut &[u8]) -> alloy_rlp::Result<Vec<Self>> {
+        let mut payload = alloy_rlp::Header::decode_bytes(buf, true)?;
+        if payload.is_empty() {
+            return Ok(Vec::new());
+        }
+
+        let first = Self::decode(&mut payload)?;
+        let mut calls = if payload.is_empty() {
+            Vec::with_capacity(1)
+        } else {
+            // Preserve the standard Vec decoder's growth for multi-call transactions.
+            Vec::new()
+        };
+        calls.push(first);
+        while !payload.is_empty() {
+            calls.push(Self::decode(&mut payload)?);
+        }
+        Ok(calls)
+    }
 }
 
 impl Encodable for Call {
@@ -582,7 +603,7 @@ impl TempoTransaction {
         let max_priority_fee_per_gas = Decodable::decode(buf)?;
         let max_fee_per_gas = Decodable::decode(buf)?;
         let gas_limit = Decodable::decode(buf)?;
-        let calls = Decodable::decode(buf)?;
+        let calls = Call::decode_list(buf)?;
         let access_list = Decodable::decode(buf)?;
         let nonce_key = Decodable::decode(buf)?;
         let nonce = Decodable::decode(buf)?;
@@ -2435,6 +2456,107 @@ mod compact_tests {
 
             let (decoded, _) = SignatureType::from_compact(&[expected_byte], 1);
             assert_eq!(decoded, variant);
+        }
+    }
+}
+
+#[cfg(test)]
+mod call_list_tests {
+    use super::*;
+
+    fn calls(count: usize, input_len: usize) -> Vec<Call> {
+        (0..count)
+            .map(|index| Call {
+                to: TxKind::Call(Address::repeat_byte(index as u8)),
+                value: U256::from(index),
+                input: Bytes::from(vec![0x42; input_len]),
+            })
+            .collect()
+    }
+
+    fn assert_decoder_equivalence(encoded: &[u8]) {
+        let mut old_input = encoded;
+        let mut new_input = encoded;
+        let old = Vec::<Call>::decode(&mut old_input);
+        let new = Call::decode_list(&mut new_input);
+        assert_eq!(new, old, "input: {encoded:?}");
+        assert_eq!(new_input, old_input, "consumed bytes differ: {encoded:?}");
+        if let (Ok(old), Ok(new)) = (old, new) {
+            if new.len() == 1 {
+                assert_eq!(new.capacity(), 1);
+            } else {
+                assert_eq!(new.capacity(), old.capacity());
+            }
+        }
+    }
+
+    #[test]
+    fn call_list_cardinality_capacity_and_owned_bytes() {
+        for count in [0, 1, 2, 3, 4, 5, 8, 9, 64] {
+            for input_len in [0, 1, 55, 56, 255, 256, 4096] {
+                let expected = calls(count, input_len);
+                let mut encoded = alloy_rlp::encode(&expected);
+                assert_decoder_equivalence(&encoded);
+                let decoded = Call::decode_list(&mut encoded.as_slice()).unwrap();
+                encoded.fill(0);
+                drop(encoded);
+                assert_eq!(decoded, expected);
+            }
+        }
+    }
+
+    #[test]
+    fn call_list_malformed_and_consumption_equivalence() {
+        assert_decoder_equivalence(&[]);
+        for first in 0..=255 {
+            assert_decoder_equivalence(&[first]);
+            for second in 0..=255 {
+                assert_decoder_equivalence(&[first, second]);
+            }
+        }
+        for count in [1, 2, 5] {
+            let encoded = alloy_rlp::encode(calls(count, 56));
+            // Every truncation plus noncanonical/list/string/length changes at every byte.
+            for end in 0..encoded.len() {
+                assert_decoder_equivalence(&encoded[..end]);
+            }
+            for index in 0..encoded.len() {
+                for byte in [
+                    0, 0x7f, 0x80, 0x81, 0xb7, 0xb8, 0xbf, 0xc0, 0xc1, 0xf7, 0xf8, 0xff,
+                ] {
+                    let mut malformed = encoded.clone();
+                    malformed[index] = byte;
+                    assert_decoder_equivalence(&malformed);
+                }
+            }
+            let mut with_trailing = encoded;
+            with_trailing.extend_from_slice(&[0x80, 0xc0]);
+            assert_decoder_equivalence(&with_trailing);
+        }
+    }
+
+    #[test]
+    fn call_list_signed_transaction_hash_and_wire_roundtrip() {
+        for count in [1, 2, 5] {
+            let tx = TempoTransaction {
+                chain_id: 1337,
+                gas_limit: 300_000,
+                calls: calls(count, 68),
+                ..Default::default()
+            };
+            let signed = AASigned::new_unhashed(tx, TempoSignature::default());
+            let mut encoded = Vec::new();
+            signed.rlp_encode(&mut encoded);
+            let decoded = AASigned::rlp_decode(&mut encoded.as_slice()).unwrap();
+            assert_eq!(decoded.tx(), signed.tx());
+            assert_eq!(decoded.signature(), signed.signature());
+            assert_eq!(decoded.hash(), signed.hash());
+            let mut reencoded = Vec::new();
+            decoded.rlp_encode(&mut reencoded);
+            assert_eq!(reencoded, encoded);
+            if count == 1 {
+                assert_eq!(decoded.tx().calls.capacity(), 1);
+            }
         }
     }
 }
