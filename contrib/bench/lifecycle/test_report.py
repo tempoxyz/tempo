@@ -26,6 +26,93 @@ def fixture(path, lost=0, close=True):
 
 
 class ReportTests(unittest.TestCase):
+    def test_execution_resource_counts_preserve_unavailable_and_cutoff(self):
+        counters = [
+            'execution_voluntary_context_switches', 'execution_involuntary_context_switches',
+            'execution_minor_page_faults', 'execution_major_page_faults',
+            'execution_block_input_operations', 'execution_block_output_operations',
+        ]
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory)/'a.jsonl'; fixture(path)
+            records = [json.loads(line) for line in path.read_text().splitlines()]
+            values = [
+                dict(execution_resources_measured=1, **dict(zip(counters, range(6)))),
+                dict(execution_resources_measured=1, **dict.fromkeys(counters, 0)),
+                dict(execution_resources_measured=0),
+                {},  # CPU-capable older capture without supplemental counters.
+            ]
+            records[-1:-1] = [dict(type='event', id=i, ts=i*1_000_000_000+200,
+                                  fields=dict(stage='execution_totals', execution_loop_ns=100,
+                                              execution_cpu_measured=1, execution_thread_cpu_ns=80, **fields))
+                              for i, fields in enumerate(values, 1)]
+            path.write_text('\n'.join(map(json.dumps, records)))
+            result = write_report([path], Path(directory)/'report', warmup=0)
+            for block, fields in zip(result['blocks'], values):
+                self.assertEqual(block['execution_totals'][0],
+                                 dict(node='Validator A', execution_loop_ns=100,
+                                      execution_cpu_measured=1, execution_thread_cpu_ns=80, **fields))
+            pruned = build([path], warmup=0, window={'backpressure': {'ts': 1_000_000_200, 'node': 'Validator A'}})
+            self.assertTrue(all(not b['execution_totals'] for b in pruned['blocks']))
+
+    def test_execution_cpu_totals_preserve_unmeasured_and_zero(self):
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory)/'a.jsonl'; fixture(path)
+            records = [json.loads(line) for line in path.read_text().splitlines()]
+            values = [
+                dict(execution_loop_ns=70, execution_cpu_measured=1, execution_thread_cpu_ns=50),
+                dict(execution_loop_ns=80, execution_cpu_measured=1, execution_thread_cpu_ns=0),
+                dict(execution_loop_ns=90, execution_cpu_measured=0),
+                {},  # Historical recording without CPU instrumentation.
+            ]
+            records[-1:-1] = [dict(type='event', id=i, ts=i*1_000_000_000+200,
+                                  fields=dict(stage='execution_totals', execution_ns=40, **fields))
+                              for i, fields in enumerate(values, 1)]
+            path.write_text('\n'.join(map(json.dumps, records)))
+            result = write_report([path], Path(directory)/'report', warmup=0)
+            for block, fields in zip(result['blocks'], values):
+                totals = block['execution_totals'][0]
+                self.assertEqual(totals, dict(node='Validator A', execution_ns=40, **fields))
+            # The same execution_totals event must be excluded at the strict cutoff.
+            cutoff = 1_000_000_200
+            pruned = build([path], warmup=0, window={'backpressure': {'ts': cutoff, 'node': 'Validator A'}})
+            self.assertTrue(all(not b['execution_totals'] for b in pruned['blocks']))
+
+    def test_milestone_detail_preserves_population_and_marks_unmeasured_polls(self):
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory)/'a.jsonl'; fixture(path)
+            original = build([path], warmup=0, expected_detail='full')
+            records = [json.loads(line) for line in path.read_text().splitlines()]
+            records[0]['detail'] = 'milestones'
+            path.write_text('\n'.join(map(json.dumps, records)))
+            out = Path(directory)/'report'
+            reduced = write_report([path], out, warmup=0, expected_detail='milestones')
+            self.assertFalse(reduced['bad_capture'])
+            self.assertEqual(reduced['blocks'], original['blocks'])
+            self.assertEqual(reduced['attempt_details'], original['attempt_details'])
+            self.assertEqual(reduced['representatives'], original['representatives'])
+            self.assertTrue(all(s['active_ms'] is None for s in reduced['spans']))
+            self.assertIn('Milestone-only capture', (out/'index.html').read_text())
+            self.assertIn('not recorded in milestone-only capture', (out/'block-50.html').read_text())
+            self.assertIn('not recorded in milestone-only capture', (out/'perfetto-p50.json').read_text())
+
+    def test_wrong_unknown_or_mixed_detail_disables_percentiles(self):
+        with tempfile.TemporaryDirectory() as directory:
+            a = Path(directory)/'a.jsonl'; fixture(a)
+            records = [json.loads(line) for line in a.read_text().splitlines()]
+            # Legacy recorder headers are full, never silently accepted as milestones.
+            self.assertTrue(build([a], expected_detail='milestones')['bad_capture'])
+            self.assertFalse(build([a], expected_detail='full')['bad_capture'])
+            for detail in ('unknown', 'milestones'):
+                b = Path(directory)/'b.jsonl'
+                b.write_text('\n'.join(map(json.dumps, [dict(records[0], detail=detail), *records[1:]])))
+                result = build([a, b], warmup=0)
+                self.assertTrue(result['bad_capture'])
+                self.assertFalse(result['detail_valid'])
+                self.assertTrue(all(v is None for v in result['representatives'].values()))
+            records[0]['detail'] = 'unknown'
+            a.write_text('\n'.join(map(json.dumps, records)))
+            self.assertTrue(build([a])['bad_capture'])
+
     def test_explicit_completion_precedes_retained_child_close(self):
         records = [
             {'type':'header','schema':1},

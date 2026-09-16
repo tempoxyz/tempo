@@ -99,6 +99,53 @@ class PackageTests(unittest.TestCase):
             self.assertIn('causal ancestor', ancestor['args']['association'])
 
     @unittest.skipUnless(shutil.which('node'), 'Node.js is required for viewer helper regression')
+    def test_viewer_resource_counts_are_not_durations_and_missing_is_not_zero(self):
+        template = Path(__file__).with_name('viewer.html').read_text()
+        helper = template.split('// BEGIN EXECUTION_LOOP_HELPER')[1].split('// END EXECUTION_LOOP_HELPER')[0]
+        script = "const ms=n=>n.toFixed(3)+' ms';" + helper + """
+const zero={execution_resources_measured:1,execution_voluntary_context_switches:0,
+  execution_involuntary_context_switches:0,execution_minor_page_faults:0,
+  execution_major_page_faults:0,execution_block_input_operations:0,execution_block_output_operations:0};
+console.log(JSON.stringify([
+  {}, {execution_resources_measured:0}, zero,
+  {...zero,execution_voluntary_context_switches:7,execution_minor_page_faults:13,execution_block_input_operations:19},
+  {...zero,execution_major_page_faults:null},
+  {execution_loop_ns:10000000,execution_cpu_measured:1,execution_thread_cpu_ns:12000000}
+].map(executionLoopSummary)));
+"""
+        old, unavailable, zero, counts, incomplete, cpu = json.loads(subprocess.check_output(['node', '-e', script], text=True))
+        for text in (old, unavailable, incomplete):
+            self.assertIn('loop resource counters unmeasured', text)
+        self.assertIn('voluntary/involuntary context switches 0/0', zero)
+        self.assertIn('minor/major page faults 13/0', counts)
+        self.assertIn('filesystem input/output operations 19/0', counts)
+        self.assertIn('counts, not wait durations or proof of a cause', counts)
+        self.assertIn('loop thread CPU 12.000 ms', cpu)
+        self.assertIn('loop resource counters unmeasured', cpu)
+
+    @unittest.skipUnless(shutil.which('node'), 'Node.js is required for viewer helper regression')
+    def test_viewer_cpu_distinguishes_unmeasured_from_zero(self):
+        template = Path(__file__).with_name('viewer.html').read_text()
+        helper = template.split('// BEGIN EXECUTION_LOOP_HELPER')[1].split('// END EXECUTION_LOOP_HELPER')[0]
+        script = "const ms=n=>n.toFixed(3)+' ms';" + helper + """
+console.log(JSON.stringify([
+  {},
+  {execution_loop_ns:10000000,execution_cpu_measured:0},
+  {execution_loop_ns:10000000,execution_cpu_measured:1,execution_thread_cpu_ns:0},
+  {execution_loop_ns:10000000,execution_cpu_measured:1,execution_thread_cpu_ns:12000000}
+].map(executionLoopSummary)));
+"""
+        old, missing, zero, larger = json.loads(subprocess.check_output(['node', '-e', script], text=True))
+        self.assertIn('loop wall unmeasured', old)
+        self.assertIn('loop thread CPU unmeasured', old)
+        self.assertIn('loop wall 10.000 ms', missing)
+        self.assertIn('loop thread CPU unmeasured', missing)
+        self.assertIn('loop thread CPU 0.000 ms', zero)
+        # Preserve the measured values independently, without clamping to wall time.
+        self.assertIn('loop wall 10.000 ms', larger)
+        self.assertIn('loop thread CPU 12.000 ms', larger)
+
+    @unittest.skipUnless(shutil.which('node'), 'Node.js is required for viewer helper regression')
     def test_viewer_reveals_nonoverlapping_causal_ancestors_and_extends_axis(self):
         template = Path(__file__).with_name('viewer.html').read_text()
         helpers = template.split('// BEGIN FOCUSED_CONTEXT_HELPERS')[1].split('// END FOCUSED_CONTEXT_HELPERS')[0]

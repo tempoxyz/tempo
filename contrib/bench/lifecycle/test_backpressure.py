@@ -15,6 +15,29 @@ def marker(ts):
 
 
 class BackpressureTests(unittest.TestCase):
+    def test_milestone_capture_prunes_boundary_and_preserves_declared_detail(self):
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory)/'a.jsonl'; fixture(path)
+            records = [json.loads(line) for line in path.read_text().splitlines()]
+            records[0]['detail'] = 'milestones'
+            cutoff = 50_025_000_000
+            records.insert(-1, marker(cutoff))
+            path.write_text('\n'.join(map(json.dumps, records)))
+            out = Path(directory)/'out'
+            result = write_report([path], out, 0, prune=True, expected_detail='milestones')
+            self.assertFalse(result['bad_capture'])
+            self.assertEqual(result['eligible'], 49)
+            self.assertEqual(result['capture_detail'], 'milestones')
+            self.assertEqual(result['quality'][0]['cutoff_spans'], 1)
+            for capture in out.glob('*.jsonl'):
+                kept = [json.loads(line) for line in capture.read_text().splitlines()]
+                self.assertEqual(kept[0]['detail'], 'milestones')
+                self.assertTrue(all(e['ts'] < cutoff for e in kept if e['type'] not in ('header', 'footer')))
+            rebuilt = build(list(out.glob('*.jsonl')), 0,
+                            json.loads((out/'window.json').read_text()), expected_detail='milestones')
+            self.assertEqual(rebuilt['blocks'], result['blocks'])
+            self.assertFalse(rebuilt['bad_capture'])
+
     def test_partial_record_and_earliest_source_time_across_validators(self):
         with tempfile.TemporaryDirectory() as directory:
             a, b = Path(directory)/'a.jsonl', Path(directory)/'b.jsonl'

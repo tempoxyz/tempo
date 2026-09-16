@@ -37,6 +37,36 @@ Separate workflow jobs can land on different machines even with identical
 runner labels. Their operation counts can help identify work changes, but do
 not treat cross-runner timing differences as controlled optimization speedups.
 
+## Reduced instrumentation for optimization comparisons
+
+Select **profiling: lifecycle-milestones**, or pass
+`--lifecycle --lifecycle-detail milestones` directly, to retain coarse block and
+attempt milestones while disabling detailed proof, storage, transport and poll
+recording at the subscriber. The node reads `TEMPO_LIFECYCLE_DETAIL=milestones`;
+the default is `full`. Both revisions must support the requested detail mode.
+The harness checks recorder headers and rejects a silent fallback to full detail,
+unknown detail values or mixed modes across validators.
+
+This mode keeps the same source-timestamped first-backpressure stop, raw artifact
+pruning, pseudonyms, loss counters, telemetry suppression and private-only upload
+path. Reports explicitly identify the reduced coverage. Active wall time is
+unmeasured, not zero. Retained identity scopes describe tracing reference
+lifetimes; coarse phase durations come from milestones. Operation-completion
+events are disabled here because wrappers around excluded spans may otherwise
+refer to a retained ancestor. Full captures retain their existing completion
+semantics.
+
+Use **profiling: lifecycle-compare-detail** (or
+`--lifecycle --lifecycle-detail compare`) with `run-pairs: 2` to run all eight
+phases in one job: full feature/baseline, milestones feature/baseline, milestones
+baseline/feature, full baseline/feature. Each phase restores snapshots and has an
+independent cutoff. Both variant order and detail order are counterbalanced;
+explicit side metadata selects baseline/feature args even with mode-prefixed
+phase names. Use the same milestone-capable binary for both settings of a proof
+parameter to isolate its effect at each detail level. Reduced recording still has overhead, and
+changing capture mode can change scheduling: it is not a zero-observer baseline.
+Use full detail again when diagnosing a particular stall.
+
 ## Stop at first backpressure
 
 Lifecycle runs stop the load process group when either validator first enters
@@ -201,3 +231,45 @@ An unmarked scope is labeled `span_lifetime`; its close timestamp is not proof
 that the function ran or waited until that time. A last poll exit is never used
 as completion. Active wall time is not CPU time. Completion/cancellation markers
 at or after first backpressure are pruned with every other timed record.
+
+
+Execution totals also report the synchronous transaction loop's elapsed wall time
+(`execution_loop_ns`) and, on Linux when both resource samples succeed, its
+execution-thread user+system CPU time (`execution_thread_cpu_ns`). The numeric
+`execution_cpu_measured` flag is 1 for a measured value (including zero), or 0
+with the CPU field absent when unavailable. Older captures show **unmeasured**.
+At most two thread-bound `getrusage(RUSAGE_THREAD)` samples bracket each completed
+loop when the existing `lifecycle` INFO tracing gate is enabled; other subscribers
+can also enable that gate. There is no per-transaction CPU syscall. An early error
+keeps the existing behavior of emitting no totals and takes only the start sample.
+CPU nanoseconds are derived from microsecond-resolution counters. Sampling
+endpoints differ slightly, so the viewer preserves wall and CPU separately and
+does not compute or clamp an apparent off-CPU residual.
+
+The loop includes transaction-iterator waits, EVM execution, receipt cloning and
+sending, and same-thread bookkeeping/observer overhead. It excludes block
+initialization, pre-execution changes, finalization and other threads (including
+recovery, prewarming, proof and receipt-root workers). Existing `execution_ns`
+is just the summed EVM transaction calls and is **not** the matching wall scope
+for this CPU measurement. Local proposal builds and the parallel BAL replay path
+do not emit these loop totals. A wall/CPU gap can indicate time this thread was
+not executing, but does not identify scheduler, kernel or I/O causes.
+
+Supplemental execution-loop resources reuse those same two thread snapshots,
+without extra or per-transaction syscalls. `execution_resources_measured` is 1
+when all six optional deltas are available, or 0 with their fields omitted when
+unsupported or sampling fails. Older CPU-only captures show resource counters
+as **unmeasured**. Measured zero is preserved. Fields are:
+
+- `execution_voluntary_context_switches` and `execution_involuntary_context_switches`.
+- `execution_minor_page_faults` and `execution_major_page_faults`.
+- `execution_block_input_operations` and `execution_block_output_operations`:
+  OS-reported filesystem input/output operation counts, not blockchain block
+  counts, bytes, or counts of every read/write syscall.
+
+These are deltas on the same execution thread and loop interval as the CPU
+measurement; they exclude other workers and block initialization/finalization.
+They count occurrences, not elapsed wait time or exact switch/fault timestamps.
+A voluntary switch does not identify a specific blocking reason, and the counters
+alone do not prove what caused an elapsed stall or how long I/O took. Several
+causes can coexist. CPU values and wall-clock boundaries are unchanged.

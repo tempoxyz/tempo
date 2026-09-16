@@ -5,6 +5,7 @@
 # e2e topology stays isolated here.
 source tempo.nu
 source contrib/bench/lifecycle/disk.nu
+source contrib/bench/lifecycle/run-plan.nu
 
 const E2E_A_STATE_PATH = "/var/lib/schelk/a.json"
 const E2E_B_STATE_PATH = "/var/lib/schelk/b.json"
@@ -999,7 +1000,7 @@ def build-valscope-static-reports [
 def run-local-e2e-phase [run: record, ctx: record] {
     let phase = $run.phase
     print $"=== Starting local e2e phase: ($phase) ==="
-    let run_type = if ($phase | str starts-with "baseline") { "baseline" } else { "feature" }
+    let run_type = $run.side
     let genesis = ($run | get -o genesis | default $ctx.genesis)
     let hardfork = ($run | get -o hardfork | default "")
     let side_args = if $run_type == "baseline" { $ctx.baseline_args } else { $ctx.feature_args }
@@ -1095,8 +1096,9 @@ def run-local-e2e-phase [run: record, ctx: record] {
         mkdir $lifecycle_dir
         ^python3 -c 'import os,sys,time; f=os.open(sys.argv[1],os.O_WRONLY|os.O_CREAT|os.O_EXCL,0o600); os.write(f,os.urandom(32)); os.close(f); print(time.monotonic_ns())' $lifecycle_key | str trim
     } else { "" }
-    let a_capture = if $ctx.lifecycle { $"RETH_LIFECYCLE_FILE=($lifecycle_dir)/a.jsonl RETH_LIFECYCLE_KEY_FILE=($lifecycle_key) RETH_LIFECYCLE_EPOCH_NS=($lifecycle_epoch) " } else { "" }
-    let b_capture = if $ctx.lifecycle { $"RETH_LIFECYCLE_FILE=($lifecycle_dir)/b.jsonl RETH_LIFECYCLE_KEY_FILE=($lifecycle_key) RETH_LIFECYCLE_EPOCH_NS=($lifecycle_epoch) " } else { "" }
+    let capture_detail = ($run.lifecycle_detail? | default $ctx.lifecycle_detail)
+    let a_capture = if $ctx.lifecycle { $"RETH_LIFECYCLE_FILE=($lifecycle_dir)/a.jsonl TEMPO_LIFECYCLE_DETAIL=($capture_detail) RETH_LIFECYCLE_KEY_FILE=($lifecycle_key) RETH_LIFECYCLE_EPOCH_NS=($lifecycle_epoch) " } else { "" }
+    let b_capture = if $ctx.lifecycle { $"RETH_LIFECYCLE_FILE=($lifecycle_dir)/b.jsonl TEMPO_LIFECYCLE_DETAIL=($capture_detail) RETH_LIFECYCLE_KEY_FILE=($lifecycle_key) RETH_LIFECYCLE_EPOCH_NS=($lifecycle_epoch) " } else { "" }
 
     mark-schelk-dirty-at $ctx.a.state_path
     mark-schelk-dirty-at $ctx.b.state_path
@@ -1221,7 +1223,7 @@ def run-local-e2e-phase [run: record, ctx: record] {
     restore-system-tuning $tuning_state
     if $ctx.lifecycle {
         rm -f $lifecycle_key
-        let report = (^python3 contrib/bench/lifecycle/report.py --prune --out $lifecycle_report_dir --warmup $ctx.summary_warmup_blocks --window $"($lifecycle_dir)/window.json" $"($lifecycle_dir)/a.jsonl" $"($lifecycle_dir)/b.jsonl" | complete)
+        let report = (^python3 contrib/bench/lifecycle/report.py --prune --expected-detail $capture_detail --out $lifecycle_report_dir --warmup $ctx.summary_warmup_blocks --window $"($lifecycle_dir)/window.json" $"($lifecycle_dir)/a.jsonl" $"($lifecycle_dir)/b.jsonl" | complete)
         print $report.stdout
         if $report.stderr != "" { print $report.stderr }
         if $report.exit_code != 0 { $phase_exit = 1 }
@@ -1422,6 +1424,7 @@ def "main e2e" [
     --feature-features: string = ""                     # Additional Cargo features for feature build (defaults to --features)
     --no-default-features                               # Disable Cargo default features
     --lifecycle                                         # Capture privacy-filtered block lifecycle artifacts on both validators
+    --lifecycle-detail: string = "full"                  # Capture detail: full, milestones, or compare (requires --lifecycle)
     --samply                                            # Profile validators with samply
     --samply-args: string = ""                          # Additional samply arguments
     --tracy: string = "off"                             # Tracy profiling: off, tracy
@@ -1453,6 +1456,12 @@ def "main e2e" [
     --valscope-dir: string = "../valscope"               # Path to the ValScope checkout
     --skip-summary                                       # Leave summary generation to a later workflow step
 ] {
+    if $lifecycle_detail not-in ["full" "milestones" "compare"] or (not $lifecycle and $lifecycle_detail != "full") {
+        error make {msg: "Lifecycle detail must be full, milestones or compare; reduced modes require --lifecycle"}
+    }
+    if $lifecycle_detail == "compare" and $run_side != "comparison" {
+        error make {msg: "Comparing lifecycle detail requires baseline/feature comparison"}
+    }
     if $lifecycle {
         if $samply or $tracy != "off" or $valscope_static_report {
             error make {msg: "Lifecycle mode requires other profilers and ValScope export to be disabled"}
@@ -1788,6 +1797,7 @@ def "main e2e" [
         samply: $samply
         samply_args: $samply_args_list
         lifecycle: $lifecycle
+        lifecycle_detail: $lifecycle_detail
         summary_warmup_blocks: $summary_warmup_blocks
         tracy: $tracy
         tracy_filter: $tracy_filter
@@ -1819,14 +1829,14 @@ def "main e2e" [
     let baseline_base_label = if $baseline_name != "" { $baseline_name } else { $baseline }
     let feature_base_label = if $feature_name != "" { $feature_name } else { $feature }
 
-    mut baseline_run_index = 0
-    mut feature_run_index = 0
     mut runs = []
-    for side in (e2e-run-sides $run_pairs $run_side) {
-        if $side == "baseline" {
-            $baseline_run_index = $baseline_run_index + 1
+    let run_plan = (lifecycle-run-plan (e2e-run-sides $run_pairs $run_side) $lifecycle_detail)
+    for planned in $run_plan {
+        if $planned.side == "baseline" {
             $runs = ($runs | append {
-                phase: $"baseline-($baseline_run_index)"
+                phase: $planned.phase
+                side: $planned.side
+                lifecycle_detail: $planned.detail
                 ref: $baseline
                 ref_label: $baseline_base_label
                 tempo: $baseline_tempo
@@ -1834,9 +1844,10 @@ def "main e2e" [
                 hardfork: $baseline_hardfork_name
             })
         } else {
-            $feature_run_index = $feature_run_index + 1
             $runs = ($runs | append {
-                phase: $"feature-($feature_run_index)"
+                phase: $planned.phase
+                side: $planned.side
+                lifecycle_detail: $planned.detail
                 ref: $feature
                 ref_label: $feature_base_label
                 tempo: $feature_tempo
@@ -1846,7 +1857,7 @@ def "main e2e" [
         }
     }
     let valid_run_labels = ($runs | get phase)
-    if $clickhouse_run != "" and $clickhouse_run not-in $valid_run_labels {
+    if not $lifecycle and $clickhouse_run != "" and $clickhouse_run not-in $valid_run_labels {
         print $"Error: --clickhouse-run must be one of: ($valid_run_labels | str join ', ') \(got '($clickhouse_run)'\)"
         exit 1
     }

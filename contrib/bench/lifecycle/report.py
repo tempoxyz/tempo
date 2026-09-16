@@ -168,6 +168,7 @@ def read_node(path, role, cutoff=None):
     for event in events:
         event['block'] = block_key(event['fields']) or inherited(spans.get(event['id']))
     quality = {'node': role, 'header': bool(header and header.get('schema') == 1),
+               'detail': (header or {}).get('detail', 'full'),
                'footer': footer is not None, 'dropped': (footer or {}).get('dropped', 0),
                'io_error': (footer or {}).get('io_error', False), 'invalid_lines': invalid + (footer or {}).get('invalid_lines', 0),
                'open_spans': sum(s['end'] is None for s in spans.values()),
@@ -194,7 +195,7 @@ def active_wall_ns(intervals):
     return duration
 
 
-def build(paths, warmup=5, window=None):
+def build(paths, warmup=5, window=None, expected_detail=None):
     spans, events, quality = [], [], []
     boundary = first_boundary(paths)
     recorded = (window or {}).get('backpressure')
@@ -225,7 +226,15 @@ def build(paths, warmup=5, window=None):
         start = min(starts) if starts else min((e['ts'] for e in markers), default=0)
         finish = min(ends) if complete else max((e['ts'] for e in markers), default=start)
         totals = [dict(node=e['node'], **{k:v for k,v in e['fields'].items()
-                  if k in ('execution_ns','receipt_ns','wait_ns','transactions')})
+                  if k in ('execution_ns','receipt_ns','wait_ns','transactions',
+                           'execution_loop_ns','execution_thread_cpu_ns','execution_cpu_measured',
+                           'execution_resources_measured',
+                           'execution_voluntary_context_switches',
+                           'execution_involuntary_context_switches',
+                           'execution_minor_page_faults',
+                           'execution_major_page_faults',
+                           'execution_block_input_operations',
+                           'execution_block_output_operations')})
                   for e in by_block[key] if e['fields'].get('stage') == 'execution_totals']
         blocks.append({'execution_totals': totals, 'id': aliases[key], 'start': start, 'end': finish,
                        'duration': finish-start, 'complete': complete, 'markers': markers})
@@ -236,7 +245,10 @@ def build(paths, warmup=5, window=None):
                 (b['start'] >= (window['start_ns']-first)/1e6 and b['end'] <= (window['end_ns']-first)/1e6))]
     for b in blocks:
         b['in_population'] = b in eligible
-    bad_capture = any(not q['header'] or not q['footer'] or q['dropped'] or q['io_error'] or q['invalid_lines'] for q in quality)
+    details = {q['detail'] for q in quality}
+    detail = next(iter(details)) if len(details) == 1 else 'mixed'
+    detail_valid = detail in ('full', 'milestones') and (expected_detail is None or detail == expected_detail)
+    bad_capture = not detail_valid or any(not q['header'] or not q['footer'] or q['dropped'] or q['io_error'] or q['invalid_lines'] for q in quality)
     # Lost events invalidate percentile completeness, even if some endpoints survived.
     representatives = {str(p): nearest_rank(eligible, p) if not bad_capture else None for p in (50,90,99)}
     attempts = sorted((s for s in spans if s['name'] == 'handle_propose'),
@@ -261,13 +273,15 @@ def build(paths, warmup=5, window=None):
             start=start, end=end, duration=end-start, markers=markers, execution_totals=[],
             complete=status in ('cancelled', 'failed', 'associated')))
     rows = []
+    node_details = {q['node']: q['detail'] for q in quality}
     for s in spans:
         if s['end'] is None or s['end'] < s['ts']:
             continue
         rows.append({'id': s['id'], 'node': s['node'], 'parent': s.get('parent'),
                      'name': s['name'], 'category': operation_category(s), 'block': aliases.get(s['block']),
                      'start': (s['ts']-first)/1e6, 'end': (s['end']-first)/1e6,
-                     'thread': s['thread'], 'active_ms': active_wall_ns(s['active'])/1e6,
+                     'thread': s['thread'], 'active_ms': (None if node_details[s['node']] == 'milestones'
+                         else active_wall_ns(s['active'])/1e6),
                      'right_censored': s.get('right_censored', False),
                      'timing_semantics': ('aggregate_envelope' if s.get('count') else
                          'operation_' + s['operation_status'] if s.get('operation_status') else
@@ -296,18 +310,20 @@ def build(paths, warmup=5, window=None):
         receives = [e for e in group if e['stage'] == 'frame_receive']
         if len(sends) == 1 and len(receives) == 1:
             transfers.append({'from': sends[0]['node'], 'to': receives[0]['node'], 'start': sends[0]['ts'], 'end': receives[0]['ts'], 'bytes': sends[0]['bytes']})
-    return {'schema':1, 'boundary': dict(boundary, relative_ms=(cutoff-first)/1e6) if boundary else None, 'blocks':blocks, 'spans':rows, 'transfers':transfers, 'quality':quality,
+    return {'schema':1, 'capture_detail':detail, 'detail_valid':detail_valid,
+            'boundary': dict(boundary, relative_ms=(cutoff-first)/1e6) if boundary else None, 'blocks':blocks, 'spans':rows, 'transfers':transfers, 'quality':quality,
             'representatives':representatives, 'eligible':len(eligible), 'warmup':warmup,
             'unexplained_attempts':sum(a['status'] == 'unexplained_unassociated' for a in attempt_details),
             'attempt_details':attempt_details, 'attempts':len(attempts), 'unbound_attempts':sum(not s.get('block') for s in attempts),
             'coverage':sorted({s['name'] for s in rows}), 'stages':list(STAGES), 'bad_capture':bad_capture,
-            'definition':'Proposal handling start on proposer → first accepted finalization certificate on a validator. Nearest-rank percentiles select actual complete blocks; initial complete blocks are excluded as warmup. When load boundaries are available, both endpoints must fall inside the load window. All views exclude data at or after the first engine persistence backpressure event on either validator; crossing spans are right-censored and crossing aggregates omitted.'}
+            'definition':('Milestone-only capture: detailed proof, storage, network and poll spans are intentionally disabled. This report measures coarse lifecycle intervals and does not provide complete operation coverage. ' if detail == 'milestones' else '') +
+                'Proposal handling start on proposer → first accepted finalization certificate on a validator. Nearest-rank percentiles select actual complete blocks; initial complete blocks are excluded as warmup. When load boundaries are available, both endpoints must fall inside the load window. All views exclude data at or after the first engine persistence backpressure event on either validator; crossing spans are right-censored and crossing aggregates omitted.'}
 
 
-def write_report(paths, out, warmup=5, window=None, prune=False):
+def write_report(paths, out, warmup=5, window=None, prune=False, expected_detail=None):
     if prune:
         paths, window = prepare_captures(paths, out, window)
-    data = build(paths, warmup, window)
+    data = build(paths, warmup, window, expected_detail)
     out.mkdir(parents=True, exist_ok=True)
     encoded = json.dumps(data, separators=(',',':')).replace('<', '\\u003c')
     (out/'lifecycle.json').write_text(encoded)
@@ -321,11 +337,12 @@ if __name__ == '__main__':
     parser.add_argument('--warmup', type=int, default=5)
     parser.add_argument('--window', type=Path)
     parser.add_argument('--prune', action='store_true', help='Publish only pre-backpressure raw captures alongside the report')
+    parser.add_argument('--expected-detail', choices=('full', 'milestones'), help='Reject captures whose recorder detail does not match the requested mode')
     parser.add_argument('captures', type=Path, nargs='+')
     args = parser.parse_args()
     window = json.loads(args.window.read_text()) if args.window and args.window.exists() else (
         {'start_ns': 0, 'end_ns': 0, 'stop_reason': 'load_not_started'} if args.window else None)
-    result = write_report(args.captures, args.out, args.warmup, window, args.prune)
+    result = write_report(args.captures, args.out, args.warmup, window, args.prune, args.expected_detail)
     print(f"Lifecycle report: {len(result['blocks'])} blocks, {result['eligible']} complete post-warmup blocks; capture loss: {result['bad_capture']}")
     if result['bad_capture'] or not result['eligible']:
         raise SystemExit(2)
