@@ -36,6 +36,11 @@ class RuntimeTests(unittest.TestCase):
                 publish_capture(output, {'complete':True})
             self.assertEqual(json.loads(output.read_text()), {'complete':True})
             self.assertFalse(output.with_suffix('.partial').exists())
+            output.with_suffix('.partial').write_text('pre-existing private capture')
+            with self.assertRaises(FileExistsError):
+                publish_capture(output, {})
+            self.assertEqual(output.with_suffix('.partial').read_text(), 'pre-existing private capture')
+            output.with_suffix('.partial').unlink()
             output.unlink()
             with patch('runtime.json.dump', side_effect=OSError('private details')):
                 with self.assertRaises(OSError):

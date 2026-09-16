@@ -34,13 +34,16 @@ def failure_summary(directory):
 
 def publish_capture(output, result):
     temporary = output.with_suffix('.partial')
+    owned = False
     try:
         with temporary.open('x') as destination:
+            owned = True
             json.dump(result, destination, separators=(',', ':'))
             destination.write('\n')
         temporary.replace(output)
     finally:
-        temporary.unlink(missing_ok=True)
+        if owned:
+            temporary.unlink(missing_ok=True)
 
 
 def capture(command, pass_fds=()):
