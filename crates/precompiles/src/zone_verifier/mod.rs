@@ -17,16 +17,16 @@ const CONFIG_V1: &[u8] = &[1];
 const MAX_FUTURE_SKEW_MILLIS: u64 = 300_000;
 
 /// Measurements for the T11 EIF built from `tempoxyz/zones` at commit
-/// `49bf739145952da1151dec4dcf23751d398f6095`.
+/// `cb5719568d07bcd30586c5c057e631ee2698563d`.
 const APPROVED_PCRS: Option<[[u8; 48]; 3]> = Some([
     alloy::primitives::hex!(
-        "fee49db3c2de8bce1e9a4826db78179de444fe2795059a63f95b6e73d445825b0217c69e5336dbaacb5661f302b350c2"
+        "3c78e34785834fa76226b87fa304cb9e7920701830c7dd8f2916ec2eca8cb2c65af874e96815d6b0beee4aad4932f1ff"
     ),
     alloy::primitives::hex!(
         "baa774ff6af9362bc5c4ecafa99c98c371d3d1e1e040e99890b9ba13d81ded18408fa2a65affa148ee2aaafa09142c81"
     ),
     alloy::primitives::hex!(
-        "501646c2a9ca16b0bf45d1fdc506f83edc98a711ec5652d6df96520993fd8458631f3d664dd5889eacd7e40cd92010ab"
+        "30c52c959b8f2913a0c0cb4dbfa77bdda16ea9f18c801f5825fec78ce070772b47df3336eb941ac32b87dc0e8ba4c4ad"
     ),
 ]);
 
