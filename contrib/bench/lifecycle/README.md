@@ -330,3 +330,21 @@ message paths, one atomic ordinal allocation per recorded origin/received frame,
 and bounded-vocabulary events. Existing queue bounds govern metadata retention;
 there is no global message lookup or additional payload copy. Its observer cost
 must be measured with the same instrumentation on both benchmark sides.
+
+
+Queue submission markers use a fresh process-local `queue_id` for each synchronous
+router, peer, inbound, or decoded-result enqueue attempt. The `_start` marker is
+before the call; the existing outcome is after it returns. Their difference is a
+submission envelope including scheduling and marker overhead, not a blocking wait.
+Fanout submissions retain distinct queue IDs even when they share one message ID.
+
+For a uniquely matched accepted receiver submission with start S, outcome E and
+post-dequeue observation marker D, insertion lies between S and min(E,D). The
+report bounds insertion-to-observation by `[max(0,D-E), D-S]`. Because the actual
+queue removal can precede D, true residence has only the conservative `[0,D-S]`
+bound. A consumer observation before the outcome is valid. These intervals can
+overlap the submission envelope and
+must not be added. Sender residence remains unknown because sender queue IDs do
+not identify a downstream peer dequeue. Rejection is not admission; missing,
+duplicate, inconsistent, or cutoff-pruned endpoints leave residence unknown.
+No nearest-time join, payload, peer identity or new wire bytes are introduced.
