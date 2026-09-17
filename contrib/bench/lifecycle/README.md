@@ -420,3 +420,37 @@ raw pruned capture retains the exact source evidence. The offline block pages sh
 only calls associated through the actual source span ancestry. An unassociated
 attempt remains unassociated. Actual clock precision is platform-dependent even
 though the encoded unit is nanoseconds.
+
+### Private frame lineage
+
+Authenticated P2P messages carry a process-local numeric origin ordinal through
+outbound queues, fanout and batching. Each independently encrypted frame records
+that ordinal; existing capture-private frame pairing joins its receive endpoint.
+Receiver-local ordinals then travel through the channel queue and synchronous or
+background codec work. These values never enter wire bytes, and the recorder
+allows only fixed stage names and numeric fields. No native peer identity,
+transaction payload, new payload hash, or retained tracing-span handle is added.
+
+`network-lineage.json` retains all origin, queue-outcome, frame and decode markers,
+including unmatched, rejected, control and ambiguous records. The context chunks
+partition every marker exactly once; focused block pages/Perfetto include linked
+markers and frames even when they fall outside proposal-to-finalization time.
+`source_blocks` identifies originating causal scopes; `decode_scope_blocks`
+identifies block scopes encountered while decoding. Both are sets, not a claim
+that every protocol message contains exactly one block. A failed decode can still
+have an observed block scope. Authentication and decode success have separate
+markers; absence means unobserved. An encryption marker alone does not prove a
+successful socket write or delivery, including when a send is cancelled.
+
+All joins use explicit ordinals/endpoints, never temporal proximity. Receiver
+implementations without frame context use the additive trait method's default
+`None`. Duplicate IDs or ambiguous frame endpoints do not justify a guessed join.
+Strict source cutoff pruning applies before any lineage is derived. Intervals
+still measure encryption completion to ciphertext receipt, which includes
+batching, writes and scheduling as well as transit; this is not isolated wire time.
+
+The diagnostic adds two fixed-size optional ordinals in the respective send/receive
+message paths, one atomic ordinal allocation per recorded origin/received frame,
+and bounded-vocabulary events. Existing queue bounds govern metadata retention;
+there is no global message lookup or additional payload copy. Its observer cost
+must be measured with the same instrumentation on both benchmark sides.
