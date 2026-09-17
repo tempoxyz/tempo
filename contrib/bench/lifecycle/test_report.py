@@ -246,6 +246,45 @@ class ReportTests(unittest.TestCase):
                 self.assertTrue(result['bad_capture'])
                 self.assertTrue(all(v is None for v in result['representatives'].values()))
 
+    def test_unclosed_scopes_invalidate_capture_but_cutoff_censoring_does_not(self):
+        with tempfile.TemporaryDirectory() as directory:
+            path=Path(directory)/'a.jsonl';fixture(path)
+            records=[json.loads(line) for line in path.read_text().splitlines()]
+            records.insert(-1,dict(type='start',id=102,ts=101_100_000_000,thread=1,
+                name='storage_worker',category='trie',parent=None,fields={}))
+            path.write_text('\n'.join(map(json.dumps,records)))
+            result=build([path],warmup=0)
+            self.assertEqual(result['quality'][0]['open_spans'],1)
+            self.assertTrue(result['bad_capture'])
+            self.assertTrue(all(v is None for v in result['representatives'].values()))
+            cut=build([path],warmup=0,window={'backpressure':{'ts':101_200_000_000,'node':'Validator A'}})
+            self.assertEqual(cut['quality'][0]['open_spans'],0)
+            self.assertEqual(cut['quality'][0]['cutoff_spans'],1)
+            self.assertFalse(cut['bad_capture'])
+            self.assertEqual(cut['representatives'],{'50':50,'90':90,'99':99})
+
+    def test_unexplained_attempt_fails_cli_after_publishing_diagnostics(self):
+        import subprocess
+        import sys
+        with tempfile.TemporaryDirectory() as directory:
+            path=Path(directory)/'a.jsonl';fixture(path)
+            records=[json.loads(line) for line in path.read_text().splitlines()]
+            records[-1:-1]=[
+                dict(type='start',id=102,ts=102_000_000_000,thread=1,
+                     name='handle_propose',category='consensus',parent=None,fields={}),
+                dict(type='end',id=102,ts=102_000_000_100)]
+            path.write_text('\n'.join(map(json.dumps,records)))
+            out=Path(directory)/'report'
+            run=subprocess.run([sys.executable,str(Path(__file__).with_name('report.py')),
+                '--out',str(out),'--warmup','0',str(path)],capture_output=True,text=True)
+            self.assertEqual(run.returncode,2,run.stderr)
+            data=json.loads((out/'lifecycle.json').read_text())
+            self.assertEqual(data['unexplained_attempts'],1)
+            self.assertTrue(data['bad_capture'])
+            self.assertTrue(all(v is None for v in data['representatives'].values()))
+            self.assertTrue((out/'index.html').is_file())
+            self.assertTrue((out/'block-1.html').is_file())
+
     def test_portable_exports_have_only_run_local_block_labels(self):
         with tempfile.TemporaryDirectory() as directory:
             path=Path(directory)/'a.jsonl';fixture(path)

@@ -210,7 +210,11 @@ Tempo owns the markers, harness and viewer. The pinned [Reth fork](https://githu
 
 The acceptance pass is a capture-quality check: two clean footers, no event loss,
 a nonempty load-window population, consistent cross-validator milestones, and
-visible build, replay, transport and persistence operations. It does not diagnose
+visible build, replay, transport and persistence operations. Unexplained open
+spans or closed proposal attempts without a recorded outcome invalidate the
+capture even when some blocks completed. The exporter still publishes diagnostic
+pages, suppresses percentile selections, and fails the benchmark phase. Expected
+spans censored at the recorded backpressure cutoff remain valid. It does not diagnose
 performance. Per-block operations use explicit digest/payload association and
 parentage. A frame pair proves a transport transfer but is not yet joined to an
 application block across all queue boundaries; those transfers remain explicitly
