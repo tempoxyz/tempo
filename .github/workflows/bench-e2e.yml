@@ -367,14 +367,14 @@ jobs:
     name: bench-e2e (reserved slot ${{ matrix.slot }})
     strategy:
       fail-fast: false
-      max-parallel: 3
+      max-parallel: 4
       matrix:
-        slot: [1, 2, 3]
+        slot: [1, 2, 3, 4]
     runs-on: [self-hosted, Linux, X64, bare-metal-dual-schelk]
     timeout-minutes: 300
     env:
       BENCH_CAPACITY_SLOT: ${{ matrix.slot }}
-      BENCH_CAPACITY_SLOTS: "3"
+      BENCH_CAPACITY_SLOTS: "4"
       BENCH_LIFECYCLE: ${{ (inputs.profiling == 'lifecycle' || inputs.profiling == 'lifecycle-milestones' || inputs.profiling == 'lifecycle-compare-detail' || inputs.profiling == 'lifecycle-compare-prewarm-cpu') }}
       BENCH_LIFECYCLE_DETAIL: ${{ inputs.profiling == 'lifecycle-compare-detail' && 'compare' || (inputs.profiling == 'lifecycle-milestones' || inputs.profiling == 'lifecycle-compare-prewarm-cpu') && 'milestones' || 'full' }}
       BENCH_LIFECYCLE_PREWARM_CPU: ${{ inputs.profiling == 'lifecycle-compare-prewarm-cpu' && 'compare' || 'disabled' }}

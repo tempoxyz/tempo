@@ -1,10 +1,24 @@
 """Fail closed if a later workflow edit lets a nonselected slot run a step."""
 from pathlib import Path
 import re
+import hashlib
 import unittest
 
 
 class CapacityWorkflowTests(unittest.TestCase):
+    def test_only_matrix_size_changes_from_reviewed_three_slot_workflow(self):
+        workflow = (Path(__file__).resolve().parents[3] /
+                    '.github/workflows/bench-e2e.yml').read_text()
+        for old, new in [('max-parallel: 3', 'max-parallel: 4'),
+                         ('slot: [1, 2, 3]', 'slot: [1, 2, 3, 4]'),
+                         ('BENCH_CAPACITY_SLOTS: "3"', 'BENCH_CAPACITY_SLOTS: "4"')]:
+            self.assertEqual(workflow.count(new), 1)
+            workflow = workflow.replace(new, old)
+        # Frozen ecb workflow: all 38 original steps and their exact gates,
+        # permissions, runner labels and benchmark arguments remain unchanged.
+        self.assertEqual(hashlib.sha256(workflow.encode()).hexdigest(),
+                         '8dee2903c5a843d4d755b4e2762fbb13278a7b2eb37e31d6b4200a1ca9c434b8')
+
     def test_every_benchmark_step_requires_selection(self):
         workflow = (Path(__file__).resolve().parents[3] /
                     '.github/workflows/bench-e2e.yml').read_text()
@@ -36,10 +50,10 @@ class CapacityWorkflowTests(unittest.TestCase):
             self.assertIn('retries: 0', step)
             self.assertIn('signal: AbortSignal.timeout(10000)', step)
             self.assertNotIn('require(process.cwd()', step)
-        self.assertIn('max-parallel: 3', workflow)
-        self.assertIn('slot: [1, 2, 3]', workflow)
+        self.assertIn('max-parallel: 4', workflow)
+        self.assertIn('slot: [1, 2, 3, 4]', workflow)
         self.assertIn('fail-fast: false', workflow)
-        self.assertIn('BENCH_CAPACITY_SLOTS: "3"', workflow)
+        self.assertIn('BENCH_CAPACITY_SLOTS: "4"', workflow)
 
 
 if __name__ == '__main__':

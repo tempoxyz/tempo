@@ -45,7 +45,7 @@ sys.stdout.buffer.write(out.getvalue())`;
   assert.equal(result.status, 0, String(result.stderr));
   return result.stdout;
 }
-const validZips = new Map([1, 2, 3].map(slot => [100 + slot, zip(JSON.stringify(receipt(slot)))]));
+const validZips = new Map([1, 2, 3, 4].map(slot => [100 + slot, zip(JSON.stringify(receipt(slot)))]));
 
 function fixture(options = {}) {
   const workspace = fs.mkdtempSync(path.join(os.tmpdir(), 'capacity-transport-'));
@@ -77,7 +77,7 @@ function fixture(options = {}) {
     const rows = options.pages ? options.pages[Math.min(lists++, options.pages.length - 1)] : options.artifacts || [artifact(1), artifact(2)];
     return { data: options.listData || { total_count: rows.length, artifacts: rows } };
   }, downloadArtifact: async args => {
-    requests.push(['download', args]); assert.equal(args.archive_format, 'zip'); assert.ok([101, 102, 103].includes(args.artifact_id));
+    requests.push(['download', args]); assert.equal(args.archive_format, 'zip'); assert.ok([101, 102, 103, 104].includes(args.artifact_id));
     assert.ok(args.request.signal instanceof AbortSignal);
     assert.equal(args.request.signal.aborted, false);
     assert.equal(args.request.log.warn('private sentinel'), undefined);
@@ -301,7 +301,7 @@ test('three-slot admission requires every receipt and keeps the total deadline',
 test('slot count is explicit private configuration and never expands receipt schema', async () => {
   const f=fixture({slots:3,slot:3});
   try {
-    for (const slots of [undefined,'','1','4','03','3.0']) {
+    for (const slots of [undefined,'','1','5','03','3.0','04','4.0']) {
       assert.throws(()=>adapter.binding(context,{...f.env,BENCH_CAPACITY_SLOTS:slots}));
     }
     assert.throws(()=>adapter.binding(context,{...f.env,BENCH_CAPACITY_SLOTS:'2'}));
@@ -315,4 +315,71 @@ test('slot count is explicit private configuration and never expands receipt sch
   const zips=new Map(validZips);
   zips.set(103,zip(JSON.stringify({...receipt(3),slots:3})));
   rejected(await elect({slots:3,artifacts:[artifact(1),artifact(2),artifact(3)],zips}));
+});
+
+function permutations(values) {
+  if (values.length === 0) return [[]];
+  return values.flatMap((value, i) => permutations(values.filter((_, j) => i !== j)).map(rest => [value, ...rest]));
+}
+
+test('four slots use complete receipts for every order and preserve deterministic ties', async () => {
+  for (const [free, winner] of [[[48,96,112,144],4], [[96,96,96,96],1]]) {
+    const zips = new Map(free.map((value, i) => [101+i, zip(JSON.stringify(receipt(i+1,value)))]));
+    for (const order of permutations([1,2,3,4])) {
+      const outcomes = [];
+      for (const slot of [1,2,3,4]) {
+        const result = await elect({ slots:4, slot, artifacts:order.map(artifact), zips });
+        assert.ok(!result.messages.some(m => m.startsWith('FAILED:')));
+        assert.equal(result.requests.filter(([kind])=>kind==='download').length,4);
+        outcomes.push(result.output.selected);
+      }
+      assert.deepEqual(outcomes,[1,2,3,4].map(slot=>String(slot===winner)));
+    }
+  }
+});
+
+test('four slots reject incomplete foreign malformed and oversized receipt sets within deadline', async () => {
+  const all=[1,2,3,4].map(artifact);
+  for (let absent=0; absent<4; absent++) {
+    const result=await elect({slots:4,artifacts:all.filter((_,i)=>i!==absent)});
+    rejected(result);assert.equal(result.elapsed,9000);
+    assert.equal(result.requests.filter(([kind])=>kind==='download').length,0);
+  }
+  for (const artifacts of [[...all,artifact(5)], [artifact(1),artifact(2),artifact(3),artifact(3)],
+      all.map((a,i)=>i===3?{...a,workflow_run:{id:12346,head_sha:SHA}}:a),
+      all.map((a,i)=>i===3?{...a,size_in_bytes:65537}:a),
+      all.map((a,i)=>i===3?{...a,size_in_bytes:true}:a)]) {
+    rejected(await elect({slots:4,artifacts}));
+  }
+  for (const options of [{sourceClock:9000},{listClock:9000},{downloadClock:2250},{pythonClock:2250}]) {
+    rejected(await elect({slots:4,artifacts:all,...options}));
+  }
+  for (const body of [JSON.stringify({...receipt(4),slots:4}),
+      JSON.stringify({...receipt(4),slot:3}), JSON.stringify({...receipt(4),run_attempt:2}),
+      JSON.stringify(receipt(4)).replace('"slot":4','"slot":true'),
+      JSON.stringify(receipt(4)).replace('"schema":1','"schema":1,"schema":1')]) {
+    const zips=new Map(validZips);zips.set(104,zip(body));
+    rejected(await elect({slots:4,artifacts:all,zips}));
+  }
+  const zips=new Map([1,2,3,4].map(slot=>[100+slot,zip(JSON.stringify(receipt(slot,48)))]));
+  const none=await elect({slots:4,artifacts:all,zips});rejected(none);
+  assert.equal(JSON.parse(none.messages.find(m=>m.startsWith('{'))).status,2);
+  const delayed=await elect({slots:4,slot:2,pages:[all.slice(0,3),all]});
+  assert.equal(delayed.elapsed,3000);assert.equal(delayed.output.selected,'true');
+});
+
+test('four-slot probe preserves closed receipt schema and exact configuration admission', async () => {
+  const f=fixture({slots:4,slot:4});
+  try {
+    for (const value of ['','0','5','04','4.0']) {
+      assert.throws(()=>adapter.binding(context,{...f.env,BENCH_CAPACITY_SLOT:value}));
+    }
+    for (const value of ['2','3','5','04','4.0']) {
+      assert.throws(()=>adapter.binding(context,{...f.env,BENCH_CAPACITY_SLOTS:value}));
+    }
+    await adapter.probe({...f,execute:()=>({status:0,stdout:JSON.stringify(capacity()),stderr:''})});
+    const value=JSON.parse(fs.readFileSync(path.join(f.env.GITHUB_WORKSPACE,f.output['artifact-path']),'utf8'));
+    assert.deepEqual(value,receipt(4,96));
+    assert.equal(f.output['artifact-name'],'bench-capacity-reservation-12345-3-4');
+  } finally {f.close();}
 });

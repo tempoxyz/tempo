@@ -26,9 +26,9 @@ function binding(context, env) {
   requireValue(/^[0-9a-f]{40}$/.test(context.sha) && uint(context.runId));
   requireValue(/^[1-9][0-9]*$/.test(env.GITHUB_RUN_ATTEMPT || ''));
   const attempt = Number(env.GITHUB_RUN_ATTEMPT);
-  requireValue(/^[23]$/.test(env.BENCH_CAPACITY_SLOTS || ''));
+  requireValue(/^[234]$/.test(env.BENCH_CAPACITY_SLOTS || ''));
   const slots = Number(env.BENCH_CAPACITY_SLOTS);
-  requireValue(/^[123]$/.test(env.BENCH_CAPACITY_SLOT || ''));
+  requireValue(/^[1234]$/.test(env.BENCH_CAPACITY_SLOT || ''));
   const slot = Number(env.BENCH_CAPACITY_SLOT);
   requireValue(uint(attempt) && slot <= slots);
   requireValue(env.BENCH_LIFECYCLE === 'true' && env.BENCH_NO_SLACK === 'true');

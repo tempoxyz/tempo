@@ -38,6 +38,43 @@ class ElectionTests(unittest.TestCase):
         with self.assertRaises(election.InvalidReceipt):
             election.elect(pair, **BINDING, slots=slots)
 
+    def test_four_slots_all_permutations_ties_and_byte_precision(self):
+        for free, winner in [([70000, 71000, 72000, 80000], 4),
+                             ([80000, 71000, 72000, 70000], 1),
+                             ([70000]*4, 1), ([1, 70000, 70000, 1], 2)]:
+            receipts = [receipt(i+1, root=value, workspace=value) for i, value in enumerate(free)]
+            before = copy.deepcopy(receipts)
+            for order in itertools.permutations(receipts):
+                self.assertEqual(election.elect(list(order), **BINDING, slots=4)['selected_slot'], winner)
+            self.assertEqual(before, receipts)
+        receipts = [receipt(i) for i in range(1, 5)]
+        for row in receipts[3]['capacity']['locations'][:2]: row['free_bytes'] += 1
+        self.assertEqual(election.elect(receipts, **BINDING, slots=4)['selected_slot'], 4)
+
+    def test_four_slots_requires_exact_complete_bound_closed_receipts(self):
+        receipts = [receipt(i) for i in range(1, 5)]
+        for missing in range(4): self.rejected(receipts[:missing]+receipts[missing+1:], slots=4)
+        self.rejected(receipts+[receipt(5)], slots=4)
+        for field, bad in [('slot', 3), ('slot', 5), ('slot', True), ('slot', 4.0),
+                           ('run_id', BINDING['run_id']+1), ('run_attempt', 1),
+                           ('workflow_sha', 'b'*40), ('slots', 4)]:
+            mutated = copy.deepcopy(receipts); mutated[3][field] = bad
+            self.rejected(mutated, slots=4)
+        for slots in (None, True, 1, 5, '4', 4.0, 2, 3):
+            self.rejected(receipts, slots=slots)
+        for depth in ('receipt', 'capacity', 'row'):
+            mutated = copy.deepcopy(receipts)
+            target = mutated[3] if depth == 'receipt' else mutated[3]['capacity']
+            if depth == 'row': target = target['locations'][0]
+            target['runner_name'] = 'PRIVATE_IDENTIFIER'
+            self.rejected(mutated, slots=4)
+        for missing in range(4):
+            mutated = copy.deepcopy(receipts)
+            mutated[missing]['capacity']['locations'][0]['free_bytes'] = True
+            self.rejected(mutated, slots=4)
+        none = [receipt(i, root=65535) for i in range(1, 5)]
+        self.assertEqual(election.elect(none, **BINDING, slots=4)['status'], 2)
+
     def test_three_slots_complete_order_independent_winner_and_ties(self):
         receipts = [receipt(1, root=65535), receipt(2), receipt(3, root=80000, workspace=79000)]
         snapshot = copy.deepcopy(receipts)
@@ -219,6 +256,23 @@ class ElectionTests(unittest.TestCase):
             self.cli(b'', *map(str, paths), code=2)
             paths[1].unlink()
             self.cli(b'', *map(str, paths), code=2)
+
+    def test_four_slot_isolated_cli_complete_stdin_paths_and_budget(self):
+        receipts = [receipt(i, root=1 if i < 4 else 70000) for i in range(1, 5)]
+        self.assertEqual(self.cli(json.dumps(receipts).encode(), '--slots', '4', use_source=True)['selected_slot'], 4)
+        for slots in ('2', '3', '5', '04', '4.0'):
+            self.cli(json.dumps(receipts).encode(), '--slots', slots, code=2)
+        self.cli(json.dumps(receipts[:3]).encode(), '--slots', '4', code=2)
+        self.cli(json.dumps([receipt(i, root=1) for i in range(1, 5)]).encode(), '--slots', '4', code=3)
+        with tempfile.TemporaryDirectory() as directory:
+            paths = [Path(directory)/f'PRIVATE_{i}.json' for i in range(4)]
+            for path, data in zip(paths, receipts): path.write_text(json.dumps(data))
+            self.assertEqual(self.cli(b'', '--slots', '4', *map(str, paths))['selected_slot'], 4)
+            self.cli(b'', '--slots', '4', *map(str, paths[:3]), code=2)
+            paths[3].write_bytes(b' ' * election.MAX_BYTES)
+            self.cli(b'', '--slots', '4', *map(str, paths), code=2)
+            paths[3].unlink()
+            self.cli(b'', '--slots', '4', *map(str, paths), code=2)
 
     def test_three_slot_isolated_cli_complete_stdin_and_paths(self):
         receipts = [receipt(1, root=1), receipt(2, root=1), receipt(3)]
