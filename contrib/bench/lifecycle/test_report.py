@@ -100,6 +100,32 @@ class ReportTests(unittest.TestCase):
             pruned = build([path], warmup=0, window={'backpressure': {'ts': 1_000_000_200, 'node': 'Validator A'}})
             self.assertTrue(all(not b['proof_worker_totals'] for b in pruned['blocks']))
 
+    def test_job_counts_preserve_kind_missing_saturation_and_cutoff(self):
+        common = dict(worker_job_counts_measured=1, worker_jobs=1, worker_target_max=0,
+                      worker_jobs_targets_0=1, worker_jobs_targets_1=0,
+                      worker_jobs_targets_2_8=0, worker_jobs_targets_9_32=0,
+                      worker_jobs_targets_33_plus=0, worker_job_counts_saturated=0)
+        values = [dict(stage='proof_storage_worker_totals', **common,
+                       worker_storage_targets=0, worker_root_requests=1),
+                  dict(stage='proof_account_worker_totals', **common,
+                       worker_account_targets=0, worker_storage_groups=3),
+                  dict(stage='proof_storage_worker_totals', worker_job_counts_measured=0),
+                  dict(stage='proof_storage_worker_totals', worker_job_counts_measured=1,
+                       worker_job_counts_saturated=1, worker_jobs=2**64-1)]
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory)/'a.jsonl'; fixture(path)
+            records = [json.loads(line) for line in path.read_text().splitlines()]
+            records[-1:-1] = [dict(type='event', id=1, ts=1_000_000_200+i, fields=value)
+                              for i,value in enumerate(values)]
+            path.write_text('\n'.join(map(json.dumps,records)))
+            result = write_report([path], Path(directory)/'report', warmup=0)
+            totals = result['blocks'][0]['proof_worker_totals']
+            for row,fields in zip(totals,values):
+                self.assertEqual({k:v for k,v in row.items() if k=='stage' or k.startswith('worker_')}, fields)
+            self.assertEqual(len(totals),4)
+            pruned = build([path],warmup=0,window={'backpressure':dict(ts=1_000_000_202,node='Validator A')})
+            self.assertEqual(len(pruned['blocks'][0]['proof_worker_totals']),2)
+
     def test_execution_resource_counts_preserve_unavailable_and_cutoff(self):
         counters = [
             'execution_voluntary_context_switches', 'execution_involuntary_context_switches',

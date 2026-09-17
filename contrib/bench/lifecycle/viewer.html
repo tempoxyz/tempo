@@ -32,6 +32,27 @@ function executionLoopSummary(t) {
 }
 // END EXECUTION_LOOP_HELPER
 // BEGIN WORKER_CPU_HELPER
+function proofJobSummary(rows) {
+  const bins=['0','1','2_8','9_32','33_plus'].map(b=>'worker_jobs_targets_'+b);
+  const valid=t=>{
+    const storage=t.stage==='proof_storage_worker_totals';
+    const fields=['worker_jobs','worker_target_max',...bins,storage?'worker_storage_targets':'worker_account_targets',storage?'worker_root_requests':'worker_storage_groups'];
+    return t.worker_job_counts_measured===1 && t.worker_job_counts_saturated===0 &&
+      fields.every(k=>Number.isSafeInteger(t[k])&&t[k]>=0) &&
+      bins.reduce((n,k)=>n+t[k],0)===t.worker_jobs &&
+      t.worker_target_max<=t[storage?'worker_storage_targets':'worker_account_targets'] &&
+      (t.worker_jobs!==0 || (t.worker_target_max===0 && t[storage?'worker_storage_targets':'worker_account_targets']===0)) &&
+      (!storage || t.worker_root_requests<=t.worker_jobs);
+  };
+  const measured=rows.filter(valid);
+  if(!measured.length) return 'attempted job sizes unmeasured (missing, invalid or saturated counters)';
+  const storage=measured[0].stage==='proof_storage_worker_totals';
+  const own=storage?'worker_storage_targets':'worker_account_targets';
+  const extra=storage?'worker_root_requests':'worker_storage_groups';
+  const sum=k=>measured.reduce((n,t)=>n+t[k],0);
+  if(!['worker_jobs',own,extra,...bins].every(k=>Number.isSafeInteger(sum(k)))) return 'attempted job size totals exceed exact viewer integer range';
+  return `${measured.length}/${rows.length} completions with job counts: ${sum('worker_jobs')} attempted jobs · ${sum(own)} ${storage?'storage':'account'} vector targets · max own vector ${Math.max(...measured.map(t=>t.worker_target_max))} · own-vector jobs [0,1,2–8,9–32,33+] = [${bins.map(sum).join(',')}] · ${sum(extra)} ${storage?'root requests':'storage groups (storage target total unmeasured)'}; attempts include failed calculations or abandoned results`;
+}
 function proofWorkerSummary(totals) {
   if (!totals.length) return 'Not measured for this block (requires full capture with proof-worker CPU instrumentation).';
   const groups = new Map();
@@ -43,7 +64,7 @@ function proofWorkerSummary(totals) {
   return [...groups].map(([key, rows]) => {
     const measured = rows.filter(t => t.worker_cpu_measured === 1 && t.worker_thread_cpu_ns != null);
     const total = measured.length ? ms(measured.reduce((n,t) => n+t.worker_thread_cpu_ns,0)/1e6) : 'unmeasured';
-    return `${key}: ${rows.length} recorded completions · ${measured.length} measured · ${rows.length-measured.length} unavailable · ${rows.filter(t=>t.worker_success===0).length} failed · summed measured thread CPU ${total}`;
+    return `${key}: ${rows.length} recorded completions · ${measured.length} measured · ${rows.length-measured.length} unavailable · ${rows.filter(t=>t.worker_success===0).length} failed · summed measured thread CPU ${total} · ${proofJobSummary(rows)}`;
   }).join('; ');
 }
 // END WORKER_CPU_HELPER
