@@ -433,7 +433,7 @@ snapshots, and benchmark state are unchanged by this failure cleanup.
 
 ### Reserved runner admission (experimental branch only)
 
-This workflow reserves three matching runner jobs and measures their capacity before
+This workflow reserves four matching runner jobs and measures their capacity before
 checkout or benchmark setup. All jobs require the same complete set of closed numeric
 receipts, bound to the immutable workflow SHA, run and attempt. The eligible slot
 with the larger minimum root/workspace free space wins (lower slot breaks ties)
@@ -448,6 +448,11 @@ to three minutes, and rejects missing, malformed, duplicate or mismatched receip
 without selecting a fallback. Existing later capacity guards remain in force.
 Selection reserves a runner job, not disk space or an exclusive physical host;
 another workload can still consume capacity after admission.
+
+The four-slot policy follows historical job metadata showing four distinct runner
+registrations across prior assignments; it does not establish current capacity or
+availability. Helpers retain explicit two/three/four-slot protocols, with the
+expected count supplied by trusted workflow configuration, not receipt contents.
 
 This branch accepts only manual lifecycle dispatches with Slack disabled. Use a
 fresh run rather than reusing artifacts across attempts. Transport tests run with

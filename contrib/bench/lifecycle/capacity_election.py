@@ -97,7 +97,7 @@ def capacity(report):
 
 def elect(receipts, *, workflow_sha, run_id, run_attempt, slots=2):
     expected = binding(workflow_sha, run_id, run_attempt)
-    integer(slots, 2, 3)
+    integer(slots, 2, 4)
     require(type(receipts) is list and len(receipts) == slots)
     seen_slots = set()
     eligible = []
@@ -151,7 +151,7 @@ def main(argv=None, stdin=None):
         parser.add_argument('--workflow-sha', required=True)
         parser.add_argument('--run-id', required=True)
         parser.add_argument('--run-attempt', required=True)
-        parser.add_argument('--slots', choices=('2', '3'), default='2')
+        parser.add_argument('--slots', choices=('2', '3', '4'), default='2')
         parser.add_argument('paths', nargs='*')
         args = parser.parse_args(argv)
         require(re.fullmatch('[1-9][0-9]{0,15}', args.run_id) is not None)
