@@ -51,7 +51,7 @@ function proofJobSummary(rows) {
   const extra=storage?'worker_root_requests':'worker_storage_groups';
   const sum=k=>measured.reduce((n,t)=>n+t[k],0);
   if(!['worker_jobs',own,extra,...bins].every(k=>Number.isSafeInteger(sum(k)))) return 'attempted job size totals exceed exact viewer integer range';
-  let joint='';
+  let joint='',inline='';
   if(!storage) {
     const eligible=measured.filter(t=>Number.isSafeInteger(t.worker_jobs_storage_only_single_group) &&
       t.worker_jobs_storage_only_single_group>=0 &&
@@ -62,8 +62,16 @@ function proofJobSummary(rows) {
     joint=eligible.length && Number.isSafeInteger(count) && Number.isSafeInteger(jobs)
       ? ` · ${count}/${jobs} attempted account jobs had zero account targets and exactly one storage group (${eligible.length}/${rows.length} completions with joint counts)`
       : ' · joint storage-only single-group count unmeasured';
+    const inlined=eligible.filter(t=>['worker_inline_storage_attempts','worker_inline_storage_targets'].every(k=>Number.isSafeInteger(t[k])&&t[k]>=0) &&
+      t.worker_inline_storage_attempts<=t.worker_jobs_storage_only_single_group &&
+      (t.worker_inline_storage_attempts!==0 || t.worker_inline_storage_targets===0));
+    const attempts=inlined.reduce((n,t)=>n+t.worker_inline_storage_attempts,0);
+    const targets=inlined.reduce((n,t)=>n+t.worker_inline_storage_targets,0);
+    inline=inlined.length && Number.isSafeInteger(attempts) && Number.isSafeInteger(targets)
+      ? ` · inline storage: ${attempts} attempted calculations / ${targets} vector targets (${inlined.length}/${rows.length} completions measured; account-worker work, not storage-pool dequeues; compare summed account+storage CPU)`
+      : ' · inline storage attempts/targets unavailable';
   }
-  return `${measured.length}/${rows.length} completions with job counts: ${sum('worker_jobs')} attempted jobs · ${sum(own)} ${storage?'storage':'account'} vector targets · max own vector ${Math.max(...measured.map(t=>t.worker_target_max))} · own-vector jobs [0,1,2–8,9–32,33+] = [${bins.map(sum).join(',')}] · ${sum(extra)} ${storage?'root requests':'storage groups (storage target total unmeasured)'}${joint}; attempts include failed calculations or abandoned results`;
+  return `${measured.length}/${rows.length} completions with job counts: ${sum('worker_jobs')} attempted jobs · ${sum(own)} ${storage?'storage':'account'} vector targets · max own vector ${Math.max(...measured.map(t=>t.worker_target_max))} · own-vector jobs [0,1,2–8,9–32,33+] = [${bins.map(sum).join(',')}] · ${sum(extra)} ${storage?'root requests':'storage groups (storage target total unmeasured)'}${joint}${inline}; attempts include failed calculations or abandoned results`;
 }
 function proofWorkerSummary(totals) {
   if (!totals.length) return 'Not measured for this block (requires full capture with proof-worker CPU instrumentation).';

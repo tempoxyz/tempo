@@ -385,3 +385,14 @@ It does not count storage targets, successful shortcuts, or saved work. The view
 uses only unsaturated measured joint counts and their matching attempted-job
 denominator; older captures remain unmeasured rather than inferring the joint
 population from separate zero-target and storage-group totals.
+
+The optional account-only `worker_inline_storage_attempts` and
+`worker_inline_storage_targets` counters measure attempted inline storage
+calculations and their input target-vector lengths, including failures and
+cancelled receivers. They are not storage-pool dequeues. The observer-only
+control emits measured zeroes; older captures without the pair remain unavailable.
+The exporter requires one unsaturated measured completion on the exact account
+worker and block, within its lifetime, and attempts no greater than the measured
+single-group eligibility count. It retains the pair in block totals and worker
+details. Compare summed account and storage worker CPU because this route moves
+work onto account workers; these counts do not establish saved work or speedup.
