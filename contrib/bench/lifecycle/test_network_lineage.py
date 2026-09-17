@@ -19,6 +19,49 @@ def event(stage, ts, node=A, block=None, span=1, **fields):
 
 
 class NetworkLineageTests(unittest.TestCase):
+    def test_lineage_preserves_prewarm_and_worker_cpu_in_combined_package(self):
+        from test_prewarm import captures
+        from report import write_report
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            paths = captures(root)
+            for index, path in enumerate(paths):
+                records = [json.loads(line) for line in path.read_text().splitlines()]
+                records[0]['detail'] = 'full'
+                records[-1:-1] = [
+                    dict(type='start', id=201, ts=6, thread=3, name='storage_worker',
+                         category='trie::proof_task', parent=1, fields={}),
+                    dict(type='event', id=201, ts=60, thread=3, fields=dict(
+                        stage='proof_storage_worker_totals', worker_run_ns=40,
+                        worker_cpu_measured=1, worker_thread_cpu_ns=20+index,
+                        worker_success=1)),
+                    dict(type='end', id=201, ts=61)]
+                records[-1]['written'] = len(records)-1
+                path.write_text('\n'.join(map(json.dumps, records)))
+            before = build(paths, warmup=0, expected_detail='full', expected_prewarm_cpu='leaf_v1')
+            for index, path in enumerate(paths):
+                records = [json.loads(line) for line in path.read_text().splitlines()]
+                fields = dict(stage='frame_send' if index == 0 else 'frame_receive',
+                              frame_hash='b'*24, bytes=80)
+                fields.update(message_id=1) if index == 0 else fields.update(receive_id=1)
+                records.insert(-1, dict(type='event', id=1, ts=7+index, thread=1, fields=fields))
+                records[-1]['written'] = len(records)-1
+                path.write_text('\n'.join(map(json.dumps, records)))
+            out = root/'report'
+            result = write_report(paths, out, warmup=0, expected_detail='full', expected_prewarm_cpu='leaf_v1')
+            self.assertFalse(result['bad_capture'])
+            self.assertEqual(result['prewarm'], before['prewarm'])
+            self.assertEqual(len(result['transfers']), 1)
+            exported = [e for e in trace_events(result) if e.get('ph') == 'X'
+                        and e.get('args', {}).get('span_id') == 201]
+            self.assertCountEqual([e['args']['worker_thread_cpu_ns'] for e in exported], [20, 21])
+            self.assertTrue(all('not block elapsed' in e['args']['worker_cpu_scope'] for e in exported))
+            self.assertEqual(json.loads((out/'prewarm-manifest.json').read_text())['leaves'], 4)
+            self.assertEqual(len(json.loads((out/'network-lineage.json').read_text())['transfers']), 1)
+            page = (out/'index.html').read_text()
+            self.assertIn('prewarm.html', page)
+            self.assertIn('network-lineage.json', page)
+
     def test_proposal_and_body_codec_membership_is_message_local(self):
         spans = [dict(node=A, id=1, parent=None, name='batch', block=None)]
         events = []
