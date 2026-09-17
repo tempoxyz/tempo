@@ -6,6 +6,8 @@ import math
 from pathlib import Path
 from report_package import write_package
 from backpressure import first_boundary, prepare_captures
+import prewarm
+from collections import defaultdict
 
 BLOCK_FIELDS = ('block_hash', 'hash', 'digest', 'proposal', 'payload')
 STAGES = ('proposal_start', 'payload_built', 'proposal_ready', 'digest_released',
@@ -192,6 +194,8 @@ def read_node(path, role, cutoff=None):
         event['block'] = block_key(event['fields']) or inherited(spans.get(event['id']))
     quality = {'node': role, 'header': bool(header and header.get('schema') == 1),
                'detail': (header or {}).get('detail', 'full'),
+               'prewarm_cpu': (header or {}).get('prewarm_cpu'),
+               'prewarm_coverage_failures': (footer or {}).get('prewarm_coverage_failures'),
                'footer': footer is not None, 'dropped': (footer or {}).get('dropped', 0),
                'io_error': (footer or {}).get('io_error', False), 'invalid_lines': invalid + (footer or {}).get('invalid_lines', 0),
                'open_spans': sum(s['end'] is None for s in spans.values()),
@@ -218,7 +222,7 @@ def active_wall_ns(intervals):
     return duration
 
 
-def build(paths, warmup=5, window=None, expected_detail=None):
+def build(paths, warmup=5, window=None, expected_detail=None, expected_prewarm_cpu=None):
     spans, events, quality = [], [], []
     boundary = first_boundary(paths)
     recorded = (window or {}).get('backpressure')
@@ -283,7 +287,20 @@ def build(paths, warmup=5, window=None, expected_detail=None):
     details = {q['detail'] for q in quality}
     detail = next(iter(details)) if len(details) == 1 else 'mixed'
     detail_valid = detail in ('full', 'milestones') and (expected_detail is None or detail == expected_detail)
-    bad_capture = not detail_valid or any(not q['header'] or not q['footer'] or q['dropped'] or q['io_error'] or q['invalid_lines'] or q['open_spans'] for q in quality)
+    try:
+        prewarm_data = prewarm.inspect(spans, events, quality, aliases, cutoff, expected_prewarm_cpu)
+        prewarm_valid = True
+    except ValueError as error:
+        prewarm_data = dict(schema=1, mode='invalid', description=prewarm.DESCRIPTION,
+                            contexts=[], leaves=[], summary=[], error=str(error))
+        prewarm_valid = False
+    prewarm_data['time_origin_ns'] = first
+    leaves_by_block = defaultdict(list)
+    for leaf in prewarm_data['leaves']:
+        leaves_by_block[leaf['block']].append(leaf)
+    for block in blocks:
+        block['prewarm_calls'] = prewarm.summarize(leaves_by_block[block['id']])
+    bad_capture = not prewarm_valid or not detail_valid or any(not q['header'] or not q['footer'] or q['dropped'] or q['io_error'] or q['invalid_lines'] or q['open_spans'] for q in quality)
     # Unexplained gaps invalidate completeness even when some blocks survived.
     representatives = {str(p): nearest_rank(eligible, p) if not bad_capture else None for p in (50,90,99)}
     attempts = sorted((s for s in spans if s['name'] == 'handle_propose'),
@@ -350,6 +367,7 @@ def build(paths, warmup=5, window=None, expected_detail=None):
         if len(sends) == 1 and len(receives) == 1:
             transfers.append({'from': sends[0]['node'], 'to': receives[0]['node'], 'start': sends[0]['ts'], 'end': receives[0]['ts'], 'bytes': sends[0]['bytes']})
     return {'schema':1, 'capture_detail':detail, 'detail_valid':detail_valid,
+            'prewarm_cpu':prewarm_data['mode'], 'prewarm_valid':prewarm_valid, 'prewarm':prewarm_data,
             'boundary': dict(boundary, relative_ms=(cutoff-first)/1e6) if boundary else None, 'blocks':blocks, 'spans':rows, 'transfers':transfers, 'quality':quality,
             'representatives':representatives, 'eligible':len(eligible), 'warmup':warmup,
             'unexplained_attempts':sum(a['status'] == 'unexplained_unassociated' for a in attempt_details),
@@ -359,14 +377,15 @@ def build(paths, warmup=5, window=None, expected_detail=None):
                 'Proposal handling start on proposer → first accepted finalization certificate on a validator. Nearest-rank percentiles select actual complete blocks; initial complete blocks are excluded as warmup. When load boundaries are available, both endpoints must fall inside the load window. All views exclude data at or after the first engine persistence backpressure event on either validator; crossing spans are right-censored and crossing aggregates omitted.'}
 
 
-def write_report(paths, out, warmup=5, window=None, prune=False, expected_detail=None):
+def write_report(paths, out, warmup=5, window=None, prune=False, expected_detail=None, expected_prewarm_cpu=None):
     if prune:
         paths, window = prepare_captures(paths, out, window)
-    data = build(paths, warmup, window, expected_detail)
+    data = build(paths, warmup, window, expected_detail, expected_prewarm_cpu)
     out.mkdir(parents=True, exist_ok=True)
     encoded = json.dumps(data, separators=(',',':')).replace('<', '\\u003c')
     (out/'lifecycle.json').write_text(encoded)
     write_package(data, out)
+    prewarm.write_view(data['prewarm'], out)
     return data
 
 
@@ -377,11 +396,12 @@ if __name__ == '__main__':
     parser.add_argument('--window', type=Path)
     parser.add_argument('--prune', action='store_true', help='Publish only pre-backpressure raw captures alongside the report')
     parser.add_argument('--expected-detail', choices=('full', 'milestones'), help='Reject captures whose recorder detail does not match the requested mode')
+    parser.add_argument('--expected-prewarm-cpu', choices=('disabled', 'leaf_v1'), help='Require selected prewarm CPU observer admission')
     parser.add_argument('captures', type=Path, nargs='+')
     args = parser.parse_args()
     window = json.loads(args.window.read_text()) if args.window and args.window.exists() else (
         {'start_ns': 0, 'end_ns': 0, 'stop_reason': 'load_not_started'} if args.window else None)
-    result = write_report(args.captures, args.out, args.warmup, window, args.prune, args.expected_detail)
+    result = write_report(args.captures, args.out, args.warmup, window, args.prune, args.expected_detail, args.expected_prewarm_cpu)
     print(f"Lifecycle report: {len(result['blocks'])} blocks, {result['eligible']} complete post-warmup blocks; invalid capture: {result['bad_capture']}")
     if result['bad_capture'] or not result['eligible']:
         raise SystemExit(2)

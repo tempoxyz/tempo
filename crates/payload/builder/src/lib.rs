@@ -478,18 +478,28 @@ where
             executor.evm().evm_env(),
             self.config.enable_parallel,
         );
+        let prewarm_observer = reth_tasks::prewarm_cpu::Context::new(
+            reth_tasks::prewarm_cpu::Role::Builder,
+            if self.config.enable_prewarming {
+                reth_tasks::prewarm_cpu::Mode::Transactions
+            } else {
+                reth_tasks::prewarm_cpu::Mode::Skipped
+            },
+        );
         let mut best_txs = if self.config.enable_prewarming {
             if self.config.enable_parallel {
                 PayloadTransactions::Parallel(BestTransactionsPrewarming::new(
                     prewarm_ctx,
                     raw_best_txs,
+                    prewarm_observer,
                 ))
             } else {
                 PayloadTransactions::Prewarming(StateAwareBestTransactions::new(
-                    BestTransactionsPrewarming::new(prewarm_ctx, raw_best_txs),
+                    BestTransactionsPrewarming::new(prewarm_ctx, raw_best_txs, prewarm_observer),
                 ))
             }
         } else {
+            prewarm_observer.finish();
             PayloadTransactions::Sequential(StateAwareBestTransactions::new(Box::new(raw_best_txs)))
         };
         self.metrics

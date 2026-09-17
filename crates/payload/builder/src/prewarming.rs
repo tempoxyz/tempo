@@ -9,7 +9,10 @@ use reth_engine_tree::tree::{CachedStateProvider, SavedCache};
 use reth_evm::{Evm, EvmEnvFor};
 use reth_revm::database::StateProviderDatabase;
 use reth_storage_api::{StateProviderBox, StateProviderFactory};
-use reth_tasks::{TaskExecutor, WorkerPool};
+use reth_tasks::{
+    TaskExecutor, WorkerPool,
+    prewarm_cpu::{Context as CpuContext, Job as CpuJob, Outcome as CpuOutcome},
+};
 use reth_transaction_pool::{
     BestTransactions, PoolTransaction, error::InvalidPoolTransactionError,
 };
@@ -34,6 +37,7 @@ impl BestTransactionsPrewarming {
     pub(crate) fn new<Txs, Provider>(
         prewarm: PrewarmingExecutionContext<Provider>,
         best_txs: Txs,
+        observer: CpuContext,
     ) -> Self
     where
         Txs: BestTransactions<Item = BestTransaction> + Send + 'static,
@@ -61,6 +65,7 @@ impl BestTransactionsPrewarming {
                         prewarm,
                         next_expiring_nonce_offset: 0,
                     },
+                    observer,
                 );
             });
 
@@ -73,6 +78,7 @@ impl BestTransactionsPrewarming {
     fn start_prewarming<Txs, Provider>(
         executor: TaskExecutor,
         mut ctx: BestTransactionsPrewarmingContext<Txs, Provider>,
+        observer: CpuContext,
     ) where
         Txs: BestTransactions<Item = BestTransaction>,
         Provider: StateProviderFactory + Clone + 'static,
@@ -109,8 +115,9 @@ impl BestTransactionsPrewarming {
                         .send(Some(PrewarmedTransaction::without_replay(tx.clone())));
                 }
 
+                let cpu_job = observer.dispatch();
                 scope.spawn(move |_| {
-                    let tx = Self::prewarm_transaction(prewarm, tx, expiring_nonce_offset);
+                    let tx = Self::prewarm_transaction(prewarm, tx, expiring_nonce_offset, cpu_job);
                     if parallel {
                         let _ = transactions_tx.send(Some(tx));
                     }
@@ -161,6 +168,7 @@ impl BestTransactionsPrewarming {
             }
         });
 
+        observer.finish();
         pool.clear();
     }
 
@@ -173,18 +181,25 @@ impl BestTransactionsPrewarming {
         prewarm: PrewarmingExecutionContext<Provider>,
         tx: BestTransaction,
         expiring_nonce_offset: Option<usize>,
+        cpu_job: CpuJob,
     ) -> PrewarmedTransaction
     where
         Provider: StateProviderFactory + Clone + 'static,
     {
+        let mut cpu = cpu_job.start();
         let replay = WorkerPool::with_worker_mut(|worker| {
             if prewarm.parallel && !is_parallel_candidate(&tx) {
+                cpu.outcome(CpuOutcome::ParallelIneligible);
                 return None;
             }
 
-            let evm = worker.get_or_init(|| prewarm.evm_for_ctx()).as_mut()?;
+            let Some(evm) = worker.get_or_init(|| prewarm.evm_for_ctx()).as_mut() else {
+                cpu.outcome(CpuOutcome::EvmUnavailable);
+                return None;
+            };
 
             if prewarm.is_stopped() {
+                cpu.outcome(CpuOutcome::Stopped);
                 return None;
             }
 
@@ -198,6 +213,7 @@ impl BestTransactionsPrewarming {
                 Err(err) => {
                     // Discard actions recorded by the failed transaction before reusing this worker.
                     evm.clear_actions();
+                    cpu.outcome(CpuOutcome::ExecutionError);
                     trace!(
                         target: "payload_builder",
                         %err,
@@ -211,10 +227,14 @@ impl BestTransactionsPrewarming {
             trace!(target: "payload_builder", "Prewarmed transaction");
 
             if !prewarm.parallel {
+                cpu.outcome(CpuOutcome::Executed);
                 return None;
             }
 
-            let actions = evm.take_actions()?;
+            let Some(actions) = evm.take_actions() else {
+                cpu.outcome(CpuOutcome::ReplayUnavailable);
+                return None;
+            };
             let expiring_nonce = tx
                 .transaction
                 .is_expiring_nonce()
@@ -234,6 +254,7 @@ impl BestTransactionsPrewarming {
                 "Generated replay for transaction"
             );
 
+            cpu.outcome(CpuOutcome::WithReplay);
             Some(Box::new(StorageActionReplay {
                 result,
                 actions,
@@ -658,8 +679,11 @@ mod tests {
         log: Arc<Mutex<TestLog>>,
     ) -> TestPrewarming {
         let context = prewarming_context(executor.clone(), false);
-        let prewarming =
-            BestTransactionsPrewarming::new(context, TestBestTransactions::new(txs, log));
+        let prewarming = BestTransactionsPrewarming::new(
+            context,
+            TestBestTransactions::new(txs, log),
+            CpuContext::default(),
+        );
         TestPrewarming {
             prewarming: Some(prewarming),
             executor,
@@ -869,6 +893,7 @@ mod tests {
                 context.clone(),
                 test_payment_tx(sender, 0),
                 None,
+                CpuJob::default(),
             );
             assert!(failed.replay.is_none());
             WorkerPool::with_worker_mut(|worker| {
@@ -883,6 +908,7 @@ mod tests {
                 context,
                 test_payment_tx(sender, 500_000),
                 None,
+                CpuJob::default(),
             );
             let replay = successful.replay.expect("successful prewarm replay");
             assert!(!replay.actions.is_empty());

@@ -1096,8 +1096,9 @@ def run-local-e2e-phase [run: record, ctx: record] {
         ^python3 -c 'import os,sys,time; f=os.open(sys.argv[1],os.O_WRONLY|os.O_CREAT|os.O_EXCL,0o600); os.write(f,os.urandom(32)); os.close(f); print(time.monotonic_ns())' $lifecycle_key | str trim
     } else { "" }
     let capture_detail = ($run.lifecycle_detail? | default $ctx.lifecycle_detail)
-    let a_capture = if $ctx.lifecycle { $"RETH_LIFECYCLE_FILE=($lifecycle_dir)/a.jsonl TEMPO_LIFECYCLE_DETAIL=($capture_detail) RETH_LIFECYCLE_KEY_FILE=($lifecycle_key) RETH_LIFECYCLE_EPOCH_NS=($lifecycle_epoch) " } else { "" }
-    let b_capture = if $ctx.lifecycle { $"RETH_LIFECYCLE_FILE=($lifecycle_dir)/b.jsonl TEMPO_LIFECYCLE_DETAIL=($capture_detail) RETH_LIFECYCLE_KEY_FILE=($lifecycle_key) RETH_LIFECYCLE_EPOCH_NS=($lifecycle_epoch) " } else { "" }
+    let prewarm_config = (lifecycle-prewarm-config $ctx.lifecycle_prewarm_cpu $run.side)
+    let a_capture = if $ctx.lifecycle { $"($prewarm_config.env)RETH_LIFECYCLE_FILE=($lifecycle_dir)/a.jsonl TEMPO_LIFECYCLE_DETAIL=($capture_detail) RETH_LIFECYCLE_KEY_FILE=($lifecycle_key) RETH_LIFECYCLE_EPOCH_NS=($lifecycle_epoch) " } else { "" }
+    let b_capture = if $ctx.lifecycle { $"($prewarm_config.env)RETH_LIFECYCLE_FILE=($lifecycle_dir)/b.jsonl TEMPO_LIFECYCLE_DETAIL=($capture_detail) RETH_LIFECYCLE_KEY_FILE=($lifecycle_key) RETH_LIFECYCLE_EPOCH_NS=($lifecycle_epoch) " } else { "" }
 
     mark-schelk-dirty-at $ctx.a.state_path
     mark-schelk-dirty-at $ctx.b.state_path
@@ -1118,6 +1119,14 @@ def run-local-e2e-phase [run: record, ctx: record] {
     if $phase_exit == 0 and not (e2e-wait-for-peers $b_rpc 1 300) { $phase_exit = 1 }
     if $phase_exit == 0 and not (e2e-wait-for-chain-advance $a_rpc 300) { $phase_exit = 1 }
     if $phase_exit == 0 and not (e2e-wait-for-chain-advance $b_rpc 300) { $phase_exit = 1 }
+
+    if $phase_exit == 0 and $ctx.lifecycle_prewarm_cpu == "compare" {
+        let admission = (^python3 contrib/bench/lifecycle/prewarm.py --expected $prewarm_config.expected --timeout 10 $"($lifecycle_dir)/a.jsonl" $"($lifecycle_dir)/b.jsonl" | complete)
+        if $admission.exit_code != 0 {
+            print "prewarm_cpu_admission_failed"
+            $phase_exit = 1
+        }
+    }
 
     let tracy_output = $"($ctx.results_dir)/tracy-profile-($phase).tracy"
     let tracy_log = $"($ctx.results_dir)/tracy-capture-($phase).log"
@@ -1222,7 +1231,8 @@ def run-local-e2e-phase [run: record, ctx: record] {
     restore-system-tuning $tuning_state
     if $ctx.lifecycle {
         rm -f $lifecycle_key
-        let report = (^python3 contrib/bench/lifecycle/report.py --prune --expected-detail $capture_detail --out $lifecycle_report_dir --warmup $ctx.summary_warmup_blocks --window $"($lifecycle_dir)/window.json" $"($lifecycle_dir)/a.jsonl" $"($lifecycle_dir)/b.jsonl" | complete)
+        let prewarm_report_args = if $ctx.lifecycle_prewarm_cpu == "compare" { ["--expected-prewarm-cpu" $prewarm_config.expected] } else { [] }
+        let report = (^python3 contrib/bench/lifecycle/report.py --prune --expected-detail $capture_detail ...$prewarm_report_args --out $lifecycle_report_dir --warmup $ctx.summary_warmup_blocks --window $"($lifecycle_dir)/window.json" $"($lifecycle_dir)/a.jsonl" $"($lifecycle_dir)/b.jsonl" | complete)
         print $report.stdout
         if $report.stderr != "" { print $report.stderr }
         if $report.exit_code != 0 { $phase_exit = 1 }
@@ -1434,6 +1444,7 @@ def "main e2e" [
     --feature-features: string = ""                     # Additional Cargo features for feature build (defaults to --features)
     --no-default-features                               # Disable Cargo default features
     --lifecycle                                         # Capture privacy-filtered block lifecycle artifacts on both validators
+    --lifecycle-prewarm-cpu: string = "disabled"          # Matched selected-call CPU observer: disabled or compare
     --lifecycle-detail: string = "full"                  # Capture detail: full, milestones, or compare (requires --lifecycle)
     --samply                                            # Profile validators with samply
     --samply-args: string = ""                          # Additional samply arguments
@@ -1466,6 +1477,17 @@ def "main e2e" [
     --valscope-dir: string = "../valscope"               # Path to the ValScope checkout
     --skip-summary                                       # Leave summary generation to a later workflow step
 ] {
+    if $lifecycle_prewarm_cpu not-in ["disabled" "compare"] or ($lifecycle_prewarm_cpu == "compare" and (not $lifecycle or $lifecycle_detail != "milestones" or $run_side != "comparison")) {
+        error make {msg: "Prewarm CPU comparison requires milestone lifecycle and both sides"}
+    }
+    if $lifecycle_prewarm_cpu == "compare" and (
+        ($baseline | default "") !~ '^[0-9a-f]{40}$' or $baseline != $feature or
+        $baseline_args != $feature_args or $baseline_features != $feature_features or
+        $baseline_hardfork != $feature_hardfork or
+        $bench_env != "" or $baseline_env != "" or $feature_env != ""
+    ) {
+        error make {msg: "Prewarm CPU comparison requires identical immutable refs and node inputs without environment overrides"}
+    }
     if $lifecycle_detail not-in ["full" "milestones" "compare"] or (not $lifecycle and $lifecycle_detail != "full") {
         error make {msg: "Lifecycle detail must be full, milestones or compare; reduced modes require --lifecycle"}
     }
@@ -1808,6 +1830,7 @@ def "main e2e" [
         samply_args: $samply_args_list
         lifecycle: $lifecycle
         lifecycle_detail: $lifecycle_detail
+        lifecycle_prewarm_cpu: $lifecycle_prewarm_cpu
         summary_warmup_blocks: $summary_warmup_blocks
         tracy: $tracy
         tracy_filter: $tracy_filter
@@ -1836,6 +1859,12 @@ def "main e2e" [
         tracing_otlp: $tracing_otlp
     }
 
+    if $lifecycle_prewarm_cpu == "compare" {
+        let equality = (^cmp --silent $baseline_tempo $feature_tempo | complete)
+        if $equality.exit_code != 0 {
+            error make {msg: "Prewarm CPU comparison requires identical binary bytes"}
+        }
+    }
     let baseline_base_label = if $baseline_name != "" { $baseline_name } else { $baseline }
     let feature_base_label = if $feature_name != "" { $feature_name } else { $feature }
 

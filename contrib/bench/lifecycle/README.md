@@ -385,3 +385,38 @@ It does not count storage targets, successful shortcuts, or saved work. The view
 uses only unsaturated measured joint counts and their matching attempted-job
 denominator; older captures remain unmeasured rather than inferring the joint
 population from separate zero-target and storage-group totals.
+
+### Selected prewarming call CPU (experimental)
+
+`profiling=lifecycle-compare-prewarm-cpu` runs the same immutable binary and node
+configuration with the observer disabled on baseline phases and `leaf_v1` enabled
+on feature phases. It uses milestone capture, checks the two binary files for byte
+equality, and requires explicit mode headers before load and after strict pruning.
+The node-only environment is `TEMPO_LIFECYCLE_PREWARM_CPU=disabled|leaf_v1`.
+Default capture leaves the observer disabled. This comparison measures observer
+cost; it is required before interpreting a prewarming configuration comparison.
+
+The observer records separate engine and builder synchronous transaction calls,
+including skip/error outcomes, with a start and completion event per invoked call.
+CPU means **inclusive current-thread CPU during the selected call**. Remote worker
+CPU is excluded; nested same-thread helping is included. Same-thread overlapping
+calls are flagged, and their inclusive CPU sums are not exclusive prewarming CPU.
+Initialization broadcasts, coordination, cleanup, BAL work and builder attempts
+that return before prewarm selection are outside this coverage.
+
+A context retains at most one shared counter state, capped at 128 live contexts per
+process including outstanding dispatch tokens. Leaf ordinals are local observer
+identities, not transaction indexes. Cap/overflow/invalid completion failures reject
+coverage through an integrity footer retained even when the failure event is beyond
+the cutoff. Missing CPU samples and calls crossing the cutoff remain unavailable;
+no CPU interval is prorated. Normal completion declares dispatch counts and must
+match all independently observed starts/completions. A never-started dispatch is
+only producer-declared, not independently reconstructed.
+
+`prewarm.html` displays role totals and links bounded Perfetto chunks. Each chunk
+contains at most 10,000 calls and reuses collector thread ordinals as tracks.
+`lifecycle.json` preserves contexts, outcomes, association and censored calls;
+raw pruned capture retains the exact source evidence. The offline block pages show
+only calls associated through the actual source span ancestry. An unassociated
+attempt remains unassociated. Actual clock precision is platform-dependent even
+though the encoded unit is nanoseconds.

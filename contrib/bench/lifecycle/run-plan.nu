@@ -38,3 +38,13 @@ def lifecycle-reuse-build [enabled: bool, no_cache: bool, builds: list<record>] 
         $a.extra_rustflags == $b.extra_rustflags and
         $a.bench_features == $b.bench_features)
 }
+
+# Explicit node-only mode selection; txgen never receives this observer flag.
+def lifecycle-prewarm-config [mode: string, side: string] {
+    if $mode == "disabled" { return {expected: "" env: ""} }
+    if $mode != "compare" or $side not-in ["baseline" "feature"] {
+        error make {msg: "Invalid prewarm observer phase"}
+    }
+    let selected = if $side == "feature" { "leaf_v1" } else { "disabled" }
+    {expected: $selected env: $"TEMPO_LIFECYCLE_PREWARM_CPU=($selected) "}
+}
