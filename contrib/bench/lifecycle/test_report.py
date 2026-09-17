@@ -57,7 +57,8 @@ class ReportTests(unittest.TestCase):
         values = [dict(stage='proof_storage_worker_totals', **common,
                        worker_storage_targets=0, worker_root_requests=1),
                   dict(stage='proof_account_worker_totals', **common,
-                       worker_account_targets=0, worker_storage_groups=3),
+                       worker_account_targets=0, worker_storage_groups=3,
+                       worker_jobs_storage_only_single_group=1),
                   dict(stage='proof_storage_worker_totals', worker_job_counts_measured=0),
                   dict(stage='proof_storage_worker_totals', worker_job_counts_measured=1,
                        worker_job_counts_saturated=1, worker_jobs=2**64-1)]

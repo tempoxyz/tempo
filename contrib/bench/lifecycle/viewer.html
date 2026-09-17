@@ -51,7 +51,19 @@ function proofJobSummary(rows) {
   const extra=storage?'worker_root_requests':'worker_storage_groups';
   const sum=k=>measured.reduce((n,t)=>n+t[k],0);
   if(!['worker_jobs',own,extra,...bins].every(k=>Number.isSafeInteger(sum(k)))) return 'attempted job size totals exceed exact viewer integer range';
-  return `${measured.length}/${rows.length} completions with job counts: ${sum('worker_jobs')} attempted jobs · ${sum(own)} ${storage?'storage':'account'} vector targets · max own vector ${Math.max(...measured.map(t=>t.worker_target_max))} · own-vector jobs [0,1,2–8,9–32,33+] = [${bins.map(sum).join(',')}] · ${sum(extra)} ${storage?'root requests':'storage groups (storage target total unmeasured)'}; attempts include failed calculations or abandoned results`;
+  let joint='';
+  if(!storage) {
+    const eligible=measured.filter(t=>Number.isSafeInteger(t.worker_jobs_storage_only_single_group) &&
+      t.worker_jobs_storage_only_single_group>=0 &&
+      t.worker_jobs_storage_only_single_group<=t.worker_jobs_targets_0 &&
+      t.worker_jobs_storage_only_single_group<=t.worker_storage_groups);
+    const count=eligible.reduce((n,t)=>n+t.worker_jobs_storage_only_single_group,0);
+    const jobs=eligible.reduce((n,t)=>n+t.worker_jobs,0);
+    joint=eligible.length && Number.isSafeInteger(count) && Number.isSafeInteger(jobs)
+      ? ` · ${count}/${jobs} attempted account jobs had zero account targets and exactly one storage group (${eligible.length}/${rows.length} completions with joint counts)`
+      : ' · joint storage-only single-group count unmeasured';
+  }
+  return `${measured.length}/${rows.length} completions with job counts: ${sum('worker_jobs')} attempted jobs · ${sum(own)} ${storage?'storage':'account'} vector targets · max own vector ${Math.max(...measured.map(t=>t.worker_target_max))} · own-vector jobs [0,1,2–8,9–32,33+] = [${bins.map(sum).join(',')}] · ${sum(extra)} ${storage?'root requests':'storage groups (storage target total unmeasured)'}${joint}; attempts include failed calculations or abandoned results`;
 }
 function proofWorkerSummary(totals) {
   if (!totals.length) return 'Not measured for this block: no worker completions recorded. Missing or cutoff-crossing invocations are not zero.';

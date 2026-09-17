@@ -332,3 +332,12 @@ Counters saturate with an explicit flag; the viewer does not summarize saturated
 incomplete or inexact integer values. Missing completions remain unmeasured, and
 strict pre-backpressure cutoff pruning applies to the entire completion event.
 CPU sampling can be unavailable while these portable counts remain measured.
+
+The optional `worker_jobs_storage_only_single_group` counter counts attempted account
+jobs with zero account targets and exactly one storage group. It is computed from
+those two existing O(1) lengths before processing, saturates with the existing
+job-count status, and appears only on the existing account-worker completion.
+It does not count storage targets, successful shortcuts, or saved work. The viewer
+uses only unsaturated measured joint counts and their matching attempted-job
+denominator; older captures remain unmeasured rather than inferring the joint
+population from separate zero-target and storage-group totals.

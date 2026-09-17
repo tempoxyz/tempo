@@ -242,6 +242,7 @@ def build(paths, warmup=5, window=None, expected_detail=None):
                                          'worker_cpu_measured','worker_success',
                                          'worker_job_counts_measured','worker_jobs','worker_account_targets',
                                          'worker_storage_targets','worker_storage_groups','worker_root_requests',
+                                         'worker_jobs_storage_only_single_group',
                                          'worker_target_max','worker_jobs_targets_0','worker_jobs_targets_1',
                                          'worker_jobs_targets_2_8','worker_jobs_targets_9_32',
                                          'worker_jobs_targets_33_plus','worker_job_counts_saturated')})
