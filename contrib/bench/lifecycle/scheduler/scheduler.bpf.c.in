@@ -1,0 +1,33 @@
+
+#include <uapi/linux/ptrace.h>
+struct event { u64 ts; u32 ordinal; u16 kind; u16 state; };
+BPF_RINGBUF_OUTPUT(events, 4096);
+BPF_HASH(ordinals,u32,u32,8192);
+BPF_PERCPU_ARRAY(counts,u64,3);
+BPF_ARRAY(sealed,u32,1);
+
+static inline void emit(u32 ordinal,u16 kind,u64 state){
+ int key=0;u64 *count=counts.lookup(&key);if(count)__sync_fetch_and_add(count,1);
+ if(!ordinal||ordinal>8192||state>256){key=2;count=counts.lookup(&key);if(count)__sync_fetch_and_add(count,1);return;}
+ struct event e={.ts=bpf_ktime_get_ns(),.ordinal=ordinal,.kind=kind,.state=state};
+ if(events.ringbuf_output(&e,sizeof(e),0)){key=1;count=counts.lookup(&key);if(count)__sync_fetch_and_add(count,1);}
+}
+int reg(struct pt_regs *ctx){
+ u64 native=bpf_get_current_pid_tgid();int zero=0;u32 *closed=sealed.lookup(&zero);
+ if((native>>32)!=WATCHED||!closed||*closed)return 0;
+ if(PT_REGS_PARM2(ctx)!=EPOCH)return 0;
+ u64 raw=PT_REGS_PARM1(ctx);if(!raw||raw>8192){int key=2;u64 *count=counts.lookup(&key);if(count)__sync_fetch_and_add(count,1);return 0;}
+ u32 tid=(u32)native, ordinal=raw;if(ordinals.update(&tid,&ordinal)){int key=2;u64 *count=counts.lookup(&key);if(count)__sync_fetch_and_add(count,1);return 0;}emit(ordinal,0,0);return 0;
+}
+TRACEPOINT_PROBE(sched,sched_switch){
+ u32 out=args->prev_pid,in=args->next_pid;u32 *ordinal=ordinals.lookup(&out);
+ if(ordinal)emit(*ordinal,1,args->prev_state);
+ ordinal=ordinals.lookup(&in);if(ordinal)emit(*ordinal,2,0);return 0;
+}
+TRACEPOINT_PROBE(sched,sched_wakeup){u32 tid=args->pid;u32 *ordinal=ordinals.lookup(&tid);if(ordinal)emit(*ordinal,3,0);return 0;}
+TRACEPOINT_PROBE(sched,sched_migrate_task){u32 tid=args->pid;u32 *ordinal=ordinals.lookup(&tid);if(ordinal)emit(*ordinal,5,0);return 0;}
+TRACEPOINT_PROBE(sched,sched_process_exit){
+ u64 native=bpf_get_current_pid_tgid();u32 tid=native;
+ if((native>>32)==WATCHED&&tid==WATCHED){int zero=0;u32 one=1;if(sealed.update(&zero,&one)){int key=2;u64 *count=counts.lookup(&key);if(count)__sync_fetch_and_add(count,1);}}
+ u32 *ordinal=ordinals.lookup(&tid);if(ordinal){emit(*ordinal,4,0);if(ordinals.delete(&tid)){int key=2;u64 *count=counts.lookup(&key);if(count)__sync_fetch_and_add(count,1);}}return 0;
+}

@@ -2,6 +2,10 @@
 
 STAGES = frozenset(('configuration', 'capability', 'marker', 'capture', 'cutoff', 'decode', 'publish'))
 REASONS = {
+    ('capability', 'binary scheduler prerequisite unavailable'): 'capability_binary_transport',
+    ('decode', 'unexpected binary scheduler output'): 'decode_binary_schema',
+    ('decode', 'scheduler memory limit exceeded; diagnostic unavailable'): 'decode_buffer_limit',
+    ('decode', 'scheduler capture tool exited unsuccessfully'): 'decode_child_exit',
     ('capture', 'scheduler memory limit exceeded; diagnostic unavailable'): 'capture_buffer_limit',
     ('capture', 'unexpected private tool output'): 'capture_encoding',
     ('capture', 'scheduler capture tool exited unsuccessfully'): 'capture_exit',

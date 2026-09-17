@@ -42,6 +42,11 @@ def decode(stdout, stderr, returncode, origin, *, expected_threads=EXPECTED_THRE
             raise ValueError("capture tool reported event loss")
         else:
             raise ValueError("unexpected tool output")
+    return decode_records(records, cutoffs, counts, expected_threads=expected_threads, cutoff_ns=cutoff_ns)
+
+
+def decode_records(records, cutoffs, counts, *, expected_threads, cutoff_ns):
+    """Apply identical completeness/cutoff rules to validated private events."""
     if cutoff_ns is not None:
         if cutoffs:
             raise ValueError("unexpected private cutoff marker")

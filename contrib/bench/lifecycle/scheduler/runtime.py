@@ -13,6 +13,7 @@ import time
 
 from diagnostic import ROOT, decode, preflight, verify_marker
 from failures import failure_code, failure_summary
+from binary_transport import HEADER, decode_binary
 sys.path.insert(0, str(ROOT.parent))
 from backpressure import first_boundary
 
@@ -33,7 +34,7 @@ def publish_capture(output, result):
             temporary.unlink(missing_ok=True)
 
 
-def capture(command, pass_fds=()):
+def capture(command, pass_fds=(), *, binary=False):
     """Drain both pipes without persisting tool output, with bounded retention."""
     process = subprocess.Popen(command, stdout=subprocess.PIPE, stderr=subprocess.PIPE, pass_fds=pass_fds)
     buffers = [bytearray(), bytearray()]
@@ -47,7 +48,7 @@ def capture(command, pass_fds=()):
                 overflow.set()
         source.close()
 
-    readers = [threading.Thread(target=drain, args=(process.stdout, buffers[0], MAX_BYTES)),
+    readers = [threading.Thread(target=drain, args=(process.stdout, buffers[0], MAX_BYTES + (HEADER.size if binary else 0))),
                threading.Thread(target=drain, args=(process.stderr, buffers[1], 1024 * 1024))]
     for reader in readers:
         reader.start()
@@ -57,7 +58,7 @@ def capture(command, pass_fds=()):
     if overflow.is_set():
         raise ValueError("scheduler memory limit exceeded; diagnostic unavailable")
     try:
-        return buffers[0].decode(), buffers[1].decode(), status
+        return (buffers[0] if binary else buffers[0].decode()), buffers[1].decode(), status
     except UnicodeError:
         raise ValueError("unexpected private tool output") from None
 
@@ -140,22 +141,14 @@ def main():
             raise ValueError('unsupported binary path')
         stage = 'capability'
         preflight()
+        _, diagnostics, status = capture([sys.executable, str(ROOT / 'binary_capture.py'), '--preflight'])
+        if status or diagnostics.strip():
+            raise ValueError('binary scheduler prerequisite unavailable')
         stage = 'marker'
         verify_marker(binary, 'reth_lifecycle_thread_register')
         stage = 'capture'
-        with tempfile.TemporaryDirectory(prefix='lifecycle-scheduler-') as private:
-            program = Path(private) / 'scheduler.bt'
-            program.write_text(program_for(binary, epoch))
-            # bpftrace 0.20.2 splits -c on spaces rather than shell-quoting it.
-            # A memfd carries the shell command without putting argv/identities
-            # on disk. Only fixed /bin/bash and /proc/self/fd/N enter -c.
-            launch = os.memfd_create('lifecycle-launch', os.MFD_CLOEXEC)
-            try:
-                os.write(launch, ('#!/bin/bash\nexec ' + str(launch) + '<&-\nexec ' + command + '\n').encode())
-                child = f'/bin/bash /proc/self/fd/{launch}'
-                stdout, stderr, status = capture(['bpftrace', '-q', '-k', '-c', child, str(program)], (launch,))
-            finally:
-                os.close(launch)
+        stdout, stderr, status = capture([sys.executable, str(ROOT / 'binary_capture.py'),
+            '--binary', str(binary), '--epoch', str(epoch), '--command-base64', args.command_base64], binary=True)
         if status:
             raise ValueError('scheduler capture tool exited unsuccessfully')
         if stderr.strip():
@@ -163,7 +156,7 @@ def main():
         stage = 'cutoff'
         cutoff, reason = final_cutoff(args.directory)
         stage = 'decode'
-        result = decode(stdout, stderr, status, epoch, expected_threads=None, cutoff_ns=cutoff)
+        result = decode_binary(stdout, epoch, cutoff)
         result.update(scope='registered validator thread windows only', process=1 if args.role == 'a' else 2,
                       cutoff_reason=reason, registration='registered_threads_v1')
         stage = 'publish'
