@@ -327,3 +327,19 @@ Counters saturate with an explicit flag; the viewer does not summarize saturated
 incomplete or inexact integer values. Missing completions remain unmeasured, and
 strict pre-backpressure cutoff pruning applies to the entire completion event.
 CPU sampling can be unavailable while these portable counts remain measured.
+
+## Storage-only forwarding experiment
+
+This candidate forwards an account job with no account targets and exactly one
+storage group to the existing storage worker. Its result is delivered directly
+to the original multiproof consumer, preserving state association, errors and
+shutdown completion. Empty storage vectors retain the existing root-only storage
+calculation. Other jobs retain the account calculation and collection path.
+
+Account job counts still describe attempts. For a forwarded job, account service
+ends after dispatch, while storage calculation and result delivery may remain
+pending. Account service completion therefore does not establish whole-proof
+completion. Storage job/service records and the original result elapsed time
+continue through that work. The experiment removes an intermediate result channel
+and account-worker wait, but does not establish a node CPU or latency benefit;
+freed account workers can change batching and storage queue pressure.
