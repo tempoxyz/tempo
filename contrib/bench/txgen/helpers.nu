@@ -57,7 +57,7 @@ def txgen-tip20-scenario-alias [name: string] {
 
     # Legacy preset names remain accepted, but active workflows should use scenario strings.
     if $name == "tip20" {
-        return (txgen-tip20-base-scenario)
+        return ((txgen-tip20-base-scenario) | merge { nonce: "protocol" })
     }
     if $name == "tip20_random_recipients" {
         return ((txgen-tip20-base-scenario) | merge { recipient: "random", fee_token: "any_tip20" })
