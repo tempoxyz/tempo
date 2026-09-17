@@ -26,6 +26,57 @@ def fixture(path, lost=0, close=True):
 
 
 class ReportTests(unittest.TestCase):
+    def test_worker_slice_cpu_uses_exact_node_span_kind_and_retained_completion(self):
+        from perfetto import trace_events
+        with tempfile.TemporaryDirectory() as directory:
+            paths = [Path(directory)/name for name in ('a.jsonl', 'b.jsonl')]
+            for index, path in enumerate(paths):
+                fixture(path)
+                records = [json.loads(line) for line in path.read_text().splitlines()]
+                extra = []
+                for ident, name in ((201, 'storage_worker'), (202, 'account_worker'),
+                                    (203, 'storage_worker'), (204, 'storage_worker')):
+                    extra += [dict(type='start', id=ident, ts=1_000_000_100, thread=2,
+                                   name=name, category='trie::proof_task', parent=1, fields={}),
+                              dict(type='end', id=ident, ts=1_000_000_500)]
+                def total(ident, stage, **fields):
+                    return dict(type='event', id=ident, ts=1_000_000_400,
+                                fields=dict(stage=stage, **fields))
+                extra += [
+                    total(201, 'proof_storage_worker_totals', worker_run_ns=10,
+                          worker_thread_cpu_ns=index*20, worker_cpu_measured=1, worker_success=1),
+                    # An account completion on a storage span cannot populate its CPU.
+                    total(203, 'proof_account_worker_totals', worker_thread_cpu_ns=999),
+                    total(202, 'proof_account_worker_totals', worker_run_ns=20,
+                          worker_cpu_measured=0, worker_success=0),
+                    total(204, 'proof_storage_worker_totals', worker_thread_cpu_ns=30),
+                    total(204, 'proof_storage_worker_totals', worker_thread_cpu_ns=40),
+                    # Never attach a worker completion to its execution/proposal ancestor.
+                    total(1, 'proof_storage_worker_totals', worker_thread_cpu_ns=999),
+                ]
+                records[-1:-1] = extra
+                path.write_text('\n'.join(map(json.dumps, records)))
+            result = build(paths, warmup=0)
+            spans = {(s['node'], s['id']): s for s in result['spans']}
+            for index, node in enumerate(('Validator A', 'Validator B')):
+                details = spans[(node, 201)]['details']
+                self.assertEqual(details['worker_thread_cpu_ns'], index*20)
+                self.assertEqual(details['worker_completion_count'], 1)
+                self.assertEqual(spans[(node, 202)]['details']['worker_cpu_measured'], 0)
+                self.assertNotIn('worker_thread_cpu_ns', spans[(node, 202)]['details'])
+                self.assertEqual(spans[(node, 203)]['details'], {'worker_completion_count': 0})
+                self.assertEqual(spans[(node, 204)]['details'], {'worker_completion_count': 2})
+                self.assertNotIn('worker_thread_cpu_ns', spans[(node, 1)]['details'])
+            exported = [e for e in trace_events(result) if e['ph']=='X'
+                        and e['args']['span_id']==201]
+            self.assertCountEqual([e['args']['worker_thread_cpu_ns'] for e in exported], [0,20])
+            self.assertTrue(all('not block elapsed' in e['args']['worker_cpu_scope'] for e in exported))
+            pruned = build(paths, warmup=0, window={'backpressure': {
+                'ts': 1_000_000_400, 'node': 'Validator A'}})
+            workers = [s for s in pruned['spans'] if s['id'] in (201,202,203,204)]
+            self.assertEqual(len(workers), 8)
+            self.assertTrue(all(s['details']=={'worker_completion_count': 0} for s in workers))
+
     def test_proof_worker_totals_preserve_completions_and_strict_cutoff(self):
         with tempfile.TemporaryDirectory() as directory:
             path = Path(directory)/'a.jsonl'; fixture(path)
