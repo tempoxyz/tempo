@@ -1,4 +1,6 @@
 # Scheduled e2e regression benchmarks.
+# State is stored in branch-isolated Actions artifacts for 90 days. Missing or
+# expired state uses the existing first-run baseline rules; no state PAT is needed.
 #
 # Runs nightly at 02:00 UTC and on v*.*.* tag pushes for each scenario below.
 # Nightly runs compare the latest main commit against the
@@ -59,14 +61,12 @@ jobs:
         id: refs
         env:
           GH_TOKEN: ${{ github.token }}
-          DEREK_TOKEN: ${{ secrets.DEREK_TOKEN }}
           GITHUB_REPOSITORY: ${{ github.repository }}
           INPUT_FORCE: ${{ inputs.force || 'false' }}
           INPUT_REF: ${{ inputs.ref || '' }}
         run: |
           scenarios=(
-            # Preserve the existing state key so the first public run compares
-            # against the last successfully benchmarked commit for this series.
+            # Keep a distinct state key for each benchmark series.
             '{"preset":"public","state_key":"default","token_count":"1"}'
             '{"preset":"tip20:recipient=existing,fee-token=any_tip20","state_key":"tip20-existing-any","token_count":"4"}'
           )
@@ -95,7 +95,6 @@ jobs:
             run_type="$(get_output "$out" run-type)"
             actor="$(get_output "$out" actor)"
             is_stale="$(get_output "$out" is-stale)"
-            state_file="$(get_output "$out" state-file)"
 
             if [ "$is_stale" = "true" ]; then
               stale_scenarios+=("$preset")
@@ -110,10 +109,9 @@ jobs:
                 --arg baseline_name "$baseline_name" \
                 --arg feature_name "$feature_name" \
                 --arg run_type "$run_type" \
-                --arg state_file "$state_file" \
                 --arg token_count "$token_count" \
                 --arg state_key "$state_key" \
-                '{preset:$preset, state_key:$state_key, actor:$actor, baseline_ref:$baseline_ref, feature_ref:$feature_ref, baseline_name:$baseline_name, feature_name:$feature_name, run_type:$run_type, state_file:$state_file, token_count:$token_count}')"
+                '{preset:$preset, state_key:$state_key, actor:$actor, baseline_ref:$baseline_ref, feature_ref:$feature_ref, baseline_name:$baseline_name, feature_name:$feature_name, run_type:$run_type, token_count:$token_count}')"
               bench_entries+=("$entry")
               if [ "$run_type" = "nightly" ]; then
                 save_entries+=("$entry")
@@ -196,56 +194,26 @@ jobs:
       always() &&
       needs.resolve-refs.outputs.has-nightly-benchmarks == 'true' &&
       needs.bench-e2e.result == 'success'
-    name: save-state
+    name: save-state (${{ matrix.state_key }})
     runs-on: ubuntu-latest
+    permissions: {}
+    strategy:
+      fail-fast: false
+      matrix: ${{ fromJSON(needs.resolve-refs.outputs.save-matrix) }}
     steps:
-      - name: Push state to charts repo
+      - name: Prepare benchmark state
         env:
-          DEREK_TOKEN: ${{ secrets.DEREK_TOKEN }}
-          SAVE_MATRIX: ${{ needs.resolve-refs.outputs.save-matrix }}
+          FEATURE_REF: ${{ matrix.feature_ref }}
         run: |
-          CHARTS_REPO="https://x-access-token:${DEREK_TOKEN}@github.com/decofe/tempo-bench-charts.git"
-          TMP_DIR=""
+          [[ "$FEATURE_REF" =~ ^[0-9a-f]{40}$ ]] || exit 1
+          mkdir -p "$RUNNER_TEMP/bench-state"
+          printf '%s\n' "$FEATURE_REF" > "$RUNNER_TEMP/bench-state/feature-ref"
 
-          prepare_state() {
-            if [ -n "${TMP_DIR}" ]; then
-              rm -rf "${TMP_DIR}"
-            fi
-
-            TMP_DIR=$(mktemp -d)
-            if git clone --depth 1 --branch state "${CHARTS_REPO}" "${TMP_DIR}" 2>/dev/null; then
-              true
-            else
-              git init "${TMP_DIR}"
-              git -C "${TMP_DIR}" remote add origin "${CHARTS_REPO}"
-            fi
-
-            echo "$SAVE_MATRIX" | jq -c '.include[]' | while read -r entry; do
-              state_file="$(echo "$entry" | jq -r '.state_file')"
-              feature_ref="$(echo "$entry" | jq -r '.feature_ref')"
-              mkdir -p "$(dirname "${TMP_DIR}/${state_file}")"
-              echo "${feature_ref}" > "${TMP_DIR}/${state_file}"
-              git -C "${TMP_DIR}" add "${state_file}"
-            done
-          }
-
-          for attempt in 1 2 3 4 5; do
-            prepare_state
-            if git -C "${TMP_DIR}" diff --cached --quiet; then
-              echo "No state change"
-              rm -rf "${TMP_DIR}"
-              exit 0
-            fi
-            git -C "${TMP_DIR}" -c user.name="github-actions" -c user.email="github-actions@github.com" \
-              commit -m "bench: update e2e nightly state"
-            if git -C "${TMP_DIR}" push origin HEAD:state; then
-              break
-            fi
-            if [ "$attempt" -eq 5 ]; then
-              echo "::error::Failed to push state after ${attempt} attempts"
-              rm -rf "${TMP_DIR}"
-              exit 1
-            fi
-            sleep "$attempt"
-          done
-          rm -rf "${TMP_DIR}"
+      - name: Save benchmark state
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: bench-state-e2e-${{ matrix.state_key }}
+          path: ${{ runner.temp }}/bench-state/feature-ref
+          retention-days: 90
+          if-no-files-found: error
+          overwrite: true

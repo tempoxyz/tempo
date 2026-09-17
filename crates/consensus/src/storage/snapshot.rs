@@ -1,6 +1,7 @@
 use commonware_consensus::{
     Heightable as _,
     simplex::{scheme::bls12381_threshold::vrf::Scheme, types::Finalization},
+    types::FixedEpocher,
 };
 use commonware_cryptography::{bls12381::primitives::variant::MinSig, ed25519::PublicKey};
 use commonware_runtime::{BufferPooler, Clock, Metrics, Spawner, Storage, buffer::paged::CacheRef};
@@ -61,6 +62,7 @@ pub async fn prepare<TContext, P>(
     storage_partition_prefix: &str,
     execution_provider: P,
     archive_entries: tokio::sync::mpsc::Sender<ArchiveEntry>,
+    epoch_strategy: &FixedEpocher,
 ) -> eyre::Result<State>
 where
     TContext: Clock + Metrics + Spawner + Storage + BufferPooler + Send + 'static,
@@ -74,10 +76,14 @@ where
     let execution_finalized_height = execution_finalized.number;
     let execution_finalized_digest = Digest(execution_finalized.hash);
 
-    let finalizations =
-        init_finalizations_archive(context, storage_partition_prefix, page_cache.clone())
-            .await
-            .wrap_err("failed to open finalizations-by-height archive")?;
+    let finalizations = init_finalizations_archive(
+        context,
+        storage_partition_prefix,
+        page_cache.clone(),
+        epoch_strategy,
+    )
+    .await
+    .wrap_err("failed to open finalizations-by-height archive")?;
     let prunable =
         init_prunable_finalized_blocks_archive(context, storage_partition_prefix, page_cache)
             .await
@@ -134,15 +140,20 @@ pub async fn write_archive<TContext>(
     context: &TContext,
     storage_partition_prefix: &str,
     mut entries: tokio::sync::mpsc::Receiver<ArchiveEntry>,
+    epoch_strategy: &FixedEpocher,
 ) -> eyre::Result<()>
 where
     TContext: Clock + Metrics + Spawner + Storage + BufferPooler + Send + 'static,
 {
     let page_cache = CacheRef::from_pooler(context, BUFFER_POOL_PAGE_SIZE, BUFFER_POOL_CAPACITY);
-    let mut finalizations =
-        init_finalizations_archive(context, storage_partition_prefix, page_cache.clone())
-            .await
-            .wrap_err("failed to open snapshot finalizations-by-height archive")?;
+    let mut finalizations = init_finalizations_archive(
+        context,
+        storage_partition_prefix,
+        page_cache.clone(),
+        epoch_strategy,
+    )
+    .await
+    .wrap_err("failed to open snapshot finalizations-by-height archive")?;
     let mut blocks =
         init_prunable_finalized_blocks_archive(context, storage_partition_prefix, page_cache)
             .await
@@ -453,10 +464,14 @@ mod tests {
         FinalizationsArchive<deterministic::Context>,
         Prunable<deterministic::Context>,
     ) {
-        let finalizations =
-            init_finalizations_archive(context, "test-snapshot", fresh_page_cache(context))
-                .await
-                .expect("init finalizations archive");
+        let finalizations = init_finalizations_archive(
+            context,
+            "test-snapshot",
+            fresh_page_cache(context),
+            &FixedEpocher::new(commonware_utils::NZU64!(10)),
+        )
+        .await
+        .expect("init finalizations archive");
         let prunable = fresh_prunable_with_section_size(context, PRUNABLE_ITEMS_PER_SECTION).await;
         (finalizations, prunable)
     }
