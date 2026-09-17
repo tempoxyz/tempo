@@ -42,6 +42,7 @@ not treat cross-runner timing differences as controlled optimization speedups.
 Select **profiling: lifecycle-milestones**, or pass
 `--lifecycle --lifecycle-detail milestones` directly, to retain coarse block and
 attempt milestones plus account/storage proof-worker identities and CPU totals,
+and cold execution-overlay resolution scopes,
 while disabling detailed proof, storage, transport and poll
 recording at the subscriber. The node reads `TEMPO_LIFECYCLE_DETAIL=milestones`;
 the default is `full`. Both revisions must support the requested detail mode.
@@ -324,3 +325,34 @@ cache lookup at each observed fallback; that measurement overhead is part of the
 captured worker CPU. Counters are optional: absent/disabled data is unmeasured,
 not zero. The viewer summarizes complete counts from successful recorded workers;
 failed or cutoff-crossing work must not be interpreted as complete block totals.
+
+## Cold execution-overlay attribution
+
+This diagnostic revision retains field-free `state.overlay.resolve`, `frontiers`,
+`execution_anchor`, `execution_cache`, `cache_ready`, `cache_pending_skip`,
+`cache_wait`, `cache_miss`, `compute_envelope`, `compute_worker`, and `compute_inline`
+scopes (all share the `state.overlay.` prefix) in full and milestone modes.
+Milestones also retains `read_validator_config_at_block_hash` with its existing
+pseudonymized block hash, so peer-refresh reads remain distinct from transaction
+execution. No new identity or numeric fields are exported.
+
+Provider-local OnceCell hits return before the new resolution scopes. The existing
+high-frequency `state.overlay.execution_overlay` aggregate remains full-only.
+`frontiers` and `execution_anchor` cover first-resolution setup. `execution_cache`
+covers a shared-cache lookup/resolution; `cache_ready` marks a ready result,
+`cache_pending_skip` marks a best-effort precompute skipping in-progress work, and
+`cache_wait` encloses the actual wait call. A `cache_miss` envelope starts after an
+initial miss and includes path selection plus any subsequent race, wait or compute;
+it is not a count of unique calculations. State-trie cache work emits none of these
+execution-cache scopes. A parent equal to its anchor can return an empty execution
+overlay without touching the shared cache.
+
+`compute_envelope` includes dispatch and waiting. Its explicit child
+`compute_worker` covers the merge/extend call executed through the worker pool;
+`compute_inline` covers that call when no pool is configured. The pool may execute
+inline when already on its own worker. These are wall intervals, not CPU samples,
+and their difference is not an exact scheduler-queue measurement. The worker keeps
+its captured parent and subscriber across dispatch. New scopes use synchronous
+lifetimes; a read can include synchronous waiting even when full capture reports
+similar active-wall and wall durations. Cutoff pruning and incomplete-scope marking
+are unchanged. Older captures need not contain these optional scopes.

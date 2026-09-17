@@ -69,6 +69,40 @@ class ReportTests(unittest.TestCase):
             self.assertEqual(len(result['blocks'][0]['proof_worker_totals']), 2)
             self.assertNotIn('storage_partial_roots', result['blocks'][0]['proof_worker_totals'][1])
 
+    def test_overlay_cold_scopes_keep_hash_association_and_strict_cutoff(self):
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory)/'a.jsonl'; fixture(path)
+            records = [json.loads(line) for line in path.read_text().splitlines()]
+            records[0]['detail'] = 'milestones'
+            records[-1:-1] = [
+                dict(type='start', id=800, ts=1_000_000_150, thread=2,
+                     name='read_validator_config_at_block_hash', category='consensus',
+                     parent=None, fields=dict(block_hash=f'{1:024x}')),
+                dict(type='start', id=801, ts=1_000_000_160, thread=2,
+                     name='state.overlay.compute_envelope', category='lifecycle', parent=800, fields={}),
+                dict(type='start', id=802, ts=1_000_000_170, thread=3,
+                     name='state.overlay.compute_worker', category='lifecycle', parent=801, fields={}),
+                dict(type='end', id=802, ts=1_000_000_190),
+                dict(type='end', id=801, ts=1_000_000_200),
+                dict(type='end', id=800, ts=1_000_000_201),
+                dict(type='start', id=803, ts=1_000_000_202, thread=2,
+                     name='state.overlay.cache_ready', category='lifecycle', parent=800, fields={}),
+                dict(type='end', id=803, ts=1_000_000_203),
+            ]
+            path.write_text('\n'.join(map(json.dumps, records)))
+            result = build([path], warmup=0, expected_detail='milestones')
+            spans = {s['id']:s for s in result['spans']}
+            for sid in (800, 801, 802, 803):
+                self.assertEqual(spans[sid]['block'], result['blocks'][0]['id'])
+                self.assertIsNone(spans[sid]['active_ms'])
+            self.assertEqual(spans[802]['parent'], 801)
+            cutoff = build([path], warmup=0, expected_detail='milestones',
+                           window={'backpressure':dict(ts=1_000_000_190,node='Validator A')})
+            scopes = {s['id']:s for s in cutoff['spans']}
+            self.assertNotIn(803, scopes)
+            self.assertTrue(scopes[802]['right_censored'])
+            self.assertTrue(scopes[801]['right_censored'])
+
     def test_milestone_worker_identity_retains_block_link_and_cutoff(self):
         with tempfile.TemporaryDirectory() as directory:
             path = Path(directory)/'a.jsonl'; fixture(path)
