@@ -74,12 +74,20 @@ jobs:
           path: ${{ steps.owned.outputs.relative }}/tools
           persist-credentials: false
       - name: Install exact Rust toolchain
-        uses: tempoxyz/gh-actions/vendor/dtolnay/rust-toolchain@3626124474a987bc74b41fc7ae65b2e23f8e4e4e
-        with:
-          toolchain: 1.98.1
-          components: rustfmt
-          targets: x86_64-unknown-linux-gnu
+        working-directory: ${{ env.PREBUILT_WORK }}
+        run: |
+          set -euo pipefail
+          curl --proto '=https' --tlsv1.2 --retry 10 --retry-connrefused --location \
+            --silent --show-error --fail https://sh.rustup.rs | \
+            sh -s -- --default-toolchain none --no-modify-path -y
+          export PATH="$CARGO_HOME/bin:$PATH"
+          echo "$CARGO_HOME/bin" >> "$GITHUB_PATH"
+          rustup toolchain install 1.98.1 --target x86_64-unknown-linux-gnu \
+            --component rustfmt --profile minimal --no-self-update
+          rustup default 1.98.1
+          rustc +1.98.1 --version --verbose
       - name: Build and validate private bundle
+        working-directory: ${{ env.PREBUILT_WORK }}
         env:
           PREBUILT_PRODUCER_SHA: ${{ github.sha }}
           PREBUILT_RUN_ID: ${{ github.run_id }}
