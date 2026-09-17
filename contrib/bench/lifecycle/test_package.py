@@ -121,6 +121,26 @@ console.log(JSON.stringify([[],[unavailable],[zero],[zero,unavailable,{...measur
         self.assertIn('CPU 12.000 ms', mixed)
 
     @unittest.skipUnless(shutil.which('node'), 'Node.js is required for viewer helper regression')
+    def test_root_opportunity_summary_requires_complete_counts(self):
+        template = Path(__file__).with_name('viewer.html').read_text()
+        helper = template.split('// BEGIN WORKER_CPU_HELPER')[1].split('// END WORKER_CPU_HELPER')[0]
+        script = "const ms=n=>n.toFixed(3)+' ms';" + helper + """
+const zero={node:'Validator A',stage:'proof_storage_worker_totals',worker_success:1,
+ root_probes_measured:1,storage_partial_roots:0,storage_partial_cached:0,
+ account_sync_roots:0,account_sync_cached:0,account_missing_roots:0,account_missing_cached:0};
+const measured={...zero,storage_partial_roots:3,storage_partial_cached:2};
+console.log(JSON.stringify([[zero],[measured], [{...zero,root_probes_measured:0}],
+ [{...zero,account_sync_roots:null}], [{...zero,storage_partial_cached:1}],
+ [{...measured,worker_success:0}], [{...zero,account_sync_roots:Number.MAX_SAFE_INTEGER+1}]].map(proofWorkerSummary)));
+"""
+        zero, measured, *unmeasured = json.loads(subprocess.check_output(['node','-e',script], text=True))
+        self.assertIn('partial storage 0 (0 already cached)', zero)
+        self.assertIn('partial storage 3 (2 already cached)', measured)
+        self.assertIn('not saved work or durations', measured)
+        for value in unmeasured:
+            self.assertIn('root-work opportunities unmeasured', value)
+
+    @unittest.skipUnless(shutil.which('node'), 'Node.js is required for viewer helper regression')
     def test_viewer_resource_counts_are_not_durations_and_missing_is_not_zero(self):
         template = Path(__file__).with_name('viewer.html').read_text()
         helper = template.split('// BEGIN EXECUTION_LOOP_HELPER')[1].split('// END EXECUTION_LOOP_HELPER')[0]

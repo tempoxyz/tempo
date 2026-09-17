@@ -43,7 +43,11 @@ function proofWorkerSummary(totals) {
   return [...groups].map(([key, rows]) => {
     const measured = rows.filter(t => t.worker_cpu_measured === 1 && t.worker_thread_cpu_ns != null);
     const total = measured.length ? ms(measured.reduce((n,t) => n+t.worker_thread_cpu_ns,0)/1e6) : 'unmeasured';
-    return `${key}: ${rows.length} recorded completions · ${measured.length} measured · ${rows.length-measured.length} unavailable · ${rows.filter(t=>t.worker_success===0).length} failed · summed measured thread CPU ${total}`;
+    const countFields = ['storage_partial_roots','storage_partial_cached','account_sync_roots','account_sync_cached','account_missing_roots','account_missing_cached'];
+    const observed = rows.filter(t => t.worker_success===1 && t.root_probes_measured===1 && countFields.every(k=>Number.isSafeInteger(t[k])&&t[k]>=0) && ['storage_partial','account_sync','account_missing'].every(k=>t[k+'_cached']<=t[k+'_roots']));
+    const sum = k => observed.reduce((n,t)=>n+t[k],0);
+    const rootSummary = !observed.length ? 'root-work opportunities unmeasured' : !countFields.every(k=>Number.isSafeInteger(sum(k))) ? 'root-work counts exceed exact viewer integer range' : `root-work observations from ${observed.length}/${rows.length} successful recorded workers: partial storage ${sum('storage_partial_roots')} (${sum('storage_partial_cached')} already cached), delayed account sync ${sum('account_sync_roots')} (${sum('account_sync_cached')} already cached), missing account root ${sum('account_missing_roots')} (${sum('account_missing_cached')} already cached); racy cache-presence counts, not saved work or durations`;
+    return `${key}: ${rows.length} recorded completions · ${measured.length} measured · ${rows.length-measured.length} unavailable · ${rows.filter(t=>t.worker_success===0).length} failed · summed measured thread CPU ${total} · ${rootSummary}`;
   }).join('; ');
 }
 // END WORKER_CPU_HELPER

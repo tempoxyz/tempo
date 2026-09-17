@@ -49,6 +49,26 @@ class ReportTests(unittest.TestCase):
             pruned = build([path], warmup=0, window={'backpressure': {'ts': 1_000_000_200, 'node': 'Validator A'}})
             self.assertTrue(all(not b['proof_worker_totals'] for b in pruned['blocks']))
 
+    def test_root_opportunities_preserve_measured_zero_missing_and_cutoff(self):
+        keys = ('storage_partial_roots','storage_partial_cached','account_sync_roots',
+                'account_sync_cached','account_missing_roots','account_missing_cached')
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory)/'a.jsonl'; fixture(path)
+            records = [json.loads(line) for line in path.read_text().splitlines()]
+            values = [dict(root_probes_measured=1, **dict.fromkeys(keys, 0)),
+                      dict(root_probes_measured=0),
+                      dict(root_probes_measured=1, **dict(zip(keys, (3,2,5,1,2,0))))]
+            records[-1:-1] = [dict(type='event', id=1, ts=1_000_000_200+i,
+                                  fields=dict(stage='proof_storage_worker_totals', worker_success=1, **fields))
+                              for i, fields in enumerate(values)]
+            path.write_text('\n'.join(map(json.dumps, records)))
+            result = build([path], warmup=0)
+            for row, expected in zip(result['blocks'][0]['proof_worker_totals'], values):
+                self.assertEqual({k:v for k,v in row.items() if k in (*keys, 'root_probes_measured')}, expected)
+            result = build([path], warmup=0, window={'backpressure': dict(ts=1_000_000_202,node='Validator A')})
+            self.assertEqual(len(result['blocks'][0]['proof_worker_totals']), 2)
+            self.assertNotIn('storage_partial_roots', result['blocks'][0]['proof_worker_totals'][1])
+
     def test_milestone_worker_identity_retains_block_link_and_cutoff(self):
         with tempfile.TemporaryDirectory() as directory:
             path = Path(directory)/'a.jsonl'; fixture(path)

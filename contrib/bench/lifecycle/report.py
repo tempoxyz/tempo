@@ -239,7 +239,10 @@ def build(paths, warmup=5, window=None, expected_detail=None):
         worker_totals = [dict(node=e['node'], span=e['id'], ts=(e['ts']-first)/1e6,
                              **{k:v for k,v in e['fields'].items()
                                 if k in ('stage','worker_run_ns','worker_thread_cpu_ns',
-                                         'worker_cpu_measured','worker_success')})
+                                         'worker_cpu_measured','worker_success','root_probes_measured',
+                                         'storage_partial_roots','storage_partial_cached',
+                                         'account_sync_roots','account_sync_cached',
+                                         'account_missing_roots','account_missing_cached')})
                          for e in by_block[key] if e['fields'].get('stage') in
                          ('proof_storage_worker_totals','proof_account_worker_totals')]
         blocks.append({'proof_worker_totals': worker_totals, 'execution_totals': totals, 'id': aliases[key], 'start': start, 'end': finish,

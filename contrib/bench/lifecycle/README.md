@@ -303,3 +303,24 @@ missing workers are not zero. CPU and wall values are preserved even when a
 small interval's microsecond-resolution CPU delta exceeds elapsed wall time.
 Worker wall intervals overlap one another and execution, so neither their wall
 sum nor CPU plus execution wall is a block latency decomposition.
+
+### Root-work opportunity counters
+
+When worker capture is enabled, each completed worker-total event also carries
+`root_probes_measured` and six numeric counts: `storage_partial_roots` /
+`storage_partial_cached`, `account_sync_roots` / `account_sync_cached`, and
+`account_missing_roots` / `account_missing_cached`. They count root-only
+computation attempts and cache-presence snapshots immediately before those
+attempts. They cover separate roots for partial storage proofs, delayed account
+Sync encoders, and dispatched account results missing a root, respectively.
+
+This diagnostic still performs the original calculations. Cache presence is a
+racy observation, not saved work, time, CPU, or a causal I/O diagnosis. Counts
+accumulate per worker, include attempts that subsequently error, and emit only
+with its existing completion event. No addresses, slots, per-job events or new
+syscalls are recorded. Disabled worker capture allocates no observer and performs
+no extra cache lookup. Enabled capture uses one local observer per worker and one
+cache lookup at each observed fallback; that measurement overhead is part of the
+captured worker CPU. Counters are optional: absent/disabled data is unmeasured,
+not zero. The viewer summarizes complete counts from successful recorded workers;
+failed or cutoff-crossing work must not be interpreted as complete block totals.
