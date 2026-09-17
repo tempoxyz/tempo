@@ -212,3 +212,33 @@ can be enriched retrospectively. Stack unwinding and resolution add observer
 cost and may perturb scheduling; the matched off/on experiment measures that
 cost before interpreting node timings. Unknown coverage remains visible even
 when scheduler edge capture is complete.
+
+### File-backed fault ancestry (schema5)
+
+`profiling=lifecycle-kernel-faults` runs one feature phase, with an empty baseline,
+`run-pairs=1`, and an immutable runtime SHA. The dedicated workflow argument sets
+`TEMPO_LIFECYCLE_KERNEL_WAITS=2`; it rejects environment overrides and requires a
+positive local file-fault/control probe before the workload. It retains the same
+build/capture disk guards and lossless phase archive. This diagnostic provides
+coverage, not an observer off/on performance comparison.
+
+Schema5 / `kernel_stacks_v2` refines generic IO reason 2 to reason 6,
+`filemap_fault_io_schedule`, only when a complete resolved stack contains exact
+`filemap_fault` above exact `io_schedule` or `io_schedule_timeout` in leaf-to-root
+order. Missing or differently ordered ancestry remains generic IO. Truncated,
+unresolved or conflicting stacks remain unknown. The footer is `SCHEDS04` with
+mode 2; the private event and safe spool widths are unchanged. Schema4 / v1
+continues to reject reason 6 and uses its original classifier and footer.
+
+File-backed fault ancestry identifies a kernel path, not a file, instruction,
+device, physical read or persistence operation. It does not establish a major
+fault. Native stack material remains private and cannot enrich old captures.
+Only the exact sleeping switch-out supplies an interval's reason. The summary
+partitions reason 6 from generic IO and retains explicit unknown coverage.
+
+The live production test uses only its own 32 MiB temporary file, mmap reads and
+pread controls, with per-file fadvise. It validates positive reason 6, generic IO
+for pread, mode-specific native decoding, strict source cutoff and exact interval
+inheritance. No system-wide cache eviction, node launch, or existing data access
+is involved. Stack sampling adds overhead and can perturb scheduling; this
+single-phase diagnostic does not measure that overhead.

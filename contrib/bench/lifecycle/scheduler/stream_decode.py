@@ -23,7 +23,7 @@ def decode_stream(rows, origin, cutoff, emitted, emit_record, emit_interval, *, 
     exited = set()
     total = kept = unknown = unclosed = unmatched = running_wakeups = 0
     last = -1
-    wait_counts=counts()
+    wait_counts=counts(version=2 if wait_reasons==2 else 1)
 
     def interval(thread, start, end, kind, reason=0, status=0):
         low, high = max(0,start), min(cutoff-1,end)
@@ -118,7 +118,7 @@ def publish_streamed(output, source, directory, origin, cutoff, emitted, metadat
         publication = Budget(SOURCE_BYTES)
         def record(row):
             kind = KIND_CODES[row['kind']]
-            bits=pack(row['state_bits'],row['wait_reason'],row['wait_status']) if 'wait_status' in row else row['state_bits']
+            bits=pack(row['state_bits'],row['wait_reason'],row['wait_status'],2 if wait_reasons==2 else 1) if 'wait_status' in row else row['state_bits']
             intermediate.write(records,EVENT.pack(row['ts'],row['thread'],kind,bits))
         def interval(*args):
             intermediate.write(intervals,interval_format.pack(*args))
@@ -127,7 +127,7 @@ def publish_streamed(output, source, directory, origin, cutoff, emitted, metadat
         if probe_misses is not None:
             if type(probe_misses) is not int or probe_misses != 0:
                 raise ValueError('capture tool reported probe misses')
-            result['schema'] = 4 if wait_reasons else 3
+            result['schema'] = 5 if wait_reasons==2 else 4 if wait_reasons else 3
             result['quality']['probe_misses'] = 0
         if evidence is not None:
             evidence.update(kept=kept,pruned=emitted-kept)

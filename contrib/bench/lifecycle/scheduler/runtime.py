@@ -135,8 +135,8 @@ def main():
         if os.environ.get('TEMPO_LIFECYCLE_SCHEDULER') != 'registered_threads_v1':
             raise ValueError('scheduler registration was not enabled')
         wait_mode=os.environ.get('TEMPO_LIFECYCLE_KERNEL_WAITS','0')
-        if wait_mode not in ('0','1'):raise ValueError('invalid kernel wait configuration')
-        wait_enabled=wait_mode=='1'
+        if wait_mode not in ('0','1','2'):raise ValueError('invalid kernel wait configuration')
+        wait_enabled=int(wait_mode)
         epoch = int(os.environ['RETH_LIFECYCLE_EPOCH_NS'])
         if epoch <= 0 or epoch > time.monotonic_ns():
             raise ValueError('invalid phase epoch')
@@ -159,11 +159,11 @@ def main():
                 stage = 'capture'
                 stdout, stderr, status = capture([sys.executable, str(ROOT / 'binary_capture.py'),
                     '--binary', str(binary), '--epoch', str(epoch), '--command-base64', args.command_base64,
-                    '--spool-fd', str(source.fileno()), '--scratch-dir', scratch]+(['--wait-reasons'] if wait_enabled else []),
+                    '--spool-fd', str(source.fileno()), '--scratch-dir', scratch]+(['--fault-reasons'] if wait_enabled==2 else ['--wait-reasons'] if wait_enabled else []),
                     pass_fds=(source.fileno(),), binary=True)
                 stage = 'decode'
                 evidence = footer(stdout)
-                if bool(evidence.get('wait_reasons'))!=wait_enabled:raise ValueError('kernel wait capture mode mismatch')
+                if evidence.get('wait_reasons',0)!=wait_enabled:raise ValueError('kernel wait capture mode mismatch')
                 stage = 'cutoff'
                 cutoff, reason = final_cutoff(args.directory)
                 stage = 'decode'

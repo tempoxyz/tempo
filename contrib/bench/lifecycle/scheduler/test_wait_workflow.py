@@ -45,6 +45,38 @@ class WorkflowTests(unittest.TestCase):
             self.assertEqual(result.returncode,0)
             self.assertEqual(result.stdout.strip(),expected)
 
+    def fault_command(self,**changes):
+        values=dict(BENCH_LIFECYCLE_KERNEL_FAULTS='true',BENCH_KERNEL_FAULT_BASELINE_EMPTY='true',BENCH_KERNEL_FAULT_FEATURE='a'*40,BENCH_RUN_SIDE='feature',BENCH_RUN_PAIRS='1')
+        values.update(changes)
+        return self.command(False,**values)
+
+    def test_fault_mode_routes_exact_single_feature_observer(self):
+        result=self.fault_command();self.assertEqual(result.returncode,0)
+        args=result.stdout.decode().split('\0')
+        self.assertIn('--feature-env=TEMPO_LIFECYCLE_KERNEL_WAITS=2',args)
+        self.assertIn('--lifecycle-scheduler',args)
+        self.assertNotIn('--require-identical-binaries',args)
+        self.assertFalse(any(x.startswith(('--baseline-env','--bench-args')) for x in args))
+        for delta in [dict(BENCH_KERNEL_FAULT_BASELINE_EMPTY='false'),dict(BENCH_KERNEL_FAULT_FEATURE='main'),dict(FEATURE_REF='b'*40),dict(BENCH_RUN_SIDE='comparison'),dict(BENCH_RUN_PAIRS='2'),dict(BENCH_BASELINE_ENV='PRIVATE'),dict(BENCH_FEATURE_ENV='PRIVATE')]:
+            failed=self.fault_command(**delta)
+            self.assertNotEqual(failed.returncode,0)
+            self.assertNotIn(b'PRIVATE',failed.stdout+failed.stderr)
+
+    def test_fault_positive_preflight_is_dedicated_and_uses_owned_scratch(self):
+        source=(ROOT/'.github/workflows/bench-e2e.yml').read_text()
+        start=source.index('          if [ "$BENCH_LIFECYCLE_KERNEL_FAULTS" = "true" ] && ! sudo')
+        chunk=source[start:source.index('          fi',start)+len('          fi')]
+        for enabled in ('false','true'):
+            script='sudo() { printf "%s\\0" "$@"; return 0; }; export -f sudo\n'+textwrap.dedent(chunk).replace('>/dev/null 2>&1','')
+            result=subprocess.run(['bash','-c',script],env=dict(os.environ,BENCH_LIFECYCLE_KERNEL_FAULTS=enabled,RUNNER_TEMP='/owned scratch'),capture_output=True)
+            self.assertEqual(result.returncode,0)
+            args=result.stdout.decode().split('\0')
+            if enabled=='true':
+                self.assertIn('PYTHONDONTWRITEBYTECODE=1',args)
+                self.assertIn('TEMPO_SCHEDULER_FAULT_SCRATCH=/owned scratch',args)
+                self.assertIn('test_fault_reasons.py',args)
+            else:self.assertEqual(result.stdout,b'')
+
     def test_actual_nu_identical_binary_guard(self):
         source=(ROOT/'bench-e2e.nu').read_text()
         function=source[source.index('def require-identical-bench-binaries'):source.index('# Run the e2e sequence on one runner.')]

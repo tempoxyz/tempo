@@ -10,7 +10,7 @@ import subprocess
 import sys
 import tempfile
 
-from spool import FOOTER, MAGIC, WAIT_FOOTER, WAIT_MAGIC
+from spool import FOOTER, MAGIC, WAIT_FOOTER, WAIT_MAGIC, FAULT_MAGIC
 from wait_reasons import resolver, stack_depth
 
 ROOT = Path(__file__).parent
@@ -107,10 +107,11 @@ def run(binary, command, epoch, spool_fd, scratch, wait_reasons=False):
             if wait_reasons:
                 resolve_type=C.CFUNCTYPE(C.c_int,C.c_int)
                 maximum_depth=stack_depth()
-                resolve_callback=resolve_type(resolver(bpf,maximum_depth))
-                native.configure_waits.argtypes=[C.c_void_p,resolve_type]
-                native.configure_waits.restype=C.c_int
-                if native.configure_waits(context,resolve_callback):raise ValueError('kernel wait collector unavailable')
+                resolve_callback=resolve_type(resolver(bpf,maximum_depth,version=2 if wait_reasons==2 else 1))
+                configure=native.configure_faults if wait_reasons==2 else native.configure_waits
+                configure.argtypes=[C.c_void_p,resolve_type]
+                configure.restype=C.c_int
+                if configure(context,resolve_callback):raise ValueError('kernel wait collector unavailable')
             callback = C.cast(native.collect, callback_type)
             bpf._open_ring_buffer(bpf['events'].map_fd, callback, C.c_void_p(context))
             initial_misses = miss_counts(native,bpf)
@@ -146,7 +147,7 @@ def run(binary, command, epoch, spool_fd, scratch, wait_reasons=False):
             # Only fixed numeric counters enter the supervisor pipe. Anonymous
             # source records remain in its unlinked, byte-capped scratch fd.
             values=(collected,emitted,lost,invalid,overflow,io_error,received,duration,probe_misses)
-            sys.stdout.buffer.write(WAIT_FOOTER.pack(WAIT_MAGIC,*values,1) if wait_reasons else FOOTER.pack(MAGIC,*values))
+            sys.stdout.buffer.write(WAIT_FOOTER.pack(FAULT_MAGIC if wait_reasons==2 else WAIT_MAGIC,*values,2 if wait_reasons==2 else 1) if wait_reasons else FOOTER.pack(MAGIC,*values))
             sys.stdout.buffer.flush()
             if os.waitstatus_to_exitcode(status) != 0:
                 raise ValueError('scheduler child failed')
@@ -168,7 +169,9 @@ def main():
     parser.add_argument('--command-base64')
     parser.add_argument('--epoch', type=int)
     parser.add_argument('--preflight', action='store_true')
-    parser.add_argument('--wait-reasons',action='store_true')
+    waits=parser.add_mutually_exclusive_group()
+    waits.add_argument('--wait-reasons',action='store_true')
+    waits.add_argument('--fault-reasons',action='store_true')
     parser.add_argument('--spool-fd', type=int)
     parser.add_argument('--scratch-dir', type=Path)
     args = parser.parse_args()
@@ -189,7 +192,7 @@ def main():
             if args.binary is None or args.epoch is None or args.command_base64 is None or args.spool_fd is None or args.scratch_dir is None:
                 raise ValueError('binary scheduler configuration missing')
             command = base64.b64decode(args.command_base64, validate=True).decode()
-            run(args.binary, command, args.epoch, args.spool_fd, args.scratch_dir, args.wait_reasons)
+            run(args.binary, command, args.epoch, args.spool_fd, args.scratch_dir, 2 if args.fault_reasons else args.wait_reasons)
         return 0
     except Exception:
         # BCC/compiler diagnostics are captured privately by the supervisor;

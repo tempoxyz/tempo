@@ -50,9 +50,13 @@ int configure_waits(void *context, wait_resolver resolve) {
     if(!resolve||buffer->received||buffer->retained)return -1;
     buffer->resolve=resolve;buffer->wait_enabled=1;return 0;
 }
-static int valid_category(unsigned code,int sleeping) {
+int configure_faults(void *context, wait_resolver resolve) {
+    if(configure_waits(context,resolve))return -1;
+    ((struct buffer*)context)->wait_enabled=2;return 0;
+}
+static int valid_category(unsigned code,int sleeping,int version) {
     unsigned reason=(code>>9)&7,status=code>>12;
-    return !(code&511)&&reason<=5&&status>=1&&status<=9&&
+    return !(code&511)&&reason<=(version==2?6:5)&&status>=1&&status<=9&&
       ((status==1)==(reason!=0))&&((status!=9)==sleeping);
 }
 int collect(void *context, void *data, size_t size) {
@@ -77,13 +81,13 @@ int collect(void *context, void *data, size_t size) {
             else if(id>=1024){buffer->invalid++;return 0;}
             else {
                 code=buffer->categories[id];
-                if(!code){code=buffer->resolve(id);if(!valid_category(code,1)){buffer->invalid++;return 0;}buffer->categories[id]=code;}
+                if(!code){code=buffer->resolve(id);if(!valid_category(code,1,buffer->wait_enabled)){buffer->invalid++;return 0;}buffer->categories[id]=code;}
             }
         } else {
             if(raw->stack_id!=INT32_MIN){buffer->invalid++;return 0;}
             if(event->kind==1&&event->state!=0&&event->state!=256)code=9<<12;
         }
-        if(code) {if(!valid_category(code,sleeping)){buffer->invalid++;return 0;}event->state|=code;}
+        if(code) {if(!valid_category(code,sleeping,buffer->wait_enabled)){buffer->invalid++;return 0;}event->state|=code;}
     }
     if (!buffer->received || event->ts < buffer->first_ts) buffer->first_ts = event->ts;
     if (event->ts > buffer->last_ts) buffer->last_ts = event->ts;
