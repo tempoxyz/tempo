@@ -87,7 +87,7 @@ mod tests {
     use revm::database::EmptyDB;
 
     #[test]
-    fn tip_1117_opcode_prices_activate_at_t13() {
+    fn tip_1102_opcode_prices_activate_at_t13() {
         let t12 = tempo_instructions::<EmptyDB>(TempoHardfork::T12);
         let t13 = tempo_instructions::<EmptyDB>(TempoHardfork::T13);
 
