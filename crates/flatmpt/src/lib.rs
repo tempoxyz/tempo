@@ -18,6 +18,7 @@
 //! rebuilds and short reorgs roll back cleanly, and the build→validate replay
 //! of the same block is a memo hit rather than a second application.
 
+pub mod checkpoint_progress;
 pub mod cursors;
 pub mod follower;
 mod sparse;
@@ -167,8 +168,22 @@ fn window() -> usize {
             .unwrap_or(32)
     })
 }
-/// Persist the flat file every this many applied blocks.
-const PERSIST_EVERY: u64 = 128;
+/// Persist cadence can be increased for catch-up from a separately retained
+/// canonical checkpoint. This changes durability frequency, not root validation.
+fn persist_every() -> u64 {
+    static INTERVAL: OnceLock<u64> = OnceLock::new();
+    *INTERVAL.get_or_init(|| {
+        parse_persist_interval(std::env::var("TEMPO_FLATMPT_PERSIST_EVERY").ok().as_deref())
+            .expect("TEMPO_FLATMPT_PERSIST_EVERY must be a positive integer")
+    })
+}
+
+fn parse_persist_interval(value: Option<&str>) -> Option<u64> {
+    match value {
+        None => Some(128),
+        Some(value) => value.parse().ok().filter(|interval| *interval > 0),
+    }
+}
 
 impl FlatShadow {
     /// Create a fresh shadow from a complete checkpoint state. `load` must feed
@@ -178,12 +193,19 @@ impl FlatShadow {
         checkpoint_root: B256,
         load: impl FnOnce(&mut FlatMpt) -> anyhow::Result<(u64, u64)>,
     ) -> anyhow::Result<Self> {
-        for suffix in ["", ".meta", ".meta.prev", ".timings"] {
-            let _ = std::fs::remove_file(format!("{path}{suffix}"));
-        }
         let started = Instant::now();
-        let mut db = FlatMpt::create_ram_build(path, mpt_flat_poc::Config::default())
-            .map_err(|e| anyhow::anyhow!("checkpoint create: {e:#}"))?;
+        let mut db = if let Some(progress) = checkpoint_progress::read(path)? {
+            let db = checkpoint_progress::open(path, checkpoint_root, &progress)?;
+            tracing::info!(target: "flatmpt", accounts = progress.accounts, slots = progress.slots,
+                "resuming persisted flat MPT import segment");
+            db
+        } else {
+            for suffix in ["", ".meta", ".meta.prev", ".timings"] {
+                let _ = std::fs::remove_file(format!("{path}{suffix}"));
+            }
+            FlatMpt::create_ram_build(path, mpt_flat_poc::Config::default())
+                .map_err(|e| anyhow::anyhow!("checkpoint create: {e:#}"))?
+        };
         let (accounts, slots) = load(&mut db)?;
         anyhow::ensure!(
             db.root() == checkpoint_root.0,
@@ -192,6 +214,11 @@ impl FlatShadow {
         );
         db.persist()
             .map_err(|e| anyhow::anyhow!("checkpoint persist: {e:#}"))?;
+        match std::fs::remove_file(format!("{path}.progress")) {
+            Ok(()) => {}
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => {}
+            Err(e) => return Err(e.into()),
+        }
         let timings = std::io::BufWriter::new(
             std::fs::OpenOptions::new()
                 .create(true)
@@ -669,10 +696,14 @@ impl FlatShadow {
         }
 
         self.blocks_since_persist += 1;
-        if self.blocks_since_persist >= PERSIST_EVERY {
+        if self.blocks_since_persist >= persist_every() {
+            let persist_started = std::time::Instant::now();
             self.db
                 .persist()
                 .map_err(|e| anyhow::anyhow!("persist: {e:#}"))?;
+            tracing::info!(target: "flatmpt", block = number,
+                interval = persist_every(), elapsed_ms = persist_started.elapsed().as_millis(),
+                "flat MPT periodic checkpoint persisted");
             self.blocks_since_persist = 0;
         }
 
@@ -925,6 +956,20 @@ fn bundle_chunk_to_ops(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn persist_interval_keeps_default_and_accepts_positive_override() {
+        assert_eq!(parse_persist_interval(None), Some(128));
+        assert_eq!(parse_persist_interval(Some("8192")), Some(8192));
+        assert_eq!(parse_persist_interval(Some("1")), Some(1));
+    }
+
+    #[test]
+    fn persist_interval_rejects_zero_and_invalid_values() {
+        for value in ["0", "", "-1", "oops", "18446744073709551616"] {
+            assert_eq!(parse_persist_interval(Some(value)), None);
+        }
+    }
 
     fn acct(byte: u8, nonce: u64) -> (Key, StateOp) {
         (
