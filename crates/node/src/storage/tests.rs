@@ -140,6 +140,31 @@ fn reads_derive_from_blocks_and_writes_remain_native() {
     );
     assert_eq!(rows.len(), 5); // seen, bucket, count, maximum, oldest
     assert_eq!(
+        tx.get_by_key_subkey::<tables::HashedStorages>(hashed_address, hashed_slot)
+            .unwrap(),
+        Some(StorageEntry {
+            key: hashed_slot,
+            value: U256::from(1200)
+        })
+    );
+    for missing in [B256::ZERO, ghost] {
+        assert_eq!(
+            tx.get_by_key_subkey::<tables::HashedStorages>(hashed_address, missing)
+                .unwrap(),
+            None
+        );
+    }
+    assert_eq!(
+        tx.get_by_key_subkey::<tables::HashedStorages>(other, hashed_slot)
+            .unwrap(),
+        Some(wrong)
+    );
+    assert_eq!(
+        tx.get_by_key_subkey::<tables::HashedStorages>(other, B256::ZERO)
+            .unwrap(),
+        None
+    );
+    assert_eq!(
         tx.get::<tables::HashedStorages>(hashed_address).unwrap(),
         Some(rows[0].1)
     );
@@ -211,24 +236,26 @@ fn reads_derive_from_blocks_and_writes_remain_native() {
     assert_eq!(db.cache.published.lock().unwrap().computations, 1);
     let lazy = db.tx().unwrap();
     // Advancing persistence must not change the already-open transaction's derived snapshot.
-    let rw = factory.provider_rw().unwrap();
+    injected.set_storage_settings_cache(factory.cached_storage_settings());
+    let rw = injected.provider_rw().unwrap();
     rw.insert_block(&make_block(2, 1200, vec![])).unwrap();
     rw.save_stage_checkpoint(reth_stages_types::StageId::Finish, StageCheckpoint::new(2))
         .unwrap();
-    rw.commit().unwrap();
+    rw.commit_with_hook(|pending| {
+        db.on_persisting(pending);
+        assert_eq!(db.cache.published.lock().unwrap().computations, 2);
+        // Prepared data is not yet canonical for newly opened read transactions.
+        assert_eq!(
+            db.tx().unwrap().slots().unwrap().get(&hashed_slot),
+            Some(&U256::from(1200))
+        );
+    })
+    .unwrap();
     assert_eq!(
         tx.slots().unwrap().get(&hashed_slot),
         Some(&U256::from(1200))
     );
     db.on_persisted();
-    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
-    while db.cache.published.lock().unwrap().computations < 2 {
-        assert!(
-            std::time::Instant::now() < deadline,
-            "cache warming did not complete"
-        );
-        std::thread::yield_now();
-    }
     let next = db.tx().unwrap();
     assert!(!next.slots().unwrap().contains_key(&hashed_slot));
     assert_eq!(next.slots().unwrap().len(), 1); // only oldest cursor survives

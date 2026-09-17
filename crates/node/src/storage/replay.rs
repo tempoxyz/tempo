@@ -2,12 +2,12 @@ use super::backend::ReplayStorage;
 use alloy_primitives::{B256, U256, keccak256};
 use reth_chainspec::EthChainSpec;
 use reth_db_api::{
-    Database, DatabaseError, cursor::DbCursorRO, models::StoredBlockBodyIndices, tables,
-    transaction::DbTx,
+    DatabaseError, cursor::DbCursorRO, models::StoredBlockBodyIndices, tables, transaction::DbTx,
 };
 use reth_primitives_traits::AlloyBlockHeader;
 use reth_provider::{
-    BlockHashReader, HeaderProvider, TransactionsProvider, providers::StaticFileProviderBuilder,
+    BlockHashReader, HeaderProvider, ProviderError, TransactionsProvider,
+    providers::StaticFileProviderBuilder,
 };
 use std::{
     path::Path,
@@ -32,11 +32,15 @@ pub(super) struct Snapshot {
     pub(super) deployed: bool,
 }
 
-/// Only the latest snapshot is retained strongly. Transactions lease immutable snapshots;
-/// weak references let concurrent readers reuse older versions until their last lease ends.
+/// Retains the latest snapshot and, during commit preparation, its predecessor.
+/// Transactions lease immutable snapshots; weak references let concurrent readers
+/// reuse older versions until their last lease ends.
 #[derive(Default, Debug)]
 pub(super) struct Published {
     latest: Option<Arc<Snapshot>>,
+    // Keep the still-visible state available while its successor is prepared
+    // but the persistence transaction has not committed yet.
+    pending_base: Option<Arc<Snapshot>>,
     leased: Vec<Weak<Snapshot>>,
     pub computations: u64,
     pub replayed_blocks: u64,
@@ -142,19 +146,25 @@ impl Cache {
         self.compute(tx, chain, path, number)
     }
 
-    pub(super) fn warm(
+    pub(super) fn prepare(
         &self,
-        db: &impl Database,
+        tx: &(impl DbTx + 'static),
         chain: &TempoChainSpec,
         path: &Path,
     ) -> Result<(), DatabaseError> {
-        // Pin the database only after acquiring the writer lock, avoiding stale
-        // queued warming requests and retaining no database reader between jobs.
         let _guard = self.computation.lock().unwrap();
-        let tx = db.tx()?;
-        let source = Source::new(&tx, chain.genesis_header().number())?;
+        {
+            let mut published = self.published.lock().unwrap();
+            published.pending_base = published.latest.clone();
+        }
+        let source = Source::new(tx, chain.genesis_header().number())?;
         self.compute(&source, chain, path, source.number)?;
         Ok(())
+    }
+
+    pub(super) fn persisted(&self) {
+        let previous = self.published.lock().unwrap().pending_base.take();
+        drop(previous);
     }
 
     // Called only with the computation lock held. Recheck after waiting, and
@@ -226,6 +236,17 @@ impl Cache {
                 if transactions.len() as u64 != body.tx_count {
                     return Err(error(format!("incomplete transactions for block {block}")));
                 }
+                // Read senders with one static-file cursor per block, rather than
+                // reopening a cursor for every expiring-nonce transaction.
+                let senders = if spec.is_t1b() && body.tx_count != 0 {
+                    match source.senders_by_tx_range(body.tx_num_range()) {
+                        Ok(senders) if senders.len() == transactions.len() => senders,
+                        Ok(_) | Err(ProviderError::MissingStaticFileTx(_, _)) => Vec::new(),
+                        Err(err) => return Err(error(err)),
+                    }
+                } else {
+                    Vec::new()
+                };
                 storage.env.set_block_number(block);
                 storage.env.set_timestamp(U256::from(header.timestamp()));
                 storage.env.set_spec(spec);
@@ -243,11 +264,8 @@ impl Cache {
                             continue;
                         }
                         let hash = if spec.is_t1b() {
-                            match source
-                                .transaction_sender(body.first_tx_num + index as u64)
-                                .map_err(error)?
-                            {
-                                Some(sender) => signed.expiring_nonce_hash(sender),
+                            match senders.get(index) {
+                                Some(sender) => signed.expiring_nonce_hash(*sender),
                                 None => signed
                                     .recover_signer_with_expiring_nonce_hash()
                                     .map_err(error)?

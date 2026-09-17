@@ -27,10 +27,10 @@ use reth_db_api::{
     transaction::DbTx,
 };
 use reth_ethereum::provider::db::DatabaseEnv;
-use reth_primitives_traits::{AlloyBlockHeader, StorageEntry};
+use reth_primitives_traits::{AlloyBlockHeader, StorageEntry, ValueWithSubKey};
 use std::{
     path::PathBuf,
-    sync::{Arc, LazyLock, OnceLock, mpsc},
+    sync::{Arc, LazyLock, OnceLock},
 };
 use tempo_chainspec::TempoChainSpec;
 use tempo_precompiles::EXPIRING_NONCE_PRECOMPILE_ADDRESS;
@@ -42,35 +42,17 @@ pub struct TempoDatabase<D = DatabaseEnv> {
     chain: Arc<TempoChainSpec>,
     static_files: PathBuf,
     cache: Arc<Cache>,
-    warm: mpsc::SyncSender<()>,
 }
 
-impl<D: Database + Clone + 'static> TempoDatabase<D> {
+impl<D: Database> TempoDatabase<D> {
     /// Wrap a database using its chain specification and static-file directory.
     pub fn new(inner: D, chain: Arc<TempoChainSpec>, static_files: PathBuf) -> Self {
         let cache = Arc::new(Cache::default());
-        let (warm, receiver) = mpsc::sync_channel(1);
-        let worker_db = inner.clone();
-        let worker_chain = chain.clone();
-        let worker_path = static_files.clone();
-        let worker_cache = cache.clone();
-        std::thread::Builder::new()
-            .name("replay-cache".into())
-            .spawn(move || {
-                while receiver.recv().is_ok() {
-                    let result = worker_cache.warm(&worker_db, &worker_chain, &worker_path);
-                    if let Err(error) = result {
-                        tracing::warn!(%error, "Could not warm replay storage cache");
-                    }
-                }
-            })
-            .expect("spawn replay cache worker");
         Self {
             inner,
             chain,
             static_files,
             cache,
-            warm,
         }
     }
 }
@@ -96,8 +78,13 @@ impl<D: Database> Database for TempoDatabase<D> {
         let tx = WriteTx(tx);
         Ok(tx)
     }
+    fn on_persisting(&self, tx: &Self::TXMut) {
+        if let Err(error) = self.cache.prepare(tx, &self.chain, &self.static_files) {
+            tracing::warn!(%error, "Could not prepare replay storage cache");
+        }
+    }
     fn on_persisted(&self) {
-        let _ = self.warm.try_send(());
+        self.cache.persisted();
     }
     fn path(&self) -> PathBuf {
         self.inner.path()
@@ -218,10 +205,37 @@ impl<TX: DbTx + 'static> DbTx for ReplayTx<TX> {
         &self,
         key: &<T::Key as Encode>::Encoded,
     ) -> Result<Option<T::Value>, DatabaseError> {
-        self.get::<T>(T::Key::decode(key.as_ref())?)
+        if address_key::<T>().is_some_and(|address| key.as_ref() == address.as_slice()) {
+            self.get::<T>(T::Key::decode(key.as_ref())?)
+        } else {
+            self.inner.get_by_encoded_key::<T>(key)
+        }
     }
     fn commit(self) -> Result<(), DatabaseError> {
         self.inner.commit()
+    }
+    fn get_by_key_subkey<T: DupSort>(
+        &self,
+        key: T::Key,
+        subkey: T::SubKey,
+    ) -> Result<Option<T::Value>, DatabaseError>
+    where
+        T::Value: ValueWithSubKey<SubKey = T::SubKey>,
+    {
+        if address_key::<T>()
+            .is_some_and(|address| key.clone().encode().as_ref() == address.as_slice())
+        {
+            let key = B256::from_slice(subkey.encode().as_ref());
+            return self
+                .slots()?
+                .get(&key)
+                .map(|&value| {
+                    T::Value::decompress(StorageEntry { key, value }.compress().as_ref())
+                        .map_err(Into::into)
+                })
+                .transpose();
+        }
+        self.inner.get_by_key_subkey::<T>(key, subkey)
     }
     fn abort(self) {
         self.inner.abort()

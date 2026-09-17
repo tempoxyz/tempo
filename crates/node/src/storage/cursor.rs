@@ -1,5 +1,5 @@
 use super::View;
-use alloy_primitives::B256;
+use alloy_primitives::{B256, U256};
 use reth_db_api::{
     DatabaseError,
     common::{PairResult, ValueOnlyResult},
@@ -18,7 +18,7 @@ use std::{
 pub struct Cursor<T, C> {
     pub(super) inner: C,
     view: Option<Arc<View>>,
-    virtual_slot: Option<B256>,
+    virtual_row: Option<(B256, U256)>,
     virtual_position: bool,
     marker: PhantomData<T>,
 }
@@ -27,7 +27,7 @@ impl<T: Table, C> Cursor<T, C> {
         Self {
             inner,
             view,
-            virtual_slot: None,
+            virtual_row: None,
             virtual_position: false,
             marker: PhantomData,
         }
@@ -38,25 +38,18 @@ impl<T: Table, C> Cursor<T, C> {
     fn is_target(key: &T::Key) -> bool {
         key.clone().encode().as_ref() == Self::address().as_slice()
     }
-    fn virtual_at(&mut self, key: Option<B256>) -> PairResult<T> {
+    fn virtual_at(&mut self, row: Option<(B256, U256)>) -> PairResult<T> {
         self.virtual_position = true;
-        self.virtual_slot = key;
-        key.map(|key| {
+        self.virtual_row = row;
+        row.map(|(key, value)| {
             Ok((
                 T::Key::decode(Self::address().as_slice())?,
-                T::Value::decompress(
-                    StorageEntry {
-                        key,
-                        value: self.view.as_ref().unwrap().snapshot()?.slots[&key],
-                    }
-                    .compress()
-                    .as_ref(),
-                )?,
+                T::Value::decompress(StorageEntry { key, value }.compress().as_ref())?,
             ))
         })
         .transpose()
     }
-    fn edge(&self, first: bool) -> Result<Option<B256>, DatabaseError> {
+    fn edge(&self, first: bool) -> Result<Option<(B256, U256)>, DatabaseError> {
         let Some(view) = &self.view else {
             return Ok(None);
         };
@@ -66,13 +59,13 @@ impl<T: Table, C> Cursor<T, C> {
         } else {
             slots.iter().next_back()
         }
-        .map(|(key, _)| *key))
+        .map(|(&key, &value)| (key, value)))
     }
 }
 impl<T: Table, C: DbCursorRO<T>> Cursor<T, C> {
     fn after_virtual(&mut self) -> PairResult<T> {
         self.virtual_position = false;
-        self.virtual_slot = None;
+        self.virtual_row = None;
         let mut address = Self::address();
         // This fixed address cannot overflow.
         address.0[31] += 1;
@@ -80,7 +73,7 @@ impl<T: Table, C: DbCursorRO<T>> Cursor<T, C> {
     }
     fn before_virtual(&mut self) -> PairResult<T> {
         self.virtual_position = false;
-        self.virtual_slot = None;
+        self.virtual_row = None;
         if self
             .inner
             .seek(T::Key::decode(Self::address().as_slice())?)?
@@ -116,26 +109,26 @@ impl<T: Table, C: DbCursorRO<T>> Cursor<T, C> {
             }
         }
         self.virtual_position = false;
-        self.virtual_slot = None;
+        self.virtual_row = None;
         Ok(row)
     }
 }
 impl<T: Table, C: DbCursorRO<T>> DbCursorRO<T> for Cursor<T, C> {
     fn first(&mut self) -> PairResult<T> {
         self.virtual_position = false;
-        self.virtual_slot = None;
+        self.virtual_row = None;
         let row = self.inner.first()?;
         self.merge(row, true)
     }
     fn last(&mut self) -> PairResult<T> {
         self.virtual_position = false;
-        self.virtual_slot = None;
+        self.virtual_row = None;
         let row = self.inner.last()?;
         self.merge(row, false)
     }
     fn current(&mut self) -> PairResult<T> {
         if self.virtual_position {
-            self.virtual_at(self.virtual_slot)
+            self.virtual_at(self.virtual_row)
         } else {
             Ok(self
                 .inner
@@ -144,8 +137,11 @@ impl<T: Table, C: DbCursorRO<T>> DbCursorRO<T> for Cursor<T, C> {
         }
     }
     fn seek(&mut self, key: T::Key) -> PairResult<T> {
+        if self.view.is_none() {
+            return self.inner.seek(key);
+        }
         self.virtual_position = false;
-        self.virtual_slot = None;
+        self.virtual_row = None;
         let can_cross = key.clone().encode().as_ref() <= Self::address().as_slice();
         let row = self.inner.seek(key)?;
         if can_cross {
@@ -156,7 +152,7 @@ impl<T: Table, C: DbCursorRO<T>> DbCursorRO<T> for Cursor<T, C> {
     }
     fn seek_exact(&mut self, key: T::Key) -> PairResult<T> {
         self.virtual_position = false;
-        self.virtual_slot = None;
+        self.virtual_row = None;
         if self.view.is_some() && Self::is_target(&key) {
             return self.virtual_at(self.edge(true)?);
         }
@@ -166,10 +162,10 @@ impl<T: Table, C: DbCursorRO<T>> DbCursorRO<T> for Cursor<T, C> {
         if self.view.is_none() {
             return self.inner.next();
         }
-        if self.virtual_position && self.virtual_slot.is_none() {
+        if self.virtual_position && self.virtual_row.is_none() {
             return self.after_virtual();
         }
-        if let Some(slot) = self.virtual_slot {
+        if let Some((slot, _)) = self.virtual_row {
             let next = self
                 .view
                 .as_ref()
@@ -178,7 +174,7 @@ impl<T: Table, C: DbCursorRO<T>> DbCursorRO<T> for Cursor<T, C> {
                 .slots
                 .range((Bound::Excluded(slot), Bound::Unbounded))
                 .next()
-                .map(|(key, _)| *key);
+                .map(|(&key, &value)| (key, value));
             return if next.is_some() {
                 self.virtual_at(next)
             } else {
@@ -200,7 +196,7 @@ impl<T: Table, C: DbCursorRO<T>> DbCursorRO<T> for Cursor<T, C> {
         if self.view.is_none() {
             return self.inner.prev();
         }
-        if self.virtual_position && self.virtual_slot.is_none() {
+        if self.virtual_position && self.virtual_row.is_none() {
             let last = self.edge(false)?;
             return if last.is_some() {
                 self.virtual_at(last)
@@ -208,7 +204,7 @@ impl<T: Table, C: DbCursorRO<T>> DbCursorRO<T> for Cursor<T, C> {
                 self.before_virtual()
             };
         }
-        if let Some(slot) = self.virtual_slot {
+        if let Some((slot, _)) = self.virtual_row {
             let prev = self
                 .view
                 .as_ref()
@@ -217,7 +213,7 @@ impl<T: Table, C: DbCursorRO<T>> DbCursorRO<T> for Cursor<T, C> {
                 .slots
                 .range(..slot)
                 .next_back()
-                .map(|(key, _)| *key);
+                .map(|(&key, &value)| (key, value));
             return if prev.is_some() {
                 self.virtual_at(prev)
             } else {
@@ -276,7 +272,7 @@ impl<T: Table, C: DbCursorRO<T>> DbCursorRO<T> for Cursor<T, C> {
 }
 impl<T: DupSort, C: DbDupCursorRO<T> + DbCursorRO<T>> DbDupCursorRO<T> for Cursor<T, C> {
     fn next_dup(&mut self) -> PairResult<T> {
-        let Some(slot) = self.virtual_slot else {
+        let Some((slot, _)) = self.virtual_row else {
             return if self.virtual_position {
                 Ok(None)
             } else {
@@ -291,7 +287,7 @@ impl<T: DupSort, C: DbDupCursorRO<T> + DbCursorRO<T>> DbDupCursorRO<T> for Curso
             .slots
             .range((Bound::Excluded(slot), Bound::Unbounded))
             .next()
-            .map(|(key, _)| *key);
+            .map(|(&key, &value)| (key, value));
         if next.is_some() {
             self.virtual_at(next)
         } else {
@@ -299,7 +295,7 @@ impl<T: DupSort, C: DbDupCursorRO<T> + DbCursorRO<T>> DbDupCursorRO<T> for Curso
         }
     }
     fn prev_dup(&mut self) -> PairResult<T> {
-        let Some(slot) = self.virtual_slot else {
+        let Some((slot, _)) = self.virtual_row else {
             return if self.virtual_position {
                 Ok(None)
             } else {
@@ -314,7 +310,7 @@ impl<T: DupSort, C: DbDupCursorRO<T> + DbCursorRO<T>> DbDupCursorRO<T> for Curso
             .slots
             .range(..slot)
             .next_back()
-            .map(|(key, _)| *key);
+            .map(|(&key, &value)| (key, value));
         if prev.is_some() {
             self.virtual_at(prev)
         } else {
@@ -322,10 +318,10 @@ impl<T: DupSort, C: DbDupCursorRO<T> + DbCursorRO<T>> DbDupCursorRO<T> for Curso
         }
     }
     fn last_dup(&mut self) -> ValueOnlyResult<T> {
-        if self.virtual_position && self.virtual_slot.is_none() {
+        if self.virtual_position && self.virtual_row.is_none() {
             return Ok(None);
         }
-        if self.virtual_slot.is_some() {
+        if self.virtual_row.is_some() {
             let last = self.edge(false)?;
             Ok(self.virtual_at(last)?.map(|(_, v)| v))
         } else {
@@ -355,7 +351,7 @@ impl<T: DupSort, C: DbDupCursorRO<T> + DbCursorRO<T>> DbDupCursorRO<T> for Curso
     }
     fn seek_by_key_subkey(&mut self, key: T::Key, subkey: T::SubKey) -> ValueOnlyResult<T> {
         self.virtual_position = false;
-        self.virtual_slot = None;
+        self.virtual_row = None;
         if self.view.is_some() && Self::is_target(&key) {
             let subkey = B256::from_slice(subkey.encode().as_ref());
             let slot = self
@@ -366,7 +362,7 @@ impl<T: DupSort, C: DbDupCursorRO<T> + DbCursorRO<T>> DbDupCursorRO<T> for Curso
                 .slots
                 .range(subkey..)
                 .next()
-                .map(|(key, _)| *key);
+                .map(|(&key, &value)| (key, value));
             return Ok(self.virtual_at(slot)?.map(|(_, v)| v));
         }
         self.inner.seek_by_key_subkey(key, subkey)
