@@ -3,10 +3,13 @@
 import json
 
 EVIDENCE_FIELDS = frozenset(('retained', 'emitted', 'lost', 'invalid', 'overflow', 'io_error',
-                             'received', 'observed_duration_ns', 'probe_misses', 'kept', 'pruned'))
+                             'received', 'observed_duration_ns', 'probe_misses', 'kept', 'pruned', 'wait_reasons'))
 
 STAGES = frozenset(('configuration', 'capability', 'marker', 'capture', 'cutoff', 'decode', 'publish'))
 REASONS = {
+    ('decode','invalid kernel wait category'): 'decode_wait_category',
+    ('decode','kernel wait capture mode mismatch'): 'decode_wait_mode',
+    ('configuration','invalid kernel wait configuration'): 'configuration_wait_mode',
     ('decode', 'capture tool reported probe misses'): 'decode_probe_misses',
     ('decode', 'scheduler publication limit exceeded'): 'decode_publication_limit',
     ('decode', 'scheduler spool I/O failed'): 'decode_spool_io',
@@ -59,7 +62,8 @@ def failure_summary(directory):
                 data = source.read(2049)
             evidence = json.loads(data) if len(data) <= 2048 else None
             if (isinstance(evidence, dict) and set(evidence) <= EVIDENCE_FIELDS
-                    and all(type(value) is int and 0 <= value < 2**64 for value in evidence.values())):
+                    and all(type(value) is int and 0 <= value < 2**64 for value in evidence.values())
+                    and ('wait_reasons' not in evidence or evidence['wait_reasons']==1)):
                 rows.append(f'Scheduler validator {role}: numeric capture evidence ' +
                             ' '.join(f'{key}={evidence[key]}' for key in sorted(evidence)))
         except (OSError, ValueError):

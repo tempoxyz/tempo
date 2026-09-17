@@ -170,3 +170,45 @@ in the checkout. Elevating only the capture subprocess would close the inherited
 fd at the sudo boundary, while running the whole test unprivileged fails the
 root-only capture admission check. This preflight explicitly publishes and checks
 schema2 with zero probe misses, using the same footer gate as the real capture.
+
+### Optional sleeping kernel paths (schema4)
+
+`profiling=lifecycle-compare-kernel-waits` compares two copies of the same
+immutable runtime: baseline uses ordinary schema3 scheduler capture and feature
+sets `TEMPO_LIFECYCLE_KERNEL_WAITS=1`. The workflow rejects different runtime
+refs or options and compares the executable bytes before loading either phase.
+It runs the additional positive futex/timer/pipe synthetic preflight only in this
+mode. Ordinary scheduler mode retains its existing requirements and schema3.
+
+The observer samples only registered threads switching out in sleeping states
+1 or 2. A bounded 1,024-entry kernel stack map uses neither stack-ID reuse nor
+hash-only comparison. A private callback resolves each immutable stack once
+with BCC's symbol resolver. Native addresses, symbols and stack IDs never enter
+the retained spool or artifacts. Private on-mode ring records are 24 bytes;
+the spool remains 16 bytes and carries only fixed reason/status enums. The
+on-mode footer is `SCHEDS03` (88 bytes); off-mode transport is unchanged.
+
+Only the exact switch-out's `blocked_before_wakeup` interval inherits the
+category. Runnable-after-wakeup and scheduled intervals never inherit it.
+Known reasons are futex wait, kernel IO scheduling, timer sleep, pipe read and
+poll wait. Unknown symbols, category conflicts, truncated stacks, collisions,
+full maps and helper failures remain explicitly unknown; unsupported sleeping
+states are explicitly not sampled. A filled stack is truncated even when the
+kernel stack-depth limit is lower than the map's storage. Depth changes during
+capture reject the observer. Existing loss, probe-miss, source registration,
+shutdown and strict pre-cutoff gates still apply.
+
+Schema4 includes retained-prefix sample/status counts. Its scheduler summary
+adds blocked wall time by observed reason, and focused Perfetto blocked slices
+carry numeric reason/status and a fixed interpretation label. The independent
+audit reconstructs the exact source-edge association and counters. The local
+live test validates positive futex, timer and pipe paths through the production
+native callback, safe spool, cutoff decoder and exporter. Poll and IO path
+classification has fixtures but no local positive live validation.
+
+These categories identify an observed sleeping kernel path, not a lock owner,
+I/O device, persistence operation or application cause. No prior schema3 capture
+can be enriched retrospectively. Stack unwinding and resolution add observer
+cost and may perturb scheduling; the matched off/on experiment measures that
+cost before interpreting node timings. Unknown coverage remains visible even
+when scheduler edge capture is complete.

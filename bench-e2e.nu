@@ -1430,6 +1430,14 @@ def "main render-txgen-spec" [
     print $spec.spec_path
 }
 
+# Opt-in observer comparisons must use the exact same executable bytes.
+def require-identical-bench-binaries [baseline_binary: string, feature_binary: string] {
+    let result = (^cmp --silent $baseline_binary $feature_binary | complete)
+    if $result.exit_code != 0 {
+        error make { msg: "Observer comparison requires identical baseline and feature binaries" }
+    }
+}
+
 # Run the e2e sequence on one runner.
 def "main e2e" [
     --baseline: string                                  # Baseline git SHA/ref
@@ -1454,6 +1462,7 @@ def "main e2e" [
     --no-default-features                               # Disable Cargo default features
     --lifecycle                                         # Capture privacy-filtered block lifecycle artifacts on both validators
     --lifecycle-scheduler                               # Opt-in registered-thread BPF diagnostic; requires full lifecycle mode
+    --require-identical-binaries                        # Reject observer comparisons whose executable bytes differ
     --lifecycle-detail: string = "full"                  # Capture detail: full, milestones, or compare (requires --lifecycle)
     --samply                                            # Profile validators with samply
     --samply-args: string = ""                          # Additional samply arguments
@@ -1774,6 +1783,12 @@ def "main e2e" [
     }
     let baseline_tempo = if $needs_baseline { worktree-bin $baseline_wt $profile "tempo" } else { "" }
     let feature_tempo = if $needs_feature { worktree-bin $feature_wt $profile "tempo" } else { "" }
+    if $require_identical_binaries {
+        if not $needs_baseline or not $needs_feature {
+            error make { msg: "Identical-binary comparison requires both benchmark sides" }
+        }
+        require-identical-bench-binaries $baseline_tempo $feature_tempo
+    }
     let regenesis_tempo = if $regenesis_needed {
         if $needs_feature { $feature_tempo } else { $baseline_tempo }
     } else { "" }

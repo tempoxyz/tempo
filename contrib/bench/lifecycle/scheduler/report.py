@@ -6,10 +6,12 @@ import shutil
 from pathlib import Path
 import time
 try:
+    from .wait_reasons import REASONS, STATUSES, checked, counts, add_count
     from .failures import failure_summary
     from .index import CaptureIndex, DiskRows, read_capture
     from .budget import Budget, CappedSink, FOCUSED_BYTES
 except ImportError:
+    from wait_reasons import REASONS, STATUSES, checked, counts, add_count
     from failures import failure_summary
     from index import CaptureIndex, DiskRows, read_capture
     from budget import Budget, CappedSink, FOCUSED_BYTES
@@ -29,7 +31,8 @@ def integer(value, low=0, high=2**64-1):
 def validate(capture, process, cutoff, reason):
     keys = {'schema','scope','process','clock','cutoff_ns','records','intervals','quality',
             'registered_window_edges_complete','cutoff_reason','registration'}
-    if set(capture) != keys or type(capture['schema']) is not int or capture['schema'] not in (1,2,3) or capture['process'] != process:
+    if capture.get('schema')==4:keys.add('wait_reasons')
+    if set(capture) != keys or type(capture['schema']) is not int or capture['schema'] not in (1,2,3,4) or capture['process'] != process:
         raise ValueError('scheduler schema/process mismatch')
     if (capture['scope'] != 'registered validator thread windows only'
             or capture['clock'] != 'monotonic_relative_ns'
@@ -38,7 +41,7 @@ def validate(capture, process, cutoff, reason):
         raise ValueError('scheduler scope/clock/cutoff mismatch')
     quality = capture['quality']
     expected_quality = (QUALITY | ({'probe_misses'} if capture['schema']>=2 else set())
-                        | ({'wakeups_while_running'} if capture['schema']==3 else set()))
+                        | ({'wakeups_while_running'} if capture['schema']>=3 else set()))
     if capture['schema']>=2 and (type(quality.get('probe_misses')) is not int or quality['probe_misses']!=0):
         raise ValueError('scheduler probe misses; capture unavailable')
     if set(quality) != expected_quality or quality['event_loss_detected'] is not False or quality['all_registered_threads_exited'] is not True:
@@ -51,44 +54,79 @@ def validate(capture, process, cutoff, reason):
     if not isinstance(capture['records'], (list, DiskRows)) or not isinstance(capture['intervals'], (list, DiskRows)):
         raise ValueError('invalid scheduler rows')
     previous = {}
+    source_modes=set();interval_modes=set();wait_counts=counts()
     for row in capture['records']:
         validate_record(row,cutoff)
+        if row['kind']=='switch_out' and row['state_bits'] not in (0,256):source_modes.add('wait_status' in row)
+        add_count(wait_counts,row)
     for row in capture['intervals']:
         validate_interval(row,cutoff,previous)
-
+        if row['kind']=='blocked_before_wakeup':interval_modes.add('wait_status' in row)
+    validate_wait_metadata(capture,source_modes,interval_modes,wait_counts)
     return capture
 
 
 def validate_record(row, cutoff):
-    if (not isinstance(row,dict) or set(row) != {'ts','thread','kind','state_bits'} or row['kind'] not in KINDS
+    fields={'wait_reason','wait_status'} if isinstance(row,dict) and ('wait_reason' in row or 'wait_status' in row) else set()
+    if (not isinstance(row,dict) or set(row) != {'ts','thread','kind','state_bits'}|fields or row['kind'] not in KINDS
             or not integer(row['thread'],1,8192) or not integer(row['ts'],0,cutoff-1)
             or not integer(row['state_bits'],0,256)):
         raise ValueError('invalid scheduler event or cutoff drift')
+    if fields:
+        if row['kind']!='switch_out' or row['state_bits'] in (0,256):raise ValueError('invalid kernel wait category')
+        checked(row['wait_reason'],row['wait_status'],row['state_bits'])
 
 
 def validate_interval(row, cutoff, previous):
-    if (not isinstance(row,dict) or set(row) != {'thread','start','end','kind','right_censored'} or row['kind'] not in INTERVALS
+    fields={'wait_reason','wait_status'} if isinstance(row,dict) and ('wait_reason' in row or 'wait_status' in row) else set()
+    if (not isinstance(row,dict) or set(row) != {'thread','start','end','kind','right_censored'}|fields or row['kind'] not in INTERVALS
             or not integer(row['thread'],1,8192) or not integer(row['start'],0,cutoff-1)
             or not integer(row['end'],row['start']+1,cutoff-1) or type(row['right_censored']) is not bool):
         raise ValueError('invalid scheduler interval or cutoff drift')
+    if fields:
+        if row['kind']!='blocked_before_wakeup':raise ValueError('invalid kernel wait category')
+        checked(row['wait_reason'],row['wait_status'],4 if row['wait_status']==9 else 1)
     if row['start'] < previous.get(row['thread'],0):
         raise ValueError('overlapping scheduler states')
     previous[row['thread']] = row['end']
 
 
+def validate_wait_metadata(capture,source_modes,interval_modes,wait_counts):
+    enabled=capture['schema']==4
+    if source_modes-{enabled} or interval_modes-{enabled}:raise ValueError('kernel wait schema/row mismatch')
+    if enabled:
+        supplied=capture.get('wait_reasons')
+        if not isinstance(supplied,dict) or set(supplied)!=set(wait_counts):raise ValueError('invalid kernel wait coverage')
+        if supplied.get('mode')!='kernel_stacks_v1':raise ValueError('invalid kernel wait coverage')
+        for name in ('sampled','known','unknown','not_sampled'):
+            if not integer(supplied[name]):raise ValueError('invalid kernel wait coverage')
+        statuses=supplied['status_counts']
+        if not isinstance(statuses,dict) or set(statuses)!={str(i) for i in STATUSES} or any(not integer(v) for v in statuses.values()):raise ValueError('invalid kernel wait coverage')
+        if supplied!=wait_counts:raise ValueError('kernel wait coverage mismatch')
+
+
 def indexed_capture(path, directory, process, cutoff, reason):
     owner = CaptureIndex(directory)
     previous = {}
+    source_modes=set();interval_modes=set();wait_counts=counts()
     try:
         def add(table,row):
             if table == 'records':
                 validate_record(row,cutoff)
+                if row['kind']=='switch_out' and row['state_bits'] not in (0,256):source_modes.add('wait_status' in row)
+                add_count(wait_counts,row)
             else:
                 validate_interval(row,cutoff,previous)
+                if row['kind']=='blocked_before_wakeup':interval_modes.add('wait_status' in row)
             owner.add(table,row)
         metadata = read_capture(path,add)
         # Metadata gates apply identically; rows were validated on ingestion.
-        validate(dict(metadata,records=[],intervals=[]),process,cutoff,reason)
+        checked_metadata=dict(metadata,records=[],intervals=[])
+        # Empty row arrays validate metadata shape; actual counters are verified below.
+        validation_copy=dict(checked_metadata)
+        if metadata.get('schema')==4:validation_copy['wait_reasons']=counts()
+        validate(validation_copy,process,cutoff,reason)
+        validate_wait_metadata(checked_metadata,source_modes,interval_modes,wait_counts)
         return owner.finish(metadata)
     except BaseException:
         owner.close()
@@ -140,7 +178,7 @@ def load(directory, out, window, timeout=900):
             coverage.append(source_registration(out / f'{"ab"[index]}.jsonl', capture))
         # Both versions carry mandatory probe evidence; schema 2 retains its
         # original wake semantics, while newly published captures use schema 3.
-        if (any(capture['schema'] not in (2,3) for capture in result)
+        if (any(capture['schema'] not in (2,3,4) for capture in result)
                 or len({capture['schema'] for capture in result}) != 1):
             raise ValueError('scheduler probe counter proof missing')
         # Write neither validator until both are validated.
@@ -184,13 +222,17 @@ def scheduler_event_rows(captures, origin, low, high):
                 continue
             clipped_start, clipped_end = start < low, end > high
             start, end = max(start, low), min(end, high)
+            wait_args=({'kernel_wait_reason':row['wait_reason'],'kernel_wait_status':row['wait_status'],
+                        'observed_kernel_wait_path':REASONS[row['wait_reason']],
+                        'wait_path_semantics':'observed sleeping kernel path; not lock owner, I/O cause or task CPU'}
+                       if 'wait_status' in row else {})
             yield {'name':row['kind'], 'cat':'scheduler context', 'ph':'X', 'pid':pid,
                          'tid':row['thread'], 'ts':start, 'dur':end-start,
                          'args':{'source_thread_ordinal':row['thread'],
                                  'association':'thread context; temporal overlap does not establish block causality',
                                  'right_censored':row['right_censored'],
                                  'focus_clipped_start':clipped_start, 'focus_clipped_end':clipped_end,
-                                 'semantics':'scheduler residency; includes kernel and interrupts, not task CPU time'}}
+                                 'semantics':'scheduler residency; includes kernel and interrupts, not task CPU time',**wait_args}}
 
 
 def scheduler_events(captures, origin, low, high):
@@ -205,10 +247,18 @@ def publish(data, captures, out, coverage):
         if not isinstance(capture['intervals'],DiskRows):
             for row in capture['intervals']:
                 totals[row['kind']] += row['end'] - row['start']
-        summary['nodes'].append({'node':f'Validator {chr(64+capture["process"])}',
+        wait_summary={}
+        if 'wait_reasons' in capture:
+            wait_totals=(capture['intervals'].wait_totals() if isinstance(capture['intervals'],DiskRows) else dict(Counter()))
+            if not isinstance(capture['intervals'],DiskRows):
+                for row in capture['intervals']:
+                    if 'wait_status' in row:
+                        name=REASONS[row['wait_reason']];wait_totals[name]=wait_totals.get(name,0)+row['end']-row['start']
+            wait_summary={'wait_reasons':capture['wait_reasons'],'blocked_wall_ns_by_wait_reason':wait_totals}
+        summary['nodes'].append({'node' :f'Validator {chr(64+capture["process"])}',
                                  'quality':capture['quality'],
                                  'registration_coverage':coverage[capture["process"]-1],
-                                 'thread_wall_ns_by_state':dict(totals)})
+                                 'thread_wall_ns_by_state':dict(totals),**wait_summary})
     budget = Budget(FOCUSED_BYTES)
     for block in data['blocks']:
         source = out / f'perfetto-block-{block["id"]}.json'
@@ -241,6 +291,7 @@ def publish(data, captures, out, coverage):
 <h1>Registered thread scheduler diagnostic</h1><p><a href="index.html">Lifecycle summary</a> · <a href="scheduler-summary.json">Quality and measured intervals</a></p>
 <p>Open a trace below in Perfetto. The ordinary lifecycle lanes are accompanied by anonymous scheduler thread tracks. Thread ordinals match source capture enter/exit records. These scheduler tracks are temporal context, not automatic attribution to a block or async task.</p>
 <p>Scheduled intervals include kernel execution and interrupts; they are not measured task CPU time. Off-CPU intervals split into blocked-before-wakeup and runnable-after-wakeup only when both edges and wakeup are observed. Missing wakeups remain unsplit. Time before registration, missing edges, and unclosed intervals is unavailable. Async tasks awaiting without a thread cannot be assigned scheduler time. Overlapping scopes and threads are not additive wall or CPU time.</p>
+<p>Optional kernel wait categories describe the observed sleeping kernel path only. Futex does not identify a lock or owner; kernel IO scheduling does not identify an I/O cause or device. Unknown, unavailable, truncated and conflicting stacks remain explicit. Runnable-after-wakeup time is not charged to that category. Stack sampling adds observer cost; comparisons require matched instrumentation.</p>
 <p>Only observed intervals intersected with the strict source cutoff are exported. Perfetto context is additionally clipped to each actual block lifecycle. Percentiles select the same actual complete blocks as the lifecycle report.</p><p>{percentile_links}</p><ul>{rows}</ul>''')
     index = out / 'index.html'
     index.write_text(index.read_text().replace('</h1>', '</h1><p><a href="scheduler.html">Opt-in scheduler diagnostic</a></p>', 1))

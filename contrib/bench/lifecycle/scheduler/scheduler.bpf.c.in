@@ -1,18 +1,34 @@
 
 #include <uapi/linux/ptrace.h>
 #include <linux/sched.h>
-struct event { u64 ts; u32 ordinal; u16 kind; u16 state; };
+#define WAIT_REASONS WAIT_ENABLED
+struct event { u64 ts; u32 ordinal; u16 kind; u16 state;
+#if WAIT_REASONS
+ int stack_id;u32 reserved;
+#endif
+};
+#if WAIT_REASONS
+BPF_STACK_TRACE(wait_stacks,1024);
+#endif
 BPF_RINGBUF_OUTPUT(events, 4096);
 BPF_HASH(ordinals,u32,u32,8192);
 BPF_PERCPU_ARRAY(counts,u64,3);
 BPF_ARRAY(sealed,u32,1);
 
-static inline void emit(u32 ordinal,u16 kind,u64 state){
+static inline void emit_sample(u32 ordinal,u16 kind,u64 state,u64 timestamp,int stack_id){
  int key=0;u64 *count=counts.lookup(&key);if(count)__sync_fetch_and_add(count,1);
  if(!ordinal||ordinal>8192||state>256){key=2;count=counts.lookup(&key);if(count)__sync_fetch_and_add(count,1);return;}
- struct event e={.ts=bpf_ktime_get_ns(),.ordinal=ordinal,.kind=kind,.state=state};
+ struct event e={.ts=timestamp,.ordinal=ordinal,.kind=kind,.state=state
+#if WAIT_REASONS
+ ,.stack_id=stack_id,.reserved=0
+#endif
+ };
  if(events.ringbuf_output(&e,sizeof(e),0)){key=1;count=counts.lookup(&key);if(count)__sync_fetch_and_add(count,1);}
 }
+static inline void emit(u32 ordinal,u16 kind,u64 state){
+ emit_sample(ordinal,kind,state,bpf_ktime_get_ns(),(-2147483647-1));
+}
+
 int reg(struct pt_regs *ctx){
  u64 native=bpf_get_current_pid_tgid();int zero=0;u32 *closed=sealed.lookup(&zero);
  if((native>>32)!=WATCHED||!closed||*closed)return 0;
@@ -22,7 +38,15 @@ int reg(struct pt_regs *ctx){
 }
 TRACEPOINT_PROBE(sched,sched_switch){
  u32 out=args->prev_pid,in=args->next_pid;u32 *ordinal=ordinals.lookup(&out);
- if(ordinal)emit(*ordinal,1,args->prev_state);
+ if(ordinal){
+#if WAIT_REASONS
+  u64 timestamp=bpf_ktime_get_ns();int stack_id=(-2147483647-1);
+  if(args->prev_state==1||args->prev_state==2)stack_id=wait_stacks.get_stackid(args,0);
+  emit_sample(*ordinal,1,args->prev_state,timestamp,stack_id);
+#else
+  emit(*ordinal,1,args->prev_state);
+#endif
+ }
  ordinal=ordinals.lookup(&in);if(ordinal)emit(*ordinal,2,0);return 0;
 }
 /* Perf tracepoints share a CPU-wide recursion guard. Timer wakeups can

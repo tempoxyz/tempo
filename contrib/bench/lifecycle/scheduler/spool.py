@@ -7,6 +7,8 @@ import tempfile
 from binary_transport import EVENT
 
 MAGIC = b'SCHEDS02'
+WAIT_MAGIC = b'SCHEDS03'
+WAIT_FOOTER = struct.Struct('<8s10Q')
 FOOTER = struct.Struct('<8s9Q')
 FIELDS = ('retained', 'emitted', 'lost', 'invalid', 'overflow', 'io_error', 'received', 'observed_duration_ns', 'probe_misses')
 MAX_BYTES = 1024 * 1024 * 1024
@@ -15,11 +17,18 @@ MERGE_FAN_IN = 32
 
 
 def footer(data):
-    if len(data) != FOOTER.size:
-        raise ValueError('unexpected binary scheduler output')
-    magic, *values = FOOTER.unpack(data)
+    if len(data) == WAIT_FOOTER.size:
+        magic,*values=WAIT_FOOTER.unpack(data)
+        if magic!=WAIT_MAGIC or values.pop()!=1:raise ValueError('unexpected binary scheduler output')
+        wait_enabled=True
+    elif len(data)==FOOTER.size:
+        magic,*values=FOOTER.unpack(data)
+        if magic!=MAGIC:raise ValueError('unexpected binary scheduler output')
+        wait_enabled=False
+    else:raise ValueError('unexpected binary scheduler output')
     result = dict(zip(FIELDS, values))
-    if magic != MAGIC or result['retained'] > MAX_BYTES // EVENT.size:
+    if wait_enabled:result['wait_reasons']=1
+    if result['retained'] > MAX_BYTES // EVENT.size:
         raise ValueError('unexpected binary scheduler output')
     return result
 

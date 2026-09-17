@@ -84,7 +84,7 @@ def read_capture(path, sink):
             if not isinstance(key,str) or key in seen:
                 raise ValueError('invalid scheduler JSON key')
             if key not in {'schema','scope','process','clock','cutoff_ns','records','intervals','quality',
-                           'registered_window_edges_complete','cutoff_reason','registration'}:
+                           'registered_window_edges_complete','cutoff_reason','registration','wait_reasons'}:
                 raise ValueError('unknown scheduler JSON key')
             seen.add(key)
             reader.take(':')
@@ -142,6 +142,9 @@ class DiskRows:
     def registrations(self):
         return dict(self.owner.registrations)
 
+    def wait_totals(self):
+        return dict(self.owner.wait_totals)
+
     def totals(self):
         return dict(self.owner.totals)
 
@@ -163,6 +166,7 @@ class CaptureIndex:
         self.counts = {'records':0,'intervals':0}
         self.registrations, self.totals = {}, {}
         self.max_width = {}
+        self.wait_totals = {}
 
     def add(self, table, row):
         payload = json.dumps(row,separators=(',',':'))
@@ -174,6 +178,13 @@ class CaptureIndex:
                 self.registrations[row['thread']] = row['ts']
         else:
             width = row['end']-row['start']
+            if 'wait_status' in row:
+                try:
+                    from .wait_reasons import REASONS
+                except ImportError:
+                    from wait_reasons import REASONS
+                name=REASONS[row['wait_reason']]
+                self.wait_totals[name]=self.wait_totals.get(name,0)+width
             self.max_width[row['thread']] = max(self.max_width.get(row['thread'],0),width)
             self.totals[row['kind']] = self.totals.get(row['kind'],0)+width
             self.db.execute('INSERT INTO intervals VALUES(?,?,?,?,?)',

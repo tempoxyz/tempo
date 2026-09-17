@@ -10,7 +10,8 @@ import subprocess
 import sys
 import tempfile
 
-from spool import FOOTER, MAGIC
+from spool import FOOTER, MAGIC, WAIT_FOOTER, WAIT_MAGIC
+from wait_reasons import resolver, stack_depth
 
 ROOT = Path(__file__).parent
 
@@ -59,13 +60,13 @@ def miss_delta(initial,final):
     return sum(b-a for a,b in zip(initial,final))
 
 
-def program_for(incarnation, epoch):
+def program_for(incarnation, epoch, wait_reasons=False):
     if not 0 < incarnation < 2**32 or not 0 < epoch < 2**64:
         raise ValueError('binary scheduler configuration invalid')
-    return (ROOT / 'scheduler.bpf.c.in').read_text().replace('WATCHED', str(incarnation)).replace('EPOCH', str(epoch))
+    return (ROOT / 'scheduler.bpf.c.in').read_text().replace('WATCHED', str(incarnation)).replace('EPOCH', str(epoch)).replace('WAIT_ENABLED', '1' if wait_reasons else '0')
 
 
-def run(binary, command, epoch, spool_fd, scratch):
+def run(binary, command, epoch, spool_fd, scratch, wait_reasons=False):
     BPF, callback_type = dependencies()
     os.set_inheritable(spool_fd, False)
     with tempfile.TemporaryDirectory(prefix='lifecycle-scheduler-native-', dir=scratch) as directory:
@@ -100,9 +101,16 @@ def run(binary, command, epoch, spool_fd, scratch):
                 raise ValueError('binary scheduler admission failed')
             # Native incarnation is substituted only in this private memory.
             incarnation = child
-            program = program_for(incarnation, epoch)
+            program = program_for(incarnation, epoch, wait_reasons)
             bpf = BPF(text=program)
             bpf.attach_uprobe(name=str(binary), sym='reth_lifecycle_thread_register', fn_name='reg', pid=child)
+            if wait_reasons:
+                resolve_type=C.CFUNCTYPE(C.c_int,C.c_int)
+                maximum_depth=stack_depth()
+                resolve_callback=resolve_type(resolver(bpf,maximum_depth))
+                native.configure_waits.argtypes=[C.c_void_p,resolve_type]
+                native.configure_waits.restype=C.c_int
+                if native.configure_waits(context,resolve_callback):raise ValueError('kernel wait collector unavailable')
             callback = C.cast(native.collect, callback_type)
             bpf._open_ring_buffer(bpf['events'].map_fd, callback, C.c_void_p(context))
             initial_misses = miss_counts(native,bpf)
@@ -125,6 +133,7 @@ def run(binary, command, epoch, spool_fd, scratch):
                 bpf.detach_uprobe_event(event)
             bpf.ring_buffer_consume()
             probe_misses = miss_delta(initial_misses,miss_counts(native,bpf))
+            if wait_reasons and stack_depth()!=maximum_depth:raise ValueError('kernel wait stack depth changed')
             counts = bpf['counts']
             emitted, lost, invalid = (sum(counts[counts.Key(index)]) for index in range(3))
             native.finalize(context)
@@ -136,8 +145,8 @@ def run(binary, command, epoch, spool_fd, scratch):
             duration = native.metric(context, 5)
             # Only fixed numeric counters enter the supervisor pipe. Anonymous
             # source records remain in its unlinked, byte-capped scratch fd.
-            sys.stdout.buffer.write(FOOTER.pack(MAGIC, collected, emitted, lost, invalid,
-                                               overflow, io_error, received, duration, probe_misses))
+            values=(collected,emitted,lost,invalid,overflow,io_error,received,duration,probe_misses)
+            sys.stdout.buffer.write(WAIT_FOOTER.pack(WAIT_MAGIC,*values,1) if wait_reasons else FOOTER.pack(MAGIC,*values))
             sys.stdout.buffer.flush()
             if os.waitstatus_to_exitcode(status) != 0:
                 raise ValueError('scheduler child failed')
@@ -159,6 +168,7 @@ def main():
     parser.add_argument('--command-base64')
     parser.add_argument('--epoch', type=int)
     parser.add_argument('--preflight', action='store_true')
+    parser.add_argument('--wait-reasons',action='store_true')
     parser.add_argument('--spool-fd', type=int)
     parser.add_argument('--scratch-dir', type=Path)
     args = parser.parse_args()
@@ -179,7 +189,7 @@ def main():
             if args.binary is None or args.epoch is None or args.command_base64 is None or args.spool_fd is None or args.scratch_dir is None:
                 raise ValueError('binary scheduler configuration missing')
             command = base64.b64decode(args.command_base64, validate=True).decode()
-            run(args.binary, command, args.epoch, args.spool_fd, args.scratch_dir)
+            run(args.binary, command, args.epoch, args.spool_fd, args.scratch_dir, args.wait_reasons)
         return 0
     except Exception:
         # BCC/compiler diagnostics are captured privately by the supervisor;

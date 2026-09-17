@@ -48,7 +48,11 @@ benchmark-runner support, bounded overhead under node load, or application
 cause attribution. The pure `admit_sample` cutoff fixture is only a proposed
 contract, not runtime integration. Poll and IO paths were not live-tested.
 
-## Proposed production integration, not implemented here
+## Historical production design
+
+The sibling scheduler implementation now implements the reviewed runtime path;
+see [its schema4 contract](../README.md#optional-sleeping-kernel-paths-schema4).
+This standalone prototype remains unchanged. Its original design notes follow.
 
 1. Keep this opt-in and retain the existing stopped-child, process-incarnation,
    ordinal, exit, sealed-registration and probe-miss gates. Retain schema-3
