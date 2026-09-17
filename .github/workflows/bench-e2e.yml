@@ -1053,7 +1053,6 @@ jobs:
           fi
 
       - name: Upload results
-        id: upload-results
         if: ${{ !cancelled() }}
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
@@ -1272,9 +1271,67 @@ jobs:
             });
 
       - name: Clean up benchmark files
-        if: always() && hashFiles('.github/scripts/bench-e2e-cleanup.sh') != ''
+        if: always()
         timeout-minutes: 5
+        working-directory: ${{ runner.temp }}
         env:
           BENCH_JOB_TMPDIR: ${{ steps.bench-tmp.outputs.path }}
-          BENCH_RESULTS_UPLOADED: ${{ steps.upload-results.outcome }}
-        run: bash .github/scripts/bench-e2e-cleanup.sh
+        # Inline so failed checkouts and older benchmark refs cannot skip cleanup.
+        run: |
+          set -euo pipefail
+          workspace=$(realpath -m -- "${GITHUB_WORKSPACE:?}")
+          runner_temp=$(realpath -e -- "${RUNNER_TEMP:?}")
+          if [[ "$workspace" == / ]]; then
+            echo "::error::Refusing cleanup at the filesystem root"
+            exit 1
+          fi
+
+          bench_tmp=${BENCH_JOB_TMPDIR:-}
+          if [[ -n "$bench_tmp" ]]; then
+            # Only accept the direct child created by this job's mktemp step.
+            if [[ "$bench_tmp" != "$runner_temp"/tempo-bench-e2e.* ||
+                  "${bench_tmp#"$runner_temp"/}" == */* ||
+                  "$(realpath -m -- "$bench_tmp")" != "$bench_tmp" ]]; then
+              echo "::error::Refusing unexpected benchmark temporary directory: $bench_tmp"
+              exit 1
+            fi
+          fi
+
+          # Validators/profilers run outside the runner's process tree. If graceful
+          # shutdown fails, kill their scopes and wait before deleting their files.
+          if ! sudo systemctl stop 'tempo-e2e-*.scope'; then
+            sudo systemctl kill --kill-whom=all --signal=SIGKILL 'tempo-e2e-*.scope'
+            sudo systemctl stop 'tempo-e2e-*.scope'
+          fi
+
+          status=0
+          # Post-job actions must no longer use the directory we are removing.
+          export TMPDIR="$runner_temp"
+
+          targets=()
+          # Results are disposable even if artifact upload failed or was skipped.
+          for path in .bench-worktrees .bench-tmp target localnet valscope/target \
+                      tempo-bench-valscope-static bench-results report.json; do
+            targets+=("$workspace/$path")
+          done
+          if [[ -n "$bench_tmp" ]]; then
+            targets+=("$bench_tmp")
+          fi
+
+          for target in "${targets[@]}"; do
+            if [[ "$(realpath -m -- "$target")" != "$target" ]] || mountpoint -q -- "$target"; then
+              echo "::error::Refusing symlinked or mounted cleanup target: $target"
+              status=1
+              continue
+            fi
+            echo "Removing $target"
+            # A failed removal must not prevent cleanup of the remaining paths.
+            sudo rm -rf --one-file-system -- "$target" || status=1
+          done
+          # Write after freeing space so a full disk does not prevent this reset.
+          echo "TMPDIR=$runner_temp" >> "$GITHUB_ENV" || status=1
+          if [[ -d "$workspace/.git" ]]; then
+            git -C "$workspace" worktree prune || status=1
+          fi
+          df -h "$runner_temp" || status=1
+          exit "$status"
