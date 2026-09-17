@@ -21,13 +21,7 @@ pub enum FormatError {
     InvalidCoseStructure,
     InvalidProtectedHeader,
     InvalidPayload,
-    InvalidSignatureEncoding,
-    MissingField(&'static str),
-    DuplicateField(&'static str),
     InvalidField(&'static str),
-    TooManyPcrs,
-    DuplicatePcr(u8),
-    TooManyCertificates,
 }
 
 /// Certificate profile and chain errors.
