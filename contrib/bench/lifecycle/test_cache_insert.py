@@ -31,10 +31,29 @@ class CacheInsertTests(unittest.TestCase):
             rows=[copy.deepcopy(row)];attach_cache_insert_details(rows,events,0)
             self.assertEqual('cache_insert_measured' in rows[0]['details'],events==[event])
 
+    def test_declared_mode_rejects_missing_mixed_or_unknown_summaries(self):
+        with tempfile.TemporaryDirectory() as directory:
+            paths=[Path(directory)/name for name in ('a.jsonl','b.jsonl')]
+            for path in paths:
+                fixture(path)
+                rows=[json.loads(s) for s in path.read_text().splitlines()]
+                rows[0]['cache_insert']='counts_v1'
+                rows[-1:-1]=[dict(type='start',id=200,ts=1_000_000_300,thread=1,name='insert_state',category='execution',parent=1,fields={}),
+                             dict(type='end',id=200,ts=1_000_000_500)]
+                path.write_text('\n'.join(map(json.dumps,rows)))
+            data=build(paths,warmup=0)
+            self.assertTrue(data['bad_capture']);self.assertFalse(data['cache_insert_valid'])
+            self.assertTrue(all(v is None for v in data['representatives'].values()))
+            for mode in ('disabled','unknown'):
+                rows=[json.loads(s) for s in paths[1].read_text().splitlines()];rows[0]['cache_insert']=mode
+                paths[1].write_text('\n'.join(map(json.dumps,rows)))
+                self.assertTrue(build(paths,warmup=0)['bad_capture'])
+
     def test_raw_report_cutoff_selected_page_and_perfetto(self):
         with tempfile.TemporaryDirectory() as directory:
             root=Path(directory);path=root/'a.jsonl';fixture(path)
             events=[json.loads(s) for s in path.read_text().splitlines()]
+            events[0]['cache_insert']='counts_v1'
             extra=[dict(type='start',id=200,ts=1_000_000_300,thread=1,name='insert_state',category='execution',parent=1,fields={}),
                    dict(type='event',id=200,ts=1_000_000_400,fields=dict(counts(),stage='execution_cache_insert_totals')),
                    dict(type='end',id=200,ts=1_000_000_500)]

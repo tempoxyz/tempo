@@ -193,6 +193,7 @@ def read_node(path, role, cutoff=None):
         event['block'] = block_key(event['fields']) or inherited(spans.get(event['id']))
     quality = {'node': role, 'header': bool(header and header.get('schema') == 1),
                'detail': (header or {}).get('detail', 'full'),
+               'cache_insert': (header or {}).get('cache_insert', 'disabled'),
                'footer': footer is not None, 'dropped': (footer or {}).get('dropped', 0),
                'io_error': (footer or {}).get('io_error', False), 'invalid_lines': invalid + (footer or {}).get('invalid_lines', 0),
                'open_spans': sum(s['end'] is None for s in spans.values()),
@@ -333,7 +334,14 @@ def build(paths, warmup=5, window=None, expected_detail=None):
                          'pending_updates', 'pending_targets', 'result_count') and isinstance(v, (int, float))},
                      'count': s.get('count'), 'elapsed_sum_ms': s.get('elapsed_ns',0)/1e6})
     attach_worker_details(rows, events)
-    attach_cache_insert_details(rows, events, first)
+    cache_modes = {q['node']: q['cache_insert'] for q in quality}
+    cache_valid = (len(set(cache_modes.values())) == 1
+                   and all(mode in ('disabled', 'counts_v1') for mode in cache_modes.values())
+                   and (detail == 'full' or set(cache_modes.values()) == {'disabled'}))
+    cache_valid = attach_cache_insert_details(rows, events, first, cache_modes) and cache_valid
+    if not cache_valid:
+        bad_capture = True
+        representatives = {key: None for key in representatives}
     frames = {}
     for event in events:
         f = event['fields']
@@ -346,6 +354,7 @@ def build(paths, warmup=5, window=None, expected_detail=None):
         if len(sends) == 1 and len(receives) == 1:
             transfers.append({'from': sends[0]['node'], 'to': receives[0]['node'], 'start': sends[0]['ts'], 'end': receives[0]['ts'], 'bytes': sends[0]['bytes']})
     return {'schema':1, 'capture_detail':detail, 'detail_valid':detail_valid,
+            'cache_insert_valid':cache_valid,
             'boundary': dict(boundary, relative_ms=(cutoff-first)/1e6) if boundary else None, 'blocks':blocks, 'spans':rows, 'transfers':transfers, 'quality':quality,
             'representatives':representatives, 'eligible':len(eligible), 'warmup':warmup,
             'unexplained_attempts':sum(a['status'] == 'unexplained_unassociated' for a in attempt_details),

@@ -353,7 +353,10 @@ Optional cache insertion counts
 
 `TEMPO_LIFECYCLE_CACHE_INSERT=1` enables one numeric summary per completed
 `insert_state` call when full lifecycle capture and its scope/event are enabled.
-It defaults off. Counts are accumulated in the existing loops: visited/skipped
+It defaults off. The source header declares `cache_insert=disabled|counts_v1`;
+unknown values and enabled milestone capture are rejected. An enabled capture
+with a missing, duplicate or invalid completed-call summary is incomplete and
+receives no percentile selections. Counts are accumulated in the existing loops: visited/skipped
 accounts, account update/removal attempts, bytecode attempts, and storage attempts
 partitioned by original-versus-present slot value. No additional state traversal,
 per-slot trace event or syscall is added. Invalid-account rejection and whole-cache
@@ -372,6 +375,6 @@ both sides, with `--baseline-env=TEMPO_LIFECYCLE_CACHE_INSERT=0` and
 `--feature-env=TEMPO_LIFECYCLE_CACHE_INSERT=1`; retain the counterbalanced
 feature/baseline/baseline/feature order. These can be supplied through the existing
 `bench-args` workflow input. Require the normal completeness/privacy/package
-checks plus the independent `cache_insert_audit.py --expected disabled|enabled`
+checks plus the independent `cache_insert_audit.py --expected disabled|counts_v1`
 for each phase before analysis. This is a diagnostic comparison, not a runtime
 optimization or an assertion of lower execution latency.

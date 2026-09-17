@@ -18,18 +18,33 @@ def valid_counts(fields):
                 + value('accounts_removed') + (outcome != 1))
 
 
-def attach_cache_insert_details(rows, events, origin):
+def attach_cache_insert_details(rows, events, origin, modes=None):
+    valid = True
     scopes = {(s['node'], s['id']): s for s in rows if s['name'] == 'insert_state'}
     summaries = {}
     for event in events:
         key = (event['node'], event['id'])
-        if event['fields'].get('stage') == 'execution_cache_insert_totals' and key in scopes:
-            summaries.setdefault(key, []).append(event)
+        if event['fields'].get('stage') == 'execution_cache_insert_totals':
+            if key not in scopes:
+                valid = False
+            else:
+                summaries.setdefault(key, []).append(event)
     for key, scope in scopes.items():
         found = summaries.get(key, [])
         scope['details']['cache_insert_summary_count'] = len(found)
+        if modes is not None:
+            mode = modes.get(scope['node'], 'disabled')
+            if mode == 'disabled' and found:
+                valid = False
+            if mode == 'counts_v1' and not scope.get('right_censored') and len(found) != 1:
+                valid = False
+        if len(found) > 1:
+            valid = False
         if len(found) == 1:
             event = found[0]
             if (scope['start'] <= (event['ts']-origin)/1e6 <= scope['end']
                     and valid_counts(event['fields'])):
                 scope['details'].update({k: event['fields'][k] for k in FIELDS})
+            else:
+                valid = False
+    return valid
