@@ -367,8 +367,8 @@ impl alloy_rlp::Encodable for PrimitiveSignature {
 
 impl alloy_rlp::Decodable for PrimitiveSignature {
     fn decode(buf: &mut &[u8]) -> alloy_rlp::Result<Self> {
-        let bytes: Bytes = alloy_rlp::Decodable::decode(buf)?;
-        Self::from_bytes(&bytes).map_err(alloy_rlp::Error::Custom)
+        let bytes = alloy_rlp::Header::decode_bytes(buf, false)?;
+        Self::from_bytes(bytes).map_err(alloy_rlp::Error::Custom)
     }
 }
 
@@ -787,8 +787,8 @@ impl alloy_rlp::Encodable for TempoSignature {
 
 impl alloy_rlp::Decodable for TempoSignature {
     fn decode(buf: &mut &[u8]) -> alloy_rlp::Result<Self> {
-        let bytes: Bytes = alloy_rlp::Decodable::decode(buf)?;
-        Self::from_bytes(&bytes).map_err(alloy_rlp::Error::Custom)
+        let bytes = alloy_rlp::Header::decode_bytes(buf, false)?;
+        Self::from_bytes(bytes).map_err(alloy_rlp::Error::Custom)
     }
 }
 
@@ -1036,6 +1036,79 @@ mod tests {
     };
     use proptest::prelude::*;
     use proptest_arbitrary_interop::arb;
+
+    // Reference the former owned-byte path to compare acceptance AND cursor movement.
+    fn check_borrowed_signature_decode(input: &[u8]) {
+        let mut old = input;
+        let mut new = input;
+        let expected = Bytes::decode(&mut old).and_then(|bytes| {
+            PrimitiveSignature::from_bytes(&bytes).map_err(alloy_rlp::Error::Custom)
+        });
+        assert_eq!(PrimitiveSignature::decode(&mut new), expected);
+        assert_eq!(new, old);
+
+        let mut old = input;
+        let mut new = input;
+        let expected = Bytes::decode(&mut old)
+            .and_then(|bytes| TempoSignature::from_bytes(&bytes).map_err(alloy_rlp::Error::Custom));
+        assert_eq!(TempoSignature::decode(&mut new), expected);
+        assert_eq!(new, old);
+    }
+
+    #[test]
+    fn borrowed_signature_decode_preserves_variants_and_errors() {
+        let mut payloads = vec![
+            vec![],
+            vec![0xff],
+            Signature::test_signature().as_bytes().to_vec(),
+        ];
+        // Accepted noncanonical parity and P256 boolean values must still normalize.
+        for parity in [0, 1, 27, 28, 37, 38] {
+            let mut bytes = Signature::test_signature().as_bytes().to_vec();
+            bytes[64] = parity;
+            payloads.push(bytes);
+        }
+        for flag in [0, 1, 2, 255] {
+            let mut bytes = vec![SIGNATURE_TYPE_P256];
+            bytes.extend_from_slice(&[0x11; P256_SIGNATURE_LENGTH]);
+            *bytes.last_mut().unwrap() = flag;
+            payloads.push(bytes);
+        }
+        let mut webauthn = vec![SIGNATURE_TYPE_WEBAUTHN];
+        webauthn.extend_from_slice(&[0x22; 160]);
+        payloads.push(webauthn);
+        for version in [SIGNATURE_TYPE_KEYCHAIN, SIGNATURE_TYPE_KEYCHAIN_V2] {
+            for inner in payloads.clone() {
+                let mut bytes = vec![version];
+                bytes.extend_from_slice(&[0x33; 20]);
+                bytes.extend_from_slice(&inner);
+                payloads.push(bytes);
+            }
+        }
+        for payload in payloads {
+            let mut encoded = alloy_rlp::encode(Bytes::from(payload));
+            for end in 0..encoded.len() {
+                check_borrowed_signature_decode(&encoded[..end]);
+            }
+            encoded.extend_from_slice(&[0xaa, 0xbb]);
+            check_borrowed_signature_decode(&encoded);
+        }
+        for malformed in [
+            &[0xc0][..],
+            &[0x81, 0x01],
+            &[0xb8, 0x01, 0x80],
+            &[0xb9, 0, 56],
+        ] {
+            check_borrowed_signature_decode(malformed);
+        }
+    }
+
+    proptest! {
+        #[test]
+        fn borrowed_signature_decode_matches_owned_bytes(input in proptest::collection::vec(any::<u8>(), 0..512)) {
+            check_borrowed_signature_decode(&input);
+        }
+    }
 
     /// Generate P256 keypair, return (signing_key, pub_key_x, pub_key_y)
     fn generate_p256_keypair() -> (P256SigningKey, B256, B256) {
