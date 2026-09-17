@@ -32,6 +32,9 @@ jobs:
       id-token: write
 
     steps:
+      - name: Secure runner
+        uses: tempoxyz/gh-actions/actions/secure-runner@05c669ce878b8719779a28fe7375ba85822403f8
+
       - name: Validate inputs
         id: release
         shell: bash

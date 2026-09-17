@@ -310,6 +310,9 @@ jobs:
       VALSCOPE_INTERNAL_TOKEN: ${{ secrets.VALSCOPE_INTERNAL_TOKEN }}
 
     steps:
+      - name: Secure runner
+        uses: tempoxyz/gh-actions/actions/secure-runner@05c669ce878b8719779a28fe7375ba85822403f8
+
       - name: Fetch GitHub token via STS
         id: github-sts
         uses: tempoxyz/gh-actions/actions/github-sts@c0292122e255def866c64c55e5844d1e7d5fe7ad

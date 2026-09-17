@@ -209,6 +209,9 @@ jobs:
       BENCH_WORK_DIR: bench-results/replay-${{ inputs.chain || 'mainnet' }}
       BENCHMARK_ID: bench-replay-${{ github.run_id }}
     steps:
+      - name: Secure runner
+        uses: tempoxyz/gh-actions/actions/secure-runner@05c669ce878b8719779a28fe7375ba85822403f8
+
       - name: Resolve benchmark config
         env:
           INPUT_BLOCKS: ${{ inputs.blocks || '5000' }}

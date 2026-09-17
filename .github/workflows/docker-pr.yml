@@ -28,6 +28,9 @@ jobs:
       pull-requests: write
     steps:
       # This workflow only calls GitHub APIs; it never checks out or runs PR code.
+      - name: Secure runner
+        uses: tempoxyz/gh-actions/actions/secure-runner@05c669ce878b8719779a28fe7375ba85822403f8
+
       - name: Detect Docker command
         id: command
         uses: actions/github-script@3a2844b7e9c422d3c10d287c895573f7108da1b3 # v9.0.0
@@ -170,6 +173,7 @@ jobs:
     needs: dispatch
     if: needs.dispatch.outputs.run-id != ''
     permissions:
+      id-token: write
       contents: read
       actions: read
       pull-requests: write
