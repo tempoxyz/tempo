@@ -16,6 +16,7 @@ use crate::consensus::{Block, Digest};
 mod actor;
 pub mod in_process;
 mod ingress;
+mod pacing;
 
 #[cfg(test)]
 mod test;

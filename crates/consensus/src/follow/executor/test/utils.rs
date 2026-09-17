@@ -70,10 +70,22 @@ struct StubExecutionProviderInner {
     forkchoices: Mutex<Vec<ForkchoiceState>>,
     reject_payloads: AtomicBool,
     reject_forkchoices: AtomicBool,
+    syncing_payloads: AtomicBool,
+    syncing_forkchoices: AtomicBool,
     forkchoice_gate: Mutex<Option<oneshot::Receiver<()>>>,
 }
 
 impl StubExecutionProvider {
+    pub(super) fn set_syncing_payloads(&self, syncing: bool) {
+        self.inner.syncing_payloads.store(syncing, Ordering::SeqCst);
+    }
+
+    pub(super) fn set_syncing_forkchoices(&self, syncing: bool) {
+        self.inner
+            .syncing_forkchoices
+            .store(syncing, Ordering::SeqCst);
+    }
+
     pub(super) fn set_finalized(&self, number: u64, hash: B256, round: Round) {
         *self.inner.finalized.lock() = BlockNumHash::new(number, hash);
         *self.inner.finalized_round.lock() = Some(round);
@@ -158,11 +170,14 @@ impl ExecutionEngine for StubExecutionProvider {
     ) -> impl Future<Output = eyre::Result<PayloadStatus>> + Send + 'static {
         self.inner.payloads.fetch_add(1, Ordering::SeqCst);
         let rejected = self.inner.reject_payloads.load(Ordering::SeqCst);
+        let syncing = self.inner.syncing_payloads.load(Ordering::SeqCst);
         async move {
             let status = if rejected {
                 PayloadStatusEnum::Invalid {
                     validation_error: "rejected by test provider".into(),
                 }
+            } else if syncing {
+                PayloadStatusEnum::Syncing
             } else {
                 PayloadStatusEnum::Valid
             };
@@ -178,6 +193,7 @@ impl ExecutionEngine for StubExecutionProvider {
         self.inner.forkchoices.lock().push(state);
         let gate = self.inner.forkchoice_gate.lock().take();
         let rejected = self.inner.reject_forkchoices.load(Ordering::SeqCst);
+        let syncing = self.inner.syncing_forkchoices.load(Ordering::SeqCst);
         async move {
             if let Some(gate) = gate {
                 let _ = gate.await;
@@ -186,6 +202,8 @@ impl ExecutionEngine for StubExecutionProvider {
                 PayloadStatusEnum::Invalid {
                     validation_error: "rejected by test engine".into(),
                 }
+            } else if syncing {
+                PayloadStatusEnum::Syncing
             } else {
                 PayloadStatusEnum::Valid
             };
