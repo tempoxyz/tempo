@@ -163,23 +163,6 @@ jobs:
             coverage/precompiles-bin/
           retention-days: 1
 
-      - name: Collect Aegis audit log
-        if: always()
-        run: |
-          if sudo test -f /var/log/aegis/service.jsonl; then
-            sudo install -m 0644 /var/log/aegis/service.jsonl "$RUNNER_TEMP/aegis-service.jsonl"
-          else
-            echo "::notice::Aegis audit log is unavailable."
-          fi
-      - name: Upload Aegis audit log
-        if: always()
-        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
-        with:
-          name: aegis-test-${{ matrix.partition }}
-          path: ${{ runner.temp }}/aegis-service.jsonl
-          if-no-files-found: ignore
-          retention-days: 7
-
   e2e:
     name: e2e (${{ matrix.partition }}/4)
     runs-on: depot-ubuntu-latest-32
@@ -222,23 +205,6 @@ jobs:
           if-no-files-found: warn
           retention-days: 30
 
-      - name: Collect Aegis audit log
-        if: always()
-        run: |
-          if sudo test -f /var/log/aegis/service.jsonl; then
-            sudo install -m 0644 /var/log/aegis/service.jsonl "$RUNNER_TEMP/aegis-service.jsonl"
-          else
-            echo "::notice::Aegis audit log is unavailable."
-          fi
-      - name: Upload Aegis audit log
-        if: always()
-        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
-        with:
-          name: aegis-e2e-${{ matrix.partition }}
-          path: ${{ runner.temp }}/aegis-service.jsonl
-          if-no-files-found: ignore
-          retention-days: 7
-
   e2e-flaky:
     name: e2e-flaky
     runs-on: depot-ubuntu-latest-32
@@ -268,23 +234,6 @@ jobs:
         run: cargo nextest run --profile ci-flaky --no-run
       - name: Run flaky e2e tests
         run: cargo nextest run --profile ci-flaky
-
-      - name: Collect Aegis audit log
-        if: always()
-        run: |
-          if sudo test -f /var/log/aegis/service.jsonl; then
-            sudo install -m 0644 /var/log/aegis/service.jsonl "$RUNNER_TEMP/aegis-service.jsonl"
-          else
-            echo "::notice::Aegis audit log is unavailable."
-          fi
-      - name: Upload Aegis audit log
-        if: always()
-        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
-        with:
-          name: aegis-e2e-flaky
-          path: ${{ runner.temp }}/aegis-service.jsonl
-          if-no-files-found: ignore
-          retention-days: 7
 
   cli:
     name: CLI smoke tests

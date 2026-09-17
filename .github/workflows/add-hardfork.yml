@@ -18,6 +18,10 @@ concurrency:
   group: add-hardfork-${{ inputs.hardfork }}
   cancel-in-progress: false
 
+env:
+  # Allow Aegis to finish its 90-second Socket lookup before Cargo times out.
+  CARGO_HTTP_TIMEOUT: "180"
+
 jobs:
   add-hardfork:
     name: Add ${{ inputs.hardfork }} hardfork

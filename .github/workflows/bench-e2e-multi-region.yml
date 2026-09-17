@@ -257,6 +257,10 @@ permissions:
   id-token: write
   packages: read
 
+env:
+  # Allow Aegis to finish its 90-second Socket lookup before Cargo times out.
+  CARGO_HTTP_TIMEOUT: "180"
+
 jobs:
   bench-e2e-multi-region:
     permissions:

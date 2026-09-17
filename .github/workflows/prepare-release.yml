@@ -21,6 +21,10 @@ concurrency:
   group: prepare-release-v${{ inputs.version }}
   cancel-in-progress: false
 
+env:
+  # Allow Aegis to finish its 90-second Socket lookup before Cargo times out.
+  CARGO_HTTP_TIMEOUT: "180"
+
 jobs:
   prepare:
     name: Prepare pre-release/v${{ inputs.version }}

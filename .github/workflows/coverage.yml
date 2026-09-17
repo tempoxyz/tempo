@@ -14,6 +14,10 @@ on:
         required: false
         type: number
 
+env:
+  # Allow Aegis to finish its 90-second Socket lookup before Cargo times out.
+  CARGO_HTTP_TIMEOUT: "180"
+
 jobs:
   wait-for-test:
     name: Wait for Test workflow
