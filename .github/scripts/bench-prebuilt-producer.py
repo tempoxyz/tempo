@@ -9,6 +9,9 @@ from pathlib import Path
 import re
 import shutil
 import shlex
+import selectors
+import signal
+import time
 import stat
 import struct
 import subprocess
@@ -41,7 +44,7 @@ SONAMES = {'libc.so.6', 'libm.so.6', 'libdl.so.2', 'libpthread.so.0', 'librt.so.
 MAX_BINARY = 2 * 1024**3
 MAX_MANIFEST = 65536
 JS_MAX = 2**53-1
-DIAGNOSTIC = dict(schema=1, stage=0, role=0, bytes=0, clean=0, abi=0, failure=0, check=0)
+DIAGNOSTIC = dict(schema=1, stage=0, role=0, bytes=0, clean=0, abi=0, failure=0, check=0, tool=0, tool_bytes=0, tool_exit=0, tool_signal=0)
 
 
 def checkpoint(stage, **values):
@@ -58,7 +61,7 @@ def failure_receipt(error):
         if trace.tb_frame.f_code.co_filename==__file__ and trace.tb_frame.f_code.co_name!='need':
             DIAGNOSTIC['check']=trace.tb_lineno
         trace=trace.tb_next
-    need(set(DIAGNOSTIC)=={'schema','stage','role','bytes','clean','abi','failure','check'})
+    need(set(DIAGNOSTIC)=={'schema','stage','role','bytes','clean','abi','failure','check','tool','tool_bytes','tool_exit','tool_signal'})
     need(all(type(v)is int and 0<=v<=JS_MAX for v in DIAGNOSTIC.values()))
     return dict(DIAGNOSTIC)
 
@@ -116,7 +119,10 @@ def checked(command, cwd=None, env=None, timeout=60):
     # Tool diagnostics stay private and are never copied into the closed manifest.
     process = subprocess.run(command, cwd=cwd, env=env, stdout=subprocess.PIPE,
                              stderr=subprocess.PIPE, timeout=timeout, check=False)
-    need(process.returncode == 0 and len(process.stdout) <= 32*1024*1024)
+    DIAGNOSTIC.update(tool=0,tool_bytes=len(process.stdout),
+                      tool_exit=max(process.returncode,0),tool_signal=max(-process.returncode,0))
+    need(process.returncode == 0)
+    need(len(process.stdout) <= 32*1024*1024)
     return process.stdout
 
 
@@ -295,13 +301,62 @@ def validate_manifest(value):
     return value
 
 
+def stream_lines(command, visit, *, timeout=120, tool=0):
+    """Bound memory by one 64KiB record, not the complete tool transcript."""
+    DIAGNOSTIC.update(tool=tool,tool_bytes=0,tool_exit=0,tool_signal=0)
+    process=subprocess.Popen(command,stdout=subprocess.PIPE,stderr=subprocess.DEVNULL,
+                             start_new_session=True)
+    selector=selectors.DefaultSelector();selector.register(process.stdout,selectors.EVENT_READ)
+    end=time.monotonic()+timeout;pending=b'';drained=False
+    try:
+        while True:
+            remaining=end-time.monotonic();need(remaining>0)
+            if not selector.select(min(remaining,0.5)):continue
+            chunk=os.read(process.stdout.fileno(),65536)
+            if not chunk:break
+            DIAGNOSTIC['tool_bytes']+=len(chunk);need(DIAGNOSTIC['tool_bytes']<=JS_MAX)
+            lines=(pending+chunk).split(b'\n');pending=lines.pop()
+            for line in lines:
+                need(len(line)<=65536);visit(line.decode())
+            need(len(pending)<=65536)
+        if pending:visit(pending.decode())
+        remaining=end-time.monotonic();need(remaining>0)
+        code=process.wait(timeout=remaining);drained=True
+        DIAGNOSTIC.update(tool_exit=max(code,0),tool_signal=max(-code,0))
+        need(code==0)
+    finally:
+        selector.close();process.stdout.close()
+        # Do not poll/reap first: an exited leader may still own pipe-holding
+        # descendants, and its unreaped PID protects this process-group identity.
+        if not drained:
+            try:os.killpg(process.pid,signal.SIGKILL)
+            except ProcessLookupError:pass
+            process.wait(timeout=5)
+
+
 def verify_marker(producer, binary):
     spec=importlib.util.spec_from_file_location('prebuilt_marker_verifier',producer/VERIFIER)
     module=importlib.util.module_from_spec(spec);spec.loader.exec_module(module)
-    symbols=checked(['nm','--defined-only',str(binary)],timeout=120).decode()
-    need(sum(len(parts)==3 and parts[1] in ('T','t') and parts[2]=='reth_lifecycle_thread_register'
-             for line in symbols.splitlines() if (parts:=line.split()))==1)
-    module.verify_marker(binary,'reth_lifecycle_thread_register')
+    name='reth_lifecycle_thread_register';symbols=[]
+    def symbol(line):
+        words=line.split()
+        if len(words)==3 and words[1] in ('T','t') and words[2]==name:
+            need(len(symbols)==0);symbols.append(line)
+    stream_lines(['nm','--defined-only',str(binary)],symbol,tool=1)
+    need(len(symbols)==1)
+    # Only marker relocations survive this streaming filter. Reuse the existing
+    # source-bound GOT and instruction matchers exactly; addresses stay private.
+    slots=set()
+    def relocation(line):
+        slots.update(module.marker_slots(symbols[0],line,name));need(len(slots)<=4096)
+    stream_lines(['readelf','-rW',str(binary)],relocation,tool=2)
+    found=False
+    def instruction(line):
+        nonlocal found
+        if not found and module.marker_call(line,name,slots):found=True
+    # Drain even after a match so a tool's nonzero exit can never be accepted.
+    stream_lines(['objdump','-d',str(binary)],instruction,tool=3)
+    need(found)
 
 
 def produce(producer,runtime,tools,output):

@@ -5,6 +5,9 @@ import os
 from pathlib import Path
 import subprocess
 import tempfile
+import sys
+import time
+import tracemalloc
 import unittest
 from unittest.mock import patch
 
@@ -156,7 +159,7 @@ class DiagnosticTests(unittest.TestCase):
             with self.assertRaises(p.Rejected):p.validate_abi(value)
 
     def test_closed_failure_stage_and_real_size_cap_preserved(self):
-        with patch.dict(p.DIAGNOSTIC,dict(schema=1,stage=12,role=1,bytes=0,clean=1,abi=0,failure=0,check=0),clear=True):
+        with patch.dict(p.DIAGNOSTIC,dict(schema=1,stage=12,role=1,bytes=0,clean=1,abi=0,failure=0,check=0,tool=0,tool_bytes=0,tool_exit=0,tool_signal=0),clear=True):
             with tempfile.TemporaryDirectory() as temp:
                 oversized=Path(temp)/'private-binary'
                 with oversized.open('wb') as f:f.truncate(p.MAX_BINARY+1)
@@ -166,12 +169,91 @@ class DiagnosticTests(unittest.TestCase):
                 self.assertEqual(receipt['bytes'],p.MAX_BINARY+1)
                 self.assertEqual((receipt['stage'],receipt['role'],receipt['failure']),(12,1,1))
                 self.assertGreater(receipt['check'],0)
-                self.assertEqual(set(receipt),{'schema','stage','role','bytes','clean','abi','failure','check'})
+                self.assertEqual(set(receipt),{'schema','stage','role','bytes','clean','abi','failure','check','tool','tool_bytes','tool_exit','tool_signal'})
                 self.assertTrue(all(type(v)is int for v in receipt.values()))
                 try:raise OSError('private path and compiler output')
                 except OSError as error:other=p.failure_receipt(error)
                 self.assertEqual(other['failure'],2)
                 self.assertNotIn('private',json.dumps(other))
+
+
+class StreamingMarkerTests(unittest.TestCase):
+    def test_large_stream_selection_is_bounded_and_checks_exit(self):
+        selected=[]
+        def visit(line):
+            if line.endswith(' T reth_lifecycle_thread_register'):selected.append(line)
+        code="import sys; b=('x'*4095+'\\n').encode(); [sys.stdout.buffer.write(b) for _ in range(8448)]; print('1 T reth_lifecycle_thread_register')"
+        tracemalloc.start()
+        try:
+            p.stream_lines([sys.executable,'-c',code],visit,tool=1)
+            _,peak=tracemalloc.get_traced_memory()
+        finally:tracemalloc.stop()
+        self.assertEqual(selected,['1 T reth_lifecycle_thread_register'])
+        self.assertGreater(p.DIAGNOSTIC['tool_bytes'],32*1024**2)
+        self.assertLess(peak,2*1024**2)
+        with self.assertRaises(p.Rejected):
+            p.stream_lines([sys.executable,'-c',"print('match');raise SystemExit(7)"],lambda _:None)
+        self.assertEqual(p.DIAGNOSTIC['tool_exit'],7)
+        with self.assertRaises(p.Rejected):
+            p.stream_lines([sys.executable,'-c',"print('x'*65537)"],lambda _:None)
+        before=time.monotonic()
+        with self.assertRaises(p.Rejected):
+            p.stream_lines([sys.executable,'-c','import time;time.sleep(60)'],lambda _:None,timeout=.05)
+        self.assertLess(time.monotonic()-before,6)
+
+    def test_partial_lines_and_signal_exit_remain_distinct(self):
+        rows=[]
+        code="import os;os.write(1,b'first');os.write(1,b' line\\nlast')"
+        p.stream_lines([sys.executable,'-c',code],rows.append)
+        self.assertEqual(rows,['first line','last'])
+        with self.assertRaises(p.Rejected):
+            p.stream_lines([sys.executable,'-c','import os,signal;os.kill(os.getpid(),signal.SIGTERM)'],lambda _:None)
+        self.assertEqual((p.DIAGNOSTIC['tool_exit'],p.DIAGNOSTIC['tool_signal']),(0,15))
+        with self.assertRaises(p.Rejected):
+            p.checked([sys.executable,'-c',"print('small');raise SystemExit(7)"])
+        self.assertEqual((p.DIAGNOSTIC['tool_exit'],p.DIAGNOSTIC['tool_bytes']),(7,6))
+        with self.assertRaises(p.Rejected):
+            p.checked([sys.executable,'-c',"import sys;sys.stdout.buffer.write(b'x'*(32*1024*1024+1))"])
+        self.assertEqual((p.DIAGNOSTIC['tool_exit'],p.DIAGNOSTIC['tool_bytes']),(0,32*1024*1024+1))
+
+    def test_exited_leader_with_pipe_holding_descendant_is_cleaned(self):
+        with tempfile.TemporaryDirectory() as temp:
+            pidfile=Path(temp)/'owned-child'
+            code="import os,sys,time;pid=os.fork();open(sys.argv[1],'w').write(str(pid)) if pid else time.sleep(60)"
+            with self.assertRaises(p.Rejected):
+                p.stream_lines([sys.executable,'-c',code,str(pidfile)],lambda _:None,timeout=.2)
+            pid=int(pidfile.read_text());deadline=time.monotonic()+1
+            while time.monotonic()<deadline:
+                status=Path('/proc')/str(pid)/'stat'
+                if not status.exists() or status.read_text().split()[2]=='Z':break
+                time.sleep(.01)
+            else:self.fail('owned descendant survived group cleanup')
+
+    def test_marker_duplicate_missing_and_no_call_reject(self):
+        for symbols,disassembly in [(['1 T reth_lifecycle_thread_register']*2,['0: call 1 <reth_lifecycle_thread_register>']),
+                                    ([],['0: call 1 <reth_lifecycle_thread_register>']),
+                                    (['1 T reth_lifecycle_thread_register'],['0: ret'])]:
+            def fake(command,visit,**kwargs):
+                for line in symbols if command[0]=='nm' else disassembly if command[0]=='objdump' else []:visit(line)
+            with patch.object(p,'stream_lines',side_effect=fake),self.assertRaises(p.Rejected):
+                p.verify_marker(ROOT.parent.parent,Path('/unused'))
+
+    def test_actual_optimized_direct_and_pic_elf_without_execution(self):
+        with tempfile.TemporaryDirectory() as temp:
+            root=Path(temp)
+            direct=root/'direct.c';direct.write_text('__attribute__((noinline)) void reth_lifecycle_thread_register(void){__asm__ volatile("" ::: "memory");} int main(void){reth_lifecycle_thread_register();return 0;}')
+            subprocess.run(['gcc','-O3','-fno-optimize-sibling-calls',str(direct),'-o',str(root/'direct')],check=True)
+            p.verify_marker(ROOT.parent.parent,root/'direct')
+            pic=root/'pic.S';pic.write_text('.text\n.globl reth_lifecycle_thread_register\n.type reth_lifecycle_thread_register,@function\nreth_lifecycle_thread_register:\nret\n.section .data.rel.ro,"aw"\n.align 8\nmarker_pointer:\n.quad reth_lifecycle_thread_register\n.text\n.globl main\n.type main,@function\nmain:\nsub $8,%rsp\ncall *marker_pointer(%rip)\nadd $8,%rsp\nxor %eax,%eax\nret\n.section .note.GNU-stack,"",@progbits\n')
+            subprocess.run(['gcc','-O3','-fPIE','-pie',str(pic),'-o',str(root/'pic')],check=True)
+            p.verify_marker(ROOT.parent.parent,root/'pic')
+            spec=importlib.util.spec_from_file_location('marker',ROOT.parent.parent/p.VERIFIER)
+            m=importlib.util.module_from_spec(spec);spec.loader.exec_module(m)
+            symbols=subprocess.check_output(['nm','--defined-only',str(root/'pic')],text=True)
+            relocs=subprocess.check_output(['readelf','-rW',str(root/'pic')],text=True)
+            self.assertTrue(m.marker_slots(symbols,relocs,'reth_lifecycle_thread_register'))
+            disassembly=subprocess.check_output(['objdump','-d',str(root/'pic')],text=True)
+            self.assertTrue(any('(%rip)' in line and m.marker_call(line,'reth_lifecycle_thread_register',m.marker_slots(symbols,relocs,'reth_lifecycle_thread_register')) for line in disassembly.splitlines()))
 
 
 class CpuTests(unittest.TestCase):
