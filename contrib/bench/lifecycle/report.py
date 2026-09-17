@@ -12,6 +12,29 @@ STAGES = ('proposal_start', 'payload_built', 'proposal_ready', 'digest_released'
           'verify_start', 'body_ready', 'replay_start', 'replay_done', 'verify_done',
           'notarize_vote_sent', 'notarized', 'finalize_vote_sent', 'finalized', 'finalization_received', 'cancelled', 'proposal_failed')
 
+WORKER_STAGES = {'proof_storage_worker_totals': 'storage_worker',
+                 'proof_account_worker_totals': 'account_worker'}
+WORKER_FIELDS = ('worker_run_ns', 'worker_thread_cpu_ns',
+                 'worker_cpu_measured', 'worker_success')
+
+
+def attach_worker_details(rows, events):
+    """Attach only exact, unique worker completions; never infer from ancestry/time."""
+    workers = {(s['node'], s['id']): s for s in rows
+               if s['name'] in WORKER_STAGES.values()}
+    completions = {}
+    for event in events:
+        key = (event['node'], event['id'])
+        span = workers.get(key)
+        if span and WORKER_STAGES.get(event['fields'].get('stage')) == span['name']:
+            completions.setdefault(key, []).append(event['fields'])
+    for key, span in workers.items():
+        matches = completions.get(key, [])
+        span['details']['worker_completion_count'] = len(matches)
+        if len(matches) == 1:
+            span['details'].update({k: v for k, v in matches[0].items()
+                                    if k in WORKER_FIELDS})
+
 
 def block_key(fields):
     return next((fields[k] for k in BLOCK_FIELDS if isinstance(fields.get(k), str)
@@ -308,6 +331,7 @@ def build(paths, warmup=5, window=None, expected_detail=None):
                          'state_trie_height', 'backlog', 'queued_jobs', 'in_flight_proof_batches',
                          'pending_updates', 'pending_targets', 'result_count') and isinstance(v, (int, float))},
                      'count': s.get('count'), 'elapsed_sum_ms': s.get('elapsed_ns',0)/1e6})
+    attach_worker_details(rows, events)
     frames = {}
     for event in events:
         f = event['fields']
