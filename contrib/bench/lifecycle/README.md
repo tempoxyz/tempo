@@ -318,3 +318,17 @@ loss, and nonzero probe-miss counters still fail completeness. Schema 1 and 2
 captures retain their original interpretation when read; they are never silently
 upgraded. Schema 3 publication requires the same zero-probe-miss evidence as
 schema 2 and adds only the unsigned counter to its exact quality vocabulary.
+
+An explicit reinterpretation of a retained schema-2 source is available via
+`scheduler/rederive.py SOURCE NEW_DIRECTORY --source-sha256 HEX --exporter-sha
+FULL_GIT_SHA --process 1 --cutoff-ns N --cutoff-reason backpressure`. Run it only
+from the reviewed committed exporter checkout, using independently checked source
+identity and cutoff. It refuses unresolved off-CPU failures and requires every
+original unmatched wake to be accounted for. It writes the derived source below
+`NEW_DIRECTORY/capture/` and provenance outside that capture directory. Both
+ordered arrays are independently read back and hashed; originals are untouched,
+and existing destinations are never replaced. This inherits original audited
+post-cutoff transport/probe/footer evidence because those edges were pruned. It
+is not a new kernel capture or proof of omitted edges. Original rejected run
+manifests must remain unchanged; apply the independent schema-3 audit to the
+separately derived artifact before using it.
