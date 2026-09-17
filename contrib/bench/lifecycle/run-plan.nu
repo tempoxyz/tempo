@@ -48,3 +48,13 @@ def lifecycle-prewarm-config [mode: string, side: string] {
     let selected = if $side == "feature" { "leaf_v1" } else { "disabled" }
     {expected: $selected env: $"TEMPO_LIFECYCLE_PREWARM_CPU=($selected) "}
 }
+
+# Explicit node-only mode selection; txgen never receives this observer flag.
+def lifecycle-process-cpu-config [mode: string, side: string] {
+    if $mode == "disabled" { return {expected: "" env: ""} }
+    if $mode != "compare" or $side not-in ["baseline" "feature"] {
+        error make {msg: "Invalid process CPU observer phase"}
+    }
+    let selected = if $side == "feature" { "rusage_self_v1" } else { "disabled" }
+    {expected: $selected env: $"TEMPO_LIFECYCLE_PROCESS_CPU=($selected) TEMPO_LIFECYCLE_PREWARM_CPU=disabled "}
+}

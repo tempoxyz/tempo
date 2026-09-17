@@ -7,6 +7,7 @@ from pathlib import Path
 from report_package import write_package
 from backpressure import first_boundary, prepare_captures
 import prewarm
+import process_cpu
 from collections import defaultdict
 
 BLOCK_FIELDS = ('block_hash', 'hash', 'digest', 'proposal', 'payload')
@@ -52,6 +53,8 @@ def read_node(path, role, cutoff=None):
     spans, events, links, polls, aggregates = {}, [], [], {}, []
     header, footer, invalid = None, None, 0
     excluded_aggregates = 0
+    cpu_stream = process_cpu.Stream()
+    cpu_error = False
     with path.open() as capture:
         for line in capture:
             try:
@@ -60,6 +63,12 @@ def read_node(path, role, cutoff=None):
                 invalid += 1
                 continue
             kind = event.get('type')
+            try:
+                cpu_stream.observe(event)
+            except ValueError:
+                cpu_error = True
+            if kind == 'process_cpu':
+                continue
             # Parse structural metadata after the cutoff for capture-integrity checks,
             # but never let later fields, identities or milestones affect the report.
             if cutoff is not None and kind not in ('header', 'footer'):
@@ -192,7 +201,12 @@ def read_node(path, role, cutoff=None):
         span['block'] = inherited(span)
     for event in events:
         event['block'] = block_key(event['fields']) or inherited(spans.get(event['id']))
-    quality = {'node': role, 'header': bool(header and header.get('schema') == 1),
+    try:
+        cpu_source = cpu_stream.finish()
+    except ValueError:
+        cpu_error = True
+        cpu_source = None
+    quality = {'_process_cpu_source': cpu_source, 'process_cpu_valid': not cpu_error, 'node': role, 'header': bool(header and header.get('schema') == 1),
                'detail': (header or {}).get('detail', 'full'),
                'prewarm_cpu': (header or {}).get('prewarm_cpu'),
                'prewarm_coverage_failures': (footer or {}).get('prewarm_coverage_failures'),
@@ -222,7 +236,7 @@ def active_wall_ns(intervals):
     return duration
 
 
-def build(paths, warmup=5, window=None, expected_detail=None, expected_prewarm_cpu=None):
+def build(paths, warmup=5, window=None, expected_detail=None, expected_prewarm_cpu=None, expected_process_cpu=None):
     spans, events, quality = [], [], []
     boundary = first_boundary(paths)
     recorded = (window or {}).get('backpressure')
@@ -300,7 +314,15 @@ def build(paths, warmup=5, window=None, expected_detail=None, expected_prewarm_c
         leaves_by_block[leaf['block']].append(leaf)
     for block in blocks:
         block['prewarm_calls'] = prewarm.summarize(leaves_by_block[block['id']])
-    bad_capture = not prewarm_valid or not detail_valid or any(not q['header'] or not q['footer'] or q['dropped'] or q['io_error'] or q['invalid_lines'] or q['open_spans'] for q in quality)
+    cpu_sources = [(q['node'], q.pop('_process_cpu_source')) for q in quality]
+    try:
+        process_cpu.need(all(q['process_cpu_valid'] for q in quality))
+        cpu_data = process_cpu.inspect(cpu_sources, window, cutoff, expected_process_cpu)
+        cpu_valid = True
+    except ValueError:
+        cpu_data = dict(schema=1, mode='invalid', description=process_cpu.DESCRIPTION, nodes=[])
+        cpu_valid = False
+    bad_capture = not cpu_valid or not prewarm_valid or not detail_valid or any(not q['header'] or not q['footer'] or q['dropped'] or q['io_error'] or q['invalid_lines'] or q['open_spans'] for q in quality)
     # Unexplained gaps invalidate completeness even when some blocks survived.
     representatives = {str(p): nearest_rank(eligible, p) if not bad_capture else None for p in (50,90,99)}
     attempts = sorted((s for s in spans if s['name'] == 'handle_propose'),
@@ -366,7 +388,7 @@ def build(paths, warmup=5, window=None, expected_detail=None, expected_prewarm_c
         receives = [e for e in group if e['stage'] == 'frame_receive']
         if len(sends) == 1 and len(receives) == 1:
             transfers.append({'from': sends[0]['node'], 'to': receives[0]['node'], 'start': sends[0]['ts'], 'end': receives[0]['ts'], 'bytes': sends[0]['bytes']})
-    return {'schema':1, 'capture_detail':detail, 'detail_valid':detail_valid,
+    return {'process_cpu':cpu_data, 'process_cpu_mode':cpu_data['mode'], 'process_cpu_valid':cpu_valid, 'schema':1, 'capture_detail':detail, 'detail_valid':detail_valid,
             'prewarm_cpu':prewarm_data['mode'], 'prewarm_valid':prewarm_valid, 'prewarm':prewarm_data,
             'boundary': dict(boundary, relative_ms=(cutoff-first)/1e6) if boundary else None, 'blocks':blocks, 'spans':rows, 'transfers':transfers, 'quality':quality,
             'representatives':representatives, 'eligible':len(eligible), 'warmup':warmup,
@@ -377,16 +399,17 @@ def build(paths, warmup=5, window=None, expected_detail=None, expected_prewarm_c
                 'Proposal handling start on proposer → first accepted finalization certificate on a validator. Nearest-rank percentiles select actual complete blocks; initial complete blocks are excluded as warmup. When load boundaries are available, both endpoints must fall inside the load window. All views exclude data at or after the first engine persistence backpressure event on either validator; crossing spans are right-censored and crossing aggregates omitted.'}
 
 
-def write_report(paths, out, warmup=5, window=None, prune=False, expected_detail=None, expected_prewarm_cpu=None):
+def write_report(paths, out, warmup=5, window=None, prune=False, expected_detail=None, expected_prewarm_cpu=None, expected_process_cpu=None):
     if prune:
         paths, window = prepare_captures(paths, out, window)
-    data = build(paths, warmup, window, expected_detail, expected_prewarm_cpu)
+    data = build(paths, warmup, window, expected_detail, expected_prewarm_cpu, expected_process_cpu)
     out.mkdir(parents=True, exist_ok=True)
     encoded = json.dumps(data, separators=(',',':')).replace('<', '\\u003c')
     (out/'lifecycle.json').write_text(encoded)
     del encoded  # Release the full serialization before allocating package views.
     write_package(data, out)
     prewarm.write_view(data['prewarm'], out)
+    process_cpu.write_view(data['process_cpu'], out)
     return data
 
 
@@ -398,11 +421,12 @@ if __name__ == '__main__':
     parser.add_argument('--prune', action='store_true', help='Publish only pre-backpressure raw captures alongside the report')
     parser.add_argument('--expected-detail', choices=('full', 'milestones'), help='Reject captures whose recorder detail does not match the requested mode')
     parser.add_argument('--expected-prewarm-cpu', choices=('disabled', 'leaf_v1'), help='Require selected prewarm CPU observer admission')
+    parser.add_argument('--expected-process-cpu', choices=('disabled', 'rusage_self_v1'))
     parser.add_argument('captures', type=Path, nargs='+')
     args = parser.parse_args()
     window = json.loads(args.window.read_text()) if args.window and args.window.exists() else (
         {'start_ns': 0, 'end_ns': 0, 'stop_reason': 'load_not_started'} if args.window else None)
-    result = write_report(args.captures, args.out, args.warmup, window, args.prune, args.expected_detail, args.expected_prewarm_cpu)
+    result = write_report(args.captures, args.out, args.warmup, window, args.prune, args.expected_detail, args.expected_prewarm_cpu, args.expected_process_cpu)
     print(f"Lifecycle report: {len(result['blocks'])} blocks, {result['eligible']} complete post-warmup blocks; invalid capture: {result['bad_capture']}")
     if result['bad_capture'] or not result['eligible']:
         raise SystemExit(2)

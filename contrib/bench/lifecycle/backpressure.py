@@ -7,6 +7,7 @@ from pathlib import Path
 import signal
 import subprocess
 import time
+import process_cpu
 
 
 def boundary(line, node):
@@ -73,6 +74,7 @@ def prepare_captures(paths, out, window=None):
     if recorded and (hit is None or recorded['ts'] < hit['ts']):
         hit = recorded
     cutoff = hit['ts'] if hit else None
+    cpu_cutoff = process_cpu.cutoff_for(window, cutoff)
     clean_window = {key: value for key, value in (window or {}).items()
                     if key in ('start_ns', 'end_ns', 'stop_reason')}
     if hit:
@@ -87,6 +89,7 @@ def prepare_captures(paths, out, window=None):
             raise ValueError('Raw captures must be outside the upload directory')
         temporary = destination.with_suffix('.tmp')
         written, invalid, excluded_aggregates, footer = 0, 0, 0, None
+        cpu_stream = process_cpu.Stream()
         try:
             with path.open() as source, temporary.open('w') as target:
                 for line in source:
@@ -96,10 +99,14 @@ def prepare_captures(paths, out, window=None):
                         invalid += 1
                         continue
                     kind = event.get('type')
+                    cpu_stream.observe(event)
                     if kind == 'footer':
                         footer = event
                         continue
-                    if cutoff is not None and kind != 'header':
+                    if kind == 'process_cpu':
+                        if cpu_cutoff is not None and event['read_end_ns'] >= cpu_cutoff:
+                            continue
+                    elif cutoff is not None and kind != 'header':
                         if event.get('ts', cutoff) >= cutoff:
                             continue
                         if kind == 'aggregate' and event['end'] >= cutoff:
@@ -107,6 +114,7 @@ def prepare_captures(paths, out, window=None):
                             continue
                     target.write(json.dumps(event, separators=(',', ':')) + '\n')
                     written += 1
+                cpu_source = cpu_stream.finish()
                 if footer is not None:
                     clean_footer = {'type': 'footer', 'written': written,
                                     'dropped': footer.get('dropped', 0),
@@ -114,6 +122,9 @@ def prepare_captures(paths, out, window=None):
                                     'invalid_lines': invalid + footer.get('invalid_lines', 0)}
                     if 'prewarm_coverage_failures' in footer:
                         clean_footer['prewarm_coverage_failures'] = footer['prewarm_coverage_failures']
+                    if cpu_source['mode'] == process_cpu.MODE:
+                        clean_footer.update(cpu_source['footer'])
+                        clean_footer.update(process_cpu.prune_metadata(cpu_source, cpu_cutoff))
                     target.write(json.dumps(clean_footer, separators=(',', ':')) + '\n')
             temporary.replace(destination)
         finally:

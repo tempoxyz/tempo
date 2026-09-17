@@ -32,7 +32,7 @@ def write_package(data, out, chunk_intervals=CHUNK_INTERVALS, full=False):
     for old in out.iterdir():
         if re.fullmatch(r'(?:context-\d+\.(?:html|json)|(?:block|attempt)-\d+\.html|perfetto(?:-(?:block|attempt)-\d+|-p(?:50|90|99))?\.json)', old.name):
             old.unlink()
-    base = {k: v for k, v in data.items() if k not in ('spans', 'transfers', 'blocks', 'prewarm')}
+    base = {k: v for k, v in data.items() if k not in ('spans', 'transfers', 'blocks', 'prewarm', 'process_cpu')}
     # Every standalone page needs the histogram, not every block's worker rows.
     # Full block details remain in lifecycle.json and each focused block page.
     base['population_blocks'] = [
@@ -136,6 +136,8 @@ def write_package(data, out, chunk_intervals=CHUNK_INTERVALS, full=False):
                     percentiles=percentiles, full_trace='perfetto.json' if (out/'perfetto.json').exists() else None,
                     counts=dict(spans=len(data['spans']), transfers=len(data.get('transfers', [])),
                                 markers=sum(len(b['markers']) for b in data['blocks']) + sum(len(a['markers']) for a in unbound)))
+    if data.get('process_cpu_mode') == 'rusage_self_v1':
+        manifest['process_cpu'] = {'data': 'process-cpu.json', 'page': 'process-cpu.html'}
     (out/'manifest.json').write_text(json.dumps(manifest, separators=(',', ':')))
     write_index(data, manifest, out)
     return manifest
@@ -150,13 +152,14 @@ def write_index(data, manifest, out):
         timeline = link(f"block-{identifier}.html", f"Block {identifier}")
         trace = link(f"perfetto-block-{identifier}.json", "Perfetto")
         rows.append(f'<tr><td>{timeline}</td><td>{b["duration"]:.3f}</td><td>{status}</td><td>{trace}</td></tr>')
+    process_cpu_link = '<p>'+link('process-cpu.html', 'Whole-process CPU coverage and unavailable intervals')+'</p>' if data.get('process_cpu_mode') == 'rusage_self_v1' else ''
     prewarm_link = '<p>'+link('prewarm.html', 'Selected prewarming call CPU and Perfetto traces')+'</p>' if data.get('prewarm_cpu') == 'leaf_v1' else ''
     attempts = ''.join('<li>'+link(f'attempt-{a["id"]}.html', f'Attempt {a["id"]}: {a["status"]}')+'</li>' for a in data.get('attempt_details', []) if not a.get('block'))
     percentiles = ' · '.join(link(p['page'], f'p{p["percentile"]}: block {p["block"]}')+' ('+link(p['trace'], 'Perfetto')+')' for p in manifest['percentiles'])
     chunks = ''.join(f'<tr><td>{link(c["page"], c["page"])}</td><td>{c["start"]:.3f}–{c["end"]:.3f}</td><td>{c["records"]}</td><td>{link(c["file"], "Perfetto")}</td></tr>' for c in manifest['chunks'])
     optional = link(manifest['full_trace'], 'Optional full Perfetto (large)') if manifest['full_trace'] else 'Full Perfetto is optional: run perfetto.py lifecycle.json --out . --full.'
     health = 'Capture incomplete; percentile selection disabled.' if data['bad_capture'] else f'{data["eligible"]} complete blocks in percentile population.'
-    html = f'''<!doctype html><html lang="en"><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>Block lifecycle capture</title><style>body{{font:16px system-ui;background:#0d1119;color:#dfe7f3;max-width:1200px;margin:32px auto;padding:16px}}a{{color:#6ce3cd}}p{{line-height:1.6}}table{{border-collapse:collapse;width:100%}}td,th{{padding:8px;text-align:left;border-bottom:1px solid #34465e}}</style><h1>Block lifecycle capture</h1><p>{escape(health)} {len(data['spans']):,} measured spans. All pages work offline after extracting the whole artifact.</p><p>{escape(data['definition'])}</p><p>{percentiles}</p>{prewarm_link}<h2>Individual blocks</h2><table><tr><th>Timeline</th><th>Duration (ms)</th><th>Population</th><th>Trace</th></tr>{''.join(rows)}</table><h2>Unassociated proposal attempts</h2><ul>{attempts}</ul><h2>Complete context capture</h2><p>These bounded chunks contain every span, matched frame transfer and block milestone exactly once, including unassociated work. Intervals retain their original timestamps and full duration; chunk time ranges may overlap. Temporal overlap does not establish block causality. Block pages link overlapping chunks.</p><table><tr><th>Timeline</th><th>Capture time (ms)</th><th>Records</th><th>Trace</th></tr>{chunks}</table><h2>Source data</h2><p>{link('lifecycle.json', 'Complete lifecycle data (large)')} · {link('manifest.json', 'Export manifest')} · {optional}</p><p>Raw captures and complete lifecycle data are preserved. Focused pages contain associated operations and causal ancestors; overlapping background work is available through context chunks.</p></html>'''
+    html = f'''<!doctype html><html lang="en"><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>Block lifecycle capture</title><style>body{{font:16px system-ui;background:#0d1119;color:#dfe7f3;max-width:1200px;margin:32px auto;padding:16px}}a{{color:#6ce3cd}}p{{line-height:1.6}}table{{border-collapse:collapse;width:100%}}td,th{{padding:8px;text-align:left;border-bottom:1px solid #34465e}}</style><h1>Block lifecycle capture</h1><p>{escape(health)} {len(data['spans']):,} measured spans. All pages work offline after extracting the whole artifact.</p><p>{escape(data['definition'])}</p><p>{percentiles}</p>{prewarm_link}{process_cpu_link}<h2>Individual blocks</h2><table><tr><th>Timeline</th><th>Duration (ms)</th><th>Population</th><th>Trace</th></tr>{''.join(rows)}</table><h2>Unassociated proposal attempts</h2><ul>{attempts}</ul><h2>Complete context capture</h2><p>These bounded chunks contain every span, matched frame transfer and block milestone exactly once, including unassociated work. Intervals retain their original timestamps and full duration; chunk time ranges may overlap. Temporal overlap does not establish block causality. Block pages link overlapping chunks.</p><table><tr><th>Timeline</th><th>Capture time (ms)</th><th>Records</th><th>Trace</th></tr>{chunks}</table><h2>Source data</h2><p>{link('lifecycle.json', 'Complete lifecycle data (large)')} · {link('manifest.json', 'Export manifest')} · {optional}</p><p>Raw captures and complete lifecycle data are preserved. Focused pages contain associated operations and causal ancestors; overlapping background work is available through context chunks.</p></html>'''
     (out/'index.html').write_text(html)
 
 
@@ -175,4 +178,7 @@ if __name__ == '__main__':
             if re.fullmatch(r'[a-z]\.jsonl|window\.json', source.name):
                 shutil.copyfile(source, args.out/source.name)
     manifest = write_package(data, args.out, full=args.full)
+    import process_cpu
+    if 'process_cpu' in data:
+        process_cpu.write_view(data['process_cpu'], args.out)
     print(f"Packaged {len(manifest['pages'])} focused pages and {len(manifest['chunks'])} complete context chunks")

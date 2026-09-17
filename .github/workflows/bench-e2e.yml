@@ -89,6 +89,7 @@ on:
           - lifecycle-milestones
           - lifecycle-compare-detail
           - lifecycle-compare-prewarm-cpu
+          - lifecycle-compare-process-cpu
       otlp:
         description: Export OTLP traces and logs.
         type: boolean
@@ -376,9 +377,10 @@ jobs:
       BENCH_CAPACITY_SLOT: ${{ matrix.slot }}
       BENCH_CAPACITY_SLOTS: "5"
       BENCH_CAPACITY_POLICY: "setup_failure_v2"
-      BENCH_LIFECYCLE: ${{ (inputs.profiling == 'lifecycle' || inputs.profiling == 'lifecycle-milestones' || inputs.profiling == 'lifecycle-compare-detail' || inputs.profiling == 'lifecycle-compare-prewarm-cpu') }}
-      BENCH_LIFECYCLE_DETAIL: ${{ inputs.profiling == 'lifecycle-compare-detail' && 'compare' || (inputs.profiling == 'lifecycle-milestones' || inputs.profiling == 'lifecycle-compare-prewarm-cpu') && 'milestones' || 'full' }}
+      BENCH_LIFECYCLE: ${{ (inputs.profiling == 'lifecycle' || inputs.profiling == 'lifecycle-milestones' || inputs.profiling == 'lifecycle-compare-detail' || inputs.profiling == 'lifecycle-compare-prewarm-cpu' || inputs.profiling == 'lifecycle-compare-process-cpu') }}
+      BENCH_LIFECYCLE_DETAIL: ${{ inputs.profiling == 'lifecycle-compare-detail' && 'compare' || (inputs.profiling == 'lifecycle-milestones' || inputs.profiling == 'lifecycle-compare-prewarm-cpu' || inputs.profiling == 'lifecycle-compare-process-cpu') && 'milestones' || 'full' }}
       BENCH_LIFECYCLE_PREWARM_CPU: ${{ inputs.profiling == 'lifecycle-compare-prewarm-cpu' && 'compare' || 'disabled' }}
+      BENCH_LIFECYCLE_PROCESS_CPU: ${{ inputs.profiling == 'lifecycle-compare-process-cpu' && 'compare' || 'disabled' }}
       BENCH_PR: ${{ inputs.pr }}
       BENCH_ACTOR: ${{ inputs.actor || github.actor }}
       BENCH_MODE: ${{ inputs.mode || 'e2e' }}
@@ -396,8 +398,8 @@ jobs:
       BENCH_TRACY: ${{ inputs.tracy != '' && inputs.tracy || ((inputs.profiling == 'tracy' || inputs.profiling == 'both') && 'tracy' || ((inputs.profiling == 'off' || inputs.profiling == 'samply') && 'off' || 'off')) }}
       BENCH_TRACY_SECONDS: ${{ inputs.tracy-seconds || '10' }}
       BENCH_TRACY_OFFSET: ${{ inputs.tracy-offset }}
-      BENCH_OTLP: ${{ inputs.profiling != 'lifecycle' && inputs.profiling != 'lifecycle-milestones' && inputs.profiling != 'lifecycle-compare-detail' && inputs.profiling != 'lifecycle-compare-prewarm-cpu' && inputs.otlp != false && inputs.otlp != 'false' }}
-      BENCH_VALSCOPE: ${{ inputs.profiling != 'lifecycle' && inputs.profiling != 'lifecycle-milestones' && inputs.profiling != 'lifecycle-compare-detail' && inputs.profiling != 'lifecycle-compare-prewarm-cpu' && (inputs.valscope == true || inputs.valscope == 'true') }}
+      BENCH_OTLP: ${{ inputs.profiling != 'lifecycle' && inputs.profiling != 'lifecycle-milestones' && inputs.profiling != 'lifecycle-compare-detail' && inputs.profiling != 'lifecycle-compare-prewarm-cpu' && inputs.profiling != 'lifecycle-compare-process-cpu' && inputs.otlp != false && inputs.otlp != 'false' }}
+      BENCH_VALSCOPE: ${{ inputs.profiling != 'lifecycle' && inputs.profiling != 'lifecycle-milestones' && inputs.profiling != 'lifecycle-compare-detail' && inputs.profiling != 'lifecycle-compare-prewarm-cpu' && inputs.profiling != 'lifecycle-compare-process-cpu' && (inputs.valscope == true || inputs.valscope == 'true') }}
       BENCH_FEATURES: ${{ (inputs.otlp != false && inputs.otlp != 'false') && 'jemalloc,asm-keccak,keccak-cache-global,otlp' || 'jemalloc,asm-keccak,keccak-cache-global' }}
       BENCH_BASELINE_FEATURES: ${{ inputs.baseline-features }}
       BENCH_FEATURE_FEATURES: ${{ inputs.feature-features }}
@@ -417,7 +419,7 @@ jobs:
       BENCH_FEATURE_ENV: ${{ inputs.feature-env }}
       BENCH_RUN_PAIRS: ${{ inputs.run-pairs || '3' }}
       # An explicit instrumented baseline enables a same-runner lifecycle pair.
-      BENCH_RUN_SIDE: ${{ (inputs.profiling == 'lifecycle' || inputs.profiling == 'lifecycle-milestones' || inputs.profiling == 'lifecycle-compare-detail' || inputs.profiling == 'lifecycle-compare-prewarm-cpu') && inputs.baseline == '' && 'feature' || inputs.run-side || 'comparison' }}
+      BENCH_RUN_SIDE: ${{ (inputs.profiling == 'lifecycle' || inputs.profiling == 'lifecycle-milestones' || inputs.profiling == 'lifecycle-compare-detail' || inputs.profiling == 'lifecycle-compare-prewarm-cpu' || inputs.profiling == 'lifecycle-compare-process-cpu') && inputs.baseline == '' && 'feature' || inputs.run-side || 'comparison' }}
       BENCH_CLICKHOUSE_RUN: ${{ inputs.clickhouse-run || 'feature-1' }}
       BENCHMARK_ID: bench-e2e-${{ github.run_id }}
       BENCH_COMMENT_ID: ${{ inputs.comment-id }}
@@ -1018,7 +1020,7 @@ jobs:
           [ -n "$BENCH_TXGEN_SPEC_PATH" ] && cmd+=(--preset-path "$BENCH_TXGEN_SPEC_PATH")
           [ "$BENCH_FORCE_BLOAT" = "true" ] && cmd+=(--force-bloat)
           [ "$BENCH_NO_CACHE" = "true" ] && cmd+=(--no-cache)
-          [ "$BENCH_LIFECYCLE" = "true" ] && cmd+=(--lifecycle --lifecycle-detail "$BENCH_LIFECYCLE_DETAIL" --lifecycle-prewarm-cpu "$BENCH_LIFECYCLE_PREWARM_CPU")
+          [ "$BENCH_LIFECYCLE" = "true" ] && cmd+=(--lifecycle --lifecycle-detail "$BENCH_LIFECYCLE_DETAIL" --lifecycle-prewarm-cpu "$BENCH_LIFECYCLE_PREWARM_CPU" --lifecycle-process-cpu "$BENCH_LIFECYCLE_PROCESS_CPU")
           [ "$BENCH_SAMPLY" = "true" ] && cmd+=(--samply)
           [ "$BENCH_TRACY" != "off" ] && cmd+=(--tracy "$BENCH_TRACY" --tracy-seconds "$BENCH_TRACY_SECONDS" --tracy-offset "$BENCH_TRACY_OFFSET")
           effective_baseline_args="$BENCH_BASELINE_ARGS"

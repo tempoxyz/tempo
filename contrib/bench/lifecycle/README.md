@@ -489,3 +489,31 @@ or current capacity. A failed job can release a registration before another slot
 starts, so different slots may reuse the same registration. No native identity
 is used to force assignment or exported as evidence. Missing/queued candidates
 still exhaust the same bounded deadline and fail closed; there is no retry loop.
+
+### Optional whole-process CPU coverage
+
+`lifecycle-compare-process-cpu` compares one immutable binary with its sampler
+explicitly disabled on baseline and `rusage_self_v1` on feature. Both sides use
+milestone capture and leave leaf CPU disabled. Immutable refs, equal node inputs,
+no environment overrides, and binary byte equality are required. Explicit headers
+on both nodes must prove mode support before load; reporting rechecks the mode.
+This is observer-cost validation, not an optimization trial.
+
+The Linux sampler emits private-identity-free user/system microsecond counters
+with two source-clock read endpoints, sequence, numeric status and skipped period
+count. `process-cpu.json` and its offline page preserve brackets, failed reads,
+gaps and unavailable totals. Deltas use adjacent successful sequence endpoints
+only; complete outer envelopes must lie in the loaded window. No interpolation,
+block assignment, division by a whole-window transaction count, or addition to
+worker/leaf CPU is performed. Covered time sums disjoint inner bracket cores,
+not overlapping outer envelopes. Zero intervals produce null CPU totals.
+
+The entire source stream, including post-cutoff failures, is validated before
+pruning. Only samples whose read end is strictly before the earliest global
+backpressure or load-end cutoff survive. Original closed footer counters remain;
+three pruning counters bind the removed suffix. Missing samples, counter
+regression, invalid time, sampler cap/overflow, writer loss and I/O failure reject
+the capture; ordinary read failures retain explicit unavailable gaps. The fixed
+period is 250 ms with a 100,000-record cap. Sampler CPU includes its own thread and
+the lifecycle writer. Node overhead remains unmeasured until a separately admitted
+comparison; this source does not claim that four reads per second are free.

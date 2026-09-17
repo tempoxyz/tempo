@@ -28,9 +28,9 @@ def ownership_helper(source):
 class PrewarmOwnership(unittest.TestCase):
     def execute(self, directory, helper, *, phase_exit=0):
         source = (ROOT/'bench-e2e.nu').read_text()
-        command = (helper+'\nlet ctx = {lifecycle: true, lifecycle_prewarm_cpu: "compare"}; '
+        command = (helper+'\nlet ctx = {lifecycle: true, lifecycle_prewarm_cpu: "compare", lifecycle_process_cpu: "disabled"}; '
                    +'let lifecycle_dir = '+json.dumps(str(directory))+'; '
-                   +'let prewarm_config = {expected: "leaf_v1"}; '
+                   +'let process_cpu_config = {expected: "disabled"}; let prewarm_config = {expected: "leaf_v1"}; '
                    +f'mut phase_exit = {phase_exit}; '+admission_block(source)
                    +'\nprint $"phase_exit=($phase_exit)"')
         return subprocess.run(['nu', '-c', command], cwd=ROOT, text=True, capture_output=True)
