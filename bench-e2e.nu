@@ -1346,8 +1346,13 @@ def "main summarize" [
 def "main render-txgen-spec" [
     --preset: string = ""                              # Txgen preset name or scenario expression
     --out-dir: string = ""                             # Directory for rendered scenario specs
+    --accounts: int = 1000                             # Number of user accounts
+    --tps: int = 50000                                  # Target TPS, also used to size zones
+    --duration: int = 90                                # Workload duration in seconds
+    --chain-id: int = 1337                              # Fixture chain ID
 ] {
-    let spec = (txgen-resolve-bench-spec $preset $out_dir)
+    let spec = (txgen-resolve-bench-spec $preset $out_dir
+        --accounts $accounts --tps $tps --duration $duration --chain-id $chain_id)
     print $spec.spec_path
 }
 
@@ -1405,7 +1410,7 @@ def "main e2e" [
     --skip-summary                                       # Leave summary generation to a later workflow step
 ] {
     let preset_spec = if $preset_path == "" {
-        txgen-resolve-bench-spec $preset
+        txgen-resolve-bench-spec $preset --accounts $accounts --tps $tps --duration $duration
     } else {
         {
             kind: pre_rendered

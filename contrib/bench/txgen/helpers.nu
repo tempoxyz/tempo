@@ -412,27 +412,49 @@ def txgen-static-preset-path [preset: string] {
     $spec_path
 }
 
-def txgen-resolve-bench-spec [preset: string, out_dir: string = ""] {
+# Resolve the preset and expand fixtures before any benchmark phase starts.
+def txgen-resolve-bench-spec [
+    preset: string, out_dir: string = "",
+    --accounts: int = 1000, --tps: int = 50000, --duration: int = 90,
+    --chain-id: int = 1337
+] {
     let preset_name = ($preset | str trim)
     let tip20_scenario = (txgen-parse-tip20-scenario $preset_name)
     if $tip20_scenario != null {
         return (txgen-render-tip20-spec $tip20_scenario $out_dir)
     }
 
-    let spec_path = (txgen-static-preset-path $preset_name)
+    let source_path = (txgen-static-preset-path $preset_name)
+    let fixture = $preset_name in [public-mix zones vault-deposit vault-withdraw]
+    let spec_path = if $fixture {
+        if $chain_id != 1337 or $accounts < 1 or $accounts > 100000 {
+            error make {msg: "Fixture presets require chain ID 1337 and 1..100000 accounts"}
+        }
+        if $tps < 1 or $duration < 1 {
+            error make {msg: "Fixture presets require positive TPS and duration"}
+        }
+        if $preset_name in [public-mix zones] {
+            let sizing = (txgen-zone-sizing $tps)
+            let count = $tps * $duration
+            if $preset_name == public-mix {
+                txgen-prepare-public-mix-preset $source_path $count $accounts $sizing.zones $chain_id --out-dir $out_dir
+            } else {
+                let mode = ($env.TXGEN_ZONE_MODE? | default "mixed")
+                txgen-prepare-zones-preset $source_path $count $accounts $sizing.zones $mode --out-dir $out_dir
+            }
+        } else {
+            txgen-prepare-vault-preset $source_path $accounts $chain_id --out-dir $out_dir
+        }
+    } else { $source_path }
     {
-        kind: static
+        kind: (if $fixture { "generated" } else { "static" })
         scenario_id: $preset_name
         spec_path: $spec_path
-        rendered: false
+        rendered: $fixture
         requires_existing_recipients: false
         requires_keychain_setup: (txgen-spec-has-keychain-setup $spec_path)
         uses_fee_amm: false
     }
-}
-
-def txgen-preset-path [preset: string] {
-    (txgen-resolve-bench-spec $preset).spec_path
 }
 
 def txgen-account-mnemonic [] {
@@ -601,7 +623,26 @@ def txgen-fund-accounts [txgen_bin: string, spec_path: string, rpc_url: string] 
     txgen-wait-for-txpool-drain $rpc_url $TXGEN_HELPER_FUND_DRAIN_TIMEOUT_SECS
 }
 
-def txgen-prepare-zones-preset [spec_path: string, count: int, accounts: int, zones: int, mode: string] {
+# TIP-1096 allows 230 outstanding deposits, reserving 20 for bounce-backs.
+# This is a configurable sizing window, not a mainnet settlement cadence.
+def txgen-zone-sizing [tps: int] {
+    let window = ($env.TXGEN_ZONE_SETTLEMENT_WINDOW_MS? | default "3000" | into int)
+    if $window < 1 { error make {msg: "TXGEN_ZONE_SETTLEMENT_WINDOW_MS must be positive"} }
+    let automatic_zones = ([1 (($tps * $window / 210000) | math ceil | into int)] | math max)
+    let zones = ($env.TXGEN_ZONE_COUNT? | default $automatic_zones | into int)
+    if $zones < 1 { error make {msg: "TXGEN_ZONE_COUNT must be positive"} }
+    {zones: $zones, window_ms: $window}
+}
+
+def txgen-fixture-output-dir [out_dir: string] {
+    let output_dir = if $out_dir == "" {
+        [(txgen-repo-root) $TXGEN_HELPER_DEFAULT_RENDERED_SPECS_DIR (random uuid)] | path join
+    } else { $out_dir | path expand }
+    mkdir $output_dir
+    $output_dir
+}
+
+def txgen-prepare-zones-preset [spec_path: string, count: int, accounts: int, zones: int, mode: string, --out-dir: string = ""] {
     if $mode not-in [mixed deposit withdraw] { error make {msg: "TXGEN_ZONE_MODE must be mixed, deposit, or withdraw"} }
     let spec = (open $spec_path)
     let token = "0x20c0000000000000000000000000000000000000"
@@ -646,15 +687,14 @@ def txgen-prepare-zones-preset [spec_path: string, count: int, accounts: int, zo
             $mix = ($mix | append {template: $name, weight: $weight})
         }
     }
-    let output_dir = ([ (txgen-repo-root) $TXGEN_HELPER_DEFAULT_RENDERED_SPECS_DIR (random uuid) ] | path join)
-    mkdir $output_dir
+    let output_dir = (txgen-fixture-output-dir $out_dir)
     let output = ($output_dir | path join zones.yml)
     {include: $spec_path, accounts: {users: {range: [0 $accounts]}},
         setup: {steps: $steps}, templates: $templates, mix: $mix} | to yaml | save -f $output
     $output
 }
 
-def txgen-prepare-vault-preset [spec_path: string, accounts: int, chain_id: int] {
+def txgen-prepare-vault-preset [spec_path: string, accounts: int, chain_id: int, --out-dir: string = ""] {
     if $chain_id != 1337 or $accounts <= 0 or $accounts > 100000 {
         error make { msg: "Vault presets require chain ID 1337 and 1..100000 user accounts" }
     }
@@ -672,8 +712,7 @@ def txgen-prepare-vault-preset [spec_path: string, accounts: int, chain_id: int]
             | update calls.1.args.1 {pool: {pool: users, select: {index: $index}}}) }
     } | transpose -r -d)
     let mix = (0..<$accounts | each { |index| {template: $"vault_($operation)_($index)", weight: 1} })
-    let output_dir = ([ (txgen-repo-root) $TXGEN_HELPER_DEFAULT_RENDERED_SPECS_DIR (random uuid) ] | path join)
-    mkdir $output_dir
+    let output_dir = (txgen-fixture-output-dir $out_dir)
     let output = ($output_dir | path join ($spec_path | path basename))
     { include: $spec_path, templates: $templates, mix: $mix, append: { setup: { steps: $steps } } } | to yaml | save -f $output
     $output
@@ -682,7 +721,7 @@ def txgen-prepare-vault-preset [spec_path: string, accounts: int, chain_id: int]
 # Reuse the standalone renderers, preserving aggregate transaction shares even
 # when users and portals have different counts. Keep each fixture nonce lane in
 # order; separate vault/zone deployers and explicit dependencies allow overlap.
-def txgen-prepare-public-mix-preset [spec_path: string, count: int, accounts: int, zones: int, chain_id: int] {
+def txgen-prepare-public-mix-preset [spec_path: string, count: int, accounts: int, zones: int, chain_id: int, --out-dir: string = ""] {
     if $zones < 1 { error make {msg: "Public mix requires at least one zone"} }
     let presets = ($spec_path | path dirname)
     let deposits = (open (txgen-prepare-vault-preset ($presets | path join vault-deposit.yml) $accounts $chain_id))
@@ -708,8 +747,7 @@ def txgen-prepare-public-mix-preset [spec_path: string, count: int, accounts: in
             $mix = ($mix | append ($entry | update weight ($entry.weight * $scale)))
         }
     }
-    let output_dir = ([ (txgen-repo-root) $TXGEN_HELPER_DEFAULT_RENDERED_SPECS_DIR (random uuid) ] | path join)
-    mkdir $output_dir
+    let output_dir = (txgen-fixture-output-dir $out_dir)
     let output = ($output_dir | path join public-mix.yml)
     {include: $spec_path, accounts: {users: {range: [0 $accounts]}},
         setup: {steps: ($vault_setup | append $users | append $zone_spec.setup.steps)},
@@ -772,7 +810,7 @@ def txgen-run-preset-pipeline [
 ] {
     let chain_id = (txgen-fetch-chain-id $generate_rpc_url)
     $env.TXGEN_ACCOUNTS = ($accounts | into string)
-    mut spec_path = ($preset_path | path expand)
+    let spec_path = ($preset_path | path expand)
     if not ($spec_path | path exists) {
         error make { msg: $"txgen preset file not found: ($spec_path)" }
     }
@@ -798,28 +836,21 @@ def txgen-run-preset-pipeline [
         if $nonce_response.result != $latest_nonce.result {
             error make { msg: "zone fixture deployer has pending transactions; drain its nonce lane before setup" }
         }
-        let mode = ($env.TXGEN_ZONE_MODE? | default "mixed")
-        # TIP-1096 allows 230 outstanding deposits, reserving 20 for bounce-backs.
-        # This is a configurable sizing window, not a claimed mainnet settlement cadence.
-        let window_ms = ($env.TXGEN_ZONE_SETTLEMENT_WINDOW_MS? | default "3000" | into int)
-        if $window_ms < 1 { error make { msg: "TXGEN_ZONE_SETTLEMENT_WINDOW_MS must be positive" } }
-        let automatic_zones = ([1 (($tps * $window_ms / 210000) | math ceil | into int)] | math max)
-        let zones = ($env.TXGEN_ZONE_COUNT? | default $automatic_zones | into int)
-        if $zones < 1 { error make { msg: "TXGEN_ZONE_COUNT must be positive" } }
-        $zone_metadata = ["-m" $"zone_count=($zones)" "-m" $"zone_sizing_window_ms=($window_ms)"]
-        print $"  Zones: ($zones), users: ($accounts), sizing window: ($window_ms)ms, capacity: 210 deposits/portal"
-        $spec_path = if $is_public_mix {
-            txgen-prepare-public-mix-preset $spec_path $tx_count $accounts $zones $chain_id
-        } else {
-            txgen-prepare-zones-preset $spec_path $tx_count $accounts $zones $mode
+        let sizing = (txgen-zone-sizing $tps)
+        # Count the rendered portals rather than expanding the workload again.
+        let zones = ((open $spec_path).setup.steps | where { |step| $step.id =~ '^portal_[0-9]+$' } | length)
+        if $zones < 1 {
+            error make {msg: "Expected a rendered fixture; use bench-e2e.nu render-txgen-spec first"}
         }
+        $zone_metadata = ["-m" $"zone_count=($zones)" "-m" $"zone_sizing_window_ms=($sizing.window_ms)"]
+        print $"  Zones: ($zones), users: ($accounts), sizing window: ($sizing.window_ms)ms, capacity: 210 deposits/portal"
     }
     let skip_faucet_funding = $skip_funding and ($preset_name not-in $TXGEN_HELPER_ALWAYS_FUND_PRESETS)
     let is_vault = $preset_name in ["vault-deposit" "vault-withdraw"]
-    if $is_vault {
-        $spec_path = (txgen-prepare-vault-preset $spec_path $accounts $chain_id)
-    }
     if $is_vault or $is_public_mix {
+        if $chain_id != 1337 {
+            error make {msg: "Vault presets require chain ID 1337"}
+        }
         # The checked-in deployments use fixed nonces and transfer policy 2.
         # Check before funding or submitting any setup transactions.
         let deployer_nonce = (txgen-rpc-call $generate_rpc_url '{"jsonrpc":"2.0","id":1,"method":"eth_getTransactionCount","params":["0xd7932ce865275be97001a0574441d79b143820ec","pending"]}')
@@ -843,6 +874,8 @@ def txgen-run-preset-pipeline [
     }
 
     let txgen_duration = $"($duration)s"
+    # Reuse bindings after vault setup without modifying the rendered input.
+    let setup_state_path = $"($report_path).setup-state.json"
     let txgen_cmd = [
         $txgen_tempo_bin
         "generate"
@@ -851,6 +884,7 @@ def txgen-run-preset-pipeline [
         "--seed" $TXGEN_HELPER_DEFAULT_SEED
         "--rpc" $generate_rpc_url
     ] | append (if $is_vault or $preset_name == "zones" { [] } else { ["--duration" $txgen_duration] })
+      | append (if $is_vault { ["--setup-state-in" $setup_state_path] } else { [] })
     # Zones and vaults generate the full count: setup must not consume workload duration.
     let txgen_setup_cmd = [
         $txgen_tempo_bin
@@ -859,7 +893,7 @@ def txgen-run-preset-pipeline [
         "-n" 0
         "--seed" $TXGEN_HELPER_DEFAULT_SEED
         "--rpc" $generate_rpc_url
-    ]
+    ] | append (if $is_vault { ["--setup-state-out" $setup_state_path] } else { [] })
     let metrics_url_args = ($metrics_url | each { |url| ["--metrics-url" $url] } | flatten)
     let bench_send_base_cmd = [
         $txgen_bench_bin
@@ -938,10 +972,6 @@ def txgen-run-preset-pipeline [
 
         if $setup_result.exit_code != 0 {
             return { ok: false, exit_code: $setup_result.exit_code, report_path: $report_path }
-        }
-        if $is_vault {
-            # Setup is complete. Do not reserve its nonces again when generating the workload.
-            open $spec_path | reject append | insert setup {steps: []} | to yaml | save -f $spec_path
         }
     }
 

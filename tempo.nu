@@ -2484,7 +2484,7 @@ def "main bench" [
         exit 1
     }
 
-    let preset_path = (txgen-preset-path $preset)
+    let preset_path = (txgen-resolve-bench-spec $preset --accounts $accounts --tps $tps --duration $duration).spec_path
     let txgen = (txgen-resolve-binaries)
 
     let gas_limit_args = if $gas_limit != "" { ["--gas-limit" $gas_limit] } else { [] }
@@ -3192,7 +3192,7 @@ def "main coverage" [
     }
 
     let live_preset_path = if $live and $script == "" {
-        txgen-preset-path $preset
+        (txgen-resolve-bench-spec $preset --accounts $accounts --tps $tps --duration $duration).spec_path
     } else {
         ""
     }

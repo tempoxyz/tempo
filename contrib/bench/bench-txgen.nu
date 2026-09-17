@@ -242,7 +242,8 @@ def "main run" [
     if $runtime_mode != "dev" {
         error make { msg: $"txgen benchmark path currently supports only dev/e2e mode \(got ($mode)\)" }
     }
-    let preset_path = (txgen-preset-path $preset)
+    let preset_path = (txgen-resolve-bench-spec $preset
+        --accounts $accounts --tps $tps --duration $duration).spec_path
     txgen-validate-bench-args $bench_args
     let resolved_scenario = if $scenario != "" {
         $scenario
