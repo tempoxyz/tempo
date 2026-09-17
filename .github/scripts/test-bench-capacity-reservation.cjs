@@ -34,7 +34,7 @@ function zip(content, options = {}) {
   const script = `import io,json,stat,sys,zipfile
 value=json.load(sys.stdin);out=io.BytesIO()
 with zipfile.ZipFile(out,'w',zipfile.ZIP_DEFLATED) as z:
- info=zipfile.ZipInfo(value.get('name','receipt.json'));info.compress_type=zipfile.ZIP_DEFLATED
+ info=zipfile.ZipInfo(value.get('name','receipt.json'));info.compress_type=value.get('method',zipfile.ZIP_DEFLATED)
  info.external_attr=((stat.S_IFLNK|0o777) if value.get('symlink') else (stat.S_IFREG|0o600))<<16
  z.writestr(info,value['content'])
  if value.get('extra'):z.writestr('extra',b'private')
@@ -505,4 +505,14 @@ test('setup metadata network await aborts under the same real deadline', async (
     assert.ok(f.messages.every(m=>!m.includes(secret)));
     assert.equal(f.output['admission-path'],undefined);
   } finally {clearTimeout(keepAlive);f.close();}
+});
+
+
+test('receipt ZIP transport admits only stored or deflate codecs', async () => {
+  for (const method of [0,8,12,14]) {
+    const zips=new Map(validZips);zips.set(102,zip(JSON.stringify(receipt(2)),{method}));
+    const result=await elect({zips});
+    if ([0,8].includes(method)) assert.ok(!result.messages.some(m=>m.startsWith('FAILED:')));
+    else rejected(result);
+  }
 });

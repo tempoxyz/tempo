@@ -114,6 +114,7 @@ try:
   if len(entries)!=1:raise ValueError()
   item=entries[0]
   mode=item.external_attr>>16
+  if item.compress_type not in (zipfile.ZIP_STORED,zipfile.ZIP_DEFLATED):raise ValueError()
   if item.filename!='receipt.json' or item.is_dir() or item.file_size>16384 or item.compress_size>16384 or item.flag_bits&1 or stat.S_IFMT(mode) not in (0,stat.S_IFREG):raise ValueError()
   with archive.open(item) as stream:
    content=stream.read(16385)
