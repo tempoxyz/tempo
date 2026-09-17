@@ -1088,9 +1088,20 @@ def run-local-e2e-phase [run: record, ctx: record] {
     let lifecycle_dir = ($"($ctx.results_dir)/lifecycle-raw/($phase)" | path expand)
     let lifecycle_report_dir = ($"($ctx.results_dir)/lifecycle/($phase)" | path expand)
     let lifecycle_key = ($"($LOCALNET_DIR)/lifecycle-key-($phase)" | path expand)
+    if $ctx.lifecycle {
+        # Only pre-start disk admission is recoverable here. Return through the
+        # phase loop so its existing owned-worktree cleanup and restore run.
+        let admitted = try {
+            lifecycle-require-disk "before capture, results filesystem" $ctx.results_dir 49152
+            lifecycle-require-disk "before capture, runner root" "/" 49152
+            true
+        } catch { false }
+        if not $admitted {
+            print "Lifecycle phase admission failed: capture disk guard"
+            return 1
+        }
+    }
     let lifecycle_epoch = if $ctx.lifecycle {
-        lifecycle-require-disk "before capture, results filesystem" $ctx.results_dir 49152
-        lifecycle-require-disk "before capture, runner root" "/" 49152
         mkdir $lifecycle_dir
         ^python3 -c 'import os,sys,time; f=os.open(sys.argv[1],os.O_WRONLY|os.O_CREAT|os.O_EXCL,0o600); os.write(f,os.urandom(32)); os.close(f); print(time.monotonic_ns())' $lifecycle_key | str trim
     } else { "" }
