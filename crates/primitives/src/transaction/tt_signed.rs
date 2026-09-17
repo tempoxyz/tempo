@@ -12,7 +12,7 @@ use alloy_eips::{
     eip7702::SignedAuthorization,
 };
 use alloy_primitives::{Address, B256, Bytes, Keccak256, TxKind, U256};
-use alloy_rlp::{BufMut, Decodable, Encodable};
+use alloy_rlp::{BufMut, Encodable};
 use core::{
     fmt::Debug,
     hash::{Hash, Hasher},
@@ -253,8 +253,8 @@ impl AASigned {
         // Decode transaction fields directly from the buffer
         let tx = TempoTransaction::rlp_decode_fields(buf)?;
 
-        // Decode signature bytes
-        let sig_bytes: Bytes = Decodable::decode(buf)?;
+        // Borrow the RLP payload; the parsed signature owns any retained data.
+        let sig_bytes = alloy_rlp::Header::decode_bytes(buf, false)?;
 
         // Check that we consumed the expected amount
         let consumed = remaining - buf.len();
@@ -263,7 +263,7 @@ impl AASigned {
         }
 
         // Parse signature
-        let signature = TempoSignature::from_bytes(&sig_bytes).map_err(alloy_rlp::Error::Custom)?;
+        let signature = TempoSignature::from_bytes(sig_bytes).map_err(alloy_rlp::Error::Custom)?;
 
         Ok(Self::new_unhashed(tx, signature))
     }
@@ -565,6 +565,165 @@ pub(crate) mod tests {
     use core::num::NonZeroU64;
     use proptest::prelude::*;
     use proptest_arbitrary_interop::arb;
+
+    fn encode_with_signature_rlp(signature_rlp: &[u8], length_adjustment: isize) -> Vec<u8> {
+        let mut payload = Vec::new();
+        make_tx().rlp_encode_fields_default(&mut payload);
+        payload.extend_from_slice(signature_rlp);
+        let mut encoded = Vec::new();
+        alloy_rlp::Header {
+            list: true,
+            payload_length: payload.len().checked_add_signed(length_adjustment).unwrap(),
+        }
+        .encode(&mut encoded);
+        encoded.extend_from_slice(&payload);
+        encoded
+    }
+
+    #[test]
+    fn test_rlp_signature_errors_and_consumption() {
+        use alloy_rlp::Error;
+
+        let cases = [
+            // A list here is interpreted as the optional key authorization.
+            (vec![0xc0], Error::InputTooShort),
+            (vec![0x80], Error::Custom("Signature data is empty")),
+            (vec![0x81, 0x00], Error::NonCanonicalSingleByte),
+            (
+                vec![0x82, 0xff, 0x00],
+                Error::Custom("Unknown signature type identifier"),
+            ),
+            // Declared string payload exceeds the available signature bytes.
+            ([vec![0xb8, 65], vec![0; 64]].concat(), Error::InputTooShort),
+        ];
+        for (signature_rlp, expected) in cases {
+            let encoded = encode_with_signature_rlp(&signature_rlp, 0);
+            let mut input = encoded.as_slice();
+            assert_eq!(AASigned::rlp_decode(&mut input).unwrap_err(), expected);
+
+            // The owning decoder uses the same canonical RLP string decoder;
+            // errors and buffer advancement must stay identical.
+            let mut old_input = encoded.as_slice();
+            alloy_rlp::Header::decode(&mut old_input).unwrap();
+            let old_result = TempoTransaction::rlp_decode_fields(&mut old_input).and_then(|_| {
+                <Bytes as alloy_rlp::Decodable>::decode(&mut old_input)
+                    .and_then(|bytes| TempoSignature::from_bytes(&bytes).map_err(Error::Custom))
+            });
+            assert_eq!(old_result.unwrap_err(), expected);
+            assert_eq!(input, old_input);
+        }
+
+        let signature = Signature::test_signature().as_bytes();
+        let signature_rlp = alloy_rlp::encode(signature.as_slice());
+        for adjustment in [-1, 1] {
+            let mut encoded = encode_with_signature_rlp(&signature_rlp, adjustment);
+            encoded.push(0x80);
+            let mut input = encoded.as_slice();
+            assert_eq!(
+                AASigned::rlp_decode(&mut input).unwrap_err(),
+                Error::UnexpectedLength
+            );
+            assert_eq!(input, &[0x80]);
+        }
+    }
+
+    #[test]
+    fn test_rlp_signature_variants_own_decoded_data() {
+        use crate::transaction::tt_signature::{
+            SIGNATURE_TYPE_KEYCHAIN, SIGNATURE_TYPE_KEYCHAIN_V2, SIGNATURE_TYPE_P256,
+            SIGNATURE_TYPE_WEBAUTHN,
+        };
+        let secp = Signature::test_signature().as_bytes().to_vec();
+        let p256 = [vec![SIGNATURE_TYPE_P256], vec![1; 128], vec![0]].concat();
+        let webauthn = [vec![SIGNATURE_TYPE_WEBAUTHN], vec![1; 160]].concat();
+        let mut variants = vec![secp.clone(), p256.clone(), webauthn.clone()];
+        for tag in [SIGNATURE_TYPE_KEYCHAIN, SIGNATURE_TYPE_KEYCHAIN_V2] {
+            for inner in [&secp, &p256, &webauthn] {
+                variants.push([vec![tag], vec![7; 20], inner.clone()].concat());
+            }
+        }
+        for bytes in variants {
+            let expected = TempoSignature::from_bytes(&bytes).unwrap();
+            let mut encoded = encode_with_signature_rlp(&alloy_rlp::encode(bytes.as_slice()), 0);
+            encoded.extend_from_slice(&[0xaa, 0xbb]);
+            let mut input = encoded.as_slice();
+            let decoded = AASigned::rlp_decode(&mut input).unwrap();
+            assert_eq!(input, &[0xaa, 0xbb]);
+            // In particular, WebAuthn's variable-length data must not borrow
+            // from the input that the caller is free to overwrite or drop.
+            encoded.fill(0);
+            drop(encoded);
+            assert_eq!(decoded.signature(), &expected);
+            assert_eq!(decoded.tx(), &make_tx());
+        }
+    }
+
+    #[test]
+    fn borrowed_signature_decode_preserves_aa_normalization_and_root() {
+        use crate::TempoTxEnvelope;
+        use alloy_rlp::Decodable;
+
+        for mut signature in [Signature::test_signature().as_bytes().to_vec(), {
+            let mut value = vec![1];
+            value.extend_from_slice(&[0x11; 129]);
+            value
+        }] {
+            // Secp parity 0 and P256 pre_hash 2 are accepted, then canonicalized.
+            let last = signature.len() - 1;
+            signature[last] = if signature.len() == 65 { 0 } else { 2 };
+            let canonical =
+                AASigned::new_unhashed(make_tx(), TempoSignature::from_bytes(&signature).unwrap());
+            let mut fields = Vec::new();
+            make_tx().rlp_encode_fields_default(&mut fields);
+            Bytes::from(signature).encode(&mut fields);
+            let mut wire = Vec::new();
+            alloy_rlp::Header {
+                list: true,
+                payload_length: fields.len(),
+            }
+            .encode(&mut wire);
+            wire.extend_from_slice(&fields);
+            let encoded_len = wire.len();
+            wire.extend_from_slice(&[0xaa, 0xbb]);
+            let mut input = wire.as_slice();
+            let decoded = AASigned::rlp_decode(&mut input).unwrap();
+            assert_eq!(input, &[0xaa, 0xbb]);
+            assert_eq!(decoded, canonical);
+            let mut canonical_bytes = Vec::new();
+            canonical.rlp_encode(&mut canonical_bytes);
+            assert_ne!(&wire[..encoded_len], canonical_bytes);
+            let actual_root =
+                alloy_consensus::proofs::calculate_transaction_root(&[TempoTxEnvelope::AA(
+                    decoded,
+                )]);
+            let expected_root =
+                alloy_consensus::proofs::calculate_transaction_root(&[TempoTxEnvelope::AA(
+                    canonical,
+                )]);
+            assert_eq!(actual_root, expected_root);
+
+            // The list-length check must still precede parsing an invalid signature.
+            let mut invalid_fields = Vec::new();
+            make_tx().rlp_encode_fields_default(&mut invalid_fields);
+            Bytes::from_static(&[0xff]).encode(&mut invalid_fields);
+            invalid_fields.push(0x80);
+            let mut invalid = Vec::new();
+            alloy_rlp::Header {
+                list: true,
+                payload_length: invalid_fields.len(),
+            }
+            .encode(&mut invalid);
+            invalid.extend_from_slice(&invalid_fields);
+            let mut input = invalid.as_slice();
+            assert_eq!(
+                AASigned::rlp_decode(&mut input),
+                Err(alloy_rlp::Error::UnexpectedLength)
+            );
+            assert_eq!(input, &[0x80]);
+            // Keep the owned reference's RLP string decoder exercised here as well.
+            assert_eq!(Bytes::decode(&mut input).unwrap(), Bytes::new());
+        }
+    }
 
     fn make_tx() -> TempoTransaction {
         TempoTransaction {
