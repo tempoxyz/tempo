@@ -16,6 +16,38 @@ def fixture():
 
 
 class DiagnosticTests(unittest.TestCase):
+    def test_packed_switches_preserve_edges_cutoff_and_migration(self):
+        rows = fixture()
+        text = stream(rows)
+        packed = text.replace('E,10,2,1,1', '').replace('E,30,2,2,0', 'P,10,30,2,1')
+        packed = packed.replace('E,12,3,1,256', '').replace('E,60,3,2,0', 'P,12,60,3,256')
+        for cutoff in (10, 12, 20, 30, 50, 60, 71):
+            with self.subTest(cutoff=cutoff):
+                expected = decode(text.replace('C,50', f'C,{cutoff}'), '', 0, 0)
+                actual = decode(packed.replace('C,50', f'C,{cutoff}'), '', 0, 0)
+                self.assertEqual(actual, expected)
+                self.assertEqual(decode('\n'.join(list(reversed(packed.replace('C,50', f'C,{cutoff}').splitlines()[:-2])) + packed.splitlines()[-2:]), '', 0, 0), expected)
+
+    def test_packed_edges_still_require_each_source_edge_in_footer(self):
+        text = stream([(1,1,0,0), (10,1,1,0), (20,1,2,0), (30,1,4,0)])
+        packed = text.replace('E,10,1,1,0', '').replace('E,20,1,2,0', 'P,10,20,1,0')
+        self.assertEqual(decode(text, '', 0, 0, expected_threads={1}),
+                         decode(packed, '', 0, 0, expected_threads={1}))
+        for invalid in (packed.replace('@emitted: 5', '@emitted: 4'),
+                        packed.replace('P,10,20', 'P,20,10'),
+                        packed.replace('P,10,20,1,0', 'P,10,20,1,512'),
+                        packed.replace('P,10,20,1,0', 'P,10,20,0,0'),
+                        packed + '\nLost 1 events'):
+            with self.subTest(invalid=invalid):
+                with self.assertRaises(ValueError):
+                    decode(invalid, '', 0, 0, expected_threads={1})
+
+    def test_packed_missing_or_duplicate_edges_remain_invalid(self):
+        for middle in ('E,5,1,1,0\nP,10,20,1,0', 'P,10,20,1,0\nE,25,1,2,0'):
+            with self.assertRaisesRegex(ValueError, 'missing switch'):
+                decode(f'E,1,1,0,0\n{middle}\nE,30,1,4,0\nC,40\n@emitted: 6',
+                       '', 0, 0, expected_threads={1})
+
     def test_sleep_runnable_migration_and_strict_cutoff(self):
         capture = decode(stream(fixture()), '', 0, 0)
         self.assertTrue(capture['registered_window_edges_complete'])

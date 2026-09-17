@@ -21,19 +21,28 @@ def decode(stdout, stderr, returncode, origin, *, expected_threads=EXPECTED_THRE
     if stderr.strip():
         raise ValueError("capture tool reported a diagnostic; capture rejected")
     records, cutoffs, counts = [], [], []
+    def append_event(ts, ordinal, kind, state):
+        if not 0 < ordinal <= 8192 or (expected_threads is not None and ordinal not in expected_threads) or kind not in KINDS:
+            raise ValueError("unexpected ordinal/event")
+        if (kind != 1 and state != 0) or state > 256:
+            raise ValueError("unexpected scheduler state")
+        records.append({"ts": ts - origin, "thread": ordinal, "kind": KINDS[kind], "state_bits": state})
+
     for line in stdout.splitlines():
         if not line.strip():
             continue
         event = re.fullmatch(r"E,([0-9]+),([0-9]+),([0-9]+),([0-9]+)", line)
+        pair = re.fullmatch(r"P,([0-9]+),([0-9]+),([0-9]+),([0-9]+)", line)
         cutoff = re.fullmatch(r"C,([0-9]+)", line)
         total = re.fullmatch(r"@emitted: ([0-9]+)", line)
         if event:
-            ts, ordinal, kind, state = map(int, event.groups())
-            if not 0 < ordinal <= 8192 or (expected_threads is not None and ordinal not in expected_threads) or kind not in KINDS:
-                raise ValueError("unexpected ordinal/event")
-            if (kind != 1 and state != 0) or state > 256:
-                raise ValueError("unexpected scheduler state")
-            records.append({"ts": ts - origin, "thread": ordinal, "kind": KINDS[kind], "state_bits": state})
+            append_event(*map(int, event.groups()))
+        elif pair:
+            out_ts, in_ts, ordinal, state = map(int, pair.groups())
+            if out_ts > in_ts:
+                raise ValueError("clock mismatch")
+            append_event(out_ts, ordinal, 1, state)
+            append_event(in_ts, ordinal, 2, 0)
         elif cutoff:
             cutoffs.append(int(cutoff[1]) - origin)
         elif total:

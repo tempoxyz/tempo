@@ -42,3 +42,13 @@ tool exit/diagnostics, schema, clock, registration/exit, and missing switch edge
 Both startup and report finalization expose this closed vocabulary; unknown
 exception text or file contents cannot become a category. Private tool output
 and commands are never printed. Any such failure still rejects scheduler data.
+
+This experimental transport pairs switch-out and switch-in deliveries while
+preserving both original timestamps, the switch-out state and the count of each
+original edge. Wakeups and migrations remain independent. Pending or duplicate
+switch-outs are emitted separately; missing edges still fail strict validation.
+The decoder expands pairs before applying the unchanged source cutoff and
+artifact schema. This reduces delivery count but does not establish loss-free
+capacity: a sustained 153-thread synthetic stress still overflowed the BPF
+transport with both the default ring and a 16 MiB ring. Increasing the transport
+buffer or combining records must never be treated as permission to accept loss.

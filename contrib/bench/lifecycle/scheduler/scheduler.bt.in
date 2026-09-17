@@ -1,4 +1,6 @@
-/* Emits only registered ordinal/time/state; native keys remain inside maps. */
+/* Emits only registered ordinal/time/state; native keys remain inside maps.
+ * Pair switch edges without changing their timestamps or the edge counter.
+ * Wakeups remain independent: no cross-CPU wakeup writer touches @pending. */
 BEGIN { @emitted = count(); @alive[cpid]=1; }
 uprobe:__BINARY__:lifecycle_thread_register /pid == cpid && @alive[cpid]/ {
     $ts=nsecs(monotonic);
@@ -7,9 +9,24 @@ uprobe:__BINARY__:lifecycle_thread_register /pid == cpid && @alive[cpid]/ {
 }
 tracepoint:sched:sched_switch {
     $out=@ordinal[cpid, args->prev_pid];
-    if($out) { @emitted=count(); printf("E,%llu,%llu,1,%llu\n",nsecs(monotonic),$out,(uint64)args->prev_state); }
+    if($out) {
+        $ts=nsecs(monotonic);
+        $previous=@pending[$out];
+        /* Preserve invalid duplicate-outs for the strict decoder to reject. */
+        if($previous.0) { printf("E,%llu,%llu,1,%llu\n",$previous.0,$out,$previous.1); }
+        @pending[$out]=($ts,(uint64)args->prev_state);
+        @emitted=count();
+    }
     $in=@ordinal[cpid, args->next_pid];
-    if($in) { @emitted=count(); printf("E,%llu,%llu,2,0\n",nsecs(monotonic),$in); }
+    if($in) {
+        $ts=nsecs(monotonic);
+        $previous=@pending[$in];
+        @emitted=count();
+        if($previous.0) {
+            printf("P,%llu,%llu,%llu,%llu\n",$previous.0,$ts,$in,$previous.1);
+            delete(@pending[$in]);
+        } else { printf("E,%llu,%llu,2,0\n",$ts,$in); }
+    }
 }
 tracepoint:sched:sched_wakeup /@ordinal[cpid, args->pid]/ {
     @emitted=count(); printf("E,%llu,%llu,3,0\n",nsecs(monotonic),@ordinal[cpid, args->pid]);
@@ -22,6 +39,11 @@ tracepoint:sched:sched_process_exit {
     if(pid == cpid && tid == cpid) { delete(@alive[cpid]); }
     $ordinal=@ordinal[cpid, tid];
     if($ordinal) {
+        $previous=@pending[$ordinal];
+        if($previous.0) {
+            printf("E,%llu,%llu,1,%llu\n",$previous.0,$ordinal,$previous.1);
+            delete(@pending[$ordinal]);
+        }
         delete(@ordinal[cpid, tid]);
         @emitted=count(); printf("E,%llu,%llu,4,0\n",nsecs(monotonic),$ordinal);
     }
@@ -29,4 +51,4 @@ tracepoint:sched:sched_process_exit {
 uprobe:__BINARY__:lifecycle_cutoff /pid == cpid && @alive[cpid]/ {
     printf("C,%llu\n",arg0);
 }
-END { print(@emitted); clear(@emitted); clear(@ordinal); clear(@alive); }
+END { print(@emitted); clear(@emitted); clear(@ordinal); clear(@alive); clear(@pending); }
