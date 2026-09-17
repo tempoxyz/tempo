@@ -1291,4 +1291,53 @@ mod tests {
             }
         }
     }
+
+    #[test]
+    fn recreated_storage_overlay_matches_flat_root() {
+        use crate::cursors::FlatHashedCursorFactory;
+        use reth_trie::{
+            StateRoot, hashed_cursor::HashedPostStateCursorFactory,
+            trie_cursor::noop::NoopTrieCursorFactory,
+        };
+
+        let dir = tempfile::tempdir().unwrap();
+        let mut parent =
+            FlatMpt::create(dir.path().join("parent.flat"), Default::default()).unwrap();
+        let key = [1; 32];
+        let account = StateOp::SetAccount {
+            nonce: 1,
+            balance: U256::ZERO,
+            code_hash: mpt_flat_poc::eth::EMPTY_CODE_HASH.0,
+        };
+        let slot = |key, value| StateOp::SetStorage {
+            slot: [key; 32],
+            value: mpt_flat_poc::eth::storage_value_rlp(U256::from(value)),
+        };
+        parent
+            .apply_block(vec![
+                (key, account.clone()),
+                (key, slot(2, 20u64)),
+                (key, slot(3, 30u64)),
+            ])
+            .unwrap();
+        let ops = vec![
+            (key, StateOp::WipeStorage),
+            (key, account),
+            (key, slot(3, 40u64)),
+        ];
+        let overlay = ops_to_post_state(&ops, Some(&parent))
+            .unwrap()
+            .into_sorted();
+        let overlay_root = StateRoot::new(
+            NoopTrieCursorFactory,
+            HashedPostStateCursorFactory::new(FlatHashedCursorFactory { mpt: &parent }, &overlay),
+        )
+        .root()
+        .unwrap();
+        let (flat_root, _) = parent.apply_block(ops).unwrap();
+        assert_eq!(
+            overlay_root.0, flat_root,
+            "wiped parent slots must not leak through the reth overlay"
+        );
+    }
 }
