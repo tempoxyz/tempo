@@ -230,6 +230,10 @@ def admission(paths, expected, timeout=0):
                     return False
             except (FileNotFoundError, json.JSONDecodeError):
                 ready = False
+            except OSError:
+                # A present but unreadable source cannot establish admission.
+                # Keep native paths and exception details out of CLI diagnostics.
+                return False
         if ready:
             return True
         if time.monotonic() >= deadline:

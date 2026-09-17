@@ -1134,6 +1134,12 @@ def run-local-e2e-phase [run: record, ctx: record] {
     if $phase_exit == 0 and not (e2e-wait-for-chain-advance $a_rpc 300) { $phase_exit = 1 }
     if $phase_exit == 0 and not (e2e-wait-for-chain-advance $b_rpc 300) { $phase_exit = 1 }
 
+    # Validators may run as root and create mode-0600 captures. Hand off this
+    # owned phase before either admission or the backpressure watcher reads it.
+    if $phase_exit == 0 and $ctx.lifecycle {
+        chown-to-current-user $lifecycle_dir
+    }
+
     if $phase_exit == 0 and $ctx.lifecycle_prewarm_cpu == "compare" {
         let admission = (^python3 contrib/bench/lifecycle/prewarm.py --expected $prewarm_config.expected --timeout 10 $"($lifecycle_dir)/a.jsonl" $"($lifecycle_dir)/b.jsonl" | complete)
         if $admission.exit_code != 0 {
@@ -1186,7 +1192,6 @@ def run-local-e2e-phase [run: record, ctx: record] {
                 submit_rpc_url: $submit_rpc_url, metrics_urls: $metrics_urls,
                 initial_db_size_bytes: $initial_db_size_bytes, phase_clickhouse_url: $phase_clickhouse_url}
             if $ctx.lifecycle {
-                chown-to-current-user $lifecycle_dir
                 with-env {TEMPO_LIFECYCLE_LOAD: ($load_config | to json --raw)} {
                     ^python3 contrib/bench/lifecycle/backpressure.py --epoch $lifecycle_epoch --window $"($lifecycle_dir)/window.json" --capture $"($lifecycle_dir)/a.jsonl" --capture $"($lifecycle_dir)/b.jsonl" -- nu bench-e2e.nu lifecycle-load
                     $env.LAST_EXIT_CODE
