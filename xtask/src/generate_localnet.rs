@@ -28,6 +28,12 @@ pub(crate) struct GenerateLocalnet {
 
     #[clap(flatten)]
     genesis_args: GenesisArgs,
+
+    /// Follower nodes to generate execution-network identities for.
+    ///
+    /// Followers are trusted execution peers but are not included in the genesis committee.
+    #[arg(long, value_name = "<ip>:<port>", value_delimiter = ',')]
+    followers: Vec<SocketAddr>,
 }
 
 impl GenerateLocalnet {
@@ -36,6 +42,7 @@ impl GenerateLocalnet {
             output,
             force,
             genesis_args,
+            followers,
         } = self;
 
         // Copy the seed here before genesis_args are consumed.
@@ -112,6 +119,34 @@ impl GenerateLocalnet {
                     execution_p2p_disc_key: execution_p2p_signing_key.display_secret().to_string(),
                     execution_p2p_identity: format!("{execution_p2p_identity:x}"),
                 },
+            ));
+        }
+
+        let mut follower_configs = vec![];
+        for addr in followers {
+            ensure!(
+                !consensus_config
+                    .validators
+                    .iter()
+                    .any(|validator| validator.addr == addr),
+                "follower address `{addr}` is already present in the validator committee"
+            );
+
+            let (execution_p2p_signing_key, execution_p2p_identity) = {
+                let (sk, pk) = SECP256K1.generate_keypair(&mut rng);
+                (sk, pk2id(&pk))
+            };
+            let consensus_p2p_port = addr.port();
+            let execution_p2p_port = consensus_p2p_port + 1;
+
+            trusted_peers.push(format!(
+                "enode://{execution_p2p_identity:x}@{}",
+                SocketAddr::new(addr.ip(), execution_p2p_port),
+            ));
+            follower_configs.push((
+                addr,
+                execution_p2p_signing_key.display_secret().to_string(),
+                format!("{execution_p2p_identity:x}"),
             ));
         }
 
@@ -193,6 +228,26 @@ impl GenerateLocalnet {
                 authrpc_port = config.execution_p2p_port + 2,
             );
             println!("{cmd}\n\n");
+        }
+
+        for (addr, execution_p2p_disc_key, execution_p2p_identity) in follower_configs {
+            let target_dir = output.join(addr.to_string());
+            std::fs::create_dir(&target_dir).wrap_err_with(|| {
+                format!(
+                    "failed creating target directory for follower keys at `{}`",
+                    target_dir.display()
+                )
+            })?;
+
+            std::fs::write(target_dir.join("enode.key"), execution_p2p_disc_key)
+                .wrap_err("failed writing follower enode key")?;
+            std::fs::write(target_dir.join("enode.identity"), execution_p2p_identity)
+                .wrap_err("failed writing follower enode identity")?;
+
+            println!(
+                "generated follower execution identity at `{}`",
+                target_dir.display()
+            );
         }
         Ok(())
     }

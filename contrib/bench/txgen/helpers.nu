@@ -1,6 +1,6 @@
 const TXGEN_HELPER_ACCOUNT_MNEMONIC = "test test test test test test test test test test test junk"
 const TXGEN_HELPER_DEFAULT_SEED = 99
-const TXGEN_HELPER_SCRAPE_INTERVAL_MS = 200
+const TXGEN_HELPER_SCRAPE_INTERVAL_MS = 5000
 const TXGEN_HELPER_FUND_DRAIN_TIMEOUT_SECS = 120
 const TXGEN_HELPER_PRESETS_DIR = "contrib/bench/txgen/presets"
 const TXGEN_HELPER_TIP20_PIECES_DIR = "contrib/bench/txgen/presets/tip20"
@@ -535,6 +535,7 @@ def --env txgen-configure-existing-recipients-env [preset_path: string, bloat_mi
 
     $env.TXGEN_EXISTING_RECIPIENTS_START = ($TXGEN_HELPER_EXISTING_RECIPIENTS_START | into string)
     $env.TXGEN_EXISTING_RECIPIENTS_END = ($recipient_end | into string)
+    $env.TXGEN_FULL_SENDERS_END = ($recipient_end | into string)
     print $"  Using existing recipient range ($TXGEN_HELPER_EXISTING_RECIPIENTS_START)..($recipient_end) from ($bloat_mib) MiB state bloat"
 }
 
@@ -698,6 +699,27 @@ def txgen-workload-metadata-args [preset_name: string, spec_path: string] {
     ["-m" "workload_mix_version=1" "-m" $"workload_mix_weights=($result.stdout | str trim)"]
 }
 
+def txgen-run-streaming-command [command: string] {
+    let status_path = (mktemp | str trim)
+    let wrapped_command = ([
+        "set +e; ("
+        $command
+        "); status=$?; printf '%s\\n' \"$status\" > "
+        (txgen-shell-quote $status_path)
+        "; exit 0"
+    ] | str join)
+
+    # Redirect explicitly because this helper's caller captures its return value.
+    bash -lc $wrapped_command out> /dev/stdout err> /dev/stderr
+    let exit_code = (try {
+        open --raw $status_path | str trim | into int
+    } catch {
+        1
+    })
+    rm -f $status_path
+    $exit_code
+}
+
 def txgen-run-preset-pipeline [
     --txgen-tempo-bin: string
     --txgen-bench-bin: string
@@ -710,6 +732,7 @@ def txgen-run-preset-pipeline [
     --duration: int
     --accounts: int
     --max-concurrent-requests: int
+    --scrape-interval-ms: int = $TXGEN_HELPER_SCRAPE_INTERVAL_MS
     --bench-args: string = ""
     --bench-env: string = ""
     --git-ref: string = ""
@@ -821,7 +844,7 @@ def txgen-run-preset-pipeline [
         "--tps" $tps
         "--max-concurrent" $max_concurrent_requests
         "--retries" 0
-        "--scrape-interval-ms" $TXGEN_HELPER_SCRAPE_INTERVAL_MS
+        "--scrape-interval-ms" $scrape_interval_ms
     ]
     let bench_base_cmd = [
         ...$bench_send_base_cmd
@@ -885,12 +908,10 @@ def txgen-run-preset-pipeline [
         } else {
             print "  Streaming keychain setup transactions into bench send..."
         }
-        let setup_result = (bash -lc $setup_pipeline | complete)
-        if $setup_result.stdout != "" { print $setup_result.stdout }
-        if $setup_result.stderr != "" { print $setup_result.stderr }
+        let setup_exit_code = (txgen-run-streaming-command $setup_pipeline)
 
-        if $setup_result.exit_code != 0 {
-            return { ok: false, exit_code: $setup_result.exit_code, report_path: $report_path }
+        if $setup_exit_code != 0 {
+            return { ok: false, exit_code: $setup_exit_code, report_path: $report_path }
         }
         if $is_vault {
             # Setup is complete. Do not reserve its nonces again when generating the workload.
@@ -906,12 +927,10 @@ def txgen-run-preset-pipeline [
     let vault_start_block = if $is_vault {
         (txgen-rpc-call $generate_rpc_url '{"jsonrpc":"2.0","id":1,"method":"eth_blockNumber","params":[]}').result | into int
     } else { 0 }
-    let result = (bash -lc $pipeline | complete)
-    if $result.stdout != "" { print $result.stdout }
-    if $result.stderr != "" { print $result.stderr }
+    let exit_code = (txgen-run-streaming-command $pipeline)
 
-    if $result.exit_code != 0 {
-        return { ok: false, exit_code: $result.exit_code, report_path: $report_path }
+    if $exit_code != 0 {
+        return { ok: false, exit_code: $exit_code, report_path: $report_path }
     }
     if not ($report_path | path exists) {
         print $"ERROR: txgen sender produced no ($report_path)"

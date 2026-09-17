@@ -23,6 +23,17 @@ const TRACY_SAMPLING_HZ = 18999
 const E2E_BLOAT_FREE_MARGIN_MIB = 51200
 const E2E_BLOAT_IMPORT_WORKING_SET_MULTIPLIER = 7
 const E2E_DEFAULT_BLOAT = 100
+const PAYMENTS_BLOAT_WORST_CASE = {
+    preset: "tip20_full_senders_policy"
+    tps: 50000
+    duration: 7200
+    bloat: 100
+    token_count: 4
+    gas_limit: "1000000000000"
+    general_gas_limit: "1000000000000"
+    rpc_cache_args: "--rpc-cache.max-blocks 128 --rpc-cache.max-receipts 128"
+    bench_env: "RUST_LOG=error"
+}
 const E2E_LOCAL_RETH_ARGS = [
     "--ipcdisable"
     "--disable-discovery"
@@ -172,6 +183,10 @@ def bench-restore-at [state_path: string, mount_point: string, datadir: string] 
     if (has-schelk) {
         run-bench-schelk "restore" $state_path $mount_point
     } else {
+        if not ($"($datadir).virgin" | path exists) {
+            print $"No virgin snapshot exists yet for ($datadir); initialization will create it."
+            return
+        }
         print $"Restoring snapshot from ($datadir).virgin..."
         rm -rf $datadir
         ^cp -a $"($datadir).virgin" $datadir
@@ -336,31 +351,30 @@ def bench-save-e2e-meta [datadir: string, meta_dir: string, marker: record, gene
     print $"Bench marker written to ($marker_path)"
 }
 
-def e2e-snapshot-required-files [datadir: string] {
+def e2e-snapshot-required-files [datadir: string, consensus_keys: bool = true] {
     let meta_dir = $"($datadir)/($BENCH_META_SUBDIR)"
-    [
+    let required = [
         $"($meta_dir)/genesis.json"
         $"($meta_dir)/trusted-peers.txt"
         $"($meta_dir)/marker.json"
-        $"($datadir)/signing.key"
-        $"($datadir)/signing.share"
         $"($datadir)/enode.key"
         $"($datadir)/enode.identity"
         $"($datadir)/db"
         $"($datadir)/static_files"
     ]
+    $required | append (if $consensus_keys { [$"($datadir)/signing.key" $"($datadir)/signing.share"] } else { [] })
 }
 
-def e2e-snapshot-missing-files [datadir: string] {
-    e2e-snapshot-required-files $datadir | where { |path| not ($path | path exists) }
+def e2e-snapshot-missing-files [datadir: string, consensus_keys: bool = true] {
+    e2e-snapshot-required-files $datadir $consensus_keys | where { |path| not ($path | path exists) }
 }
 
-def e2e-snapshot-ready [datadir: string] {
-    (e2e-snapshot-missing-files $datadir | length) == 0
+def e2e-snapshot-ready [datadir: string, consensus_keys: bool = true] {
+    (e2e-snapshot-missing-files $datadir $consensus_keys | length) == 0
 }
 
-def e2e-snapshots-ready [a_db: string, b_db: string] {
-    (e2e-snapshot-ready $a_db) and (e2e-snapshot-ready $b_db)
+def e2e-snapshots-ready [a_db: string, b_db: string, isolated_roles: bool = false] {
+    (e2e-snapshot-ready $a_db) and (e2e-snapshot-ready $b_db (not $isolated_roles))
 }
 
 def e2e-snapshot-state-hardfork [datadir: string] {
@@ -680,6 +694,19 @@ def build-e2e-consensus-args [node_dir: string, trusted_peers: string, port: int
     ]
 }
 
+def build-e2e-follower-args [node_dir: string, trusted_peers: string, port: int, consensus_ip: string] {
+    [
+        "--follow" "ws://127.0.0.1:8545"
+        "--consensus.metrics-address" $"($consensus_ip):($port + 2)"
+        "--trusted-peers" $trusted_peers
+        "--port" $"($port + 1)"
+        "--discovery.port" $"($port + 1)"
+        "--discovery.v5.port" $"($port + 4)"
+        "--p2p-secret-key" $"($node_dir)/enode.key"
+        "--authrpc.port" $"($port + 3)"
+    ]
+}
+
 def stop-e2e-processes-gracefully [] {
     let pids = (find-tempo-pids)
     if ($pids | length) > 0 {
@@ -905,6 +932,7 @@ def init-local-e2e-side [
     bloat_file: string,
     tempo_bin: string,
     marker: record,
+    consensus_keys: bool,
 ] {
     let meta_dir = $"($datadir)/($BENCH_META_SUBDIR)"
     let generated_trusted_peers = $"($LOCALNET_DIR)/e2e-local-init/trusted-peers.txt"
@@ -914,7 +942,9 @@ def init-local-e2e-side [
     mkdir $node_dir
 
     init-e2e-db $tempo_bin $generated_genesis $datadir $bloat $bloat_file
-    for file in ["signing.key" "signing.share" "enode.key" "enode.identity"] {
+    let node_files = ["enode.key" "enode.identity"]
+        | append (if $consensus_keys { ["signing.key" "signing.share"] } else { [] })
+    for file in $node_files {
         cp $"($generated_node_dir)/($file)" $"($node_dir)/($file)"
     }
     $trusted_peers | save -f $generated_trusted_peers
@@ -1020,10 +1050,12 @@ def run-local-e2e-phase [run: record, ctx: record] {
         e2e-regenesis $ctx.regenesis_tempo $genesis $ctx.b.datadir $hardfork $ctx.gas_limit $ctx.general_gas_limit
     }
     for role_info in [
-        { role: "a", node_dir: $ctx.a.node_dir }
-        { role: "b", node_dir: $ctx.b.node_dir }
+        { role: "a", node_dir: $ctx.a.node_dir, consensus_keys: true }
+        { role: "b", node_dir: $ctx.b.node_dir, consensus_keys: (not $ctx.isolated_roles) }
     ] {
-        for required_file in ["signing.key" "signing.share" "enode.key"] {
+        let required_files = ["enode.key"]
+            | append (if $role_info.consensus_keys { ["signing.key" "signing.share"] } else { [] })
+        for required_file in $required_files {
             let path = $"($role_info.node_dir)/($required_file)"
             if not ($path | path exists) {
                 print $"Error: missing ($role_info.role) validator file after snapshot recovery: ($path)"
@@ -1055,20 +1087,38 @@ def run-local-e2e-phase [run: record, ctx: record] {
 
     let a_rpc = "http://127.0.0.1:8545"
     let b_rpc = "http://127.0.0.1:8645"
+    let a_role_args = if $ctx.isolated_roles { ["--disable-tx-gossip"] } else { [] }
+    let b_role_args = if $ctx.isolated_roles {
+        [
+            "--tx-ingress-policy" "none"
+            "--disable-tx-gossip"
+            "--builder.disable-prewarming"
+            "--engine.disable-execution-cache-sharing-with-builder"
+        ]
+    } else {
+        []
+    }
     let a_base_args = (build-base-args $genesis $ctx.a.datadir $a_log_dir "0.0.0.0" 8545 9001)
         | append ["--log.file.format" "json"]
         | append (build-e2e-consensus-args $ctx.a.node_dir $ctx.trusted_peers $ctx.a.consensus_port $ctx.a.ip)
         | append $local_reth_args
         | append (log-filter-args $ctx.loud)
+        | append $a_role_args
         | append (if $ctx.gas_limit != "" { ["--builder.gaslimit" $ctx.gas_limit] } else { [] })
         | append (if $ctx.samply { ["--log.samply"] } else { [] })
         | append (if $ctx.tracy != "off" { ["--log.tracy" "--log.tracy.filter" $ctx.tracy_filter] } else { [] })
         | append (benchmark-otlp-args $ctx.tracing_otlp)
+    let b_topology_args = if $ctx.isolated_roles {
+        build-e2e-follower-args $ctx.b.node_dir $ctx.trusted_peers $ctx.b.consensus_port $ctx.b.ip
+    } else {
+        build-e2e-consensus-args $ctx.b.node_dir $ctx.trusted_peers $ctx.b.consensus_port $ctx.b.ip
+    }
     let b_base_args = (build-base-args $genesis $ctx.b.datadir $b_log_dir "0.0.0.0" 8645 9101)
         | append ["--log.file.format" "json"]
-        | append (build-e2e-consensus-args $ctx.b.node_dir $ctx.trusted_peers $ctx.b.consensus_port $ctx.b.ip)
+        | append $b_topology_args
         | append $local_reth_args
         | append (log-filter-args $ctx.loud)
+        | append $b_role_args
         | append (if $ctx.gas_limit != "" { ["--builder.gaslimit" $ctx.gas_limit] } else { [] })
         | append (if $ctx.samply { ["--log.samply"] } else { [] })
         | append (benchmark-otlp-args $ctx.tracing_otlp)
@@ -1138,7 +1188,7 @@ def run-local-e2e-phase [run: record, ctx: record] {
     }
     let metrics_urls = ["a:http://127.0.0.1:9001/metrics" "b:http://127.0.0.1:9101/metrics"]
         | append (if $ctx.runner_metrics_url != "" { [$"runner:($ctx.runner_metrics_url)"] } else { [] })
-    let submit_rpc_url = [$a_rpc $b_rpc] | str join ","
+    let submit_rpc_url = if $ctx.isolated_roles { $a_rpc } else { [$a_rpc $b_rpc] | str join "," }
 
     if $phase_exit == 0 {
         let phase_started_ms = ((date now | into int) / 1_000_000 | into int)
@@ -1156,6 +1206,7 @@ def run-local-e2e-phase [run: record, ctx: record] {
                 --duration $ctx.duration
                 --accounts $ctx.accounts
                 --max-concurrent-requests $ctx.max_concurrent_requests
+                --scrape-interval-ms $ctx.scrape_interval_ms
                 --bench-args $ctx.bench_args
                 --bench-env $ctx.bench_env
                 --git-ref $run.ref
@@ -1207,6 +1258,8 @@ def run-local-e2e-phase [run: record, ctx: record] {
         print "  Stopping validators before tracy-capture so Tracy can record graceful node shutdown..."
     }
     stop-e2e-processes-gracefully
+    chown-to-current-user $ctx.a.datadir
+    chown-to-current-user $ctx.b.datadir
     if $tracy_capture_started {
         stop-tracy-capture
         if $tracy_capture_job > 0 {
@@ -1362,7 +1415,10 @@ def "main e2e" [
     --summary-warmup-blocks: int = 5                    # Initial blocks per run excluded from summary metrics
     --accounts: int = 1000                              # Number of accounts
     --max-concurrent-requests: int = 500                # Max concurrent requests
+    --scrape-interval-ms: int = 5000                    # Node metrics scrape interval; lower values create large sample archives
     --bloat: int = $E2E_DEFAULT_BLOAT                   # State bloat snapshot size in GiB: 0, 1, 10, or 100
+    --bloat-keccak-signable-shared                       # Make the full shared bloat account range signable
+    --isolated-roles                                      # A proposes; B follows certified blocks with no mempool ingress
     --token-count: int = 4                         # Number of TIP20 tokens to use in txgen presets
     --gas-limit: string = $E2E_GAS_LIMIT                # Builder gas limit
     --general-gas-limit: string = $E2E_GAS_LIMIT        # General (non-payment) gas limit override
@@ -1481,8 +1537,10 @@ def "main e2e" [
     let a_consensus_port = ($a_validator | split row ":" | get 1 | into int)
     let b_ip = ($b_validator | split row ":" | get 0)
     let b_consensus_port = ($b_validator | split row ":" | get 1 | into int)
-    let a_db = $"($E2E_A_MOUNT)/tempo_e2e_($bloat_mib)mb"
-    let b_db = $"($E2E_B_MOUNT)/tempo_e2e_($bloat_mib)mb"
+    let bloat_mode_suffix = if $bloat_keccak_signable_shared { "_full_signable" } else { "" }
+    let role_mode_suffix = if $isolated_roles { "_isolated_roles" } else { "" }
+    let a_db = $"($E2E_A_MOUNT)/tempo_e2e_($bloat_mib)mb($bloat_mode_suffix)($role_mode_suffix)"
+    let b_db = $"($E2E_B_MOUNT)/tempo_e2e_($bloat_mib)mb($bloat_mode_suffix)($role_mode_suffix)"
     let a_identity = $a_db
     let b_identity = $b_db
     let genesis_path = $"($a_db)/($BENCH_META_SUBDIR)/genesis.json"
@@ -1514,12 +1572,12 @@ def "main e2e" [
     bench-restore-at $E2E_A_STATE_PATH $E2E_A_MOUNT $a_db
     bench-restore-at $E2E_B_STATE_PATH $E2E_B_MOUNT $b_db
 
-    let snapshots_ready = (e2e-snapshots-ready $a_db $b_db)
+    let snapshots_ready = (e2e-snapshots-ready $a_db $b_db $isolated_roles)
     let should_init_snapshots = $force_bloat or (not $snapshots_ready)
     if (not $snapshots_ready) and (not $force_bloat) {
         print $"Local e2e snapshot ($bloat) is missing required files; initializing it once."
         let missing_a = (e2e-snapshot-missing-files $a_db)
-        let missing_b = (e2e-snapshot-missing-files $b_db)
+        let missing_b = (e2e-snapshot-missing-files $b_db (not $isolated_roles))
         if ($missing_a | length) > 0 {
             print $"  Missing from a: ($missing_a | str join ', ')"
         }
@@ -1543,8 +1601,10 @@ def "main e2e" [
         build-tempo --no-default-features=$no_default_features ["tempo"] $profile $snapshot_features
         let tempo_bin = if $profile == "dev" { "./target/debug/tempo" } else { $"./target/($profile)/tempo" }
         let genesis_accounts = ([$accounts 3] | math max) + 1
-        print $"Generating local e2e localnet config for validators: ($E2E_VALIDATORS)"
-        cargo run -p tempo-xtask --profile $profile -- generate-localnet -o $init_dir --accounts $genesis_accounts --validators $E2E_VALIDATORS --seed $E2E_SEED --force ...$gas_limit_args ...$general_gas_limit_args ...$snapshot_hardfork_args
+        let committee = if $isolated_roles { $a_validator } else { $E2E_VALIDATORS }
+        let follower_args = if $isolated_roles { ["--followers" $b_validator] } else { [] }
+        print $"Generating local e2e committee: ($committee)"
+        cargo run -p tempo-xtask --profile $profile -- generate-localnet -o $init_dir --accounts $genesis_accounts --validators $committee ...$follower_args --seed $E2E_SEED --force ...$gas_limit_args ...$general_gas_limit_args ...$snapshot_hardfork_args
 
         let trusted_peers = (trusted-peers-from-localnet $init_dir)
         if $trusted_peers == "" {
@@ -1558,23 +1618,26 @@ def "main e2e" [
             ensure-bloat-space $bloat_mib
             print $"Generating local e2e state bloat \(($bloat_mib) MiB\)..."
             let token_args = ($TIP20_TOKEN_IDS | each { |id| ["--token" $"($id)"] } | flatten)
-            cargo run -p tempo-xtask --profile $profile -- generate-state-bloat --size $bloat_mib --out $bloat_file ...$token_args
+            let signable_args = if $bloat_keccak_signable_shared { ["--keccak-signable-shared"] } else { [] }
+            cargo run -p tempo-xtask --profile $profile -- generate-state-bloat --size $bloat_mib --out $bloat_file ...$token_args ...$signable_args
         }
 
         let marker = {
             bloat_mib: $bloat_mib
             bloat: $bloat
             accounts: $genesis_accounts
-            validators: $E2E_VALIDATORS
+            validators: $committee
+            follower: (if $isolated_roles { $b_validator } else { "" })
             seed: $E2E_SEED
             gas_limit: $gas_limit
             general_gas_limit: $general_gas_limit
             dkg_in_genesis: true
-            topology: "single-runner"
+            topology: (if $isolated_roles { "single-proposer-certified-follower" } else { "single-runner" })
             state_hardfork: $snapshot_state_hardfork
+            bloat_address_mode: (if $bloat_keccak_signable_shared { "keccak-signable-shared" } else { "legacy" })
         }
-        init-local-e2e-side a $E2E_A_STATE_PATH $E2E_A_MOUNT $a_db $a_identity $"($init_dir)/($a_validator)" $generated_genesis $trusted_peers $bloat_mib $bloat_file $tempo_bin ($marker | insert bench_datadir $a_db | insert node_dir $a_identity | insert validator_addr $a_validator)
-        init-local-e2e-side b $E2E_B_STATE_PATH $E2E_B_MOUNT $b_db $b_identity $"($init_dir)/($b_validator)" $generated_genesis $trusted_peers $bloat_mib $bloat_file $tempo_bin ($marker | insert bench_datadir $b_db | insert node_dir $b_identity | insert validator_addr $b_validator)
+        init-local-e2e-side a $E2E_A_STATE_PATH $E2E_A_MOUNT $a_db $a_identity $"($init_dir)/($a_validator)" $generated_genesis $trusted_peers $bloat_mib $bloat_file $tempo_bin ($marker | insert bench_datadir $a_db | insert node_dir $a_identity | insert validator_addr $a_validator) true
+        init-local-e2e-side b $E2E_B_STATE_PATH $E2E_B_MOUNT $b_db $b_identity $"($init_dir)/($b_validator)" $generated_genesis $trusted_peers $bloat_mib $bloat_file $tempo_bin ($marker | insert bench_datadir $b_db | insert node_dir $b_identity | insert validator_addr $b_validator) (not $isolated_roles)
         if ($E2E_BLOAT_TMP_DIR | path exists) {
             rm -rf $E2E_BLOAT_TMP_DIR
         }
@@ -1711,6 +1774,7 @@ def "main e2e" [
         duration: $duration
         accounts: $accounts
         max_concurrent_requests: $max_concurrent_requests
+        scrape_interval_ms: $scrape_interval_ms
         bloat: $bloat_mib
         token_count: $token_count
         txgen: $txgen
@@ -1743,6 +1807,7 @@ def "main e2e" [
         feature_local_reth_args: $feature_arg_filter.supported
         regenesis_tempo: $regenesis_tempo
         tracing_otlp: $tracing_otlp
+        isolated_roles: $isolated_roles
     }
 
     let baseline_base_label = if $baseline_name != "" { $baseline_name } else { $baseline }
@@ -1839,4 +1904,57 @@ def "main e2e" [
     if $e2e_exit != 0 {
         exit $e2e_exit
     }
+}
+
+# Worst-case payment workload: fully signable 100 GB state, active empty blacklist policy,
+# full sender pool, and isolated builder/certified-follower execution.
+def "main payments-bloat-worst-case" [
+    --baseline: string = "HEAD"                         # Baseline git SHA/ref
+    --feature: string = "HEAD"                          # Feature git SHA/ref
+    --tps: int = $PAYMENTS_BLOAT_WORST_CASE.tps         # Target TPS
+    --duration: int = $PAYMENTS_BLOAT_WORST_CASE.duration # Duration in seconds
+    --run-pairs: int = 1                                # Number of baseline/feature run pairs
+    --run-side: string = "feature"                      # Phases to run: comparison or feature
+    --baseline-args: string = ""                        # Additional baseline node arguments
+    --feature-args: string = ""                         # Additional feature node arguments
+    --baseline-env: string = ""                         # Environment vars for baseline nodes
+    --feature-env: string = ""                          # Environment vars for feature nodes
+    --bench-env: string = $PAYMENTS_BLOAT_WORST_CASE.bench_env # Environment vars for txgen
+    --profile: string = $DEFAULT_PROFILE                # Cargo build profile
+    --force-bloat                                       # Rebuild the dedicated snapshots
+    --init-only                                         # Build snapshots without running load
+    --no-cache                                          # Skip binary cache
+] {
+    let baseline_node_args = ([
+        $PAYMENTS_BLOAT_WORST_CASE.rpc_cache_args
+        $baseline_args
+    ] | where { |arg| ($arg | str trim) != "" } | str join " ")
+    let feature_node_args = ([
+        $PAYMENTS_BLOAT_WORST_CASE.rpc_cache_args
+        $feature_args
+    ] | where { |arg| ($arg | str trim) != "" } | str join " ")
+
+    (main e2e
+        --baseline $baseline
+        --feature $feature
+        --preset $PAYMENTS_BLOAT_WORST_CASE.preset
+        --tps $tps
+        --duration $duration
+        --bloat $PAYMENTS_BLOAT_WORST_CASE.bloat
+        --bloat-keccak-signable-shared
+        --isolated-roles
+        --token-count $PAYMENTS_BLOAT_WORST_CASE.token_count
+        --gas-limit $PAYMENTS_BLOAT_WORST_CASE.gas_limit
+        --general-gas-limit $PAYMENTS_BLOAT_WORST_CASE.general_gas_limit
+        --run-pairs $run_pairs
+        --run-side $run_side
+        --baseline-args $baseline_node_args
+        --feature-args $feature_node_args
+        --baseline-env $baseline_env
+        --feature-env $feature_env
+        --bench-env $bench_env
+        --profile $profile
+        --force-bloat=($force_bloat)
+        --init-only=($init_only)
+        --no-cache=($no_cache))
 }
