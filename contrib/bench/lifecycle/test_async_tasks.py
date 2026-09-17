@@ -113,6 +113,18 @@ class AsyncTaskTests(unittest.TestCase):
         self.assertTrue(inspect(registrations(),HEADER,FOOTER,cutoff=20)['valid'])
         self.assertTrue(inspect(registrations()+[event(8,'terminal',task_id=1,task_outcome=2)],HEADER,FOOTER)['valid'])
 
+    def test_async_registration_preserves_shared_source_origin_without_block_binding(self):
+        with tempfile.TemporaryDirectory() as directory:
+            path=Path(directory)/'a.jsonl'
+            capture(path,registrations()+[event(8,'terminal',task_id=1,task_outcome=2),
+                dict(type='event',id=0,ts=40,thread=1,fields=dict(stage='proposal_start',block_hash='1'*24)),
+                dict(type='event',id=0,ts=70,thread=1,fields=dict(stage='finalized',block_hash='1'*24))])
+            data=build([path],warmup=0,expected_async_tasks='selected_v1')
+            self.assertFalse(data['bad_capture'])
+            self.assertEqual(data['time_origin_ns'],1)
+            self.assertEqual(data['blocks'][0]['start'],39/1e6)
+            self.assertEqual(len(data['blocks'][0]['markers']),2)
+
     def test_context_tracks_reuse_lanes_and_never_claim_block_association(self):
         events=registrations()
         for poll in range(1,1001):

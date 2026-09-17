@@ -188,7 +188,8 @@ def read_node(path, role, cutoff=None, include_tasks=False):
                'open_spans': sum(s['end'] is None for s in spans.values()),
                'cutoff_spans': censored, 'crossing_aggregates_excluded': excluded_aggregates}
     result = (list(spans.values()), events, quality)
-    return (*result, task_capture) if include_tasks else result
+    task_first = min((e['ts'] for e in async_events if cutoff is None or e['ts'] < cutoff), default=None)
+    return (*result, task_capture, task_first) if include_tasks else result
 
 
 def operation_category(span):
@@ -211,7 +212,7 @@ def active_wall_ns(intervals):
 
 
 def build(paths, warmup=5, window=None, expected_detail=None, expected_async_tasks=None):
-    task_captures = {}
+    task_captures, task_starts = {}, []
     spans, events, quality = [], [], []
     boundary = first_boundary(paths)
     recorded = (window or {}).get('backpressure')
@@ -219,14 +220,16 @@ def build(paths, warmup=5, window=None, expected_detail=None, expected_async_tas
         boundary = recorded
     cutoff = boundary['ts'] if boundary else None
     for index, path in enumerate(paths):
-        ss, es, qq, tasks = read_node(path, f'Validator {chr(65 + index)}', cutoff, include_tasks=True)
+        ss, es, qq, tasks, task_first = read_node(path, f'Validator {chr(65 + index)}', cutoff, include_tasks=True)
         task_captures[qq['node']] = tasks
+        if task_first is not None:
+            task_starts.append(task_first)
         spans.extend(ss)
         events.extend(es)
         pruned = next((q for q in (window or {}).get('pruning', []) if q['node'] == qq['node']), {})
         qq['crossing_aggregates_excluded'] += pruned.get('crossing_aggregates_excluded', 0)
         quality.append(qq)
-    first = min((x['ts'] for x in spans + events), default=0)
+    first = min([*task_starts, *(x['ts'] for x in spans + events)], default=0)
     by_block = {}
     for event in events:
         if event.get('block'):
