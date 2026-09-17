@@ -1,0 +1,120 @@
+{
+  "created_at": "2026-09-17T13:56:51.970360+00:00",
+  "status": "completed",
+  "records": [
+    {
+      "branch": "joshie/perf-borrow-builder-command-sender",
+      "sha": "3b802411241b5eb57f8c3d2ee75bba10e70f2d08",
+      "pr": 7693,
+      "archive_ref": "refs/retired/20260917/joshie/perf-borrow-builder-command-sender",
+      "pr_state": "closed",
+      "closed_at": "2026-09-17T13:57:39Z",
+      "remote_branch_state": "deleted",
+      "verified_at": "2026-09-17T13:57:42.942786+00:00"
+    },
+    {
+      "branch": "joshie/perf-borrow-overlay-cursor",
+      "sha": "32cd7bcb2873325c06840c67fc4d2e6117f2cf82",
+      "pr": 7696,
+      "archive_ref": "refs/retired/20260917/joshie/perf-borrow-overlay-cursor",
+      "pr_state": "closed",
+      "closed_at": "2026-09-17T13:57:43Z",
+      "remote_branch_state": "deleted",
+      "verified_at": "2026-09-17T13:57:46.859658+00:00"
+    },
+    {
+      "branch": "joshie/bench-engine-prewarm-parent",
+      "sha": "c78a317d1714589c23a13a792e54d02f47be15dd",
+      "pr": 7690,
+      "archive_ref": "refs/retired/20260917/joshie/bench-engine-prewarm-parent",
+      "pr_state": "closed",
+      "closed_at": "2026-09-17T13:57:47Z",
+      "remote_branch_state": "deleted",
+      "verified_at": "2026-09-17T13:57:50.394014+00:00"
+    },
+    {
+      "branch": "joshie/bench-borrow-builder-prewarm-context",
+      "sha": "4fd46caead4920f5c4bf573b969280e623b2048f",
+      "pr": 7688,
+      "archive_ref": "refs/retired/20260917/joshie/bench-borrow-builder-prewarm-context",
+      "pr_state": "closed",
+      "closed_at": "2026-09-17T13:57:50Z",
+      "remote_branch_state": "deleted",
+      "verified_at": "2026-09-17T13:57:53.987912+00:00"
+    },
+    {
+      "branch": "joshie/bench-inline-single-storage",
+      "sha": "e8bae1456a50319f4602e940765c075b0b8a35f1",
+      "pr": 7681,
+      "archive_ref": "refs/retired/20260917/joshie/bench-inline-single-storage",
+      "pr_state": "closed",
+      "closed_at": "2026-09-17T13:57:54Z",
+      "remote_branch_state": "deleted",
+      "verified_at": "2026-09-17T13:57:57.616533+00:00"
+    },
+    {
+      "branch": "joshie/bench-body-subscription",
+      "sha": "70b38e6acb3f5bea790f8ee5dc397c13ca4344a2",
+      "pr": null,
+      "archive_ref": "refs/retired/20260917/joshie/bench-body-subscription",
+      "remote_branch_state": "deleted",
+      "verified_at": "2026-09-17T13:57:59.847734+00:00"
+    },
+    {
+      "branch": "joshie/bench-scatter-block",
+      "sha": "c98c31562cb35f1c842bef78d8b80728300e954f",
+      "pr": null,
+      "archive_ref": "refs/retired/20260917/joshie/bench-scatter-block",
+      "remote_branch_state": "deleted",
+      "verified_at": "2026-09-17T13:58:01.842762+00:00"
+    },
+    {
+      "branch": "joshie/bench-proof-result-channel",
+      "sha": "1c85224f5066504a6ad16058cf6bb1e1019ec28a",
+      "pr": null,
+      "archive_ref": "refs/retired/20260917/joshie/bench-proof-result-channel",
+      "remote_branch_state": "deleted",
+      "verified_at": "2026-09-17T13:58:03.973832+00:00"
+    },
+    {
+      "branch": "joshie/bench-lazy-aggregates-v2",
+      "sha": "97f38e0b4209e92bc0740bdbec60f0801bceb4f2",
+      "pr": null,
+      "archive_ref": "refs/retired/20260917/joshie/bench-lazy-aggregates-v2",
+      "remote_branch_state": "deleted",
+      "verified_at": "2026-09-17T13:58:06.182829+00:00"
+    },
+    {
+      "branch": "joshie/bench-single-storage-dispatch",
+      "sha": "af223e15f0a71dc9fb4bdafee1eb85b8651d4b69",
+      "pr": null,
+      "archive_ref": "refs/retired/20260917/joshie/bench-single-storage-dispatch",
+      "remote_branch_state": "deleted",
+      "verified_at": "2026-09-17T13:58:08.484711+00:00"
+    },
+    {
+      "branch": "joshie/bench-proof-root-scratch",
+      "sha": "1fdc6c93397971c629517b4d9e8e16ce9349c445",
+      "pr": null,
+      "archive_ref": "refs/retired/20260917/joshie/bench-proof-root-scratch",
+      "remote_branch_state": "deleted",
+      "verified_at": "2026-09-17T13:58:10.880364+00:00"
+    },
+    {
+      "branch": "joshie/bench-inline-owned",
+      "sha": "c42763f3a2dfe3df98b5e6813fcd60873f1b8e93",
+      "pr": null,
+      "archive_ref": "refs/retired/20260917/joshie/bench-inline-owned",
+      "remote_branch_state": "deleted",
+      "verified_at": "2026-09-17T13:58:12.971177+00:00"
+    },
+    {
+      "branch": "joshie/bench-storage-forward-v3",
+      "sha": "ac8cace726f6948a84feb90294fb0551c6513c7a",
+      "pr": null,
+      "archive_ref": "refs/retired/20260917/joshie/bench-storage-forward-v3",
+      "remote_branch_state": "deleted",
+      "verified_at": "2026-09-17T13:58:15.183524+00:00"
+    }
+  ]
+}

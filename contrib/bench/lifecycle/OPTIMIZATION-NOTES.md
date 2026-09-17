@@ -20,16 +20,15 @@ tested read caching plus seeding together: forwarding median 11.119 to 0.094 ms,
 release-to-body median 25.165 to 14.147 ms. It was feature-first only, with no
 whole-node CPU/RSS result; do not present it as a counterbalanced node win.
 
-The user's original exclusion was "Persistence struggles to keep pace." Earlier
-analysis interpreted this broadly enough to also defer consensus/archive
-durability tuning. That broader interpretation was the investigation's working
-scope, not an explicit user instruction banning every consensus-journal change.
-Distinguish consensus/archive durable-write waits below from Reth background
-state persistence falling behind. No durability behavior was changed, and no
-execution-thread stall is classified as persistence merely by that exclusion.
+The user clarified on 2026-09-17 that only **backpressure from background state
+persistence** is excluded. Consensus/archive durability waits are explicitly in
+scope for investigation and safe optimization. Earlier notes interpreted the
+exclusion too broadly; that interpretation is superseded. Preserve required
+crash durability and ordering. Execution-thread stalls must be attributed from
+evidence, not classified as persistence by assumption.
 
-Concrete excluded outliers in run35212362924, verified against complete context
-and exact parent chains:
+Concrete durability outliers in run35212362924, verified against complete context
+and exact parent chains (the trace label `fsync` wraps `File::sync_data()`):
 
 | Phase / block | Observed interval | Recorded durability operations |
 |---|---:|---|
@@ -44,6 +43,24 @@ first three marshal actor operations themselves finish in about 1–2 ms; retain
 async persistence children and the durable acknowledgment extend the enclosing
 scope. Do not describe that as an actor occupied for 494 ms. All examples precede
 the backpressure cutoff and remain in the measured block distributions.
+
+## Retirement requested on 2026-09-17
+
+The user requested closing unsuccessful optimization experiments. PRs
+#7681 (inline proofs), #7688 (builder context), #7690 (engine parent), #7693
+(command sender), and #7696 (overlay cursor) were closed because node
+benefit was not established. Preserve immutable revisions and benchmark results
+below; closure is not deletion of the experimental evidence or instrumentation.
+PR #7679 is a correctness fix now maintained by another person and must remain
+untouched. Keep #7661, #7680 and #7694 for useful instrumentation. Keep #7682's
+measured signature-allocation reduction separate from claims of node speedup.
+The finalized decode cache, combined broadcast/decode trial, and direct hints
+retain demonstrated narrower effects; they are not general node-speed winners.
+
+Retired branch heads and closure receipts are recorded in
+`RETIREMENT-2026-09-17.json`. Retained local Git refs prevent experimental commits
+from becoming unreachable. Existing benchmark and capture source refs remain
+reproducible; no artifacts are rewritten.
 
 ## Paths tried without an established overall improvement
 
