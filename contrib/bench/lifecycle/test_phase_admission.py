@@ -54,12 +54,13 @@ def mark-schelk-dirty-at [...args] {}
                        feature_env='', baseline_local_reth_args=[], feature_local_reth_args=[],
                        results_dir='results', tune=True, gas_limit='', general_gas_limit='',
                        samply=False, tracy='off', tracing_otlp=False, loud=False,
-                       lifecycle=True, lifecycle_detail='full', trusted_peers='',
+                       lifecycle=True, lifecycle_detail='full', lifecycle_prewarm_cpu='disabled', trusted_peers='',
                        benchmark_id='', reference_epoch=0)
             for node in ('a', 'b'):
                 ctx[node] = dict(state_path=node, mount=node, datadir=node, node_dir=node,
                                  consensus_port=0, ip='')
             script = (f'source {json.dumps(str(ROOT / "contrib/bench/lifecycle/disk.nu"))}\n'
+                      + f'source {json.dumps(str(ROOT / "contrib/bench/lifecycle/run-plan.nu"))}\n'
                       + stubs + '\ndef fixture [run: record, ctx: record] {' + prefix
                       + '\nprint admitted\n}\nfixture '
                       + "('{\"phase\":\"feature-1\",\"side\":\"feature\",\"ref\":\"fixture\"}' | from json) "
