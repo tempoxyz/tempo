@@ -2,7 +2,7 @@
 # Transaction shares: plain transfer 25%, memo transfer 40%, mint 1%, MPP 15%,
 # zone deposit 5%, zone withdrawal 4%, vault deposit 6%, vault withdrawal 4%.
 # These are benchmark assumptions, not a replay of mainnet activity.
-# Uses the native MPP open-only preset with txgen main.
+# Uses native MPP and explicit setup dependencies (tempoxyz/txgen#214).
 # Transfers and mints target prepopulated state-bloat accounts; requires nonzero bloat.
 # The helper combines fixture setup and expands per-user/portal templates.
 include:

@@ -705,8 +705,8 @@ def txgen-workload-metadata-args [preset_name: string, spec_path: string] {
 }
 
 # Reuse the standalone renderers, preserving aggregate transaction shares even
-# when users and portals have different counts. Vault deployments must come first:
-# their addresses are fixed, while zone deployments resolve their addresses dynamically.
+# when users and portals have different counts. Keep each fixture nonce lane in
+# order; separate vault/zone deployers and explicit dependencies allow overlap.
 def txgen-prepare-public-mix-preset [spec_path: string, count: int, accounts: int, zones: int, chain_id: int] {
     if $zones < 1 { error make {msg: "Public mix requires at least one zone"} }
     let presets = ($spec_path | path dirname)
