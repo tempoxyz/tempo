@@ -641,7 +641,7 @@ fn queued_build_is_checked_against_finality_when_scheduled() {
         release.send(()).unwrap();
         let _ = verify
             .await
-            .expect_err("the build replaced the verification slot");
+            .expect_err("finality passed the verification's round, so it is dropped");
         build
             .await
             .expect_err("finality made the queued parent stale");

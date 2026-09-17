@@ -7,7 +7,7 @@ use alloy_rpc_types_engine::{
     PayloadStatusEnum,
 };
 use commonware_consensus::{
-    marshal::core::DigestFallback,
+    marshal::{Identifier, core::DigestFallback},
     types::{Height, Round},
 };
 use commonware_cryptography::ed25519::PublicKey;
@@ -120,6 +120,11 @@ pub(crate) trait Marshal: Clone + Send + Sync + 'static {
     /// A best-effort attempt to retrieve a finalized block from marshal's
     /// local storage.
     fn get_block(&self, height: Height) -> impl Future<Output = Option<Block>> + Send;
+
+    /// A best-effort attempt to retrieve the block with `digest` from
+    /// marshal's local storage, whether or not it is finalized. Never
+    /// reaches out to peers.
+    fn get_block_by_digest(&self, digest: Digest) -> impl Future<Output = Option<Block>> + Send;
 
     /// Retrieves `(height, digest)` finalization info for `height` from
     /// marshal's local storage.
@@ -237,6 +242,11 @@ impl Marshal for crate::alias::marshal::Mailbox {
     fn get_block(&self, height: Height) -> impl Future<Output = Option<Block>> + Send {
         let mailbox = self.clone();
         async move { mailbox.get_block(height).await }
+    }
+
+    fn get_block_by_digest(&self, digest: Digest) -> impl Future<Output = Option<Block>> + Send {
+        let mailbox = self.clone();
+        async move { mailbox.get_block(Identifier::Digest(digest)).await }
     }
 
     fn get_info(&self, height: Height) -> impl Future<Output = Option<(Height, Digest)>> + Send {

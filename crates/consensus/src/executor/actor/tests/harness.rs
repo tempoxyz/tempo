@@ -826,10 +826,13 @@ impl ExecutionLayer for FakeExecution {
     }
 }
 
+/// One block the fake marshal was asked for, with every waiter for it. Like
+/// the real marshal actor, several subscriptions for the same digest share
+/// one fetch and are notified together.
 struct MarshalSubscription {
     digest: Digest,
     notarized_in: Round,
-    sender: oneshot::Sender<Arc<Block>>,
+    senders: Vec<oneshot::Sender<Arc<Block>>>,
 }
 
 struct MarshalSubscriptions(Mutex<Vec<MarshalSubscription>>);
@@ -839,28 +842,69 @@ impl MarshalSubscriptions {
         Self(Mutex::new(Vec::new()))
     }
 
-    fn subscribe(&self, digest: Digest, notarized_in: Round) -> oneshot::Receiver<Arc<Block>> {
+    /// Subscribes for `digest`. Returns whether this opened a new fetch
+    /// rather than joining one already open.
+    fn subscribe(
+        &self,
+        digest: Digest,
+        notarized_in: Round,
+    ) -> (oneshot::Receiver<Arc<Block>>, bool) {
         let (sender, receiver) = oneshot::channel();
-        self.0.lock().push(MarshalSubscription {
+        let mut subscriptions = self.0.lock();
+        Self::prune(&mut subscriptions);
+        if let Some(subscription) = subscriptions
+            .iter_mut()
+            .find(|subscription| subscription.digest == digest)
+        {
+            subscription.senders.push(sender);
+            return (receiver, false);
+        }
+        subscriptions.push(MarshalSubscription {
             digest,
             notarized_in,
-            sender,
+            senders: vec![sender],
         });
-        receiver
+        (receiver, true)
+    }
+
+    /// Forgets waiters that went away, and fetches nobody waits for anymore.
+    fn prune(subscriptions: &mut Vec<MarshalSubscription>) {
+        for subscription in subscriptions.iter_mut() {
+            subscription.senders.retain(|sender| !sender.is_closed());
+        }
+        subscriptions.retain(|subscription| !subscription.senders.is_empty());
     }
 
     fn open(&self) -> Vec<(Digest, Round)> {
         let mut subscriptions = self.0.lock();
-        subscriptions.retain(|subscription| !subscription.sender.is_closed());
+        Self::prune(&mut subscriptions);
         subscriptions
             .iter()
             .map(|subscription| (subscription.digest, subscription.notarized_in))
             .collect()
     }
 
+    /// How many waiters share the open fetch for `digest`.
+    fn waiters(&self, digest: Digest) -> usize {
+        let mut subscriptions = self.0.lock();
+        Self::prune(&mut subscriptions);
+        subscriptions
+            .iter()
+            .find(|subscription| subscription.digest == digest)
+            .map_or(0, |subscription| subscription.senders.len())
+    }
+
+    /// Delivers `block` to every waiter for `digest`. Every waiter is
+    /// served, not only the first; returns whether any received it.
     fn fulfill(&self, digest: Digest, block: Arc<Block>) -> bool {
-        self.take(digest)
-            .is_some_and(|subscription| subscription.sender.send(block).is_ok())
+        let Some(subscription) = self.take(digest) else {
+            return false;
+        };
+        let mut delivered = false;
+        for sender in subscription.senders {
+            delivered |= sender.send(block.clone()).is_ok();
+        }
+        delivered
     }
 
     fn discard(&self, digest: Digest) -> bool {
@@ -869,6 +913,7 @@ impl MarshalSubscriptions {
 
     fn take(&self, digest: Digest) -> Option<MarshalSubscription> {
         let mut subscriptions = self.0.lock();
+        Self::prune(&mut subscriptions);
         let position = subscriptions
             .iter()
             .position(|subscription| subscription.digest == digest)?;
@@ -883,7 +928,8 @@ struct FakeMarshalInner {
     infos: Mutex<HashMap<u64, Digest>>,
     /// Open digest subscriptions the test can fulfill or drop.
     subscriptions: MarshalSubscriptions,
-    /// Every subscription ever made, in order.
+    /// Every fetch ever opened, in order. A subscription joining an open
+    /// fetch for the same digest is not a new fetch.
     subscribe_log: Mutex<Vec<(Digest, Round)>>,
     get_block_log: Mutex<Vec<u64>>,
 }
@@ -925,7 +971,13 @@ impl FakeMarshal {
         self.inner.subscriptions.open()
     }
 
-    /// Every subscription ever opened, in order.
+    /// How many subscriptions share the open fetch for `digest`.
+    pub(super) fn waiters(&self, digest: Digest) -> usize {
+        self.inner.subscriptions.waiters(digest)
+    }
+
+    /// Every fetch ever opened, in order. A subscription joining an open
+    /// fetch for the same digest is not a new fetch.
     pub(super) fn subscribe_log(&self) -> Vec<(Digest, Round)> {
         self.inner.subscribe_log.lock().clone()
     }
@@ -960,6 +1012,17 @@ impl Marshal for FakeMarshal {
         async move { block }
     }
 
+    fn get_block_by_digest(&self, digest: Digest) -> impl Future<Output = Option<Block>> + Send {
+        let block = self
+            .inner
+            .blocks
+            .lock()
+            .values()
+            .find(|block| block.digest() == digest)
+            .cloned();
+        async move { block }
+    }
+
     fn get_info(&self, height: Height) -> impl Future<Output = Option<(Height, Digest)>> + Send {
         let info = self
             .inner
@@ -975,8 +1038,11 @@ impl Marshal for FakeMarshal {
         digest: Digest,
         notarized_in: Round,
     ) -> oneshot::Receiver<Arc<Block>> {
-        self.inner.subscribe_log.lock().push((digest, notarized_in));
-        self.inner.subscriptions.subscribe(digest, notarized_in)
+        let (receiver, opened) = self.inner.subscriptions.subscribe(digest, notarized_in);
+        if opened {
+            self.inner.subscribe_log.lock().push((digest, notarized_in));
+        }
+        receiver
     }
 }
 
@@ -1073,6 +1139,7 @@ impl HarnessBuilder {
             marshal,
             mailbox,
             actor,
+            tip: options.finalized_tip,
         })
     }
 }
@@ -1084,6 +1151,8 @@ pub(super) struct Harness<TContext = deterministic::Context> {
     pub(super) marshal: FakeMarshal,
     pub(super) mailbox: Mailbox,
     pub(super) actor: Handle<()>,
+    /// The finalized tip last reported to the actor.
+    tip: (Round, u64, Digest),
 }
 
 impl Harness {
@@ -1132,6 +1201,16 @@ where
                 .accepted(),
             "actor should accept the finalized tip",
         );
+        self.tip = (round, height, digest);
+    }
+
+    /// Wakes the actor's event loop without changing its state by reporting
+    /// the current finalized tip again. Queued verifications are not polled;
+    /// a subscription that delivered while the actor was idle is picked up
+    /// on the next iteration, which this provides.
+    pub(super) fn kick(&mut self) {
+        let (round, height, digest) = self.tip;
+        self.deliver_tip(round, height, digest);
     }
 
     /// Delivers a finalized block, returning the acknowledgement waiter.
