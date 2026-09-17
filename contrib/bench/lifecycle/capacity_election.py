@@ -98,11 +98,11 @@ def capacity(report):
 
 def elect(receipts, *, workflow_sha, run_id, run_attempt, slots=2, setup_failed_slots=None):
     expected = binding(workflow_sha, run_id, run_attempt)
-    integer(slots, 2, 4)
+    integer(slots, 2, 5)
     failures = [] if setup_failed_slots is None else setup_failed_slots
     require(type(failures) is list)
     if setup_failed_slots is not None:
-        require(slots == 4)
+        require(slots in (4, 5))
     require(all(integer(slot, 1, slots) for slot in failures))
     require(len(failures) == len(set(failures)) < slots)
     require(type(receipts) is list and len(receipts) + len(failures) == slots)
@@ -158,7 +158,7 @@ def main(argv=None, stdin=None):
         parser.add_argument('--workflow-sha', required=True)
         parser.add_argument('--run-id', required=True)
         parser.add_argument('--run-attempt', required=True)
-        parser.add_argument('--slots', choices=('2', '3', '4'), default='2')
+        parser.add_argument('--slots', choices=('2', '3', '4', '5'), default='2')
         parser.add_argument('--policy', choices=('strict_v1', SETUP_FAILURE_POLICY), default='strict_v1')
         parser.add_argument('paths', nargs='*')
         args = parser.parse_args(argv)

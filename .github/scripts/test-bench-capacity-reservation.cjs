@@ -45,7 +45,7 @@ sys.stdout.buffer.write(out.getvalue())`;
   assert.equal(result.status, 0, String(result.stderr));
   return result.stdout;
 }
-const validZips = new Map([1, 2, 3, 4].map(slot => [100 + slot, zip(JSON.stringify(receipt(slot)))]));
+const validZips = new Map([1, 2, 3, 4, 5].map(slot => [100 + slot, zip(JSON.stringify(receipt(slot)))]));
 
 function fixture(options = {}) {
   const workspace = fs.mkdtempSync(path.join(os.tmpdir(), 'capacity-transport-'));
@@ -86,7 +86,7 @@ function fixture(options = {}) {
     const rows = options.pages ? options.pages[Math.min(lists++, options.pages.length - 1)] : options.artifacts || [artifact(1), artifact(2)];
     return { data: options.listData || { total_count: rows.length, artifacts: rows } };
   }, downloadArtifact: async args => {
-    requests.push(['download', args]); assert.equal(args.archive_format, 'zip'); assert.ok([101, 102, 103, 104].includes(args.artifact_id));
+    requests.push(['download', args]); assert.equal(args.archive_format, 'zip'); assert.ok([101, 102, 103, 104, 105].includes(args.artifact_id));
     assert.ok(args.request.signal instanceof AbortSignal);
     assert.equal(args.request.signal.aborted, false);
     assert.equal(args.request.log.warn('private sentinel'), undefined);
@@ -312,7 +312,7 @@ test('three-slot admission requires every receipt and keeps the total deadline',
 test('slot count is explicit private configuration and never expands receipt schema', async () => {
   const f=fixture({slots:3,slot:3});
   try {
-    for (const slots of [undefined,'','1','5','03','3.0','04','4.0']) {
+    for (const slots of [undefined,'','1','6','03','3.0','04','4.0','05','5.0']) {
       assert.throws(()=>adapter.binding(context,{...f.env,BENCH_CAPACITY_SLOTS:slots}));
     }
     assert.throws(()=>adapter.binding(context,{...f.env,BENCH_CAPACITY_SLOTS:'2'}));
@@ -382,10 +382,10 @@ test('four slots reject incomplete foreign malformed and oversized receipt sets 
 test('four-slot probe preserves closed receipt schema and exact configuration admission', async () => {
   const f=fixture({slots:4,slot:4});
   try {
-    for (const value of ['','0','5','04','4.0']) {
+    for (const value of ['','0','6','04','4.0','05','5.0']) {
       assert.throws(()=>adapter.binding(context,{...f.env,BENCH_CAPACITY_SLOT:value}));
     }
-    for (const value of ['2','3','5','04','4.0']) {
+    for (const value of ['2','3','6','04','4.0','05','5.0']) {
       assert.throws(()=>adapter.binding(context,{...f.env,BENCH_CAPACITY_SLOTS:value}));
     }
     await adapter.probe({...f,execute:()=>({status:0,stdout:JSON.stringify(capacity()),stderr:''})});
@@ -515,4 +515,78 @@ test('receipt ZIP transport admits only stored or deflate codecs', async () => {
     if ([0,8].includes(method)) assert.ok(!result.messages.some(m=>m.startsWith('FAILED:')));
     else rejected(result);
   }
+});
+
+function fiveOptions(failed = []) {
+  return {slots:5,slot:5,policy:adapter.SETUP_FAILURE_POLICY,
+    jobs:{total_count:5,jobs:[1,2,3,4,5].map(slot=>job(slot,failed.includes(slot)))},
+    artifacts:[1,2,3,4,5].filter(slot=>!failed.includes(slot)).map(artifact)};
+}
+
+test('five-slot source-bound election selects its own winner across rotations and ties', async () => {
+  for(const [free,winner] of [[[96,112,128,144,160],5],[[96,96,96,96,96],1]]) {
+    const zips=new Map(free.map((value,i)=>[101+i,zip(JSON.stringify(receipt(i+1,value)))]));
+    for(let rotate=0;rotate<5;rotate++) {
+      const order=[1,2,3,4,5].slice(rotate).concat([1,2,3,4,5].slice(0,rotate));
+      for(const slot of [1,2,3,4,5]) {
+        const result=await elect({...fiveOptions(),slot,zips,artifacts:order.map(artifact),
+          jobs:{total_count:5,jobs:order.toReversed().map(i=>job(i))}});
+        assert.ok(!result.messages.some(m=>m.startsWith('FAILED:')));
+        assert.equal(result.output.selected,String(slot===winner));
+        if(slot===winner) {
+          assert.equal(result.admission.slots,5);assert.equal(result.admission.selected_slot,winner);
+          assert.deepEqual(result.admission.capacity_receipts.map(r=>r.slot),[1,2,3,4,5]);
+        } else assert.equal(result.admission,null);
+      }
+    }
+  }
+});
+
+test('five-slot setup accounting excludes only proven slots and does not assume distinct runners', async () => {
+  for(const failed of [[1],[2],[3],[4],[5],[1,2,3,4]]) {
+    const options=fiveOptions(failed);options.slot=failed.includes(2)?(failed.includes(3)?5:3):2;
+    const result=await elect(options);assert.equal(result.output.selected,'true');
+    assert.deepEqual(result.admission.setup_failed_slots,failed);assert.equal(result.admission.slots,5);
+  }
+  const options=fiveOptions([1,2,3,4]);
+  // API job identities remain unique; native runner registration reuse is not
+  // evidence of distinct hosts and must neither be exported nor force routing.
+  options.jobs.jobs.forEach(j=>{j.runner_id=4321;j.runner_name=secret;});
+  const result=await elect(options);assert.equal(result.output.selected,'true');
+  assert.ok(!JSON.stringify(result.admission).includes('4321'));
+});
+
+test('fifth-slot missing conflicting stale oversized and delayed evidence remains bounded', async () => {
+  const base=fiveOptions([4]);base.slot=2;
+  for(const override of [
+    {jobs:{total_count:4,jobs:[1,2,3,4].map(i=>job(i,i===4))}},
+    {jobs:{total_count:6,jobs:[1,2,3,4,5,6].map(i=>job(i,i===4))}},
+    {artifacts:[artifact(1),artifact(2),artifact(3)]},
+    {artifacts:[1,2,3,4,5].map(artifact)},
+    {artifacts:[artifact(1),artifact(2),artifact(3),artifact(6)]},
+    {jobsClock:9000},{downloadClock:2250},{pythonClock:2250},
+    {artifacts:base.artifacts.map(a=>a.id===105?{...a,size_in_bytes:65537}:a)},
+  ]) rejected(await elect({...base,...override}));
+  for(const field of ['run_id','run_attempt','head_sha','name','id']) {
+    const options=fiveOptions([5]);
+    options.jobs.jobs[4][field]=field==='head_sha'?'2'.repeat(40):field==='name'?'bench-e2e (reserved slot 4)':field==='id'?501:999;
+    rejected(await elect(options));
+  }
+  const mutated=structuredClone(base.jobs);mutated.jobs[3].steps.push({...mutated.jobs[3].steps[0],number:2,name:'Probe reserved runner capacity',conclusion:'skipped'});
+  rejected(await elect({...base,jobPages:[base.jobs,mutated]}));
+  const low=new Map([1,2,3,5].map(slot=>[100+slot,zip(JSON.stringify(receipt(slot,48)))]));
+  rejected(await elect({...base,zips:low}));
+  rejected(await elect(fiveOptions([1,2,3,4,5])));
+  const delayed=await elect({...base,pages:[base.artifacts.slice(0,3),base.artifacts]});
+  assert.equal(delayed.elapsed,3000);assert.equal(delayed.output.selected,'true');
+});
+
+test('fifth-slot probe is closed, count is explicit, and six slots are forbidden', async () => {
+  const f=fixture({slots:5,slot:5,policy:adapter.SETUP_FAILURE_POLICY});
+  try {
+    for(const slots of ['4','6','05','5.0','']) assert.throws(()=>adapter.binding(context,{...f.env,BENCH_CAPACITY_SLOTS:slots}));
+    for(const slot of ['6','05','5.0','']) assert.throws(()=>adapter.binding(context,{...f.env,BENCH_CAPACITY_SLOT:slot}));
+    await adapter.probe({...f,execute:()=>({status:0,stdout:JSON.stringify(capacity()),stderr:''})});
+    assert.deepEqual(JSON.parse(fs.readFileSync(path.join(f.env.GITHUB_WORKSPACE,f.output['artifact-path']),'utf8')),receipt(5,96));
+  } finally {f.close();}
 });
