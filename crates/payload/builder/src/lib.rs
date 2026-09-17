@@ -7,6 +7,7 @@ mod budget;
 mod encode;
 mod metrics;
 mod prewarming;
+mod prewarming_state;
 
 pub use budget::DEFAULT_BUILD_TIME_MULTIPLIER;
 use crossbeam_channel::Sender;

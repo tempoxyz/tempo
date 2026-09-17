@@ -1,7 +1,11 @@
-use std::sync::{
-    Arc,
-    atomic::{AtomicBool, Ordering},
-    mpsc::{self, Receiver, Sender},
+use crate::prewarming_state::{self, Slot};
+use std::{
+    cell::RefCell,
+    sync::{
+        Arc, Weak,
+        atomic::{AtomicBool, Ordering},
+        mpsc::{self, Receiver, Sender},
+    },
 };
 
 use alloy_primitives::B256;
@@ -21,6 +25,21 @@ use tempo_transaction_pool::{StateAwarePoolTransaction, best::BestTransaction};
 use tracing::{instrument, trace};
 
 pub(crate) type PrewarmEvmState = Option<TempoEvm<StateProviderDatabase<StateProviderBox>>>;
+
+thread_local! {
+    static BUILDER_PREWARM: RefCell<Slot<PrewarmEvmState>> = const {RefCell::new(Slot::new())};
+}
+
+struct ClearBuilderState<'a> {
+    pool: &'a WorkerPool,
+    owner: Weak<AtomicBool>,
+}
+impl Drop for ClearBuilderState<'_> {
+    fn drop(&mut self) {
+        self.pool
+            .broadcast_fn(|| prewarming_state::clear(&BUILDER_PREWARM, &self.owner));
+    }
+}
 
 /// Prewarming orchestrator that consumes source [`BestTransactions`] with bounded
 /// lookahead, prewarms buffered transactions in parallel, and produces a new
@@ -84,11 +103,19 @@ impl BestTransactionsPrewarming {
         Provider: StateProviderFactory + Clone + 'static,
     {
         let pool = executor.prewarming_pool();
+        let _clear = ClearBuilderState {
+            pool,
+            owner: Arc::downgrade(&ctx.prewarm.stop),
+        };
 
         pool.in_place_scope(|scope| {
             let prewarm = ctx.prewarm.clone();
             scope.spawn(move |_| {
-                pool.init::<PrewarmEvmState>(|_| prewarm.evm_for_ctx());
+                pool.broadcast_fn(|| {
+                    prewarming_state::initialize(&BUILDER_PREWARM, &prewarm.stop, || {
+                        prewarm.evm_for_ctx()
+                    })
+                });
             });
 
             let advance = |ctx: &mut BestTransactionsPrewarmingContext<Txs, Provider>| {
@@ -167,9 +194,9 @@ impl BestTransactionsPrewarming {
                 }
             }
         });
-
+        // The existing scope has joined every leaf. Normal TLS cleanup is excluded.
         observer.finish();
-        pool.clear();
+        drop(_clear);
     }
 
     /// Prewarms a transaction by executing it on top of the latest state.
@@ -187,81 +214,85 @@ impl BestTransactionsPrewarming {
         Provider: StateProviderFactory + Clone + 'static,
     {
         let mut cpu = cpu_job.start();
-        let replay = WorkerPool::with_worker_mut(|worker| {
-            if prewarm.parallel && !is_parallel_candidate(&tx) {
-                cpu.outcome(CpuOutcome::ParallelIneligible);
-                return None;
-            }
+        if prewarm.parallel && !is_parallel_candidate(&tx) {
+            cpu.outcome(CpuOutcome::ParallelIneligible);
+            return PrewarmedTransaction::without_replay(tx);
+        }
+        let replay = prewarming_state::with_state(
+            &BUILDER_PREWARM,
+            &prewarm.stop,
+            || prewarm.evm_for_ctx(),
+            |state| {
+                let Some(evm) = state.as_mut() else {
+                    cpu.outcome(CpuOutcome::EvmUnavailable);
+                    return None;
+                };
 
-            let Some(evm) = worker.get_or_init(|| prewarm.evm_for_ctx()).as_mut() else {
-                cpu.outcome(CpuOutcome::EvmUnavailable);
-                return None;
-            };
-
-            if prewarm.is_stopped() {
-                cpu.outcome(CpuOutcome::Stopped);
-                return None;
-            }
-
-            let mut tx_env = tx.transaction.clone_tx_env();
-            if let Some(tempo_tx_env) = tx_env.tempo_tx_env.as_mut() {
-                tempo_tx_env.expiring_nonce_idx = expiring_nonce_offset;
-            }
-
-            let result = match evm.transact_raw(tx_env) {
-                Ok(result) => result.result,
-                Err(err) => {
-                    // Discard actions recorded by the failed transaction before reusing this worker.
-                    evm.clear_actions();
-                    cpu.outcome(CpuOutcome::ExecutionError);
-                    trace!(
-                        target: "payload_builder",
-                        %err,
-                        "Failed to prewarm transaction by execution"
-                    );
-
+                if prewarm.is_stopped() {
+                    cpu.outcome(CpuOutcome::Stopped);
                     return None;
                 }
-            };
 
-            trace!(target: "payload_builder", "Prewarmed transaction");
+                let mut tx_env = tx.transaction.clone_tx_env();
+                if let Some(tempo_tx_env) = tx_env.tempo_tx_env.as_mut() {
+                    tempo_tx_env.expiring_nonce_idx = expiring_nonce_offset;
+                }
 
-            if !prewarm.parallel {
-                cpu.outcome(CpuOutcome::Executed);
-                return None;
-            }
+                let result = match evm.transact_raw(tx_env) {
+                    Ok(result) => result.result,
+                    Err(err) => {
+                        // Discard actions recorded by the failed transaction before reusing this worker.
+                        evm.clear_actions();
+                        cpu.outcome(CpuOutcome::ExecutionError);
+                        trace!(
+                            target: "payload_builder",
+                            %err,
+                            "Failed to prewarm transaction by execution"
+                        );
 
-            let Some(actions) = evm.take_actions() else {
-                cpu.outcome(CpuOutcome::ReplayUnavailable);
-                return None;
-            };
-            let expiring_nonce = tx
-                .transaction
-                .is_expiring_nonce()
-                .then(|| {
-                    let valid_before = tx.transaction.inner().valid_before()?;
-                    Some(ExpiringNonceReplay {
-                        hash: tx.transaction.expiring_nonce_hash()?,
-                        valid_before,
+                        return None;
+                    }
+                };
+
+                trace!(target: "payload_builder", "Prewarmed transaction");
+
+                if !prewarm.parallel {
+                    cpu.outcome(CpuOutcome::Executed);
+                    return None;
+                }
+
+                let Some(actions) = evm.take_actions() else {
+                    cpu.outcome(CpuOutcome::ReplayUnavailable);
+                    return None;
+                };
+                let expiring_nonce = tx
+                    .transaction
+                    .is_expiring_nonce()
+                    .then(|| {
+                        let valid_before = tx.transaction.inner().valid_before()?;
+                        Some(ExpiringNonceReplay {
+                            hash: tx.transaction.expiring_nonce_hash()?,
+                            valid_before,
+                        })
                     })
-                })
-                .flatten();
+                    .flatten();
 
-            trace!(
-                target: "payload_builder",
-                actions = actions.len(),
-                expiring_nonce = expiring_nonce.is_some(),
-                "Generated replay for transaction"
-            );
+                trace!(
+                    target: "payload_builder",
+                    actions = actions.len(),
+                    expiring_nonce = expiring_nonce.is_some(),
+                    "Generated replay for transaction"
+                );
 
-            cpu.outcome(CpuOutcome::WithReplay);
-            Some(Box::new(StorageActionReplay {
-                result,
-                actions,
-                validator_fee: evm.validator_fee(),
-                expiring_nonce,
-            }))
-        });
+                cpu.outcome(CpuOutcome::WithReplay);
+                Some(Box::new(StorageActionReplay {
+                    result,
+                    actions,
+                    validator_fee: evm.validator_fee(),
+                    expiring_nonce,
+                }))
+            },
+        );
 
         PrewarmedTransaction { tx, replay }
     }
@@ -845,6 +876,227 @@ mod tests {
         });
     }
 
+    #[derive(Clone, Default)]
+    struct Events(Arc<std::sync::Mutex<Vec<std::collections::BTreeMap<String, String>>>>);
+
+    impl tracing::Subscriber for Events {
+        fn enabled(&self, _: &tracing::Metadata<'_>) -> bool {
+            true
+        }
+        fn new_span(&self, _: &tracing::span::Attributes<'_>) -> tracing::span::Id {
+            tracing::span::Id::from_u64(1)
+        }
+        fn record(&self, _: &tracing::span::Id, _: &tracing::span::Record<'_>) {}
+        fn record_follows_from(&self, _: &tracing::span::Id, _: &tracing::span::Id) {}
+        fn event(&self, event: &tracing::Event<'_>) {
+            #[derive(Default)]
+            struct Fields(std::collections::BTreeMap<String, String>);
+            impl tracing::field::Visit for Fields {
+                fn record_debug(
+                    &mut self,
+                    field: &tracing::field::Field,
+                    value: &dyn std::fmt::Debug,
+                ) {
+                    self.0.insert(field.name().into(), format!("{value:?}"));
+                }
+                fn record_str(&mut self, field: &tracing::field::Field, value: &str) {
+                    self.0.insert(field.name().into(), value.into());
+                }
+            }
+            let mut fields = Fields::default();
+            event.record(&mut fields);
+            self.0.lock().unwrap().push(fields.0);
+        }
+        fn enter(&self, _: &tracing::span::Id) {}
+        fn exit(&self, _: &tracing::span::Id) {}
+    }
+
+    #[test]
+    fn observer_counts_parallel_ineligible_leaf_before_early_return() {
+        const CHILD: &str = "TEMPO_TEST_PREWARM_INELIGIBLE_CHILD";
+        if std::env::var_os(CHILD).is_none() {
+            let status = std::process::Command::new(std::env::current_exe().unwrap())
+                .args(["--exact", "prewarming::tests::observer_counts_parallel_ineligible_leaf_before_early_return", "--nocapture"])
+                .env(CHILD, "1")
+                .env("TEMPO_LIFECYCLE_PREWARM_CPU", "leaf_v1")
+                .env("RETH_LIFECYCLE_FILE", "test-subscriber-only")
+                .status().unwrap();
+            assert!(status.success());
+            return;
+        }
+        let events = Events::default();
+        tracing::subscriber::with_default(events.clone(), || {
+            let context = prewarming_context(TaskExecutor::test(), true);
+            let observer = CpuContext::new(
+                reth_tasks::prewarm_cpu::Role::Builder,
+                reth_tasks::prewarm_cpu::Mode::Transactions,
+            );
+            let result = BestTransactionsPrewarming::prewarm_transaction(
+                context,
+                test_tx(Address::random(), 0),
+                None,
+                observer.dispatch(),
+            );
+            assert!(result.replay.is_none());
+            assert!(BUILDER_PREWARM.with_borrow(|slot| slot.state().is_none()));
+            observer.finish();
+        });
+        let rows = events.0.lock().unwrap();
+        let selected: Vec<_> = rows
+            .iter()
+            .filter(|row| row.get("stage").is_some_and(|s| s.starts_with("prewarm_")))
+            .collect();
+        assert_eq!(
+            selected
+                .iter()
+                .map(|row| row["stage"].as_str())
+                .collect::<Vec<_>>(),
+            [
+                "prewarm_context_started",
+                "prewarm_leaf_started",
+                "prewarm_leaf_completed",
+                "prewarm_context_completed"
+            ]
+        );
+        assert_eq!(selected[2]["prewarm_outcome"], "7");
+        assert_eq!(selected[3]["prewarm_dispatched"], "1");
+        assert_eq!(selected[3]["prewarm_started"], "1");
+        assert_eq!(selected[3]["prewarm_completed"], "1");
+    }
+
+    #[test]
+    fn builder_prewarming_preserves_other_active_context_environment() {
+        let executor = TaskExecutor::test();
+        let pool = executor.prewarming_pool();
+        let mut engine_context = prewarming_context(executor.clone(), false);
+        engine_context.evm_env.block_env.number = U256::from(11);
+        // This is the engine's concrete Tempo prewarm state type, not an unrelated usize.
+        type EngineState =
+            Option<reth_evm::EvmFor<TempoEvmConfig, StateProviderDatabase<StateProviderBox>>>;
+        let same_type: EngineState = engine_context.evm_for_ctx();
+        let _: PrewarmEvmState = same_type;
+        pool.init::<EngineState>(|_| engine_context.evm_for_ctx());
+
+        let mut builder_context = prewarming_context(executor.clone(), false);
+        builder_context.evm_env.block_env.number = U256::from(22);
+        let log = Arc::new(Mutex::new(TestLog::default()));
+        let prewarming = BestTransactionsPrewarming::new(
+            builder_context,
+            TestBestTransactions::new(vec![], log),
+            CpuContext::default(),
+        );
+        let running_builder = TestPrewarming {
+            prewarming: Some(prewarming),
+            executor: executor.clone(),
+        };
+        // Keep the real builder coordinator alive while its initial broadcast
+        // completes; no leaf or provider mock is replacing the production initializer.
+        let deadline = Instant::now() + Duration::from_secs(5);
+        loop {
+            let initialized = AtomicBool::new(true);
+            pool.broadcast_fn(|| {
+                let current = BUILDER_PREWARM.with_borrow(|slot| {
+                    slot.state()
+                        .and_then(|state| state.as_ref())
+                        .map(|evm| evm.block().number)
+                });
+                if current != Some(U256::from(22)) {
+                    initialized.store(false, Ordering::Relaxed)
+                }
+            });
+            if initialized.load(Ordering::Relaxed) {
+                break;
+            }
+            assert!(
+                Instant::now() < deadline,
+                "builder initialization did not complete"
+            );
+            thread::yield_now();
+        }
+        let observed = pool.install_fn(|| {
+            WorkerPool::with_worker_mut(|worker| {
+                // Exact get_or_init pattern used by the engine transaction leaf.
+                worker
+                    .get_or_init::<EngineState>(|| engine_context.evm_for_ctx())
+                    .as_ref()
+                    .unwrap()
+                    .block()
+                    .number
+            })
+        });
+        drop(running_builder);
+        pool.broadcast(pool.current_num_threads(), |worker| {
+            assert_eq!(
+                worker.get::<EngineState>().as_ref().unwrap().block().number,
+                U256::from(11)
+            );
+            assert!(BUILDER_PREWARM.with_borrow(|slot| slot.state().is_none()));
+        });
+        assert_eq!(
+            observed,
+            U256::from(11),
+            "another active role replaced the selected call's EVM environment"
+        );
+    }
+
+    #[test]
+    fn builder_state_initialization_and_panic_cleanup_preserve_borrowed_engine_evm() {
+        let executor = TaskExecutor::test();
+        let pool = WorkerPool::new(1, "prewarm-nested-owner");
+        let mut engine = prewarming_context(executor.clone(), false);
+        engine.evm_env.block_env.number = U256::from(11);
+        let mut builder = prewarming_context(executor, false);
+        builder.evm_env.block_env.number = U256::from(22);
+        pool.init::<PrewarmEvmState>(|_| engine.evm_for_ctx());
+        pool.install_fn(|| {
+            WorkerPool::with_worker_mut(|worker| {
+                let engine_evm = worker.get_mut::<PrewarmEvmState>().as_mut().unwrap();
+                let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+                    let _clear = ClearBuilderState {
+                        pool: &pool,
+                        owner: Arc::downgrade(&builder.stop),
+                    };
+                    // Rayon services this callback while the shared engine slot remains borrowed.
+                    pool.broadcast_fn(|| {
+                        prewarming_state::initialize(&BUILDER_PREWARM, &builder.stop, || {
+                            builder.evm_for_ctx()
+                        })
+                    });
+                    prewarming_state::with_state(
+                        &BUILDER_PREWARM,
+                        &builder.stop,
+                        || unreachable!(),
+                        |state| {
+                            assert_eq!(state.as_ref().unwrap().block().number, U256::from(22));
+                            assert_eq!(engine_evm.block().number, U256::from(11));
+                            panic!("synthetic builder leaf panic");
+                        },
+                    );
+                }));
+                assert!(result.is_err());
+                assert!(BUILDER_PREWARM.with_borrow(|slot| slot.state().is_none()));
+                assert_eq!(engine_evm.block().number, U256::from(11));
+            })
+        });
+    }
+
+    #[test]
+    fn parallel_ineligible_leaf_does_not_initialize_builder_state() {
+        let executor = TaskExecutor::test();
+        let context = prewarming_context(executor, true);
+        let pool = WorkerPool::new(1, "prewarm-ineligible");
+        pool.install_fn(|| {
+            let result = BestTransactionsPrewarming::prewarm_transaction(
+                context,
+                test_tx(Address::random(), 0),
+                None,
+                CpuJob::default(),
+            );
+            assert!(result.replay.is_none());
+            assert!(BUILDER_PREWARM.with_borrow(|slot| slot.state().is_none()));
+        });
+    }
+
     #[test]
     fn prewarming_does_not_use_shared_worker_state_slot() {
         let executor = TaskExecutor::test();
@@ -870,7 +1122,13 @@ mod tests {
         context.evm_env.block_env.basefee = 0;
 
         let pool = WorkerPool::new(1, "prewarm-actions-test");
-        pool.init::<PrewarmEvmState>(|_| context.evm_for_ctx());
+        let _clear = ClearBuilderState {
+            pool: &pool,
+            owner: Arc::downgrade(&context.stop),
+        };
+        pool.broadcast_fn(|| {
+            prewarming_state::initialize(&BUILDER_PREWARM, &context.stop, || context.evm_for_ctx())
+        });
 
         pool.install_fn(|| {
             let failed_action = StorageAction::Sstore(
@@ -879,14 +1137,16 @@ mod tests {
                 U256::from(2),
                 U256::from(3),
             );
-            WorkerPool::with_worker_mut(|worker| {
-                let evm = worker
-                    .get_mut::<PrewarmEvmState>()
-                    .as_mut()
-                    .expect("prewarm EVM");
-                // Model an action recorded before the failed execution returned an error.
-                assert_eq!(evm.replace_actions(vec![failed_action]), Some(Vec::new()));
-            });
+            prewarming_state::with_state(
+                &BUILDER_PREWARM,
+                &context.stop,
+                || unreachable!(),
+                |state| {
+                    let evm = state.as_mut().expect("prewarm EVM");
+                    // Model an action recorded before the failed execution returned an error.
+                    assert_eq!(evm.replace_actions(vec![failed_action]), Some(Vec::new()));
+                },
+            );
 
             let sender = Address::random();
             let failed = BestTransactionsPrewarming::prewarm_transaction(
@@ -896,13 +1156,15 @@ mod tests {
                 CpuJob::default(),
             );
             assert!(failed.replay.is_none());
-            WorkerPool::with_worker_mut(|worker| {
-                let evm = worker
-                    .get_mut::<PrewarmEvmState>()
-                    .as_mut()
-                    .expect("prewarm EVM");
-                assert_eq!(evm.take_actions(), Some(Vec::new()));
-            });
+            prewarming_state::with_state(
+                &BUILDER_PREWARM,
+                &context.stop,
+                || unreachable!(),
+                |state| {
+                    let evm = state.as_mut().expect("prewarm EVM");
+                    assert_eq!(evm.take_actions(), Some(Vec::new()));
+                },
+            );
 
             let successful = BestTransactionsPrewarming::prewarm_transaction(
                 context,
@@ -914,7 +1176,5 @@ mod tests {
             assert!(!replay.actions.is_empty());
             assert!(!replay.actions.contains(&failed_action));
         });
-
-        pool.clear();
     }
 }
