@@ -377,16 +377,41 @@ def build(paths, warmup=5, window=None, expected_detail=None, expected_prewarm_c
                 'Proposal handling start on proposer → first accepted finalization certificate on a validator. Nearest-rank percentiles select actual complete blocks; initial complete blocks are excluded as warmup. When load boundaries are available, both endpoints must fall inside the load window. All views exclude data at or after the first engine persistence backpressure event on either validator; crossing spans are right-censored and crossing aggregates omitted.'}
 
 
-def write_report(paths, out, warmup=5, window=None, prune=False, expected_detail=None, expected_prewarm_cpu=None):
+def write_report(paths, out, warmup=5, window=None, prune=False, expected_detail=None, expected_prewarm_cpu=None, scheduler_dir=None):
+    from progress import emit
     if prune:
+        emit('lifecycle_prune', 'begin')
         paths, window = prepare_captures(paths, out, window)
+        emit('lifecycle_prune', 'end')
+    emit('lifecycle_build', 'begin')
     data = build(paths, warmup, window, expected_detail, expected_prewarm_cpu)
+    emit('lifecycle_build', 'end')
     out.mkdir(parents=True, exist_ok=True)
-    encoded = json.dumps(data, separators=(',',':')).replace('<', '\\u003c')
-    (out/'lifecycle.json').write_text(encoded)
-    del encoded  # Release the full serialization before allocating package views.
-    write_package(data, out)
-    prewarm.write_view(data['prewarm'], out)
+    if scheduler_dir is not None:
+        from scheduler.report import load, publish, close
+        if not prune or data['bad_capture'] or not data['detail_valid']:
+            raise ValueError('scheduler diagnostic requires a valid pruned lifecycle capture')
+        emit('scheduler_load', 'begin')
+        captures, coverage = load(scheduler_dir, out, window, retain_records=False)
+    try:
+        if scheduler_dir is not None:
+            emit('scheduler_load', 'end')
+        emit('report_write', 'begin')
+        encoded = json.dumps(data, separators=(',',':')).replace('<', '\\u003c')
+        (out/'lifecycle.json').write_text(encoded)
+        del encoded  # Release the full serialization before allocating package views.
+        emit('report_write', 'end')
+        emit('package', 'begin')
+        write_package(data, out)
+        prewarm.write_view(data['prewarm'], out)
+        emit('package', 'end')
+        if scheduler_dir is not None:
+            emit('scheduler_publish', 'begin')
+            publish(data, captures, out, coverage)
+            emit('scheduler_publish', 'end')
+    finally:
+        if scheduler_dir is not None:
+            close(captures)
     return data
 
 
@@ -395,6 +420,7 @@ if __name__ == '__main__':
     parser.add_argument('--out', type=Path, required=True)
     parser.add_argument('--warmup', type=int, default=5)
     parser.add_argument('--window', type=Path)
+    parser.add_argument('--scheduler-dir', type=Path, help='Require matching private scheduler captures')
     parser.add_argument('--prune', action='store_true', help='Publish only pre-backpressure raw captures alongside the report')
     parser.add_argument('--expected-detail', choices=('full', 'milestones'), help='Reject captures whose recorder detail does not match the requested mode')
     parser.add_argument('--expected-prewarm-cpu', choices=('disabled', 'leaf_v1'), help='Require selected prewarm CPU observer admission')
@@ -402,7 +428,7 @@ if __name__ == '__main__':
     args = parser.parse_args()
     window = json.loads(args.window.read_text()) if args.window and args.window.exists() else (
         {'start_ns': 0, 'end_ns': 0, 'stop_reason': 'load_not_started'} if args.window else None)
-    result = write_report(args.captures, args.out, args.warmup, window, args.prune, args.expected_detail, args.expected_prewarm_cpu)
+    result = write_report(args.captures, args.out, args.warmup, window, args.prune, args.expected_detail, args.expected_prewarm_cpu, args.scheduler_dir)
     print(f"Lifecycle report: {len(result['blocks'])} blocks, {result['eligible']} complete post-warmup blocks; invalid capture: {result['bad_capture']}")
     if result['bad_capture'] or not result['eligible']:
         raise SystemExit(2)

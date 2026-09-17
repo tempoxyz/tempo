@@ -1,0 +1,69 @@
+
+#include <uapi/linux/ptrace.h>
+#include <linux/sched.h>
+#define WAIT_REASONS WAIT_ENABLED
+struct event { u64 ts; u32 ordinal; u16 kind; u16 state;
+#if WAIT_REASONS
+ int stack_id;u32 reserved;
+#endif
+};
+#if WAIT_REASONS
+BPF_STACK_TRACE(wait_stacks,1024);
+#endif
+BPF_RINGBUF_OUTPUT(events, 4096);
+BPF_HASH(ordinals,u32,u32,8192);
+BPF_PERCPU_ARRAY(counts,u64,3);
+BPF_ARRAY(sealed,u32,1);
+
+static inline void emit_sample(u32 ordinal,u16 kind,u64 state,u64 timestamp,int stack_id){
+ int key=0;u64 *count=counts.lookup(&key);if(count)__sync_fetch_and_add(count,1);
+ if(!ordinal||ordinal>8192||state>256){key=2;count=counts.lookup(&key);if(count)__sync_fetch_and_add(count,1);return;}
+ struct event e={.ts=timestamp,.ordinal=ordinal,.kind=kind,.state=state
+#if WAIT_REASONS
+ ,.stack_id=stack_id,.reserved=0
+#endif
+ };
+ if(events.ringbuf_output(&e,sizeof(e),0)){key=1;count=counts.lookup(&key);if(count)__sync_fetch_and_add(count,1);}
+}
+static inline void emit(u32 ordinal,u16 kind,u64 state){
+ emit_sample(ordinal,kind,state,bpf_ktime_get_ns(),(-2147483647-1));
+}
+
+int reg(struct pt_regs *ctx){
+ u64 native=bpf_get_current_pid_tgid();int zero=0;u32 *closed=sealed.lookup(&zero);
+ if((native>>32)!=WATCHED||!closed||*closed)return 0;
+ if(PT_REGS_PARM2(ctx)!=EPOCH)return 0;
+ u64 raw=PT_REGS_PARM1(ctx);if(!raw||raw>8192){int key=2;u64 *count=counts.lookup(&key);if(count)__sync_fetch_and_add(count,1);return 0;}
+ u32 tid=(u32)native, ordinal=raw;if(ordinals.update(&tid,&ordinal)){int key=2;u64 *count=counts.lookup(&key);if(count)__sync_fetch_and_add(count,1);return 0;}emit(ordinal,0,0);return 0;
+}
+TRACEPOINT_PROBE(sched,sched_switch){
+ u32 out=args->prev_pid,in=args->next_pid;u32 *ordinal=ordinals.lookup(&out);
+ if(ordinal){
+#if WAIT_REASONS
+  u64 timestamp=bpf_ktime_get_ns();int stack_id=(-2147483647-1);
+  if(args->prev_state==1||args->prev_state==2)stack_id=wait_stacks.get_stackid(args,0);
+  emit_sample(*ordinal,1,args->prev_state,timestamp,stack_id);
+#else
+  emit(*ordinal,1,args->prev_state);
+#endif
+ }
+ ordinal=ordinals.lookup(&in);if(ordinal)emit(*ordinal,2,0);return 0;
+}
+/* Perf tracepoints share a CPU-wide recursion guard. Timer wakeups can
+ * interrupt another probe and be suppressed before its emit counter runs.
+ * Raw tracepoints use a per-program guard; all guards are also audited.
+ * Keep the same sched_wakeup TASK_RUNNING boundary (not sched_waking). */
+static inline void emit_task(struct task_struct *task,u16 kind){
+ u32 tid=0;
+ if(bpf_probe_read_kernel(&tid,sizeof(tid),&task->pid)){
+  int key=2;u64 *count=counts.lookup(&key);if(count)__sync_fetch_and_add(count,1);return;
+ }
+ u32 *ordinal=ordinals.lookup(&tid);if(ordinal)emit(*ordinal,kind,0);
+}
+RAW_TRACEPOINT_PROBE(sched_wakeup){emit_task((void*)ctx->args[0],3);return 0;}
+RAW_TRACEPOINT_PROBE(sched_migrate_task){emit_task((void*)ctx->args[0],5);return 0;}
+TRACEPOINT_PROBE(sched,sched_process_exit){
+ u64 native=bpf_get_current_pid_tgid();u32 tid=native;
+ if((native>>32)==WATCHED&&tid==WATCHED){int zero=0;u32 one=1;if(sealed.update(&zero,&one)){int key=2;u64 *count=counts.lookup(&key);if(count)__sync_fetch_and_add(count,1);}}
+ u32 *ordinal=ordinals.lookup(&tid);if(ordinal){emit(*ordinal,4,0);if(ordinals.delete(&tid)){int key=2;u64 *count=counts.lookup(&key);if(count)__sync_fetch_and_add(count,1);}}return 0;
+}
