@@ -246,3 +246,35 @@ fn cancellation_before_verification_delivery_still_leaves_the_body_for_convergen
         assert!(h.marshal.subscribe_log().is_empty());
     });
 }
+
+#[test]
+fn verification_request_context_survives_mailbox_without_current_span_substitution() {
+    tracing::subscriber::with_default(tracing_subscriber::registry(), || {
+        deterministic::Runner::default().start(|context| async move {
+            let h = Harness::start_at_genesis(&context);
+            let block = make_block(1, 1, GENESIS);
+            let first = tracing::info_span!("verify");
+            let second = tracing::info_span!("verify");
+            let expected = vec![first.id(), second.id(), None];
+            assert!(expected[0].is_some());
+            assert_ne!(expected[0], expected[1]);
+            // The same block is deliberately submitted repeatedly with different owned contexts.
+            // A disabled request must stay disabled despite another enabled caller scope.
+            for (index, cause) in [first, second, tracing::Span::none()]
+                .into_iter()
+                .enumerate()
+            {
+                use tracing::Instrument as _;
+                let verdict = h
+                    .mailbox
+                    .verify_block(round(index as u64 + 1), block.clone(), cause)
+                    .instrument(tracing::info_span!("unrelated_caller"))
+                    .await
+                    .unwrap();
+                assert!(verdict.is_some());
+            }
+            assert_eq!(h.execution.verification_parents(), expected);
+            assert_eq!(h.execution.new_payloads(), vec![block.digest(); 3]);
+        });
+    });
+}

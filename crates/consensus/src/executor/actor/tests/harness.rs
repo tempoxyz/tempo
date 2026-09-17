@@ -235,6 +235,7 @@ struct FakeExecutionInner {
     genesis: B256,
     state: Mutex<ElState>,
     calls: Mutex<Vec<ElCall>>,
+    verification_parents: Mutex<Vec<Option<tracing::span::Id>>>,
     /// Complete new-payload outcome sequences keyed by block hash. A digest
     /// absent from this map uses the fake's stateful default behavior; a
     /// digest present in it must not receive more calls than scripted.
@@ -311,6 +312,7 @@ impl FakeExecution {
                     finalized: None,
                 }),
                 calls: Mutex::new(Vec::new()),
+                verification_parents: Mutex::new(Vec::new()),
                 payload_overrides: ScriptedResults::new(),
                 payload_attributes: Mutex::new(Vec::new()),
                 fcu_overrides: ScriptedResults::new(),
@@ -479,6 +481,10 @@ impl FakeExecution {
     }
 
     // ---- observation ----
+
+    pub(super) fn verification_parents(&self) -> Vec<Option<tracing::span::Id>> {
+        self.inner.verification_parents.lock().clone()
+    }
 
     pub(super) fn calls(&self) -> Vec<ElCall> {
         self.inner.calls.lock().clone()
@@ -656,6 +662,15 @@ impl ExecutionLayer for FakeExecution {
             }
             Ok(PayloadStatus::from_status(status))
         }
+    }
+
+    fn new_payload_with_parent(
+        &self,
+        payload: TempoExecutionData,
+        parent: tracing::Span,
+    ) -> impl Future<Output = eyre::Result<PayloadStatus>> + Send + 'static {
+        self.inner.verification_parents.lock().push(parent.id());
+        self.new_payload(payload)
     }
 
     fn fork_choice_updated(
@@ -1113,7 +1128,11 @@ where
         block: Block,
     ) -> impl Future<Output = eyre::Result<Option<Duration>>> + use<TContext> {
         let mailbox = self.mailbox.clone();
-        async move { mailbox.verify_block(round, block).await }
+        async move {
+            mailbox
+                .verify_block(round, block, tracing::Span::none())
+                .await
+        }
     }
 
     /// Requests a proposal build on top of `parent`, returning the payload

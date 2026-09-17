@@ -49,14 +49,19 @@ impl Mailbox {
         &self,
         round: Round,
         block: Block,
+        cause: Span,
     ) -> eyre::Result<Option<Duration>> {
         let (response, rx) = oneshot::channel();
         self.inner
-            .unbounded_send(Message::in_current_span(VerifyBlock {
-                round,
-                block: Arc::new(block),
-                response,
-            }))
+            .unbounded_send(Message {
+                cause,
+                command: VerifyBlock {
+                    round,
+                    block: Arc::new(block),
+                    response,
+                }
+                .into(),
+            })
             .wrap_err("failed sending validate-block request to agent, this means it exited")?;
         rx.await.wrap_err(
             "executor dropped the validation response channel: the request was \

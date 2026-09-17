@@ -47,7 +47,7 @@ use tempo_payload_types::{
     marshal_persist_estimate, observe_marshal_persist,
 };
 use tempo_primitives::TempoConsensusContext;
-use tracing::{Instrument as _, Level, debug, info, instrument, warn};
+use tracing::{Instrument as _, Level, Span, debug, info, instrument, warn};
 
 use super::{
     Mailbox,
@@ -667,23 +667,42 @@ impl Inner<Init> {
         ))
     }
 
-    #[instrument(
-        skip_all,
-        fields(
-            %parent_view,
-            %parent_digest,
-            %round,
-            proposal = %payload,
-            %proposer,
-        ),
-        err(level = Level::WARN),
-    )]
     async fn verify(
         self,
         (parent_view, parent_digest): (View, Digest),
         payload: Digest,
         proposer: PublicKey,
         round: Round,
+    ) -> eyre::Result<VerifyResult> {
+        // Keep the actual callsite handle: Span::current() could substitute an enabled ancestor
+        // when this verification span is filtered out.
+        let cause = tracing::info_span!("verify", %parent_view, %parent_digest, %round,
+            proposal = %payload, %proposer);
+        let work = self.verify_inner(
+            (parent_view, parent_digest),
+            payload,
+            proposer,
+            round,
+            cause.clone(),
+        );
+        async move {
+            let result = work.await;
+            if let Err(error) = &result {
+                tracing::warn!(%error);
+            }
+            result
+        }
+        .instrument(cause)
+        .await
+    }
+
+    async fn verify_inner(
+        self,
+        (parent_view, parent_digest): (View, Digest),
+        payload: Digest,
+        proposer: PublicKey,
+        round: Round,
+        cause: Span,
     ) -> eyre::Result<VerifyResult> {
         // Report the parent we are asked to verify against as the pending
         // head, so that the executor keeps driving the execution layer
@@ -748,6 +767,7 @@ impl Inner<Init> {
             &self.state.executor,
             &block,
             parent_digest,
+            cause,
         )
         .await
         .wrap_err("failed verifying block against execution layer")?;
@@ -857,6 +877,7 @@ async fn verify_block(
     executor: &crate::executor::Mailbox,
     block: &Block,
     parent_digest: Digest,
+    cause: Span,
 ) -> eyre::Result<Option<Duration>> {
     let epoch = round.epoch();
     let epoch_info = epoch_strategy
@@ -874,7 +895,7 @@ async fn verify_block(
         return Ok(None);
     }
 
-    executor.verify_block(round, block.clone()).await
+    executor.verify_block(round, block.clone(), cause).await
 }
 
 #[instrument(skip_all, err(Display))]
