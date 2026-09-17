@@ -9,7 +9,7 @@ Run the isolated proof without launching validators:
 ```sh
 python3 contrib/bench/lifecycle/scheduler/diagnostic.py --output /tmp/scheduler-proof.json
 python3 -m unittest discover -s contrib/bench/lifecycle/scheduler
-sudo -n env TEMPO_SCHEDULER_LIVE_TEST=1 /usr/bin/python3 -m unittest discover -s contrib/bench/lifecycle/scheduler
+sudo -n env PYTHONDONTWRITEBYTECODE=1 TEMPO_SCHEDULER_LIVE_TEST=1 /usr/bin/python3 -m unittest discover -s contrib/bench/lifecycle/scheduler
 ```
 
 The standalone text-transport proof verifies that the monotonic BPF helper is used (bare `nsecs` has a different clock), checks C and Rust registration calls survive optimized/LTO compilation, and runs three synthetic threads with blocked and runnable intervals. Its events after a synthetic cutoff are kept only in private memory and removed before writing the sanitized result. It does not prove that a particular validator binary or runner can be traced; the runtime repeats capability and marker-call checks against the actual binary.
@@ -163,3 +163,10 @@ process exit, 513-thread churn, and two concurrent 33-thread captures. Each had
 matching emitted/received/retained counts, zero probe/transport losses and zero
 unsplit, unclosed or unmatched intervals. Every published record and interval
 endpoint remained strictly before its synthetic cutoff.
+
+The workflow runs its synthetic live-attach test as root before creating the
+private spool fd, with bytecode writes disabled to avoid root-owned cache files
+in the checkout. Elevating only the capture subprocess would close the inherited
+fd at the sudo boundary, while running the whole test unprivileged fails the
+root-only capture admission check. This preflight explicitly publishes and checks
+schema2 with zero probe misses, using the same footer gate as the real capture.

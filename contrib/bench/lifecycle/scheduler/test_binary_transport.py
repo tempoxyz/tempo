@@ -52,9 +52,12 @@ class BinaryTests(unittest.TestCase):
                 stamps = [event[0] for event in spool_rows(spool)]
                 cutoff = (min(stamps)+max(stamps))//2-origin
                 output = directory/'capture.json'
-                publish_streamed(output,spool,directory,origin,cutoff,counts['emitted'],{})
+                publish_streamed(output,spool,directory,origin,cutoff,counts['emitted'],{},
+                                 probe_misses=counts['probe_misses'])
                 import json
                 decoded = json.loads(output.read_text())
+            self.assertEqual(decoded['schema'],2)
+            self.assertEqual(decoded['quality']['probe_misses'],0)
             self.assertTrue(decoded['registered_window_edges_complete'])
             self.assertGreater(decoded['quality']['at_or_post_cutoff_records_pruned'],0)
             self.assertTrue(all(row['ts']<cutoff for row in decoded['records']))

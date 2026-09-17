@@ -876,7 +876,9 @@ jobs:
           scheduler_probe_dir=$(mktemp -d)
           trap 'rm -rf "$scheduler_probe_dir"' EXIT
           /usr/bin/python3 contrib/bench/lifecycle/scheduler/diagnostic.py --output "$scheduler_probe_dir/sanitized.json"
-          if ! TEMPO_SCHEDULER_LIVE_TEST=1 /usr/bin/python3 -m unittest discover -s contrib/bench/lifecycle/scheduler -p 'test_binary_transport.py' >/dev/null 2>&1; then
+          # Elevate the test before it creates its private spool fd; sudo would
+          # otherwise close that fd between the test and the capture helper.
+          if ! sudo -n env PYTHONDONTWRITEBYTECODE=1 TEMPO_SCHEDULER_LIVE_TEST=1 /usr/bin/python3 -m unittest discover -s contrib/bench/lifecycle/scheduler -p 'test_binary_transport.py' >/dev/null 2>&1; then
             echo '::error::scheduler_setup_live_attach: binary scheduler synthetic attach/capture validation failed'
             exit 1
           fi
