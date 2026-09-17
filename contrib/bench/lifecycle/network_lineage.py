@@ -2,7 +2,8 @@
 from collections import defaultdict
 
 STAGES = frozenset(('message_origin', 'message_router_queue', 'message_peer_queue',
-    'message_inbound_queue', 'message_dequeued', 'message_decode', 'message_decode_result',
+    'message_router_queue_start', 'message_peer_queue_start', 'message_inbound_queue_start',
+    'message_decoded_queue_start', 'message_inbound_queue', 'message_dequeued', 'message_decode', 'message_decode_result',
     'message_decoded_queue', 'message_delivered', 'frame_authenticated', 'frame_send', 'frame_receive'))
 
 
@@ -16,7 +17,7 @@ def build_lineage(events, spans, aliases, first):
             continue
         row = dict(node=event['node'], stage=stage, ts=(event['ts']-first)/1e6,
                    span=event.get('id'), blocks=[])
-        for key in ('message_id', 'receive_id', 'accepted', 'bytes'):
+        for key in ('message_id', 'receive_id', 'queue_id', 'accepted', 'bytes'):
             value = fields.get(key)
             if isinstance(value, int) and not isinstance(value, bool) and value >= 0:
                 row[key] = value
@@ -101,4 +102,56 @@ def build_lineage(events, spans, aliases, first):
             frame_count=sum(e['stage'] == 'frame_send' for e in rows),
             rejected_submissions=sum(e.get('accepted') == 0 for e in rows),
             status='frame observed' if any(e['stage'] == 'frame_send' for e in rows) else 'no frame observed in retained capture'))
+    annotate_queues(records)
     return transfers, records, messages
+
+
+QUEUE_CONSUMERS = {'message_router_queue': None, 'message_peer_queue': None,
+    'message_inbound_queue': 'message_dequeued', 'message_decoded_queue': 'message_delivered'}
+
+
+def annotate_queues(records):
+    """Bound insertion between before/after call markers, never by nearest timestamp.
+
+    The synchronous call envelope includes scheduling and marker overhead. Residence
+    overlaps that envelope when a consumer dequeues before the outcome marker.
+    """
+    attempts, consumers, receive_attempts = defaultdict(list), defaultdict(list), defaultdict(list)
+    for row in records:
+        if row.get('queue_id'):
+            attempts[(row['node'], row['queue_id'])].append(row)
+        if row.get('receive_id'):
+            consumers[(row['node'], row['receive_id'], row['stage'])].append(row)
+            if row['stage'].endswith('_start') and row['stage'][:-6] in QUEUE_CONSUMERS:
+                receive_attempts[(row['node'], row['receive_id'], row['stage'][:-6])].append(row)
+    for group in attempts.values():
+        starts = [r for r in group if r['stage'].endswith('_start') and r['stage'][:-6] in QUEUE_CONSUMERS]
+        outcomes = [r for r in group if r['stage'] in QUEUE_CONSUMERS]
+        for row in starts or outcomes:
+            row['queue'] = dict(status='incomplete or ambiguous submission', residence_status='unknown')
+        if len(starts) != 1 or len(outcomes) != 1 or len(group) != 2:
+            continue
+        start, end = starts[0], outcomes[0]
+        kind = start['stage'][:-6]
+        if end['stage'] != kind or any(start.get(k, 0) != end.get(k, 0) for k in ('message_id', 'receive_id')) or end['ts'] < start['ts']:
+            continue
+        result = start['queue']
+        result.update(status='submission observed', submission_end=end['ts'],
+                      submission_ms=end['ts']-start['ts'])
+        if end.get('accepted') == 0:
+            result['residence_status'] = 'not admitted'
+            continue
+        consumer_stage = QUEUE_CONSUMERS[kind]
+        if end.get('accepted') != 1 or consumer_stage is None or not start.get('receive_id'):
+            continue
+        key = (start['node'], start['receive_id'])
+        matching = consumers.get((*key, consumer_stage), [])
+        if len(receive_attempts[(*key, kind)]) != 1 or len(matching) != 1:
+            continue
+        consumed = matching[0]['ts']
+        if consumed < start['ts']:
+            continue
+        result.update(residence_status='bounded', consumer_observed_ts=consumed,
+                      residence_lower_ms=0, residence_upper_ms=consumed-start['ts'],
+                      insertion_to_observation_lower_ms=max(0, consumed-end['ts']),
+                      insertion_to_observation_upper_ms=consumed-start['ts'])

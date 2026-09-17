@@ -133,5 +133,77 @@ class NetworkLineageTests(unittest.TestCase):
             self.assertEqual(json.loads((out/'network-lineage.json').read_text())['network_events'], data['network_events'])
             self.assertIn('network-lineage.json', (out/'index.html').read_text())
 
+    def test_submission_envelope_and_post_pop_observation_bounds(self):
+        for outcome, expected_lower in [(20, 10/1e6), (40, 0)]:
+            events = [event('message_inbound_queue_start', 10, B, receive_id=1, queue_id=7),
+                      event('message_inbound_queue', outcome, B, receive_id=1, queue_id=7, accepted=1),
+                      event('message_dequeued', 30, B, receive_id=1)]
+            _, rows, _ = build_lineage(events, [], {}, 0)
+            queue = rows[0]['queue']
+            self.assertAlmostEqual(queue['submission_ms'], (outcome-10)/1e6)
+            self.assertEqual(queue['residence_lower_ms'], 0)
+            self.assertAlmostEqual(queue['residence_upper_ms'], 20/1e6)
+            self.assertAlmostEqual(queue['insertion_to_observation_lower_ms'], expected_lower)
+            self.assertEqual(queue['residence_status'], 'bounded')
+
+    def test_queue_fanout_rejection_and_incomplete_endpoints_do_not_guess(self):
+        events = [event('message_peer_queue_start', 10, message_id=1, queue_id=1),
+                  event('message_peer_queue_start', 11, message_id=1, queue_id=2),
+                  event('message_peer_queue', 12, message_id=1, queue_id=2, accepted=0),
+                  event('message_peer_queue', 13, message_id=1, queue_id=1, accepted=1),
+                  event('message_decoded_queue_start', 14, B, receive_id=1, queue_id=1),
+                  event('message_decoded_queue', 15, B, receive_id=1, queue_id=1, accepted=1),
+                  event('message_inbound_queue_start', 16, B, receive_id=2, queue_id=2),
+                  event('message_delivered', 20, B, receive_id=1)]
+        _, rows, _ = build_lineage(events, [], {}, 0)
+        self.assertAlmostEqual(rows[0]['queue']['submission_ms'], 3/1e6)
+        self.assertEqual(rows[0]['queue']['residence_status'], 'unknown')
+        self.assertEqual(rows[1]['queue']['residence_status'], 'not admitted')
+        self.assertEqual(rows[4]['queue']['residence_status'], 'bounded')
+        self.assertEqual(rows[6]['queue']['status'], 'incomplete or ambiguous submission')
+        for added in [event('message_decoded_queue', 16, B, receive_id=1, queue_id=1, accepted=1),
+                      event('message_delivered', 21, B, receive_id=1),
+                      event('message_decoded_queue_start', 17, B, receive_id=1, queue_id=3)]:
+            _, changed, _ = build_lineage(events+[added], [], {}, 0)
+            self.assertEqual(changed[4]['queue']['residence_status'], 'unknown')
+
+    def test_queue_mismatched_identity_and_reversed_start_stay_unknown(self):
+        for identity, outcome in [(2, 20), (1, 5)]:
+            _, rows, _ = build_lineage([
+                event('message_inbound_queue_start', 10, B, receive_id=1, queue_id=1),
+                event('message_inbound_queue', outcome, B, receive_id=identity, queue_id=1, accepted=1),
+                event('message_dequeued', 30, B, receive_id=1)], [], {}, 0)
+            self.assertEqual(rows[0]['queue']['residence_status'], 'unknown')
+            self.assertNotIn('submission_ms', rows[0]['queue'])
+
+    def test_queue_missing_start_or_consumer_and_early_consumer_are_unknown(self):
+        start = event('message_decoded_queue_start', 10, B, receive_id=1, queue_id=1)
+        outcome = event('message_decoded_queue', 20, B, receive_id=1, queue_id=1, accepted=1)
+        for events in [[outcome], [start, outcome],
+                       [start, outcome, event('message_delivered', 5, B, receive_id=1)]]:
+            _, rows, _ = build_lineage(events, [], {}, 0)
+            self.assertEqual(rows[0]['queue']['residence_status'], 'unknown')
+            self.assertNotIn('residence_upper_ms', rows[0]['queue'])
+
+    def test_queue_outcome_at_cutoff_cannot_complete_pre_cutoff_attempt(self):
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory)/'a.jsonl'; fixture(path)
+            records = [json.loads(line) for line in path.read_text().splitlines()]
+            start = 1_000_000_000
+            records[-1:-1] = [dict(type='event', id=1, ts=start+offset,
+                fields=dict(stage=stage, receive_id=1, queue_id=1, **fields))
+                for stage, offset, fields in [
+                    ('message_inbound_queue_start', 10, {}),
+                    ('message_inbound_queue', 20, {'accepted':1}),
+                    ('message_dequeued', 21, {})]]
+            path.write_text('\n'.join(json.dumps(e) for e in records))
+            data = build([path], window={'backpressure':dict(ts=start+20, node=A)})
+            self.assertEqual(len(data['network_events']), 1)
+            self.assertEqual(data['network_events'][0]['queue']['status'], 'incomplete or ambiguous submission')
+            out = Path(directory)/'report'; manifest = write_package(data, out, chunk_intervals=2)
+            self.assertEqual(manifest['counts']['network_events'], 1)
+            self.assertEqual(sum(c['network_events'] for c in manifest['chunks']), 1)
+            self.assertNotIn('submission_end', json.loads((out/'network-lineage.json').read_text())['network_events'][0]['queue'])
+
 
 if __name__ == '__main__': unittest.main()
