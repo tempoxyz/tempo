@@ -348,3 +348,13 @@ individual files at 16 GiB and entries per phase at 100,000, with a 1 GiB free-s
 reserve before extraction. `--max-total-bytes` explicitly adjusts the combined
 limit for larger approved matrices. ZIP central-directory memory is separately
 bounded before member parsing. Existing destinations are never merged or replaced.
+
+## Identical validator builds
+
+Lifecycle comparisons reuse one validator executable when both revisions are
+the same full commit hash and the effective build inputs match. This avoids a
+second download/build and duplicate binary storage for observer comparisons.
+Both phase labels, environments and source worktrees remain separate. Mutable
+references, different inputs, ordinary benchmarks and `--no-cache` keep separate
+builds. Existing binary verification, same-binary admission and disk guards still
+apply; reuse does not establish additional cache or hardware compatibility.

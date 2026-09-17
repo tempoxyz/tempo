@@ -1741,8 +1741,10 @@ def "main e2e" [
             build-in-worktree --lifecycle-build=$lifecycle --no-default-features=$no_default_features $b.wt $b.ref_name $profile $b.features $b.sha
         }
     }
+    let reuse_baseline_binary = (lifecycle-reuse-build $lifecycle $effective_no_cache $builds)
+    let selected_builds = if $reuse_baseline_binary { $builds | take 1 } else { $builds }
     if $lifecycle {
-        for build in $builds {
+        for build in $selected_builds {
             do $build_binary $build
             lifecycle-trim-worktree $build.wt $profile
         }
@@ -1750,7 +1752,7 @@ def "main e2e" [
         $builds | par-each { |build| do $build_binary $build } | ignore
     }
     let baseline_tempo = if $needs_baseline { worktree-bin $baseline_wt $profile "tempo" } else { "" }
-    let feature_tempo = if $needs_feature { worktree-bin $feature_wt $profile "tempo" } else { "" }
+    let feature_tempo = if $reuse_baseline_binary { $baseline_tempo } else if $needs_feature { worktree-bin $feature_wt $profile "tempo" } else { "" }
     let regenesis_tempo = if $regenesis_needed {
         if $needs_feature { $feature_tempo } else { $baseline_tempo }
     } else { "" }
