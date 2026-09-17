@@ -109,6 +109,11 @@ class CleanupTests(unittest.TestCase):
         self.assertIn('always()', steps[-1]['if'])
         for role, name in [('producer','Checkout producer'),('runtime','Checkout exact validator runtime'),('tools','Checkout exact workload tools')]:
             self.assertEqual(steps[names.index(name)]['with']['path'], '${{ steps.owned.outputs.relative }}/'+role)
+        installer = steps[names.index('Install exact Rust toolchain')]
+        self.assertIn('--no-modify-path', installer['run'])
+        self.assertIn('rustup toolchain install 1.98.1', installer['run'])
+        self.assertEqual(installer['working-directory'], '${{ env.PREBUILT_WORK }}')
+        self.assertEqual(steps[names.index('Build and validate private bundle')]['working-directory'], '${{ env.PREBUILT_WORK }}')
         build = steps[names.index('Build and validate private bundle')]['run']
         self.assertIn('"$PREBUILT_TEMP/bundle"', build)
         self.assertEqual(steps[-2]['with']['path'], '${{ env.PREBUILT_TEMP }}/bundle/*')
