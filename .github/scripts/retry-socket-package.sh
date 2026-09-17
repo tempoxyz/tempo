@@ -5,7 +5,10 @@ set -uo pipefail
 log=$(mktemp)
 trap 'rm -f "$log"' EXIT
 
-for attempt in {1..10}; do
+max_attempts=${SOCKET_RETRY_ATTEMPTS:-30}
+delay_seconds=${SOCKET_RETRY_DELAY_SECONDS:-15}
+
+for ((attempt = 1; attempt <= max_attempts; attempt++)); do
   : >"$log"
   "$@" 2>&1 | tee "$log"
   status=${PIPESTATUS[0]}
@@ -16,10 +19,10 @@ for attempt in {1..10}; do
   if ! grep -Eq 'Socket (analysis incomplete|API returned HTTP 429)|Reason: recentlyPublished' "$log"; then
     exit "$status"
   fi
-  if (( attempt == 10 )); then
+  if (( attempt == max_attempts )); then
     exit "$status"
   fi
 
-  echo "Socket package policy is temporarily unavailable; retrying in 15 seconds (attempt $((attempt + 1))/10)"
-  sleep 15
+  echo "Socket package policy is temporarily unavailable; retrying in ${delay_seconds} seconds (attempt $((attempt + 1))/${max_attempts})"
+  sleep "$delay_seconds"
 done

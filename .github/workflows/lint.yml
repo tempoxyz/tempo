@@ -213,7 +213,7 @@ jobs:
         with:
           tool: zepter
       - name: Eagerly pull dependencies
-        run: .github/scripts/retry-socket-package.sh cargo metadata --format-version=1 --locked > /dev/null
+        run: .github/scripts/retry-socket-package.sh bash -c 'cargo metadata --format-version=1 --locked > /dev/null'
       - run: zepter run check
 
   no-std:
