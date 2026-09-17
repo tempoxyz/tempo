@@ -590,3 +590,30 @@ test('fifth-slot probe is closed, count is explicit, and six slots are forbidden
     assert.deepEqual(JSON.parse(fs.readFileSync(path.join(f.env.GITHUB_WORKSPACE,f.output['artifact-path']),'utf8')),receipt(5,96));
   } finally {f.close();}
 });
+
+test('prebuilt budget is bound to immutable plan bytes and Python contract', async () => {
+  const {createHash}=require('node:crypto');
+  const result=spawnSync('python3',['-c',`import sys,json;sys.path.insert(0,'contrib/bench/lifecycle');from test_prebuilt import fixture;print(json.dumps(fixture()[0],separators=(',',':')),end='')`],{cwd:root,encoding:'utf8'});
+  assert.equal(result.status,0,result.stderr);
+  const plan=result.stdout,script=fs.readFileSync(path.join(root,'contrib/bench/lifecycle/prebuilt.py'),'utf8');
+  const hash=createHash('sha256').update(plan).digest('hex');
+  const env={PATH:process.env.PATH,BENCH_BINARY_MODE:'prebuilt_v1',BENCH_CAPACITY_SLOTS:'5',BENCH_CAPACITY_POLICY:adapter.SETUP_FAILURE_POLICY,BENCH_PREBUILT_PLAN_SHA256:hash};
+  const requests=[];
+  const github={rest:{repos:{getContent:async args=>{
+    requests.push(args);assert.equal(args.ref,SHA);
+    const raw=args.path.endsWith('prebuilt-plan.json')?plan:script;
+    return {data:{type:'file',encoding:'base64',size:Buffer.byteLength(raw),content:Buffer.from(raw).toString('base64')}};
+  }}}};
+  const config=await adapter.prebuilt(github,context,env,spawnSync);
+  assert.equal(config.proof.plan_sha256,hash);
+  assert.ok(config.proof.required_bytes>49152*1048576 && config.proof.required_bytes<65536*1048576);
+  assert.equal(requests.length,2);
+  const rows=[1,2,3,4,5].map(slot=>({...receipt(slot,50),prebuilt:config.proof}));
+  const input=JSON.stringify({schema:2,receipts:rows,setup_failed_slots:[],prebuilt_plan:plan});
+  const args=['-I','-c',adapter.withPrebuilt(election,config),'--workflow-sha',SHA,'--run-id','12345','--run-attempt','3','--slots','5','--policy',adapter.SETUP_FAILURE_POLICY,'--binary-mode','prebuilt_v1'];
+  const voted=spawnSync('python3',args,{input,encoding:'utf8'});assert.equal(voted.status,0,voted.stderr);
+  assert.equal(JSON.parse(voted.stdout).selected_slot,1);
+  await assert.rejects(adapter.prebuilt(github,context,{...env,BENCH_PREBUILT_PLAN_SHA256:'0'.repeat(64)},spawnSync));
+  await assert.rejects(adapter.prebuilt(github,context,{...env,BENCH_BINARY_MODE:'build_v1'},spawnSync));
+  assert.equal(await adapter.prebuilt(github,context,{PATH:process.env.PATH},spawnSync),null);
+});

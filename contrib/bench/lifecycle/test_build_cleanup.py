@@ -45,6 +45,7 @@ class BuildCleanupTests(unittest.TestCase):
             script+=creation+'\n'
             if replace:
                 script+=f'^mv {quoted(a)} {quoted(root/"moved-owned")}\nmkdir {quoted(a)}\n"replacement" | save {quoted(a/"keep")}\n'
+            script+='let prebuilt = false; let prebuilt_directory = ""; let baseline_tbc = {features: ""}; let feature_tbc = {features: ""}; const E2E_A_CPUS = ""; const E2E_B_CPUS = ""\n'
             script+='let builds = [{label: "baseline", wt: $baseline_wt, ref_name: $baseline, sha: $baseline, features: "", extra_rustflags: "", bench_features: ""}, {label: "feature", wt: $feature_wt, ref_name: $feature, sha: $feature, features: "", extra_rustflags: "", bench_features: ""}]\n'
             script+='let build_binary = {|b| build-in-worktree --lifecycle-build $b.wt $b.ref_name $profile $b.features $b.sha }\n'+body
             env=dict(os.environ,PATH=str(bins)+os.pathsep+os.environ['PATH'],CASE=case,FAIL_CLEANUP=str(int(cleanup_failure)),CAPACITY_MIB=str(1 if case=='retrieval' else 63000 if case=='compile_guard' else 100000))

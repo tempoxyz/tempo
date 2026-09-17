@@ -96,9 +96,16 @@ def capacity(report):
     return rows[0], rows[1]
 
 
-def elect(receipts, *, workflow_sha, run_id, run_attempt, slots=2, setup_failed_slots=None):
+def elect(receipts, *, workflow_sha, run_id, run_attempt, slots=2, setup_failed_slots=None, prebuilt_plan=None):
     expected = binding(workflow_sha, run_id, run_attempt)
+    proof = None
+    if prebuilt_plan is not None:
+        from prebuilt import budget
+        require(type(prebuilt_plan) is str)
+        proof = budget(prebuilt_plan.encode('utf-8'))
+    required_bytes = REQUIRED_MIB * MIB if proof is None else proof['required_bytes']
     integer(slots, 2, 5)
+    if proof is not None: require(slots == 5 and setup_failed_slots is not None)
     failures = [] if setup_failed_slots is None else setup_failed_slots
     require(type(failures) is list)
     if setup_failed_slots is not None:
@@ -109,7 +116,9 @@ def elect(receipts, *, workflow_sha, run_id, run_attempt, slots=2, setup_failed_
     seen_slots = set(failures)
     eligible = []
     for receipt in receipts:
-        keys(receipt, {'schema', 'workflow_sha', 'run_id', 'run_attempt', 'slot', 'capacity'})
+        keys(receipt, {'schema', 'workflow_sha', 'run_id', 'run_attempt', 'slot', 'capacity'} | ({'prebuilt'} if proof is not None else set()))
+        if proof is not None:
+            require(json.dumps(receipt['prebuilt'],sort_keys=True)==json.dumps(proof,sort_keys=True))
         require(integer(receipt['schema']) == 1)
         require(binding(receipt['workflow_sha'], receipt['run_id'], receipt['run_attempt']) == expected)
         slot = integer(receipt['slot'], 1, slots)
@@ -117,7 +126,7 @@ def elect(receipts, *, workflow_sha, run_id, run_attempt, slots=2, setup_failed_
         seen_slots.add(slot)
         root, workspace = capacity(receipt['capacity'])
         enough = all(row['free_bytes'] is not None and
-                     row['free_bytes'] >= REQUIRED_MIB * MIB for row in (root, workspace))
+                     row['free_bytes'] >= required_bytes for row in (root, workspace))
         root_ready = root['read_only'] is False and root['status'] in ('writable', 'access_denied')
         if enough and root_ready and workspace['status'] == 'writable':
             eligible.append((min(root['free_bytes'], workspace['free_bytes']), -slot, root, workspace))
@@ -160,6 +169,7 @@ def main(argv=None, stdin=None):
         parser.add_argument('--run-attempt', required=True)
         parser.add_argument('--slots', choices=('2', '3', '4', '5'), default='2')
         parser.add_argument('--policy', choices=('strict_v1', SETUP_FAILURE_POLICY), default='strict_v1')
+        parser.add_argument('--binary-mode', choices=('build_v1','prebuilt_v1'), default='build_v1')
         parser.add_argument('paths', nargs='*')
         args = parser.parse_args(argv)
         require(re.fullmatch('[1-9][0-9]{0,15}', args.run_id) is not None)
@@ -179,6 +189,11 @@ def main(argv=None, stdin=None):
             source = sys.stdin.buffer if stdin is None else stdin
             inputs = parse(source.read(MAX_BYTES + 1))
         failures = None
+        prebuilt_plan = None
+        if args.binary_mode == 'prebuilt_v1':
+            require(not args.paths and args.policy == SETUP_FAILURE_POLICY)
+            keys(inputs, {'schema','receipts','setup_failed_slots','prebuilt_plan'})
+            prebuilt_plan = inputs.pop('prebuilt_plan')
         if args.policy == SETUP_FAILURE_POLICY:
             keys(inputs, {'schema', 'receipts', 'setup_failed_slots'})
             require(integer(inputs['schema']) == 2)
@@ -186,7 +201,7 @@ def main(argv=None, stdin=None):
             inputs = inputs['receipts']
         result = elect(inputs, workflow_sha=args.workflow_sha,
                        run_id=int(args.run_id), run_attempt=int(args.run_attempt),
-                       slots=int(args.slots), setup_failed_slots=failures)
+                       slots=int(args.slots), setup_failed_slots=failures, prebuilt_plan=prebuilt_plan)
         print(json.dumps(result, separators=(',', ':')))
         return 0 if result['status'] == 0 else 3
     except (InvalidReceipt, ValueError, TypeError, KeyError, OSError, RecursionError, OverflowError):

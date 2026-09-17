@@ -31,6 +31,9 @@ CATEGORIES = {
 
 def command(argv, timeout=120):
     try:
+        # Root compiler probes use this job's owned scratch, including on cancellation.
+        if os.environ.get('BENCH_RUN_CLEANUP') == 'true' and argv[:2] == ['sudo', '-n']:
+            argv = argv[:2] + ['env', 'TMPDIR=' + os.environ['TMPDIR']] + argv[2:]
         return subprocess.run(argv, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
                               timeout=timeout).returncode == 0
     except (OSError, subprocess.SubprocessError):

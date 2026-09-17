@@ -19,6 +19,16 @@ class ProvisionTests(unittest.TestCase):
         with patch('provision.subprocess.run',side_effect=OSError('private runner details')):
             self.assertFalse(command(['unavailable']))
 
+    def test_root_probes_use_owned_scratch_only_when_cleanup_enabled(self):
+        with patch('provision.subprocess.run') as run:
+            run.return_value.returncode = 0
+            with patch.dict('provision.os.environ', {'BENCH_RUN_CLEANUP':'true','TMPDIR':'/owned/scratch path'}, clear=True):
+                self.assertTrue(command(NATIVE))
+                self.assertEqual(run.call_args.args[0][:5], ['sudo','-n','env','TMPDIR=/owned/scratch path',PYTHON])
+            with patch.dict('provision.os.environ', {}, clear=True):
+                self.assertTrue(command(NATIVE))
+                self.assertEqual(run.call_args.args[0], NATIVE)
+
     def test_normal_mode_never_checks_or_installs(self):
         for mode in ('false','', 'lifecycle'):
             self.assertEqual(self.run_setup(iter([]),mode), ('scheduler_setup_skipped',[]))
