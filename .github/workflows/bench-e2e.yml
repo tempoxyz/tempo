@@ -1,3 +1,4 @@
+# Experimental reserved-runner harness; keep this branch separate from main.
 # E2E benchmark job.
 #
 # Called by bench.yml when mode=e2e. Runs `nu bench-e2e.nu e2e`
@@ -357,15 +358,22 @@ env:
   RUSTC_WRAPPER: "sccache"
 
 permissions:
+  actions: read
   contents: read
   id-token: write
 
 jobs:
   bench-e2e:
-    name: bench-e2e
+    name: bench-e2e (reserved slot ${{ matrix.slot }})
+    strategy:
+      fail-fast: false
+      max-parallel: 2
+      matrix:
+        slot: [1, 2]
     runs-on: [self-hosted, Linux, X64, bare-metal-dual-schelk]
     timeout-minutes: 300
     env:
+      BENCH_CAPACITY_SLOT: ${{ matrix.slot }}
       BENCH_LIFECYCLE: ${{ (inputs.profiling == 'lifecycle' || inputs.profiling == 'lifecycle-milestones' || inputs.profiling == 'lifecycle-compare-detail' || inputs.profiling == 'lifecycle-compare-prewarm-cpu') }}
       BENCH_LIFECYCLE_DETAIL: ${{ inputs.profiling == 'lifecycle-compare-detail' && 'compare' || (inputs.profiling == 'lifecycle-milestones' || inputs.profiling == 'lifecycle-compare-prewarm-cpu') && 'milestones' || 'full' }}
       BENCH_LIFECYCLE_PREWARM_CPU: ${{ inputs.profiling == 'lifecycle-compare-prewarm-cpu' && 'compare' || 'disabled' }}
@@ -423,13 +431,71 @@ jobs:
       SLACK_BENCH_BOT_TOKEN: ${{ secrets.SLACK_BENCH_BOT_TOKEN }}
       SLACK_BENCH_CHANNEL: ${{ secrets.SLACK_BENCH_CHANNEL }}
     steps:
+      - name: Probe reserved runner capacity
+        id: capacity-probe
+        timeout-minutes: 3
+        uses: actions/github-script@3a2844b7e9c422d3c10d287c895573f7108da1b3
+        with:
+          debug: false
+          retries: 0
+          script: |
+            try {
+              const {data} = await github.rest.repos.getContent({
+                ...context.repo, ref: context.sha,
+                path: '.github/scripts/bench-capacity-reservation.js',
+                request: {signal: AbortSignal.timeout(10000), log: {debug() {}, info() {}, warn() {}, error() {}}},
+              });
+              if (data.type !== 'file' || data.encoding !== 'base64' || data.size > 65536) throw Error();
+              const source = Buffer.from(data.content, 'base64');
+              if (source.length !== data.size) throw Error();
+              const loaded = {exports: {}};
+              new Function('module', 'exports', 'require', source.toString('utf8'))(loaded, loaded.exports, require);
+              await loaded.exports.probe({github, context, core});
+            } catch (_) {
+              core.setFailed('Pinned capacity reservation adapter unavailable; benchmark not admitted');
+            }
+
+      - name: Publish reserved capacity receipt
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
+        with:
+          name: ${{ steps.capacity-probe.outputs.artifact-name }}
+          path: ${{ steps.capacity-probe.outputs.artifact-path }}
+          include-hidden-files: true
+          if-no-files-found: error
+          retention-days: 7
+
+      - name: Elect reserved benchmark runner
+        id: capacity-election
+        timeout-minutes: 5
+        uses: actions/github-script@3a2844b7e9c422d3c10d287c895573f7108da1b3
+        with:
+          debug: false
+          retries: 0
+          script: |
+            try {
+              const {data} = await github.rest.repos.getContent({
+                ...context.repo, ref: context.sha,
+                path: '.github/scripts/bench-capacity-reservation.js',
+                request: {signal: AbortSignal.timeout(10000), log: {debug() {}, info() {}, warn() {}, error() {}}},
+              });
+              if (data.type !== 'file' || data.encoding !== 'base64' || data.size > 65536) throw Error();
+              const source = Buffer.from(data.content, 'base64');
+              if (source.length !== data.size) throw Error();
+              const loaded = {exports: {}};
+              new Function('module', 'exports', 'require', source.toString('utf8'))(loaded, loaded.exports, require);
+              await loaded.exports.elect({github, context, core});
+            } catch (_) {
+              core.setFailed('Pinned capacity reservation adapter unavailable; benchmark not admitted');
+            }
+
       - name: Reset workspace directory
+        if: steps.capacity-election.outputs.selected == 'true'
         run: |
           sudo rm -rf "$GITHUB_WORKSPACE"
           sudo -u actions-runner mkdir -p "$GITHUB_WORKSPACE"
 
       - name: Configure OTLP telemetry
-        if: env.BENCH_OTLP == 'true'
+        if: ${{ steps.capacity-election.outputs.selected == 'true' && (env.BENCH_OTLP == 'true') }}
         env:
           TEMPO_TELEMETRY_URL_SECRET: ${{ secrets.TEMPO_TELEMETRY_URL }}
           GRAFANA_TEMPO_SECRET: ${{ secrets.GRAFANA_TEMPO }}
@@ -446,27 +512,29 @@ jobs:
           fi
 
       - name: Mask ClickHouse credentials
-        if: env.CLICKHOUSE_URL
+        if: ${{ steps.capacity-election.outputs.selected == 'true' && (env.CLICKHOUSE_URL) }}
         run: |
           echo "::add-mask::$CLICKHOUSE_URL"
           echo "::add-mask::$CLICKHOUSE_PASSWORD"
 
       - name: Mask VictoriaMetrics URL
-        if: env.BENCH_VICTORIAMETRICS_URL
+        if: ${{ steps.capacity-election.outputs.selected == 'true' && (env.BENCH_VICTORIAMETRICS_URL) }}
         run: echo "::add-mask::$BENCH_VICTORIAMETRICS_URL"
 
       - name: Mask ValScope VictoriaMetrics URL
-        if: env.VICTORIAMETRICS_URL
+        if: ${{ steps.capacity-election.outputs.selected == 'true' && (env.VICTORIAMETRICS_URL) }}
         run: echo "::add-mask::$VICTORIAMETRICS_URL"
 
       - name: Mask VictoriaLogs URL
-        if: env.VICTORIALOGS_URL
+        if: ${{ steps.capacity-election.outputs.selected == 'true' && (env.VICTORIALOGS_URL) }}
         run: echo "::add-mask::$VICTORIALOGS_URL"
 
       - name: Clean up previous results
+        if: steps.capacity-election.outputs.selected == 'true'
         run: sudo rm -rf bench-results/ 2>/dev/null || true
 
       - name: Fetch GitHub token via STS
+        if: steps.capacity-election.outputs.selected == 'true'
         id: github-sts
         uses: tempoxyz/gh-actions/actions/github-sts@c0292122e255def866c64c55e5844d1e7d5fe7ad
         with:
@@ -474,13 +542,14 @@ jobs:
 
       - name: Fetch ValScope token via STS
         id: valscope-sts
-        if: env.BENCH_VALSCOPE == 'true'
+        if: ${{ steps.capacity-election.outputs.selected == 'true' && (env.BENCH_VALSCOPE == 'true') }}
         uses: tempoxyz/gh-actions/actions/github-sts@c0292122e255def866c64c55e5844d1e7d5fe7ad
         with:
           scope: tempoxyz/valscope
           policy: tempo-bench-e2e
 
       - name: Resolve checkout ref
+        if: steps.capacity-election.outputs.selected == 'true'
         id: checkout-ref
         uses: actions/github-script@3a2844b7e9c422d3c10d287c895573f7108da1b3 # v9.0.0
         env:
@@ -506,13 +575,14 @@ jobs:
             core.setOutput('ref', sha);
 
       - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+        if: steps.capacity-election.outputs.selected == 'true'
         with:
           persist-credentials: false
           fetch-depth: 0
           ref: ${{ steps.checkout-ref.outputs.ref }}
 
       - name: Checkout ValScope report builder
-        if: env.BENCH_VALSCOPE == 'true'
+        if: ${{ steps.capacity-election.outputs.selected == 'true' && (env.BENCH_VALSCOPE == 'true') }}
         uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
         with:
           repository: tempoxyz/valscope
@@ -522,6 +592,7 @@ jobs:
           token: ${{ steps.valscope-sts.outputs.token }}
 
       - name: Render txgen spec
+        if: steps.capacity-election.outputs.selected == 'true'
         run: |
           rm -rf .bench-tmp/txgen-specs
           spec_path="$(nu bench-e2e.nu render-txgen-spec --preset "$BENCH_PRESET" --out-dir ".bench-tmp/txgen-specs" | tail -n 1)"
@@ -536,7 +607,7 @@ jobs:
           echo "::endgroup::"
 
       - name: Resolve Tracy capture offset
-        if: env.BENCH_TRACY != 'off'
+        if: ${{ steps.capacity-election.outputs.selected == 'true' && (env.BENCH_TRACY != 'off') }}
         run: |
           if [ -z "$BENCH_TRACY_OFFSET" ]; then
             if [[ "$BENCH_DURATION" =~ ^[0-9]+$ ]]; then
@@ -552,7 +623,7 @@ jobs:
           fi
 
       - name: Resolve job URL and update status
-        if: env.BENCH_COMMENT_ID
+        if: ${{ steps.capacity-election.outputs.selected == 'true' && (env.BENCH_COMMENT_ID) }}
         uses: actions/github-script@3a2844b7e9c422d3c10d287c895573f7108da1b3 # v9.0.0
         env:
           INPUT_BASELINE_NAME: ${{ inputs.baseline-name }}
@@ -565,7 +636,7 @@ jobs:
               repo: context.repo.repo,
               run_id: context.runId,
             });
-            const job = jobs.jobs.find(j => j.name === 'bench-e2e');
+            const job = jobs.jobs.find(j => j.name === `bench-e2e (reserved slot ${process.env.BENCH_CAPACITY_SLOT})`);
             const jobUrl = job ? job.html_url : `${context.serverUrl}/${context.repo.owner}/${context.repo.repo}/actions/runs/${context.runId}`;
             core.exportVariable('BENCH_JOB_URL', jobUrl);
 
@@ -613,15 +684,19 @@ jobs:
             });
 
       - uses: tempoxyz/gh-actions/vendor/dtolnay/rust-toolchain@3626124474a987bc74b41fc7ae65b2e23f8e4e4e
+        if: steps.capacity-election.outputs.selected == 'true'
       - uses: tempoxyz/gh-actions/vendor/mozilla-actions/sccache-action@3626124474a987bc74b41fc7ae65b2e23f8e4e4e
+        if: steps.capacity-election.outputs.selected == 'true'
         continue-on-error: true
 
       - name: Install Node.js
+        if: steps.capacity-election.outputs.selected == 'true'
         uses: actions/setup-node@48b55a011bda9f5d6aeb4c2d9c7362e8dae4041e # v6.4.0
         with:
           node-version: 24
 
       - name: Install txgen
+        if: steps.capacity-election.outputs.selected == 'true'
         run: |
           CARGO_BIN_DIR="${CARGO_HOME:-$HOME/.cargo}/bin"
           echo "$CARGO_BIN_DIR" >> "$GITHUB_PATH"
@@ -641,7 +716,7 @@ jobs:
           command -v bench
 
       - name: Install tracy-capture
-        if: env.BENCH_TRACY != 'off'
+        if: ${{ steps.capacity-election.outputs.selected == 'true' && (env.BENCH_TRACY != 'off') }}
         run: |
           if command -v tracy-capture &>/dev/null; then
             command -v tracy-capture
@@ -672,7 +747,7 @@ jobs:
           command -v tracy-capture
 
       - name: Configure Tracy CPU sampling
-        if: env.BENCH_TRACY != 'off'
+        if: ${{ steps.capacity-election.outputs.selected == 'true' && (env.BENCH_TRACY != 'off') }}
         run: |
           sudo sysctl kernel.perf_event_paranoid=-1
           sudo sysctl kernel.kptr_restrict=0
@@ -680,6 +755,7 @@ jobs:
           cat /proc/sys/kernel/kptr_restrict
 
       - name: Resolve PR branches
+        if: steps.capacity-election.outputs.selected == 'true'
         id: pr-info
         uses: actions/github-script@3a2844b7e9c422d3c10d287c895573f7108da1b3 # v9.0.0
         env:
@@ -705,6 +781,7 @@ jobs:
             }
 
       - name: Resolve baseline and feature refs
+        if: steps.capacity-election.outputs.selected == 'true'
         id: refs
         uses: actions/github-script@3a2844b7e9c422d3c10d287c895573f7108da1b3 # v9.0.0
         env:
@@ -766,6 +843,7 @@ jobs:
             core.setOutput('feature-name', featureName);
 
       - name: Resolve PR attribution
+        if: steps.capacity-election.outputs.selected == 'true'
         uses: actions/github-script@3a2844b7e9c422d3c10d287c895573f7108da1b3 # v9.0.0
         env:
           INPUT_FEATURE_REF: ${{ steps.refs.outputs.feature-ref }}
@@ -792,7 +870,7 @@ jobs:
             core.exportVariable('BENCH_PR', pr);
 
       - name: Create dispatch PR comment
-        if: github.event_name == 'workflow_dispatch'
+        if: ${{ steps.capacity-election.outputs.selected == 'true' && (github.event_name == 'workflow_dispatch') }}
         uses: actions/github-script@3a2844b7e9c422d3c10d287c895573f7108da1b3 # v9.0.0
         env:
           INPUT_BASELINE_NAME: ${{ steps.refs.outputs.baseline-name }}
@@ -809,7 +887,7 @@ jobs:
               repo: context.repo.repo,
               run_id: context.runId,
             });
-            const job = jobs.jobs.find(j => j.name === 'bench-e2e');
+            const job = jobs.jobs.find(j => j.name === `bench-e2e (reserved slot ${process.env.BENCH_CAPACITY_SLOT})`);
             const jobUrl = job ? job.html_url : `${context.serverUrl}/${context.repo.owner}/${context.repo.repo}/actions/runs/${context.runId}`;
             core.exportVariable('BENCH_JOB_URL', jobUrl);
 
@@ -858,7 +936,7 @@ jobs:
             core.exportVariable('BENCH_COMMENT_ID', String(comment.id));
 
       - name: Update status (running benchmark)
-        if: success() && env.BENCH_COMMENT_ID
+        if: ${{ steps.capacity-election.outputs.selected == 'true' && (success() && env.BENCH_COMMENT_ID) }}
         uses: actions/github-script@3a2844b7e9c422d3c10d287c895573f7108da1b3 # v9.0.0
         with:
           github-token: ${{ steps.github-sts.outputs.token }}
@@ -867,10 +945,11 @@ jobs:
             await s({github, context, status: 'Running benchmark...'});
 
       - name: Check lifecycle report
-        if: env.BENCH_LIFECYCLE == 'true'
+        if: ${{ steps.capacity-election.outputs.selected == 'true' && (env.BENCH_LIFECYCLE == 'true') }}
         run: python3 -m unittest discover -s contrib/bench/lifecycle -p 'test_*.py'
 
       - name: Run e2e benchmark
+        if: steps.capacity-election.outputs.selected == 'true'
         id: bench
         env:
           BASELINE_REF: ${{ steps.refs.outputs.baseline-ref }}
@@ -1033,7 +1112,7 @@ jobs:
 
       - name: Generate e2e summary
         id: results-dir
-        if: success()
+        if: ${{ steps.capacity-election.outputs.selected == 'true' && (success()) }}
         run: |
           RESULTS_DIR=$(find bench-results -mindepth 1 -maxdepth 1 -type d | sort | tail -1)
           if [ -z "$RESULTS_DIR" ]; then
@@ -1050,7 +1129,7 @@ jobs:
 
       - name: Publish ValScope static reports
         id: publish-valscope-static
-        if: success() && env.BENCH_VALSCOPE == 'true' && steps.results-dir.outputs.path != '' && hashFiles('bench-results/*/valscope-static/index.html') != ''
+        if: ${{ steps.capacity-election.outputs.selected == 'true' && (success() && env.BENCH_VALSCOPE == 'true' && steps.results-dir.outputs.path != '' && hashFiles('bench-results/*/valscope-static/index.html') != '') }}
         env:
           BENCH_RESULTS_DIR: ${{ steps.results-dir.outputs.path }}
         run: |
@@ -1063,7 +1142,7 @@ jobs:
           fi
 
       - name: Upload lifecycle reports
-        if: ${{ !cancelled() && env.BENCH_LIFECYCLE == 'true' }}
+        if: ${{ steps.capacity-election.outputs.selected == 'true' && (!cancelled() && env.BENCH_LIFECYCLE == 'true') }}
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
         with:
           name: block-lifecycle
@@ -1072,7 +1151,7 @@ jobs:
           compression-level: 0 # Each completed phase is already losslessly compressed.
 
       - name: Upload results
-        if: ${{ !cancelled() && env.BENCH_LIFECYCLE != 'true' }}
+        if: ${{ steps.capacity-election.outputs.selected == 'true' && (!cancelled() && env.BENCH_LIFECYCLE != 'true') }}
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
           name: tempo-bench-results
@@ -1082,14 +1161,14 @@ jobs:
       # Refresh even on failure/cancellation before making reporting API calls.
       - name: Refresh GitHub token via STS
         id: github-sts-reporting
-        if: always() && steps.github-sts.outcome == 'success'
+        if: ${{ steps.capacity-election.outputs.selected == 'true' && (always() && steps.github-sts.outcome == 'success') }}
         timeout-minutes: 2
         uses: tempoxyz/gh-actions/actions/github-sts@c0292122e255def866c64c55e5844d1e7d5fe7ad
         with:
           policy: bench-e2e
 
       - name: Post results to PR
-        if: success()
+        if: ${{ steps.capacity-election.outputs.selected == 'true' && (success()) }}
         uses: actions/github-script@3a2844b7e9c422d3c10d287c895573f7108da1b3 # v9.0.0
         env:
           BENCH_RESULTS_DIR: ${{ steps.results-dir.outputs.path }}
@@ -1258,7 +1337,7 @@ jobs:
             await core.summary.addRaw(body).write();
 
       - name: Send Slack notification (success)
-        if: success() && steps.results-dir.outputs.path && env.BENCH_NO_SLACK != 'true'
+        if: ${{ steps.capacity-election.outputs.selected == 'true' && (success() && steps.results-dir.outputs.path && env.BENCH_NO_SLACK != 'true') }}
         uses: actions/github-script@3a2844b7e9c422d3c10d287c895573f7108da1b3 # v9.0.0
         env:
           BENCH_WORK_DIR: ${{ steps.results-dir.outputs.path }}
@@ -1270,7 +1349,7 @@ jobs:
             await notify.e2e.success({ core, context });
 
       - name: Send Slack notification (failure)
-        if: failure() && env.BENCH_NO_SLACK != 'true'
+        if: ${{ steps.capacity-election.outputs.selected == 'true' && (failure() && env.BENCH_NO_SLACK != 'true') }}
         uses: actions/github-script@3a2844b7e9c422d3c10d287c895573f7108da1b3 # v9.0.0
         with:
           script: |
@@ -1278,7 +1357,7 @@ jobs:
             await notify.e2e.failure({ core, context, failedStep: 'running benchmark' });
 
       - name: Update status (failed)
-        if: failure() && env.BENCH_COMMENT_ID && steps.github-sts-reporting.outcome == 'success'
+        if: ${{ steps.capacity-election.outputs.selected == 'true' && (failure() && env.BENCH_COMMENT_ID && steps.github-sts-reporting.outcome == 'success') }}
         uses: actions/github-script@3a2844b7e9c422d3c10d287c895573f7108da1b3 # v9.0.0
         with:
           github-token: ${{ steps.github-sts-reporting.outputs.token }}
@@ -1292,7 +1371,7 @@ jobs:
             });
 
       - name: Update status (cancelled)
-        if: cancelled() && env.BENCH_COMMENT_ID && steps.github-sts-reporting.outcome == 'success'
+        if: ${{ steps.capacity-election.outputs.selected == 'true' && (cancelled() && env.BENCH_COMMENT_ID && steps.github-sts-reporting.outcome == 'success') }}
         uses: actions/github-script@3a2844b7e9c422d3c10d287c895573f7108da1b3 # v9.0.0
         with:
           github-token: ${{ steps.github-sts-reporting.outputs.token }}

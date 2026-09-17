@@ -430,3 +430,26 @@ owned build area, not protection against an adversarial rename during removal.
 Failures while creating another worktree or recording ownership precede this
 narrow build/trim catch and are not covered. Disk thresholds, shared caches,
 snapshots, and benchmark state are unchanged by this failure cleanup.
+
+### Reserved runner admission (experimental branch only)
+
+This workflow reserves two matching runner jobs and measures their capacity before
+checkout or benchmark setup. Both jobs require the same pair of closed numeric
+receipts, bound to the immutable workflow SHA, run and attempt. The eligible slot
+with the larger minimum root/workspace free space wins (lower slot breaks ties)
+and continues on its existing runner. Every original workflow step is gated on
+that selection, including failure reporting and artifact uploads.
+
+Receipts contain only capacity, status, role and per-receipt filesystem ordinals;
+no native runner, host, device or path identifiers are uploaded. The probe creates
+and removes only a tiny exclusive test file. It does not prune shared data. The
+election requires at least 64 GiB free on root and writable workspace, is bounded
+to three minutes, and rejects missing, malformed, duplicate or mismatched receipts
+without selecting a fallback. Existing later capacity guards remain in force.
+Selection reserves a runner job, not disk space or an exclusive physical host;
+another workload can still consume capacity after admission.
+
+This branch accepts only manual lifecycle dispatches with Slack disabled. Use a
+fresh run rather than reusing artifacts across attempts. Transport tests run with
+`node --test .github/scripts/test-bench-capacity-reservation.cjs`; protocol and
+workflow gates are included in the lifecycle Python test suite.
