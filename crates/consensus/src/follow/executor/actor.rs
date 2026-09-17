@@ -9,7 +9,7 @@
 //! upstream, submit them to Reth as finalized payloads, and rely on Reth's sync machinery plus
 //! marshal gap repair to fill history.
 
-use std::{collections::VecDeque, time::Duration};
+use std::{collections::VecDeque, sync::Arc, time::Duration};
 
 use alloy_rpc_types_engine::ForkchoiceState;
 use commonware_consensus::{
@@ -33,8 +33,9 @@ pub(crate) struct Actor<TContext, P, E, M = crate::alias::marshal::Mailbox> {
     context: ContextCell<TContext>,
     mailbox: mpsc::UnboundedReceiver<Message>,
 
-    execution_provider: P,
+    execution_provider: Arc<P>,
     execution_engine: E,
+    checkpoint_replay: bool,
     marshal: M,
 
     epoch_strategy: FixedEpocher,
@@ -85,8 +86,10 @@ where
             marshal,
             epoch_strategy,
             floor,
-            execution_provider,
+            execution_provider: Arc::new(execution_provider),
             execution_engine,
+            checkpoint_replay: std::env::var_os("TEMPO_FLATMPT").is_some()
+                && std::env::var("TEMPO_FLATMPT_MODE").as_deref() == Ok("root"),
 
             last_fcu: tip,
             latest_tip: tip,
@@ -101,6 +104,11 @@ where
 
     pub(crate) fn start(mut self) -> Handle<()> {
         spawn_cell!(self.context, self.run())
+    }
+
+    #[cfg(test)]
+    pub(super) fn enable_replay_checkpoints(&mut self) {
+        self.checkpoint_replay = true;
     }
 
     async fn run(mut self) {
@@ -197,8 +205,17 @@ where
         let last_fcu = self.last_fcu;
         let context = self.context.child("execute_request");
         let execution_engine = self.execution_engine.clone();
-        self.execution_task
-            .replace(execute_request(context, execution_engine, last_fcu, request).boxed());
+        self.execution_task.replace(
+            execute_request(
+                context,
+                execution_engine,
+                self.execution_provider.clone(),
+                self.checkpoint_replay,
+                last_fcu,
+                request,
+            )
+            .boxed(),
+        );
     }
 
     #[instrument(skip_all, err(level = Level::WARN))]
@@ -260,9 +277,15 @@ enum ExecutionTaskResult {
     Fatal(Report),
 }
 
-async fn execute_request<TContext: Pacer, E: ExecutionEngine + 'static>(
+async fn execute_request<
+    TContext: Pacer,
+    E: ExecutionEngine + 'static,
+    P: FinalizedBlockProvider + 'static,
+>(
     context: TContext,
     execution_engine: E,
+    execution_provider: Arc<P>,
+    checkpoint_replay: bool,
     last_fcu: Target,
     request: ExecutionRequest,
 ) -> ExecutionTaskResult {
@@ -275,18 +298,41 @@ async fn execute_request<TContext: Pacer, E: ExecutionEngine + 'static>(
         }
         ExecutionRequest::Block(block, ack) => {
             let tip = Target::from_block(&block);
+            let height = block.height().get();
 
-            if let Err(error) = submit_new_payload(&context, &execution_engine, block).await {
-                return ExecutionTaskResult::Fatal(error);
-            }
+            let payload_valid = match submit_new_payload(&context, &execution_engine, block).await {
+                Ok(valid) => valid,
+                Err(error) => return ExecutionTaskResult::Fatal(error),
+            };
 
-            let last_fcu = if tip.supersedes(&last_fcu) {
+            // A future FCU may have returned SYNCING without advancing execution's
+            // finalized head. In FlatMPT mode, persist already-validated marshal
+            // history as it arrives instead of retaining the entire replay overlay.
+            // The provider check prevents regressing an actually finalized head;
+            // the VALID check prevents checkpointing an unexecuted payload.
+            let replay_checkpoint = if checkpoint_replay && payload_valid {
+                match execution_provider.finalized_header() {
+                    Ok(finalized) => height > finalized.num_hash().number,
+                    Err(error) => return ExecutionTaskResult::Fatal(error),
+                }
+            } else {
+                false
+            };
+
+            let last_fcu = if tip.supersedes(&last_fcu) || replay_checkpoint {
                 if let Err(error) =
                     submit_forkchoice_update(&context, &execution_engine, &tip).await
                 {
                     return ExecutionTaskResult::Fatal(error);
                 }
-                tip
+                if replay_checkpoint && !tip.supersedes(&last_fcu) {
+                    tracing::debug!(height, "checkpointed validated FlatMPT replay block");
+                }
+                if tip.supersedes(&last_fcu) {
+                    tip
+                } else {
+                    last_fcu
+                }
             } else {
                 last_fcu
             };
@@ -306,7 +352,7 @@ async fn submit_new_payload<TContext: Pacer, E: ExecutionEngine + ?Sized>(
     context: &TContext,
     execution_engine: &E,
     block: Block,
-) -> eyre::Result<()> {
+) -> eyre::Result<bool> {
     let (block, block_access_list) = block.into_parts();
     let payload_status = execution_engine
         .new_payload(TempoExecutionData {
@@ -325,7 +371,7 @@ async fn submit_new_payload<TContext: Pacer, E: ExecutionEngine + ?Sized>(
          `{payload_status}`"
     );
 
-    Ok(())
+    Ok(payload_status.is_valid())
 }
 
 #[instrument(skip_all, fields(round = ?tip.round, digest = %tip.digest))]

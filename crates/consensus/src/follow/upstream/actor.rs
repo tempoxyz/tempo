@@ -415,6 +415,7 @@ async fn get_finalization(
     client: Arc<WsClient>,
     height: Height,
 ) -> eyre::Result<Option<CertifiedBlock>> {
+    super::pacing::wait().await;
     TempoConsensusApiClient::get_finalization(client.as_ref(), Query::Height(height.get()))
         .await
         .map(Some)
@@ -424,6 +425,7 @@ async fn get_finalization(
 /// Fetches a full consensus block from the upstream node.
 #[instrument(skip_all, fields(%digest), err)]
 async fn get_block(client: Arc<WsClient>, digest: Digest) -> eyre::Result<Option<Block>> {
+    super::pacing::wait().await;
     let block = client
         .request::<Option<RpcBlock<Transaction<TempoTxEnvelope>, TempoHeader>>, _>(
             "eth_getBlockByHash",

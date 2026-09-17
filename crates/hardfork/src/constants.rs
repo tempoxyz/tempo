@@ -224,6 +224,12 @@ pub mod mainnet {
 
     /// T9 activation timestamp (Aug 6th 2026 14:00 UTC).
     pub const MAINNET_T9_TIMESTAMP: u64 = 1_786_024_800;
+
+    /// T10 activation timestamp (Aug 21st 2026 14:00 UTC).
+    pub const MAINNET_T10_TIMESTAMP: u64 = 1_787_320_800;
+
+    /// T11 activation timestamp (Sep 10th 2026 14:00 UTC).
+    pub const MAINNET_T11_TIMESTAMP: u64 = 1_789_048_800;
 }
 
 pub mod moderato {
@@ -285,4 +291,10 @@ pub mod moderato {
 
     /// T9 activation timestamp (Aug 5th 2026 14:00 UTC).
     pub const MODERATO_T9_TIMESTAMP: u64 = 1_785_938_400;
+
+    /// T10 activation timestamp (Aug 20th 2026 14:00 UTC).
+    pub const MODERATO_T10_TIMESTAMP: u64 = 1_787_234_400;
+
+    /// T11 activation timestamp (Sep 9th 2026 14:00 UTC).
+    pub const MODERATO_T11_TIMESTAMP: u64 = 1_788_962_400;
 }
