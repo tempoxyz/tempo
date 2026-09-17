@@ -475,6 +475,7 @@ impl Inner<Init> {
             parent_digest,
             &self.marshal,
             None,
+            None,
         )
         .await?;
 
@@ -700,17 +701,19 @@ impl Inner<Init> {
         }
 
         tracing::info!(target: "lifecycle", stage = "verify_start", block_hash = %payload);
+        let mut body_source = 0u64;
         let block = subscribe(
             &self.execution_node,
             round,
             payload,
             &self.marshal,
+            Some(&mut body_source),
             Some(&self.broadcast),
         )
         .await
         .wrap_err("failed getting proposal block")?;
 
-        tracing::info!(target: "lifecycle", stage = "body_ready", block_hash = %block.digest(), height = %block.height());
+        tracing::info!(target: "lifecycle", stage = "body_ready", body_source, block_hash = %block.digest(), height = %block.height());
 
         // Can only repropose at the end of an epoch.
         if payload == parent_digest {
@@ -983,18 +986,19 @@ async fn subscribe(
     round: Round,
     digest: Digest,
     marshal: &crate::alias::marshal::Mailbox,
+    body_source: Option<&mut u64>,
     broadcast: Option<&commonware_broadcast::buffered::Mailbox<PublicKey, Block>>,
 ) -> eyre::Result<Block> {
-    let block = if let Some(block) = execution_node
+    let (block, source) = if let Some(block) = execution_node
         .provider
         .find_sealed_or_recovered_block(digest.0, BlockSource::Any)
         .wrap_err_with(|| format!("failed querying execution layer for parent block `{digest}`"))?
     {
         // EL database reads do not include commonware sidecars.
-        Block::from_execution_block_unchecked(block, None)
+        (Block::from_execution_block_unchecked(block, None), 1)
     } else {
         let primary = marshal.subscribe_by_digest(digest, DigestFallback::FetchByRound { round });
-        let received = if let Some(broadcast) = broadcast {
+        let (received, source) = if let Some(broadcast) = broadcast {
             // This is the same structurally decoded body source marshal consults before
             // persistence. Replay, context validation and vote durability still follow.
             super::body_subscription::receive(primary, broadcast.subscribe(digest), |block| {
@@ -1002,11 +1006,20 @@ async fn subscribe(
             })
             .await
         } else {
-            primary.await
+            (primary.await, 2)
         };
-        (*received.map_err(|_| eyre!("syncer dropped channel before the parent block was sent"))?)
-            .clone()
+        (
+            (*received
+                .map_err(|_| eyre!("syncer dropped channel before the parent block was sent"))?)
+            .clone(),
+            source,
+        )
     };
+    // Fixed acquisition codes: 1=EL, 2=marshal, 3=direct broadcast,
+    // 4=marshal after a selected unusable/closed broadcast response.
+    if let Some(body_source) = body_source {
+        *body_source = source;
+    }
     Ok(block)
 }
 

@@ -8,12 +8,12 @@ pub(super) async fn receive<T>(
     mut marshal: oneshot::Receiver<T>,
     broadcast: oneshot::Receiver<T>,
     usable: impl FnOnce(&T) -> bool,
-) -> Result<T, oneshot::error::RecvError> {
+) -> (Result<T, oneshot::error::RecvError>, u64) {
     commonware_macros::select! {
-        result = &mut marshal => result,
+        result = &mut marshal => (result, 2),
         result = broadcast => match result {
-            Ok(value) if usable(&value) => Ok(value),
-            _ => marshal.await,
+            Ok(value) if usable(&value) => (Ok(value), 3),
+            _ => (marshal.await, 4),
         },
     }
 }
@@ -31,9 +31,8 @@ mod tests {
         assert_eq!(
             receive(primary, secondary, |value| *value == 42)
                 .now_or_never()
-                .unwrap()
                 .unwrap(),
-            42
+            (Ok(42), 3)
         );
         assert!(
             marshal.is_closed(),
@@ -50,9 +49,8 @@ mod tests {
         assert_eq!(
             receive(primary, secondary, |_| true)
                 .now_or_never()
-                .unwrap()
                 .unwrap(),
-            41
+            (Ok(41), 2)
         );
         let (marshal, primary) = oneshot::channel::<u64>();
         let (broadcast, secondary) = oneshot::channel();
@@ -62,6 +60,7 @@ mod tests {
             receive(primary, secondary, |_| true)
                 .now_or_never()
                 .unwrap()
+                .0
                 .is_err()
         );
     }
@@ -80,7 +79,7 @@ mod tests {
             assert!(future.as_mut().now_or_never().is_none());
             assert!(!marshal.is_closed());
             marshal.send(42).unwrap();
-            assert_eq!(future.now_or_never().unwrap().unwrap(), 42);
+            assert_eq!(future.now_or_never().unwrap(), (Ok(42), 4));
         }
     }
 
@@ -93,6 +92,7 @@ mod tests {
             receive(primary, secondary, |_| true)
                 .now_or_never()
                 .unwrap()
+                .0
                 .is_err()
         );
         assert!(broadcast.is_closed());
@@ -117,9 +117,8 @@ mod tests {
         assert_eq!(
             receive(primary, secondary, |_| true)
                 .now_or_never()
-                .unwrap()
                 .unwrap(),
-            42
+            (Ok(42), 2)
         );
         assert!(broadcast.is_closed());
     }
