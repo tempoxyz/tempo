@@ -51,6 +51,9 @@ const MAX_PENDING_ACKS: NonZeroUsize = NZUsize!(1);
 pub struct Builder<TBlocker, TPeerManager> {
     pub execution_node: Option<Arc<TempoFullNode>>,
 
+    /// Trusted network identity to register before initializing consensus actors.
+    pub network_identity: tempo_chainspec::NetworkIdentity,
+
     pub blocker: TBlocker,
     pub peer_manager: TPeerManager,
 
@@ -146,6 +149,7 @@ where
             mailbox: marshal_mailbox,
             finalized_floor,
             finalized_tip,
+            finalized_tip_certificate,
         } = alias::marshal::init(
             context.child("marshal"),
             page_cache_ref.clone(),
@@ -185,10 +189,10 @@ where
                 execution_node: execution_node.clone(),
                 oracle: self.peer_manager.clone(),
                 epoch_strategy: epoch_strategy.clone(),
-                finalized_floor,
                 finalized_tip: (finalized_tip.1, finalized_tip.2),
             },
-        );
+        )
+        .wrap_err("failed initializing peer manager")?;
 
         let (broadcast, broadcast_mailbox) = buffered::Engine::new(
             context.child("broadcast"),
@@ -279,10 +283,14 @@ where
         let (dkg_manager, dkg_manager_mailbox) = dkg::manager::init(
             context.child("dkg_manager"),
             dkg::manager::Config {
-                epoch_manager: epoch_manager_mailbox.clone(),
+                epoch_manager: epoch_manager_mailbox,
                 epoch_strategy: epoch_strategy.clone(),
                 execution_node,
                 initial_share: self.share.clone(),
+                finalized_tip: finalized_tip_certificate
+                    .map(|certificate| (finalized_tip.1, certificate)),
+                network_identity: self.network_identity,
+                scheme_provider,
                 last_finalized_height: finalized_floor,
                 mailbox_size: self.mailbox_size,
                 marshal: marshal_mailbox,
@@ -313,7 +321,6 @@ where
             marshal,
 
             epoch_manager,
-            epoch_manager_mailbox,
 
             peer_manager,
             peer_manager_mailbox,
@@ -370,9 +377,8 @@ where
     marshal: crate::alias::marshal::Actor<TContext>,
 
     epoch_manager: epoch::manager::Actor<TContext, TBlocker>,
-    epoch_manager_mailbox: epoch::manager::Mailbox,
 
-    peer_manager: peer_manager::Actor<TContext, TPeerManager>,
+    peer_manager: peer_manager::Actor<TContext, TPeerManager, TempoFullNode>,
     peer_manager_mailbox: peer_manager::Mailbox,
 
     feed: crate::feed::Actor<TContext>,
@@ -521,17 +527,14 @@ where
 
         let marshal = self.marshal.start(
             Reporters::from((
-                self.epoch_manager_mailbox,
+                self.executor_mailbox,
                 Reporters::from((
-                    self.executor_mailbox,
+                    self.dkg_manager_mailbox.clone(),
                     Reporters::from((
-                        self.dkg_manager_mailbox.clone(),
-                        Reporters::from((
-                            self.peer_manager_mailbox,
-                            Reporters::<_, crate::feed::Mailbox, crate::gossip::Mailbox>::from((
-                                self.feed_mailbox,
-                                self.gossip_mailbox,
-                            )),
+                        self.peer_manager_mailbox,
+                        Reporters::<_, crate::feed::Mailbox, crate::gossip::Mailbox>::from((
+                            self.feed_mailbox,
+                            self.gossip_mailbox,
                         )),
                     )),
                 )),

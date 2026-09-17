@@ -8,6 +8,7 @@ use std::{
 
 use alloy_primitives::B256;
 use clap::{ArgMatches, FromArgMatches, Parser};
+use commonware_consensus::types::FixedEpocher;
 use commonware_runtime::Runner as _;
 use eyre::{Context as _, OptionExt, ensure};
 use reth_chainspec::EthChainSpec as _;
@@ -251,6 +252,13 @@ fn prepare_snapshot_consensus_archive(
     source_datadir: &Path,
 ) -> eyre::Result<PreparedConsensusSnapshot> {
     ensure_consensus_storage_not_held(consensus_dir)?;
+    let epoch_strategy = FixedEpocher::new(
+        chainspec
+            .info
+            .epoch_length()
+            .ok_or_eyre("chainspec did not contain epochLength")?,
+    );
+    let writer_epoch_strategy = epoch_strategy.clone();
     let execution_provider = execution_provider(chainspec, source_datadir)?;
     let archive_dir = tempfile::tempdir().wrap_err("failed to create consensus snapshot dir")?;
     let archive_storage_dir = archive_dir.path().to_path_buf();
@@ -274,6 +282,7 @@ fn prepare_snapshot_consensus_archive(
                 &context,
                 tempo_consensus::PARTITION_PREFIX,
                 archive_entries_rx,
+                &writer_epoch_strategy,
             )
             .await
         })
@@ -298,6 +307,7 @@ fn prepare_snapshot_consensus_archive(
             tempo_consensus::PARTITION_PREFIX,
             execution_provider,
             archive_entries_tx,
+            &epoch_strategy,
         )
         .await
     });

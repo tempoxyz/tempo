@@ -678,6 +678,26 @@ def txgen-prepare-vault-preset [spec_path: string, accounts: int, chain_id: int]
     $output
 }
 
+# Only public-mix needs category metadata; other presets keep their existing metadata.
+def txgen-workload-metadata-args [preset_name: string, spec_path: string] {
+    if $preset_name != "public-mix" { return [] }
+
+    # Read only the prepared file's mix, not its included setup/template specs.
+    # Pin the jq-compatible Python yq, rather than relying on a system yq variant.
+    let result = (^uv run --no-project --with yq==3.4.3 yq -ceS '
+        .mix | if length > 0 then . else error("public-mix requires a mix") end
+        | map({key: ((.template // .sequence)
+            | sub("^(?<category>(zone|vault)_(deposit|withdraw))_[0-9]+$"; "\(.category)")), value: .weight})
+        | group_by(.key)
+        | map({key: .[0].key, value: (map(.value) | add)})
+        | from_entries
+    ' $spec_path | complete)
+    if $result.exit_code != 0 {
+        error make {msg: $"Failed to extract public-mix metadata: ($result.stderr)"}
+    }
+    ["-m" "workload_mix_version=1" "-m" $"workload_mix_weights=($result.stdout | str trim)"]
+}
+
 def txgen-run-preset-pipeline [
     --txgen-tempo-bin: string
     --txgen-bench-bin: string
@@ -770,6 +790,7 @@ def txgen-run-preset-pipeline [
         0
     }
     let total_accounts = $accounts + $recipient_accounts
+    let workload_metadata = (txgen-workload-metadata-args $preset_name $spec_path)
     if not $skip_faucet_funding {
         txgen-fund-accounts $txgen_tempo_bin $spec_path $generate_rpc_url
     }
@@ -833,6 +854,7 @@ def txgen-run-preset-pipeline [
         "-m" $"build_profile=($build_profile)"
         "-m" $"mode=($benchmark_mode)"
     ]
+        | append $workload_metadata
         | append $zone_metadata
         | append (if $recipient_accounts > 0 { ["-m" $"recipient_accounts=($recipient_accounts)"] } else { [] })
         | append (if $benchmark_id != "" { ["-m" $"benchmark_id=($benchmark_id)"] } else { [] })
