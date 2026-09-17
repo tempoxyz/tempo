@@ -1,4 +1,4 @@
-//! TIP-1117 precompile repricing, active from T13.
+//! TIP-1102 precompile repricing, active from T13.
 
 use alloy_evm::precompiles::{DynPrecompile, PrecompilesMap};
 use alloy_primitives::{Address, U256};

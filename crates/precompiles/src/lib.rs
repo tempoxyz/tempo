@@ -20,7 +20,7 @@ pub mod receive_policy_guard;
 pub mod signature_verifier;
 pub mod stablecoin_dex;
 pub mod storage_credits;
-mod tip1117;
+mod tip1102;
 pub mod tip20;
 pub mod tip20_channel_reserve;
 pub mod tip20_factory;
@@ -202,7 +202,7 @@ pub fn tempo_precompiles(
     };
     let mut precompiles = PrecompilesMap::from_static(EthPrecompiles::new(spec).precompiles);
     if cfg.spec.is_t13() {
-        tip1117::apply(&mut precompiles);
+        tip1102::apply(&mut precompiles);
     }
     extend_tempo_precompiles(&mut precompiles, cfg, actions, non_creditable_slots);
     precompiles

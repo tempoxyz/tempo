@@ -62,7 +62,7 @@ pub(crate) fn tempo_instructions<DB: Database>(
     }
 
     if spec.is_t13() {
-        // TIP-1117: static opcode repricing. KECCAK256's dynamic per-word
+        // TIP-1102: static opcode repricing. KECCAK256's dynamic per-word
         // component is configured in `tempo_gas_params`.
         instructions.insert_gas(MOD, 40);
         instructions.insert_gas(SMOD, 37);

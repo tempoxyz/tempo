@@ -60,7 +60,7 @@ pub fn tempo_gas_params_with_amsterdam(
         return TABLE.get_or_init(amsterdam_gas_params).clone();
     }
 
-    // TIP-1117 (T13+): reprice the dynamic KECCAK256 per-word component.
+    // TIP-1102 (T13+): reprice the dynamic KECCAK256 per-word component.
     // The opcode's static base cost is configured in `tempo_instructions`.
     if spec.is_t13() {
         static TABLE: OnceLock<GasParams> = OnceLock::new();
@@ -82,7 +82,7 @@ pub fn tempo_gas_params_with_amsterdam(
     GasParams::new_spec(spec.into())
 }
 
-/// Builds the T13 gas table with TIP-1117's KECCAK256 per-word repricing.
+/// Builds the T13 gas table with TIP-1102's KECCAK256 per-word repricing.
 fn t13_gas_params() -> GasParams {
     let mut gas_params = t7_gas_params();
     gas_params.override_gas([(GasId::keccak256_per_word(), 41)]);
