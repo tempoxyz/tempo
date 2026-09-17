@@ -575,6 +575,9 @@ def systemd-scope-command [unit: string, cpus: string, memory: string, script: s
 
     let memory_args = if $memory != "" { ["-p" $"MemoryMax=($memory)"] } else { [] }
     mut telemetry_env_names = []
+    if ($env.BENCH_RUN_CLEANUP? | default "") == "true" {
+        $telemetry_env_names = ($telemetry_env_names | append "TMPDIR")
+    }
     if ($env.TEMPO_TELEMETRY_URL? | default "" | str length) > 0 {
         $telemetry_env_names = ($telemetry_env_names | append "TEMPO_TELEMETRY_URL")
     }
@@ -1667,6 +1670,10 @@ def "main e2e" [
     # Reject missing snapshot metadata before process cleanup or restoration.
     # Recheck after restoration below; neither check may fall back to generation.
     if $prebuilt { prebuilt-require-snapshot true (e2e-snapshots-ready $a_db $b_db) $force_bloat $init_only }
+    if ($env.BENCH_RUN_CLEANUP? | default "") == "true" {
+        if not (has-schelk) { error make {msg: "Runner cleanup requires schelk snapshots"} }
+        touch .bench-snapshot-dirty
+    }
     cleanup-local-e2e-processes
 
     bench-restore-at $E2E_A_STATE_PATH $E2E_A_MOUNT $a_db
