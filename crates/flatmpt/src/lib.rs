@@ -1316,6 +1316,7 @@ mod tests {
         parent
             .apply_block(vec![
                 (key, account.clone()),
+                ([9; 32], account.clone()),
                 (key, slot(2, 20u64)),
                 (key, slot(3, 30u64)),
             ])
@@ -1324,6 +1325,7 @@ mod tests {
             (key, StateOp::WipeStorage),
             (key, account),
             (key, slot(3, 40u64)),
+            (key, slot(4, 50u64)),
         ];
         let overlay = ops_to_post_state(&ops, Some(&parent))
             .unwrap()

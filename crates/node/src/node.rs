@@ -791,6 +791,21 @@ where
             })
             .expect("flat root mode is on");
             let mut ops = tempo_flatmpt::bundle_to_ops(&input.output.state);
+            let hashed_state = tempo_flatmpt::ops_to_post_state_at_parent(
+                shadow,
+                input.parent_block.state_root(),
+                &ops,
+            )
+            .map_err(|e| {
+                reth_errors::ProviderError::other(std::io::Error::other(format!("{e:#}")))
+            })?;
+            let outcome = |root| {
+                reth_engine_tree::tree::state_root_strategy::StateRootJobOutcome::new(
+                    root,
+                    Arc::new(reth_trie_common::updates::TrieUpdates::default()),
+                )
+                .with_hashed_state(Some(Arc::new(hashed_state)))
+            };
             // A block whose sparse commitment this process already produced
             // (and whose flat apply is queued on the follower) validates
             // without waiting behind the apply's write lock; the follower's
@@ -798,7 +813,7 @@ where
             if let Some(root) =
                 tempo_flatmpt::follower::pending_root(input.parent_block.state_root(), &mut ops)
             {
-                return Ok((root, reth_trie_common::updates::TrieUpdates::default()));
+                return Ok(outcome(root));
             }
             let root = shadow
                 .write()
@@ -810,7 +825,7 @@ where
                 .map_err(|e| {
                     reth_errors::ProviderError::other(std::io::Error::other(format!("{e:#}")))
                 })?;
-            Ok((root, reth_trie_common::updates::TrieUpdates::default()))
+            Ok(outcome(root))
         })))
     }
 }
