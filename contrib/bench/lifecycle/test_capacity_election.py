@@ -38,6 +38,25 @@ class ElectionTests(unittest.TestCase):
         with self.assertRaises(election.InvalidReceipt):
             election.elect(pair, **BINDING, slots=slots)
 
+    def test_setup_accounting_exact_disjoint_union_and_eligible_winner(self):
+        for failed in ([1], [2], [3], [4], [1, 2, 3]):
+            receipts = [receipt(i) for i in range(1, 5) if i not in failed]
+            for order in itertools.permutations(receipts):
+                value = election.elect(list(order), **BINDING, slots=4, setup_failed_slots=failed)
+                self.assertEqual(value['selected_slot'], min(set(range(1, 5))-set(failed)))
+        for failed in (None, '1', [True], [1.0], [0], [5], [1, 1], [1, 2, 3, 4], [1, 2]):
+            with self.assertRaises(election.InvalidReceipt):
+                election.elect([receipt(2), receipt(3), receipt(4)], **BINDING, slots=4, setup_failed_slots=failed)
+        for receipts, failed in [([receipt(1), receipt(2), receipt(3)], [1]),
+                                 ([receipt(1), receipt(2)], [4]),
+                                 ([receipt(1), receipt(2), receipt(3), receipt(4)], [4])]:
+            with self.assertRaises(election.InvalidReceipt):
+                election.elect(receipts, **BINDING, slots=4, setup_failed_slots=failed)
+        self.assertEqual(election.elect([receipt(4, root=65535)], **BINDING,
+                         slots=4, setup_failed_slots=[1, 2, 3])['status'], 2)
+        with self.assertRaises(election.InvalidReceipt):
+            election.elect([receipt(1)], **BINDING, slots=2, setup_failed_slots=[2])
+
     def test_four_slots_all_permutations_ties_and_byte_precision(self):
         for free, winner in [([70000, 71000, 72000, 80000], 4),
                              ([80000, 71000, 72000, 70000], 1),
@@ -256,6 +275,19 @@ class ElectionTests(unittest.TestCase):
             self.cli(b'', *map(str, paths), code=2)
             paths[1].unlink()
             self.cli(b'', *map(str, paths), code=2)
+
+    def test_setup_accounting_cli_is_explicit_closed_and_preserves_legacy(self):
+        envelope = dict(schema=2, receipts=[receipt(1), receipt(2), receipt(3)], setup_failed_slots=[4])
+        args = ('--slots', '4', '--policy', election.SETUP_FAILURE_POLICY)
+        self.assertEqual(self.cli(json.dumps(envelope).encode(), *args, use_source=True)['selected_slot'], 1)
+        self.cli(json.dumps(envelope).encode(), '--slots', '4', code=2)
+        self.cli(json.dumps(envelope['receipts']).encode(), *args, code=2)
+        for key, value in [('schema', True), ('schema', 1), ('setup_failed_slots', [3]),
+                           ('setup_failed_slots', [4, 4]), ('untrusted_job', {})]:
+            mutated = dict(envelope); mutated[key] = value
+            self.cli(json.dumps(mutated).encode(), *args, code=2)
+        self.cli(json.dumps(envelope).encode().replace(b'"schema": 2',b'"schema":2,"schema":2'), *args, code=2)
+        self.cli(json.dumps(envelope).encode(), '--slots', '3', '--policy', election.SETUP_FAILURE_POLICY, code=2)
 
     def test_four_slot_isolated_cli_complete_stdin_paths_and_budget(self):
         receipts = [receipt(i, root=1 if i < 4 else 70000) for i in range(1, 5)]

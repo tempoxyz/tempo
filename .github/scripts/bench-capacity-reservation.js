@@ -4,9 +4,11 @@ const fs = require('node:fs');
 const path = require('node:path');
 const { spawnSync } = require('node:child_process');
 const { performance } = require('node:perf_hooks');
+const { createHash } = require('node:crypto');
 
 const MAX_BYTES = 65536;
 const PREFIX = 'bench-capacity-reservation-';
+const SETUP_FAILURE_POLICY = 'setup_failure_v2';
 const silentLog = { debug() {}, info() {}, warn() {}, error() {} };
 
 function requestOptions(timeout) {
@@ -31,8 +33,11 @@ function binding(context, env) {
   requireValue(/^[1234]$/.test(env.BENCH_CAPACITY_SLOT || ''));
   const slot = Number(env.BENCH_CAPACITY_SLOT);
   requireValue(uint(attempt) && slot <= slots);
+  const policy = env.BENCH_CAPACITY_POLICY ?? 'strict_v1';
+  requireValue(['strict_v1', SETUP_FAILURE_POLICY].includes(policy));
+  requireValue(policy !== SETUP_FAILURE_POLICY || slots === 4);
   requireValue(env.BENCH_LIFECYCLE === 'true' && env.BENCH_NO_SLACK === 'true');
-  return { workflow_sha: context.sha, run_id: context.runId, run_attempt: attempt, slot, slots };
+  return { workflow_sha: context.sha, run_id: context.runId, run_attempt: attempt, slot, slots, policy };
 }
 
 async function source(github, context, filename, timeout = 10000) {
@@ -84,7 +89,7 @@ async function probe({ github, context, core, env = process.env, execute = spawn
     const capacity = JSON.parse(python(script, [], '', env, execute));
     validateCapacity(capacity);
     // Expected slot count is trusted workflow configuration, not receipt data.
-    const { slots, ...receiptBinding } = bound;
+    const { slots, policy, ...receiptBinding } = bound;
     const receipt = { schema: 1, ...receiptBinding, capacity };
     const encoded = JSON.stringify(receipt);
     requireValue(Buffer.byteLength(encoded) <= 16384);
@@ -119,6 +124,60 @@ except BaseException:
  sys.exit(1)
 `;
 
+function timestamp(value) {
+  requireValue(typeof value === 'string' && /^\d{4}-\d\d-\d\dT\d\d:\d\d:\d\dZ$/.test(value));
+  const parsed = Date.parse(value);
+  requireValue(Number.isFinite(parsed) && new Date(parsed).toISOString() === value.replace('Z', '.000Z'));
+  return parsed;
+}
+
+// Trust only authenticated, attempt-scoped terminal Actions accounting. Never
+// inspect annotations/log text or export runner fields from the API response.
+function setupFailures(data, bound) {
+  requireValue(data && Number.isSafeInteger(data.total_count) && data.total_count >= 0 && data.total_count <= bound.slots);
+  requireValue(Array.isArray(data.jobs) && data.jobs.length === data.total_count);
+  requireValue(Buffer.byteLength(JSON.stringify(data)) <= MAX_BYTES);
+  const seen = new Set(); const ids = new Set(); const failed = [];
+  for (const job of data.jobs) {
+    requireValue(uint(job.id) && !ids.has(job.id)); ids.add(job.id);
+    requireValue(job.run_id === bound.run_id && job.run_attempt === bound.run_attempt && job.head_sha === bound.workflow_sha);
+    const slot = Array.from({ length: bound.slots }, (_, i) => i + 1).find(i => job.name === `bench-e2e (reserved slot ${i})`);
+    requireValue(slot && !seen.has(slot)); seen.add(slot);
+    requireValue(['queued', 'in_progress', 'completed'].includes(job.status));
+    requireValue(Array.isArray(job.steps) && job.steps.length <= 100);
+    if (job.status !== 'completed') { requireValue(job.conclusion === null); continue; }
+    if (job.conclusion === 'success') continue;
+    requireValue(job.conclusion === 'failure' && job.steps.length === 1);
+    const step = job.steps[0];
+    requireValue(Object.keys(step).sort().join() === 'completed_at,conclusion,name,number,started_at,status');
+    requireValue(step.number === 1 && step.name === 'Set up job' && step.status === 'completed' && step.conclusion === 'failure');
+    const start = timestamp(job.started_at); const end = timestamp(job.completed_at);
+    const stepStart = timestamp(step.started_at); const stepEnd = timestamp(step.completed_at);
+    requireValue(start <= stepStart && stepStart <= stepEnd && stepEnd <= end);
+    failed.push(slot);
+  }
+  return { complete: seen.size === bound.slots, failed: failed.sort((a, b) => a - b) };
+}
+
+function admissionReceipt(bound, failed, receipts, election) {
+  return { schema: 2, policy: SETUP_FAILURE_POLICY, workflow_sha: bound.workflow_sha,
+    run_id: bound.run_id, run_attempt: bound.run_attempt, slots: bound.slots,
+    selected_slot: election.selected_slot, setup_failed_slots: failed,
+    capacity_receipts: receipts.map(value => ({ slot: JSON.parse(value).slot,
+      sha256: createHash('sha256').update(value).digest('hex') })).sort((a, b) => a.slot - b.slot), election };
+}
+
+function publishAdmission(bound, failed, receipts, election, env, core) {
+  const workspace = env.GITHUB_WORKSPACE;
+  requireValue(workspace && fs.realpathSync(workspace) === path.resolve(workspace));
+  const encoded = JSON.stringify(admissionReceipt(bound, failed, receipts, election));
+  requireValue(Buffer.byteLength(encoded) <= 16384);
+  const owned = fs.mkdtempSync(path.join(workspace, '.capacity-admission-'));
+  fs.writeFileSync(path.join(owned, 'admission.json'), encoded, { flag: 'wx', mode: 0o600 });
+  core.setOutput('admission-path', path.relative(workspace, path.join(owned, 'admission.json')));
+  core.setOutput('admission-name', `bench-capacity-admission-${bound.run_id}-${bound.run_attempt}`);
+}
+
 async function elect({ github, context, core, env = process.env, execute = spawnSync,
   now = () => performance.now(), sleep = ms => new Promise(resolve => setTimeout(resolve, ms)), timeoutMs = 180000 }) {
   try {
@@ -133,8 +192,16 @@ async function elect({ github, context, core, env = process.env, execute = spawn
     const script = await source(github, context, 'contrib/bench/lifecycle/capacity_election.py', budget(10000));
     budget(10000);
     const names = Array.from({ length: bound.slots }, (_, i) => artifactName(bound, i + 1));
-    let artifacts;
-    for (;;) {
+    const accounted = bound.policy === SETUP_FAILURE_POLICY;
+    const jobs = async () => {
+      const { data } = await github.rest.actions.listJobsForWorkflowRunAttempt({
+        ...context.repo, run_id: bound.run_id, attempt_number: bound.run_attempt, per_page: 100,
+        request: requestOptions(budget(10000)),
+      });
+      budget(10000);
+      return setupFailures(data, bound);
+    };
+    const inventory = async () => {
       const { data } = await github.rest.actions.listWorkflowRunArtifacts({
         ...context.repo, run_id: bound.run_id, per_page: 100, request: requestOptions(budget(10000)),
       });
@@ -145,7 +212,17 @@ async function elect({ github, context, core, env = process.env, execute = spawn
       const selected = data.artifacts.filter(item => item.name.startsWith(current));
       requireValue(selected.every(item => names.includes(item.name)));
       requireValue(new Set(selected.map(item => item.name)).size === selected.length);
-      if (selected.length === bound.slots) { artifacts = selected; break; }
+      return selected;
+    };
+    let artifacts; let failed = [];
+    for (;;) {
+      const state = accounted ? await jobs() : { complete: true, failed: [] };
+      const selected = await inventory();
+      requireValue(!state.failed.some(slot => selected.some(item => item.name === artifactName(bound, slot))));
+      if (state.complete && selected.length + state.failed.length === bound.slots) {
+        requireValue(selected.length > 0);
+        artifacts = selected; failed = state.failed; break;
+      }
       await sleep(budget(3000));
     }
     const receipts = [];
@@ -166,10 +243,13 @@ async function elect({ github, context, core, env = process.env, execute = spawn
       requireValue(item.name === artifactName(bound, parsed.slot) && uint(parsed.slot) && parsed.slot <= bound.slots);
       receipts.push(receipt);
     }
-    const elected = JSON.parse(python(script, [
+    const electionArgs = [
       '--workflow-sha', bound.workflow_sha, '--run-id', String(bound.run_id),
       '--run-attempt', String(bound.run_attempt), '--slots', String(bound.slots),
-    ], `[${receipts.join(',')}]`, env, execute, [0, 2, 3], budget(60000)));
+    ];
+    if (accounted) electionArgs.push('--policy', SETUP_FAILURE_POLICY);
+    const input = accounted ? `{"schema":2,"receipts":[${receipts.join(',')}],"setup_failed_slots":${JSON.stringify(failed)}}` : `[${receipts.join(',')}]`;
+    const elected = JSON.parse(python(script, electionArgs, input, env, execute, [0, 2, 3], budget(60000)));
     budget(10000);
     const fields = ['schema', 'status', 'selected_slot', 'root_free_mib', 'workspace_free_mib', 'minimum_free_mib'];
     requireValue(Object.keys(elected).sort().join() === fields.sort().join());
@@ -181,6 +261,18 @@ async function elect({ github, context, core, env = process.env, execute = spawn
       requireValue(false);
     }
     requireValue(uint(elected.selected_slot) && elected.selected_slot <= bound.slots && elected.minimum_free_mib >= 65536);
+    requireValue(!failed.includes(elected.selected_slot) && receipts.some(value => JSON.parse(value).slot === elected.selected_slot));
+    if (accounted) {
+      const final = await jobs(); const latest = await inventory();
+      requireValue(final.complete && JSON.stringify(final.failed) === JSON.stringify(failed));
+      const identities = rows => rows.map(row => [row.name, row.id, row.size_in_bytes, row.expired, row.workflow_run]).sort((a, b) => a[0].localeCompare(b[0]));
+      requireValue(JSON.stringify(identities(latest)) === JSON.stringify(identities(artifacts)));
+      if (elected.selected_slot === bound.slot) {
+        requireValue(receipts.some(value => JSON.parse(value).slot === bound.slot));
+        publishAdmission(bound, failed, receipts, elected, env, core);
+      }
+      budget(10000);
+    }
     core.info(JSON.stringify(elected));
     core.setOutput('selected', String(elected.selected_slot === bound.slot));
   } catch (_) {
@@ -188,4 +280,4 @@ async function elect({ github, context, core, env = process.env, execute = spawn
   }
 }
 
-module.exports = { probe, elect, binding, artifactName, EXTRACT_RECEIPT, validateCapacity };
+module.exports = { probe, elect, binding, artifactName, EXTRACT_RECEIPT, validateCapacity, setupFailures, admissionReceipt, SETUP_FAILURE_POLICY };

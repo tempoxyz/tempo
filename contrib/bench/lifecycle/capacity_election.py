@@ -8,6 +8,7 @@ MAX_BYTES = 65536
 MAX_INTEGER = (1 << 53) - 1
 MIB = 1 << 20
 REQUIRED_MIB = 65536
+SETUP_FAILURE_POLICY = 'setup_failure_v2'
 # Exact vocabulary of capacity_preflight.py at f360; this module never probes paths.
 ROLES = ('root', 'workspace', 'runner_temp', 'optional_scratch')
 ROW_FIELDS = {'role', 'exists', 'filesystem', 'total_bytes', 'free_bytes',
@@ -95,11 +96,17 @@ def capacity(report):
     return rows[0], rows[1]
 
 
-def elect(receipts, *, workflow_sha, run_id, run_attempt, slots=2):
+def elect(receipts, *, workflow_sha, run_id, run_attempt, slots=2, setup_failed_slots=None):
     expected = binding(workflow_sha, run_id, run_attempt)
     integer(slots, 2, 4)
-    require(type(receipts) is list and len(receipts) == slots)
-    seen_slots = set()
+    failures = [] if setup_failed_slots is None else setup_failed_slots
+    require(type(failures) is list)
+    if setup_failed_slots is not None:
+        require(slots == 4)
+    require(all(integer(slot, 1, slots) for slot in failures))
+    require(len(failures) == len(set(failures)) < slots)
+    require(type(receipts) is list and len(receipts) + len(failures) == slots)
+    seen_slots = set(failures)
     eligible = []
     for receipt in receipts:
         keys(receipt, {'schema', 'workflow_sha', 'run_id', 'run_attempt', 'slot', 'capacity'})
@@ -152,11 +159,13 @@ def main(argv=None, stdin=None):
         parser.add_argument('--run-id', required=True)
         parser.add_argument('--run-attempt', required=True)
         parser.add_argument('--slots', choices=('2', '3', '4'), default='2')
+        parser.add_argument('--policy', choices=('strict_v1', SETUP_FAILURE_POLICY), default='strict_v1')
         parser.add_argument('paths', nargs='*')
         args = parser.parse_args(argv)
         require(re.fullmatch('[1-9][0-9]{0,15}', args.run_id) is not None)
         require(re.fullmatch('[1-9][0-9]{0,15}', args.run_attempt) is not None)
         if args.paths:
+            require(args.policy == 'strict_v1')
             require(len(args.paths) == int(args.slots))
             inputs = []
             remaining = MAX_BYTES
@@ -169,9 +178,15 @@ def main(argv=None, stdin=None):
         else:
             source = sys.stdin.buffer if stdin is None else stdin
             inputs = parse(source.read(MAX_BYTES + 1))
+        failures = None
+        if args.policy == SETUP_FAILURE_POLICY:
+            keys(inputs, {'schema', 'receipts', 'setup_failed_slots'})
+            require(integer(inputs['schema']) == 2)
+            failures = inputs['setup_failed_slots']
+            inputs = inputs['receipts']
         result = elect(inputs, workflow_sha=args.workflow_sha,
                        run_id=int(args.run_id), run_attempt=int(args.run_attempt),
-                       slots=int(args.slots))
+                       slots=int(args.slots), setup_failed_slots=failures)
         print(json.dumps(result, separators=(',', ':')))
         return 0 if result['status'] == 0 else 3
     except (InvalidReceipt, ValueError, TypeError, KeyError, OSError, RecursionError, OverflowError):

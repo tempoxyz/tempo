@@ -574,3 +574,25 @@ lineage coverage checker, and publishes an explicit receipt. Missing old-binary
 support or a stale collector receipt cannot silently pass. Legitimate unmatched,
 ambiguous and unknown-membership frames remain in the coverage denominator.
 Semantic validation and pure wire latency are not inferred from codec membership.
+
+### Setup-only failure accounting (separate experimental policy)
+
+This pinned branch declares `BENCH_CAPACITY_POLICY=setup_failure_v2`; the
+controller spec must explicitly opt in with `capacity_policy: setup_failure_v2`.
+The dispatcher input set is unchanged. Earlier workflows and the helper's
+absent-policy default retain strict receipt-only accounting.
+
+Every one of four slots needs a valid capacity receipt or authenticated
+attempt-scoped Actions evidence of a terminal setup-only failure: exactly step 1,
+`Set up job`, completed/failure, with no other steps and consistent timestamps.
+No receipt may coexist with that exclusion. Missing, queued, cancelled, timed-out,
+API-error and user-step failure cases never become fallback candidates. No raw
+runner metadata, annotations or logs are exported. Final metadata/artifact
+snapshots must agree before the eligible current job is selected.
+
+The selected job uploads a closed admission receipt before workspace reset.
+The independent controller must revalidate it and every terminal job before
+accepting an aggregate workflow failure caused only by proven setup exclusions;
+it must retain that original remote conclusion. Without this explicit policy and
+independent validation, aggregate failure remains failure. Thresholds and total
+election deadline remain unchanged; this policy claims no recovered disk space.
