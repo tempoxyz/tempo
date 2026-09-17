@@ -5,6 +5,7 @@
 # e2e topology stays isolated here.
 source tempo.nu
 source contrib/bench/lifecycle/run-plan.nu
+source contrib/bench/lifecycle/owned-worktrees.nu
 
 const E2E_A_STATE_PATH = "/var/lib/schelk/a.json"
 const E2E_B_STATE_PATH = "/var/lib/schelk/b.json"
@@ -1725,12 +1726,23 @@ def "main e2e" [
             try { git worktree remove --force $wt } catch { rm -rf $wt }
         }
     }
+    mut created_build_worktrees = []
     if $needs_baseline {
         git worktree add $baseline_wt $baseline
+        if $env.LAST_EXIT_CODE != 0 { error make { msg: "Baseline worktree creation failed" } }
+        if $lifecycle {
+            $created_build_worktrees = ($created_build_worktrees | append (e2e-record-worktree-owner $baseline_wt))
+        }
     }
     if $needs_feature {
         git worktree add $feature_wt $feature
+        if $env.LAST_EXIT_CODE != 0 { error make { msg: "Feature worktree creation failed" } }
+        if $lifecycle {
+            $created_build_worktrees = ($created_build_worktrees | append (e2e-record-worktree-owner $feature_wt))
+        }
     }
+
+    let owned_build_worktrees = $created_build_worktrees
 
     let global_build_features = (merge-e2e-features $DEFAULT_FEATURES $features)
     let baseline_build_features = if $baseline_features != "" { merge-e2e-features $global_build_features $baseline_features } else { $global_build_features }
@@ -1757,9 +1769,14 @@ def "main e2e" [
     let reuse_baseline_binary = (lifecycle-reuse-build $lifecycle $effective_no_cache $builds)
     let selected_builds = if $reuse_baseline_binary { $builds | take 1 } else { $builds }
     if $lifecycle {
-        for build in $selected_builds {
-            do $build_binary $build
-            lifecycle-trim-worktree $build.wt $profile
+        try {
+            for build in $selected_builds {
+                do $build_binary $build
+                lifecycle-trim-worktree $build.wt $profile
+            }
+        } catch { |build_error|
+            e2e-cleanup-owned-worktrees $owned_build_worktrees
+            error make $build_error.raw
         }
     } else {
         $builds | par-each { |build| do $build_binary $build } | ignore
