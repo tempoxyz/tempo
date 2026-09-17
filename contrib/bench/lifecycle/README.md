@@ -370,11 +370,16 @@ do not establish an existing cache hit or prove that skipping warming is safe.
 Absent, duplicate, saturated, out-of-scope or inconsistent summaries remain
 unmeasured. Existing strict backpressure pruning removes at/post-cutoff summaries.
 
-To measure observer cost, use the same pinned binary and full-detail reporter on
-both sides, with `--baseline-env=TEMPO_LIFECYCLE_CACHE_INSERT=0` and
-`--feature-env=TEMPO_LIFECYCLE_CACHE_INSERT=1`; retain the counterbalanced
-feature/baseline/baseline/feature order. These can be supplied through the existing
-`bench-args` workflow input. Require the normal completeness/privacy/package
-checks plus the independent `cache_insert_audit.py --expected disabled|counts_v1`
-for each phase before analysis. This is a diagnostic comparison, not a runtime
-optimization or an assertion of lower execution latency.
+To measure observer cost, select workflow profiling mode
+`lifecycle-compare-cache-insert` and use the same pinned runtime on both sides.
+The harness checks binary equality and injects fixed node environments at the
+Nushell phase boundary: baseline `TEMPO_LIFECYCLE_CACHE_INSERT=0`, feature `=1`.
+Both source headers must explicitly declare full capture and the expected mode
+before load begins; the report enforces that declaration again after shutdown.
+The feature/baseline/baseline/feature order is retained. `bench-args` is exclusively
+for txgen arguments and must not contain validator environment options.
+
+Require normal completeness/privacy/package checks plus the independent
+`cache_insert_audit.py --expected disabled|counts_v1` gate for each phase before
+analysis. This is a diagnostic comparison, not a runtime optimization or an
+assertion of lower execution latency.

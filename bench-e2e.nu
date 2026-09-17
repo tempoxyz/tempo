@@ -1096,8 +1096,9 @@ def run-local-e2e-phase [run: record, ctx: record] {
         ^python3 -c 'import os,sys,time; f=os.open(sys.argv[1],os.O_WRONLY|os.O_CREAT|os.O_EXCL,0o600); os.write(f,os.urandom(32)); os.close(f); print(time.monotonic_ns())' $lifecycle_key | str trim
     } else { "" }
     let capture_detail = ($run.lifecycle_detail? | default $ctx.lifecycle_detail)
-    let a_capture = if $ctx.lifecycle { $"RETH_LIFECYCLE_FILE=($lifecycle_dir)/a.jsonl TEMPO_LIFECYCLE_DETAIL=($capture_detail) RETH_LIFECYCLE_KEY_FILE=($lifecycle_key) RETH_LIFECYCLE_EPOCH_NS=($lifecycle_epoch) " } else { "" }
-    let b_capture = if $ctx.lifecycle { $"RETH_LIFECYCLE_FILE=($lifecycle_dir)/b.jsonl TEMPO_LIFECYCLE_DETAIL=($capture_detail) RETH_LIFECYCLE_KEY_FILE=($lifecycle_key) RETH_LIFECYCLE_EPOCH_NS=($lifecycle_epoch) " } else { "" }
+    let cache_config = (lifecycle-cache-config $ctx.lifecycle_cache_insert $run.side)
+    let a_capture = if $ctx.lifecycle { $"RETH_LIFECYCLE_FILE=($lifecycle_dir)/a.jsonl TEMPO_LIFECYCLE_DETAIL=($capture_detail) ($cache_config.env)RETH_LIFECYCLE_KEY_FILE=($lifecycle_key) RETH_LIFECYCLE_EPOCH_NS=($lifecycle_epoch) " } else { "" }
+    let b_capture = if $ctx.lifecycle { $"RETH_LIFECYCLE_FILE=($lifecycle_dir)/b.jsonl TEMPO_LIFECYCLE_DETAIL=($capture_detail) ($cache_config.env)RETH_LIFECYCLE_KEY_FILE=($lifecycle_key) RETH_LIFECYCLE_EPOCH_NS=($lifecycle_epoch) " } else { "" }
 
     mark-schelk-dirty-at $ctx.a.state_path
     mark-schelk-dirty-at $ctx.b.state_path
@@ -1118,6 +1119,14 @@ def run-local-e2e-phase [run: record, ctx: record] {
     if $phase_exit == 0 and not (e2e-wait-for-peers $b_rpc 1 300) { $phase_exit = 1 }
     if $phase_exit == 0 and not (e2e-wait-for-chain-advance $a_rpc 300) { $phase_exit = 1 }
     if $phase_exit == 0 and not (e2e-wait-for-chain-advance $b_rpc 300) { $phase_exit = 1 }
+
+    if $phase_exit == 0 and $ctx.lifecycle_cache_insert == "compare" {
+        let admission = (^python3 contrib/bench/lifecycle/cache_insert.py --expected $cache_config.expected --timeout 10 $"($lifecycle_dir)/a.jsonl" $"($lifecycle_dir)/b.jsonl" | complete)
+        if $admission.exit_code != 0 {
+            print "cache_insert_admission_failed"
+            $phase_exit = 1
+        }
+    }
 
     let tracy_output = $"($ctx.results_dir)/tracy-profile-($phase).tracy"
     let tracy_log = $"($ctx.results_dir)/tracy-capture-($phase).log"
@@ -1222,7 +1231,8 @@ def run-local-e2e-phase [run: record, ctx: record] {
     restore-system-tuning $tuning_state
     if $ctx.lifecycle {
         rm -f $lifecycle_key
-        let report = (^python3 contrib/bench/lifecycle/report.py --prune --expected-detail $capture_detail --out $lifecycle_report_dir --warmup $ctx.summary_warmup_blocks --window $"($lifecycle_dir)/window.json" $"($lifecycle_dir)/a.jsonl" $"($lifecycle_dir)/b.jsonl" | complete)
+        let cache_report_args = if $ctx.lifecycle_cache_insert == "compare" { ["--expected-cache-insert" $cache_config.expected] } else { [] }
+        let report = (^python3 contrib/bench/lifecycle/report.py --prune --expected-detail $capture_detail ...$cache_report_args --out $lifecycle_report_dir --warmup $ctx.summary_warmup_blocks --window $"($lifecycle_dir)/window.json" $"($lifecycle_dir)/a.jsonl" $"($lifecycle_dir)/b.jsonl" | complete)
         print $report.stdout
         if $report.stderr != "" { print $report.stderr }
         if $report.exit_code != 0 { $phase_exit = 1 }
@@ -1434,6 +1444,7 @@ def "main e2e" [
     --feature-features: string = ""                     # Additional Cargo features for feature build (defaults to --features)
     --no-default-features                               # Disable Cargo default features
     --lifecycle                                         # Capture privacy-filtered block lifecycle artifacts on both validators
+    --lifecycle-cache-insert: string = "disabled"        # Same-binary cache observer comparison: disabled or compare
     --lifecycle-detail: string = "full"                  # Capture detail: full, milestones, or compare (requires --lifecycle)
     --samply                                            # Profile validators with samply
     --samply-args: string = ""                          # Additional samply arguments
@@ -1466,6 +1477,9 @@ def "main e2e" [
     --valscope-dir: string = "../valscope"               # Path to the ValScope checkout
     --skip-summary                                       # Leave summary generation to a later workflow step
 ] {
+    if $lifecycle_cache_insert not-in ["disabled" "compare"] or ($lifecycle_cache_insert == "compare" and (not $lifecycle or $lifecycle_detail != "full" or $run_side != "comparison")) {
+        error make {msg: "Cache observer comparison requires full lifecycle baseline/feature mode"}
+    }
     if $lifecycle_detail not-in ["full" "milestones" "compare"] or (not $lifecycle and $lifecycle_detail != "full") {
         error make {msg: "Lifecycle detail must be full, milestones or compare; reduced modes require --lifecycle"}
     }
@@ -1806,6 +1820,7 @@ def "main e2e" [
         samply_args: $samply_args_list
         lifecycle: $lifecycle
         lifecycle_detail: $lifecycle_detail
+        lifecycle_cache_insert: $lifecycle_cache_insert
         summary_warmup_blocks: $summary_warmup_blocks
         tracy: $tracy
         tracy_filter: $tracy_filter
@@ -1832,6 +1847,13 @@ def "main e2e" [
         feature_local_reth_args: $feature_arg_filter.supported
         regenesis_tempo: $regenesis_tempo
         tracing_otlp: $tracing_otlp
+    }
+
+    if $lifecycle_cache_insert == "compare" {
+        let same_binary = (^cmp -s $baseline_tempo $feature_tempo | complete)
+        if $same_binary.exit_code != 0 {
+            error make {msg: "Cache observer comparison requires identical validator binaries"}
+        }
     }
 
     let baseline_base_label = if $baseline_name != "" { $baseline_name } else { $baseline }

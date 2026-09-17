@@ -194,6 +194,7 @@ def read_node(path, role, cutoff=None):
     quality = {'node': role, 'header': bool(header and header.get('schema') == 1),
                'detail': (header or {}).get('detail', 'full'),
                'cache_insert': (header or {}).get('cache_insert', 'disabled'),
+               'cache_insert_declared': 'cache_insert' in (header or {}),
                'footer': footer is not None, 'dropped': (footer or {}).get('dropped', 0),
                'io_error': (footer or {}).get('io_error', False), 'invalid_lines': invalid + (footer or {}).get('invalid_lines', 0),
                'open_spans': sum(s['end'] is None for s in spans.values()),
@@ -220,7 +221,7 @@ def active_wall_ns(intervals):
     return duration
 
 
-def build(paths, warmup=5, window=None, expected_detail=None):
+def build(paths, warmup=5, window=None, expected_detail=None, expected_cache_insert=None):
     spans, events, quality = [], [], []
     boundary = first_boundary(paths)
     recorded = (window or {}).get('backpressure')
@@ -338,6 +339,8 @@ def build(paths, warmup=5, window=None, expected_detail=None):
     cache_valid = (len(set(cache_modes.values())) == 1
                    and all(mode in ('disabled', 'counts_v1') for mode in cache_modes.values())
                    and (detail == 'full' or set(cache_modes.values()) == {'disabled'}))
+    if expected_cache_insert is not None:
+        cache_valid = cache_valid and expected_cache_insert in ('disabled', 'counts_v1') and all(q.get('cache_insert_declared') and q['cache_insert'] == expected_cache_insert for q in quality)
     cache_valid = attach_cache_insert_details(rows, events, first, cache_modes) and cache_valid
     if not cache_valid:
         bad_capture = True
@@ -364,10 +367,10 @@ def build(paths, warmup=5, window=None, expected_detail=None):
                 'Proposal handling start on proposer → first accepted finalization certificate on a validator. Nearest-rank percentiles select actual complete blocks; initial complete blocks are excluded as warmup. When load boundaries are available, both endpoints must fall inside the load window. All views exclude data at or after the first engine persistence backpressure event on either validator; crossing spans are right-censored and crossing aggregates omitted.'}
 
 
-def write_report(paths, out, warmup=5, window=None, prune=False, expected_detail=None):
+def write_report(paths, out, warmup=5, window=None, prune=False, expected_detail=None, expected_cache_insert=None):
     if prune:
         paths, window = prepare_captures(paths, out, window)
-    data = build(paths, warmup, window, expected_detail)
+    data = build(paths, warmup, window, expected_detail, expected_cache_insert)
     out.mkdir(parents=True, exist_ok=True)
     encoded = json.dumps(data, separators=(',',':')).replace('<', '\\u003c')
     (out/'lifecycle.json').write_text(encoded)
@@ -382,11 +385,12 @@ if __name__ == '__main__':
     parser.add_argument('--window', type=Path)
     parser.add_argument('--prune', action='store_true', help='Publish only pre-backpressure raw captures alongside the report')
     parser.add_argument('--expected-detail', choices=('full', 'milestones'), help='Reject captures whose recorder detail does not match the requested mode')
+    parser.add_argument('--expected-cache-insert', choices=('disabled', 'counts_v1'), help='Require explicit source observer mode')
     parser.add_argument('captures', type=Path, nargs='+')
     args = parser.parse_args()
     window = json.loads(args.window.read_text()) if args.window and args.window.exists() else (
         {'start_ns': 0, 'end_ns': 0, 'stop_reason': 'load_not_started'} if args.window else None)
-    result = write_report(args.captures, args.out, args.warmup, window, args.prune, args.expected_detail)
+    result = write_report(args.captures, args.out, args.warmup, window, args.prune, args.expected_detail, args.expected_cache_insert)
     print(f"Lifecycle report: {len(result['blocks'])} blocks, {result['eligible']} complete post-warmup blocks; invalid capture: {result['bad_capture']}")
     if result['bad_capture'] or not result['eligible']:
         raise SystemExit(2)

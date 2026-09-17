@@ -48,3 +48,49 @@ def attach_cache_insert_details(rows, events, origin, modes=None):
             else:
                 valid = False
     return valid
+
+
+def admission(paths, expected, timeout=0):
+    """Before load, require both source headers to explicitly declare full/off-or-on."""
+    import json
+    import time
+    from pathlib import Path
+    if expected not in ('disabled', 'counts_v1') or len(paths) != 2 or not 0 <= timeout <= 30:
+        return False
+    deadline = time.monotonic() + timeout
+    while True:
+        ready = True
+        for path in paths:
+            try:
+                with Path(path).open() as stream:
+                    line = stream.readline(4097)
+                if not line.endswith('\n'):
+                    if len(line) > 4096:
+                        return False
+                    ready = False
+                    continue
+                header = json.loads(line)
+                if (type(header) is not dict or header.get('type') != 'header'
+                        or type(header.get('schema')) is not int or header['schema'] != 1
+                        or header.get('clock') != 'shared_monotonic_relative_ns'
+                        or header.get('detail') != 'full' or header.get('cache_insert') != expected):
+                    return False
+            except (FileNotFoundError, json.JSONDecodeError):
+                ready = False
+        if ready:
+            return True
+        if time.monotonic() >= deadline:
+            return False
+        time.sleep(.05)
+
+
+if __name__ == '__main__':
+    import argparse
+    from pathlib import Path
+    parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument('--expected', choices=('disabled', 'counts_v1'), required=True)
+    parser.add_argument('--timeout', type=float, default=0)
+    parser.add_argument('captures', type=Path, nargs=2)
+    args = parser.parse_args()
+    if not admission(args.captures, args.expected, args.timeout):
+        raise SystemExit('cache_insert_admission_failed')

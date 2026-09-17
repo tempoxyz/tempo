@@ -24,3 +24,16 @@ def lifecycle-run-plan [sides: list<string>, detail: string] {
     }
     $phases
 }
+
+# Fixed node-only observer environment. These are never txgen arguments.
+def lifecycle-cache-config [mode: string, side: string] {
+    if $mode == "disabled" { return {expected: "" env: ""} }
+    if $mode != "compare" or $side not-in ["baseline" "feature"] {
+        error make {msg: "Invalid cache observer comparison mode or side"}
+    }
+    if $side == "baseline" {
+        {expected: "disabled" env: "TEMPO_LIFECYCLE_CACHE_INSERT=0 "}
+    } else {
+        {expected: "counts_v1" env: "TEMPO_LIFECYCLE_CACHE_INSERT=1 "}
+    }
+}
