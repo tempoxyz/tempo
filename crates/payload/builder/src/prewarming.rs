@@ -2,7 +2,7 @@ use crate::prewarming_state::{self, Slot};
 use std::{
     cell::RefCell,
     sync::{
-        Arc, Weak,
+        Arc,
         atomic::{AtomicBool, Ordering},
         mpsc::{self, Receiver, Sender},
     },
@@ -29,13 +29,16 @@ thread_local! {
 
 struct ClearBuilderState<'a> {
     pool: &'a WorkerPool,
-    owner: Weak<AtomicBool>,
 }
 impl Drop for ClearBuilderState<'_> {
     fn drop(&mut self) {
-        self.pool
-            .broadcast_fn(|| prewarming_state::clear(&BUILDER_PREWARM, &self.owner));
+        broadcast_builder_state(self.pool, || prewarming_state::clear(&BUILDER_PREWARM));
     }
+}
+
+/// Run on this pool's workers without borrowing the engine's worker state.
+fn broadcast_builder_state(pool: &WorkerPool, f: impl Fn() + Sync) {
+    pool.install_fn(|| rayon::broadcast(|_| f()));
 }
 
 /// Prewarming orchestrator that consumes source [`BestTransactions`] with bounded
@@ -97,18 +100,15 @@ impl BestTransactionsPrewarming {
         Provider: StateProviderFactory + Clone + 'static,
     {
         let pool = executor.prewarming_pool();
-        let _clear = ClearBuilderState {
-            pool,
-            owner: Arc::downgrade(&ctx.prewarm.stop),
-        };
+        // The named coordinator serializes builds. Join every scoped leaf before
+        // clearing TLS, and finish clearing before the next build can start.
+        let _clear = ClearBuilderState { pool };
 
         pool.in_place_scope(|scope| {
             let prewarm = ctx.prewarm.clone();
             scope.spawn(move |_| {
-                pool.broadcast_fn(|| {
-                    prewarming_state::initialize(&BUILDER_PREWARM, &prewarm.stop, || {
-                        prewarm.evm_for_ctx()
-                    })
+                broadcast_builder_state(pool, || {
+                    prewarming_state::initialize(&BUILDER_PREWARM, || prewarm.evm_for_ctx())
                 });
             });
 
@@ -207,7 +207,6 @@ impl BestTransactionsPrewarming {
         }
         let replay = prewarming_state::with_state(
             &BUILDER_PREWARM,
-            &prewarm.stop,
             || prewarm.evm_for_ctx(),
             |state| {
                 let evm = state.as_mut()?;
@@ -863,65 +862,69 @@ mod tests {
         let _: PrewarmEvmState = same_type;
         pool.init::<EngineState>(|_| engine_context.evm_for_ctx());
 
-        let mut builder_context = prewarming_context(executor.clone(), false);
-        builder_context.evm_env.block_env.number = U256::from(22);
-        let log = Arc::new(Mutex::new(TestLog::default()));
-        let prewarming = BestTransactionsPrewarming::new(
-            builder_context,
-            TestBestTransactions::new(vec![], log),
-        );
-        let running_builder = TestPrewarming {
-            prewarming: Some(prewarming),
-            executor: executor.clone(),
-        };
-        // Keep the real builder coordinator alive while its initial broadcast
-        // completes; no leaf or provider mock is replacing the production initializer.
-        let deadline = Instant::now() + Duration::from_secs(5);
-        loop {
-            let initialized = AtomicBool::new(true);
-            pool.broadcast_fn(|| {
-                let current = BUILDER_PREWARM.with_borrow(|slot| {
-                    slot.state()
-                        .and_then(|state| state.as_ref())
-                        .map(|evm| evm.block().number)
+        // Reuse the same pool for a subsequent build as well: coordinator cleanup
+        // must remove the previous builder's environment without clearing engine state.
+        for number in [22, 33] {
+            let mut builder_context = prewarming_context(executor.clone(), false);
+            builder_context.evm_env.block_env.number = U256::from(number);
+            let log = Arc::new(Mutex::new(TestLog::default()));
+            let prewarming = BestTransactionsPrewarming::new(
+                builder_context,
+                TestBestTransactions::new(vec![], log),
+            );
+            let running_builder = TestPrewarming {
+                prewarming: Some(prewarming),
+                executor: executor.clone(),
+            };
+            // Keep the real builder coordinator alive while its initial broadcast
+            // completes; no leaf or provider mock is replacing the production initializer.
+            let deadline = Instant::now() + Duration::from_secs(5);
+            loop {
+                let initialized = AtomicBool::new(true);
+                broadcast_builder_state(pool, || {
+                    let current = BUILDER_PREWARM.with_borrow(|slot| {
+                        slot.state()
+                            .and_then(|state| state.as_ref())
+                            .map(|evm| evm.block().number)
+                    });
+                    if current != Some(U256::from(number)) {
+                        initialized.store(false, Ordering::Relaxed)
+                    }
                 });
-                if current != Some(U256::from(22)) {
-                    initialized.store(false, Ordering::Relaxed)
+                if initialized.load(Ordering::Relaxed) {
+                    break;
                 }
-            });
-            if initialized.load(Ordering::Relaxed) {
-                break;
+                assert!(
+                    Instant::now() < deadline,
+                    "builder initialization did not complete"
+                );
+                thread::yield_now();
             }
-            assert!(
-                Instant::now() < deadline,
-                "builder initialization did not complete"
-            );
-            thread::yield_now();
-        }
-        let observed = pool.install_fn(|| {
-            WorkerPool::with_worker_mut(|worker| {
-                // Exact get_or_init pattern used by the engine transaction leaf.
-                worker
-                    .get_or_init::<EngineState>(|| engine_context.evm_for_ctx())
-                    .as_ref()
-                    .unwrap()
-                    .block()
-                    .number
-            })
-        });
-        drop(running_builder);
-        pool.broadcast(pool.current_num_threads(), |worker| {
+            let observed = pool.install_fn(|| {
+                WorkerPool::with_worker_mut(|worker| {
+                    // Exact get_or_init pattern used by the engine transaction leaf.
+                    worker
+                        .get_or_init::<EngineState>(|| engine_context.evm_for_ctx())
+                        .as_ref()
+                        .unwrap()
+                        .block()
+                        .number
+                })
+            });
+            drop(running_builder);
+            pool.broadcast(pool.current_num_threads(), |worker| {
+                assert_eq!(
+                    worker.get::<EngineState>().as_ref().unwrap().block().number,
+                    U256::from(11)
+                );
+                assert!(BUILDER_PREWARM.with_borrow(|slot| slot.state().is_none()));
+            });
             assert_eq!(
-                worker.get::<EngineState>().as_ref().unwrap().block().number,
-                U256::from(11)
+                observed,
+                U256::from(11),
+                "another active role replaced the selected call's EVM environment"
             );
-            assert!(BUILDER_PREWARM.with_borrow(|slot| slot.state().is_none()));
-        });
-        assert_eq!(
-            observed,
-            U256::from(11),
-            "another active role replaced the selected call's EVM environment"
-        );
+        }
     }
 
     #[test]
@@ -937,19 +940,13 @@ mod tests {
             WorkerPool::with_worker_mut(|worker| {
                 let engine_evm = worker.get_mut::<PrewarmEvmState>().as_mut().unwrap();
                 let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-                    let _clear = ClearBuilderState {
-                        pool: &pool,
-                        owner: Arc::downgrade(&builder.stop),
-                    };
+                    let _clear = ClearBuilderState { pool: &pool };
                     // Rayon services this callback while the shared engine slot remains borrowed.
-                    pool.broadcast_fn(|| {
-                        prewarming_state::initialize(&BUILDER_PREWARM, &builder.stop, || {
-                            builder.evm_for_ctx()
-                        })
+                    broadcast_builder_state(&pool, || {
+                        prewarming_state::initialize(&BUILDER_PREWARM, || builder.evm_for_ctx())
                     });
                     prewarming_state::with_state(
                         &BUILDER_PREWARM,
-                        &builder.stop,
                         || unreachable!(),
                         |state| {
                             assert_eq!(state.as_ref().unwrap().block().number, U256::from(22));
@@ -1006,12 +1003,9 @@ mod tests {
         context.evm_env.block_env.basefee = 0;
 
         let pool = WorkerPool::new(1, "prewarm-actions-test");
-        let _clear = ClearBuilderState {
-            pool: &pool,
-            owner: Arc::downgrade(&context.stop),
-        };
-        pool.broadcast_fn(|| {
-            prewarming_state::initialize(&BUILDER_PREWARM, &context.stop, || context.evm_for_ctx())
+        let _clear = ClearBuilderState { pool: &pool };
+        broadcast_builder_state(&pool, || {
+            prewarming_state::initialize(&BUILDER_PREWARM, || context.evm_for_ctx())
         });
 
         pool.install_fn(|| {
@@ -1023,7 +1017,6 @@ mod tests {
             );
             prewarming_state::with_state(
                 &BUILDER_PREWARM,
-                &context.stop,
                 || unreachable!(),
                 |state| {
                     let evm = state.as_mut().expect("prewarm EVM");
@@ -1041,7 +1034,6 @@ mod tests {
             assert!(failed.replay.is_none());
             prewarming_state::with_state(
                 &BUILDER_PREWARM,
-                &context.stop,
                 || unreachable!(),
                 |state| {
                     let evm = state.as_mut().expect("prewarm EVM");
