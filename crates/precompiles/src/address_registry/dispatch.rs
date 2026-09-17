@@ -17,20 +17,20 @@ impl Precompile for AddressRegistry {
             |call| match call {
                 IAddressRegistry::IAddressRegistryCalls {
                     // Registration
-                    registerVirtualMaster(call) => mutate(call, msg_sender, |s, c| {
-                        self.register_virtual_master(s, c)
+                    registerVirtualMaster(call) => mutate(self, call, msg_sender, |this, s, c| {
+                        this.register_virtual_master(s, c)
                     }),
                     // View functions
-                    getMaster(call) => view(call, |c| {
-                        Ok(self.get_master(c.masterId)?.unwrap_or(Address::ZERO))
+                    getMaster(call) => view(self, call, |this, c| {
+                        Ok(this.get_master(c.masterId)?.unwrap_or(Address::ZERO))
                     }),
-                    resolveRecipient(call) => view(call, |c| self.resolve_recipient(c.to)),
-                    resolveVirtualAddress(call) => view(call, |c| {
-                        self.resolve_virtual_address(c.virtualAddr)
+                    resolveRecipient(call) => view(self, call, |this, c| this.resolve_recipient(c.to)),
+                    resolveVirtualAddress(call) => view(self, call, |this, c| {
+                        this.resolve_virtual_address(c.virtualAddr)
                     }),
                     // Pure functions
-                    isVirtualAddress(call) => view(call, |c| Ok(c.addr.is_virtual())),
-                    decodeVirtualAddress(call) => view(call, |c| {
+                    isVirtualAddress(call) => view(self, call, |_, c| Ok(c.addr.is_virtual())),
+                    decodeVirtualAddress(call) => view(self, call, |_, c| {
                         let (is_virtual, master_id, user_tag) = match c.addr.decode_virtual() {
                             Some((mid, tag)) => (true, mid, tag),
                             None => (false, MasterId::ZERO, UserTag::ZERO),
@@ -38,8 +38,8 @@ impl Precompile for AddressRegistry {
                         Ok((is_virtual, master_id, user_tag).into())
                     }),
                     #[schedule(since = T5)]
-                    isImplicitlyApproved(call) => view(call, |c| {
-                        Ok(self.is_implicitly_approved(c.addr))
+                    isImplicitlyApproved(call) => view(self, call, |this, c| {
+                        Ok(this.is_implicitly_approved(c.addr))
                     })
                 }
             }
