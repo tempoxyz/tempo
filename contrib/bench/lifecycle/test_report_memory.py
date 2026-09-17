@@ -12,7 +12,7 @@ class ReportMemoryTests(unittest.TestCase):
     def test_serialization_is_released_before_package_generation(self):
         # Keep the decoded input outside tracing; measure the temporary serialization
         # retained at the actual package boundary, not peak encoder workspace.
-        data = {'payload': '<' + 'x' * (8 * 1024 * 1024), 'prewarm': {'mode': 'disabled'}}
+        data = {'payload': '<' + 'x' * (8 * 1024 * 1024), 'prewarm': {'mode': 'disabled'}, 'process_cpu': {'mode': 'disabled'}}
         observed = []
         with tempfile.TemporaryDirectory() as directory:
             out = Path(directory)

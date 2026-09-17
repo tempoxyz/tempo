@@ -52,7 +52,7 @@ class PrewarmHarness(unittest.TestCase):
         guard='    if $lifecycle_prewarm_cpu == "compare" {'+source.split('    if $lifecycle_prewarm_cpu == "compare" {',1)[1].split('    let baseline_base_label',1)[0]
         with tempfile.TemporaryDirectory() as directory:
             a,b=Path(directory)/'a',Path(directory)/'b';a.write_bytes(b'validator');b.write_bytes(b'validator')
-            command=f'let lifecycle_prewarm_cpu = "compare"; let baseline_tempo = "{a}"; let feature_tempo = "{b}"; '+guard
+            command=f'let lifecycle_process_cpu = "disabled"; let lifecycle_prewarm_cpu = "compare"; let baseline_tempo = "{a}"; let feature_tempo = "{b}"; '+guard
             self.assertEqual(subprocess.run(['nu','-c',command],capture_output=True).returncode,0)
             b.write_bytes(b'different');self.assertNotEqual(subprocess.run(['nu','-c',command],capture_output=True).returncode,0)
         for args in (['--lifecycle-prewarm-cpu','compare'],['--lifecycle','--lifecycle-prewarm-cpu','compare','--run-side','feature'],['--lifecycle','--lifecycle-detail','full','--lifecycle-prewarm-cpu','compare']):

@@ -5,10 +5,25 @@ import hashlib
 import unittest
 
 
+def without_process_cpu_mode(workflow):
+    # Normalize only the separately tested new observer routing; retain historical
+    # complete workflow hashes for reservation and every original selected step.
+    for text in (
+        '          - lifecycle-compare-process-cpu\n',
+        "      BENCH_LIFECYCLE_PROCESS_CPU: ${{ inputs.profiling == 'lifecycle-compare-process-cpu' && 'compare' || 'disabled' }}\n",
+        ' --lifecycle-process-cpu "$BENCH_LIFECYCLE_PROCESS_CPU"',
+    ):
+        assert workflow.count(text) == 1
+        workflow = workflow.replace(text, '')
+    workflow = workflow.replace(" || inputs.profiling == 'lifecycle-compare-process-cpu'", '')
+    return workflow.replace(" && inputs.profiling != 'lifecycle-compare-process-cpu'", '')
+
+
 class CapacityWorkflowTests(unittest.TestCase):
     def test_five_slot_workflow_preserves_entire_reviewed_setup_policy(self):
         workflow = (Path(__file__).resolve().parents[3] /
                     '.github/workflows/bench-e2e.yml').read_text()
+        workflow = without_process_cpu_mode(workflow)
         for old, new in [('max-parallel: 4', 'max-parallel: 5'),
                          ('slot: [1, 2, 3, 4]', 'slot: [1, 2, 3, 4, 5]'),
                          ('BENCH_CAPACITY_SLOTS: "4"', 'BENCH_CAPACITY_SLOTS: "5"')]:
@@ -19,6 +34,7 @@ class CapacityWorkflowTests(unittest.TestCase):
     def test_only_matrix_size_changes_from_reviewed_three_slot_workflow(self):
         workflow = (Path(__file__).resolve().parents[3] /
                     '.github/workflows/bench-e2e.yml').read_text()
+        workflow = without_process_cpu_mode(workflow)
         self.assertEqual(workflow.count('      BENCH_CAPACITY_POLICY: "setup_failure_v2"\n'), 1)
         workflow = workflow.replace('      BENCH_CAPACITY_POLICY: "setup_failure_v2"\n', '')
         workflow, count = re.subn(r'      - name: Publish capacity admission receipt\n.*?(?=      - name: Reset workspace directory)', '', workflow, flags=re.DOTALL)
