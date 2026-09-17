@@ -1,49 +1,126 @@
-name: Build binaries
-
-permissions: {}
+name: Build source-bound benchmark binaries
 
 on:
   workflow_dispatch:
-    inputs:
-      profile:
-        default: "maxperf"
-        description: "Build profile"
-        type: choice
-        options:
-          - "release"
-          - "maxperf"
-          - "profiling"
+
+permissions:
+  contents: read
 
 concurrency:
-  group: build-${{ github.head_ref }}
-  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
-
-env:
-  CARGO_TERM_COLOR: always
-  RUST_BACKTRACE: full
-  RUSTC_WRAPPER: "sccache"
+  group: prebuilt-benchmark-${{ github.ref }}
+  cancel-in-progress: false
 
 jobs:
-  build:
-    name: Build
+  prebuilt:
+    name: Build portable benchmark bundle
     runs-on: depot-ubuntu-latest-16
-    permissions:
-      contents: read
-    strategy:
-      matrix:
-        binary: [tempo, tempo-sidecar]
+    timeout-minutes: 90
+    container:
+      image: ubuntu:22.04@sha256:281c5745f657873d78e5531fc5ba8575f46ab7769b94550ac99543f122679986
+    defaults:
+      run:
+        shell: bash
     steps:
-      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+      - name: Install build prerequisites
+        run: |
+          set -euo pipefail
+          apt-get update -qq
+          DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends \
+            build-essential binutils ca-certificates clang curl git libclang-dev \
+            libssl-dev libudev-dev pkg-config protobuf-compiler python3
+      - name: Reserve exclusive producer directories
+        id: owned
+        uses: actions/github-script@3a2844b7e9c422d3c10d287c895573f7108da1b3
         with:
+          script: |
+            const {createHash} = require('node:crypto');
+            const {spawnSync} = require('node:child_process');
+            const result = await github.rest.repos.getContent({...context.repo,
+              path: '.github/scripts/bench-prebuilt-cleanup.py', ref: context.sha});
+            if (result.data.encoding !== 'base64' || result.data.size > 65536) throw new Error('cleanup_source_rejected');
+            const source = Buffer.from(result.data.content, 'base64');
+            if (source.length !== result.data.size || createHash('sha256').update(source).digest('hex') !== 'bf715a33c6edc825c9611d950bb4ad0cbaeee49431ece83c0ab9cdba4b8cddb4') throw new Error('cleanup_source_rejected');
+            const child = spawnSync('python3', ['-I', '-c', source.toString(), 'init'], {encoding:'utf8', timeout:30000, maxBuffer:65536});
+            if (child.status !== 0 || child.error) throw new Error('cleanup_init_rejected');
+            const state = JSON.parse(child.stdout);
+            if (state.schema !== 1 || state.roots.length !== 2) throw new Error('cleanup_init_rejected');
+            core.setOutput('state', JSON.stringify(state));
+            core.setOutput('cleanup_source', source.toString('base64'));
+            const work = state.roots[0].parent + '/' + state.roots[0].name;
+            const temp = state.roots[1].parent + '/' + state.roots[1].name;
+            core.setOutput('relative', state.roots[0].name);
+            core.exportVariable('PREBUILT_WORK', work);
+            core.exportVariable('PREBUILT_TEMP', temp);
+            core.exportVariable('TMPDIR', temp);
+            core.exportVariable('CARGO_HOME', temp + '/toolchain-cargo');
+            core.exportVariable('RUSTUP_HOME', temp + '/toolchain-rustup');
+      - name: Checkout producer
+        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd
+        with:
+          ref: ${{ github.sha }}
+          path: ${{ steps.owned.outputs.relative }}/producer
           persist-credentials: false
-      - uses: tempoxyz/gh-actions/vendor/dtolnay/rust-toolchain@3626124474a987bc74b41fc7ae65b2e23f8e4e4e
-      - uses: tempoxyz/gh-actions/actions/setup-mold@a65420ff2c90fcc46fe778c044aa7998ae9f246c
-      - uses: tempoxyz/gh-actions/vendor/mozilla-actions/sccache-action@3626124474a987bc74b41fc7ae65b2e23f8e4e4e
-      - name: Build
-        run: cargo build --bin ${{ matrix.binary }} --profile ${{ inputs.profile || 'dev' }}
-      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
-        id: binary_upload
+      - name: Checkout exact validator runtime
+        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd
         with:
-          if-no-files-found: "error"
-          name: ${{ matrix.binary }}
-          path: target/${{ inputs.profile || 'debug' }}/${{ matrix.binary }}
+          ref: 0bd62dd2f0e509016439b2189cd0f4998d007a26
+          path: ${{ steps.owned.outputs.relative }}/runtime
+          persist-credentials: false
+      - name: Checkout exact workload tools
+        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd
+        with:
+          repository: tempoxyz/txgen
+          ref: 94f86f186cd18f641eb9699d7e31c9e536de7c17
+          path: ${{ steps.owned.outputs.relative }}/tools
+          persist-credentials: false
+      - name: Install exact Rust toolchain
+        working-directory: ${{ env.PREBUILT_WORK }}
+        run: |
+          set -euo pipefail
+          curl --proto '=https' --tlsv1.2 --retry 10 --retry-connrefused --location \
+            --silent --show-error --fail https://sh.rustup.rs | \
+            sh -s -- --default-toolchain none --no-modify-path -y
+          export PATH="$CARGO_HOME/bin:$PATH"
+          echo "$CARGO_HOME/bin" >> "$GITHUB_PATH"
+          rustup toolchain install 1.98.1 --target x86_64-unknown-linux-gnu \
+            --component rustfmt --profile minimal --no-self-update
+          rustup default 1.98.1
+          rustc +1.98.1 --version --verbose
+      - name: Build and validate private bundle
+        working-directory: ${{ env.PREBUILT_WORK }}
+        env:
+          PREBUILT_PRODUCER_SHA: ${{ github.sha }}
+          PREBUILT_RUN_ID: ${{ github.run_id }}
+          PREBUILT_RUN_ATTEMPT: ${{ github.run_attempt }}
+        run: |
+          set -euo pipefail
+          python3 -I "$PREBUILT_WORK/producer/.github/scripts/bench-prebuilt-producer.py" \
+            --producer "$PREBUILT_WORK/producer" --runtime "$PREBUILT_WORK/runtime" --tools "$PREBUILT_WORK/tools" \
+            --output "$PREBUILT_TEMP/bundle"
+      - name: Upload private prebuilt transport
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
+        with:
+          name: bench-prebuilt-v1-${{ github.run_id }}-${{ github.run_attempt }}
+          path: ${{ env.PREBUILT_TEMP }}/bundle/*
+          if-no-files-found: error
+          compression-level: 0
+          retention-days: 7
+      - name: Remove owned producer files
+        if: ${{ always() && steps.owned.outputs.state != '' }}
+        timeout-minutes: 8
+        uses: actions/github-script@3a2844b7e9c422d3c10d287c895573f7108da1b3
+        env:
+          PREBUILT_OWNED_STATE: ${{ steps.owned.outputs.state }}
+          PREBUILT_CLEANUP_SOURCE: ${{ steps.owned.outputs.cleanup_source }}
+        with:
+          script: |
+            const {createHash} = require('node:crypto');
+            const {spawnSync} = require('node:child_process');
+            const encoded = process.env.PREBUILT_CLEANUP_SOURCE;
+            if (!encoded || encoded.length > 90000) throw new Error('cleanup_source_rejected');
+            const source = Buffer.from(encoded, 'base64');
+            if (source.length > 65536 || createHash('sha256').update(source).digest('hex') !== 'bf715a33c6edc825c9611d950bb4ad0cbaeee49431ece83c0ab9cdba4b8cddb4') throw new Error('cleanup_source_rejected');
+            const child = spawnSync('python3', ['-I', '-c', source.toString(), 'clean'], {
+              input:process.env.PREBUILT_OWNED_STATE, encoding:'utf8', timeout:360000, maxBuffer:65536});
+            if (child.stdout) core.info(child.stdout.trim());
+            if (child.status !== 0 || child.error) throw new Error('owned_cleanup_failed');
