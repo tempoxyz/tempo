@@ -1,4 +1,4 @@
-"""Elect from two invocation-bound, privacy-safe capacity receipts; no runner actions."""
+"""Elect from a complete invocation-bound capacity receipt set; no runner actions."""
 import argparse
 import json
 import re
@@ -95,25 +95,26 @@ def capacity(report):
     return rows[0], rows[1]
 
 
-def elect(receipts, *, workflow_sha, run_id, run_attempt):
+def elect(receipts, *, workflow_sha, run_id, run_attempt, slots=2):
     expected = binding(workflow_sha, run_id, run_attempt)
-    require(type(receipts) is list and len(receipts) == 2)
-    slots = set()
+    integer(slots, 2, 3)
+    require(type(receipts) is list and len(receipts) == slots)
+    seen_slots = set()
     eligible = []
     for receipt in receipts:
         keys(receipt, {'schema', 'workflow_sha', 'run_id', 'run_attempt', 'slot', 'capacity'})
         require(integer(receipt['schema']) == 1)
         require(binding(receipt['workflow_sha'], receipt['run_id'], receipt['run_attempt']) == expected)
-        slot = integer(receipt['slot'], 1, 2)
-        require(slot not in slots)
-        slots.add(slot)
+        slot = integer(receipt['slot'], 1, slots)
+        require(slot not in seen_slots)
+        seen_slots.add(slot)
         root, workspace = capacity(receipt['capacity'])
         enough = all(row['free_bytes'] is not None and
                      row['free_bytes'] >= REQUIRED_MIB * MIB for row in (root, workspace))
         root_ready = root['read_only'] is False and root['status'] in ('writable', 'access_denied')
         if enough and root_ready and workspace['status'] == 'writable':
             eligible.append((min(root['free_bytes'], workspace['free_bytes']), -slot, root, workspace))
-    require(slots == {1, 2})
+    require(seen_slots == set(range(1, slots + 1)))
     if not eligible:
         return {'schema': 1, 'status': 2, 'selected_slot': 0,
                 'root_free_mib': 0, 'workspace_free_mib': 0, 'minimum_free_mib': 0}
@@ -150,12 +151,13 @@ def main(argv=None, stdin=None):
         parser.add_argument('--workflow-sha', required=True)
         parser.add_argument('--run-id', required=True)
         parser.add_argument('--run-attempt', required=True)
+        parser.add_argument('--slots', choices=('2', '3'), default='2')
         parser.add_argument('paths', nargs='*')
         args = parser.parse_args(argv)
         require(re.fullmatch('[1-9][0-9]{0,15}', args.run_id) is not None)
         require(re.fullmatch('[1-9][0-9]{0,15}', args.run_attempt) is not None)
         if args.paths:
-            require(len(args.paths) == 2)
+            require(len(args.paths) == int(args.slots))
             inputs = []
             remaining = MAX_BYTES
             for path in args.paths:
@@ -168,7 +170,8 @@ def main(argv=None, stdin=None):
             source = sys.stdin.buffer if stdin is None else stdin
             inputs = parse(source.read(MAX_BYTES + 1))
         result = elect(inputs, workflow_sha=args.workflow_sha,
-                       run_id=int(args.run_id), run_attempt=int(args.run_attempt))
+                       run_id=int(args.run_id), run_attempt=int(args.run_attempt),
+                       slots=int(args.slots))
         print(json.dumps(result, separators=(',', ':')))
         return 0 if result['status'] == 0 else 3
     except (InvalidReceipt, ValueError, TypeError, KeyError, OSError, RecursionError, OverflowError):

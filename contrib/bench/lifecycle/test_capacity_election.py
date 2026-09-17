@@ -1,5 +1,6 @@
 import copy
 import io
+import itertools
 import json
 from pathlib import Path
 import subprocess
@@ -33,9 +34,58 @@ def receipt(slot, **capacity):
 
 
 class ElectionTests(unittest.TestCase):
-    def rejected(self, pair):
+    def rejected(self, pair, slots=2):
         with self.assertRaises(election.InvalidReceipt):
-            election.elect(pair, **BINDING)
+            election.elect(pair, **BINDING, slots=slots)
+
+    def test_three_slots_complete_order_independent_winner_and_ties(self):
+        receipts = [receipt(1, root=65535), receipt(2), receipt(3, root=80000, workspace=79000)]
+        snapshot = copy.deepcopy(receipts)
+        for order in itertools.permutations(receipts):
+            self.assertEqual(election.elect(list(order), **BINDING, slots=3),
+                             dict(schema=1, status=0, selected_slot=3,
+                                  root_free_mib=80000, workspace_free_mib=79000, minimum_free_mib=79000))
+        self.assertEqual(receipts, snapshot)
+        for order in itertools.permutations([receipt(1), receipt(2), receipt(3)]):
+            self.assertEqual(election.elect(list(order), **BINDING, slots=3)['selected_slot'], 1)
+        tied = [receipt(1, root=1), receipt(3), receipt(2)]
+        self.assertEqual(election.elect(tied, **BINDING, slots=3)['selected_slot'], 2)
+        for row in tied[1]['capacity']['locations'][:2]:
+            row['free_bytes'] += 1
+        self.assertEqual(election.elect(tied, **BINDING, slots=3)['selected_slot'], 3)
+
+    def test_three_slots_missing_duplicate_foreign_and_policy_types_reject(self):
+        for receipts in ([], [receipt(3)], [receipt(1), receipt(2)],
+                         [receipt(1), receipt(2), receipt(2)],
+                         [receipt(1), receipt(2), receipt(4)],
+                         [receipt(1), receipt(2), receipt(3), receipt(4)]):
+            self.rejected(receipts, slots=3)
+        for field, bad in [('workflow_sha', 'b'*40), ('run_id', BINDING['run_id']+1),
+                           ('run_attempt', 1), ('slot', True), ('slot', 3.0), ('slot', '3')]:
+            receipts = [receipt(1), receipt(2), receipt(3)]
+            receipts[2][field] = bad
+            self.rejected(receipts, slots=3)
+        for bad in (None, True, False, 1, 4, 2.0, 3.0, '3', election.MAX_INTEGER+1):
+            self.rejected([receipt(1), receipt(2), receipt(3)], slots=bad)
+        self.rejected([receipt(1), receipt(2), receipt(3)])
+        for depth in ('receipt', 'capacity', 'row'):
+            receipts = [receipt(1), receipt(2), receipt(3)]
+            target = receipts[2] if depth == 'receipt' else receipts[2]['capacity']
+            if depth == 'row': target = target['locations'][0]
+            target['runner_name'] = 'PRIVATE_IDENTIFIER'
+            self.rejected(receipts, slots=3)
+
+    def test_three_slots_ineligible_failure_has_no_fallback(self):
+        receipts = [receipt(1, root=65535), receipt(2, workspace=65535), receipt(3)]
+        receipts[2]['capacity']['locations'][0].update(
+            status='read_only', read_only=True, writable=False, write_tested=False)
+        self.assertEqual(election.elect(receipts, **BINDING, slots=3),
+                         dict(schema=1, status=2, selected_slot=0,
+                              root_free_mib=0, workspace_free_mib=0, minimum_free_mib=0))
+        # A malformed third receipt disqualifies the invocation even if slot 1 is eligible.
+        receipts[0] = receipt(1)
+        receipts[2]['capacity']['locations'][1]['free_bytes'] = True
+        self.rejected(receipts, slots=3)
 
     def test_pair_order_and_minimum_capacity_election(self):
         pair = [receipt(1, root=80000, workspace=66000), receipt(2, root=70000, workspace=71000)]
@@ -169,6 +219,25 @@ class ElectionTests(unittest.TestCase):
             self.cli(b'', *map(str, paths), code=2)
             paths[1].unlink()
             self.cli(b'', *map(str, paths), code=2)
+
+    def test_three_slot_isolated_cli_complete_stdin_and_paths(self):
+        receipts = [receipt(1, root=1), receipt(2, root=1), receipt(3)]
+        self.assertEqual(self.cli(json.dumps(receipts).encode(), '--slots', '3', use_source=True)['selected_slot'], 3)
+        self.cli(json.dumps(receipts).encode(), code=2)
+        self.cli(json.dumps(receipts[:2]).encode(), '--slots', '3', code=2)
+        self.cli(json.dumps([receipt(i, root=1) for i in (1,2,3)]).encode(), '--slots', '3', code=3)
+        for value in ('1', '4', '3.0', 'true', 'PRIVATE'):
+            self.cli(json.dumps(receipts).encode(), '--slots', value, code=2)
+        with tempfile.TemporaryDirectory() as directory:
+            paths = [Path(directory)/f'PRIVATE_{i}.json' for i in (1,2,3)]
+            for path, data in zip(paths, receipts):path.write_text(json.dumps(data))
+            self.assertEqual(self.cli(b'', '--slots', '3', *map(str, paths))['selected_slot'], 3)
+            self.cli(b'', '--slots', '3', *map(str, paths[:2]), code=2)
+            paths[2].write_bytes(b' ' * election.MAX_BYTES)
+            self.cli(b'', '--slots', '3', *map(str, paths), code=2)
+            paths[2].write_text(json.dumps(receipts[2]))
+            paths[1].unlink()
+            self.cli(b'', '--slots', '3', *map(str, paths), code=2)
 
 
 if __name__ == '__main__':

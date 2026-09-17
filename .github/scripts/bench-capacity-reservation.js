@@ -1,4 +1,4 @@
-// Experimental workflow adapter. Both slots remain on their reserved runners;
+// Experimental workflow adapter. All slots remain on their reserved runners;
 // only the deterministic winner may execute the existing benchmark steps.
 const fs = require('node:fs');
 const path = require('node:path');
@@ -26,11 +26,13 @@ function binding(context, env) {
   requireValue(/^[0-9a-f]{40}$/.test(context.sha) && uint(context.runId));
   requireValue(/^[1-9][0-9]*$/.test(env.GITHUB_RUN_ATTEMPT || ''));
   const attempt = Number(env.GITHUB_RUN_ATTEMPT);
-  requireValue(/^[12]$/.test(env.BENCH_CAPACITY_SLOT || ''));
+  requireValue(/^[23]$/.test(env.BENCH_CAPACITY_SLOTS || ''));
+  const slots = Number(env.BENCH_CAPACITY_SLOTS);
+  requireValue(/^[123]$/.test(env.BENCH_CAPACITY_SLOT || ''));
   const slot = Number(env.BENCH_CAPACITY_SLOT);
-  requireValue(uint(attempt) && [1, 2].includes(slot));
+  requireValue(uint(attempt) && slot <= slots);
   requireValue(env.BENCH_LIFECYCLE === 'true' && env.BENCH_NO_SLACK === 'true');
-  return { workflow_sha: context.sha, run_id: context.runId, run_attempt: attempt, slot };
+  return { workflow_sha: context.sha, run_id: context.runId, run_attempt: attempt, slot, slots };
 }
 
 async function source(github, context, filename, timeout = 10000) {
@@ -81,7 +83,9 @@ async function probe({ github, context, core, env = process.env, execute = spawn
     const script = await source(github, context, 'contrib/bench/lifecycle/capacity_preflight.py');
     const capacity = JSON.parse(python(script, [], '', env, execute));
     validateCapacity(capacity);
-    const receipt = { schema: 1, ...bound, capacity };
+    // Expected slot count is trusted workflow configuration, not receipt data.
+    const { slots, ...receiptBinding } = bound;
+    const receipt = { schema: 1, ...receiptBinding, capacity };
     const encoded = JSON.stringify(receipt);
     requireValue(Buffer.byteLength(encoded) <= 16384);
     const workspace = env.GITHUB_WORKSPACE;
@@ -128,7 +132,7 @@ async function elect({ github, context, core, env = process.env, execute = spawn
     };
     const script = await source(github, context, 'contrib/bench/lifecycle/capacity_election.py', budget(10000));
     budget(10000);
-    const names = [1, 2].map(slot => artifactName(bound, slot));
+    const names = Array.from({ length: bound.slots }, (_, i) => artifactName(bound, i + 1));
     let artifacts;
     for (;;) {
       const { data } = await github.rest.actions.listWorkflowRunArtifacts({
@@ -141,7 +145,7 @@ async function elect({ github, context, core, env = process.env, execute = spawn
       const selected = data.artifacts.filter(item => item.name.startsWith(current));
       requireValue(selected.every(item => names.includes(item.name)));
       requireValue(new Set(selected.map(item => item.name)).size === selected.length);
-      if (selected.length === 2) { artifacts = selected; break; }
+      if (selected.length === bound.slots) { artifacts = selected; break; }
       await sleep(budget(3000));
     }
     const receipts = [];
@@ -159,12 +163,12 @@ async function elect({ github, context, core, env = process.env, execute = spawn
       const receipt = python(EXTRACT_RECEIPT, [], bytes, env, execute, [0], budget(60000));
       budget(10000);
       const parsed = JSON.parse(receipt);
-      requireValue(item.name === artifactName(bound, parsed.slot) && [1, 2].includes(parsed.slot));
+      requireValue(item.name === artifactName(bound, parsed.slot) && uint(parsed.slot) && parsed.slot <= bound.slots);
       receipts.push(receipt);
     }
     const elected = JSON.parse(python(script, [
       '--workflow-sha', bound.workflow_sha, '--run-id', String(bound.run_id),
-      '--run-attempt', String(bound.run_attempt),
+      '--run-attempt', String(bound.run_attempt), '--slots', String(bound.slots),
     ], `[${receipts.join(',')}]`, env, execute, [0, 2, 3], budget(60000)));
     budget(10000);
     const fields = ['schema', 'status', 'selected_slot', 'root_free_mib', 'workspace_free_mib', 'minimum_free_mib'];
@@ -176,7 +180,7 @@ async function elect({ github, context, core, env = process.env, execute = spawn
       core.info(JSON.stringify(elected));
       requireValue(false);
     }
-    requireValue([1, 2].includes(elected.selected_slot) && elected.minimum_free_mib >= 65536);
+    requireValue(uint(elected.selected_slot) && elected.selected_slot <= bound.slots && elected.minimum_free_mib >= 65536);
     core.info(JSON.stringify(elected));
     core.setOutput('selected', String(elected.selected_slot === bound.slot));
   } catch (_) {
