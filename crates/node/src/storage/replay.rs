@@ -106,28 +106,28 @@ fn error(err: impl std::fmt::Display) -> DatabaseError {
     DatabaseError::Other(format!("derived replay storage: {err}"))
 }
 
-impl Cache {
-    fn find(
-        &self,
+impl Published {
+    pub(super) fn find(
+        &mut self,
         tx: &Source,
-        number: u64,
         genesis: u64,
     ) -> Result<Option<Arc<Snapshot>>, DatabaseError> {
-        let mut published = self.published.lock().unwrap();
-        published.leased.retain(|state| state.strong_count() != 0);
-        for state in published
+        self.leased.retain(|state| state.strong_count() != 0);
+        for state in self
             .latest
             .iter()
             .cloned()
-            .chain(published.leased.iter().filter_map(Weak::upgrade))
+            .chain(self.leased.iter().filter_map(Weak::upgrade))
         {
-            if state.number == number && state.canonical(tx, genesis)? {
+            if state.number == tx.number && state.canonical(tx, genesis)? {
                 return Ok(Some(state));
             }
         }
         Ok(None)
     }
+}
 
+impl Cache {
     pub(super) fn get(
         &self,
         tx: &Source,
@@ -136,7 +136,7 @@ impl Cache {
     ) -> Result<Arc<Snapshot>, DatabaseError> {
         let genesis = chain.genesis_header().number();
         let number = tx.number;
-        if let Some(state) = self.find(tx, number, genesis)? {
+        if let Some(state) = self.published.lock().unwrap().find(tx, genesis)? {
             return Ok(state);
         }
         let started = std::time::Instant::now();
@@ -177,7 +177,7 @@ impl Cache {
         number: u64,
     ) -> Result<Arc<Snapshot>, DatabaseError> {
         let genesis_number = chain.genesis_header().number();
-        if let Some(state) = self.find(tx, number, genesis_number)? {
+        if let Some(state) = self.published.lock().unwrap().find(tx, genesis_number)? {
             return Ok(state);
         }
         let started = std::time::Instant::now();

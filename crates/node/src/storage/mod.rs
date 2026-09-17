@@ -64,12 +64,25 @@ impl<D: Database> Database for TempoDatabase<D> {
     #[cfg(feature = "expiring-nonce-no-persistence")]
     type TXMut = WriteTx<D::TXMut>;
     fn tx(&self) -> Result<Self::TX, DatabaseError> {
+        // Pin the database and an available snapshot atomically with publication.
+        // Otherwise a lazy reader can lose its old state before its first nonce read.
+        let mut published = self.cache.published.lock().unwrap();
+        let inner = self.inner.tx()?;
+        let genesis = self.chain.genesis_header().number();
+        let source = Source::new(&inner, genesis)?;
+        let snapshot = published
+            .find(&source, genesis)?
+            .map_or_else(OnceLock::new, |state| OnceLock::from(Ok(state)));
+        drop(published);
         Ok(ReplayTx {
-            inner: self.inner.tx()?,
-            chain: self.chain.clone(),
-            static_files: self.static_files.clone(),
-            view: OnceLock::new(),
-            cache: self.cache.clone(),
+            inner,
+            view: Arc::new(View {
+                source,
+                chain: self.chain.clone(),
+                static_files: self.static_files.clone(),
+                snapshot,
+                cache: self.cache.clone(),
+            }),
         })
     }
     fn tx_mut(&self) -> Result<Self::TXMut, DatabaseError> {
@@ -115,10 +128,7 @@ impl<D: DatabaseMetrics> DatabaseMetrics for TempoDatabase<D> {
 #[derive(Debug)]
 pub struct ReplayTx<TX> {
     inner: TX,
-    chain: Arc<TempoChainSpec>,
-    static_files: PathBuf,
-    cache: Arc<Cache>,
-    view: OnceLock<Result<Arc<View>, DatabaseError>>,
+    view: Arc<View>,
 }
 
 /// All cursors from a transaction share this lazily acquired snapshot lease.
@@ -153,32 +163,14 @@ fn address_key<T: Table>() -> Option<B256> {
 }
 
 impl<TX: DbTx + 'static> ReplayTx<TX> {
-    fn view(&self) -> Result<&Arc<View>, DatabaseError> {
-        self.view
-            .get_or_init(|| {
-                Ok(Arc::new(View {
-                    source: Source::new(&self.inner, self.chain.genesis_header().number())?,
-                    chain: self.chain.clone(),
-                    static_files: self.static_files.clone(),
-                    cache: self.cache.clone(),
-                    snapshot: OnceLock::new(),
-                }))
-            })
-            .as_ref()
-            .map_err(Clone::clone)
-    }
     fn snapshot(&self) -> Result<&Arc<Snapshot>, DatabaseError> {
-        self.view()?.snapshot()
+        self.view.snapshot()
     }
     fn slots(&self) -> Result<&Slots, DatabaseError> {
         Ok(&self.snapshot()?.slots)
     }
-    fn storage_view<T: Table>(&self) -> Result<Option<Arc<View>>, DatabaseError> {
-        if address_key::<T>().is_some() {
-            Ok(Some(self.view()?.clone()))
-        } else {
-            Ok(None)
-        }
+    fn storage_view<T: Table>(&self) -> Option<Arc<View>> {
+        address_key::<T>().map(|_| self.view.clone())
     }
 }
 
@@ -243,13 +235,13 @@ impl<TX: DbTx + 'static> DbTx for ReplayTx<TX> {
     fn cursor_read<T: Table>(&self) -> Result<Self::Cursor<T>, DatabaseError> {
         Ok(Cursor::new(
             self.inner.cursor_read::<T>()?,
-            self.storage_view::<T>()?,
+            self.storage_view::<T>(),
         ))
     }
     fn cursor_dup_read<T: DupSort>(&self) -> Result<Self::DupCursor<T>, DatabaseError> {
         Ok(Cursor::new(
             self.inner.cursor_dup_read::<T>()?,
-            self.storage_view::<T>()?,
+            self.storage_view::<T>(),
         ))
     }
     fn entries<T: Table>(&self) -> Result<usize, DatabaseError> {

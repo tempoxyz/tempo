@@ -261,21 +261,23 @@ fn reads_derive_from_blocks_and_writes_remain_native() {
     assert_eq!(next.slots().unwrap().len(), 1); // only oldest cursor survives
     assert_eq!(db.cache.published.lock().unwrap().computations, 2);
     assert_eq!(db.cache.published.lock().unwrap().replayed_blocks, 2);
-    // Old leases retain their view after the global cache advances.
-    assert_eq!(
-        lazy.slots().unwrap().get(&hashed_slot),
-        Some(&U256::from(1200))
-    );
-    // Fresh transactions reuse the newly advanced state.
-    assert!(Arc::ptr_eq(
-        db.tx().unwrap().snapshot().unwrap(),
-        next.snapshot().unwrap()
-    ));
     let old_lease = Arc::downgrade(tx.snapshot().unwrap());
     drop(hashed);
     drop(state);
     drop(injected);
     drop(tx);
+    // The untouched transaction is now the only old lease. Its first nonce read
+    // must reuse that state, rather than reconstructing a discarded checkpoint.
+    assert_eq!(
+        lazy.slots().unwrap().get(&hashed_slot),
+        Some(&U256::from(1200))
+    );
+    assert_eq!(db.cache.published.lock().unwrap().computations, 2);
+    // Fresh transactions reuse the newly advanced state.
+    assert!(Arc::ptr_eq(
+        db.tx().unwrap().snapshot().unwrap(),
+        next.snapshot().unwrap()
+    ));
     drop(lazy);
     drop(next);
     assert!(old_lease.upgrade().is_none());
