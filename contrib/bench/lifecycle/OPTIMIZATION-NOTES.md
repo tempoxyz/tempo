@@ -57,6 +57,7 @@ measured signature-allocation reduction separate from claims of node speedup.
 The finalized decode cache, combined broadcast/decode trial, and direct hints
 retain demonstrated narrower effects; they are not general node-speed winners.
 
+Five PRs were closed and 22 remote branch heads were removed (13 Tempo, 9 Reth).
 Retired branch heads and closure receipts are recorded in
 `RETIREMENT-2026-09-17.json`. Retained local Git refs prevent experimental commits
 from becoming unreachable. Existing benchmark and capture source refs remain

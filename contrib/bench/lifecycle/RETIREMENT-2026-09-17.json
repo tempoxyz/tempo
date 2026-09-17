@@ -10,7 +10,8 @@
       "pr_state": "closed",
       "closed_at": "2026-09-17T13:57:39Z",
       "remote_branch_state": "deleted",
-      "verified_at": "2026-09-17T13:57:42.942786+00:00"
+      "verified_at": "2026-09-17T13:57:42.942786+00:00",
+      "repository": "tempoxyz/tempo"
     },
     {
       "branch": "joshie/perf-borrow-overlay-cursor",
@@ -20,7 +21,8 @@
       "pr_state": "closed",
       "closed_at": "2026-09-17T13:57:43Z",
       "remote_branch_state": "deleted",
-      "verified_at": "2026-09-17T13:57:46.859658+00:00"
+      "verified_at": "2026-09-17T13:57:46.859658+00:00",
+      "repository": "tempoxyz/tempo"
     },
     {
       "branch": "joshie/bench-engine-prewarm-parent",
@@ -30,7 +32,8 @@
       "pr_state": "closed",
       "closed_at": "2026-09-17T13:57:47Z",
       "remote_branch_state": "deleted",
-      "verified_at": "2026-09-17T13:57:50.394014+00:00"
+      "verified_at": "2026-09-17T13:57:50.394014+00:00",
+      "repository": "tempoxyz/tempo"
     },
     {
       "branch": "joshie/bench-borrow-builder-prewarm-context",
@@ -40,7 +43,8 @@
       "pr_state": "closed",
       "closed_at": "2026-09-17T13:57:50Z",
       "remote_branch_state": "deleted",
-      "verified_at": "2026-09-17T13:57:53.987912+00:00"
+      "verified_at": "2026-09-17T13:57:53.987912+00:00",
+      "repository": "tempoxyz/tempo"
     },
     {
       "branch": "joshie/bench-inline-single-storage",
@@ -50,7 +54,8 @@
       "pr_state": "closed",
       "closed_at": "2026-09-17T13:57:54Z",
       "remote_branch_state": "deleted",
-      "verified_at": "2026-09-17T13:57:57.616533+00:00"
+      "verified_at": "2026-09-17T13:57:57.616533+00:00",
+      "repository": "tempoxyz/tempo"
     },
     {
       "branch": "joshie/bench-body-subscription",
@@ -58,7 +63,8 @@
       "pr": null,
       "archive_ref": "refs/retired/20260917/joshie/bench-body-subscription",
       "remote_branch_state": "deleted",
-      "verified_at": "2026-09-17T13:57:59.847734+00:00"
+      "verified_at": "2026-09-17T13:57:59.847734+00:00",
+      "repository": "tempoxyz/tempo"
     },
     {
       "branch": "joshie/bench-scatter-block",
@@ -66,7 +72,8 @@
       "pr": null,
       "archive_ref": "refs/retired/20260917/joshie/bench-scatter-block",
       "remote_branch_state": "deleted",
-      "verified_at": "2026-09-17T13:58:01.842762+00:00"
+      "verified_at": "2026-09-17T13:58:01.842762+00:00",
+      "repository": "tempoxyz/tempo"
     },
     {
       "branch": "joshie/bench-proof-result-channel",
@@ -74,7 +81,8 @@
       "pr": null,
       "archive_ref": "refs/retired/20260917/joshie/bench-proof-result-channel",
       "remote_branch_state": "deleted",
-      "verified_at": "2026-09-17T13:58:03.973832+00:00"
+      "verified_at": "2026-09-17T13:58:03.973832+00:00",
+      "repository": "tempoxyz/tempo"
     },
     {
       "branch": "joshie/bench-lazy-aggregates-v2",
@@ -82,7 +90,8 @@
       "pr": null,
       "archive_ref": "refs/retired/20260917/joshie/bench-lazy-aggregates-v2",
       "remote_branch_state": "deleted",
-      "verified_at": "2026-09-17T13:58:06.182829+00:00"
+      "verified_at": "2026-09-17T13:58:06.182829+00:00",
+      "repository": "tempoxyz/tempo"
     },
     {
       "branch": "joshie/bench-single-storage-dispatch",
@@ -90,7 +99,8 @@
       "pr": null,
       "archive_ref": "refs/retired/20260917/joshie/bench-single-storage-dispatch",
       "remote_branch_state": "deleted",
-      "verified_at": "2026-09-17T13:58:08.484711+00:00"
+      "verified_at": "2026-09-17T13:58:08.484711+00:00",
+      "repository": "tempoxyz/tempo"
     },
     {
       "branch": "joshie/bench-proof-root-scratch",
@@ -98,7 +108,8 @@
       "pr": null,
       "archive_ref": "refs/retired/20260917/joshie/bench-proof-root-scratch",
       "remote_branch_state": "deleted",
-      "verified_at": "2026-09-17T13:58:10.880364+00:00"
+      "verified_at": "2026-09-17T13:58:10.880364+00:00",
+      "repository": "tempoxyz/tempo"
     },
     {
       "branch": "joshie/bench-inline-owned",
@@ -106,7 +117,8 @@
       "pr": null,
       "archive_ref": "refs/retired/20260917/joshie/bench-inline-owned",
       "remote_branch_state": "deleted",
-      "verified_at": "2026-09-17T13:58:12.971177+00:00"
+      "verified_at": "2026-09-17T13:58:12.971177+00:00",
+      "repository": "tempoxyz/tempo"
     },
     {
       "branch": "joshie/bench-storage-forward-v3",
@@ -114,7 +126,80 @@
       "pr": null,
       "archive_ref": "refs/retired/20260917/joshie/bench-storage-forward-v3",
       "remote_branch_state": "deleted",
-      "verified_at": "2026-09-17T13:58:15.183524+00:00"
+      "verified_at": "2026-09-17T13:58:15.183524+00:00",
+      "repository": "tempoxyz/tempo"
+    },
+    {
+      "branch": "joshie/bench-borrow-engine-prewarm-parent",
+      "sha": "f847d7bffc7425741ba141dea308366b07ec3f5a",
+      "repository": "joshieDo/reth",
+      "archive_ref": "refs/retired/20260917/joshie/bench-borrow-engine-prewarm-parent",
+      "remote_branch_state": "deleted",
+      "verified_at": "2026-09-17T14:05:24.271958+00:00"
+    },
+    {
+      "branch": "joshie/bench-inline-owned",
+      "sha": "5504385615cb061c707d1ac5ff290fe50dc9b3a6",
+      "repository": "joshieDo/reth",
+      "archive_ref": "refs/retired/20260917/joshie/bench-inline-owned",
+      "remote_branch_state": "deleted",
+      "verified_at": "2026-09-17T14:05:26.634160+00:00"
+    },
+    {
+      "branch": "joshie/bench-inline-single-storage",
+      "sha": "9ba53b46ee5fcf7bc53ad10c36ef937598e78df1",
+      "repository": "joshieDo/reth",
+      "archive_ref": "refs/retired/20260917/joshie/bench-inline-single-storage",
+      "remote_branch_state": "deleted",
+      "verified_at": "2026-09-17T14:05:28.839450+00:00"
+    },
+    {
+      "branch": "joshie/bench-lazy-aggregates-v2",
+      "sha": "054dcb212938b711a025bb36ccda7d3862903b74",
+      "repository": "joshieDo/reth",
+      "archive_ref": "refs/retired/20260917/joshie/bench-lazy-aggregates-v2",
+      "remote_branch_state": "deleted",
+      "verified_at": "2026-09-17T14:05:30.932484+00:00"
+    },
+    {
+      "branch": "joshie/bench-proof-result-channel",
+      "sha": "011b761484f9854601e05c50ce4d14347bf3fd86",
+      "repository": "joshieDo/reth",
+      "archive_ref": "refs/retired/20260917/joshie/bench-proof-result-channel",
+      "remote_branch_state": "deleted",
+      "verified_at": "2026-09-17T14:05:33.594338+00:00"
+    },
+    {
+      "branch": "joshie/bench-proof-root-scratch",
+      "sha": "bf62c80095060dac817c7ffd541a17417d6c4a49",
+      "repository": "joshieDo/reth",
+      "archive_ref": "refs/retired/20260917/joshie/bench-proof-root-scratch",
+      "remote_branch_state": "deleted",
+      "verified_at": "2026-09-17T14:05:35.458191+00:00"
+    },
+    {
+      "branch": "joshie/bench-storage-forward-v3",
+      "sha": "eced41923d16c580e51b2925b4dfa76b38af0bd8",
+      "repository": "joshieDo/reth",
+      "archive_ref": "refs/retired/20260917/joshie/bench-storage-forward-v3",
+      "remote_branch_state": "deleted",
+      "verified_at": "2026-09-17T14:05:39.152693+00:00"
+    },
+    {
+      "branch": "joshie/perf-borrow-overlay-cursor",
+      "sha": "8eb65098a7a402ddb7c5beab757d018e5f630806",
+      "repository": "joshieDo/reth",
+      "archive_ref": "refs/retired/20260917/joshie/perf-borrow-overlay-cursor",
+      "remote_branch_state": "deleted",
+      "verified_at": "2026-09-17T14:05:42.646050+00:00"
+    },
+    {
+      "branch": "joshie/perf-single-storage-dispatch",
+      "sha": "fbe0993d874407acae4c501e7ab0f5d37aa50b08",
+      "repository": "joshieDo/reth",
+      "archive_ref": "refs/retired/20260917/joshie/perf-single-storage-dispatch",
+      "remote_branch_state": "deleted",
+      "verified_at": "2026-09-17T14:05:45.424012+00:00"
     }
   ]
 }
