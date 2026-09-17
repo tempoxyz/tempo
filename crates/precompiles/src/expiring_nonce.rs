@@ -27,19 +27,22 @@ impl ExpiringNonceManager {
         {
             return Err(NonceError::invalid_expiring_nonce_expiry().into());
         }
-        if self.seen[hash].read()? > now {
+        let mut seen = self.seen.at_owned(&hash);
+        if seen.read()? > now {
             return Err(NonceError::expiring_nonce_replay().into());
         }
         let block = self.storage.block_number();
-        let count = self.bucket_count[block].read()?;
+        let mut bucket_count = self.bucket_count.at_owned(&block);
+        let count = bucket_count.read()?;
         let next = count
             .checked_add(1)
             .ok_or_else(NonceError::nonce_overflow)?;
-        self.seen[hash].write(valid_before)?;
-        self.bucket[block][count].write(hash)?;
-        self.bucket_count[block].write(next)?;
-        if valid_before > self.bucket_max_expiry[block].read()? {
-            self.bucket_max_expiry[block].write(valid_before)?;
+        seen.write(valid_before)?;
+        self.bucket.at_owned(&block).at_owned(&count).write(hash)?;
+        bucket_count.write(next)?;
+        let mut max_expiry = self.bucket_max_expiry.at_owned(&block);
+        if valid_before > max_expiry.read()? {
+            max_expiry.write(valid_before)?;
         }
         Ok(())
     }
@@ -51,18 +54,22 @@ impl ExpiringNonceManager {
         let oldest = self.oldest_unpruned_block.read()?;
         let mut block = oldest;
         while block < current_block {
-            if self.bucket_max_expiry[block].read()? > now {
+            let mut max_expiry = self.bucket_max_expiry.at_owned(&block);
+            if max_expiry.read()? > now {
                 break;
             }
-            let count = self.bucket_count[block].read()?;
+            let mut bucket_count = self.bucket_count.at_owned(&block);
+            let count = bucket_count.read()?;
+            let bucket = self.bucket.at_owned(&block);
             for i in 0..count {
-                let hash = self.bucket[block][i].read()?;
-                self.seen[hash].write(0)?;
-                self.bucket[block][i].write(B256::ZERO)?;
+                let mut entry = bucket.at_owned(&i);
+                let hash = entry.read()?;
+                self.seen.at_owned(&hash).write(0)?;
+                entry.write(B256::ZERO)?;
             }
             if count != 0 {
-                self.bucket_count[block].write(0)?;
-                self.bucket_max_expiry[block].write(0)?;
+                bucket_count.write(0)?;
+                max_expiry.write(0)?;
             }
             block += 1;
         }
