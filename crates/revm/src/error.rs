@@ -240,6 +240,11 @@ pub enum TempoInvalidTransaction {
     #[error(transparent)]
     CollectFeePreTx(#[from] FeePaymentError),
 
+    /// No protocol fallback token covers the maximum fee (TIP-1115).
+    /// Raised before nonce consumption, unlike a fee-collection failure.
+    #[error("insufficient funds in fallback fee tokens: required {required}")]
+    InsufficientFallbackFeeBalance { required: U256 },
+
     /// Tempo transaction validation error from validate_calls().
     ///
     /// This wraps validation errors from the shared validate_calls function.
@@ -326,6 +331,7 @@ impl TempoInvalidTransaction {
             | Self::KeychainPrecompileError { .. }
             | Self::KeychainValidationFailed { .. }
             | Self::CollectFeePreTx(_)
+            | Self::InsufficientFallbackFeeBalance { .. }
             | Self::NonceManagerError(_)
             | Self::V2KeychainBeforeActivation => false,
         }

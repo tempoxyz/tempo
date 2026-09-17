@@ -997,7 +997,12 @@ where
         let fee_payer = tx.fee_payer().expect("pre-validated in `validate_env`");
         let fee_token = fee_manager
             .get_fee_token(journal, tx, fee_payer, cfg.spec, actions.clone())
-            .map_err(|err| EVMError::Custom(err.to_string()))?;
+            .map_err(|err| match err {
+                crate::FeeTokenResolutionError::InsufficientFunds { required } => {
+                    TempoInvalidTransaction::InsufficientFallbackFeeBalance { required }.into()
+                }
+                err => EVMError::Custom(err.to_string()),
+            })?;
 
         evm.fee_token = Some(fee_token);
 

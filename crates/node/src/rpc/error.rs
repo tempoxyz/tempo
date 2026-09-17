@@ -82,6 +82,10 @@ where
 
 fn fee_token_rpc_error(err: &TempoInvalidTransaction) -> Option<ErrorObject<'static>> {
     let data = match err {
+        TempoInvalidTransaction::InsufficientFallbackFeeBalance { required } => serde_json::json!({
+            "name": "InsufficientFallbackFeeBalanceError",
+            "required": required.to_string(),
+        }),
         TempoInvalidTransaction::FeeTokenNotTip20 { address } => serde_json::json!({
             "name": "FeeTokenNotTip20Error",
             "token": address.to_string(),
@@ -146,6 +150,13 @@ mod tests {
     fn fee_token_errors_are_transaction_rejected_rpc_errors() {
         let address = Address::repeat_byte(0x20);
         let cases = [
+            (
+                TempoInvalidTransaction::InsufficientFallbackFeeBalance {
+                    required: alloy_primitives::U256::from(2),
+                },
+                "insufficient funds",
+                serde_json::json!({ "name": "InsufficientFallbackFeeBalanceError", "required": "2" }),
+            ),
             (
                 TempoInvalidTransaction::FeeTokenNotTip20 { address },
                 "is not a TIP-20 token",

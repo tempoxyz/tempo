@@ -420,19 +420,38 @@ where
             .map_err(EVMError::<ProviderError, _>::from)?;
 
         let actions = StorageActions::disabled();
-        let fee_token = self
-            .evm_config()
-            .resolve_fee_token(
-                &mut db,
-                tx_env,
-                fee_payer,
-                evm_env.cfg_env.spec,
-                actions.clone(),
-            )
-            .map_err(ProviderError::other)?;
-        let fee_token_balance = db
-            .get_token_balance(fee_token, fee_payer, evm_env.cfg_env.spec, actions)
-            .map_err(ProviderError::other)?;
+        let resolved = self.evm_config().resolve_fee_token(
+            &mut db,
+            tx_env,
+            fee_payer,
+            evm_env.cfg_env.spec,
+            actions.clone(),
+        );
+        let fee_token_balance = match resolved {
+            Ok(fee_token) => db
+                .get_token_balance(fee_token, fee_payer, evm_env.cfg_env.spec, actions)
+                .map_err(ProviderError::other)?,
+            Err(tempo_evm::FeeTokenResolutionError::InsufficientFunds { .. }) => {
+                // Estimation starts with the block gas limit when gas is omitted. No candidate
+                // may cover that bound even though one can pay for the actual transaction.
+                // Cap the search by the largest SINGLE candidate balance; execution still uses
+                // the ordered resolver at each trial gas limit, without pinning this token.
+                let mut balance = U256::ZERO;
+                for &token in tempo_precompiles::FALLBACK_FEE_TOKENS {
+                    balance = balance.max(
+                        db.get_token_balance(
+                            token,
+                            fee_payer,
+                            evm_env.cfg_env.spec,
+                            actions.clone(),
+                        )
+                        .map_err(ProviderError::other)?,
+                    );
+                }
+                balance
+            }
+            Err(err) => return Err(TempoEthApiError::from(ProviderError::other(err))),
+        };
 
         Ok(fee_token_balance
             // multiply by the scaling factor

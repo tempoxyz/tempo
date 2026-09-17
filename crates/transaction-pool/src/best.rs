@@ -188,6 +188,13 @@ where
             let tx = self.inner.next()?;
             let best_tx = tx.best_transaction();
 
+            // A drained selected token may now fall through to a funded later candidate.
+            // Execution resolves the choice against the current journal, including credits to
+            // earlier candidates. Cached-token balance checks cannot decide validity here.
+            if !best_tx.transaction.fallback_balance_slots().is_empty() {
+                return Some(tx);
+            }
+
             let Some(key) = best_tx.transaction.fee_balance_slot() else {
                 debug_assert!(false, "pool transaction must have cached fee_balance_slot");
                 continue;
@@ -260,6 +267,19 @@ mod tests {
     use tempo_chainspec::{hardfork::TempoHardfork, spec::TEMPO_T1_BASE_FEE};
 
     type TestTx = Arc<ValidPoolTransaction<TempoPooledTransaction>>;
+
+    #[test]
+    fn fallback_balance_drop_is_resolved_by_execution() {
+        let tx = protocol_tx(0, 10);
+        tx.transaction
+            .set_resolved_fee_token(tempo_precompiles::DEFAULT_FEE_TOKEN);
+        tx.transaction.cache_fallback_balance_slots(true);
+        let slot = tx.transaction.fee_balance_slot().unwrap();
+        let mut best =
+            StateAwareBestTransactions::new(protocol_best_transactions(vec![tx.clone()]));
+        best.decreased_balances.insert(slot, U256::ZERO);
+        assert_eq!(best.next().map(|t| *t.hash()), Some(*tx.hash()));
+    }
 
     fn tx_with_nonce_key(nonce_key: U256, sender: Address, nonce: u64, priority: u128) -> TestTx {
         Arc::new(wrap_valid_tx(

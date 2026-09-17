@@ -25,6 +25,72 @@ use tempo_primitives::{
 };
 
 #[tokio::test(flavor = "multi_thread")]
+async fn test_tip1115_estimate_and_pay_with_fallback() -> eyre::Result<()> {
+    tokio::time::timeout(std::time::Duration::from_secs(60), async {
+        let setup = TestNodeBuilder::new()
+            .with_genesis(crate::utils::make_genesis_at(
+                tempo_chainspec::hardfork::TempoHardfork::T12,
+            ))
+            .build_http_only()
+            .await?;
+        let funder = MnemonicBuilder::from_phrase(crate::utils::TEST_MNEMONIC).build()?;
+        let provider = ProviderBuilder::new()
+            .wallet(funder)
+            .connect_http(setup.http_url.clone());
+        let signer = PrivateKeySigner::random();
+        let payer = signer.address();
+        let balance = U256::from(20_000);
+        let pathusd = ITIP20::new(PATH_USD_ADDRESS, &provider);
+        pathusd
+            .transfer(payer, balance)
+            .send()
+            .await?
+            .get_receipt()
+            .await?;
+        assert!(
+            IFeeManager::new(TIP_FEE_MANAGER_ADDRESS, &provider)
+                .userTokens(payer)
+                .call()
+                .await?
+                .is_zero()
+        );
+
+        let provider = ProviderBuilder::new()
+            .wallet(signer)
+            .connect_http(setup.http_url);
+        let request = TransactionRequest::default()
+            .from(payer)
+            .to(Address::repeat_byte(0x71))
+            .max_fee_per_gas(20_000_000_000)
+            .max_priority_fee_per_gas(0);
+        // This account can afford 1M gas, but not the provisional block-sized estimate.
+        let gas = provider.estimate_gas(request.clone()).await?;
+        assert!(gas <= 1_000_000);
+        let hash = provider
+            .send_transaction(request.gas_limit(gas))
+            .await?
+            .watch()
+            .await?;
+        let receipt = provider
+            .raw_request::<_, TempoTransactionReceipt>("eth_getTransactionReceipt".into(), (hash,))
+            .await?;
+        assert!(receipt.status());
+        assert_eq!(receipt.fee_token, Some(PATH_USD_ADDRESS));
+        assert_eq!(receipt.fee_payer, payer);
+        let remaining = ITIP20::new(PATH_USD_ADDRESS, &provider)
+            .balanceOf(payer)
+            .call()
+            .await?;
+        let actual_fee = (U256::from(receipt.gas_used) * U256::from(receipt.effective_gas_price()))
+            .div_ceil(U256::from(1_000_000_000_000u64));
+        assert_eq!(remaining, balance - actual_fee);
+        Ok::<_, eyre::Report>(())
+    })
+    .await??;
+    Ok(())
+}
+
+#[tokio::test(flavor = "multi_thread")]
 async fn test_set_user_token() -> eyre::Result<()> {
     reth_tracing::init_test_tracing();
 

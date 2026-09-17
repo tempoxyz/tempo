@@ -489,9 +489,11 @@ where
     let mut chain_events = pool.client().canonical_state_stream();
 
     let amm_cache = pool.amm_liquidity_cache();
+    let mut previous_spec = None;
 
     // Process all maintenance operations on new block commit or reorg.
     while let Some(event) = chain_events.next().await {
+        let is_reorg = matches!(&event, CanonStateNotification::Reorg { .. });
         let new = match event {
             CanonStateNotification::Reorg { old: _, new } => {
                 // Repopulate AMM liquidity cache from the new canonical chain
@@ -510,6 +512,10 @@ where
         let tip = &new;
         let bundle_state = tip.execution_outcome().state().state();
         let tip_timestamp = tip.tip().header().timestamp();
+        let spec = pool.client().chain_spec().tempo_hardfork_at(tip_timestamp);
+        let old_spec = previous_spec.replace(spec);
+        let fork_changed =
+            old_spec != Some(spec) && (spec.is_t12() || old_spec.is_some_and(|old| old.is_t12()));
 
         // Removed transactions are collected here and dropped at the end of the
         // iteration: deallocating them (input data, signatures, allocator work) is
@@ -546,6 +552,39 @@ where
         // Exclude them from every snapshot-based maintenance phase so they follow the
         // normal mined path rather than being discarded from the pool.
         let mut removed_this_iteration: B256Set = tip.transaction_hashes().copied().collect();
+
+        // TIP-1115 depends on credits as well as debits in every examined candidate. Use
+        // committed storage, not Transfer logs, so protocol fee writes are included too.
+        // Refresh before token-specific eviction can act on a stale resolved fee token.
+        let fallback_hashes: Vec<_> = {
+            let all_txs = all_txs.get_or_insert_with(|| pool.all_transactions());
+            all_txs
+                .iter()
+                .filter(|tx| !removed_this_iteration.contains(tx.hash()))
+                .filter(|tx| {
+                    tx.transaction
+                        .needs_fallback_revalidation(bundle_state, is_reorg, fork_changed)
+                })
+                .map(|tx| *tx.hash())
+                .collect()
+        };
+        if !fallback_hashes.is_empty() {
+            let transactions = pool.remove_transactions(fallback_hashes);
+            for tx in &transactions {
+                removed_this_iteration.insert(*tx.hash());
+            }
+            let pool = pool.clone();
+            tokio::spawn(async move {
+                let transactions = transactions
+                    .into_iter()
+                    .map(|tx| (tx.origin, tx.transaction.with_discarded_caches()))
+                    .collect();
+                let results = pool.add_transactions_with_origins(transactions).await;
+                debug!(target: "txpool", total = results.len(),
+                    success = results.iter().filter(|result| result.is_ok()).count(),
+                    "Revalidated fallback fee-token dependencies");
+            });
+        }
 
         // 4. Handle potentially invalidating updates
         // When a cached value changes of a token (transfer policy, or quote token) changes,

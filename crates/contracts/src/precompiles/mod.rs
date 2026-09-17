@@ -40,6 +40,10 @@ use tempo_hardfork::TempoHardfork;
 pub const TIP_FEE_MANAGER_ADDRESS: Address = address!("0xfeec000000000000000000000000000000000000");
 pub const PATH_USD_ADDRESS: Address = address!("0x20C0000000000000000000000000000000000000");
 pub const DEFAULT_FEE_TOKEN: Address = PATH_USD_ADDRESS;
+/// TIP-1115 ordered fallback fee tokens. Changes require a protocol upgrade.
+///
+/// pathUSD must remain first. Additional deployed USD TIP-20 addresses are TBD.
+pub const FALLBACK_FEE_TOKENS: &[Address] = &[PATH_USD_ADDRESS];
 pub const TIP403_REGISTRY_ADDRESS: Address = address!("0x403C000000000000000000000000000000000000");
 pub const TIP20_FACTORY_ADDRESS: Address = address!("0x20FC000000000000000000000000000000000000");
 pub const STABLECOIN_DEX_ADDRESS: Address = address!("0xdec0000000000000000000000000000000000000");

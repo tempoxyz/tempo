@@ -146,7 +146,7 @@ impl<DB: Database> ProtocolFeeManager<DB> for ValidatorTokenLookupFailsFeeManage
         _fee_payer: Address,
         _spec: TempoHardfork,
         _actions: StorageActions,
-    ) -> tempo_precompiles::error::Result<Address> {
+    ) -> Result<Address, crate::FeeTokenResolutionError> {
         Ok(tx.fee_token.unwrap_or(DEFAULT_FEE_TOKEN))
     }
 
@@ -212,6 +212,38 @@ fn test_invalid_fee_token_rejected() {
             Err(EVMError::Transaction(TempoInvalidTransaction::FeeTokenNotTip20 { address })) if address == invalid_token
         ),
         "Should reject non-TIP20 fee token with FeeTokenNotTip20 error"
+    );
+}
+
+#[test]
+fn test_fallback_insufficient_funds_does_not_consume_nonce() {
+    let caller = Address::repeat_byte(0x71);
+    let mut test = TestHandlerEvm::tx(TempoHardfork::T12, |tx| {
+        tx.inner.caller = caller;
+        tx.inner.kind = alloy_primitives::TxKind::Call(Address::repeat_byte(0x72));
+        tx.inner.gas_limit = 1_000_000;
+        tx.inner.gas_price = 20_000_000_000;
+    });
+    let error = test.validate_against_state_and_deduct_caller().unwrap_err();
+    assert!(matches!(error, EVMError::Transaction(
+        TempoInvalidTransaction::InsufficientFallbackFeeBalance { required }
+    ) if required == U256::from(20_000)));
+    assert_eq!(
+        test.evm
+            .ctx()
+            .journal_mut()
+            .load_account(caller)
+            .unwrap()
+            .data
+            .info
+            .nonce,
+        0
+    );
+    assert!(
+        !TempoInvalidTransaction::InsufficientFallbackFeeBalance {
+            required: U256::ONE,
+        }
+        .is_bad_transaction()
     );
 }
 

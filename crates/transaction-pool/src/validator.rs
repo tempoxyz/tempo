@@ -497,6 +497,7 @@ where
 
         // Cache the resolved fee token from EVM validation for pool maintenance.
         transaction.set_resolved_fee_token(validation_ctx.fee_token);
+        transaction.cache_fallback_balance_slots(spec.is_t12());
 
         // Pool-only key-expiry propagation buffer: reject keychain txs whose key
         // expires too soon (within AA_VALID_BEFORE_MIN_SECS of tip timestamp).
