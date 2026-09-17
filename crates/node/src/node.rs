@@ -12,8 +12,8 @@ use crate::{
 use alloy_consensus::BlockHeader as _;
 use alloy_primitives::B256;
 use reth_chainspec::{ChainKind, EthChainSpec, Hardforks, NamedChain};
-use reth_ethereum::network::{NetworkHandle, PeersInfo as _, primitives::BasicNetworkPrimitives};
 use reth_db_api::{cursor::DbCursorRO, tables, transaction::DbTx};
+use reth_ethereum::network::{NetworkHandle, PeersInfo as _, primitives::BasicNetworkPrimitives};
 use reth_node_api::{
     AddOnsContext, FullNodeComponents, FullNodeTypes, NodeAddOns, NodeTypes,
     PayloadAttributesBuilder, PayloadTypes, PrimitivesTy, TxTy,

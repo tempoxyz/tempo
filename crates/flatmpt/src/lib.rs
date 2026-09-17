@@ -28,7 +28,10 @@ pub use follower::{
     publish_snapshot, published_snapshot,
 };
 pub use mpt_flat_poc::{AccountSeed, FlatMpt, FlatSnapshot};
-pub use sparse::{RevealSink, SparseStats, SparseWorker, ops_to_post_state, sparse_enabled};
+pub use sparse::{
+    RevealSink, SparseStats, SparseWorker, ops_to_post_state, ops_to_post_state_at_parent,
+    sparse_enabled,
+};
 pub use stream::{FlatStream, stream_enabled};
 
 pub fn storage_value_rlp(value: U256) -> Vec<u8> {
@@ -1207,25 +1210,62 @@ mod tests {
             ..Default::default()
         };
 
+        let dir = tempfile::tempdir().unwrap();
+        let mut parent =
+            FlatMpt::create(dir.path().join("parent.flat"), Default::default()).unwrap();
+        // Include old slots absent from the bundle, including one overwritten
+        // after recreation. Both must participate in the new explicit-zero model.
+        for byte in [3, 4] {
+            let key = alloy_primitives::keccak256(addr(byte)).0;
+            parent
+                .apply_block(vec![
+                    (
+                        key,
+                        StateOp::SetAccount {
+                            nonce: 1,
+                            balance: U256::ZERO,
+                            code_hash: mpt_flat_poc::eth::EMPTY_CODE_HASH.0,
+                        },
+                    ),
+                    (
+                        key,
+                        StateOp::SetStorage {
+                            slot: alloy_primitives::keccak256(B256::from(U256::from(99))).0,
+                            value: mpt_flat_poc::eth::storage_value_rlp(U256::from(123)),
+                        },
+                    ),
+                    (
+                        key,
+                        StateOp::SetStorage {
+                            slot: alloy_primitives::keccak256(B256::from(U256::from(7))).0,
+                            value: mpt_flat_poc::eth::storage_value_rlp(U256::from(456)),
+                        },
+                    ),
+                ])
+                .unwrap();
+        }
         let ops = bundle_to_ops(&bundle);
-        let ours = ops_to_post_state(&ops);
-        let destroyed: std::collections::BTreeSet<B256> = bundle
-            .state
-            .iter()
-            .filter(|(_, account)| account.was_destroyed())
-            .map(|(address, _)| alloy_primitives::keccak256(address))
-            .collect();
-        let reths = reth_trie::HashedPostState::from_bundle_state::<reth_trie::KeccakKeyHasher>(
+        assert!(
+            ops_to_post_state(&ops, None).is_err(),
+            "wipes must not silently ignore the parent"
+        );
+        let ours = ops_to_post_state(&ops, Some(&parent)).unwrap();
+        let mut reths = reth_trie::HashedPostState::from_bundle_state::<reth_trie::KeccakKeyHasher>(
             &bundle.state,
         );
+        reth_trie::hashed_cursor::zero_destroyed_account_storage(
+            &crate::cursors::FlatHashedCursorFactory { mpt: &parent },
+            bundle.state(),
+            &mut reths,
+        )
+        .unwrap();
 
         // Account maps must agree exactly (reth normalizes the empty code
         // hash to None; ops_to_post_state mirrors that).
         assert_eq!(ours.accounts, reths.accounts, "account maps diverge");
 
-        // Storage: compare effective semantics per account touched by either
-        // side — wiped flag for live accounts, and every slot's effective
-        // value (wiped + absent ⇒ zero).
+        // Storage: compare explicit changes, including every zero expanded from
+        // the parent, not merely effective values where missing looks like zero.
         let all: std::collections::BTreeSet<B256> = ours
             .storages
             .keys()
@@ -1235,19 +1275,6 @@ mod tests {
         for acct in all {
             let o = ours.storages.get(&acct);
             let r = reths.storages.get(&acct);
-            let deleted = matches!(ours.accounts.get(&acct), Some(None));
-            if destroyed.contains(&acct) {
-                assert!(
-                    o.is_some_and(|s| s.wiped),
-                    "destroyed account must wipe storage"
-                );
-            } else if !deleted {
-                assert_eq!(
-                    o.map(|s| s.wiped).unwrap_or(false),
-                    r.map(|s| s.wiped).unwrap_or(false),
-                    "wiped flag diverges for live account {acct}"
-                );
-            }
             let keys: std::collections::BTreeSet<B256> = o
                 .map(|s| s.storage.keys().copied().collect::<Vec<_>>())
                 .unwrap_or_default()
@@ -1258,12 +1285,8 @@ mod tests {
                 )
                 .collect();
             for k in keys {
-                let ov = o
-                    .and_then(|s| s.storage.get(&k).copied())
-                    .unwrap_or_default();
-                let rv = r
-                    .and_then(|s| s.storage.get(&k).copied())
-                    .unwrap_or_default();
+                let ov = o.and_then(|s| s.storage.get(&k).copied());
+                let rv = r.and_then(|s| s.storage.get(&k).copied());
                 assert_eq!(ov, rv, "slot {k} of {acct} diverges");
             }
         }

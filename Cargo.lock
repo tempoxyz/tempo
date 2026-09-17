@@ -7208,6 +7208,21 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "1fafa6961cabd9c63bcd77a45d7e3b7f3b552b70417831fb0f56db717e72407e"
 
 [[package]]
+name = "mpt-flat-poc"
+version = "0.1.0"
+source = "git+https://github.com/dankrad/mpt-flat-poc?rev=23bc449a19a98e5760dd7f6c411d35f3a6b7f821#23bc449a19a98e5760dd7f6c411d35f3a6b7f821"
+dependencies = [
+ "alloy-primitives",
+ "alloy-rlp",
+ "anyhow",
+ "bincode",
+ "libc",
+ "serde",
+ "sha3 0.10.9",
+ "tempfile",
+]
+
+[[package]]
 name = "multiaddr"
 version = "0.18.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -13549,6 +13564,7 @@ dependencies = [
  "tempo-ext",
  "tempo-eyre",
  "tempo-faucet",
+ "tempo-flatmpt",
  "tempo-node",
  "tempo-precompiles",
  "tempo-primitives",
@@ -13892,6 +13908,28 @@ dependencies = [
 ]
 
 [[package]]
+name = "tempo-flatmpt"
+version = "1.10.0"
+dependencies = [
+ "alloy-genesis",
+ "alloy-primitives",
+ "alloy-rlp",
+ "anyhow",
+ "bincode",
+ "hex",
+ "mpt-flat-poc",
+ "parking_lot",
+ "reth-db-api",
+ "reth-primitives-traits",
+ "reth-trie",
+ "reth-trie-sparse",
+ "revm",
+ "serde_json",
+ "tempfile",
+ "tracing",
+]
+
+[[package]]
 name = "tempo-hardfork"
 version = "1.11.0"
 dependencies = [
@@ -13923,6 +13961,7 @@ name = "tempo-node"
 version = "1.14.0"
 dependencies = [
  "alloy",
+ "alloy-consensus",
  "alloy-eips",
  "alloy-evm",
  "alloy-network",
@@ -13932,6 +13971,7 @@ dependencies = [
  "alloy-rpc-types-engine",
  "alloy-rpc-types-eth",
  "alloy-serde",
+ "anyhow",
  "async-trait",
  "base64 0.22.1",
  "clap",
@@ -13951,7 +13991,9 @@ dependencies = [
  "rand 0.9.4",
  "reqwest 0.13.3",
  "reth-chainspec",
+ "reth-db-api",
  "reth-e2e-test-utils",
+ "reth-engine-tree",
  "reth-errors",
  "reth-ethereum",
  "reth-evm",
@@ -13972,6 +14014,9 @@ dependencies = [
  "reth-storage-api",
  "reth-tracing",
  "reth-transaction-pool",
+ "reth-trie",
+ "reth-trie-common",
+ "reth-trie-db",
  "serde",
  "serde_json",
  "sha2 0.10.9",
@@ -13981,6 +14026,7 @@ dependencies = [
  "tempo-contracts",
  "tempo-e2e",
  "tempo-evm",
+ "tempo-flatmpt",
  "tempo-payload-builder",
  "tempo-payload-types",
  "tempo-precompiles",
@@ -14005,8 +14051,10 @@ dependencies = [
  "alloy-eips",
  "alloy-primitives",
  "alloy-rlp",
+ "anyhow",
  "crossbeam-channel",
  "metrics",
+ "parking_lot",
  "proptest",
  "reth-basic-payload-builder",
  "reth-chainspec",
@@ -14014,6 +14062,7 @@ dependencies = [
  "reth-engine-tree",
  "reth-errors",
  "reth-evm",
+ "reth-execution-cache",
  "reth-execution-types",
  "reth-metrics",
  "reth-payload-builder",
@@ -14026,6 +14075,7 @@ dependencies = [
  "reth-trie-common",
  "tempo-chainspec",
  "tempo-evm",
+ "tempo-flatmpt",
  "tempo-payload-types",
  "tempo-precompiles",
  "tempo-primitives",
