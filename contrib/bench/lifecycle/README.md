@@ -1,5 +1,8 @@
 # Block lifecycle capture
 
+See [optimization decisions and experiment history](OPTIMIZATION-NOTES.md) for
+deferred work, measured tradeoffs, and paths that did not establish a node gain.
+
 Select **profiling: lifecycle** in the `bench-e2e` workflow. This runs the feature
 revision on both local validators and uploads the `block-lifecycle` artifact.
 Extract the artifact, expand its completed phase archives as described below,
