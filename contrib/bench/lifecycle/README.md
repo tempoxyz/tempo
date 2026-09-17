@@ -332,3 +332,13 @@ post-cutoff transport/probe/footer evidence because those edges were pruned. It
 is not a new kernel capture or proof of omitted edges. Original rejected run
 manifests must remain unchanged; apply the independent schema-3 audit to the
 separately derived artifact before using it.
+
+## Identical validator builds
+
+Lifecycle comparisons reuse one validator executable when both revisions are
+the same full commit hash and the effective build inputs match. This avoids a
+second download/build and duplicate binary storage for observer comparisons.
+Both phase labels, environments and source worktrees remain separate. Mutable
+references, different inputs, ordinary benchmarks and `--no-cache` keep separate
+builds. Existing binary verification, same-binary admission and disk guards still
+apply; reuse does not establish additional cache or hardware compatibility.
