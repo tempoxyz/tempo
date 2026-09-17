@@ -354,3 +354,13 @@ individual files at 16 GiB and entries per phase at 100,000, with a 1 GiB free-s
 reserve before extraction. `--max-total-bytes` explicitly adjusts the combined
 limit for larger approved matrices. ZIP central-directory memory is separately
 bounded before member parsing. Existing destinations are never merged or replaced.
+
+
+Proposal body acquisition is recorded as `body_source` on the existing
+`body_ready` event, with explicit block association:1 execution layer,2 marshal,
+3 direct broadcast,4 marshal after a selected unusable or closed broadcast
+response. Control and concurrent-subscription captures use identical recorder
+and report fields. The source describes acquisition, not validation or durability;
+header/replay verification and `marshal.verified` still follow. Marshal wins when
+both responses are ready, including its error. Missing or unknown source values
+remain unmeasured. No additional spans, events or clock samples are introduced.

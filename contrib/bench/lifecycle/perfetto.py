@@ -93,7 +93,7 @@ def trace_events(data, block_id=None):
     for b in blocks:
         for e in b['markers']:
             events.append({'name': e['stage'], 'ph': 'i', 's': 't', 'ts': round(e['ts'] * 1_000_000) / 1000,
-                           'pid': nodes[e['node']], 'tid': 0, 'args': {'block': b['id'], **({'proposal_attempt': b['attempt']} if b.get('attempt') is not None else {})}})
+                           'pid': nodes[e['node']], 'tid': 0, 'args': {'block': b['id'], **{k:e[k] for k in ('body_source','body_source_name') if k in e}, **({'proposal_attempt': b['attempt']} if b.get('attempt') is not None else {})}})
     events.sort(key=lambda e: (e['ts'], e['pid'], e['tid']))
     return metadata + events
 

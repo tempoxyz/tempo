@@ -26,6 +26,33 @@ def fixture(path, lost=0, close=True):
 
 
 class ReportTests(unittest.TestCase):
+    def test_body_source_is_closed_numeric_block_associated_and_pre_cutoff(self):
+        from perfetto import trace_events
+        values = [1, 2, 3, 4, None, 0, 5, True, 'PRIVATE']
+        labels = ['execution layer', 'marshal', 'direct broadcast', 'marshal after unusable broadcast']
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory)/'a.jsonl'; fixture(path)
+            records = [json.loads(line) for line in path.read_text().splitlines()]
+            records[-1:-1] = [dict(type='event', id=i, ts=i*1_000_000_000+200,
+                                  fields=dict(stage='body_ready', body_source=value))
+                              for i, value in enumerate(values, 1)]
+            path.write_text('\n'.join(map(json.dumps, records)))
+            result = build([path], warmup=0)
+            for i, block in enumerate(result['blocks'][:len(values)]):
+                marker = next(m for m in block['markers'] if m['stage']=='body_ready')
+                if i < 4:
+                    self.assertEqual(marker['body_source'], values[i])
+                    self.assertEqual(marker['body_source_name'], labels[i])
+                else:
+                    self.assertNotIn('body_source', marker)
+                    self.assertNotIn('body_source_name', marker)
+            events = [e for e in trace_events(result) if e.get('name')=='body_ready']
+            self.assertEqual([e['args'].get('body_source') for e in events], [1,2,3,4,None,None,None,None,None])
+            self.assertNotIn('PRIVATE', json.dumps(events))
+            cutoff = 1_000_000_200
+            pruned = build([path], warmup=0, window={'backpressure': {'ts':cutoff,'node':'Validator A'}})
+            self.assertTrue(all(not any(m['stage']=='body_ready' for m in b['markers']) for b in pruned['blocks']))
+
     def test_worker_slice_cpu_uses_exact_node_span_kind_and_retained_completion(self):
         from perfetto import trace_events
         with tempfile.TemporaryDirectory() as directory:
