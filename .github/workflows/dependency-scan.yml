@@ -10,4 +10,4 @@ jobs:
     permissions:
       contents: read
       id-token: write
-    uses: tempoxyz/gh-actions/.github/workflows/dependency-scan.yml@b61457a6d6d06485b118a3c0e9637c94186c8c5a
+    uses: tempoxyz/gh-actions/.github/workflows/dependency-scan.yml@27b9d9cb079918e6be16c8660f82bb0cf7fef6ea
