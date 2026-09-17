@@ -310,13 +310,16 @@ When worker capture is enabled, each completed worker-total event also carries
 `root_probes_measured` and six numeric counts: `storage_partial_roots` /
 `storage_partial_cached`, `account_sync_roots` / `account_sync_cached`, and
 `account_missing_roots` / `account_missing_cached`. They count root-only
-computation attempts and cache-presence snapshots immediately before those
-attempts. They cover separate roots for partial storage proofs, delayed account
+fallback decisions and cache-presence snapshots at those decisions. They cover separate roots for partial storage proofs, delayed account
 Sync encoders, and dispatched account results missing a root, respectively.
 
-This diagnostic still performs the original calculations. Cache presence is a
+The instrumentation baseline performs the original calculations. This runtime
+experiment rechecks the existing task-local root cache in delayed account Sync
+and missing-root fallbacks, after consuming any dispatched proof. A hit skips
+only that root-only calculation; misses preserve the original calculation and
+errors. Partial storage-root calculations remain unchanged. Cache presence is a
 racy observation, not saved work, time, CPU, or a causal I/O diagnosis. Counts
-accumulate per worker, include attempts that subsequently error, and emit only
+accumulate per worker, include decisions whose fallback subsequently errors, and emit only
 with its existing completion event. No addresses, slots, per-job events or new
 syscalls are recorded. Disabled worker capture allocates no observer and performs
 no extra cache lookup. Enabled capture uses one local observer per worker and one
