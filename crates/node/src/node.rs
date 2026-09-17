@@ -556,6 +556,18 @@ impl Default for TempoConsensusBuilder {
     }
 }
 
+impl TempoConsensusBuilder {
+    /// Builds the consensus rules for `chain_spec`. The consensus layer uses
+    /// this to validate proposal headers with the same rules the node's
+    /// execution layer applies.
+    pub fn build<C>(&self, chain_spec: Arc<C>) -> TempoConsensus<C>
+    where
+        C: TempoConsensusSpec,
+    {
+        TempoConsensus::new_with_bal_hashes(chain_spec, self.allow_bal_hashes)
+    }
+}
+
 impl<Node> ConsensusBuilder<Node> for TempoConsensusBuilder
 where
     Node: FullNodeTypes<
@@ -565,10 +577,7 @@ where
     type Consensus = TempoConsensus<<Node::Types as NodeTypes>::ChainSpec>;
 
     async fn build_consensus(self, ctx: &BuilderContext<Node>) -> eyre::Result<Self::Consensus> {
-        Ok(TempoConsensus::new_with_bal_hashes(
-            ctx.chain_spec(),
-            self.allow_bal_hashes,
-        ))
+        Ok(self.build(ctx.chain_spec()))
     }
 }
 

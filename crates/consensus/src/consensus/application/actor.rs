@@ -41,12 +41,15 @@ use tempo_dkg_onchain_artifacts::OnchainDkgOutcome;
 use tempo_node::TempoFullNode;
 use tempo_telemetry_util::display_duration;
 
+use reth_consensus::HeaderValidator;
 use reth_provider::{BlockReader as _, BlockSource};
+use tempo_evm::consensus::TempoConsensus;
+use tempo_node::node::TempoConsensusBuilder;
 use tempo_payload_types::{
     TempoPayloadAttributes, ValidationLatencyEstimator, ValidationLatencyWorkload,
     marshal_persist_estimate, observe_marshal_persist,
 };
-use tempo_primitives::TempoConsensusContext;
+use tempo_primitives::{TempoConsensusContext, TempoHeader};
 use tracing::{Level, debug, info, instrument, warn};
 
 use super::{
@@ -121,6 +124,8 @@ where
                 my_mailbox,
                 marshal: config.marshal,
 
+                header_validator: TempoConsensusBuilder::default()
+                    .build(config.execution_node.config.chain.clone()),
                 execution_node: config.execution_node,
                 executor: config.executor,
 
@@ -224,6 +229,9 @@ struct Inner<TState> {
     marshal: crate::alias::marshal::Mailbox,
 
     execution_node: Arc<TempoFullNode>,
+    /// The execution layer's standalone header rules, applied to proposals
+    /// before they are handed to it. Built the way the node builds its own.
+    header_validator: TempoConsensus,
     executor: crate::executor::Mailbox,
     validation_latency_estimator: Arc<Mutex<ValidationLatencyEstimator>>,
 
@@ -695,6 +703,7 @@ impl Inner<Init> {
             &self.state.dkg_manager,
             &self.epoch_strategy,
             &proposer,
+            &self.header_validator,
         )
         .await
         {
@@ -769,6 +778,7 @@ impl Inner<Uninit> {
             my_mailbox: self.my_mailbox,
             marshal: self.marshal,
             execution_node: self.execution_node,
+            header_validator: self.header_validator,
             executor: self.executor.clone(),
             state: Init {
                 dkg_manager,
@@ -841,6 +851,7 @@ async fn verify_header(
     dkg_manager: &crate::dkg::manager::Mailbox,
     epoch_strategy: &FixedEpocher,
     proposer: &PublicKey,
+    header_validator: &impl HeaderValidator<TempoHeader>,
 ) -> eyre::Result<()> {
     let epoch_info = epoch_strategy
         .containing(block.height())
@@ -863,6 +874,13 @@ async fn verify_header(
         "mismatch in consensus context for block `{}`. expected `{expected_ctx:?}`. got `{ctx:?}`",
         block.digest()
     );
+
+    // The standalone header rules the execution layer applies when it
+    // executes the block, applied before the block is handed over so that
+    // the rejection is decided at vote time.
+    header_validator
+        .validate_header(block.block().sealed_header())
+        .wrap_err("header failed consensus validation")?;
 
     if epoch_info.last() == block.height() {
         info!(
