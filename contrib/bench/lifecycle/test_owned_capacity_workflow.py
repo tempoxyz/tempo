@@ -8,12 +8,13 @@ import unittest
 import yaml
 
 ROOT=Path(__file__).resolve().parents[3]
-WORKFLOW=ROOT/'.github/workflows/bench-owned-capacity.yml'
+WORKFLOW=ROOT/'.github/workflows/bench-e2e.yml'
 HELPER=Path(__file__).with_name('owned_capacity_inventory.py')
 
 class WorkflowTests(unittest.TestCase):
     def test_closed_workflow_contract(self):
-        d=yaml.safe_load(WORKFLOW.read_text());job=d['jobs']['inventory']
+        self.assertEqual(WORKFLOW.read_bytes(), (ROOT/'.github/workflows/bench-owned-capacity.yml').read_bytes())
+        d=yaml.safe_load(WORKFLOW.read_text());self.assertEqual(set(d['jobs']), {'inventory'});job=d['jobs']['inventory']
         self.assertEqual(d['permissions'],{'contents':'read'})
         self.assertEqual(job['strategy'],{'fail-fast':False,'max-parallel':5,'matrix':{'slot':[1,2,3,4,5]}})
         self.assertEqual(job['timeout-minutes'],5)
