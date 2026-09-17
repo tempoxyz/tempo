@@ -173,6 +173,17 @@ need narrow cold-initialization and compute-versus-existing-waiter spans.
 
 [PR7715](https://github.com/tempoxyz/tempo/pull/7715) retains exact verification-request context through the executor and Reth queue/service boundary, including response cancellation and cross-dispatch tracing cleanup. Focused Tempo and Reth tests pass; this is attribution instrumentation, not a measured speedup, and is not part of the pinned runtime in capture 35252651860.
 
+The portable archive control/overlap builds (35255262493 / 35255264728) and
+journal preparation build (35256348538) all passed bundle/source validation and
+final cleanup. Each removed both owned build directories; no owned processes
+remained. Workload tools and CPU-check binaries match byte-for-byte across these
+arms and the prior portable control. The archive consumer branch
+`joshie/bench-prebuilt-archive-only` is prepared for the two counterbalanced
+orders with unchanged measurement code. These are build and cleanup results,
+not optimization wins; node execution remains blocked on the missing 100 GiB
+snapshots established by inventory 35256428759. No snapshot generation fallback
+or change to the pre-backpressure cutoff was introduced.
+
 ## Evidence rules
 
 - Preserve failed captures, rejected audits, source refs and negative results.
