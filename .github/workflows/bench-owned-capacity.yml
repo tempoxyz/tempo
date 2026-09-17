@@ -1,0 +1,65 @@
+name: Inspect owned benchmark capacity
+
+permissions:
+  contents: read
+
+on:
+  workflow_dispatch:
+
+jobs:
+  inventory:
+    name: capacity inventory (slot ${{ matrix.slot }})
+    runs-on: [self-hosted, Linux, X64, bare-metal-dual-schelk]
+    timeout-minutes: 5
+    strategy:
+      fail-fast: false
+      max-parallel: 5
+      matrix:
+        slot: [1, 2, 3, 4, 5]
+    env:
+      CAPACITY_SLOT: ${{ matrix.slot }}
+      INVENTORY_SOURCE_SHA256: 05004acf6568833af1bfdc1992507ca84dbc7e1218653f3e7b806446d885fab7
+    steps:
+      # Deliberately no checkout: preserve the previous benchmark workspace.
+      - name: Read bounded numeric directory inventory
+        id: inventory
+        uses: actions/github-script@60a0d83039c74a4aee543508d2ffcb1c3799cdea
+        with:
+          script: |
+            const fs = require('fs');
+            const path = require('path');
+            const crypto = require('crypto');
+            const {spawnSync} = require('child_process');
+            try {
+              const response = await github.rest.repos.getContent({
+                owner: context.repo.owner, repo: context.repo.repo,
+                path: 'contrib/bench/lifecycle/owned_capacity_inventory.py', ref: context.sha,
+              });
+              const item = response.data;
+              if (item.type !== 'file' || item.encoding !== 'base64' || item.size > 32768) throw new Error();
+              const source = Buffer.from(item.content, 'base64');
+              if (source.length !== item.size || crypto.createHash('sha256').update(source).digest('hex') !== process.env.INVENTORY_SOURCE_SHA256) throw new Error();
+              const directory = fs.mkdtempSync(path.join(process.env.RUNNER_TEMP, 'tempo-owned-inventory-'));
+              const helper = path.join(directory, 'inventory.py');
+              const output = path.join(directory, 'inventory.json');
+              fs.writeFileSync(helper, source, {flag: 'wx', mode: 0o600});
+              const result = spawnSync('/usr/bin/python3', [helper], {
+                encoding: 'utf8', timeout: 90000, maxBuffer: 1048576,
+                env: {...process.env, PYTHONDONTWRITEBYTECODE: '1'},
+              });
+              if (result.error || result.status !== 0) throw new Error();
+              const data = JSON.parse(result.stdout);
+              if (data.schema !== 1 || data.workflow_sha !== context.sha || data.source_sha256 !== process.env.INVENTORY_SOURCE_SHA256 || data.run_id !== context.runId || data.run_attempt !== Number(process.env.GITHUB_RUN_ATTEMPT) || data.slot !== Number(process.env.CAPACITY_SLOT)) throw new Error();
+              fs.writeFileSync(output, result.stdout, {flag: 'wx', mode: 0o600});
+              core.setOutput('path', output);
+              core.info('Read-only numeric inventory prepared; no existing data changed');
+            } catch (_) {
+              core.setFailed('Owned capacity inventory unavailable; no benchmark or cleanup performed');
+            }
+      - name: Upload numeric directory inventory
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
+        with:
+          name: owned-capacity-${{ github.run_id }}-${{ github.run_attempt }}-${{ matrix.slot }}
+          path: ${{ steps.inventory.outputs.path }}
+          if-no-files-found: error
+          retention-days: 7
