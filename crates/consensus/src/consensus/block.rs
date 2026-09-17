@@ -95,6 +95,8 @@ pub(crate) struct Block {
     execution_block: SealedOrRecoveredBlock<tempo_primitives::Block>,
     /// Cached execution-layer RLP bytes when already encoded by the caller or a payload clone.
     execution_block_encoded: EncodedBlock,
+    /// True only after this immutable representation passes wire decoding.
+    wire_decoded: bool,
     /// Optional block access list. Only provided if the network supports BALs.
     #[cfg(feature = "bal")]
     block_access_list: Option<Bytes>,
@@ -203,6 +205,7 @@ impl Block {
         Self {
             execution_block: execution_block.into(),
             execution_block_encoded,
+            wire_decoded: false,
             #[cfg(feature = "bal")]
             block_access_list,
         }
@@ -355,12 +358,16 @@ impl Read for Block {
 
         tracing::info!(target: "lifecycle", stage = "decode_done", block_hash = %inner.hash());
         let execution_block_encoded = EncodedBlock::new(bytes.into());
-        Self::try_from_execution_block_with_encoded_cache(
+        let mut block = Self::try_from_execution_block_with_encoded_cache(
             inner,
             block_access_list,
             execution_block_encoded,
         )
-        .map_err(|err| err.codec_error())
+        .map_err(|err| err.codec_error())?;
+        // All constructors start ineligible; only this successful decoder owns
+        // both the validated representation and its matching encoded byte cache.
+        block.wire_decoded = true;
+        Ok(block)
     }
 }
 
@@ -410,6 +417,12 @@ impl Heightable for Block {
 }
 
 impl commonware_consensus::Block for Block {
+    fn can_reuse_cached_encoding(&self, _cfg: &()) -> bool {
+        // The codec configuration is unit, and fields have no mutating API.
+        // Clones preserve the exact representation and its decoder provenance.
+        self.wire_decoded
+    }
+
     fn parent(&self) -> Digest {
         self.parent_digest()
     }
@@ -563,6 +576,26 @@ mod tests {
         let encoded = decoded.encode();
 
         assert_eq!(encoded.as_ref(), block_bytes.as_slice());
+        use commonware_consensus::Block as _;
+        assert!(!expected.can_reuse_cached_encoding(&()));
+        assert!(decoded.can_reuse_cached_encoding(&()));
+        assert!(decoded.clone().can_reuse_cached_encoding(&()));
+        let reconstructed =
+            Block::from_execution_block_unchecked(decoded.clone().into_execution_block(), None);
+        assert!(!reconstructed.can_reuse_cached_encoding(&()));
+        let external_cache = Block::try_from_execution_block_with_encoded_cache(
+            execution_block.clone(),
+            None,
+            tempo_payload_types::EncodedBlock::new(bytes!("0xff")),
+        )
+        .unwrap();
+        assert!(!external_cache.can_reuse_cached_encoding(&()));
+        let unchecked_cache = Block::from_execution_block_unchecked_with_encoded_cache(
+            execution_block,
+            None,
+            tempo_payload_types::EncodedBlock::new(bytes!("0xff")),
+        );
+        assert!(!unchecked_cache.can_reuse_cached_encoding(&()));
     }
 
     #[test]
@@ -703,6 +736,10 @@ mod tests {
         let decoded = Block::read_cfg(&mut encoded.as_ref(), &()).unwrap();
 
         assert_eq!(decoded, block);
+        use commonware_consensus::Block as _;
+        assert!(!block.can_reuse_cached_encoding(&()));
+        assert!(decoded.can_reuse_cached_encoding(&()));
+        assert!(decoded.clone().can_reuse_cached_encoding(&()));
         assert_eq!(
             decoded.block_access_list().map(|bytes| bytes.as_ref()),
             Some(block_access_list.as_ref())
