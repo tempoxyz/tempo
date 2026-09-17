@@ -43,6 +43,103 @@ fn digest(byte: u8) -> Digest {
 }
 
 #[test_traced]
+fn flatmpt_checkpoints_valid_replay_below_a_syncing_target_without_regressing_finality() {
+    deterministic::Runner::default().start(|context| async move {
+        let provider = StubExecutionProvider::default();
+        provider.set_finalized(10, B256::with_last_byte(10), round(10));
+        provider.set_syncing_forkchoices(true);
+        let (mut actor, mut mailbox) = init(
+            context.child("follower_executor"),
+            Config {
+                execution_provider: provider.clone(),
+                execution_engine: provider.clone(),
+                marshal: StubMarshal::default(),
+                epoch_strategy: FixedEpocher::new(EPOCH_LENGTH),
+                floor: Height::zero(),
+                fcu_heartbeat_interval: Duration::from_secs(60),
+            },
+        );
+        actor.enable_replay_checkpoints();
+        actor.start();
+        assert!(
+            mailbox
+                .report(Update::Tip(round(100), Height::new(100), digest(100)))
+                .accepted()
+        );
+        wait_until(&context, || provider.forkchoices().len() == 1).await;
+        provider.set_syncing_forkchoices(false);
+
+        let block = make_block_at_round(11, B256::with_last_byte(10), round(11));
+        let hash = block.block_hash();
+        let (ack, waiter) = Exact::handle();
+        assert!(mailbox.report(Update::Block(block.into(), ack)).accepted());
+        waiter
+            .await
+            .expect("validated replay should be acknowledged");
+        assert_eq!(provider.forkchoices().len(), 2);
+        assert_eq!(provider.forkchoices()[1].head_block_hash, hash);
+        assert_eq!(provider.forkchoices()[1].finalized_block_hash, hash);
+
+        provider.set_finalized(11, hash, round(11));
+        let (ack, waiter) = Exact::handle();
+        assert!(
+            mailbox
+                .report(Update::Block(
+                    make_block_at_round(9, B256::ZERO, round(9)).into(),
+                    ack
+                ))
+                .accepted()
+        );
+        waiter
+            .await
+            .expect("old block should be acknowledged without changing finality");
+        assert_eq!(provider.forkchoices().len(), 2);
+    });
+}
+
+#[test_traced]
+fn flatmpt_does_not_checkpoint_unexecuted_syncing_payloads() {
+    deterministic::Runner::default().start(|context| async move {
+        let provider = StubExecutionProvider::default();
+        provider.set_finalized(10, B256::with_last_byte(10), round(10));
+        provider.set_syncing_forkchoices(true);
+        let (mut actor, mut mailbox) = init(
+            context.child("follower_executor"),
+            Config {
+                execution_provider: provider.clone(),
+                execution_engine: provider.clone(),
+                marshal: StubMarshal::default(),
+                epoch_strategy: FixedEpocher::new(EPOCH_LENGTH),
+                floor: Height::zero(),
+                fcu_heartbeat_interval: Duration::from_secs(60),
+            },
+        );
+        actor.enable_replay_checkpoints();
+        actor.start();
+        assert!(
+            mailbox
+                .report(Update::Tip(round(100), Height::new(100), digest(100)))
+                .accepted()
+        );
+        wait_until(&context, || provider.forkchoices().len() == 1).await;
+        provider.set_syncing_payloads(true);
+        let (ack, waiter) = Exact::handle();
+        assert!(
+            mailbox
+                .report(Update::Block(
+                    make_block_at_round(11, B256::with_last_byte(10), round(11)).into(),
+                    ack
+                ))
+                .accepted()
+        );
+        waiter
+            .await
+            .expect("syncing payload should retain ordinary acknowledgement behavior");
+        assert_eq!(provider.forkchoices().len(), 1);
+    });
+}
+
+#[test_traced]
 fn block_is_executed_canonicalized_acknowledged_and_advances_floor_to_deep_candidate() {
     deterministic::Runner::default().start(|context| async move {
         let finalized_height = EPOCH_LENGTH.get() * 2;

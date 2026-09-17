@@ -68,6 +68,7 @@ pub const BLOCK_GAS_LIMIT_500M: u64 = 500_000_000;
 fn load_flat_checkpoint<Tx: DbTx>(
     tx: &Tx,
     flat: &mut tempo_flatmpt::FlatMpt,
+    checkpoint_root: B256,
 ) -> anyhow::Result<(u64, u64)> {
     // State-bloat checkpoints have only a handful of TIP20 accounts, but each
     // can own hundreds of millions of slots. Never accumulate one account's
@@ -77,24 +78,49 @@ fn load_flat_checkpoint<Tx: DbTx>(
     // idempotently re-set and the supplied slots are added), so stream bounded
     // chunks instead.
     const BATCH_SLOTS: usize = 1 << 16;
+    const BATCH_ACCOUNTS: usize = 4096;
+    let path = std::env::var("TEMPO_FLATMPT")?;
+    let progress = tempo_flatmpt::checkpoint_progress::read(&path)?;
+    let resume_after = progress.as_ref().map(|p| p.last_account);
+    let mut account_count = progress.as_ref().map_or(0, |p| p.accounts);
+    let mut slot_count = progress.as_ref().map_or(0, |p| p.slots);
+    let segment_accounts = std::env::var("TEMPO_FLATMPT_IMPORT_ACCOUNTS")
+        .ok()
+        .map(|value| value.parse::<u64>())
+        .transpose()?
+        .unwrap_or(0);
+    let segment_end = account_count.saturating_add(segment_accounts);
     let mut accounts_cursor = tx.cursor_read::<tables::HashedAccounts>()?;
     let mut storage_cursor = tx.cursor_read::<tables::HashedStorages>()?;
-    let mut accounts = accounts_cursor.walk(None)?;
-    let mut storages = storage_cursor.walk(None)?;
+    let mut accounts = accounts_cursor.walk(resume_after)?;
+    let mut next_account = accounts.next().transpose()?;
+    if let Some(last_account) = resume_after {
+        anyhow::ensure!(
+            next_account.as_ref().map(|(key, _)| *key) == Some(last_account),
+            "saved import cursor is absent from canonical checkpoint"
+        );
+        next_account = accounts.next().transpose()?;
+    }
+    let Some((first_key, _)) = next_account.as_ref() else {
+        return Ok((account_count, slot_count));
+    };
+    let storage_start = resume_after.map(|_| *first_key);
+    let mut storages = storage_cursor.walk(storage_start)?;
     let mut next_storage = storages.next().transpose()?;
-    let mut account_count = 0u64;
-    let mut slot_count = 0u64;
-    let mut next_progress = 25_000_000u64;
+    let mut next_progress = (slot_count / 25_000_000 + 1) * 25_000_000;
     let started_at = Instant::now();
+    let mut batch = Vec::with_capacity(BATCH_ACCOUNTS);
+    let mut batch_slots = 0usize;
 
-    while let Some((account_key, account)) = accounts.next().transpose()? {
-        let mut slots = Vec::with_capacity(BATCH_SLOTS);
+    while let Some((account_key, account)) = next_account.take() {
+        let mut slots = Vec::new();
         let mut seeded = false;
         let mut flush = |slots: &mut Vec<([u8; 32], Vec<u8>)>| -> anyhow::Result<()> {
             if slots.is_empty() && seeded {
                 return Ok(());
             }
-            flat.insert_batch_accounts(vec![(
+            batch_slots += slots.len();
+            batch.push((
                 account_key.0,
                 tempo_flatmpt::AccountSeed {
                     nonce: account.nonce,
@@ -102,9 +128,14 @@ fn load_flat_checkpoint<Tx: DbTx>(
                     code_hash: account.get_bytecode_hash().0,
                     slots: std::mem::take(slots),
                 },
-            )])
-            .map_err(|e| anyhow::anyhow!("flat checkpoint batch: {e:#}"))?;
-            *slots = Vec::with_capacity(BATCH_SLOTS);
+            ));
+            // Each bulk call spawns workers and computes a root. Amortize that
+            // work across accounts while retaining a bounded storage batch.
+            if batch.len() >= BATCH_ACCOUNTS || batch_slots >= BATCH_SLOTS {
+                flat.insert_batch_accounts(std::mem::take(&mut batch))
+                    .map_err(|e| anyhow::anyhow!("flat checkpoint batch: {e:#}"))?;
+                batch_slots = 0;
+            }
             seeded = true;
             Ok(())
         };
@@ -137,11 +168,37 @@ fn load_flat_checkpoint<Tx: DbTx>(
         }
         flush(&mut slots)?;
         account_count += 1;
+        if account_count % 1_000_000 == 0 {
+            info!(target: "flatmpt", slots = slot_count, accounts = account_count,
+                elapsed_s = started_at.elapsed().as_secs(), "flat MPT checkpoint account progress");
+        }
+        if segment_accounts > 0 && account_count >= segment_end {
+            if !batch.is_empty() {
+                flat.insert_batch_accounts(std::mem::take(&mut batch))
+                    .map_err(|e| anyhow::anyhow!("flat checkpoint segment batch: {e:#}"))?;
+            }
+            let progress = tempo_flatmpt::checkpoint_progress::CheckpointProgress {
+                checkpoint_root,
+                flat_root: B256::from(flat.root()),
+                last_account: account_key,
+                accounts: account_count,
+                slots: slot_count,
+            };
+            tempo_flatmpt::checkpoint_progress::save(&path, flat, &progress)?;
+            info!(target: "flatmpt", accounts = account_count, slots = slot_count,
+                "flat MPT import segment persisted; restart to continue (exit 75)");
+            std::process::exit(75);
+        }
+        next_account = accounts.next().transpose()?;
     }
     anyhow::ensure!(
         next_storage.is_none(),
         "hashed storage exists without an account"
     );
+    if !batch.is_empty() {
+        flat.insert_batch_accounts(batch)
+            .map_err(|e| anyhow::anyhow!("flat checkpoint final batch: {e:#}"))?;
+    }
     Ok((account_count, slot_count))
 }
 
@@ -590,7 +647,7 @@ where
                     checkpoint_number,
                     checkpoint_root,
                     tip.state_root(),
-                    move |flat| load_flat_checkpoint(db_provider.tx_ref(), flat),
+                    move |flat| load_flat_checkpoint(db_provider.tx_ref(), flat, checkpoint_root),
                 );
             } else {
                 let chain_spec = chain_spec.clone();
