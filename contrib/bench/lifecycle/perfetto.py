@@ -17,13 +17,15 @@ def trace_events(data, block_id=None):
     blocks = data['blocks']
     spans = data['spans']
     transfers = data.get('transfers', [])
+    network_events = data.get('network_events', [])
     if block_id is not None:
         blocks = [b for b in blocks if b['id'] == block_id]
         if not blocks:
             raise ValueError(f'Block {block_id} is not in this capture')
         spans = [s for s in spans if s['block'] == block_id]
         block = blocks[0]
-        transfers = [t for t in transfers if t['start'] < block['end'] and t['end'] > block['start']]
+        transfers = [t for t in transfers if block_id in t.get('blocks', []) or (t['start'] < block['end'] and t['end'] > block['start'])]
+        network_events = [e for e in network_events if block_id in e.get('blocks', [])]
 
     nodes = {q['node']: i + 1 for i, q in enumerate(data['quality'])}
     intervals = []
@@ -37,6 +39,8 @@ def trace_events(data, block_id=None):
                 'and result forwarding. worker_run_ns includes receive waits and teardown. '
                 'Worker CPU sums overlap across threads; they are not block elapsed time. '
                 'Missing or duplicate completions do not imply zero CPU.')
+        if s.get('context_reason'):
+            args['context_reason'] = s['context_reason']
         if data.get('focus_block') is not None:
             args['association'] = 'selected block' if s['block'] == data['focus_block'] else 'causal ancestor; no selected-block attribution'
         if s.get('attempt') is not None:
@@ -57,11 +61,11 @@ def trace_events(data, block_id=None):
                           round(s['start'] * 1_000_000), round(s['end'] * 1_000_000),
                           s['name'] + (' [aggregate envelope]' if aggregate else ' [cutoff]' if s.get('right_censored') else ''), args))
     for t in transfers:
-        # This is a matched frame transfer, not a proven application/block dependency.
+        # Source/decode association does not isolate network transit from scheduling.
         intervals.append((nodes[t['from']], 'network', 'frame context',
                           round(t['start'] * 1_000_000), round(t['end'] * 1_000_000),
-                          'encrypted frame transfer [context]',
-                          {'to': t['to'], 'bytes': t['bytes'], 'semantics': 'encryption complete to ciphertext receipt; no block attribution'}))
+                          'encrypted frame transfer [' + ('associated' if t.get('blocks') else 'context') + ']',
+                          {**{k:v for k,v in t.items() if k not in ('start', 'end')}, 'semantics': 'encryption complete to ciphertext receipt, not pure wire time; ' + ('block sets describe causal source/decode scopes' if t.get('blocks') else 'no block attribution')}))
 
     metadata = []
     events = []
@@ -93,6 +97,12 @@ def trace_events(data, block_id=None):
         for e in b['markers']:
             events.append({'name': e['stage'], 'ph': 'i', 's': 't', 'ts': round(e['ts'] * 1_000_000) / 1000,
                            'pid': nodes[e['node']], 'tid': 0, 'args': {'block': b['id'], **({'proposal_attempt': b['attempt']} if b.get('attempt') is not None else {})}})
+    for node, pid in nodes.items():
+        selected = [e for e in network_events if e['node'] == node]
+        if selected:
+            tid = next_tid[pid]
+            metadata.append({'name':'thread_name', 'ph':'M', 'pid':pid, 'tid':tid, 'args':{'name':'Network lineage milestones'}})
+            events.extend({'name':e['stage'], 'cat':'network', 'ph':'i', 's':'t', 'pid':pid, 'tid':tid, 'ts':round(e['ts'] * 1_000_000)/1000, 'args':{k:v for k,v in e.items() if k not in ('ts','node','stage')}} for e in selected)
     events.sort(key=lambda e: (e['ts'], e['pid'], e['tid']))
     return metadata + events
 

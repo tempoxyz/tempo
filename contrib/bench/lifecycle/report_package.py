@@ -32,7 +32,7 @@ def write_package(data, out, chunk_intervals=CHUNK_INTERVALS, full=False):
     for old in out.iterdir():
         if re.fullmatch(r'(?:context-\d+\.(?:html|json)|(?:block|attempt)-\d+\.html|perfetto(?:-(?:block|attempt)-\d+|-p(?:50|90|99))?\.json)', old.name):
             old.unlink()
-    base = {k: v for k, v in data.items() if k not in ('spans', 'transfers', 'blocks', 'prewarm')}
+    base = {k: v for k, v in data.items() if k not in ('spans', 'transfers', 'blocks', 'prewarm', 'network_events', 'network_messages')}
     # Every standalone page needs the histogram, not every block's worker rows.
     # Full block details remain in lifecycle.json and each focused block page.
     base['population_blocks'] = [
@@ -41,7 +41,10 @@ def write_package(data, out, chunk_intervals=CHUNK_INTERVALS, full=False):
     base['packaged'] = True
     base['capture_attempt_details'] = data.get('attempt_details', [])
     base['percentile_blocks'] = {} if data['bad_capture'] else data['representatives']
-    block_spans, attempt_spans = defaultdict(list), defaultdict(list)
+    block_spans, attempt_spans, block_network_events = defaultdict(list), defaultdict(list), defaultdict(list)
+    for event in data.get('network_events', []):
+        for block in event.get('blocks', []):
+            block_network_events[block].append(event)
     lookup = {}
     records = []
     for s in data['spans']:
@@ -52,6 +55,7 @@ def write_package(data, out, chunk_intervals=CHUNK_INTERVALS, full=False):
             lookup[(s['node'], s['id'])] = s
         records.append((s['start'], 'span', s))
     records.extend((t['start'], 'transfer', t) for t in data.get('transfers', []))
+    records.extend((e['ts'], 'network_event', e) for e in data.get('network_events', []))
     for b in data['blocks']:
         records.extend((m['ts'], 'marker', (b['id'], m)) for m in b['markers'])
     unbound = [a for a in data.get('attempt_details', []) if not a.get('block')]
@@ -61,16 +65,17 @@ def write_package(data, out, chunk_intervals=CHUNK_INTERVALS, full=False):
     chunks = []
     for offset in range(0, len(records), chunk_intervals):
         part = records[offset:offset + chunk_intervals]
-        spans, transfers, markers, attempt_markers = [], [], defaultdict(list), defaultdict(list)
+        spans, transfers, network_events, markers, attempt_markers = [], [], [], defaultdict(list), defaultdict(list)
         for _, kind, record in part:
             if kind == 'span': spans.append(record)
             elif kind == 'transfer': transfers.append(record)
+            elif kind == 'network_event': network_events.append(record)
             elif kind == 'marker': markers[record[0]].append(record[1])
             else: attempt_markers[record[0]].append(record[1])
         start = part[0][0]
         end = max([part[-1][0], *(s['end'] for s in spans), *(t['end'] for t in transfers)])
         stem = f'context-{len(chunks) + 1:04d}'
-        chunk = dict(base, spans=spans, transfers=transfers,
+        chunk = dict(base, spans=spans, transfers=transfers, network_events=network_events,
                      blocks=[dict(b, markers=markers[b['id']]) for b in data['blocks'] if b['id'] in markers] +
                             [dict(a, id=None, attempt=a['id'], markers=attempt_markers[a['id']]) for a in unbound if a['id'] in attempt_markers])
         export = write_trace(chunk, out / f'{stem}.json')
@@ -80,13 +85,19 @@ def write_package(data, out, chunk_intervals=CHUNK_INTERVALS, full=False):
         page = dict(chunk, blocks=[selection], attempt_details=[], representatives={}, context_chunk=True)
         write_page(page, out / f'{stem}.html', [(f'{stem}.json', 'This context chunk in Perfetto')])
         chunks.append(dict(file=f'{stem}.json', page=f'{stem}.html', start=start, end=end,
-                           records=len(part), spans=len(spans), transfers=len(transfers),
+                           records=len(part), spans=len(spans), transfers=len(transfers), network_events=len(network_events),
                            markers=sum(map(len, markers.values())) + sum(map(len, attempt_markers.values())), **{k:v for k,v in export.items() if k != 'file'}))
 
     def focused(spans, selected, attempt=False):
         # Retain causal ancestors even when they have no block association.
         result = list(spans)
         included = {(s['node'], s['id']) for s in result if not s.get('count')}
+        network_events = [] if attempt else block_network_events[selected['id']]
+        for event in network_events:
+            key = (event['node'], event.get('span'))
+            if key in lookup and key not in included:
+                included.add(key)
+                result.append(dict(lookup[key], context_reason='linked network event scope; may include other messages'))
         for s in list(result):
             key = (s['node'], s['parent'])
             while key not in included and key in lookup:
@@ -95,8 +106,9 @@ def write_package(data, out, chunk_intervals=CHUNK_INTERVALS, full=False):
                 result.append(parent)
                 key = (parent['node'], parent['parent'])
         transfers = [t for t in data.get('transfers', [])
-                     if t['start'] < selected['end'] and t['end'] > selected['start']]
-        return dict(base, spans=result, transfers=transfers,
+                     if (not attempt and selected['id'] in t.get('blocks', [])) or
+                        (t['start'] < selected['end'] and t['end'] > selected['start'])]
+        return dict(base, spans=result, transfers=transfers, network_events=network_events,
                     blocks=[] if attempt else [selected],
                     attempt_details=[selected] if attempt else [],
                     focus_attempt=selected['id'] if attempt else None,
@@ -134,8 +146,9 @@ def write_package(data, out, chunk_intervals=CHUNK_INTERVALS, full=False):
         write_trace(dict(data, blocks=data['blocks'] + [dict(a, id=None, attempt=a['id']) for a in unbound]), out / 'perfetto.json')
     manifest = dict(schema=1, chunk_interval_limit=chunk_intervals, chunks=chunks, pages=pages,
                     percentiles=percentiles, full_trace='perfetto.json' if (out/'perfetto.json').exists() else None,
-                    counts=dict(spans=len(data['spans']), transfers=len(data.get('transfers', [])),
+                    counts=dict(spans=len(data['spans']), transfers=len(data.get('transfers', [])), network_events=len(data.get('network_events', [])),
                                 markers=sum(len(b['markers']) for b in data['blocks']) + sum(len(a['markers']) for a in unbound)))
+    (out/'network-lineage.json').write_text(json.dumps({k:data.get(k, []) for k in ('network_events', 'network_messages', 'transfers')}, separators=(',', ':')))
     (out/'manifest.json').write_text(json.dumps(manifest, separators=(',', ':')))
     write_index(data, manifest, out)
     return manifest
@@ -156,7 +169,7 @@ def write_index(data, manifest, out):
     chunks = ''.join(f'<tr><td>{link(c["page"], c["page"])}</td><td>{c["start"]:.3f}–{c["end"]:.3f}</td><td>{c["records"]}</td><td>{link(c["file"], "Perfetto")}</td></tr>' for c in manifest['chunks'])
     optional = link(manifest['full_trace'], 'Optional full Perfetto (large)') if manifest['full_trace'] else 'Full Perfetto is optional: run perfetto.py lifecycle.json --out . --full.'
     health = 'Capture incomplete; percentile selection disabled.' if data['bad_capture'] else f'{data["eligible"]} complete blocks in percentile population.'
-    html = f'''<!doctype html><html lang="en"><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>Block lifecycle capture</title><style>body{{font:16px system-ui;background:#0d1119;color:#dfe7f3;max-width:1200px;margin:32px auto;padding:16px}}a{{color:#6ce3cd}}p{{line-height:1.6}}table{{border-collapse:collapse;width:100%}}td,th{{padding:8px;text-align:left;border-bottom:1px solid #34465e}}</style><h1>Block lifecycle capture</h1><p>{escape(health)} {len(data['spans']):,} measured spans. All pages work offline after extracting the whole artifact.</p><p>{escape(data['definition'])}</p><p>{percentiles}</p>{prewarm_link}<h2>Individual blocks</h2><table><tr><th>Timeline</th><th>Duration (ms)</th><th>Population</th><th>Trace</th></tr>{''.join(rows)}</table><h2>Unassociated proposal attempts</h2><ul>{attempts}</ul><h2>Complete context capture</h2><p>These bounded chunks contain every span, matched frame transfer and block milestone exactly once, including unassociated work. Intervals retain their original timestamps and full duration; chunk time ranges may overlap. Temporal overlap does not establish block causality. Block pages link overlapping chunks.</p><table><tr><th>Timeline</th><th>Capture time (ms)</th><th>Records</th><th>Trace</th></tr>{chunks}</table><h2>Source data</h2><p>{link('lifecycle.json', 'Complete lifecycle data (large)')} · {link('manifest.json', 'Export manifest')} · {optional}</p><p>Raw captures and complete lifecycle data are preserved. Focused pages contain associated operations and causal ancestors; overlapping background work is available through context chunks.</p></html>'''
+    html = f'''<!doctype html><html lang="en"><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>Block lifecycle capture</title><style>body{{font:16px system-ui;background:#0d1119;color:#dfe7f3;max-width:1200px;margin:32px auto;padding:16px}}a{{color:#6ce3cd}}p{{line-height:1.6}}table{{border-collapse:collapse;width:100%}}td,th{{padding:8px;text-align:left;border-bottom:1px solid #34465e}}</style><h1>Block lifecycle capture</h1><p>{escape(health)} {len(data['spans']):,} measured spans. All pages work offline after extracting the whole artifact.</p><p>{escape(data['definition'])}</p><p>{percentiles}</p>{prewarm_link}<h2>Individual blocks</h2><table><tr><th>Timeline</th><th>Duration (ms)</th><th>Population</th><th>Trace</th></tr>{''.join(rows)}</table><h2>Unassociated proposal attempts</h2><ul>{attempts}</ul><h2>Complete context capture</h2><p>These bounded chunks contain every span, matched frame transfer, network lineage event and block milestone exactly once, including unassociated work. Intervals retain their original timestamps and full duration; chunk time ranges may overlap. Temporal overlap does not establish block causality. Block pages link overlapping chunks.</p><table><tr><th>Timeline</th><th>Capture time (ms)</th><th>Records</th><th>Trace</th></tr>{chunks}</table><h2>Source data</h2><p>{link('lifecycle.json', 'Complete lifecycle data (large)')} · {link('manifest.json', 'Export manifest')} · {link('network-lineage.json', 'Complete network lineage')} · {optional}</p><p>Raw captures and complete lifecycle data are preserved. Focused pages contain associated operations and causal ancestors; overlapping background work is available through context chunks.</p></html>'''
     (out/'index.html').write_text(html)
 
 
