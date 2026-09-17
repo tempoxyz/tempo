@@ -13,7 +13,8 @@ import time
 
 from diagnostic import ROOT, decode, preflight, verify_marker
 from failures import failure_code, failure_summary
-from binary_transport import HEADER, decode_binary
+from spool import FOOTER, footer, integrity, rows
+from stream_decode import publish_streamed
 sys.path.insert(0, str(ROOT.parent))
 from backpressure import first_boundary
 
@@ -48,7 +49,7 @@ def capture(command, pass_fds=(), *, binary=False):
                 overflow.set()
         source.close()
 
-    readers = [threading.Thread(target=drain, args=(process.stdout, buffers[0], MAX_BYTES + (HEADER.size if binary else 0))),
+    readers = [threading.Thread(target=drain, args=(process.stdout, buffers[0], FOOTER.size if binary else MAX_BYTES)),
                threading.Thread(target=drain, args=(process.stderr, buffers[1], 1024 * 1024))]
     for reader in readers:
         reader.start()
@@ -122,9 +123,10 @@ def main():
     parser.add_argument('--command-base64', required=True)
     args = parser.parse_args()
     resource.setrlimit(resource.RLIMIT_CORE, (0, 0))
-    output = args.directory / f'scheduler-{args.role}.json'
+    output = args.directory / f'scheduler-{args.role}.json.gz'
     failure = args.directory / f'scheduler-{args.role}.failed'
     stage = 'configuration'
+    evidence = {}
     try:
         if os.geteuid() != 0:
             raise ValueError('scheduler supervisor requires the benchmark root scope')
@@ -146,25 +148,55 @@ def main():
             raise ValueError('binary scheduler prerequisite unavailable')
         stage = 'marker'
         verify_marker(binary, 'reth_lifecycle_thread_register')
-        stage = 'capture'
-        stdout, stderr, status = capture([sys.executable, str(ROOT / 'binary_capture.py'),
-            '--binary', str(binary), '--epoch', str(epoch), '--command-base64', args.command_base64], binary=True)
-        if status:
-            raise ValueError('scheduler capture tool exited unsuccessfully')
-        if stderr.strip():
-            raise ValueError('scheduler capture tool reported diagnostics')
-        stage = 'cutoff'
-        cutoff, reason = final_cutoff(args.directory)
-        stage = 'decode'
-        result = decode_binary(stdout, epoch, cutoff)
-        result.update(scope='registered validator thread windows only', process=1 if args.role == 'a' else 2,
-                      cutoff_reason=reason, registration='registered_threads_v1')
-        stage = 'publish'
-        publish_capture(output, result)
+        # Every event/sort inode is anonymous and on the already guarded phase
+        # filesystem, never the host's default /tmp. TemporaryFile is CLOEXEC;
+        # the helper also clears inheritance before any compiler/node exec.
+        with tempfile.TemporaryDirectory(prefix='.scheduler-scratch-', dir=args.directory) as scratch:
+            with tempfile.TemporaryFile(dir=scratch) as source:
+                stage = 'capture'
+                stdout, stderr, status = capture([sys.executable, str(ROOT / 'binary_capture.py'),
+                    '--binary', str(binary), '--epoch', str(epoch), '--command-base64', args.command_base64,
+                    '--spool-fd', str(source.fileno()), '--scratch-dir', scratch],
+                    pass_fds=(source.fileno(),), binary=True)
+                stage = 'decode'
+                evidence = footer(stdout)
+                stage = 'cutoff'
+                cutoff, reason = final_cutoff(args.directory)
+                stage = 'decode'
+                try:
+                    integrity(evidence, source)
+                    if status:
+                        raise ValueError('scheduler capture tool exited unsuccessfully')
+                    if stderr.strip():
+                        raise ValueError('scheduler capture tool reported diagnostics')
+                except ValueError:
+                    # Counts describe only retained anonymous records, never a
+                    # valid capture. Even overflow/loss failures expose their
+                    # retained prefix split when its fixed-width bytes are intact.
+                    try:
+                        kept = pruned = 0
+                        for timestamp,_,_,_ in rows(source):
+                            if timestamp-epoch < cutoff:
+                                kept += 1
+                            else:
+                                pruned += 1
+                        evidence.update(kept=kept,pruned=pruned)
+                    except (OSError,ValueError):
+                        pass
+                    raise
+                kept, pruned = publish_streamed(output, source, scratch, epoch, cutoff, evidence['emitted'],
+                    dict(scope='registered validator thread windows only', process=1 if args.role == 'a' else 2,
+                         cutoff_reason=reason, registration='registered_threads_v1'),evidence)
+                evidence.update(kept=kept, pruned=pruned)
         return 0
     except (ValueError, OSError, KeyError, subprocess.SubprocessError) as error:
         # Neither exception strings nor commands can escape: either can contain
         # a native identity, environment value, path, or child-process output.
+        try:
+            if evidence:
+                publish_capture(args.directory / f'scheduler-{args.role}.evidence.json', evidence)
+        except OSError:
+            pass
         try:
             failure.write_text(failure_code(stage, error) + '\n')
         except OSError:

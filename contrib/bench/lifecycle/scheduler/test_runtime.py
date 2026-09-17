@@ -1,4 +1,5 @@
 import copy
+import gzip
 import importlib.util
 import json
 from pathlib import Path
@@ -160,18 +161,19 @@ class RuntimeTests(unittest.TestCase):
             directory=Path(name)/'private';out=Path(name)/'artifact'
             directory.mkdir();out.mkdir()
             for role,process in [('a',1),('b',2)]:
-                (directory/f'scheduler-{role}.json').write_text(json.dumps(example(process)))
+                (directory/f'scheduler-{role}.json.gz').write_bytes(gzip.compress(json.dumps(example(process)).encode(),mtime=0))
                 (out/f'{role}.jsonl').write_text('{"type":"header","scheduler":"registered_threads_v1"}\n')
             bad=example(2);bad['native_tid']=123
-            (directory/'scheduler-b.json').write_text(json.dumps(bad))
+            (directory/'scheduler-b.json.gz').write_bytes(gzip.compress(json.dumps(bad).encode(),mtime=0))
             with self.assertRaises(ValueError):
                 report.load(directory,out,{'backpressure':{'ts':50}})
-            self.assertFalse((out/'scheduler-a.json').exists())
-            (directory/'scheduler-b.json').write_text(json.dumps(example(2)))
+            self.assertFalse((out/'scheduler-a.json.gz').exists())
+            (directory/'scheduler-b.json.gz').write_bytes(gzip.compress(json.dumps(example(2)).encode(),mtime=0))
             captures,coverage=report.load(directory,out,{'backpressure':{'ts':50}})
             self.assertEqual(len(captures),2)
             self.assertEqual(coverage[0]['source_events_before_registration'],0)
-            self.assertTrue((out/'scheduler-a.json').exists())
+            self.assertTrue((out/'scheduler-a.json.gz').exists())
+            report.close(captures)
 
     def test_report_uses_same_actual_percentile_block_and_preserves_original_trace(self):
         with tempfile.TemporaryDirectory() as name:
@@ -185,7 +187,7 @@ class RuntimeTests(unittest.TestCase):
             report.publish(data,[example(1),example(2)],out,coverage)
             summary=json.loads((out/'scheduler-summary.json').read_text())
             self.assertEqual({p['block'] for p in summary['percentiles']},{7})
-            trace=json.loads((out/'perfetto-scheduler-block-7.json').read_text())
+            trace=json.loads(gzip.decompress((out/'perfetto-scheduler-block-7.json.gz').read_bytes()))
             self.assertEqual(trace['traceEvents'][0],original['traceEvents'][0])
             self.assertEqual(json.loads((out/'perfetto-block-7.json').read_text()),original)
             self.assertIn('scheduler.html',(out/'index.html').read_text())

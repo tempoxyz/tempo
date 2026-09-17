@@ -1,31 +1,44 @@
 /* Private fixed-width records only; never receives native process/thread IDs. */
+#include <errno.h>
 #include <stdint.h>
 #include <stdlib.h>
 #include <string.h>
+#include <sys/stat.h>
+#include <unistd.h>
 
-struct event {
-    uint64_t ts;
-    uint32_t ordinal;
-    uint16_t kind;
-    uint16_t state;
-};
+struct event { uint64_t ts; uint32_t ordinal; uint16_t kind, state; };
 _Static_assert(sizeof(struct event) == 16, "fixed binary scheduler schema");
 struct buffer {
-    size_t used, capacity, invalid, overflow;
-    struct event *data;
+    size_t retained, capacity, invalid, overflow, io_error, received;
+    uint64_t first_ts, last_ts;
+    int fd;
+    size_t pending;
+    unsigned char bytes[64 * 1024];
 };
 
-void *allocate_capacity(size_t capacity) {
-    if (!capacity || capacity > (256UL * 1024 * 1024) / sizeof(struct event)) return NULL;
+void *allocate_capacity(int fd, size_t capacity) {
+    struct stat status;
+    if (!capacity || capacity > (1024UL * 1024 * 1024) / sizeof(struct event) ||
+        fstat(fd, &status) || !S_ISREG(status.st_mode) || status.st_nlink || status.st_size) return NULL;
     struct buffer *buffer = calloc(1, sizeof(*buffer));
     if (!buffer) return NULL;
     buffer->capacity = capacity;
-    buffer->data = malloc(capacity * sizeof(struct event));
-    if (!buffer->data) { free(buffer); return NULL; }
+    buffer->fd = fd;
     return buffer;
 }
-void *allocate(void) { return allocate_capacity((256UL * 1024 * 1024) / sizeof(struct event)); }
+void *allocate(int fd) { return allocate_capacity(fd, (1024UL * 1024 * 1024) / sizeof(struct event)); }
 
+void finalize(void *context) {
+    struct buffer *buffer = context;
+    size_t done = 0;
+    while (!buffer->io_error && done < buffer->pending) {
+        ssize_t wrote = write(buffer->fd, buffer->bytes + done, buffer->pending - done);
+        if (wrote < 0 && errno == EINTR) continue;
+        if (wrote <= 0) { buffer->io_error = 1; break; }
+        done += wrote;
+    }
+    buffer->pending = 0;
+}
 int collect(void *context, void *data, size_t size) {
     struct buffer *buffer = context;
     if (size != sizeof(struct event)) { buffer->invalid++; return 0; }
@@ -35,17 +48,26 @@ int collect(void *context, void *data, size_t size) {
         buffer->invalid++;
         return 0;
     }
-    if (buffer->used == buffer->capacity) { buffer->overflow++; return 0; }
-    memcpy(buffer->data + buffer->used++, data, size);
+    if (!buffer->received || event->ts < buffer->first_ts) buffer->first_ts = event->ts;
+    if (event->ts > buffer->last_ts) buffer->last_ts = event->ts;
+    buffer->received++;
+    if (buffer->retained == buffer->capacity) { buffer->overflow++; return 0; }
+    if (buffer->io_error) return 0;
+    memcpy(buffer->bytes + buffer->pending, data, size);
+    buffer->pending += size;
+    buffer->retained++;
+    if (buffer->pending == sizeof(buffer->bytes)) finalize(context);
     return 0;
 }
 size_t metric(void *context, int index) {
     struct buffer *buffer = context;
-    return index == 0 ? buffer->used : index == 1 ? buffer->invalid : buffer->overflow;
+    switch (index) {
+        case 0: return buffer->retained;
+        case 1: return buffer->invalid;
+        case 2: return buffer->overflow;
+        case 3: return buffer->io_error;
+        case 4: return buffer->received;
+        default: return buffer->last_ts - buffer->first_ts;
+    }
 }
-void *records(void *context) { return ((struct buffer *)context)->data; }
-void release(void *context) {
-    struct buffer *buffer = context;
-    free(buffer->data);
-    free(buffer);
-}
+void release(void *context) { free(context); }

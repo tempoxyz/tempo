@@ -1,12 +1,18 @@
 """Validate and publish only anonymous, cutoff-intersected scheduler context."""
 from collections import Counter
 import json
+import gzip
+import shutil
 from pathlib import Path
 import time
 try:
     from .failures import failure_summary
+    from .index import CaptureIndex, DiskRows, read_capture
+    from .budget import Budget, CappedSink, FOCUSED_BYTES
 except ImportError:
     from failures import failure_summary
+    from index import CaptureIndex, DiskRows, read_capture
+    from budget import Budget, CappedSink, FOCUSED_BYTES
 
 KINDS = {'register', 'switch_out', 'switch_in', 'wakeup', 'exit', 'migration'}
 INTERVALS = {'scheduled_on_cpu', 'runnable_off_cpu', 'blocked_before_wakeup',
@@ -38,27 +44,56 @@ def validate(capture, process, cutoff, reason):
     complete = not any(quality[key] for key in ('unclassified_off_cpu_intervals','unclosed_intervals_excluded','unmatched_wakeups'))
     if capture['registered_window_edges_complete'] is not complete:
         raise ValueError('invalid scheduler completeness')
-    if not isinstance(capture['records'], list) or not isinstance(capture['intervals'], list):
+    if not isinstance(capture['records'], (list, DiskRows)) or not isinstance(capture['intervals'], (list, DiskRows)):
         raise ValueError('invalid scheduler rows')
-    for row in capture['records']:
-        if (set(row) != {'ts','thread','kind','state_bits'} or row['kind'] not in KINDS
-                or not integer(row['thread'], 1, 8192) or not integer(row['ts'], 0, cutoff-1)
-                or not integer(row['state_bits'], 0, 256)):
-            raise ValueError('invalid scheduler event or cutoff drift')
     previous = {}
+    for row in capture['records']:
+        validate_record(row,cutoff)
     for row in capture['intervals']:
-        if (set(row) != {'thread','start','end','kind','right_censored'} or row['kind'] not in INTERVALS
-                or not integer(row['thread'], 1, 8192) or not integer(row['start'], 0, cutoff-1)
-                or not integer(row['end'], row['start']+1, cutoff-1) or type(row['right_censored']) is not bool):
-            raise ValueError('invalid scheduler interval or cutoff drift')
-        if row['start'] < previous.get(row['thread'], 0):
-            raise ValueError('overlapping scheduler states')
-        previous[row['thread']] = row['end']
+        validate_interval(row,cutoff,previous)
+
     return capture
 
 
+def validate_record(row, cutoff):
+    if (not isinstance(row,dict) or set(row) != {'ts','thread','kind','state_bits'} or row['kind'] not in KINDS
+            or not integer(row['thread'],1,8192) or not integer(row['ts'],0,cutoff-1)
+            or not integer(row['state_bits'],0,256)):
+        raise ValueError('invalid scheduler event or cutoff drift')
+
+
+def validate_interval(row, cutoff, previous):
+    if (not isinstance(row,dict) or set(row) != {'thread','start','end','kind','right_censored'} or row['kind'] not in INTERVALS
+            or not integer(row['thread'],1,8192) or not integer(row['start'],0,cutoff-1)
+            or not integer(row['end'],row['start']+1,cutoff-1) or type(row['right_censored']) is not bool):
+        raise ValueError('invalid scheduler interval or cutoff drift')
+    if row['start'] < previous.get(row['thread'],0):
+        raise ValueError('overlapping scheduler states')
+    previous[row['thread']] = row['end']
+
+
+def indexed_capture(path, directory, process, cutoff, reason):
+    owner = CaptureIndex(directory)
+    previous = {}
+    try:
+        def add(table,row):
+            if table == 'records':
+                validate_record(row,cutoff)
+            else:
+                validate_interval(row,cutoff,previous)
+            owner.add(table,row)
+        metadata = read_capture(path,add)
+        # Metadata gates apply identically; rows were validated on ingestion.
+        validate(dict(metadata,records=[],intervals=[]),process,cutoff,reason)
+        return owner.finish(metadata)
+    except BaseException:
+        owner.close()
+        raise
+
+
 def source_registration(path, capture):
-    registrations = {row['thread']:row['ts'] for row in capture['records'] if row['kind'] == 'register'}
+    registrations = (capture['records'].registrations() if isinstance(capture['records'],DiskRows) else
+                     {row['thread']:row['ts'] for row in capture['records'] if row['kind'] == 'register'})
     early = max_gap = 0
     with path.open() as stream:
         for line in stream:
@@ -74,8 +109,10 @@ def source_registration(path, capture):
     return {'source_events_before_registration':early, 'maximum_registration_gap_ns':max_gap}
 
 
-def load(directory, out, window, timeout=90):
-    paths = [directory / 'scheduler-a.json', directory / 'scheduler-b.json']
+# A17M-edge sizing proof takes102s just to validate/publish one source.
+# Bound post-shutdown processing separately from the90s lifecycle-footer gate.
+def load(directory, out, window, timeout=900):
+    paths = [directory / f'scheduler-{role}.json.gz' for role in ('a','b')]
     deadline = time.monotonic() + timeout
     while not all(path.exists() for path in paths):
         if any((directory / f'scheduler-{role}.failed').exists() for role in ('a','b')):
@@ -86,70 +123,108 @@ def load(directory, out, window, timeout=90):
     hit = window.get('backpressure')
     cutoff, reason = (hit['ts'], 'backpressure') if hit else (window['end_ns'], 'load_finished')
     result, coverage = [], []
-    for index, path in enumerate(paths):
-        # Lifecycle headers must prove the requested hook was active, even if
-        # BPF happens to have observed another instrumented process by mistake.
-        with (out / f'{"ab"[index]}.jsonl').open() as stream:
-            header = json.loads(stream.readline())
-        if header.get('scheduler') != 'registered_threads_v1':
-            raise ValueError('lifecycle scheduler registration header missing')
-        capture = validate(json.loads(path.read_text()), index+1, cutoff, reason)
-        coverage.append(source_registration(out / f'{"ab"[index]}.jsonl', capture))
-        result.append(capture)
-    # Write neither validator until both are validated.
-    for path, capture in zip(paths, result):
-        (out / path.name).write_text(json.dumps(capture, separators=(',', ':')) + '\n')
-    return result, coverage
+    try:
+        for index, path in enumerate(paths):
+            # Lifecycle headers must prove the requested hook was active, even if
+            # BPF happens to have observed another instrumented process by mistake.
+            with (out / f'{"ab"[index]}.jsonl').open() as stream:
+                header = json.loads(stream.readline())
+            if header.get('scheduler') != 'registered_threads_v1':
+                raise ValueError('lifecycle scheduler registration header missing')
+            capture = indexed_capture(path, directory, index+1, cutoff, reason)
+            result.append(capture)
+            coverage.append(source_registration(out / f'{"ab"[index]}.jsonl', capture))
+        # Write neither validator until both are validated.
+        for path, capture in zip(paths, result):
+            shutil.copyfile(path, out / path.name)
+        return result, coverage
+    except BaseException:
+        close(result)
+        raise
 
 
-def scheduler_events(captures, origin, low, high):
-    rows, used = [], set()
+
+def close(captures):
+    for capture in captures:
+        if isinstance(capture['records'],DiskRows):
+            capture['records'].owner.close()
+
+
+def scheduler_event_rows(captures, origin, low, high):
+    used = set()
+    for capture in captures:
+        intervals = capture['intervals']
+        if isinstance(intervals,DiskRows):
+            used.update((100+capture['process'],thread) for thread in intervals.threads(origin+low*1000,origin+high*1000))
+        else:
+            used.update((100+capture['process'],row['thread']) for row in intervals
+                        if (row['start']-origin)/1000 < high and (row['end']-origin)/1000 > low)
+    for capture in captures:
+        yield {'name':'process_name','ph':'M','pid':100+capture['process'],'tid':0,
+               'args':{'name':f'Validator {chr(64+capture["process"])} scheduler'}}
+    for pid,thread in sorted(used):
+        yield {'name':'thread_name','ph':'M','pid':pid,'tid':thread,
+               'args':{'name':f'Anonymous thread {thread}'}}
     for capture in captures:
         pid = 100 + capture['process']
-        for row in capture['intervals']:
+        source_rows = (capture['intervals'].overlap(origin+low*1000,origin+high*1000)
+                       if isinstance(capture['intervals'],DiskRows) else capture['intervals'])
+        for row in source_rows:
             start, end = (row['start']-origin)/1000, (row['end']-origin)/1000
             if start >= high or end <= low:
                 continue
             clipped_start, clipped_end = start < low, end > high
             start, end = max(start, low), min(end, high)
-            used.add((pid, row['thread']))
-            rows.append({'name':row['kind'], 'cat':'scheduler context', 'ph':'X', 'pid':pid,
+            yield {'name':row['kind'], 'cat':'scheduler context', 'ph':'X', 'pid':pid,
                          'tid':row['thread'], 'ts':start, 'dur':end-start,
                          'args':{'source_thread_ordinal':row['thread'],
                                  'association':'thread context; temporal overlap does not establish block causality',
                                  'right_censored':row['right_censored'],
                                  'focus_clipped_start':clipped_start, 'focus_clipped_end':clipped_end,
-                                 'semantics':'scheduler residency; includes kernel and interrupts, not task CPU time'}})
-    metadata = [{'name':'process_name','ph':'M','pid':100+c['process'],'tid':0,
-                 'args':{'name':f'Validator {chr(64+c["process"])} scheduler'}} for c in captures]
-    metadata.extend({'name':'thread_name','ph':'M','pid':pid,'tid':thread,
-                     'args':{'name':f'Anonymous thread {thread}'}} for pid,thread in sorted(used))
-    return metadata + rows
+                                 'semantics':'scheduler residency; includes kernel and interrupts, not task CPU time'}}
+
+
+def scheduler_events(captures, origin, low, high):
+    return list(scheduler_event_rows(captures,origin,low,high))
 
 
 def publish(data, captures, out, coverage):
     summary = {'schema':1, 'scope':'registered thread windows only; not complete async-task attribution',
                'cutoff_ns':captures[0]['cutoff_ns'], 'nodes':[], 'pages':[], 'percentiles':[]}
     for capture in captures:
-        totals = Counter()
-        for row in capture['intervals']:
-            totals[row['kind']] += row['end'] - row['start']
+        totals = Counter(capture['intervals'].totals()) if isinstance(capture['intervals'],DiskRows) else Counter()
+        if not isinstance(capture['intervals'],DiskRows):
+            for row in capture['intervals']:
+                totals[row['kind']] += row['end'] - row['start']
         summary['nodes'].append({'node':f'Validator {chr(64+capture["process"])}',
                                  'quality':capture['quality'],
                                  'registration_coverage':coverage[capture["process"]-1],
                                  'thread_wall_ns_by_state':dict(totals)})
+    budget = Budget(FOCUSED_BYTES)
     for block in data['blocks']:
         source = out / f'perfetto-block-{block["id"]}.json'
         trace = json.loads(source.read_text())
-        trace['traceEvents'].extend(scheduler_events(captures, data['time_origin_ns'],
-                                                      block['start']*1000, block['end']*1000))
-        name = f'perfetto-scheduler-block-{block["id"]}.json'
-        (out / name).write_text(json.dumps(trace, separators=(',', ':')))
+        name = f'perfetto-scheduler-block-{block["id"]}.json.gz'
+        expanded = Budget(8*1024**3)
+        with (out / name).open('wb') as raw, gzip.GzipFile(filename='',mode='wb',
+                fileobj=CappedSink(raw,budget),compresslevel=1,mtime=0) as destination:
+            events = trace.pop('traceEvents')
+            expanded.write(destination,json.dumps(trace,separators=(',',':')).encode()[:-1])
+            expanded.write(destination,((',' if trace else '')+'"traceEvents":[').encode())
+            first = True
+            import itertools
+            for event in itertools.chain(events,scheduler_event_rows(captures,data['time_origin_ns'],
+                                        block['start']*1000,block['end']*1000)):
+                if not first:
+                    expanded.write(destination,b',')
+                first = False
+                expanded.write(destination,json.dumps(event,separators=(',',':')).encode())
+            expanded.write(destination,b']}')
         summary['pages'].append({'block':block['id'], 'trace':name})
     for percentile, block in data['representatives'].items():
         if not data['bad_capture']:
             summary['percentiles'].append({'percentile':int(percentile),'block':block,
-                                          'trace':f'perfetto-scheduler-block-{block}.json'})
+                                          'trace':f'perfetto-scheduler-block-{block}.json.gz'})
     (out / 'scheduler-summary.json').write_text(json.dumps(summary, indent=2) + '\n')
     percentile_links = ' · '.join(f'<a href="{p["trace"]}">p{p["percentile"]}: block {p["block"]}</a>' for p in summary['percentiles'])
     rows = ''.join(f'<li><a href="{p["trace"]}">Block {p["block"]} + scheduler context</a></li>' for p in summary['pages'])

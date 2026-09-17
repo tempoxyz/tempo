@@ -10,7 +10,7 @@ import subprocess
 import sys
 import tempfile
 
-from binary_transport import HEADER, MAGIC
+from spool import FOOTER, MAGIC
 
 ROOT = Path(__file__).parent
 
@@ -28,9 +28,9 @@ def prepare_native(directory):
     subprocess.run(['gcc', '-O3', '-shared', '-fPIC', str(ROOT / 'collector.c'), '-o', str(library)],
                    check=True, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
     native = C.CDLL(str(library))
+    native.allocate.argtypes = [C.c_int]
     native.allocate.restype = C.c_void_p
-    native.records.argtypes = [C.c_void_p]
-    native.records.restype = C.c_void_p
+    native.finalize.argtypes = [C.c_void_p]
     native.metric.argtypes = [C.c_void_p, C.c_int]
     native.metric.restype = C.c_size_t
     native.release.argtypes = [C.c_void_p]
@@ -43,11 +43,12 @@ def program_for(incarnation, epoch):
     return (ROOT / 'scheduler.bpf.c.in').read_text().replace('WATCHED', str(incarnation)).replace('EPOCH', str(epoch))
 
 
-def run(binary, command, epoch):
+def run(binary, command, epoch, spool_fd, scratch):
     BPF, callback_type = dependencies()
-    with tempfile.TemporaryDirectory(prefix='lifecycle-scheduler-native-') as directory:
+    os.set_inheritable(spool_fd, False)
+    with tempfile.TemporaryDirectory(prefix='lifecycle-scheduler-native-', dir=scratch) as directory:
         native = prepare_native(directory)
-        context = native.allocate()
+        context = native.allocate(spool_fd)
         if not context:
             raise ValueError('binary scheduler allocation failed')
         child = None
@@ -92,15 +93,20 @@ def run(binary, command, epoch):
             bpf.ring_buffer_consume()
             counts = bpf['counts']
             emitted, lost, invalid = (sum(counts[counts.Key(index)]) for index in range(3))
+            native.finalize(context)
             collected = native.metric(context, 0)
             invalid += native.metric(context, 1)
             overflow = native.metric(context, 2)
-            # Header and records go only to the supervisor's private pipe.
-            sys.stdout.buffer.write(HEADER.pack(MAGIC, collected, emitted, lost, invalid, overflow,
-                                               int(os.waitstatus_to_exitcode(status) != 0)))
-            record_type = C.c_char * (collected * 16)
-            sys.stdout.buffer.write(record_type.from_address(native.records(context)))
+            io_error = native.metric(context, 3)
+            received = native.metric(context, 4)
+            duration = native.metric(context, 5)
+            # Only fixed numeric counters enter the supervisor pipe. Anonymous
+            # source records remain in its unlinked, byte-capped scratch fd.
+            sys.stdout.buffer.write(FOOTER.pack(MAGIC, collected, emitted, lost, invalid,
+                                               overflow, io_error, received, duration))
             sys.stdout.buffer.flush()
+            if os.waitstatus_to_exitcode(status) != 0:
+                raise ValueError('scheduler child failed')
         finally:
             if child is not None:
                 try:
@@ -119,6 +125,8 @@ def main():
     parser.add_argument('--command-base64')
     parser.add_argument('--epoch', type=int)
     parser.add_argument('--preflight', action='store_true')
+    parser.add_argument('--spool-fd', type=int)
+    parser.add_argument('--scratch-dir', type=Path)
     args = parser.parse_args()
     try:
         parent = os.getppid()
@@ -130,10 +138,10 @@ def main():
             with tempfile.TemporaryDirectory(prefix='lifecycle-scheduler-check-') as directory:
                 prepare_native(directory)
         else:
-            if args.binary is None or args.epoch is None or args.command_base64 is None:
+            if args.binary is None or args.epoch is None or args.command_base64 is None or args.spool_fd is None or args.scratch_dir is None:
                 raise ValueError('binary scheduler configuration missing')
             command = base64.b64decode(args.command_base64, validate=True).decode()
-            run(args.binary, command, args.epoch)
+            run(args.binary, command, args.epoch, args.spool_fd, args.scratch_dir)
         return 0
     except Exception:
         # BCC/compiler diagnostics are captured privately by the supervisor;

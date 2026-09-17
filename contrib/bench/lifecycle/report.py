@@ -319,15 +319,19 @@ def write_report(paths, out, warmup=5, window=None, prune=False, expected_detail
     data = build(paths, warmup, window, expected_detail)
     out.mkdir(parents=True, exist_ok=True)
     if scheduler_dir is not None:
-        from scheduler.report import load, publish
+        from scheduler.report import load, publish, close
         if not prune or data['bad_capture'] or not data['detail_valid']:
             raise ValueError('scheduler diagnostic requires a valid pruned lifecycle capture')
         captures, coverage = load(scheduler_dir, out, window)
-    encoded = json.dumps(data, separators=(',',':')).replace('<', '\\u003c')
-    (out/'lifecycle.json').write_text(encoded)
-    write_package(data, out)
-    if scheduler_dir is not None:
-        publish(data, captures, out, coverage)
+    try:
+        encoded = json.dumps(data, separators=(',',':')).replace('<', '\\u003c')
+        (out/'lifecycle.json').write_text(encoded)
+        write_package(data, out)
+        if scheduler_dir is not None:
+            publish(data, captures, out, coverage)
+    finally:
+        if scheduler_dir is not None:
+            close(captures)
     return data
 
 

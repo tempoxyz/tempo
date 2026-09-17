@@ -10,6 +10,8 @@ import unittest
 from binary_capture import prepare_native, program_for
 from binary_transport import EVENT, HEADER, MAGIC, decode_binary
 from diagnostic import decode
+from spool import footer, integrity, rows as spool_rows
+from stream_decode import publish_streamed
 from test_diagnostic import fixture, stream
 
 
@@ -29,6 +31,8 @@ class BinaryTests(unittest.TestCase):
                   .replace(': "r"(ordinal) :', ': "r"(ordinal), "r"(epoch) :')
                   .replace('lifecycle_thread_register((uintptr_t)opaque)', 'reth_lifecycle_thread_register((uintptr_t)opaque,1)')
                   .replace('lifecycle_thread_register(1)', 'reth_lifecycle_thread_register(1,1)'))
+        source = source.replace('#include <unistd.h>', '#include <unistd.h>\n#include <fcntl.h>\n#include <stdlib.h>\n#include <errno.h>')
+        source = source.replace('int main(void) {', 'int main(void) { if(fcntl(atoi(getenv("SCHEDULER_TEST_FD")),F_GETFD)!=-1 || errno!=EBADF)return 91;')
         with tempfile.TemporaryDirectory() as name:
             directory = Path(name)
             (directory/'synthetic.c').write_text(source)
@@ -36,14 +40,21 @@ class BinaryTests(unittest.TestCase):
             built = subprocess.run(['gcc','-O3','-flto','-pthread',str(directory/'synthetic.c'),'-o',str(binary)], capture_output=True)
             self.assertEqual(built.returncode, 0)
             origin = time.monotonic_ns()
-            result = subprocess.run(['sudo','-n','/usr/bin/python3',str(root/'binary_capture.py'),
-                '--binary',str(binary),'--epoch','1','--command-base64',base64.b64encode(str(binary).encode()).decode()],
-                capture_output=True, timeout=20)
-            self.assertEqual(result.returncode, 0)
-            self.assertFalse(bool(result.stderr))
-            stamps = [event[0] for event in EVENT.iter_unpack(result.stdout[HEADER.size:])]
-            cutoff = (min(stamps)+max(stamps))//2-origin
-            decoded = decode_binary(result.stdout,origin,cutoff,expected_threads={1,2,3})
+            with tempfile.TemporaryFile(dir=directory) as spool:
+                result = subprocess.run(['/usr/bin/python3',str(root/'binary_capture.py'),
+                    '--binary',str(binary),'--epoch','1','--command-base64',base64.b64encode(str(binary).encode()).decode(),
+                    '--spool-fd',str(spool.fileno()),'--scratch-dir',str(directory)],
+                    pass_fds=(spool.fileno(),), env=dict(os.environ,SCHEDULER_TEST_FD=str(spool.fileno())), capture_output=True, timeout=20)
+                self.assertEqual(result.returncode, 0)
+                self.assertFalse(bool(result.stderr))
+                counts = footer(result.stdout)
+                integrity(counts,spool)
+                stamps = [event[0] for event in spool_rows(spool)]
+                cutoff = (min(stamps)+max(stamps))//2-origin
+                output = directory/'capture.json'
+                publish_streamed(output,spool,directory,origin,cutoff,counts['emitted'],{})
+                import json
+                decoded = json.loads(output.read_text())
             self.assertTrue(decoded['registered_window_edges_complete'])
             self.assertGreater(decoded['quality']['at_or_post_cutoff_records_pruned'],0)
             self.assertTrue(all(row['ts']<cutoff for row in decoded['records']))
@@ -100,22 +111,25 @@ class BinaryTests(unittest.TestCase):
             self.assertEqual(result, decode(stream(rows), '', 0, 0))
 
     def test_native_collector_bounds_schema_and_bytes(self):
-        with tempfile.TemporaryDirectory() as directory:
+        with tempfile.TemporaryDirectory() as directory, tempfile.TemporaryFile(dir=directory) as spool:
             native = prepare_native(directory)
-            native.allocate_capacity.argtypes = [C.c_size_t]
+            native.allocate_capacity.argtypes = [C.c_int,C.c_size_t]
             native.allocate_capacity.restype = C.c_void_p
             native.collect.argtypes = [C.c_void_p, C.c_void_p, C.c_size_t]
-            self.assertFalse(native.allocate_capacity(0))
-            self.assertFalse(native.allocate_capacity(2**30))
-            context = native.allocate_capacity(1)
+            self.assertFalse(native.allocate_capacity(spool.fileno(),0))
+            self.assertFalse(native.allocate_capacity(spool.fileno(),2**30))
+            context = native.allocate_capacity(spool.fileno(),1)
+            self.assertTrue(context)
             try:
                 valid = EVENT.pack(15,2,1,256)
                 native.collect(context, C.create_string_buffer(valid), len(valid))
                 native.collect(context, C.create_string_buffer(valid), len(valid))
                 for invalid in (b'PRIVATE_NATIVE_ID', EVENT.pack(15,0,1,0), EVENT.pack(15,1,0,1)):
                     native.collect(context, C.create_string_buffer(invalid), len(invalid))
-                self.assertEqual([native.metric(context,i) for i in range(3)], [1,3,1])
-                self.assertEqual(C.string_at(native.records(context),16), valid)
+                self.assertEqual([native.metric(context,i) for i in range(5)], [1,3,1,0,2])
+                native.finalize(context)
+                spool.seek(0)
+                self.assertEqual(spool.read(),valid)
             finally:
                 native.release(context)
 
