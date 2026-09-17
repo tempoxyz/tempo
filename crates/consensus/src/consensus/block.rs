@@ -285,7 +285,6 @@ impl std::ops::Deref for Block {
 }
 
 impl Write for Block {
-    #[tracing::instrument(name = "block.write", target = "lifecycle", level = "debug", skip_all, fields(block_hash = %self.digest()))]
     fn write(&self, buf: &mut impl BufMut) {
         buf.put_slice(self.encoded_execution_block());
         #[cfg(feature = "bal")]
