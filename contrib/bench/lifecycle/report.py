@@ -326,6 +326,7 @@ def write_report(paths, out, warmup=5, window=None, prune=False, expected_detail
     try:
         encoded = json.dumps(data, separators=(',',':')).replace('<', '\\u003c')
         (out/'lifecycle.json').write_text(encoded)
+        del encoded  # Release the full serialization before allocating package views.
         write_package(data, out)
         if scheduler_dir is not None:
             publish(data, captures, out, coverage)
