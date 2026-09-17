@@ -186,7 +186,7 @@ def main():
                     raise
                 kept, pruned = publish_streamed(output, source, scratch, epoch, cutoff, evidence['emitted'],
                     dict(scope='registered validator thread windows only', process=1 if args.role == 'a' else 2,
-                         cutoff_reason=reason, registration='registered_threads_v1'),evidence)
+                         cutoff_reason=reason, registration='registered_threads_v1'),evidence,probe_misses=evidence['probe_misses'])
                 evidence.update(kept=kept, pruned=pruned)
         return 0
     except (ValueError, OSError, KeyError, subprocess.SubprocessError) as error:

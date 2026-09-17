@@ -94,8 +94,10 @@ def decode_stream(rows, origin, cutoff, emitted, emit_record, emit_interval, *, 
     }, kept
 
 
-def publish_streamed(output, source, directory, origin, cutoff, emitted, metadata, evidence=None):
+def publish_streamed(output, source, directory, origin, cutoff, emitted, metadata, evidence=None, probe_misses=None):
     """Publish atomically only after every edge/count has validated and been pruned."""
+    if set(metadata)-{'scope','process','cutoff_reason','registration'}:
+        raise ValueError('unexpected scheduler publication metadata')
     temporary = output.with_suffix('.partial')
     owned = False
     with tempfile.TemporaryFile(dir=directory) as records, tempfile.TemporaryFile(dir=directory) as intervals:
@@ -107,6 +109,11 @@ def publish_streamed(output, source, directory, origin, cutoff, emitted, metadat
         def interval(rank, thread, start, end, kind, censored):
             intermediate.write(intervals,INTERVAL.pack(rank,thread,start,end,kind,censored))
         result,kept = decode_stream(sorted_rows(source,directory),origin,cutoff,emitted,record,interval)
+        if probe_misses is not None:
+            if type(probe_misses) is not int or probe_misses != 0:
+                raise ValueError('capture tool reported probe misses')
+            result['schema'] = 2
+            result['quality']['probe_misses'] = 0
         if evidence is not None:
             evidence.update(kept=kept,pruned=emitted-kept)
         result.update(metadata)

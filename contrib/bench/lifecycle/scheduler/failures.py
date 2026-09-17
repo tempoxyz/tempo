@@ -3,10 +3,11 @@
 import json
 
 EVIDENCE_FIELDS = frozenset(('retained', 'emitted', 'lost', 'invalid', 'overflow', 'io_error',
-                             'received', 'observed_duration_ns', 'kept', 'pruned'))
+                             'received', 'observed_duration_ns', 'probe_misses', 'kept', 'pruned'))
 
 STAGES = frozenset(('configuration', 'capability', 'marker', 'capture', 'cutoff', 'decode', 'publish'))
 REASONS = {
+    ('decode', 'capture tool reported probe misses'): 'decode_probe_misses',
     ('decode', 'scheduler publication limit exceeded'): 'decode_publication_limit',
     ('decode', 'scheduler spool I/O failed'): 'decode_spool_io',
     ('decode', 'scheduler spool limit exceeded'): 'decode_spool_limit',

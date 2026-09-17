@@ -28,6 +28,8 @@ def prepare_native(directory):
     subprocess.run(['gcc', '-O3', '-shared', '-fPIC', str(ROOT / 'collector.c'), '-o', str(library)],
                    check=True, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
     native = C.CDLL(str(library))
+    native.probe_misses.argtypes = [C.c_int,C.POINTER(C.c_uint64)]
+    native.probe_misses.restype = C.c_int
     native.allocate.argtypes = [C.c_int]
     native.allocate.restype = C.c_void_p
     native.finalize.argtypes = [C.c_void_p]
@@ -35,6 +37,26 @@ def prepare_native(directory):
     native.metric.restype = C.c_size_t
     native.release.argtypes = [C.c_void_p]
     return native
+
+
+PROGRAMS = (b'tracepoint__sched__sched_switch', b'raw_tracepoint__sched_wakeup',
+            b'raw_tracepoint__sched_migrate_task', b'tracepoint__sched__sched_process_exit', b'reg')
+
+
+def miss_counts(native,bpf):
+    result = []
+    for name in PROGRAMS:
+        count = C.c_uint64()
+        if native.probe_misses(bpf.funcs[name].fd,C.byref(count)):
+            raise ValueError('binary scheduler probe counters unavailable')
+        result.append(count.value)
+    return result
+
+
+def miss_delta(initial,final):
+    if len(initial) != len(PROGRAMS) or len(final) != len(PROGRAMS) or any(b<a for a,b in zip(initial,final)):
+        raise ValueError('binary scheduler probe counters unavailable')
+    return sum(b-a for a,b in zip(initial,final))
 
 
 def program_for(incarnation, epoch):
@@ -77,11 +99,13 @@ def run(binary, command, epoch, spool_fd, scratch):
                 child = None
                 raise ValueError('binary scheduler admission failed')
             # Native incarnation is substituted only in this private memory.
-            program = program_for(child, epoch)
+            incarnation = child
+            program = program_for(incarnation, epoch)
             bpf = BPF(text=program)
             bpf.attach_uprobe(name=str(binary), sym='reth_lifecycle_thread_register', fn_name='reg', pid=child)
             callback = C.cast(native.collect, callback_type)
             bpf._open_ring_buffer(bpf['events'].map_fd, callback, C.c_void_p(context))
+            initial_misses = miss_counts(native,bpf)
             os.kill(child, signal.SIGCONT)
             while True:
                 bpf.ring_buffer_poll(20)
@@ -89,8 +113,18 @@ def run(binary, command, epoch, spool_fd, scratch):
                 if done:
                     child = None  # Never signal an already-reaped/reusable PID.
                     break
-            # ring_buffer_consume drains until empty after every traced thread exits.
+            # Freeze every probe after all child threads exit, before draining
+            # and reading final counters. Counter coverage includes post-cutoff
+            # shutdown edges; no kernel suppression may be hidden by ring counts.
+            for event in ('sched_switch','sched_process_exit'):
+                bpf.detach_tracepoint(tp='sched:'+event)
+            for event in ('sched_wakeup','sched_migrate_task'):
+                bpf.detach_raw_tracepoint(tp=event)
+            # Close only our already-owned link; do not resolve a reaped PID.
+            for event in list(bpf.uprobe_fds):
+                bpf.detach_uprobe_event(event)
             bpf.ring_buffer_consume()
+            probe_misses = miss_delta(initial_misses,miss_counts(native,bpf))
             counts = bpf['counts']
             emitted, lost, invalid = (sum(counts[counts.Key(index)]) for index in range(3))
             native.finalize(context)
@@ -103,7 +137,7 @@ def run(binary, command, epoch, spool_fd, scratch):
             # Only fixed numeric counters enter the supervisor pipe. Anonymous
             # source records remain in its unlinked, byte-capped scratch fd.
             sys.stdout.buffer.write(FOOTER.pack(MAGIC, collected, emitted, lost, invalid,
-                                               overflow, io_error, received, duration))
+                                               overflow, io_error, received, duration, probe_misses))
             sys.stdout.buffer.flush()
             if os.waitstatus_to_exitcode(status) != 0:
                 raise ValueError('scheduler child failed')
@@ -134,9 +168,13 @@ def main():
             raise ValueError('binary scheduler parent unavailable')
         if args.preflight:
             BPF, _ = dependencies()
-            BPF(text='int probe(void *ctx) { return 0; }')
+            check = BPF(text='int probe(void *ctx) { return 0; }')
+            function = check.load_func('probe',BPF.KPROBE)
             with tempfile.TemporaryDirectory(prefix='lifecycle-scheduler-check-') as directory:
-                prepare_native(directory)
+                native = prepare_native(directory)
+                count = C.c_uint64()
+                if native.probe_misses(function.fd,C.byref(count)):
+                    raise ValueError('binary scheduler probe counters unavailable')
         else:
             if args.binary is None or args.epoch is None or args.command_base64 is None or args.spool_fd is None or args.scratch_dir is None:
                 raise ValueError('binary scheduler configuration missing')

@@ -6,9 +6,9 @@ import tempfile
 
 from binary_transport import EVENT
 
-MAGIC = b'SCHEDS01'
-FOOTER = struct.Struct('<8s8Q')
-FIELDS = ('retained', 'emitted', 'lost', 'invalid', 'overflow', 'io_error', 'received', 'observed_duration_ns')
+MAGIC = b'SCHEDS02'
+FOOTER = struct.Struct('<8s9Q')
+FIELDS = ('retained', 'emitted', 'lost', 'invalid', 'overflow', 'io_error', 'received', 'observed_duration_ns', 'probe_misses')
 MAX_BYTES = 1024 * 1024 * 1024
 CHUNK_RECORDS = 65536
 MERGE_FAN_IN = 32
@@ -25,6 +25,8 @@ def footer(data):
 
 
 def integrity(counts, source):
+    if counts['probe_misses']:
+        raise ValueError('capture tool reported probe misses')
     if counts['io_error']:
         raise ValueError('scheduler spool I/O failed')
     if counts['overflow']:

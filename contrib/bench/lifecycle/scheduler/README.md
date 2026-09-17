@@ -20,7 +20,7 @@ For a local benchmark, pass `--lifecycle --lifecycle-scheduler` to `bench-e2e.nu
 
 Each validator has its own BCC/BPF supervisor. It launches one stopped child, attaches before execution, and uses `exec` to retain that process incarnation through the shell and CPU affinity wrapper. Admission is sealed at the leader’s kernel exit before its PID can be reaped or reused; late registration after leader exit is unsupported and fails source-coverage checks. Admission checks the child process and the phase epoch. Each private kernel map belongs to one watched process incarnation and keys its native TIDs; `sched_process_exit` removes a thread before the TID can be reused. Ordinals never repeat in a process. The two validators are separate anonymous process namespaces in the exported traces. No arbitrary existing process, forked subprocess or late attachment is supported.
 
-The launch command is carried in a memory-only memfd script, not a temporary command file. The helper forks a stopped child, installs scheduler probes and the epoch-checked registration uprobe, then resumes it. Parent death kills an unreaped child. A native C callback drains the16MiB BPF ring through a64KiB buffer into an unlinked, fixed16-byte ordinal/time/state spool, capped at1GiB per validator. Its file descriptor is not inherited by the compiler or node after exec. Scratch storage is explicitly beneath the guarded phase directory; it never defaults to `/tmp`. The successful capture stdout pipe contains only a72-byte fixed numeric footer; unexpected tool diagnostics remain bounded in private memory. No native PID/TID is present in the spool. Native maps and unexpected compiler diagnostics remain private. Core dumps are disabled. There is no raw perf file or native identity mapping file. Any tool diagnostic, lost event/count mismatch, missing registration, missing exit, malformed event, map-helper error, I/O error or storage budget failure rejects the scheduler diagnostic. No automatic fallback presents incomplete data as a complete capture.
+The launch command is carried in a memory-only memfd script, not a temporary command file. The helper forks a stopped child, installs scheduler probes and the epoch-checked registration uprobe, then resumes it. Parent death kills an unreaped child. A native C callback drains the16MiB BPF ring through a64KiB buffer into an unlinked, fixed16-byte ordinal/time/state spool, capped at1GiB per validator. Its file descriptor is not inherited by the compiler or node after exec. Scratch storage is explicitly beneath the guarded phase directory; it never defaults to `/tmp`. The successful capture stdout pipe contains only an80-byte fixed numeric footer; unexpected tool diagnostics remain bounded in private memory. No native PID/TID is present in the spool. Native maps and unexpected compiler diagnostics remain private. Core dumps are disabled. There is no raw perf file or native identity mapping file. Any tool diagnostic, lost event/count mismatch, missing registration, missing exit, malformed event, map-helper error, I/O error or storage budget failure rejects the scheduler diagnostic. No automatic fallback presents incomplete data as a complete capture.
 
 After both lifecycle footers are present, the supervisor recomputes the earliest backpressure boundary from both final source streams and the load window. Every at/post-cutoff event is discarded. Closed intervals end at most one nanosecond before that cutoff, with zero-width results discarded; unclosed intervals are excluded, never extended to an invented endpoint. Without backpressure, the diagnostic ends at the load-window end. Report publication rechecks the exact cutoff, schema, process namespace and source-thread registrations before copying either scheduler source into the artifact.
 
@@ -51,7 +51,8 @@ A private numeric footer records emitted/collected counts, failed kernel output,
 invalid records, spool overflow, I/O failure, callback record count and observed-duration difference; child exit status is checked separately. Any loss, truncation or failure
 rejects capture before the existing edge/cutoff decoder runs. After child exit,
 the helper drains the ring to empty before reading counters. The published JSON
-schema and all source-coverage, pruning and Perfetto validation gates are unchanged.
+record/interval shapes and source-coverage, pruning and Perfetto gates are preserved;
+schema2 adds the explicit probe-miss quality proof described below.
 The isolated153-thread,2-second throughput proof collected all7,471,733 emitted
 records with zero reported loss; this synthetic result is not validator capture
 validation or an application performance claim.
@@ -110,3 +111,55 @@ validator rate or a guarantee for a120-second workload. The strict decoder kept
 all observed endpoints before its synthetic cutoff and produced a209,349,035-byte
 gzip. It also correctly reported73 unsplit off-CPU intervals, so this was a
 transport-capacity proof, not a complete scheduler-attribution result.
+
+
+### Probe suppression and schema2
+
+The ordinary perf tracepoint path in Linux6.8 uses a CPU-wide BPF recursion guard.
+An interrupt can therefore suppress a different probe before this diagnostic's
+emitted/ring-loss counters execute. A six-second153-thread reproduction observed
+91 `sched_wakeup` and199 `sched_migrate_task` recursion misses, with46 unsplit
+waits in the pre-cutoff half. The absence of ring-buffer loss did not establish
+probe completeness; migration omissions could be silent in interval quality.
+
+Wakeup and migration now attach as raw tracepoints, whose recursion guard is per
+program. They still observe the same kernel events: `sched_wakeup` means the task
+has become TASK_RUNNING; `sched_waking` is not substituted. Native task-ID reads
+are checked and remain in kernel memory. The switch-state encoding, registration,
+process-incarnation admission, ordinal reuse/exit checks and cutoff are unchanged.
+A matching synthetic comparison collected21,372,628 edges with zero recursion
+misses, zero ring/collector loss, and all pre-cutoff intervals classified. This
+supports the mechanism correction, not a claim that real captures always succeed.
+
+Every attached program's kernel `recursion_misses` counter is read before the
+stopped child resumes. After the child and all its threads exit, all owned probes
+are detached, the ring is drained, and final counters are checked. Detachment
+uses the owned uprobe link, without looking up a PID after reaping. Unavailable,
+reset or positive counter deltas reject capture, including omissions after the
+cutoff that could affect shutdown/closing-edge validation. The check is
+conservative: a miss affecting an unregistered task during that window also
+rejects the diagnostic. No perf/sysctl/statistics setting is changed.
+
+The private footer is `SCHEDS02`,80 bytes, with an added numeric `probe_misses`.
+Published scheduler source schema2 requires `quality.probe_misses` to be the
+unsigned integer zero. The current producer/report require schema2 on both
+validators; legacy schema1 decoding remains available only for explicit old
+fixtures/audits. A matching transport footer can never override probe misses.
+
+Primary kernel references:
+- [perf tracepoint recursion guard](https://github.com/torvalds/linux/blob/v6.8/kernel/trace/bpf_trace.c#L110-L120)
+- [raw tracepoint per-program guard](https://github.com/torvalds/linux/blob/v6.8/kernel/trace/bpf_trace.c#L2232-L2243)
+- [TASK_RUNNING wakeup boundary](https://github.com/torvalds/linux/blob/v6.8/kernel/sched/core.c#L3545-L3549)
+
+The final implementation, including counter snapshots, detachment and schema2
+publication, also passed a separate six-second153-thread proof with22,417,631
+emitted/received/retained edges, zero ring/collector/probe misses, and zero unsplit,
+unclosed or unmatched intervals. The pre-cutoff gzip was212,480,903 bytes. Real
+validator capture remains subject to the same strict gates and still needs a
+successful benchmark run; synthetic completeness is not a replacement for it.
+
+The final gated shutdown matrix also passed all five cases: handled SIGINT,
+process exit, 513-thread churn, and two concurrent 33-thread captures. Each had
+matching emitted/received/retained counts, zero probe/transport losses and zero
+unsplit, unclosed or unmatched intervals. Every published record and interval
+endpoint remained strictly before its synthetic cutoff.

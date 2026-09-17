@@ -19,6 +19,8 @@ spec.loader.exec_module(report)
 
 def example(process=1):
     capture = decode(stream(fixture()), '', 0, 0)
+    capture['schema']=2
+    capture['quality']['probe_misses']=0
     capture.update(scope='registered validator thread windows only', process=process,
                    cutoff_reason='backpressure', registration='registered_threads_v1')
     return capture

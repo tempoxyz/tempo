@@ -1,5 +1,6 @@
 
 #include <uapi/linux/ptrace.h>
+#include <linux/sched.h>
 struct event { u64 ts; u32 ordinal; u16 kind; u16 state; };
 BPF_RINGBUF_OUTPUT(events, 4096);
 BPF_HASH(ordinals,u32,u32,8192);
@@ -24,8 +25,19 @@ TRACEPOINT_PROBE(sched,sched_switch){
  if(ordinal)emit(*ordinal,1,args->prev_state);
  ordinal=ordinals.lookup(&in);if(ordinal)emit(*ordinal,2,0);return 0;
 }
-TRACEPOINT_PROBE(sched,sched_wakeup){u32 tid=args->pid;u32 *ordinal=ordinals.lookup(&tid);if(ordinal)emit(*ordinal,3,0);return 0;}
-TRACEPOINT_PROBE(sched,sched_migrate_task){u32 tid=args->pid;u32 *ordinal=ordinals.lookup(&tid);if(ordinal)emit(*ordinal,5,0);return 0;}
+/* Perf tracepoints share a CPU-wide recursion guard. Timer wakeups can
+ * interrupt another probe and be suppressed before its emit counter runs.
+ * Raw tracepoints use a per-program guard; all guards are also audited.
+ * Keep the same sched_wakeup TASK_RUNNING boundary (not sched_waking). */
+static inline void emit_task(struct task_struct *task,u16 kind){
+ u32 tid=0;
+ if(bpf_probe_read_kernel(&tid,sizeof(tid),&task->pid)){
+  int key=2;u64 *count=counts.lookup(&key);if(count)__sync_fetch_and_add(count,1);return;
+ }
+ u32 *ordinal=ordinals.lookup(&tid);if(ordinal)emit(*ordinal,kind,0);
+}
+RAW_TRACEPOINT_PROBE(sched_wakeup){emit_task((void*)ctx->args[0],3);return 0;}
+RAW_TRACEPOINT_PROBE(sched_migrate_task){emit_task((void*)ctx->args[0],5);return 0;}
 TRACEPOINT_PROBE(sched,sched_process_exit){
  u64 native=bpf_get_current_pid_tgid();u32 tid=native;
  if((native>>32)==WATCHED&&tid==WATCHED){int zero=0;u32 one=1;if(sealed.update(&zero,&one)){int key=2;u64 *count=counts.lookup(&key);if(count)__sync_fetch_and_add(count,1);}}

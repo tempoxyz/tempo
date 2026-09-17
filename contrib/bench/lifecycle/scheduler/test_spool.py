@@ -80,12 +80,12 @@ class SpoolTests(unittest.TestCase):
             self.assertFalse(output.exists())
 
     def test_footer_counts_and_numeric_failure_evidence_are_closed(self):
-        values=dict(retained=1,emitted=1,lost=0,invalid=0,overflow=0,io_error=0,received=1,observed_duration_ns=5)
+        values=dict(retained=1,emitted=1,lost=0,invalid=0,overflow=0,io_error=0,received=1,observed_duration_ns=5,probe_misses=0)
         with tempfile.TemporaryDirectory() as name,tempfile.TemporaryFile(dir=name) as source:
             source.write(EVENT.pack(1,1,0,0));source.flush()
             self.assertEqual(footer(FOOTER.pack(MAGIC,*values.values())),values)
             integrity(values,source)
-            for key in ('lost','invalid','overflow','io_error'):
+            for key in ('lost','invalid','overflow','io_error','probe_misses'):
                 with self.assertRaises(ValueError):
                     integrity(dict(values,**{key:1}),source)
             directory=Path(name)

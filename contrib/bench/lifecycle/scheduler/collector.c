@@ -71,3 +71,19 @@ size_t metric(void *context, int index) {
     }
 }
 void release(void *context) { free(context); }
+
+/* Query only the miss count. Native program metadata stays on this stack. */
+#include <stddef.h>
+#include <linux/bpf.h>
+#include <sys/syscall.h>
+int probe_misses(int fd, uint64_t *result) {
+    struct bpf_prog_info info = {0};
+    union bpf_attr attr = {0};
+    attr.info.bpf_fd = fd;
+    attr.info.info_len = sizeof(info);
+    attr.info.info = (uintptr_t)&info;
+    if (syscall(__NR_bpf, BPF_OBJ_GET_INFO_BY_FD, &attr, sizeof(attr)) ||
+        attr.info.info_len < offsetof(struct bpf_prog_info, recursion_misses) + sizeof(info.recursion_misses)) return -1;
+    *result = info.recursion_misses;
+    return 0;
+}
