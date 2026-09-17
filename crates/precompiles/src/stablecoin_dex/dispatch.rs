@@ -5,7 +5,7 @@ use revm::precompile::PrecompileResult;
 use tempo_contracts::precompiles::IStablecoinDEX;
 
 use crate::{
-    Precompile, charge_input_cost, dispatch, mutate, mutate_void, preserve_storage_credits,
+    Precompile, charge_input_cost, dispatch, mutate, preserve_storage_credits,
     stablecoin_dex::{
         StablecoinDEX, TickLevel,
         orderbook::{BookId, compute_book_key},
@@ -45,15 +45,15 @@ impl Precompile for StablecoinDEX {
                         preserve_storage_credits(this.address)?;
                         this.create_pair(c.base)
                     }),
-                    withdraw(call) => mutate_void(self, call, msg_sender, |this, s, c| {
+                    withdraw(call) => mutate(self, call, msg_sender, |this, s, c| {
                         preserve_storage_credits(this.address)?;
                         this.withdraw(s, c.token, c.amount)
                     }),
-                    cancel(call) => mutate_void(self, call, msg_sender, |this, s, c| {
+                    cancel(call) => mutate(self, call, msg_sender, |this, s, c| {
                         preserve_storage_credits(this.address)?;
                         this.cancel(s, c.orderId)
                     }),
-                    cancelStaleOrder(call) => mutate_void(self, call, msg_sender, |this, _, c| {
+                    cancelStaleOrder(call) => mutate(self, call, msg_sender, |this, _, c| {
                         preserve_storage_credits(this.address)?;
                         this.cancel_stale_order(c.orderId)
                     }),
@@ -92,7 +92,7 @@ impl Precompile for StablecoinDEX {
                     #[schedule(since = T8)]
                     bookKeyForIndex(call) => view(self, call, |this, c| this.book_key_for_index(c.index)),
                     #[schedule(since = T8)]
-                    setBookIndex(call) => mutate_void(self, call, msg_sender, |this, _, c| {
+                    setBookIndex(call) => mutate(self, call, msg_sender, |this, _, c| {
                         preserve_storage_credits(this.address)?;
                         this.set_book_index(c.index)
                     }),

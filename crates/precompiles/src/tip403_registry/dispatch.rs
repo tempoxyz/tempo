@@ -1,7 +1,7 @@
 //! ABI dispatch for the [`TIP403Registry`] precompile.
 
 use crate::{
-    Precompile, charge_input_cost, dispatch, mutate, mutate_void,
+    Precompile, charge_input_cost, dispatch, mutate,
     tip403_registry::{AuthRole, TIP403Registry},
     view,
 };
@@ -54,7 +54,7 @@ impl Precompile for TIP403Registry {
                         })
                     }),
                     #[schedule(since = T6)]
-                    setReceivePolicy(call) => mutate_void(self, call, msg_sender, |this, s, c| this.set_receive_policy(s, c)),
+                    setReceivePolicy(call) => mutate(self, call, msg_sender, |this, s, c| this.set_receive_policy(s, c)),
                     #[schedule(since = T9)]
                     migrateTransferPolicyIds(call) => mutate(self, call, msg_sender, |this, _, c| {
                         this.migrate_transfer_policy_ids(c)
@@ -63,9 +63,9 @@ impl Precompile for TIP403Registry {
                     createPolicyWithAccounts(call) => mutate(self, call, msg_sender, |this, s, c| {
                         this.create_policy_with_accounts(s, c)
                     }),
-                    setPolicyAdmin(call) => mutate_void(self, call, msg_sender, |this, s, c| this.set_policy_admin(s, c)),
-                    modifyPolicyWhitelist(call) => mutate_void(self, call, msg_sender, |this, s, c| this.modify_policy_whitelist(s, c)),
-                    modifyPolicyBlacklist(call) => mutate_void(self, call, msg_sender, |this, s, c| this.modify_policy_blacklist(s, c)),
+                    setPolicyAdmin(call) => mutate(self, call, msg_sender, |this, s, c| this.set_policy_admin(s, c)),
+                    modifyPolicyWhitelist(call) => mutate(self, call, msg_sender, |this, s, c| this.modify_policy_whitelist(s, c)),
+                    modifyPolicyBlacklist(call) => mutate(self, call, msg_sender, |this, s, c| this.modify_policy_blacklist(s, c)),
                     #[schedule(since = T2)]
                     createCompoundPolicy(call) => mutate(self, call, msg_sender, |this, s, c| this.create_compound_policy(s, c))
                 }

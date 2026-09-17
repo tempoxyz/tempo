@@ -1,7 +1,7 @@
 //! ABI dispatch for the [`TipFeeManager`] precompile.
 
 use crate::{
-    Precompile, charge_input_cost, dispatch, mutate, mutate_void,
+    Precompile, charge_input_cost, dispatch, mutate,
     storage::Handler,
     tip_fee_manager::{
         ITIPFeeAMM, TipFeeManager,
@@ -28,12 +28,12 @@ impl Precompile for TipFeeManager {
                     collectedFees(call) => view(self, call, |this, c| this.collected_fees[c.validator][c.token].read()),
 
                     // IFeeManager mutate functions
-                    setValidatorToken(call) => mutate_void(self, call, msg_sender, |this, s, c| {
+                    setValidatorToken(call) => mutate(self, call, msg_sender, |this, s, c| {
                         let beneficiary = this.storage.beneficiary();
                         this.set_validator_token(s, c, beneficiary)
                     }),
-                    setUserToken(call) => mutate_void(self, call, msg_sender, |this, s, c| this.set_user_token(s, c)),
-                    distributeFees(call) => mutate_void(self, call, msg_sender, |this, _, c| {
+                    setUserToken(call) => mutate(self, call, msg_sender, |this, s, c| this.set_user_token(s, c)),
+                    distributeFees(call) => mutate(self, call, msg_sender, |this, _, c| {
                         this.distribute_fees(c.validator, c.token)
                     })
 
