@@ -132,6 +132,31 @@ console.log(JSON.stringify([[{}],[base],[account],[base,{}],[{...base,worker_job
         self.assertIn('0 attempted jobs',zero)
 
     @unittest.skipUnless(shutil.which('node'), 'Node.js is required for viewer helper regression')
+    def test_joint_account_shape_is_optional_and_rejects_invalid_counts(self):
+        template = Path(__file__).with_name('viewer.html').read_text()
+        helper = template.split('// BEGIN WORKER_CPU_HELPER')[1].split('// END WORKER_CPU_HELPER')[0]
+        script = helper + """
+const base={stage:'proof_account_worker_totals',worker_job_counts_measured:1,worker_job_counts_saturated:0,
+ worker_jobs:3,worker_target_max:1,worker_account_targets:1,worker_storage_groups:2,
+ worker_jobs_targets_0:2,worker_jobs_targets_1:1,worker_jobs_targets_2_8:0,
+ worker_jobs_targets_9_32:0,worker_jobs_targets_33_plus:0};
+console.log(JSON.stringify([[base],[{...base,worker_jobs_storage_only_single_group:0}],
+ [{...base,worker_jobs_storage_only_single_group:2}],
+ [base,{...base,worker_jobs_storage_only_single_group:1}],
+ ...[-1,3,2**64,'private'].map(value=>[{...base,worker_jobs_storage_only_single_group:value}]),
+ [{...base,worker_jobs_storage_only_single_group:1,worker_job_counts_saturated:1}]].map(proofJobSummary)));
+"""
+        missing, zero, exact, partial, *invalid = json.loads(subprocess.check_output(['node','-e',script],text=True))
+        self.assertIn('joint storage-only single-group count unmeasured',missing)
+        self.assertIn('0/3 attempted account jobs',zero)
+        self.assertIn('2/3 attempted account jobs',exact)
+        self.assertIn('zero account targets and exactly one storage group',exact)
+        self.assertIn('1/2 completions with joint counts',partial)
+        for value in invalid:
+            self.assertIn('unmeasured',value)
+            self.assertNotIn('private',value)
+
+    @unittest.skipUnless(shutil.which('node'), 'Node.js is required for viewer helper regression')
     def test_worker_cpu_summary_preserves_unavailable_zero_and_failure(self):
         template = Path(__file__).with_name('viewer.html').read_text()
         helper = template.split('// BEGIN WORKER_CPU_HELPER')[1].split('// END WORKER_CPU_HELPER')[0]
