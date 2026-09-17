@@ -69,7 +69,13 @@ class PackageTests(unittest.TestCase):
             for p in manifest['percentiles']:
                 focused = embedded(out/p['page'])
                 self.assertEqual([b['id'] for b in focused['blocks']], [p['block']])
-                self.assertEqual(focused['population_blocks'], data['blocks'])
+                self.assertEqual(
+                    [(b['id'], b['duration'], b['in_population']) for b in focused['population_blocks']],
+                    [(b['id'], b['duration'], b['in_population']) for b in data['blocks']])
+                self.assertTrue(all(set(b) == {'id', 'duration', 'in_population'}
+                                    for b in focused['population_blocks']))
+                self.assertEqual(focused['blocks'],
+                                 [b for b in data['blocks'] if b['id'] == p['block']])
                 self.assertEqual(focused['eligible'], data['eligible'])
             for page in out.glob('*.html'):
                 for href in re.findall(r'href="([^"]+)"', page.read_text()):
