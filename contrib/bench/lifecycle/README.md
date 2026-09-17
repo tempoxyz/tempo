@@ -439,3 +439,23 @@ individual files at 16 GiB and entries per phase at 100,000, with a 1 GiB free-s
 reserve before extraction. `--max-total-bytes` explicitly adjusts the combined
 limit for larger approved matrices. ZIP central-directory memory is separately
 bounded before member parsing. Existing destinations are never merged or replaced.
+
+### Matched optimizations with selected task observation
+
+`lifecycle-async-tasks` keeps `selected_v1` enabled on both baseline and feature
+phases. Use explicit immutable runtime refs and two run pairs to retain
+feature/control then control/feature order. Both builds receive
+`lifecycle-task-capture`; the harness admits all six mandatory roles from both
+validators before load and rechecks mode, coverage, footer and cutoff afterward.
+The external spec must declare `selected_v1` for every phase. This mode permits
+different runtime binaries; `lifecycle-compare-async` remains the separate
+identical-binary off/on observer-cost experiment.
+
+The finalized decoded-cache experiment uses the former mode so both sides expose
+marshal poll and wake observations. Its control and feature share typed span
+starts and the same proof, detached-task and resolver parent-lifetime fixes. The
+only optimization delta confirms existing cache entries after accepted finalized
+archive insertion. Existing dispatch durability barriers, full-commitment/height
+checks, bounds, pruning and archive fallback remain required. Prior measurements
+showed fewer archive decodes, mixed latency and earlier backpressure; this followup
+is an experiment, not a throughput or persistence-pressure fix.
