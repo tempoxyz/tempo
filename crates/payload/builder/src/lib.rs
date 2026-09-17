@@ -323,6 +323,10 @@ where
 
         check_cancel!();
 
+        if let Some(handle) = state_root_handle.as_mut() {
+            handle.link_to_current_span();
+        }
+
         let start = Instant::now();
 
         let block_time_millis =
