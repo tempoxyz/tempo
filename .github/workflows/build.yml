@@ -1,49 +1,72 @@
-name: Build binaries
-
-permissions: {}
+name: Build source-bound benchmark binaries
 
 on:
   workflow_dispatch:
-    inputs:
-      profile:
-        default: "maxperf"
-        description: "Build profile"
-        type: choice
-        options:
-          - "release"
-          - "maxperf"
-          - "profiling"
+
+permissions:
+  contents: read
 
 concurrency:
-  group: build-${{ github.head_ref }}
-  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
-
-env:
-  CARGO_TERM_COLOR: always
-  RUST_BACKTRACE: full
-  RUSTC_WRAPPER: "sccache"
+  group: prebuilt-benchmark-${{ github.ref }}
+  cancel-in-progress: false
 
 jobs:
-  build:
-    name: Build
+  prebuilt:
+    name: Build portable benchmark bundle
     runs-on: depot-ubuntu-latest-16
-    permissions:
-      contents: read
-    strategy:
-      matrix:
-        binary: [tempo, tempo-sidecar]
+    timeout-minutes: 90
+    container:
+      image: ubuntu:22.04@sha256:281c5745f657873d78e5531fc5ba8575f46ab7769b94550ac99543f122679986
+    defaults:
+      run:
+        shell: bash
     steps:
-      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+      - name: Install build prerequisites
+        run: |
+          set -euo pipefail
+          apt-get update -qq
+          DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends \
+            build-essential binutils ca-certificates clang curl git libclang-dev \
+            libssl-dev libudev-dev pkg-config protobuf-compiler python3
+      - name: Checkout producer
+        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd
         with:
+          ref: ${{ github.sha }}
+          path: producer
           persist-credentials: false
-      - uses: tempoxyz/gh-actions/vendor/dtolnay/rust-toolchain@3626124474a987bc74b41fc7ae65b2e23f8e4e4e
-      - uses: tempoxyz/gh-actions/actions/setup-mold@a65420ff2c90fcc46fe778c044aa7998ae9f246c
-      - uses: tempoxyz/gh-actions/vendor/mozilla-actions/sccache-action@3626124474a987bc74b41fc7ae65b2e23f8e4e4e
-      - name: Build
-        run: cargo build --bin ${{ matrix.binary }} --profile ${{ inputs.profile || 'dev' }}
-      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
-        id: binary_upload
+      - name: Checkout exact validator runtime
+        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd
         with:
-          if-no-files-found: "error"
-          name: ${{ matrix.binary }}
-          path: target/${{ inputs.profile || 'debug' }}/${{ matrix.binary }}
+          ref: 0bd62dd2f0e509016439b2189cd0f4998d007a26
+          path: runtime
+          persist-credentials: false
+      - name: Checkout exact workload tools
+        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd
+        with:
+          repository: tempoxyz/txgen
+          ref: 94f86f186cd18f641eb9699d7e31c9e536de7c17
+          path: tools
+          persist-credentials: false
+      - name: Install exact Rust toolchain
+        uses: tempoxyz/gh-actions/vendor/dtolnay/rust-toolchain@3626124474a987bc74b41fc7ae65b2e23f8e4e4e
+        with:
+          toolchain: 1.98.1
+          targets: x86_64-unknown-linux-gnu
+      - name: Build and validate private bundle
+        env:
+          PREBUILT_PRODUCER_SHA: ${{ github.sha }}
+          PREBUILT_RUN_ID: ${{ github.run_id }}
+          PREBUILT_RUN_ATTEMPT: ${{ github.run_attempt }}
+        run: |
+          set -euo pipefail
+          python3 -I producer/.github/scripts/bench-prebuilt-producer.py \
+            --producer producer --runtime runtime --tools tools \
+            --output "$RUNNER_TEMP/bench-prebuilt-bundle"
+      - name: Upload private prebuilt transport
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
+        with:
+          name: bench-prebuilt-v1-${{ github.run_id }}-${{ github.run_attempt }}
+          path: ${{ runner.temp }}/bench-prebuilt-bundle/*
+          if-no-files-found: error
+          compression-level: 0
+          retention-days: 7
