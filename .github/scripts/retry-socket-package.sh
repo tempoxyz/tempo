@@ -5,8 +5,12 @@ set -uo pipefail
 log=$(mktemp)
 trap 'rm -f "$log"' EXIT
 
-max_attempts=${SOCKET_RETRY_ATTEMPTS:-30}
+max_attempts=${SOCKET_RETRY_ATTEMPTS:-60}
 delay_seconds=${SOCKET_RETRY_DELAY_SECONDS:-15}
+
+# Avoid bursting concurrent crate downloads through the Socket proxy. HTTP/1.1 without
+# pipelining gives the policy API time to evaluate each package before the next request.
+export CARGO_HTTP_MULTIPLEXING=${CARGO_HTTP_MULTIPLEXING:-false}
 
 for ((attempt = 1; attempt <= max_attempts; attempt++)); do
   : >"$log"
