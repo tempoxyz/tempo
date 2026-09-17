@@ -308,3 +308,22 @@ missing workers are not zero. CPU and wall values are preserved even when a
 small interval's microsecond-resolution CPU delta exceeds elapsed wall time.
 Worker wall intervals overlap one another and execution, so neither their wall
 sum nor CPU plus execution wall is a block latency decomposition.
+
+## Attempted proof-job sizes
+
+When worker accounting is enabled, each completed worker also reports stack-local
+counts of attempted jobs and its own input-vector lengths. Account workers count
+account-vector targets and storage-map groups; their total storage targets remain
+unmeasured. Storage workers count storage-vector targets and requests needing a
+root. Both record the maximum own-vector length and job-count bins 0, 1, 2–8,
+9–32 and 33+. These are submitted inputs, not unique keys, completed proofs or
+duplicate-work estimates. Individual calculation failures and abandoned results
+still count as attempts; worker success alone does not establish job success.
+
+Only O(1) vector/map lengths are read, behind the existing optional worker timer.
+There are no target scans, per-job allocations or records, or extra resource samples.
+The existing completion record carries the additional fixed set of numeric fields.
+Counters saturate with an explicit flag; the viewer does not summarize saturated,
+incomplete or inexact integer values. Missing completions remain unmeasured, and
+strict pre-backpressure cutoff pruning applies to the entire completion event.
+CPU sampling can be unavailable while these portable counts remain measured.

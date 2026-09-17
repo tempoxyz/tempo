@@ -239,7 +239,12 @@ def build(paths, warmup=5, window=None, expected_detail=None):
         worker_totals = [dict(node=e['node'], span=e['id'], ts=(e['ts']-first)/1e6,
                              **{k:v for k,v in e['fields'].items()
                                 if k in ('stage','worker_run_ns','worker_thread_cpu_ns',
-                                         'worker_cpu_measured','worker_success')})
+                                         'worker_cpu_measured','worker_success',
+                                         'worker_job_counts_measured','worker_jobs','worker_account_targets',
+                                         'worker_storage_targets','worker_storage_groups','worker_root_requests',
+                                         'worker_target_max','worker_jobs_targets_0','worker_jobs_targets_1',
+                                         'worker_jobs_targets_2_8','worker_jobs_targets_9_32',
+                                         'worker_jobs_targets_33_plus','worker_job_counts_saturated')})
                          for e in by_block[key] if e['fields'].get('stage') in
                          ('proof_storage_worker_totals','proof_account_worker_totals')]
         blocks.append({'proof_worker_totals': worker_totals, 'execution_totals': totals, 'id': aliases[key], 'start': start, 'end': finish,
