@@ -70,7 +70,6 @@ tracing.workspace = true
 serde_json.workspace = true
 
 [dev-dependencies]
-commonware-consensus.workspace = true
 commonware-macros.workspace = true
 commonware-parallel.workspace = true
 jsonrpsee = { workspace = true, features = ["ws-client", "http-client"] }

@@ -275,12 +275,10 @@ impl AA2dPool {
         let replaced = match self.by_id.entry(tx_id) {
             Entry::Occupied(mut entry) => {
                 // Ensure the replacement transaction is not underpriced
-                if entry
-                    .get()
-                    .inner
-                    .transaction
-                    .is_underpriced(&tx.inner.transaction, &self.config.price_bump_config)
-                {
+                if entry.get().inner.transaction.is_replacement_underpriced(
+                    &tx.inner.transaction,
+                    &self.config.price_bump_config,
+                ) {
                     return Err(PoolError::new(
                         *transaction.hash(),
                         PoolErrorKind::ReplacementUnderpriced,
@@ -447,6 +445,7 @@ impl AA2dPool {
             replaced: replaced.map(|tx| tx.inner.transaction.clone()),
             subpool: SubPool::Queued,
             queued_reason: Some(QueuedReason::NonceGap),
+            promoted: Vec::new(),
         })
     }
 
