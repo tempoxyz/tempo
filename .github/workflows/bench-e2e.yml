@@ -1067,6 +1067,7 @@ jobs:
           name: block-lifecycle
           path: bench-results/*/lifecycle/
           if-no-files-found: error
+          compression-level: 0 # Each completed phase is already losslessly compressed.
 
       - name: Upload results
         if: ${{ !cancelled() && env.BENCH_LIFECYCLE != 'true' }}
