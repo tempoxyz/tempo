@@ -112,6 +112,8 @@ def prepare_captures(paths, out, window=None):
                                     'dropped': footer.get('dropped', 0),
                                     'io_error': footer.get('io_error', False),
                                     'invalid_lines': invalid + footer.get('invalid_lines', 0)}
+                    if 'async_coverage_failures' in footer:
+                        clean_footer['async_coverage_failures'] = footer['async_coverage_failures']
                     target.write(json.dumps(clean_footer, separators=(',', ':')) + '\n')
             temporary.replace(destination)
         finally:

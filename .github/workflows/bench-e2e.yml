@@ -87,6 +87,8 @@ on:
           - lifecycle
           - lifecycle-milestones
           - lifecycle-compare-detail
+          - lifecycle-async-tasks
+          - lifecycle-compare-async
       otlp:
         description: Export OTLP traces and logs.
         type: boolean
@@ -365,7 +367,8 @@ jobs:
     runs-on: [self-hosted, Linux, X64, bare-metal-dual-schelk]
     timeout-minutes: 300
     env:
-      BENCH_LIFECYCLE: ${{ (inputs.profiling == 'lifecycle' || inputs.profiling == 'lifecycle-milestones' || inputs.profiling == 'lifecycle-compare-detail') }}
+      BENCH_LIFECYCLE: ${{ (inputs.profiling == 'lifecycle' || inputs.profiling == 'lifecycle-milestones' || inputs.profiling == 'lifecycle-compare-detail' || inputs.profiling == 'lifecycle-async-tasks' || inputs.profiling == 'lifecycle-compare-async') }}
+      BENCH_LIFECYCLE_ASYNC_TASKS: ${{ inputs.profiling == 'lifecycle-compare-async' && 'compare' || inputs.profiling == 'lifecycle-async-tasks' && 'selected_v1' || 'disabled' }}
       BENCH_LIFECYCLE_DETAIL: ${{ inputs.profiling == 'lifecycle-compare-detail' && 'compare' || inputs.profiling == 'lifecycle-milestones' && 'milestones' || 'full' }}
       BENCH_PR: ${{ inputs.pr }}
       BENCH_ACTOR: ${{ inputs.actor || github.actor }}
@@ -384,8 +387,8 @@ jobs:
       BENCH_TRACY: ${{ inputs.tracy != '' && inputs.tracy || ((inputs.profiling == 'tracy' || inputs.profiling == 'both') && 'tracy' || ((inputs.profiling == 'off' || inputs.profiling == 'samply') && 'off' || 'off')) }}
       BENCH_TRACY_SECONDS: ${{ inputs.tracy-seconds || '10' }}
       BENCH_TRACY_OFFSET: ${{ inputs.tracy-offset }}
-      BENCH_OTLP: ${{ inputs.profiling != 'lifecycle' && inputs.profiling != 'lifecycle-milestones' && inputs.profiling != 'lifecycle-compare-detail' && inputs.otlp != false && inputs.otlp != 'false' }}
-      BENCH_VALSCOPE: ${{ inputs.profiling != 'lifecycle' && inputs.profiling != 'lifecycle-milestones' && inputs.profiling != 'lifecycle-compare-detail' && (inputs.valscope == true || inputs.valscope == 'true') }}
+      BENCH_OTLP: ${{ inputs.profiling != 'lifecycle' && inputs.profiling != 'lifecycle-milestones' && inputs.profiling != 'lifecycle-compare-detail' && inputs.profiling != 'lifecycle-async-tasks' && inputs.profiling != 'lifecycle-compare-async' && inputs.otlp != false && inputs.otlp != 'false' }}
+      BENCH_VALSCOPE: ${{ inputs.profiling != 'lifecycle' && inputs.profiling != 'lifecycle-milestones' && inputs.profiling != 'lifecycle-compare-detail' && inputs.profiling != 'lifecycle-async-tasks' && inputs.profiling != 'lifecycle-compare-async' && (inputs.valscope == true || inputs.valscope == 'true') }}
       BENCH_FEATURES: ${{ (inputs.otlp != false && inputs.otlp != 'false') && 'jemalloc,asm-keccak,keccak-cache-global,otlp' || 'jemalloc,asm-keccak,keccak-cache-global' }}
       BENCH_BASELINE_FEATURES: ${{ inputs.baseline-features }}
       BENCH_FEATURE_FEATURES: ${{ inputs.feature-features }}
@@ -405,7 +408,7 @@ jobs:
       BENCH_FEATURE_ENV: ${{ inputs.feature-env }}
       BENCH_RUN_PAIRS: ${{ inputs.run-pairs || '3' }}
       # An explicit instrumented baseline enables a same-runner lifecycle pair.
-      BENCH_RUN_SIDE: ${{ (inputs.profiling == 'lifecycle' || inputs.profiling == 'lifecycle-milestones' || inputs.profiling == 'lifecycle-compare-detail') && inputs.baseline == '' && 'feature' || inputs.run-side || 'comparison' }}
+      BENCH_RUN_SIDE: ${{ (inputs.profiling == 'lifecycle' || inputs.profiling == 'lifecycle-milestones' || inputs.profiling == 'lifecycle-compare-detail' || inputs.profiling == 'lifecycle-async-tasks' || inputs.profiling == 'lifecycle-compare-async') && inputs.baseline == '' && 'feature' || inputs.run-side || 'comparison' }}
       BENCH_CLICKHOUSE_RUN: ${{ inputs.clickhouse-run || 'feature-1' }}
       BENCHMARK_ID: bench-e2e-${{ github.run_id }}
       BENCH_COMMENT_ID: ${{ inputs.comment-id }}
@@ -901,6 +904,9 @@ jobs:
             echo "::error::token-count must be <= 4, matching the TIP20 tokens available in state bloat"
             exit 1
           fi
+          if [ "$BENCH_LIFECYCLE_ASYNC_TASKS" != "disabled" ]; then
+            BENCH_FEATURES="$BENCH_FEATURES,lifecycle-task-capture"
+          fi
           cmd=(nu bench-e2e.nu e2e)
           cmd+=(
             --preset "$BENCH_PRESET"
@@ -925,7 +931,7 @@ jobs:
           [ -n "$BENCH_TXGEN_SPEC_PATH" ] && cmd+=(--preset-path "$BENCH_TXGEN_SPEC_PATH")
           [ "$BENCH_FORCE_BLOAT" = "true" ] && cmd+=(--force-bloat)
           [ "$BENCH_NO_CACHE" = "true" ] && cmd+=(--no-cache)
-          [ "$BENCH_LIFECYCLE" = "true" ] && cmd+=(--lifecycle --lifecycle-detail "$BENCH_LIFECYCLE_DETAIL")
+          [ "$BENCH_LIFECYCLE" = "true" ] && cmd+=(--lifecycle --lifecycle-detail "$BENCH_LIFECYCLE_DETAIL" --lifecycle-async-tasks "$BENCH_LIFECYCLE_ASYNC_TASKS")
           [ "$BENCH_SAMPLY" = "true" ] && cmd+=(--samply)
           [ "$BENCH_TRACY" != "off" ] && cmd+=(--tracy "$BENCH_TRACY" --tracy-seconds "$BENCH_TRACY_SECONDS" --tracy-offset "$BENCH_TRACY_OFFSET")
           effective_baseline_args="$BENCH_BASELINE_ARGS"

@@ -6,6 +6,7 @@ import math
 from pathlib import Path
 from report_package import write_package
 from backpressure import first_boundary, prepare_captures
+from async_tasks import inspect as inspect_tasks, write_observations, clear_exports, MAX_EVENTS
 
 BLOCK_FIELDS = ('block_hash', 'hash', 'digest', 'proposal', 'payload')
 STAGES = ('proposal_start', 'payload_built', 'proposal_ready', 'digest_released',
@@ -23,10 +24,12 @@ def nearest_rank(blocks, percentile):
     return ordered[max(0, math.ceil(len(ordered) * percentile / 100) - 1)]['id'] if ordered else None
 
 
-def read_node(path, role, cutoff=None):
+def read_node(path, role, cutoff=None, include_tasks=False):
     spans, events, links, polls, aggregates = {}, [], [], {}, []
     header, footer, invalid = None, None, 0
     excluded_aggregates = 0
+    async_events = []
+    async_limit = False
     with path.open() as capture:
         for line in capture:
             try:
@@ -35,6 +38,12 @@ def read_node(path, role, cutoff=None):
                 invalid += 1
                 continue
             kind = event.get('type')
+            if kind == 'event' and str(event.get('fields', {}).get('stage', '')).startswith('async_task_'):
+                if len(async_events) < MAX_EVENTS + 1:
+                    async_events.append(event)
+                else:
+                    async_limit = True
+                continue  # Rootless task context never binds blocks or operation spans.
             # Parse structural metadata after the cutoff for capture-integrity checks,
             # but never let later fields, identities or milestones affect the report.
             if cutoff is not None and kind not in ('header', 'footer'):
@@ -167,13 +176,19 @@ def read_node(path, role, cutoff=None):
         span['block'] = inherited(span)
     for event in events:
         event['block'] = block_key(event['fields']) or inherited(spans.get(event['id']))
-    quality = {'node': role, 'header': bool(header and header.get('schema') == 1),
+    task_capture = inspect_tasks(async_events, header, footer, cutoff)
+    if async_limit:
+        task_capture['valid'] = False
+        task_capture['errors'] = sorted(set(task_capture['errors']) | {'event_limit'})
+    quality = {'async_tasks': task_capture['mode'], 'async_tasks_valid': task_capture['valid'],
+               'async_task_errors': task_capture['errors'], 'node': role, 'header': bool(header and header.get('schema') == 1),
                'detail': (header or {}).get('detail', 'full'),
                'footer': footer is not None, 'dropped': (footer or {}).get('dropped', 0),
                'io_error': (footer or {}).get('io_error', False), 'invalid_lines': invalid + (footer or {}).get('invalid_lines', 0),
                'open_spans': sum(s['end'] is None for s in spans.values()),
                'cutoff_spans': censored, 'crossing_aggregates_excluded': excluded_aggregates}
-    return list(spans.values()), events, quality
+    result = (list(spans.values()), events, quality)
+    return (*result, task_capture) if include_tasks else result
 
 
 def operation_category(span):
@@ -195,7 +210,8 @@ def active_wall_ns(intervals):
     return duration
 
 
-def build(paths, warmup=5, window=None, expected_detail=None):
+def build(paths, warmup=5, window=None, expected_detail=None, expected_async_tasks=None):
+    task_captures = {}
     spans, events, quality = [], [], []
     boundary = first_boundary(paths)
     recorded = (window or {}).get('backpressure')
@@ -203,7 +219,8 @@ def build(paths, warmup=5, window=None, expected_detail=None):
         boundary = recorded
     cutoff = boundary['ts'] if boundary else None
     for index, path in enumerate(paths):
-        ss, es, qq = read_node(path, f'Validator {chr(65 + index)}', cutoff)
+        ss, es, qq, tasks = read_node(path, f'Validator {chr(65 + index)}', cutoff, include_tasks=True)
+        task_captures[qq['node']] = tasks
         spans.extend(ss)
         events.extend(es)
         pruned = next((q for q in (window or {}).get('pruning', []) if q['node'] == qq['node']), {})
@@ -260,7 +277,9 @@ def build(paths, warmup=5, window=None, expected_detail=None):
     details = {q['detail'] for q in quality}
     detail = next(iter(details)) if len(details) == 1 else 'mixed'
     detail_valid = detail in ('full', 'milestones') and (expected_detail is None or detail == expected_detail)
-    bad_capture = not detail_valid or any(not q['header'] or not q['footer'] or q['dropped'] or q['io_error'] or q['invalid_lines'] for q in quality)
+    task_modes = {q['async_tasks'] for q in quality}
+    tasks_valid = len(task_modes) == 1 and all(q['async_tasks_valid'] for q in quality) and (expected_async_tasks is None or task_modes == {expected_async_tasks})
+    bad_capture = not tasks_valid or not detail_valid or any(not q['header'] or not q['footer'] or q['dropped'] or q['io_error'] or q['invalid_lines'] for q in quality)
     # Lost events invalidate percentile completeness, even if some endpoints survived.
     representatives = {str(p): nearest_rank(eligible, p) if not bad_capture else None for p in (50,90,99)}
     attempts = sorted((s for s in spans if s['name'] == 'handle_propose'),
@@ -322,7 +341,7 @@ def build(paths, warmup=5, window=None, expected_detail=None):
         receives = [e for e in group if e['stage'] == 'frame_receive']
         if len(sends) == 1 and len(receives) == 1:
             transfers.append({'from': sends[0]['node'], 'to': receives[0]['node'], 'start': sends[0]['ts'], 'end': receives[0]['ts'], 'bytes': sends[0]['bytes']})
-    return {'schema':1, 'capture_detail':detail, 'detail_valid':detail_valid,
+    return {'schema':1, 'time_origin_ns':first, 'async_tasks': task_captures, 'async_tasks_valid': tasks_valid, 'capture_detail':detail, 'detail_valid':detail_valid,
             'boundary': dict(boundary, relative_ms=(cutoff-first)/1e6) if boundary else None, 'blocks':blocks, 'spans':rows, 'transfers':transfers, 'quality':quality,
             'representatives':representatives, 'eligible':len(eligible), 'warmup':warmup,
             'unexplained_attempts':sum(a['status'] == 'unexplained_unassociated' for a in attempt_details),
@@ -332,11 +351,16 @@ def build(paths, warmup=5, window=None, expected_detail=None):
                 'Proposal handling start on proposer → first accepted finalization certificate on a validator. Nearest-rank percentiles select actual complete blocks; initial complete blocks are excluded as warmup. When load boundaries are available, both endpoints must fall inside the load window. All views exclude data at or after the first engine persistence backpressure event on either validator; crossing spans are right-censored and crossing aggregates omitted.'}
 
 
-def write_report(paths, out, warmup=5, window=None, prune=False, expected_detail=None):
+def write_report(paths, out, warmup=5, window=None, prune=False, expected_detail=None, expected_async_tasks=None):
     if prune:
         paths, window = prepare_captures(paths, out, window)
-    data = build(paths, warmup, window, expected_detail)
+    data = build(paths, warmup, window, expected_detail, expected_async_tasks)
     out.mkdir(parents=True, exist_ok=True)
+    clear_exports(out)
+    tasks = data.pop('async_tasks')
+    if any(result['mode'] != 'disabled' for result in tasks.values()):
+        write_observations(tasks, out)
+        data['async_tasks_files'] = ['async-tasks.json', 'async-tasks-index.json', 'async-tasks.html']
     encoded = json.dumps(data, separators=(',',':')).replace('<', '\\u003c')
     (out/'lifecycle.json').write_text(encoded)
     write_package(data, out)
@@ -350,11 +374,12 @@ if __name__ == '__main__':
     parser.add_argument('--window', type=Path)
     parser.add_argument('--prune', action='store_true', help='Publish only pre-backpressure raw captures alongside the report')
     parser.add_argument('--expected-detail', choices=('full', 'milestones'), help='Reject captures whose recorder detail does not match the requested mode')
+    parser.add_argument('--expected-async-tasks', choices=('disabled', 'selected_v1'))
     parser.add_argument('captures', type=Path, nargs='+')
     args = parser.parse_args()
     window = json.loads(args.window.read_text()) if args.window and args.window.exists() else (
         {'start_ns': 0, 'end_ns': 0, 'stop_reason': 'load_not_started'} if args.window else None)
-    result = write_report(args.captures, args.out, args.warmup, window, args.prune, args.expected_detail)
+    result = write_report(args.captures, args.out, args.warmup, window, args.prune, args.expected_detail, args.expected_async_tasks)
     print(f"Lifecycle report: {len(result['blocks'])} blocks, {result['eligible']} complete post-warmup blocks; capture loss: {result['bad_capture']}")
     if result['bad_capture'] or not result['eligible']:
         raise SystemExit(2)

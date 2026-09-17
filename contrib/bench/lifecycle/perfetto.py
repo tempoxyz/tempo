@@ -45,7 +45,7 @@ def trace_events(data, block_id=None):
                         reference_right_censored=s.get('reference_right_censored'),
                         reference_retention_lower_bound_ms=s.get('reference_retention_lower_bound_ms'))
             if s['active_ms'] is None:
-                args['active_wall_status'] = 'not recorded in milestone-only capture'
+                args['active_wall_status'] = s.get('active_wall_status', 'not recorded in milestone-only capture')
         if s.get('right_censored'):
             args.update(right_censored=True, semantics='reference lifetime truncated at cutoff; operation completion unknown')
         intervals.append((nodes[s['node']], s['category'], 'aggregate envelope' if aggregate else 'wall time',

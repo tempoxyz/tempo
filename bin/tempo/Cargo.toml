@@ -134,6 +134,9 @@ default = ["asm-keccak", "jemalloc", "otlp", "keccak-cache-global"]
 
 localnet = ["dep:nix"]
 
+# Default-off selected actor observer; runtime admission verifies registrations.
+lifecycle-task-capture = ["commonware-utils/lifecycle-task-capture"]
+
 bal = ["tempo-consensus/bal", "tempo-node/bal"]
 
 asm-keccak = [

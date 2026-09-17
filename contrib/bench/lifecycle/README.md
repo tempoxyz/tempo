@@ -341,3 +341,46 @@ It does not count storage targets, successful shortcuts, or saved work. The view
 uses only unsaturated measured joint counts and their matching attempted-job
 denominator; older captures remain unmeasured rather than inferring the joint
 population from separate zero-target and storage-group totals.
+
+### Selected async task observations (experimental)
+
+Compile Tempo with `lifecycle-task-capture` and select `lifecycle-async-tasks`
+profiling (or `--lifecycle --lifecycle-async-tasks selected_v1`). This wraps only
+marshal, voter, resolver, batcher, and authenticated peer send/receive outer
+futures. The feature is default off. Feature-compiled/env-disabled controls keep
+the original future Context and allocate no observer state, with a small enum
+branch at poll. Selected mode retains at most 256 task states per process,
+including states held by stale wakers; capacity or counter exhaustion invalidates
+coverage instead of rejecting application work. Task IDs are local generated
+ordinals, never native executor task IDs, pointers, names or payloads.
+
+The source header declares `async_tasks=selected_v1`. Before submitting load, both
+validators must provide all six role registrations. The report independently
+checks those registrations, fixed event fields, poll generations, terminal
+consistency and a zero `async_coverage_failures` footer. Missing header mode means
+legacy disabled, so an old binary cannot silently satisfy a selected-mode run.
+Full lifecycle detail is required initially. Any capacity/overflow marker counts
+against integrity even if pruning removes its at/post-cutoff event. A cutoff can
+censor only the final poll/terminal; an uncut shutdown requires every registered
+task to terminate, including cancellation before first poll.
+
+Open `async-tasks.html` for the observation inventory and bounded Perfetto context
+files. Poll intervals are explicit wall time, not CPU. Wake-request-to-poll
+intervals begin at captured wake publication, not exact executor enqueue, and may
+overlap the previous poll. Concurrent publication can follow the next poll or even
+task termination: those observations remain raced/unavailable and do not reopen
+tasks or produce negative delays. Missing wake evidence never becomes a guessed
+queue duration. No per-block causal association is inferred from actor/time overlap.
+Each chunk contains at most 10,000 intervals on reusable virtual lanes. The
+complete observations and unmatched/late wakes remain in `async-tasks.json`; raw
+source events remain in the pruned validator captures. The offline report rejects
+more than 2,000,000 selected-task events per node rather than sampling.
+
+Before any promotion, use `lifecycle-compare-async`, explicit identical baseline
+and feature refs, and at least two counterbalanced pairs on one physical job.
+Both sides compile the feature; baseline sets the runtime mode to `disabled`,
+feature to `selected_v1`. The harness compares binary bytes before executing
+phases. Compare actual trace volume/drops, RSS, CPU and wall metrics on the same
+load/common horizon. Keep persistence cutoff/privacy guards and independent
+artifact audits. Synthetic wrapper tests establish semantics, not application
+observer cost or complete coverage of every async task.
