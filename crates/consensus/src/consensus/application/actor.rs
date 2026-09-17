@@ -472,6 +472,7 @@ impl Inner<Init> {
             Round::new(round.epoch(), parent_view),
             parent_digest,
             &self.marshal,
+            None,
         )
         .await?;
 
@@ -697,11 +698,18 @@ impl Inner<Init> {
         }
 
         tracing::info!(target: "lifecycle", stage = "verify_start", block_hash = %payload);
-        let block = subscribe(&self.execution_node, round, payload, &self.marshal)
-            .await
-            .wrap_err("failed getting proposal block")?;
+        let mut body_source = 0u64;
+        let block = subscribe(
+            &self.execution_node,
+            round,
+            payload,
+            &self.marshal,
+            Some(&mut body_source),
+        )
+        .await
+        .wrap_err("failed getting proposal block")?;
 
-        tracing::info!(target: "lifecycle", stage = "body_ready", block_hash = %block.digest(), height = %block.height());
+        tracing::info!(target: "lifecycle", stage = "body_ready", body_source, block_hash = %block.digest(), height = %block.height());
 
         // Can only repropose at the end of an epoch.
         if payload == parent_digest {
@@ -973,21 +981,30 @@ async fn subscribe(
     round: Round,
     digest: Digest,
     marshal: &crate::alias::marshal::Mailbox,
+    body_source: Option<&mut u64>,
 ) -> eyre::Result<Block> {
-    let block = if let Some(block) = execution_node
+    let (block, source) = if let Some(block) = execution_node
         .provider
         .find_sealed_or_recovered_block(digest.0, BlockSource::Any)
         .wrap_err_with(|| format!("failed querying execution layer for parent block `{digest}`"))?
     {
         // EL database reads do not include commonware sidecars.
-        Block::from_execution_block_unchecked(block, None)
+        (Block::from_execution_block_unchecked(block, None), 1)
     } else {
-        (*marshal
-            .subscribe_by_digest(digest, DigestFallback::FetchByRound { round })
-            .await
-            .map_err(|_| eyre!("syncer dropped channel before the parent block was sent"))?)
-        .clone()
+        (
+            (*marshal
+                .subscribe_by_digest(digest, DigestFallback::FetchByRound { round })
+                .await
+                .map_err(|_| eyre!("syncer dropped channel before the parent block was sent"))?)
+            .clone(),
+            2,
+        )
     };
+    // Fixed acquisition codes: 1=EL, 2=marshal, 3=direct broadcast,
+    // 4=marshal after a selected unusable/closed broadcast response.
+    if let Some(body_source) = body_source {
+        *body_source = source;
+    }
     Ok(block)
 }
 
