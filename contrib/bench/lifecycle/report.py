@@ -260,8 +260,8 @@ def build(paths, warmup=5, window=None, expected_detail=None):
     details = {q['detail'] for q in quality}
     detail = next(iter(details)) if len(details) == 1 else 'mixed'
     detail_valid = detail in ('full', 'milestones') and (expected_detail is None or detail == expected_detail)
-    bad_capture = not detail_valid or any(not q['header'] or not q['footer'] or q['dropped'] or q['io_error'] or q['invalid_lines'] for q in quality)
-    # Lost events invalidate percentile completeness, even if some endpoints survived.
+    bad_capture = not detail_valid or any(not q['header'] or not q['footer'] or q['dropped'] or q['io_error'] or q['invalid_lines'] or q['open_spans'] for q in quality)
+    # Unexplained gaps invalidate completeness even when some blocks survived.
     representatives = {str(p): nearest_rank(eligible, p) if not bad_capture else None for p in (50,90,99)}
     attempts = sorted((s for s in spans if s['name'] == 'handle_propose'),
                       key=lambda s: (s['ts'], s['node'], s['id']))
@@ -284,6 +284,9 @@ def build(paths, warmup=5, window=None, expected_detail=None):
             node=attempt['node'], block=aliases.get(attempt.get('block')), status=status,
             start=start, end=end, duration=end-start, markers=markers, execution_totals=[],
             complete=status in ('cancelled', 'failed', 'associated')))
+    if any(a['status'] == 'unexplained_unassociated' for a in attempt_details):
+        bad_capture = True
+        representatives = {key: None for key in representatives}
     rows = []
     node_details = {q['node']: q['detail'] for q in quality}
     for s in spans:
@@ -355,6 +358,6 @@ if __name__ == '__main__':
     window = json.loads(args.window.read_text()) if args.window and args.window.exists() else (
         {'start_ns': 0, 'end_ns': 0, 'stop_reason': 'load_not_started'} if args.window else None)
     result = write_report(args.captures, args.out, args.warmup, window, args.prune, args.expected_detail)
-    print(f"Lifecycle report: {len(result['blocks'])} blocks, {result['eligible']} complete post-warmup blocks; capture loss: {result['bad_capture']}")
+    print(f"Lifecycle report: {len(result['blocks'])} blocks, {result['eligible']} complete post-warmup blocks; invalid capture: {result['bad_capture']}")
     if result['bad_capture'] or not result['eligible']:
         raise SystemExit(2)
