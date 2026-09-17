@@ -3,10 +3,12 @@ from pathlib import Path
 import re
 import hashlib
 import unittest
+from test_prebuilt_workflow import without_prebuilt
 
 
 def without_fault_scheduler(workflow):
-    """Reverse only the explicit new mode, preserving historical capacity hashes."""
+    """Reverse only explicit opt-ins, preserving historical capacity hashes."""
+    workflow=without_prebuilt(workflow)
     workflow=workflow.replace('          - lifecycle-kernel-faults\n','')
     workflow=workflow.replace(" || inputs.profiling == 'lifecycle-kernel-faults'",'')
     workflow=workflow.replace("inputs.profiling != 'lifecycle-kernel-faults' && ",'')

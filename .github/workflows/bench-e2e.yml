@@ -377,6 +377,9 @@ jobs:
       BENCH_CAPACITY_SLOT: ${{ matrix.slot }}
       BENCH_CAPACITY_SLOTS: "5"
       BENCH_CAPACITY_POLICY: "setup_failure_v2"
+      BENCH_BINARY_MODE: "prebuilt_v1"
+      # Filled only from the authenticated successful producer artifact; zero is deliberately inadmissible.
+      BENCH_PREBUILT_PLAN_SHA256: "0000000000000000000000000000000000000000000000000000000000000000"
       BENCH_LIFECYCLE: ${{ (inputs.profiling == 'lifecycle' || inputs.profiling == 'lifecycle-milestones' || inputs.profiling == 'lifecycle-compare-detail' || inputs.profiling == 'lifecycle-compare-prewarm-cpu' || inputs.profiling == 'lifecycle-kernel-faults') }}
       BENCH_LIFECYCLE_SCHEDULER: ${{ inputs.profiling == 'lifecycle-kernel-faults' }}
       BENCH_KERNEL_FAULT_BASELINE_EMPTY: ${{ inputs.baseline == '' }}
@@ -700,9 +703,9 @@ jobs:
             });
 
       - uses: tempoxyz/gh-actions/vendor/dtolnay/rust-toolchain@3626124474a987bc74b41fc7ae65b2e23f8e4e4e
-        if: steps.capacity-election.outputs.selected == 'true'
+        if: steps.capacity-election.outputs.selected == 'true' && (env.BENCH_BINARY_MODE != 'prebuilt_v1')
       - uses: tempoxyz/gh-actions/vendor/mozilla-actions/sccache-action@3626124474a987bc74b41fc7ae65b2e23f8e4e4e
-        if: steps.capacity-election.outputs.selected == 'true'
+        if: steps.capacity-election.outputs.selected == 'true' && (env.BENCH_BINARY_MODE != 'prebuilt_v1')
         continue-on-error: true
 
       - name: Install Node.js
@@ -712,7 +715,7 @@ jobs:
           node-version: 24
 
       - name: Install txgen
-        if: steps.capacity-election.outputs.selected == 'true'
+        if: steps.capacity-election.outputs.selected == 'true' && (env.BENCH_BINARY_MODE != 'prebuilt_v1')
         run: |
           CARGO_BIN_DIR="${CARGO_HOME:-$HOME/.cargo}/bin"
           echo "$CARGO_BIN_DIR" >> "$GITHUB_PATH"
@@ -732,7 +735,7 @@ jobs:
           command -v bench
 
       - name: Install tracy-capture
-        if: ${{ steps.capacity-election.outputs.selected == 'true' && (env.BENCH_TRACY != 'off') }}
+        if: ${{ steps.capacity-election.outputs.selected == 'true' && (env.BENCH_TRACY != 'off' && env.BENCH_BINARY_MODE != 'prebuilt_v1') }}
         run: |
           if command -v tracy-capture &>/dev/null; then
             command -v tracy-capture
@@ -763,7 +766,7 @@ jobs:
           command -v tracy-capture
 
       - name: Configure Tracy CPU sampling
-        if: ${{ steps.capacity-election.outputs.selected == 'true' && (env.BENCH_TRACY != 'off') }}
+        if: ${{ steps.capacity-election.outputs.selected == 'true' && (env.BENCH_TRACY != 'off' && env.BENCH_BINARY_MODE != 'prebuilt_v1') }}
         run: |
           sudo sysctl kernel.perf_event_paranoid=-1
           sudo sysctl kernel.kptr_restrict=0
@@ -857,6 +860,16 @@ jobs:
             core.setOutput('baseline-name', baselineName);
             core.setOutput('feature-ref', featureRef);
             core.setOutput('feature-name', featureName);
+
+      - name: Admit exact prebuilt binaries
+        if: steps.capacity-election.outputs.selected == 'true' && (env.BENCH_BINARY_MODE == 'prebuilt_v1')
+        env:
+          GH_TOKEN: ${{ github.token }}
+          PREBUILT_BASELINE_REF: ${{ steps.refs.outputs.baseline-ref }}
+          PREBUILT_FEATURE_REF: ${{ steps.refs.outputs.feature-ref }}
+        run: |
+          set -euo pipefail
+          python3 contrib/bench/lifecycle/prebuilt_workflow.py
 
       - name: Resolve PR attribution
         if: steps.capacity-election.outputs.selected == 'true'
@@ -1013,6 +1026,7 @@ jobs:
             exit 1
           fi
           cmd=(nu bench-e2e.nu e2e)
+          [ "$BENCH_BINARY_MODE" = "prebuilt_v1" ] && cmd+=(--prebuilt-directory "$BENCH_PREBUILT_DIRECTORY")
           cmd+=(
             --preset "$BENCH_PRESET"
             --bloat "$BENCH_BLOAT"
