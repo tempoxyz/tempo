@@ -636,7 +636,7 @@ jobs:
             install_args+=(--rev "${TXGEN_REV:-$BENCH_TXGEN_REF}")
           fi
 
-          cargo install "${install_args[@]}" txgen-tempo bench-cli
+          python3 .github/scripts/bench-owned-install.py install "${install_args[@]}" txgen-tempo bench-cli
           echo "TXGEN_TEMPO_BIN=$CARGO_BIN_DIR/txgen-tempo" >> "$GITHUB_ENV"
           echo "TXGEN_BENCH_BIN=$CARGO_BIN_DIR/bench" >> "$GITHUB_ENV"
           command -v txgen-tempo
