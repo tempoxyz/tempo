@@ -453,3 +453,16 @@ This branch accepts only manual lifecycle dispatches with Slack disabled. Use a
 fresh run rather than reusing artifacts across attempts. Transport tests run with
 `node --test .github/scripts/test-bench-capacity-reservation.cjs`; protocol and
 workflow gates are included in the lifecycle Python test suite.
+
+### Inline storage attempt counters
+
+The optional account-only `worker_inline_storage_attempts` and
+`worker_inline_storage_targets` counters measure attempted inline storage
+calculations and their input target-vector lengths, including failures and
+cancelled receivers. They are not storage-pool dequeues. The observer-only
+control emits measured zeroes; older captures without the pair remain unavailable.
+The exporter requires one unsaturated measured completion on the exact account
+worker and block, within its lifetime, and attempts no greater than the measured
+single-group eligibility count. It retains the pair in block totals and worker
+details. Compare summed account and storage worker CPU because this route moves
+work onto account workers; these counts do not establish saved work or speedup.
