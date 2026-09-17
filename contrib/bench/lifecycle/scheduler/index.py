@@ -149,8 +149,29 @@ class DiskRows:
         return dict(self.owner.totals)
 
 
+class RecordSummary:
+    """Validated record metadata without retained row payloads.
+
+    Report publication needs only registration times and the record count. Row
+    iteration is deliberately unavailable; callers needing it must use the
+    default full-record index or read the unchanged source capture.
+    """
+    def __init__(self, count, registrations):
+        self.count = count
+        self._registrations = dict(registrations)
+
+    def __len__(self):
+        return self.count
+
+    def __iter__(self):
+        raise TypeError('scheduler record payloads not retained; request retain_records=True')
+
+    def registrations(self):
+        return dict(self._registrations)
+
+
 class CaptureIndex:
-    def __init__(self, directory):
+    def __init__(self, directory, *, retain_records=True):
         self.directory = tempfile.TemporaryDirectory(prefix='.scheduler-index-', dir=directory)
         self.db = sqlite3.connect(str(Path(self.directory.name)/'anonymous.sqlite'))
         self.db.execute('PRAGMA page_size=4096')
@@ -159,7 +180,9 @@ class CaptureIndex:
         self.db.execute('PRAGMA synchronous=OFF')
         self.db.execute('PRAGMA cache_size=-8192')
         self.db.execute('PRAGMA temp_store=FILE')
-        self.db.execute('CREATE TABLE records(sequence INTEGER PRIMARY KEY, payload TEXT)')
+        self.retain_records = retain_records
+        if retain_records:
+            self.db.execute('CREATE TABLE records(sequence INTEGER PRIMARY KEY, payload TEXT)')
         self.db.execute('CREATE TABLE intervals(sequence INTEGER PRIMARY KEY, thread INTEGER, start INTEGER, end INTEGER, payload TEXT)')
         # Create before inserts: avoid a separate unbounded sort/temp filesystem.
         self.db.execute('CREATE INDEX interval_start ON intervals(thread,start)')
@@ -169,9 +192,10 @@ class CaptureIndex:
         self.wait_totals = {}
 
     def add(self, table, row):
-        payload = json.dumps(row,separators=(',',':'))
         if table == 'records':
-            self.db.execute('INSERT INTO records VALUES(?,?)',(self.counts[table],payload))
+            if self.retain_records:
+                self.db.execute('INSERT INTO records VALUES(?,?)',
+                                (self.counts[table],json.dumps(row,separators=(',',':'))))
             if row['kind'] == 'register':
                 if row['thread'] in self.registrations:
                     raise ValueError('ordinal reused')
@@ -188,12 +212,15 @@ class CaptureIndex:
             self.max_width[row['thread']] = max(self.max_width.get(row['thread'],0),width)
             self.totals[row['kind']] = self.totals.get(row['kind'],0)+width
             self.db.execute('INSERT INTO intervals VALUES(?,?,?,?,?)',
-                            (self.counts[table],row['thread'],row['start'],row['end'],payload))
+                            (self.counts[table],row['thread'],row['start'],row['end'],
+                             json.dumps(row,separators=(',',':'))))
         self.counts[table] += 1
 
     def finish(self, metadata):
         self.db.commit()
-        return dict(metadata,records=DiskRows(self,'records'),intervals=DiskRows(self,'intervals'))
+        records = (DiskRows(self,'records') if self.retain_records else
+                   RecordSummary(self.counts['records'], self.registrations))
+        return dict(metadata,records=records,intervals=DiskRows(self,'intervals'))
 
     def close(self):
         self.db.close()

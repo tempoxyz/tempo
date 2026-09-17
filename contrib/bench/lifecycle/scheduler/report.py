@@ -8,12 +8,12 @@ import time
 try:
     from .wait_reasons import REASONS, STATUSES, checked, counts, add_count
     from .failures import failure_summary
-    from .index import CaptureIndex, DiskRows, read_capture
+    from .index import CaptureIndex, DiskRows, RecordSummary, read_capture
     from .budget import Budget, CappedSink, FOCUSED_BYTES
 except ImportError:
     from wait_reasons import REASONS, STATUSES, checked, counts, add_count
     from failures import failure_summary
-    from index import CaptureIndex, DiskRows, read_capture
+    from index import CaptureIndex, DiskRows, RecordSummary, read_capture
     from budget import Budget, CappedSink, FOCUSED_BYTES
 
 KINDS = {'register', 'switch_out', 'switch_in', 'wakeup', 'exit', 'migration'}
@@ -106,8 +106,8 @@ def validate_wait_metadata(capture,source_modes,interval_modes,wait_counts):
         if supplied!=wait_counts:raise ValueError('kernel wait coverage mismatch')
 
 
-def indexed_capture(path, directory, process, cutoff, reason):
-    owner = CaptureIndex(directory)
+def indexed_capture(path, directory, process, cutoff, reason, *, retain_records=True):
+    owner = CaptureIndex(directory, retain_records=retain_records)
     previous = {}
     source_modes=set();interval_modes=set();wait_counts=counts();reason_codes=set()
     try:
@@ -139,7 +139,7 @@ def indexed_capture(path, directory, process, cutoff, reason):
 
 
 def source_registration(path, capture):
-    registrations = (capture['records'].registrations() if isinstance(capture['records'],DiskRows) else
+    registrations = (capture['records'].registrations() if isinstance(capture['records'],(DiskRows,RecordSummary)) else
                      {row['thread']:row['ts'] for row in capture['records'] if row['kind'] == 'register'})
     early = max_gap = 0
     with path.open() as stream:
@@ -158,7 +158,7 @@ def source_registration(path, capture):
 
 # A17M-edge sizing proof takes102s just to validate/publish one source.
 # Bound post-shutdown processing separately from the90s lifecycle-footer gate.
-def load(directory, out, window, timeout=900):
+def load(directory, out, window, timeout=900, *, retain_records=True):
     paths = [directory / f'scheduler-{role}.json.gz' for role in ('a','b')]
     deadline = time.monotonic() + timeout
     while not all(path.exists() for path in paths):
@@ -178,7 +178,7 @@ def load(directory, out, window, timeout=900):
                 header = json.loads(stream.readline())
             if header.get('scheduler') != 'registered_threads_v1':
                 raise ValueError('lifecycle scheduler registration header missing')
-            capture = indexed_capture(path, directory, index+1, cutoff, reason)
+            capture = indexed_capture(path, directory, index+1, cutoff, reason, retain_records=retain_records)
             result.append(capture)
             coverage.append(source_registration(out / f'{"ab"[index]}.jsonl', capture))
         # Both versions carry mandatory probe evidence; schema 2 retains its
@@ -198,8 +198,8 @@ def load(directory, out, window, timeout=900):
 
 def close(captures):
     for capture in captures:
-        if isinstance(capture['records'],DiskRows):
-            capture['records'].owner.close()
+        if isinstance(capture['intervals'],DiskRows):
+            capture['intervals'].owner.close()
 
 
 def scheduler_event_rows(captures, origin, low, high):

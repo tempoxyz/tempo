@@ -322,7 +322,7 @@ def write_report(paths, out, warmup=5, window=None, prune=False, expected_detail
         from scheduler.report import load, publish, close
         if not prune or data['bad_capture'] or not data['detail_valid']:
             raise ValueError('scheduler diagnostic requires a valid pruned lifecycle capture')
-        captures, coverage = load(scheduler_dir, out, window)
+        captures, coverage = load(scheduler_dir, out, window, retain_records=False)
     try:
         encoded = json.dumps(data, separators=(',',':')).replace('<', '\\u003c')
         (out/'lifecycle.json').write_text(encoded)

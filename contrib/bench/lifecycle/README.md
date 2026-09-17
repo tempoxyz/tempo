@@ -342,3 +342,12 @@ Both phase labels, environments and source worktrees remain separate. Mutable
 references, different inputs, ordinary benchmarks and `--no-cache` keep separate
 builds. Existing binary verification, same-binary admission and disk guards still
 apply; reuse does not establish additional cache or hardware compatibility.
+
+Scheduler report publication uses a summary-only record index: every source record
+is still parsed and validated, and counts and registration times are retained,
+but its JSON payload is not duplicated into SQLite. Interval indexing and source
+gzip copies are unchanged. Generic `indexed_capture`/`load` callers retain full
+record iteration by default; explicitly requesting `retain_records=False` returns
+a `RecordSummary` whose row iteration raises rather than returning an empty list.
+This changes only post-capture report work, not validator instrumentation or
+capture acceptance.
