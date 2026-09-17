@@ -105,6 +105,21 @@ ownership repair is a reproduced correctness fix, not a benchmark hypothesis.
 - [PR7708](https://github.com/tempoxyz/tempo/pull/7708) isolates journal-section preparation (storage/recovery, actual voter-loop ordering tests and a full Tempo compile check pass; node benchmark pending): one owned preparation task can overlap creation with an already-dispatched application request, and all append/prune/sync consumers recover the same journal before using it. It must preserve vote-sync ordering, cancellation and pruning; it has no measured node result yet.
 - The fixed-lookahead comparison now passes all ordinary audits and 12 Perfetto imports after a reviewed source-bound legacy-header compatibility correction. Its original controller rejection remains archived unchanged. More prewarming reduced loop waiting, but did not establish improved whole-block latency; see its row above.
 
+The durability trial's exact common-cohort follow-up found zero archive fsync
+overlap with body-ready-to-verification in all 175 blocks, as expected from the
+unchanged serial ordering. Its feature p90 examples contain 41.789 ms and
+15.195 ms of owned archive fsync union; the latter also has 2.326/3.455 ms of
+partition/header sync. These are actual per-block intervals, not summed stage
+quantiles or a causal explanation of the feature/control shift. They support
+testing archive overlap separately from parent-directory proof reuse.
+
+A remaining attribution gap is the new-payload request boundary: Tempo retains
+the verification request context, but Reth's queued message does not carry it.
+Execution still has exact block identity; repeated verification attempts cannot
+be distinguished by block identity alone. The overlap analysis therefore keeps
+block CPU separate and marks attempt-specific replay overlap unavailable across
+that gap. Body-ready-to-verification and owned archive ancestry remain measurable.
+
 ## Current questions above 5 ms
 
 [Full-lineage run35212362924](https://github.com/tempoxyz/tempo/actions/runs/35212362924)
