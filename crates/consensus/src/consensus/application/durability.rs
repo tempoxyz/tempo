@@ -3,6 +3,7 @@
 use std::future::Future;
 
 use eyre::ensure;
+use futures::future::{Either, select};
 
 /// A recovered candidate may be invalid or have been broadcast in a different
 /// parent context. Its presence must prevent releasing either that candidate or
@@ -20,6 +21,29 @@ pub(super) async fn build_fresh_proposal<T>(
     };
     let ((), proposal) = futures::try_join!(guard, build)?;
     Ok(proposal)
+}
+
+/// Poll both operations concurrently. A rejected block need not wait for its
+/// candidate write; a successful verdict must wait for the durability barrier.
+/// Dropping the observer does not cancel a sync already started by marshal.
+pub(super) async fn verify_and_persist(
+    verify: impl Future<Output = eyre::Result<bool>>,
+    persist: impl Future<Output = bool>,
+) -> eyre::Result<bool> {
+    futures::pin_mut!(verify, persist);
+    match select(verify, persist).await {
+        Either::Left((verdict, persist)) => {
+            if !verdict? {
+                return Ok(false);
+            }
+            ensure!(persist.await, "marshal refused to persist candidate");
+            Ok(true)
+        }
+        Either::Right((durable, verify)) => {
+            ensure!(durable, "marshal refused to persist candidate");
+            verify.await
+        }
+    }
 }
 
 #[cfg(test)]
@@ -65,5 +89,95 @@ mod tests {
         assert!(gate.as_mut().now_or_never().is_none());
         built_tx.send(42).unwrap();
         assert_eq!(block_on(gate).unwrap(), 42);
+    }
+
+    #[test]
+    fn cancelled_verification_drops_both_observers_after_store_start() {
+        let (verdict_tx, verdict_rx) = oneshot::channel::<bool>();
+        let (started_tx, started_rx) = oneshot::channel();
+        let (durable_tx, durable_rx) = oneshot::channel();
+        let mut gate = Box::pin(verify_and_persist(
+            async { Ok(verdict_rx.await.unwrap()) },
+            async {
+                started_tx.send(()).unwrap();
+                durable_rx.await.unwrap()
+            },
+        ));
+        assert!(gate.as_mut().now_or_never().is_none());
+        assert_eq!(block_on(started_rx), Ok(()));
+        drop(gate);
+        assert!(verdict_tx.is_canceled());
+        assert!(durable_tx.is_canceled());
+    }
+
+    #[test]
+    fn persistence_starts_while_verification_is_pending() {
+        let (verdict_tx, verdict_rx) = oneshot::channel();
+        let (started_tx, started_rx) = oneshot::channel();
+        let (durable_tx, durable_rx) = oneshot::channel();
+        let gate = verify_and_persist(async { Ok(verdict_rx.await.unwrap()) }, async {
+            started_tx.send(()).unwrap();
+            durable_rx.await.unwrap()
+        });
+        futures::pin_mut!(gate);
+        assert!(gate.as_mut().now_or_never().is_none());
+        assert_eq!(block_on(started_rx), Ok(()));
+        verdict_tx.send(true).unwrap();
+        assert!(gate.as_mut().now_or_never().is_none());
+        durable_tx.send(true).unwrap();
+        assert!(block_on(gate).unwrap());
+    }
+
+    #[test]
+    fn early_durability_does_not_release_an_unverified_block() {
+        let (verdict_tx, verdict_rx) = oneshot::channel();
+        let gate = verify_and_persist(async { Ok(verdict_rx.await.unwrap()) }, future::ready(true));
+        futures::pin_mut!(gate);
+        assert!(gate.as_mut().now_or_never().is_none());
+        verdict_tx.send(false).unwrap();
+        assert!(!block_on(gate).unwrap());
+    }
+
+    #[test]
+    fn invalid_block_does_not_wait_for_durability() {
+        assert!(
+            !block_on(verify_and_persist(
+                future::ready(Ok(false)),
+                future::pending()
+            ))
+            .unwrap()
+        );
+    }
+
+    #[test]
+    fn shutdown_cannot_release_a_valid_block() {
+        assert!(
+            block_on(verify_and_persist(
+                future::ready(Ok(true)),
+                future::ready(false)
+            ))
+            .is_err()
+        );
+        assert!(block_on(verify_and_persist(future::pending(), future::ready(false))).is_err());
+    }
+
+    #[test]
+    fn verification_error_does_not_become_a_valid_verdict() {
+        assert!(
+            block_on(verify_and_persist(
+                future::ready(Err(eyre::eyre!("execution unavailable"))),
+                future::ready(true),
+            ))
+            .is_err()
+        );
+    }
+
+    #[test]
+    #[should_panic(expected = "fatal storage failure")]
+    fn fatal_storage_errors_are_not_converted_to_rejection() {
+        block_on(verify_and_persist(future::pending(), async {
+            panic!("fatal storage failure");
+        }))
+        .unwrap();
     }
 }
