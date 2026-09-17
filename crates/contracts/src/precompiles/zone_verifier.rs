@@ -1,7 +1,7 @@
 //! ABI for the TIP-1098 native Zone verifier.
 
 crate::sol! {
-    /// Proof-agnostic Zone verifier ABI retained by TIP-1098.
+    /// Proof-agnostic Zone verifier ABI with the height binding required by TIP-1098.
     #[derive(Debug, PartialEq, Eq)]
     #[sol(abi)]
     interface IZoneVerifier {
@@ -28,6 +28,7 @@ crate::sol! {
             uint64 anchorBlockNumber,
             bytes32 anchorBlockHash,
             uint64 expectedWithdrawalBatchIndex,
+            uint256 nextZoneHeight,
             BlockTransition calldata blockTransition,
             DepositQueueTransition calldata depositQueueTransition,
             TokenEnablementTransition calldata tokenEnablementTransition,

@@ -1233,6 +1233,7 @@ mod tests {
             anchorBlockNumber: 1,
             anchorBlockHash: B256::ZERO,
             expectedWithdrawalBatchIndex: 0,
+            nextZoneHeight: U256::ZERO,
             blockTransition: IZoneVerifier::BlockTransition {
                 prevBlockHash: B256::ZERO,
                 nextBlockHash: B256::ZERO,
