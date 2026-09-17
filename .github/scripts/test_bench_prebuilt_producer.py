@@ -283,7 +283,7 @@ class CpuTests(unittest.TestCase):
 class WorkflowTests(unittest.TestCase):
     def test_fixed_source_private_artifact_and_no_compile_cache(self):
         source=(ROOT.parent/'workflows'/'build.yml').read_text()
-        for exact in [p.RUNTIME,p.TOOLS,p.IMAGE,'toolchain: 1.98.1','components: rustfmt','timeout-minutes: 90',
+        for exact in [p.RUNTIME,p.TOOLS,p.IMAGE,'rustup toolchain install 1.98.1 --target x86_64-unknown-linux-gnu','--component rustfmt --profile minimal --no-self-update','timeout-minutes: 90',
                       'depot-ubuntu-latest-16','persist-credentials: false','compression-level: 0']:
             self.assertIn(exact,source)
         for forbidden in ['sccache','MINIO','target-cpu=native','pull_request:','inputs.','id-token: write','github-sts']:
