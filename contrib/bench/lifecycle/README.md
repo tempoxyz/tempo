@@ -420,3 +420,13 @@ raw pruned capture retains the exact source evidence. The offline block pages sh
 only calls associated through the actual source span ancestry. An unassociated
 attempt remains unassociated. Actual clock precision is platform-dependent even
 though the encoded unit is nanoseconds.
+
+Lifecycle build or intermediate-trim failure removes only the disposable Git
+worktrees successfully created and recorded by this invocation, then rethrows
+its original diagnostic. Private receipts verify the directory and `.git` file
+identity before `git worktree remove`; a replaced path or failed removal is left
+alone, with no recursive deletion fallback. This assumes a single writer to the
+owned build area, not protection against an adversarial rename during removal.
+Failures while creating another worktree or recording ownership precede this
+narrow build/trim catch and are not covered. Disk thresholds, shared caches,
+snapshots, and benchmark state are unchanged by this failure cleanup.

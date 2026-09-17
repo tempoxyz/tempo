@@ -24,7 +24,7 @@ class BuildReuseTests(unittest.TestCase):
             body = '    let reuse_baseline_binary = '+source.split('    let reuse_baseline_binary = ', 1)[1].split('    let regenesis_tempo = ', 1)[0]
             # Run the production selection and loop. The builder is a filesystem
             # fixture, making a duplicate fetch/build observable as a second file.
-            script = 'source contrib/bench/lifecycle/run-plan.nu\n'
+            script = 'source contrib/bench/lifecycle/run-plan.nu\nsource contrib/bench/lifecycle/owned-worktrees.nu\nlet owned_build_worktrees = []\n'
             script += f'let builds = ({json.dumps(json.dumps(builds))} | from json)\n'
             script += f'let lifecycle = {str(enabled).lower()}; let effective_no_cache = {str(no_cache).lower()}\n'
             script += f'let baseline_wt = {json.dumps(str(root/"baseline"))}; let feature_wt = {json.dumps(str(root/"feature"))}\n'
