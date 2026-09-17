@@ -366,6 +366,7 @@ def write_report(paths, out, warmup=5, window=None, prune=False, expected_detail
     out.mkdir(parents=True, exist_ok=True)
     encoded = json.dumps(data, separators=(',',':')).replace('<', '\\u003c')
     (out/'lifecycle.json').write_text(encoded)
+    del encoded  # Release the full serialization before allocating package views.
     write_package(data, out)
     return data
 
