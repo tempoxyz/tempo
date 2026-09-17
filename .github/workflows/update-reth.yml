@@ -687,7 +687,7 @@ jobs:
 
           # Determine overall status
           JOB_STATUS="${JOB_STATUS_IN}"
-          MENTION="<!subteam^S09KMRP46D7|reth>"
+          MENTION="<!subteam^S0C0784UDQF|oncall-reth>"
           if [ "$JOB_STATUS" = "success" ]; then
             EMOJI="✅"
             STATUS="succeeded"
