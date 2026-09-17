@@ -259,8 +259,10 @@ fn finalizations_and_their_acknowledgements_precede_queued_verification() {
             .await;
 
         // While the slot is held, a validation and another finalization
-        // queue up. Nothing may reach the execution layer.
-        let verify = h.verify(round(2), b2.clone());
+        // queue up. Nothing may reach the execution layer. The validation is
+        // requested from a round above the finality announced below, so it
+        // is kept.
+        let verify = h.verify(round(3), b2.clone());
         futures::pin_mut!(verify);
         let sleep = h.run_for(Duration::from_millis(10));
         futures::pin_mut!(sleep);
