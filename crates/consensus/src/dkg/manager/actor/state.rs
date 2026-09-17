@@ -51,6 +51,10 @@ pub(super) fn builder() -> Builder {
     Builder::default()
 }
 
+/// Durable DKG state. Persistence failures panic, ending the actor before its
+/// in-memory protocol state or storage can be reused. Recover by reopening storage.
+///
+/// Writes must be awaited to completion or cancelled together with the actor.
 pub(super) struct Storage<TContext>
 where
     TContext: BufferPooler + commonware_runtime::Storage + Clock + Metrics,
@@ -1315,6 +1319,67 @@ mod tests {
                 "storage with an initial state must reopen with it"
             );
         });
+    }
+
+    #[test]
+    fn journal_write_failures_are_fatal() {
+        use futures::FutureExt as _;
+        use std::panic::AssertUnwindSafe;
+
+        // Network dealing and ACK failures are exercised by the actor tests.
+        // Cover finalized headers and dealer logs at the storage boundary.
+        for operation in ["append_finalized_header", "append_dealer_log"] {
+            deterministic::Runner::default().start(|mut context| async move {
+                let mut state = make_test_state(&mut context, 0);
+                state.is_full_dkg = true;
+                let mut storage = builder()
+                    .partition_prefix(operation)
+                    .init_unverified(context.child("storage"))
+                    .await
+                    .unwrap()
+                    .init_verified(state.clone())
+                    .await;
+                let header = TempoHeader::default();
+                storage
+                    .append_finalized_header(state.epoch, header.clone())
+                    .await;
+                let faults = context.storage_fault_config();
+                faults.write().sync_rate = Some(commonware_utils::probability!(1.0));
+                let result = AssertUnwindSafe(async move {
+                    match operation {
+                        "append_finalized_header" => {
+                            storage
+                                .append_finalized_header(state.epoch.next(), header.clone())
+                                .await
+                        }
+                        "append_dealer_log" => {
+                            let round = Round::from_state(&state, crate::config::NAMESPACE);
+                            let (dealer, _, _) = dkg::Dealer::start::<N3f1>(
+                                &mut context,
+                                round.info().clone(),
+                                PrivateKey::from_seed(0),
+                                None,
+                            )
+                            .unwrap();
+                            let (dealer, log) =
+                                dealer.finalize::<N3f1>().check(round.info()).unwrap();
+                            storage.append_dealer_log(state.epoch, dealer, log).await
+                        }
+                        _ => unreachable!(),
+                    }
+                })
+                .catch_unwind()
+                .await;
+                let panic = result.expect_err("a persistence failure must not return normally");
+                let message = panic
+                    .downcast_ref::<String>()
+                    .map(String::as_str)
+                    .or_else(|| panic.downcast_ref::<&str>().copied())
+                    .unwrap();
+                let expected = "failed to persist DKG event";
+                assert!(message.contains(expected), "{operation}: {message}");
+            });
+        }
     }
 
     #[test]

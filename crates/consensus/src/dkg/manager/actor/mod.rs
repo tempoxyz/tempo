@@ -322,6 +322,8 @@ where
             )
         });
 
+        // Await writes inside the selected branch, never as competing select
+        // futures. Cancelling this actor drops storage along with the write.
         loop {
             let mut shutdown = self.context.stopped().fuse();
             select!(
