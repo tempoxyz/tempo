@@ -358,7 +358,7 @@ def build(paths, warmup=5, window=None, expected_detail=None, expected_prewarm_c
                      'count': s.get('count'), 'elapsed_sum_ms': s.get('elapsed_ns',0)/1e6})
     attach_worker_details(rows, events)
     transfers, network_events, network_messages = build_lineage(events, spans, aliases, first)
-    return {'schema':1, 'capture_detail':detail, 'detail_valid':detail_valid,
+    return {'schema':1, 'time_origin_ns':first, 'capture_detail':detail, 'detail_valid':detail_valid,
             'prewarm_cpu':prewarm_data['mode'], 'prewarm_valid':prewarm_valid, 'prewarm':prewarm_data,
             'boundary': dict(boundary, relative_ms=(cutoff-first)/1e6) if boundary else None, 'blocks':blocks, 'spans':rows, 'transfers':transfers, 'network_events':network_events, 'network_messages':network_messages, 'quality':quality,
             'representatives':representatives, 'eligible':len(eligible), 'warmup':warmup,
