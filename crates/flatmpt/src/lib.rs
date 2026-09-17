@@ -1329,7 +1329,7 @@ mod tests {
             .unwrap()
             .into_sorted();
         let overlay_root = StateRoot::new(
-            NoopTrieCursorFactory,
+            NoopTrieCursorFactory::default(),
             HashedPostStateCursorFactory::new(FlatHashedCursorFactory { mpt: &parent }, &overlay),
         )
         .root()
