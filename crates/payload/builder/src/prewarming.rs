@@ -110,9 +110,13 @@ impl BestTransactionsPrewarming {
         // Scoped leaves share this immutable context until they all join. Drop
         // its handles before the guard clears the builder-owned worker state.
         let prewarm = ctx.prewarm.clone();
+        // The command channel stays fixed for this coordinator. Keep one sender
+        // for the joined scope instead of retaining another handle in every job.
+        let commands_tx = ctx.commands_tx.clone();
 
         pool.in_place_scope(|scope| {
             let prewarm = &prewarm;
+            let commands_tx = &commands_tx;
             scope.spawn(move |_| {
                 pool.broadcast_fn(|| {
                     prewarming_state::initialize(&BUILDER_PREWARM, &prewarm.stop, || {
@@ -135,7 +139,6 @@ impl BestTransactionsPrewarming {
                 };
 
                 let parallel = prewarm.parallel;
-                let commands_tx = ctx.commands_tx.clone();
                 let transactions_tx = ctx.transactions_tx.clone();
 
                 if !parallel {
@@ -196,6 +199,7 @@ impl BestTransactionsPrewarming {
                 }
             }
         });
+        drop(commands_tx);
         drop(prewarm);
         // The existing scope has joined every leaf. Normal TLS cleanup is excluded.
         observer.finish();
