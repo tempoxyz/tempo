@@ -38,7 +38,7 @@ pub struct TempoTransactionRequest {
     pub inner: TransactionRequest,
 
     /// Optional fee token preference
-    #[serde(default)]
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub fee_token: Option<Address>,
 
     /// Optional nonce key for a 2D [`TempoTransaction`].
@@ -46,17 +46,17 @@ pub struct TempoTransactionRequest {
     pub nonce_key: Option<U256>,
 
     /// Optional calls array, for Tempo transactions.
-    #[serde(default)]
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub calls: Vec<Call>,
 
     /// Optional key type for gas estimation of Tempo transactions.
     /// Specifies the signature verification algorithm to calculate accurate gas costs.
-    #[serde(default)]
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub key_type: Option<SignatureType>,
 
     /// Optional key-specific data for gas estimation (e.g., webauthn authenticator data).
     /// Required when key_type is WebAuthn to calculate calldata gas costs.
-    #[serde(default)]
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub key_data: Option<Bytes>,
 
     /// Optional access key ID for gas estimation.
@@ -879,5 +879,39 @@ mod tests {
             roundtrip.calls, batch,
             "multi-call AA must not gain phantom calls on round-trip"
         );
+    }
+
+    #[test]
+    fn unset_tempo_fields_are_omitted() {
+        use alloy_network::TransactionBuilder as _;
+
+        let mut request = TempoTransactionRequest::default();
+        request.set_to(Address::ZERO);
+
+        let json = serde_json::to_string(&request).expect("request serializes");
+        assert_eq!(
+            json,
+            r#"{"to":"0x0000000000000000000000000000000000000000"}"#
+        );
+
+        let round_tripped: TempoTransactionRequest =
+            serde_json::from_str(&json).expect("request deserializes");
+        assert_eq!(round_tripped.fee_token, None);
+        assert_eq!(round_tripped.key_type, None);
+        assert_eq!(round_tripped.key_data, None);
+        assert!(round_tripped.calls.is_empty());
+    }
+
+    #[test]
+    fn set_tempo_fields_are_serialized() {
+        let request = TempoTransactionRequest::default()
+            .with_fee_token(Address::ZERO)
+            .with_key_type(SignatureType::P256)
+            .with_key_data(Bytes::from_static(&[0x05, 0x78]));
+
+        let json = serde_json::to_string(&request).expect("request serializes");
+        assert!(json.contains(r#""feeToken":"#), "{json}");
+        assert!(json.contains(r#""keyType":"#), "{json}");
+        assert!(json.contains(r#""keyData":"#), "{json}");
     }
 }
