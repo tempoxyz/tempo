@@ -174,6 +174,10 @@ where
     fn converter(&self) -> &Self::RpcConvert {
         self.inner.converter()
     }
+
+    fn eth_api_settings(&self) -> &EthApiSettings {
+        self.inner.eth_api_settings()
+    }
 }
 
 impl<N> RpcNodeCore for TempoEthApi<N>
