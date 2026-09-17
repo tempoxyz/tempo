@@ -19,6 +19,102 @@ def event(stage, ts, node=A, block=None, span=1, **fields):
 
 
 class NetworkLineageTests(unittest.TestCase):
+    def test_proposal_and_body_codec_membership_is_message_local(self):
+        spans = [dict(node=A, id=1, parent=None, name='batch', block=None)]
+        events = []
+        for i, blocks in [(10, ['a', 'b']), (20, ['c'])]:
+            spans.append(dict(node=A, id=i, parent=1, name='network.codec.send_ref', block=None))
+            events += [event('message_origin', i, span=i, message_id=i),
+                       event('frame_send', i+1, frame_hash=str(i), message_id=i),
+                       event('frame_receive', i+2, B, frame_hash=str(i), receive_id=i),
+                       event('message_decode', i+3, B, span=i, receive_id=i),
+                       event('message_decode_result', i+4, B, span=i, receive_id=i, accepted=int(i == 10))]
+            spans.append(dict(node=B, id=i, parent=None, name='network.codec.recv', block=None))
+            for j, block in enumerate(blocks, 1):
+                spans += [dict(node=A, id=i+j, parent=i, name='simplex.proposal.write' if i == 10 else 'block.write', block=block, fields={'block_hash':block}),
+                          dict(node=B, id=i+j, parent=i, name='simplex.proposal.read' if i == 10 else 'block.read_cfg', block=block, fields={'block_hash':block})]
+        # Unrelated journal/codec work shares a batch ancestor but no per-message codec.
+        spans += [dict(node=A, id=90, parent=1, name='simplex.proposal.write', block='d', fields={'block_hash':'d'}),
+                  dict(node=B, id=90, parent=None, name='simplex.proposal.read', block='d', fields={'block_hash':'d'})]
+        transfers, _, messages = build_lineage(events, spans, dict(a=1, b=2, c=3, d=4), 0)
+        self.assertEqual([t['encode_scope_blocks'] for t in transfers], [[1, 2], [3]])
+        self.assertEqual([t['decode_scope_blocks'] for t in transfers], [[1, 2], [3]])
+        self.assertEqual([t['source_blocks'] for t in transfers], [[], []])
+        self.assertEqual([t['decode_result'] for t in transfers], [True, False])
+        self.assertEqual([m['encode_membership'] for m in messages], ['observed', 'observed'])
+
+    def test_ambiguous_codec_origins_and_decode_scopes_remain_unknown(self):
+        for duplicate_id in [False, True]:
+            spans = [dict(node=A, id=1, parent=None, name='network.codec.send_ref', block=None),
+                     dict(node=A, id=2, parent=1, name='simplex.proposal.write', block='a', fields={'block_hash':'a'}),
+                     dict(node=B, id=1, parent=None, name='network.codec.recv', block=None),
+                     dict(node=B, id=2, parent=1, name='simplex.proposal.read', block='a', fields={'block_hash':'a'})]
+            events = [event('message_origin', 1, message_id=1),
+                      event('message_origin', 2, message_id=1 if duplicate_id else 2),
+                      event('frame_send', 3, frame_hash='f', message_id=1),
+                      event('frame_receive', 4, B, frame_hash='f', receive_id=1),
+                      event('message_decode', 5, B, receive_id=1),
+                      event('message_decode', 6, B, receive_id=2)]
+            transfers, _, messages = build_lineage(events, spans, {'a': 1}, 0)
+            self.assertEqual(transfers[0]['blocks'], [])
+            self.assertTrue(all(m['encode_membership'] == 'unknown' for m in messages))
+        # No origin or decode marker: nearby codec scopes never supply membership.
+        transfers, _, _ = build_lineage(events[2:4], spans, {'a': 1}, 0)
+        self.assertEqual(transfers[0]['blocks'], [])
+
+    def test_absent_invalid_origin_and_inherited_identity_do_not_claim_membership(self):
+        spans = [dict(node=A, id=1, parent=None, name='network.codec.send_ref', block='a', fields={'block_hash':'a'}),
+                 dict(node=A, id=2, parent=1, name='block.write', block='a', fields={})]
+        for ordinal in [None, 0, False, 'private', -1]:
+            fields = {} if ordinal is None else {'message_id':ordinal}
+            _, _, messages = build_lineage([event('message_origin', 1, **fields)], spans, {'a':1}, 0)
+            self.assertEqual(messages, [])
+        spans += [dict(node=B, id=1, parent=None, name='network.codec.recv', block=None, fields={}),
+                  dict(node=B, id=2, parent=1, name='simplex.proposal.read', block='a', fields={}),
+                  dict(node=B, id=3, parent=1, name='simplex.proposal.read', block='b', fields={'block_hash':'b'})]
+        events = [event('message_origin', 1, message_id=1),
+                  event('frame_send', 2, frame_hash='f', message_id=1),
+                  event('frame_receive', 3, B, frame_hash='f', receive_id=1),
+                  event('message_decode', 4, B, receive_id=1)]
+        transfers, _, messages = build_lineage(events, spans, {'a':1,'b':2}, 0)
+        self.assertEqual(transfers[0]['encode_scope_blocks'], [])
+        self.assertEqual(transfers[0]['encode_membership'], 'unknown')
+        self.assertEqual(transfers[0]['decode_scope_blocks'], [2])
+        self.assertEqual(transfers[0]['decode_membership'], 'observed')
+        self.assertEqual(messages[0]['encode_membership'], 'unknown')
+
+    def test_real_report_uses_own_codec_field_and_prunes_cutoff_record(self):
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory)/'a.jsonl'; fixture(path)
+            records = [json.loads(line) for line in path.read_text().splitlines()]
+            start = 1_000_000_000
+            extra = [dict(type='start', id=201, ts=start+110, thread=1,
+                          name='network.codec.recv', category='lifecycle', parent=1, fields={}),
+                     dict(type='start', id=202, ts=start+120, thread=1,
+                          name='simplex.proposal.read', category='lifecycle', parent=201, fields={}),
+                     dict(type='fields', id=202, ts=start+150, fields={'block_hash':f'{2:024x}'}),
+                     dict(type='end', id=202, ts=start+160),
+                     dict(type='end', id=201, ts=start+170)]
+            for stage, offset, ident, fields in [
+                ('frame_send', 100, 0, dict(frame_hash='a'*24)),
+                ('frame_receive', 105, 0, dict(frame_hash='a'*24, receive_id=1)),
+                ('message_decode', 115, 201, dict(receive_id=1)),
+                ('message_decode_result', 165, 201, dict(receive_id=1, accepted=0)),
+            ]:
+                extra.append(dict(type='event', id=ident, ts=start+offset, fields=dict(stage=stage, **fields)))
+            records[-1:-1] = extra
+            path.write_text('\n'.join(map(json.dumps, records)))
+            data = build([path], warmup=0)
+            self.assertEqual(data['transfers'][0]['decode_scope_blocks'], [2])
+            self.assertFalse(data['transfers'][0]['decode_result'])
+            out = Path(directory)/'report'; write_package(data, out)
+            exported = json.loads((out/'network-lineage.json').read_text())
+            self.assertEqual(exported['transfers'][0]['decode_scope_blocks'], [2])
+            self.assertTrue(any(e.get('args',{}).get('decode_scope_blocks') == [2] for e in trace_events(data)))
+            pruned = build([path], warmup=0, window={'backpressure':dict(ts=start+150,node=A)})
+            self.assertEqual(pruned['transfers'][0]['decode_scope_blocks'], [])
+            self.assertIsNone(pruned['transfers'][0]['decode_result'])
+
     def test_distinct_batch_origins_and_fanout_keep_exact_frames(self):
         events = [event('message_origin', 0, block='a', message_id=1),
                   event('message_origin', 1, block='b', message_id=2)]
@@ -40,7 +136,11 @@ class NetworkLineageTests(unittest.TestCase):
             events += [event('frame_send', i*10, message_id=1, frame_hash=str(i)),
                        event('frame_receive', i*10+1, B, receive_id=i, frame_hash=str(i)),
                        event('message_decode', i*10+2, B, span=i+10, receive_id=i, block=block)]
-        transfers, rows, _ = build_lineage(events, [], {'a':11, 'b':22}, 0)
+        spans = []
+        for i, block in [(1, 'a'), (2, 'b')]:
+            spans += [dict(node=B, id=i+10, parent=None, name='network.codec.recv', block=None),
+                      dict(node=B, id=i+20, parent=i+10, name='block.read_cfg', block=block, fields={'block_hash':block})]
+        transfers, rows, _ = build_lineage(events, spans, {'a':11, 'b':22}, 0)
         self.assertEqual([t['blocks'] for t in transfers], [[11], [22]])
         for stage in ['frame_send', 'frame_receive', 'message_decode']:
             self.assertEqual([e['blocks'] for e in rows if e['stage'] == stage], [[11], [22]])
@@ -72,8 +172,8 @@ class NetworkLineageTests(unittest.TestCase):
                   event('message_decode_result', 4, B, span=7, receive_id=1, accepted=0),
                   event('message_decode_result', 5, A, span=7, receive_id=1, accepted=1)]
         spans = [dict(node=B, id=7, parent=None, name='network.codec.decode', block=None),
-                 dict(node=B, id=8, parent=7, name='block.read_cfg', block='a'),
-                 dict(node=B, id=9, parent=7, name='block.read_cfg', block='b')]
+                 dict(node=B, id=8, parent=7, name='block.read_cfg', block='a', fields={'block_hash':'a'}),
+                 dict(node=B, id=9, parent=7, name='block.read_cfg', block='b', fields={'block_hash':'b'})]
         transfers, _, _ = build_lineage(events, spans, {'a':11, 'b':22}, 0)
         self.assertEqual(transfers[0]['decode_scope_blocks'], [11, 22])
         self.assertEqual(transfers[0]['source_blocks'], [])
