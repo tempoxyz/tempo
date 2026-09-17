@@ -12,24 +12,11 @@ import threading
 import time
 
 from diagnostic import ROOT, decode, preflight, verify_marker
+from failures import failure_code, failure_summary
 sys.path.insert(0, str(ROOT.parent))
 from backpressure import first_boundary
 
 MAX_BYTES = 256 * 1024 * 1024
-FAILURE_STAGES = frozenset(('configuration', 'capability', 'marker', 'capture', 'cutoff', 'decode', 'publish'))
-
-
-def failure_summary(directory):
-    rows = []
-    for role in ('a', 'b'):
-        try:
-            with (directory / f'scheduler-{role}.failed').open() as source:
-                value = source.read(128).strip()
-        except OSError:
-            value = 'unavailable'
-        stage = value if value in FAILURE_STAGES else 'unavailable'
-        rows.append(f'Scheduler validator {role}: startup/capture failure category {stage}')
-    return rows
 
 
 def publish_capture(output, result):
@@ -169,8 +156,10 @@ def main():
                 stdout, stderr, status = capture(['bpftrace', '-q', '-k', '-c', child, str(program)], (launch,))
             finally:
                 os.close(launch)
-        if status or stderr.strip():
-            raise ValueError('scheduler capture tool failed')
+        if status:
+            raise ValueError('scheduler capture tool exited unsuccessfully')
+        if stderr.strip():
+            raise ValueError('scheduler capture tool reported diagnostics')
         stage = 'cutoff'
         cutoff, reason = final_cutoff(args.directory)
         stage = 'decode'
@@ -180,11 +169,11 @@ def main():
         stage = 'publish'
         publish_capture(output, result)
         return 0
-    except (ValueError, OSError, KeyError, subprocess.SubprocessError):
+    except (ValueError, OSError, KeyError, subprocess.SubprocessError) as error:
         # Neither exception strings nor commands can escape: either can contain
         # a native identity, environment value, path, or child-process output.
         try:
-            failure.write_text(stage + '\n')
+            failure.write_text(failure_code(stage, error) + '\n')
         except OSError:
             pass
         return 1

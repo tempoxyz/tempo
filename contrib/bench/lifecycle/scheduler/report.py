@@ -3,6 +3,10 @@ from collections import Counter
 import json
 from pathlib import Path
 import time
+try:
+    from .failures import failure_summary
+except ImportError:
+    from failures import failure_summary
 
 KINDS = {'register', 'switch_out', 'switch_in', 'wakeup', 'exit', 'migration'}
 INTERVALS = {'scheduled_on_cpu', 'runnable_off_cpu', 'blocked_before_wakeup',
@@ -75,7 +79,7 @@ def load(directory, out, window, timeout=90):
     deadline = time.monotonic() + timeout
     while not all(path.exists() for path in paths):
         if any((directory / f'scheduler-{role}.failed').exists() for role in ('a','b')):
-            raise ValueError('scheduler supervisor failed; diagnostic unavailable')
+            raise ValueError('scheduler supervisor failed; diagnostic unavailable; ' + '; '.join(failure_summary(directory)))
         if time.monotonic() > deadline:
             raise ValueError('scheduler capture not finalized')
         time.sleep(.1)
