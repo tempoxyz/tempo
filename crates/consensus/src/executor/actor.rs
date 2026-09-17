@@ -29,12 +29,17 @@
 //!
 //! # Execution failures
 //!
-//! An INVALID block is INVALID for good, and so is every descendant: the
-//! execution layer caches the rejection. A walk therefore stops at the first
-//! INVALID. For verification that is the candidate's verdict; convergence
-//! stops until a newer consensus context selects the same head again or a
-//! finalized block is delivered. Other verification and build failures end
-//! the affected request.
+//! An INVALID answer ends the walk that received it. A block that fails
+//! validation is cached as invalid by the execution layer, which then answers
+//! INVALID for it and for every descendant, so re-probing learns nothing.
+//! The one rejection the execution layer does not cache is a timestamp ahead
+//! of our clock; a candidate built on such an ancestor would fail the same
+//! check, so the verdict stands, and the pending head gets another chance
+//! through the restarts below. For verification an INVALID is the
+//! candidate's verdict, whether it was the candidate or an ancestor that was
+//! rejected. Convergence stops until a newer consensus context selects the
+//! same head again or a finalized block is delivered. Other verification and
+//! build failures end the affected request.
 //!
 //! An engine call that fails outright, rather than answering with a payload
 //! status, is fatal wherever it happens. The execution layer runs in this
@@ -407,22 +412,22 @@ where
                     }
                 }
 
-                wake = async {
+                event = async {
                     match &mut self.pending_consensus_request {
-                        Some((_, ConsensusRequest::Verify(pending))) => pending.wake().await,
+                        Some((_, ConsensusRequest::Verify(pending))) => pending.next_event().await,
                         _ => std::future::pending().await,
                     }
                 } => {
-                    self.handle_verification_wake(wake);
+                    self.handle_verification_event(event);
                 }
 
-                wake = async {
+                event = async {
                     match &mut self.convergence {
-                        Some(walk) => walk.wake().await,
+                        Some(walk) => walk.next_event().await,
                         None => std::future::pending().await,
                     }
                 } => {
-                    self.handle_convergence_wake(wake);
+                    self.handle_convergence_event(event);
                 }
 
                 Some(delivered) = self.payload_jobs.next() => {
@@ -1231,29 +1236,29 @@ where
         }
     }
 
-    fn handle_convergence_wake(&mut self, wake: WalkWake) {
+    fn handle_convergence_event(&mut self, event: WalkEvent) {
         let Some(walk) = &mut self.convergence else {
             return;
         };
-        match wake {
-            WalkWake::Fetched(Some(block)) => walk.on_fetched(block),
-            WalkWake::Fetched(None) => {
+        match event {
+            WalkEvent::Fetched(Some(block)) => walk.on_fetched(block),
+            WalkEvent::Fetched(None) => {
                 warn!("marshal dropped the ancestor subscription; retrying the fetch");
                 walk.start_parent_fetch(&self.execution_node, &self.marshal);
             }
-            WalkWake::Canceled => {}
+            WalkEvent::Canceled => {}
         }
     }
 
-    fn handle_verification_wake(&mut self, wake: WalkWake) {
+    fn handle_verification_event(&mut self, event: WalkEvent) {
         let Some((_, ConsensusRequest::Verify(pending))) = &mut self.pending_consensus_request
         else {
             return;
         };
-        match wake {
-            WalkWake::Canceled => self.pending_consensus_request = None,
-            WalkWake::Fetched(Some(block)) => pending.walk.on_fetched(block),
-            WalkWake::Fetched(None) => {
+        match event {
+            WalkEvent::Canceled => self.pending_consensus_request = None,
+            WalkEvent::Fetched(Some(block)) => pending.walk.on_fetched(block),
+            WalkEvent::Fetched(None) => {
                 warn!(
                     "marshal dropped the verification ancestor subscription; failing the request"
                 );
@@ -1525,8 +1530,8 @@ struct PendingVerification {
     duration: Duration,
 }
 
-/// Why the event loop woke up for a walk.
-enum WalkWake {
+/// What a walk's wait resolved to.
+enum WalkEvent {
     /// The verification's requester went away.
     Canceled,
     /// The ancestor fetch resolved; `None` if the marshal actor dropped it.
@@ -1552,8 +1557,9 @@ impl PendingVerification {
             .is_some_and(|response| response.is_canceled())
     }
 
-    /// Resolves when the requester cancels or the walk's wait completes.
-    async fn wake(&mut self) -> WalkWake {
+    /// Drives the walk's wait, if any, and resolves when it completes or the
+    /// requester cancels.
+    async fn next_event(&mut self) -> WalkEvent {
         let Self { walk, response, .. } = self;
         select! {
             biased;
@@ -1563,8 +1569,8 @@ impl PendingVerification {
                     Some(response) => response.cancellation().await,
                     None => std::future::pending().await,
                 }
-            } => WalkWake::Canceled,
-            wake = walk.wake() => wake,
+            } => WalkEvent::Canceled,
+            event = walk.next_event() => event,
         }
     }
 }
@@ -1622,10 +1628,14 @@ enum WalkOutcome {
     /// The cursor's parent is missing above the finalized tip; the owner
     /// starts its fetch.
     NeedsParent,
+    /// The target itself returned VALID: it is executed and connected to the
+    /// canonical chain.
     TargetValid,
-    /// The cursor was rejected. The execution layer caches the rejection and
-    /// answers INVALID for every descendant, so this is the target's verdict
-    /// whether the cursor is the target or an ancestor.
+    /// The cursor was rejected. This is the target's verdict whether the
+    /// cursor is the target or an ancestor: the execution layer answers
+    /// INVALID for every descendant of a cached rejection, and the one
+    /// uncached rejection, a timestamp ahead of our clock, would fail the
+    /// target too.
     Invalid,
     /// The cursor's parent is the finalized tip and was delivered already,
     /// yet the execution layer still says SYNCING. The walk cannot descend
@@ -1692,11 +1702,11 @@ impl AncestryWalk {
         self.step = WalkStep::Stopped;
     }
 
-    /// Resolves when the step's fetch completes. The owner replaces the step
-    /// before the walk is polled again.
-    async fn wake(&mut self) -> WalkWake {
+    /// Drives the step's fetch, if any, and resolves when it completes. The
+    /// owner replaces the step before the walk is polled again.
+    async fn next_event(&mut self) -> WalkEvent {
         match &mut self.step {
-            WalkStep::FetchParent(fetch) => WalkWake::Fetched(fetch.await),
+            WalkStep::FetchParent(fetch) => WalkEvent::Fetched(fetch.await),
             WalkStep::Probe
             | WalkStep::InFlight
             | WalkStep::WaitForFinalized { .. }
