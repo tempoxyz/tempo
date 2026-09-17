@@ -65,7 +65,7 @@ def trace_events(data, block_id=None):
         intervals.append((nodes[t['from']], 'network', 'frame context',
                           round(t['start'] * 1_000_000), round(t['end'] * 1_000_000),
                           'encrypted frame transfer [' + ('associated' if t.get('blocks') else 'context') + ']',
-                          {**{k:v for k,v in t.items() if k not in ('start', 'end')}, 'semantics': 'encryption complete to ciphertext receipt, not pure wire time; ' + ('block sets describe causal source/decode scopes' if t.get('blocks') else 'no block attribution')}))
+                          {**{k:v for k,v in t.items() if k not in ('start', 'end')}, 'semantics': 'encryption complete to ciphertext receipt, not pure wire time; ' + ('block sets describe causal source or codec membership, not byte attribution or semantic validation' if t.get('blocks') else 'no block attribution')}))
 
     metadata = []
     events = []

@@ -218,16 +218,16 @@ capture even when some blocks completed. The exporter still publishes diagnostic
 pages, suppresses percentile selections, and fails the benchmark phase. Expected
 spans censored at the recorded backpressure cutoff remain valid. It does not diagnose
 performance. Per-block operations use explicit digest/payload association and
-parentage. A frame pair proves a transport transfer but is not yet joined to an
-application block across all queue boundaries; those transfers remain explicitly
+parentage. Private transport ordinals join authenticated frames through queues
+and codecs. Explicit body/proposal codec scopes establish block membership where
+available; unmatched, control and later-decoded opaque resolver payloads remain
 labeled context. Broad parent spans also include uninstrumented work. Neither
 blank time nor a broad span is claimed to be a fully explained CPU interval.
 
-Closing those remaining gaps requires propagating a local message envelope ID
-through network fanout and batching, transport queue enqueue/dequeue markers, and scheduler/off-CPU
-profiling if kernel attribution is needed. Such IDs must remain source-filtered
-and must not alter network messages. Use this draft's coverage inventory to
-verify those additions before beginning the separate investigation phase.
+Remaining application gaps require explicit context propagation through opaque
+resolver delivery and protocol paths that do not decode under a per-message codec.
+Do not infer them from time proximity or round/height coincidence. Scheduler
+context is a separate opt-in diagnostic and does not supply application membership.
 
 ### Operation completion and reference lifetimes
 
@@ -435,8 +435,10 @@ transaction payload, new payload hash, or retained tracing-span handle is added.
 including unmatched, rejected, control and ambiguous records. The context chunks
 partition every marker exactly once; focused block pages/Perfetto include linked
 markers and frames even when they fall outside proposal-to-finalization time.
-`source_blocks` identifies originating causal scopes; `decode_scope_blocks`
-identifies block scopes encountered while decoding. Both are sets, not a claim
+`source_blocks` identifies originating causal scopes. `encode_scope_blocks` and
+`decode_scope_blocks` identify explicit body/proposal fields observed inside a
+uniquely matched per-message codec. Inherited ancestor identity does not count as
+codec membership. Missing/ambiguous origins or codec scopes remain unknown. Both are sets, not a claim
 that every protocol message contains exactly one block. A failed decode can still
 have an observed block scope. Authentication and decode success have separate
 markers; absence means unobserved. An encryption marker alone does not prove a
@@ -472,3 +474,26 @@ must not be added. Sender residence remains unknown because sender queue IDs do
 not identify a downstream peer dequeue. Rejection is not admission; missing,
 duplicate, inconsistent, or cutoff-pruned endpoints leave residence unknown.
 No nearest-time join, payload, peer identity or new wire bytes are introduced.
+
+
+### Application membership coverage
+
+Full captures observe body `block.write`/`block.read_cfg` and Simplex
+`simplex.proposal.write`/`simplex.proposal.read` scopes. Proposal scopes cover
+notarize/finalize votes, notarization/finalization certificates, and multi-proposal
+backfill responses encoded or decoded inside the retained network codec. Nullify
+messages and requests containing only views/heights do not have a block digest.
+Journal/local codec work outside that unique network scope supplies no membership.
+A failed outer decode can contain an observed inner proposal; decode acceptance,
+authentication and consensus validation remain separate outcomes. Block sets are
+message/frame membership, not exclusive byte or elapsed-time attribution.
+
+Opaque marshal resolver response bytes are decoded after the generic network
+codec has returned. Those later reads do not yet have an explicit receive ordinal;
+source ancestry may associate some responses, but complete receiver membership is
+unknown. DKG/discovery/control traffic has no general single-block interpretation.
+External transports using the default context-free receiver and Reth transaction
+gossip do not gain Commonware frame linkage. Reduced-detail captures omit the
+codec scopes, so they cannot establish this full-capture membership inventory.
+The additional scopes use the existing source-salted digest allowlist; no new
+wire bytes, identity fields or payload copies are introduced.
