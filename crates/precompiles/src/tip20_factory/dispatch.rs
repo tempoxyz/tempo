@@ -15,11 +15,11 @@ impl Precompile for TIP20Factory {
             calldata,
             |call| match call {
                 ITIP20Factory::ITIP20FactoryCalls {
-                    createToken_0(call) => mutate(call, msg_sender, |s, c| self.create_token(s, c)),
+                    createToken_0(call) => mutate(self, call, msg_sender, |this, s, c| this.create_token(s, c)),
                     #[schedule(since = T5)]
-                    createToken_1(call) => mutate(call, msg_sender, |s, c| self.create_token_with_logo(s, c)),
-                    isTIP20(call) => view(call, |c| self.is_tip20(c.token)),
-                    getTokenAddress(call) => view(call, |c| self.get_token_address(c)),
+                    createToken_1(call) => mutate(self, call, msg_sender, |this, s, c| this.create_token_with_logo(s, c)),
+                    isTIP20(call) => view(self, call, |this, c| this.is_tip20(c.token)),
+                    getTokenAddress(call) => view(self, call, |this, c| this.get_token_address(c)),
                 }
             },
         )

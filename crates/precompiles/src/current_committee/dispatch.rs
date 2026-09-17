@@ -1,7 +1,7 @@
 //! ABI dispatch for the [`CurrentCommittee`] precompile.
 
 use crate::{
-    Precompile, charge_input_cost, current_committee::CurrentCommittee, dispatch, mutate_void, view,
+    Precompile, charge_input_cost, current_committee::CurrentCommittee, dispatch, mutate, view,
 };
 use alloy::primitives::Address;
 use revm::precompile::PrecompileResult;
@@ -19,9 +19,9 @@ impl Precompile for CurrentCommittee {
             calldata,
             |call| match call {
                 ICurrentCommittee::ICurrentCommitteeCalls {
-                    getCommitteeMembers(call) => view(call, |_| self.get_committee_members()),
+                    getCommitteeMembers(call) => view(self, call, |this, _| this.get_committee_members()),
                     setCommitteeMembers(call) => {
-                        mutate_void(call, msg_sender, |s, c| self.set_committee_members(s, c))
+                        mutate(self, call, msg_sender, |this, s, c| this.set_committee_members(s, c))
                     }
                 }
             }

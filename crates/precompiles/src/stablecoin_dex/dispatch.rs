@@ -5,7 +5,7 @@ use revm::precompile::PrecompileResult;
 use tempo_contracts::precompiles::IStablecoinDEX;
 
 use crate::{
-    Precompile, charge_input_cost, dispatch, mutate, mutate_void, preserve_storage_credits,
+    Precompile, charge_input_cost, dispatch, mutate, preserve_storage_credits,
     stablecoin_dex::{
         StablecoinDEX, TickLevel,
         orderbook::{BookId, compute_book_key},
@@ -22,79 +22,79 @@ impl Precompile for StablecoinDEX {
             calldata,
             |call| match call {
                 IStablecoinDEX::IStablecoinDEXCalls {
-                    place(call) => mutate(call, msg_sender, |s, c| {
-                        preserve_storage_credits(self.address)?;
-                        self.place(s, c.token, c.amount, c.isBid, c.tick)
+                    place(call) => mutate(self, call, msg_sender, |this, s, c| {
+                        preserve_storage_credits(this.address)?;
+                        this.place(s, c.token, c.amount, c.isBid, c.tick)
                     }),
-                    placeFlip(call) => mutate(call, msg_sender, |s, c| {
-                        preserve_storage_credits(self.address)?;
-                        self.place_flip(s, c.token, c.amount, c.isBid, c.tick, c.flipTick, false)
+                    placeFlip(call) => mutate(self, call, msg_sender, |this, s, c| {
+                        preserve_storage_credits(this.address)?;
+                        this.place_flip(s, c.token, c.amount, c.isBid, c.tick, c.flipTick, false)
                     }),
-                    balanceOf(call) => view(call, |c| self.balance_of(c.user, c.token)),
-                    getOrder(call) => view(call, |c| {
-                        self.get_order(c.orderId).map(|order| order.into())
+                    balanceOf(call) => view(self, call, |this, c| this.balance_of(c.user, c.token)),
+                    getOrder(call) => view(self, call, |this, c| {
+                        this.get_order(c.orderId).map(|order| order.into())
                     }),
-                    getTickLevel(call) => view(call, |c| {
-                        let TickLevel { links, total_liquidity } = self.get_price_level(c.base, c.tick, c.isBid)?;
+                    getTickLevel(call) => view(self, call, |this, c| {
+                        let TickLevel { links, total_liquidity } = this.get_price_level(c.base, c.tick, c.isBid)?;
                         Ok((links.head, links.tail, total_liquidity).into())
                     }),
-                    pairKey(call) => view(call, |c| Ok(compute_book_key(c.tokenA, c.tokenB))),
-                    books(call) => view(call, |c| self.books(c.pairKey).map(Into::into)),
-                    nextOrderId(call) => view(call, |_| self.next_order_id()),
-                    createPair(call) => mutate(call, msg_sender, |_, c| {
-                        preserve_storage_credits(self.address)?;
-                        self.create_pair(c.base)
+                    pairKey(call) => view(self, call, |_, c| Ok(compute_book_key(c.tokenA, c.tokenB))),
+                    books(call) => view(self, call, |this, c| this.books(c.pairKey).map(Into::into)),
+                    nextOrderId(call) => view(self, call, |this, _| this.next_order_id()),
+                    createPair(call) => mutate(self, call, msg_sender, |this, _, c| {
+                        preserve_storage_credits(this.address)?;
+                        this.create_pair(c.base)
                     }),
-                    withdraw(call) => mutate_void(call, msg_sender, |s, c| {
-                        preserve_storage_credits(self.address)?;
-                        self.withdraw(s, c.token, c.amount)
+                    withdraw(call) => mutate(self, call, msg_sender, |this, s, c| {
+                        preserve_storage_credits(this.address)?;
+                        this.withdraw(s, c.token, c.amount)
                     }),
-                    cancel(call) => mutate_void(call, msg_sender, |s, c| {
-                        preserve_storage_credits(self.address)?;
-                        self.cancel(s, c.orderId)
+                    cancel(call) => mutate(self, call, msg_sender, |this, s, c| {
+                        preserve_storage_credits(this.address)?;
+                        this.cancel(s, c.orderId)
                     }),
-                    cancelStaleOrder(call) => mutate_void(call, msg_sender, |_, c| {
-                        preserve_storage_credits(self.address)?;
-                        self.cancel_stale_order(c.orderId)
+                    cancelStaleOrder(call) => mutate(self, call, msg_sender, |this, _, c| {
+                        preserve_storage_credits(this.address)?;
+                        this.cancel_stale_order(c.orderId)
                     }),
-                    swapExactAmountIn(call) => mutate(call, msg_sender, |s, c| {
-                        preserve_storage_credits(self.address)?;
-                        self.swap_exact_amount_in(s, c.tokenIn, c.tokenOut, c.amountIn, c.minAmountOut)
+                    swapExactAmountIn(call) => mutate(self, call, msg_sender, |this, s, c| {
+                        preserve_storage_credits(this.address)?;
+                        this.swap_exact_amount_in(s, c.tokenIn, c.tokenOut, c.amountIn, c.minAmountOut)
                     }),
-                    swapExactAmountOut(call) => mutate(call, msg_sender, |s, c| {
-                        preserve_storage_credits(self.address)?;
-                        self.swap_exact_amount_out(s, c.tokenIn, c.tokenOut, c.amountOut, c.maxAmountIn)
+                    swapExactAmountOut(call) => mutate(self, call, msg_sender, |this, s, c| {
+                        preserve_storage_credits(this.address)?;
+                        this.swap_exact_amount_out(s, c.tokenIn, c.tokenOut, c.amountOut, c.maxAmountIn)
                     }),
-                    quoteSwapExactAmountIn(call) => view(call, |c| {
-                        self.quote_swap_exact_amount_in(c.tokenIn, c.tokenOut, c.amountIn)
+                    quoteSwapExactAmountIn(call) => view(self, call, |this, c| {
+                        this.quote_swap_exact_amount_in(c.tokenIn, c.tokenOut, c.amountIn)
                     }),
-                    quoteSwapExactAmountOut(call) => view(call, |c| {
-                        self.quote_swap_exact_amount_out(c.tokenIn, c.tokenOut, c.amountOut)
+                    quoteSwapExactAmountOut(call) => view(self, call, |this, c| {
+                        this.quote_swap_exact_amount_out(c.tokenIn, c.tokenOut, c.amountOut)
                     }),
-                    MIN_TICK(call) => view(call, |_| Ok(crate::stablecoin_dex::MIN_TICK)),
-                    MAX_TICK(call) => view(call, |_| Ok(crate::stablecoin_dex::MAX_TICK)),
-                    TICK_SPACING(call) => view(call, |_| Ok(crate::stablecoin_dex::TICK_SPACING)),
-                    PRICE_SCALE(call) => view(call, |_| Ok(crate::stablecoin_dex::PRICE_SCALE)),
-                    MIN_ORDER_AMOUNT(call) => view(call, |_| Ok(crate::stablecoin_dex::MIN_ORDER_AMOUNT)),
-                    MIN_PRICE(call) => view(call, |_| Ok(self.min_price())),
-                    MAX_PRICE(call) => view(call, |_| Ok(self.max_price())),
-                    tickToPrice(call) => view(call, |c| self.tick_to_price(c.tick)),
-                    priceToTick(call) => view(call, |c| self.price_to_tick(c.price)),
+                    MIN_TICK(call) => view(self, call, |_, _| Ok(crate::stablecoin_dex::MIN_TICK)),
+                    MAX_TICK(call) => view(self, call, |_, _| Ok(crate::stablecoin_dex::MAX_TICK)),
+                    TICK_SPACING(call) => view(self, call, |_, _| Ok(crate::stablecoin_dex::TICK_SPACING)),
+                    PRICE_SCALE(call) => view(self, call, |_, _| Ok(crate::stablecoin_dex::PRICE_SCALE)),
+                    MIN_ORDER_AMOUNT(call) => view(self, call, |_, _| Ok(crate::stablecoin_dex::MIN_ORDER_AMOUNT)),
+                    MIN_PRICE(call) => view(self, call, |this, _| Ok(this.min_price())),
+                    MAX_PRICE(call) => view(self, call, |this, _| Ok(this.max_price())),
+                    tickToPrice(call) => view(self, call, |this, c| this.tick_to_price(c.tick)),
+                    priceToTick(call) => view(self, call, |this, c| this.price_to_tick(c.price)),
 
                     #[schedule(since = T7)]
-                    storageCredits(call) => view(call, |c| self.storage_credits(c.user)),
+                    storageCredits(call) => view(self, call, |this, c| this.storage_credits(c.user)),
 
                     #[schedule(since = T8)]
-                    bookIndexForKey(call) => view(call, |c| {
-                        let index = self.book_key_index(c.bookKey)?;
+                    bookIndexForKey(call) => view(self, call, |this, c| {
+                        let index = this.book_key_index(c.bookKey)?;
                         Ok((index.is_some(), index.unwrap_or(*BookId::UNSET)).into())
                     }),
                     #[schedule(since = T8)]
-                    bookKeyForIndex(call) => view(call, |c| self.book_key_for_index(c.index)),
+                    bookKeyForIndex(call) => view(self, call, |this, c| this.book_key_for_index(c.index)),
                     #[schedule(since = T8)]
-                    setBookIndex(call) => mutate_void(call, msg_sender, |_, c| {
-                        preserve_storage_credits(self.address)?;
-                        self.set_book_index(c.index)
+                    setBookIndex(call) => mutate(self, call, msg_sender, |this, _, c| {
+                        preserve_storage_credits(this.address)?;
+                        this.set_book_index(c.index)
                     }),
                 }
             }

@@ -1,7 +1,7 @@
 //! ABI dispatch for the [`TIP403Registry`] precompile.
 
 use crate::{
-    Precompile, charge_input_cost, dispatch, mutate, mutate_void,
+    Precompile, charge_input_cost, dispatch, mutate,
     tip403_registry::{AuthRole, TIP403Registry},
     view,
 };
@@ -19,33 +19,33 @@ impl Precompile for TIP403Registry {
             calldata,
             |call| match call {
                 ITIP403Registry::ITIP403RegistryCalls {
-                    policyIdCounter(call) => view(call, |_| self.policy_id_counter()),
-                    policyExists(call) => view(call, |c| self.policy_exists(c)),
+                    policyIdCounter(call) => view(self, call, |this, _| this.policy_id_counter()),
+                    policyExists(call) => view(self, call, |this, c| this.policy_exists(c)),
                     #[schedule(since = T9)]
-                    tokenTransferPolicyId(call) => view(call, |c| self.token_transfer_policy_id(c)),
-                    policyData(call) => view(call, |c| self.policy_data(c)),
-                    isAuthorized(call) => view(call, |c| {
-                        self.is_authorized_as(c.policyId, c.user, AuthRole::Transfer)
+                    tokenTransferPolicyId(call) => view(self, call, |this, c| this.token_transfer_policy_id(c)),
+                    policyData(call) => view(self, call, |this, c| this.policy_data(c)),
+                    isAuthorized(call) => view(self, call, |this, c| {
+                        this.is_authorized_as(c.policyId, c.user, AuthRole::Transfer)
                     }),
                     #[schedule(since = T2)]
-                    isAuthorizedSender(call) => view(call, |c| {
-                        self.is_authorized_as(c.policyId, c.user, AuthRole::Sender)
+                    isAuthorizedSender(call) => view(self, call, |this, c| {
+                        this.is_authorized_as(c.policyId, c.user, AuthRole::Sender)
                     }),
                     #[schedule(since = T2)]
-                    isAuthorizedRecipient(call) => view(call, |c| {
-                        self.is_authorized_as(c.policyId, c.user, AuthRole::Recipient)
+                    isAuthorizedRecipient(call) => view(self, call, |this, c| {
+                        this.is_authorized_as(c.policyId, c.user, AuthRole::Recipient)
                     }),
                     #[schedule(since = T2)]
-                    isAuthorizedMintRecipient(call) => view(call, |c| {
-                        self.is_authorized_as(c.policyId, c.user, AuthRole::MintRecipient)
+                    isAuthorizedMintRecipient(call) => view(self, call, |this, c| {
+                        this.is_authorized_as(c.policyId, c.user, AuthRole::MintRecipient)
                     }),
                     #[schedule(since = T2)]
-                    compoundPolicyData(call) => view(call, |c| self.compound_policy_data(c)),
+                    compoundPolicyData(call) => view(self, call, |this, c| this.compound_policy_data(c)),
                     #[schedule(since = T6)]
-                    receivePolicy(call) => view(call, |c| self.receive_policy(c.account)),
+                    receivePolicy(call) => view(self, call, |this, c| this.receive_policy(c.account)),
                     #[schedule(since = T6)]
-                    validateReceivePolicy(call) => view(call, |c| {
-                        let blocked_reason = self
+                    validateReceivePolicy(call) => view(self, call, |this, c| {
+                        let blocked_reason = this
                             .validate_receive_policy(c.token, c.sender, c.receiver)?
                             .unwrap_or(ITIP403Registry::BlockedReason::NONE);
                         Ok(ITIP403Registry::validateReceivePolicyReturn {
@@ -54,20 +54,20 @@ impl Precompile for TIP403Registry {
                         })
                     }),
                     #[schedule(since = T6)]
-                    setReceivePolicy(call) => mutate_void(call, msg_sender, |s, c| self.set_receive_policy(s, c)),
+                    setReceivePolicy(call) => mutate(self, call, msg_sender, |this, s, c| this.set_receive_policy(s, c)),
                     #[schedule(since = T9)]
-                    migrateTransferPolicyIds(call) => mutate(call, msg_sender, |_, c| {
-                        self.migrate_transfer_policy_ids(c)
+                    migrateTransferPolicyIds(call) => mutate(self, call, msg_sender, |this, _, c| {
+                        this.migrate_transfer_policy_ids(c)
                     }),
-                    createPolicy(call) => mutate(call, msg_sender, |s, c| self.create_policy(s, c)),
-                    createPolicyWithAccounts(call) => mutate(call, msg_sender, |s, c| {
-                        self.create_policy_with_accounts(s, c)
+                    createPolicy(call) => mutate(self, call, msg_sender, |this, s, c| this.create_policy(s, c)),
+                    createPolicyWithAccounts(call) => mutate(self, call, msg_sender, |this, s, c| {
+                        this.create_policy_with_accounts(s, c)
                     }),
-                    setPolicyAdmin(call) => mutate_void(call, msg_sender, |s, c| self.set_policy_admin(s, c)),
-                    modifyPolicyWhitelist(call) => mutate_void(call, msg_sender, |s, c| self.modify_policy_whitelist(s, c)),
-                    modifyPolicyBlacklist(call) => mutate_void(call, msg_sender, |s, c| self.modify_policy_blacklist(s, c)),
+                    setPolicyAdmin(call) => mutate(self, call, msg_sender, |this, s, c| this.set_policy_admin(s, c)),
+                    modifyPolicyWhitelist(call) => mutate(self, call, msg_sender, |this, s, c| this.modify_policy_whitelist(s, c)),
+                    modifyPolicyBlacklist(call) => mutate(self, call, msg_sender, |this, s, c| this.modify_policy_blacklist(s, c)),
                     #[schedule(since = T2)]
-                    createCompoundPolicy(call) => mutate(call, msg_sender, |s, c| self.create_compound_policy(s, c))
+                    createCompoundPolicy(call) => mutate(self, call, msg_sender, |this, s, c| this.create_compound_policy(s, c))
                 }
             }
         )
