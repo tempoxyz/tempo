@@ -20,7 +20,44 @@ WORKER_FIELDS = ('worker_run_ns', 'worker_thread_cpu_ns',
                  'worker_cpu_measured', 'worker_success')
 
 
-def attach_worker_details(rows, events):
+INLINE_WORKER_FIELDS = ('worker_inline_storage_attempts', 'worker_inline_storage_targets')
+
+
+def inline_worker_counts(spans, events):
+    """Retain counts only on a unique, exact account completion with its own block."""
+    workers = {(s['node'], s['id']): s for s in spans if s['name'] == 'account_worker'}
+    completions = {}
+    for event in events:
+        if event['fields'].get('stage') in WORKER_STAGES:
+            completions.setdefault((event['node'], event['id']), []).append(event)
+    result = {}
+    uint = lambda value: type(value) is int and 0 <= value < 2**64
+    for key, worker in workers.items():
+        matches = completions.get(key, [])
+        if len(matches) != 1:
+            continue
+        event = matches[0]; fields = event['fields']
+        required = (*INLINE_WORKER_FIELDS, 'worker_job_counts_measured',
+                    'worker_job_counts_saturated', 'worker_jobs_storage_only_single_group',
+                    'worker_jobs_targets_0', 'worker_storage_groups', 'worker_jobs')
+        if (fields.get('stage') != 'proof_account_worker_totals' or
+                fields.get('worker_job_counts_measured') != 1 or
+                fields.get('worker_job_counts_saturated') != 0 or
+                not all(uint(fields.get(k)) for k in required) or
+                not worker.get('block') or event.get('block') != worker['block'] or
+                worker['end'] is None or not worker['ts'] <= event['ts'] <= worker['end']):
+            continue
+        attempts, targets = (fields[k] for k in INLINE_WORKER_FIELDS)
+        joint = fields['worker_jobs_storage_only_single_group']
+        if (attempts > joint or joint > min(fields['worker_jobs_targets_0'],
+                fields['worker_storage_groups'], fields['worker_jobs']) or
+                (attempts == 0 and targets != 0)):
+            continue
+        result[key] = {k: fields[k] for k in INLINE_WORKER_FIELDS}
+    return result
+
+
+def attach_worker_details(rows, events, inline_counts=None):
     """Attach only exact, unique worker completions; never infer from ancestry/time."""
     workers = {(s['node'], s['id']): s for s in rows
                if s['name'] in WORKER_STAGES.values()}
@@ -36,6 +73,7 @@ def attach_worker_details(rows, events):
         if len(matches) == 1:
             span['details'].update({k: v for k, v in matches[0].items()
                                     if k in WORKER_FIELDS})
+            span['details'].update((inline_counts or {}).get(key, {}))
 
 
 def block_key(fields):
@@ -236,6 +274,7 @@ def build(paths, warmup=5, window=None, expected_detail=None, expected_prewarm_c
         pruned = next((q for q in (window or {}).get('pruning', []) if q['node'] == qq['node']), {})
         qq['crossing_aggregates_excluded'] += pruned.get('crossing_aggregates_excluded', 0)
         quality.append(qq)
+    inline_counts = inline_worker_counts(spans, events)
     first = min((x['ts'] for x in spans + events), default=0)
     by_block = {}
     for event in events:
@@ -264,6 +303,7 @@ def build(paths, warmup=5, window=None, expected_detail=None, expected_prewarm_c
                            'execution_block_output_operations')})
                   for e in by_block[key] if e['fields'].get('stage') == 'execution_totals']
         worker_totals = [dict(node=e['node'], span=e['id'], ts=(e['ts']-first)/1e6,
+                             **inline_counts.get((e['node'], e['id']), {}),
                              **{k:v for k,v in e['fields'].items()
                                 if k in ('stage','worker_run_ns','worker_thread_cpu_ns',
                                          'worker_cpu_measured','worker_success',
@@ -354,7 +394,7 @@ def build(paths, warmup=5, window=None, expected_detail=None, expected_prewarm_c
                          'state_trie_height', 'backlog', 'queued_jobs', 'in_flight_proof_batches',
                          'pending_updates', 'pending_targets', 'result_count') and isinstance(v, (int, float))},
                      'count': s.get('count'), 'elapsed_sum_ms': s.get('elapsed_ns',0)/1e6})
-    attach_worker_details(rows, events)
+    attach_worker_details(rows, events, inline_counts)
     frames = {}
     for event in events:
         f = event['fields']
