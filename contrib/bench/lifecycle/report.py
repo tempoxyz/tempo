@@ -13,6 +13,18 @@ STAGES = ('proposal_start', 'payload_built', 'proposal_ready', 'digest_released'
           'notarize_vote_sent', 'notarized', 'finalize_vote_sent', 'finalized', 'finalization_received', 'cancelled', 'proposal_failed')
 
 
+BODY_SOURCES = {1: 'execution layer', 2: 'marshal', 3: 'direct broadcast',
+                4: 'marshal after unusable broadcast'}
+
+
+def body_source_fields(event):
+    fields = event['fields']
+    value = fields.get('body_source')
+    if fields.get('stage') == 'body_ready' and type(value) is int and value in BODY_SOURCES:
+        return dict(body_source=value, body_source_name=BODY_SOURCES[value])
+    return {}
+
+
 def block_key(fields):
     return next((fields[k] for k in BLOCK_FIELDS if isinstance(fields.get(k), str)
                  and len(fields[k]) == 24 and all(c in '0123456789abcdef' for c in fields[k])), None)
@@ -218,7 +230,7 @@ def build(paths, warmup=5, window=None, expected_detail=None):
     aliases = {key: i + 1 for i, key in enumerate(keys)}
     blocks = []
     for key in keys:
-        markers = [dict(stage=e['fields'].get('stage'), ts=(e['ts']-first)/1e6, node=e['node'])
+        markers = [dict(stage=e['fields'].get('stage'), ts=(e['ts']-first)/1e6, node=e['node'], **body_source_fields(e))
                    for e in by_block[key] if e['fields'].get('stage') in STAGES]
         starts = [e['ts'] for e in markers if e['stage'] == 'proposal_start']
         ends = [e['ts'] for e in markers if e['stage'] == 'finalized']
@@ -249,7 +261,7 @@ def build(paths, warmup=5, window=None, expected_detail=None):
     attempt_ids = {(s['node'], s['id']): i for i, s in enumerate(attempts, 1)}
     attempt_details = []
     for attempt in attempts:
-        markers = [dict(stage=e['fields']['stage'], ts=(e['ts']-first)/1e6, node=e['node'])
+        markers = [dict(stage=e['fields']['stage'], ts=(e['ts']-first)/1e6, node=e['node'], **body_source_fields(e))
                    for e in events if e['node'] == attempt['node'] and e['id'] == attempt['id']
                    and e['fields'].get('stage') in STAGES]
         stages = {e['stage'] for e in markers}
