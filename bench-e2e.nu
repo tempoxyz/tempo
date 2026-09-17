@@ -171,6 +171,39 @@ def validate-schelk-state [a_state_path: string, b_state_path: string] {
     }
 }
 
+# Mount only existing, validated scratch volumes before checking their metadata.
+# Never recover, copy, initialize, or promote a snapshot in this preflight.
+def prebuilt-mount-existing-snapshots [force: bool, init_only: bool] {
+    prebuilt-require-snapshot true true $force $init_only
+    if not (has-schelk) { return }
+    mut pending = []
+    for pair in [
+        {state: $E2E_A_STATE_PATH, mount: $E2E_A_MOUNT}
+        {state: $E2E_B_STATE_PATH, mount: $E2E_B_MOUNT}
+    ] {
+        let state = (try { schelk-state $pair.state } catch {
+            error make {msg: "Prebuilt snapshot state admission failed"}
+        })
+        let mounted = ($state | get --optional is_mounted)
+        if ($mounted | describe) != "bool" or ($state | get --optional mount_point) != $pair.mount {
+            error make {msg: "Prebuilt snapshot state admission failed"}
+        }
+        let actual = (^mountpoint -q $pair.mount | complete)
+        if $actual.exit_code not-in [0 32] or $mounted != ($actual.exit_code == 0) {
+            error make {msg: "Prebuilt snapshot mount state disagrees"}
+        }
+        if not $mounted { $pending = ($pending | append $pair.state) }
+    }
+    # Validate both sides before any mutation, and cover partial mount failures.
+    if not ($pending | is-empty) { touch .bench-snapshot-dirty }
+    for state_path in $pending {
+        let result = (sudo schelk --state-path $state_path mount | complete)
+        if $result.exit_code != 0 {
+            error make {msg: "Prebuilt existing snapshot mount failed"}
+        }
+    }
+}
+
 def bench-restore-at [state_path: string, mount_point: string, datadir: string] {
     if (has-schelk) {
         run-bench-schelk "restore" $state_path $mount_point
@@ -587,7 +620,13 @@ def systemd-scope-command [unit: string, cpus: string, memory: string, script: s
     let preserve_env_args = if ($telemetry_env_names | length) > 0 {
         [$"--preserve-env=($telemetry_env_names | str join ',')"]
     } else { [] }
-    let telemetry_env = ($telemetry_env_names | each { |name| $"--setenv=($name)" })
+    let telemetry_env = ($telemetry_env_names | each { |name|
+        if $name == "TMPDIR" {
+            $"--setenv=TMPDIR=($env.TMPDIR)"
+        } else {
+            $"--setenv=($name)"
+        }
+    })
     [
         "sudo"
         ...$preserve_env_args
@@ -1669,7 +1708,10 @@ def "main e2e" [
     validate-schelk-state $E2E_A_STATE_PATH $E2E_B_STATE_PATH
     # Reject missing snapshot metadata before process cleanup or restoration.
     # Recheck after restoration below; neither check may fall back to generation.
-    if $prebuilt { prebuilt-require-snapshot true (e2e-snapshots-ready $a_db $b_db) $force_bloat $init_only }
+    if $prebuilt {
+        prebuilt-mount-existing-snapshots $force_bloat $init_only
+        prebuilt-require-snapshot true (e2e-snapshots-ready $a_db $b_db) $force_bloat $init_only
+    }
     if ($env.BENCH_RUN_CLEANUP? | default "") == "true" {
         if not (has-schelk) { error make {msg: "Runner cleanup requires schelk snapshots"} }
         touch .bench-snapshot-dirty
