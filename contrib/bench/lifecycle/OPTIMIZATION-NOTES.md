@@ -96,6 +96,12 @@ useful tooling changes. Offline report CPU improved about 7–8.5% with identica
 output; that is not an EVM or whole-node speedup. The builder/engine worker-state
 ownership repair is a reproduced correctness fix, not a benchmark hypothesis.
 
+## Follow-ups after the scope clarification
+
+- [PR7704](https://github.com/tempoxyz/tempo/pull/7704) adds an execution kernel-wait diagnostic. Initial [35231747665](https://github.com/tempoxyz/tempo/actions/runs/35231747665) stopped before transaction load: the latest collector had anonymous thread ordinals but lacked the native registration hook. The marker gate correctly rejected it. A separate missing timestamp-origin export was reproduced end to end. Neither failure is a node-performance result; both require concrete source fixes before another capture.
+- [PR7705](https://github.com/tempoxyz/tempo/pull/7705) tests bounded reuse of successfully synced parent-directory identities. [Matched trial35232632085](https://github.com/tempoxyz/tempo/actions/runs/35232632085) is pending. Partition/header durability barriers remain; first creation still requires root sync. The earlier one-entry prototype had zero hits for alternating partitions (16 syncs for 16 creations); a bounded 16-entry version requires two in that fixture. These are local operation counts, not a measured node saving or evidence that the historical 39.8 ms root sync was avoidable.
+- The fixed-lookahead comparison now passes all ordinary audits and 12 Perfetto imports after a reviewed source-bound legacy-header compatibility correction. Its original controller rejection remains archived unchanged. More prewarming reduced loop waiting, but did not establish improved whole-block latency; see its row above.
+
 ## Current questions above 5 ms
 
 [Full-lineage run35212362924](https://github.com/tempoxyz/tempo/actions/runs/35212362924)
