@@ -254,3 +254,13 @@ is just the summed EVM transaction calls and is **not** the matching wall scope
 for this CPU measurement. Local proposal builds and the parallel BAL replay path
 do not emit these loop totals. A wall/CPU gap can indicate time this thread was
 not executing, but does not identify scheduler, kernel or I/O causes.
+
+
+Proposal body acquisition is recorded as `body_source` on the existing
+`body_ready` event, with explicit block association:1 execution layer,2 marshal,
+3 direct broadcast,4 marshal after a selected unusable or closed broadcast
+response. Control and concurrent-subscription captures use identical recorder
+and report fields. The source describes acquisition, not validation or durability;
+header/replay verification and `marshal.verified` still follow. Marshal wins when
+both responses are ready, including its error. Missing or unknown source values
+remain unmeasured. No additional spans, events or clock samples are introduced.
