@@ -445,6 +445,7 @@ impl AA2dPool {
             replaced: replaced.map(|tx| tx.inner.transaction.clone()),
             subpool: SubPool::Queued,
             queued_reason: Some(QueuedReason::NonceGap),
+            promoted: promoted.into_iter().map(|tx| tx.transaction).collect(),
         })
     }
 
