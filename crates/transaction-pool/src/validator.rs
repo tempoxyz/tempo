@@ -5,7 +5,7 @@ use crate::{
     transaction::{TempoPoolTransactionError, TempoPooledTransaction},
 };
 
-use alloy_consensus::constants::KECCAK_EMPTY;
+use alloy_consensus::{Transaction, constants::KECCAK_EMPTY};
 use alloy_evm::{Database, EvmEnv};
 use alloy_primitives::{Address, B256};
 use parking_lot::RwLock;
@@ -32,7 +32,10 @@ use std::sync::{
     Arc,
     atomic::{AtomicU8, Ordering},
 };
-use tempo_chainspec::hardfork::{TempoHardfork, TempoHardforks};
+use tempo_chainspec::{
+    hardfork::{TempoHardfork, TempoHardforks},
+    spec::{TEMPO_T0_BASE_FEE, TEMPO_T1_BASE_FEE, TEMPO_T7_BASE_FEE_FLOOR},
+};
 use tempo_evm::{TempoEvmConfig, TempoPoolValidationEvm};
 use tempo_precompiles::{
     nonce::{INonce, NonceManager},
@@ -407,6 +410,26 @@ where
             return TransactionValidationOutcome::Invalid(
                 transaction,
                 InvalidPoolTransactionError::Consensus(InvalidTransactionError::TxTypeNotSupported),
+            );
+        }
+
+        // Fees below the hardfork's floor can never become executable. Fees below the
+        // current dynamic base fee can, so leave those queued until block selection.
+        let min_base_fee = if spec.is_t7() {
+            TEMPO_T7_BASE_FEE_FLOOR
+        } else if spec.is_t1() {
+            TEMPO_T1_BASE_FEE
+        } else {
+            TEMPO_T0_BASE_FEE
+        };
+        if transaction.max_fee_per_gas() < u128::from(min_base_fee) {
+            return TransactionValidationOutcome::Invalid(
+                transaction,
+                InvalidPoolTransactionError::other(TempoPoolTransactionError::Evm(
+                    TempoInvalidTransaction::EthInvalidTransaction(
+                        InvalidTransaction::GasPriceLessThanBasefee,
+                    ),
+                )),
             );
         }
 
@@ -2114,148 +2137,74 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn test_fee_cap_below_min_base_fee_rejected() {
-        let current_time = std::time::SystemTime::now()
-            .duration_since(std::time::UNIX_EPOCH)
-            .unwrap()
-            .as_secs();
-
-        // T0 base fee is 10 gwei (10_000_000_000 wei)
-        // Create a transaction with max_fee_per_gas below this
-        let transaction = TxBuilder::aa(Address::random())
-            .max_fee(1_000_000_000) // 1 gwei, below T0's 10 gwei
-            .max_priority_fee(1_000_000_000)
-            .build();
-
-        let validator = setup_validator(&transaction, current_time);
-
-        let outcome = validator
-            .validate_transaction(TransactionOrigin::External, transaction)
-            .await;
-
-        match outcome {
-            TransactionValidationOutcome::Invalid(_, ref err) => {
+    async fn test_fee_cap_below_hardfork_floor_rejected() {
+        for (spec, floor) in [
+            (TempoHardfork::T0, TEMPO_T0_BASE_FEE),
+            (TempoHardfork::T1, TEMPO_T1_BASE_FEE),
+            (TempoHardfork::T7, TEMPO_T7_BASE_FEE_FLOOR),
+        ] {
+            for transaction in [
+                TxBuilder::aa(Address::random())
+                    .max_fee(u128::from(floor - 1))
+                    .max_priority_fee(0)
+                    .build(),
+                TxBuilder::eip1559(Address::random())
+                    .max_fee(u128::from(floor - 1))
+                    .max_priority_fee(0)
+                    .build_eip1559(),
+            ] {
+                let validator = setup_validator(&transaction, 0);
+                validator
+                    .active_hardfork
+                    .store(spec.variant_index(), Ordering::Relaxed);
+                let outcome = validator
+                    .validate_transaction(TransactionOrigin::External, transaction)
+                    .await;
                 assert!(
                     matches!(
-                        err.downcast_other_ref::<TempoPoolTransactionError>(),
-                        Some(TempoPoolTransactionError::Evm(
-                            TempoInvalidTransaction::EthInvalidTransaction(
-                                InvalidTransaction::GasPriceLessThanBasefee
-                            )
-                        ))
+                        outcome,
+                        TransactionValidationOutcome::Invalid(_, ref err)
+                            if matches!(err.downcast_other_ref::<TempoPoolTransactionError>(),
+                                Some(TempoPoolTransactionError::Evm(
+                                    TempoInvalidTransaction::EthInvalidTransaction(
+                                        InvalidTransaction::GasPriceLessThanBasefee
+                                    )
+                                )))
                     ),
-                    "Expected Evm error, got: {err:?}"
+                    "{spec:?}: expected floor rejection, got {outcome:?}"
                 );
             }
-            _ => panic!("Expected Invalid outcome with Evm error, got: {outcome:?}"),
         }
     }
 
     #[tokio::test]
-    async fn test_fee_cap_at_min_base_fee_passes() {
+    async fn test_fee_cap_at_floor_below_tip_base_fee_passes() {
         let current_time = std::time::SystemTime::now()
             .duration_since(std::time::UNIX_EPOCH)
             .unwrap()
             .as_secs();
-
-        // Create a transaction with max_fee_per_gas exactly at the fixed T1+ minimum.
-        let transaction = TxBuilder::aa(Address::random())
-            .max_fee(u128::from(TEMPO_T1_BASE_FEE))
-            .max_priority_fee(1_000_000_000)
-            .build();
-
-        let validator = setup_validator(&transaction, current_time);
-
-        let outcome = validator
-            .validate_transaction(TransactionOrigin::External, transaction)
-            .await;
-
-        // Should not fail with FeeCapBelowMinBaseFee
-        if let TransactionValidationOutcome::Invalid(_, ref err) = outcome {
-            assert!(
-                !matches!(
-                    err.downcast_other_ref::<TempoPoolTransactionError>(),
-                    Some(TempoPoolTransactionError::Evm(
-                        TempoInvalidTransaction::EthInvalidTransaction(
-                            InvalidTransaction::GasPriceLessThanBasefee
-                        )
-                    ))
-                ),
-                "Should not fail with FeeCapBelowMinBaseFee when fee cap equals min base fee"
-            );
-        }
-    }
-
-    #[tokio::test]
-    async fn test_fee_cap_above_min_base_fee_passes() {
-        let current_time = std::time::SystemTime::now()
-            .duration_since(std::time::UNIX_EPOCH)
-            .unwrap()
-            .as_secs();
-
-        // T0 base fee is 10 gwei (10_000_000_000 wei)
-        // Create a transaction with max_fee_per_gas above minimum
-        let transaction = TxBuilder::aa(Address::random())
-            .max_fee(20_000_000_000) // 20 gwei, above T0's 10 gwei
-            .max_priority_fee(1_000_000_000)
-            .build();
-
-        let validator = setup_validator(&transaction, current_time);
-
-        let outcome = validator
-            .validate_transaction(TransactionOrigin::External, transaction)
-            .await;
-
-        // Should not fail with FeeCapBelowMinBaseFee
-        if let TransactionValidationOutcome::Invalid(_, ref err) = outcome {
-            assert!(
-                !matches!(
-                    err.downcast_other_ref::<TempoPoolTransactionError>(),
-                    Some(TempoPoolTransactionError::Evm(
-                        TempoInvalidTransaction::EthInvalidTransaction(
-                            InvalidTransaction::GasPriceLessThanBasefee
-                        )
-                    ))
-                ),
-                "Should not fail with FeeCapBelowMinBaseFee when fee cap is above min base fee"
-            );
-        }
-    }
-
-    #[tokio::test]
-    async fn test_eip1559_fee_cap_below_min_base_fee_rejected() {
-        let current_time = std::time::SystemTime::now()
-            .duration_since(std::time::UNIX_EPOCH)
-            .unwrap()
-            .as_secs();
-
-        // T0 base fee is 10 gwei, create EIP-1559 tx with lower fee
-        let transaction = TxBuilder::eip1559(Address::random())
-            .max_fee(1_000_000_000) // 1 gwei, below T0's 10 gwei
-            .max_priority_fee(1_000_000_000)
-            .build_eip1559();
-
-        let validator = setup_validator(&transaction, current_time);
-
-        let outcome = validator
-            .validate_transaction(TransactionOrigin::External, transaction)
-            .await;
-
-        match outcome {
-            TransactionValidationOutcome::Invalid(_, ref err) => {
+        for fee in [TEMPO_T7_BASE_FEE_FLOOR, TEMPO_T7_BASE_FEE_FLOOR + 1] {
+            for transaction in [
+                TxBuilder::aa(Address::random())
+                    .max_fee(u128::from(fee))
+                    .max_priority_fee(0)
+                    .build(),
+                TxBuilder::eip1559(Address::random())
+                    .max_fee(u128::from(fee))
+                    .max_priority_fee(0)
+                    .build_eip1559(),
+            ] {
+                let validator = setup_validator(&transaction, current_time);
+                assert!(validator.active_hardfork().is_t7());
+                assert!(validator.cached_evm_env.read().block_env.inner.basefee > fee);
+                let outcome = validator
+                    .validate_transaction(TransactionOrigin::External, transaction)
+                    .await;
                 assert!(
-                    matches!(
-                        err.downcast_other_ref::<TempoPoolTransactionError>(),
-                        Some(TempoPoolTransactionError::Evm(
-                            TempoInvalidTransaction::EthInvalidTransaction(
-                                InvalidTransaction::GasPriceLessThanBasefee
-                            )
-                        ))
-                    ),
-                    "Expected Evm error for EIP-1559 tx, got: {err:?}"
+                    matches!(outcome, TransactionValidationOutcome::Valid { .. }),
+                    "fee cap {fee} should be admitted below the tip base fee: {outcome:?}"
                 );
             }
-            _ => panic!("Expected Invalid outcome with Evm error, got: {outcome:?}"),
         }
     }
 
