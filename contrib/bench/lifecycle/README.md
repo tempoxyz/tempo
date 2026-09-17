@@ -545,3 +545,27 @@ the response. Disabled context spans preserve the original subscriber request sp
 The codec receiver exposes an additive `recv_with_context` method; existing `recv`
 callers keep their original decoded result/error shape, and Consumer/Delivery
 public interfaces remain unchanged.
+
+### Owned lineage capture harness
+
+This isolated harness retains the three-slot reservation workflow and imports the
+reviewed frame/queue/proposal/resolver report plus the event index used for
+proposal-attempt attribution. Its runtime source and Cargo pins remain at the
+reserved workflow base; the immutable baseline/feature inputs select the separate
+ownership-corrected lineage runtime.
+
+The prepared diagnostic uses `profiling=lifecycle` (full detail), identical
+runtime SHAs and node arguments for all four phases. Frame lineage has no
+independent off switch. This is a repeated capture diagnostic, not an observer
+off/on or optimization comparison. Selected prewarm leaf CPU stays disabled;
+absence of that measurement is not zero CPU.
+
+The external specification requires `require_frame_lineage=true`, an immutable
+collector-source SHA256, and the complete lineage report vocabulary. After the
+normal source, privacy and package gates, the added audit requires actual origin,
+send, receive, authentication, decode and result observations on both validators,
+checks exact raw/export markers and source-clock endpoints using the existing
+lineage coverage checker, and publishes an explicit receipt. Missing old-binary
+support or a stale collector receipt cannot silently pass. Legitimate unmatched,
+ambiguous and unknown-membership frames remain in the coverage denominator.
+Semantic validation and pure wire latency are not inferred from codec membership.
