@@ -1,5 +1,5 @@
 # Diagnostic-only branch override; never merge this replacement into main.
-name: bench-capacity-preflight
+name: bench-capacity-usage
 
 on:
   workflow_dispatch:
@@ -17,8 +17,8 @@ jobs:
     runs-on: [self-hosted, Linux, X64, bare-metal-dual-schelk]
     timeout-minutes: 10
     steps:
-      # No checkout/reset, snapshot restore, build, cache access, or validator process.
-      - name: Inspect numeric filesystem capacity
+      # No checkout/reset, snapshot restore, build, cache mutation, or validator process.
+      - name: Inspect bounded numeric capacity and allocated usage
         id: capacity
         uses: actions/github-script@3a2844b7e9c422d3c10d287c895573f7108da1b3
         with:
@@ -28,29 +28,54 @@ jobs:
               const path = require('path');
               const {spawnSync} = require('child_process');
               if (!/^[0-9a-f]{40}$/.test(context.sha)) throw Error('pin');
-              const response = await github.rest.repos.getContent({
-                ...context.repo, ref: context.sha,
-                path: 'contrib/bench/lifecycle/capacity_preflight.py'
-              });
-              const item = response.data;
-              if (item.type !== 'file' || item.encoding !== 'base64' || item.size > 65536) throw Error('source');
-              const source = Buffer.from(item.content, 'base64').toString('utf8');
+              const sources = [];
+              for (const filename of ['capacity_preflight.py','capacity_usage.py']) {
+                const response = await github.rest.repos.getContent({
+                  ...context.repo, ref: context.sha, path: 'contrib/bench/lifecycle/'+filename
+                });
+                const item = response.data;
+                if (item.type !== 'file' || item.encoding !== 'base64' || item.size > 65536) throw Error('source');
+                sources.push(Buffer.from(item.content, 'base64').toString('utf8'));
+              }
+              // Both sources remain in memory, pinned to this workflow revision.
+              // Isolated Python imports only the admitted in-memory legacy helper.
+              const source = 'import sys,types\nbase=types.ModuleType("capacity_preflight")\n'+
+                'exec('+JSON.stringify(sources[0])+',base.__dict__)\nsys.modules["capacity_preflight"]=base\n'+
+                'exec('+JSON.stringify(sources[1])+')';
               const result = spawnSync('python3', ['-I', '-c', source], {
-                encoding: 'utf8', timeout: 60000, maxBuffer: 65536
+                encoding: 'utf8', timeout: 210000, maxBuffer: 65536
               });
               if (result.error || result.status !== 0 || result.stderr) throw Error('probe');
               const report = JSON.parse(result.stdout);
               const roles = ['root', 'workspace', 'runner_temp', 'optional_scratch'];
-              if (report.schema !== 1 || !Array.isArray(report.locations) || report.locations.length !== 4) throw Error('schema');
+              if (report.schema !== 2 || !Array.isArray(report.locations) || report.locations.length !== 4) throw Error('schema');
               const fields = ['role','exists','filesystem','total_bytes','free_bytes','read_only','writable','write_tested','status'];
               const statuses = ['unset','invalid_path','missing','redirected','not_directory','changed_directory','read_only','access_denied','write_failed','cleanup_failed','writable','unavailable'];
               const uint = value => value === null || (Number.isSafeInteger(value) && value >= 0);
               const flag = value => value === null || typeof value === 'boolean';
-              if (Object.keys(report).sort().join() !== ['locations','schema'].join()) throw Error('keys');
+              if (Object.keys(report).sort().join() !== ['locations','per_category_timeout_ms','schema','scratch_locations','total_usage_budget_ms','usage'].join()) throw Error('keys');
               for (const [i, row] of report.locations.entries()) {
                 if (Object.keys(row).sort().join() !== fields.slice().sort().join() || row.role !== roles[i] || !statuses.includes(row.status)) throw Error('row');
                 if (typeof row.exists !== 'boolean' || typeof row.write_tested !== 'boolean' || !flag(row.read_only) || !flag(row.writable)) throw Error('flags');
                 if (![row.filesystem,row.total_bytes,row.free_bytes].every(uint) || (row.filesystem !== null && (row.filesystem < 1 || row.filesystem > 4))) throw Error('numbers');
+              }
+              const scratchRoles = ['bench_scratch_a','bench_scratch_b'];
+              const scratchFields = ['role','status','exists','filesystem','total_bytes','free_bytes','read_only','mountpoint','distinct_from_parent'];
+              const scratchStatuses = ['ok','unavailable','redirected','not_directory','changed_directory','missing'];
+              if (!Array.isArray(report.scratch_locations) || report.scratch_locations.length !== 2) throw Error('scratch');
+              for (const [i,row] of report.scratch_locations.entries()) {
+                if (Object.keys(row).sort().join() !== scratchFields.slice().sort().join() || row.role !== scratchRoles[i] || !scratchStatuses.includes(row.status)) throw Error('scratch row');
+                if (typeof row.exists !== 'boolean' || ![row.read_only,row.mountpoint,row.distinct_from_parent].every(flag) || ![row.filesystem,row.total_bytes,row.free_bytes].every(uint) || (row.filesystem !== null && (row.filesystem < 1 || row.filesystem > 6))) throw Error('scratch values');
+                if (row.status === 'ok' && (!row.exists || [row.filesystem,row.total_bytes,row.free_bytes,row.read_only,row.mountpoint,row.distinct_from_parent].some(v=>v===null))) throw Error('scratch completeness');
+              }
+              const usageRoles = ['runner_work','runner_temp','workspace','cargo_registry','cargo_git','sccache_default','sccache_env','home','var','tmp','opt','usr'];
+              const usageFields = ['role','status','allocated_bytes','filesystem','elapsed_ms','exclusions_applied'];
+              const usageStatuses = ['ok','unset','invalid_path','protected','missing','redirected','not_directory','unavailable','timeout','budget_exhausted'];
+              if (report.per_category_timeout_ms !== 15000 || report.total_usage_budget_ms !== 150000 || !Array.isArray(report.usage) || report.usage.length !== usageRoles.length) throw Error('usage');
+              for (const [i,row] of report.usage.entries()) {
+                if (Object.keys(row).sort().join() !== usageFields.slice().sort().join() || row.role !== usageRoles[i] || !usageStatuses.includes(row.status) || row.exclusions_applied !== true) throw Error('usage row');
+                if (![row.allocated_bytes,row.filesystem].every(uint) || !Number.isSafeInteger(row.elapsed_ms) || row.elapsed_ms < 0 || (row.filesystem !== null && (row.filesystem < 1 || row.filesystem > 18))) throw Error('usage numbers');
+                if ((row.allocated_bytes !== null) !== (row.status === 'ok') || (row.status === 'ok' && row.filesystem === null)) throw Error('usage completeness');
               }
               // Upload only the numeric report. Neither the native path nor API errors
               // are printed; a relative owned artifact path avoids exposing checkout names.
