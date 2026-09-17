@@ -41,7 +41,8 @@ not treat cross-runner timing differences as controlled optimization speedups.
 
 Select **profiling: lifecycle-milestones**, or pass
 `--lifecycle --lifecycle-detail milestones` directly, to retain coarse block and
-attempt milestones while disabling detailed proof, storage, transport and poll
+attempt milestones plus account/storage proof-worker identities and CPU totals,
+while disabling detailed proof, storage, transport and poll
 recording at the subscriber. The node reads `TEMPO_LIFECYCLE_DETAIL=milestones`;
 the default is `full`. Both revisions must support the requested detail mode.
 The harness checks recorder headers and rejects a silent fallback to full detail,
@@ -276,14 +277,23 @@ causes can coexist. CPU values and wall-clock boundaries are unchanged.
 
 ## Proof-worker CPU accounting
 
-Full captures can report current-thread user+system CPU and elapsed wall time
+Full and milestone captures can report current-thread user+system CPU and elapsed wall time
 for each completed account/storage proof-worker invocation. The recorder takes
 two resource samples around `worker.run()`, never per proof job. Receive waits
 and teardown are within that interval; worker construction and error forwarding
-are outside it. Sampling requires a lifecycle capture file and full detail.
-Milestone mode, older captures, unsupported platforms and failed samples remain
-unmeasured. These extra samples have overhead and are held identical on both
-sides of an optimization comparison.
+are outside it. Sampling requires a lifecycle capture file, supported full or
+milestone detail, and a build with metrics enabled. Milestone mode retains only
+the exact `storage_worker` and `account_worker` identity scopes and their totals;
+it still omits worker polls, jobs and detailed proof operations. Retained worker
+spans anchor explicit event parents even when another subscriber enables excluded
+intermediate spans. Their span lifetimes are context, not measured active work.
+
+Older milestone captures have no worker totals. Missing completions remain
+unmeasured; unsupported platforms or failed resource samples emit unavailable
+CPU rather than zero. These two samples per worker have overhead and are held
+identical on both sides of an optimization comparison. Comparing the same binary
+in full and milestone modes can estimate the effect of detailed instrumentation
+on worker CPU, but reduced mode still has observer cost and may change scheduling.
 
 The block viewer groups recorded completions by validator and proof type,
 retaining each completion in `proof_worker_totals` with its anonymous span ID.

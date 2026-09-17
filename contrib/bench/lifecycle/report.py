@@ -322,7 +322,7 @@ def build(paths, warmup=5, window=None, expected_detail=None):
             'unexplained_attempts':sum(a['status'] == 'unexplained_unassociated' for a in attempt_details),
             'attempt_details':attempt_details, 'attempts':len(attempts), 'unbound_attempts':sum(not s.get('block') for s in attempts),
             'coverage':sorted({s['name'] for s in rows}), 'stages':list(STAGES), 'bad_capture':bad_capture,
-            'definition':('Milestone-only capture: detailed proof, storage, network and poll spans are intentionally disabled. This report measures coarse lifecycle intervals and does not provide complete operation coverage. ' if detail == 'milestones' else '') +
+            'definition':('Milestone-only capture: detailed proof, storage, network and poll spans are intentionally disabled. Coarse worker identity and recorded CPU totals may be present. This report measures coarse lifecycle intervals and does not provide complete operation coverage. ' if detail == 'milestones' else '') +
                 'Proposal handling start on proposer → first accepted finalization certificate on a validator. Nearest-rank percentiles select actual complete blocks; initial complete blocks are excluded as warmup. When load boundaries are available, both endpoints must fall inside the load window. All views exclude data at or after the first engine persistence backpressure event on either validator; crossing spans are right-censored and crossing aggregates omitted.'}
 
 
