@@ -38,6 +38,8 @@ def decode(stdout, stderr, returncode, origin, *, expected_threads=EXPECTED_THRE
             cutoffs.append(int(cutoff[1]) - origin)
         elif total:
             counts.append(int(total[1]))
+        elif re.fullmatch(r"Lost [0-9]+ events", line):
+            raise ValueError("capture tool reported event loss")
         else:
             raise ValueError("unexpected tool output")
     if cutoff_ns is not None:
