@@ -53,10 +53,7 @@ use super::{
     Mailbox,
     ingress::{Broadcast, Message, Propose, Verify},
 };
-use crate::{
-    consensus::{Digest, block::Block},
-    utils::OptionFuture,
-};
+use crate::consensus::{Digest, block::Block};
 
 pub(in crate::consensus) struct Actor<TContext, TState = Uninit> {
     context: ContextCell<TContext>,
@@ -288,28 +285,12 @@ impl Inner<Init> {
 
         let proposal_block = {
             let mut proposal = Box::pin(async {
-                // Follow the commonware marshal::standard::inline application:
-                //
-                // >On leader recovery, marshal may already hold a verified block
-                // >for this round (persisted by a pre-crash propose whose
-                // >notarize vote never reached the journal).
-                //
-                // >The parent context recovered by simplex may differ from the one
-                // >the cached block was built against, so the stored block is not safe to reuse
-                // >and building a fresh block would land on the same prunable
-                // >archive index and be silently dropped.
-                //
-                // >Skip this view and let the voter nullify it via timeout.
-                //
-                // `marshal.get_verified` can take a long time if marshal is busy
-                // persisting the parent block, so we race it with payload building to
-                // avoid delaying the usual proposal path. If it finds a verified block,
-                // we always prefer that block and skip the newly built proposal,
-                // even when payload construction finishes first.
-                let already_verified = OptionFuture::some(self.marshal.get_verified(round));
-                futures::pin_mut!(already_verified);
-
-                let mut proposal = Box::pin(self.clone().propose(
+                // A cached candidate may have been broadcast before a crash and
+                // need not have passed execution. Do not reuse it or publish a
+                // different digest for the same round. Let consensus time out.
+                // Race the read with construction without releasing a proposal
+                // until the read has confirmed this is a fresh round.
+                let build = self.clone().propose(
                     &context,
                     BuildProposalArgs {
                         propose_start,
@@ -318,31 +299,12 @@ impl Inner<Init> {
                         round,
                         leader,
                     },
-                ));
-
-                let proposal_result = tokio::select! {
-                    biased;
-
-                    Some(block) = &mut already_verified => {
-                        debug!("skipping proposal: verified block already exists for round on restart");
-                        Ok((block, None))
-                    },
-
-                    res = &mut proposal => {
-                        res.wrap_err("failed creating a proposal")
-                    },
-                };
-
-                // already_verified blocks are always preferred, even if
-                // building a block failed.
-                let (block, proposal_return) = if already_verified.is_some()
-                    && let Some(block) = already_verified.await
-                {
-                    debug!("skipping proposal: verified block already exists for round on restart");
-                    (block, None)
-                } else {
-                    proposal_result?
-                };
+                );
+                let (block, proposal_return) = super::durability::build_fresh_proposal(
+                    async { self.marshal.get_verified(round).await.is_some() },
+                    build,
+                )
+                .await?;
 
                 tracing::Span::current()
                     .record("block_hash", tracing::field::display(block.digest()));
