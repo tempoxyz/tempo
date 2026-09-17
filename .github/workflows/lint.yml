@@ -43,7 +43,7 @@ jobs:
         with:
           version: v0.15.0
       - name: Run clippy on runtime targets
-        run: cargo clippy --workspace --lib --bins --all-features --locked
+        run: .github/scripts/retry-socket-package.sh cargo clippy --workspace --lib --bins --all-features --locked
         env:
           RUSTFLAGS: -D warnings
       - name: Run clippy on test targets
@@ -127,7 +127,7 @@ jobs:
         with:
           version: v0.15.0
       - name: Build documentation
-        run: cargo doc --workspace --all-features --no-deps --document-private-items
+        run: .github/scripts/retry-socket-package.sh cargo doc --workspace --all-features --no-deps --document-private-items
         env:
           RUSTDOCFLAGS: --cfg docsrs -D warnings --show-type-layout --generate-link-to-definition --enable-index-page -Zunstable-options
       - name: Exclude rustdocs from indexing
@@ -213,7 +213,7 @@ jobs:
         with:
           tool: zepter
       - name: Eagerly pull dependencies
-        run: cargo metadata --format-version=1 --locked > /dev/null
+        run: .github/scripts/retry-socket-package.sh cargo metadata --format-version=1 --locked > /dev/null
       - run: zepter run check
 
   no-std:

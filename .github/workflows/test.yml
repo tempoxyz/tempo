@@ -76,7 +76,7 @@ jobs:
           version: v0.15.0
       - name: Generate genesis
         run: |
-          cargo xtask generate-genesis \
+          .github/scripts/retry-socket-package.sh cargo xtask generate-genesis \
             --accounts 100 \
             --no-dkg-in-genesis \
             --output generated \
@@ -124,7 +124,7 @@ jobs:
       # Build and run tests WITH coverage (only when precompiles changed)
       - name: Build and compile tests with coverage
         if: needs.check-precompiles.outputs.coverage == 'true'
-        run: cargo nextest run --profile ci -E 'not (package(tempo-e2e) | (package(tempo-node) & binary(it) & test(/test_matrices_(testnet|devnet)/)))' --partition count:${{ matrix.partition }}/2 --no-run
+        run: .github/scripts/retry-socket-package.sh cargo nextest run --profile ci -E 'not (package(tempo-e2e) | (package(tempo-node) & binary(it) & test(/test_matrices_(testnet|devnet)/)))' --partition count:${{ matrix.partition }}/2 --no-run
         env:
           RUSTFLAGS: -C instrument-coverage
       - name: Run tests with coverage
@@ -138,7 +138,7 @@ jobs:
       # Build and run tests WITHOUT coverage (when precompiles not changed)
       - name: Build and compile tests
         if: needs.check-precompiles.outputs.coverage != 'true'
-        run: cargo nextest run --profile ci -E 'not (package(tempo-e2e) | (package(tempo-node) & binary(it) & test(/test_matrices_(testnet|devnet)/)))' --partition count:${{ matrix.partition }}/2 --no-run
+        run: .github/scripts/retry-socket-package.sh cargo nextest run --profile ci -E 'not (package(tempo-e2e) | (package(tempo-node) & binary(it) & test(/test_matrices_(testnet|devnet)/)))' --partition count:${{ matrix.partition }}/2 --no-run
       - name: Run tests
         if: needs.check-precompiles.outputs.coverage != 'true'
         run: cargo nextest run --profile ci -E 'not (package(tempo-e2e) | (package(tempo-node) & binary(it) & test(/test_matrices_(testnet|devnet)/)))' --partition count:${{ matrix.partition }}/2
@@ -191,7 +191,7 @@ jobs:
         with:
           tool: nextest@0.9.127
       - name: Build e2e tests
-        run: cargo nextest run --profile ci -E 'package(tempo-e2e)' --partition slice:${{ matrix.partition }}/4 --no-run
+        run: .github/scripts/retry-socket-package.sh cargo nextest run --profile ci -E 'package(tempo-e2e)' --partition slice:${{ matrix.partition }}/4 --no-run
       - name: Run e2e tests
         run: cargo nextest run --profile ci -E 'package(tempo-e2e)' --partition slice:${{ matrix.partition }}/4
       - name: Upload e2e test timings
@@ -229,7 +229,7 @@ jobs:
         with:
           tool: nextest@0.9.127
       - name: Build flaky e2e tests
-        run: cargo nextest run --profile ci-flaky --no-run
+        run: .github/scripts/retry-socket-package.sh cargo nextest run --profile ci-flaky --no-run
       - name: Run flaky e2e tests
         run: cargo nextest run --profile ci-flaky
 
@@ -253,7 +253,7 @@ jobs:
         with:
           version: v0.15.0
       - name: Build tempo
-        run: cargo build --bin tempo
+        run: .github/scripts/retry-socket-package.sh cargo build --bin tempo
       - name: Run CLI tests
         run: ./scripts/test-cli.sh
 
@@ -305,7 +305,7 @@ jobs:
         with:
           version: v0.15.0
       - name: Build with MSRV
-        run: cargo build --bin tempo
+        run: .github/scripts/retry-socket-package.sh cargo build --bin tempo
         env:
           RUSTFLAGS: -D warnings
 
