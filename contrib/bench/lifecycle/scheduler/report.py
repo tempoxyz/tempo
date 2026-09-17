@@ -159,6 +159,7 @@ def source_registration(path, capture):
 # A17M-edge sizing proof takes102s just to validate/publish one source.
 # Bound post-shutdown processing separately from the90s lifecycle-footer gate.
 def load(directory, out, window, timeout=900, *, retain_records=True):
+    from progress import emit
     paths = [directory / f'scheduler-{role}.json.gz' for role in ('a','b')]
     deadline = time.monotonic() + timeout
     while not all(path.exists() for path in paths):
@@ -178,8 +179,10 @@ def load(directory, out, window, timeout=900, *, retain_records=True):
                 header = json.loads(stream.readline())
             if header.get('scheduler') != 'registered_threads_v1':
                 raise ValueError('lifecycle scheduler registration header missing')
+            emit('scheduler_index', 'begin', index+1)
             capture = indexed_capture(path, directory, index+1, cutoff, reason, retain_records=retain_records)
             result.append(capture)
+            emit('scheduler_index', 'end', index+1)
             coverage.append(source_registration(out / f'{"ab"[index]}.jsonl', capture))
         # Both versions carry mandatory probe evidence; schema 2 retains its
         # original wake semantics, while newly published captures use schema 3.

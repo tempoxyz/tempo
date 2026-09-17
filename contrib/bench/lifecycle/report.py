@@ -314,22 +314,36 @@ def build(paths, warmup=5, window=None, expected_detail=None):
 
 
 def write_report(paths, out, warmup=5, window=None, prune=False, expected_detail=None, scheduler_dir=None):
+    from progress import emit
     if prune:
+        emit('lifecycle_prune', 'begin')
         paths, window = prepare_captures(paths, out, window)
+        emit('lifecycle_prune', 'end')
+    emit('lifecycle_build', 'begin')
     data = build(paths, warmup, window, expected_detail)
+    emit('lifecycle_build', 'end')
     out.mkdir(parents=True, exist_ok=True)
     if scheduler_dir is not None:
         from scheduler.report import load, publish, close
         if not prune or data['bad_capture'] or not data['detail_valid']:
             raise ValueError('scheduler diagnostic requires a valid pruned lifecycle capture')
+        emit('scheduler_load', 'begin')
         captures, coverage = load(scheduler_dir, out, window, retain_records=False)
     try:
+        if scheduler_dir is not None:
+            emit('scheduler_load', 'end')
+        emit('report_write', 'begin')
         encoded = json.dumps(data, separators=(',',':')).replace('<', '\\u003c')
         (out/'lifecycle.json').write_text(encoded)
         del encoded  # Release the full serialization before allocating package views.
+        emit('report_write', 'end')
+        emit('package', 'begin')
         write_package(data, out)
+        emit('package', 'end')
         if scheduler_dir is not None:
+            emit('scheduler_publish', 'begin')
             publish(data, captures, out, coverage)
+            emit('scheduler_publish', 'end')
     finally:
         if scheduler_dir is not None:
             close(captures)
