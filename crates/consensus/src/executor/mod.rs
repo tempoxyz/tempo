@@ -89,6 +89,16 @@ pub(crate) trait ExecutionLayer: Clone + Send + Sync + 'static {
         payload: TempoExecutionData,
     ) -> impl Future<Output = eyre::Result<PayloadStatus>> + Send + 'static;
 
+    /// Submits a verification payload with its exact consensus request context. Implementations
+    /// without engine tracing retain the original submission/cancellation behavior.
+    fn new_payload_with_parent(
+        &self,
+        payload: TempoExecutionData,
+        _parent: tracing::Span,
+    ) -> impl Future<Output = eyre::Result<PayloadStatus>> + Send + 'static {
+        self.new_payload(payload)
+    }
+
     /// Updates the execution layer's head and finalized blocks, optionally
     /// registering a payload build.
     fn fork_choice_updated(
@@ -180,6 +190,20 @@ impl ExecutionLayer for Arc<TempoFullNode> {
     ) -> impl Future<Output = eyre::Result<PayloadStatus>> + Send + 'static {
         let engine = self.add_ons_handle.beacon_engine_handle.clone();
         async move { engine.new_payload(payload).await.map_err(Into::into) }
+    }
+
+    fn new_payload_with_parent(
+        &self,
+        payload: TempoExecutionData,
+        parent: tracing::Span,
+    ) -> impl Future<Output = eyre::Result<PayloadStatus>> + Send + 'static {
+        let engine = self.add_ons_handle.beacon_engine_handle.clone();
+        async move {
+            engine
+                .new_payload_with_parent(payload, parent)
+                .await
+                .map_err(Into::into)
+        }
     }
 
     fn fork_choice_updated(

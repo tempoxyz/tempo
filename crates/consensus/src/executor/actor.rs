@@ -1308,12 +1308,12 @@ async fn execute_validation(
     request: VerifyBlockRequest,
 ) -> ExecutionTaskOutcome {
     let VerifyBlockRequest {
-        cause: _,
+        cause,
         block,
         mut response,
     } = request;
 
-    let work = validate_block(&execution_node, block);
+    let work = validate_block(&execution_node, block, cause);
     futures::pin_mut!(work);
 
     let result = select! {
@@ -1366,16 +1366,20 @@ async fn execute_validation(
 async fn validate_block(
     execution_node: &impl ExecutionLayer,
     block: Arc<Block>,
+    cause: Span,
 ) -> eyre::Result<Option<Duration>> {
     use alloy_rpc_types_engine::PayloadStatusEnum;
 
     let (block, block_access_list) = Arc::unwrap_or_clone(block).into_parts();
     let validation_start = Instant::now();
     let payload_status = execution_node
-        .new_payload(TempoExecutionData {
-            block,
-            block_access_list,
-        })
+        .new_payload_with_parent(
+            TempoExecutionData {
+                block,
+                block_access_list,
+            },
+            cause,
+        )
         .await
         .wrap_err("failed sending new-payload request to execution layer to validate block")?;
     match payload_status.status {
