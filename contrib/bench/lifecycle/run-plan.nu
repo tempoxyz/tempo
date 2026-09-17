@@ -37,3 +37,17 @@ def lifecycle-cache-config [mode: string, side: string] {
         {expected: "counts_v1" env: "TEMPO_LIFECYCLE_CACHE_INSERT=1 "}
     }
 }
+
+# Both sides share profile, toolchain and default-feature settings. Reuse only
+# an exact immutable revision with identical effective build inputs; preserve
+# separate builds for no-cache requests, mutable refs and ordinary benchmarks.
+def lifecycle-reuse-build [enabled: bool, no_cache: bool, builds: list<record>] {
+    if not $enabled or $no_cache or ($builds | length) != 2 { return false }
+    let a = $builds.0
+    let b = $builds.1
+    ($a.label == "baseline" and $b.label == "feature" and
+        ($a.sha =~ '^[0-9a-f]{40}$') and $a.sha == $b.sha and
+        $a.features == $b.features and
+        $a.extra_rustflags == $b.extra_rustflags and
+        $a.bench_features == $b.bench_features)
+}

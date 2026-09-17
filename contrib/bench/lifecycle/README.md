@@ -383,3 +383,12 @@ Require normal completeness/privacy/package checks plus the independent
 `cache_insert_audit.py --expected disabled|counts_v1` gate for each phase before
 analysis. This is a diagnostic comparison, not a runtime optimization or an
 assertion of lower execution latency.
+# Identical validator builds
+
+Lifecycle comparisons reuse one validator executable when both revisions are
+the same full commit hash and the effective build inputs match. This avoids a
+second download/build and duplicate binary storage for observer comparisons.
+Both phase labels, environments and source worktrees remain separate. Mutable
+references, different inputs, ordinary benchmarks and `--no-cache` keep separate
+builds. Existing binary verification, same-binary admission and disk guards still
+apply; reuse does not establish additional cache or hardware compatibility.
