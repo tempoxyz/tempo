@@ -115,6 +115,56 @@ class NetworkLineageTests(unittest.TestCase):
             self.assertEqual(pruned['transfers'][0]['decode_scope_blocks'], [])
             self.assertIsNone(pruned['transfers'][0]['decode_result'])
 
+    def test_opaque_response_redelivery_uses_exact_ordinal_and_own_fields(self):
+        events, spans = [], []
+        for ordinal, block in [(11, 'a'), (22, 'b')]:
+            events += [event('frame_send', ordinal, frame_hash=str(ordinal)),
+                       event('frame_receive', ordinal+1, B, frame_hash=str(ordinal), receive_id=ordinal),
+                       event('message_decode', ordinal+2, B, span=ordinal, receive_id=ordinal),
+                       event('message_decode_result', ordinal+3, B, span=ordinal, receive_id=ordinal, accepted=1)]
+            spans.append(dict(node=B,id=ordinal,parent=None,name='network.codec.recv',fields={}))
+            for retry in [100,200]:
+                ident = ordinal+retry
+                spans += [dict(node=B,id=ident,parent=None,name='resolver.response.context',fields={'receive_id':ordinal}),
+                          dict(node=B,id=ident+1,parent=ident,name='marshal.resolver.deliver',fields={}),
+                          dict(node=B,id=ident+2,parent=ident+1,name='block.read_cfg',fields={'block_hash':block}),
+                          dict(node=B,id=ident+3,parent=ident+1,name='simplex.proposal.read',block='other',fields={})]
+        transfers, _, _ = build_lineage(events, spans, dict(a=1,b=2,other=3), 0)
+        self.assertEqual([t['delivery_scope_blocks'] for t in transfers], [[1],[2]])
+        self.assertEqual([t['decode_scope_blocks'] for t in transfers], [[],[]])
+        self.assertEqual([t['decode_result'] for t in transfers], [True,True])
+        self.assertTrue(all(t['delivery_membership']=='observed' for t in transfers))
+        events += [event('frame_send', 40, frame_hash='duplicate'),
+                   event('frame_receive',41,B,frame_hash='duplicate',receive_id=11)]
+        transfers, _, _ = build_lineage(events, spans, dict(a=1,b=2,other=3), 0)
+        self.assertEqual([t['delivery_scope_blocks'] for t in transfers], [[],[2],[]])
+
+    def test_response_context_export_and_cutoff_do_not_infer_validation(self):
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory)/'a.jsonl'; fixture(path)
+            records = [json.loads(line) for line in path.read_text().splitlines()]
+            start = 1_000_000_000
+            extra = [dict(type='start',id=201,ts=start+110,thread=1,name='resolver.response.context',category='lifecycle',parent=1,fields={}),
+                     dict(type='start',id=202,ts=start+120,thread=1,name='block.read_cfg',category='lifecycle',parent=201,fields={}),
+                     dict(type='event',id=202,ts=start+140,fields=dict(stage='decode_done',block_hash=f'{2:024x}')),
+                     dict(type='fields',id=201,ts=start+150,fields={'receive_id':11}),
+                     dict(type='end',id=202,ts=start+160),dict(type='end',id=201,ts=start+170),
+                     dict(type='event',id=0,ts=start+100,fields=dict(stage='frame_send',frame_hash='a'*24)),
+                     dict(type='event',id=0,ts=start+105,fields=dict(stage='frame_receive',frame_hash='a'*24,receive_id=11))]
+            records[-1:-1] = extra
+            path.write_text('\n'.join(map(json.dumps,records)))
+            data = build([path],warmup=0)
+            transfer = data['transfers'][0]
+            self.assertEqual(transfer['delivery_scope_blocks'],[2])
+            self.assertIsNone(transfer['decode_result'])
+            self.assertEqual(next(s for s in data['spans'] if s['id']==201)['timing_semantics'],'response_context_lifetime_not_service')
+            self.assertTrue(any(e.get('args',{}).get('delivery_scope_blocks')==[2] for e in trace_events(data)))
+            out = Path(directory)/'report'; write_package(data,out)
+            self.assertEqual(json.loads((out/'network-lineage.json').read_text())['transfers'][0]['delivery_scope_blocks'],[2])
+            pruned = build([path],warmup=0,window={'backpressure':dict(ts=start+150,node=A)})
+            self.assertEqual(pruned['transfers'][0]['delivery_scope_blocks'],[])
+            self.assertEqual(pruned['transfers'][0]['delivery_membership'],'unknown')
+
     def test_distinct_batch_origins_and_fanout_keep_exact_frames(self):
         events = [event('message_origin', 0, block='a', message_id=1),
                   event('message_origin', 1, block='b', message_id=2)]

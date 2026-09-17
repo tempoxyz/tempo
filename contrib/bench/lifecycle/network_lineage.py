@@ -57,7 +57,7 @@ def build_lineage(events, spans, aliases, first):
     decode_roots = {k: rows[0] for k, rows in decode_candidates.items() if len(rows) == 1}
     encode_roots = {k: rows[0] for k, rows in encode_candidates.items()
                     if len(rows) == 1 and len(origins[(rows[0]['node'], rows[0]['message_id'])]) == 1}
-    encoded, decoded = defaultdict(set), defaultdict(set)
+    encoded, decoded, delivered = defaultdict(set), defaultdict(set), defaultdict(set)
     for span in spans:
         # Inherited causal identity is not evidence of encoded/decoded membership.
         own_block = span.get('fields', {}).get('block_hash')
@@ -75,6 +75,11 @@ def build_lineage(events, spans, aliases, first):
                         row['blocks'] = sorted(set(row['blocks']) | {block})
                         decoded[key].add(block)
                     break
+                if lookup[key]['name'] == 'resolver.response.context':
+                    receive_id = lookup[key].get('fields', {}).get('receive_id')
+                    if type(receive_id) is int and receive_id > 0:
+                        delivered[(span['node'], receive_id)].add(block)
+                    break
                 key = (span['node'], lookup[key].get('parent'))
         elif span['name'] in ('block.write', 'simplex.proposal.write'):
             root = ancestor(key, {'network.codec.send_ref'})
@@ -91,7 +96,7 @@ def build_lineage(events, spans, aliases, first):
     for frame_id, group in enumerate(frames.values(), 1):
         sends = [e for e in group if e['stage'] == 'frame_send']
         receives = [e for e in group if e['stage'] == 'frame_receive']
-        source_blocks, encode_scope_blocks, decode_scope_blocks = set(), set(), set()
+        source_blocks, encode_scope_blocks, decode_scope_blocks, delivery_scope_blocks = set(), set(), set(), set()
         origin = None
         if len(sends) == 1:
             source = origins.get((sends[0]['node'], sends[0].get('message_id')), [])
@@ -104,9 +109,10 @@ def build_lineage(events, spans, aliases, first):
             candidates = receivers.get((receives[0]['node'], receives[0]['receive_id']), [])
             if sum(e['stage'] == 'frame_receive' for e in candidates) == 1:
                 receiver_events = candidates
+                delivery_scope_blocks.update(delivered[(receives[0]['node'], receives[0]['receive_id'])])
             decode_scope_blocks.update(b for e in receiver_events if e['stage'] == 'message_decode'
                                        for b in decoded[(e['node'], e['span'])])
-        blocks = sorted(source_blocks | encode_scope_blocks | decode_scope_blocks)
+        blocks = sorted(source_blocks | encode_scope_blocks | decode_scope_blocks | delivery_scope_blocks)
         associated = [*group, *receiver_events]
         if origin is not None:
             associated.append(origin)
@@ -120,6 +126,8 @@ def build_lineage(events, spans, aliases, first):
                 start=sends[0]['ts'], end=receives[0]['ts'], bytes=sends[0].get('bytes', 0),
                 message_id=sends[0].get('message_id') or None, receive_id=receives[0].get('receive_id') or None,
                 blocks=blocks, source_blocks=sorted(source_blocks), encode_scope_blocks=sorted(encode_scope_blocks), decode_scope_blocks=sorted(decode_scope_blocks),
+                delivery_scope_blocks=sorted(delivery_scope_blocks),
+                delivery_membership='observed' if delivery_scope_blocks else 'unknown',
                 encode_membership='observed' if encode_scope_blocks else 'unknown',
                 decode_membership='observed' if decode_scope_blocks else 'unknown',
                 authentication_observed=any(e['stage'] == 'frame_authenticated' for e in receiver_events),
