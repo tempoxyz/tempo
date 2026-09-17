@@ -172,6 +172,7 @@ def build_environment(original, cargo_home, target_dir, rustc):
     need('PATH' in original and 'HOME' in original)
     environment = {key:original[key] for key in ('PATH','HOME','RUSTUP_HOME') if key in original}
     environment.update(CARGO_HOME=str(cargo_home), CARGO_TARGET_DIR=str(target_dir),
+        TMPDIR=str(target_dir.parent),
         RUSTUP_TOOLCHAIN=TOOLCHAIN, RUSTC=str(rustc), CARGO_BUILD_JOBS='16',
         CARGO_ENCODED_RUSTFLAGS='\x1f'.join(RUSTFLAGS), RUSTFLAGS=' '.join(RUSTFLAGS),
         CFLAGS=' '.join(CFLAGS), CXXFLAGS=' '.join(CFLAGS), CC='/usr/bin/gcc', CXX='/usr/bin/g++',
