@@ -143,6 +143,9 @@ where
 pub struct VecHandler<T: Storable> {
     len_slot: U256,
     address: Address,
+    /// Keccak-derived data slot, computed on first use so handlers that never touch elements do
+    /// not pay for the hash.
+    data_slot: std::cell::OnceCell<U256>,
     cache: HandlerCache<usize, T::Handler>,
 }
 
@@ -197,6 +200,7 @@ where
         Self {
             len_slot,
             address,
+            data_slot: std::cell::OnceCell::new(),
             cache: HandlerCache::new(),
         }
     }
@@ -223,7 +227,7 @@ where
     /// Multi-slot vectors use consecutive slots starting from this base.
     #[inline]
     pub fn data_slot(&self) -> ::alloy::primitives::U256 {
-        calc_data_slot(self.len_slot)
+        *self.data_slot.get_or_init(|| calc_data_slot(self.len_slot))
     }
 
     /// Returns a `Slot` accessor for full-vector operations.

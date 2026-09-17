@@ -460,7 +460,7 @@ mod tests {
         StorageCtx::enter(&mut storage, || {
             let mut token = TIP20Setup::create("T", "T", admin)
                 .with_issuer(admin)
-                .with_role(burner, *BURN_BLOCKED_ROLE)
+                .with_role(burner, BURN_BLOCKED_ROLE)
                 .with_mint(originator, amount)
                 .apply()?;
             block_all_senders(receiver, receiver)?;

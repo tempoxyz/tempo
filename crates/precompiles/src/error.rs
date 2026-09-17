@@ -19,12 +19,15 @@ use revm::{
     context::journaled_state::JournalLoadError,
     precompile::{PrecompileError, PrecompileHalt, PrecompileOutput, PrecompileResult},
 };
-use tempo_contracts::precompiles::{
-    AccountKeychainError, AddrRegistryError, CurrentCommitteeError, FeeManagerError, NonceError,
-    ReceivePolicyGuardError, RolesAuthError, SignatureVerifierError, StablecoinDEXError,
-    StorageCreditsError, TIP20ChannelReserveError, TIP20FactoryError, TIP403RegistryError,
-    TIPFeeAMMError, UnknownFunctionSelector, ValidatorConfigError, ValidatorConfigV2Error,
-    ZoneFactoryError,
+use tempo_contracts::{
+    TempoHardfork,
+    precompiles::{
+        AccountKeychainError, AddrRegistryError, CurrentCommitteeError, FeeManagerError,
+        NonceError, ReceivePolicyGuardError, RolesAuthError, SignatureVerifierError,
+        StablecoinDEXError, StorageCreditsError, TIP20ChannelReserveError, TIP20FactoryError,
+        TIP403RegistryError, TIPFeeAMMError, UnknownFunctionSelector, ValidatorConfigError,
+        ValidatorConfigV2Error, ZoneFactoryError,
+    },
 };
 
 /// Top-level error type for all Tempo precompile operations
@@ -299,12 +302,15 @@ pub fn add_errors_to_registry<T: SolInterface>(
         registry.insert(
             selector.into(),
             Box::new(move |data: &[u8]| {
-                T::abi_decode_with_config(data, crate::dispatch::abi_decoder_config())
-                    .ok()
-                    .map(|error| DecodedTempoPrecompileError {
-                        error: converter(error),
-                        revert_bytes: data,
-                    })
+                T::abi_decode_with_config(
+                    data,
+                    crate::dispatch::abi_decoder_config_for_spec(TempoHardfork::latest()),
+                )
+                .ok()
+                .map(|error| DecodedTempoPrecompileError {
+                    error: converter(error),
+                    revert_bytes: data,
+                })
             }),
         );
     }

@@ -1,16 +1,15 @@
 use core::fmt;
 
 use alloy_primitives::{Address, B256, Bytes, TxKind, U256};
-use alloy_rlp::Encodable;
 use alloy_sol_types::SolCall;
 use tempo_contracts::precompiles::{
     ACCOUNT_KEYCHAIN_ADDRESS,
     IAccountKeychain::{
         KeyRestrictions as AbiKeyRestrictions, LegacyTokenLimit as AbiLegacyTokenLimit,
-        TokenLimit as AbiTokenLimit, removeAllowedCallsCall, revokeKeyCall,
+        TokenLimit as AbiTokenLimit, removeAllowedCallsCall, revokeKeyCall, setAllowedCallsCall,
         updateSpendingLimitCall,
     },
-    ITIP20, authorizeAdminKeyCall, authorizeKeyCall, legacyAuthorizeKeyCall, setAllowedCallsCall,
+    ITIP20, authorizeAdminKeyCall, authorizeKeyCall, legacyAuthorizeKeyCall,
 };
 use tempo_primitives::{
     SignatureType,
@@ -310,7 +309,7 @@ pub fn authorize_key_legacy(
     }))
 }
 
-/// Build a pre-T11 `authorizeKey(address,uint8,KeyRestrictions)` precompile call.
+/// Build an `authorizeKey(address,uint8,KeyRestrictions)` precompile call.
 pub fn authorize_key(
     key_id: Address,
     signature_type: SignatureType,
@@ -323,7 +322,7 @@ pub fn authorize_key(
     })
 }
 
-/// Build a pre-T11 `authorizeAdminKey(address,uint8,bytes32)` precompile call.
+/// Build an `authorizeAdminKey(address,uint8,bytes32)` precompile call.
 ///
 /// Admin keys (TIP-1049) can perform account-management calls such as authorizing or
 /// revoking other keys and setting a receive policy. Pass [`B256::ZERO`] for `witness`
@@ -350,7 +349,7 @@ pub fn update_spending_limit(key_id: Address, token: Address, new_limit: U256) -
     })
 }
 
-/// Build a `setAllowedCalls(address,bytes)` precompile call with RLP-encoded scopes.
+/// Build a `setAllowedCalls(address,CallScope[])` precompile call.
 ///
 /// # Examples
 ///
@@ -369,11 +368,9 @@ pub fn update_spending_limit(key_id: Address, token: Address, new_limit: U256) -
 /// let call = set_allowed_calls(key_id, vec![scope]);
 /// ```
 pub fn set_allowed_calls(key_id: Address, scopes: Vec<CallScope>) -> Call {
-    let mut encoded = Vec::new();
-    scopes.encode(&mut encoded);
     account_keychain_call(setAllowedCallsCall {
         keyId: key_id,
-        scopes: encoded.into(),
+        scopes: scopes.into_iter().map(Into::into).collect(),
     })
 }
 
@@ -410,11 +407,10 @@ fn account_keychain_call(call: impl SolCall) -> Call {
 mod tests {
     use super::*;
     use alloy_primitives::{address, uint};
-    use alloy_rlp::Decodable;
     use tempo_contracts::precompiles::IAccountKeychain::{
         CallScope as AbiCallScope, SelectorRule as AbiSelectorRule,
         SignatureType as AbiSignatureType, removeAllowedCallsCall, revokeKeyCall,
-        updateSpendingLimitCall,
+        setAllowedCallsCall, updateSpendingLimitCall,
     };
 
     #[test]
@@ -608,11 +604,8 @@ mod tests {
 
         let decoded = setAllowedCallsCall::abi_decode(&call.input).expect("decode setAllowedCalls");
         assert_eq!(decoded.keyId, key_id);
-        let mut encoded = decoded.scopes.as_ref();
-        let decoded_scopes = Vec::<CallScope>::decode(&mut encoded).expect("decode RLP scopes");
-        assert!(encoded.is_empty());
-        assert_eq!(decoded_scopes.len(), 1);
-        assert_eq!(decoded_scopes[0].selector_rules.len(), 1);
+        assert_eq!(decoded.scopes.len(), 1);
+        assert_eq!(decoded.scopes[0].selectorRules.len(), 1);
     }
 
     #[test]

@@ -109,11 +109,13 @@ impl TempoPooledTransaction {
             calc_gas_balance_spending(transaction.gas_limit(), transaction.max_fee_per_gas())
                 .saturating_add(value);
         let fee_token_cost = cost - value;
+        let in_memory_size = transaction.size();
         Self {
             inner: EthPooledTransaction {
                 transaction,
                 cost,
                 encoded_length,
+                in_memory_size,
                 blob_sidecar: EthBlobTransactionSidecar::None,
                 blob_cell_availability: None,
             },
@@ -847,6 +849,12 @@ impl PoolTransaction for TempoPooledTransaction {
                 tx.tx().nonce_key.is_zero()
             })
             .unwrap_or(true)
+    }
+
+    fn requires_nonce_bound_check(&self) -> bool {
+        // Expiring nonces are discriminators, not incrementing counters. Fork-specific
+        // restrictions on their values are enforced by Tempo's EVM validation.
+        !self.is_expiring_nonce()
     }
 }
 

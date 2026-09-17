@@ -18,8 +18,8 @@ use super::{Config, try_init};
 use crate::{
     epoch::SchemeProvider,
     follow::test_utils::{
-        DkgFixture, EPOCH_LENGTH, StubExecutionProvider, StubExecutor, StubMarshal, dkg_fixture,
-        make_block, make_certified_block, make_finalization,
+        DkgFixture, EPOCH_LENGTH, StubExecutionProvider, StubMarshal, dkg_fixture, make_block,
+        make_certified_block, make_finalization,
     },
     gossip::{CertificateError, CertificateMailbox as _},
 };
@@ -63,7 +63,6 @@ fn startup_uses_previous_execution_boundary() {
                 },
                 last_finalized_height: finalized_height,
                 marshal: StubMarshal::default(),
-                executor: StubExecutor::default(),
                 epoch_strategy: strategy,
             },
         );
@@ -92,7 +91,6 @@ fn startup_propagates_finalized_block_read_failure() {
                 },
                 last_finalized_height: Height::zero(),
                 marshal: StubMarshal::default(),
-                executor: StubExecutor::default(),
                 epoch_strategy: FixedEpocher::new(EPOCH_LENGTH),
             },
         );
@@ -119,7 +117,6 @@ fn startup_requires_execution_boundary_header() {
                 },
                 last_finalized_height: Height::zero(),
                 marshal: StubMarshal::default(),
-                executor: StubExecutor::default(),
                 epoch_strategy: FixedEpocher::new(EPOCH_LENGTH),
             },
         );
@@ -139,8 +136,6 @@ fn valid_finalization_is_certified_and_reported() {
 
         let marshal = StubMarshal::default();
 
-        let executor = StubExecutor::default();
-
         let (actor, mailbox) = try_init(
             context.child("driver"),
             Config {
@@ -152,7 +147,6 @@ fn valid_finalization_is_certified_and_reported() {
                 },
                 last_finalized_height: Height::zero(),
                 marshal: marshal.clone(),
-                executor: executor.clone(),
                 epoch_strategy: FixedEpocher::new(EPOCH_LENGTH),
             },
         )
@@ -184,10 +178,6 @@ fn valid_finalization_is_certified_and_reported() {
         assert_eq!(certified[0].1, block);
         assert_eq!(marshal.report_count(), 1);
         assert!(marshal.hints().is_empty());
-        assert!(
-            executor.finalizations().is_empty(),
-            "marshal's durable tip drives execution for upstream finalizations",
-        );
     });
 }
 
@@ -200,7 +190,6 @@ fn network_identity_verifies_finalization_when_epoch_scheme_is_missing() {
         let provider = StubExecutionProvider::default();
         provider.add_header(&startup_block);
         let marshal = StubMarshal::default();
-        let executor = StubExecutor::default();
         let schemes = SchemeProvider::new();
         let (actor, mailbox) = try_init(
             context.child("driver"),
@@ -208,19 +197,18 @@ fn network_identity_verifies_finalization_when_epoch_scheme_is_missing() {
                 execution_provider: provider,
                 scheme_provider: schemes.clone(),
                 network_identity: NetworkIdentity {
-                    from_epoch: network_fixture.outcome.epoch.get(),
+                    from_epoch: network_fixture.outcome.epoch,
                     identity: *network_fixture.outcome.network_identity(),
                 },
                 last_finalized_height: Height::zero(),
                 marshal: marshal.clone(),
-                executor: executor.clone(),
                 epoch_strategy: FixedEpocher::new(EPOCH_LENGTH),
             },
         )
         .expect("driver should initialize");
 
         assert!(
-            schemes.scoped(network_fixture.outcome.epoch).is_none(),
+            schemes.scoped(network_fixture.outcome.epoch()).is_none(),
             "network identity fallback requires the epoch scheme to be missing",
         );
         actor.start();
@@ -228,7 +216,7 @@ fn network_identity_verifies_finalization_when_epoch_scheme_is_missing() {
         let block = make_block(EPOCH_LENGTH.get() * 2 + 1, None);
         let finalization = make_finalization(
             &block,
-            network_fixture.outcome.epoch,
+            network_fixture.outcome.epoch(),
             &network_fixture.schemes,
         );
         let certified = make_certified_block(block, &finalization);
@@ -249,7 +237,7 @@ fn network_identity_verifies_finalization_when_epoch_scheme_is_missing() {
 /// marshal and its round and digest to execution so both can pursue the same
 /// block.
 #[test_traced]
-fn gossiped_certificate_is_admitted_and_nudges_the_execution_layer() {
+fn gossiped_certificate_is_admitted_and_reported_only_to_marshal() {
     deterministic::Runner::default().start(|mut context| async move {
         let fixture = dkg_fixture(&mut context, Epoch::zero());
         let network_fixture = dkg_fixture(&mut context, Epoch::new(2));
@@ -257,7 +245,6 @@ fn gossiped_certificate_is_admitted_and_nudges_the_execution_layer() {
         let provider = StubExecutionProvider::default();
         provider.add_header(&startup_block);
         let marshal = StubMarshal::default();
-        let executor = StubExecutor::default();
         let schemes = SchemeProvider::new();
 
         let (actor, mailbox) = try_init(
@@ -266,12 +253,11 @@ fn gossiped_certificate_is_admitted_and_nudges_the_execution_layer() {
                 execution_provider: provider,
                 scheme_provider: schemes.clone(),
                 network_identity: NetworkIdentity {
-                    from_epoch: network_fixture.outcome.epoch.get(),
+                    from_epoch: network_fixture.outcome.epoch,
                     identity: *network_fixture.outcome.network_identity(),
                 },
                 last_finalized_height: Height::zero(),
                 marshal: marshal.clone(),
-                executor: executor.clone(),
                 epoch_strategy: FixedEpocher::new(EPOCH_LENGTH),
             },
         )
@@ -282,14 +268,11 @@ fn gossiped_certificate_is_admitted_and_nudges_the_execution_layer() {
         let block = make_block(EPOCH_LENGTH.get() * 2 + 1, None);
         let finalization = make_finalization(
             &block,
-            network_fixture.outcome.epoch,
+            network_fixture.outcome.epoch(),
             &network_fixture.schemes,
         );
-        let round = finalization.round();
-        let digest = block.digest();
-
         assert!(
-            schemes.scoped(network_fixture.outcome.epoch).is_none(),
+            schemes.scoped(network_fixture.outcome.epoch()).is_none(),
             "the certificate must require the network identity fallback",
         );
 
@@ -299,18 +282,17 @@ fn gossiped_certificate_is_admitted_and_nudges_the_execution_layer() {
             .expect("driver should answer");
         assert_eq!(result, Ok(()));
         assert!(
-            schemes.scoped(network_fixture.outcome.epoch).is_some(),
+            schemes.scoped(network_fixture.outcome.epoch()).is_some(),
             "marshal needs the successful fallback to re-verify the resolved block",
         );
         // The driver reports only the certificate to marshal.
         assert_eq!(marshal.report_count(), 1);
         assert!(marshal.certified().is_empty());
-        assert_eq!(executor.finalizations(), vec![(round, digest)]);
 
         // The first offer became the latest verified round, so a repeat is stale.
         let repeat = make_finalization(
             &make_block(EPOCH_LENGTH.get() * 2 + 1, None),
-            network_fixture.outcome.epoch,
+            network_fixture.outcome.epoch(),
             &network_fixture.schemes,
         );
         let result = mailbox
@@ -352,7 +334,6 @@ fn start_rig(context: &mut deterministic::Context) -> Rig {
             },
             last_finalized_height: Height::zero(),
             marshal: marshal.clone(),
-            executor: StubExecutor::default(),
             epoch_strategy: FixedEpocher::new(EPOCH_LENGTH),
         },
     )
@@ -516,7 +497,6 @@ fn unverifiable_gossiped_certificate_is_not_blamed_on_the_sender() {
         let provider = StubExecutionProvider::default();
         provider.add_header(&startup_block);
         let marshal = StubMarshal::default();
-        let executor = StubExecutor::default();
         let strategy = FixedEpocher::new(EPOCH_LENGTH);
         let expected_boundary = strategy
             .last(Epoch::zero())
@@ -533,7 +513,6 @@ fn unverifiable_gossiped_certificate_is_not_blamed_on_the_sender() {
                 },
                 last_finalized_height: Height::zero(),
                 marshal: marshal.clone(),
-                executor: executor.clone(),
                 epoch_strategy: strategy,
             },
         )
@@ -557,7 +536,6 @@ fn unverifiable_gossiped_certificate_is_not_blamed_on_the_sender() {
         );
         assert_eq!(marshal.report_count(), 0);
         assert_eq!(marshal.hints(), vec![expected_boundary]);
-        assert!(executor.finalizations().is_empty());
 
         let probe = make_block(1, None);
         let valid = make_finalization(&probe, Epoch::zero(), &fixture.schemes);
@@ -602,7 +580,6 @@ fn missing_scheme_catches_up_through_each_boundary() {
                 },
                 last_finalized_height: Height::zero(),
                 marshal: marshal.clone(),
-                executor: StubExecutor::default(),
                 epoch_strategy: strategy,
             },
         )
@@ -668,7 +645,6 @@ fn upstream_finalization_failing_registered_scheme_is_dropped_without_hint() {
         provider.add_header(&startup_block);
 
         let marshal = StubMarshal::default();
-        let executor = StubExecutor::default();
         let strategy = FixedEpocher::new(EPOCH_LENGTH);
 
         let (actor, mailbox) = try_init(
@@ -682,7 +658,6 @@ fn upstream_finalization_failing_registered_scheme_is_dropped_without_hint() {
                 },
                 last_finalized_height: Height::zero(),
                 marshal: marshal.clone(),
-                executor: executor.clone(),
                 epoch_strategy: strategy,
             },
         )
@@ -713,7 +688,6 @@ fn upstream_finalization_failing_registered_scheme_is_dropped_without_hint() {
         assert!(marshal.hints().is_empty());
         assert!(marshal.certified().is_empty());
         assert_eq!(marshal.report_count(), 0);
-        assert!(executor.finalizations().is_empty());
     });
 }
 
@@ -731,8 +705,6 @@ fn finalization_failing_the_identity_fallback_hints_current_epoch_boundary() {
 
         let marshal = StubMarshal::default();
 
-        let executor = StubExecutor::default();
-
         let strategy = FixedEpocher::new(EPOCH_LENGTH);
         let expected_boundary = strategy
             .last(Epoch::zero())
@@ -749,7 +721,6 @@ fn finalization_failing_the_identity_fallback_hints_current_epoch_boundary() {
                 },
                 last_finalized_height: Height::zero(),
                 marshal: marshal.clone(),
-                executor: executor.clone(),
                 epoch_strategy: strategy,
             },
         )
@@ -774,7 +745,6 @@ fn finalization_failing_the_identity_fallback_hints_current_epoch_boundary() {
         assert_eq!(marshal.hints(), vec![expected_boundary]);
         assert!(marshal.certified().is_empty());
         assert_eq!(marshal.report_count(), 0);
-        assert!(executor.finalizations().is_empty());
     });
 }
 
@@ -787,7 +757,6 @@ fn mismatched_finalization_digest_is_dropped_without_stopping_driver() {
 
         provider.add_header(&startup_block);
         let marshal = StubMarshal::default();
-        let executor = StubExecutor::default();
         let (actor, mailbox) = try_init(
             context.child("driver"),
             Config {
@@ -799,7 +768,6 @@ fn mismatched_finalization_digest_is_dropped_without_stopping_driver() {
                 },
                 last_finalized_height: Height::zero(),
                 marshal: marshal.clone(),
-                executor: executor.clone(),
                 epoch_strategy: FixedEpocher::new(EPOCH_LENGTH),
             },
         )
@@ -851,8 +819,6 @@ fn scheme_before_network_identity_epoch_is_required() {
 
         let marshal = StubMarshal::default();
 
-        let executor = StubExecutor::default();
-
         let schemes = SchemeProvider::new();
         let (actor, mailbox) = try_init(
             context.child("driver"),
@@ -860,24 +826,23 @@ fn scheme_before_network_identity_epoch_is_required() {
                 execution_provider: provider,
                 scheme_provider: schemes.clone(),
                 network_identity: NetworkIdentity {
-                    from_epoch: missing_fixture.outcome.epoch.get() + 1,
+                    from_epoch: missing_fixture.outcome.epoch + 1,
                     identity: *missing_fixture.outcome.network_identity(),
                 },
                 last_finalized_height: Height::zero(),
                 marshal: marshal.clone(),
-                executor: executor.clone(),
                 epoch_strategy: FixedEpocher::new(EPOCH_LENGTH),
             },
         )
         .expect("driver should initialize");
 
-        assert!(schemes.scoped(missing_fixture.outcome.epoch).is_none());
+        assert!(schemes.scoped(missing_fixture.outcome.epoch()).is_none());
         actor.start();
 
         let block = make_block(EPOCH_LENGTH.get() + 1, None);
         let finalization = make_finalization(
             &block,
-            missing_fixture.outcome.epoch,
+            missing_fixture.outcome.epoch(),
             &missing_fixture.schemes,
         );
 
@@ -907,19 +872,17 @@ fn gossiped_certificate_without_a_usable_identity_needs_scheme() {
         provider.add_header(&startup_block);
 
         let marshal = StubMarshal::default();
-        let executor = StubExecutor::default();
         let (actor, mailbox) = try_init(
             context.child("driver"),
             Config {
                 execution_provider: provider,
                 scheme_provider: SchemeProvider::new(),
                 network_identity: NetworkIdentity {
-                    from_epoch: missing_fixture.outcome.epoch.get() + 1,
+                    from_epoch: missing_fixture.outcome.epoch + 1,
                     identity: *missing_fixture.outcome.network_identity(),
                 },
                 last_finalized_height: Height::zero(),
                 marshal: marshal.clone(),
-                executor: executor.clone(),
                 epoch_strategy: FixedEpocher::new(EPOCH_LENGTH),
             },
         )
@@ -930,7 +893,7 @@ fn gossiped_certificate_without_a_usable_identity_needs_scheme() {
         let block = make_block(EPOCH_LENGTH.get() + 1, None);
         let certificate = make_finalization(
             &block,
-            missing_fixture.outcome.epoch,
+            missing_fixture.outcome.epoch(),
             &missing_fixture.schemes,
         );
         let result = mailbox
@@ -941,12 +904,11 @@ fn gossiped_certificate_without_a_usable_identity_needs_scheme() {
         assert_eq!(
             result,
             Err(CertificateError::NeedsScheme {
-                epoch: missing_fixture.outcome.epoch,
+                epoch: missing_fixture.outcome.epoch(),
             })
         );
         assert_eq!(marshal.report_count(), 0);
         assert!(marshal.hints().is_empty());
-        assert!(executor.finalizations().is_empty());
 
         let probe = make_block(1, None);
         let valid = make_finalization(&probe, Epoch::zero(), &fixture.schemes);
@@ -984,7 +946,6 @@ fn boundary_update_registers_scheme_before_acknowledging() {
                 },
                 last_finalized_height: Height::zero(),
                 marshal: StubMarshal::default(),
-                executor: StubExecutor::default(),
                 epoch_strategy: strategy,
             },
         )
@@ -1024,7 +985,6 @@ fn non_boundary_update_is_acknowledged_without_registering_a_scheme() {
                 },
                 last_finalized_height: Height::zero(),
                 marshal: StubMarshal::default(),
-                executor: StubExecutor::default(),
                 epoch_strategy: FixedEpocher::new(EPOCH_LENGTH),
             },
         )
@@ -1053,8 +1013,6 @@ fn startup_installs_missing_consensus_epoch_scheme_from_marshal() {
 
         let marshal = StubMarshal::default();
 
-        let executor = StubExecutor::default();
-
         let strategy = FixedEpocher::new(EPOCH_LENGTH);
         let last_finalized_height = Height::new(EPOCH_LENGTH.get() * 3);
         let current_epoch = strategy
@@ -1081,7 +1039,6 @@ fn startup_installs_missing_consensus_epoch_scheme_from_marshal() {
                 },
                 last_finalized_height,
                 marshal: marshal.clone(),
-                executor: executor.clone(),
                 epoch_strategy: strategy,
             },
         )
@@ -1089,7 +1046,7 @@ fn startup_installs_missing_consensus_epoch_scheme_from_marshal() {
 
         actor.start();
         wait_until(&context, || {
-            schemes.scoped(recovered_fixture.outcome.epoch).is_some()
+            schemes.scoped(recovered_fixture.outcome.epoch()).is_some()
         })
         .await;
 
@@ -1105,7 +1062,6 @@ fn non_finalized_events_are_ignored() {
         let provider = StubExecutionProvider::default();
         provider.add_header(&startup_block);
         let marshal = StubMarshal::default();
-        let executor = StubExecutor::default();
         let (actor, mailbox) = try_init(
             context.child("driver"),
             Config {
@@ -1117,7 +1073,6 @@ fn non_finalized_events_are_ignored() {
                 },
                 last_finalized_height: Height::zero(),
                 marshal: marshal.clone(),
-                executor: executor.clone(),
                 epoch_strategy: FixedEpocher::new(EPOCH_LENGTH),
             },
         )

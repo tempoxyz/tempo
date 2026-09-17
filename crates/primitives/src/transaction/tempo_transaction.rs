@@ -1,7 +1,7 @@
 #[cfg(feature = "serde")]
 use crate::transaction::key_authorization::serde_nonzero_quantity_opt;
 use crate::{
-    subblock::{PartialValidatorKey, has_sub_block_nonce_key_prefix},
+    subblock::has_sub_block_nonce_key_prefix,
     transaction::{
         AASigned, TempoSignature, TempoSignedAuthorization,
         key_authorization::SignedKeyAuthorization,
@@ -433,6 +433,13 @@ impl TempoTransaction {
         keccak256(&buf)
     }
 
+    /// Returns `true` if the fee payer signature is the [`FEE_PAYER_SIGNATURE_MARKER`]
+    /// placeholder, indicating the transaction still needs to be signed by a fee payer.
+    #[inline]
+    pub fn has_fee_payer_signature_marker(&self) -> bool {
+        self.fee_payer_signature == Some(FEE_PAYER_SIGNATURE_MARKER)
+    }
+
     /// Recovers the fee payer for this transaction.
     ///
     /// This returns the given sender if the transaction doesn't include a fee payer signature
@@ -664,17 +671,6 @@ impl TempoTransaction {
     /// Returns true if the nonce key of this transaction has the [`TEMPO_SUBBLOCK_NONCE_KEY_PREFIX`](crate::subblock::TEMPO_SUBBLOCK_NONCE_KEY_PREFIX).
     pub fn has_sub_block_nonce_key_prefix(&self) -> bool {
         has_sub_block_nonce_key_prefix(&self.nonce_key)
-    }
-
-    /// Returns the proposer of the subblock if this is a subblock transaction.
-    pub fn subblock_proposer(&self) -> Option<PartialValidatorKey> {
-        if self.has_sub_block_nonce_key_prefix() {
-            Some(PartialValidatorKey::from_slice(
-                &self.nonce_key.to_be_bytes::<32>()[1..16],
-            ))
-        } else {
-            None
-        }
     }
 }
 

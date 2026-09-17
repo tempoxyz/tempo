@@ -97,10 +97,10 @@ jobs:
           fi
 
       # ── toolchain (matches test.yml) ───────────────────────────
-      - uses: dtolnay/rust-toolchain@4360b52568e2003a75bf9bc1d59f33a8e3fc893c # stable
-      - uses: rui314/setup-mold@7e4f20ad28a2e8ca6fd0892ccf72e2abb706b9c3 # v1
-      - uses: mozilla-actions/sccache-action@9e7fa8a12102821edf02ca5dbea1acd0f89a2696 # v0.0.10
-      - uses: taiki-e/install-action@d0f23220b09a75c6db730f13bb37c4f8144b4382 # v2.75.9
+      - uses: tempoxyz/gh-actions/vendor/dtolnay/rust-toolchain@3626124474a987bc74b41fc7ae65b2e23f8e4e4e
+      - uses: tempoxyz/gh-actions/actions/setup-mold@a65420ff2c90fcc46fe778c044aa7998ae9f246c
+      - uses: tempoxyz/gh-actions/vendor/mozilla-actions/sccache-action@3626124474a987bc74b41fc7ae65b2e23f8e4e4e
+      - uses: tempoxyz/gh-actions/vendor/taiki-e/install-action@3626124474a987bc74b41fc7ae65b2e23f8e4e4e
         with:
           tool: nextest@0.9.127
 
@@ -342,7 +342,7 @@ jobs:
           fi
 
       # ── zepter feature lint ─────────────────────────────────────
-      - uses: taiki-e/cache-cargo-install-action@f9eed3e4680f27610dc6d8c67be1b88593f7dade # v3.0.6
+      - uses: tempoxyz/gh-actions/actions/cargo-install@ab45d76f6e7420a094281a22aee1973ecc0754f8
         with:
           tool: zepter
       - name: Fix zepter lint
@@ -658,17 +658,17 @@ jobs:
           done
 
       # ── Slack notification ─────────────────────────────────────
-      - name: Notify Slack
-        if: always()
+      - name: Notify Slack on failure
+        if: failure()
         env:
           GH_TOKEN: ${{ secrets.DEREK_UPDATE_RETH_TOKEN }}
-          SLACK_WEBHOOK_URL: ${{ secrets.SLACK_ENG_TEMPO_WORKFLOWS_WEBHOOK_URL }}
+          SLACK_BOT_TOKEN: ${{ secrets.SLACK_BENCH_BOT_TOKEN }}
+          SLACK_CHANNEL: C09KA1JNJ02 # eng-reth-alerts
           OLD_REV_IN: ${{ steps.update.outputs.old_rev }}
           NEW_REV_IN: ${{ steps.update.outputs.new_rev }}
           BUMPED_IN: ${{ steps.update.outputs.bumped }}
           CLIPPY_PASSED_IN: ${{ steps.check-loop.outputs.clippy_passed }}
           TEST_PASSED_IN: ${{ steps.test-loop.outputs.test_passed }}
-          JOB_STATUS_IN: ${{ job.status }}
         run: |
           PR_BRANCH="reth-auto-bump"
           RUN_URL="${GITHUB_SERVER_URL}/${GITHUB_REPOSITORY}/actions/runs/${GITHUB_RUN_ID}"
@@ -685,24 +685,10 @@ jobs:
             IFS=$'\t' read -r PR_NUMBER PR_URL <<< "$PR_INFO"
           fi
 
-          # Determine overall status
-          JOB_STATUS="${JOB_STATUS_IN}"
-          if [ "$JOB_STATUS" = "success" ]; then
-            EMOJI="✅"
-            STATUS="succeeded"
-            COLOR="#2eb67d"
-            MENTION=""
-          elif [ "$JOB_STATUS" = "cancelled" ]; then
-            EMOJI="⚠️"
-            STATUS="cancelled"
-            COLOR="#e0a523"
-            MENTION="<!subteam^S09KMRP46D7|reth>"
-          else
-            EMOJI="❌"
-            STATUS="failed"
-            COLOR="#e01e5a"
-            MENTION="<!subteam^S09KMRP46D7|reth>"
-          fi
+          MENTION="<!subteam^S09KMRP46D7|reth>"
+          EMOJI="❌"
+          STATUS="failed"
+          COLOR="#e01e5a"
 
           # Build detail lines
           DETAILS=""
@@ -726,21 +712,26 @@ jobs:
 
           DETAILS="${DETAILS}\n• <${RUN_URL}|Workflow>"
 
-          # Post to Slack via incoming webhook
-          if [ -z "${SLACK_WEBHOOK_URL:-}" ]; then
-            echo "::warning::SLACK_WEBHOOK_URL is not set; skipping Slack notification"
+          # Use the existing notification bot to target eng-reth-alerts directly.
+          if [ -z "${SLACK_BOT_TOKEN:-}" ]; then
+            echo "::warning::SLACK_BOT_TOKEN is not set; skipping Slack notification"
             exit 0
           fi
 
           DETAILS_TEXT=$(printf '%b' "$DETAILS")
 
           PAYLOAD=$(jq -n \
+            --arg channel "$SLACK_CHANNEL" \
             --arg emoji "$EMOJI" \
             --arg status "$STATUS" \
             --arg mention "$MENTION" \
             --arg details "$DETAILS_TEXT" \
             --arg color "$COLOR" \
             '{
+              channel: $channel,
+              text: "Reth update failed",
+              unfurl_links: false,
+              unfurl_media: false,
               attachments: [{
                 color: $color,
                 blocks: [
@@ -755,7 +746,15 @@ jobs:
               }]
             }')
 
-          curl -sf -X POST -H 'Content-type: application/json' \
+          RESPONSE=$(curl -sf -X POST \
+            -H "Authorization: Bearer $SLACK_BOT_TOKEN" \
+            -H 'Content-type: application/json' \
             --data "$PAYLOAD" \
-            "$SLACK_WEBHOOK_URL" \
-            || echo "::warning::Failed to post Slack notification"
+            https://slack.com/api/chat.postMessage) || {
+              echo "::warning::Failed to post Slack notification"
+              exit 0
+            }
+          if ! jq -e '.ok == true' <<< "$RESPONSE" >/dev/null; then
+            ERROR=$(jq -r '.error // "unknown_error"' <<< "$RESPONSE")
+            echo "::warning::Slack rejected notification: $ERROR"
+          fi

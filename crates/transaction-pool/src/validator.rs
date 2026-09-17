@@ -603,14 +603,8 @@ where
                         );
                     }
 
-                    // Check if T1 hardfork is active for expiring nonce handling
-                    let current_time = self.inner.fork_tracker().tip_timestamp();
-                    let is_t1_active = self
-                        .inner
-                        .chain_spec()
-                        .is_t1_active_at_timestamp(current_time);
-
-                    if is_t1_active && nonce_key == TEMPO_EXPIRING_NONCE_KEY {
+                    // Expiring nonces are only recognized once T1 is active at the tip.
+                    if spec.is_t1() && nonce_key == TEMPO_EXPIRING_NONCE_KEY {
                         // Expiring nonce transactions are validated by the EVM
                     } else {
                         // This is a 2D nonce transaction - validate against 2D nonce
@@ -1072,6 +1066,45 @@ mod tests {
         validator.on_new_head_block(&mock_block);
 
         validator
+    }
+
+    #[test]
+    fn nonce_bound_check_only_exempts_expiring_nonces() {
+        for nonce in [0, 1, u64::MAX - 1, u64::MAX] {
+            let sender = Address::random();
+            for tx in [
+                TxBuilder::eip1559(sender).nonce(nonce).build_eip1559(),
+                TxBuilder::aa(sender).nonce(nonce).build(),
+                TxBuilder::aa(sender)
+                    .nonce_key(U256::from(1))
+                    .nonce(nonce)
+                    .build(),
+                TxBuilder::aa(sender)
+                    .nonce_key(TEMPO_EXPIRING_NONCE_KEY)
+                    .nonce(nonce)
+                    .valid_before(TEST_VALIDITY_WINDOW)
+                    .build(),
+            ] {
+                assert_eq!(
+                    tx.nonce(),
+                    nonce,
+                    "test transaction must preserve its nonce"
+                );
+                let validator = setup_validator(&tx, 1);
+                let result = validator
+                    .inner
+                    .validate_stateless(TransactionOrigin::External, &tx);
+                if nonce == u64::MAX && !tx.is_expiring_nonce() {
+                    assert!(
+                        matches!(result, Err(InvalidPoolTransactionError::Eip2681)),
+                        "expected EIP-2681 rejection for nonce key {:?}, got {result:?}",
+                        tx.nonce_key(),
+                    );
+                } else {
+                    assert!(result.is_ok(), "unexpected stateless rejection: {result:?}");
+                }
+            }
+        }
     }
 
     #[test]
