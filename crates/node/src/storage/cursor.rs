@@ -12,7 +12,7 @@ use std::{
 
 pub(super) type Rows = Arc<Vec<(Vec<u8>, Vec<u8>)>>;
 
-/// Native cursor for ordinary tables; an ordered snapshot for the two storage tables.
+/// Native cursor for ordinary tables; an ordered snapshot for hashed storage.
 #[derive(Debug)]
 pub struct Cursor<T, C> {
     inner: C,

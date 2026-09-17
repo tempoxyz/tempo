@@ -1,7 +1,6 @@
 use super::*;
 use crate::TempoNode;
 use alloy::signers::{SignerSync, local::PrivateKeySigner};
-use alloy_primitives::Address;
 use reth_db_api::{cursor::DbDupCursorRO, transaction::DbTxMut};
 use reth_primitives_traits::RecoveredBlock;
 use reth_provider::{
@@ -63,35 +62,28 @@ fn reads_derive_from_blocks_and_writes_remain_native() {
     let address = EXPIRING_NONCE_PRECOMPILE_ADDRESS;
     let manager = tempo_precompiles::expiring_nonce::ExpiringNonceManager::new();
     let slot = B256::from(manager.seen[hash].slot());
+    let hashed_address = keccak256(address);
+    let hashed_slot = keccak256(slot);
     let wrong = StorageEntry {
-        key: slot,
+        key: hashed_slot,
         value: U256::from(99999),
     };
     rw.tx_ref()
-        .put::<tables::PlainStorageState>(address, wrong)
-        .unwrap();
-    rw.tx_ref()
-        .put::<tables::HashedStorages>(
-            keccak256(address),
-            StorageEntry {
-                key: keccak256(slot),
-                ..wrong
-            },
-        )
+        .put::<tables::HashedStorages>(hashed_address, wrong)
         .unwrap();
     let ghost = B256::repeat_byte(0xff);
     rw.tx_ref()
-        .put::<tables::PlainStorageState>(
-            address,
+        .put::<tables::HashedStorages>(
+            hashed_address,
             StorageEntry {
                 key: ghost,
                 value: U256::from(123),
             },
         )
         .unwrap();
-    let other = Address::with_last_byte(9);
+    let other = B256::with_last_byte(9);
     rw.tx_ref()
-        .put::<tables::PlainStorageState>(other, wrong)
+        .put::<tables::HashedStorages>(other, wrong)
         .unwrap();
     rw.commit().unwrap();
     let db = TempoDatabase::new(
@@ -112,8 +104,8 @@ fn reads_derive_from_blocks_and_writes_remain_native() {
             U256::from(42),
         )
         .unwrap();
-    let mut plain = StorageCtx::enter(&mut outer, || {
-        let cursor = tx.cursor_dup_read::<tables::PlainStorageState>().unwrap();
+    let mut hashed = StorageCtx::enter(&mut outer, || {
+        let cursor = tx.cursor_dup_read::<tables::HashedStorages>().unwrap();
         assert_eq!(
             StorageCtx
                 .sload(address, U256::from_be_slice(slot.as_slice()))
@@ -123,40 +115,37 @@ fn reads_derive_from_blocks_and_writes_remain_native() {
         cursor
     });
     assert_eq!(
-        plain
-            .seek_by_key_subkey(address, slot)
+        hashed
+            .seek_by_key_subkey(hashed_address, hashed_slot)
             .unwrap()
             .unwrap()
             .value,
         U256::from(1200)
     );
-    assert_eq!(plain.seek_by_key_subkey(other, slot).unwrap(), Some(wrong));
-    let rows: Vec<_> = plain
-        .walk_dup(Some(address), None)
+    assert_eq!(
+        hashed.seek_by_key_subkey(other, hashed_slot).unwrap(),
+        Some(wrong)
+    );
+    let rows: Vec<_> = hashed
+        .walk_dup(Some(hashed_address), None)
         .unwrap()
         .map(Result::unwrap)
         .collect();
-    assert_eq!(plain.seek_by_key_subkey(address, ghost).unwrap(), None);
+    assert_eq!(
+        hashed.seek_by_key_subkey(hashed_address, ghost).unwrap(),
+        None
+    );
     assert_eq!(rows.len(), 5); // seen, bucket, count, maximum, oldest
     assert_eq!(
-        tx.get::<tables::PlainStorageState>(address).unwrap(),
+        tx.get::<tables::HashedStorages>(hashed_address).unwrap(),
         Some(rows[0].1)
     );
     assert_eq!(
-        tx.get_by_encoded_key::<tables::PlainStorageState>(&address.encode())
+        tx.get_by_encoded_key::<tables::HashedStorages>(&hashed_address.encode())
             .unwrap(),
         Some(rows[0].1)
     );
-    assert_eq!(tx.entries::<tables::PlainStorageState>().unwrap(), 6);
-    let mut hashed = tx.cursor_dup_read::<tables::HashedStorages>().unwrap();
-    assert_eq!(
-        hashed
-            .seek_by_key_subkey(keccak256(address), keccak256(slot))
-            .unwrap()
-            .unwrap()
-            .value,
-        U256::from(1200)
-    );
+    assert_eq!(tx.entries::<tables::HashedStorages>().unwrap(), 6);
     let mut expected_hashed: Vec<_> = tx
         .slots()
         .unwrap()
@@ -182,26 +171,26 @@ fn reads_derive_from_blocks_and_writes_remain_native() {
             reth_ethereum::tasks::Runtime::test(),
         )
         .unwrap();
-    for storage_v2 in [false, true] {
-        let mut settings = injected.cached_storage_settings();
-        settings.storage_v2 = storage_v2;
-        injected.set_storage_settings_cache(settings);
-        let state = injected.latest().unwrap();
-        assert_eq!(
-            state.storage(address, slot).unwrap(),
-            Some(U256::from(1200))
-        );
-        assert_eq!(
-            state.storage_root(address, Default::default()).unwrap(),
-            reth_ethereum::trie::root::storage_root_unsorted(
-                expected_hashed.iter().map(|entry| (entry.key, entry.value))
-            )
-        );
-    }
+    let mut settings = injected.cached_storage_settings();
+    settings.storage_v2 = true;
+    injected.set_storage_settings_cache(settings);
+    let state = injected.latest().unwrap();
+    assert_eq!(
+        state.storage(address, slot).unwrap(),
+        Some(U256::from(1200))
+    );
+    assert_eq!(
+        state.storage_root(address, Default::default()).unwrap(),
+        reth_ethereum::trie::root::storage_root_unsorted(
+            expected_hashed.iter().map(|entry| (entry.key, entry.value))
+        )
+    );
     // Native write transactions still see the intentionally incorrect persisted value.
     let native = db.tx_mut().unwrap();
     assert_eq!(
-        native.get::<tables::PlainStorageState>(address).unwrap(),
+        native
+            .get::<tables::HashedStorages>(hashed_address)
+            .unwrap(),
         Some(wrong)
     );
     native.abort();
@@ -226,8 +215,8 @@ fn storage_cursor_matches_native_traversal() {
     for owner in [1, 3, 7] {
         for slot in [2, 4, 8] {
             rw.tx_ref()
-                .put::<tables::PlainStorageState>(
-                    Address::with_last_byte(owner),
+                .put::<tables::HashedStorages>(
+                    B256::with_last_byte(owner),
                     StorageEntry {
                         key: B256::with_last_byte(slot),
                         value: U256::from(slot),
@@ -245,10 +234,10 @@ fn storage_cursor_matches_native_traversal() {
     );
     let virtual_tx = wrapper.tx().unwrap();
     let mut native = native_tx
-        .cursor_dup_read::<tables::PlainStorageState>()
+        .cursor_dup_read::<tables::HashedStorages>()
         .unwrap();
     let mut virtual_cursor = virtual_tx
-        .cursor_dup_read::<tables::PlainStorageState>()
+        .cursor_dup_read::<tables::HashedStorages>()
         .unwrap();
     macro_rules! same { ($method:ident($($arg:expr),*)) => { assert_eq!(virtual_cursor.$method($($arg),*).unwrap(), native.$method($($arg),*).unwrap(), stringify!($method)); } }
     same!(first());
@@ -265,11 +254,11 @@ fn storage_cursor_matches_native_traversal() {
     same!(last());
     same!(next());
     for owner in [0, 1, 2, 3, 7, 9] {
-        same!(seek(Address::with_last_byte(owner)));
-        same!(seek_exact(Address::with_last_byte(owner)));
+        same!(seek(B256::with_last_byte(owner)));
+        same!(seek_exact(B256::with_last_byte(owner)));
         for slot in [0, 2, 3, 4, 8, 9] {
             same!(seek_by_key_subkey(
-                Address::with_last_byte(owner),
+                B256::with_last_byte(owner),
                 B256::with_last_byte(slot)
             ));
         }
@@ -277,7 +266,7 @@ fn storage_cursor_matches_native_traversal() {
     for owner in [0, 2, 9] {
         assert!(
             virtual_cursor
-                .walk_dup(Some(Address::with_last_byte(owner)), None)
+                .walk_dup(Some(B256::with_last_byte(owner)), None)
                 .unwrap()
                 .next()
                 .is_none()
@@ -285,10 +274,7 @@ fn storage_cursor_matches_native_traversal() {
     }
     assert!(
         virtual_cursor
-            .walk_dup(
-                Some(Address::with_last_byte(1)),
-                Some(B256::with_last_byte(9))
-            )
+            .walk_dup(Some(B256::with_last_byte(1)), Some(B256::with_last_byte(9)))
             .unwrap()
             .next()
             .is_none()
@@ -304,7 +290,7 @@ fn storage_cursor_matches_native_traversal() {
         .map(Result::unwrap)
         .collect();
     assert_eq!(forward, backward.into_iter().rev().collect::<Vec<_>>());
-    let range = Address::with_last_byte(1)..Address::with_last_byte(7);
+    let range = B256::with_last_byte(1)..B256::with_last_byte(7);
     assert_eq!(
         virtual_cursor
             .walk_range(range.clone())

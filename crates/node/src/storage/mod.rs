@@ -1,7 +1,7 @@
 //! Read-only replay-protection storage derived from canonical block data.
 //!
 //! This PoC scans blocks from genesis to the transaction's Finish checkpoint and
-//! materializes storage tables for cursor reads. It requires those block bodies
+//! materializes hashed storage for cursor reads. It requires those block bodies
 //! to remain available. Writes, history, and trie persistence are unmodified.
 mod cursor;
 mod replay;
@@ -96,7 +96,6 @@ pub struct ReplayTx<TX> {
 
 fn address_key<T: Table>() -> Option<Vec<u8>> {
     match T::NAME {
-        tables::PlainStorageState::NAME => Some(EXPIRING_NONCE_PRECOMPILE_ADDRESS.to_vec()),
         tables::HashedStorages::NAME => Some(keccak256(EXPIRING_NONCE_PRECOMPILE_ADDRESS).to_vec()),
         _ => None,
     }
@@ -110,7 +109,7 @@ impl<TX: DbTx> ReplayTx<TX> {
             .map_err(Clone::clone)
     }
 
-    // Materialize only the two storage tables. This intentionally favors a simple PoC
+    // Materialize the hashed storage table. This intentionally favors a simple PoC
     // over memory usage; unrelated tables retain their native cursors.
     fn rows<T: Table>(&self) -> Result<Option<Rows>, DatabaseError> {
         let Some(address) = address_key::<T>() else {
@@ -126,11 +125,7 @@ impl<TX: DbTx> ReplayTx<TX> {
             }
         }
         for (&slot, &value) in self.slots()? {
-            let key = if T::NAME == tables::HashedStorages::NAME {
-                keccak256(slot)
-            } else {
-                slot
-            };
+            let key = keccak256(slot);
             rows.push((address.clone(), StorageEntry { key, value }.compress()));
         }
         rows.sort();
@@ -147,11 +142,7 @@ impl<TX: DbTx> DbTx for ReplayTx<TX> {
                 .slots()?
                 .iter()
                 .map(|(&slot, &value)| StorageEntry {
-                    key: if T::NAME == tables::HashedStorages::NAME {
-                        keccak256(slot)
-                    } else {
-                        slot
-                    },
+                    key: keccak256(slot),
                     value,
                 })
                 .collect();
