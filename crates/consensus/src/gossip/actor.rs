@@ -18,7 +18,7 @@ use commonware_runtime::{
 use futures::{FutureExt as _, future::BoxFuture};
 use tempo_node::gossip::{Frame, PeerControl, PeerEvent, TransportHandle, TransportSender, wire};
 use tokio::{select, sync::mpsc};
-use tracing::debug;
+use tracing::{debug, error, error_span};
 
 use super::{
     Certificate, CertificateError, CertificateMailbox, Marshal, ingress::Message, metrics::Metrics,
@@ -208,7 +208,7 @@ where
     }
 
     async fn run(mut self) {
-        loop {
+        let reason = loop {
             // Biased order keeps incoming peer frames last. A flood cannot delay
             // driver results, budget wakeups, control changes, publications, or
             // marshal progress updates.
@@ -226,13 +226,30 @@ where
                     self.try_dispatch();
                 }
 
-                Some(event) = self.config.transport.control.recv() => self.on_peer(event),
+                event = self.config.transport.control.recv() => {
+                    let Some(event) = event else {
+                        break "peer control channel closed";
+                    };
+                    self.on_peer(event);
+                }
 
-                Some(message) = self.mailbox.recv() => self.on_message(message).await,
+                message = self.mailbox.recv() => {
+                    let Some(message) = message else {
+                        break "mailbox closed";
+                    };
+                    self.on_message(message).await;
+                }
 
-                Some(frame) = self.config.transport.frames.recv() => self.on_frame(frame),
+                frame = self.config.transport.frames.recv() => {
+                    let Some(frame) = frame else {
+                        break "peer frames channel closed";
+                    };
+                    self.on_frame(frame);
+                }
             }
-        }
+        };
+
+        error_span!("shutdown").in_scope(|| error!(%reason, "gossip actor exited"));
     }
 
     fn on_peer(&mut self, event: PeerEvent) {

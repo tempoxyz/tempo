@@ -10,7 +10,7 @@ use commonware_runtime::{ContextCell, Handle, Spawner, spawn_cell};
 use futures::StreamExt;
 use std::time::{SystemTime, UNIX_EPOCH};
 use tempo_node::rpc::consensus::CertifiedBlock;
-use tracing::{debug, error, info_span, instrument, warn};
+use tracing::{debug, error, error_span, instrument, warn};
 
 use super::{ingress::FinalizedTip, state::FeedStateHandle};
 use crate::alias::marshal;
@@ -53,11 +53,14 @@ impl<TContext: Spawner> Actor<TContext> {
     }
 
     async fn run(mut self) {
-        while let Some(tip) = self.receiver.next().await {
+        let reason = loop {
+            let Some(tip) = self.receiver.next().await else {
+                break "mailbox closed";
+            };
             self.handle_tip(tip).await;
-        }
+        };
 
-        info_span!("feed_actor").in_scope(|| error!("mailbox closed; shutting down"));
+        error_span!("shutdown").in_scope(|| error!(%reason, "feed actor exited"));
     }
 
     #[instrument(skip_all, fields(height = %tip.height, digest = %tip.digest))]
