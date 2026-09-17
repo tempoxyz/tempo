@@ -220,12 +220,12 @@ spans censored at the recorded backpressure cutoff remain valid. It does not dia
 performance. Per-block operations use explicit digest/payload association and
 parentage. Private transport ordinals join authenticated frames through queues
 and codecs. Explicit body/proposal codec scopes establish block membership where
-available; unmatched, control and later-decoded opaque resolver payloads remain
-labeled context. Broad parent spans also include uninstrumented work. Neither
+available; retained response context also joins later opaque resolver decoding.
+Unmatched and control transfers remain labeled context. Broad parent spans also include uninstrumented work. Neither
 blank time nor a broad span is claimed to be a fully explained CPU interval.
 
-Remaining application gaps require explicit context propagation through opaque
-resolver delivery and protocol paths that do not decode under a per-message codec.
+Remaining application gaps include protocol paths that expose no block digest or
+do not propagate receive context into decoding.
 Do not infer them from time proximity or round/height coincidence. Scheduler
 context is a separate opt-in diagnostic and does not supply application membership.
 
@@ -521,11 +521,27 @@ authentication and consensus validation remain separate outcomes. Block sets are
 message/frame membership, not exclusive byte or elapsed-time attribution.
 
 Opaque marshal resolver response bytes are decoded after the generic network
-codec has returned. Those later reads do not yet have an explicit receive ordinal;
-source ancestry may associate some responses, but complete receiver membership is
-unknown. DKG/discovery/control traffic has no general single-block interpretation.
+codec has returned. The resolver retains the exact receive ordinal alongside its
+cached response and carries it through initial delivery and local redelivery using
+the existing subscriber-span path. `delivery_scope_blocks` identifies explicit
+body/proposal reads under that response context; it is separate from generic
+network `decode_result`, which only describes envelope decoding. Neither value
+establishes certificate or application validation. Missing/ambiguous frame context
+leaves delivery membership unknown. DKG/discovery/control traffic has no general single-block interpretation.
 External transports using the default context-free receiver and Reth transaction
 gossip do not gain Commonware frame linkage. Reduced-detail captures omit the
 codec scopes, so they cannot establish this full-capture membership inventory.
 The additional scopes use the existing source-salted digest allowlist; no new
 wire bytes, identity fields or payload copies are introduced.
+
+
+Resolver response context spans are labeled `response_context_lifetime_not_service`.
+Their duration includes retention by subscribers and pending result handling; it
+is not decode, queue wait or service time. The ordinal adds one optional integer
+to existing cached-response metadata and one optional span per delivered subscriber.
+No new response map, wire bytes, payload scan or identity fields are added. A
+replacement response replaces its ordinal; discard/cancellation remove it with
+the response. Disabled context spans preserve the original subscriber request span.
+The codec receiver exposes an additive `recv_with_context` method; existing `recv`
+callers keep their original decoded result/error shape, and Consumer/Delivery
+public interfaces remain unchanged.
