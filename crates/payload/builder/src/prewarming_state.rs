@@ -252,7 +252,7 @@ mod tests {
                     with_state(
                         &DROP_TEST,
                         &owner,
-                        || Reenter(None),
+                        || Self(None),
                         |_| owner.store(true, Ordering::Relaxed),
                     );
                 }
