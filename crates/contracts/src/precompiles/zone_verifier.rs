@@ -28,6 +28,7 @@ crate::sol! {
             uint64 anchorBlockNumber,
             bytes32 anchorBlockHash,
             uint64 expectedWithdrawalBatchIndex,
+            uint256 nextZoneHeight,
             BlockTransition calldata blockTransition,
             DepositQueueTransition calldata depositQueueTransition,
             TokenEnablementTransition calldata tokenEnablementTransition,
