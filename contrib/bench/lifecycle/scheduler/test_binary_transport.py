@@ -36,7 +36,7 @@ class BinaryTests(unittest.TestCase):
             built = subprocess.run(['gcc','-O3','-flto','-pthread',str(directory/'synthetic.c'),'-o',str(binary)], capture_output=True)
             self.assertEqual(built.returncode, 0)
             origin = time.monotonic_ns()
-            result = subprocess.run(['sudo','-n','python3',str(root/'binary_capture.py'),
+            result = subprocess.run(['sudo','-n','/usr/bin/python3',str(root/'binary_capture.py'),
                 '--binary',str(binary),'--epoch','1','--command-base64',base64.b64encode(str(binary).encode()).decode()],
                 capture_output=True, timeout=20)
             self.assertEqual(result.returncode, 0)

@@ -634,7 +634,7 @@ def start-e2e-local-node [
     let node_cmd_str = if $scheduler {
         let encoded = ($plain_node_cmd | encode base64)
         let directory = ($"($results_dir)/lifecycle-raw/($phase)" | path expand)
-        $"python3 contrib/bench/lifecycle/scheduler/runtime.py --binary ($tempo_bin) --role ($role) --directory ($directory) --command-base64 ($encoded)"
+        $"/usr/bin/python3 contrib/bench/lifecycle/scheduler/runtime.py --binary ($tempo_bin) --role ($role) --directory ($directory) --command-base64 ($encoded)"
     } else { $plain_node_cmd }
     let script = $"($env_prefix)($otel_attrs)($tracy_env_prefix)($node_cmd_str) 2>&1"
     let unit_phase = ($phase | str replace -a "_" "-" | str replace -a "." "-")

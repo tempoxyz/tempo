@@ -866,12 +866,20 @@ jobs:
             const s = require('./.github/scripts/bench-update-status.js');
             await s({github, context, status: 'Running benchmark...'});
 
+      - name: Provision opt-in scheduler dependencies
+        if: env.BENCH_LIFECYCLE_SCHEDULER == 'true'
+        run: /usr/bin/python3 contrib/bench/lifecycle/scheduler/provision.py
+
       - name: Preflight opt-in scheduler diagnostic
         if: env.BENCH_LIFECYCLE_SCHEDULER == 'true'
         run: |
           scheduler_probe_dir=$(mktemp -d)
           trap 'rm -rf "$scheduler_probe_dir"' EXIT
-          python3 contrib/bench/lifecycle/scheduler/diagnostic.py --output "$scheduler_probe_dir/sanitized.json"
+          /usr/bin/python3 contrib/bench/lifecycle/scheduler/diagnostic.py --output "$scheduler_probe_dir/sanitized.json"
+          if ! TEMPO_SCHEDULER_LIVE_TEST=1 /usr/bin/python3 -m unittest discover -s contrib/bench/lifecycle/scheduler -p 'test_binary_transport.py' >/dev/null 2>&1; then
+            echo '::error::scheduler_setup_live_attach: binary scheduler synthetic attach/capture validation failed'
+            exit 1
+          fi
 
       - name: Check lifecycle report
         if: env.BENCH_LIFECYCLE == 'true'
