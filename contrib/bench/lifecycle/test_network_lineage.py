@@ -165,6 +165,24 @@ class NetworkLineageTests(unittest.TestCase):
             self.assertEqual(pruned['transfers'][0]['delivery_scope_blocks'],[])
             self.assertEqual(pruned['transfers'][0]['delivery_membership'],'unknown')
 
+            # The completed-phase transport must preserve the full lineage sidecar
+            # and compact offline views exactly, including explicit unknowns.
+            from phase_archive import pack, unpack
+            phase = Path(directory)/'feature-1'
+            write_package(data, phase, chunk_intervals=2)
+            before = {p.relative_to(phase):p.read_bytes() for p in phase.rglob('*') if p.is_file()}
+            index = embedded(phase/'block-2.html')
+            self.assertEqual(index['transfers'][0]['delivery_scope_blocks'], [2])
+            self.assertTrue(all(set(b)=={'id','duration','in_population'} for b in index['population_blocks']))
+            pack(phase, remove_source=True)
+            self.assertFalse(phase.exists())
+            unpack(Path(directory)/'feature-1.zip', Path(directory), 'feature-1')
+            after = {p.relative_to(phase):p.read_bytes() for p in phase.rglob('*') if p.is_file()}
+            self.assertEqual(before, after)
+            restored = json.loads((phase/'network-lineage.json').read_text())['transfers'][0]
+            self.assertEqual(restored['delivery_scope_blocks'], [2])
+            self.assertIsNone(restored['decode_result'])
+
     def test_distinct_batch_origins_and_fanout_keep_exact_frames(self):
         events = [event('message_origin', 0, block='a', message_id=1),
                   event('message_origin', 1, block='b', message_id=2)]
