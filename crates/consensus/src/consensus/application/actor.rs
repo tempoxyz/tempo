@@ -120,6 +120,7 @@ where
 
                 my_mailbox,
                 marshal: config.marshal,
+                broadcast: config.broadcast,
 
                 execution_node: config.execution_node,
                 executor: config.executor,
@@ -222,6 +223,7 @@ struct Inner<TState> {
     my_mailbox: Mailbox,
 
     marshal: crate::alias::marshal::Mailbox,
+    broadcast: commonware_broadcast::buffered::Mailbox<PublicKey, Block>,
 
     execution_node: Arc<TempoFullNode>,
     executor: crate::executor::Mailbox,
@@ -472,6 +474,7 @@ impl Inner<Init> {
             Round::new(round.epoch(), parent_view),
             parent_digest,
             &self.marshal,
+            None,
         )
         .await?;
 
@@ -697,9 +700,15 @@ impl Inner<Init> {
         }
 
         tracing::info!(target: "lifecycle", stage = "verify_start", block_hash = %payload);
-        let block = subscribe(&self.execution_node, round, payload, &self.marshal)
-            .await
-            .wrap_err("failed getting proposal block")?;
+        let block = subscribe(
+            &self.execution_node,
+            round,
+            payload,
+            &self.marshal,
+            Some(&self.broadcast),
+        )
+        .await
+        .wrap_err("failed getting proposal block")?;
 
         tracing::info!(target: "lifecycle", stage = "body_ready", block_hash = %block.digest(), height = %block.height());
 
@@ -805,6 +814,7 @@ impl Inner<Uninit> {
             proposal_return_budget: self.proposal_return_budget,
             my_mailbox: self.my_mailbox,
             marshal: self.marshal,
+            broadcast: self.broadcast,
             execution_node: self.execution_node,
             executor: self.executor.clone(),
             state: Init {
@@ -973,6 +983,7 @@ async fn subscribe(
     round: Round,
     digest: Digest,
     marshal: &crate::alias::marshal::Mailbox,
+    broadcast: Option<&commonware_broadcast::buffered::Mailbox<PublicKey, Block>>,
 ) -> eyre::Result<Block> {
     let block = if let Some(block) = execution_node
         .provider
@@ -982,11 +993,19 @@ async fn subscribe(
         // EL database reads do not include commonware sidecars.
         Block::from_execution_block_unchecked(block, None)
     } else {
-        (*marshal
-            .subscribe_by_digest(digest, DigestFallback::FetchByRound { round })
+        let primary = marshal.subscribe_by_digest(digest, DigestFallback::FetchByRound { round });
+        let received = if let Some(broadcast) = broadcast {
+            // This is the same structurally decoded body source marshal consults before
+            // persistence. Replay, context validation and vote durability still follow.
+            super::body_subscription::receive(primary, broadcast.subscribe(digest), |block| {
+                commonware_cryptography::Digestible::digest(block.as_ref()) == digest
+            })
             .await
-            .map_err(|_| eyre!("syncer dropped channel before the parent block was sent"))?)
-        .clone()
+        } else {
+            primary.await
+        };
+        (*received.map_err(|_| eyre!("syncer dropped channel before the parent block was sent"))?)
+            .clone()
     };
     Ok(block)
 }
