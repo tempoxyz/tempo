@@ -34,6 +34,11 @@ def trace_events(data, block_id=None):
         args = {'block': s['block'], 'span_id': s['id'], 'parent_span_id': s['parent'],
                 'semantics': 'aggregate envelope, not continuous work' if aggregate else s.get('timing_semantics', 'span_lifetime')}
         args.update(s.get('details', {}))
+        if 'worker_completion_count' in args:
+            args['worker_cpu_scope'] = ('Synchronous worker.run thread CPU; excludes construction '
+                'and result forwarding. worker_run_ns includes receive waits and teardown. '
+                'Worker CPU sums overlap across threads; they are not block elapsed time. '
+                'Missing or duplicate completions do not imply zero CPU.')
         if s.get('context_reason'):
             args['context_reason'] = s['context_reason']
         if data.get('focus_block') is not None:
