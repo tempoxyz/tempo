@@ -22,6 +22,7 @@ jobs:
     permissions:
       actions: read
       contents: read
+      pull-requests: read
       packages: write
       id-token: write
     uses: ./.github/workflows/docker.yml

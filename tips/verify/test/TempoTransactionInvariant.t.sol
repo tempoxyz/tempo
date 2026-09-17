@@ -4339,8 +4339,31 @@ contract TempoTransactionInvariantTest is InvariantChecker {
         }
     }
 
+    /// @notice Verify discriminator boundaries on both sides of TIP-1106 activation.
+    function test_expiringNonceDiscriminatorBoundaries() public {
+        uint64[4] memory nonces = [uint64(0), uint64(1), type(uint64).max - 1, type(uint64).max];
+        uint64 protocolNonce = vm.getNonce(actors[0]);
+        vm.coinbase(validator);
+
+        for (uint256 i = 0; i < nonces.length; i++) {
+            bytes memory signedTx = _buildExpiringNonceTxWithNonce(
+                0, actors[1], 1e6, uint64(block.timestamp + _maxExpirySecs()), nonces[i]
+            );
+            bool accepted;
+            try vmExec.executeTransaction(signedTx) {
+                accepted = true;
+            } catch { }
+            assertEq(
+                accepted,
+                nonces[i] == 0 || _allowsExpiringNonceDiscriminators(),
+                "E4: Unexpected expiring nonce discriminator acceptance"
+            );
+            assertEq(vm.getNonce(actors[0]), protocolNonce, "E4: Protocol nonce changed");
+        }
+    }
+
     /// @notice Handler E4: Attempt expiring nonce tx with non-zero nonce
-    /// @dev Expiring nonce txs must have nonce = 0
+    /// @dev Non-zero discriminators are valid starting at T12 (TIP-1106).
     function handler_expiringNonceNonZeroNonce(
         uint256 actorSeed,
         uint256 recipientSeed,
@@ -4365,17 +4388,21 @@ contract TempoTransactionInvariantTest is InvariantChecker {
         }
 
         uint64 validBefore = uint64(block.timestamp + _maxExpirySecs());
-        uint64 wrongNonce = uint64(bound(nonceSeed, 1, 100));
+        uint64 discriminator = uint64(bound(nonceSeed, 1, type(uint64).max));
 
-        bytes memory signedTx =
-            _buildExpiringNonceTxWithNonce(senderIdx, recipient, amount, validBefore, wrongNonce);
+        bytes memory signedTx = _buildExpiringNonceTxWithNonce(
+            senderIdx, recipient, amount, validBefore, discriminator
+        );
 
         vm.coinbase(validator);
         ghost_expiringNonceNonZeroAttempted++;
 
         try vmExec.executeTransaction(signedTx) {
-            // E4 VIOLATION: Non-zero nonce was allowed!
             ghost_expiringNonceNonZeroAllowed++;
+            ghost_expiringNonceExecuted[keccak256(signedTx)] = true;
+            ghost_expiringNonceTxsExecuted++;
+            ghost_totalTxExecuted++;
+            ghost_totalCallsExecuted++;
         } catch {
             _handleExpectedReject(_noop);
         }
