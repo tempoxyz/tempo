@@ -704,38 +704,44 @@ impl Inner<Init> {
             });
         }
 
-        let validation_duration = verify_block(
-            round,
-            &self.epoch_strategy,
-            &self.state.executor,
-            &block,
-            parent_digest,
-        )
-        .await
-        .wrap_err("failed verifying block against execution layer")?;
-        if let Some(duration) = validation_duration
-            && let Ok(mut estimator) = self.validation_latency_estimator.lock()
-        {
-            estimator.observe(
-                block.height().get(),
-                ValidationLatencyWorkload::new(
-                    block.block().gas_used(),
-                    block.block().body().transaction_count(),
-                ),
-                duration,
-            );
-        }
-        let is_good = validation_duration.is_some();
-        if is_good {
-            tracing::info!(target: "lifecycle", stage = "verify_done", block_hash = %block.digest(), height = %block.height());
-        }
-
-        if is_good {
-            // Persist the verified block in the marshal actor.
-            if !self.marshal.verified(round, block).await {
-                bail!("marshal actor refused to persist verified block");
+        // Structural checks are complete. Marshal's candidate archive does
+        // not assert application validity, so start its sync while execution
+        // runs. A successful response still requires both gates. Keep the
+        // existing mailbox API so storage errors retain its fatal policy.
+        let validation = async {
+            let validation_duration = verify_block(
+                round,
+                &self.epoch_strategy,
+                &self.state.executor,
+                &block,
+                parent_digest,
+            )
+            .await
+            .wrap_err("failed verifying block against execution layer")?;
+            if let Some(duration) = validation_duration
+                && let Ok(mut estimator) = self.validation_latency_estimator.lock()
+            {
+                estimator.observe(
+                    block.height().get(),
+                    ValidationLatencyWorkload::new(
+                        block.block().gas_used(),
+                        block.block().body().transaction_count(),
+                    ),
+                    duration,
+                );
             }
-
+            let is_good = validation_duration.is_some();
+            if is_good {
+                tracing::info!(target: "lifecycle", stage = "verify_done", block_hash = %block.digest(), height = %block.height());
+            }
+            Ok(is_good)
+        };
+        let is_good = super::durability::verify_and_persist(
+            validation,
+            self.marshal.verified(round, block.clone()),
+        )
+        .await?;
+        if is_good {
             return Ok(VerifyResult {
                 result: true,
                 block: None,
