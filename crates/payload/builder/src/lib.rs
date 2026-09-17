@@ -640,7 +640,6 @@ where
             target: "flatmpt",
             pre_fill_ms = start.elapsed().as_millis() as u64,
             pool_fetch_us = pool_fetch_start.elapsed().as_micros() as u64,
-            prepare_system_us = prepare_system_txs_elapsed.as_micros() as u64,
             "build phases before fill"
         );
 

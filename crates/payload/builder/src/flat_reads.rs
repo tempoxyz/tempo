@@ -21,8 +21,9 @@ use reth_storage_api::{
     StateProvider, StateRootProvider, StorageRootProvider,
 };
 use reth_trie_common::{
-    AccountProof, HashedPostState, HashedStorage, MultiProof, MultiProofTargets, StorageMultiProof,
-    StorageProof, TrieInput, updates::TrieUpdates,
+    AccountProof, DecodedMultiProofV2, HashedPostState, HashedStorage, MultiProof,
+    MultiProofTargets, MultiProofTargetsV2, StorageMultiProof, StorageProof, TrieInput,
+    updates::TrieUpdates,
 };
 
 /// `TEMPO_FLATMPT_READS=1` (in root mode) routes builder state reads through
@@ -294,6 +295,14 @@ impl StorageRootProvider for FetchTimedProvider {
 }
 
 impl StateProofProvider for FetchTimedProvider {
+    fn multiproof_v2(
+        &self,
+        input: TrieInput,
+        targets: MultiProofTargetsV2,
+    ) -> ProviderResult<DecodedMultiProofV2> {
+        self.inner.multiproof_v2(input, targets)
+    }
+
     fn proof(
         &self,
         input: TrieInput,
@@ -501,6 +510,14 @@ impl StorageRootProvider for FlatReadProvider {
 }
 
 impl StateProofProvider for FlatReadProvider {
+    fn multiproof_v2(
+        &self,
+        input: TrieInput,
+        targets: MultiProofTargetsV2,
+    ) -> ProviderResult<DecodedMultiProofV2> {
+        self.inner.multiproof_v2(input, targets)
+    }
+
     fn proof(
         &self,
         input: TrieInput,
