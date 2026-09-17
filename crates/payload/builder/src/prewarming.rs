@@ -107,9 +107,12 @@ impl BestTransactionsPrewarming {
             pool,
             owner: Arc::downgrade(&ctx.prewarm.stop),
         };
+        // Scoped leaves share this immutable context until they all join. Drop
+        // its handles before the guard clears the builder-owned worker state.
+        let prewarm = ctx.prewarm.clone();
 
         pool.in_place_scope(|scope| {
-            let prewarm = ctx.prewarm.clone();
+            let prewarm = &prewarm;
             scope.spawn(move |_| {
                 pool.broadcast_fn(|| {
                     prewarming_state::initialize(&BUILDER_PREWARM, &prewarm.stop, || {
@@ -131,8 +134,7 @@ impl BestTransactionsPrewarming {
                     None
                 };
 
-                let parallel = ctx.prewarm.parallel;
-                let prewarm = ctx.prewarm.clone();
+                let parallel = prewarm.parallel;
                 let commands_tx = ctx.commands_tx.clone();
                 let transactions_tx = ctx.transactions_tx.clone();
 
@@ -194,6 +196,7 @@ impl BestTransactionsPrewarming {
                 }
             }
         });
+        drop(prewarm);
         // The existing scope has joined every leaf. Normal TLS cleanup is excluded.
         observer.finish();
         drop(_clear);
@@ -205,7 +208,7 @@ impl BestTransactionsPrewarming {
     /// a [`PrewarmedTransaction`] with populated replay data is returned.
     #[instrument(level = "trace", skip_all, fields(parallel = prewarm.parallel, tx_hash = ?tx.hash()))]
     fn prewarm_transaction<Provider>(
-        prewarm: PrewarmingExecutionContext<Provider>,
+        prewarm: &PrewarmingExecutionContext<Provider>,
         tx: BestTransaction,
         expiring_nonce_offset: Option<usize>,
         cpu_job: CpuJob,
@@ -817,6 +820,65 @@ mod tests {
     }
 
     #[test]
+    fn queued_prewarming_borrows_one_context_until_cancelled_scope_joins() {
+        let executor = TaskExecutor::test();
+        let pool = executor.prewarming_pool();
+        // Declare the coordinator owner before the releases so unwinding always
+        // unblocks the workers before joining the coordinator.
+        let mut running = TestPrewarming {
+            prewarming: None,
+            executor: executor.clone(),
+        };
+        let mut releases = Vec::new();
+        let (started_tx, started_rx) = mpsc::channel();
+        for _ in 0..pool.current_num_threads() {
+            let (release_tx, release_rx) = mpsc::channel::<()>();
+            releases.push(release_tx);
+            let started_tx = started_tx.clone();
+            pool.spawn(move || {
+                started_tx.send(()).unwrap();
+                let _ = release_rx.recv();
+            });
+        }
+        for _ in 0..pool.current_num_threads() {
+            started_rx.recv_timeout(Duration::from_secs(5)).unwrap();
+        }
+
+        let cache = SavedCache::new(B256::ZERO, reth_engine_tree::tree::ExecutionCache::new(64));
+        let mut context = prewarming_context(executor.clone(), false);
+        context.cache = Some(cache.clone());
+        let owner = Arc::downgrade(&context.stop);
+        let count = pool.current_num_threads() * 2;
+        let sender = Address::random();
+        let txs = (0..count)
+            .map(|nonce| test_tx(sender, nonce as u64))
+            .collect();
+        let log = Arc::new(Mutex::new(TestLog::default()));
+        running.prewarming = Some(BestTransactionsPrewarming::new(
+            context,
+            TestBestTransactions::new(txs, log.clone()),
+            CpuContext::default(),
+        ));
+        running.no_updates();
+        wait_until(|| log.lock().unwrap().no_updates == 1);
+        assert_eq!(log.lock().unwrap().yielded, count);
+        // External cache + coordinator context + one scoped context. Queued
+        // leaves must not each retain a separate clone of all context fields.
+        assert_eq!(cache.usage_count(), 3);
+        assert!(!cache.is_available());
+
+        drop(running.prewarming.take());
+        assert!(owner.upgrade().unwrap().load(Ordering::Relaxed));
+        drop(releases);
+        drop(running);
+        assert!(owner.upgrade().is_none());
+        assert!(cache.is_available());
+        pool.broadcast_fn(|| {
+            assert!(BUILDER_PREWARM.with_borrow(|slot| slot.state().is_none()));
+        });
+    }
+
+    #[test]
     fn empty_source_is_polled_for_eager_advances_and_each_consumer_advance() {
         let executor = TaskExecutor::test();
         let eager_advances = executor.prewarming_pool().current_num_threads() * 2;
@@ -932,7 +994,7 @@ mod tests {
                 reth_tasks::prewarm_cpu::Mode::Transactions,
             );
             let result = BestTransactionsPrewarming::prewarm_transaction(
-                context,
+                &context,
                 test_tx(Address::random(), 0),
                 None,
                 observer.dispatch(),
@@ -1087,7 +1149,7 @@ mod tests {
         let pool = WorkerPool::new(1, "prewarm-ineligible");
         pool.install_fn(|| {
             let result = BestTransactionsPrewarming::prewarm_transaction(
-                context,
+                &context,
                 test_tx(Address::random(), 0),
                 None,
                 CpuJob::default(),
@@ -1150,7 +1212,7 @@ mod tests {
 
             let sender = Address::random();
             let failed = BestTransactionsPrewarming::prewarm_transaction(
-                context.clone(),
+                &context,
                 test_payment_tx(sender, 0),
                 None,
                 CpuJob::default(),
@@ -1167,7 +1229,7 @@ mod tests {
             );
 
             let successful = BestTransactionsPrewarming::prewarm_transaction(
-                context,
+                &context,
                 test_payment_tx(sender, 500_000),
                 None,
                 CpuJob::default(),
