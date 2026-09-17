@@ -1240,6 +1240,17 @@ def run-local-e2e-phase [run: record, ctx: record] {
         if $report.stderr != "" { print $report.stderr }
         if $report.exit_code != 0 { $phase_exit = 1 }
         rm -rf $lifecycle_dir
+        if $phase_exit == 0 {
+            # Workload has returned, validators stopped, tuning restored and the
+            # strict pre-cutoff report completed. Compress only this owned phase.
+            if (find-tempo-pids | length) != 0 {
+                error make {msg: "Cannot retain lifecycle phase while validators remain active"}
+            }
+            let archive = (^python3 contrib/bench/lifecycle/phase_archive.py pack $lifecycle_report_dir --remove-source | complete)
+            print $archive.stdout
+            if $archive.stderr != "" { print $archive.stderr }
+            if $archive.exit_code != 0 { $phase_exit = 1 }
+        }
     }
 
     if $phase_exit != 0 {
