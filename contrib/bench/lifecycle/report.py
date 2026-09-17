@@ -176,15 +176,27 @@ def read_node(path, role, cutoff=None):
     for span in spans.values():
         span['attempt_root'] = attempt_owner(span)
 
+    # Fields and payload links are final here. Resolve shared ancestry once,
+    # including missing parents and cycles with no block identity.
+    resolved_blocks = {}
+
     def inherited(s):
+        trail = []
         seen = set()
+        key = None
         while s and s['id'] not in seen:
+            if s['id'] in resolved_blocks:
+                key = resolved_blocks[s['id']]
+                break
             seen.add(s['id'])
+            trail.append(s['id'])
             key = block_key(s['fields'])
             if key:
-                return key
+                break
             s = spans.get(s.get('parent'))
-        return None
+        for span_id in trail:
+            resolved_blocks[span_id] = key
+        return key
 
     for span in spans.values():
         span['block'] = inherited(span)
