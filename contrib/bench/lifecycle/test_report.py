@@ -26,6 +26,25 @@ def fixture(path, lost=0, close=True):
 
 
 class ReportTests(unittest.TestCase):
+    def test_rootless_delivery_reuse_scope_associates_exact_block(self):
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory)/'a.jsonl'; fixture(path)
+            records = [json.loads(line) for line in path.read_text().splitlines()]
+            start = 1_000_000_200
+            records[-1:-1] = [
+                dict(type='start', id=200, ts=start, thread=2, parent=None,
+                     name='marshal.reuse_delivered_block', category='storage',
+                     fields=dict(block_hash=f'{1:024x}')),
+                dict(type='end', id=200, ts=start+500),
+            ]
+            path.write_text('\n'.join(map(json.dumps, records)))
+            result = build([path], warmup=0)
+            scope = next(s for s in result['spans'] if s['name'] == 'marshal.reuse_delivered_block')
+            self.assertEqual(scope['block'], 1)
+            self.assertIsNone(scope['parent'])
+            pruned = build([path], warmup=0, window={'backpressure': {'ts': start, 'node': 'Validator A'}})
+            self.assertFalse(any(s['name'] == 'marshal.reuse_delivered_block' for s in pruned['spans']))
+
     def test_execution_cpu_totals_preserve_unmeasured_and_zero(self):
         with tempfile.TemporaryDirectory() as directory:
             path = Path(directory)/'a.jsonl'; fixture(path)
