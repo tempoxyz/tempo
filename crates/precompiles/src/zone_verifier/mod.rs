@@ -31,7 +31,7 @@ const APPROVED_PCRS: Option<[[u8; 48]; 3]> = Some([
     ),
 ]);
 
-const BATCH_ATTESTATION_TYPE: &str = "NitroBatchAttestation(uint256 parentChainId,address verifier,uint32 zoneId,uint64 tempoBlockNumber,uint64 anchorBlockNumber,bytes32 anchorBlockHash,uint64 expectedWithdrawalBatchIndex,bytes32 prevBlockHash,bytes32 nextBlockHash,bytes32 prevProcessedHash,bytes32 nextProcessedHash,uint64 prevDepositNumber,uint64 nextDepositNumber,uint64 prevProcessedTokenCount,uint64 nextProcessedTokenCount,bytes32 withdrawalQueueHash,bytes32 verifierConfigHash)";
+const BATCH_ATTESTATION_TYPE: &str = "NitroBatchAttestation(uint256 parentChainId,address verifier,uint32 zoneId,uint64 tempoBlockNumber,uint64 anchorBlockNumber,bytes32 anchorBlockHash,uint64 expectedWithdrawalBatchIndex,uint256 nextZoneHeight,bytes32 prevBlockHash,bytes32 nextBlockHash,bytes32 prevProcessedHash,bytes32 nextProcessedHash,uint64 prevDepositNumber,uint64 nextDepositNumber,uint64 prevProcessedTokenCount,uint64 nextProcessedTokenCount,bytes32 withdrawalQueueHash,bytes32 verifierConfigHash)";
 
 #[contract(addr = ZONE_VERIFIER_ADDRESS)]
 pub struct ZoneVerifier {}
@@ -109,6 +109,7 @@ fn batch_commitment(chain_id: u64, call: &IZoneVerifier::verifyCall) -> B256 {
             call.anchorBlockNumber,
             call.anchorBlockHash,
             call.expectedWithdrawalBatchIndex,
+            call.nextZoneHeight,
             call.blockTransition.prevBlockHash,
             call.blockTransition.nextBlockHash,
             call.depositQueueTransition.prevProcessedHash,
@@ -140,6 +141,7 @@ mod tests {
             anchorBlockNumber: 10,
             anchorBlockHash: B256::with_last_byte(11),
             expectedWithdrawalBatchIndex: 13,
+            nextZoneHeight: U256::from(14),
             blockTransition: IZoneVerifier::BlockTransition {
                 prevBlockHash: B256::with_last_byte(1),
                 nextBlockHash: B256::with_last_byte(2),
@@ -164,18 +166,18 @@ mod tests {
     fn batch_commitment_type_hash_is_stable() {
         assert_eq!(
             IZoneVerifier::verifyCall::SELECTOR,
-            [0xe5, 0x7a, 0x63, 0x66]
+            [0xeb, 0xb2, 0xdd, 0xc9]
         );
         assert_eq!(
             keccak256(BATCH_ATTESTATION_TYPE),
             B256::from(alloy::primitives::hex!(
-                "5f68457ecb053e8123f7c6c8d100b27e79ebae8ca9925aaf79a7b107346bb24f"
+                "b6f39555cba9bf38842c669ea0c90bca6aad793881d75a0034e33352fbecb25e"
             ))
         );
         assert_eq!(
             batch_commitment(42_431, &call()),
             B256::from(alloy::primitives::hex!(
-                "c01ffd959ca368959c0724a9de479a8fc678f36ff608cc0565f6cfd86e98202e"
+                "1a703e80dd395e4720d1c88c877ed9f7d77c03052a985133b25cbf3e2b745b9d"
             ))
         );
     }
@@ -186,12 +188,13 @@ mod tests {
         let expected = batch_commitment(1, &original);
         assert_ne!(batch_commitment(2, &original), expected);
 
-        let mutations: [fn(&mut IZoneVerifier::verifyCall); 15] = [
+        let mutations: [fn(&mut IZoneVerifier::verifyCall); 16] = [
             |call| call.zoneId += 1,
             |call| call.tempoBlockNumber += 1,
             |call| call.anchorBlockNumber += 1,
             |call| call.anchorBlockHash[0] ^= 1,
             |call| call.expectedWithdrawalBatchIndex += 1,
+            |call| call.nextZoneHeight += U256::ONE,
             |call| call.blockTransition.prevBlockHash[0] ^= 1,
             |call| call.blockTransition.nextBlockHash[0] ^= 1,
             |call| call.depositQueueTransition.prevProcessedHash[0] ^= 1,
@@ -260,6 +263,22 @@ mod tests {
                     .verify_with_policy(portal, altered, &root, Some(pcrs))
                     .unwrap()
             );
+            // Reusing the same proof must not let a quorum store a height different
+            // from the executed header, including values that alias after u64 truncation.
+            for height in [
+                call.nextZoneHeight + U256::ONE,
+                call.nextZoneHeight + (U256::ONE << 64),
+                U256::MAX,
+            ] {
+                let mut altered = call.clone();
+                altered.nextZoneHeight = height;
+                assert!(
+                    !verifier
+                        .verify_with_policy(portal, altered, &root, Some(pcrs))
+                        .unwrap(),
+                    "accepted a proof for a different Zone height: {height}"
+                );
+            }
             assert!(
                 !verifier
                     .verify_with_policy(portal, call, &root, None)

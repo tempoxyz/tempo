@@ -16,6 +16,7 @@ use tempo_precompiles::{
     test_util::TIP20Setup,
     tip20::{ISSUER_ROLE, ITIP20, PAUSE_ROLE, UNPAUSE_ROLE},
     tip403_registry::{AuthRole, ITIP403Registry, TIP403Registry},
+    zone_factory::portal_address,
     zone_verifier::ZoneVerifier,
 };
 use tempo_primitives::transaction::tt_signature::{SIGNATURE_TYPE_P256, normalize_p256_s};
@@ -37,7 +38,7 @@ fn signature_verification(c: &mut Criterion) {
     p256_signature.push(0);
 
     c.bench_function("p256_verify", |b| {
-        let mut storage = HashMapStorageProvider::new_with_spec(1, TempoHardfork::T11);
+        let mut storage = HashMapStorageProvider::new_with_spec(1, TempoHardfork::T13);
         StorageCtx::enter(&mut storage, || {
             let mut verifier = SignatureVerifier::new();
             b.iter(|| {
@@ -60,12 +61,13 @@ fn signature_verification(c: &mut Criterion) {
     let parsed = parse_attestation(&document).expect("fixture parses");
     assert_eq!(parsed.signature_count(), 5, "fixture chain shape changed");
 
-    let calldata = IZoneVerifier::verifyCall {
+    let call = IZoneVerifier::verifyCall {
         zoneId: 1,
         tempoBlockNumber: 1,
         anchorBlockNumber: 1,
         anchorBlockHash: B256::ZERO,
         expectedWithdrawalBatchIndex: 0,
+        nextZoneHeight: U256::ZERO,
         blockTransition: IZoneVerifier::BlockTransition {
             prevBlockHash: B256::ZERO,
             nextBlockHash: B256::ZERO,
@@ -83,19 +85,21 @@ fn signature_verification(c: &mut Criterion) {
         withdrawalQueueHash: B256::ZERO,
         verifierConfig: Bytes::from_static(&[1]),
         proof: document.into(),
-    }
-    .abi_encode();
+    };
+    let portal = portal_address(call.zoneId);
+    let calldata = call.abi_encode();
 
     c.bench_function("zone_nitro_verify_five_p384", |b| {
-        let mut storage = HashMapStorageProvider::new_with_spec(1, TempoHardfork::T11);
+        let mut storage = HashMapStorageProvider::new_with_spec(1, TempoHardfork::T13);
         storage.set_timestamp(U256::from(1_767_472_867u64));
         StorageCtx::enter(&mut storage, || {
             let mut verifier = ZoneVerifier::new();
             b.iter(|| {
                 let output = verifier
-                    .call(black_box(&calldata), Address::ZERO)
+                    .call(black_box(&calldata), portal)
                     .expect("Zone verifier call completes");
                 assert!(output.is_success());
+                // Unset production PCRs reject the proof after attestation verification.
                 assert!(
                     !IZoneVerifier::verifyCall::abi_decode_returns(&output.bytes)
                         .expect("Zone verifier returns a bool")
