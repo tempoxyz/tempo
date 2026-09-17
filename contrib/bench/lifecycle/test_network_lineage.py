@@ -51,6 +51,9 @@ class NetworkLineageTests(unittest.TestCase):
             result = write_report(paths, out, warmup=0, expected_detail='full', expected_prewarm_cpu='leaf_v1')
             self.assertFalse(result['bad_capture'])
             self.assertEqual(result['prewarm'], before['prewarm'])
+            self.assertEqual(result['time_origin_ns'], 1)
+            self.assertEqual(result['time_origin_ns'], result['prewarm']['time_origin_ns'])
+            self.assertEqual(embedded(out/'block-1.html')['time_origin_ns'], 1)
             self.assertEqual(len(result['transfers']), 1)
             exported = [e for e in trace_events(result) if e.get('ph') == 'X'
                         and e.get('args', {}).get('span_id') == 201]
