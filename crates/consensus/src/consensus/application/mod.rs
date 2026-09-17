@@ -14,6 +14,7 @@ use rand_core::{CryptoRng, Rng};
 use tempo_node::TempoFullNode;
 
 mod actor;
+mod durability;
 mod ingress;
 
 pub(super) use actor::Actor;
