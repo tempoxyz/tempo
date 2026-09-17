@@ -288,6 +288,11 @@ it still omits worker polls, jobs and detailed proof operations. Retained worker
 spans anchor explicit event parents even when another subscriber enables excluded
 intermediate spans. Their span lifetimes are context, not measured active work.
 
+Totals accounting checks event enablement explicitly. The milestone filter rejects
+untyped tracing enablement hints, so older binaries using those hints can omit
+both execution-loop and proof-worker totals even while retaining identity spans.
+Require the totals audit before using a capture for CPU comparisons.
+
 Older milestone captures have no worker totals. Missing completions remain
 unmeasured; unsupported platforms or failed resource samples emit unavailable
 CPU rather than zero. These two samples per worker have overhead and are held
