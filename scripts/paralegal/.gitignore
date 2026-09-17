@@ -1,0 +1,6 @@
+/target/
+/fixture/target/
+/fixture/markers.toml
+/fixture/*-graph.*
+/fixture/paralegal-artifact.json
+/fixture/*.log

@@ -1,0 +1,29 @@
+# Keep trust boundaries explicit: these checkers establish control dependence
+# on existing checks, not the correctness of the checks themselves.
+[["tempo_precompiles::tip20::TIP20Token::check_role_internal"]]
+marker = "role_authorization"
+on_return = true
+
+[["tempo_precompiles::tip20::TIP20Token::grant_role_internal"]]
+marker = "role_write"
+on_return = true
+
+[["tempo_precompiles::tip20::TIP20Token::revoke_role_internal"]]
+marker = "role_write"
+on_return = true
+
+[["tempo_precompiles::tip20::TIP20Token::set_role_admin_internal"]]
+marker = "role_write"
+on_return = true
+
+[["tempo_precompiles::tip20::TIP20Token::check_not_paused"]]
+marker = "pause_check"
+on_return = true
+
+[["tempo_precompiles::tip20::TIP20Token::ensure_transfer_authorized"]]
+marker = "transfer_authorization"
+on_return = true
+
+[["tempo_precompiles::tip20::TIP20Token::_transfer"]]
+marker = "transfer_effect"
+on_return = true

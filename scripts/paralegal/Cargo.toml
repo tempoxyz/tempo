@@ -1,0 +1,11 @@
+[package]
+name = "tempo-paralegal-trial"
+version = "0.1.0"
+edition = "2024"
+publish = false
+
+[workspace]
+
+[dependencies]
+anyhow = "1"
+paralegal-policy = { git = "https://github.com/brownsys/paralegal", rev = "c96efb341aba35c16b02e5746681d9c8fb74fe9c" }

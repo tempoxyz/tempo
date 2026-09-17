@@ -40,3 +40,9 @@ _
 # LLVM coverage profraw files
 *.profraw
 __pycache__/
+
+# Paralegal trial outputs
+/flow-graph.o
+/flow-graph.stat.json
+/flow-graph.marker_stats.json
+/paralegal-artifact.json
