@@ -56,7 +56,7 @@ class BinaryTests(unittest.TestCase):
                                  probe_misses=counts['probe_misses'])
                 import json
                 decoded = json.loads(output.read_text())
-            self.assertEqual(decoded['schema'],2)
+            self.assertEqual(decoded['schema'],3)
             self.assertEqual(decoded['quality']['probe_misses'],0)
             self.assertTrue(decoded['registered_window_edges_complete'])
             self.assertGreater(decoded['quality']['at_or_post_cutoff_records_pruned'],0)

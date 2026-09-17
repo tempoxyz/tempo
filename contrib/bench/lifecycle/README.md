@@ -307,3 +307,14 @@ individual files at 16 GiB and entries per phase at 100,000, with a 1 GiB free-s
 reserve before extraction. `--max-total-bytes` explicitly adjusts the combined
 limit for larger approved matrices. ZIP central-directory memory is separately
 bounded before member parsing. Existing destinations are never merged or replaced.
+
+Scheduler schema 3 keeps wakeups observed while the registered thread is
+scheduled as a separate `quality.wakeups_while_running` counter. Linux can cancel
+an intended sleep before `schedule()` switches the task out (`ttwu_runnable` and
+`try_to_wake_up`'s current-task path). Such wakeups do not create off-CPU intervals.
+The raw events and all interval timestamps remain unchanged. Repeated wakes
+within an outstanding off-CPU interval, missing boundaries, unclassified sleeps,
+loss, and nonzero probe-miss counters still fail completeness. Schema 1 and 2
+captures retain their original interpretation when read; they are never silently
+upgraded. Schema 3 publication requires the same zero-probe-miss evidence as
+schema 2 and adds only the unsigned counter to its exact quality vocabulary.

@@ -43,7 +43,7 @@ class MissTests(unittest.TestCase):
             output=Path(directory)/'capture.json'
             publish_streamed(output,source,directory,0,50,len(values),{},probe_misses=0)
             capture=json.loads(output.read_text())
-            self.assertEqual(capture['schema'],2)
+            self.assertEqual(capture['schema'],3)
             self.assertEqual(capture['quality']['probe_misses'],0)
             for bad in (1,-1,True,False,0.0):
                 output.unlink(missing_ok=True)

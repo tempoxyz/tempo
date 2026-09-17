@@ -45,7 +45,7 @@ def decode(stdout, stderr, returncode, origin, *, expected_threads=EXPECTED_THRE
     return decode_records(records, cutoffs, counts, expected_threads=expected_threads, cutoff_ns=cutoff_ns)
 
 
-def decode_records(records, cutoffs, counts, *, expected_threads, cutoff_ns):
+def decode_records(records, cutoffs, counts, *, expected_threads, cutoff_ns, classify_running_wakes=False):
     """Apply identical completeness/cutoff rules to validated private events."""
     if cutoff_ns is not None:
         if cutoffs:
@@ -75,7 +75,7 @@ def decode_records(records, cutoffs, counts, *, expected_threads, cutoff_ns):
         raise ValueError("registration/exit coverage incomplete")
     cutoff = cutoffs[0]
     intervals = []
-    unknown = open_intervals = unmatched_wakeups = 0
+    unknown = open_intervals = unmatched_wakeups = running_wakeups = 0
 
     def interval(thread, start, end, kind):
         # Keep even the endpoint strictly before cutoff; discard sub-nanosecond
@@ -100,6 +100,10 @@ def decode_records(records, cutoffs, counts, *, expected_threads, cutoff_ns):
             elif kind == "wakeup":
                 if out is not None and wake is None:
                     wake = ts
+                elif classify_running_wakes and running is not None and out is None:
+                    # Linux ttwu_runnable and the p == current wake path may
+                    # cancel a sleep before schedule(). This is not a wait edge.
+                    running_wakeups += int(ts < cutoff)
                 else:
                     unmatched_wakeups += int(ts < cutoff)
             elif kind == "switch_in":
@@ -133,6 +137,7 @@ def decode_records(records, cutoffs, counts, *, expected_threads, cutoff_ns):
             "all_registered_threads_exited": True, "unclassified_off_cpu_intervals": unknown,
             "unclosed_intervals_excluded": open_intervals, "unmatched_wakeups": unmatched_wakeups,
             "at_or_post_cutoff_records_pruned": len(records) - len(kept),
+            **({"wakeups_while_running": running_wakeups} if classify_running_wakes else {}),
         },
         "registered_window_edges_complete": unknown == 0 and open_intervals == 0 and unmatched_wakeups == 0,
     }

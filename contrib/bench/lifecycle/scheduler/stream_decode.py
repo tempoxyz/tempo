@@ -14,12 +14,12 @@ INTERVAL_KINDS = ('scheduled_on_cpu','runnable_off_cpu','blocked_before_wakeup',
 INTERVAL = struct.Struct('<IIQQBB')
 
 
-def decode_stream(rows, origin, cutoff, emitted, emit_record, emit_interval, *, expected_threads=None):
+def decode_stream(rows, origin, cutoff, emitted, emit_record, emit_interval, *, expected_threads=None, classify_running_wakes=False):
     if cutoff <= 0:
         raise ValueError('clock mismatch')
     states = {}
     exited = set()
-    total = kept = unknown = unclosed = unmatched = 0
+    total = kept = unknown = unclosed = unmatched = running_wakeups = 0
     last = -1
 
     def interval(thread, start, end, kind):
@@ -53,6 +53,10 @@ def decode_stream(rows, origin, cutoff, emitted, emit_record, emit_interval, *, 
         elif kind == 3:
             if state['out'] is not None and state['wake'] is None:
                 state['wake'] = ts
+            elif classify_running_wakes and state['running'] is not None and state['out'] is None:
+                # A wake may cancel an intended sleep before the task schedules
+                # out. Preserve the event, without inventing an off-CPU interval.
+                running_wakeups += int(ts < cutoff)
             else:
                 unmatched += int(ts < cutoff)
         elif kind == 2:
@@ -89,7 +93,8 @@ def decode_stream(rows, origin, cutoff, emitted, emit_record, emit_interval, *, 
         'quality':{'event_loss_detected':False,'registered_threads':len(states),
                    'all_registered_threads_exited':True,'unclassified_off_cpu_intervals':unknown,
                    'unclosed_intervals_excluded':unclosed,'unmatched_wakeups':unmatched,
-                   'at_or_post_cutoff_records_pruned':total-kept},
+                   'at_or_post_cutoff_records_pruned':total-kept,
+                   **({'wakeups_while_running':running_wakeups} if classify_running_wakes else {})},
         'registered_window_edges_complete':unknown==0 and unclosed==0 and unmatched==0,
     }, kept
 
@@ -108,11 +113,12 @@ def publish_streamed(output, source, directory, origin, cutoff, emitted, metadat
             intermediate.write(records,EVENT.pack(row['ts'],row['thread'],kind,row['state_bits']))
         def interval(rank, thread, start, end, kind, censored):
             intermediate.write(intervals,INTERVAL.pack(rank,thread,start,end,kind,censored))
-        result,kept = decode_stream(sorted_rows(source,directory),origin,cutoff,emitted,record,interval)
+        result,kept = decode_stream(sorted_rows(source,directory),origin,cutoff,emitted,record,interval,
+                                    classify_running_wakes=probe_misses is not None)
         if probe_misses is not None:
             if type(probe_misses) is not int or probe_misses != 0:
                 raise ValueError('capture tool reported probe misses')
-            result['schema'] = 2
+            result['schema'] = 3
             result['quality']['probe_misses'] = 0
         if evidence is not None:
             evidence.update(kept=kept,pruned=emitted-kept)

@@ -29,7 +29,7 @@ def integer(value, low=0, high=2**64-1):
 def validate(capture, process, cutoff, reason):
     keys = {'schema','scope','process','clock','cutoff_ns','records','intervals','quality',
             'registered_window_edges_complete','cutoff_reason','registration'}
-    if set(capture) != keys or type(capture['schema']) is not int or capture['schema'] not in (1,2) or capture['process'] != process:
+    if set(capture) != keys or type(capture['schema']) is not int or capture['schema'] not in (1,2,3) or capture['process'] != process:
         raise ValueError('scheduler schema/process mismatch')
     if (capture['scope'] != 'registered validator thread windows only'
             or capture['clock'] != 'monotonic_relative_ns'
@@ -37,8 +37,9 @@ def validate(capture, process, cutoff, reason):
             or capture['cutoff_ns'] != cutoff or capture['cutoff_reason'] != reason):
         raise ValueError('scheduler scope/clock/cutoff mismatch')
     quality = capture['quality']
-    expected_quality = QUALITY | ({'probe_misses'} if capture['schema']==2 else set())
-    if capture['schema']==2 and (type(quality.get('probe_misses')) is not int or quality['probe_misses']!=0):
+    expected_quality = (QUALITY | ({'probe_misses'} if capture['schema']>=2 else set())
+                        | ({'wakeups_while_running'} if capture['schema']==3 else set()))
+    if capture['schema']>=2 and (type(quality.get('probe_misses')) is not int or quality['probe_misses']!=0):
         raise ValueError('scheduler probe misses; capture unavailable')
     if set(quality) != expected_quality or quality['event_loss_detected'] is not False or quality['all_registered_threads_exited'] is not True:
         raise ValueError('scheduler capture integrity failed')
@@ -137,7 +138,10 @@ def load(directory, out, window, timeout=900):
             capture = indexed_capture(path, directory, index+1, cutoff, reason)
             result.append(capture)
             coverage.append(source_registration(out / f'{"ab"[index]}.jsonl', capture))
-        if any(capture['schema']!=2 for capture in result):
+        # Both versions carry mandatory probe evidence; schema 2 retains its
+        # original wake semantics, while newly published captures use schema 3.
+        if (any(capture['schema'] not in (2,3) for capture in result)
+                or len({capture['schema'] for capture in result}) != 1):
             raise ValueError('scheduler probe counter proof missing')
         # Write neither validator until both are validated.
         for path, capture in zip(paths, result):
