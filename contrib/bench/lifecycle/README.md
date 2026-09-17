@@ -433,8 +433,8 @@ snapshots, and benchmark state are unchanged by this failure cleanup.
 
 ### Reserved runner admission (experimental branch only)
 
-This workflow reserves two matching runner jobs and measures their capacity before
-checkout or benchmark setup. Both jobs require the same pair of closed numeric
+This workflow reserves three matching runner jobs and measures their capacity before
+checkout or benchmark setup. All jobs require the same complete set of closed numeric
 receipts, bound to the immutable workflow SHA, run and attempt. The eligible slot
 with the larger minimum root/workspace free space wins (lower slot breaks ties)
 and continues on its existing runner. Every original workflow step is gated on

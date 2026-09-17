@@ -36,9 +36,10 @@ class CapacityWorkflowTests(unittest.TestCase):
             self.assertIn('retries: 0', step)
             self.assertIn('signal: AbortSignal.timeout(10000)', step)
             self.assertNotIn('require(process.cwd()', step)
-        self.assertIn('max-parallel: 2', workflow)
-        self.assertIn('slot: [1, 2]', workflow)
+        self.assertIn('max-parallel: 3', workflow)
+        self.assertIn('slot: [1, 2, 3]', workflow)
         self.assertIn('fail-fast: false', workflow)
+        self.assertIn('BENCH_CAPACITY_SLOTS: "3"', workflow)
 
 
 if __name__ == '__main__':

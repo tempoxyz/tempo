@@ -45,12 +45,12 @@ sys.stdout.buffer.write(out.getvalue())`;
   assert.equal(result.status, 0, String(result.stderr));
   return result.stdout;
 }
-const validZips = new Map([1, 2].map(slot => [100 + slot, zip(JSON.stringify(receipt(slot)))]));
+const validZips = new Map([1, 2, 3].map(slot => [100 + slot, zip(JSON.stringify(receipt(slot)))]));
 
 function fixture(options = {}) {
   const workspace = fs.mkdtempSync(path.join(os.tmpdir(), 'capacity-transport-'));
   const env = { PATH: process.env.PATH, GITHUB_WORKSPACE: workspace, RUNNER_TEMP: workspace,
-    GITHUB_RUN_ATTEMPT: '3', BENCH_CAPACITY_SLOT: String(options.slot || 1),
+    GITHUB_RUN_ATTEMPT: '3', BENCH_CAPACITY_SLOT: String(options.slot || 1), BENCH_CAPACITY_SLOTS: String(options.slots || 2),
     BENCH_LIFECYCLE: 'true', BENCH_NO_SLACK: 'true', GITHUB_TOKEN: secret };
   const messages = []; const output = {}; const requests = []; let clock = 0; let lists = 0;
   const core = { setOutput: (k, v) => { output[k] = v; }, info: m => messages.push(String(m)),
@@ -77,7 +77,7 @@ function fixture(options = {}) {
     const rows = options.pages ? options.pages[Math.min(lists++, options.pages.length - 1)] : options.artifacts || [artifact(1), artifact(2)];
     return { data: options.listData || { total_count: rows.length, artifacts: rows } };
   }, downloadArtifact: async args => {
-    requests.push(['download', args]); assert.equal(args.archive_format, 'zip'); assert.ok([101, 102].includes(args.artifact_id));
+    requests.push(['download', args]); assert.equal(args.archive_format, 'zip'); assert.ok([101, 102, 103].includes(args.artifact_id));
     assert.ok(args.request.signal instanceof AbortSignal);
     assert.equal(args.request.signal.aborted, false);
     assert.equal(args.request.log.warn('private sentinel'), undefined);
@@ -90,7 +90,7 @@ function fixture(options = {}) {
     assert.equal(command, 'python3'); assert.equal(args[0], '-I'); assert.equal(args[1], '-c');
     assert.ok([election, adapter.EXTRACT_RECEIPT].includes(args[2]));
     assert.equal(opts.env.GITHUB_TOKEN, undefined); assert.ok(opts.timeout > 0 && opts.timeout <= 60000);
-    if (args[2] === election) assert.deepEqual(args.slice(3), ['--workflow-sha', SHA, '--run-id', '12345', '--run-attempt', '3']);
+    if (args[2] === election) assert.deepEqual(args.slice(3), ['--workflow-sha', SHA, '--run-id', '12345', '--run-attempt', '3', '--slots', String(options.slots || 2)]);
     if (options.pythonResult) return options.pythonResult;
     const result = spawnSync(command, args, opts);
     if (options.pythonClock) clock += options.pythonClock;
@@ -256,4 +256,63 @@ test('an awaited request aborts within the real election budget', async () => {
     clearTimeout(keepAlive);
     f.close();
   }
+});
+
+
+test('three receipts elect exactly one winner across all slot orders and capacity cases', async () => {
+  const permutations = [[1,2,3],[1,3,2],[2,1,3],[2,3,1],[3,1,2],[3,2,1]];
+  for (const [free, winner] of [[[144,96,48],1], [[48,96,144],3], [[96,144,96],2], [[96,96,96],1]]) {
+    const zips = new Map(free.map((value, i) => [101+i, zip(JSON.stringify(receipt(i+1,value)))]));
+    for (const order of permutations) {
+      const outcomes = [];
+      for (const slot of [1,2,3]) {
+        const result = await elect({ slots: 3, slot, artifacts: order.map(artifact), zips });
+        assert.ok(!result.messages.some(m => m.startsWith('FAILED:')));
+        assert.equal(result.requests.filter(([kind]) => kind === 'download').length, 3);
+        outcomes.push(result.output.selected);
+      }
+      assert.deepEqual(outcomes, [1,2,3].map(slot => String(slot === winner)));
+    }
+  }
+});
+
+test('three-slot admission requires every receipt and keeps the total deadline', async () => {
+  for (const rows of [[artifact(1),artifact(2)], [artifact(1),artifact(3)], [artifact(2),artifact(3)]]) {
+    const result = await elect({ slots: 3, artifacts: rows }); rejected(result);
+    assert.equal(result.elapsed,9000);
+    assert.equal(result.requests.filter(([kind]) => kind === 'download').length,0);
+  }
+  const all = [artifact(3),artifact(1),artifact(2)];
+  const delayed = await elect({ slots: 3, slot: 3, pages: [[artifact(1),artifact(2)], all] });
+  assert.equal(delayed.elapsed,3000);
+  // Default fixture ties slot2/3: lower slot2 wins.
+  assert.equal(delayed.output.selected,'false');
+  for (const options of [{sourceClock:9000},{listClock:9000},{downloadClock:3000},{pythonClock:3000}]) {
+    rejected(await elect({ slots:3, slot:3, artifacts:all, ...options }));
+  }
+  for (const artifacts of [[artifact(1),artifact(2),artifact(2)], [...all,{...artifact(1),name:'bench-capacity-reservation-12345-3-4'}]]) {
+    rejected(await elect({ slots:3, artifacts }));
+  }
+  const zips = new Map([1,2,3].map(slot=>[100+slot,zip(JSON.stringify(receipt(slot,48)))]));
+  const none = await elect({ slots:3, artifacts:all, zips }); rejected(none);
+  assert.equal(JSON.parse(none.messages.find(m=>m.startsWith('{'))).status,2);
+});
+
+test('slot count is explicit private configuration and never expands receipt schema', async () => {
+  const f=fixture({slots:3,slot:3});
+  try {
+    for (const slots of [undefined,'','1','4','03','3.0']) {
+      assert.throws(()=>adapter.binding(context,{...f.env,BENCH_CAPACITY_SLOTS:slots}));
+    }
+    assert.throws(()=>adapter.binding(context,{...f.env,BENCH_CAPACITY_SLOTS:'2'}));
+    const execute=()=>({status:0,stdout:JSON.stringify(capacity()),stderr:''});
+    await adapter.probe({...f,execute});
+    const value=JSON.parse(fs.readFileSync(path.join(f.env.GITHUB_WORKSPACE,f.output['artifact-path']),'utf8'));
+    assert.deepEqual(value,receipt(3,96));
+    assert.equal(Object.hasOwn(value,'slots'),false);
+    assert.equal(f.output['artifact-name'],'bench-capacity-reservation-12345-3-3');
+  } finally { f.close(); }
+  const zips=new Map(validZips);
+  zips.set(103,zip(JSON.stringify({...receipt(3),slots:3})));
+  rejected(await elect({slots:3,artifacts:[artifact(1),artifact(2),artifact(3)],zips}));
 });
