@@ -1,0 +1,33 @@
+#include <uapi/linux/ptrace.h>
+struct sample_key { u32 ordinal; int stack_id; };
+BPF_HASH(ordinals,u32,u32,8);
+/* No BPF_F_REUSE_STACKID / FAST_STACK_CMP: IDs remain immutable until teardown. */
+BPF_STACK_TRACE(stacks,1024);
+BPF_HASH(samples,struct sample_key,u64,4096);
+BPF_PERCPU_ARRAY(counts,u64,4);
+BPF_ARRAY(registrations,u64,4);
+static inline void count(int key) {u64 *value=counts.lookup(&key);if(value)__sync_fetch_and_add(value,1);}
+int reg(struct pt_regs *ctx) {
+ u64 native=bpf_get_current_pid_tgid();if((native>>32)!=WATCHED)return 0;
+ u32 tid=native;u64 value=PT_REGS_PARM1(ctx);
+ if(value<1||value>2||PT_REGS_PARM2(ctx)!=1){count(3);return 0;}
+ u32 ordinal=value;
+ if(ordinals.lookup(&tid)){count(3);return 0;}
+ if(ordinals.update(&tid,&ordinal)){count(3);return 0;}
+ int key=ordinal;u64 *registered=registrations.lookup(&key);
+ if(!registered){count(3);return 0;}__sync_fetch_and_add(registered,1);return 0;
+}
+TRACEPOINT_PROBE(sched,sched_switch) {
+ u32 tid=args->prev_pid;u32 *ordinal=ordinals.lookup(&tid);
+ if(!ordinal || (args->prev_state!=1 && args->prev_state!=2))return 0;
+ count(0);
+ int stack_id=stacks.get_stackid(args,0);
+ if(stack_id<0){count(1);return 0;}
+ struct sample_key key={.ordinal=*ordinal,.stack_id=stack_id};u64 zero=0;
+ u64 *value=samples.lookup_or_try_init(&key,&zero);
+ if(!value){count(2);return 0;}__sync_fetch_and_add(value,1);return 0;
+}
+TRACEPOINT_PROBE(sched,sched_process_exit) {
+ u32 tid=(u32)bpf_get_current_pid_tgid();u32 *ordinal=ordinals.lookup(&tid);
+ if(ordinal && ordinals.delete(&tid))count(3);return 0;
+}
