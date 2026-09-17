@@ -1053,7 +1053,6 @@ def run-local-e2e-phase [run: record, ctx: record] {
         if ($stale | path exists) { rm -rf $stale }
     }
     if ("report.json" | path exists) { rm report.json }
-    let tuning_state = if $ctx.tune { apply-system-tuning } else { { tuned: false } }
 
     let a_rpc = "http://127.0.0.1:8545"
     let b_rpc = "http://127.0.0.1:8645"
@@ -1102,6 +1101,9 @@ def run-local-e2e-phase [run: record, ctx: record] {
 
     mark-schelk-dirty-at $ctx.a.state_path
     mark-schelk-dirty-at $ctx.b.state_path
+
+    # Admission can reject the phase; change host tuning only after it succeeds.
+    let tuning_state = if $ctx.tune { apply-system-tuning } else { { tuned: false } }
 
     start-e2e-local-node a $phase $run.tempo $a_args $"($env_prefix)($a_capture)" $a_otel $tracy_env_prefix $ctx.samply $ctx.samply_args $ctx.results_dir $ctx.a.cpus $ctx.a.memory $ctx.lifecycle
     start-e2e-local-node b $phase $run.tempo $b_args $"($env_prefix)($b_capture)" $b_otel "" $ctx.samply $ctx.samply_args $ctx.results_dir $ctx.b.cpus $ctx.b.memory $ctx.lifecycle
