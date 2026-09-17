@@ -1042,19 +1042,19 @@ mod tests {
         let mut context = prewarming_context(executor, true);
         context.evm_env.block_env.basefee = 0;
 
-        let pool = WorkerPool::new(1, "prewarm-actions-test");
-        pool.init::<PrewarmEvmState>(|_| context.evm_for_ctx());
-
-        pool.install_fn(|| {
+        // Isolate the thread-local EVM just as a dedicated prewarm worker does.
+        thread::spawn(move || {
+            PREWARM_EVM.with_borrow_mut(|slot| *slot = Some(context.evm_for_ctx()));
             let failed_action = StorageAction::Sstore(
                 Address::random(),
                 U256::from(1),
                 U256::from(2),
                 U256::from(3),
             );
-            WorkerPool::with_worker_mut(|worker| {
-                let evm = worker
-                    .get_mut::<PrewarmEvmState>()
+            PREWARM_EVM.with_borrow_mut(|slot| {
+                let evm = slot
+                    .as_mut()
+                    .expect("initialized worker")
                     .as_mut()
                     .expect("prewarm EVM");
                 // Model an action recorded before the failed execution returned an error.
@@ -1068,9 +1068,10 @@ mod tests {
                 None,
             );
             assert!(failed.replay.is_none());
-            WorkerPool::with_worker_mut(|worker| {
-                let evm = worker
-                    .get_mut::<PrewarmEvmState>()
+            PREWARM_EVM.with_borrow_mut(|slot| {
+                let evm = slot
+                    .as_mut()
+                    .expect("initialized worker")
                     .as_mut()
                     .expect("prewarm EVM");
                 assert_eq!(evm.take_actions(), Some(Vec::new()));
@@ -1084,8 +1085,8 @@ mod tests {
             let replay = successful.replay.expect("successful prewarm replay");
             assert!(!replay.actions.is_empty());
             assert!(!replay.actions.contains(&failed_action));
-        });
-
-        pool.clear();
+        })
+        .join()
+        .expect("prewarm worker should pass");
     }
 }

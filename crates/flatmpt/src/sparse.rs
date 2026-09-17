@@ -1350,7 +1350,7 @@ impl Worker {
         // are rare and, when they race this thread, fall back to the safe
         // wait-for-parent path — so it leaves the critical path entirely.
         let t_phase = Instant::now();
-        let post_state = ops_to_post_state_at_parent(&self.shadow, self.parent_root, &ops)?;
+        let post_state = ops_to_post_state_at_parent(self.shadow, self.parent_root, &ops)?;
         let slot = push_overlay_pending(self.parent_root, root);
         std::thread::Builder::new()
             .name("flatmpt-overlay".into())
