@@ -70,7 +70,7 @@ fn flatmpt_checkpoints_valid_replay_below_a_syncing_target_without_regressing_fi
         provider.set_syncing_forkchoices(false);
 
         let block = make_block_at_round(11, B256::with_last_byte(10), round(11));
-        let hash = block.block_hash();
+        let hash = block.block().hash();
         let (ack, waiter) = Exact::handle();
         assert!(mailbox.report(Update::Block(block.into(), ack)).accepted());
         waiter
