@@ -234,9 +234,12 @@ def build(paths, warmup=5, window=None, expected_detail=None):
         quality.append(qq)
     first = min((x['ts'] for x in spans + events), default=0)
     by_block = {}
+    attempt_events = {}
     for event in events:
         if event.get('block'):
             by_block.setdefault(event['block'],[]).append(event)
+        if event['fields'].get('stage') in STAGES:
+            attempt_events.setdefault((event['node'], event['id']), []).append(event)
     keys = sorted(by_block,key=lambda key: min(e['ts'] for e in by_block[key]))
     aliases = {key: i + 1 for i, key in enumerate(keys)}
     blocks = []
@@ -292,8 +295,7 @@ def build(paths, warmup=5, window=None, expected_detail=None):
     attempt_details = []
     for attempt in attempts:
         markers = [dict(stage=e['fields']['stage'], ts=(e['ts']-first)/1e6, node=e['node'])
-                   for e in events if e['node'] == attempt['node'] and e['id'] == attempt['id']
-                   and e['fields'].get('stage') in STAGES]
+                   for e in attempt_events.get((attempt['node'], attempt['id']), ())]
         stages = {e['stage'] for e in markers}
         status = ('cancelled' if 'cancelled' in stages else
                   'failed' if 'proposal_failed' in stages else
