@@ -105,6 +105,33 @@ class PackageTests(unittest.TestCase):
             self.assertIn('causal ancestor', ancestor['args']['association'])
 
     @unittest.skipUnless(shutil.which('node'), 'Node.js is required for viewer helper regression')
+    def test_job_summary_uses_attempted_own_vectors_and_rejects_missing_or_inexact(self):
+        template = Path(__file__).with_name('viewer.html').read_text()
+        helper = template.split('// BEGIN WORKER_CPU_HELPER')[1].split('// END WORKER_CPU_HELPER')[0]
+        script = helper + """
+const base={stage:'proof_storage_worker_totals',worker_job_counts_measured:1,worker_job_counts_saturated:0,
+ worker_jobs:1,worker_target_max:0,worker_storage_targets:0,worker_root_requests:1,
+ worker_jobs_targets_0:1,worker_jobs_targets_1:0,worker_jobs_targets_2_8:0,
+ worker_jobs_targets_9_32:0,worker_jobs_targets_33_plus:0};
+const account={...base,stage:'proof_account_worker_totals',worker_account_targets:0,worker_storage_groups:3};
+delete account.worker_storage_targets;delete account.worker_root_requests;
+console.log(JSON.stringify([[{}],[base],[account],[base,{}],[{...base,worker_job_counts_saturated:1}],
+ [{...base,worker_jobs:0}],[{...base,worker_storage_targets:2**64}],
+ [{...base,worker_jobs:0,worker_root_requests:0,worker_jobs_targets_0:0}]].map(proofJobSummary)));
+"""
+        missing, storage, account, partial, saturated, invalid, inexact, zero = json.loads(subprocess.check_output(['node','-e',script],text=True))
+        self.assertIn('unmeasured',missing)
+        self.assertIn('1 attempted jobs',storage)
+        self.assertIn('0 storage vector targets',storage)
+        self.assertIn('1 root requests',storage)
+        self.assertIn('failed calculations or abandoned results',storage)
+        self.assertIn('0 account vector targets',account)
+        self.assertIn('3 storage groups (storage target total unmeasured)',account)
+        self.assertIn('1/2 completions',partial)
+        for value in [saturated,invalid,inexact]: self.assertIn('unmeasured',value)
+        self.assertIn('0 attempted jobs',zero)
+
+    @unittest.skipUnless(shutil.which('node'), 'Node.js is required for viewer helper regression')
     def test_worker_cpu_summary_preserves_unavailable_zero_and_failure(self):
         template = Path(__file__).with_name('viewer.html').read_text()
         helper = template.split('// BEGIN WORKER_CPU_HELPER')[1].split('// END WORKER_CPU_HELPER')[0]
