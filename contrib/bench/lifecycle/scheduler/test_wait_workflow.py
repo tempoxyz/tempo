@@ -35,6 +35,16 @@ class WorkflowTests(unittest.TestCase):
             self.assertNotEqual(result.returncode,0)
             self.assertNotIn(b'PRIVATE',result.stdout+result.stderr)
 
+    def test_positive_wait_preflight_only_runs_in_dedicated_mode(self):
+        source=(ROOT/'.github/workflows/bench-e2e.yml').read_text()
+        start=source.index('          if [ "$BENCH_LIFECYCLE_KERNEL_WAITS" = "true" ] && ! sudo')
+        chunk=source[start:source.index('          fi',start)+len('          fi')]
+        for enabled,expected in [('false',''),('true','called')]:
+            script='sudo() { echo called; return 0; }; export -f sudo\n'+textwrap.dedent(chunk).replace('>/dev/null 2>&1','')
+            result=subprocess.run(['bash','-c',script],env=dict(os.environ,BENCH_LIFECYCLE_KERNEL_WAITS=enabled),capture_output=True,text=True)
+            self.assertEqual(result.returncode,0)
+            self.assertEqual(result.stdout.strip(),expected)
+
     def test_actual_nu_identical_binary_guard(self):
         source=(ROOT/'bench-e2e.nu').read_text()
         function=source[source.index('def require-identical-bench-binaries'):source.index('# Run the e2e sequence on one runner.')]

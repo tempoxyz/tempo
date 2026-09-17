@@ -11,7 +11,7 @@ ROOT = Path(__file__).resolve().parents[3]
 
 @unittest.skipUnless(shutil.which('nu'), 'Nushell required')
 class BuildReuseTests(unittest.TestCase):
-    def run_plan(self, *, enabled=True, no_cache=False, feature=None, sides=2, revision=None):
+    def run_plan(self, *, enabled=True, no_cache=False, feature=None, sides=2, revision=None, identical=False):
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)
             for side in ('baseline', 'feature'):
@@ -25,6 +25,8 @@ class BuildReuseTests(unittest.TestCase):
             # Run the production selection and loop. The builder is a filesystem
             # fixture, making a duplicate fetch/build observable as a second file.
             script = 'source contrib/bench/lifecycle/run-plan.nu\n'
+            script += source[source.index('def require-identical-bench-binaries'):source.index('# Run the e2e sequence on one runner.')]
+            script += f'let require_identical_binaries = {str(identical).lower()}\n'
             script += f'let builds = ({json.dumps(json.dumps(builds))} | from json)\n'
             script += f'let lifecycle = {str(enabled).lower()}; let effective_no_cache = {str(no_cache).lower()}\n'
             script += f'let baseline_wt = {json.dumps(str(root/"baseline"))}; let feature_wt = {json.dumps(str(root/"feature"))}\n'
@@ -43,6 +45,10 @@ class BuildReuseTests(unittest.TestCase):
 
     def test_identical_immutable_inputs_build_once(self):
         self.assertEqual(self.run_plan(), (True, 1))
+
+    def test_identical_observer_guard_accepts_reused_and_separate_binaries(self):
+        self.assertEqual(self.run_plan(identical=True), (True, 1))
+        self.assertEqual(self.run_plan(identical=True, no_cache=True), (False, 2))
 
     def test_different_effective_inputs_build_separately(self):
         for delta in ({'sha':'b'*40}, {'features':'jemalloc'},
