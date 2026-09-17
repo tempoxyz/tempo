@@ -24,7 +24,8 @@ jobs:
       contents: read
       pull-requests: read
       statuses: write
-    uses: tempoxyz/gh-actions/.github/workflows/pr-audit.yml@183a02178c660ce295e9a262edc5857cb7135f06
+      id-token: write
+    uses: tempoxyz/gh-actions/.github/workflows/pr-audit.yml@b61457a6d6d06485b118a3c0e9637c94186c8c5a
     with:
       required-labels: |
         cyclops
@@ -54,7 +55,7 @@ jobs:
       pull-requests: read
     steps:
       - name: Secure runner
-        uses: tempoxyz/gh-actions/actions/secure-runner@05c669ce878b8719779a28fe7375ba85822403f8
+        uses: tempoxyz/gh-actions/actions/secure-runner@b61457a6d6d06485b118a3c0e9637c94186c8c5a
 
       - name: Handle audit command
         uses: tempoxyz/gh-actions/actions/pr-audit-comment@7741a8658354abd422dd1b941d07f809682ca96d

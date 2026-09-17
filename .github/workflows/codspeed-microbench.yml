@@ -70,7 +70,7 @@ jobs:
     timeout-minutes: 60
     steps:
       - name: Secure runner
-        uses: tempoxyz/gh-actions/actions/secure-runner@05c669ce878b8719779a28fe7375ba85822403f8
+        uses: tempoxyz/gh-actions/actions/secure-runner@b61457a6d6d06485b118a3c0e9637c94186c8c5a
 
       - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
         with:
@@ -153,7 +153,7 @@ jobs:
           BUILD_ARGS: ${{ steps.args.outputs.build_args }}
         run: |
           # shellcheck disable=SC2086  # BUILD_ARGS must word-split into multiple cargo args
-          .github/scripts/retry-socket-package.sh cargo codspeed build $BUILD_ARGS
+          cargo codspeed build $BUILD_ARGS
       - name: Run benchmark target(s)
         uses: tempoxyz/gh-actions/vendor/CodSpeedHQ/action@58e2045a79b95e1867484a8e3cd28e7804d4cae1
         with:
