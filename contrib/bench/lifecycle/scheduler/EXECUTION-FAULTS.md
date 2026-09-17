@@ -1,9 +1,12 @@
 # Execution fault diagnostic
 
 This isolated harness adds one full-capture `feature-1` phase to the reviewed
-five-slot `setup_failure_v2` reservation policy. It uses the corrected runtime
-`41f606ef415effc66c429192220c4a36faea98a9`; runtime sources and Cargo pins are not
-changed by this harness. It is a cause diagnostic, not an optimization comparison.
+five-slot `setup_failure_v2` reservation policy. It uses runtime
+`0bd62dd2f0e509016439b2189cd0f4998d007a26`, a pin-only descendant of accepted
+`41f606ef415effc66c429192220c4a36faea98a9`. Its Reth descendant adds the missing
+optional native thread-registration hook to that collector; engine and storage
+algorithms remain identical. Runtime sources and Cargo pins are not changed by
+this harness. It is a cause diagnostic, not an optimization comparison.
 
 The scheduler producer, classifier, strict cutoff handling and bounded SQLite
 report index are copied from reviewed `132006dbfc32d5e2e31eff30544af8f790bbbda0`.
@@ -33,3 +36,10 @@ routing and Nu snippets, reservation transport tests, a live owned-file fault
 probe, and a bounded original-runtime capture-prefix loader/privacy check.
 The prefix is intentionally incomplete and provides compatibility evidence only;
 it is not a valid standalone benchmark or scheduler capture.
+
+The first harness `54b74202cfa9e5c39b66fb382861743dd900079d` was rejected
+before workload because the accepted runtime lacked this native hook; anonymous
+raw thread ordinals alone do not support a kernel join. A separate latent export
+bug omitted `time_origin_ns`. This follow-up exports the existing integer origin
+and exercises actual pruning, scheduler indexing/publication, and fault Perfetto
+output together. The prior failed spec and artifacts remain unchanged.

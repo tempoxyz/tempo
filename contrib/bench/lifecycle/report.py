@@ -366,7 +366,7 @@ def build(paths, warmup=5, window=None, expected_detail=None, expected_prewarm_c
         receives = [e for e in group if e['stage'] == 'frame_receive']
         if len(sends) == 1 and len(receives) == 1:
             transfers.append({'from': sends[0]['node'], 'to': receives[0]['node'], 'start': sends[0]['ts'], 'end': receives[0]['ts'], 'bytes': sends[0]['bytes']})
-    return {'schema':1, 'capture_detail':detail, 'detail_valid':detail_valid,
+    return {'schema':1, 'time_origin_ns':first, 'capture_detail':detail, 'detail_valid':detail_valid,
             'prewarm_cpu':prewarm_data['mode'], 'prewarm_valid':prewarm_valid, 'prewarm':prewarm_data,
             'boundary': dict(boundary, relative_ms=(cutoff-first)/1e6) if boundary else None, 'blocks':blocks, 'spans':rows, 'transfers':transfers, 'quality':quality,
             'representatives':representatives, 'eligible':len(eligible), 'warmup':warmup,
