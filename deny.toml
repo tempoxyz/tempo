@@ -90,5 +90,8 @@ unknown-registry = "warn"
 unknown-git = "deny"
 allow-git = [
   "https://github.com/paradigmxyz/reth",
+  # Temporary, revision-pinned instrumentation forks for lifecycle benchmarks.
+  "https://github.com/joshieDo/reth",
+  "https://github.com/joshieDo/monorepo",
   "https://github.com/sigp/discv5",
 ]

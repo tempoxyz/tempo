@@ -47,7 +47,7 @@ use tempo_payload_types::{
     marshal_persist_estimate, observe_marshal_persist,
 };
 use tempo_primitives::TempoConsensusContext;
-use tracing::{Level, debug, info, instrument, warn};
+use tracing::{Instrument as _, Level, debug, info, instrument, warn};
 
 use super::{
     Mailbox,
@@ -251,6 +251,7 @@ impl Inner<Init> {
             view = %request.round.view(),
             parent.view = %request.parent.0,
             parent.digest = %request.parent.1,
+            block_hash = tracing::field::Empty,
         ),
         err(level = Level::WARN),
     )]
@@ -259,6 +260,7 @@ impl Inner<Init> {
         request: Propose,
         context: TContext,
     ) -> eyre::Result<()> {
+        tracing::info!(target: "lifecycle", stage = "proposal_start");
         let Propose {
             parent: (parent_view, parent_digest),
             mut response,
@@ -342,9 +344,12 @@ impl Inner<Init> {
                     proposal_result?
                 };
 
+                tracing::Span::current()
+                    .record("block_hash", tracing::field::display(block.digest()));
+                tracing::info!(target: "lifecycle", stage = "proposal_ready", block_hash = %block.digest(), height = %block.height());
                 if let Some(proposal_return) = proposal_return {
                     let persist_start = Instant::now();
-                    if !self.marshal.verified(round, block.clone()).await {
+                    if !self.marshal.verified(round, block.clone()).instrument(tracing::info_span!(target: "lifecycle", "proposal.persist", block_hash = %block.digest())).await {
                         bail!("marshal actor rejected persisting proposal");
                     }
                     observe_marshal_persist(
@@ -353,7 +358,10 @@ impl Inner<Init> {
                     );
 
                     // Keep waiting for the remaining return time, if there's anything left after building the block.
-                    context.sleep_until(proposal_return.return_at).await;
+                    context
+                        .sleep_until(proposal_return.return_at)
+                        .instrument(tracing::info_span!(target: "lifecycle", "proposal.pacing"))
+                        .await;
                 }
 
                 eyre::Ok(block)
@@ -361,6 +369,7 @@ impl Inner<Init> {
 
             tokio::select! {
                 () = response.closed() => {
+                    tracing::info!(target: "lifecycle", stage = "cancelled");
                     return Err(eyre!(
                         "proposal return channel was closed by consensus \
                         engine before block could be proposed; aborting"
@@ -368,12 +377,16 @@ impl Inner<Init> {
                 },
 
                 res = &mut proposal => {
+                    if res.is_err() {
+                        tracing::info!(target: "lifecycle", stage = "proposal_failed");
+                    }
                     res?
                 },
             }
         };
 
         let proposal_digest = proposal_block.digest();
+        tracing::info!(target: "lifecycle", stage = "digest_released", block_hash = %proposal_digest, height = %proposal_block.height());
         info!(
             proposal.digest = %proposal_digest,
             "constructed proposal",
@@ -683,9 +696,12 @@ impl Inner<Init> {
             warn!(%error, "failed reporting the verify parent as the pending head");
         }
 
+        tracing::info!(target: "lifecycle", stage = "verify_start", block_hash = %payload);
         let block = subscribe(&self.execution_node, round, payload, &self.marshal)
             .await
             .wrap_err("failed getting proposal block")?;
+
+        tracing::info!(target: "lifecycle", stage = "body_ready", block_hash = %block.digest(), height = %block.height());
 
         // Can only repropose at the end of an epoch.
         if payload == parent_digest {
@@ -748,6 +764,9 @@ impl Inner<Init> {
             );
         }
         let is_good = validation_duration.is_some();
+        if is_good {
+            tracing::info!(target: "lifecycle", stage = "verify_done", block_hash = %block.digest(), height = %block.height());
+        }
 
         if is_good {
             // Persist the verified block in the marshal actor.

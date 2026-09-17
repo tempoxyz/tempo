@@ -1233,6 +1233,7 @@ async fn execute_finalization(
     canonicalized: LocalState,
     request: FinalizedBlockRequest,
 ) -> ExecutionTaskOutcome {
+    tracing::info!(target: "lifecycle", stage = "finalization_received", block_hash = %request.block.digest(), height = %request.block.height());
     let target = match finalization_target(&execution_node, canonicalized, request.block.as_ref()) {
         Ok(target) => target,
         Err(error) => return ExecutionTaskOutcome::Fatal { error },
@@ -1258,6 +1259,7 @@ async fn execute_notarization(
     on_top_of: LocalState,
     step: NextToForward,
 ) -> ExecutionTaskOutcome {
+    tracing::info!(target: "lifecycle", stage = "notarized", block_hash = %step.digest(), height = %step.height());
     let digest = step.digest();
     let is_repoint = matches!(step, NextToForward::Repoint(..));
     let target = on_top_of.update_head(step.height(), digest);

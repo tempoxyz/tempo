@@ -4,6 +4,8 @@
 # Shared build/cache/report helpers are sourced from tempo.nu; the replacement
 # e2e topology stays isolated here.
 source tempo.nu
+source contrib/bench/lifecycle/run-plan.nu
+source contrib/bench/lifecycle/owned-worktrees.nu
 
 const E2E_A_STATE_PATH = "/var/lib/schelk/a.json"
 const E2E_B_STATE_PATH = "/var/lib/schelk/b.json"
@@ -620,6 +622,7 @@ def start-e2e-local-node [
     results_dir: string,
     cpus: string,
     memory: string,
+    quiet: bool,
 ] {
     let profile_label = $"($phase)-($role)"
     let full_samply_args = if $samply {
@@ -631,11 +634,11 @@ def start-e2e-local-node [
     let script = $"($env_prefix)($otel_attrs)($tracy_env_prefix)($node_cmd_str) 2>&1"
     let unit_phase = ($phase | str replace -a "_" "-" | str replace -a "." "-")
     let runner = (systemd-scope-command $"tempo-e2e-($role)-($unit_phase)" $cpus $memory $script)
-    print $"Starting local e2e validator ($role) for ($phase): ($runner | str join ' ')"
+    if not $quiet { print $"Starting local e2e validator ($role) for ($phase): ($runner | str join ' ')" }
     job spawn {
         run-external ($runner | first) ...($runner | skip 1)
         | lines
-        | each { |line| print $"[e2e-($phase)-($role)] ($line)" }
+        | each { |line| if not $quiet { print $"[e2e-($phase)-($role)] ($line)" } }
     }
 }
 
@@ -997,7 +1000,7 @@ def build-valscope-static-reports [
 def run-local-e2e-phase [run: record, ctx: record] {
     let phase = $run.phase
     print $"=== Starting local e2e phase: ($phase) ==="
-    let run_type = if ($phase | str starts-with "baseline") { "baseline" } else { "feature" }
+    let run_type = $run.side
     let genesis = ($run | get -o genesis | default $ctx.genesis)
     let hardfork = ($run | get -o hardfork | default "")
     let side_args = if $run_type == "baseline" { $ctx.baseline_args } else { $ctx.feature_args }
@@ -1051,7 +1054,6 @@ def run-local-e2e-phase [run: record, ctx: record] {
         if ($stale | path exists) { rm -rf $stale }
     }
     if ("report.json" | path exists) { rm report.json }
-    let tuning_state = if $ctx.tune { apply-system-tuning } else { { tuned: false } }
 
     let a_rpc = "http://127.0.0.1:8545"
     let b_rpc = "http://127.0.0.1:8645"
@@ -1072,8 +1074,9 @@ def run-local-e2e-phase [run: record, ctx: record] {
         | append (if $ctx.gas_limit != "" { ["--builder.gaslimit" $ctx.gas_limit] } else { [] })
         | append (if $ctx.samply { ["--log.samply"] } else { [] })
         | append (benchmark-otlp-args $ctx.tracing_otlp)
-    let a_args = (dedup-args $a_base_args $extra_args)
-    let b_args = (dedup-args $b_base_args $extra_args)
+    let privacy_args = if $ctx.lifecycle { ["--log.stdout.filter" "off" "--log.file.filter" "off"] } else { [] }
+    let a_args = (dedup-args $a_base_args ($extra_args | append $privacy_args))
+    let b_args = (dedup-args $b_base_args ($extra_args | append $privacy_args))
 
     if $ctx.tracy != "off" {
         print $"  Tracy mode: ($ctx.tracy), sampling hz: ($TRACY_SAMPLING_HZ)"
@@ -1083,11 +1086,38 @@ def run-local-e2e-phase [run: record, ctx: record] {
     let a_otel = $"OTEL_RESOURCE_ATTRIBUTES=benchmark_id=($ctx.benchmark_id),benchmark_run=($phase),runner_role=a,run_type=($run_type),git_ref=($run.ref),reference_epoch=($ctx.reference_epoch) "
     let b_otel = $"OTEL_RESOURCE_ATTRIBUTES=benchmark_id=($ctx.benchmark_id),benchmark_run=($phase),runner_role=b,run_type=($run_type),git_ref=($run.ref),reference_epoch=($ctx.reference_epoch) "
 
+    let lifecycle_dir = ($"($ctx.results_dir)/lifecycle-raw/($phase)" | path expand)
+    let lifecycle_report_dir = ($"($ctx.results_dir)/lifecycle/($phase)" | path expand)
+    let lifecycle_key = ($"($LOCALNET_DIR)/lifecycle-key-($phase)" | path expand)
+    if $ctx.lifecycle {
+        # Only pre-start disk admission is recoverable here. Return through the
+        # phase loop so its existing owned-worktree cleanup and restore run.
+        let admitted = try {
+            lifecycle-require-disk "before capture, results filesystem" $ctx.results_dir 49152
+            lifecycle-require-disk "before capture, runner root" "/" 49152
+            true
+        } catch { false }
+        if not $admitted {
+            print "Lifecycle phase admission failed: capture disk guard"
+            return 1
+        }
+    }
+    let lifecycle_epoch = if $ctx.lifecycle {
+        mkdir $lifecycle_dir
+        ^python3 -c 'import os,sys,time; f=os.open(sys.argv[1],os.O_WRONLY|os.O_CREAT|os.O_EXCL,0o600); os.write(f,os.urandom(32)); os.close(f); print(time.monotonic_ns())' $lifecycle_key | str trim
+    } else { "" }
+    let capture_detail = ($run.lifecycle_detail? | default $ctx.lifecycle_detail)
+    let a_capture = if $ctx.lifecycle { $"RETH_LIFECYCLE_FILE=($lifecycle_dir)/a.jsonl TEMPO_LIFECYCLE_DETAIL=($capture_detail) RETH_LIFECYCLE_KEY_FILE=($lifecycle_key) RETH_LIFECYCLE_EPOCH_NS=($lifecycle_epoch) " } else { "" }
+    let b_capture = if $ctx.lifecycle { $"RETH_LIFECYCLE_FILE=($lifecycle_dir)/b.jsonl TEMPO_LIFECYCLE_DETAIL=($capture_detail) RETH_LIFECYCLE_KEY_FILE=($lifecycle_key) RETH_LIFECYCLE_EPOCH_NS=($lifecycle_epoch) " } else { "" }
+
     mark-schelk-dirty-at $ctx.a.state_path
     mark-schelk-dirty-at $ctx.b.state_path
 
-    start-e2e-local-node a $phase $run.tempo $a_args $env_prefix $a_otel $tracy_env_prefix $ctx.samply $ctx.samply_args $ctx.results_dir $ctx.a.cpus $ctx.a.memory
-    start-e2e-local-node b $phase $run.tempo $b_args $env_prefix $b_otel "" $ctx.samply $ctx.samply_args $ctx.results_dir $ctx.b.cpus $ctx.b.memory
+    # Admission can reject the phase; change host tuning only after it succeeds.
+    let tuning_state = if $ctx.tune { apply-system-tuning } else { { tuned: false } }
+
+    start-e2e-local-node a $phase $run.tempo $a_args $"($env_prefix)($a_capture)" $a_otel $tracy_env_prefix $ctx.samply $ctx.samply_args $ctx.results_dir $ctx.a.cpus $ctx.a.memory $ctx.lifecycle
+    start-e2e-local-node b $phase $run.tempo $b_args $"($env_prefix)($b_capture)" $b_otel "" $ctx.samply $ctx.samply_args $ctx.results_dir $ctx.b.cpus $ctx.b.memory $ctx.lifecycle
 
     sleep 2sec
     let rpc_timeout = if $ctx.bloat > 0 { 600 } else { 300 }
@@ -1130,7 +1160,6 @@ def run-local-e2e-phase [run: record, ctx: record] {
         $tracy_capture_started = true
     }
 
-    let scenario = $ctx.preset
     let phase_clickhouse_url = if $ctx.clickhouse_url != "" and ($ctx.clickhouse_run == "" or $ctx.clickhouse_run == $phase) {
         $ctx.clickhouse_url
     } else {
@@ -1144,41 +1173,17 @@ def run-local-e2e-phase [run: record, ctx: record] {
         let phase_started_ms = ((date now | into int) / 1_000_000 | into int)
         let initial_db_size_bytes = (e2e-db-size-bytes $ctx.a.datadir)
         let sender_exit = (try {
-            let bench_result = (txgen-run-preset-pipeline
-                --txgen-tempo-bin $ctx.txgen.txgen_tempo_bin
-                --txgen-bench-bin $ctx.txgen.txgen_bench_bin
-                --preset-path $ctx.preset_path
-                --generate-rpc-url $a_rpc
-                --submit-rpc-url $submit_rpc_url
-                --metrics-url $metrics_urls
-                --report-path $"($ctx.results_dir)/report-($phase).json"
-                --tps $ctx.tps
-                --duration $ctx.duration
-                --accounts $ctx.accounts
-                --max-concurrent-requests $ctx.max_concurrent_requests
-                --bench-args $ctx.bench_args
-                --bench-env $ctx.bench_env
-                --git-ref $run.ref
-                --git-ref-label ($run | get -o ref_label | default $run.ref)
-                --build-profile $ctx.profile
-                --benchmark-mode "e2e"
-                --benchmark-id $ctx.benchmark_id
-                --benchmark-run $phase
-                --run-type $ctx.run_type
-                --benchmark-start $ctx.reference_epoch
-                --platform "tempo"
-                --scenario $scenario
-                --bloat-mib $ctx.bloat
-                --tip20-token-count $ctx.token_count
-                --bloat-token-count ($TIP20_TOKEN_IDS | length)
-                --initial-db-size-bytes $initial_db_size_bytes
-                --victoriametrics-url $ctx.victoriametrics_url
-                --clickhouse-url $phase_clickhouse_url
-                --skip-funding=($ctx.bloat > 0))
-            if not $bench_result.ok {
-                $bench_result.exit_code
+            let load_config = {ctx: $ctx, run: $run, phase: $phase, a_rpc: $a_rpc,
+                submit_rpc_url: $submit_rpc_url, metrics_urls: $metrics_urls,
+                initial_db_size_bytes: $initial_db_size_bytes, phase_clickhouse_url: $phase_clickhouse_url}
+            if $ctx.lifecycle {
+                chown-to-current-user $lifecycle_dir
+                with-env {TEMPO_LIFECYCLE_LOAD: ($load_config | to json --raw)} {
+                    ^python3 contrib/bench/lifecycle/backpressure.py --epoch $lifecycle_epoch --window $"($lifecycle_dir)/window.json" --capture $"($lifecycle_dir)/a.jsonl" --capture $"($lifecycle_dir)/b.jsonl" -- nu bench-e2e.nu lifecycle-load
+                    $env.LAST_EXIT_CODE
+                }
             } else {
-                0
+                (e2e-load $load_config).exit_code
             }
         } catch { |e|
             print $"Error: local e2e txgen sender failed for ($phase): ($e.msg)"
@@ -1226,15 +1231,84 @@ def run-local-e2e-phase [run: record, ctx: record] {
     chown-to-current-user $ctx.results_dir
     chown-to-current-user $a_log_dir
     chown-to-current-user $b_log_dir
-    if ($a_log_dir | path exists) { cp -r $a_log_dir $"($ctx.results_dir)/logs-($phase)-a" }
-    if ($b_log_dir | path exists) { cp -r $b_log_dir $"($ctx.results_dir)/logs-($phase)-b" }
+    if not $ctx.lifecycle and ($a_log_dir | path exists) { cp -r $a_log_dir $"($ctx.results_dir)/logs-($phase)-a" }
+    if not $ctx.lifecycle and ($b_log_dir | path exists) { cp -r $b_log_dir $"($ctx.results_dir)/logs-($phase)-b" }
     restore-system-tuning $tuning_state
+    if $ctx.lifecycle {
+        rm -f $lifecycle_key
+        let report = (^python3 contrib/bench/lifecycle/report.py --prune --expected-detail $capture_detail --out $lifecycle_report_dir --warmup $ctx.summary_warmup_blocks --window $"($lifecycle_dir)/window.json" $"($lifecycle_dir)/a.jsonl" $"($lifecycle_dir)/b.jsonl" | complete)
+        print $report.stdout
+        if $report.stderr != "" { print $report.stderr }
+        if $report.exit_code != 0 { $phase_exit = 1 }
+        rm -rf $lifecycle_dir
+        if $phase_exit == 0 {
+            # Workload has returned, validators stopped, tuning restored and the
+            # strict pre-cutoff report completed. Compress only this owned phase.
+            if (find-tempo-pids | length) != 0 {
+                error make {msg: "Cannot retain lifecycle phase while validators remain active"}
+            }
+            let archive = (^python3 contrib/bench/lifecycle/phase_archive.py pack $lifecycle_report_dir --remove-source | complete)
+            print $archive.stdout
+            if $archive.stderr != "" { print $archive.stderr }
+            if $archive.exit_code != 0 { $phase_exit = 1 }
+        }
+    }
 
     if $phase_exit != 0 {
         return $phase_exit
     }
     print $"=== Local e2e phase complete: ($phase) ==="
     return 0
+}
+
+# Run in a separate process group so a lifecycle stop interrupts funding, setup,
+# generation and submission together, while the parent still drains validators.
+def e2e-load [config: record] {
+    let ctx = $config.ctx
+    let run = $config.run
+    let phase = $config.phase
+    let a_rpc = $config.a_rpc
+    let submit_rpc_url = $config.submit_rpc_url
+    let metrics_urls = $config.metrics_urls
+    let initial_db_size_bytes = $config.initial_db_size_bytes
+    let phase_clickhouse_url = $config.phase_clickhouse_url
+    let scenario = $ctx.preset
+    (txgen-run-preset-pipeline
+        --txgen-tempo-bin $ctx.txgen.txgen_tempo_bin
+        --txgen-bench-bin $ctx.txgen.txgen_bench_bin
+        --preset-path $ctx.preset_path
+        --generate-rpc-url $a_rpc
+        --submit-rpc-url $submit_rpc_url
+        --metrics-url $metrics_urls
+        --report-path $"($ctx.results_dir)/report-($phase).json"
+        --tps $ctx.tps
+        --duration $ctx.duration
+        --accounts $ctx.accounts
+        --max-concurrent-requests $ctx.max_concurrent_requests
+        --bench-args $ctx.bench_args
+        --bench-env $ctx.bench_env
+        --git-ref $run.ref
+        --git-ref-label ($run | get -o ref_label | default $run.ref)
+        --build-profile $ctx.profile
+        --benchmark-mode "e2e"
+        --benchmark-id $ctx.benchmark_id
+        --benchmark-run $phase
+        --run-type $ctx.run_type
+        --benchmark-start $ctx.reference_epoch
+        --platform "tempo"
+        --scenario $scenario
+        --bloat-mib $ctx.bloat
+        --tip20-token-count $ctx.token_count
+        --bloat-token-count ($TIP20_TOKEN_IDS | length)
+        --initial-db-size-bytes $initial_db_size_bytes
+        --victoriametrics-url $ctx.victoriametrics_url
+        --clickhouse-url $phase_clickhouse_url
+        --skip-funding=($ctx.bloat > 0))
+}
+
+def "main lifecycle-load" [] {
+    let result = (e2e-load ($env.TEMPO_LIFECYCLE_LOAD | from json))
+    exit $result.exit_code
 }
 
 def e2e-run-sides [run_pairs: int, run_side: string] {
@@ -1373,6 +1447,8 @@ def "main e2e" [
     --baseline-features: string = ""                    # Additional Cargo features for baseline build (defaults to --features)
     --feature-features: string = ""                     # Additional Cargo features for feature build (defaults to --features)
     --no-default-features                               # Disable Cargo default features
+    --lifecycle                                         # Capture privacy-filtered block lifecycle artifacts on both validators
+    --lifecycle-detail: string = "full"                  # Capture detail: full, milestones, or compare (requires --lifecycle)
     --samply                                            # Profile validators with samply
     --samply-args: string = ""                          # Additional samply arguments
     --tracy: string = "off"                             # Tracy profiling: off, tracy
@@ -1404,6 +1480,18 @@ def "main e2e" [
     --valscope-dir: string = "../valscope"               # Path to the ValScope checkout
     --skip-summary                                       # Leave summary generation to a later workflow step
 ] {
+    if $lifecycle_detail not-in ["full" "milestones" "compare"] or (not $lifecycle and $lifecycle_detail != "full") {
+        error make {msg: "Lifecycle detail must be full, milestones or compare; reduced modes require --lifecycle"}
+    }
+    if $lifecycle_detail == "compare" and $run_side != "comparison" {
+        error make {msg: "Comparing lifecycle detail requires baseline/feature comparison"}
+    }
+    if $lifecycle {
+        if $samply or $tracy != "off" or $valscope_static_report {
+            error make {msg: "Lifecycle mode requires other profilers and ValScope export to be disabled"}
+        }
+        hide-env -i TEMPO_TELEMETRY_URL GRAFANA_TEMPO OTEL_EXPORTER_OTLP_TRACES_ENDPOINT OTEL_EXPORTER_OTLP_HEADERS CLICKHOUSE_URL CLICKHOUSE_USER CLICKHOUSE_PASSWORD BENCH_VICTORIAMETRICS_URL
+    }
     let preset_spec = if $preset_path == "" {
         txgen-resolve-bench-spec $preset
     } else {
@@ -1503,7 +1591,7 @@ def "main e2e" [
     let reference_epoch = (($run_started_at | into int) / 1_000_000_000 | into int)
     let gas_limit_args = if $gas_limit != "" { ["--gas-limit" $gas_limit] } else { [] }
     let general_gas_limit_args = if $general_gas_limit != "" { ["--general-gas-limit" $general_gas_limit] } else { [] }
-    let tracing_otlp = (derive-tracing-otlp $tracing_otlp)
+    let tracing_otlp = if $lifecycle { "" } else { derive-tracing-otlp $tracing_otlp }
     if $tracing_otlp != "" {
         $env.OTEL_EXPORTER_OTLP_TRACES_ENDPOINT = $tracing_otlp
     }
@@ -1540,6 +1628,10 @@ def "main e2e" [
         mkdir $E2E_BLOAT_TMP_DIR
 
         let snapshot_features = (merge-e2e-features $DEFAULT_FEATURES $features)
+        if $lifecycle {
+            lifecycle-require-disk "before snapshot build, workspace" "." 65536
+            lifecycle-require-disk "before snapshot build, runner root" "/" 65536
+        }
         build-tempo --no-default-features=$no_default_features ["tempo"] $profile $snapshot_features
         let tempo_bin = if $profile == "dev" { "./target/debug/tempo" } else { $"./target/($profile)/tempo" }
         let genesis_accounts = ([$accounts 3] | math max) + 1
@@ -1634,12 +1726,23 @@ def "main e2e" [
             try { git worktree remove --force $wt } catch { rm -rf $wt }
         }
     }
+    mut created_build_worktrees = []
     if $needs_baseline {
         git worktree add $baseline_wt $baseline
+        if $env.LAST_EXIT_CODE != 0 { error make { msg: "Baseline worktree creation failed" } }
+        if $lifecycle {
+            $created_build_worktrees = ($created_build_worktrees | append (e2e-record-worktree-owner $baseline_wt))
+        }
     }
     if $needs_feature {
         git worktree add $feature_wt $feature
+        if $env.LAST_EXIT_CODE != 0 { error make { msg: "Feature worktree creation failed" } }
+        if $lifecycle {
+            $created_build_worktrees = ($created_build_worktrees | append (e2e-record-worktree-owner $feature_wt))
+        }
     }
+
+    let owned_build_worktrees = $created_build_worktrees
 
     let global_build_features = (merge-e2e-features $DEFAULT_FEATURES $features)
     let baseline_build_features = if $baseline_features != "" { merge-e2e-features $global_build_features $baseline_features } else { $global_build_features }
@@ -1647,8 +1750,8 @@ def "main e2e" [
     let baseline_tbc = (tracy-build-config $baseline_build_features $tracy)
     let feature_tbc = (tracy-build-config $feature_build_features $tracy)
     let effective_no_cache = $no_cache or ($tracy != "off")
-    # Build benchmark binaries in parallel with independent target/ directories,
-    # so cargo invocations don't collide.
+    # Independent target directories allow ordinary builds to run in parallel.
+    # Lifecycle builds run sequentially and trim each target to bound peak disk use.
     mut builds = []
     if $needs_baseline {
         $builds = ($builds | append { wt: $baseline_wt, ref_name: $baseline, sha: $baseline, label: "baseline", features: $baseline_tbc.features, extra_rustflags: $baseline_tbc.extra_rustflags, bench_features: $baseline_build_features })
@@ -1656,15 +1759,30 @@ def "main e2e" [
     if $needs_feature {
         $builds = ($builds | append { wt: $feature_wt, ref_name: $feature, sha: $feature, label: "feature", features: $feature_tbc.features, extra_rustflags: $feature_tbc.extra_rustflags, bench_features: $feature_build_features })
     }
-    $builds | par-each { |b|
+    let build_binary = { |b|
         if $effective_no_cache {
-            build-in-worktree --no-cache --no-default-features=$no_default_features --extra-rustflags $b.extra_rustflags --bench-features $b.bench_features $b.wt $b.ref_name $profile $b.features $b.sha
+            build-in-worktree --lifecycle-build=$lifecycle --no-cache --no-default-features=$no_default_features --extra-rustflags $b.extra_rustflags --bench-features $b.bench_features $b.wt $b.ref_name $profile $b.features $b.sha
         } else {
-            build-in-worktree --no-default-features=$no_default_features $b.wt $b.ref_name $profile $b.features $b.sha
+            build-in-worktree --lifecycle-build=$lifecycle --no-default-features=$no_default_features $b.wt $b.ref_name $profile $b.features $b.sha
         }
-    } | ignore
+    }
+    let reuse_baseline_binary = (lifecycle-reuse-build $lifecycle $effective_no_cache $builds)
+    let selected_builds = if $reuse_baseline_binary { $builds | take 1 } else { $builds }
+    if $lifecycle {
+        try {
+            for build in $selected_builds {
+                do $build_binary $build
+                lifecycle-trim-worktree $build.wt $profile
+            }
+        } catch { |build_error|
+            e2e-cleanup-owned-worktrees $owned_build_worktrees
+            error make $build_error.raw
+        }
+    } else {
+        $builds | par-each { |build| do $build_binary $build } | ignore
+    }
     let baseline_tempo = if $needs_baseline { worktree-bin $baseline_wt $profile "tempo" } else { "" }
-    let feature_tempo = if $needs_feature { worktree-bin $feature_wt $profile "tempo" } else { "" }
+    let feature_tempo = if $reuse_baseline_binary { $baseline_tempo } else if $needs_feature { worktree-bin $feature_wt $profile "tempo" } else { "" }
     let regenesis_tempo = if $regenesis_needed {
         if $needs_feature { $feature_tempo } else { $baseline_tempo }
     } else { "" }
@@ -1718,6 +1836,9 @@ def "main e2e" [
         profile: $profile
         samply: $samply
         samply_args: $samply_args_list
+        lifecycle: $lifecycle
+        lifecycle_detail: $lifecycle_detail
+        summary_warmup_blocks: $summary_warmup_blocks
         tracy: $tracy
         tracy_filter: $tracy_filter
         tracy_seconds: $tracy_seconds
@@ -1728,8 +1849,8 @@ def "main e2e" [
         baseline_env: $baseline_env
         feature_env: $feature_env
         bench_env: $bench_env
-        victoriametrics_url: $victoriametrics_url
-        clickhouse_url: $clickhouse_url
+        victoriametrics_url: (if $lifecycle { "" } else { $victoriametrics_url })
+        clickhouse_url: (if $lifecycle { "" } else { $clickhouse_url })
         clickhouse_run: $clickhouse_run
         runner_metrics_url: $runner_metrics_url
         run_type: $run_type
@@ -1748,14 +1869,14 @@ def "main e2e" [
     let baseline_base_label = if $baseline_name != "" { $baseline_name } else { $baseline }
     let feature_base_label = if $feature_name != "" { $feature_name } else { $feature }
 
-    mut baseline_run_index = 0
-    mut feature_run_index = 0
     mut runs = []
-    for side in (e2e-run-sides $run_pairs $run_side) {
-        if $side == "baseline" {
-            $baseline_run_index = $baseline_run_index + 1
+    let run_plan = (lifecycle-run-plan (e2e-run-sides $run_pairs $run_side) $lifecycle_detail)
+    for planned in $run_plan {
+        if $planned.side == "baseline" {
             $runs = ($runs | append {
-                phase: $"baseline-($baseline_run_index)"
+                phase: $planned.phase
+                side: $planned.side
+                lifecycle_detail: $planned.detail
                 ref: $baseline
                 ref_label: $baseline_base_label
                 tempo: $baseline_tempo
@@ -1763,9 +1884,10 @@ def "main e2e" [
                 hardfork: $baseline_hardfork_name
             })
         } else {
-            $feature_run_index = $feature_run_index + 1
             $runs = ($runs | append {
-                phase: $"feature-($feature_run_index)"
+                phase: $planned.phase
+                side: $planned.side
+                lifecycle_detail: $planned.detail
                 ref: $feature
                 ref_label: $feature_base_label
                 tempo: $feature_tempo
@@ -1775,7 +1897,7 @@ def "main e2e" [
         }
     }
     let valid_run_labels = ($runs | get phase)
-    if $clickhouse_run != "" and $clickhouse_run not-in $valid_run_labels {
+    if not $lifecycle and $clickhouse_run != "" and $clickhouse_run not-in $valid_run_labels {
         print $"Error: --clickhouse-run must be one of: ($valid_run_labels | str join ', ') \(got '($clickhouse_run)'\)"
         exit 1
     }

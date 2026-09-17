@@ -283,6 +283,7 @@ where
         skip_all,
         fields(
             id = %args.config.payload_id,
+            block_hash = tracing::field::Empty,
             parent_number = %args.config.parent_header.number(),
             parent_hash = %args.config.parent_header.hash()
         )
@@ -797,7 +798,8 @@ where
         let bal_rx = bal_task_handle.map(|handle| handle.into_bal_rx());
 
         // merge all transitions into bundle state before deriving the hashed post-state
-        db.merge_transitions(BundleRetention::Reverts);
+        debug_span!(target: "lifecycle", "builder.merge_transitions")
+            .in_scope(|| db.merge_transitions(BundleRetention::Reverts));
 
         let hashed_state = if let Some(Ok(hashed_state)) = state_root_handle
             .as_mut()
@@ -1017,6 +1019,8 @@ where
             .rlp_block_size_bytes_last
             .set(recorded_block_size_bytes as f64);
 
+        tracing::Span::current().record("block_hash", tracing::field::display(block.hash()));
+        tracing::info!(target: "lifecycle", stage = "payload_built", block_hash = %block.hash(), height = block.number(), transactions = total_transactions as u64);
         info!(
             parent_hash = ?block.parent_hash(),
             number = block.number(),
