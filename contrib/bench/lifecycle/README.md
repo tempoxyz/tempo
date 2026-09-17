@@ -2,7 +2,8 @@
 
 Select **profiling: lifecycle** in the `bench-e2e` workflow. This runs the feature
 revision on both local validators and uploads the `block-lifecycle` artifact.
-Extract the artifact and open a phase's `index.html`. The viewer works offline.
+Extract the artifact, expand its completed phase archives as described below,
+and open a phase's `index.html`. The viewer works offline.
 Open `perfetto-p50.json`, `perfetto-p90.json` or `perfetto-p99.json` in
 [Perfetto](https://ui.perfetto.dev) for a small trace of an actual representative
 block. The compact index links every individual block/attempt page and focused
@@ -389,3 +390,52 @@ the response. Disabled context spans preserve the original subscriber request sp
 The codec receiver exposes an additive `recv_with_context` method; existing `recv`
 callers keep their original decoded result/error shape, and Consumer/Delivery
 public interfaces remain unchanged.
+
+# Completed phase archives
+
+Lifecycle benchmark workflows retain each completed phase as a lossless ZIP64
+archive inside the existing `block-lifecycle` artifact. Compression starts only
+after the workload returns, validators stop, system tuning is restored, and the
+strict pre-backpressure prune/report command succeeds. Disk guards, snapshots,
+warmup, phase order and source cutoff rules are unchanged. Added compression and
+verification reads can affect page cache between phases; compare both sides using
+the same workflow variant rather than assuming zero indirect observer effect.
+
+Download and extract the outer artifact, then run:
+
+```sh
+python3 phase_archive.py unpack-all .
+```
+
+Open `<phase>/index.html` locally afterward. All individual-block, percentile,
+context and Perfetto files retain their original paths and bytes. Standard ZIP
+tools can also extract a phase archive; the provided script additionally verifies
+all file hashes and refuses unsafe paths, links, collisions and excessive expansion.
+Use a fresh destination if a phase folder already exists. Atomic directory
+publication uses exclusive rename on Linux/macOS and the non-overwriting Windows
+rename behavior; unsupported filesystems/platforms fail closed.
+
+The version-1 archive contract is `format: tempo-lifecycle-phase`, with a
+`<phase>.zip` and `<phase>.archive.json` receipt. The receipt includes archive
+size/SHA-256 and the complete file inventory (relative path, size, SHA-256), empty
+directories and total expanded bytes. The same inventory is embedded as
+`<phase>.archive-manifest.json`; source files are under `<phase>/`. Archives are
+verified in full before atomic publication. Original phase files are removed only
+after verification and durable archive/receipt publication. Failures retain the
+original phase. No source or derived file is selected out or rewritten.
+
+Automated consumers must use the script from their pinned workflow revision,
+not execute a downloaded helper blindly. Supply the closed expected phase set:
+
+```sh
+python3 contrib/bench/lifecycle/phase_archive.py unpack-all ARTIFACT_LIFECYCLE_DIR \
+  --expect-phases feature-1 baseline-1 baseline-2 feature-2
+```
+
+The command emits versioned JSON extraction provenance, including each archive
+digest, for the run manifest. Then run the existing privacy, cutoff, completeness
+and package audits unchanged. Defaults cap combined expansion at 64 GiB,
+individual files at 16 GiB and entries per phase at 100,000, with a 1 GiB free-space
+reserve before extraction. `--max-total-bytes` explicitly adjusts the combined
+limit for larger approved matrices. ZIP central-directory memory is separately
+bounded before member parsing. Existing destinations are never merged or replaced.
