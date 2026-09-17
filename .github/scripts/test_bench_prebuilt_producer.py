@@ -89,7 +89,7 @@ class ManifestTests(unittest.TestCase):
         self.assertNotIn('GITHUB_TOKEN',environment);self.assertNotIn('RUSTC_WRAPPER',environment)
         self.assertNotIn('AWS_SECRET_ACCESS_KEY',environment);self.assertNotIn('CARGO_PROFILE_PROFILING_LTO',environment)
         self.assertEqual(environment['CARGO_ENCODED_RUSTFLAGS'],'-C\x1ftarget-cpu=x86-64-v3')
-        self.assertEqual(environment['CFLAGS'],'-march=x86-64-v3 -mtune=generic')
+        self.assertEqual(environment['CFLAGS'],'-march=x86-64-v3 -mtune=generic -DNO_PCLMUL')
         self.assertEqual(p.build_command('tempo'),['cargo','+1.98.1','build','--locked','--target',p.TARGET,
             '--profile','profiling','--no-default-features','--features','asm-keccak,jemalloc,keccak-cache-global','--bin','tempo'])
         self.assertEqual(p.build_command('tools'),['cargo','+1.98.1','build','--locked','--target',p.TARGET,
@@ -168,7 +168,7 @@ class CpuTests(unittest.TestCase):
 class WorkflowTests(unittest.TestCase):
     def test_fixed_source_private_artifact_and_no_compile_cache(self):
         source=(ROOT.parent/'workflows'/'build.yml').read_text()
-        for exact in [p.RUNTIME,p.TOOLS,p.IMAGE,'toolchain: 1.98.1','timeout-minutes: 90',
+        for exact in [p.RUNTIME,p.TOOLS,p.IMAGE,'toolchain: 1.98.1','components: rustfmt','timeout-minutes: 90',
                       'depot-ubuntu-latest-16','persist-credentials: false','compression-level: 0']:
             self.assertIn(exact,source)
         for forbidden in ['sccache','MINIO','target-cpu=native','pull_request:','inputs.','id-token: write','github-sts']:

@@ -29,7 +29,8 @@ SCRIPT = '.github/scripts/bench-prebuilt-producer.py'
 CPU_SOURCE = '.github/scripts/bench-cpu-check.c'
 VERIFIER = 'contrib/bench/lifecycle/scheduler/diagnostic.py'
 RUSTFLAGS = ['-C', 'target-cpu=x86-64-v3']
-CFLAGS = ['-march=x86-64-v3', '-mtune=generic']
+# RocksDB's header otherwise infers PCLMUL from AVX, which v3 does not require.
+CFLAGS = ['-march=x86-64-v3', '-mtune=generic', '-DNO_PCLMUL']
 CPU_FLAGS = ['-static', '-O2', '-march=x86-64', '-mtune=generic']
 FEATURES = ['asm-keccak', 'jemalloc', 'keccak-cache-global']
 ROLES = ('tempo', 'txgen-tempo', 'bench')
