@@ -397,3 +397,14 @@ individual files at 16 GiB and entries per phase at 100,000, with a 1 GiB free-s
 reserve before extraction. `--max-total-bytes` explicitly adjusts the combined
 limit for larger approved matrices. ZIP central-directory memory is separately
 bounded before member parsing. Existing destinations are never merged or replaced.
+
+Forwarding pressure experiments optionally add `worker_forward_attempts` and
+`worker_pressure_fallback_attempts` to account-worker completion totals. They count
+the route chosen before send/processing, including failed dispatches and canceled
+result receivers; they do not count successful proofs. Their sum equals the
+same-worker `worker_jobs_storage_only_single_group` count when measured and
+unsaturated. They share the existing sticky `worker_job_counts_saturated` flag.
+Missing fields in old captures are unmeasured, not zero. Storage-worker totals
+omit both fields. The queue-pressure decision uses an advisory queue-length
+snapshot; it is not a hard queue capacity or memory bound. Both comparison sides
+must use the same counter-enabled observer and exporter.

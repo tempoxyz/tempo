@@ -132,6 +132,33 @@ console.log(JSON.stringify([[{}],[base],[account],[base,{}],[{...base,worker_job
         self.assertIn('0 attempted jobs',zero)
 
     @unittest.skipUnless(shutil.which('node'), 'Node.js is required for viewer helper regression')
+    def test_forward_routes_are_optional_partitioned_and_saturating(self):
+        template = Path(__file__).with_name('viewer.html').read_text()
+        helper = template.split('// BEGIN WORKER_CPU_HELPER')[1].split('// END WORKER_CPU_HELPER')[0]
+        script = helper + """
+const base={stage:'proof_account_worker_totals',worker_job_counts_measured:1,worker_job_counts_saturated:0,
+ worker_jobs:2,worker_target_max:0,worker_account_targets:0,worker_storage_groups:2,
+ worker_jobs_targets_0:2,worker_jobs_targets_1:0,worker_jobs_targets_2_8:0,worker_jobs_targets_9_32:0,
+ worker_jobs_targets_33_plus:0,worker_jobs_storage_only_single_group:2};
+const route={...base,worker_forward_attempts:1,worker_pressure_fallback_attempts:1};
+console.log(JSON.stringify([[base],[route],[base,route],
+ [{...route,worker_forward_attempts:0}], [{...route,worker_forward_attempts:-1}],
+ [{...route,worker_forward_attempts:'private'}], [{...route,worker_forward_attempts:2**64}],
+ [{...route,worker_job_counts_saturated:1}],
+ [{...base,worker_jobs:0,worker_storage_groups:0,worker_jobs_targets_0:0,worker_jobs_storage_only_single_group:0,
+ worker_forward_attempts:0,worker_pressure_fallback_attempts:0}]].map(proofJobSummary)));
+"""
+        missing,exact,partial,*rest=json.loads(subprocess.check_output(['node','-e',script],text=True))
+        self.assertIn('forwarding route counts unmeasured',missing)
+        self.assertIn('1 forwarding attempts / 1 queue-pressure fallback attempts',exact)
+        self.assertIn('advisory queue snapshot, not a hard bound',exact)
+        self.assertIn('1/2 completions with route counts',partial)
+        for invalid in rest[:-1]:
+            self.assertIn('unmeasured',invalid)
+            self.assertNotIn('private',invalid)
+        self.assertIn('0 forwarding attempts / 0 queue-pressure fallback attempts',rest[-1])
+
+    @unittest.skipUnless(shutil.which('node'), 'Node.js is required for viewer helper regression')
     def test_joint_account_shape_is_optional_and_rejects_invalid_counts(self):
         template = Path(__file__).with_name('viewer.html').read_text()
         helper = template.split('// BEGIN WORKER_CPU_HELPER')[1].split('// END WORKER_CPU_HELPER')[0]
