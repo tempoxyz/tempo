@@ -105,7 +105,10 @@ fn reads_derive_from_blocks_and_writes_remain_native() {
         )
         .unwrap();
     let mut hashed = StorageCtx::enter(&mut outer, || {
-        let cursor = tx.cursor_dup_read::<tables::HashedStorages>().unwrap();
+        let mut cursor = tx.cursor_dup_read::<tables::HashedStorages>().unwrap();
+        cursor
+            .seek_by_key_subkey(hashed_address, hashed_slot)
+            .unwrap();
         assert_eq!(
             StorageCtx
                 .sload(address, U256::from_be_slice(slot.as_slice()))
@@ -150,10 +153,7 @@ fn reads_derive_from_blocks_and_writes_remain_native() {
         .slots()
         .unwrap()
         .iter()
-        .map(|(&key, &value)| StorageEntry {
-            key: keccak256(key),
-            value,
-        })
+        .map(|(&key, &value)| StorageEntry { key, value })
         .collect();
     expected_hashed.sort();
     let actual_hashed: Vec<_> = hashed
@@ -194,6 +194,21 @@ fn reads_derive_from_blocks_and_writes_remain_native() {
         Some(wrong)
     );
     native.abort();
+    // Readers at one checkpoint share one computation, even when first accessed concurrently.
+    std::thread::scope(|scope| {
+        let handles: Vec<_> = (0..8)
+            .map(|_| {
+                scope.spawn(|| {
+                    let reader = db.tx().unwrap();
+                    reader.snapshot().unwrap().clone()
+                })
+            })
+            .collect();
+        for handle in handles {
+            assert!(Arc::ptr_eq(&handle.join().unwrap(), tx.snapshot().unwrap()));
+        }
+    });
+    assert_eq!(db.cache.published.lock().unwrap().computations, 1);
     let lazy = db.tx().unwrap();
     // Advancing persistence must not change the already-open transaction's derived snapshot.
     let rw = factory.provider_rw().unwrap();
@@ -201,11 +216,59 @@ fn reads_derive_from_blocks_and_writes_remain_native() {
     rw.save_stage_checkpoint(reth_stages_types::StageId::Finish, StageCheckpoint::new(2))
         .unwrap();
     rw.commit().unwrap();
-    assert_eq!(tx.slots().unwrap().get(&slot), Some(&U256::from(1200)));
-    assert_eq!(lazy.slots().unwrap().get(&slot), Some(&U256::from(1200)));
+    assert_eq!(
+        tx.slots().unwrap().get(&hashed_slot),
+        Some(&U256::from(1200))
+    );
+    db.on_persisted();
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
+    while db.cache.published.lock().unwrap().computations < 2 {
+        assert!(
+            std::time::Instant::now() < deadline,
+            "cache warming did not complete"
+        );
+        std::thread::yield_now();
+    }
     let next = db.tx().unwrap();
-    assert!(!next.slots().unwrap().contains_key(&slot));
+    assert!(!next.slots().unwrap().contains_key(&hashed_slot));
     assert_eq!(next.slots().unwrap().len(), 1); // only oldest cursor survives
+    assert_eq!(db.cache.published.lock().unwrap().computations, 2);
+    assert_eq!(db.cache.published.lock().unwrap().replayed_blocks, 2);
+    // Old leases retain their view after the global cache advances.
+    assert_eq!(
+        lazy.slots().unwrap().get(&hashed_slot),
+        Some(&U256::from(1200))
+    );
+    // Fresh transactions reuse the newly advanced state.
+    assert!(Arc::ptr_eq(
+        db.tx().unwrap().snapshot().unwrap(),
+        next.snapshot().unwrap()
+    ));
+    let old_lease = Arc::downgrade(tx.snapshot().unwrap());
+    drop(hashed);
+    drop(state);
+    drop(injected);
+    drop(tx);
+    drop(lazy);
+    drop(next);
+    assert!(old_lease.upgrade().is_none());
+    // Replace the canonical chain at the same Finish height. A height-only cache
+    // would incorrectly return the old snapshot instead of replaying this fork.
+    let rw = factory.provider_rw().unwrap();
+    rw.remove_blocks_above(0).unwrap();
+    rw.save_stage_checkpoint(reth_stages_types::StageId::Finish, StageCheckpoint::new(0))
+        .unwrap();
+    rw.commit().unwrap();
+    let rw = factory.provider_rw().unwrap();
+    rw.insert_block(&make_block(1, 1300, vec![])).unwrap();
+    rw.insert_block(&make_block(2, 1301, vec![])).unwrap();
+    rw.save_stage_checkpoint(reth_stages_types::StageId::Finish, StageCheckpoint::new(2))
+        .unwrap();
+    rw.commit().unwrap();
+    let fork = db.tx().unwrap();
+    assert_eq!(fork.slots().unwrap().len(), 1);
+    assert_eq!(db.cache.published.lock().unwrap().computations, 3);
+    assert_eq!(db.cache.published.lock().unwrap().replayed_blocks, 4);
 }
 
 #[test]
@@ -239,6 +302,14 @@ fn storage_cursor_matches_native_traversal() {
     let mut virtual_cursor = virtual_tx
         .cursor_dup_read::<tables::HashedStorages>()
         .unwrap();
+    virtual_cursor
+        .seek_by_key_subkey(B256::with_last_byte(1), B256::with_last_byte(2))
+        .unwrap();
+    assert_eq!(
+        wrapper.cache.published.lock().unwrap().computations,
+        0,
+        "unrelated storage must not reconstruct nonces"
+    );
     macro_rules! same { ($method:ident($($arg:expr),*)) => { assert_eq!(virtual_cursor.$method($($arg),*).unwrap(), native.$method($($arg),*).unwrap(), stringify!($method)); } }
     same!(first());
     same!(next());
@@ -400,5 +471,141 @@ fn replay_writes_are_discarded_without_affecting_other_addresses() {
     check::<tables::PackedStoragesTrie>(PackedStorageTrieEntry {
         nibbles: Nibbles::default().into(),
         node: Default::default(),
+    });
+}
+
+#[test]
+fn merged_cursor_matches_native_storage() {
+    let factory = create_test_provider_factory_with_node_types::<TempoNode>(DEV.clone());
+    let target = keccak256(EXPIRING_NONCE_PRECOMPILE_ADDRESS);
+    let owners = [B256::ZERO, target, B256::repeat_byte(0xff)];
+    let rw = factory.provider_rw().unwrap();
+    let slots: Slots = [2, 4, 8]
+        .into_iter()
+        .map(|slot| (B256::with_last_byte(slot), U256::from(slot)))
+        .collect();
+    for owner in owners {
+        for (&key, &value) in &slots {
+            rw.tx_ref()
+                .put::<tables::HashedStorages>(owner, StorageEntry { key, value })
+                .unwrap();
+        }
+    }
+    rw.commit().unwrap();
+    let tx = factory.db_ref().tx().unwrap();
+    let snapshot = Arc::new(Snapshot {
+        number: 0,
+        hash: B256::ZERO,
+        slots,
+        deployed: true,
+    });
+    let mut merged = Cursor::<tables::HashedStorages, _>::new(
+        tx.cursor_dup_read().unwrap(),
+        Some(Arc::new(View {
+            source: Source::new(&tx, 0).unwrap(),
+            chain: DEV.clone(),
+            cache: Arc::default(),
+            static_files: factory.static_file_provider().directory().to_owned(),
+            snapshot: OnceLock::from(Ok(snapshot)),
+        })),
+    );
+    let mut native = tx.cursor_dup_read::<tables::HashedStorages>().unwrap();
+    assert_eq!(
+        merged
+            .walk(None)
+            .unwrap()
+            .collect::<Result<Vec<_>, _>>()
+            .unwrap(),
+        native
+            .walk(None)
+            .unwrap()
+            .collect::<Result<Vec<_>, _>>()
+            .unwrap()
+    );
+    assert_eq!(
+        merged
+            .walk_back(None)
+            .unwrap()
+            .collect::<Result<Vec<_>, _>>()
+            .unwrap(),
+        native
+            .walk_back(None)
+            .unwrap()
+            .collect::<Result<Vec<_>, _>>()
+            .unwrap()
+    );
+    macro_rules! same { ($method:ident($($arg:expr),*)) => { assert_eq!(merged.$method($($arg),*).unwrap(), native.$method($($arg),*).unwrap(), stringify!($method)); } }
+    for owner in owners {
+        same!(seek(owner));
+        same!(next_dup());
+        same!(prev_dup());
+        same!(last_dup());
+        same!(next_no_dup());
+        same!(seek(owner));
+        same!(prev());
+        for slot in [0, 2, 3, 4, 8, 9] {
+            same!(seek_by_key_subkey(owner, B256::with_last_byte(slot)));
+        }
+    }
+    same!(seek_exact(target));
+    same!(next());
+    same!(next());
+    same!(next());
+    same!(prev());
+    same!(seek(B256::with_last_byte(1)));
+}
+
+#[test]
+fn concurrent_cold_readers_compute_once() {
+    let factory = create_test_provider_factory_with_node_types::<TempoNode>(DEV.clone());
+    let db = TempoDatabase::new(
+        factory.db_ref().clone(),
+        DEV.clone(),
+        factory.static_file_provider().directory().to_owned(),
+    );
+    let barrier = std::sync::Barrier::new(8);
+    let states = std::thread::scope(|scope| {
+        let handles: Vec<_> = (0..8)
+            .map(|_| {
+                scope.spawn(|| {
+                    let tx = db.tx().unwrap();
+                    barrier.wait();
+                    tx.snapshot().unwrap().clone()
+                })
+            })
+            .collect();
+        handles
+            .into_iter()
+            .map(|handle| handle.join().unwrap())
+            .collect::<Vec<_>>()
+    });
+    assert_eq!(db.cache.published.lock().unwrap().computations, 1);
+    for state in &states {
+        assert!(Arc::ptr_eq(state, &states[0]));
+    }
+}
+
+#[test]
+fn published_reads_do_not_wait_for_computation() {
+    let factory = create_test_provider_factory_with_node_types::<TempoNode>(DEV.clone());
+    let db = TempoDatabase::new(
+        factory.db_ref().clone(),
+        DEV.clone(),
+        factory.static_file_provider().directory().to_owned(),
+    );
+    let first = db.tx().unwrap().snapshot().unwrap().clone();
+    let guard = db.cache.computation.lock().unwrap();
+    let (send, receive) = std::sync::mpsc::channel();
+    std::thread::scope(|scope| {
+        scope.spawn(|| {
+            send.send(db.tx().unwrap().snapshot().unwrap().clone())
+                .unwrap()
+        });
+        let result = receive.recv_timeout(std::time::Duration::from_secs(2));
+        drop(guard);
+        assert!(Arc::ptr_eq(
+            &result.expect("published reads blocked behind writer"),
+            &first
+        ));
     });
 }

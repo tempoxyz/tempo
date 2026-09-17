@@ -1,9 +1,10 @@
 //! Read-only replay-protection storage derived from canonical block data.
 //!
-//! This PoC scans blocks from genesis to the transaction's Finish checkpoint and
-//! materializes hashed storage for cursor reads. It requires those block bodies
-//! to remain available. `expiring-nonce-no-persistence` discards this precompile's
+//! Read transactions lease shared snapshots at their Finish checkpoint. Snapshots
+//! advance by replaying missing blocks; unrelated forks rebuild from genesis.
+//! Block bodies must remain available. `expiring-nonce-no-persistence` discards this precompile's
 //! hashed storage and storage-trie writes. History remains unchanged.
+mod backend;
 mod cursor;
 mod replay;
 #[cfg(feature = "expiring-nonce-no-persistence")]
@@ -11,9 +12,12 @@ mod write;
 #[cfg(feature = "expiring-nonce-no-persistence")]
 pub use write::WriteTx;
 
-use alloy_primitives::{B256, U256, keccak256};
+#[cfg(test)]
+use alloy_primitives::U256;
+use alloy_primitives::{B256, keccak256};
 pub use cursor::Cursor;
-use cursor::Rows;
+use replay::{Cache, Slots, Snapshot, Source};
+use reth_chainspec::EthChainSpec;
 use reth_db_api::{
     Database, DatabaseError,
     cursor::DbCursorRO,
@@ -23,11 +27,10 @@ use reth_db_api::{
     transaction::DbTx,
 };
 use reth_ethereum::provider::db::DatabaseEnv;
-use reth_primitives_traits::StorageEntry;
+use reth_primitives_traits::{AlloyBlockHeader, StorageEntry};
 use std::{
-    collections::BTreeMap,
     path::PathBuf,
-    sync::{Arc, OnceLock},
+    sync::{Arc, LazyLock, OnceLock, mpsc},
 };
 use tempo_chainspec::TempoChainSpec;
 use tempo_precompiles::EXPIRING_NONCE_PRECOMPILE_ADDRESS;
@@ -38,15 +41,36 @@ pub struct TempoDatabase<D = DatabaseEnv> {
     inner: D,
     chain: Arc<TempoChainSpec>,
     static_files: PathBuf,
+    cache: Arc<Cache>,
+    warm: mpsc::SyncSender<()>,
 }
 
-impl<D> TempoDatabase<D> {
+impl<D: Database + Clone + 'static> TempoDatabase<D> {
     /// Wrap a database using its chain specification and static-file directory.
     pub fn new(inner: D, chain: Arc<TempoChainSpec>, static_files: PathBuf) -> Self {
+        let cache = Arc::new(Cache::default());
+        let (warm, receiver) = mpsc::sync_channel(1);
+        let worker_db = inner.clone();
+        let worker_chain = chain.clone();
+        let worker_path = static_files.clone();
+        let worker_cache = cache.clone();
+        std::thread::Builder::new()
+            .name("replay-cache".into())
+            .spawn(move || {
+                while receiver.recv().is_ok() {
+                    let result = worker_cache.warm(&worker_db, &worker_chain, &worker_path);
+                    if let Err(error) = result {
+                        tracing::warn!(%error, "Could not warm replay storage cache");
+                    }
+                }
+            })
+            .expect("spawn replay cache worker");
         Self {
             inner,
             chain,
             static_files,
+            cache,
+            warm,
         }
     }
 }
@@ -62,7 +86,8 @@ impl<D: Database> Database for TempoDatabase<D> {
             inner: self.inner.tx()?,
             chain: self.chain.clone(),
             static_files: self.static_files.clone(),
-            slots: OnceLock::new(),
+            view: OnceLock::new(),
+            cache: self.cache.clone(),
         })
     }
     fn tx_mut(&self) -> Result<Self::TXMut, DatabaseError> {
@@ -70,6 +95,9 @@ impl<D: Database> Database for TempoDatabase<D> {
         #[cfg(feature = "expiring-nonce-no-persistence")]
         let tx = WriteTx(tx);
         Ok(tx)
+    }
+    fn on_persisted(&self) {
+        let _ = self.warm.try_send(());
     }
     fn path(&self) -> PathBuf {
         self.inner.path()
@@ -102,65 +130,86 @@ pub struct ReplayTx<TX> {
     inner: TX,
     chain: Arc<TempoChainSpec>,
     static_files: PathBuf,
-    slots: OnceLock<Result<BTreeMap<B256, U256>, DatabaseError>>,
+    cache: Arc<Cache>,
+    view: OnceLock<Result<Arc<View>, DatabaseError>>,
 }
 
-fn address_key<T: Table>() -> Option<Vec<u8>> {
+/// All cursors from a transaction share this lazily acquired snapshot lease.
+#[derive(Debug)]
+pub(super) struct View {
+    source: Source,
+    chain: Arc<TempoChainSpec>,
+    static_files: PathBuf,
+    cache: Arc<Cache>,
+    snapshot: OnceLock<Result<Arc<Snapshot>, DatabaseError>>,
+}
+impl View {
+    fn snapshot(&self) -> Result<&Arc<Snapshot>, DatabaseError> {
+        self.snapshot
+            .get_or_init(|| {
+                self.cache
+                    .get(&self.source, &self.chain, &self.static_files)
+            })
+            .as_ref()
+            .map_err(Clone::clone)
+    }
+}
+
+static HASHED_ADDRESS: LazyLock<B256> =
+    LazyLock::new(|| keccak256(EXPIRING_NONCE_PRECOMPILE_ADDRESS));
+
+fn address_key<T: Table>() -> Option<B256> {
     match T::NAME {
-        tables::HashedStorages::NAME => Some(keccak256(EXPIRING_NONCE_PRECOMPILE_ADDRESS).to_vec()),
+        tables::HashedStorages::NAME => Some(*HASHED_ADDRESS),
         _ => None,
     }
 }
 
-impl<TX: DbTx> ReplayTx<TX> {
-    fn slots(&self) -> Result<&BTreeMap<B256, U256>, DatabaseError> {
-        self.slots
-            .get_or_init(|| replay::reconstruct(&self.inner, &self.chain, &self.static_files))
+impl<TX: DbTx + 'static> ReplayTx<TX> {
+    fn view(&self) -> Result<&Arc<View>, DatabaseError> {
+        self.view
+            .get_or_init(|| {
+                Ok(Arc::new(View {
+                    source: Source::new(&self.inner, self.chain.genesis_header().number())?,
+                    chain: self.chain.clone(),
+                    static_files: self.static_files.clone(),
+                    cache: self.cache.clone(),
+                    snapshot: OnceLock::new(),
+                }))
+            })
             .as_ref()
             .map_err(Clone::clone)
     }
-
-    // Materialize the hashed storage table. This intentionally favors a simple PoC
-    // over memory usage; unrelated tables retain their native cursors.
-    fn rows<T: Table>(&self) -> Result<Option<Rows>, DatabaseError> {
-        let Some(address) = address_key::<T>() else {
-            return Ok(None);
-        };
-        let mut rows = Vec::new();
-        let mut cursor = self.inner.cursor_read::<T>()?;
-        for row in cursor.walk(None)? {
-            let (key, value) = row?;
-            let key = key.encode().as_ref().to_vec();
-            if key != address {
-                rows.push((key, value.compress().as_ref().to_vec()));
-            }
+    fn snapshot(&self) -> Result<&Arc<Snapshot>, DatabaseError> {
+        self.view()?.snapshot()
+    }
+    fn slots(&self) -> Result<&Slots, DatabaseError> {
+        Ok(&self.snapshot()?.slots)
+    }
+    fn storage_view<T: Table>(&self) -> Result<Option<Arc<View>>, DatabaseError> {
+        if address_key::<T>().is_some() {
+            Ok(Some(self.view()?.clone()))
+        } else {
+            Ok(None)
         }
-        for (&slot, &value) in self.slots()? {
-            let key = keccak256(slot);
-            rows.push((address.clone(), StorageEntry { key, value }.compress()));
-        }
-        rows.sort();
-        Ok(Some(Arc::new(rows)))
     }
 }
 
-impl<TX: DbTx> DbTx for ReplayTx<TX> {
+impl<TX: DbTx + 'static> DbTx for ReplayTx<TX> {
     type Cursor<T: Table> = Cursor<T, TX::Cursor<T>>;
     type DupCursor<T: DupSort> = Cursor<T, TX::DupCursor<T>>;
     fn get<T: Table>(&self, key: T::Key) -> Result<Option<T::Value>, DatabaseError> {
-        if address_key::<T>().is_some_and(|address| key.clone().encode().as_ref() == address) {
-            let mut entries: Vec<_> = self
+        if address_key::<T>()
+            .is_some_and(|address| key.clone().encode().as_ref() == address.as_slice())
+        {
+            return self
                 .slots()?
                 .iter()
-                .map(|(&slot, &value)| StorageEntry {
-                    key: keccak256(slot),
-                    value,
+                .next()
+                .map(|(&key, &value)| {
+                    T::Value::decompress(StorageEntry { key, value }.compress().as_ref())
+                        .map_err(Into::into)
                 })
-                .collect();
-            entries.sort();
-            return entries
-                .first()
-                .map(|entry| T::Value::decompress(entry.compress().as_ref()).map_err(Into::into))
                 .transpose();
         }
         self.inner.get::<T>(key)
@@ -180,21 +229,29 @@ impl<TX: DbTx> DbTx for ReplayTx<TX> {
     fn cursor_read<T: Table>(&self) -> Result<Self::Cursor<T>, DatabaseError> {
         Ok(Cursor::new(
             self.inner.cursor_read::<T>()?,
-            self.rows::<T>()?,
+            self.storage_view::<T>()?,
         ))
     }
     fn cursor_dup_read<T: DupSort>(&self) -> Result<Self::DupCursor<T>, DatabaseError> {
         Ok(Cursor::new(
             self.inner.cursor_dup_read::<T>()?,
-            self.rows::<T>()?,
+            self.storage_view::<T>()?,
         ))
     }
     fn entries<T: Table>(&self) -> Result<usize, DatabaseError> {
-        match self.rows::<T>()? {
-            Some(rows) => Ok(rows.len()),
-            None => self.inner.entries::<T>(),
+        let mut count = self.inner.entries::<T>()?;
+        if let Some(address) = address_key::<T>() {
+            let mut cursor = self.inner.cursor_read::<T>()?;
+            let mut row = cursor.seek(T::Key::decode(address.as_slice())?)?;
+            while row.is_some_and(|(key, _)| key.encode().as_ref() == address.as_slice()) {
+                count -= 1;
+                row = cursor.next()?;
+            }
+            count += self.slots()?.len();
         }
+        Ok(count)
     }
+
     fn disable_long_read_transaction_safety(&mut self) {
         self.inner.disable_long_read_transaction_safety()
     }

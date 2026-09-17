@@ -27,6 +27,9 @@ tempo-primitives = { workspace = true, features = ["default"] }
 tempo-revm.workspace = true
 
 thiserror.workspace = true
+imbl = "=7.0.0"
+tracing.workspace = true
+revm.workspace = true
 
 reth-db-api.workspace = true
 reth-chainspec.workspace = true
