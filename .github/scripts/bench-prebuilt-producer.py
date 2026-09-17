@@ -36,10 +36,31 @@ FEATURES = ['asm-keccak', 'jemalloc', 'keccak-cache-global']
 ROLES = ('tempo', 'txgen-tempo', 'bench')
 SONAMES = {'libc.so.6', 'libm.so.6', 'libdl.so.2', 'libpthread.so.0', 'librt.so.1',
            'libgcc_s.so.1', 'libstdc++.so.6', 'libudev.so.1', 'libssl.so.3',
-           'libcrypto.so.3', 'libz.so.1', 'libzstd.so.1', 'libatomic.so.1'}
+           'libcrypto.so.3', 'libz.so.1', 'libzstd.so.1', 'libatomic.so.1',
+           'ld-linux-x86-64.so.2'}
 MAX_BINARY = 2 * 1024**3
 MAX_MANIFEST = 65536
 JS_MAX = 2**53-1
+DIAGNOSTIC = dict(schema=1, stage=0, role=0, bytes=0, clean=0, abi=0, failure=0, check=0)
+
+
+def checkpoint(stage, **values):
+    DIAGNOSTIC.update(stage=stage, **values)
+
+
+def failure_receipt(error):
+    # Only fixed source-stage/role enums, source line, booleans-as-enums and sizes.
+    # Never include exception text, paths, symbol names, or tool output.
+    categories=(Rejected,OSError,ValueError,TypeError,KeyError,subprocess.SubprocessError,ImportError)
+    DIAGNOSTIC['failure']=next(i+1 for i,k in enumerate(categories) if isinstance(error,k))
+    trace=error.__traceback__
+    while trace is not None:
+        if trace.tb_frame.f_code.co_filename==__file__ and trace.tb_frame.f_code.co_name!='need':
+            DIAGNOSTIC['check']=trace.tb_lineno
+        trace=trace.tb_next
+    need(set(DIAGNOSTIC)=={'schema','stage','role','bytes','clean','abi','failure','check'})
+    need(all(type(v)is int and 0<=v<=JS_MAX for v in DIAGNOSTIC.values()))
+    return dict(DIAGNOSTIC)
 
 
 class Rejected(Exception):
@@ -81,6 +102,7 @@ def identity(path):
 
 def hashed(path):
     before = identity(path)
+    DIAGNOSTIC['bytes']=before[2]
     need(0 < before[2] <= MAX_BINARY)
     h = hashlib.sha256()
     with path.open('rb') as source:
@@ -104,7 +126,9 @@ def git(repo, *args):
 
 def source(repo, expected, repository):
     need(repo.is_dir() and repo.resolve() == repo and git(repo, 'rev-parse', 'HEAD') == expected)
-    need(git(repo, 'status', '--porcelain', '--untracked-files=all') == '')
+    clean=git(repo, 'status', '--porcelain', '--untracked-files=all') == ''
+    DIAGNOSTIC['clean']=1 if clean else 2
+    need(clean)
     # Exact tracked bytes are rechecked after compilation too.
     for name in ('Cargo.toml', 'Cargo.lock'):
         need(checked(['git', '-C', str(repo), 'show', expected+':'+name]) == (repo/name).read_bytes())
@@ -181,16 +205,20 @@ def remapped_environment(environment, producer, repo, private, rustc):
 
 
 def abi(binary):
+    DIAGNOSTIC['abi']=1
     with binary.open('rb') as source:
         header = source.read(64)
     need(len(header) == 64 and header[:7] == b'\x7fELF\x02\x01\x01')
     need(struct.unpack_from('<H',header,18)[0] == 62)
+    DIAGNOSTIC['abi']=2
     program = checked(['readelf','-lW',str(binary)]).decode()
     loaders = re.findall(r'\[Requesting program interpreter: ([^\]]+)\]',program)
     need(loaders in ([], ['/lib64/ld-linux-x86-64.so.2']))
+    DIAGNOSTIC['abi']=3
     dynamic = checked(['readelf','-dW',str(binary)]).decode()
     needed = re.findall(r'\(NEEDED\).*Shared library: \[([^\]]+)\]',dynamic)
     need(len(needed) == len(set(needed)) and set(needed) <= SONAMES)
+    DIAGNOSTIC['abi']=4
     version_text = checked(['readelf','-VW',str(binary)]).decode()
     versions = {}; library = None
     for line in version_text.splitlines():
@@ -204,7 +232,9 @@ def abi(binary):
     result = dict(elf_class=64, machine=62, little_endian=True,
                   loader='glibc_x86_64' if loaders else 'none', needed=sorted(needed),
                   versions={k:sorted(set(v)) for k,v in sorted(versions.items())})
+    DIAGNOSTIC['abi']=5
     validate_abi(result)
+    DIAGNOSTIC['abi']=6
     return result
 
 
@@ -275,17 +305,20 @@ def verify_marker(producer, binary):
 
 
 def produce(producer,runtime,tools,output):
+    checkpoint(1)
     expected=sha(os.environ.get('PREBUILT_PRODUCER_SHA'),40)
     run_id=uint(int(os.environ.get('PREBUILT_RUN_ID','0')),1)
     attempt=uint(int(os.environ.get('PREBUILT_RUN_ATTEMPT','0')),1)
     need(git(producer,'rev-parse','HEAD')==expected and git(producer,'status','--porcelain','--untracked-files=all')=='')
     for path in (WORKFLOW,SCRIPT,CPU_SOURCE,VERIFIER):
         need(checked(['git','-C',str(producer),'show',expected+':'+path])==(producer/path).read_bytes())
+    checkpoint(2)
     sources={'tempo':source(runtime,RUNTIME,'tempoxyz/tempo'),'tools':source(tools,TOOLS,'tempoxyz/txgen')}
     lock=(runtime/'Cargo.lock').read_text()
     for url,revision in [('joshieDo/reth',RETH),('joshieDo/monorepo',COMMONWARE)]:
         found=re.findall(r'source = "git\+https://github.com/'+url+r'\?rev=([a-f0-9]+)#([a-f0-9]+)"',lock)
         need(found and all(a==b==revision for a,b in found))
+    checkpoint(3)
     parse_rustc(checked(['rustup','run',TOOLCHAIN,'rustc','-Vv']))
     rustc=Path(checked(['rustup','which','--toolchain',TOOLCHAIN,'rustc']).decode().strip())
     native={}
@@ -293,6 +326,7 @@ def produce(producer,runtime,tools,output):
         path=Path(shutil.which(command)).resolve()
         native[key]={'version':checked([str(path),'-dumpfullversion']).decode().strip(),
                      'sha256':hashed(path)['sha256']}
+    checkpoint(4)
     need(not output.exists() and output.parent.resolve()==output.parent)
     output.mkdir(mode=0o700)
     cpu=output/'cpu-check'
@@ -302,8 +336,10 @@ def produce(producer,runtime,tools,output):
     need(type(cpuresult['schema']) is int and cpuresult['schema']==1 and cpuresult['supported'] is True)
     need(uint(cpuresult['checked'],1)==uint(cpuresult['total'],1))
     need(shutil.disk_usage(output.parent).free>=64*1024**3)
+    checkpoint(5)
     binaries={}
     for group,repo,names in [('tempo',runtime,('tempo',)),('tools',tools,('txgen-tempo','bench'))]:
+        checkpoint(10 if group=='tempo' else 20,role=1 if group=='tempo' else 2,abi=0,bytes=0,clean=0)
         with tempfile.TemporaryDirectory(prefix='prebuilt-build-',dir=output.parent) as temp:
             private=Path(temp);home=private/'cargo';home.mkdir();target=private/'target';target.mkdir()
             environment=remapped_environment(build_environment(os.environ,home,target,rustc),
@@ -311,18 +347,24 @@ def produce(producer,runtime,tools,output):
             # Streaming build logs are private workflow logs, never artifact members.
             result=subprocess.run(build_command(group),cwd=repo,env=environment,timeout=3600,check=False)
             need(result.returncode==0)
+            checkpoint(11 if group=='tempo' else 21)
             need(source(repo,RUNTIME if group=='tempo' else TOOLS,
                         'tempoxyz/tempo' if group=='tempo' else 'tempoxyz/txgen')==sources[group])
             for role in names:
+                checkpoint(12,role=ROLES.index(role)+1,abi=0,bytes=0)
                 profile='profiling' if role=='tempo' else 'release'
                 original=target/TARGET/profile/role
                 signature=hashed(original);destination=output/role
+                checkpoint(13)
                 with original.open('rb') as src,destination.open('xb') as dst:shutil.copyfileobj(src,dst,1024*1024)
                 destination.chmod(0o700);need(hashed(destination)==signature)
+                checkpoint(14)
                 binaries[role]=dict(sources[group],profile=profile,default_features=role!='tempo',
                     features=FEATURES if role=='tempo' else [],rustflags=RUSTFLAGS,cflags=CFLAGS,cxxflags=CFLAGS,
                     **signature,abi=abi(destination))
+    checkpoint(30,role=1)
     verify_marker(producer,output/'tempo')
+    checkpoint(31,role=0)
     manifest=dict(schema=1,build_contract='x86_64_v3_locked_v1',producer_repository='tempoxyz/tempo',
         producer_workflow_path=WORKFLOW,producer_workflow_sha=expected,producer_run_id=run_id,
         producer_run_attempt=attempt,producer_workflow_sha256=hashed(producer/WORKFLOW)['sha256'],
@@ -333,12 +375,15 @@ def produce(producer,runtime,tools,output):
             compiler_flags=CPU_FLAGS,**hashed(cpu),abi=abi(cpu)),
         runtime_dependencies={'reth':RETH,'commonware':COMMONWARE},
         registration=dict(symbol_verified=True,call_verified=True,verifier_sha256=hashed(producer/VERIFIER)['sha256']))
+    checkpoint(32)
     validate_manifest(manifest)
+    checkpoint(33)
     need(source(runtime,RUNTIME,'tempoxyz/tempo')==sources['tempo'] and source(tools,TOOLS,'tempoxyz/txgen')==sources['tools'])
     need(git(producer,'rev-parse','HEAD')==expected and git(producer,'status','--porcelain','--untracked-files=all')=='')
     need(hashed(cpu)=={k:manifest['cpu_check'][k] for k in ('bytes','sha256')})
     need(set(p.name for p in output.iterdir())==set(ROLES)|{'cpu-check'})
     for role in ROLES:need(hashed(output/role)=={k:manifest['binaries'][role][k] for k in ('bytes','sha256')})
+    checkpoint(34)
     with (output/'manifest.json').open('x') as file:
         file.write(json.dumps(manifest,sort_keys=True,separators=(',',':'))+'\n')
     print('{"schema":1,"built":true,"binaries":4}')
@@ -357,5 +402,6 @@ if __name__=='__main__':
     args=parser.parse_args()
     try:
         produce(*(getattr(args,name).absolute() for name in ('producer','runtime','tools','output')))
-    except (Rejected,OSError,ValueError,TypeError,KeyError,subprocess.SubprocessError,ImportError):
+    except (Rejected,OSError,ValueError,TypeError,KeyError,subprocess.SubprocessError,ImportError) as error:
+        print(json.dumps(failure_receipt(error),sort_keys=True,separators=(',',':')),flush=True)
         raise SystemExit('prebuilt_producer_rejected') from None

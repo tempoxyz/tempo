@@ -141,6 +141,39 @@ class ManifestTests(unittest.TestCase):
             with patch.object(p,'identity',side_effect=changed),self.assertRaises(p.Rejected):p.hashed(path)
 
 
+class DiagnosticTests(unittest.TestCase):
+    def test_actual_rust_elf_can_require_the_exact_loader_soname(self):
+        with tempfile.TemporaryDirectory() as temp:
+            root=Path(temp);source=root/'fixture.rs';binary=root/'fixture'
+            source.write_text('fn main() { std::thread::spawn(|| std::thread::current()).join().unwrap(); }')
+            subprocess.run(['rustc','--crate-name','abi_fixture',str(source),'-o',str(binary)],check=True)
+            with patch.object(p,'SONAMES',p.SONAMES-{'ld-linux-x86-64.so.2'}):
+                with self.assertRaises(p.Rejected):p.abi(binary)
+            value=p.abi(binary)
+            self.assertIn('ld-linux-x86-64.so.2',value['needed'])
+            self.assertEqual(value['loader'],'glibc_x86_64')
+            value['needed'].append('ld-private.so')
+            with self.assertRaises(p.Rejected):p.validate_abi(value)
+
+    def test_closed_failure_stage_and_real_size_cap_preserved(self):
+        with patch.dict(p.DIAGNOSTIC,dict(schema=1,stage=12,role=1,bytes=0,clean=1,abi=0,failure=0,check=0),clear=True):
+            with tempfile.TemporaryDirectory() as temp:
+                oversized=Path(temp)/'private-binary'
+                with oversized.open('wb') as f:f.truncate(p.MAX_BINARY+1)
+                try:p.hashed(oversized)
+                except p.Rejected as error:receipt=p.failure_receipt(error)
+                else:self.fail('original 2GiB cap was weakened')
+                self.assertEqual(receipt['bytes'],p.MAX_BINARY+1)
+                self.assertEqual((receipt['stage'],receipt['role'],receipt['failure']),(12,1,1))
+                self.assertGreater(receipt['check'],0)
+                self.assertEqual(set(receipt),{'schema','stage','role','bytes','clean','abi','failure','check'})
+                self.assertTrue(all(type(v)is int for v in receipt.values()))
+                try:raise OSError('private path and compiler output')
+                except OSError as error:other=p.failure_receipt(error)
+                self.assertEqual(other['failure'],2)
+                self.assertNotIn('private',json.dumps(other))
+
+
 class CpuTests(unittest.TestCase):
     def test_actual_baseline_static_probe_and_each_missing_feature(self):
         with tempfile.TemporaryDirectory() as temp:
