@@ -37,4 +37,8 @@ The release marker check accepts a direct call or an x86-64 RIP-relative indirec
 call through a GOT slot whose ELF relocation points exactly to the marker. An
 unused marker symbol alone does not pass. Startup failures expose only fixed
 categories (`configuration`, `capability`, `marker`, `capture`, `cutoff`, `decode`,
-`publish`); private tool output and commands are never printed.
+`publish`) and fixed subcategories for buffer limits, source footer/integrity,
+tool exit/diagnostics, schema, clock, registration/exit, and missing switch edges.
+Both startup and report finalization expose this closed vocabulary; unknown
+exception text or file contents cannot become a category. Private tool output
+and commands are never printed. Any such failure still rejects scheduler data.

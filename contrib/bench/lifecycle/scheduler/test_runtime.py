@@ -7,6 +7,7 @@ import unittest
 from unittest.mock import patch
 
 from diagnostic import decode, marker_call, marker_slots
+from failures import CODES, REASONS, failure_code
 from runtime import failure_summary, final_cutoff, program_for, publish_capture
 from test_diagnostic import fixture, stream
 # Avoid confusing this module with the parent lifecycle report module.
@@ -68,6 +69,25 @@ class RuntimeTests(unittest.TestCase):
             self.assertEqual(failure_summary(directory), [
                 'Scheduler validator a: startup/capture failure category marker',
                 'Scheduler validator b: startup/capture failure category unavailable'])
+
+    def test_failure_codes_are_closed_and_stage_specific(self):
+        for (stage, message), expected in REASONS.items():
+            self.assertEqual(failure_code(stage, ValueError(message)), expected)
+            self.assertIn(expected, CODES)
+        self.assertEqual(failure_code('decode', ValueError('private native identity')), 'decode')
+        self.assertEqual(failure_code('publish', ValueError('missing switch-in')), 'publish')
+        self.assertEqual(failure_code('untrusted stage', OSError('private command')), 'unavailable')
+
+    def test_shutdown_failure_exposes_only_closed_categories(self):
+        with tempfile.TemporaryDirectory() as name:
+            directory = Path(name)
+            (directory/'scheduler-a.failed').write_text('decode_missing_switch_in\n')
+            (directory/'scheduler-b.failed').write_text('decode_missing_switch_in private identity\n')
+            with self.assertRaises(ValueError) as failure:
+                report.load(directory, directory, {}, timeout=0)
+            self.assertIn('category decode_missing_switch_in', str(failure.exception))
+            self.assertIn('category unavailable', str(failure.exception))
+            self.assertNotIn('private identity', str(failure.exception))
 
     def test_source_cutoff_uses_earliest_final_stream_boundary(self):
         with tempfile.TemporaryDirectory() as name:
