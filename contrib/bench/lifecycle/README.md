@@ -348,3 +348,30 @@ individual files at 16 GiB and entries per phase at 100,000, with a 1 GiB free-s
 reserve before extraction. `--max-total-bytes` explicitly adjusts the combined
 limit for larger approved matrices. ZIP central-directory memory is separately
 bounded before member parsing. Existing destinations are never merged or replaced.
+
+Optional cache insertion counts
+
+`TEMPO_LIFECYCLE_CACHE_INSERT=1` enables one numeric summary per completed
+`insert_state` call when full lifecycle capture and its scope/event are enabled.
+It defaults off. Counts are accumulated in the existing loops: visited/skipped
+accounts, account update/removal attempts, bytecode attempts, and storage attempts
+partitioned by original-versus-present slot value. No additional state traversal,
+per-slot trace event or syscall is added. Invalid-account rejection and whole-cache
+clear outcomes report the visited prefix; unwinding before return has no summary.
+The observer preserves warming, destruction handling and validation barriers.
+
+Select an `insert_state` operation in an individual block page to inspect counts;
+the same numeric details appear in its Perfetto slice. Counts are attempted
+operations: fixed-cache can reject writes to busy buckets. Unchanged slot values
+do not establish an existing cache hit or prove that skipping warming is safe.
+Absent, duplicate, saturated, out-of-scope or inconsistent summaries remain
+unmeasured. Existing strict backpressure pruning removes at/post-cutoff summaries.
+
+To measure observer cost, use the same pinned binary and full-detail reporter on
+both sides, with `--baseline-env=TEMPO_LIFECYCLE_CACHE_INSERT=0` and
+`--feature-env=TEMPO_LIFECYCLE_CACHE_INSERT=1`; retain the counterbalanced
+feature/baseline/baseline/feature order. These can be supplied through the existing
+`bench-args` workflow input. Require the normal completeness/privacy/package
+checks plus the independent `cache_insert_audit.py --expected disabled|enabled`
+for each phase before analysis. This is a diagnostic comparison, not a runtime
+optimization or an assertion of lower execution latency.

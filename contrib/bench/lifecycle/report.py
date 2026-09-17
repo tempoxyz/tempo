@@ -5,6 +5,7 @@ import json
 import math
 from pathlib import Path
 from report_package import write_package
+from cache_insert import attach_cache_insert_details
 from backpressure import first_boundary, prepare_captures
 
 BLOCK_FIELDS = ('block_hash', 'hash', 'digest', 'proposal', 'payload')
@@ -332,6 +333,7 @@ def build(paths, warmup=5, window=None, expected_detail=None):
                          'pending_updates', 'pending_targets', 'result_count') and isinstance(v, (int, float))},
                      'count': s.get('count'), 'elapsed_sum_ms': s.get('elapsed_ns',0)/1e6})
     attach_worker_details(rows, events)
+    attach_cache_insert_details(rows, events, first)
     frames = {}
     for event in events:
         f = event['fields']
