@@ -417,7 +417,7 @@ mod tests {
     #[test]
     fn modexp_prices_match_tip_1102() {
         fn input(size: usize) -> Vec<u8> {
-            let mut input = Vec::with_capacity(96 + 3 * size);
+            let mut input = Vec::new();
             let encoded_size = U256::from(size).to_be_bytes::<32>();
             input.extend_from_slice(&encoded_size);
             input.extend_from_slice(&encoded_size);
