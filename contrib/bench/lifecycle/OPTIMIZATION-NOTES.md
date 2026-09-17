@@ -160,6 +160,17 @@ alongside replay and ends at most about 3.4 ms afterward in this cohort. Engine
 conversion finishes at least about 74 ms before replay completes. Nested spans
 and independently calculated quantiles are not additive savings.
 
+An exact-owner follow-up also rules out the execution-overlay accessor as a
+>=5 ms explanation for these receiver-loop stalls. Raw aggregate counts and
+nanosecond sums match all 175 execution owners; per-phase maxima are only
+0.346/0.415/0.444/0.437 ms. The same blocks can have much larger overlay sums
+under later validator-configuration reads (54.925 and 70.139 ms examples), which
+must not be assigned to the earlier transaction loop. Deprioritize removing the
+cold-overlay worker handoff as a remedy for these measured loops. Hot accessors
+are aggregated, so their broad first-to-last-call envelopes cannot be joined to
+kernel waits as individual calls. A future materially slow owner would first
+need narrow cold-initialization and compute-versus-existing-waiter spans.
+
 ## Evidence rules
 
 - Preserve failed captures, rejected audits, source refs and negative results.
