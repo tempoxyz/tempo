@@ -147,8 +147,10 @@ impl BestTransactionsPrewarming {
 
             // Fill the initial batch of transactions to execute and prewarm.
             //
-            // We schedule 2x the number of threads to make sure that workers are never idle.
-            for _ in 0..pool.current_num_threads() * 2 {
+            // Benchmark-only: keep the initial seed at 32 while comparing 16 and 32
+            // prewarm workers. Completion/consumer-driven refills below are unchanged;
+            // this is not a bound on the total queued or buffered transactions.
+            for _ in 0..32 {
                 advance(&mut ctx);
             }
 
@@ -769,13 +771,78 @@ mod tests {
             .collect::<Vec<_>>();
 
         assert_eq!(actual, expected);
+        assert!(prewarming.next().is_none());
+    }
+
+    #[test]
+    fn fixed_initial_seed_and_refills_progress_with_workers_blocked_then_released() {
+        let executor = TaskExecutor::test();
+        let pool = executor.prewarming_pool();
+        let (started_tx, started_rx) = mpsc::channel();
+        let mut releases = Vec::new();
+        // Occupy every worker so no completion can refill the initial seed.
+        for _ in 0..pool.current_num_threads() {
+            let (release_tx, release_rx) = mpsc::channel::<()>();
+            releases.push(release_tx);
+            let started_tx = started_tx.clone();
+            pool.spawn(move || {
+                let _ = started_tx.send(());
+                let _ = release_rx.recv();
+            });
+        }
+        for _ in 0..pool.current_num_threads() {
+            started_rx.recv_timeout(Duration::from_secs(5)).unwrap();
+        }
+        let sender = Address::random();
+        let txs = (0..68)
+            .map(|nonce| test_tx(sender, nonce))
+            .collect::<Vec<_>>();
+        let expected = txs.iter().map(|tx| *tx.hash()).collect::<Vec<_>>();
+        let log = Arc::new(Mutex::new(TestLog::default()));
+        let mut prewarming = prewarming_with_executor(executor, txs, log.clone());
+        // Drop these before TestPrewarming on assertion failure so teardown can join.
+        struct BlockedWorkers {
+            _releases: Vec<Sender<()>>,
+        }
+        let releases = BlockedWorkers {
+            _releases: releases,
+        };
+
+        // The command is a coordinator barrier after its initial seeding loop.
+        prewarming
+            .commands_tx
+            .send(BestTransactionsCommand::NoUpdates)
+            .unwrap();
+        wait_until(|| log.lock().unwrap().no_updates == 1);
+        assert_eq!(log.lock().unwrap().yielded, 32);
+
+        prewarming
+            .commands_tx
+            .send(BestTransactionsCommand::Advance)
+            .unwrap();
+        prewarming
+            .commands_tx
+            .send(BestTransactionsCommand::NoUpdates)
+            .unwrap();
+        wait_until(|| log.lock().unwrap().no_updates == 2);
+        assert_eq!(log.lock().unwrap().yielded, 33);
+
+        // Completion-driven refills must drain beyond the initial seed without
+        // consumer demand, while preserving the ordinary source ordering.
+        drop(releases);
+        wait_until(|| log.lock().unwrap().yielded == expected.len());
+        let actual = (0..expected.len())
+            .map(|_| *prewarming.next().expect("transaction").tx.hash())
+            .collect::<Vec<_>>();
+        assert_eq!(actual, expected);
+        assert!(prewarming.next().is_none());
     }
 
     #[test]
     fn prewarming_eagerly_drains_source_iterator() {
         let sender = Address::random();
         let executor = TaskExecutor::test();
-        let txs = (0..executor.prewarming_pool().current_num_threads() * 2 + 4)
+        let txs = (0..68)
             .map(|nonce| test_tx(sender, nonce as u64))
             .collect::<Vec<_>>();
         let expected = txs.iter().map(|tx| *tx.hash()).collect::<Vec<_>>();
@@ -793,7 +860,7 @@ mod tests {
     #[test]
     fn empty_source_is_polled_for_eager_advances_and_each_consumer_advance() {
         let executor = TaskExecutor::test();
-        let eager_advances = executor.prewarming_pool().current_num_threads() * 2;
+        let eager_advances = 32;
         let log = Arc::new(Mutex::new(TestLog::default()));
         let mut prewarming = prewarming_with_executor(executor, Vec::new(), log.clone());
 
