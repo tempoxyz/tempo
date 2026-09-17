@@ -378,6 +378,7 @@ jobs:
       BENCH_CAPACITY_SLOTS: "5"
       BENCH_CAPACITY_POLICY: "setup_failure_v2"
       BENCH_BINARY_MODE: "prebuilt_v1"
+      BENCH_RUN_CLEANUP_CONTRACT: "owned_artifacts_v1"
       # Filled only from the authenticated successful producer artifact; zero is deliberately inadmissible.
       BENCH_PREBUILT_PLAN_SHA256: "b8c3694543e70e011773dcf6479053b55d6c05cf291291d7832250e86f5da530"
       BENCH_LIFECYCLE: ${{ (inputs.profiling == 'lifecycle' || inputs.profiling == 'lifecycle-milestones' || inputs.profiling == 'lifecycle-compare-detail' || inputs.profiling == 'lifecycle-compare-prewarm-cpu' || inputs.profiling == 'lifecycle-kernel-faults') }}
@@ -440,6 +441,29 @@ jobs:
       SLACK_BENCH_BOT_TOKEN: ${{ secrets.SLACK_BENCH_BOT_TOKEN }}
       SLACK_BENCH_CHANNEL: ${{ secrets.SLACK_BENCH_CHANNEL }}
     steps:
+      - name: Prepare runner cleanup
+        id: runner-cleanup
+        uses: actions/github-script@3a2844b7e9c422d3c10d287c895573f7108da1b3
+        with:
+          debug: false
+          retries: 0
+          script: |
+            const fs = require('node:fs');
+            const path = require('node:path');
+            const {data} = await github.rest.repos.getContent({
+              ...context.repo, ref: context.sha, path: 'contrib/bench/lifecycle/runner_cleanup.py',
+              request: {signal: AbortSignal.timeout(10000), log: {debug() {}, info() {}, warn() {}, error() {}}},
+            });
+            if (data.type !== 'file' || data.encoding !== 'base64' || data.size > 65536) throw Error('cleanup_source_rejected');
+            const source = Buffer.from(data.content, 'base64');
+            if (source.length !== data.size) throw Error('cleanup_source_rejected');
+            const temp = fs.realpathSync(process.env.RUNNER_TEMP);
+            const directory = fs.mkdtempSync(path.join(temp, '.bench-cleanup-'));
+            core.setOutput('directory', directory);
+            const owner = fs.statSync(directory);
+            core.setOutput('owner', JSON.stringify({dev: owner.dev, ino: owner.ino}));
+            fs.writeFileSync(path.join(directory, 'cleanup.py'), source, {flag: 'wx', mode: 0o600});
+
       - name: Probe reserved runner capacity
         id: capacity-probe
         timeout-minutes: 3
@@ -508,10 +532,20 @@ jobs:
           retention-days: 7
 
       - name: Reset workspace directory
+        id: workspace-reset
         if: steps.capacity-election.outputs.selected == 'true'
         run: |
           sudo rm -rf "$GITHUB_WORKSPACE"
           sudo -u actions-runner mkdir -p "$GITHUB_WORKSPACE"
+          python3 - <<'PYOWNER'
+          import json, os
+          from pathlib import Path
+          path = Path(os.environ['GITHUB_WORKSPACE'])
+          assert path.resolve() == path
+          value = path.stat()
+          with open(os.environ['GITHUB_OUTPUT'], 'a') as out:
+              out.write('owner=' + json.dumps(dict(dev=value.st_dev, ino=value.st_ino, uid=value.st_uid)) + '\n')
+          PYOWNER
 
       - name: Configure OTLP telemetry
         if: ${{ steps.capacity-election.outputs.selected == 'true' && (env.BENCH_OTLP == 'true') }}
@@ -599,6 +633,13 @@ jobs:
           persist-credentials: false
           fetch-depth: 0
           ref: ${{ steps.checkout-ref.outputs.ref }}
+
+      - name: Prepare owned benchmark scratch
+        if: steps.capacity-election.outputs.selected == 'true'
+        run: |
+          mkdir -p "$GITHUB_WORKSPACE/.bench-tmp/runner-temp"
+          echo "TMPDIR=$GITHUB_WORKSPACE/.bench-tmp/runner-temp" >> "$GITHUB_ENV"
+          echo "BENCH_RUN_CLEANUP=true" >> "$GITHUB_ENV"
 
       - name: Checkout ValScope report builder
         if: ${{ steps.capacity-election.outputs.selected == 'true' && (env.BENCH_VALSCOPE == 'true') }}
@@ -980,7 +1021,7 @@ jobs:
       - name: Admit kernel fault diagnostic capability
         if: ${{ steps.capacity-election.outputs.selected == 'true' && (env.BENCH_LIFECYCLE_SCHEDULER == 'true') }}
         run: |
-          if ! sudo -n env PYTHONDONTWRITEBYTECODE=1 TEMPO_SCHEDULER_LIVE_TEST=1 TEMPO_SCHEDULER_FAULT_SCRATCH="$RUNNER_TEMP" /usr/bin/python3 -m unittest discover -s contrib/bench/lifecycle/scheduler -p 'test_fault_reasons.py' >/dev/null 2>&1; then
+          if ! sudo -n env PYTHONDONTWRITEBYTECODE=1 TEMPO_SCHEDULER_LIVE_TEST=1 TMPDIR="$TMPDIR" TEMPO_SCHEDULER_FAULT_SCRATCH="$TMPDIR" /usr/bin/python3 -m unittest discover -s contrib/bench/lifecycle/scheduler -p 'test_fault_reasons.py' >/dev/null 2>&1; then
             echo '::error::kernel_fault_capability_unavailable'
             exit 1
           fi
@@ -1434,3 +1475,47 @@ jobs:
               comment_id: parseInt(process.env.BENCH_COMMENT_ID),
               body: `cc @${process.env.BENCH_ACTOR}\n\n⚠️ Benchmark cancelled. [View logs](${jobUrl})`,
             });
+
+      # Run after artifact upload/reporting even when the benchmark failed or was cancelled.
+      - name: Remove runner benchmark artifacts
+        if: ${{ always() && steps.runner-cleanup.outputs.directory != '' }}
+        timeout-minutes: 6
+        uses: actions/github-script@3a2844b7e9c422d3c10d287c895573f7108da1b3
+        env:
+          CLEANUP_DIRECTORY: ${{ steps.runner-cleanup.outputs.directory }}
+          CLEANUP_OWNER: ${{ steps.workspace-reset.outputs.owner }}
+          CLEANUP_TEMP_OWNER: ${{ steps.runner-cleanup.outputs.owner }}
+          CLEANUP_RESERVATION: ${{ steps.capacity-probe.outputs.artifact-path }}
+          CLEANUP_ADMISSION: ${{ steps.capacity-election.outputs.admission-path }}
+        with:
+          script: |
+            const fs = require('node:fs');
+            const path = require('node:path');
+            const {spawnSync} = require('node:child_process');
+            const directory = process.env.CLEANUP_DIRECTORY;
+            const temp = fs.realpathSync(process.env.RUNNER_TEMP);
+            if (path.dirname(directory) !== temp || !path.basename(directory).startsWith('.bench-cleanup-') || fs.realpathSync(directory) !== directory) throw Error('cleanup_path_rejected');
+            const tempOwner = JSON.parse(process.env.CLEANUP_TEMP_OWNER);
+            const checkOwner = () => {
+              const current = fs.lstatSync(directory);
+              if (!current.isDirectory() || current.dev !== tempOwner.dev || current.ino !== tempOwner.ino) throw Error('cleanup_owner_rejected');
+            };
+            checkOwner();
+            try {
+              const input = {
+                workspace: process.env.GITHUB_WORKSPACE,
+                owner: process.env.CLEANUP_OWNER ? JSON.parse(process.env.CLEANUP_OWNER) : null,
+                capacity_paths: [process.env.CLEANUP_RESERVATION, process.env.CLEANUP_ADMISSION].filter(Boolean),
+              };
+              const result = spawnSync('sudo', ['-n', '/usr/bin/python3', '-I', path.join(directory, 'cleanup.py')], {
+                input: JSON.stringify(input), encoding: 'utf8', timeout: 300000, maxBuffer: 65536,
+              });
+              if (result.error) throw Error('runner_cleanup_failed');
+              const report = JSON.parse(result.stdout);
+              if (!report || Object.keys(report).sort().join() !== 'processes_stopped,removed_entries,schema,snapshots_cleaned,status' || Object.values(report).some(value => !Number.isSafeInteger(value) || value < 0) || report.schema !== 1) throw Error('cleanup_report_rejected');
+              core.info(JSON.stringify(report));
+              if (result.status !== 0 || report.status !== 0) throw Error('runner_cleanup_failed');
+            } finally {
+              checkOwner();
+              fs.rmSync(directory, {recursive: true});
+            }

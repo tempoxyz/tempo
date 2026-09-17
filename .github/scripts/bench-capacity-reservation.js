@@ -124,8 +124,8 @@ async function probe({ github, context, core, env = process.env, execute = spawn
     const workspace = env.GITHUB_WORKSPACE;
     requireValue(workspace && fs.realpathSync(workspace) === path.resolve(workspace));
     const owned = fs.mkdtempSync(path.join(workspace, '.capacity-reservation-'));
-    fs.writeFileSync(path.join(owned, 'receipt.json'), encoded, { flag: 'wx', mode: 0o600 });
     core.setOutput('artifact-path', path.relative(workspace, path.join(owned, 'receipt.json')));
+    fs.writeFileSync(path.join(owned, 'receipt.json'), encoded, { flag: 'wx', mode: 0o600 });
     core.setOutput('artifact-name', artifactName(bound, bound.slot));
     core.info('Numeric capacity receipt prepared');
   } catch (_) {
@@ -203,8 +203,8 @@ function publishAdmission(bound, failed, receipts, election, env, core, portable
   const encoded = JSON.stringify(admissionReceipt(bound, failed, receipts, election, portable));
   requireValue(Buffer.byteLength(encoded) <= 16384);
   const owned = fs.mkdtempSync(path.join(workspace, '.capacity-admission-'));
-  fs.writeFileSync(path.join(owned, 'admission.json'), encoded, { flag: 'wx', mode: 0o600 });
   core.setOutput('admission-path', path.relative(workspace, path.join(owned, 'admission.json')));
+  fs.writeFileSync(path.join(owned, 'admission.json'), encoded, { flag: 'wx', mode: 0o600 });
   core.setOutput('admission-name', `bench-capacity-admission-${bound.run_id}-${bound.run_attempt}`);
 }
 
