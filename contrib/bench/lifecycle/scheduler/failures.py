@@ -13,6 +13,7 @@ REASONS = {
     ('decode', 'unexpected ordinal/event'): 'decode_event_schema',
     ('decode', 'unexpected scheduler state'): 'decode_state_schema',
     ('decode', 'unexpected tool output'): 'decode_output_schema',
+    ('decode', 'capture tool reported event loss'): 'decode_event_loss',
     ('decode', 'unexpected private cutoff marker'): 'decode_cutoff_marker',
     ('decode', 'missing boundary/footer or event loss'): 'decode_count_or_footer',
     ('decode', 'clock mismatch'): 'decode_clock',

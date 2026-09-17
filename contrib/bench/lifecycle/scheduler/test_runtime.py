@@ -78,6 +78,11 @@ class RuntimeTests(unittest.TestCase):
         self.assertEqual(failure_code('publish', ValueError('missing switch-in')), 'publish')
         self.assertEqual(failure_code('untrusted stage', OSError('private command')), 'unavailable')
 
+    def test_kernel_loss_line_rejects_even_with_matching_footer(self):
+        with self.assertRaisesRegex(ValueError, 'event loss') as failure:
+            decode(stream(fixture()) + '\nLost 1 events\n', '', 0, 0)
+        self.assertEqual(failure_code('decode', failure.exception), 'decode_event_loss')
+
     def test_shutdown_failure_exposes_only_closed_categories(self):
         with tempfile.TemporaryDirectory() as name:
             directory = Path(name)
