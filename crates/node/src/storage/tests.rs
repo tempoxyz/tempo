@@ -304,3 +304,101 @@ fn storage_cursor_matches_native_traversal() {
             .collect::<Vec<_>>()
     );
 }
+
+#[cfg(feature = "expiring-nonce-no-persistence")]
+#[test]
+fn replay_writes_are_discarded_without_affecting_other_addresses() {
+    use reth_db_api::cursor::{DbCursorRW, DbDupCursorRW};
+    use reth_ethereum::trie::{Nibbles, PackedStorageTrieEntry, StorageTrieEntry};
+
+    fn check<T: DupSort<Key = B256>>(value: T::Value)
+    where
+        T::Value: PartialEq + Clone,
+    {
+        let factory = create_test_provider_factory_with_node_types::<TempoNode>(DEV.clone());
+        let db = TempoDatabase::new(
+            factory.db_ref().clone(),
+            DEV.clone(),
+            factory.static_file_provider().directory().to_owned(),
+        );
+        let address = keccak256(EXPIRING_NONCE_PRECOMPILE_ADDRESS);
+        let tx = db.tx_mut().unwrap();
+        tx.put::<T>(address, value.clone()).unwrap();
+        tx.append::<T>(address, value.clone()).unwrap();
+        let mut cursor = tx.cursor_dup_write::<T>().unwrap();
+        cursor.upsert(address, &value).unwrap();
+        cursor.insert(address, &value).unwrap();
+        cursor.append(address, &value).unwrap();
+        cursor.append_dup(address, value.clone()).unwrap();
+        tx.cursor_read::<T>()
+            .unwrap()
+            .upsert(address, &value)
+            .unwrap();
+        tx.cursor_dup_read::<T>()
+            .unwrap()
+            .append_dup(address, value.clone())
+            .unwrap();
+        assert_eq!(tx.get::<T>(address).unwrap(), None);
+        assert_eq!(tx.entries::<T>().unwrap(), 0);
+
+        let keys: Vec<_> = (1..=6).map(B256::with_last_byte).collect();
+        tx.put::<T>(keys[0], value.clone()).unwrap();
+        tx.append::<T>(keys[1], value.clone()).unwrap();
+        cursor.upsert(keys[2], &value).unwrap();
+        cursor.insert(keys[3], &value).unwrap();
+        cursor.append(keys[4], &value).unwrap();
+        cursor.append_dup(keys[5], value.clone()).unwrap();
+        tx.put::<tables::CanonicalHeaders>(1, address).unwrap();
+        drop(cursor);
+        tx.commit().unwrap();
+        let native = factory.db_ref().tx().unwrap();
+        assert_eq!(native.get::<T>(address).unwrap(), None);
+        assert_eq!(native.entries::<T>().unwrap(), 6);
+        for key in &keys {
+            assert_eq!(native.get::<T>(*key).unwrap(), Some(value.clone()));
+        }
+        assert_eq!(
+            native.get::<tables::CanonicalHeaders>(1).unwrap(),
+            Some(address)
+        );
+        drop(native);
+
+        // Even deletions and table clears must leave a pre-existing filtered row untouched.
+        let native = factory.db_ref().tx_mut().unwrap();
+        native.put::<T>(address, value.clone()).unwrap();
+        native.commit().unwrap();
+        let tx = db.tx_mut().unwrap();
+        assert!(!tx.delete::<T>(address, None).unwrap());
+        assert!(tx.delete::<T>(keys[0], None).unwrap());
+        let mut cursor = tx.cursor_dup_write::<T>().unwrap();
+        cursor.seek_exact(address).unwrap();
+        cursor.delete_current().unwrap();
+        cursor.delete_current_duplicates().unwrap();
+        cursor.seek_exact(keys[1]).unwrap();
+        cursor.delete_current().unwrap();
+        cursor.seek_exact(keys[2]).unwrap();
+        cursor.delete_current_duplicates().unwrap();
+        assert_eq!(tx.entries::<T>().unwrap(), 4);
+        tx.clear::<T>().unwrap();
+        tx.clear::<tables::CanonicalHeaders>().unwrap();
+        drop(cursor);
+        tx.commit().unwrap();
+        let native = factory.db_ref().tx().unwrap();
+        assert_eq!(native.entries::<T>().unwrap(), 1);
+        assert_eq!(native.get::<T>(address).unwrap(), Some(value));
+        assert_eq!(native.entries::<tables::CanonicalHeaders>().unwrap(), 0);
+    }
+
+    check::<tables::HashedStorages>(StorageEntry {
+        key: B256::ZERO,
+        value: U256::from(1),
+    });
+    check::<tables::StoragesTrie>(StorageTrieEntry {
+        nibbles: Nibbles::default().into(),
+        node: Default::default(),
+    });
+    check::<tables::PackedStoragesTrie>(PackedStorageTrieEntry {
+        nibbles: Nibbles::default().into(),
+        node: Default::default(),
+    });
+}

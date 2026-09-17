@@ -2,9 +2,14 @@
 //!
 //! This PoC scans blocks from genesis to the transaction's Finish checkpoint and
 //! materializes hashed storage for cursor reads. It requires those block bodies
-//! to remain available. Writes, history, and trie persistence are unmodified.
+//! to remain available. `expiring-nonce-no-persistence` discards this precompile's
+//! hashed storage and storage-trie writes. History remains unchanged.
 mod cursor;
 mod replay;
+#[cfg(feature = "expiring-nonce-no-persistence")]
+mod write;
+#[cfg(feature = "expiring-nonce-no-persistence")]
+pub use write::WriteTx;
 
 use alloy_primitives::{B256, U256, keccak256};
 pub use cursor::Cursor;
@@ -27,7 +32,7 @@ use std::{
 use tempo_chainspec::TempoChainSpec;
 use tempo_precompiles::EXPIRING_NONCE_PRECOMPILE_ADDRESS;
 
-/// The node's database. Write transactions are deliberately passed through unchanged.
+/// The node's database, with derived replay reads and optional write filtering.
 #[derive(Clone, Debug)]
 pub struct TempoDatabase<D = DatabaseEnv> {
     inner: D,
@@ -48,7 +53,10 @@ impl<D> TempoDatabase<D> {
 
 impl<D: Database> Database for TempoDatabase<D> {
     type TX = ReplayTx<D::TX>;
+    #[cfg(not(feature = "expiring-nonce-no-persistence"))]
     type TXMut = D::TXMut;
+    #[cfg(feature = "expiring-nonce-no-persistence")]
+    type TXMut = WriteTx<D::TXMut>;
     fn tx(&self) -> Result<Self::TX, DatabaseError> {
         Ok(ReplayTx {
             inner: self.inner.tx()?,
@@ -58,7 +66,10 @@ impl<D: Database> Database for TempoDatabase<D> {
         })
     }
     fn tx_mut(&self) -> Result<Self::TXMut, DatabaseError> {
-        self.inner.tx_mut()
+        let tx = self.inner.tx_mut()?;
+        #[cfg(feature = "expiring-nonce-no-persistence")]
+        let tx = WriteTx(tx);
+        Ok(tx)
     }
     fn path(&self) -> PathBuf {
         self.inner.path()

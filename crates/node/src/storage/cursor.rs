@@ -15,7 +15,7 @@ pub(super) type Rows = Arc<Vec<(Vec<u8>, Vec<u8>)>>;
 /// Native cursor for ordinary tables; an ordered snapshot for hashed storage.
 #[derive(Debug)]
 pub struct Cursor<T, C> {
-    inner: C,
+    pub(super) inner: C,
     rows: Option<Rows>,
     position: Option<usize>,
     marker: PhantomData<T>,

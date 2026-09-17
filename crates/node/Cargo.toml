@@ -115,6 +115,7 @@ vergen-git2.workspace = true
 
 [features]
 default = []
+expiring-nonce-no-persistence = []
 bal = ["tempo-payload-builder/bal"]
 asm-keccak = [
 	"alloy/asm-keccak",
