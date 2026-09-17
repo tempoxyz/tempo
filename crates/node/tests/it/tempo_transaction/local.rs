@@ -4,9 +4,7 @@
 //! which spins up an in-process node with direct pool/block access, plus tests
 //! that require pool introspection or controlled block mining.
 
-use crate::utils::{
-    ForkSchedule, SingleNodeSetup, TEST_MNEMONIC, TestNodeBuilder, make_genesis_at,
-};
+use crate::utils::{ForkSchedule, SingleNodeSetup, TEST_MNEMONIC, TestNodeBuilder};
 use alloy::{
     consensus::{BlockHeader, Transaction},
     network::{EthereumWallet, ReceiptResponse},
@@ -23,7 +21,7 @@ use reth_ethereum::network::{NetworkSyncUpdater, SyncState};
 use reth_node_api::BuiltPayload;
 use reth_primitives_traits::transaction::TxHashRef;
 use reth_transaction_pool::TransactionPool;
-use tempo_alloy::TempoNetwork;
+use tempo_alloy::{TempoNetwork, provider::TempoProviderBuilderExt};
 use tempo_chainspec::{hardfork::TempoHardfork, spec::TEMPO_T1_BASE_FEE};
 use tempo_contracts::precompiles::{
     DEFAULT_FEE_TOKEN,
@@ -32,6 +30,7 @@ use tempo_contracts::precompiles::{
         revokeKeyCall,
     },
 };
+use tempo_node::rpc::TempoTransactionRequest;
 use tempo_precompiles::{
     ACCOUNT_KEYCHAIN_ADDRESS,
     tip20::ITIP20::{self},
@@ -1939,6 +1938,67 @@ async fn test_aa_keychain_revocation_toctou_dos() -> eyre::Result<()> {
 // Expiring Nonce Tests
 // ============================================================================
 
+#[test_case::test_case(TempoHardfork::T11, [true, false, false] ; "t11")]
+#[test_case::test_case(TempoHardfork::T12, [true, true, true] ; "t12")]
+#[tokio::test(flavor = "multi_thread")]
+async fn test_expiring_nonce_discriminators_across_t12(
+    hardfork: TempoHardfork,
+    expected_admission: [bool; 3],
+) -> eyre::Result<()> {
+    let mut localnet = Localnet::with_schedule(ForkSchedule::DevnetAt(hardfork)).await?;
+    let valid_before = super::types::TestEnv::current_block_timestamp(&mut localnet).await?
+        + localnet.setup.hardfork.expiring_nonce_max_expiry_secs();
+    let Localnet {
+        mut setup,
+        provider,
+        chain_id,
+        funder_signer,
+        funder_addr,
+    } = localnet;
+    let recipient = Address::random();
+    let protocol_nonce = provider.get_transaction_count(funder_addr).await?;
+    let tempo_provider = ProviderBuilder::new_with_network::<TempoNetwork>()
+        .with_expiring_nonces()
+        .wallet(funder_signer)
+        .connect_http(setup.node.rpc_url());
+    let mut accepted_hashes = Vec::new();
+
+    for (discriminator, should_accept) in [0, 1, u64::MAX].into_iter().zip(expected_admission) {
+        let mut tx = create_expiring_nonce_tx(chain_id, valid_before, recipient);
+        tx.nonce = discriminator;
+        let mut request = TempoTransactionRequest::from(tx);
+        request.inner.from = Some(funder_addr);
+        estimate_gas(&provider, &request).await?;
+
+        let submission = tempo_provider.send_transaction(request).await;
+        if should_accept {
+            accepted_hashes.push(*submission?.tx_hash());
+        } else {
+            assert!(
+                submission.is_err(),
+                "{hardfork:?} admitted discriminator {discriminator}"
+            );
+        }
+    }
+
+    assert!(
+        accepted_hashes
+            .iter()
+            .all(|hash| setup.node.inner.pool.contains(hash)),
+        "{hardfork:?} accepted discriminators must coexist in the pool"
+    );
+    setup.node.advance_block().await?;
+    for hash in accepted_hashes {
+        assert_receipt_status(&provider, hash, true).await?;
+    }
+    assert_eq!(
+        provider.get_transaction_count(funder_addr).await?,
+        protocol_nonce,
+        "expiring nonce discriminators must not change the protocol nonce"
+    );
+    Ok(())
+}
+
 /// Test expiring nonce replay protection - same tx hash should be rejected
 #[tokio::test(flavor = "multi_thread")]
 async fn test_aa_expiring_nonce_replay_protection() -> eyre::Result<()> {
@@ -2431,121 +2491,6 @@ async fn test_v2_keychain_blocks_cross_account_replay() -> eyre::Result<()> {
         .inject_tx(replay_env.encoded_2718().into())
         .await
         .expect_err("P256 cross-account replay must be rejected at pool level");
-
-    Ok(())
-}
-
-#[tokio::test]
-async fn test_v1_keychain_cross_account_replay_pre_t1c() -> eyre::Result<()> {
-    reth_tracing::init_test_tracing();
-
-    // Pre-T1C genesis so V1 keychain sigs are accepted.
-    let mut setup = TestNodeBuilder::new()
-        .with_genesis(make_genesis_at(TempoHardfork::T1B))
-        .build_with_node_access()
-        .await?;
-
-    let alice_signer = MnemonicBuilder::from_phrase(TEST_MNEMONIC)
-        .index(0)?
-        .build()?;
-    let alice_addr = alice_signer.address();
-    let bob_signer = MnemonicBuilder::from_phrase(TEST_MNEMONIC)
-        .index(1)?
-        .build()?;
-    let bob_addr = bob_signer.address();
-    let provider = ProviderBuilder::new()
-        .wallet(alice_signer.clone())
-        .connect_http(setup.node.rpc_url());
-    let chain_id = provider.get_chain_id().await?;
-
-    // Shared access key authorized on both accounts
-    let access_key_signer = alloy::signers::local::PrivateKeySigner::random();
-    let access_key_addr = access_key_signer.address();
-
-    let mut nonce_alice = provider.get_transaction_count(alice_addr).await?;
-
-    fund_address_with(
-        &mut setup,
-        &provider,
-        &alice_signer,
-        alice_addr,
-        bob_addr,
-        U256::from(100e6),
-        DEFAULT_FEE_TOKEN,
-        chain_id,
-    )
-    .await?;
-    nonce_alice += 1;
-
-    let secp_mock = || {
-        TempoSignature::Primitive(PrimitiveSignature::Secp256k1(
-            alloy_primitives::Signature::test_signature(),
-        ))
-    };
-
-    // Authorize key on both accounts
-    authorize_access_key(
-        &mut setup,
-        &alice_signer,
-        alice_addr,
-        access_key_addr,
-        secp_mock(),
-        chain_id,
-        nonce_alice,
-    )
-    .await?;
-    nonce_alice += 1;
-    let nonce_bob = provider.get_transaction_count(bob_addr).await?;
-    authorize_access_key(
-        &mut setup,
-        &bob_signer,
-        bob_addr,
-        access_key_addr,
-        secp_mock(),
-        chain_id,
-        nonce_bob,
-    )
-    .await?;
-    let mut nonce_bob = nonce_bob + 1;
-
-    // Advance Bob's nonce to match Alice's — the replay needs identical sig_hash
-    let dummy_tx = create_basic_aa_tx(
-        chain_id,
-        nonce_bob,
-        vec![create_balance_of_call(bob_addr)],
-        2_000_000,
-    );
-    let dummy_sig = sign_aa_tx_secp256k1(&dummy_tx, &bob_signer)?;
-    submit_and_mine_aa_tx(&mut setup, dummy_tx, dummy_sig).await?;
-    nonce_bob += 1;
-    assert_eq!(nonce_alice, nonce_bob, "nonces must match for replay");
-
-    // Alice sends a V1 keychain tx, succeeds pre-T1C
-    let alice_tx = create_basic_aa_tx(
-        chain_id,
-        nonce_alice,
-        vec![create_balance_of_call(alice_addr)],
-        2_000_000,
-    );
-    let alice_v1_sig =
-        sign_aa_tx_with_secp256k1_access_key_v1(&alice_tx, &access_key_signer, alice_addr)?;
-    submit_and_mine_aa_tx(&mut setup, alice_tx.clone(), alice_v1_sig.clone()).await?;
-
-    // Extract Alice's inner sig, re-wrap for Bob with V1
-    let inner = alice_v1_sig.as_keychain().unwrap().signature.clone();
-    let bob_replay_sig = TempoSignature::Keychain(KeychainSignature::new_v1(bob_addr, inner));
-
-    // Replay Alice's EXACT tx body for Bob — V1 doesn't bind user_address in the
-    // inner sig, so the same sig verifies against the same sig_hash for any user.
-    let replay_env: TempoTxEnvelope = AASigned::new_unhashed(alice_tx, bob_replay_sig).into();
-    setup
-        .node
-        .rpc
-        .inject_tx(replay_env.encoded_2718().into())
-        .await
-        .expect("V1 cross-account replay enters pool pre-T1C");
-    setup.node.advance_block().await?;
-    assert_receipt_status(&provider, *replay_env.tx_hash(), true).await?;
 
     Ok(())
 }

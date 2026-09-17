@@ -61,6 +61,7 @@ pub trait TempoProviderExt: Provider<TempoNetwork> {
         if nonce_key.is_zero() {
             return self
                 .get_transaction_count(account)
+                .pending()
                 .await
                 .map_err(Into::into);
         }

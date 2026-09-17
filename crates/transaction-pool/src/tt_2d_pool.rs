@@ -275,12 +275,10 @@ impl AA2dPool {
         let replaced = match self.by_id.entry(tx_id) {
             Entry::Occupied(mut entry) => {
                 // Ensure the replacement transaction is not underpriced
-                if entry
-                    .get()
-                    .inner
-                    .transaction
-                    .is_underpriced(&tx.inner.transaction, &self.config.price_bump_config)
-                {
+                if entry.get().inner.transaction.is_replacement_underpriced(
+                    &tx.inner.transaction,
+                    &self.config.price_bump_config,
+                ) {
                     return Err(PoolError::new(
                         *transaction.hash(),
                         PoolErrorKind::ReplacementUnderpriced,
@@ -447,6 +445,7 @@ impl AA2dPool {
             replaced: replaced.map(|tx| tx.inner.transaction.clone()),
             subpool: SubPool::Queued,
             queued_reason: Some(QueuedReason::NonceGap),
+            promoted: Vec::new(),
         })
     }
 
@@ -690,6 +689,32 @@ impl AA2dPool {
         transactions.pending.extend(
             self.expiring_nonce_txs
                 .values()
+                .map(|tx| tx.transaction.clone()),
+        );
+    }
+
+    /// Appends all transactions from `sender` to the provided collection.
+    pub(crate) fn append_all_transactions_by_sender(
+        &self,
+        sender: Address,
+        transactions: &mut AllPoolTransactions<TempoPooledTransaction>,
+    ) {
+        for tx in self.by_id.values() {
+            if tx.inner.transaction.sender() != sender {
+                continue;
+            }
+
+            if tx.is_pending() {
+                transactions.pending.push(tx.inner.transaction.clone());
+            } else {
+                transactions.queued.push(tx.inner.transaction.clone());
+            }
+        }
+
+        transactions.pending.extend(
+            self.expiring_nonce_txs
+                .values()
+                .filter(|tx| tx.transaction.sender() == sender)
                 .map(|tx| tx.transaction.clone()),
         );
     }
@@ -4183,6 +4208,40 @@ mod tests {
 
         assert_eq!(pending_hashes, expected_pending);
         assert_eq!(queued_hashes, expected_queued);
+    }
+
+    #[test]
+    fn test_append_all_transactions_by_sender() {
+        let mut pool = AA2dPool::default();
+        let sender = Address::random();
+        let other_sender = Address::random();
+
+        let pending_tx = TxBuilder::aa(sender).build();
+        let queued_tx = TxBuilder::aa(sender).nonce(2).build();
+        let expiring_tx = TxBuilder::aa(sender).nonce_key(U256::MAX).build();
+        let other_tx = TxBuilder::aa(other_sender).build();
+
+        let pending_hash = *pending_tx.hash();
+        let queued_hash = *queued_tx.hash();
+        let expiring_hash = *expiring_tx.hash();
+
+        for tx in [pending_tx, queued_tx, expiring_tx, other_tx] {
+            pool.add_transaction(
+                Arc::new(wrap_valid_tx(tx, TransactionOrigin::Local)),
+                0,
+                TempoHardfork::T1,
+            )
+            .unwrap();
+        }
+
+        let mut transactions = AllPoolTransactions::default();
+        pool.append_all_transactions_by_sender(sender, &mut transactions);
+
+        let pending_hashes: HashSet<_> = transactions.pending.iter().map(|tx| *tx.hash()).collect();
+        let queued_hashes: HashSet<_> = transactions.queued.iter().map(|tx| *tx.hash()).collect();
+
+        assert_eq!(pending_hashes, HashSet::from([pending_hash, expiring_hash]));
+        assert_eq!(queued_hashes, HashSet::from([queued_hash]));
     }
 
     #[test]
