@@ -420,6 +420,13 @@ jobs:
           sudo rm -rf "$GITHUB_WORKSPACE"
           sudo -u actions-runner mkdir -p "$GITHUB_WORKSPACE"
 
+      - name: Create job temporary directory
+        id: bench-tmp
+        run: |
+          bench_tmp=$(mktemp -d "$RUNNER_TEMP/tempo-bench-e2e.XXXXXXXX")
+          echo "TMPDIR=$bench_tmp" >> "$GITHUB_ENV"
+          echo "path=$bench_tmp" >> "$GITHUB_OUTPUT"
+
       - name: Configure OTLP telemetry
         if: env.BENCH_OTLP == 'true'
         env:
@@ -641,9 +648,9 @@ jobs:
           fi
 
           for attempt in 1 2 3; do
-            rm -rf /tmp/tracy /tmp/tracy-capture-build
-            git clone --depth 1 https://github.com/wolfpld/tracy /tmp/tracy
-            if cmake -S /tmp/tracy/capture -B /tmp/tracy-capture-build -DCMAKE_BUILD_TYPE=Release; then
+            rm -rf "$TMPDIR/tracy" "$TMPDIR/tracy-capture-build"
+            git clone --depth 1 https://github.com/wolfpld/tracy "$TMPDIR/tracy"
+            if cmake -S "$TMPDIR/tracy/capture" -B "$TMPDIR/tracy-capture-build" -DCMAKE_BUILD_TYPE=Release; then
               break
             fi
             if [ "$attempt" = "3" ]; then
@@ -652,9 +659,9 @@ jobs:
             fi
             sleep 5
           done
-          cmake --build /tmp/tracy-capture-build --parallel
+          cmake --build "$TMPDIR/tracy-capture-build" --parallel
 
-          tracy_capture="$(find /tmp/tracy-capture-build -type f -name tracy-capture -perm -111 | head -n 1)"
+          tracy_capture="$(find "$TMPDIR/tracy-capture-build" -type f -name tracy-capture -perm -111 | head -n 1)"
           if [ -z "$tracy_capture" ]; then
             echo "::error::failed to build tracy-capture"
             exit 1
@@ -1046,6 +1053,7 @@ jobs:
           fi
 
       - name: Upload results
+        id: upload-results
         if: ${{ !cancelled() }}
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
@@ -1262,3 +1270,11 @@ jobs:
               comment_id: parseInt(process.env.BENCH_COMMENT_ID),
               body: `cc @${process.env.BENCH_ACTOR}\n\n⚠️ Benchmark cancelled. [View logs](${jobUrl})`,
             });
+
+      - name: Clean up benchmark files
+        if: always() && hashFiles('.github/scripts/bench-e2e-cleanup.sh') != ''
+        timeout-minutes: 5
+        env:
+          BENCH_JOB_TMPDIR: ${{ steps.bench-tmp.outputs.path }}
+          BENCH_RESULTS_UPLOADED: ${{ steps.upload-results.outcome }}
+        run: bash .github/scripts/bench-e2e-cleanup.sh
