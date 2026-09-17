@@ -89,6 +89,7 @@ on:
           - lifecycle-milestones
           - lifecycle-compare-detail
           - lifecycle-compare-prewarm-cpu
+          - lifecycle-kernel-faults
       otlp:
         description: Export OTLP traces and logs.
         type: boolean
@@ -376,7 +377,10 @@ jobs:
       BENCH_CAPACITY_SLOT: ${{ matrix.slot }}
       BENCH_CAPACITY_SLOTS: "5"
       BENCH_CAPACITY_POLICY: "setup_failure_v2"
-      BENCH_LIFECYCLE: ${{ (inputs.profiling == 'lifecycle' || inputs.profiling == 'lifecycle-milestones' || inputs.profiling == 'lifecycle-compare-detail' || inputs.profiling == 'lifecycle-compare-prewarm-cpu') }}
+      BENCH_LIFECYCLE: ${{ (inputs.profiling == 'lifecycle' || inputs.profiling == 'lifecycle-milestones' || inputs.profiling == 'lifecycle-compare-detail' || inputs.profiling == 'lifecycle-compare-prewarm-cpu' || inputs.profiling == 'lifecycle-kernel-faults') }}
+      BENCH_LIFECYCLE_SCHEDULER: ${{ inputs.profiling == 'lifecycle-kernel-faults' }}
+      BENCH_KERNEL_FAULT_BASELINE_EMPTY: ${{ inputs.baseline == '' }}
+      BENCH_KERNEL_FAULT_FEATURE: ${{ inputs.feature }}
       BENCH_LIFECYCLE_DETAIL: ${{ inputs.profiling == 'lifecycle-compare-detail' && 'compare' || (inputs.profiling == 'lifecycle-milestones' || inputs.profiling == 'lifecycle-compare-prewarm-cpu') && 'milestones' || 'full' }}
       BENCH_LIFECYCLE_PREWARM_CPU: ${{ inputs.profiling == 'lifecycle-compare-prewarm-cpu' && 'compare' || 'disabled' }}
       BENCH_PR: ${{ inputs.pr }}
@@ -396,8 +400,8 @@ jobs:
       BENCH_TRACY: ${{ inputs.tracy != '' && inputs.tracy || ((inputs.profiling == 'tracy' || inputs.profiling == 'both') && 'tracy' || ((inputs.profiling == 'off' || inputs.profiling == 'samply') && 'off' || 'off')) }}
       BENCH_TRACY_SECONDS: ${{ inputs.tracy-seconds || '10' }}
       BENCH_TRACY_OFFSET: ${{ inputs.tracy-offset }}
-      BENCH_OTLP: ${{ inputs.profiling != 'lifecycle' && inputs.profiling != 'lifecycle-milestones' && inputs.profiling != 'lifecycle-compare-detail' && inputs.profiling != 'lifecycle-compare-prewarm-cpu' && inputs.otlp != false && inputs.otlp != 'false' }}
-      BENCH_VALSCOPE: ${{ inputs.profiling != 'lifecycle' && inputs.profiling != 'lifecycle-milestones' && inputs.profiling != 'lifecycle-compare-detail' && inputs.profiling != 'lifecycle-compare-prewarm-cpu' && (inputs.valscope == true || inputs.valscope == 'true') }}
+      BENCH_OTLP: ${{ inputs.profiling != 'lifecycle' && inputs.profiling != 'lifecycle-milestones' && inputs.profiling != 'lifecycle-compare-detail' && inputs.profiling != 'lifecycle-compare-prewarm-cpu' && inputs.profiling != 'lifecycle-kernel-faults' && inputs.otlp != false && inputs.otlp != 'false' }}
+      BENCH_VALSCOPE: ${{ inputs.profiling != 'lifecycle' && inputs.profiling != 'lifecycle-milestones' && inputs.profiling != 'lifecycle-compare-detail' && inputs.profiling != 'lifecycle-compare-prewarm-cpu' && inputs.profiling != 'lifecycle-kernel-faults' && (inputs.valscope == true || inputs.valscope == 'true') }}
       BENCH_FEATURES: ${{ (inputs.otlp != false && inputs.otlp != 'false') && 'jemalloc,asm-keccak,keccak-cache-global,otlp' || 'jemalloc,asm-keccak,keccak-cache-global' }}
       BENCH_BASELINE_FEATURES: ${{ inputs.baseline-features }}
       BENCH_FEATURE_FEATURES: ${{ inputs.feature-features }}
@@ -417,7 +421,7 @@ jobs:
       BENCH_FEATURE_ENV: ${{ inputs.feature-env }}
       BENCH_RUN_PAIRS: ${{ inputs.run-pairs || '3' }}
       # An explicit instrumented baseline enables a same-runner lifecycle pair.
-      BENCH_RUN_SIDE: ${{ (inputs.profiling == 'lifecycle' || inputs.profiling == 'lifecycle-milestones' || inputs.profiling == 'lifecycle-compare-detail' || inputs.profiling == 'lifecycle-compare-prewarm-cpu') && inputs.baseline == '' && 'feature' || inputs.run-side || 'comparison' }}
+      BENCH_RUN_SIDE: ${{ (inputs.profiling == 'lifecycle' || inputs.profiling == 'lifecycle-milestones' || inputs.profiling == 'lifecycle-compare-detail' || inputs.profiling == 'lifecycle-compare-prewarm-cpu' || inputs.profiling == 'lifecycle-kernel-faults') && inputs.baseline == '' && 'feature' || inputs.run-side || 'comparison' }}
       BENCH_CLICKHOUSE_RUN: ${{ inputs.clickhouse-run || 'feature-1' }}
       BENCHMARK_ID: bench-e2e-${{ github.run_id }}
       BENCH_COMMENT_ID: ${{ inputs.comment-id }}
@@ -956,9 +960,23 @@ jobs:
             const s = require('./.github/scripts/bench-update-status.js');
             await s({github, context, status: 'Running benchmark...'});
 
+      - name: Provision kernel fault diagnostic dependencies
+        if: ${{ steps.capacity-election.outputs.selected == 'true' && (env.BENCH_LIFECYCLE_SCHEDULER == 'true') }}
+        run: /usr/bin/python3 contrib/bench/lifecycle/scheduler/provision.py
+
+      - name: Admit kernel fault diagnostic capability
+        if: ${{ steps.capacity-election.outputs.selected == 'true' && (env.BENCH_LIFECYCLE_SCHEDULER == 'true') }}
+        run: |
+          if ! sudo -n env PYTHONDONTWRITEBYTECODE=1 TEMPO_SCHEDULER_LIVE_TEST=1 TEMPO_SCHEDULER_FAULT_SCRATCH="$RUNNER_TEMP" /usr/bin/python3 -m unittest discover -s contrib/bench/lifecycle/scheduler -p 'test_fault_reasons.py' >/dev/null 2>&1; then
+            echo '::error::kernel_fault_capability_unavailable'
+            exit 1
+          fi
+
       - name: Check lifecycle report
         if: ${{ steps.capacity-election.outputs.selected == 'true' && (env.BENCH_LIFECYCLE == 'true') }}
-        run: python3 -m unittest discover -s contrib/bench/lifecycle -p 'test_*.py'
+        run: |
+          python3 -m unittest discover -s contrib/bench/lifecycle -p 'test_*.py'
+          python3 -m unittest discover -s contrib/bench/lifecycle/scheduler
 
       - name: Run e2e benchmark
         if: steps.capacity-election.outputs.selected == 'true'
@@ -1019,6 +1037,13 @@ jobs:
           [ "$BENCH_FORCE_BLOAT" = "true" ] && cmd+=(--force-bloat)
           [ "$BENCH_NO_CACHE" = "true" ] && cmd+=(--no-cache)
           [ "$BENCH_LIFECYCLE" = "true" ] && cmd+=(--lifecycle --lifecycle-detail "$BENCH_LIFECYCLE_DETAIL" --lifecycle-prewarm-cpu "$BENCH_LIFECYCLE_PREWARM_CPU")
+          if [ "$BENCH_LIFECYCLE_SCHEDULER" = "true" ]; then
+            if [ "$BENCH_KERNEL_FAULT_BASELINE_EMPTY" != "true" ] || ! [[ "$BENCH_KERNEL_FAULT_FEATURE" =~ ^[0-9a-f]{40}$ ]] || [ "$BENCH_KERNEL_FAULT_FEATURE" != "$FEATURE_REF" ] || [ "$BENCH_RUN_SIDE" != "feature" ] || [ "$BENCH_RUN_PAIRS" != "1" ] || [ "$BENCH_SAMPLY" = "true" ] || [ "$BENCH_TRACY" != "off" ] || [ -n "$BENCH_BASELINE_ENV$BENCH_FEATURE_ENV$BENCH_BENCH_ENV" ]; then
+              echo '::error::kernel_fault_requires_one_immutable_feature_phase'
+              exit 1
+            fi
+            cmd+=(--lifecycle-scheduler)
+          fi
           [ "$BENCH_SAMPLY" = "true" ] && cmd+=(--samply)
           [ "$BENCH_TRACY" != "off" ] && cmd+=(--tracy "$BENCH_TRACY" --tracy-seconds "$BENCH_TRACY_SECONDS" --tracy-offset "$BENCH_TRACY_OFFSET")
           effective_baseline_args="$BENCH_BASELINE_ARGS"

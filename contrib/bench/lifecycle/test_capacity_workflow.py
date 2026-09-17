@@ -5,10 +5,25 @@ import hashlib
 import unittest
 
 
+def without_fault_scheduler(workflow):
+    """Reverse only the explicit new mode, preserving historical capacity hashes."""
+    workflow=workflow.replace('          - lifecycle-kernel-faults\n','')
+    workflow=workflow.replace(" || inputs.profiling == 'lifecycle-kernel-faults'",'')
+    workflow=workflow.replace("inputs.profiling != 'lifecycle-kernel-faults' && ",'')
+    workflow=re.sub(r'^      BENCH_(?:LIFECYCLE_SCHEDULER|KERNEL_FAULT_BASELINE_EMPTY|KERNEL_FAULT_FEATURE):.*\n','',workflow,flags=re.MULTILINE)
+    workflow,count=re.subn(r'      - name: Provision kernel fault diagnostic dependencies\n.*?(?=      - name: Check lifecycle report)','',workflow,flags=re.DOTALL)
+    assert count==1
+    workflow,count=re.subn(r'          if \[ "\$BENCH_LIFECYCLE_SCHEDULER" = "true" \]; then\n.*?^          fi\n','',workflow,flags=re.MULTILINE|re.DOTALL)
+    assert count==1
+    workflow=workflow.replace("        run: |\n          python3 -m unittest discover -s contrib/bench/lifecycle -p 'test_*.py'\n          python3 -m unittest discover -s contrib/bench/lifecycle/scheduler", "        run: python3 -m unittest discover -s contrib/bench/lifecycle -p 'test_*.py'")
+    return workflow
+
+
 class CapacityWorkflowTests(unittest.TestCase):
     def test_five_slot_workflow_preserves_entire_reviewed_setup_policy(self):
         workflow = (Path(__file__).resolve().parents[3] /
                     '.github/workflows/bench-e2e.yml').read_text()
+        workflow = without_fault_scheduler(workflow)
         for old, new in [('max-parallel: 4', 'max-parallel: 5'),
                          ('slot: [1, 2, 3, 4]', 'slot: [1, 2, 3, 4, 5]'),
                          ('BENCH_CAPACITY_SLOTS: "4"', 'BENCH_CAPACITY_SLOTS: "5"')]:
@@ -19,6 +34,7 @@ class CapacityWorkflowTests(unittest.TestCase):
     def test_only_matrix_size_changes_from_reviewed_three_slot_workflow(self):
         workflow = (Path(__file__).resolve().parents[3] /
                     '.github/workflows/bench-e2e.yml').read_text()
+        workflow = without_fault_scheduler(workflow)
         self.assertEqual(workflow.count('      BENCH_CAPACITY_POLICY: "setup_failure_v2"\n'), 1)
         workflow = workflow.replace('      BENCH_CAPACITY_POLICY: "setup_failure_v2"\n', '')
         workflow, count = re.subn(r'      - name: Publish capacity admission receipt\n.*?(?=      - name: Reset workspace directory)', '', workflow, flags=re.DOTALL)

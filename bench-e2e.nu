@@ -623,6 +623,7 @@ def start-e2e-local-node [
     cpus: string,
     memory: string,
     quiet: bool,
+    scheduler: bool,
 ] {
     let profile_label = $"($phase)-($role)"
     let full_samply_args = if $samply {
@@ -630,7 +631,12 @@ def start-e2e-local-node [
     } else { [] }
     let pinned_cmd = taskset-command [$tempo_bin ...$args] $cpus
     let node_cmd = wrap-samply $pinned_cmd $samply $full_samply_args
-    let node_cmd_str = ($node_cmd | str join " ")
+    let plain_node_cmd = ($node_cmd | str join " ")
+    let node_cmd_str = if $scheduler {
+        let encoded = ($plain_node_cmd | encode base64)
+        let directory = ($"($results_dir)/lifecycle-raw/($phase)" | path expand)
+        $"/usr/bin/python3 contrib/bench/lifecycle/scheduler/runtime.py --binary ($tempo_bin) --role ($role) --directory ($directory) --command-base64 ($encoded)"
+    } else { $plain_node_cmd }
     let script = $"($env_prefix)($otel_attrs)($tracy_env_prefix)($node_cmd_str) 2>&1"
     let unit_phase = ($phase | str replace -a "_" "-" | str replace -a "." "-")
     let runner = (systemd-scope-command $"tempo-e2e-($role)-($unit_phase)" $cpus $memory $script)
@@ -1107,9 +1113,10 @@ def run-local-e2e-phase [run: record, ctx: record] {
         ^python3 -c 'import os,sys,time; f=os.open(sys.argv[1],os.O_WRONLY|os.O_CREAT|os.O_EXCL,0o600); os.write(f,os.urandom(32)); os.close(f); print(time.monotonic_ns())' $lifecycle_key | str trim
     } else { "" }
     let capture_detail = ($run.lifecycle_detail? | default $ctx.lifecycle_detail)
+    let scheduler_env = if $ctx.lifecycle_scheduler { "TEMPO_LIFECYCLE_SCHEDULER=registered_threads_v1 TEMPO_LIFECYCLE_KERNEL_WAITS=2 TEMPO_LIFECYCLE_PREWARM_CPU=disabled TEMPO_LIFECYCLE_PROCESS_CPU=disabled " } else { "" }
     let prewarm_config = (lifecycle-prewarm-config $ctx.lifecycle_prewarm_cpu $run.side)
-    let a_capture = if $ctx.lifecycle { $"($prewarm_config.env)RETH_LIFECYCLE_FILE=($lifecycle_dir)/a.jsonl TEMPO_LIFECYCLE_DETAIL=($capture_detail) RETH_LIFECYCLE_KEY_FILE=($lifecycle_key) RETH_LIFECYCLE_EPOCH_NS=($lifecycle_epoch) " } else { "" }
-    let b_capture = if $ctx.lifecycle { $"($prewarm_config.env)RETH_LIFECYCLE_FILE=($lifecycle_dir)/b.jsonl TEMPO_LIFECYCLE_DETAIL=($capture_detail) RETH_LIFECYCLE_KEY_FILE=($lifecycle_key) RETH_LIFECYCLE_EPOCH_NS=($lifecycle_epoch) " } else { "" }
+    let a_capture = if $ctx.lifecycle { $"($prewarm_config.env)($scheduler_env)RETH_LIFECYCLE_FILE=($lifecycle_dir)/a.jsonl TEMPO_LIFECYCLE_DETAIL=($capture_detail) RETH_LIFECYCLE_KEY_FILE=($lifecycle_key) RETH_LIFECYCLE_EPOCH_NS=($lifecycle_epoch) " } else { "" }
+    let b_capture = if $ctx.lifecycle { $"($prewarm_config.env)($scheduler_env)RETH_LIFECYCLE_FILE=($lifecycle_dir)/b.jsonl TEMPO_LIFECYCLE_DETAIL=($capture_detail) RETH_LIFECYCLE_KEY_FILE=($lifecycle_key) RETH_LIFECYCLE_EPOCH_NS=($lifecycle_epoch) " } else { "" }
 
     mark-schelk-dirty-at $ctx.a.state_path
     mark-schelk-dirty-at $ctx.b.state_path
@@ -1117,14 +1124,25 @@ def run-local-e2e-phase [run: record, ctx: record] {
     # Admission can reject the phase; change host tuning only after it succeeds.
     let tuning_state = if $ctx.tune { apply-system-tuning } else { { tuned: false } }
 
-    start-e2e-local-node a $phase $run.tempo $a_args $"($env_prefix)($a_capture)" $a_otel $tracy_env_prefix $ctx.samply $ctx.samply_args $ctx.results_dir $ctx.a.cpus $ctx.a.memory $ctx.lifecycle
-    start-e2e-local-node b $phase $run.tempo $b_args $"($env_prefix)($b_capture)" $b_otel "" $ctx.samply $ctx.samply_args $ctx.results_dir $ctx.b.cpus $ctx.b.memory $ctx.lifecycle
+    start-e2e-local-node a $phase $run.tempo $a_args $"($env_prefix)($a_capture)" $a_otel $tracy_env_prefix $ctx.samply $ctx.samply_args $ctx.results_dir $ctx.a.cpus $ctx.a.memory $ctx.lifecycle $ctx.lifecycle_scheduler
+    start-e2e-local-node b $phase $run.tempo $b_args $"($env_prefix)($b_capture)" $b_otel "" $ctx.samply $ctx.samply_args $ctx.results_dir $ctx.b.cpus $ctx.b.memory $ctx.lifecycle $ctx.lifecycle_scheduler
 
-    sleep 2sec
+    if $ctx.lifecycle_scheduler {
+        # The diagnostic checks the final binary and attaches before exec.
+        mut startup_wait = 0
+        while ((find-tempo-pids) | length) < 2 and $startup_wait < 150 {
+            if ($"($lifecycle_dir)/scheduler-a.failed" | path exists) or ($"($lifecycle_dir)/scheduler-b.failed" | path exists) { break }
+            sleep 1sec
+            $startup_wait = $startup_wait + 1
+        }
+    } else { sleep 2sec }
     let rpc_timeout = if $ctx.bloat > 0 { 600 } else { 300 }
     mut phase_exit = 0
     if ((find-tempo-pids) | length) < 2 {
         print $"Error: local e2e validators exited before readiness checks completed for ($phase)"
+        if $ctx.lifecycle_scheduler {
+            ^python3 contrib/bench/lifecycle/scheduler/runtime.py --failure-summary $lifecycle_dir
+        }
         $phase_exit = 1
     }
     if $phase_exit == 0 and not (e2e-wait-for-rpc-online $a_rpc $rpc_timeout) { $phase_exit = 1 }
@@ -1251,9 +1269,8 @@ def run-local-e2e-phase [run: record, ctx: record] {
     if $ctx.lifecycle {
         rm -f $lifecycle_key
         let prewarm_report_args = if $ctx.lifecycle_prewarm_cpu == "compare" { ["--expected-prewarm-cpu" $prewarm_config.expected] } else { [] }
-        let report = (^python3 contrib/bench/lifecycle/report.py --prune --expected-detail $capture_detail ...$prewarm_report_args --out $lifecycle_report_dir --warmup $ctx.summary_warmup_blocks --window $"($lifecycle_dir)/window.json" $"($lifecycle_dir)/a.jsonl" $"($lifecycle_dir)/b.jsonl" | complete)
-        print $report.stdout
-        if $report.stderr != "" { print $report.stderr }
+        let scheduler_report_args = if $ctx.lifecycle_scheduler { ["--scheduler-dir" $lifecycle_dir] } else { [] }
+        let report = (^python3 contrib/bench/lifecycle/progress.py ...$scheduler_report_args --prune --expected-detail $capture_detail ...$prewarm_report_args --out $lifecycle_report_dir --warmup $ctx.summary_warmup_blocks --window $"($lifecycle_dir)/window.json" $"($lifecycle_dir)/a.jsonl" $"($lifecycle_dir)/b.jsonl" err> /dev/stderr | complete)
         if $report.exit_code != 0 { $phase_exit = 1 }
         rm -rf $lifecycle_dir
         if $phase_exit == 0 {
@@ -1463,6 +1480,7 @@ def "main e2e" [
     --feature-features: string = ""                     # Additional Cargo features for feature build (defaults to --features)
     --no-default-features                               # Disable Cargo default features
     --lifecycle                                         # Capture privacy-filtered block lifecycle artifacts on both validators
+    --lifecycle-scheduler                               # Opt-in registered-thread kernel fault diagnostic
     --lifecycle-prewarm-cpu: string = "disabled"          # Matched selected-call CPU observer: disabled or compare
     --lifecycle-detail: string = "full"                  # Capture detail: full, milestones, or compare (requires --lifecycle)
     --samply                                            # Profile validators with samply
@@ -1496,6 +1514,9 @@ def "main e2e" [
     --valscope-dir: string = "../valscope"               # Path to the ValScope checkout
     --skip-summary                                       # Leave summary generation to a later workflow step
 ] {
+    if $lifecycle_scheduler and (not $lifecycle or $lifecycle_detail != "full" or $lifecycle_prewarm_cpu != "disabled" or $samply or $tracy != "off") {
+        error make {msg: "Kernel fault diagnostic requires full lifecycle and no other observer"}
+    }
     if $lifecycle_prewarm_cpu not-in ["disabled" "compare"] or ($lifecycle_prewarm_cpu == "compare" and (not $lifecycle or $lifecycle_detail != "milestones" or $run_side != "comparison")) {
         error make {msg: "Prewarm CPU comparison requires milestone lifecycle and both sides"}
     }
@@ -1865,6 +1886,7 @@ def "main e2e" [
         samply_args: $samply_args_list
         lifecycle: $lifecycle
         lifecycle_detail: $lifecycle_detail
+        lifecycle_scheduler: $lifecycle_scheduler
         lifecycle_prewarm_cpu: $lifecycle_prewarm_cpu
         summary_warmup_blocks: $summary_warmup_blocks
         tracy: $tracy
