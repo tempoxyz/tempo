@@ -164,21 +164,41 @@ def inspect_abi(binary):
     validate_abi(value);return value
 
 
+LOADER = '/lib64/ld-linux-x86-64.so.2'
+LOADER_SONAME = 'ld-linux-x86-64.so.2'
+
+
+def trusted_library(path):
+    actual=Path(path).resolve();st=actual.stat()
+    need(str(actual).startswith(('/usr/lib/','/lib/')) and stat.S_ISREG(st.st_mode) and st.st_uid==0 and not st.st_mode&0o022)
+    return actual
+
+
+def resolved_libraries(text):
+    resolved={}
+    for line in text.splitlines():
+        # glibc prints its interpreter directly, even when Rust also declares
+        # that exact loader as DT_NEEDED. Do not generalize arbitrary paths.
+        direct=re.fullmatch(r'\s*/lib64/ld-linux-x86-64\.so\.2 \(0x[0-9a-f]+\)\s*',line)
+        found=re.fullmatch(r'\s*(\S+) => (/\S+) \(0x[0-9a-f]+\)\s*',line)
+        if direct:
+            name,path=LOADER_SONAME,LOADER
+        elif found:
+            name,path=found.groups();need(name!=LOADER_SONAME)
+        else:
+            continue
+        need(name not in resolved);resolved[name]=trusted_library(path)
+    need(LOADER_SONAME in resolved)
+    return resolved
+
+
 def host_abi(binary,expected):
     need(inspect_abi(binary)==expected)
     if expected['loader']=='none':return
-    loader='/lib64/ld-linux-x86-64.so.2'
-    checked([loader,'--verify',str(binary)])
+    trusted_library(LOADER)
+    checked([LOADER,'--verify',str(binary)])
     # --list resolves/verifies version requirements without entering the program.
-    text=checked([loader,'--list',str(binary)]).decode()
-    resolved={}
-    for line in text.splitlines():
-        found=re.fullmatch(r'\s*(\S+) => (/\S+) \(0x[0-9a-f]+\)\s*',line)
-        if found:
-            name,path=found.groups();need(name not in resolved)
-            actual=Path(path).resolve();st=actual.stat()
-            need(str(actual).startswith(('/usr/lib/','/lib/')) and stat.S_ISREG(st.st_mode) and st.st_uid==0 and not st.st_mode&0o022)
-            resolved[name]=actual
+    resolved=resolved_libraries(checked([LOADER,'--list',str(binary)]).decode())
     need(set(expected['needed'])<=set(resolved))
     for library,requirements in expected['versions'].items():
         available=set(re.findall(r'Name: (\S+)',checked(['/usr/bin/readelf','-VW',str(resolved[library])]).decode()))

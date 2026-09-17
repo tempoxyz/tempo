@@ -20,7 +20,7 @@ CFLAGS = ['-march=x86-64-v3', '-mtune=generic', '-DNO_PCLMUL']
 CPU_FLAGS = ['-static', '-O2', '-march=x86-64', '-mtune=generic']
 FEATURES = ['asm-keccak', 'jemalloc', 'keccak-cache-global']
 ROLES = ('tempo', 'txgen-tempo', 'bench')
-SONAMES = {'libc.so.6', 'libm.so.6', 'libdl.so.2', 'libpthread.so.0', 'librt.so.1',
+SONAMES = {'ld-linux-x86-64.so.2', 'libc.so.6', 'libm.so.6', 'libdl.so.2', 'libpthread.so.0', 'librt.so.1',
            'libgcc_s.so.1', 'libstdc++.so.6', 'libudev.so.1', 'libssl.so.3',
            'libcrypto.so.3', 'libz.so.1', 'libzstd.so.1', 'libatomic.so.1'}
 MAX_BINARY = 2 * 1024**3

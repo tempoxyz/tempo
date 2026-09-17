@@ -5,6 +5,7 @@ import json
 import os
 from pathlib import Path
 import stat
+import shutil
 import tempfile
 import unittest
 from unittest.mock import patch
@@ -111,6 +112,25 @@ class Contract(unittest.TestCase):
         abi=c.inspect_abi(binary);c.host_abi(binary,abi)
         abi['versions']['libc.so.6'].append('GLIBC_99.99')
         with self.assertRaises(p.Rejected):c.host_abi(binary,abi)
+
+    def test_fixed_loader_resolution_accepts_direct_entry_only(self):
+        direct='\t/lib64/ld-linux-x86-64.so.2 (0x1234)\n'
+        self.assertEqual(c.resolved_libraries(direct)[c.LOADER_SONAME],Path(c.LOADER).resolve())
+        for text in (direct+direct,'/other/ld-linux-x86-64.so.2 (0x1234)\n','ld-linux-x86-64.so.2 => /lib64/ld-linux-x86-64.so.2 (0x1234)\n','/lib64/ld-linux-aarch64.so.1 (0x1234)\n'):
+            with self.assertRaises(p.Rejected):c.resolved_libraries(text)
+        with patch.object(Path,'stat',return_value=type('S',(),{'st_mode':stat.S_IFREG|0o777,'st_uid':0})()),self.assertRaises(p.Rejected):c.trusted_library(c.LOADER)
+
+    @unittest.skipUnless(shutil.which('nu'),'installed Rust ELF fixture unavailable')
+    def test_installed_rust_elf_loader_needed_and_versions_without_execution(self):
+        binary=Path(shutil.which('nu'))
+        abi=c.inspect_abi(binary)
+        # Skip another platform's Nu build; the synthetic direct-line fixture
+        # above still checks the exact loader parsing contract everywhere.
+        if c.LOADER_SONAME not in abi['needed']:self.skipTest('fixture does not declare loader DT_NEEDED')
+        self.assertIn(c.LOADER_SONAME,abi['versions'])
+        c.host_abi(binary,abi) # readelf + system loader --verify/--list only.
+        wrong=copy.deepcopy(abi);wrong['needed'].append('ld-foreign.so.2')
+        with self.assertRaises(p.Rejected):p.validate_abi(wrong)
 
     def test_prebuilt_election_requires_exact_derived_bytes_and_receipt_proof(self):
         from test_capacity_election import BINDING, receipt
