@@ -433,7 +433,7 @@ snapshots, and benchmark state are unchanged by this failure cleanup.
 
 ### Reserved runner admission (experimental branch only)
 
-This workflow reserves four matching runner jobs and measures their capacity before
+This workflow reserves five matching runner jobs and measures their capacity before
 checkout or benchmark setup. All jobs require the same complete set of closed numeric
 receipts, bound to the immutable workflow SHA, run and attempt. The eligible slot
 with the larger minimum root/workspace free space wins (lower slot breaks ties)
@@ -449,9 +449,9 @@ without selecting a fallback. Existing later capacity guards remain in force.
 Selection reserves a runner job, not disk space or an exclusive physical host;
 another workload can still consume capacity after admission.
 
-The four-slot policy follows historical job metadata showing four distinct runner
+The five-slot policy follows historical job metadata showing five distinct runner
 registrations across prior assignments; it does not establish current capacity or
-availability. Helpers retain explicit two/three/four-slot protocols, with the
+availability. Helpers retain explicit bounded two/three/four/five-slot protocols, with the
 expected count supplied by trusted workflow configuration, not receipt contents.
 
 This branch accepts only manual lifecycle dispatches with Slack disabled. Use a
@@ -578,11 +578,13 @@ Semantic validation and pure wire latency are not inferred from codec membership
 ### Setup-only failure accounting (separate experimental policy)
 
 This pinned branch declares `BENCH_CAPACITY_POLICY=setup_failure_v2`; the
-controller spec must explicitly opt in with `capacity_policy: setup_failure_v2`.
+controller spec must explicitly opt in with `capacity_policy: setup_failure_v2`
+and `capacity_slots: 5`, bound to this pinned workflow matrix and count. Four-slot
+specs and refs remain separate; an omitted count retains their four-slot meaning.
 The dispatcher input set is unchanged. Earlier workflows and the helper's
 absent-policy default retain strict receipt-only accounting.
 
-Every one of four slots needs a valid capacity receipt or authenticated
+Every one of five slots needs a valid capacity receipt or authenticated
 attempt-scoped Actions evidence of a terminal setup-only failure: exactly step 1,
 `Set up job`, completed/failure, with no other steps and consistent timestamps.
 No receipt may coexist with that exclusion. Missing, queued, cancelled, timed-out,
@@ -596,3 +598,10 @@ accepting an aggregate workflow failure caused only by proven setup exclusions;
 it must retain that original remote conclusion. Without this explicit policy and
 independent validation, aggregate failure remains failure. Thresholds and total
 election deadline remain unchanged; this policy claims no recovered disk space.
+
+Five candidates are the smallest expansion covering the five historical runner
+registrations observed in job metadata. This does not claim five physical hosts
+or current capacity. A failed job can release a registration before another slot
+starts, so different slots may reuse the same registration. No native identity
+is used to force assignment or exported as evidence. Missing/queued candidates
+still exhaust the same bounded deadline and fail closed; there is no retry loop.

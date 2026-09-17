@@ -38,6 +38,47 @@ class ElectionTests(unittest.TestCase):
         with self.assertRaises(election.InvalidReceipt):
             election.elect(pair, **BINDING, slots=slots)
 
+    def test_five_slots_all_120_orders_ties_and_exact_accounted_union(self):
+        for capacities, winner in [([70000]*5, 1), ([1,70000,71000,72000,80000], 5)]:
+            receipts = [receipt(i+1, root=n, workspace=n) for i,n in enumerate(capacities)]
+            snapshot = copy.deepcopy(receipts)
+            for order in itertools.permutations(receipts):
+                self.assertEqual(election.elect(list(order), **BINDING, slots=5,
+                                 setup_failed_slots=[])['selected_slot'], winner)
+            self.assertEqual(receipts, snapshot)
+        for absent in range(1, 6):
+            receipts = [receipt(i) for i in range(1, 6) if i != absent]
+            for order in itertools.permutations(receipts):
+                self.assertEqual(election.elect(list(order), **BINDING, slots=5,
+                                 setup_failed_slots=[absent])['selected_slot'], min(set(range(1, 6))-{absent}))
+        for winner in range(1, 6):
+            self.assertEqual(election.elect([receipt(winner)], **BINDING, slots=5,
+                             setup_failed_slots=[i for i in range(1,6) if i!=winner])['selected_slot'], winner)
+        receipts = [receipt(i) for i in range(1, 6)]
+        for row in receipts[4]['capacity']['locations'][:2]: row['free_bytes'] += 1
+        self.assertEqual(election.elect(receipts, **BINDING, slots=5,
+                         setup_failed_slots=[])['selected_slot'], 5)
+
+    def test_five_slot_omissions_conflicts_types_and_no_eligible_reject(self):
+        for receipts, failed in [([receipt(i) for i in range(1,5)], []),
+                                 ([receipt(i) for i in range(1,5)], [4]),
+                                 ([receipt(i) for i in range(1,5)], [5,5]),
+                                 ([receipt(i) for i in range(1,5)], [6]),
+                                 ([], list(range(1,6))),
+                                 ([receipt(5)], [1,2,3,True]),
+                                 ([receipt(5)], [1,2,3,4.0])]:
+            with self.assertRaises(election.InvalidReceipt):
+                election.elect(receipts, **BINDING, slots=5, setup_failed_slots=failed)
+        for slots in (True, 5.0, '5', 6):
+            with self.assertRaises(election.InvalidReceipt):
+                election.elect([receipt(i) for i in range(1,6)], **BINDING, slots=slots, setup_failed_slots=[])
+        for key,value in [('run_attempt',99),('slot',True),('slot',4),('slot',6),('workflow_sha','b'*40)]:
+            receipts=[receipt(i) for i in range(1,6)];receipts[-1][key]=value
+            with self.assertRaises(election.InvalidReceipt):
+                election.elect(receipts, **BINDING, slots=5, setup_failed_slots=[])
+        self.assertEqual(election.elect([receipt(5, root=65535)], **BINDING,
+                         slots=5, setup_failed_slots=[1,2,3,4])['status'],2)
+
     def test_setup_accounting_exact_disjoint_union_and_eligible_winner(self):
         for failed in ([1], [2], [3], [4], [1, 2, 3]):
             receipts = [receipt(i) for i in range(1, 5) if i not in failed]
@@ -275,6 +316,15 @@ class ElectionTests(unittest.TestCase):
             self.cli(b'', *map(str, paths), code=2)
             paths[1].unlink()
             self.cli(b'', *map(str, paths), code=2)
+
+    def test_five_slot_cli_requires_declared_count_and_closed_envelope(self):
+        envelope=dict(schema=2,receipts=[receipt(5)],setup_failed_slots=[1,2,3,4])
+        encoded=json.dumps(envelope).encode()
+        args=('--slots','5','--policy',election.SETUP_FAILURE_POLICY)
+        self.assertEqual(self.cli(encoded,*args,use_source=True)['selected_slot'],5)
+        for count in ('4','6','05','5.0'):
+            self.cli(encoded,'--slots',count,'--policy',election.SETUP_FAILURE_POLICY,code=2)
+        self.cli(encoded,'--slots','5',code=2)
 
     def test_setup_accounting_cli_is_explicit_closed_and_preserves_legacy(self):
         envelope = dict(schema=2, receipts=[receipt(1), receipt(2), receipt(3)], setup_failed_slots=[4])
