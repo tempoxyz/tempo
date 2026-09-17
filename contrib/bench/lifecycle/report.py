@@ -313,7 +313,8 @@ def build(paths, warmup=5, window=None, expected_detail=None):
                      'thread': s['thread'], 'active_ms': (None if node_details[s['node']] == 'milestones'
                          else active_wall_ns(s['active'])/1e6),
                      'right_censored': s.get('right_censored', False),
-                     'timing_semantics': ('aggregate_envelope' if s.get('count') else
+                     'timing_semantics': ('response_context_lifetime_not_service' if s['name'] == 'resolver.response.context' else
+                         'aggregate_envelope' if s.get('count') else
                          'operation_' + s['operation_status'] if s.get('operation_status') else
                          'span_lifetime'),
                      'retained_after_operation_ms': (max(0, s['reference_end'] - s['end'])/1e6
