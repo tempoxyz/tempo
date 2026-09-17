@@ -18,7 +18,7 @@ import subprocess
 import sys
 import tempfile
 
-RUNTIME = '0bd62dd2f0e509016439b2189cd0f4998d007a26'
+RUNTIME = 'c1bed8d9db922abaff0fe2eb0efe9b430f90cfef'
 TOOLS = '94f86f186cd18f641eb9699d7e31c9e536de7c17'
 RETH = '000fc3cdf3d5f09a816ad30554a555881f2e28bf'
 COMMONWARE = 'e755c2f335acb4fccab4cbfd3d4184206742360e'
