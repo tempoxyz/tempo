@@ -342,3 +342,20 @@ Both phase labels, environments and source worktrees remain separate. Mutable
 references, different inputs, ordinary benchmarks and `--no-cache` keep separate
 builds. Existing binary verification, same-binary admission and disk guards still
 apply; reuse does not establish additional cache or hardware compatibility.
+
+
+### Post-capture report progress
+
+The benchmark invokes `progress.py` only after the workload and validator shutdown.
+It streams fixed begin/end stages for pruning, lifecycle construction, scheduler
+load/indexing, JSON writing, package generation and scheduler publication. Node
+values are only 0 (combined), 1 or 2; elapsed milliseconds and process status are
+numeric. An end marker describes that stage returning, not capture acceptance.
+
+A dedicated inherited pipe carries validated markers. Ordinary reporter stdout
+and stderr stay in bounded private memory and are never printed or published by
+the wrapper. Exceptions and command/path strings are not forwarded. The Nu call
+redirects the wrapper's safe progress channel around `complete`, retaining the
+reporter's exit status and existing phase-failure handling. Marker failure fails
+the wrapper; handled cancellation terminates and reaps its owned reporter. No lifecycle
+source, cutoff, audit or archive membership is changed by progress output.
