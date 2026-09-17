@@ -998,6 +998,9 @@ where
         // before the transitions are merged, letting the trie finalization overlap with it.
         db.set_state_hook(None);
 
+        // Both FlatMPT and the fallback hashed state must include every transition.
+        db.merge_transitions(BundleRetention::Reverts);
+
         // Flat-MPT commitment (experimental, env-gated): the flat engine's root for
         // this bundle. In `Root` mode it becomes the header's state root; in
         // `Compare` mode it is asserted against the regular pipeline's root below.
@@ -1013,7 +1016,12 @@ where
             // The ops already carry every hashed key, so the block's hashed
             // state comes from them for free — the stock derivation below
             // re-keccaks the whole bundle on the hot path.
-            let hashed = tempo_flatmpt::ops_to_post_state(&ops);
+            let hashed = tempo_flatmpt::ops_to_post_state_at_parent(
+                shadow,
+                parent_header.state_root(),
+                &ops,
+            )
+            .map_err(|e| PayloadBuilderError::Other(e.into()))?;
             // Sparse overlay: root from the sparse trie (read-only against the
             // flat store), apply queued to the background follower which
             // cross-checks the flat engine's root against ours. Any sparse

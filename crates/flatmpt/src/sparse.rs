@@ -312,7 +312,11 @@ pub(crate) fn prune_overlays(flat_root: B256) {
 /// understand (keys are already hashed in flat-MPT ops). Also serves the
 /// payload builder as the block's hashed state: the ops already carry every
 /// hashed key, so this avoids re-keccaking the whole bundle on the hot path.
-pub fn ops_to_post_state(ops: &[(Key, StateOp)]) -> HashedPostState {
+/// Wipes require the exact parent state to expand old slots into explicit zeroes.
+pub fn ops_to_post_state(
+    ops: &[(Key, StateOp)],
+    parent: Option<&crate::FlatMpt>,
+) -> anyhow::Result<HashedPostState> {
     let mut post = HashedPostState::default();
     for (key, op) in ops {
         let acct = B256::from(*key);
@@ -337,29 +341,74 @@ pub fn ops_to_post_state(ops: &[(Key, StateOp)]) -> HashedPostState {
             }
             StateOp::DeleteAccount => {
                 post.accounts.insert(acct, None);
-                post.storages.insert(acct, HashedStorage::new(true));
+                post.storages.insert(acct, wiped_storage(parent, key)?);
             }
             StateOp::WipeStorage => {
-                post.storages.insert(acct, HashedStorage::new(true));
+                post.storages.insert(acct, wiped_storage(parent, key)?);
             }
             StateOp::SetStorage { slot, value } => {
                 let v = alloy_primitives::U256::decode(&mut value.as_slice()).unwrap_or_default();
                 post.storages
                     .entry(acct)
-                    .or_insert_with(|| HashedStorage::new(false))
+                    .or_default()
                     .storage
                     .insert(B256::from(*slot), v);
             }
             StateOp::DeleteStorage { slot } => {
                 post.storages
                     .entry(acct)
-                    .or_insert_with(|| HashedStorage::new(false))
+                    .or_default()
                     .storage
                     .insert(B256::from(*slot), alloy_primitives::U256::ZERO);
             }
         }
     }
-    post
+    Ok(post)
+}
+
+fn wiped_storage(parent: Option<&crate::FlatMpt>, account: &Key) -> anyhow::Result<HashedStorage> {
+    let parent =
+        parent.ok_or_else(|| anyhow::anyhow!("storage wipe requires the parent flat state"))?;
+    let mut cursor = parent.storage_cursor(account);
+    let mut entry = cursor.seek(&[0; 32])?;
+    let mut storage = HashedStorage::default();
+    while let Some((key, _)) = entry {
+        storage
+            .storage
+            .insert(B256::from(key), alloy_primitives::U256::ZERO);
+        entry = cursor.next()?;
+    }
+    Ok(storage)
+}
+
+/// Derive a reth overlay, waiting for the exact parent only when a storage wipe
+/// needs old slots. Ordinary writes keep the allocation-only fast path.
+pub fn ops_to_post_state_at_parent(
+    shadow: &RwLock<FlatShadow>,
+    parent_root: B256,
+    ops: &[(Key, StateOp)],
+) -> anyhow::Result<HashedPostState> {
+    if !ops
+        .iter()
+        .any(|(_, op)| matches!(op, StateOp::DeleteAccount | StateOp::WipeStorage))
+    {
+        return ops_to_post_state(ops, None);
+    }
+    let deadline = Instant::now() + parent_wait();
+    crate::follower::request_parent(parent_root);
+    loop {
+        {
+            let guard = shadow.read();
+            if guard.at_parent(parent_root) {
+                return ops_to_post_state(ops, Some(guard.db()));
+            }
+        }
+        anyhow::ensure!(
+            Instant::now() < deadline,
+            "flat store did not reach storage-wipe parent {parent_root}"
+        );
+        std::thread::sleep(Duration::from_millis(2));
+    }
 }
 
 /// Whether reveal nodes come straight from flat records (default) instead of
@@ -1301,11 +1350,12 @@ impl Worker {
         // are rare and, when they race this thread, fall back to the safe
         // wait-for-parent path — so it leaves the critical path entirely.
         let t_phase = Instant::now();
+        let post_state = ops_to_post_state_at_parent(&self.shadow, self.parent_root, &ops)?;
         let slot = push_overlay_pending(self.parent_root, root);
         std::thread::Builder::new()
             .name("flatmpt-overlay".into())
             .spawn(move || {
-                let built = (trie_updates.into_sorted(), ops_to_post_state(&ops));
+                let built = (trie_updates.into_sorted(), post_state);
                 *slot.write() = Some(built);
             })
             .map_err(|e| anyhow::anyhow!("spawn overlay build: {e}"))?;

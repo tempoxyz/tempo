@@ -188,7 +188,7 @@ reth-node-ethereum = { git = "https://github.com/paradigmxyz/reth", rev = "64f55
 reth-node-metrics = { git = "https://github.com/paradigmxyz/reth", rev = "64f556902344c4b43d0bb653c7bcd0f5ef944450" }
 reth-payload-builder = { git = "https://github.com/paradigmxyz/reth", rev = "64f556902344c4b43d0bb653c7bcd0f5ef944450" }
 reth-payload-primitives = { git = "https://github.com/paradigmxyz/reth", rev = "64f556902344c4b43d0bb653c7bcd0f5ef944450" }
-reth-primitives-traits = { version = "0.7.0", default-features = false }
+reth-primitives-traits = { version = "0.7.1", default-features = false }
 reth-config = { git = "https://github.com/paradigmxyz/reth", rev = "64f556902344c4b43d0bb653c7bcd0f5ef944450" }
 reth-downloaders = { git = "https://github.com/paradigmxyz/reth", rev = "64f556902344c4b43d0bb653c7bcd0f5ef944450" }
 reth-provider = { git = "https://github.com/paradigmxyz/reth", rev = "64f556902344c4b43d0bb653c7bcd0f5ef944450" }
