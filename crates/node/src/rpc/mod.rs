@@ -61,8 +61,8 @@ use reth_rpc_eth_api::{
     transaction::{ConvertReceiptInput, ReceiptConverter},
 };
 use reth_rpc_eth_types::{
-    EthApiError, EthStateCache, FeeHistoryCache, GasPriceOracle, PendingBlock, SignError,
-    builder::config::PendingBlockKind, receipt::EthReceiptConverter,
+    EthApiError, EthApiSettings, EthStateCache, FeeHistoryCache, GasPriceOracle, PendingBlock,
+    SignError, builder::config::PendingBlockKind, receipt::EthReceiptConverter,
 };
 use tempo_alloy::{TempoNetwork, rpc::TempoTransactionReceipt};
 use tempo_evm::{TempoBlockEnv, TempoInvalidTransaction};
@@ -167,6 +167,10 @@ where
 
     fn converter(&self) -> &Self::RpcConvert {
         self.inner.converter()
+    }
+
+    fn eth_api_settings(&self) -> &EthApiSettings {
+        self.inner.eth_api_settings()
     }
 }
 
