@@ -57,37 +57,23 @@ pub mod typed {
         f(precompile, call).encode_precompile_result(0, 0, |ret| T::abi_encode_returns(&ret).into())
     }
 
-    /// Dispatches a state-mutating call that returns ABI-encoded data.
+    /// Dispatches a state-mutating call, ABI-encoding its return values.
     ///
-    /// Rejects static calls: pre-T12 with [`StaticCallNotAllowed`], T12 with an execution halt.
+    /// Handlers for calls without return values may return `()`; Alloy converts it into the
+    /// generated empty return container through [`Into`]. Rejects static calls pre-T12 with
+    /// [`StaticCallNotAllowed`] and from T12 with an execution halt.
     #[inline]
-    pub fn mutate<P, T: SolCall, E: IntoPrecompileResult>(
+    pub fn mutate<P, T: SolCall, E: IntoPrecompileResult, R: Into<T::Return>>(
         precompile: &mut P,
         call: T,
         sender: Address,
-        f: impl FnOnce(&mut P, Address, T) -> core::result::Result<T::Return, E>,
+        f: impl FnOnce(&mut P, Address, T) -> core::result::Result<R, E>,
     ) -> PrecompileResult {
         if StorageCtx.is_static() {
             return reject_static_call();
         }
         f(precompile, sender, call)
-            .encode_precompile_result(0, 0, |ret| T::abi_encode_returns(&ret).into())
-    }
-
-    /// Dispatches a state-mutating call that returns no data (e.g. `approve`, `transfer`).
-    ///
-    /// Rejects static calls: pre-T12 with [`StaticCallNotAllowed`], T12 with an execution halt.
-    #[inline]
-    pub fn mutate_void<P, T: SolCall, E: IntoPrecompileResult>(
-        precompile: &mut P,
-        call: T,
-        sender: Address,
-        f: impl FnOnce(&mut P, Address, T) -> core::result::Result<(), E>,
-    ) -> PrecompileResult {
-        if StorageCtx.is_static() {
-            return reject_static_call();
-        }
-        f(precompile, sender, call).encode_precompile_result(0, 0, |()| Bytes::new())
+            .encode_precompile_result(0, 0, |ret| T::abi_encode_returns(&ret.into()).into())
     }
 }
 
@@ -101,30 +87,17 @@ pub fn view<P, T: SolCall>(
     typed::view(precompile, call, f)
 }
 
-/// Dispatches a state-mutating call that returns ABI-encoded data.
+/// Dispatches a state-mutating call, ABI-encoding its return values.
 ///
 /// Rejects static calls with [`StaticCallNotAllowed`].
 #[inline]
-pub fn mutate<P, T: SolCall>(
+pub fn mutate<P, T: SolCall, R: Into<T::Return>>(
     precompile: &mut P,
     call: T,
     sender: Address,
-    f: impl FnOnce(&mut P, Address, T) -> Result<T::Return>,
+    f: impl FnOnce(&mut P, Address, T) -> Result<R>,
 ) -> PrecompileResult {
     typed::mutate(precompile, call, sender, f)
-}
-
-/// Dispatches a state-mutating call that returns no data (e.g. `approve`, `transfer`).
-///
-/// Rejects static calls with [`StaticCallNotAllowed`].
-#[inline]
-pub fn mutate_void<P, T: SolCall>(
-    precompile: &mut P,
-    call: T,
-    sender: Address,
-    f: impl FnOnce(&mut P, Address, T) -> Result<()>,
-) -> PrecompileResult {
-    typed::mutate_void(precompile, call, sender, f)
 }
 
 /// Sets TIP-1060 storage creation mode to Preserve for the given storage-credit owner.
@@ -471,7 +444,7 @@ mod tests {
                 ITestDispatch::setCall::abi_encode_returns(&U256::from(7))
             );
 
-            let output = typed::mutate_void(
+            let output = typed::mutate(
                 &mut target,
                 ITestDispatch::clearCall {
                     value: U256::from(7),

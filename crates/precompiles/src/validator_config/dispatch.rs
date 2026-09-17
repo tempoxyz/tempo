@@ -1,9 +1,7 @@
 //! ABI dispatch for the [`ValidatorConfig`] (V1) precompile.
 
 use super::ValidatorConfig;
-use crate::{
-    Precompile, charge_input_cost, dispatch, error::TempoPrecompileError, mutate_void, view,
-};
+use crate::{Precompile, charge_input_cost, dispatch, error::TempoPrecompileError, mutate, view};
 use alloy::primitives::Address;
 use revm::precompile::PrecompileResult;
 use tempo_contracts::precompiles::IValidatorConfig;
@@ -30,15 +28,15 @@ impl Precompile for ValidatorConfig {
                     validatorCount(call) => view(self, call, |this, _| this.validator_count()),
 
                     // Mutate functions
-                    addValidator(call) => mutate_void(self, call, msg_sender, |this, s, c| this.add_validator(s, c)),
-                    updateValidator(call) => mutate_void(self, call, msg_sender, |this, s, c| this.update_validator(s, c)),
-                    changeValidatorStatus(call) => mutate_void(self, call, msg_sender, |this, s, c| this.change_validator_status(s, c)),
+                    addValidator(call) => mutate(self, call, msg_sender, |this, s, c| this.add_validator(s, c)),
+                    updateValidator(call) => mutate(self, call, msg_sender, |this, s, c| this.update_validator(s, c)),
+                    changeValidatorStatus(call) => mutate(self, call, msg_sender, |this, s, c| this.change_validator_status(s, c)),
                     #[schedule(since = T1)]
-                    changeValidatorStatusByIndex(call) => mutate_void(self, call, msg_sender, |this, s, c| {
+                    changeValidatorStatusByIndex(call) => mutate(self, call, msg_sender, |this, s, c| {
                         this.change_validator_status_by_index(s, c)
                     }),
-                    changeOwner(call) => mutate_void(self, call, msg_sender, |this, s, c| this.change_owner(s, c)),
-                    setNextFullDkgCeremony(call) => mutate_void(self, call, msg_sender, |this, s, c| {
+                    changeOwner(call) => mutate(self, call, msg_sender, |this, s, c| this.change_owner(s, c)),
+                    setNextFullDkgCeremony(call) => mutate(self, call, msg_sender, |this, s, c| {
                         this.set_next_full_dkg_ceremony(s, c)
                     })
                 }

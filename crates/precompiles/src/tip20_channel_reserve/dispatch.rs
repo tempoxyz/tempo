@@ -1,9 +1,7 @@
 //! ABI dispatch for the [`TIP20ChannelReserve`] precompile.
 
 use super::{CLOSE_GRACE_PERIOD, TIP20ChannelReserve, VOUCHER_TYPEHASH};
-use crate::{
-    Precompile, charge_input_cost, dispatch, mutate, mutate_void, preserve_storage_credits, view,
-};
+use crate::{Precompile, charge_input_cost, dispatch, mutate, preserve_storage_credits, view};
 use alloy::primitives::Address;
 use revm::precompile::PrecompileResult;
 use tempo_contracts::precompiles::ITIP20ChannelReserve;
@@ -23,23 +21,23 @@ impl Precompile for TIP20ChannelReserve {
                         preserve_storage_credits(this.address)?;
                         this.open(sender, c)
                     }),
-                    settle(call) => mutate_void(self, call, msg_sender, |this, sender, c| {
+                    settle(call) => mutate(self, call, msg_sender, |this, sender, c| {
                         preserve_storage_credits(this.address)?;
                         this.settle(sender, c)
                     }),
-                    topUp(call) => mutate_void(self, call, msg_sender, |this, sender, c| {
+                    topUp(call) => mutate(self, call, msg_sender, |this, sender, c| {
                         preserve_storage_credits(this.address)?;
                         this.top_up(sender, c)
                     }),
-                    close(call) => mutate_void(self, call, msg_sender, |this, sender, c| {
+                    close(call) => mutate(self, call, msg_sender, |this, sender, c| {
                         preserve_storage_credits(this.address)?;
                         this.close(sender, c)
                     }),
-                    requestClose(call) => mutate_void(self, call, msg_sender, |this, sender, c| {
+                    requestClose(call) => mutate(self, call, msg_sender, |this, sender, c| {
                         preserve_storage_credits(this.address)?;
                         this.request_close(sender, c)
                     }),
-                    withdraw(call) => mutate_void(self, call, msg_sender, |this, sender, c| {
+                    withdraw(call) => mutate(self, call, msg_sender, |this, sender, c| {
                         preserve_storage_credits(this.address)?;
                         this.withdraw(sender, c)
                     }),
