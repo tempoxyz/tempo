@@ -20,9 +20,13 @@ tested read caching plus seeding together: forwarding median 11.119 to 0.094 ms,
 release-to-body median 25.165 to 14.147 ms. It was feature-first only, with no
 whole-node CPU/RSS result; do not present it as a counterbalanced node win.
 
-Persistence throughput/durability tuning remains excluded. Record observed
-durability waits, but do not weaken barriers or alter their ordering. This
-exclusion does not establish that execution-thread stalls are persistence waits.
+The user's original exclusion was "Persistence struggles to keep pace." Earlier
+analysis interpreted this broadly enough to also defer consensus/archive
+durability tuning. That broader interpretation was the investigation's working
+scope, not an explicit user instruction banning every consensus-journal change.
+Distinguish consensus/archive durable-write waits below from Reth background
+state persistence falling behind. No durability behavior was changed, and no
+execution-thread stall is classified as persistence merely by that exclusion.
 
 Concrete excluded outliers in run35212362924, verified against complete context
 and exact parent chains:
