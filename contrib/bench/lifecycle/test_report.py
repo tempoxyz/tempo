@@ -81,12 +81,18 @@ class ReportTests(unittest.TestCase):
             records = [json.loads(line) for line in path.read_text().splitlines()]
             records[0]['detail'] = 'milestones'
             records[-1:-1] = [
-                dict(type='start', id=800, ts=1_000_000_150, thread=2, name='storage_worker', category='trie', parent=1, fields={}),
+                # Real topology: workers are spawned under validation before the
+                # later execution scope. Only the retained validation owns identity.
+                dict(type='start', id=810, ts=1_000_000_140, thread=1, name='validate_block_with_state', category='execution', parent=None, fields={'block_hash':f'{1:024x}'}),
+                dict(type='start', id=800, ts=1_000_000_150, thread=2, name='storage_worker', category='trie', parent=810, fields={}),
                 dict(type='event', id=800, ts=1_000_000_200, fields=dict(stage='proof_storage_worker_totals', worker_run_ns=20, worker_thread_cpu_ns=0, worker_cpu_measured=1, worker_success=1)),
                 dict(type='end', id=800, ts=1_000_000_201),
-                dict(type='start', id=801, ts=1_000_000_160, thread=3, name='account_worker', category='trie', parent=1, fields={}),
+                dict(type='start', id=801, ts=1_000_000_160, thread=3, name='account_worker', category='trie', parent=810, fields={}),
                 dict(type='event', id=801, ts=1_000_000_202, fields=dict(stage='proof_account_worker_totals', worker_run_ns=30, worker_cpu_measured=0, worker_success=0)),
-                dict(type='end', id=801, ts=1_000_000_203)]
+                dict(type='end', id=801, ts=1_000_000_203),
+                dict(type='start', id=811, ts=1_000_000_180, thread=1, name='execute_block', category='execution', parent=810, fields={}),
+                dict(type='end', id=811, ts=1_000_000_199),
+                dict(type='end', id=810, ts=1_000_000_204)]
             path.write_text('\n'.join(map(json.dumps, records)))
             result = build([path], warmup=0, expected_detail='milestones')
             totals = result['blocks'][0]['proof_worker_totals']
@@ -95,7 +101,13 @@ class ReportTests(unittest.TestCase):
             self.assertNotIn('worker_thread_cpu_ns', totals[1])
             self.assertTrue(all(s['active_ms'] is None for s in result['spans']))
             workers = [s for s in result['spans'] if s['id'] in (800,801)]
-            self.assertTrue(all(s['block'] == result['blocks'][0]['id'] and s['parent'] == 1 for s in workers))
+            self.assertTrue(all(s['block'] == result['blocks'][0]['id'] and s['parent'] == 810 for s in workers))
+            # Losing the sole identity parent must remain unbound, never inferred
+            # from adjacent execution events or timestamps.
+            unbound = [record for record in records if record.get('id') != 810]
+            path.write_text('\n'.join(map(json.dumps, unbound)))
+            self.assertFalse(build([path], warmup=0, expected_detail='milestones')['blocks'][0]['proof_worker_totals'])
+            path.write_text('\n'.join(map(json.dumps, records)))
             cutoff = build([path], warmup=0, expected_detail='milestones', window={'backpressure':dict(ts=1_000_000_202,node='Validator A')})
             self.assertEqual([t['span'] for t in cutoff['blocks'][0]['proof_worker_totals']], [800])
             self.assertTrue(next(s for s in cutoff['spans'] if s['id']==801)['right_censored'])

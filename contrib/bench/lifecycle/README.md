@@ -283,7 +283,8 @@ two resource samples around `worker.run()`, never per proof job. Receive waits
 and teardown are within that interval; worker construction and error forwarding
 are outside it. Sampling requires a lifecycle capture file, supported full or
 milestone detail, and a build with metrics enabled. Milestone mode retains only
-the exact `storage_worker` and `account_worker` identity scopes and their totals;
+the exact `storage_worker` and `account_worker` identity scopes and their totals,
+plus `validate_block_with_state`, which owns their explicit block identity;
 it still omits worker polls, jobs and detailed proof operations. Retained worker
 spans anchor explicit event parents even when another subscriber enables excluded
 intermediate spans. Their span lifetimes are context, not measured active work.
@@ -291,7 +292,11 @@ intermediate spans. Their span lifetimes are context, not measured active work.
 Totals accounting checks event enablement explicitly. The milestone filter rejects
 untyped tracing enablement hints, so older binaries using those hints can omit
 both execution-loop and proof-worker totals even while retaining identity spans.
-Require the totals audit before using a capture for CPU comparisons.
+Require totals and per-block worker association audits before using a capture for
+CPU comparisons. Worker pools are created under `validate_block_with_state` before
+`execute_block` starts; execution is a sibling, not their parent. Older milestone
+binaries that filtered out validation can record complete CPU totals with no block
+association. Those totals remain unbound; never assign them by nearby timestamps.
 
 Older milestone captures have no worker totals. Missing completions remain
 unmeasured; unsupported platforms or failed resource samples emit unavailable
