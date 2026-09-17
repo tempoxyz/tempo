@@ -68,7 +68,7 @@ on:
         description: Number of baseline/feature run pairs.
         type: string
         required: true
-        default: "3"
+        default: "1"
 
 permissions: {}
 
@@ -161,6 +161,7 @@ jobs:
       baseline-name: ${{ needs.resolve-refs.outputs.baseline-name }}
       feature: ${{ needs.resolve-refs.outputs.feature-ref }}
       feature-name: ${{ needs.resolve-refs.outputs.feature-name }}
+      preset: public-mix
       duration: ${{ inputs.duration || '90' }}
       bloat: ${{ inputs.bloat || '100' }}
       validator-count: ${{ inputs['validator-count'] || '10' }}
@@ -168,9 +169,10 @@ jobs:
       tps: ${{ inputs.tps || '50000' }}
       accounts: ${{ inputs.accounts || '1000' }}
       max-concurrent-requests: ${{ inputs['max-concurrent-requests'] || '5000' }}
-      run-pairs: ${{ inputs['run-pairs'] || '3' }}
+      run-pairs: ${{ inputs['run-pairs'] || '1' }}
       clickhouse-run: feature-1
       otlp: true
+      valscope: true
     secrets:
       BENCH_LOGS_PUSH_URL: ${{ secrets.BENCH_LOGS_PUSH_URL }}
       TEMPO_TELEMETRY_URL: ${{ secrets.TEMPO_TELEMETRY_URL }}
@@ -180,6 +182,8 @@ jobs:
       CLICKHOUSE_PASSWORD: ${{ secrets.CLICKHOUSE_PASSWORD }}
       VICTORIALOGS_URL: ${{ secrets.VICTORIALOGS_URL }}
       VICTORIAMETRICS_URL: ${{ secrets.VICTORIAMETRICS_URL }}
+      VALSCOPE_CONTROL_URL: ${{ secrets.VALSCOPE_CONTROL_URL }}
+      VALSCOPE_INTERNAL_TOKEN: ${{ secrets.VALSCOPE_INTERNAL_TOKEN }}
 
   save-state:
     needs: [resolve-refs, bench-e2e-multi-region]

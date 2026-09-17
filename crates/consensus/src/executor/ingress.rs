@@ -1,11 +1,5 @@
-use alloy_primitives::B256;
 use commonware_actor::Feedback;
-use commonware_consensus::{
-    Reporter,
-    marshal::Update,
-    simplex::types::Context,
-    types::{Height, Round},
-};
+use commonware_consensus::{Reporter, marshal::Update, simplex::types::Context, types::Round};
 use commonware_cryptography::ed25519::PublicKey;
 use eyre::WrapErr as _;
 use futures::channel::{mpsc, oneshot};
@@ -55,14 +49,12 @@ impl Mailbox {
         &self,
         round: Round,
         block: Block,
-        validator_set: Option<Vec<B256>>,
     ) -> eyre::Result<Option<Duration>> {
         let (response, rx) = oneshot::channel();
         self.inner
             .unbounded_send(Message::in_current_span(VerifyBlock {
                 round,
                 block: Arc::new(block),
-                validator_set,
                 response,
             }))
             .wrap_err("failed sending validate-block request to agent, this means it exited")?;
@@ -72,8 +64,8 @@ impl Mailbox {
         )
     }
 
-    /// Requests the executor to build a proposal on top of `digest` found at
-    /// `round` and with `height`.
+    /// Requests the executor to build a proposal on top of `digest` in
+    /// `round`.
     ///
     /// The built payload is delivered on the returned channel once the
     /// execution layer finishes constructing it. The receiver may be dropped
@@ -91,7 +83,6 @@ impl Mailbox {
     pub(crate) fn build_proposal(
         &self,
         round: Round,
-        height: Height,
         digest: Digest,
         attributes: TempoPayloadAttributes,
     ) -> eyre::Result<oneshot::Receiver<TempoBuiltPayload>> {
@@ -99,7 +90,6 @@ impl Mailbox {
         self.inner
             .unbounded_send(Message::in_current_span(Build {
                 round,
-                height,
                 digest,
                 attributes: Box::new(attributes),
                 response,
@@ -153,7 +143,6 @@ impl From<PendingHeadReport> for Command {
 #[derive(Debug)]
 pub(super) struct Build {
     pub(super) round: Round,
-    pub(super) height: Height,
     pub(super) digest: Digest,
     pub(super) attributes: Box<TempoPayloadAttributes>,
     pub(super) response: oneshot::Sender<TempoBuiltPayload>,
@@ -163,7 +152,6 @@ pub(super) struct Build {
 pub(super) struct VerifyBlock {
     pub(super) round: Round,
     pub(super) block: Arc<Block>,
-    pub(super) validator_set: Option<Vec<B256>>,
     pub(super) response: oneshot::Sender<Option<Duration>>,
 }
 

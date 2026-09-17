@@ -31,25 +31,16 @@
 //! epochs 1 through 5), it hints to the marshal actor that a finalization
 //! certificate for the node's *current* epoch's boundary height must exist.
 //!
-//! If such a finalization certificate exists, the marshal actor will fetch
-//! and verify it, and move the network finalized tip there. If that happens,
-//! the epoch manager actor will read the DKG outcome from the finalized tip
-//! and move on to the next epoch. It will not start a full simplex engine
-//! (the DKG manager is responsible for driving that), but it will "soft-enter"
-//! the new epoch by registering the new public polynomial on the scheme
-//! provider.
-//!
-//! This process is repeated until the node catches up to the current network
-//! epoch.
+//! Marshal fetches and verifies that certificate, then delivers the missing
+//! blocks in order. Once the DKG manager processes the boundary block, it
+//! persists the next epoch's state and instructs this actor to enter it.
+//! Only that instruction installs the next epoch's scheme and allows hints
+//! for its boundary. This repeats until the node catches up to the network.
 use std::{collections::BTreeMap, num::NonZeroUsize};
 
-use alloy_consensus::BlockHeader as _;
-use commonware_codec::ReadExt as _;
 use commonware_consensus::{
-    Reporters,
-    marshal::{Update, core::DigestFallback},
     simplex::{self, config::Floor, elector, scheme::bls12381_threshold::vrf::Scheme},
-    types::{Epoch, EpochDelta, Epocher as _, Height},
+    types::{Epoch, EpochDelta, Epocher as _},
 };
 use commonware_cryptography::ed25519::PublicKey;
 use commonware_macros::select;
@@ -62,7 +53,7 @@ use commonware_runtime::{
     BufferPooler, Clock, ContextCell, Handle, Network, Spawner, Storage, spawn_cell,
     telemetry::metrics::{Counter, Gauge, GaugeExt as _, MetricsExt as _},
 };
-use commonware_utils::{Acknowledgement as _, NZUsize, vec::NonEmptyVec};
+use commonware_utils::{NZUsize, vec::NonEmptyVec};
 use eyre::{ensure, eyre};
 use futures::{StreamExt as _, channel::mpsc};
 use rand_core::{CryptoRng, Rng};
@@ -83,7 +74,6 @@ pub(crate) struct Actor<TContext, TBlocker> {
     active_epochs: BTreeMap<Epoch, Handle<()>>,
     config: super::Config<TBlocker>,
     context: ContextCell<TContext>,
-    confirmed_latest_network_epoch: Option<Epoch>,
     mailbox: mpsc::UnboundedReceiver<Message>,
     metrics: Metrics,
 }
@@ -140,7 +130,6 @@ where
                 how_often_verifier,
             },
             active_epochs: BTreeMap::new(),
-            confirmed_latest_network_epoch: None,
         }
     }
 
@@ -229,7 +218,7 @@ where
                     let cause = msg.cause;
                     match msg.content {
                         Content::Enter(enter) => {
-                            let _: Result<_, _> = self
+                            if self
                                 .enter(
                                     cause,
                                     enter,
@@ -237,19 +226,13 @@ where
                                     &mut certificate_mux,
                                     &mut resolver_mux,
                                 )
-                                .await;
-                        }
-                        Content::Exit(exit) => self.exit(cause, exit),
-                        Content::Update(update) => {
-                            match *update {
-                                Update::Tip(_, height, digest) => {
-                                    let _ = self.handle_finalized_tip(height, digest).await;
-                                }
-                                Update::Block(_block, ack) => {
-                                    ack.acknowledge();
-                                }
+                                .await
+                                .is_err()
+                            {
+                                return;
                             }
                         }
+                        Content::Exit(exit) => self.exit(cause, exit),
                     }
                 },
             )
@@ -347,13 +330,16 @@ where
                 epoch,
                 floor,
                 scheme,
-                elector: elector::Random,
+                #[expect(
+                    deprecated,
+                    reason = "switching random leader election from V0 to V1 requires a hardfork"
+                )]
+                elector: elector::Random::<commonware_cryptography::Sha256>::new(
+                    elector::RandomVersion::V0,
+                ),
                 strategy: Sequential,
 
-                reporter: Reporters::<_, crate::subblocks::Mailbox, _>::from((
-                    self.config.subblocks.clone(),
-                    self.config.marshal.clone(),
-                )),
+                reporter: self.config.marshal.clone(),
                 partition: format!(
                     "{partition_prefix}_consensus_epoch_{epoch}",
                     partition_prefix = self.config.partition_prefix
@@ -370,12 +356,15 @@ where
                 certification_timeout: self.config.time_to_collect_notarizations,
                 timeout_retry: self.config.time_to_retry_nullify_broadcast,
                 fetch_timeout: self.config.time_for_peer_response,
-                activity_timeout: self.config.views_to_track,
-                skip_timeout: self.config.views_until_leader_skip,
+                view_retention: self.config.views_to_track,
+                skip: simplex::config::SkipPolicy::Enabled {
+                    timeout: self.config.inactive_time_before_leader_skip,
+                    budget: simplex::config::SkipBudget::Participants,
+                },
 
                 mailbox_size: self.config.mailbox_size,
-                fetch_concurrent: crate::config::NUMBER_CONCURRENT_FETCHES,
-                forwarding: commonware_consensus::simplex::config::ForwardingPolicy::Disabled,
+                forward: commonware_consensus::simplex::config::ForwardPolicy::Disabled,
+                track_historical_votes: true,
             },
         );
 
@@ -390,9 +379,6 @@ where
             "there must be no other active engine running: this was ensured at \
             the beginning of this method",
         );
-
-        let latest = self.confirmed_latest_network_epoch.get_or_insert(epoch);
-        *latest = (*latest).max(epoch);
 
         info!("started consensus engine backing the epoch");
 
@@ -448,70 +434,6 @@ where
         }
     }
 
-    #[instrument(
-        skip_all,
-        fields(%height, epoch = tracing::field::Empty),
-        err,
-    )]
-    async fn handle_finalized_tip(&mut self, height: Height, digest: Digest) -> eyre::Result<()> {
-        let epoch_info = self
-            .config
-            .epoch_strategy
-            .containing(height)
-            .expect("epoch strategy is valid for all epochs and heights");
-        Span::current().record("epoch", tracing::field::display(epoch_info.epoch()));
-
-        {
-            let network_epoch = self
-                .confirmed_latest_network_epoch
-                .get_or_insert(epoch_info.epoch());
-            *network_epoch = (*network_epoch).max(epoch_info.epoch());
-        }
-
-        // If the tip contains a boundary block, then:
-        //
-        // 1. request the block from the marshal actor;
-        // 2. read the DKG outcome from the block header;
-        // 3. register the DKG scheme on the scheme provider;
-        // 4. set the confirmed network height to the value in the on-chain
-        // DKG outcome.
-        //
-        // This soft enters the new epoch without spinning up a new simplex
-        // engine, and allows the epoch manager to forward more finalization
-        // hints to the marshal actor.
-        if epoch_info.last() == height {
-            info!(
-                "the finalized tip is a boundary block; requesting the \
-                block to set the scheme for its epoch"
-            );
-            let block = self
-                .config
-                .marshal
-                .subscribe_by_digest(digest, DigestFallback::Wait)
-                .await
-                .map_err(|_| eyre!("marshal never returned the block"))?;
-            let onchain_outcome = tempo_dkg_onchain_artifacts::OnchainDkgOutcome::read(
-                &mut block.header().extra_data().as_ref(),
-            )
-            .expect("boundary blocks must contain DKG outcomes");
-            self.config.scheme_provider.register(
-                onchain_outcome.epoch,
-                Scheme::verifier(
-                    crate::config::NAMESPACE,
-                    onchain_outcome.players().clone(),
-                    onchain_outcome.sharing().clone(),
-                ),
-            );
-            self.confirmed_latest_network_epoch
-                .replace(onchain_outcome.epoch);
-            debug!(
-                next_epoch = %onchain_outcome.epoch,
-                "read DKG outcome from boundary and registered scheme",
-            );
-        }
-        Ok(())
-    }
-
     /// Handles messages for epochs received on un-registered sub-channels.
     ///
     /// If `their_epoch` is known (equal to our current epoch or in the past),
@@ -524,22 +446,9 @@ where
         fields(msg.epoch = %their_epoch, msg.from = %from),
     )]
     async fn handle_msg_for_unregistered_epoch(&mut self, their_epoch: Epoch, from: PublicKey) {
-        let reference_epoch = match (
-            self.active_epochs.keys().last().copied(),
-            self.confirmed_latest_network_epoch,
-        ) {
-            (Some(our), None) => our,
-            (Some(our), Some(confirmed_finalized)) => our.max(confirmed_finalized),
-            (None, Some(confirmed_finalized)) => confirmed_finalized,
-            (None, None) => {
-                debug!(
-                    "received message for unregistered epoch, but we are \
-                    neither running a consensus engine backing an epoch, nor \
-                    do we know what the latest finalized epoch is; there is \
-                    nothing to do",
-                );
-                return;
-            }
+        let Some(reference_epoch) = self.active_epochs.keys().last().copied() else {
+            debug!("received message for unregistered epoch before DKG entered an epoch");
+            return;
         };
 
         if reference_epoch >= their_epoch {

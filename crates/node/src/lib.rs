@@ -18,6 +18,7 @@ pub use reth_transaction_pool::{
     error::{InvalidPoolTransactionError, PoolTransactionError},
 };
 pub use tempo_transaction_pool::{
+    AddressFilter,
     transaction::{TempoPoolTransactionError, TempoPooledTransaction},
     validator::DEFAULT_AA_VALID_AFTER_MAX_SECS,
 };

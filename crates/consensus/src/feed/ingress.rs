@@ -80,7 +80,7 @@ mod tests {
         block_on(async {
             let (sender, mut receiver) = futures::channel::mpsc::unbounded();
             let mut mailbox = Mailbox::new(sender);
-            let block = Block::from_execution_block(
+            let block = Block::try_from_execution_block(
                 SealedBlock::seal_slow(TempoBlock {
                     header: TempoHeader {
                         inner: Header {
