@@ -413,25 +413,25 @@ vergen-git2 = "10.0.1"
 
 [patch.crates-io]
 # Benchmark-only lifecycle scopes on the existing dependency versions.
-commonware-actor = { git = "https://github.com/joshieDo/monorepo", rev = "e755c2f335acb4fccab4cbfd3d4184206742360e" }
-commonware-broadcast = { git = "https://github.com/joshieDo/monorepo", rev = "e755c2f335acb4fccab4cbfd3d4184206742360e" }
-commonware-codec = { git = "https://github.com/joshieDo/monorepo", rev = "e755c2f335acb4fccab4cbfd3d4184206742360e" }
-commonware-codec-macros = { git = "https://github.com/joshieDo/monorepo", rev = "e755c2f335acb4fccab4cbfd3d4184206742360e" }
-commonware-coding = { git = "https://github.com/joshieDo/monorepo", rev = "e755c2f335acb4fccab4cbfd3d4184206742360e" }
-commonware-conformance = { git = "https://github.com/joshieDo/monorepo", rev = "e755c2f335acb4fccab4cbfd3d4184206742360e" }
-commonware-conformance-macros = { git = "https://github.com/joshieDo/monorepo", rev = "e755c2f335acb4fccab4cbfd3d4184206742360e" }
-commonware-consensus = { git = "https://github.com/joshieDo/monorepo", rev = "e755c2f335acb4fccab4cbfd3d4184206742360e" }
-commonware-cryptography = { git = "https://github.com/joshieDo/monorepo", rev = "e755c2f335acb4fccab4cbfd3d4184206742360e" }
-commonware-formatting = { git = "https://github.com/joshieDo/monorepo", rev = "e755c2f335acb4fccab4cbfd3d4184206742360e" }
-commonware-invariants = { git = "https://github.com/joshieDo/monorepo", rev = "e755c2f335acb4fccab4cbfd3d4184206742360e" }
-commonware-macros = { git = "https://github.com/joshieDo/monorepo", rev = "e755c2f335acb4fccab4cbfd3d4184206742360e" }
-commonware-macros-impl = { git = "https://github.com/joshieDo/monorepo", rev = "e755c2f335acb4fccab4cbfd3d4184206742360e" }
-commonware-math = { git = "https://github.com/joshieDo/monorepo", rev = "e755c2f335acb4fccab4cbfd3d4184206742360e" }
-commonware-p2p = { git = "https://github.com/joshieDo/monorepo", rev = "e755c2f335acb4fccab4cbfd3d4184206742360e" }
-commonware-parallel = { git = "https://github.com/joshieDo/monorepo", rev = "e755c2f335acb4fccab4cbfd3d4184206742360e" }
-commonware-resolver = { git = "https://github.com/joshieDo/monorepo", rev = "e755c2f335acb4fccab4cbfd3d4184206742360e" }
-commonware-runtime = { git = "https://github.com/joshieDo/monorepo", rev = "e755c2f335acb4fccab4cbfd3d4184206742360e" }
-commonware-runtime-macros = { git = "https://github.com/joshieDo/monorepo", rev = "e755c2f335acb4fccab4cbfd3d4184206742360e" }
-commonware-storage = { git = "https://github.com/joshieDo/monorepo", rev = "e755c2f335acb4fccab4cbfd3d4184206742360e" }
-commonware-stream = { git = "https://github.com/joshieDo/monorepo", rev = "e755c2f335acb4fccab4cbfd3d4184206742360e" }
-commonware-utils = { git = "https://github.com/joshieDo/monorepo", rev = "e755c2f335acb4fccab4cbfd3d4184206742360e" }
+commonware-actor = { git = "https://github.com/joshieDo/monorepo", rev = "0dfc39c6050c31dc70f43f68879fcb819ff3808a" }
+commonware-broadcast = { git = "https://github.com/joshieDo/monorepo", rev = "0dfc39c6050c31dc70f43f68879fcb819ff3808a" }
+commonware-codec = { git = "https://github.com/joshieDo/monorepo", rev = "0dfc39c6050c31dc70f43f68879fcb819ff3808a" }
+commonware-codec-macros = { git = "https://github.com/joshieDo/monorepo", rev = "0dfc39c6050c31dc70f43f68879fcb819ff3808a" }
+commonware-coding = { git = "https://github.com/joshieDo/monorepo", rev = "0dfc39c6050c31dc70f43f68879fcb819ff3808a" }
+commonware-conformance = { git = "https://github.com/joshieDo/monorepo", rev = "0dfc39c6050c31dc70f43f68879fcb819ff3808a" }
+commonware-conformance-macros = { git = "https://github.com/joshieDo/monorepo", rev = "0dfc39c6050c31dc70f43f68879fcb819ff3808a" }
+commonware-consensus = { git = "https://github.com/joshieDo/monorepo", rev = "0dfc39c6050c31dc70f43f68879fcb819ff3808a" }
+commonware-cryptography = { git = "https://github.com/joshieDo/monorepo", rev = "0dfc39c6050c31dc70f43f68879fcb819ff3808a" }
+commonware-formatting = { git = "https://github.com/joshieDo/monorepo", rev = "0dfc39c6050c31dc70f43f68879fcb819ff3808a" }
+commonware-invariants = { git = "https://github.com/joshieDo/monorepo", rev = "0dfc39c6050c31dc70f43f68879fcb819ff3808a" }
+commonware-macros = { git = "https://github.com/joshieDo/monorepo", rev = "0dfc39c6050c31dc70f43f68879fcb819ff3808a" }
+commonware-macros-impl = { git = "https://github.com/joshieDo/monorepo", rev = "0dfc39c6050c31dc70f43f68879fcb819ff3808a" }
+commonware-math = { git = "https://github.com/joshieDo/monorepo", rev = "0dfc39c6050c31dc70f43f68879fcb819ff3808a" }
+commonware-p2p = { git = "https://github.com/joshieDo/monorepo", rev = "0dfc39c6050c31dc70f43f68879fcb819ff3808a" }
+commonware-parallel = { git = "https://github.com/joshieDo/monorepo", rev = "0dfc39c6050c31dc70f43f68879fcb819ff3808a" }
+commonware-resolver = { git = "https://github.com/joshieDo/monorepo", rev = "0dfc39c6050c31dc70f43f68879fcb819ff3808a" }
+commonware-runtime = { git = "https://github.com/joshieDo/monorepo", rev = "0dfc39c6050c31dc70f43f68879fcb819ff3808a" }
+commonware-runtime-macros = { git = "https://github.com/joshieDo/monorepo", rev = "0dfc39c6050c31dc70f43f68879fcb819ff3808a" }
+commonware-storage = { git = "https://github.com/joshieDo/monorepo", rev = "0dfc39c6050c31dc70f43f68879fcb819ff3808a" }
+commonware-stream = { git = "https://github.com/joshieDo/monorepo", rev = "0dfc39c6050c31dc70f43f68879fcb819ff3808a" }
+commonware-utils = { git = "https://github.com/joshieDo/monorepo", rev = "0dfc39c6050c31dc70f43f68879fcb819ff3808a" }
