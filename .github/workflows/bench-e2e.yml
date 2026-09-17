@@ -375,6 +375,7 @@ jobs:
     env:
       BENCH_CAPACITY_SLOT: ${{ matrix.slot }}
       BENCH_CAPACITY_SLOTS: "4"
+      BENCH_CAPACITY_POLICY: "setup_failure_v2"
       BENCH_LIFECYCLE: ${{ (inputs.profiling == 'lifecycle' || inputs.profiling == 'lifecycle-milestones' || inputs.profiling == 'lifecycle-compare-detail' || inputs.profiling == 'lifecycle-compare-prewarm-cpu') }}
       BENCH_LIFECYCLE_DETAIL: ${{ inputs.profiling == 'lifecycle-compare-detail' && 'compare' || (inputs.profiling == 'lifecycle-milestones' || inputs.profiling == 'lifecycle-compare-prewarm-cpu') && 'milestones' || 'full' }}
       BENCH_LIFECYCLE_PREWARM_CPU: ${{ inputs.profiling == 'lifecycle-compare-prewarm-cpu' && 'compare' || 'disabled' }}
@@ -488,6 +489,16 @@ jobs:
             } catch (_) {
               core.setFailed('Pinned capacity reservation adapter unavailable; benchmark not admitted');
             }
+
+      - name: Publish capacity admission receipt
+        if: ${{ steps.capacity-election.outputs.selected == 'true' && (env.BENCH_CAPACITY_POLICY == 'setup_failure_v2') }}
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
+        with:
+          name: ${{ steps.capacity-election.outputs.admission-name }}
+          path: ${{ steps.capacity-election.outputs.admission-path }}
+          include-hidden-files: true
+          if-no-files-found: error
+          retention-days: 7
 
       - name: Reset workspace directory
         if: steps.capacity-election.outputs.selected == 'true'

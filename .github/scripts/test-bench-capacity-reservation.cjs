@@ -52,7 +52,8 @@ function fixture(options = {}) {
   const env = { PATH: process.env.PATH, GITHUB_WORKSPACE: workspace, RUNNER_TEMP: workspace,
     GITHUB_RUN_ATTEMPT: '3', BENCH_CAPACITY_SLOT: String(options.slot || 1), BENCH_CAPACITY_SLOTS: String(options.slots || 2),
     BENCH_LIFECYCLE: 'true', BENCH_NO_SLACK: 'true', GITHUB_TOKEN: secret };
-  const messages = []; const output = {}; const requests = []; let clock = 0; let lists = 0;
+  if (options.policy !== undefined) env.BENCH_CAPACITY_POLICY = options.policy;
+  const messages = []; const output = {}; const requests = []; let clock = 0; let lists = 0; let jobLists = 0;
   const core = { setOutput: (k, v) => { output[k] = v; }, info: m => messages.push(String(m)),
     setFailed: m => messages.push(`FAILED:${m}`) };
   const github = { rest: { repos: { getContent: async args => {
@@ -67,7 +68,15 @@ function fixture(options = {}) {
     if (options.sourceClock) clock += options.sourceClock;
     const text = args.path.endsWith('capacity_election.py') ? election : probeSource;
     return { data: { type: 'file', encoding: 'base64', size: Buffer.byteLength(text), content: Buffer.from(text).toString('base64') } };
-  } }, actions: { listWorkflowRunArtifacts: async args => {
+  } }, actions: { listJobsForWorkflowRunAttempt: async args => {
+    requests.push(['jobs', args]);
+    assert.equal(args.run_id, context.runId); assert.equal(args.attempt_number, 3); assert.equal(args.per_page, 100);
+    assert.ok(args.request.signal instanceof AbortSignal);
+    if (options.jobsError) throw new Error(secret);
+    if (options.jobsClock) clock += options.jobsClock;
+    const data = options.jobPages ? options.jobPages[Math.min(jobLists++, options.jobPages.length-1)] : options.jobs;
+    return {data};
+  }, listWorkflowRunArtifacts: async args => {
     requests.push(['list', args]); assert.equal(args.run_id, context.runId); assert.equal(args.per_page, 100);
     assert.ok(args.request.signal instanceof AbortSignal);
     assert.equal(args.request.signal.aborted, false);
@@ -90,7 +99,7 @@ function fixture(options = {}) {
     assert.equal(command, 'python3'); assert.equal(args[0], '-I'); assert.equal(args[1], '-c');
     assert.ok([election, adapter.EXTRACT_RECEIPT].includes(args[2]));
     assert.equal(opts.env.GITHUB_TOKEN, undefined); assert.ok(opts.timeout > 0 && opts.timeout <= 60000);
-    if (args[2] === election) assert.deepEqual(args.slice(3), ['--workflow-sha', SHA, '--run-id', '12345', '--run-attempt', '3', '--slots', String(options.slots || 2)]);
+    if (args[2] === election) assert.deepEqual(args.slice(3), ['--workflow-sha', SHA, '--run-id', '12345', '--run-attempt', '3', '--slots', String(options.slots || 2), ...(options.policy === adapter.SETUP_FAILURE_POLICY ? ['--policy', adapter.SETUP_FAILURE_POLICY] : [])]);
     if (options.pythonResult) return options.pythonResult;
     const result = spawnSync(command, args, opts);
     if (options.pythonClock) clock += options.pythonClock;
@@ -105,7 +114,9 @@ async function elect(options = {}) {
   try {
     await adapter.elect({ ...f, timeoutMs: options.timeoutMs ?? 9000 });
     assert.ok(f.messages.every(m => !m.includes(secret)));
-    return { output: f.output, messages: f.messages, requests: f.requests, elapsed: f.now() };
+    const admission = f.output['admission-path'] ? JSON.parse(fs.readFileSync(path.join(f.env.GITHUB_WORKSPACE,f.output['admission-path']),'utf8')) : null;
+    assert.ok(!JSON.stringify(admission).includes(secret));
+    return { output: f.output, messages: f.messages, requests: f.requests, elapsed: f.now(), admission };
   } finally { f.close(); }
 }
 function rejected(result) {
@@ -382,4 +393,116 @@ test('four-slot probe preserves closed receipt schema and exact configuration ad
     assert.deepEqual(value,receipt(4,96));
     assert.equal(f.output['artifact-name'],'bench-capacity-reservation-12345-3-4');
   } finally {f.close();}
+});
+
+function job(slot, failed = false) {
+  return { id:500+slot, run_id:12345, run_attempt:3, head_sha:SHA,
+    name:`bench-e2e (reserved slot ${slot})`, status:failed?'completed':'in_progress',
+    conclusion:failed?'failure':null, started_at:'2026-09-17T09:00:00Z',
+    completed_at:failed?'2026-09-17T09:00:10Z':null,
+    runner_name:secret, labels:[secret], steps:[{number:1,name:'Set up job',status:'completed',
+      conclusion:failed?'failure':'success',started_at:'2026-09-17T09:00:01Z',completed_at:'2026-09-17T09:00:09Z'}] };
+}
+function accountedOptions(failed = [4]) {
+  return {slots:4,slot:2,policy:adapter.SETUP_FAILURE_POLICY,
+    jobs:{total_count:4,jobs:[1,2,3,4].map(slot=>job(slot,failed.includes(slot)))},
+    artifacts:[1,2,3,4].filter(slot=>!failed.includes(slot)).map(artifact)};
+}
+
+test('setup-only accounting requires every slot and emits only exact sanitized winner evidence', async () => {
+  const base=accountedOptions();
+  for (const order of permutations([1,2,3,4])) {
+    for (const slot of [1,2,3]) {
+      const result=await elect({...base,slot,jobs:{total_count:4,jobs:order.map(i=>job(i,i===4))}});
+      assert.ok(!result.messages.some(m=>m.startsWith('FAILED:')));
+      assert.equal(result.output.selected,String(slot===2));
+      assert.equal(result.requests.filter(([kind])=>kind==='jobs').length,2);
+      if(slot===2) {
+        assert.deepEqual(Object.keys(result.admission).sort(),['schema','policy','workflow_sha','run_id','run_attempt','slots','selected_slot','setup_failed_slots','capacity_receipts','election'].sort());
+        assert.deepEqual(result.admission.setup_failed_slots,[4]);
+        assert.equal(result.output['admission-name'],'bench-capacity-admission-12345-3');
+        assert.equal(result.admission.schema,2);assert.equal(result.admission.selected_slot,2);
+        assert.deepEqual(result.admission.capacity_receipts,[1,2,3].map(slot=>({slot,sha256:require('node:crypto').createHash('sha256').update(JSON.stringify(receipt(slot))).digest('hex')})));
+      } else assert.equal(result.admission,null);
+    }
+  }
+  for (const failed of [[1],[2],[3],[4],[1,2,3]]) {
+    const options=accountedOptions(failed);options.slot=failed.includes(2)?(failed.includes(3)?4:3):2;
+    const result=await elect(options);assert.equal(result.output.selected,'true');
+    assert.deepEqual(result.admission.setup_failed_slots,failed);
+  }
+  const normal=await elect(accountedOptions([]));assert.equal(normal.output.selected,'true');
+  assert.deepEqual(normal.admission.setup_failed_slots,[]);
+});
+
+test('setup-only accounting rejects every ambiguous API step binding or timestamp', async () => {
+  const changes=[
+    j=>{j.status='in_progress';j.conclusion=null;},
+    j=>{j.status='queued';j.conclusion=null;},
+    j=>{j.conclusion='cancelled';},j=>{j.conclusion='timed_out';},j=>{j.conclusion='success';},
+    j=>{j.steps.push({...j.steps[0],number:2,name:'Probe reserved runner capacity'});},
+    j=>{j.steps.push({...j.steps[0],number:2,name:'Run e2e benchmark',conclusion:'skipped'});},
+    j=>{j.steps[0].name='Probe reserved runner capacity';},j=>{j.steps[0].number=2;},
+    j=>{j.steps[0].conclusion='success';},j=>{j.steps[0].status='in_progress';},
+    j=>{j.steps[0].private=secret;},j=>{j.steps[0].started_at='2026-09-17T08:59:59Z';},
+    j=>{j.steps[0].completed_at='2026-09-17T09:00:11Z';},
+    j=>{j.completed_at='2026-09-17T08:00:00Z';},j=>{j.started_at='2026-02-31T09:00:00Z';},
+    j=>{j.steps[0].completed_at=null;},j=>{j.steps[0].number=true;},
+    j=>{j.run_id++;},j=>{j.run_attempt++;},j=>{j.head_sha='2'.repeat(40);},
+    j=>{j.id=501;},j=>{j.name='bench-e2e (reserved slot 3)';},j=>{j.name='untrusted';},
+  ];
+  for(const change of changes) {
+    const options=accountedOptions();change(options.jobs.jobs[3]);
+    const result=await elect(options);rejected(result);assert.equal(result.admission,null);
+  }
+  for(const data of [{total_count:5,jobs:[1,2,3,4,5].map(i=>job(i,true))},
+      {total_count:4,jobs:[job(1),job(2),job(3)]},
+      {total_count:true,jobs:[]}, {total_count:4,jobs:[job(1),job(2),job(3),{...job(4,true),labels:['x'.repeat(65536)]}]}]) {
+    rejected(await elect({...accountedOptions(),jobs:data}));
+  }
+});
+
+test('setup accounting has no missing receipt API error deadline or final snapshot fallback', async () => {
+  const base=accountedOptions();
+  for(const options of [{jobsError:true},{jobsClock:9000},{jobsClock:4500},
+      {downloadClock:3000},{pythonClock:3000}, {artifacts:[artifact(1),artifact(2)]},
+      {artifacts:[artifact(1),artifact(2),artifact(3),artifact(4)]},
+      {jobs:{total_count:3,jobs:[job(1),job(2),job(3)]}},
+      {jobs:{total_count:4,jobs:[1,2,3,4].map(i=>job(i,true))},artifacts:[]}]) {
+    rejected(await elect({...base,...options}));
+  }
+  const changed=structuredClone(base.jobs);changed.jobs[3].steps[0].name='Run e2e benchmark';
+  rejected(await elect({...base,jobPages:[base.jobs,changed]}));
+  const replaced=base.artifacts.map(a=>a.id===103?{...a,id:104}:a);
+  rejected(await elect({...base,pages:[base.artifacts,replaced]}));
+  const zips=new Map(validZips);zips.set(103,zip(JSON.stringify(receipt(3)).replace('"schema":1','"schema":1,"schema":1')));
+  rejected(await elect({...base,zips}));
+  const low=new Map([1,2,3].map(slot=>[100+slot,zip(JSON.stringify(receipt(slot,48)))]));
+  rejected(await elect({...base,zips:low}));
+  // No opt-in: a terminal setup shape never substitutes for a fourth receipt.
+  const legacy=await elect({...base,policy:'strict_v1'});rejected(legacy);
+  assert.equal(legacy.requests.filter(([kind])=>kind==='jobs').length,0);
+});
+
+test('setup policy is a closed fixed four-slot choice', () => {
+  const f=fixture({slots:4,slot:2});
+  try {
+    for(const policy of ['',true,'setup_failure_v3']) assert.throws(()=>adapter.binding(context,{...f.env,BENCH_CAPACITY_POLICY:policy}));
+    for(const slots of ['2','3']) assert.throws(()=>adapter.binding(context,{...f.env,BENCH_CAPACITY_POLICY:adapter.SETUP_FAILURE_POLICY,BENCH_CAPACITY_SLOTS:slots}));
+    assert.equal(adapter.binding(context,f.env).policy,'strict_v1');
+  } finally {f.close();}
+});
+
+test('setup metadata network await aborts under the same real deadline', async () => {
+  const f=fixture(accountedOptions());let observed=false;
+  f.github.rest.actions.listJobsForWorkflowRunAttempt=async args=>new Promise((resolve,reject)=>{
+    args.request.signal.addEventListener('abort',()=>{observed=true;reject(new Error(secret));},{once:true});
+  });
+  const keepAlive=setTimeout(()=>{},1000);
+  try {
+    await adapter.elect({...f,now:()=>performance.now(),timeoutMs:25});
+    assert.equal(observed,true);rejected({output:f.output,messages:f.messages});
+    assert.ok(f.messages.every(m=>!m.includes(secret)));
+    assert.equal(f.output['admission-path'],undefined);
+  } finally {clearTimeout(keepAlive);f.close();}
 });
