@@ -125,11 +125,17 @@ name = "tempo"
 path = "src/main.rs"
 
 [[bin]]
+name = "tempo-v2"
+path = "src/v2.rs"
+required-features = ["fixed-t11"]
+
+[[bin]]
 name = "tempo-localnet"
 path = "src/localnet.rs"
 required-features = ["localnet"]
 
 [features]
+fixed-t11 = ["tempo-chainspec/fixed-t11"]
 default = ["asm-keccak", "jemalloc", "otlp", "keccak-cache-global"]
 
 localnet = ["dep:nix"]

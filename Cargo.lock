@@ -13832,6 +13832,22 @@ dependencies = [
 ]
 
 [[package]]
+name = "tempo-multiplex"
+version = "1.14.0"
+dependencies = [
+ "axum",
+ "clap",
+ "eyre",
+ "futures",
+ "reqwest 0.13.3",
+ "rustls",
+ "serde",
+ "serde_json",
+ "tempfile",
+ "tokio",
+]
+
+[[package]]
 name = "tempo-node"
 version = "1.14.0"
 dependencies = [

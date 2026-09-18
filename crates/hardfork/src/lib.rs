@@ -76,7 +76,7 @@ macro_rules! tempo_hardfork {
                 $(
                     #[doc = concat!("Returns true if this hardfork is ", stringify!($variant), " or later.")]
                     pub const fn [<is_ $variant:lower>](&self) -> bool {
-                        *self as u64 >= Self::$variant as u64
+                        self.execution_spec() as u64 >= Self::$variant as u64
                     }
                 )*
             }
@@ -144,7 +144,12 @@ macro_rules! tempo_hardfork {
                             .expect(concat!(stringify!($variant), " missing from VARIANTS"));
                         for (i, fork) in TempoHardfork::VARIANTS.iter().enumerate() {
                             let active = TempoHardfork::[<is_ $variant:lower>](fork);
-                            if i >= idx {
+                            let active_index = if cfg!(feature = "fixed-t11") {
+                                T11.variant_index() as usize
+                            } else {
+                                i
+                            };
+                            if active_index >= idx {
                                 assert!(active, "{fork:?} should satisfy is_{}", stringify!([<$variant:lower>]));
                             } else {
                                 assert!(!active, "{fork:?} should not satisfy is_{}", stringify!([<$variant:lower>]));
@@ -230,6 +235,26 @@ tempo_hardfork!(
 );
 
 impl TempoHardfork {
+    /// The only protocol executed by the v2 binary.
+    pub const CURRENT: Self = Self::T11;
+
+    /// Whether this build excludes historical execution rules.
+    pub const FIXED_EXECUTION: bool = cfg!(feature = "fixed-t11");
+
+    /// Select execution rules at compile time for v2. Historical identifiers and activation
+    /// metadata remain available for chain identity, SDKs, and the v1/v2 handover.
+    #[inline(always)]
+    pub const fn execution_spec(&self) -> Self {
+        #[cfg(feature = "fixed-t11")]
+        {
+            Self::CURRENT
+        }
+        #[cfg(not(feature = "fixed-t11"))]
+        {
+            *self
+        }
+    }
+
     /// Returns the position of this hardfork in [`Self::VARIANTS`].
     ///
     /// Useful for storing the hardfork in an atomic, see [`Self::from_variant_index`].

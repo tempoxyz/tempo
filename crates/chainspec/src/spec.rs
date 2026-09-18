@@ -446,6 +446,9 @@ macro_rules! tempo_hardforks_trait {
 
             /// Retrieves the Tempo hardfork active at a given timestamp.
             fn tempo_hardfork_at(&self, timestamp: u64) -> TempoHardfork {
+                if TempoHardfork::FIXED_EXECUTION {
+                    return TempoHardfork::CURRENT;
+                }
                 for &fork in TempoHardfork::VARIANTS.iter().rev() {
                     if self
                         .tempo_fork_activation(fork)
@@ -461,6 +464,9 @@ macro_rules! tempo_hardforks_trait {
                 $(
                     #[doc = concat!("Returns true if ", stringify!($variant), " is active at the given timestamp.")]
                     fn [<is_ $variant:lower _active_at_timestamp>](&self, timestamp: u64) -> bool {
+                        if TempoHardfork::FIXED_EXECUTION {
+                            return TempoHardfork::CURRENT >= TempoHardfork::$variant;
+                        }
                         self.tempo_fork_activation(TempoHardfork::$variant)
                             .active_at_timestamp(timestamp)
                     }

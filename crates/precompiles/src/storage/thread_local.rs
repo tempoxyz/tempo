@@ -236,7 +236,11 @@ impl StorageCtx {
 
     /// Returns the currently active hardfork.
     pub fn spec(&self) -> TempoHardfork {
-        Self::with_storage(|s| s.spec())
+        if TempoHardfork::FIXED_EXECUTION {
+            TempoHardfork::CURRENT
+        } else {
+            Self::with_storage(|s| s.spec())
+        }
     }
 
     /// Returns the shared storage-actions recorder for the current storage context.

@@ -85,6 +85,23 @@ impl FeeTokenResolver for TempoEvmConfig {
 }
 
 impl TempoEvmConfig {
+    /// Refuse to execute historical state with v2 rules. Genesis/headers may still be read
+    /// from a checkpoint; replay and historical calls must go through tempo-multiplex.
+    fn validate_execution_timestamp(&self, timestamp: u64) -> Result<(), TempoEvmError> {
+        if TempoHardfork::FIXED_EXECUTION
+            && !self
+                .chain_spec()
+                .tempo_fork_activation(TempoHardfork::CURRENT)
+                .active_at_timestamp(timestamp)
+        {
+            return Err(TempoEvmError::InvalidEvmConfig(
+                "tempo-v2 cannot execute pre-T11 blocks; use tempo-multiplex and a T11 checkpoint"
+                    .into(),
+            ));
+        }
+        Ok(())
+    }
+
     /// Create a new [`TempoEvmConfig`] with the given chain spec and EVM factory.
     pub fn new(chain_spec: Arc<TempoChainSpec>) -> Self {
         let inner =
@@ -163,6 +180,7 @@ impl ConfigureEvm for TempoEvmConfig {
     }
 
     fn evm_env(&self, header: &TempoHeader) -> Result<EvmEnvFor<Self>, Self::Error> {
+        self.validate_execution_timestamp(header.timestamp())?;
         let EvmEnv { cfg_env, block_env } = EvmEnv::for_eth_block(
             header,
             self.chain_spec(),
@@ -211,6 +229,7 @@ impl ConfigureEvm for TempoEvmConfig {
         parent: &TempoHeader,
         attributes: &Self::NextBlockEnvCtx,
     ) -> Result<EvmEnvFor<Self>, Self::Error> {
+        self.validate_execution_timestamp(attributes.timestamp)?;
         let EvmEnv { cfg_env, block_env } = EvmEnv::for_eth_next_block(
             parent,
             NextEvmEnvAttributes {

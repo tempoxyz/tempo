@@ -27,6 +27,7 @@ serde = { workspace = true, optional = true }
 serde_json.workspace = true
 
 [features]
+fixed-t11 = []
 default = ["std", "serde"]
 std = [
     "alloy-eips/std",
