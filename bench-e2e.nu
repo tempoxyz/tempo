@@ -639,6 +639,29 @@ def start-e2e-local-node [
     }
 }
 
+# Diagnostic artifacts: retain the exact resource constraints and reclaim/I/O
+# counters for each node before its systemd scope disappears at shutdown.
+def e2e-record-cgroup [phase: string, point: string, results_dir: string] {
+    if (which systemctl | is-empty) { return }
+    let unit_phase = ($phase | str replace -a "_" "-" | str replace -a "." "-")
+    for role in ["a" "b"] {
+        let unit = $"tempo-e2e-($role)-($unit_phase).scope"
+        let result = (systemctl show --property=ControlGroup --value $unit | complete)
+        if $result.exit_code != 0 { continue }
+        let cgroup = ($result.stdout | str trim)
+        if $cgroup == "" { continue }
+        mut counters = {}
+        for name in ["memory.current" "memory.peak" "memory.max" "memory.events" "memory.stat" "memory.pressure" "memory.swap.current" "io.stat" "cpu.stat"] {
+            let path = $"/sys/fs/cgroup($cgroup)/($name)"
+            if ($path | path exists) {
+                $counters = ($counters | insert $name (open --raw $path))
+            }
+        }
+        { phase: $phase, point: $point, role: $role, unit: $unit, cgroup: $cgroup, timestamp_ms: ((date now | into int) / 1_000_000 | into int), counters: $counters }
+            | to json | save -f $"($results_dir)/cgroup-($phase)-($role)-($point).json"
+    }
+}
+
 def build-e2e-consensus-args [node_dir: string, trusted_peers: string, port: int, consensus_ip: string] {
     let addr = ($node_dir | path basename)
     let inferred_ip = if ($addr | str contains ":") {
@@ -1141,6 +1164,7 @@ def run-local-e2e-phase [run: record, ctx: record] {
     let submit_rpc_url = [$a_rpc $b_rpc] | str join ","
 
     if $phase_exit == 0 {
+        e2e-record-cgroup $phase "start" $ctx.results_dir
         let phase_started_ms = ((date now | into int) / 1_000_000 | into int)
         let initial_db_size_bytes = (e2e-db-size-bytes $ctx.a.datadir)
         let sender_exit = (try {
@@ -1203,6 +1227,7 @@ def run-local-e2e-phase [run: record, ctx: record] {
         print $"Skipping local e2e sender for ($phase) because readiness checks failed"
     }
 
+    e2e-record-cgroup $phase "end" $ctx.results_dir
     if $tracy_capture_started {
         print "  Stopping validators before tracy-capture so Tracy can record graceful node shutdown..."
     }

@@ -814,12 +814,17 @@ def txgen-run-preset-pipeline [
         "--rpc" $generate_rpc_url
     ]
     let metrics_url_args = ($metrics_url | each { |url| ["--metrics-url" $url] } | flatten)
-    # Diagnostic comparison only: isolate the observer's disk/CPU load while
-    # keeping the node binary, workload, and cache settings identical.
-    let scrape_interval_ms = if ($benchmark_run starts-with "feature") { 2000 } else { $TXGEN_HELPER_SCRAPE_INTERVAL_MS }
+    # Diagnostic comparison only: change the sample spool encoding while keeping
+    # the node, generator, workload, caches, and sampling cadence identical.
+    let baseline_run = ($benchmark_run starts-with "baseline")
+    let bench_bin = if $baseline_run { $env.TXGEN_BASELINE_BENCH_BIN } else { $txgen_bench_bin }
+    let bench_ref = if $baseline_run { $env.TXGEN_BASELINE_BENCH_REV } else { $env.TXGEN_FEATURE_BENCH_REV }
+    let sample_encoding = if $baseline_run { "uncompressed" } else { "gzip-fast" }
+    let scrape_interval_ms = $TXGEN_HELPER_SCRAPE_INTERVAL_MS
     print $"  Metrics scrape interval: ($scrape_interval_ms)ms"
+    print $"  Metric sample spool: ($sample_encoding), bench revision: ($bench_ref)"
     let bench_send_base_cmd = [
-        $txgen_bench_bin
+        $bench_bin
         "send"
         "--rpc-url" $submit_rpc_url
         "--tps" $tps
@@ -844,6 +849,8 @@ def txgen-run-preset-pipeline [
         "-m" $"target_tps=($tps)"
         "-m" $"run_duration_secs=($duration)"
         "-m" $"metrics_scrape_interval_ms=($scrape_interval_ms)"
+        "-m" $"metric_sample_spool=($sample_encoding)"
+        "-m" $"txgen_bench_rev=($bench_ref)"
         "-m" $"accounts=($total_accounts)"
         "-m" $"total_connections=($max_concurrent_requests)"
         "-m" $"bloat_mib=($bloat_mib)"

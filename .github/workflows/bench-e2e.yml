@@ -640,6 +640,21 @@ jobs:
           command -v txgen-tempo
           command -v bench
 
+      - name: Install compressed-metric bench for diagnostic comparison
+        run: |
+          BASELINE_BENCH_REV=41bddc328d92b0a9f49966208129c7b8805e7e65
+          FEATURE_BENCH_REV=8f98268140265b6ef4409b78e526985c701f5d39
+          if [ "$BENCH_TXGEN_REF" != "$BASELINE_BENCH_REV" ]; then
+            echo "::error::diagnostic comparison requires the pinned baseline txgen revision"
+            exit 1
+          fi
+          FEATURE_BENCH_ROOT="$RUNNER_TEMP/txgen-compressed-metrics"
+          cargo install --git https://github.com/tempoxyz/txgen --locked --rev "$FEATURE_BENCH_REV" --root "$FEATURE_BENCH_ROOT" bench-cli
+          echo "TXGEN_BASELINE_BENCH_BIN=$TXGEN_BENCH_BIN" >> "$GITHUB_ENV"
+          echo "TXGEN_BASELINE_BENCH_REV=$BASELINE_BENCH_REV" >> "$GITHUB_ENV"
+          echo "TXGEN_FEATURE_BENCH_REV=$FEATURE_BENCH_REV" >> "$GITHUB_ENV"
+          echo "TXGEN_BENCH_BIN=$FEATURE_BENCH_ROOT/bin/bench" >> "$GITHUB_ENV"
+
       - name: Install tracy-capture
         if: env.BENCH_TRACY != 'off'
         run: |
