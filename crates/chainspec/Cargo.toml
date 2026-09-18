@@ -40,6 +40,7 @@ commonware-cryptography = { workspace = true, optional = true }
 [dev-dependencies]
 
 [features]
+account-ext = ["reth-chainspec?/account-ext"]
 default = ["std", "serde", "reth", "cli"]
 std = [
     "tempo-hardfork/std",

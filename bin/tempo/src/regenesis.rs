@@ -344,6 +344,7 @@ fn genesis_account_replacement(
         nonce: genesis_account.nonce.unwrap_or_default(),
         balance: genesis_account.balance,
         bytecode_hash: bytecode.as_ref().map(|(hash, _)| *hash),
+        extension: genesis_account.extension.clone(),
     };
     let storage = genesis_storage_entries(genesis_account);
     let mut hashed_storage = storage
@@ -373,11 +374,12 @@ where
     P: DBProvider,
 {
     let mut hashed_state = HashedPostState::default()
-        .with_accounts(
-            replacements
-                .iter()
-                .map(|replacement| (replacement.hashed_address, Some(replacement.account))),
-        )
+        .with_accounts(replacements.iter().map(|replacement| {
+            (
+                replacement.hashed_address,
+                Some(replacement.account.clone()),
+            )
+        }))
         .with_storages(replacements.iter().map(|replacement| {
             let storage = HashedStorage {
                 storage: replacement
@@ -873,7 +875,7 @@ where
         if let Some((hash, bytecode)) = &replacement.bytecode {
             tx.put::<tables::Bytecodes>(*hash, bytecode.clone())?;
         }
-        tx.put::<tables::HashedAccounts>(replacement.hashed_address, replacement.account)?;
+        tx.put::<tables::HashedAccounts>(replacement.hashed_address, replacement.account.clone())?;
     }
 
     Ok(())
@@ -975,10 +977,13 @@ mod tests {
         let value = B256::repeat_byte(0x33);
         let account = GenesisAccount {
             storage: Some(BTreeMap::from([(raw_slot, value), (zero_slot, B256::ZERO)])),
+            extension: reth_primitives_traits::AccountExtension::copy_from_slice(&[0x42; 32]),
             ..Default::default()
         };
 
         let replacement = genesis_account_replacement(Address::ZERO, &account).unwrap();
+
+        assert_eq!(replacement.account.extension, account.extension);
 
         assert_eq!(replacement.hashed_storage.len(), 1);
         assert_eq!(replacement.hashed_storage[0].key, keccak256(raw_slot));
