@@ -103,3 +103,16 @@ cargo +nightly clippy -p tempo-multiplex --all-targets -- -D warnings
 Routing tests use distinct HTTP backends and cover the exact boundary, tags,
 hash/transaction lookups, cross-boundary logs and fees, revert data, write routing,
 notifications, mixed batches, parse errors, and checkpoint disagreement.
+
+The real-node smoke test creates a local dev chain with a future T11 timestamp,
+mines through the upgrade with v1, stops it cleanly, copies the database for v2,
+and launches the supervisor. It checks historical/current calls and traces,
+T11's strict ABI decoding change, refusal of historical execution by v2,
+cross-boundary logs/fees, clean shutdown, restart, and continued block production.
+It leaves the tested endpoint running on port `18545` and prints a JSON report.
+
+```sh
+git show v1.14.0:crates/chainspec/src/genesis/dev.json > /tmp/multiplex-v1-genesis.json
+MULTIPLEX_GENESIS=/tmp/multiplex-v1-genesis.json node contrib/multiplex/smoke.mjs \
+  /opt/tempo/v1.14.0/tempo target/release/tempo-v2 target/release/tempo-multiplex
+```
