@@ -10,7 +10,7 @@ pub(crate) use ingress::Mailbox;
 use commonware_consensus::types::{FixedEpocher, ViewDelta};
 use commonware_p2p::Blocker;
 use commonware_runtime::{
-    BufferPooler, Clock, Metrics, Network, Spawner, Storage, buffer::paged::CacheRef,
+    buffer::paged::CacheRef, BufferPooler, Clock, Metrics, Network, Spawner, Storage,
 };
 use rand_core::{CryptoRng, Rng};
 use tempo_node::TempoFullNode;
@@ -18,7 +18,7 @@ use tempo_node::TempoFullNode;
 use crate::epoch::scheme_provider::SchemeProvider;
 
 pub(crate) struct Config<TBlocker> {
-    pub(crate) application: crate::consensus::application::Mailbox,
+    pub(crate) application: crate::consensus::application::Application,
     pub(crate) execution_node: Arc<TempoFullNode>,
     pub(crate) blocker: TBlocker,
     pub(crate) page_cache: CacheRef,
