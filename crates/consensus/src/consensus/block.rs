@@ -672,7 +672,10 @@ mod tests {
 
         assert_eq!(decoded, block);
         assert_eq!(
-            decoded.block_access_list.as_ref().map(|bytes| bytes.as_ref()),
+            decoded
+                .block_access_list
+                .as_ref()
+                .map(|bytes| bytes.as_ref()),
             Some(block_access_list.as_ref())
         );
     }

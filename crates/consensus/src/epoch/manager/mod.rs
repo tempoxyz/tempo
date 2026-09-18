@@ -10,7 +10,7 @@ pub(crate) use ingress::Mailbox;
 use commonware_consensus::types::{FixedEpocher, ViewDelta};
 use commonware_p2p::Blocker;
 use commonware_runtime::{
-    buffer::paged::CacheRef, BufferPooler, Clock, Metrics, Network, Spawner, Storage,
+    BufferPooler, Clock, Metrics, Network, Spawner, Storage, buffer::paged::CacheRef,
 };
 use rand_core::{CryptoRng, Rng};
 use tempo_node::TempoFullNode;
