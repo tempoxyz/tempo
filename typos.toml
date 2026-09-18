@@ -23,7 +23,6 @@ Nam = "Nam"
 prool = "prool"
 Prool = "Prool"
 JOD = "JOD"
-COSE = "COSE"
 
 [default.extend-identifiers]
 cose = "cose"
