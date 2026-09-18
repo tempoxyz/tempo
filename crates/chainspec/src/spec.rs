@@ -404,19 +404,15 @@ impl EthChainSpec for TempoChainSpec {
         self.inner.get_final_paris_total_difficulty()
     }
 
-    fn next_block_base_fee(&self, parent: &TempoHeader, target_timestamp: u64) -> Option<u64> {
-        let _target_fork = self.tempo_hardfork_at(target_timestamp);
-
-        {
-            let parent_base_fee = parent
-                .inner
-                .base_fee_per_gas
-                .expect("tempo blocks are expected to have a base fee");
-            Some(tempo_t7_next_block_base_fee(
-                parent_base_fee,
-                parent.inner.gas_used,
-            ))
-        }
+    fn next_block_base_fee(&self, parent: &TempoHeader, _target_timestamp: u64) -> Option<u64> {
+        let parent_base_fee = parent
+            .inner
+            .base_fee_per_gas
+            .expect("tempo blocks are expected to have a base fee");
+        Some(tempo_t7_next_block_base_fee(
+            parent_base_fee,
+            parent.inner.gas_used,
+        ))
     }
 }
 
@@ -477,7 +473,7 @@ impl TempoHardforks for TempoChainSpec {
 
 /// Chain-spec policy for Tempo consensus header gas limits.
 ///
-/// The hardfork schedule determines the default Tempo L1 policy, while chains that reuse the
+/// The current protocol determines the default Tempo L1 policy, while chains that reuse the
 /// Tempo block format may define their own gas partitioning.
 pub trait TempoConsensusSpec: EthChainSpec<Header = TempoHeader> + TempoHardforks {
     /// Returns the shared gas limit for the given timestamp and block gas limit.

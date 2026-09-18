@@ -592,7 +592,10 @@ where
 mod tests {
     use super::*;
     use crate::test_utils::{TestExecutorBuilder, test_chainspec, test_evm};
-    use alloy_consensus::{Signed, TxLegacy, transaction::Recovered};
+    use alloy_consensus::{
+        Signed, TxLegacy,
+        transaction::{Recovered, TxHashRef},
+    };
     use alloy_evm::{block::BlockExecutor, eth::receipt_builder::ReceiptBuilder};
     use alloy_primitives::{Bytes, Log, Signature, TxKind, address, bytes::BytesMut};
     use alloy_rlp::Encodable;
