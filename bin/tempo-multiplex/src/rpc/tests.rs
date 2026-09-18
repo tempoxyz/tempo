@@ -139,6 +139,11 @@ async fn routes_boundary_tags_hashes_and_transactions() {
             .unwrap();
         assert_eq!(result["backend"], expected);
     }
+    let safe = rpc
+        .route("eth_call", &[json!({}), json!("safe")])
+        .await
+        .unwrap();
+    assert_eq!(safe["params"][1], "0x8");
     for task in tasks {
         task.abort();
     }
@@ -274,4 +279,19 @@ fn rejects_malformed_quantities() {
     ] {
         assert!(quantity(&bad).is_err());
     }
+}
+
+#[tokio::test]
+async fn backend_failure_never_falls_back_to_other_execution_rules() {
+    let (rpc, tasks, mocks) = setup().await;
+    tasks[0].abort();
+    tokio::task::yield_now().await;
+    assert_eq!(
+        rpc.route("eth_call", &[json!({}), json!("0x9")])
+            .await
+            .unwrap_err()["code"],
+        -32002
+    );
+    assert!(mocks[1].calls.lock().unwrap().is_empty());
+    tasks[1].abort();
 }

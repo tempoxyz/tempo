@@ -10,6 +10,40 @@ pub(crate) struct Backend {
     pub args: Vec<String>,
 }
 
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn rejects_shared_or_nested_data_directories() {
+        let root = tempfile::tempdir().unwrap();
+        let v1 = root.path().join("v1");
+        let v2 = root.path().join("v2");
+        std::fs::create_dir(&v1).unwrap();
+        std::fs::create_dir(&v2).unwrap();
+        let mut config = Config {
+            listen: "127.0.0.1:8545".parse().unwrap(),
+            cutover_block: 10,
+            parent_hash: format!("0x{:064x}", 9),
+            v1: Backend {
+                rpc: "http://127.0.0.1:8546".into(),
+                binary: "tempo-v1".into(),
+                args: vec!["--datadir".into(), v1.display().to_string()],
+            },
+            v2: Backend {
+                rpc: "http://127.0.0.1:8547".into(),
+                binary: "tempo-v2".into(),
+                args: vec!["--datadir".into(), v2.display().to_string()],
+            },
+        };
+        config.validate().unwrap();
+        config.v2.args[1] = v1.display().to_string();
+        assert!(config.validate().is_err());
+        config.v2.args[1] = root.path().display().to_string();
+        assert!(config.validate().is_err());
+    }
+}
+
 #[derive(Clone, Debug, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub(crate) struct Config {

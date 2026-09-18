@@ -354,11 +354,16 @@ impl Rpc {
             | "eth_getUncleCountByBlockNumber"
             | "eth_getUncleByBlockNumberAndIndex"
             | "eth_getTransactionByBlockNumberAndIndex"
+            | "eth_getRawTransactionByBlockNumberAndIndex"
             | "eth_getBlockReceipts"
+            | "debug_getRawHeader"
+            | "debug_getRawBlock"
+            | "debug_getRawReceipts"
             | "debug_traceBlockByNumber"
             | "trace_block"
             | "trace_replayBlockTransactions" => Some(0),
             "eth_getBalance"
+            | "eth_getAccount"
             | "eth_getCode"
             | "eth_getTransactionCount"
             | "eth_call"
@@ -371,14 +376,26 @@ impl Rpc {
             "eth_getStorageAt" | "eth_getProof" | "trace_call" => Some(2),
             _ => None,
         };
+        let mut forwarded = params.to_vec();
+        if let Some(index) = selector_index
+            && let Some(selector) = forwarded.get_mut(index)
+            && selector
+                .as_str()
+                .is_some_and(|s| matches!(s, "latest" | "safe" | "finalized" | "earliest"))
+        {
+            // Resolve once so a moving safe/finalized tag cannot cross the boundary between
+            // backend selection and execution. All tags refer to v2's canonical view.
+            *selector = json!(format!("0x{:x}", self.block_number(selector).await?));
+        }
         let backend = if let Some(index) = selector_index {
-            self.selector_backend(params.get(index).unwrap_or(&Value::Null))
+            self.selector_backend(forwarded.get(index).unwrap_or(&Value::Null))
                 .await?
         } else {
             match method {
                 "eth_getBlockByHash"
                 | "eth_getBlockTransactionCountByHash"
                 | "eth_getTransactionByBlockHashAndIndex"
+                | "eth_getRawTransactionByBlockHashAndIndex"
                 | "eth_getUncleCountByBlockHash"
                 | "eth_getUncleByBlockHashAndIndex"
                 | "debug_traceBlockByHash" => {
@@ -388,6 +405,7 @@ impl Rpc {
                 "eth_getTransactionByHash"
                 | "eth_getTransactionReceipt"
                 | "eth_getRawTransactionByHash"
+                | "debug_getRawTransaction"
                 | "debug_traceTransaction"
                 | "trace_transaction"
                 | "trace_replayTransaction"
@@ -423,16 +441,6 @@ impl Rpc {
                 _ => return Err(error(-32601, "Method not supported by tempo-multiplex")),
             }
         };
-        let mut forwarded = params.to_vec();
-        if let Some(index) = selector_index
-            && let Some(selector) = forwarded.get_mut(index)
-            && selector
-                .as_str()
-                .is_some_and(|s| matches!(s, "latest" | "safe" | "finalized" | "earliest"))
-        {
-            // Tags refer to v2's canonical view, not the frozen v1 head/finality view.
-            *selector = json!(format!("0x{:x}", self.block_number(selector).await?));
-        }
         self.call(backend, method, json!(forwarded)).await
     }
 
