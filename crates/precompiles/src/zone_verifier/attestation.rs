@@ -147,7 +147,7 @@ pub(super) mod tests {
         document: &[u8],
         timestamp: u64,
     ) -> Result<NitroAttestation, AttestationError> {
-        let mut storage = HashMapStorageProvider::new_with_spec(1, TempoHardfork::T11);
+        let mut storage = HashMapStorageProvider::new_with_spec(1, TempoHardfork::T13);
         StorageCtx::enter(&mut storage, || {
             verify_attestation_with_root(
                 &mut StorageCtx::default(),
@@ -305,7 +305,7 @@ pub(super) mod tests {
         let parsed = parse_attestation(&document).expect("production fixture parses");
         assert!(parsed.signature[48..] > P384_HALF_ORDER[..]);
 
-        let mut storage = HashMapStorageProvider::new_with_spec(1, TempoHardfork::T11);
+        let mut storage = HashMapStorageProvider::new_with_spec(1, TempoHardfork::T13);
         StorageCtx::enter(&mut storage, || {
             let verified = verify_attestation_with_root(
                 &mut StorageCtx::default(),

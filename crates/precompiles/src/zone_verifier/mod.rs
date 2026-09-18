@@ -18,7 +18,7 @@ use self::attestation::{AWS_NITRO_ROOT_DER, AttestationError, verify_attestation
 const CONFIG_V1: &[u8] = &[1];
 const MAX_FUTURE_SKEW_MILLIS: u64 = 300_000;
 
-/// Production measurements remain deliberately unset until the reproducible T11 EIF is finalized.
+/// Production measurements remain deliberately unset until the reproducible T13 EIF is finalized.
 const APPROVED_PCRS: Option<[[u8; 48]; 3]> = None;
 
 sol! {
@@ -230,7 +230,7 @@ mod tests {
         let (proof, root, pcrs) = attestation::tests::fixture(commitment.as_ref());
         call.proof = proof.into();
 
-        let mut storage = HashMapStorageProvider::new_with_spec(1, TempoHardfork::T11);
+        let mut storage = HashMapStorageProvider::new_with_spec(1, TempoHardfork::T13);
         storage.set_timestamp(U256::from(BLOCK_TIMESTAMP));
         StorageCtx::enter(&mut storage, || {
             let mut verifier = ZoneVerifier::new();
@@ -297,7 +297,7 @@ mod tests {
         let call = call();
         let portal = portal_address(call.zoneId);
         let commitment = batch_commitment(1, &call);
-        let mut storage = HashMapStorageProvider::new_with_spec(1, TempoHardfork::T11);
+        let mut storage = HashMapStorageProvider::new_with_spec(1, TempoHardfork::T13);
         storage.set_timestamp(U256::from(BLOCK_TIMESTAMP));
         StorageCtx::enter(&mut storage, || {
             for (skew, expected) in [

@@ -70,7 +70,7 @@ mod tests {
 
     #[test]
     fn empty_and_oversized_proofs_return_false() {
-        let mut storage = HashMapStorageProvider::new_with_spec(1, TempoHardfork::T11);
+        let mut storage = HashMapStorageProvider::new_with_spec(1, TempoHardfork::T13);
         StorageCtx::enter(&mut storage, || {
             for call in [
                 call(Vec::new()),
