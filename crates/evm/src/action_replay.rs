@@ -41,6 +41,7 @@ where
         result_closure: impl FnOnce(&TempoTxResult),
         commit_reads: bool,
     ) -> Result<(), BlockExecutionError> {
+        self.apply_nonce_pruning(false)?;
         let (tx_env, recovered) = tx.into_parts();
 
         let StorageActionReplay {

@@ -18,10 +18,7 @@ use commonware_codec::ReadExt;
 use reth_evm::block::StateDB;
 use reth_revm::{
     Inspector,
-    context::{
-        JournalTr,
-        result::{ExecutionResult, HaltReason, ResultAndState},
-    },
+    context::result::{ExecutionResult, HaltReason, ResultAndState},
     state::{Account, Bytecode, EvmState, EvmStorageSlot, TransactionId},
 };
 use tempo_chainspec::{TempoChainSpec, hardfork::TempoHardforks};
@@ -162,6 +159,7 @@ impl TxResult for TempoTxResult {
 /// logic on top: section-based transaction ordering (`BlockSection`), system transaction
 /// validation, shared/non-shared gas accounting, and gas incentive tracking.
 pub struct TempoBlockExecutor<'a, DB: Database, I> {
+    pub(crate) nonce_prune: Option<crate::nonce_prune::PruneReceiver>,
     pub(crate) inner:
         EthBlockExecutor<'a, TempoEvm<DB, I>, &'a TempoChainSpec, TempoReceiptBuilder>,
 
@@ -187,6 +185,7 @@ where
         chain_spec: &'a TempoChainSpec,
     ) -> Self {
         Self {
+            nonce_prune: None,
             incentive_gas_used: 0,
             non_payment_gas_left: ctx.general_gas_limit,
             non_shared_gas_left: evm.block().gas_limit.saturating_sub(ctx.shared_gas_limit),
@@ -200,6 +199,49 @@ where
             section: BlockSection::StartOfBlock,
             replay_state: StorageActionReplayState::default(),
         }
+    }
+
+    /// Commit completed pruning between transactions, or wait for it at block end.
+    pub(crate) fn apply_nonce_pruning(&mut self, wait: bool) -> Result<(), BlockExecutionError> {
+        use std::sync::mpsc::TryRecvError;
+        let Some(receiver) = self.nonce_prune.take() else {
+            return Ok(());
+        };
+        let result = if wait {
+            receiver.recv().map_err(BlockExecutionError::other)?
+        } else {
+            match receiver.try_recv() {
+                Ok(result) => result,
+                Err(TryRecvError::Empty) => {
+                    self.nonce_prune = Some(receiver);
+                    return Ok(());
+                }
+                Err(err) => return Err(BlockExecutionError::other(err)),
+            }
+        };
+        let mut state = result?;
+        if state.is_empty() {
+            return Ok(());
+        }
+        let start = std::time::Instant::now();
+        let slots: usize = state.values().map(|account| account.storage.len()).sum();
+        // Only storage slots commute. Preserve current account metadata (e.g. a
+        // balance changed by a transaction), rather than restoring the parent copy.
+        for (address, account) in &mut state {
+            let info = self
+                .evm_mut()
+                .db_mut()
+                .basic(*address)
+                .map_err(BlockExecutionError::other)?
+                .unwrap_or_default();
+            let storage = std::mem::take(&mut account.storage);
+            *account = Account::from(info);
+            account.storage = storage;
+            account.mark_touch();
+        }
+        self.evm_mut().db_mut().commit(state);
+        tracing::debug!(target: "tempo::nonce_prune", slots, elapsed = ?start.elapsed(), "Committed background nonce pruning");
+        Ok(())
     }
 
     /// Deploys `0xEF` marker bytecode and initializes storage at a precompile address.
@@ -507,20 +549,10 @@ where
             )],
         )?;
 
-        // Stream pruning updates to the trie before transaction execution so proof work can overlap.
-        // This is block bookkeeping: no transaction gas or storage credits.
-        let ctx = self.evm_mut().ctx_mut();
-        tempo_precompiles::storage::StorageCtx::enter_evm_without_tip1060_accounting(
-            &mut ctx.journaled_state,
-            &ctx.block,
-            &ctx.cfg,
-            &ctx.tx,
-            tempo_precompiles::storage::StorageActions::disabled(),
-            || tempo_precompiles::expiring_nonce::ExpiringNonceManager::new().prune(),
-        )
-        .map_err(BlockExecutionError::other)?;
-        let state = ctx.journaled_state.finalize();
-        self.evm_mut().db_mut().commit(state);
+        if self.nonce_prune.is_none() {
+            let state = crate::nonce_prune::prune(self.evm_mut())?;
+            self.evm_mut().db_mut().commit(state);
+        }
 
         // Deploy 0xEF marker bytecode to precompiles at their activation hardforks.
         let timestamp = self.evm().block().timestamp.to::<u64>();
@@ -561,6 +593,7 @@ where
         &mut self,
         tx: impl ExecutableTx<Self>,
     ) -> Result<Self::Result, BlockExecutionError> {
+        self.apply_nonce_pruning(false)?;
         let (tx_env, recovered) = tx.into_parts();
         let execution_context = tx_env.execution_context;
         let next_section = self.validate_tx_pre_execution(recovered.tx())?;
@@ -644,6 +677,7 @@ where
         }
 
         self.apply_current_committee_system_call()?;
+        self.apply_nonce_pruning(true)?;
 
         let amsterdam_eip8037_enabled = self.evm().cfg.enable_amsterdam_eip8037;
 
@@ -710,7 +744,7 @@ mod tests {
     use commonware_utils::{N3f1, TryFromIterator as _, ordered};
     use rand::SeedableRng as _;
     use reth_chainspec::EthChainSpec;
-    use reth_revm::{State, state::AccountInfo};
+    use reth_revm::{State, context::JournalTr, state::AccountInfo};
     use revm::{
         context::result::{ExecutionResult, ResultGas},
         database::EmptyDB,
@@ -1242,6 +1276,155 @@ mod tests {
                     )
                     .unwrap(),
                 U256::from(block)
+            );
+        }
+    }
+
+    #[test]
+    fn background_pruning_preserves_transactions_and_matches_synchronous_state() {
+        use revm::{
+            Database as _, DatabaseCommit as _, database::states::bundle_state::BundleRetention,
+        };
+        use tempo_precompiles::{
+            EXPIRING_NONCE_PRECOMPILE_ADDRESS as ADDRESS, expiring_nonce::ExpiringNonceManager,
+        };
+        let chainspec = test_chainspec();
+        let manager = ExpiringNonceManager::new();
+        let expired = B256::repeat_byte(1);
+        let fresh = B256::repeat_byte(2);
+        let make_db = || {
+            let mut db = State::builder().with_bundle_update().build();
+            let code = Bytecode::new_legacy([0xef].into());
+            db.insert_account_with_storage(
+                ADDRESS,
+                AccountInfo {
+                    nonce: 1,
+                    code_hash: code.hash_slow(),
+                    code: Some(code),
+                    ..Default::default()
+                },
+                [
+                    (manager.seen[expired].slot(), U256::from(100)),
+                    (manager.bucket[1][0].slot(), U256::from_be_bytes(expired.0)),
+                    (manager.bucket_count[1].slot(), U256::ONE),
+                    (manager.bucket_max_expiry[1].slot(), U256::from(100)),
+                ]
+                .into_iter()
+                .collect(),
+            );
+            db
+        };
+        let mut expected = None;
+        // Synchronous, asynchronous applied between transactions, and asynchronous
+        // still pending when finish is called must produce identical state/reverts.
+        for mode in 0..3 {
+            let mut db = make_db();
+            let mut executor = TestExecutorBuilder::default()
+                .with_block_number(2)
+                .with_parent_beacon_block_root(B256::ZERO)
+                .with_spec(TempoHardfork::T1)
+                .build(&mut db, &chainspec);
+            executor.evm_mut().ctx_mut().block.timestamp = U256::from(100);
+            let mut parent = TempoEvm::new(make_db(), executor.evm().evm_env());
+            let delta = crate::nonce_prune::prune(&mut parent).unwrap();
+            let (sender, receiver) = std::sync::mpsc::channel();
+            if mode != 0 {
+                executor.nonce_prune = Some(receiver);
+            }
+            executor.apply_pre_execution_changes().unwrap();
+            if mode != 0 {
+                executor.apply_nonce_pruning(false).unwrap();
+                assert_eq!(
+                    executor
+                        .evm_mut()
+                        .db_mut()
+                        .storage(ADDRESS, manager.seen[expired].slot())
+                        .unwrap(),
+                    U256::from(100)
+                );
+            }
+            // Simulate a new nonce and an account balance change while pruning runs.
+            let ctx = executor.evm_mut().ctx_mut();
+            tempo_precompiles::storage::StorageCtx::enter_evm_without_tip1060_accounting(
+                &mut ctx.journaled_state,
+                &ctx.block,
+                &ctx.cfg,
+                &ctx.tx,
+                tempo_precompiles::storage::StorageActions::disabled(),
+                || ExpiringNonceManager::new().check_and_mark_expiring_nonce(fresh, 110),
+            )
+            .unwrap();
+            let state = ctx.journaled_state.finalize();
+            executor.evm_mut().db_mut().commit(state);
+            let mut account =
+                Account::from(executor.evm_mut().db_mut().basic(ADDRESS).unwrap().unwrap());
+            account.info.balance = U256::from(42);
+            account.mark_touch();
+            executor
+                .evm_mut()
+                .db_mut()
+                .commit(EvmState::from_iter([(ADDRESS, account)]));
+            if mode != 0 {
+                sender.send(Ok(delta)).unwrap();
+                if mode == 1 {
+                    executor.apply_nonce_pruning(false).unwrap();
+                }
+            }
+            executor.finish().unwrap();
+            assert_eq!(db.basic(ADDRESS).unwrap().unwrap().balance, U256::from(42));
+            assert_eq!(
+                db.storage(ADDRESS, manager.seen[expired].slot()).unwrap(),
+                U256::ZERO
+            );
+            assert_eq!(
+                db.storage(ADDRESS, manager.seen[fresh].slot()).unwrap(),
+                U256::from(110)
+            );
+            assert_eq!(
+                db.storage(ADDRESS, manager.bucket_count[2].slot()).unwrap(),
+                U256::ONE
+            );
+            db.merge_transitions(BundleRetention::Reverts);
+            let hashed = reth_trie::HashedPostState::from_bundle_state::<reth_trie::KeccakKeyHasher>(
+                db.bundle_state.state(),
+            );
+            let result = (hashed, db.bundle_state.reverts);
+            if let Some(expected) = &expected {
+                assert_eq!(&result, expected);
+            } else {
+                expected = Some(result);
+            }
+        }
+    }
+
+    #[test]
+    fn background_pruning_failure_prevents_block_finalization() {
+        for disconnect in [false, true] {
+            let chainspec = test_chainspec();
+            let mut db = State::builder().with_bundle_update().build();
+            let mut executor = TestExecutorBuilder::default().build(&mut db, &chainspec);
+            let (sender, receiver) = std::sync::mpsc::channel();
+            executor.nonce_prune = Some(receiver);
+            if !disconnect {
+                sender
+                    .send(Err(BlockExecutionError::other(std::io::Error::other(
+                        "prune failed",
+                    ))))
+                    .unwrap();
+            }
+            drop(sender);
+            let error = executor
+                .finish()
+                .err()
+                .expect("pruning failure must abort the block");
+            let message = error.to_string();
+            assert!(
+                message.contains(if disconnect {
+                    "closed channel"
+                } else {
+                    "prune failed"
+                }),
+                "{message}"
             );
         }
     }
