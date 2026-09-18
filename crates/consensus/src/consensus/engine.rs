@@ -16,7 +16,7 @@ use commonware_cryptography::{
 };
 use commonware_p2p::{AddressableManager, Blocker, Receiver, Sender};
 use commonware_runtime::{
-    BufferPooler, Clock, ContextCell, Handle, Metrics, Network, Pacer, Spawner, Storage,
+    BufferPooler, Clock, ContextCell, Handle, Metrics, Network, Spawner, Storage,
     buffer::paged::CacheRef, spawn_cell,
 };
 use commonware_utils::NZUsize;
@@ -111,7 +111,6 @@ where
             + governor::clock::Clock
             + Rng
             + CryptoRng
-            + Pacer
             + Spawner
             + Storage
             + Metrics
@@ -246,54 +245,19 @@ where
             })
             .unzip();
 
-        let (application, application_mailbox) = application::init(super::application::Config {
-            context: context.child("application"),
-            public_key: self.signer.public_key(),
-            mailbox_size: self.mailbox_size,
-            marshal: marshal_mailbox.clone(),
-            execution_node: execution_node.clone(),
-            executor: executor_mailbox.clone(),
-            proposal_return_budget: self.proposal_return_budget,
-            epoch_strategy: epoch_strategy.clone(),
-        })
-        .await
-        .wrap_err("failed initializing application actor")?;
-
-        let (epoch_manager, epoch_manager_mailbox) = epoch::manager::init(
-            context.child("epoch_manager"),
-            epoch::manager::Config {
-                application: application_mailbox.clone(),
-                execution_node: execution_node.clone(),
-                blocker: self.blocker.clone(),
-                page_cache: page_cache_ref,
-                epoch_strategy: epoch_strategy.clone(),
-                time_for_peer_response: self.time_for_peer_response,
-                time_to_propose: self.time_to_propose,
-                mailbox_size: self.mailbox_size,
-                marshal: marshal_mailbox.clone(),
-                scheme_provider: scheme_provider.clone(),
-                time_to_collect_notarizations: self.time_to_collect_notarizations,
-                time_to_retry_nullify_broadcast: self.time_to_retry_nullify_broadcast,
-                partition_prefix: format!("{}_epoch_manager", self.partition_prefix),
-                views_to_track: ViewDelta::new(self.views_to_track),
-                inactive_time_before_leader_skip: self.inactive_time_before_leader_skip,
-            },
-        );
-
         let (dkg_manager, dkg_manager_mailbox) = dkg::manager::init(
             context.child("dkg_manager"),
             dkg::manager::Config {
-                epoch_manager: epoch_manager_mailbox,
                 epoch_strategy: epoch_strategy.clone(),
-                execution_node,
+                execution_node: execution_node.clone(),
                 initial_share: self.share.clone(),
                 finalized_tip: finalized_tip_certificate
                     .map(|certificate| (finalized_tip.1, certificate)),
                 network_identity: self.network_identity,
-                scheme_provider,
+                scheme_provider: scheme_provider.clone(),
                 last_finalized_height: finalized_floor,
                 mailbox_size: self.mailbox_size,
-                marshal: marshal_mailbox,
+                marshal: marshal_mailbox.clone(),
                 namespace: crate::config::NAMESPACE.to_vec(),
                 me: self.signer.clone(),
                 partition_prefix: format!("{}_dkg_manager", self.partition_prefix),
@@ -301,6 +265,37 @@ where
         )
         .await
         .wrap_err("failed initializing dkg manager")?;
+
+        let application = application::Application::new(application::Config {
+            context: context.child("application"),
+            public_key: self.signer.public_key(),
+            executor: executor_mailbox.clone(),
+            dkg_manager: dkg_manager_mailbox.clone(),
+            execution_node: execution_node.clone(),
+            proposal_return_budget: self.proposal_return_budget,
+            epoch_strategy: epoch_strategy.clone(),
+        });
+
+        let (epoch_manager, epoch_manager_mailbox) = epoch::manager::init(
+            context.child("epoch_manager"),
+            epoch::manager::Config {
+                application,
+                execution_node: execution_node.clone(),
+                blocker: self.blocker.clone(),
+                page_cache: page_cache_ref,
+                epoch_strategy: epoch_strategy.clone(),
+                time_for_peer_response: self.time_for_peer_response,
+                time_to_propose: self.time_to_propose,
+                mailbox_size: self.mailbox_size,
+                marshal: marshal_mailbox,
+                scheme_provider,
+                time_to_collect_notarizations: self.time_to_collect_notarizations,
+                time_to_retry_nullify_broadcast: self.time_to_retry_nullify_broadcast,
+                partition_prefix: format!("{}_epoch_manager", self.partition_prefix),
+                views_to_track: ViewDelta::new(self.views_to_track),
+                inactive_time_before_leader_skip: self.inactive_time_before_leader_skip,
+            },
+        );
 
         Ok(Engine {
             context: ContextCell::new(context),
@@ -312,8 +307,6 @@ where
             dkg_manager,
             dkg_manager_mailbox,
 
-            application,
-
             executor,
             executor_mailbox,
 
@@ -321,6 +314,7 @@ where
             marshal,
 
             epoch_manager,
+            epoch_manager_mailbox,
 
             peer_manager,
             peer_manager_mailbox,
@@ -342,7 +336,6 @@ where
         + CryptoRng
         + Metrics
         + Network
-        + Pacer
         + Spawner
         + Storage,
     TBlocker: Blocker<PublicKey = PublicKey>,
@@ -359,10 +352,6 @@ where
     dkg_manager: dkg::manager::Actor<TContext>,
     dkg_manager_mailbox: dkg::manager::Mailbox,
 
-    /// Acts as the glue between the consensus and execution layers implementing
-    /// the `[commonware_consensus::Automaton]` trait.
-    application: application::Actor<TContext>,
-
     /// Responsible for keeping the consensus layer state and execution layer
     /// states in sync. Drives the chain state of the execution layer by sending
     /// forkchoice-updates.
@@ -377,6 +366,7 @@ where
     marshal: crate::alias::marshal::Actor<TContext>,
 
     epoch_manager: epoch::manager::Actor<TContext, TBlocker>,
+    epoch_manager_mailbox: epoch::manager::Mailbox,
 
     peer_manager: peer_manager::Actor<TContext, TPeerManager, TempoFullNode>,
     peer_manager_mailbox: peer_manager::Mailbox,
@@ -403,7 +393,6 @@ where
         + CryptoRng
         + Metrics
         + Network
-        + Pacer
         + Spawner
         + Storage,
     TBlocker: Blocker<PublicKey = PublicKey> + Sync,
@@ -522,14 +511,13 @@ where
             marshal_channel,
         );
 
-        let application = self.application.start(self.dkg_manager_mailbox.clone());
         let executor = self.executor.start();
 
         let marshal = self.marshal.start(
             Reporters::from((
                 self.executor_mailbox,
                 Reporters::from((
-                    self.dkg_manager_mailbox.clone(),
+                    self.dkg_manager_mailbox,
                     Reporters::from((
                         self.peer_manager_mailbox,
                         Reporters::<_, crate::feed::Mailbox, crate::gossip::Mailbox>::from((
@@ -550,10 +538,11 @@ where
         let feed = self.feed.start();
         let gossip_task = self.gossip_actor.map(crate::gossip::Actor::start);
 
-        let dkg_manager = self.dkg_manager.start(dkg_channel);
+        let dkg_manager = self
+            .dkg_manager
+            .start(self.epoch_manager_mailbox, dkg_channel);
 
         let mut tasks = vec![
-            application,
             broadcast,
             epoch_manager,
             executor,

@@ -234,18 +234,6 @@ impl Block {
         self.execution_block.sealed_block()
     }
 
-    /// Returns the block access list of the wrapped block.
-    pub(crate) fn block_access_list(&self) -> Option<&Bytes> {
-        #[cfg(feature = "bal")]
-        {
-            self.block_access_list.as_ref()
-        }
-        #[cfg(not(feature = "bal"))]
-        {
-            None
-        }
-    }
-
     fn encoded_execution_block(&self) -> &Bytes {
         self.execution_block_encoded
             .get_or_encode(self.execution_block.sealed_block())
@@ -537,7 +525,8 @@ mod tests {
 
         let decoded = Block::read_cfg(&mut block_bytes.as_ref(), &()).unwrap();
         assert_eq!(decoded, expected);
-        assert!(decoded.block_access_list().is_none());
+        #[cfg(feature = "bal")]
+        assert!(decoded.block_access_list.is_none());
 
         let encoded = decoded.encode();
 
@@ -683,7 +672,7 @@ mod tests {
 
         assert_eq!(decoded, block);
         assert_eq!(
-            decoded.block_access_list().map(|bytes| bytes.as_ref()),
+            decoded.block_access_list.as_ref().map(|bytes| bytes.as_ref()),
             Some(block_access_list.as_ref())
         );
     }
