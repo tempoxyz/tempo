@@ -1,5 +1,6 @@
 mod config;
 mod rpc;
+mod version;
 
 use axum::{Router, extract::DefaultBodyLimit, routing::post};
 use clap::Parser;
@@ -68,6 +69,11 @@ async fn main() -> eyre::Result<()> {
     let args = Args::parse();
     let config: Config = serde_json::from_slice(&std::fs::read(&args.config)?)?;
     config.validate()?;
+    let (v1_sha, v2_sha) = tokio::try_join!(
+        version::node_sha(&config.v1.binary),
+        version::node_sha(&config.v2.binary)
+    )?;
+    let rpc = rpc::Rpc::new(&config, [v1_sha, v2_sha])?;
     let mut v1 = spawn(&config.v1)?;
     let mut v2 = match spawn(&config.v2) {
         Ok(child) => child,
@@ -76,7 +82,6 @@ async fn main() -> eyre::Result<()> {
             return Err(error);
         }
     };
-    let rpc = rpc::Rpc::new(&config)?;
     // Bind only after identity and checkpoint validation. A port accepting traffic means ready.
     let startup = tokio::select! {
         ready = tokio::time::timeout(Duration::from_secs(120), rpc.wait_ready()) => ready.map_err(eyre::Report::from).and_then(|ready| ready),

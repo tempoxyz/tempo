@@ -2,6 +2,9 @@ use super::*;
 use axum::{Router, routing::post};
 use std::sync::Mutex;
 
+const V1_SHA: &str = "1111111111111111111111111111111111111111";
+const V2_SHA: &str = "2222222222222222222222222222222222222222";
+
 #[derive(Clone)]
 struct Mock {
     name: &'static str,
@@ -13,6 +16,14 @@ async fn mock(State(mock): State<Mock>, Json(request): Json<Value>) -> Json<Valu
     let params = &request["params"];
     let result = match request["method"].as_str().unwrap() {
         "eth_chainId" => json!("0x539"),
+        "web3_clientVersion" => json!(format!(
+            "tempo/v1.14.0-{}/linux",
+            if mock.name == "v1" {
+                &V1_SHA[..7]
+            } else {
+                &V2_SHA[..7]
+            }
+        )),
         "tempo_executionRules" => {
             json!({"fixed":mock.name == "v2","protocol":"T11","activationTimestamp":10})
         }
@@ -101,6 +112,8 @@ async fn setup() -> (Rpc, Vec<tokio::task::JoinHandle<()>>, [Mock; 2]) {
         cutover: 10,
         parent_hash: format!("0x{:064x}", 9),
         inflight: Arc::new(Semaphore::new(64)),
+        versions: Arc::new([V1_SHA.into(), V2_SHA.into()]),
+        responders: Arc::new(AtomicU8::new(0)),
     };
     (rpc, tasks, mocks)
 }
@@ -296,4 +309,108 @@ async fn backend_failure_never_falls_back_to_other_execution_rules() {
     );
     assert!(mocks[1].calls.lock().unwrap().is_empty());
     tasks[1].abort();
+}
+
+#[tokio::test]
+async fn version_header_identifies_payload_backends_not_lookup_probes() {
+    let (rpc, tasks, _) = setup().await;
+    for (method, params, expected) in [
+        ("eth_call", json!([{}, "0x9"]), V1_SHA),
+        ("eth_call", json!([{}, "0xa"]), V2_SHA),
+        ("eth_call", json!([{}, "safe"]), V1_SHA),
+        ("eth_call", json!([{"revert":true}, "0x9"]), V1_SHA),
+        (
+            "eth_getBlockByHash",
+            json!([format!("0x{:064x}", 9), false]),
+            V1_SHA,
+        ),
+        (
+            "eth_getTransactionReceipt",
+            json!([format!("0x{:064x}", 1)]),
+            V1_SHA,
+        ),
+    ] {
+        let body = json!({"jsonrpc":"2.0","id":1,"method":method,"params":params});
+        let response = handle(State(rpc.clone()), Bytes::from(body.to_string())).await;
+        assert_eq!(
+            response.headers()["x-tempo-version"],
+            expected,
+            "{method}: {params}"
+        );
+    }
+    for method in ["eth_getLogs", "eth_feeHistory"] {
+        let params = if method == "eth_getLogs" {
+            json!([{"fromBlock":"0x9","toBlock":"0xa"}])
+        } else {
+            json!(["0x2", "0xa", []])
+        };
+        let response = handle(
+            State(rpc.clone()),
+            Bytes::from(
+                json!({"jsonrpc":"2.0","id":1,"method":method,"params":params}).to_string(),
+            ),
+        )
+        .await;
+        assert_eq!(
+            response.headers()["x-tempo-version"],
+            format!("{V1_SHA}, {V2_SHA}")
+        );
+    }
+    for task in tasks {
+        task.abort();
+    }
+}
+
+#[tokio::test]
+async fn version_header_handles_batches_notifications_and_request_isolation() {
+    let (rpc, tasks, _) = setup().await;
+    let request =
+        |block: &str| json!({"jsonrpc":"2.0","id":1,"method":"eth_call","params":[{},block]});
+    let mixed = json!([request("0x9"), request("0xa"), request("0x9")]);
+    let response = handle(State(rpc.clone()), Bytes::from(mixed.to_string())).await;
+    assert_eq!(
+        response.headers()["x-tempo-version"],
+        format!("{V1_SHA}, {V2_SHA}")
+    );
+    let (old, new) = tokio::join!(
+        handle(State(rpc.clone()), Bytes::from(request("0x9").to_string())),
+        handle(State(rpc.clone()), Bytes::from(request("0xa").to_string()))
+    );
+    assert_eq!(old.headers()["x-tempo-version"], V1_SHA);
+    assert_eq!(new.headers()["x-tempo-version"], V2_SHA);
+    let response = handle(
+        State(rpc.clone()),
+        Bytes::from(json!({"jsonrpc":"2.0","method":"eth_chainId"}).to_string()),
+    )
+    .await;
+    assert_eq!(response.status(), StatusCode::NO_CONTENT);
+    assert_eq!(response.headers()["x-tempo-version"], V2_SHA);
+    for body in [
+        "{".to_string(),
+        json!({"jsonrpc":"2.0","id":1,"method":"unsupported"}).to_string(),
+    ] {
+        let response = handle(State(rpc.clone()), Bytes::from(body)).await;
+        assert!(!response.headers().contains_key("x-tempo-version"));
+    }
+    tasks[0].abort();
+    tokio::task::yield_now().await;
+    let response = handle(State(rpc), Bytes::from(request("0x9").to_string())).await;
+    assert!(!response.headers().contains_key("x-tempo-version"));
+    tasks[1].abort();
+}
+
+#[tokio::test]
+async fn refuses_wrong_running_binary_revision() {
+    let (mut rpc, tasks, _) = setup().await;
+    rpc.versions = Arc::new([V2_SHA.into(), V1_SHA.into()]);
+    assert!(
+        rpc.wait_ready()
+            .await
+            .unwrap_err()
+            .to_string()
+            .contains("version does not match")
+    );
+    for task in tasks {
+        task.abort();
+    }
 }

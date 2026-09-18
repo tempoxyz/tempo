@@ -3,12 +3,18 @@ use axum::{
     Json,
     body::Bytes,
     extract::State,
-    http::StatusCode,
+    http::{HeaderValue, StatusCode},
     response::{IntoResponse, Response},
 };
 use futures::StreamExt;
 use serde_json::{Value, json};
-use std::{sync::Arc, time::Duration};
+use std::{
+    sync::{
+        Arc,
+        atomic::{AtomicU8, Ordering},
+    },
+    time::Duration,
+};
 use tokio::sync::Semaphore;
 
 type RpcResult<T> = Result<T, Value>;
@@ -48,10 +54,13 @@ pub(crate) struct Rpc {
     cutover: u64,
     parent_hash: String,
     inflight: Arc<Semaphore>,
+    versions: Arc<[String; 2]>,
+    /// Request-local provenance; lookup probes do not contribute response payloads.
+    responders: Arc<AtomicU8>,
 }
 
 impl Rpc {
-    pub(crate) fn new(config: &Config) -> eyre::Result<Self> {
+    pub(crate) fn new(config: &Config, versions: [String; 2]) -> eyre::Result<Self> {
         Ok(Self {
             client: reqwest::Client::builder()
                 .timeout(Duration::from_secs(30))
@@ -62,11 +71,27 @@ impl Rpc {
             cutover: config.cutover_block,
             parent_hash: config.parent_hash.clone(),
             inflight: Arc::new(Semaphore::new(64)),
+            versions: Arc::new(versions),
+            responders: Arc::new(AtomicU8::new(0)),
         })
     }
 
     /// Do not retry writes or fail over execution to a different protocol version.
     async fn call(&self, backend: usize, method: &str, params: Value) -> RpcResult<Value> {
+        self.call_inner(backend, method, params, false).await
+    }
+
+    async fn forward(&self, backend: usize, method: &str, params: Value) -> RpcResult<Value> {
+        self.call_inner(backend, method, params, true).await
+    }
+
+    async fn call_inner(
+        &self,
+        backend: usize,
+        method: &str,
+        params: Value,
+        contributes: bool,
+    ) -> RpcResult<Value> {
         let response = self
             .client
             .post(&self.urls[backend])
@@ -91,12 +116,33 @@ impl Rpc {
             return Err(error(-32603, "Invalid Tempo backend envelope"));
         }
         match (response.get("result"), response.get("error")) {
-            (Some(result), None) => Ok(result.clone()),
+            (Some(result), None) => {
+                if contributes {
+                    self.responders.fetch_or(1 << backend, Ordering::Relaxed);
+                }
+                Ok(result.clone())
+            }
             (None, Some(err)) if err["code"].is_i64() && err["message"].is_string() => {
+                if contributes {
+                    self.responders.fetch_or(1 << backend, Ordering::Relaxed);
+                }
                 Err(err.clone())
             }
             _ => Err(error(-32603, "Invalid Tempo backend result")),
         }
+    }
+
+    fn version_header(&self) -> Option<HeaderValue> {
+        let mask = self.responders.load(Ordering::Relaxed);
+        let mut versions = Vec::new();
+        for backend in 0..2 {
+            let sha = self.versions[backend].as_str();
+            if mask & (1 << backend) != 0 && !versions.contains(&sha) {
+                versions.push(sha);
+            }
+        }
+        (!versions.is_empty())
+            .then(|| HeaderValue::from_str(&versions.join(", ")).expect("validated Git SHAs"))
     }
 
     pub(crate) async fn wait_ready(&self) -> eyre::Result<()> {
@@ -110,6 +156,22 @@ impl Rpc {
                 break;
             }
             tokio::time::sleep(Duration::from_millis(500)).await;
+        }
+        for backend in 0..2 {
+            let version = self
+                .call(backend, "web3_clientVersion", json!([]))
+                .await
+                .map_err(|e| eyre::eyre!("node version check failed: {e}"))?;
+            eyre::ensure!(
+                version
+                    .as_str()
+                    .is_some_and(|value| crate::version::matches_client_version(
+                        &self.versions[backend],
+                        value
+                    )),
+                "v{} RPC version does not match its executable",
+                backend + 1
+            );
         }
         match self.call(0, "tempo_executionRules", json!([])).await {
             Ok(rules) => eyre::ensure!(
@@ -265,7 +327,7 @@ impl Rpc {
                 return Err(invalid());
             }
             return self
-                .call(self.hash_backend(hash).await?, "eth_getLogs", json!(params))
+                .forward(self.hash_backend(hash).await?, "eth_getLogs", json!(params))
                 .await;
         }
         let latest = json!("latest");
@@ -289,7 +351,7 @@ impl Rpc {
             let mut part = filter.clone();
             part.insert("fromBlock".into(), json!(format!("0x{start:x}")));
             part.insert("toBlock".into(), json!(format!("0x{end:x}")));
-            let response = self.call(backend, "eth_getLogs", json!([part])).await?;
+            let response = self.forward(backend, "eth_getLogs", json!([part])).await?;
             logs.extend(
                 response
                     .as_array()
@@ -313,7 +375,7 @@ impl Rpc {
         let oldest = newest.saturating_sub(count - 1);
         if self.backend(oldest) == self.backend(newest) {
             return self
-                .call(self.backend(newest), "eth_feeHistory", json!(params))
+                .forward(self.backend(newest), "eth_feeHistory", json!(params))
                 .await;
         }
         let mut old_params = params.to_vec();
@@ -322,8 +384,8 @@ impl Rpc {
         let mut new_params = params.to_vec();
         new_params[0] = json!(format!("0x{:x}", newest - self.cutover + 1));
         new_params[1] = json!(format!("0x{newest:x}"));
-        let mut old = self.call(0, "eth_feeHistory", json!(old_params)).await?;
-        let new = self.call(1, "eth_feeHistory", json!(new_params)).await?;
+        let mut old = self.forward(0, "eth_feeHistory", json!(old_params)).await?;
+        let new = self.forward(1, "eth_feeHistory", json!(new_params)).await?;
         let old_start = quantity(&old["oldestBlock"])?;
         let new_start = quantity(&new["oldestBlock"])?;
         let old_count = old["gasUsedRatio"].as_array().ok_or_else(invalid)?.len() as u64;
@@ -464,7 +526,7 @@ impl Rpc {
                 _ => return Err(error(-32601, "Method not supported by tempo-multiplex")),
             }
         };
-        self.call(backend, method, json!(forwarded)).await
+        self.forward(backend, method, json!(forwarded)).await
     }
 
     async fn request(&self, request: Value) -> Option<Value> {
@@ -499,6 +561,10 @@ impl Rpc {
 }
 
 pub(crate) async fn handle(State(rpc): State<Rpc>, body: Bytes) -> Response {
+    let rpc = Rpc {
+        responders: Arc::new(AtomicU8::new(0)),
+        ..rpc
+    };
     let request: Value = match serde_json::from_slice(&body) {
         Ok(value) => value,
         Err(_) => {
@@ -523,10 +589,14 @@ pub(crate) async fn handle(State(rpc): State<Rpc>, body: Bytes) -> Response {
     } else {
         rpc.request(request).await
     };
-    match response {
+    let mut response = match response {
         Some(response) => Json(response).into_response(),
         None => StatusCode::NO_CONTENT.into_response(),
+    };
+    if let Some(version) = rpc.version_header() {
+        response.headers_mut().insert("x-tempo-version", version);
     }
+    response
 }
 
 #[cfg(test)]

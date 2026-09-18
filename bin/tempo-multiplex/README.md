@@ -94,6 +94,14 @@ Do not use this prototype as a transparent replacement for every Tempo RPC API.
 
 `tempo_multiplexStatus` reports the cutover block and checkpoint hash.
 
+`X-Tempo-Version` identifies the responding node's full embedded Git SHA. The
+supervisor reads each executable's `--version` and verifies the revision against
+its live `web3_clientVersion` at startup. Mixed batches and cross-boundary ranges
+list both SHAs, comma-separated in v1/v2 order; routing lookups do not add a SHA.
+Backend RPC errors and notifications also carry the header. Locally generated
+responses without a backend responder (including parse errors and multiplexer
+status) omit it.
+
 ## Tests
 
 ```sh
