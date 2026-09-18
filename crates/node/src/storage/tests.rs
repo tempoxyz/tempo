@@ -33,7 +33,7 @@ fn reads_derive_from_blocks_and_writes_remain_native() {
         .unwrap()
         .1
         .unwrap();
-    let make_block = |number, timestamp, transactions: Vec<TempoTxEnvelope>| {
+    let make_block = |number, timestamp, transactions: Vec<TempoTxEnvelope>, parent_hash| {
         let senders = vec![signer.address(); transactions.len()];
         RecoveredBlock::new_unhashed(
             Block {
@@ -41,6 +41,7 @@ fn reads_derive_from_blocks_and_writes_remain_native() {
                     inner: alloy::consensus::Header {
                         number,
                         timestamp,
+                        parent_hash,
                         ..Default::default()
                     },
                     ..Default::default()
@@ -54,8 +55,9 @@ fn reads_derive_from_blocks_and_writes_remain_native() {
         )
     };
     let rw = factory.provider_rw().unwrap();
-    rw.insert_block(&make_block(0, 999, vec![])).unwrap();
-    rw.insert_block(&make_block(1, 1000, vec![signed.into()]))
+    rw.insert_block(&make_block(0, 999, vec![], B256::ZERO))
+        .unwrap();
+    rw.insert_block(&make_block(1, 1000, vec![signed.into()], B256::ZERO))
         .unwrap();
     rw.save_stage_checkpoint(reth_stages_types::StageId::Finish, StageCheckpoint::new(1))
         .unwrap();
@@ -237,25 +239,45 @@ fn reads_derive_from_blocks_and_writes_remain_native() {
     let lazy = db.tx().unwrap();
     // Advancing persistence must not change the already-open transaction's derived snapshot.
     injected.set_storage_settings_cache(factory.cached_storage_settings());
+    let block = make_block(2, 1200, vec![], tx.snapshot().unwrap().hash);
+    // An aborted persistence task must not publish its prepared successor.
+    drop(
+        db.prepare_persistence(vec![Arc::new(block.clone())])
+            .unwrap()
+            .unwrap(),
+    );
+    assert_eq!(db.cache.published.lock().unwrap().computations, 1);
+    let preparation = db
+        .prepare_persistence(vec![Arc::new(block.clone())])
+        .unwrap()
+        .unwrap();
+    assert_eq!(
+        db.tx().unwrap().slots().unwrap().get(&hashed_slot),
+        Some(&U256::from(1200))
+    );
     let rw = injected.provider_rw().unwrap();
-    rw.insert_block(&make_block(2, 1200, vec![])).unwrap();
+    rw.insert_block(&block).unwrap();
     rw.save_stage_checkpoint(reth_stages_types::StageId::Finish, StageCheckpoint::new(2))
         .unwrap();
-    rw.commit_with_hook(|pending| {
-        db.on_persisting(pending);
-        assert_eq!(db.cache.published.lock().unwrap().computations, 2);
-        // Prepared data is not yet canonical for newly opened read transactions.
-        assert_eq!(
-            db.tx().unwrap().slots().unwrap().get(&hashed_slot),
-            Some(&U256::from(1200))
-        );
-    })
-    .unwrap();
+    rw.commit().unwrap();
+    // A reader opened between commit and publication waits for the one worker.
+    std::thread::scope(|scope| {
+        let (opened, started) = std::sync::mpsc::channel();
+        let db = &db;
+        let reader = scope.spawn(move || {
+            let next = db.tx().unwrap();
+            opened.send(()).unwrap();
+            next.snapshot().unwrap().clone()
+        });
+        started.recv().unwrap();
+        assert_eq!(db.cache.published.lock().unwrap().computations, 1);
+        preparation.finish();
+        assert_eq!(reader.join().unwrap().number, 2);
+    });
     assert_eq!(
         tx.slots().unwrap().get(&hashed_slot),
         Some(&U256::from(1200))
     );
-    db.on_persisted();
     let next = db.tx().unwrap();
     assert!(!next.slots().unwrap().contains_key(&hashed_slot));
     assert_eq!(next.slots().unwrap().len(), 1); // only oldest cursor survives
@@ -289,8 +311,10 @@ fn reads_derive_from_blocks_and_writes_remain_native() {
         .unwrap();
     rw.commit().unwrap();
     let rw = factory.provider_rw().unwrap();
-    rw.insert_block(&make_block(1, 1300, vec![])).unwrap();
-    rw.insert_block(&make_block(2, 1301, vec![])).unwrap();
+    rw.insert_block(&make_block(1, 1300, vec![], B256::ZERO))
+        .unwrap();
+    rw.insert_block(&make_block(2, 1301, vec![], B256::ZERO))
+        .unwrap();
     rw.save_stage_checkpoint(reth_stages_types::StageId::Finish, StageCheckpoint::new(2))
         .unwrap();
     rw.commit().unwrap();

@@ -1,5 +1,5 @@
 use super::backend::ReplayStorage;
-use alloy_primitives::{B256, U256, keccak256};
+use alloy_primitives::{Address, B256, U256, keccak256};
 use reth_chainspec::EthChainSpec;
 use reth_db_api::{
     DatabaseError, cursor::DbCursorRO, models::StoredBlockBodyIndices, tables, transaction::DbTx,
@@ -19,7 +19,7 @@ use tempo_precompiles::{
     expiring_nonce::ExpiringNonceManager,
     storage::{Handler, StorageCtx},
 };
-use tempo_primitives::TempoPrimitives;
+use tempo_primitives::{TempoPrimitives, TempoTxEnvelope};
 
 /// Hashed slot keys, ordered for storage cursor seeks. Cloning shares unmodified tree nodes.
 pub(super) type Slots = imbl::OrdMap<B256, U256>;
@@ -32,15 +32,12 @@ pub(super) struct Snapshot {
     pub(super) deployed: bool,
 }
 
-/// Retains the latest snapshot and, during commit preparation, its predecessor.
+/// Retains the latest committed snapshot.
 /// Transactions lease immutable snapshots; weak references let concurrent readers
 /// reuse older versions until their last lease ends.
 #[derive(Default, Debug)]
 pub(super) struct Published {
     latest: Option<Arc<Snapshot>>,
-    // Keep the still-visible state available while its successor is prepared
-    // but the persistence transaction has not committed yet.
-    pending_base: Option<Arc<Snapshot>>,
     leased: Vec<Weak<Snapshot>>,
     pub computations: u64,
     pub replayed_blocks: u64,
@@ -146,27 +143,6 @@ impl Cache {
         self.compute(tx, chain, path, number)
     }
 
-    pub(super) fn prepare(
-        &self,
-        tx: &(impl DbTx + 'static),
-        chain: &TempoChainSpec,
-        path: &Path,
-    ) -> Result<(), DatabaseError> {
-        let _guard = self.computation.lock().unwrap();
-        {
-            let mut published = self.published.lock().unwrap();
-            published.pending_base = published.latest.clone();
-        }
-        let source = Source::new(tx, chain.genesis_header().number())?;
-        self.compute(&source, chain, path, source.number)?;
-        Ok(())
-    }
-
-    pub(super) fn persisted(&self) {
-        let previous = self.published.lock().unwrap().pending_base.take();
-        drop(previous);
-    }
-
     // Called only with the computation lock held. Recheck after waiting, and
     // publish only complete states; a failed replay leaves the cache usable.
     fn compute(
@@ -247,45 +223,15 @@ impl Cache {
                 } else {
                     Vec::new()
                 };
-                storage.env.set_block_number(block);
-                storage.env.set_timestamp(U256::from(header.timestamp()));
-                storage.env.set_spec(spec);
-                StorageCtx::enter(&mut storage, || -> Result<(), DatabaseError> {
-                    let mut manager = ExpiringNonceManager::new();
-                    if !state.deployed {
-                        manager.oldest_unpruned_block.write(block).map_err(error)?;
-                        state.deployed = true;
-                    }
-                    manager.prune().map_err(error)?;
-                    for (index, transaction) in transactions.into_iter().enumerate() {
-                        let Some(signed) = transaction.as_aa() else {
-                            continue;
-                        };
-                        if !spec.is_t1() || !signed.tx().is_expiring_nonce_tx() {
-                            continue;
-                        }
-                        let hash = if spec.is_t1b() {
-                            match senders.get(index) {
-                                Some(sender) => signed.expiring_nonce_hash(*sender),
-                                None => signed
-                                    .recover_signer_with_expiring_nonce_hash()
-                                    .map_err(error)?
-                                    .1
-                                    .ok_or_else(|| error("missing replay hash"))?,
-                            }
-                        } else {
-                            *signed.hash()
-                        };
-                        let expiry = signed
-                            .tx()
-                            .valid_before
-                            .ok_or_else(|| error("missing expiry"))?;
-                        manager
-                            .check_and_mark_expiring_nonce(hash, expiry.get())
-                            .map_err(error)?;
-                    }
-                    Ok(())
-                })?;
+                replay_block(
+                    &mut storage,
+                    &mut state.deployed,
+                    block,
+                    header.timestamp(),
+                    spec,
+                    &transactions,
+                    &senders,
+                )?;
             }
             state.slots = storage.slots;
             state.number = number;
@@ -308,5 +254,162 @@ impl Cache {
             published.leased.push(Arc::downgrade(&previous));
         }
         Ok(state)
+    }
+}
+
+pub(super) fn replay_block(
+    storage: &mut ReplayStorage,
+    deployed: &mut bool,
+    block: u64,
+    timestamp: u64,
+    spec: tempo_chainspec::hardfork::TempoHardfork,
+    transactions: &[TempoTxEnvelope],
+    senders: &[Address],
+) -> Result<(), DatabaseError> {
+    storage.env.set_block_number(block);
+    storage.env.set_timestamp(U256::from(timestamp));
+    storage.env.set_spec(spec);
+    StorageCtx::enter(storage, || -> Result<(), DatabaseError> {
+        let mut manager = ExpiringNonceManager::new();
+        if !*deployed {
+            manager.oldest_unpruned_block.write(block).map_err(error)?;
+            *deployed = true;
+        }
+        manager.prune().map_err(error)?;
+        for (index, transaction) in transactions.iter().enumerate() {
+            let Some(signed) = transaction.as_aa() else {
+                continue;
+            };
+            if !spec.is_t1() || !signed.tx().is_expiring_nonce_tx() {
+                continue;
+            }
+            let hash = if spec.is_t1b() {
+                match senders.get(index) {
+                    Some(sender) => signed.expiring_nonce_hash(*sender),
+                    None => signed
+                        .recover_signer_with_expiring_nonce_hash()
+                        .map_err(error)?
+                        .1
+                        .ok_or_else(|| error("missing replay hash"))?,
+                }
+            } else {
+                *signed.hash()
+            };
+            let expiry = signed
+                .tx()
+                .valid_before
+                .ok_or_else(|| error("missing expiry"))?;
+            manager
+                .check_and_mark_expiring_nonce(hash, expiry.get())
+                .map_err(error)?;
+        }
+        Ok(())
+    })
+}
+
+/// Dropping an unfinished task signals failed persistence and waits for its worker.
+/// The computation lock remains held until commit decides whether to publish, so
+/// readers of a newly committed view wait instead of duplicating preparation.
+pub(super) struct Preparation {
+    commit: Option<std::sync::mpsc::Sender<bool>>,
+    worker: Option<std::thread::JoinHandle<Result<(), DatabaseError>>>,
+}
+
+impl Preparation {
+    fn complete(&mut self, committed: bool) {
+        if let Some(commit) = self.commit.take() {
+            let _ = commit.send(committed);
+        }
+        if let Some(worker) = self.worker.take() {
+            match worker.join() {
+                Ok(Ok(())) => {}
+                Ok(Err(error)) => tracing::warn!(%error, "Replay cache preparation failed"),
+                Err(_) => tracing::warn!("Replay cache preparation worker panicked"),
+            }
+        }
+    }
+}
+impl Drop for Preparation {
+    fn drop(&mut self) {
+        self.complete(false);
+    }
+}
+impl reth_db_api::database::PersistenceTask for Preparation {
+    fn finish(mut self: Box<Self>) {
+        let started = std::time::Instant::now();
+        self.complete(true);
+        metrics::histogram!("tempo_replay_cache_publish_wait_seconds")
+            .record(started.elapsed().as_secs_f64());
+    }
+}
+
+impl Cache {
+    pub(super) fn prepare_blocks(
+        self: &Arc<Self>,
+        source: Source,
+        chain: Arc<TempoChainSpec>,
+        path: std::path::PathBuf,
+        blocks: Vec<Arc<reth_primitives_traits::RecoveredBlock<tempo_primitives::Block>>>,
+    ) -> Result<Preparation, DatabaseError> {
+        let cache = self.clone();
+        let (commit, committed) = std::sync::mpsc::channel();
+        let (ready, acquired) = std::sync::mpsc::sync_channel(0);
+        let worker = std::thread::Builder::new()
+            .name("nonce-cache-prepare".into())
+            .spawn(move || {
+                let _guard = cache.computation.lock().unwrap();
+                let _ = ready.send(());
+                let prepare_started = std::time::Instant::now();
+                let result = (|| {
+                    let base = cache.compute(&source, &chain, &path, source.number)?;
+                    let started = std::time::Instant::now();
+                    let mut state = base.as_ref().clone();
+                    let mut storage =
+                        ReplayStorage::new(chain.chain().id(), std::mem::take(&mut state.slots));
+                    for block in &blocks {
+                        if block.number() != state.number + 1 || block.parent_hash() != state.hash {
+                            return Err(error(
+                                "persistence blocks do not extend the cache checkpoint",
+                            ));
+                        }
+                        replay_block(
+                            &mut storage,
+                            &mut state.deployed,
+                            block.number(),
+                            block.timestamp(),
+                            chain.tempo_hardfork_at(block.timestamp()),
+                            &block.body().transactions,
+                            block.senders(),
+                        )?;
+                        state.number = block.number();
+                        state.hash = block.hash();
+                    }
+                    state.slots = storage.slots;
+                    metrics::histogram!("tempo_replay_cache_compute_seconds")
+                        .record(started.elapsed().as_secs_f64());
+                    Ok((base, Arc::new(state)))
+                })();
+                metrics::histogram!("tempo_replay_cache_prepare_seconds")
+                    .record(prepare_started.elapsed().as_secs_f64());
+                let (base, state) = result?;
+                if committed.recv().unwrap_or(false) {
+                    let mut published = cache.published.lock().unwrap();
+                    published.computations += 1;
+                    published.replayed_blocks += state.number - base.number;
+                    metrics::counter!("tempo_replay_cache_blocks_total")
+                        .increment(state.number - base.number);
+                    if let Some(previous) = published.latest.replace(state) {
+                        published.leased.push(Arc::downgrade(&previous));
+                    }
+                }
+                Ok(())
+            })
+            .map_err(error)?;
+        let task = Preparation {
+            commit: Some(commit),
+            worker: Some(worker),
+        };
+        acquired.recv().map_err(error)?;
+        Ok(task)
     }
 }

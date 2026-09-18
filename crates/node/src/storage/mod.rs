@@ -91,13 +91,25 @@ impl<D: Database> Database for TempoDatabase<D> {
         let tx = WriteTx(tx);
         Ok(tx)
     }
-    fn on_persisting(&self, tx: &Self::TXMut) {
-        if let Err(error) = self.cache.prepare(tx, &self.chain, &self.static_files) {
-            tracing::warn!(%error, "Could not prepare replay storage cache");
+    fn prepare_persistence<B: reth_primitives_traits::Block + 'static>(
+        &self,
+        blocks: Vec<Arc<reth_primitives_traits::RecoveredBlock<B>>>,
+    ) -> Result<Option<Box<dyn reth_db_api::database::PersistenceTask>>, DatabaseError> {
+        if blocks.is_empty() {
+            return Ok(None);
         }
-    }
-    fn on_persisted(&self) {
-        self.cache.persisted();
+        let blocks = (Box::new(blocks) as Box<dyn std::any::Any>)
+            .downcast::<Vec<Arc<reth_primitives_traits::RecoveredBlock<tempo_primitives::Block>>>>()
+            .map_err(|_| DatabaseError::Other("non-Tempo persistence blocks".into()))?;
+        let source = Source::new(&self.inner.tx()?, self.chain.genesis_header().number())?;
+        self.cache
+            .prepare_blocks(
+                source,
+                self.chain.clone(),
+                self.static_files.clone(),
+                *blocks,
+            )
+            .map(|task| Some(Box::new(task) as Box<dyn reth_db_api::database::PersistenceTask>))
     }
     fn path(&self) -> PathBuf {
         self.inner.path()
