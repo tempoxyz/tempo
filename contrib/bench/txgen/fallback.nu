@@ -98,10 +98,14 @@ def txgen-prepare-fallback [spec_path: string, txgen: string, bench: string, rpc
 
     # Assert every sender reaches the final fallback, and the feature must skip pathUSD.
     for address in $addresses {
-        let preference = (fallback-read $rpc $fee_manager "ed498fa8" $address | into int)
-        let path_balance = (fallback-read $rpc $pathusd "70a08231" $address | into int)
-        let selected_balance = (fallback-read $rpc $expected "70a08231" $address | into int)
-        if $preference != 0 or ($use_alpha and $path_balance != 0) or $selected_balance < 30000 {
+        let preference = (fallback-read $rpc $fee_manager "ed498fa8" $address)
+        let path_balance = (fallback-read $rpc $pathusd "70a08231" $address)
+        let selected_balance = (fallback-read $rpc $expected "70a08231" $address)
+        let significant = ($selected_balance | str replace --regex '^0x0*' '')
+        let funded = if ($significant | str length) > 4 { true } else {
+            ($selected_balance | into int) >= 30000
+        }
+        if not ($preference =~ '^0x0+$') or ($use_alpha and not ($path_balance =~ '^0x0+$')) or not $funded {
             error make {msg: $"Fallback preconditions failed for ($address): preference=($preference), pathUSD=($path_balance), selected=($selected_balance)"}
         }
     }
