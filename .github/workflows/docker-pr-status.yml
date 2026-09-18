@@ -34,6 +34,7 @@ jobs:
     env:
       BUILD_RUN_ID: ${{ inputs.run_id || github.event.workflow_run.id }}
     permissions:
+      id-token: write
       contents: read
       actions: read
       pull-requests: write

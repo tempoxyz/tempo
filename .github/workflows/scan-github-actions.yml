@@ -37,7 +37,7 @@ jobs:
 
   scan:
     if: ${{ github.event_name != 'schedule' || github.repository == 'tempoxyz/tempo' }}
-    uses: tempoxyz/gh-actions/.github/workflows/scan-github-actions.yml@27b9d9cb079918e6be16c8660f82bb0cf7fef6ea
+    uses: tempoxyz/gh-actions/.github/workflows/scan-github-actions.yml@6a4184039b7a7537d35ace0badc96764d5a1d4d0
     permissions:
       id-token: write
       actions: read
