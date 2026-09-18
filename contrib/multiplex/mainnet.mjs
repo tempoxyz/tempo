@@ -1,19 +1,24 @@
 // Start a mainnet demonstration from an archive downloaded into ROOT/v1.
-// Usage: node mainnet.mjs /path/to/v1 /path/to/v2 /path/to/mux ROOT
+// Usage: node mainnet.mjs /path/to/v1 /path/to/v2 /path/to/mux ROOT [--resume]
 // No validator keys or transactions are used. Both children are certified followers.
 import assert from 'node:assert/strict';
 import { spawn } from 'node:child_process';
 import { closeSync, openSync } from 'node:fs';
-import { cp, stat, writeFile } from 'node:fs/promises';
+import { cp, readFile, stat, writeFile } from 'node:fs/promises';
 import path from 'node:path';
 
-assert.equal(process.argv.length, 6, 'expected v1, v2, mux, and root paths');
-const [v1Binary, v2Binary, muxBinary, root] = process.argv.slice(2).map(p => path.resolve(p));
+assert.ok(process.argv.length === 6 || (process.argv.length === 7 && process.argv[6] === '--resume'),
+  'expected v1, v2, mux, root paths, and optional --resume');
+const resume = process.argv[6] === '--resume';
+const [v1Binary, v2Binary, muxBinary, root] = process.argv.slice(2, 6).map(p => path.resolve(p));
 const v1Dir = path.join(root, 'v1');
 const v2Dir = path.join(root, 'v2');
 await stat(path.join(v1Dir, 'db'));
-try { await stat(v2Dir); throw new Error('v2 already exists; use its saved configuration instead'); }
-catch (error) { if (error.code !== 'ENOENT') throw error; }
+if (resume) await stat(path.join(v2Dir, 'db'));
+else {
+  try { await stat(v2Dir); throw new Error('v2 already exists; pass --resume to use the saved checkpoint'); }
+  catch (error) { if (error.code !== 'ENOENT') throw error; }
+}
 
 const v1Rpc = 'http://127.0.0.1:28546';
 const v2Rpc = 'http://127.0.0.1:28547';
@@ -66,7 +71,10 @@ function args(datadir, port, networkPort, metricsPort) {
     '--follow.upstream-request-timeout', '10s',
     '--http', '--http.addr', '127.0.0.1', '--http.port', String(port),
     '--http.api', 'eth,net,web3,debug,trace,tempo',
-    '--port', String(networkPort), '--authrpc.port', String(port + 10), '--ipcdisable',
+    '--port', String(networkPort), '--discovery.port', String(networkPort),
+    '--p2p-secret-key', path.join(root, `peer-${port}.key`),
+    '--authrpc.port', String(port + 10), '--ipcdisable',
+    '--log.file.directory', path.join(root, `logs-${port}`),
     '--consensus.metrics-address', `127.0.0.1:${metricsPort}`,
     '--color', 'never'];
 }
@@ -79,30 +87,42 @@ try {
   const schedule = await rpc(reference, 'tempo_forkSchedule');
   assert.equal(schedule.active, 'T11', 'this fixed-rule binary only supports the active T11 protocol');
   assert.equal(schedule.schedule.find(f => f.name === 'T11').activationTime, activation);
-  seed = start(v1Binary, args(v1Dir, 28546, 30326, 28561), 'checkpoint');
-  await ready(v1Rpc, seed);
-  const genesis = await rpc(v1Rpc, 'eth_getBlockByNumber', ['0x0', false]);
-  assert.equal(genesis.hash, (await rpc(reference, 'eth_getBlockByNumber', ['0x0', false])).hash);
-  let low = 1;
-  let high = Number(BigInt(await rpc(v1Rpc, 'eth_blockNumber')));
-  assert.ok(Number(BigInt((await rpc(v1Rpc, 'eth_getBlockByNumber', [hex(high), false])).timestamp)) >= activation);
-  while (low < high) {
-    const middle = Math.floor((low + high) / 2);
-    const block = await rpc(v1Rpc, 'eth_getBlockByNumber', [hex(middle), false]);
-    if (Number(BigInt(block.timestamp)) >= activation) high = middle;
-    else low = middle + 1;
+  let cutover;
+  let parent;
+  let first;
+  if (resume) {
+    const saved = JSON.parse(await readFile(path.join(root, 'multiplex.json'), 'utf8'));
+    cutover = saved.cutover_block;
+    assert.ok(Number.isSafeInteger(cutover) && cutover > 0);
+    parent = await rpc(reference, 'eth_getBlockByNumber', [hex(cutover - 1), false]);
+    first = await rpc(reference, 'eth_getBlockByNumber', [hex(cutover), false]);
+    assert.equal(parent.hash, saved.parent_hash);
+  } else {
+    seed = start(v1Binary, args(v1Dir, 28546, 30326, 28561), 'checkpoint');
+    await ready(v1Rpc, seed);
+    const genesis = await rpc(v1Rpc, 'eth_getBlockByNumber', ['0x0', false]);
+    assert.equal(genesis.hash, (await rpc(reference, 'eth_getBlockByNumber', ['0x0', false])).hash);
+    let low = 1;
+    let high = Number(BigInt(await rpc(v1Rpc, 'eth_blockNumber')));
+    assert.ok(Number(BigInt((await rpc(v1Rpc, 'eth_getBlockByNumber', [hex(high), false])).timestamp)) >= activation);
+    while (low < high) {
+      const middle = Math.floor((low + high) / 2);
+      const block = await rpc(v1Rpc, 'eth_getBlockByNumber', [hex(middle), false]);
+      if (Number(BigInt(block.timestamp)) >= activation) high = middle;
+      else low = middle + 1;
+    }
+    cutover = low;
+    parent = await rpc(v1Rpc, 'eth_getBlockByNumber', [hex(cutover - 1), false]);
+    first = await rpc(v1Rpc, 'eth_getBlockByNumber', [hex(cutover), false]);
+    for (const block of [parent, first]) {
+      assert.equal(block.hash, (await rpc(reference, 'eth_getBlockByNumber', [block.number, false])).hash);
+    }
+    await stop(seed);
+    seed = undefined;
+    await cp(v1Dir, v2Dir, { recursive: true, errorOnExist: true, force: false });
   }
-  const cutover = low;
-  const parent = await rpc(v1Rpc, 'eth_getBlockByNumber', [hex(cutover - 1), false]);
-  const first = await rpc(v1Rpc, 'eth_getBlockByNumber', [hex(cutover), false]);
   assert.equal(first.parentHash, parent.hash);
-  for (const block of [parent, first]) {
-    assert.equal(block.hash, (await rpc(reference, 'eth_getBlockByNumber', [block.number, false])).hash);
-  }
   console.log(JSON.stringify({ phase: 'checkpoint', cutover, parentHash: parent.hash }));
-  await stop(seed);
-  seed = undefined;
-  await cp(v1Dir, v2Dir, { recursive: true, errorOnExist: true, force: false });
   const config = { listen: '127.0.0.1:28545', cutover_block: cutover, parent_hash: parent.hash,
     v1: { rpc: v1Rpc, binary: v1Binary, args: args(v1Dir, 28546, 30326, 28561) },
     v2: { rpc: v2Rpc, binary: v2Binary, args: args(v2Dir, 28547, 30327, 28562) } };
@@ -110,6 +130,8 @@ try {
   await writeFile(configPath, JSON.stringify(config, null, 2));
   mux = start(muxBinary, ['--config', configPath], 'multiplex');
   await ready(muxRpc, mux);
+  assert.equal((await rpc(muxRpc, 'eth_getBlockByNumber', ['0x0', false])).hash,
+    (await rpc(reference, 'eth_getBlockByNumber', ['0x0', false])).hash);
   const canonical = { to: token, data: '0x313ce567' };
   for (const [block, backend] of [[parent.number, v1Rpc], [first.number, v2Rpc]]) {
     for (const [method, params] of [

@@ -134,3 +134,6 @@ starts both binaries as certified followers without validator keys. It checks
 historical calls/traces/receipts, boundary ABI behavior, and live head agreement.
 The validated HTTP endpoint stays on `127.0.0.1:28545`; expose it separately using
 your intended access controls. The prototype RPC limitations above still apply.
+The two followers use distinct discovery ports and independently generated peer
+identities. After a failed run has saved both databases and `multiplex.json`,
+append `--resume` to rerun validation without replacing the checkpoint data.
