@@ -1,3 +1,5 @@
+use std::time::Duration;
+
 use commonware_macros::test_traced;
 use commonware_runtime::{
     Runner as _,
@@ -5,8 +7,36 @@ use commonware_runtime::{
 };
 use futures::future::join_all;
 use reth_ethereum::provider::BlockReader as _;
+use tempo_consensus::VerificationMode;
 
 use crate::{Setup, metrics::wait_for_height, setup_validators};
+
+#[test_traced]
+fn deferred_verification_across_epochs() {
+    let _ = tempo_eyre::install();
+    let setup = Setup::new().epoch_length(10);
+    let cfg = deterministic::Config::default()
+        .with_seed(setup.seed)
+        .with_timeout(Some(Duration::from_secs(60)));
+
+    Runner::from(cfg).start(|mut context| async move {
+        let (mut nodes, _execution_runtime) = setup_validators(&mut context, setup).await;
+        for node in &mut nodes {
+            node.verification_mode = VerificationMode::Deferred;
+        }
+        join_all(nodes.iter_mut().map(|node| node.start(&context))).await;
+
+        join_all(nodes.iter().map(|node| wait_for_height(&context, node, 15))).await;
+        for node in &nodes {
+            let block = node
+                .execution_provider()
+                .block_by_number(15)
+                .unwrap()
+                .unwrap();
+            assert_eq!(block.header.consensus_context.unwrap().epoch, 1);
+        }
+    });
+}
 
 #[test_traced]
 fn blocks_have_consensus_context() {
