@@ -5,7 +5,8 @@ pub mod dispatch;
 
 use alloy::{
     primitives::{Address, B256, U256, keccak256},
-    sol_types::SolValue,
+    sol,
+    sol_types::SolStruct,
 };
 use tempo_contracts::precompiles::{IZoneVerifier, ZONE_VERIFIER_ADDRESS};
 use tempo_precompiles_macros::contract;
@@ -20,7 +21,28 @@ const MAX_FUTURE_SKEW_MILLIS: u64 = 300_000;
 /// Production measurements remain deliberately unset until the reproducible T11 EIF is finalized.
 const APPROVED_PCRS: Option<[[u8; 48]; 3]> = None;
 
-const BATCH_ATTESTATION_TYPE: &str = "NitroBatchAttestation(uint256 parentChainId,address verifier,uint32 zoneId,uint64 tempoBlockNumber,uint64 anchorBlockNumber,bytes32 anchorBlockHash,uint64 expectedWithdrawalBatchIndex,uint256 nextZoneHeight,bytes32 prevBlockHash,bytes32 nextBlockHash,bytes32 prevProcessedHash,bytes32 nextProcessedHash,uint64 prevDepositNumber,uint64 nextDepositNumber,uint64 prevProcessedTokenCount,uint64 nextProcessedTokenCount,bytes32 withdrawalQueueHash,bytes32 verifierConfigHash)";
+sol! {
+    struct NitroBatchAttestation {
+        uint256 parentChainId;
+        address verifier;
+        uint32 zoneId;
+        uint64 tempoBlockNumber;
+        uint64 anchorBlockNumber;
+        bytes32 anchorBlockHash;
+        uint64 expectedWithdrawalBatchIndex;
+        uint256 nextZoneHeight;
+        bytes32 prevBlockHash;
+        bytes32 nextBlockHash;
+        bytes32 prevProcessedHash;
+        bytes32 nextProcessedHash;
+        uint64 prevDepositNumber;
+        uint64 nextDepositNumber;
+        uint64 prevProcessedTokenCount;
+        uint64 nextProcessedTokenCount;
+        bytes32 withdrawalQueueHash;
+        bytes32 verifierConfigHash;
+    }
+}
 
 #[contract(addr = ZONE_VERIFIER_ADDRESS)]
 pub struct ZoneVerifier {}
@@ -88,30 +110,27 @@ impl ZoneVerifier {
 }
 
 fn batch_commitment(chain_id: u64, call: &IZoneVerifier::verifyCall) -> B256 {
-    keccak256(
-        (
-            keccak256(BATCH_ATTESTATION_TYPE),
-            U256::from(chain_id),
-            ZONE_VERIFIER_ADDRESS,
-            call.zoneId,
-            call.tempoBlockNumber,
-            call.anchorBlockNumber,
-            call.anchorBlockHash,
-            call.expectedWithdrawalBatchIndex,
-            call.nextZoneHeight,
-            call.blockTransition.prevBlockHash,
-            call.blockTransition.nextBlockHash,
-            call.depositQueueTransition.prevProcessedHash,
-            call.depositQueueTransition.nextProcessedHash,
-            call.depositQueueTransition.prevDepositNumber,
-            call.depositQueueTransition.nextDepositNumber,
-            call.tokenEnablementTransition.prevProcessedTokenCount,
-            call.tokenEnablementTransition.nextProcessedTokenCount,
-            call.withdrawalQueueHash,
-            keccak256(&call.verifierConfig),
-        )
-            .abi_encode(),
-    )
+    NitroBatchAttestation {
+        parentChainId: U256::from(chain_id),
+        verifier: ZONE_VERIFIER_ADDRESS,
+        zoneId: call.zoneId,
+        tempoBlockNumber: call.tempoBlockNumber,
+        anchorBlockNumber: call.anchorBlockNumber,
+        anchorBlockHash: call.anchorBlockHash,
+        expectedWithdrawalBatchIndex: call.expectedWithdrawalBatchIndex,
+        nextZoneHeight: call.nextZoneHeight,
+        prevBlockHash: call.blockTransition.prevBlockHash,
+        nextBlockHash: call.blockTransition.nextBlockHash,
+        prevProcessedHash: call.depositQueueTransition.prevProcessedHash,
+        nextProcessedHash: call.depositQueueTransition.nextProcessedHash,
+        prevDepositNumber: call.depositQueueTransition.prevDepositNumber,
+        nextDepositNumber: call.depositQueueTransition.nextDepositNumber,
+        prevProcessedTokenCount: call.tokenEnablementTransition.prevProcessedTokenCount,
+        nextProcessedTokenCount: call.tokenEnablementTransition.nextProcessedTokenCount,
+        withdrawalQueueHash: call.withdrawalQueueHash,
+        verifierConfigHash: keccak256(&call.verifierConfig),
+    }
+    .eip712_hash_struct()
 }
 
 #[cfg(test)]
@@ -158,7 +177,7 @@ mod tests {
             [0xeb, 0xb2, 0xdd, 0xc9]
         );
         assert_eq!(
-            keccak256(BATCH_ATTESTATION_TYPE),
+            keccak256(NitroBatchAttestation::eip712_encode_type().as_bytes()),
             B256::from(alloy::primitives::hex!(
                 "b6f39555cba9bf38842c669ea0c90bca6aad793881d75a0034e33352fbecb25e"
             ))
