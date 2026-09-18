@@ -25,6 +25,7 @@ const BLS12_PAIRING_OFFSET: u64 = 230_000;
 const BLS12_PAIRING_MULTIPLIER: u64 = 167_000;
 const BLS12_MAP_FP_TO_G1: u64 = 26_000;
 const BLS12_MAP_FP2_TO_G2: u64 = 95_000;
+const P256_VERIFY_BASE: u64 = 27_000;
 const MODEXP_MIN_GAS: u64 = 500;
 const MODEXP_SMALL_MULTIPLICATION_COMPLEXITY: u64 = 81;
 const MODEXP_LARGE_BASE_MODULUS_MULTIPLIER: u64 = 2;
@@ -127,6 +128,12 @@ pub(crate) fn apply(precompiles: &mut PrecompilesMap) {
         PrecompileId::Bls12MapFp2ToGp2,
         bls12_map_fp2_to_g2,
     );
+    replace(
+        precompiles,
+        precompile::secp256r1::P256VERIFY_OSAKA.address(),
+        PrecompileId::P256Verify,
+        p256_verify,
+    );
 
     precompiles.apply_precompile(&precompile::kzg_point_evaluation::ADDRESS, |_| None);
 }
@@ -169,6 +176,16 @@ fn ecrecover(input: &[u8], gas_limit: u64, reservoir: u64) -> PrecompileResult {
         reservoir,
         ECRECOVER_BASE,
         precompile::secp256k1::ec_recover_run,
+    )
+}
+
+fn p256_verify(input: &[u8], gas_limit: u64, reservoir: u64) -> PrecompileResult {
+    run_repriced(
+        input,
+        gas_limit,
+        reservoir,
+        P256_VERIFY_BASE,
+        precompile::secp256r1::p256_verify_osaka,
     )
 }
 
@@ -377,6 +394,7 @@ mod tests {
     #[test]
     fn fixed_and_linear_prices_match_tip_1102() {
         assert_price(ecrecover, &[], ECRECOVER_BASE, 0);
+        assert_price(p256_verify, &[], P256_VERIFY_BASE, 0);
         assert_price(sha256, &[], SHA256_BASE, 32);
         assert_price(sha256, &[0; 33], SHA256_BASE + 2 * SHA256_PER_WORD, 32);
         assert_price(identity, &[], IDENTITY_BASE, 0);
