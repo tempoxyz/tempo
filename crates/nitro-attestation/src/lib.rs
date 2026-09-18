@@ -13,7 +13,6 @@ mod error;
 mod x509;
 
 use alloc::{string::String, vec::Vec};
-use sha2::{Digest, Sha256};
 
 pub use error::{CertificateError, Error, FormatError, SignatureError};
 
@@ -95,8 +94,6 @@ pub struct NitroAttestation {
     pub user_data: Vec<u8>,
     /// Optional nonce. Empty when absent, CBOR null, or present with zero length.
     pub nonce: Vec<u8>,
-    /// SHA-256 of the exact DER-encoded leaf certificate.
-    pub leaf_cert_hash: [u8; 32],
 }
 
 /// Backend used for P-384 public-key and signature operations.
@@ -155,7 +152,6 @@ pub fn verify_parsed<V: P384Verifier + Sha384Hasher>(
         return Err(SignatureError::Document.into());
     }
 
-    let leaf_cert_hash: [u8; 32] = Sha256::digest(&parsed.certificate).into();
     Ok(NitroAttestation {
         module_id: parsed.module_id,
         timestamp: parsed.timestamp,
@@ -163,6 +159,5 @@ pub fn verify_parsed<V: P384Verifier + Sha384Hasher>(
         public_key: parsed.public_key,
         user_data: parsed.user_data,
         nonce: parsed.nonce,
-        leaf_cert_hash,
     })
 }

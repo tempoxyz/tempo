@@ -290,6 +290,12 @@ pub(super) mod tests {
         let document = production_fixture();
         let parsed = parse_attestation(&document).expect("production fixture parses");
         assert!(parsed.signature[48..] > P384_HALF_ORDER[..]);
+        assert_eq!(
+            aws_lc_rs::digest::digest(&aws_lc_rs::digest::SHA256, &parsed.certificate).as_ref(),
+            alloy::primitives::hex!(
+                "37dbbf810aba51d3423c84f6999b6bd0fcf008d9af094ae419134647bd41aa07"
+            )
+        );
 
         let mut storage = HashMapStorageProvider::new_with_spec(1, TempoHardfork::T13);
         StorageCtx::enter(&mut storage, || {
@@ -304,12 +310,6 @@ pub(super) mod tests {
             assert_eq!(verified.pcrs.len(), 16);
             assert!(verified.public_key.is_empty());
             assert!(verified.nonce.is_empty());
-            assert_eq!(
-                verified.leaf_cert_hash,
-                alloy::primitives::hex!(
-                    "37dbbf810aba51d3423c84f6999b6bd0fcf008d9af094ae419134647bd41aa07"
-                )
-            );
         });
     }
 
