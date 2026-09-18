@@ -226,7 +226,26 @@ impl<DB: Database, I> TempoEvm<DB, I> {
         self.non_creditable_slots.clone()
     }
 
-    /// Clears all intermediate state from the EVM.
+    /// Resets Tempo-specific transaction-local bookkeeping: the collected fee, fee token,
+    /// access-key expiry, and protocol slots excluded from storage credits.
+    ///
+    /// # When to call
+    ///
+    /// This is a required cleanup step before reusing the EVM for another transaction. Full
+    /// transaction execution calls it automatically through the handler's result and error
+    /// paths. Callers that only run part of the transaction lifecycle (for example, validation
+    /// without execution) must ensure it is called when they finish or abandon that transaction,
+    /// including on early errors. Otherwise, state from one transaction can affect the next.
+    /// Calling it again after cleanup is harmless.
+    ///
+    /// In particular, [`TempoEvmHandler::validate_transaction`](crate::handler::TempoEvmHandler::validate_transaction)
+    /// clears this bookkeeping on success, but can return an error before reaching cleanup;
+    /// callers must clear it on those error paths before reusing the EVM.
+    ///
+    /// This does not revert journaled writes or reset the transaction environment, recorded
+    /// storage actions, or EVM configuration. Validation-only callers must also discard the
+    /// transaction's journaled writes with `journal_mut().discard_tx()`; discarding the journal
+    /// alone does not clear this bookkeeping.
     pub fn clear(&mut self) {
         self.collected_fee = U256::ZERO;
         self.fee_token = None;
