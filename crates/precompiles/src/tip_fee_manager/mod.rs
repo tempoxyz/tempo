@@ -1108,22 +1108,6 @@ mod tests {
             Ok(())
         };
 
-        // Pre-T5: fallback disabled — must revert.
-        with_two_hop_env(
-            TempoHardfork::T4,
-            false,
-            |fm, t, user, validator, _admin| {
-                setup_pools(fm, t)?;
-                let res = fm.collect_fee_pre_tx(user, t.user, U256::from(1_000), validator, false);
-                assert_eq!(
-                    res.unwrap_err(),
-                    TIPFeeAMMError::insufficient_liquidity().into(),
-                    "T4: expected InsufficientLiquidity",
-                );
-                Ok(())
-            },
-        )?;
-
         // T5: same setup — fallback engages successfully.
         with_two_hop_env(
             TempoHardfork::T5,

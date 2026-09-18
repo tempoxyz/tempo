@@ -498,7 +498,7 @@ mod tests {
 
     #[test]
     fn test_has_enough_liquidity_cached_pool_insufficient() {
-        let user_token = address!("2222222222222222222222222222222222222222");
+        let user_token = tempo_contracts::precompiles::PATH_USD_ADDRESS;
         let validator_token = address!("3333333333333333333333333333333333333333");
 
         let cache = AmmLiquidityCache {
@@ -583,7 +583,7 @@ mod tests {
 
     #[test]
     fn test_has_enough_liquidity_cache_miss_insufficient() {
-        let user_token = address!("2222222222222222222222222222222222222222");
+        let user_token = tempo_contracts::precompiles::PATH_USD_ADDRESS;
         let validator_token = address!("3333333333333333333333333333333333333333");
 
         let cache = AmmLiquidityCache {

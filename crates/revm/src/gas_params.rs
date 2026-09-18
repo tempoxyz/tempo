@@ -64,7 +64,7 @@ pub fn tempo_gas_params_with_amsterdam(
     // 245k creditable portion is handled by the storage-credit hook.
     {
         static TABLE: OnceLock<GasParams> = OnceLock::new();
-        return TABLE.get_or_init(t7_gas_params).clone();
+        TABLE.get_or_init(t7_gas_params).clone()
     }
 }
 
@@ -240,7 +240,7 @@ mod tests {
         // T1 has full 250k costs in regular gas, no state gas split
         assert_eq!(
             gas_params.get(GasId::sstore_set_without_load_cost()),
-            250_000
+            SSTORE_SET_COST
         );
         assert_eq!(gas_params.get(GasId::new_account_cost()), 250_000);
         assert_eq!(gas_params.get(GasId::tx_create_cost()), 500_000);

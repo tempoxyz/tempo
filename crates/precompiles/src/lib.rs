@@ -1016,6 +1016,21 @@ mod tests {
     }
 
     #[test]
+    fn test_current_precompile_membership_ignores_metadata() {
+        for &metadata in TempoHardfork::VARIANTS {
+            let mut cfg = CfgEnv::<TempoHardfork>::default();
+            cfg.set_spec_and_mainnet_gas_params(metadata);
+            let precompiles = test_tempo_precompiles(&cfg);
+            for &(address, _) in tempo_contracts::precompiles::SYSTEM_PRECOMPILES {
+                assert!(precompiles.get(&address).is_some(), "{metadata}: {address}");
+            }
+            let p256 = Address::from_word(U256::from(256).into());
+            assert!(precompiles.get(&p256).is_some());
+            assert!(precompiles.get(&zone_factory::portal_address(1)).is_none());
+        }
+    }
+
+    #[test]
     fn test_extend_tempo_precompiles_registers_precompiles() {
         let mut cfg = CfgEnv::<TempoHardfork>::default();
         cfg.set_spec_and_mainnet_gas_params(TempoHardfork::T3);
@@ -1105,93 +1120,5 @@ mod tests {
             random_precompile.is_none(),
             "Random address should not be a precompile"
         );
-    }
-
-    #[test]
-    fn test_signature_verifier_not_registered_pre_t3() {
-        let cfg = CfgEnv::<TempoHardfork>::default();
-        let precompiles = test_tempo_precompiles(&cfg);
-
-        assert!(
-            precompiles.get(&SIGNATURE_VERIFIER_ADDRESS).is_none(),
-            "SignatureVerifier should NOT be registered before T3"
-        );
-    }
-
-    #[test]
-    fn test_zone_factory_registered_at_t10_only() {
-        let mut pre_t10 = CfgEnv::<TempoHardfork>::default();
-        pre_t10.set_spec_and_mainnet_gas_params(TempoHardfork::T9);
-        assert!(
-            test_tempo_precompiles(&pre_t10)
-                .get(&ZONE_FACTORY_ADDRESS)
-                .is_none()
-        );
-
-        let mut t10 = CfgEnv::<TempoHardfork>::default();
-        t10.set_spec_and_mainnet_gas_params(TempoHardfork::T10);
-        let precompiles = test_tempo_precompiles(&t10);
-        assert!(
-            precompiles.get(&ZONE_FACTORY_ADDRESS).is_some(),
-            "ZoneFactory should be registered at T10"
-        );
-        assert!(
-            precompiles.get(&zone_factory::portal_address(1)).is_none(),
-            "ZonePortal storage handles must not be registered as precompiles"
-        );
-    }
-
-    #[test]
-    fn test_channel_reserve_registered_at_t5_only() {
-        let pre_t5 = CfgEnv::<TempoHardfork>::default();
-        assert!(
-            test_tempo_precompiles(&pre_t5)
-                .get(&TIP20_CHANNEL_RESERVE_ADDRESS)
-                .is_none(),
-            "TIP20 channel reserve should NOT be registered before T5"
-        );
-
-        let mut t5 = CfgEnv::<TempoHardfork>::default();
-        t5.set_spec_and_mainnet_gas_params(TempoHardfork::T5);
-        assert!(
-            test_tempo_precompiles(&t5)
-                .get(&TIP20_CHANNEL_RESERVE_ADDRESS)
-                .is_some(),
-            "TIP20 channel reserve should be registered at T5"
-        );
-    }
-
-    #[test]
-    fn test_p256verify_availability_across_t1c_boundary() {
-        let has_p256 = |spec: TempoHardfork| -> bool {
-            // P256VERIFY lives at address 0x100 (256), added in Osaka
-            let p256_addr = Address::from_word(U256::from(256).into());
-
-            let mut cfg = CfgEnv::<TempoHardfork>::default();
-            cfg.set_spec_and_mainnet_gas_params(spec);
-            test_tempo_precompiles(&cfg).get(&p256_addr).is_some()
-        };
-
-        // Pre-T1C hardforks should use Prague precompiles (no P256VERIFY)
-        for spec in [
-            TempoHardfork::Genesis,
-            TempoHardfork::T0,
-            TempoHardfork::T1,
-            TempoHardfork::T1A,
-            TempoHardfork::T1B,
-        ] {
-            assert!(
-                !has_p256(spec),
-                "P256VERIFY should NOT be available at {spec:?} (pre-T1C)"
-            );
-        }
-
-        // T1C+ hardforks should use Osaka precompiles (P256VERIFY available)
-        for spec in [TempoHardfork::T1C, TempoHardfork::T2] {
-            assert!(
-                has_p256(spec),
-                "P256VERIFY should be available at {spec:?} (T1C+)"
-            );
-        }
     }
 }

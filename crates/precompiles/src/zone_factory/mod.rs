@@ -306,7 +306,7 @@ fn validate_closed_loop_config(
         )? {
             return Err(ZoneFactoryError::invalid_closed_loop_config().into());
         }
-        return Ok(());
+        Ok(())
     }
 }
 

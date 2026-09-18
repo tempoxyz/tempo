@@ -2262,23 +2262,21 @@ where
 
     // Calculate 2D nonce gas if nonce_key is non-zero
     // If tx nonce is 0, it's a new key (0 -> 1 transition), otherwise existing key
-    {
-        if aa_env.nonce_key == TEMPO_EXPIRING_NONCE_KEY {
-            // Calculate nonce gas based on nonce type:
-            // - Expiring nonce (nonce_key == MAX, T1 active): ring buffer + seen mapping operations
-            // - 2D nonce (nonce_key != 0): SLOAD + SSTORE for nonce increment
-            // - Regular nonce (nonce_key == 0): no additional gas
-            batch_gas.initial_regular_gas += EXPIRING_NONCE_GAS;
-        } else if tx.nonce == 0 {
-            // TIP-1000: Storage pricing updates for launch
-            // Tempo transactions with any `nonce_key` and `nonce == 0` require an additional 250,000 gas
-            batch_gas.initial_regular_gas += gas_params.get(GasId::new_account_cost());
-            batch_gas.initial_state_gas += gas_params.new_account_state_gas();
-        } else if !aa_env.nonce_key.is_zero() {
-            // Existing 2D nonce key usage (nonce > 0)
-            // TIP-1000 Invariant 3: existing state updates must charge +5,000 gas
-            batch_gas.initial_regular_gas += spec.gas_existing_nonce_key();
-        }
+    if aa_env.nonce_key == TEMPO_EXPIRING_NONCE_KEY {
+        // Calculate nonce gas based on nonce type:
+        // - Expiring nonce (nonce_key == MAX, T1 active): ring buffer + seen mapping operations
+        // - 2D nonce (nonce_key != 0): SLOAD + SSTORE for nonce increment
+        // - Regular nonce (nonce_key == 0): no additional gas
+        batch_gas.initial_regular_gas += EXPIRING_NONCE_GAS;
+    } else if tx.nonce == 0 {
+        // TIP-1000: Storage pricing updates for launch
+        // Tempo transactions with any `nonce_key` and `nonce == 0` require an additional 250,000 gas
+        batch_gas.initial_regular_gas += gas_params.get(GasId::new_account_cost());
+        batch_gas.initial_state_gas += gas_params.new_account_state_gas();
+    } else if !aa_env.nonce_key.is_zero() {
+        // Existing 2D nonce key usage (nonce > 0)
+        // TIP-1000 Invariant 3: existing state updates must charge +5,000 gas
+        batch_gas.initial_regular_gas += spec.gas_existing_nonce_key();
     };
 
     // For T0+, include 2D nonce gas in validation (charged upfront)

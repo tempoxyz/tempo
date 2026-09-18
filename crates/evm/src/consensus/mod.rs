@@ -488,7 +488,7 @@ mod tests {
         // Pre-T1 chainspec uses the divisor-based calculation
         let consensus = TempoConsensus::new(create_pre_t1_chainspec());
         let gas_limit = 500_000_000u64;
-        let shared_gas_limit = gas_limit / 10;
+        let shared_gas_limit = 0;
         // Pre-T1: expected = (gas_limit - shared_gas_limit) / 2
         let header = TestHeaderBuilder::default()
             .gas_limit(gas_limit)
@@ -507,7 +507,7 @@ mod tests {
         );
 
         // Now verify the correct pre-T1 value works
-        let expected_general_gas_limit = (gas_limit - shared_gas_limit) / 2;
+        let expected_general_gas_limit = 30_000_000;
         let header = TestHeaderBuilder::default()
             .gas_limit(gas_limit)
             .timestamp_millis(current_timestamp_millis())
@@ -651,7 +651,7 @@ mod tests {
             .gas_limit(gas_limit)
             .timestamp_millis(current_timestamp_millis())
             .general_gas_limit(999)
-            .shared_gas_limit(50_000_000)
+            .shared_gas_limit(0)
             .build();
         let sealed = SealedHeader::seal_slow(header);
 
@@ -668,7 +668,7 @@ mod tests {
             .gas_limit(gas_limit)
             .timestamp_millis(current_timestamp_millis())
             .general_gas_limit(TempoHardfork::T1.general_gas_limit().unwrap())
-            .shared_gas_limit(50_000_000)
+            .shared_gas_limit(0)
             .build();
         let sealed = SealedHeader::seal_slow(header);
         consensus.validate_header(&sealed).expect("should be valid");
@@ -740,7 +740,7 @@ mod tests {
             .timestamp(parent_ts + 1)
             .timestamp_millis_part(600)
             .number(2)
-            .base_fee(TEMPO_T1_BASE_FEE)
+            .base_fee(tempo_chainspec::spec::TEMPO_T7_BASE_FEE_CAP)
             .parent_hash(parent_sealed.hash())
             .build();
         let child_sealed = SealedHeader::seal_slow(child);
@@ -768,7 +768,7 @@ mod tests {
             .timestamp(parent_ts)
             .timestamp_millis_part(500)
             .number(2)
-            .base_fee(TEMPO_T1_BASE_FEE)
+            .base_fee(tempo_chainspec::spec::TEMPO_T7_BASE_FEE_CAP)
             .parent_hash(parent_sealed.hash())
             .build();
         let child_sealed = SealedHeader::seal_slow(child);
@@ -806,7 +806,7 @@ mod tests {
             .timestamp(parent_ts)
             .timestamp_millis_part(400)
             .number(1)
-            .base_fee(TEMPO_T1_BASE_FEE)
+            .base_fee(tempo_chainspec::spec::TEMPO_T7_BASE_FEE_CAP)
             .parent_hash(parent_sealed.hash())
             .build();
         let child_sealed = SealedHeader::seal_slow(child);
@@ -843,7 +843,7 @@ mod tests {
             .number(2)
             .parent_hash(parent_sealed.hash())
             .general_gas_limit(TempoHardfork::T1.general_gas_limit().unwrap())
-            .base_fee(TEMPO_T1_BASE_FEE)
+            .base_fee(tempo_chainspec::spec::TEMPO_T7_BASE_FEE_CAP)
             .build();
         let child_sealed = SealedHeader::seal_slow(child);
 

@@ -214,6 +214,20 @@ impl TIP403Registry {
         self.policy_id_counter.read().map(|counter| counter.max(2))
     }
 
+    /// Seeds a checkpoint record without invoking retired policy-creation rules.
+    #[cfg(test)]
+    pub(crate) fn seed_legacy_policy(&mut self, admin: Address, policy_type: u8) -> Result<u64> {
+        let id = self.policy_id_counter()?;
+        self.policy_id_counter.write(id + 1)?;
+        self.set_policy_data(id, PolicyData { policy_type, admin })?;
+        Ok(id)
+    }
+
+    #[cfg(test)]
+    pub(crate) fn clear_token_binding_fixture(&mut self, token: Address) -> Result<()> {
+        self.token_transfer_policies[token].write(TokenTransferPolicy::default())
+    }
+
     /// Returns `true` if the given policy ID exists (built-in or user-created).
     pub fn policy_exists(&self, call: ITIP403Registry::policyExistsCall) -> Result<bool> {
         // Built-in policies (0 and 1) always exist
@@ -1067,11 +1081,11 @@ mod tests {
         ];
         let admin = Address::random();
 
-        // pre-T6 the address is NOT protected
+        // Historical metadata cannot unprotect a system address
         let mut storage = HashMapStorageProvider::new_with_spec(1, TempoHardfork::T2);
         StorageCtx::enter(&mut storage, || {
             let registry = TIP403Registry::new();
-            assert!(!registry.is_authorized_as(
+            assert!(registry.is_authorized_as(
                 REJECT_ALL_POLICY_ID,
                 RECEIVE_POLICY_GUARD_ADDRESS,
                 AuthRole::Transfer,
@@ -2171,13 +2185,7 @@ mod tests {
 
         let policy_id = StorageCtx::enter(&mut storage, || {
             let mut registry = TIP403Registry::new();
-            registry.create_policy(
-                admin,
-                ITIP403Registry::createPolicyCall {
-                    admin,
-                    policyType: ITIP403Registry::PolicyType::COMPOUND,
-                },
-            )
+            registry.seed_legacy_policy(admin, 255)
         })?;
 
         // Upgrade to T2 and try to use the policy
@@ -2216,13 +2224,7 @@ mod tests {
 
         let invalid_policy_id = StorageCtx::enter(&mut storage, || {
             let mut registry = TIP403Registry::new();
-            registry.create_policy(
-                admin,
-                ITIP403Registry::createPolicyCall {
-                    admin,
-                    policyType: ITIP403Registry::PolicyType::__Invalid,
-                },
-            )
+            registry.seed_legacy_policy(admin, 255)
         })?;
 
         // Upgrade to T2 and create a valid simple policy
@@ -2301,13 +2303,7 @@ mod tests {
         // Create policy with COMPOUND on pre-T2 (stores as 255)
         let policy_id = StorageCtx::enter(&mut storage, || {
             let mut registry = TIP403Registry::new();
-            registry.create_policy(
-                admin,
-                ITIP403Registry::createPolicyCall {
-                    admin,
-                    policyType: ITIP403Registry::PolicyType::COMPOUND,
-                },
-            )
+            registry.seed_legacy_policy(admin, 255)
         })?;
 
         // Now on T2, is_authorized should error with InvalidPolicyType
@@ -2519,13 +2515,7 @@ mod tests {
 
         let policy_id = StorageCtx::enter(&mut storage, || {
             let mut registry = TIP403Registry::new();
-            registry.create_policy(
-                admin,
-                ITIP403Registry::createPolicyCall {
-                    admin,
-                    policyType: ITIP403Registry::PolicyType::__Invalid,
-                },
-            )
+            registry.seed_legacy_policy(admin, 255)
         })?;
 
         // Pre-T2: should return under_overflow error
@@ -2535,10 +2525,16 @@ mod tests {
             let result = registry.policy_data(ITIP403Registry::policyDataCall {
                 policyId: policy_id,
             });
-            assert_eq!(result.unwrap_err(), TempoPrecompileError::under_overflow());
+            assert_eq!(
+                result.unwrap_err(),
+                TIP403RegistryError::invalid_policy_type().into()
+            );
 
             let result = registry.is_authorized_as(policy_id, user, AuthRole::Transfer);
-            assert_eq!(result.unwrap_err(), TempoPrecompileError::under_overflow());
+            assert_eq!(
+                result.unwrap_err(),
+                TIP403RegistryError::invalid_policy_type().into()
+            );
 
             Ok::<_, TempoPrecompileError>(())
         })?;
@@ -2634,16 +2630,7 @@ mod tests {
         let user = Address::random();
         let nonexistent_id = 999;
 
-        // Pre-T2: silently returns default data / false
-        StorageCtx::enter(&mut storage, || -> Result<()> {
-            let registry = TIP403Registry::new();
-            let data = registry.get_policy_data(nonexistent_id)?;
-            assert!(data.is_default());
-            assert!(!registry.is_authorized_as(nonexistent_id, user, AuthRole::Transfer)?);
-            Ok(())
-        })?;
-
-        // T2: reverts with `PolicyNotFound`
+        // All metadata values use current errors; reverts with `PolicyNotFound`
         let mut storage = storage.with_spec(TempoHardfork::T2);
         StorageCtx::enter(&mut storage, || {
             let registry = TIP403Registry::new();

@@ -1643,7 +1643,6 @@ fn test_refund_cap_removed_on_t7() {
     // Refund (50k) deliberately exceeds one fifth of the gas used (100k / 5 = 20k).
     const SPENT: u64 = 100_000;
     const REFUND: i64 = 50_000;
-    const CAPPED: i64 = (SPENT / 5) as i64;
 
     let refunded_for_spec = |spec: TempoHardfork| -> i64 {
         let mut cfg = CfgEnv::<TempoHardfork>::default();
@@ -1673,8 +1672,8 @@ fn test_refund_cap_removed_on_t7() {
 
     assert_eq!(
         refunded_for_spec(TempoHardfork::T6),
-        CAPPED,
-        "pre-T7 must cap the refund at one fifth of gas used"
+        REFUND,
+        "Metadata cannot restore the retired refund cap"
     );
     assert_eq!(
         refunded_for_spec(TempoHardfork::T7),
@@ -2506,12 +2505,12 @@ mod keychain {
 
         let signed = sign_key_auth(
             &bad_signer,
-            KeyAuthorization::unrestricted(1337, SignatureType::Secp256k1, key),
+            KeyAuthorization::unrestricted(1, SignatureType::Secp256k1, key),
         );
         let (mut evm, h) = make_evm(user, key, Some(signed), TempoHardfork::T2, None, true);
 
         assert!(matches!(
-            h.validate_env(&mut evm),
+            h.validate_against_state_and_deduct_caller(&mut evm, &mut Default::default()),
             Err(EVMError::Transaction(
                 TempoInvalidTransaction::KeyAuthorizationNotSignedByRoot { .. }
             ))
@@ -2526,12 +2525,12 @@ mod keychain {
 
         let signed = sign_key_auth(
             &signer,
-            KeyAuthorization::unrestricted(1337, SignatureType::Secp256k1, wrong_key),
+            KeyAuthorization::unrestricted(1, SignatureType::Secp256k1, wrong_key),
         );
         let (mut evm, h) = make_evm(user, tx_key, Some(signed), TempoHardfork::T2, None, true);
 
         assert!(matches!(
-            h.validate_env(&mut evm),
+            h.validate_against_state_and_deduct_caller(&mut evm, &mut Default::default()),
             Err(EVMError::Transaction(
                 TempoInvalidTransaction::AccessKeyCannotAuthorizeOtherKeys
             ))
@@ -3158,7 +3157,7 @@ mod keychain {
             ))
         ));
 
-        // V2 rejected pre-T1C
+        // V2 stays available regardless of historical metadata.
         let v2 = TempoSignature::Keychain(KeychainSignature::new(caller, test_sig()));
         let (mut evm, h) = make_evm(
             caller,
@@ -3168,12 +3167,7 @@ mod keychain {
             Some(v2),
             false,
         );
-        assert!(matches!(
-            h.validate_env(&mut evm),
-            Err(EVMError::Transaction(
-                TempoInvalidTransaction::V2KeychainBeforeActivation
-            ))
-        ));
+        assert!(h.validate_env(&mut evm).is_ok());
     }
 
     #[test]

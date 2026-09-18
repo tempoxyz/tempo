@@ -18,7 +18,8 @@ pub(crate) fn tempo_instructions<DB: Database>(
     let evm_spec = spec.into();
 
     // +T7: Enable TIP-1060 sstore hook
-    let instructions = {
+
+    {
         EthInstructions::new(
             {
                 let mut table = instruction_table::<EthInterpreter, TempoContext<DB>>();
@@ -28,7 +29,5 @@ pub(crate) fn tempo_instructions<DB: Database>(
             gas_table_spec(evm_spec),
             evm_spec,
         )
-    };
-
-    instructions
+    }
 }

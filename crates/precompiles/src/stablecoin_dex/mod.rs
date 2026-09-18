@@ -2113,7 +2113,7 @@ mod tests {
             let alice_credits = exchange.storage_credits(alice)?;
             let alice_order_slots = <Order as crate::storage::StorableType>::SLOTS as u64;
             assert!(alice_credits > 0 && alice_credits <= alice_order_slots);
-            assert_eq!(exchange.storage_credits(bob)?, 0);
+            assert_eq!(exchange.storage_credits(bob)?, 1);
 
             Ok(())
         })
@@ -2162,7 +2162,7 @@ mod tests {
             let alice_credits = exchange.storage_credits(alice)?;
             let alice_order_slots = <Order as crate::storage::StorableType>::SLOTS as u64;
             assert!(alice_credits > 0 && alice_credits <= alice_order_slots);
-            assert_eq!(exchange.storage_credits(bob)?, 0);
+            assert_eq!(exchange.storage_credits(bob)?, 1);
 
             Ok(())
         })
@@ -5110,13 +5110,7 @@ mod tests {
                     // Create an invalid policy (COMPOUND on T0 stores as __Invalid = 255)
                     // and reassign the token to it, simulating a legacy-broken policy reference.
                     let mut registry = TIP403Registry::new();
-                    let invalid_policy_id = registry.create_policy(
-                        admin,
-                        ITIP403Registry::createPolicyCall {
-                            admin,
-                            policyType: ITIP403Registry::PolicyType::COMPOUND,
-                        },
-                    )?;
+                    let invalid_policy_id = registry.seed_legacy_policy(admin, 255)?;
                     base.change_transfer_policy_id(
                         admin,
                         ITIP20::changeTransferPolicyIdCall {

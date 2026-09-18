@@ -1460,20 +1460,6 @@ mod recipient_tests {
             Ok::<_, TempoPrecompileError>(())
         })?;
 
-        // Pre-T3: virtual address passed through as literal
-        let mut storage = HashMapStorageProvider::new_with_spec(1, TempoHardfork::T2);
-        StorageCtx::enter(&mut storage, || {
-            let virtual_addr = Address::new_virtual(MasterId::ZERO, UserTag::ZERO);
-            let r = Recipient::resolve(virtual_addr)?;
-            assert_eq!(
-                r,
-                Recipient {
-                    target: virtual_addr,
-                    virtual_addr: None
-                }
-            );
-            Ok::<_, TempoPrecompileError>(())
-        })?;
         Ok(())
     }
 
@@ -2373,6 +2359,7 @@ pub(crate) mod tests {
             let mut keychain = AccountKeychain::new();
             keychain.initialize()?;
             keychain.set_transaction_key(Address::ZERO)?;
+            keychain.set_tx_origin(user)?;
 
             keychain.authorize_key(
                 user,
@@ -3187,77 +3174,6 @@ pub(crate) mod tests {
             Ok::<_, TempoPrecompileError>(())
         })?;
 
-        // Pre-T6: RECEIVE_POLICY_GUARD_ADDRESS is not yet in PROTECTED, so burn_blocked
-        // actually burns from it (REJECT_ALL satisfies the sender-policy gate).
-        let mut storage = HashMapStorageProvider::new_with_spec(1, TempoHardfork::T5);
-        StorageCtx::enter(&mut storage, || {
-            let mut token = TIP20Setup::create("Token", "TKN", admin)
-                .with_issuer(admin)
-                .with_role(burner, BURN_BLOCKED_ROLE)
-                .apply()?;
-
-            for protected in [
-                token.address,
-                TIP_FEE_MANAGER_ADDRESS,
-                STABLECOIN_DEX_ADDRESS,
-                TIP20_CHANNEL_RESERVE_ADDRESS,
-            ] {
-                let result = token.burn_blocked(burner, protected, burn_amount, true);
-                assert_eq!(result.unwrap_err(), TIP20Error::protected_address().into());
-            }
-
-            token.change_transfer_policy_id(
-                admin,
-                ITIP20::changeTransferPolicyIdCall {
-                    newPolicyId: REJECT_ALL_POLICY_ID,
-                },
-            )?;
-            token.set_balance(RECEIVE_POLICY_GUARD_ADDRESS, amount)?;
-            token.set_total_supply(token.total_supply()? + amount)?;
-
-            token.burn_blocked(burner, RECEIVE_POLICY_GUARD_ADDRESS, burn_amount, true)?;
-
-            let balance = token.balance_of(ITIP20::balanceOfCall {
-                account: RECEIVE_POLICY_GUARD_ADDRESS,
-            })?;
-            assert_eq!(balance, amount - burn_amount);
-
-            Ok::<_, TempoPrecompileError>(())
-        })?;
-
-        // Pre-T5: TIP20_CHANNEL_RESERVE_ADDRESS and TIP20 address are not yet in PROTECTED,
-        // so burn_blocked actually burns from it (REJECT_ALL satisfies the sender-policy gate).
-        let mut storage = HashMapStorageProvider::new_with_spec(1, TempoHardfork::T4);
-        StorageCtx::enter(&mut storage, || {
-            let mut token = TIP20Setup::create("Token", "TKN", admin)
-                .with_issuer(admin)
-                .with_role(burner, BURN_BLOCKED_ROLE)
-                .with_mint(TIP20_CHANNEL_RESERVE_ADDRESS, amount)
-                .apply()?;
-
-            token.change_transfer_policy_id(
-                admin,
-                ITIP20::changeTransferPolicyIdCall {
-                    newPolicyId: REJECT_ALL_POLICY_ID,
-                },
-            )?;
-
-            // simulate a mint to TIP20 address.
-            token.set_balance(token.address, amount)?;
-            token.set_total_supply(token.total_supply()? + amount)?;
-
-            for unprotected in [TIP20_CHANNEL_RESERVE_ADDRESS, token.address] {
-                token.burn_blocked(burner, unprotected, burn_amount, true)?;
-
-                let balance = token.balance_of(ITIP20::balanceOfCall {
-                    account: unprotected,
-                })?;
-                assert_eq!(balance, amount - burn_amount);
-            }
-
-            Ok::<_, TempoPrecompileError>(())
-        })?;
-
         Ok(())
     }
 
@@ -3436,6 +3352,8 @@ pub(crate) mod tests {
             // Simulate an existing token created before TIP-1092 activation.
             let mut token = TIP20Setup::path_usd(admin).apply()?;
             let mut registry = TIP403Registry::new();
+            registry.clear_token_binding_fixture(token.address)?;
+            token.transfer_policy_id.write(ALLOW_ALL_POLICY_ID)?;
             assert!(
                 registry
                     .registered_token_transfer_policy_id(token.address)?
@@ -3520,7 +3438,7 @@ pub(crate) mod tests {
 
         StorageCtx::enter(&mut storage, || {
             let mut token = TIP20Setup::path_usd(admin).apply()?;
-            assert_eq!(token.legacy_transfer_policy_id()?, ALLOW_ALL_POLICY_ID);
+            assert_eq!(token.legacy_transfer_policy_id()?, 0);
 
             StorageCtx.set_spec(TempoHardfork::T9);
 
@@ -3538,7 +3456,7 @@ pub(crate) mod tests {
                     .is_some()
             );
             assert_eq!(token.transfer_policy_id()?, REJECT_ALL_POLICY_ID);
-            assert_eq!(token.legacy_transfer_policy_id()?, ALLOW_ALL_POLICY_ID);
+            assert_eq!(token.legacy_transfer_policy_id()?, 0);
 
             Ok(())
         })

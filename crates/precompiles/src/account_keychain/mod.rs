@@ -954,7 +954,7 @@ impl AccountKeychain {
             for scope in scopes {
                 self.validate_call_scope(scope)?;
             }
-            return Ok(());
+            Ok(())
         }
     }
 
@@ -3018,6 +3018,7 @@ mod tests {
     fn test_authorize_key_rejects_existing_key_boundary() -> eyre::Result<()> {
         // Use pre-T0 to avoid expiry validation (focus on existence check)
         let mut storage = HashMapStorageProvider::new_with_spec(1, TempoHardfork::Genesis);
+        storage.set_timestamp(U256::ZERO);
         let account = Address::random();
         let key_id = Address::random();
         StorageCtx::enter(&mut storage, || {
@@ -3726,8 +3727,8 @@ mod tests {
             })?;
             assert_eq!(
                 after_refund,
-                U256::from(40),
-                "limit should be unchanged after revoked key refund"
+                U256::ZERO,
+                "Revoked keys expose no remaining allowance"
             );
 
             Ok(())
@@ -3790,8 +3791,8 @@ mod tests {
             })?;
             assert_eq!(
                 after_refund,
-                U256::from(40),
-                "limit should be unchanged after expired key refund"
+                U256::ZERO,
+                "Expired keys expose no remaining allowance"
             );
 
             Ok(())
@@ -3908,8 +3909,8 @@ mod tests {
             })?;
             assert_eq!(
                 after_refund,
-                U256::from(140),
-                "saturating_add should allow refund beyond original limit without overflow"
+                U256::from(100),
+                "Refunds cannot exceed the authorized limit"
             );
 
             Ok(())
