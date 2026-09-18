@@ -94,10 +94,7 @@ impl ZoneVerifier {
             return Ok(false);
         }
 
-        let max_timestamp = self
-            .storage
-            .timestamp()
-            .saturating_to::<u64>()
+        let max_timestamp = block_timestamp
             .saturating_mul(1_000)
             .saturating_add(MAX_FUTURE_SKEW_MILLIS);
         if attestation.timestamp > max_timestamp || attestation.user_data.len() != 32 {
