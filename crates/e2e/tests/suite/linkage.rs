@@ -19,7 +19,9 @@ fn only_good_links() {
     //
     // for seed in 0..5 {
     for seed in 0..1 {
-        let setup = Setup::new().epoch_length(100).seed(seed);
+        let setup = Setup::new(crate::VERIFICATION_MODE)
+            .epoch_length(100)
+            .seed(seed);
         let _first = run(setup.clone(), |metrics| metrics.consensus_at_height(5) > 0);
 
         // FIXME(janis): there is some non-determinism and hence the runs are
@@ -55,7 +57,7 @@ fn many_bad_links() {
     //
     // for seed in 0..5 {
     for seed in 0..1 {
-        let setup = Setup::new()
+        let setup = Setup::new(crate::VERIFICATION_MODE)
             .seed(seed)
             .linkage(link.clone())
             .epoch_length(100);
@@ -86,7 +88,7 @@ fn reach_height_20_with_a_few_bad_links() {
         success_rate: commonware_utils::probability!(0.98),
     };
 
-    let setup = Setup::new()
+    let setup = Setup::new(crate::VERIFICATION_MODE)
         .how_many_signers(10)
         .epoch_length(100)
         .linkage(link);

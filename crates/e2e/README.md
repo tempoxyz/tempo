@@ -4,6 +4,25 @@ This crate contains full e2e tests. It spins up networks of validators with
 full consensus and execution layers and asserts that a minimum height is
 reached.
 
+## Running the tests
+
+The `inline` and `deferred` test binaries run the same suite with immediate and
+deferred verification, respectively. Run both with:
+
+```sh
+cargo nextest run -p tempo-e2e
+```
+
+To run one verification mode:
+
+```sh
+cargo nextest run -p tempo-e2e --test inline
+cargo nextest run -p tempo-e2e --test deferred
+```
+
+Shared tests live in `tests/suite`. Pass `crate::VERIFICATION_MODE` to
+`Setup::new` so each test uses its binary's verification mode.
+
 ## Implementation details
 
 The tests are rust tests (no container images or production binaries).

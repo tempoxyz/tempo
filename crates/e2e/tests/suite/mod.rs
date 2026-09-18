@@ -20,6 +20,7 @@ mod restart;
 mod simple;
 mod snapshot;
 mod sync;
+mod testing_node;
 
 #[test_traced]
 fn spawning_execution_node_works() {

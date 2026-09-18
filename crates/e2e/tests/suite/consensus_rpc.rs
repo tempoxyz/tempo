@@ -23,7 +23,9 @@ async fn consensus_subscribe_and_query_finalization() {
     let _ = tempo_eyre::install();
 
     let initial_height = 3;
-    let setup = Setup::new().how_many_signers(1).epoch_length(100);
+    let setup = Setup::new(crate::VERIFICATION_MODE)
+        .how_many_signers(1)
+        .epoch_length(100);
     let cfg = deterministic::Config::default().with_seed(setup.seed);
 
     let (addr_tx, addr_rx) = oneshot::channel::<(SocketAddr, SocketAddr)>();

@@ -9,7 +9,10 @@ use commonware_p2p::simulated::Link;
 fn single_node() {
     let _ = tempo_eyre::install();
 
-    let setup = Setup::new().how_many_signers(1).epoch_length(100).seed(0);
+    let setup = Setup::new(crate::VERIFICATION_MODE)
+        .how_many_signers(1)
+        .epoch_length(100)
+        .seed(0);
     let _first = run(setup, |metrics| metrics.consensus_at_height(5) > 0);
 }
 
@@ -17,7 +20,9 @@ fn single_node() {
 fn only_good_links() {
     let _ = tempo_eyre::install();
 
-    let setup = Setup::new().epoch_length(100).seed(42);
+    let setup = Setup::new(crate::VERIFICATION_MODE)
+        .epoch_length(100)
+        .seed(42);
     let _first = run(setup, |metrics| metrics.consensus_at_height(5) > 0);
 }
 
@@ -31,7 +36,10 @@ fn many_bad_links() {
         success_rate: commonware_utils::probability!(0.75),
     };
 
-    let setup = Setup::new().seed(42).epoch_length(100).linkage(link);
+    let setup = Setup::new(crate::VERIFICATION_MODE)
+        .seed(42)
+        .epoch_length(100)
+        .linkage(link);
 
     let _first = run(setup, |metrics| metrics.consensus_at_height(5) > 0);
 }
@@ -46,7 +54,7 @@ fn reach_height_20_with_a_few_bad_links() {
         success_rate: commonware_utils::probability!(0.98),
     };
 
-    let setup = Setup::new()
+    let setup = Setup::new(crate::VERIFICATION_MODE)
         .how_many_signers(10)
         .epoch_length(100)
         .linkage(link);

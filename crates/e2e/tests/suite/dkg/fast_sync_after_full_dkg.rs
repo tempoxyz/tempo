@@ -47,7 +47,7 @@ fn fast_sync_after_full_dkg(update_network_identity: bool) {
     let full_dkg_epoch = 1;
     let blocks_before_late_join = 3 * epoch_length + 1;
 
-    let setup = Setup::new()
+    let setup = Setup::new(crate::VERIFICATION_MODE)
         .how_many_signers(how_many_signers)
         .epoch_length(epoch_length);
 

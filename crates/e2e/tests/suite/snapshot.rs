@@ -39,7 +39,7 @@ fn joins_from_snapshot() {
     let epoch_length = 20;
     // Create a verifier that we will never start. It just the private keys
     // we desire.
-    let setup = Setup::new()
+    let setup = Setup::new(crate::VERIFICATION_MODE)
         .how_many_signers(4)
         .how_many_verifiers(1)
         .epoch_length(epoch_length);
@@ -224,7 +224,7 @@ fn can_restart_after_joining_from_snapshot() {
     let epoch_length = 20;
     // Create a verifier that we will never start. It just the private keys
     // we desire.
-    let setup = Setup::new()
+    let setup = Setup::new(crate::VERIFICATION_MODE)
         .how_many_signers(4)
         .how_many_verifiers(1)
         .epoch_length(epoch_length);

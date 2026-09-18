@@ -19,7 +19,9 @@ fn validator_recovers_revealed_share_without_consensus_state() {
     let _ = tempo_eyre::install();
 
     let epoch_length = 20;
-    let setup = Setup::new().how_many_signers(4).epoch_length(epoch_length);
+    let setup = Setup::new(crate::VERIFICATION_MODE)
+        .how_many_signers(4)
+        .epoch_length(epoch_length);
     let cfg = Config::default().with_seed(setup.seed);
     let executor = Runner::from(cfg);
 
