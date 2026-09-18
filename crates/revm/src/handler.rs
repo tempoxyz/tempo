@@ -67,12 +67,6 @@ use crate::{
     signature_gas::{primitive_signature_verification_gas, tempo_signature_verification_gas},
 };
 
-/// Base gas for KeyAuthorization (22k storage + 5k buffer), signature gas added at runtime
-const KEY_AUTH_BASE_GAS: u64 = 27_000;
-
-/// Gas per spending limit in KeyAuthorization
-const KEY_AUTH_PER_LIMIT_GAS: u64 = 22_000;
-
 /// Rounded buffer for each extra LOG3/no-data event emitted by key authorizations.
 const KEY_AUTH_EXTRA_EVENT_BUFFER: u64 = 1_500;
 
@@ -113,13 +107,13 @@ struct LoadedTxAccessKey {
 /// rounded surcharge.
 fn call_scope_storage_slots(
     auth: &tempo_primitives::transaction::KeyAuthorization,
-    spec: tempo_chainspec::hardfork::TempoHardfork,
+    _spec: tempo_chainspec::hardfork::TempoHardfork,
 ) -> u64 {
     match auth.allowed_calls.as_ref() {
         None => 0,
         Some(scopes) if scopes.is_empty() => 1,
         Some(scopes) => {
-            let is_t4 = true;
+            let _is_t4 = true;
             let mut selector_sets = 0u64;
             let mut selectors = 0u64;
             let mut constrained_selectors = 0u64;
@@ -413,7 +407,7 @@ where
         remaining_gas: &mut u64,
         reservoir: u64,
     ) -> Result<Option<FrameResult>, EVMError<DB::Error, TempoInvalidTransaction>> {
-        let spec = *evm.ctx().cfg().spec();
+        let _spec = *evm.ctx().cfg().spec();
 
         // Call-scope matching scales with batch size, so it runs under a metered storage provider.
         // This keeps unpaid transaction validation bounded while still failing before the first
@@ -877,7 +871,7 @@ where
         exec_result: &mut FrameResult,
         eip7702_refund: i64,
     ) -> Result<(), Self::Error> {
-        let spec = evm.ctx.cfg.spec;
+        let _spec = evm.ctx.cfg.spec;
         {
             // No cap: leave the accumulated refund counter untouched after
             // recording the EIP-7702 auth refund.
@@ -911,7 +905,7 @@ where
         _gas: &mut GasTracker,
     ) -> Result<Option<u64>, Self::Error> {
         let ctx = &mut evm.ctx;
-        let spec = ctx.cfg.spec;
+        let _spec = ctx.cfg.spec;
 
         // Check if this is an AA transaction with an authorization list
         let has_aa_auth_list = ctx
@@ -1503,7 +1497,7 @@ where
             provider.set_tip1060_storage_credits(false);
 
             // The core logic of setting up thread-local storage is here.
-            let out_of_gas = StorageCtx::enter(&mut provider, || {
+            let _out_of_gas = StorageCtx::enter(&mut provider, || {
                 let mut keychain = AccountKeychain::default();
                 let access_key_addr = key_auth.key_id;
 
@@ -1579,7 +1573,7 @@ where
                 }
             })?;
 
-            let gas_used = provider.gas_used();
+            let _gas_used = provider.gas_used();
             drop(provider);
 
             // Cache inline key authorization expiry.
@@ -1591,7 +1585,7 @@ where
             // T1B+: Skip adding precompile gas to initial_gas since it is already
             // accounted for in intrinsic gas. The precompile runs with unlimited gas
             // on T1B+ so out_of_gas is never true.
-            if let Some(keychain_checkpoint) = keychain_checkpoint {
+            if let Some(_keychain_checkpoint) = keychain_checkpoint {
                 {
                     journal.checkpoint_commit();
                 };
@@ -1743,7 +1737,7 @@ where
         // of the environment with a temporary in-range value.
         // TODO: Remove this workaround when migrating to EVM2. Its per-transaction-type handlers
         // let Tempo omit the nonce-overflow check for T12+ expiring nonce transactions.
-        let accepts_max_expiring_nonce = false;
+        let _accepts_max_expiring_nonce = false;
 
         let validation_result = validation::validate_env::<_, Self::Error>(evm.ctx());
 
@@ -1964,7 +1958,7 @@ where
         evm: &mut Self::Evm,
     ) -> Result<InitialAndFloorGas, Self::Error> {
         let tx = evm.ctx_ref().tx();
-        let spec = evm.ctx_ref().cfg().spec();
+        let _spec = evm.ctx_ref().cfg().spec();
         let gas_params = evm.ctx_ref().cfg().gas_params();
         let gas_limit = tx.gas_limit();
 
@@ -2265,7 +2259,7 @@ where
     let mut batch_gas =
         calculate_aa_batch_intrinsic_gas(aa_env, gas_params, tx.access_list(), spec)?;
 
-    let mut nonce_2d_gas = 0;
+    let nonce_2d_gas = 0;
 
     // Calculate 2D nonce gas if nonce_key is non-zero
     // If tx nonce is 0, it's a new key (0 -> 1 transition), otherwise existing key

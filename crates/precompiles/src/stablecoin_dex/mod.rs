@@ -491,7 +491,7 @@ impl StablecoinDEX {
     pub fn get_price_level(&self, base: Address, tick: i16, is_bid: bool) -> Result<TickLevel> {
         let quote = TIP20Token::from_address(base)?.quote_token()?;
         let book_key = compute_book_key(base, quote);
-        let mut level = if is_bid {
+        let level = if is_bid {
             self.books[book_key].bids[tick].read()?
         } else {
             self.books[book_key].asks[tick].read()?
@@ -1222,37 +1222,6 @@ impl StablecoinDEX {
             .read()
     }
 
-    /// Read-only traversal to the order that execution would fill after fully
-    /// consuming `order`, mirroring the advancement inside [`Self::fill_order`]:
-    /// stay on the same tick while more orders are linked, otherwise jump to the
-    /// next initialized tick. Returns `None` when no further liquidity exists.
-    ///
-    /// Used by the per-order quote paths so quotes walk the book exactly like a
-    /// swap does. Uses the order's in-memory `next`/`tick` (unchanged by a fill).
-    fn next_order_after(
-        &self,
-        book_key: B256,
-        order: &Order,
-        is_bid: bool,
-    ) -> Result<Option<Order>> {
-        if order.next() != 0 {
-            return Ok(Some(self.orders[order.next()].read_in_book(book_key)?));
-        }
-
-        let (next_tick, has_liquidity) =
-            self.books[book_key].next_initialized_tick(order.tick(), is_bid)?;
-        if !has_liquidity {
-            return Ok(None);
-        }
-
-        let next_level = self.books[book_key]
-            .tick_level_handler(next_tick, is_bid)
-            .read()?;
-        self.orders[next_level.links.head]
-            .read_in_book(book_key)
-            .map(Some)
-    }
-
     /// Cancels an active order and refunds escrowed tokens to the maker.
     /// Only the order maker can cancel their own orders.
     ///
@@ -1406,7 +1375,7 @@ impl StablecoinDEX {
             return Ok(false);
         }
 
-        { is_authorized_for_token(token_out, order.maker(), AuthRole::recipient()) }
+        is_authorized_for_token(token_out, order.maker(), AuthRole::recipient())
     }
 
     /// Withdraws `amount` from the caller's DEX balance, transferring
@@ -1433,28 +1402,7 @@ impl StablecoinDEX {
     /// under-estimate the input across fragmented levels; it is kept for pre-T12
     /// historical determinism.
     fn quote_exact_out(&self, book_key: B256, amount_out: u128, is_bid: bool) -> Result<u128> {
-        { self.quote_exact_out_per_tick(book_key, amount_out, is_bid) }
-    }
-
-    /// Per-order quote that walks the book like swap execution but without
-    /// mutating state, sharing the same `step` arithmetic so quoted amounts equal
-    /// executed amounts.
-    fn quote_per_order(
-        &self,
-        book_key: B256,
-        amount: u128,
-        is_bid: bool,
-        step: impl Fn(u128, &Order, bool) -> Option<OrderStep>,
-    ) -> Result<u128> {
-        let level = self.get_best_price_level(book_key, is_bid)?;
-        let order = self.orders[level.links.head].read_in_book(book_key)?;
-
-        // Read-only walk: advance the cursor without settling, so the quote uses
-        // the same per-order arithmetic and traversal as execution.
-        walk_resting_orders(order, amount, is_bid, step, |order, fill| match fill {
-            Fill::Partial(_) => Ok(None),
-            Fill::Full => self.next_order_after(book_key, &order, is_bid),
-        })
+        self.quote_exact_out_per_tick(book_key, amount_out, is_bid)
     }
 
     /// Legacy pre-T12 exact-output quote. It walks by tick-level aggregate
@@ -1691,7 +1639,7 @@ impl StablecoinDEX {
     /// per-order floors is `<=` the floor of the sum; it is kept for pre-T12
     /// historical determinism.
     fn quote_exact_in(&self, book_key: B256, amount_in: u128, is_bid: bool) -> Result<u128> {
-        { self.quote_exact_in_per_tick(book_key, amount_in, is_bid) }
+        self.quote_exact_in_per_tick(book_key, amount_in, is_bid)
     }
 
     /// Legacy pre-T12 exact-input quote. It walks by tick-level aggregate

@@ -23,7 +23,7 @@ pub const ABI_DECODER_MEMORY_LIMIT: usize = 16 * 1024 * 1024;
 /// Strict decoding starts at T11; T12 additionally permits trailing bytes.
 #[inline]
 pub const fn abi_decoder_config_for_spec(
-    spec: TempoHardfork,
+    _spec: TempoHardfork,
 ) -> alloy::sol_types::abi::AbiDecoderConfig {
     alloy::sol_types::abi::AbiDecoderConfig::new()
         .memory_limit(ABI_DECODER_MEMORY_LIMIT)
@@ -288,7 +288,7 @@ pub fn selector_from_calldata(calldata: &[u8]) -> Option<[u8; 4]> {
 pub fn missing_selector_result() -> PrecompileResult {
     let storage = StorageCtx::default();
 
-    { Ok(storage.revert_output(Bytes::new())) }
+    Ok(storage.revert_output(Bytes::new()))
 }
 
 pub fn unknown_selector_result(calldata: &[u8]) -> PrecompileResult {

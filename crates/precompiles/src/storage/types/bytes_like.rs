@@ -13,7 +13,7 @@
 
 use crate::{
     error::{Result, TempoPrecompileError},
-    storage::{StorageCtx, StorageOps, types::*},
+    storage::{StorageOps, types::*},
 };
 use alloy::primitives::{Address, Bytes, U256, keccak256};
 use std::marker::PhantomData;

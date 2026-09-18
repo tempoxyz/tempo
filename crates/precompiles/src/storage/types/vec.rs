@@ -17,7 +17,7 @@ use std::ops::{Index, IndexMut};
 use crate::{
     error::{Result, TempoPrecompileError},
     storage::{
-        Handler, Layout, LayoutCtx, Storable, StorableType, StorageCtx, StorageOps,
+        Handler, Layout, LayoutCtx, Storable, StorableType, StorageOps,
         packing::{PackedSlot, calc_element_loc, calc_packed_slot_count},
         types::{HandlerCache, Slot},
     },

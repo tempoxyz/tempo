@@ -63,7 +63,6 @@ use revm::{
     context::CfgEnv,
     handler::EthPrecompiles,
     precompile::{PrecompileId, PrecompileOutput, PrecompileResult},
-    primitives::hardfork::SpecId,
 };
 
 pub use tempo_contracts::precompiles::{
@@ -79,11 +78,6 @@ pub use tempo_contracts::precompiles::{
 // Re-export storage layout helpers for read-only contexts (e.g., pool validation)
 pub use account_keychain::AuthorizedKey;
 
-/// Pre-T11 input per word cost. It covers ABI decoding and cloning of input into calldata.
-///
-/// This is priced at twice `COPY_COST` to mitigate different ABI decodings.
-const PRE_T11_INPUT_PER_WORD_COST: u64 = 6;
-
 /// Input per word cost starting at T11.
 const POST_T11_INPUT_PER_WORD_COST: u64 = 30;
 
@@ -96,7 +90,7 @@ pub const ECRECOVER_GAS: u64 = 3_000;
 /// Returns the gas cost for decoding calldata of the given length at `spec`, rounded up to word
 /// boundaries, or out-of-gas if the cost cannot be represented as a `u64`.
 #[inline]
-pub fn input_cost(spec: TempoHardfork, calldata_len: usize) -> Result<u64> {
+pub fn input_cost(_spec: TempoHardfork, calldata_len: usize) -> Result<u64> {
     let per_word_cost = { POST_T11_INPUT_PER_WORD_COST };
 
     let calldata_len =
@@ -110,7 +104,7 @@ pub fn input_cost(spec: TempoHardfork, calldata_len: usize) -> Result<u64> {
 
 /// Returns the additional gas cost for duplicate validation at `spec`.
 #[inline]
-pub fn dedup_cost(spec: TempoHardfork, item_count: usize) -> Result<u64> {
+pub fn dedup_cost(_spec: TempoHardfork, item_count: usize) -> Result<u64> {
     u64::try_from(item_count)
         .map_err(|_| error::TempoPrecompileError::OutOfGas)?
         .checked_mul(T11_DEDUP_PER_ITEM_COST)

@@ -38,7 +38,7 @@ pub const IMPLICIT_APPROVAL_LIST: &[Address] = &[
 /// Returns `true` iff `addr` is on the [`IMPLICIT_APPROVAL_LIST`] for the given hardfork.
 ///
 /// Before `TempoHardfork::T5` (TIP-1035 activation), returns `false` for all addresses.
-pub fn is_implicitly_approved(addr: Address, hardfork: TempoHardfork) -> bool {
+pub fn is_implicitly_approved(addr: Address, _hardfork: TempoHardfork) -> bool {
     IMPLICIT_APPROVAL_LIST.contains(&addr)
 }
 

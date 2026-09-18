@@ -14,10 +14,7 @@ use reth_consensus_common::validation::{
 use reth_ethereum_consensus::EthBeaconConsensus;
 use reth_primitives_traits::{RecoveredBlock, SealedBlock, SealedHeader};
 use std::sync::Arc;
-use tempo_chainspec::{
-    TempoChainSpec, TempoConsensusSpec,
-    spec::{SYSTEM_TX_ADDRESSES, SYSTEM_TX_COUNT},
-};
+use tempo_chainspec::{TempoChainSpec, TempoConsensusSpec, spec::SYSTEM_TX_ADDRESSES};
 use tempo_primitives::{
     Block, BlockBody, TempoHeader, TempoPrimitives, TempoReceipt, TempoTxEnvelope,
 };

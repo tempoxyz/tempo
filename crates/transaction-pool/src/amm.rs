@@ -231,7 +231,7 @@ impl AmmLiquidityCache {
         P: StateProviderFactory + ChainSpecProvider<ChainSpec: TempoHardforks>,
     {
         let headers = headers.into_iter().collect::<Vec<_>>();
-        let (latest_hash, latest_timestamp) = if let Some(header) = headers.last() {
+        let (latest_hash, _latest_timestamp) = if let Some(header) = headers.last() {
             (header.hash(), header.timestamp())
         } else {
             return Ok(());

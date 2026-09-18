@@ -47,7 +47,7 @@ const T4_SSTORE_SET_REFUND: u64 = T4_SSTORE_SET_STATE + 17_800; // 230,000 + 17,
 /// so TIP-1016 can be deferred independently of the T4 hardfork activation.
 #[inline]
 pub fn tempo_gas_params_with_amsterdam(
-    spec: TempoHardfork,
+    _spec: TempoHardfork,
     amsterdam_eip8037_enabled: bool,
 ) -> GasParams {
     debug_assert!(

@@ -35,7 +35,6 @@ use std::{sync::Arc, time::Instant};
 use tempo_chainspec::hardfork::{TempoHardfork, TempoHardforks};
 use tempo_evm::TempoEvmConfig;
 use tempo_precompiles::{
-    TIP_FEE_MANAGER_ADDRESS,
     account_keychain::AccountKeychain,
     error::Result as TempoPrecompileResult,
     storage::{Handler, StorageActions},
@@ -1342,26 +1341,6 @@ fn get_sender_policy_ids(
     })
 }
 
-/// Returns the set of policy IDs that can affect recipient authorization for a token.
-///
-/// For simple (non-compound) policies, the transfer policy applies symmetrically to both
-/// sender and recipient, so the set contains just the policy ID. For compound policies
-/// (TIP-1015) it contains both the compound root and the recipient sub-policy, since
-/// pre-T8 fee transfer authorization checks the fee manager via `AuthRole::Recipient`.
-/// T8+ fee collection exempts the FeeManager recipient side, so this returns `None`.
-///
-/// Unlike `get_sender_policy_ids` this is uncached — it's only called on the rare path
-/// where the fee manager itself is blacklisted or un-whitelisted.
-fn get_recipient_policy_ids(
-    provider: &mut impl StateProvider,
-    fee_token: Address,
-    spec: TempoHardfork,
-) -> Option<Vec<u64>> {
-    {
-        return None;
-    }
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -2448,127 +2427,6 @@ mod tests {
             !ids.contains(&mint_recipient_sub),
             "mint_recipient must be excluded from sender policy IDs"
         );
-    }
-
-    /// Pre-T8, `get_recipient_policy_ids` returns the compound root and recipient sub-policy.
-    #[test]
-    fn recipient_policy_ids_includes_recipient_sub_policy_pre_t8() {
-        let fee_token = address!("20C0000000000000000000000000000000000001");
-        let compound_policy_id: u64 = 5;
-        let sender_sub: u64 = 3;
-        let recipient_sub: u64 = 4;
-
-        let provider = MockEthProvider::default().with_chain_spec(std::sync::Arc::unwrap_or_clone(
-            tempo_chainspec::spec::MODERATO.clone(),
-        ));
-
-        let transfer_policy_id_packed =
-            U256::from(compound_policy_id) << (tip20_slots::TRANSFER_POLICY_ID_OFFSET * 8);
-        provider.add_account(
-            fee_token,
-            ExtendedAccount::new(0, U256::ZERO).extend_storage([(
-                tip20_slots::TRANSFER_POLICY_ID.into(),
-                transfer_policy_id_packed,
-            )]),
-        );
-
-        provider
-            .setup_storage(TempoHardfork::default(), || {
-                let mut registry = TIP403Registry::new();
-                registry.policy_records[compound_policy_id]
-                    .base
-                    .write(PolicyData {
-                        policy_type: ITIP403Registry::PolicyType::COMPOUND as u8,
-                        admin: Address::ZERO,
-                    })?;
-                registry.policy_records[compound_policy_id]
-                    .compound
-                    .write(CompoundPolicyData {
-                        sender_policy_id: sender_sub,
-                        recipient_policy_id: recipient_sub,
-                        mint_recipient_policy_id: 0,
-                    })
-            })
-            .unwrap();
-
-        let mut state = provider.latest().unwrap();
-        let ids = get_recipient_policy_ids(&mut state, fee_token, TempoHardfork::T7)
-            .expect("should resolve policy IDs");
-
-        assert!(
-            ids.contains(&compound_policy_id),
-            "should contain compound policy ID"
-        );
-        assert!(
-            ids.contains(&recipient_sub),
-            "should contain recipient sub-policy"
-        );
-        assert!(
-            !ids.contains(&sender_sub),
-            "recipient policy IDs should not contain sender sub-policy"
-        );
-    }
-
-    /// For simple (non-compound) policies, pre-T8 `get_recipient_policy_ids` returns just the root.
-    #[test]
-    fn recipient_policy_ids_simple_policy_pre_t8() {
-        let fee_token = address!("20C0000000000000000000000000000000000001");
-        let simple_policy_id: u64 = 7;
-
-        let provider = MockEthProvider::default().with_chain_spec(std::sync::Arc::unwrap_or_clone(
-            tempo_chainspec::spec::MODERATO.clone(),
-        ));
-
-        let transfer_policy_id_packed =
-            U256::from(simple_policy_id) << (tip20_slots::TRANSFER_POLICY_ID_OFFSET * 8);
-        provider.add_account(
-            fee_token,
-            ExtendedAccount::new(0, U256::ZERO).extend_storage([(
-                tip20_slots::TRANSFER_POLICY_ID.into(),
-                transfer_policy_id_packed,
-            )]),
-        );
-
-        provider
-            .setup_storage(TempoHardfork::default(), || {
-                let mut registry = TIP403Registry::new();
-                registry.policy_records[simple_policy_id]
-                    .base
-                    .write(PolicyData {
-                        policy_type: ITIP403Registry::PolicyType::BLACKLIST as u8,
-                        admin: Address::ZERO,
-                    })
-            })
-            .unwrap();
-
-        let mut state = provider.latest().unwrap();
-        let ids = get_recipient_policy_ids(&mut state, fee_token, TempoHardfork::T7)
-            .expect("should resolve policy IDs");
-
-        assert_eq!(ids, vec![simple_policy_id]);
-    }
-
-    #[test]
-    fn recipient_policy_ids_exempt_on_t8() {
-        let fee_token = address!("20C0000000000000000000000000000000000001");
-        let simple_policy_id: u64 = 7;
-
-        let provider = MockEthProvider::default().with_chain_spec(std::sync::Arc::unwrap_or_clone(
-            tempo_chainspec::spec::MODERATO.clone(),
-        ));
-
-        let transfer_policy_id_packed =
-            U256::from(simple_policy_id) << (tip20_slots::TRANSFER_POLICY_ID_OFFSET * 8);
-        provider.add_account(
-            fee_token,
-            ExtendedAccount::new(0, U256::ZERO).extend_storage([(
-                tip20_slots::TRANSFER_POLICY_ID.into(),
-                transfer_policy_id_packed,
-            )]),
-        );
-
-        let mut state = provider.latest().unwrap();
-        assert!(get_recipient_policy_ids(&mut state, fee_token, TempoHardfork::T8).is_none());
     }
 
     #[test]

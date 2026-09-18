@@ -30,7 +30,6 @@ use crate::{
     error::Result,
     has_duplicates_metered,
     storage::{Handler, Mapping, Set},
-    tip20_factory::TIP20Factory,
 };
 use alloy::primitives::{Address, B256, FixedBytes, TxKind, U256, keccak256};
 use tempo_precompiles_macros::{Storable, contract};
@@ -262,7 +261,6 @@ impl AccountKeychain {
     ) -> Result<()> {
         let config = &config;
         self.ensure_admin_caller(msg_sender)?;
-        let is_t3 = true;
 
         // Validate inputs
         if key_id == Address::ZERO {
@@ -726,9 +724,6 @@ impl AccountKeychain {
         allowed_calls: Option<&[CallScope]>,
     ) -> Result<()> {
         let limit_key = Self::spending_limit_key(account, key_id);
-
-        let is_t3 = true;
-        debug_assert!(is_t3 || allowed_calls.is_none());
 
         let now = self.storage.timestamp().saturating_to::<u64>();
         for limit in limits {

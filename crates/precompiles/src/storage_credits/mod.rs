@@ -13,7 +13,7 @@ use crate::{
     ACCOUNT_KEYCHAIN_ADDRESS, STORAGE_CREDITS_ADDRESS,
     account_keychain::AccountKeychain,
     error::{Result, TempoPrecompileError},
-    storage::{Handler, LayoutCtx, StorableType, StorageCtx},
+    storage::{Handler, LayoutCtx, StorableType},
     tip20::TIP20Token,
 };
 use alloy::primitives::{Address, U256};

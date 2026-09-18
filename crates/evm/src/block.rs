@@ -12,7 +12,6 @@ use alloy_evm::{
     },
 };
 use alloy_primitives::{Address, B256, Bytes, U256};
-use alloy_rlp::Decodable;
 use alloy_sol_types::SolCall;
 use commonware_codec::ReadExt;
 use reth_evm::block::StateDB;
@@ -21,16 +20,15 @@ use reth_revm::{
     context::result::{ExecutionResult, HaltReason, ResultAndState},
     state::{Account, Bytecode, EvmState, EvmStorageSlot, TransactionId},
 };
-use tempo_chainspec::{TempoChainSpec, hardfork::TempoHardforks};
+use tempo_chainspec::TempoChainSpec;
 use tempo_contracts::precompiles::{
     ADDRESS_REGISTRY_ADDRESS, CURRENT_COMMITTEE_ADDRESS, ICurrentCommittee, INITIAL_FACTORY_OWNER,
     InitialZoneFactoryAccount, RECEIVE_POLICY_GUARD_ADDRESS, SIGNATURE_VERIFIER_ADDRESS,
     STORAGE_CREDITS_ADDRESS, TIP20_CHANNEL_RESERVE_ADDRESS, VALIDATOR_CONFIG_V2_ADDRESS,
-    initial_zone_factory_state, t13_zone_factory_state,
+    initial_zone_factory_state,
 };
-use tempo_primitives::{SubBlockMetadata, TempoReceipt, TempoTxEnvelope, TempoTxType};
+use tempo_primitives::{TempoReceipt, TempoTxEnvelope, TempoTxType};
 use tempo_revm::{ExecutionContext, evm::TempoContext};
-use tracing::trace;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub(crate) enum BlockSection {
@@ -42,8 +40,6 @@ pub(crate) enum BlockSection {
     NonShared,
     /// Gas incentive transaction.
     GasIncentive,
-    /// End of block system transactions.
-    System { seen_subblocks_signatures: bool },
 }
 
 /// Builder for [`TempoReceipt`].
@@ -255,12 +251,6 @@ where
         Ok(())
     }
 
-    /// Exercises the shared runtime upgrade path at T13.
-    fn upgrade_zone_runtimes_at_boundary(&mut self) -> Result<(), BlockExecutionError> {
-        let [_, portal, verifier, messenger] = t13_zone_factory_state(INITIAL_FACTORY_OWNER);
-        self.install_zone_runtimes_at_boundary([portal, verifier, messenger])
-    }
-
     /// Installs shared Zone runtimes without modifying their existing storage.
     fn install_zone_runtimes_at_boundary(
         &mut self,
@@ -337,31 +327,13 @@ where
         &self,
         tx: &TempoTxEnvelope,
     ) -> Result<BlockSection, BlockValidationError> {
-        let block = self.evm().block();
-        let block_number = block.number.to_be_bytes::<32>();
-        let to = tx.to().unwrap_or_default();
-
-        // Handle end-of-block system transactions (subblocks signatures only)
-        let mut seen_subblocks_signatures = match self.section {
-            BlockSection::System {
-                seen_subblocks_signatures,
-            } => seen_subblocks_signatures,
-            _ => false,
-        };
-
-        if to.is_zero() {
-            if seen_subblocks_signatures {
-                return Err(BlockValidationError::msg(
-                    "duplicate subblocks metadata system transaction",
-                ));
-            }
-
-            {
-                return Err(BlockValidationError::msg("subblocks are disabled in T4+"));
-            }
-        } else {
-            return Err(BlockValidationError::msg("invalid system transaction"));
-        }
+        Err(BlockValidationError::msg(
+            if tx.to().unwrap_or_default().is_zero() {
+                "subblocks are disabled in T4+"
+            } else {
+                "invalid system transaction"
+            },
+        ))
     }
 
     /// Pre-validate a transaction before execution.
@@ -391,7 +363,7 @@ where
     /// [`is_payment_v1`]: TempoTxEnvelope::is_payment_v1
     /// [`is_payment_v2`]: TempoTxEnvelope::is_payment_v2
     pub(crate) fn is_payment(&self, tx: &TempoTxEnvelope) -> bool {
-        { tx.is_payment_v2() }
+        tx.is_payment_v2()
     }
 
     pub(crate) fn validate_tx(
@@ -420,12 +392,6 @@ where
                     }
                 }
                 BlockSection::GasIncentive => Ok(BlockSection::GasIncentive),
-                BlockSection::System { .. } => {
-                    trace!(target: "tempo::block", tx_hash = ?*tx.tx_hash(), "Rejecting: regular transaction after system transaction");
-                    Err(BlockValidationError::msg(
-                        "regular transaction can't follow system transaction",
-                    ))
-                }
             }
         }
     }
@@ -455,7 +421,7 @@ where
         self.inner.apply_pre_execution_changes()?;
 
         // Deploy 0xEF marker bytecode to precompiles at their activation hardforks.
-        let timestamp = self.evm().block().timestamp.to::<u64>();
+        let _timestamp = self.evm().block().timestamp.to::<u64>();
         {
             self.deploy_precompile_at_boundary(VALIDATOR_CONFIG_V2_ADDRESS, &[])?;
         }
@@ -557,9 +523,6 @@ where
                     self.incentive_gas_used += block_gas_used;
                 }
             }
-            BlockSection::System { .. } => {
-                // no gas spending for end-of-block system transactions
-            }
         }
 
         self.replay_state.commit_tx_changes();
@@ -658,10 +621,7 @@ mod tests {
             CURRENT_COMMITTEE_ADDRESS, ICurrentCommittee, PATH_USD_ADDRESS, ZONE_FACTORY_ADDRESS,
             ZONE_MESSENGER_ADDRESS, ZONE_PORTAL_IMPL_ADDRESS, ZONE_VERIFIER_ADDRESS,
         },
-        zones::{
-            T13_ZONE_MESSENGER_RUNTIME, T13_ZONE_PORTAL_RUNTIME, T13_ZONE_VERIFIER_RUNTIME,
-            ZONE_MESSENGER_RUNTIME, ZONE_PORTAL_RUNTIME, ZONE_VERIFIER_RUNTIME,
-        },
+        zones::{ZONE_MESSENGER_RUNTIME, ZONE_PORTAL_RUNTIME, ZONE_VERIFIER_RUNTIME},
     };
     use tempo_dkg_onchain_artifacts::OnchainDkgOutcome;
     use tempo_primitives::{
@@ -790,23 +750,12 @@ mod tests {
         let chainspec = test_chainspec();
         let mut db = State::builder().with_bundle_update().build();
         let executor = TestExecutorBuilder::default().build(&mut db, &chainspec);
-
         let signer = PrivateKey::from_seed(0);
-        let metadata = vec![create_subblock_metadata(&signer)];
-        let input = create_system_tx_input(metadata, 1);
-        let system_tx = create_system_tx(chainspec.chain().id(), input);
-
-        let result = executor.validate_system_tx(&system_tx);
-        assert!(
-            result.is_ok(),
-            "validate_system_tx failed: {:?}",
-            result.err()
-        );
+        let input = create_system_tx_input(vec![create_subblock_metadata(&signer)], 1);
+        let tx = create_system_tx(chainspec.chain().id(), input);
         assert_eq!(
-            result.unwrap(),
-            BlockSection::System {
-                seen_subblocks_signatures: true
-            }
+            executor.validate_system_tx(&tx).unwrap_err().to_string(),
+            "subblocks are disabled in T4+"
         );
     }
 
@@ -840,29 +789,6 @@ mod tests {
             // Historical replay decodes the signature but does not verify it.
             signature: Bytes::from(vec![0; 64]),
         }
-    }
-
-    #[test]
-    fn test_validate_system_tx_duplicate_subblocks_system_tx() {
-        let chainspec = test_chainspec();
-        let mut db = State::builder().with_bundle_update().build();
-        let executor = TestExecutorBuilder::default()
-            .with_section(BlockSection::System {
-                seen_subblocks_signatures: true,
-            })
-            .build(&mut db, &chainspec);
-
-        let signer = PrivateKey::from_seed(0);
-        let metadata = vec![create_subblock_metadata(&signer)];
-        let input = create_system_tx_input(metadata, 1);
-        let system_tx = create_system_tx(chainspec.chain().id(), input);
-
-        let result = executor.validate_system_tx(&system_tx);
-        assert!(result.is_err());
-        assert_eq!(
-            result.unwrap_err().to_string(),
-            "duplicate subblocks metadata system transaction"
-        );
     }
 
     #[test]
@@ -1016,28 +942,6 @@ mod tests {
             );
             assert_eq!(err.to_string(), "subblock transactions are not supported");
         }
-    }
-
-    #[test]
-    fn test_validate_tx_regular_tx_follow_system_tx() {
-        let chainspec = test_chainspec();
-        let mut db = State::builder().with_bundle_update().build();
-
-        // Set section to System
-        let executor = TestExecutorBuilder::default()
-            .with_section(BlockSection::System {
-                seen_subblocks_signatures: false,
-            })
-            .build(&mut db, &chainspec);
-
-        // Try to validate a regular tx
-        let tx = create_legacy_tx();
-        let result = executor.validate_tx(&tx, 21000);
-        assert!(result.is_err());
-        assert_eq!(
-            result.unwrap_err().to_string(),
-            "regular transaction can't follow system transaction"
-        );
     }
 
     #[test]
@@ -1660,7 +1564,7 @@ mod tests {
     }
 
     #[test]
-    fn zone_runtime_upgrade_activates_at_t13() {
+    fn zone_runtime_ignores_future_schedule_metadata() {
         for (activation, expected_runtimes) in [
             (
                 u64::MAX,
@@ -1673,9 +1577,9 @@ mod tests {
             (
                 0,
                 [
-                    T13_ZONE_PORTAL_RUNTIME,
-                    T13_ZONE_VERIFIER_RUNTIME,
-                    T13_ZONE_MESSENGER_RUNTIME,
+                    ZONE_PORTAL_RUNTIME,
+                    ZONE_VERIFIER_RUNTIME,
+                    ZONE_MESSENGER_RUNTIME,
                 ],
             ),
         ] {
@@ -1741,8 +1645,6 @@ mod tests {
 
         executor.deploy_zone_factory_at_boundary().unwrap();
         executor.deploy_zone_factory_at_boundary().unwrap();
-        executor.upgrade_zone_runtimes_at_boundary().unwrap();
-        executor.upgrade_zone_runtimes_at_boundary().unwrap();
         drop(executor);
 
         let factory = db.load_cache_account(ZONE_FACTORY_ADDRESS).unwrap();
@@ -1764,15 +1666,15 @@ mod tests {
         for (destination, expected) in [
             (
                 ZONE_PORTAL_IMPL_ADDRESS,
-                Bytecode::new_legacy(T13_ZONE_PORTAL_RUNTIME),
+                Bytecode::new_legacy(ZONE_PORTAL_RUNTIME),
             ),
             (
                 ZONE_VERIFIER_ADDRESS,
-                Bytecode::new_legacy(T13_ZONE_VERIFIER_RUNTIME),
+                Bytecode::new_legacy(ZONE_VERIFIER_RUNTIME),
             ),
             (
                 ZONE_MESSENGER_ADDRESS,
-                Bytecode::new_legacy(T13_ZONE_MESSENGER_RUNTIME),
+                Bytecode::new_legacy(ZONE_MESSENGER_RUNTIME),
             ),
         ] {
             let installed = db
@@ -1788,8 +1690,8 @@ mod tests {
         let calls = hook_calls.lock().unwrap();
         assert_eq!(
             calls.len(),
-            3,
-            "T10 installation and T13 replacement must each dispatch an update"
+            2,
+            "factory and shared runtimes must each dispatch one update"
         );
         assert!(calls[0].contains_key(&ZONE_FACTORY_ADDRESS));
         for address in [
@@ -1800,10 +1702,6 @@ mod tests {
             assert!(
                 calls[1].contains_key(&address),
                 "shared runtime must be installed in the runtime state hook"
-            );
-            assert!(
-                calls[2].contains_key(&address),
-                "T13 runtime must be installed in the runtime state hook"
             );
         }
     }

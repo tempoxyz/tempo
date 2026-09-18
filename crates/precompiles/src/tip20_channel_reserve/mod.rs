@@ -83,15 +83,6 @@ impl PackedChannelState {
         (self.close_requested_at != 0).then_some(self.close_requested_at)
     }
 
-    /// Returns the sender presented to the payee's TIP-1028 receive policy.
-    fn receive_policy_sender(self, payer: Address) -> Address {
-        if self.uses_logical_receive_policy_sender {
-            payer
-        } else {
-            TIP20_CHANNEL_RESERVE_ADDRESS
-        }
-    }
-
     /// Converts packed native storage to the public Solidity ABI shape.
     fn to_sol(self) -> ITIP20ChannelReserve::ChannelState {
         ITIP20ChannelReserve::ChannelState {

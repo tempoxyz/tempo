@@ -10,10 +10,7 @@ pub mod dispatch;
 // Re-export the generated slots module for external access to storage slot constants.
 pub use slots as tip403_registry_slots;
 
-use crate::{
-    StorageCtx,
-    receive_policy_guard::{RECOVERY_ORIGINATOR, RecoveryMode},
-};
+use crate::receive_policy_guard::{RECOVERY_ORIGINATOR, RecoveryMode};
 pub use tempo_contracts::precompiles::{
     ITIP403Registry::{self, PolicyType},
     TIP403RegistryError, TIP403RegistryEvent,
@@ -28,7 +25,6 @@ use crate::{
     tip20_factory::TIP20Factory,
 };
 use alloy::primitives::{Address, U256};
-use tempo_chainspec::hardfork::TempoHardfork;
 use tempo_primitives::TempoAddressExt;
 
 /// Built-in policy ID that always rejects authorization.
@@ -155,11 +151,11 @@ pub struct PolicyData {
 impl PolicyData {
     /// Decodes the raw `policy_type` u8 to a `PolicyType` enum.
     fn policy_type(&self) -> Result<PolicyType> {
-        let is_t2 = true;
+        let _is_t2 = true;
 
         match self.policy_type.try_into() {
             Ok(ty) if true => Ok(ty),
-            _ => Err({ TIP403RegistryError::invalid_policy_type().into() }),
+            _ => Err(TIP403RegistryError::invalid_policy_type().into()),
         }
     }
 
@@ -942,7 +938,7 @@ impl TIP403Registry {
 impl AuthRole {
     #[inline]
     fn transfer_or(t2_variant: Self) -> Self {
-        { t2_variant }
+        t2_variant
     }
 
     /// Hardfork-aware: always returns `Transfer`.

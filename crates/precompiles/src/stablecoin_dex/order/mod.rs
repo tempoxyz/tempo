@@ -153,10 +153,10 @@ impl Order {
         tick: i16,
         is_bid: bool,
         flip_tick: i16,
-        hardfork: TempoHardfork,
+        _hardfork: TempoHardfork,
     ) -> Result<Self, OrderError> {
         // TIP-1030 (T5+) relaxes the constraint to allow `flip_tick == tick`.
-        let t5_active = true;
+        let _t5_active = true;
         let invalid = if is_bid {
             flip_tick < tick
         } else {

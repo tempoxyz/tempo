@@ -64,7 +64,7 @@ use std::{
     },
     time::{Duration, Instant},
 };
-use tempo_chainspec::{TempoChainSpec, hardfork::TempoHardforks};
+use tempo_chainspec::{TempoChainSpec, hardfork::TempoHardfork};
 use tempo_evm::{
     StorageActionReplayError, TempoEvmConfig, TempoNextBlockEnvAttributes, TempoStateAccess,
     TempoTxResult, evm::TempoEvm,
@@ -365,7 +365,7 @@ where
             .gas_limit_with_target(parent_header.gas_limit(), attributes.target_gas_limit);
         let general_gas_limit =
             chain_spec.general_gas_limit_at(attributes.timestamp, block_gas_limit, 0);
-        let hardfork = TempoHardfork::CURRENT;
+        let _hardfork = TempoHardfork::CURRENT;
 
         let mut cumulative_gas_used = 0;
         let mut cumulative_state_gas_used = 0u64;

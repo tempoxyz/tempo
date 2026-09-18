@@ -3,7 +3,7 @@
 use crate::{
     error::{Result, TempoPrecompileError},
     stablecoin_dex::{IStablecoinDEX, Order, TICK_SPACING},
-    storage::{Handler, Mapping, StorageCtx},
+    storage::{Handler, Mapping},
 };
 use alloy::primitives::{Address, B256, U256, keccak256};
 use std::ops::Deref;
@@ -333,19 +333,19 @@ impl TickLevelHandler {
     /// Reads only the live linked-list slot at T12 while preserving the legacy layout below T12.
     #[inline]
     pub(crate) fn read(&self) -> Result<TickLevel> {
-        { <Self as Handler<TickLevel>>::read(self) }
+        <Self as Handler<TickLevel>>::read(self)
     }
 
     /// Writes only the live linked-list slot at T12 while preserving the legacy layout below T12.
     #[inline]
     pub(crate) fn write(&mut self, level: TickLevel) -> Result<()> {
-        { <Self as Handler<TickLevel>>::write(self, level) }
+        <Self as Handler<TickLevel>>::write(self, level)
     }
 
     /// Deletes only the live linked-list slot at T12 while preserving the stale aggregate.
     #[inline]
     pub(crate) fn delete(&mut self) -> Result<()> {
-        { <Self as Handler<TickLevel>>::delete(self) }
+        <Self as Handler<TickLevel>>::delete(self)
     }
 }
 

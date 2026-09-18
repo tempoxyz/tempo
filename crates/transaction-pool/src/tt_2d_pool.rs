@@ -223,7 +223,7 @@ impl AA2dPool {
         &mut self,
         transaction: Arc<ValidPoolTransaction<TempoPooledTransaction>>,
         on_chain_nonce: u64,
-        hardfork: tempo_chainspec::hardfork::TempoHardfork,
+        _hardfork: tempo_chainspec::hardfork::TempoHardfork,
     ) -> PoolResult<AddedTransaction<TempoPooledTransaction>> {
         debug_assert!(
             transaction.transaction.is_aa(),

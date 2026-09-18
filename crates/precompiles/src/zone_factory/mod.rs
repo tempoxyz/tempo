@@ -16,7 +16,7 @@ use alloy::{
     primitives::{Address, B256, IntoLogData, keccak256},
     sol_types::SolValue,
 };
-use std::collections::{HashMap, HashSet};
+use std::collections::HashMap;
 use tempo_contracts::precompiles::{
     IZoneFactory, ZONE_MESSENGER_ADDRESS, ZONE_VERIFIER_ADDRESS, ZoneFactoryError,
     ZoneFactoryEvent, ZoneInfo, ZonePortalEvent, ZonePortalRole,

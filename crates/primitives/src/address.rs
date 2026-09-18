@@ -120,7 +120,7 @@ impl TempoAddressExt for Address {
         Self::from(bytes)
     }
 
-    fn is_precompile(&self, spec: TempoHardfork) -> bool {
+    fn is_precompile(&self, _spec: TempoHardfork) -> bool {
         self.is_tip20() || SYSTEM_PRECOMPILES.iter().any(|&(a, _)| &a == self)
     }
 }

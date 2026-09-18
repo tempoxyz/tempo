@@ -21,7 +21,7 @@ pub use tempo_primitives::is_tip20_prefix;
 pub use slots as tip20_slots;
 
 use crate::{
-    PATH_USD_ADDRESS, RECEIVE_POLICY_GUARD_ADDRESS, StorageCtx, TIP_FEE_MANAGER_ADDRESS,
+    PATH_USD_ADDRESS, RECEIVE_POLICY_GUARD_ADDRESS, TIP_FEE_MANAGER_ADDRESS,
     account_keychain::AccountKeychain,
     address_registry::AddressRegistry,
     error::{Result, TempoPrecompileError},
@@ -36,7 +36,6 @@ use alloy::{
     sol_types::SolValue,
 };
 use keccak_const::Keccak256;
-use tempo_chainspec::hardfork::TempoHardfork;
 use tempo_contracts::precompiles::{
     DECIMALS as TIP20_DECIMALS, ReceivePolicyGuardError, STABLECOIN_DEX_ADDRESS,
     TIP20_CHANNEL_RESERVE_ADDRESS,
@@ -915,46 +914,6 @@ impl TIP20Token {
         Ok(true)
     }
 
-    /// Moves channel-reserve custody after the reserve applies operation-specific TIP-403 rules.
-    ///
-    /// This is an internal TIP-1034 integration, not an ABI entrypoint. At least one physical
-    /// endpoint must be the canonical channel reserve. The reserve checks the logical payer-payee
-    /// path before funding and capture, and derives refunds from authenticated channel state.
-    ///
-    /// `receive_policy_sender` is the sender presented to TIP-1028. It may differ from the physical
-    /// balance owner when reserve custody pays a channel's payee. Unlike ordinary TIP-20 transfers,
-    /// channel custody movements revert when TIP-1028 rejects delivery because channel accounting
-    /// cannot represent a pending guarded payment.
-    pub(crate) fn channel_reserve_transfer(
-        &mut self,
-        from: Address,
-        to: Recipient,
-        amount: U256,
-        receive_policy_sender: Address,
-    ) -> Result<()> {
-        if from != TIP20_CHANNEL_RESERVE_ADDRESS
-            && to.original_address() != TIP20_CHANNEL_RESERVE_ADDRESS
-        {
-            return Err(TIP20Error::unauthorized().into());
-        }
-
-        self.check_not_paused()?;
-        to.validate()?;
-        self.check_and_update_spending_limit(from, amount)?;
-
-        if to.target == RECEIVE_POLICY_GUARD_ADDRESS {
-            return Err(ReceivePolicyGuardError::address_reserved().into());
-        }
-        self.ensure_receive_policy_authorized(receive_policy_sender, to.target)?;
-
-        self._transfer(from, &to, amount)?;
-        if let Some(hop) = to.build_virtual_transfer_event(amount) {
-            self.emit_event(hop)?;
-        }
-
-        Ok(())
-    }
-
     /// Debits `spender`'s allowance on `owner`. No-op when unlimited.
     fn consume_allowance(&mut self, owner: Address, spender: Address, amount: U256) -> Result<()> {
         let allowed = self.get_allowance(owner, spender)?;
@@ -1204,24 +1163,6 @@ impl TIP20Token {
         Ok(())
     }
 
-    /// Ensures `receiver` currently accepts this token from `sender` under TIP-1028.
-    ///
-    /// Receive policies remain mutable, so a later policy change can still block delivery.
-    pub(crate) fn ensure_receive_policy_authorized(
-        &self,
-        sender: Address,
-        receiver: Address,
-    ) -> Result<()> {
-        if TIP403Registry::new()
-            .validate_receive_policy(self.address, sender, receiver)?
-            .is_some()
-        {
-            return Err(TIP20Error::policy_forbids().into());
-        }
-
-        Ok(())
-    }
-
     /// Check whether users are authorized by the token's [`TIP403Registry`] policy for the given
     /// roles.
     ///
@@ -1355,21 +1296,6 @@ impl TIP20Token {
         self.check_not_paused()?;
         self.check_and_update_spending_limit(from, amount)?;
 
-        // Update rewards for the sender and get their reward recipient
-        let from_reward_recipient = self.update_rewards(from)?;
-
-        // If user is opted into rewards, decrease opted-in supply
-        if from_reward_recipient != Address::ZERO {
-            let opted_in_supply = U256::from(self.get_opted_in_supply()?)
-                .checked_sub(amount)
-                .ok_or(TempoPrecompileError::under_overflow())?;
-            self.set_opted_in_supply(
-                opted_in_supply
-                    .try_into()
-                    .map_err(|_| TempoPrecompileError::under_overflow())?,
-            )?;
-        }
-
         self.decrement_balance(from, amount)?;
         self.increment_balance(TIP_FEE_MANAGER_ADDRESS, amount)?;
 
@@ -1399,21 +1325,6 @@ impl TIP20Token {
 
         {
             AccountKeychain::new().refund_spending_limit(to, self.address, refund)?;
-        }
-
-        // Update rewards for the recipient and get their reward recipient
-        let to_reward_recipient = self.update_rewards(to)?;
-
-        // If user is opted into rewards, increase opted-in supply by refund amount
-        if to_reward_recipient != Address::ZERO {
-            let opted_in_supply = U256::from(self.get_opted_in_supply()?)
-                .checked_add(refund)
-                .ok_or(TempoPrecompileError::under_overflow())?;
-            self.set_opted_in_supply(
-                opted_in_supply
-                    .try_into()
-                    .map_err(|_| TempoPrecompileError::under_overflow())?,
-            )?;
         }
 
         self.decrement_balance(TIP_FEE_MANAGER_ADDRESS, refund)?;

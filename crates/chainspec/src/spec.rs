@@ -405,7 +405,7 @@ impl EthChainSpec for TempoChainSpec {
     }
 
     fn next_block_base_fee(&self, parent: &TempoHeader, target_timestamp: u64) -> Option<u64> {
-        let target_fork = self.tempo_hardfork_at(target_timestamp);
+        let _target_fork = self.tempo_hardfork_at(target_timestamp);
 
         {
             let parent_base_fee = parent
