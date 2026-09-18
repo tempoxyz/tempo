@@ -6,6 +6,7 @@ const TXGEN_HELPER_PRESETS_DIR = "contrib/bench/txgen/presets"
 const TXGEN_HELPER_TIP20_PIECES_DIR = "contrib/bench/txgen/presets/tip20"
 const TXGEN_HELPER_TIP20_SCENARIO_PRESETS = ["default" "public" "tip20"]
 const TXGEN_HELPER_ALWAYS_FUND_PRESETS = [
+    "tip1115-fallback"
     "dex"
     "neobank-deposit"
     "neobank-swap"
@@ -679,6 +680,8 @@ def txgen-prepare-vault-preset [spec_path: string, accounts: int, chain_id: int]
 }
 
 # Only public-mix needs category metadata; other presets keep their existing metadata.
+source fallback.nu
+
 def txgen-workload-metadata-args [preset_name: string, spec_path: string] {
     if $preset_name != "public-mix" { return [] }
 
@@ -795,6 +798,10 @@ def txgen-run-preset-pipeline [
         txgen-fund-accounts $txgen_tempo_bin $spec_path $generate_rpc_url
     }
 
+    if $preset_name == "tip1115-fallback" {
+        $spec_path = (txgen-prepare-fallback $spec_path $txgen_tempo_bin $txgen_bench_bin $generate_rpc_url $accounts $benchmark_run $report_path)
+    }
+
     let txgen_duration = $"($duration)s"
     let txgen_cmd = [
         $txgen_tempo_bin
@@ -906,6 +913,9 @@ def txgen-run-preset-pipeline [
     let vault_start_block = if $is_vault {
         (txgen-rpc-call $generate_rpc_url '{"jsonrpc":"2.0","id":1,"method":"eth_blockNumber","params":[]}').result | into int
     } else { 0 }
+    let fallback_start_block = if $preset_name == "tip1115-fallback" {
+        fallback-rpc $generate_rpc_url eth_blockNumber [] | into int
+    } else { 0 }
     let result = (bash -lc $pipeline | complete)
     if $result.stdout != "" { print $result.stdout }
     if $result.stderr != "" { print $result.stderr }
@@ -916,6 +926,15 @@ def txgen-run-preset-pipeline [
     if not ($report_path | path exists) {
         print $"ERROR: txgen sender produced no ($report_path)"
         return { ok: false, exit_code: 1, report_path: $report_path }
+    }
+
+    if $preset_name == "tip1115-fallback" {
+        let expected = if ($benchmark_run | str starts-with "feature") {
+            "0x20c0000000000000000000000000000000000001"
+        } else { "0x20c0000000000000000000000000000000000000" }
+        let proof = (fallback-proof $generate_rpc_url $fallback_start_block $expected)
+        $proof | to json | save -f $"($report_path).measured-fallback-proof.json"
+        print $"MEASURED_FALLBACK_PROOF ($proof | to json -r)"
     }
 
     if $preset_name in ["zones" "vault-deposit" "vault-withdraw"] and (open $report_path).failed > 0 {

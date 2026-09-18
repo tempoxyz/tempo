@@ -1,0 +1,16 @@
+# Benchmark-only: approve does not trigger TIP-20 fee-token inference.
+# fallback.nu drains pathUSD only on the feature side before measurement.
+include:
+  - tip20/base.yml
+  - tip20/fee-amm-liquidity.yml
+  - tip20/auth-direct.yml
+  - tip20/nonce-expiring.yml
+merge:
+  templates:
+    tip20_transfer:
+      call:
+        to: "0x20c0000000000000000000000000000000000002"
+        function: approve
+        args:
+          - "0x000000000000000000000000000000000000beef"
+          - 1
