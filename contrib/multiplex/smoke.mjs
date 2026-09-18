@@ -129,6 +129,8 @@ try {
   assert.ok(token, 'genesis needs a TIP-20 token');
   const tokenAddress = token.startsWith('0x') ? token : `0x${token}`;
   const canonicalCall = { to: tokenAddress, data: '0x313ce567' };
+  const refusedHistoricalExecution = await response(v2Rpc, 'eth_call', [canonicalCall, old]);
+  assert.ok(refusedHistoricalExecution.error, 'v2 must refuse historical execution');
   for (const [block, backend] of [[old, v1Rpc], [current, v2Rpc]]) {
     const expected = await response(backend, 'eth_call', [canonicalCall, block]);
     assert.ok(!expected.error, JSON.stringify(expected));
@@ -148,11 +150,21 @@ try {
   const fees = await rpc(muxRpc, 'eth_feeHistory', ['0x2', current, [50]]);
   assert.equal(fees.baseFeePerGas.length, 3);
   assert.equal(fees.gasUsedRatio.length, 2);
+  // Check clean supervision and restart against the same checkpointed databases.
+  await stop(mux);
+  mux = undefined;
+  for (const url of [v1Rpc, v2Rpc]) {
+    let alive = false;
+    try { await rpc(url, 'eth_chainId'); alive = true; } catch {}
+    assert.equal(alive, false, 'child RPC must stop when the supervisor stops');
+  }
+  mux = start(muxBinary, ['--config', configPath], 'multiplex');
+  await ready(muxRpc, mux);
   const firstHeight = await rpc(muxRpc, 'eth_blockNumber');
   await delay(2200);
   const lastHeight = await rpc(muxRpc, 'eth_blockNumber');
   assert.ok(BigInt(lastHeight) > BigInt(firstHeight), 'v2 must continue producing blocks');
-  const report = { root, rpc: muxRpc, pid: mux.pid, cutover, parentHash: parent.hash, activation, firstHeight, lastHeight, before, after, result: 'passed' };
+  const report = { root, rpc: muxRpc, pid: mux.pid, cutover, parentHash: parent.hash, activation, firstHeight, lastHeight, before, after, refusedHistoricalExecution, result: 'passed' };
   await writeFile(path.join(root, 'report.json'), JSON.stringify(report, null, 2));
   console.log(JSON.stringify(report, null, 2));
   success = true;
