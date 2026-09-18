@@ -15,7 +15,7 @@ on:
         description: Cloud provider used for disposable benchmark infrastructure.
         type: choice
         required: true
-        default: aws
+        default: gcp
         options:
           - aws
           - gcp
@@ -160,7 +160,7 @@ jobs:
       id-token: write
       packages: read
     with:
-      cloud: ${{ inputs.cloud || 'aws' }}
+      cloud: ${{ inputs.cloud || 'gcp' }}
       baseline: ${{ needs.resolve-refs.outputs.baseline-ref }}
       baseline-name: ${{ needs.resolve-refs.outputs.baseline-name }}
       feature: ${{ needs.resolve-refs.outputs.feature-ref }}
