@@ -34,10 +34,14 @@ jobs:
     env:
       BUILD_RUN_ID: ${{ inputs.run_id || github.event.workflow_run.id }}
     permissions:
+      id-token: write
       contents: read
       actions: read
       pull-requests: write
     steps:
+      - name: Secure runner
+        uses: tempoxyz/gh-actions/actions/secure-runner@ca2b15de1d1f6edd2276736187d7e4c2d898972c
+
       # Never check out the build/PR head or execute downloaded artifacts.
       - uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6.0.3
         with:

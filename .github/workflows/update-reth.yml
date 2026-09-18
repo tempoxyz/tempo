@@ -20,6 +20,8 @@ permissions:
   pull-requests: write
 
 env:
+  # Allow Aegis to finish its 90-second Socket lookup before Cargo times out.
+  CARGO_HTTP_TIMEOUT: "180"
   CARGO_TERM_COLOR: always
   RUST_BACKTRACE: full
   RUSTC_WRAPPER: "sccache"
@@ -29,12 +31,20 @@ env:
 
 jobs:
   update:
+    permissions:
+      contents: write
+      issues: write
+      pull-requests: write
+      id-token: write
     name: Update reth dependencies
     if: ${{ github.event_name != 'schedule' || github.repository == 'tempoxyz/tempo' }}
     runs-on: depot-ubuntu-latest-32
     timeout-minutes: 120
     steps:
       # ── checkout ───────────────────────────────────────────────
+      - name: Secure runner
+        uses: tempoxyz/gh-actions/actions/secure-runner@ca2b15de1d1f6edd2276736187d7e4c2d898972c
+
       - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2 # zizmor: ignore[artipacked]
         with:
           fetch-depth: 0

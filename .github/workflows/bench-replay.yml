@@ -174,6 +174,8 @@ on:
         required: false
 
 env:
+  # Allow Aegis to finish its 90-second Socket lookup before Cargo times out.
+  CARGO_HTTP_TIMEOUT: "180"
   CARGO_TERM_COLOR: always
   RUSTC_WRAPPER: "sccache"
 
@@ -183,6 +185,9 @@ permissions:
 
 jobs:
   bench-replay:
+    permissions:
+      contents: read
+      id-token: write
     name: bench-replay
     runs-on: [self-hosted, Linux, X64, bare-metal-dual-schelk]
     timeout-minutes: 300
@@ -209,6 +214,9 @@ jobs:
       BENCH_WORK_DIR: bench-results/replay-${{ inputs.chain || 'mainnet' }}
       BENCHMARK_ID: bench-replay-${{ github.run_id }}
     steps:
+      - name: Secure runner
+        uses: tempoxyz/gh-actions/actions/secure-runner@ca2b15de1d1f6edd2276736187d7e4c2d898972c
+
       - name: Resolve benchmark config
         env:
           INPUT_BLOCKS: ${{ inputs.blocks || '5000' }}

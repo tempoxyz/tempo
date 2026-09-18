@@ -19,8 +19,12 @@ jobs:
   benchmark-helpers:
     runs-on: ubuntu-latest
     permissions:
+      id-token: write
       contents: read
     steps:
+      - name: Secure runner
+        uses: tempoxyz/gh-actions/actions/secure-runner@ca2b15de1d1f6edd2276736187d7e4c2d898972c
+
       - uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6.0.3
         with:
           persist-credentials: false
@@ -33,7 +37,8 @@ jobs:
 
   scan:
     if: ${{ github.event_name != 'schedule' || github.repository == 'tempoxyz/tempo' }}
-    uses: tempoxyz/gh-actions/.github/workflows/scan-github-actions.yml@5d3a903b51ce8d1f6d363d1c59d7243ecf80f026
+    uses: tempoxyz/gh-actions/.github/workflows/scan-github-actions.yml@6a4184039b7a7537d35ace0badc96764d5a1d4d0
     permissions:
+      id-token: write
       actions: read
       contents: read

@@ -29,8 +29,12 @@ jobs:
     name: Build & hash
     runs-on: depot-ubuntu-latest-16
     permissions:
+      id-token: write
       contents: read
     steps:
+      - name: Secure runner
+        uses: tempoxyz/gh-actions/actions/secure-runner@ca2b15de1d1f6edd2276736187d7e4c2d898972c
+
       - name: Checkout repository
         uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
         with:

@@ -35,6 +35,7 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 65
     permissions:
+      id-token: write
       checks: read
       contents: read
       pull-requests: read
@@ -42,6 +43,9 @@ jobs:
     outputs:
       eligible: ${{ steps.ci.outputs.eligible }}
     steps:
+      - name: Secure runner
+        uses: tempoxyz/gh-actions/actions/secure-runner@ca2b15de1d1f6edd2276736187d7e4c2d898972c
+
       - name: Wait for required CI checks
         id: ci
         env:
@@ -131,9 +135,13 @@ jobs:
     if: ${{ needs.wait_for_ci.outputs.eligible == 'true' }}
     runs-on: ubuntu-latest
     permissions:
+      id-token: write
       contents: read
       packages: write
     steps:
+      - name: Secure runner
+        uses: tempoxyz/gh-actions/actions/secure-runner@ca2b15de1d1f6edd2276736187d7e4c2d898972c
+
       - name: Check current branch head
         id: branch-head
         env:

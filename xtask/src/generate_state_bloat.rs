@@ -23,7 +23,7 @@ use std::{
     path::PathBuf,
     sync::Arc,
 };
-use tempo_precompiles::tip20::tip20_slots;
+use tempo_precompiles::{storage::StorageKey, tip20::tip20_slots};
 use tempo_primitives::transaction::TIP20_PAYMENT_PREFIX;
 
 /// Magic bytes for the state bloat binary format (8 bytes)
@@ -183,7 +183,7 @@ impl GenerateStateBloat {
                     } else {
                         derive_address_fast(&seed, i as u64)
                     };
-                    compute_mapping_slot(addr, tip20_slots::BALANCES).to_be_bytes::<32>()
+                    addr.mapping_slot(tip20_slots::BALANCES).to_be_bytes::<32>()
                 })
                 .collect();
 
@@ -265,16 +265,6 @@ fn derive_parent_key(mnemonic_phrase: &str) -> eyre::Result<XPriv> {
     Ok(master)
 }
 
-/// Compute a Solidity mapping slot: keccak256(pad32(key) || pad32(base_slot))
-fn compute_mapping_slot(key: Address, base_slot: U256) -> U256 {
-    let mut buf = [0u8; 64];
-    // Left-pad address to 32 bytes
-    buf[12..32].copy_from_slice(key.as_slice());
-    // Base slot as big-endian 32 bytes
-    buf[32..].copy_from_slice(&base_slot.to_be_bytes::<32>());
-    U256::from_be_bytes(keccak256(buf).0)
-}
-
 /// Write a block header to the output.
 /// Format: `[magic:8][version:2][flags:2][address:20][pair_count:8] = 40 bytes`
 fn write_header(writer: &mut impl Write, address: Address, pair_count: u64) -> eyre::Result<()> {
@@ -307,26 +297,6 @@ mod tests {
                 .parse::<Address>()
                 .unwrap()
         );
-    }
-
-    #[test]
-    fn test_compute_mapping_slot() {
-        // Verify the slot computation matches Solidity's keccak256(abi.encode(key, slot))
-        let addr: Address = "0x1234567890123456789012345678901234567890"
-            .parse()
-            .unwrap();
-        let slot = compute_mapping_slot(addr, tip20_slots::BALANCES);
-
-        // The slot should be deterministic
-        let slot2 = compute_mapping_slot(addr, tip20_slots::BALANCES);
-        assert_eq!(slot, slot2);
-
-        // Different addresses should produce different slots
-        let other_addr: Address = "0xabcdefabcdefabcdefabcdefabcdefabcdefabcd"
-            .parse()
-            .unwrap();
-        let other_slot = compute_mapping_slot(other_addr, tip20_slots::BALANCES);
-        assert_ne!(slot, other_slot);
     }
 
     #[test]
