@@ -577,11 +577,7 @@ where
     }
 
     fn spec(&self) -> TempoHardfork {
-        TempoHardfork::T2
-    }
-
-    fn amsterdam_eip8037_enabled(&self) -> bool {
-        false
+        TempoHardfork::CURRENT
     }
 
     fn is_static(&self) -> bool {

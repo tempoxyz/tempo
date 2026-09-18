@@ -1,3 +1,4 @@
+//! Supervises versioned Tempo nodes and routes historical/current HTTP JSON-RPC requests.
 mod config;
 mod rpc;
 mod version;
