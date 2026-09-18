@@ -62,7 +62,6 @@ mod tests {
     use tempo_chainspec::hardfork::TempoHardfork;
     use tempo_contracts::precompiles::{
         ISignatureVerifier, ISignatureVerifier::ISignatureVerifierCalls as ISVCalls,
-        UnknownFunctionSelector,
     };
     use tempo_primitives::transaction::tt_signature::{
         KeychainSignature, PrimitiveSignature, TempoSignature,

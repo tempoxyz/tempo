@@ -1368,7 +1368,6 @@ mod tests {
         spec::{MODERATO, TEMPO_T1_TX_GAS_LIMIT_CAP},
     };
     use tempo_contracts::precompiles::ITIP403Registry;
-    use tempo_evm::TempoEvmConfig;
     use tempo_precompiles::{
         PATH_USD_ADDRESS,
         account_keychain::{
@@ -1508,7 +1507,7 @@ mod tests {
     ) -> TempoTransactionPool<MockEthProvider<TempoPrimitives, TempoChainSpec>> {
         let inner = EthTransactionValidatorBuilder::new(
             provider.clone(),
-            crate::test_utils::current_evm(tempo_chainspec::spec::MAINNET.clone()),
+            crate::test_utils::current_evm(tempo_chainspec::spec::PRESTO.clone()),
         )
         .disable_balance_check()
         .build(InMemoryBlobStore::default());
@@ -1794,7 +1793,7 @@ mod tests {
 
         let inner = EthTransactionValidatorBuilder::new(
             provider.clone(),
-            crate::test_utils::current_evm(tempo_chainspec::spec::MAINNET.clone()),
+            crate::test_utils::current_evm(tempo_chainspec::spec::PRESTO.clone()),
         )
         .disable_balance_check()
         .build(InMemoryBlobStore::default());
@@ -1957,7 +1956,7 @@ mod tests {
 
         let inner = EthTransactionValidatorBuilder::new(
             provider,
-            crate::test_utils::current_evm(tempo_chainspec::spec::MAINNET.clone()),
+            crate::test_utils::current_evm(tempo_chainspec::spec::PRESTO.clone()),
         )
         .disable_balance_check()
         .build(InMemoryBlobStore::default());
@@ -2039,7 +2038,7 @@ mod tests {
 
         let inner = EthTransactionValidatorBuilder::new(
             provider.clone(),
-            crate::test_utils::current_evm(tempo_chainspec::spec::MAINNET.clone()),
+            crate::test_utils::current_evm(tempo_chainspec::spec::PRESTO.clone()),
         )
         .disable_balance_check()
         .build(InMemoryBlobStore::default());
@@ -2132,7 +2131,7 @@ mod tests {
 
         let inner = EthTransactionValidatorBuilder::new(
             provider.clone(),
-            crate::test_utils::current_evm(tempo_chainspec::spec::MAINNET.clone()),
+            crate::test_utils::current_evm(tempo_chainspec::spec::PRESTO.clone()),
         )
         .disable_balance_check()
         .build(InMemoryBlobStore::default());
@@ -2221,7 +2220,7 @@ mod tests {
 
         let inner = EthTransactionValidatorBuilder::new(
             provider.clone(),
-            crate::test_utils::current_evm(tempo_chainspec::spec::MAINNET.clone()),
+            crate::test_utils::current_evm(tempo_chainspec::spec::PRESTO.clone()),
         )
         .disable_balance_check()
         .build(InMemoryBlobStore::default());

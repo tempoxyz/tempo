@@ -118,9 +118,7 @@ mod tests {
         sol_types::{SolCall, SolError, SolInterface, SolValue},
     };
     use tempo_chainspec::hardfork::TempoHardfork;
-    use tempo_contracts::precompiles::{
-        IRolesAuth, RolesAuthError, TIP20Error, UnknownFunctionSelector,
-    };
+    use tempo_contracts::precompiles::{IRolesAuth, RolesAuthError, TIP20Error};
 
     #[test]
     fn test_function_selector_dispatch() -> eyre::Result<()> {

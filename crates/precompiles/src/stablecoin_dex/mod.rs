@@ -6101,7 +6101,7 @@ mod tests {
                 //   balance >= amount)
                 // - non-escrow paused: escrow itself is unpaused, so any debit path works
                 // T4: rejected regardless.
-                let should_succeed = false;
+                let _should_succeed = false;
 
                 {
                     assert_eq!(res.unwrap_err(), TIP20Error::contract_paused().into());

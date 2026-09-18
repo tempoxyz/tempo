@@ -41,9 +41,7 @@ mod tests {
     };
     use alloy::sol_types::{SolCall, SolInterface};
     use tempo_chainspec::hardfork::TempoHardfork;
-    use tempo_contracts::precompiles::{
-        IStorageCredits, IStorageCredits::IStorageCreditsCalls, StorageCreditsError,
-    };
+    use tempo_contracts::precompiles::{IStorageCredits, IStorageCredits::IStorageCreditsCalls};
 
     #[test]
     fn test_storage_credits_selector_coverage() -> eyre::Result<()> {

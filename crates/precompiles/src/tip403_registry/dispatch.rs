@@ -68,18 +68,13 @@ impl Precompile for TIP403Registry {
 mod tests {
     use super::*;
     use crate::{
-        storage::{ContractStorage, StorageCtx, hashmap::HashMapStorageProvider},
-        test_util::{TIP20Setup, assert_full_coverage, check_selector_coverage},
-        tip403_registry::{ALLOW_ALL_POLICY_ID, ITIP403Registry},
+        storage::{StorageCtx, hashmap::HashMapStorageProvider},
+        test_util::{assert_full_coverage, check_selector_coverage},
+        tip403_registry::ITIP403Registry,
     };
-    use alloy::{
-        primitives::U256,
-        sol_types::{SolCall, SolError, SolValue},
-    };
+    use alloy::sol_types::{SolCall, SolError, SolValue};
     use tempo_chainspec::hardfork::TempoHardfork;
-    use tempo_contracts::precompiles::{
-        ITIP403Registry::ITIP403RegistryCalls, UnknownFunctionSelector,
-    };
+    use tempo_contracts::precompiles::ITIP403Registry::ITIP403RegistryCalls;
 
     #[test]
     fn test_is_authorized_precompile() -> eyre::Result<()> {

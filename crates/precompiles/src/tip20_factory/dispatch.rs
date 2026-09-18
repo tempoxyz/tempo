@@ -32,14 +32,9 @@ mod tests {
         storage::{StorageCtx, hashmap::HashMapStorageProvider},
         test_util::{assert_full_coverage, check_selector_coverage},
     };
-    use alloy::{
-        primitives::B256,
-        sol_types::{SolCall, SolError},
-    };
+    use alloy::sol_types::{SolCall, SolError};
     use tempo_chainspec::hardfork::TempoHardfork;
-    use tempo_contracts::precompiles::{
-        ITIP20Factory::ITIP20FactoryCalls, UnknownFunctionSelector, createTokenWithLogoCall,
-    };
+    use tempo_contracts::precompiles::ITIP20Factory::ITIP20FactoryCalls;
 
     #[test]
     fn tip20_factory_test_selector_coverage() {

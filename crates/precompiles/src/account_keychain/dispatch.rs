@@ -66,12 +66,12 @@ mod tests {
     };
     use crate::{
         Precompile,
-        account_keychain::{getRemainingLimitCall, getRemainingLimitWithPeriodCall},
-        storage::{Handler, StorageCtx, hashmap::HashMapStorageProvider},
+        account_keychain::getRemainingLimitCall,
+        storage::{StorageCtx, hashmap::HashMapStorageProvider},
         test_util::{assert_full_coverage, check_selector_coverage},
     };
     use alloy::{
-        primitives::{B256, U256},
+        primitives::U256,
         sol_types::{SolCall, SolError},
     };
     use tempo_chainspec::hardfork::TempoHardfork;

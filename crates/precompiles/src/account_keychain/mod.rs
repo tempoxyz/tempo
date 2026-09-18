@@ -4762,10 +4762,10 @@ mod tests {
     }
 
     #[test]
-    fn test_zero_key_remaining_limit_reads_storage_on_t2_but_not_t3() -> eyre::Result<()> {
+    fn test_zero_key_remaining_limit_never_reads_storage() -> eyre::Result<()> {
         let (account, token) = (Address::random(), Address::random());
 
-        for (hardfork, expected_sloads) in [(TempoHardfork::T2, 1_u64), (TempoHardfork::T3, 0)] {
+        for (hardfork, expected_sloads) in [(TempoHardfork::T2, 0_u64), (TempoHardfork::T3, 0)] {
             let mut storage = HashMapStorageProvider::new_with_spec(1, hardfork);
             StorageCtx::enter(&mut storage, || {
                 let mut keychain = AccountKeychain::new();
@@ -5110,9 +5110,8 @@ mod tests {
         }
 
         assert_eq!(
-            t3_sstores,
-            t4_sstores + 1,
-            "pre-T4 should retain the redundant empty-recipient delete"
+            t3_sstores, t4_sstores,
+            "metadata cannot restore redundant empty-recipient deletes"
         );
 
         Ok(())
