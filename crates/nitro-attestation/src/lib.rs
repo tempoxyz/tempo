@@ -15,7 +15,7 @@ mod x509;
 use alloc::{string::String, vec::Vec};
 use sha2::{Digest, Sha256};
 
-pub use error::{CertificateError, Error, ErrorCategory, FormatError, SignatureError};
+pub use error::{CertificateError, Error, FormatError, SignatureError};
 
 /// Maximum accepted size of the complete COSE_Sign1 document.
 pub const MAX_DOCUMENT_SIZE: usize = 24_576;
@@ -165,22 +165,4 @@ pub fn verify_parsed<V: P384Verifier + Sha384Hasher>(
         nonce: parsed.nonce,
         leaf_cert_hash,
     })
-}
-
-/// Parses and fully verifies a Nitro attestation in one call.
-///
-/// Gas-metered callers should instead use [`parse_attestation`] and [`verify_parsed`] separately,
-/// charging for [`ParsedAttestation::signature_count`] before calling the latter.
-pub fn verify_attestation<V: P384Verifier + Sha384Hasher>(
-    document: &[u8],
-    block_timestamp: u64,
-    pinned_root_der: &[u8],
-    verifier: &V,
-) -> Result<NitroAttestation, Error> {
-    verify_parsed(
-        parse_attestation(document)?,
-        block_timestamp,
-        pinned_root_der,
-        verifier,
-    )
 }

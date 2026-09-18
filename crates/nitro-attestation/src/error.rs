@@ -1,16 +1,5 @@
 use core::fmt;
 
-/// Stable Nitro attestation validation category.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub enum ErrorCategory {
-    /// CBOR/COSE or payload structure is invalid.
-    InvalidFormat,
-    /// The X.509 chain or certificate profile is invalid.
-    InvalidCertificate,
-    /// A certificate or document signature failed verification.
-    InvalidSignature,
-}
-
 /// Structural document errors.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum FormatError {
@@ -56,17 +45,6 @@ pub enum Error {
     InvalidFormat(FormatError),
     InvalidCertificate(CertificateError),
     InvalidSignature(SignatureError),
-}
-
-impl Error {
-    /// Returns the ABI-level error category.
-    pub const fn category(self) -> ErrorCategory {
-        match self {
-            Self::InvalidFormat(_) => ErrorCategory::InvalidFormat,
-            Self::InvalidCertificate(_) => ErrorCategory::InvalidCertificate,
-            Self::InvalidSignature(_) => ErrorCategory::InvalidSignature,
-        }
-    }
 }
 
 impl From<FormatError> for Error {

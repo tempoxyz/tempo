@@ -13,7 +13,7 @@ use tempo_precompiles_macros::contract;
 
 use crate::{error::Result, zone_factory::portal_address};
 
-use self::attestation::{AWS_NITRO_ROOT_DER, AttestationError, verify_attestation_with_root};
+use self::attestation::{AWS_NITRO_ROOT_DER, verify_attestation_with_root};
 
 const CONFIG_V1: &[u8] = &[1];
 const MAX_FUTURE_SKEW_MILLIS: u64 = 300_000;
@@ -48,12 +48,12 @@ sol! {
 pub struct ZoneVerifier {}
 
 impl ZoneVerifier {
-    pub fn verify(&mut self, portal: Address, call: IZoneVerifier::verifyCall) -> Result<bool> {
+    pub fn verify(&self, portal: Address, call: IZoneVerifier::verifyCall) -> Result<bool> {
         self.verify_with_policy(portal, call, AWS_NITRO_ROOT_DER, APPROVED_PCRS)
     }
 
     fn verify_with_policy(
-        &mut self,
+        &self,
         portal: Address,
         call: IZoneVerifier::verifyCall,
         root_der: &[u8],
@@ -68,17 +68,10 @@ impl ZoneVerifier {
         }
 
         let block_timestamp = self.storage.timestamp().saturating_to::<u64>();
-        let attestation = match verify_attestation_with_root(
-            &mut self.storage,
-            call.proof.as_ref(),
-            block_timestamp,
-            root_der,
-        ) {
-            Ok(attestation) => attestation,
-            Err(AttestationError::OutOfGas) => {
-                return Err(crate::error::TempoPrecompileError::OutOfGas);
-            }
-            Err(_) => return Ok(false),
+        let Some(attestation) =
+            verify_attestation_with_root(call.proof.as_ref(), block_timestamp, root_der)?
+        else {
+            return Ok(false);
         };
 
         let Some(approved_pcrs) = approved_pcrs else {
@@ -233,7 +226,7 @@ mod tests {
         let mut storage = HashMapStorageProvider::new_with_spec(1, TempoHardfork::T13);
         storage.set_timestamp(U256::from(BLOCK_TIMESTAMP));
         StorageCtx::enter(&mut storage, || {
-            let mut verifier = ZoneVerifier::new();
+            let verifier = ZoneVerifier::new();
             assert!(
                 verifier
                     .verify_with_policy(portal, call.clone(), &root, Some(pcrs))

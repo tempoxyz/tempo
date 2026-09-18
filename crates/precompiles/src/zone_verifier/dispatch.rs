@@ -7,7 +7,8 @@ use crate::{Precompile, charge_input_cost, dispatch, view};
 use super::ZoneVerifier;
 
 // selector + 17 static ABI words + one-byte config tail + maximum proof tail.
-const MAX_CALLDATA_LEN: usize = 4 + 17 * 32 + 2 * 32 + 32 + super::attestation::MAX_DOCUMENT_LEN;
+const MAX_CALLDATA_LEN: usize =
+    4 + 17 * 32 + 2 * 32 + 32 + tempo_nitro_attestation::MAX_DOCUMENT_SIZE;
 
 impl Precompile for ZoneVerifier {
     fn call(&mut self, calldata: &[u8], msg_sender: Address) -> PrecompileResult {
@@ -74,7 +75,7 @@ mod tests {
         StorageCtx::enter(&mut storage, || {
             for call in [
                 call(Vec::new()),
-                call(vec![0; super::super::attestation::MAX_DOCUMENT_LEN + 1]),
+                call(vec![0; tempo_nitro_attestation::MAX_DOCUMENT_SIZE + 1]),
             ] {
                 let output = ZoneVerifier::new()
                     .call(
@@ -90,7 +91,7 @@ mod tests {
 
     #[test]
     fn calldata_limit_applies_before_decoding() {
-        let call = call(vec![0; super::super::attestation::MAX_DOCUMENT_LEN]);
+        let call = call(vec![0; tempo_nitro_attestation::MAX_DOCUMENT_SIZE]);
         let portal = crate::zone_factory::portal_address(call.zoneId);
         let mut calldata = call.abi_encode();
         assert_eq!(calldata.len(), 25_220);
