@@ -153,7 +153,7 @@ pub(crate) trait FinalizedBlocksProvider: Send + Sync {
 /// passed to [`Hybrid`] in production. Generic over `N` only so the
 /// impl works for any concrete `BlockchainProvider<N>` whose primitive
 /// block type is [`tempo_primitives::Block`] (e.g. the
-/// `BlockchainProvider<NodeTypesWithDBAdapter<TempoNode, DatabaseEnv>>`
+/// `BlockchainProvider<NodeTypesWithDBAdapter<TempoNode, TempoDatabase>>`
 /// alias used by `tempo_node::TempoFullNode`).
 impl<N> FinalizedBlocksProvider for BlockchainProvider<N>
 where

@@ -23,7 +23,6 @@ use commonware_runtime::{Clock, Metrics, Spawner, telemetry::metrics::Registered
 use eyre::Report;
 use parking_lot::Mutex;
 use prometheus_client::metrics::counter::Counter;
-use reth_ethereum::provider::db::DatabaseEnv;
 use reth_network_p2p::{BlockAccessListsClient, BlockClient, FullBlockClient};
 use reth_node_builder::NodeTypesWithDBAdapter;
 use reth_primitives_traits::NodePrimitives;
@@ -32,7 +31,7 @@ use reth_provider::{
     providers::{BlockchainProvider, ProviderNodeTypes},
 };
 use tempo_evm::consensus::validate_body_against_header;
-use tempo_node::{node::TempoNode, rpc::consensus::CertifiedBlock};
+use tempo_node::{node::TempoNode, rpc::consensus::CertifiedBlock, storage::TempoDatabase};
 use tempo_primitives::Block as TempoBlock;
 use tokio::select;
 use tracing::{debug, error, instrument, warn};
@@ -54,7 +53,7 @@ type Key = handler::Key<Digest>;
 pub(super) type Mailbox = opaque::Resolver<Key, handler::Annotation, PublicKey>;
 
 pub(super) struct Config<
-    P = BlockchainProvider<NodeTypesWithDBAdapter<TempoNode, DatabaseEnv>>,
+    P = BlockchainProvider<NodeTypesWithDBAdapter<TempoNode, TempoDatabase>>,
     U = super::upstream::Mailbox,
     N = NoopBlockNetwork,
 > {

@@ -409,8 +409,19 @@ where
             .context_for_next_block(&parent_header, next_attributes)
             .map_err(PayloadBuilderError::other)?;
 
-        let evm = self.evm_config.evm_with_env(&mut db, evm_env);
-        let mut executor = self.evm_config.create_executor(evm, ctx.clone());
+        let evm_config = if self.enable_bal {
+            self.evm_config.clone()
+        } else {
+            let provider = self.provider.clone();
+            let parent_hash = parent_header.hash();
+            self.evm_config
+                .clone()
+                .with_background_state(&evm_env, move || {
+                    provider.state_by_block_hash(parent_hash)
+                })?
+        };
+        let evm = evm_config.evm_with_env(&mut db, evm_env);
+        let mut executor = evm_config.create_executor(evm, ctx.clone());
 
         check_cancel!();
 

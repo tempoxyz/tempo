@@ -27,7 +27,11 @@ tempo-primitives = { workspace = true, features = ["default"] }
 tempo-revm.workspace = true
 
 thiserror.workspace = true
+imbl = "=7.0.0"
+tracing.workspace = true
+revm.workspace = true
 
+reth-db-api.workspace = true
 reth-chainspec.workspace = true
 reth-errors.workspace = true
 reth-ethereum = { workspace = true, features = ["node", "rpc"] }
@@ -79,6 +83,7 @@ tokio.workspace = true
 tokio-stream = { workspace = true, features = ["sync"] }
 
 [dev-dependencies]
+reth-stages-types.workspace = true
 tempo-e2e.workspace = true
 tempo-transaction-pool = { workspace = true, features = ["test-utils"] }
 alloy-network.workspace = true
@@ -113,6 +118,7 @@ vergen-git2.workspace = true
 
 [features]
 default = []
+expiring-nonce-no-persistence = []
 bal = ["tempo-payload-builder/bal"]
 asm-keccak = [
 	"alloy/asm-keccak",

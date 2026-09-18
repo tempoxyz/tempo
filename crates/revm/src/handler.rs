@@ -44,10 +44,10 @@ use tempo_precompiles::{
         SelectorRule as PrecompileSelectorRule, TokenLimit,
     },
     error::TempoPrecompileError,
+    expiring_nonce::ExpiringNonceManager,
     nonce::{INonce::getNonceCall, NonceManager},
     storage::{
-        Handler as _, PrecompileStorageProvider, StorageActions, StorageCtx,
-        evm::EvmPrecompileStorageProvider,
+        PrecompileStorageProvider, StorageActions, StorageCtx, evm::EvmPrecompileStorageProvider,
     },
     tip20::{ITIP20::InsufficientBalance, TIP20Error, TIP20Token},
     tip20_channel_reserve::TIP20ChannelReserve,
@@ -76,27 +76,8 @@ const KEY_AUTH_PER_LIMIT_GAS: u64 = 22_000;
 /// Rounded buffer for each extra LOG3/no-data event emitted by key authorizations.
 const KEY_AUTH_EXTRA_EVENT_BUFFER: u64 = 1_500;
 
-/// Gas cost for expiring nonce transactions (replay check + insert).
-///
-/// See [TIP-1009] for full specification.
-///
-/// [TIP-1009]: <https://docs.tempo.xyz/protocol/tips/tip-1009>
-///
-/// Operations charged:
-/// - 2 cold SLOADs: `seen[tx_hash]`, `ring[idx]` (unique slots per tx)
-/// - 1 warm SLOAD: `seen[old_hash]` (warm because we just read `ring[idx]` which points to it)
-/// - 3 SSTOREs at RESET price: `seen[old_hash]=0`, `ring[idx]=tx_hash`, `seen[tx_hash]=valid_before`
-///
-/// Excluded from gas calculation:
-/// - `ring_ptr` SLOAD/SSTORE: Accessed by almost every expiring nonce tx in a block, so
-///   amortized cost approaches ~200 gas. May be moved out of EVM storage in the future.
-///
-/// Why SSTORE_RESET (2,900) instead of SSTORE_SET (20,000) for `seen[tx_hash]`:
-/// - SSTORE_SET cost exists to penalize permanent state growth
-/// - Expiring nonce data is ephemeral: evicted within 30 seconds, fixed-size buffer (300k)
-/// - No permanent state growth, so the 20k penalty doesn't apply
-///
-/// Total: 2*2100 + 100 + 3*2900 = 13,000 gas
+/// Flat PoC charge for replay checking and ephemeral bucket storage.
+/// Retains the existing 13,000 gas charge; pruning is block bookkeeping.
 pub const EXPIRING_NONCE_GAS: u64 = 2 * COLD_SLOAD_COST + 100 + 3 * WARM_SSTORE_RESET;
 
 #[derive(Debug, Clone)]
@@ -1074,7 +1055,6 @@ where
 
         if is_expiring_nonce {
             let max_expiry_secs = spec.expiring_nonce_max_expiry_secs();
-            let capacity = spec.expiring_nonce_set_capacity();
             // Expiring nonce transaction replay protection:
             // - Pre-T1B: use tx_hash for backwards-compatible behavior.
             // - T1B+: use the sender-scoped tx identifier (keccak256(encode_for_signing || sender))
@@ -1109,26 +1089,7 @@ where
                 tx,
                 actions.clone(),
                 || {
-                    let mut nonce_manager = NonceManager::new();
-
-                    let prev_ptr = if let Some(expiring_nonce_idx) = tempo_tx_env.expiring_nonce_idx
-                    {
-                        let ptr = nonce_manager
-                            .expiring_nonce_ring_ptr
-                            .read()
-                            .map_err(|err| EVMError::Custom(err.to_string()))?;
-
-                        let next = (ptr + expiring_nonce_idx as u32) % capacity;
-
-                        nonce_manager
-                            .expiring_nonce_ring_ptr
-                            .write(next)
-                            .map_err(|err| EVMError::Custom(err.to_string()))?;
-
-                        Some(ptr)
-                    } else {
-                        None
-                    };
+                    let mut nonce_manager = ExpiringNonceManager::new();
 
                     nonce_manager
                     .check_and_mark_expiring_nonce(replay_hash, valid_before)
@@ -1152,13 +1113,6 @@ where
                         }
                         err => TempoInvalidTransaction::NonceManagerError(err.to_string()).into(),
                     })?;
-
-                    if let Some(prev_ptr) = prev_ptr {
-                        nonce_manager
-                            .expiring_nonce_ring_ptr
-                            .write(prev_ptr)
-                            .map_err(|err| EVMError::Custom(err.to_string()))?;
-                    }
 
                     Ok::<_, EVMError<DB::Error, TempoInvalidTransaction>>(())
                 },
@@ -2382,7 +2336,7 @@ where
     if spec.is_t1() {
         if aa_env.nonce_key == TEMPO_EXPIRING_NONCE_KEY {
             // Calculate nonce gas based on nonce type:
-            // - Expiring nonce (nonce_key == MAX, T1 active): ring buffer + seen mapping operations
+            // - Expiring nonce (nonce_key == MAX, T1 active): block bucket + seen mapping operations
             // - 2D nonce (nonce_key != 0): SLOAD + SSTORE for nonce increment
             // - Regular nonce (nonce_key == 0): no additional gas
             batch_gas.initial_regular_gas += EXPIRING_NONCE_GAS;

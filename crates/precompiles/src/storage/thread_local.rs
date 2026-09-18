@@ -43,10 +43,10 @@ impl StorageCtx {
     ///
     /// # IMPORTANT
     ///
-    /// The caller must ensure that:
-    /// 1. Only one `enter` call is active at a time, in the same thread.
-    /// 2. If multiple storage providers are instantiated in parallel threads,
-    ///    they CANNOT point to the same storage addresses.
+    /// Nested scopes must use independent storage providers. In particular, an inner
+    /// provider must not access the borrowed outer provider through an alias. The outer
+    /// context is restored when the inner scope exits, including during unwinding.
+    /// Providers used concurrently on different threads must not alias mutable state.
     pub fn enter<S, R>(storage: &mut S, f: impl FnOnce() -> R) -> R
     where
         S: PrecompileStorageProvider,
@@ -606,6 +606,48 @@ mod tests {
                 StorageCtx::with_storage(|_| ())
             })
         });
+    }
+
+    #[test]
+    fn independent_nested_storage_restores_borrowed_outer_context() {
+        for panic_in_inner in [false, true] {
+            let mut outer = t1c_storage();
+            let mut inner = t1c_storage();
+            StorageCtx::enter(&mut outer, || {
+                StorageCtx
+                    .sstore(Address::ZERO, U256::ZERO, U256::from(42))
+                    .unwrap();
+                // Reconstruction can be triggered while an outer SLOAD still holds
+                // this borrow. Its independent backend must not reborrow the outer one.
+                StorageCtx::with_storage(|outer| {
+                    let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+                        StorageCtx::enter(&mut inner, || {
+                            assert_eq!(
+                                StorageCtx.sload(Address::ZERO, U256::ZERO).unwrap(),
+                                U256::ZERO
+                            );
+                            StorageCtx
+                                .sstore(Address::ZERO, U256::ZERO, U256::from(99))
+                                .unwrap();
+                            assert!(!panic_in_inner, "inner scope failure");
+                        });
+                    }));
+                    assert_eq!(result.is_err(), panic_in_inner);
+                    assert_eq!(
+                        outer.sload(Address::ZERO, U256::ZERO).unwrap(),
+                        U256::from(42)
+                    );
+                });
+                assert_eq!(
+                    StorageCtx.sload(Address::ZERO, U256::ZERO).unwrap(),
+                    U256::from(42)
+                );
+            });
+            assert_eq!(
+                inner.sload(Address::ZERO, U256::ZERO).unwrap(),
+                U256::from(99)
+            );
+        }
     }
 
     #[test]

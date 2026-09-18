@@ -15,7 +15,7 @@ use crate::{
     storage_credits::{NonCreditableSlots, StorageCreditsBackend, sstore_storage_credits},
 };
 
-/// In-memory [`PrecompileStorageProvider`] for unit tests.
+/// In-memory [`PrecompileStorageProvider`] for tests and state reconstruction.
 ///
 /// Stores all state in `HashMap`s, avoiding the need for a real EVM context.
 pub struct HashMapStorageProvider {
@@ -103,6 +103,30 @@ impl HashMapStorageProvider {
         self.amsterdam_eip8037_enabled = enabled;
         self.gas_params = GasParams::new_spec(self.spec.into());
         self
+    }
+
+    /// Overrides the block timestamp.
+    pub fn set_timestamp(&mut self, timestamp: U256) {
+        self.block_env.timestamp = timestamp;
+    }
+
+    /// Overrides the block number.
+    pub fn set_block_number(&mut self, block_number: u64) {
+        self.block_env.number = U256::from(block_number);
+    }
+
+    /// Overrides the active hardfork spec.
+    pub fn set_spec(&mut self, spec: TempoHardfork) {
+        self.spec = spec;
+        self.gas_params = GasParams::new_spec(self.spec.into());
+        self.tip1060_storage_credits_enabled = spec.is_t7();
+    }
+
+    /// Returns all storage entries as `(address, slot, value)`.
+    pub fn into_storage(self) -> impl Iterator<Item = (Address, U256, U256)> {
+        self.internals
+            .into_iter()
+            .map(|((addr, slot), value)| (addr, slot, value))
     }
 }
 
@@ -378,26 +402,9 @@ impl HashMapStorageProvider {
         account.nonce = nonce;
     }
 
-    /// Overrides the block timestamp.
-    pub fn set_timestamp(&mut self, timestamp: U256) {
-        self.block_env.timestamp = timestamp;
-    }
-
     /// Overrides the block beneficiary (coinbase).
     pub fn set_beneficiary(&mut self, beneficiary: Address) {
         self.block_env.beneficiary = beneficiary;
-    }
-
-    /// Overrides the block number.
-    pub fn set_block_number(&mut self, block_number: u64) {
-        self.block_env.number = U256::from(block_number);
-    }
-
-    /// Overrides the active hardfork spec.
-    pub fn set_spec(&mut self, spec: TempoHardfork) {
-        self.spec = spec;
-        self.gas_params = GasParams::new_spec(self.spec.into());
-        self.tip1060_storage_credits_enabled = spec.is_t7();
     }
 
     /// Clears all transient storage (simulates a new block).
@@ -428,12 +435,5 @@ impl HashMapStorageProvider {
     pub fn reset_counters(&mut self) {
         self.counter_sload = 0;
         self.counter_sstore = 0;
-    }
-
-    /// Returns all storage entries as `(address, slot, value)`.
-    pub fn into_storage(self) -> impl Iterator<Item = (Address, U256, U256)> {
-        self.internals
-            .into_iter()
-            .map(|((addr, slot), value)| (addr, slot, value))
     }
 }

@@ -303,18 +303,6 @@ impl TempoHardfork {
         gas::TEMPO_T1_NEW_NONCE_KEY_GAS
     }
 
-    /// Returns the expiring nonce replay-protection capacity.
-    pub const fn expiring_nonce_set_capacity(&self) -> u32 {
-        const PRE_T11_CAPACITY: u32 = 300_000;
-        const POST_T11_CAPACITY: u32 = 3_000_000;
-
-        if self.is_t11() {
-            POST_T11_CAPACITY
-        } else {
-            PRE_T11_CAPACITY
-        }
-    }
-
     /// Returns the maximum expiring nonce validity window in seconds.
     pub const fn expiring_nonce_max_expiry_secs(&self) -> u64 {
         const PRE_T11_MAX_EXPIRY_SECS: u64 = 30;

@@ -502,7 +502,8 @@ where
     /// Panics if the execution node is not running.
     pub fn execution_provider(
         &self,
-    ) -> BlockchainProvider<NodeTypesWithDBAdapter<TempoNode, DatabaseEnv>> {
+    ) -> BlockchainProvider<NodeTypesWithDBAdapter<TempoNode, tempo_node::storage::TempoDatabase>>
+    {
         self.execution().provider.clone()
     }
 
