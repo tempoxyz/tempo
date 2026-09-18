@@ -1,5 +1,5 @@
 use crate::{StorageActionReplayState, TempoBlockExecutionCtx, evm::TempoEvm};
-use alloy_consensus::{Transaction, transaction::TxHashRef};
+use alloy_consensus::Transaction;
 use alloy_evm::{
     Database, Evm, RecoveredTx,
     block::{
@@ -1128,7 +1128,7 @@ mod tests {
                         )
                         .unwrap();
                 }
-                let should_reject = hardfork == TempoHardfork::T4 && simulations.contains(&false);
+                let should_reject = simulations.contains(&false);
                 match executor.finish() {
                     Err(err) => {
                         assert!(should_reject);

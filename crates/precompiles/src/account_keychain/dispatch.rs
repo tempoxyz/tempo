@@ -60,7 +60,10 @@ impl Precompile for AccountKeychain {
 
 #[cfg(test)]
 mod tests {
-    use super::*;
+    use super::{
+        super::{KeyRestrictions, TokenLimit},
+        *,
+    };
     use crate::{
         Precompile,
         account_keychain::{getRemainingLimitCall, getRemainingLimitWithPeriodCall},

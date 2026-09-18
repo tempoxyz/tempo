@@ -346,7 +346,7 @@ mod tests {
     }
 
     #[test]
-    fn trailing_bytes_are_allowed_from_t12() -> eyre::Result<()> {
+    fn abi_rules_ignore_historical_and_future_metadata() -> eyre::Result<()> {
         let canonical = ITestMemoryDispatch::setValuesCall {
             values: vec![U256::from(1), U256::from(2)],
         }
@@ -360,9 +360,9 @@ mod tests {
             TempoHardfork::T13,
         ] {
             let config = abi_decoder_config_for_spec(spec);
-            assert_eq!(config.get_strict(), spec.is_t11());
-            assert_eq!(config.get_validate(), spec.is_t11());
-            assert_eq!(config.get_validate_allow_trailing_bytes(), spec.is_t12());
+            assert!(config.get_strict());
+            assert!(config.get_validate());
+            assert!(!config.get_validate_allow_trailing_bytes());
             assert_eq!(config.get_memory_limit(), ABI_DECODER_MEMORY_LIMIT);
 
             let mut storage = HashMapStorageProvider::new_with_spec(1, spec);
@@ -393,7 +393,7 @@ mod tests {
             gapped.splice(36..36, [0u8; 32]);
             assert_eq!(
                 ITestMemoryDispatch::setValuesCall::abi_decode_with_config(&gapped, config).is_ok(),
-                !spec.is_t11(),
+                false,
                 "{spec:?}"
             );
             assert!(

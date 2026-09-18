@@ -588,7 +588,7 @@ mod tests {
     }
 
     #[test]
-    fn create_zone_initializes_token_cursor_at_t13() -> eyre::Result<()> {
+    fn future_metadata_does_not_enable_token_cursor() -> eyre::Result<()> {
         for hardfork in [TempoHardfork::T12, TempoHardfork::T13] {
             let mut storage = HashMapStorageProvider::new_with_spec(1, hardfork);
             StorageCtx::enter(&mut storage, || -> eyre::Result<()> {
@@ -603,13 +603,10 @@ mod tests {
 
                 let portal = ZonePortalStorage::new(created.portal);
                 assert_eq!(portal.last_processed_enabled_token_count.read()?, 0);
-                assert_eq!(
-                    portal.token_enablement_cursor_initialized.read()?,
-                    hardfork.is_t13()
-                );
+                assert_eq!(portal.token_enablement_cursor_initialized.read()?, false);
                 assert_eq!(
                     StorageCtx.sload(created.portal, U256::from(28))?,
-                    U256::from(u64::from(hardfork.is_t13())) << 64
+                    U256::ZERO
                 );
                 Ok(())
             })?;

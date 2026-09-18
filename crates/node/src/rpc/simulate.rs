@@ -10,16 +10,14 @@ use reth_ethereum::evm::revm::database::StateProviderDatabase;
 use reth_node_api::FullNodeTypes;
 use reth_node_builder::NodeAdapter;
 use reth_primitives_traits::AlloyBlockHeader as _;
-use reth_provider::ChainSpecProvider;
 use reth_rpc_eth_api::{
-    RpcBlock, RpcNodeCore,
+    RpcBlock,
     helpers::{EthCall, LoadBlock, LoadState, SpawnBlocking},
 };
 use reth_rpc_eth_types::EthApiError;
 use reth_tracing::tracing;
 use serde::{Deserialize, Serialize};
 use std::collections::{BTreeMap, HashSet};
-use tempo_chainspec::hardfork::TempoHardforks;
 use tempo_evm::TempoStateAccess;
 use tempo_precompiles::{
     error::TempoPrecompileError,
@@ -183,7 +181,7 @@ impl<N: FullNodeTypes<Types = TempoNode>> TempoSimulate<N> {
         &self,
         addresses: Vec<Address>,
         block: BlockId,
-        timestamp: u64,
+        _timestamp: u64,
     ) -> BTreeMap<Address, Tip20TokenMetadata> {
         if addresses.is_empty() {
             return BTreeMap::new();

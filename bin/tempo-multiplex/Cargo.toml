@@ -26,3 +26,4 @@ nix = { version = "0.30.1", features = ["signal"] }
 
 [dev-dependencies]
 tempfile.workspace = true
+syn = { version = "2", features = ["full", "visit"] }

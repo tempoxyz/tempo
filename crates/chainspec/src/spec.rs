@@ -488,16 +488,19 @@ pub trait TempoConsensusSpec: EthChainSpec<Header = TempoHeader> + TempoHardfork
 }
 
 impl TempoConsensusSpec for TempoChainSpec {
-    fn shared_gas_limit_at(&self, timestamp: u64, gas_limit: u64) -> u64 {
-        self.tempo_hardfork_at(timestamp)
-            .shared_gas_limit(gas_limit)
+    fn shared_gas_limit_at(&self, _timestamp: u64, gas_limit: u64) -> u64 {
+        TempoHardfork::CURRENT.shared_gas_limit(gas_limit)
     }
 
-    fn general_gas_limit_at(&self, timestamp: u64, gas_limit: u64, shared_gas_limit: u64) -> u64 {
+    fn general_gas_limit_at(
+        &self,
+        _timestamp: u64,
+        _gas_limit: u64,
+        _shared_gas_limit: u64,
+    ) -> u64 {
         self.info
             .general_gas_limit()
-            .or_else(|| self.tempo_hardfork_at(timestamp).general_gas_limit())
-            .unwrap_or_else(|| (gas_limit - shared_gas_limit) / 2)
+            .unwrap_or(TEMPO_T1_GENERAL_GAS_LIMIT)
     }
 }
 

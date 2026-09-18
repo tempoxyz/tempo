@@ -113,7 +113,6 @@ fn call_scope_storage_slots(
         None => 0,
         Some(scopes) if scopes.is_empty() => 1,
         Some(scopes) => {
-            let _is_t4 = true;
             let mut selector_sets = 0u64;
             let mut selectors = 0u64;
             let mut constrained_selectors = 0u64;

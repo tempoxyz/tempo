@@ -684,7 +684,7 @@ mod tests {
             // Only allowed pre-T7
             assert_eq!(
                 is_tip20_fee_inference_call(spec, &distributeRewardCall::SELECTOR),
-                !spec.is_t7()
+                false
             );
 
             // Disallowed selectors

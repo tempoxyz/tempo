@@ -1,33 +1,13 @@
-//! Tempo-specific hardfork definitions, activation schedules, and protocol constants.
+//! Tempo chain identity, activation metadata, and current protocol constants.
 //!
-//! This crate is the lightweight source of truth for Tempo hardfork identifiers. It intentionally
-//! does not depend on `tempo-chainspec` or Reth, so SDK crates can use [`TempoHardfork`] without
-//! pulling in chain-spec/node integration.
+//! Historical identifiers and timestamps are retained to preserve genesis hashes,
+//! networking fork IDs, and RPC schedule responses. They do not select execution
+//! rules. This source tree executes only [TempoHardfork::CURRENT]; the released
+//! v1 binary serves older blocks through tempo-multiplex.
 //!
-//! ## Adding a New Hardfork
-//!
-//! When a new hardfork is needed (e.g., `Vivace`):
-//!
-//! ### In `tempo-hardfork`
-//! 1. Append a `Vivace` variant to `tempo_hardfork!` — automatically:
-//!    * defines the enum variant via [`hardfork!`]
-//!    * adds the variant to [`TempoHardfork::VARIANTS`]
-//!    * generates the `is_vivace()` inherent helper
-//!    * exports the variant through [`tempo_post_genesis_hardforks!`] for downstream generated APIs
-//!    * adds tests for the generated hardfork helpers
-//! 2. Update activation schedule methods/constants for the new fork.
-//! 3. Update `From<TempoHardfork> for SpecId` if the hardfork requires a different Ethereum
-//!    `SpecId`.
-//!
-//! ### In `tempo-chainspec`
-//! 4. Add `vivace_time: Option<u64>` field to `TempoGenesisInfo` if the fork is configurable in
-//!    genesis. `fork_time()` is generated through [`tempo_post_genesis_hardforks!`], so missing
-//!    fields for new hardfork variants fail at compile time.
-//!
-//! ### In genesis files and generator
-//! 5. Add `"vivaceTime": 0` to `genesis/dev.json`.
-//! 6. Add `vivace_time: Option<u64>` arg to `xtask/src/genesis_args.rs`.
-//! 7. Add insertion of `"vivaceTime"` to `chain_config.extra_fields`.
+//! A protocol upgrade requires another versioned execution binary, not another
+//! timestamp-dependent branch in the EVM or precompiles. The metadata enum can
+//! describe a scheduled upgrade without enabling its execution in this binary.
 
 #![cfg_attr(not(feature = "std"), no_std)]
 
@@ -418,6 +398,31 @@ impl TempoHardfork {
             Self::T11 => Some(MODERATO_T11_TIMESTAMP),
             Self::T12 => None,
             Self::T13 => None,
+        }
+    }
+}
+
+#[cfg(test)]
+mod fixed_execution_tests {
+    use super::TempoHardfork;
+
+    #[test]
+    fn protocol_constants_cannot_select_historical_or_future_execution() {
+        assert_eq!(TempoHardfork::default(), TempoHardfork::CURRENT);
+        for metadata in TempoHardfork::VARIANTS {
+            assert_eq!(metadata.general_gas_limit(), Some(30_000_000));
+            assert_eq!(metadata.shared_gas_limit(500_000_000), 0);
+            assert_eq!(metadata.tx_gas_limit_cap(), Some(30_000_000));
+            assert_eq!(metadata.expiring_nonce_set_capacity(), 3_000_000);
+            assert_eq!(metadata.expiring_nonce_max_expiry_secs(), 300);
+            assert_eq!(
+                metadata.gas_existing_nonce_key(),
+                TempoHardfork::CURRENT.gas_existing_nonce_key()
+            );
+            assert_eq!(
+                metadata.gas_new_nonce_key(),
+                TempoHardfork::CURRENT.gas_new_nonce_key()
+            );
         }
     }
 }

@@ -151,8 +151,6 @@ pub struct PolicyData {
 impl PolicyData {
     /// Decodes the raw `policy_type` u8 to a `PolicyType` enum.
     fn policy_type(&self) -> Result<PolicyType> {
-        let _is_t2 = true;
-
         match self.policy_type.try_into() {
             Ok(ty) if true => Ok(ty),
             _ => Err(TIP403RegistryError::invalid_policy_type().into()),
@@ -1005,6 +1003,7 @@ mod tests {
         sol_types::SolEvent,
     };
     use rand_08::Rng;
+    use tempo_chainspec::hardfork::TempoHardfork;
     use tempo_contracts::precompiles::{
         PATH_USD_ADDRESS, SYSTEM_PRECOMPILES, TIP403_REGISTRY_ADDRESS,
     };

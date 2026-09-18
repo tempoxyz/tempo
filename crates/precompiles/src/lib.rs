@@ -994,13 +994,13 @@ mod tests {
         assert_eq!(input_cost(TempoHardfork::T11, 0).unwrap(), 0);
 
         // 1 byte rounds up to 1 word.
-        assert_eq!(input_cost(TempoHardfork::T10, 1).unwrap(), 6);
+        assert_eq!(input_cost(TempoHardfork::T10, 1).unwrap(), 30);
 
         // 32 bytes is 1 word.
-        assert_eq!(input_cost(TempoHardfork::T10, 32).unwrap(), 6);
+        assert_eq!(input_cost(TempoHardfork::T10, 32).unwrap(), 30);
 
         // 33 bytes rounds up to 2 words.
-        assert_eq!(input_cost(TempoHardfork::T10, 33).unwrap(), 12);
+        assert_eq!(input_cost(TempoHardfork::T10, 33).unwrap(), 60);
 
         // T11 increases the input charge to 30 gas per word.
         assert_eq!(input_cost(TempoHardfork::T11, 1).unwrap(), 30);
@@ -1010,7 +1010,7 @@ mod tests {
 
     #[test]
     fn test_dedup_cost_schedule() {
-        assert_eq!(dedup_cost(TempoHardfork::T10, 65_536).unwrap(), 0);
+        assert_eq!(dedup_cost(TempoHardfork::T10, 65_536).unwrap(), 1_310_720);
         assert_eq!(dedup_cost(TempoHardfork::T11, 0).unwrap(), 0);
         assert_eq!(dedup_cost(TempoHardfork::T11, 65_536).unwrap(), 1_310_720);
     }

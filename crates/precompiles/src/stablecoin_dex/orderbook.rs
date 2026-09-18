@@ -791,7 +791,7 @@ mod tests {
             StorageCtx::enter(&mut storage, || {
                 TickLevelHandler::new(slot, address).write(updated)
             })?;
-            assert_eq!(storage.counter_sload(), if spec.is_t4() { 0 } else { 2 });
+            assert_eq!(storage.counter_sload(), 0);
             assert_eq!(storage.counter_sstore(), if is_t12 { 1 } else { 2 });
 
             storage.reset_counters();
