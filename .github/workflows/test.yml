@@ -192,10 +192,22 @@ jobs:
       - uses: tempoxyz/gh-actions/vendor/taiki-e/install-action@3626124474a987bc74b41fc7ae65b2e23f8e4e4e
         with:
           tool: nextest@0.9.127
+      - uses: tempoxyz/gh-actions/vendor/astral-sh/setup-uv@3626124474a987bc74b41fc7ae65b2e23f8e4e4e
+        continue-on-error: true
+        with:
+          version: "0.12.16"
+          enable-cache: false
+      - name: Test flaky e2e reporter
+        continue-on-error: true
+        run: uv run --no-project python -m unittest discover -s .github/scripts -p 'test_warn_flaky_e2e.py'
       - name: Build e2e tests
         run: cargo nextest run --profile ci -E 'package(tempo-e2e)' --partition slice:${{ matrix.partition }}/4 --no-run
       - name: Run e2e tests
         run: cargo nextest run --profile ci -E 'package(tempo-e2e)' --partition slice:${{ matrix.partition }}/4
+      - name: Warn about flaky e2e tests
+        if: ${{ !cancelled() }}
+        continue-on-error: true
+        run: uv run --no-project python .github/scripts/warn_flaky_e2e.py target/nextest/ci/junit.xml
       - name: Upload e2e test timings
         if: always()
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
