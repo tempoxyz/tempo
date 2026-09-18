@@ -17,6 +17,8 @@ workspace = true
 
 [dependencies]
 ciborium = { version = "=0.2.2", default-features = false }
+ciborium-io = { version = "=0.2.2", default-features = false }
+ciborium-ll = { version = "=0.2.2", default-features = false }
 serde = { workspace = true, features = ["alloc"] }
 serde_bytes = { version = "=0.11.19", default-features = false, features = ["alloc"] }
 sha2.workspace = true

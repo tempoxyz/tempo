@@ -13893,6 +13893,8 @@ name = "tempo-nitro-attestation"
 version = "1.14.0"
 dependencies = [
  "ciborium",
+ "ciborium-io",
+ "ciborium-ll",
  "minicbor",
  "serde",
  "serde_bytes",
