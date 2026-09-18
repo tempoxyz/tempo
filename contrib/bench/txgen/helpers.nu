@@ -814,6 +814,10 @@ def txgen-run-preset-pipeline [
         "--rpc" $generate_rpc_url
     ]
     let metrics_url_args = ($metrics_url | each { |url| ["--metrics-url" $url] } | flatten)
+    # Diagnostic comparison only: isolate the observer's disk/CPU load while
+    # keeping the node binary, workload, and cache settings identical.
+    let scrape_interval_ms = if ($benchmark_run starts-with "feature") { 2000 } else { $TXGEN_HELPER_SCRAPE_INTERVAL_MS }
+    print $"  Metrics scrape interval: ($scrape_interval_ms)ms"
     let bench_send_base_cmd = [
         $txgen_bench_bin
         "send"
@@ -821,7 +825,7 @@ def txgen-run-preset-pipeline [
         "--tps" $tps
         "--max-concurrent" $max_concurrent_requests
         "--retries" 0
-        "--scrape-interval-ms" $TXGEN_HELPER_SCRAPE_INTERVAL_MS
+        "--scrape-interval-ms" $scrape_interval_ms
     ]
     let bench_base_cmd = [
         ...$bench_send_base_cmd
@@ -839,6 +843,7 @@ def txgen-run-preset-pipeline [
         "-m" $"chain_id=($chain_id)"
         "-m" $"target_tps=($tps)"
         "-m" $"run_duration_secs=($duration)"
+        "-m" $"metrics_scrape_interval_ms=($scrape_interval_ms)"
         "-m" $"accounts=($total_accounts)"
         "-m" $"total_connections=($max_concurrent_requests)"
         "-m" $"bloat_mib=($bloat_mib)"
