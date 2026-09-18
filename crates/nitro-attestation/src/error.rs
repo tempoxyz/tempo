@@ -16,7 +16,6 @@ pub enum ErrorCategory {
 pub enum FormatError {
     DocumentTooLarge,
     InvalidCbor,
-    NestingTooDeep,
     InvalidCoseTag,
     InvalidCoseStructure,
     InvalidProtectedHeader,
