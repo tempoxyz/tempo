@@ -13,7 +13,8 @@ use tracing::info;
 
 use super::common::{wait_for_outcome, wait_for_validators_to_reach_epoch};
 use crate::{
-    Setup, connect_execution_peers, connect_execution_to_peers, metrics::MetricsExt,
+    Setup, connect_execution_peers, connect_execution_to_peers,
+    metrics::{MetricsExt, wait_for_height},
     setup_validators,
 };
 
@@ -133,20 +134,14 @@ fn fast_sync_after_full_dkg(update_network_identity: bool) {
         {
             context.sleep(Duration::from_millis(100)).await;
         }
-        // verify continued progress
-        let block_after_sync = late_validator
-            .execution_provider()
-            .last_block_number()
-            .unwrap();
-        context.sleep(Duration::from_secs(2)).await;
-        let block_later = late_validator
-            .execution_provider()
-            .last_block_number()
-            .unwrap();
-        assert!(
-            block_later > block_after_sync,
-            "Late validator should keep progressing after sync"
-        );
+        // Verify continued processing of finalized blocks. The persisted EL height can
+        // stay unchanged while the node progresses, and FCUs acknowledge blocks in batches.
+        let height_after_sync = context
+            .to_metrics()
+            .for_scope(&late_validator)
+            .latest_consensus_height()
+            .expect("late validator has a marshal processed height");
+        wait_for_height(&context, &late_validator, height_after_sync + 1).await;
         context.to_metrics().assert_no_dkg_failures();
     })
 }
