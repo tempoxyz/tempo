@@ -13,7 +13,9 @@ async fn mock(State(mock): State<Mock>, Json(request): Json<Value>) -> Json<Valu
     let params = &request["params"];
     let result = match request["method"].as_str().unwrap() {
         "eth_chainId" => json!("0x539"),
-        "tempo_executionRules" => json!({"fixed":true,"protocol":"T11","activationTimestamp":10}),
+        "tempo_executionRules" => {
+            json!({"fixed":mock.name == "v2","protocol":"T11","activationTimestamp":10})
+        }
         "eth_getBlockByNumber" => {
             let number = match params[0].as_str().unwrap() {
                 "latest" => 20,

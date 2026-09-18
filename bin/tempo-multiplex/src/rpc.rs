@@ -111,6 +111,16 @@ impl Rpc {
             }
             tokio::time::sleep(Duration::from_millis(500)).await;
         }
+        match self.call(0, "tempo_executionRules", json!([])).await {
+            Ok(rules) => eyre::ensure!(
+                rules["fixed"] == false,
+                "v1 must retain historical execution rules"
+            ),
+            Err(error) if error["code"] == -32601 => {} // Unmodified v1.14.0 predates this handshake.
+            Err(error) => {
+                eyre::bail!("v1 capability check failed: {error}");
+            }
+        }
         for number in [0, self.cutover - 1] {
             let params = json!([format!("0x{number:x}"), false]);
             let v1 = self
@@ -314,6 +324,19 @@ impl Rpc {
         new_params[1] = json!(format!("0x{newest:x}"));
         let mut old = self.call(0, "eth_feeHistory", json!(old_params)).await?;
         let new = self.call(1, "eth_feeHistory", json!(new_params)).await?;
+        let old_start = quantity(&old["oldestBlock"])?;
+        let new_start = quantity(&new["oldestBlock"])?;
+        let old_count = old["gasUsedRatio"].as_array().ok_or_else(invalid)?.len() as u64;
+        let new_count = new["gasUsedRatio"].as_array().ok_or_else(invalid)?.len() as u64;
+        if old_start.checked_add(old_count) != Some(self.cutover)
+            || new_start != self.cutover
+            || new_count != newest - self.cutover + 1
+        {
+            return Err(error(
+                -32001,
+                "Fee history is missing at the protocol boundary",
+            ));
+        }
         for key in [
             "baseFeePerGas",
             "gasUsedRatio",
