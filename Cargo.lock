@@ -13839,6 +13839,7 @@ dependencies = [
  "clap",
  "eyre",
  "futures",
+ "nix 0.30.1",
  "reqwest 0.13.3",
  "rustls",
  "serde",

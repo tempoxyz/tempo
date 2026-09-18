@@ -13,7 +13,7 @@ async fn mock(State(mock): State<Mock>, Json(request): Json<Value>) -> Json<Valu
     let params = &request["params"];
     let result = match request["method"].as_str().unwrap() {
         "eth_chainId" => json!("0x539"),
-        "tempo_executionRules" => json!({"fixed":true,"protocol":"T11"}),
+        "tempo_executionRules" => json!({"fixed":true,"protocol":"T11","activationTimestamp":10}),
         "eth_getBlockByNumber" => {
             let number = match params[0].as_str().unwrap() {
                 "latest" => 20,
@@ -21,7 +21,7 @@ async fn mock(State(mock): State<Mock>, Json(request): Json<Value>) -> Json<Valu
                 "earliest" => 0,
                 _ => quantity(&params[0]).unwrap(),
             };
-            json!({"number":format!("0x{number:x}"),"hash":format!("0x{number:064x}"),"backend":mock.name})
+            json!({"number":format!("0x{number:x}"),"timestamp":format!("0x{number:x}"),"hash":format!("0x{number:064x}"),"parentHash":format!("0x{:064x}",number.saturating_sub(1)),"backend":mock.name})
         }
         "eth_getBlockByHash" => {
             let n = u64::from_str_radix(&params[0].as_str().unwrap()[2..], 16).unwrap();
@@ -70,6 +70,7 @@ async fn mock(State(mock): State<Mock>, Json(request): Json<Value>) -> Json<Valu
 }
 
 async fn setup() -> (Rpc, Vec<tokio::task::JoinHandle<()>>, [Mock; 2]) {
+    let _ = rustls::crypto::ring::default_provider().install_default();
     let mut urls = Vec::new();
     let mut tasks = Vec::new();
     let mocks = [

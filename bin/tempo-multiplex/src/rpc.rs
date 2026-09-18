@@ -143,8 +143,39 @@ impl Rpc {
             .await
             .map_err(|e| eyre::eyre!("v2 fixed-rule handshake failed: {e}"))?;
         eyre::ensure!(
-            rules == json!({"fixed":true,"protocol":"T11"}),
+            rules["fixed"] == true && rules["protocol"] == "T11",
             "v2 must use fixed T11 execution rules"
+        );
+        let activation = rules["activationTimestamp"]
+            .as_u64()
+            .ok_or_else(|| eyre::eyre!("v2 has no T11 activation timestamp"))?;
+        let parent = self
+            .call(
+                1,
+                "eth_getBlockByNumber",
+                json!([format!("0x{:x}", self.cutover - 1), false]),
+            )
+            .await
+            .map_err(|e| eyre::eyre!("{e}"))?;
+        let first = self
+            .call(
+                1,
+                "eth_getBlockByNumber",
+                json!([format!("0x{:x}", self.cutover), false]),
+            )
+            .await
+            .map_err(|e| eyre::eyre!("{e}"))?;
+        let parent_timestamp = quantity(&parent["timestamp"])
+            .map_err(|e| eyre::eyre!("invalid parent timestamp: {e}"))?;
+        let first_timestamp = quantity(&first["timestamp"])
+            .map_err(|e| eyre::eyre!("checkpoint must contain the first T11 block: {e}"))?;
+        eyre::ensure!(
+            parent_timestamp < activation && first_timestamp >= activation,
+            "cutover does not straddle the T11 activation timestamp"
+        );
+        eyre::ensure!(
+            first["parentHash"] == parent["hash"],
+            "cutover parent linkage mismatch"
         );
         Ok(())
     }
@@ -395,7 +426,9 @@ impl Rpc {
         let mut forwarded = params.to_vec();
         if let Some(index) = selector_index
             && let Some(selector) = forwarded.get_mut(index)
-            && selector.as_str().is_some_and(|s| matches!(s, "latest" | "safe" | "finalized" | "earliest"))
+            && selector
+                .as_str()
+                .is_some_and(|s| matches!(s, "latest" | "safe" | "finalized" | "earliest"))
         {
             // Tags refer to v2's canonical view, not the frozen v1 head/finality view.
             *selector = json!(format!("0x{:x}", self.block_number(selector).await?));

@@ -21,5 +21,8 @@ serde = { workspace = true, features = ["derive"] }
 serde_json = { workspace = true, features = ["std"] }
 tokio.workspace = true
 
+[target.'cfg(unix)'.dependencies]
+nix = { version = "0.30.1", features = ["signal"] }
+
 [dev-dependencies]
 tempfile.workspace = true

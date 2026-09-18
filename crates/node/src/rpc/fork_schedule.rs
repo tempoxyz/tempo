@@ -46,9 +46,11 @@ pub trait TempoForkScheduleApi {
 
 /// Execution capability handshake used by tempo-multiplex.
 #[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
 pub struct ExecutionRules {
     pub fixed: bool,
     pub protocol: String,
+    pub activation_timestamp: Option<u64>,
 }
 
 /// Implementation of `tempo_forkSchedule`.
@@ -83,6 +85,14 @@ where
         Ok(ExecutionRules {
             fixed: TempoHardfork::FIXED_EXECUTION,
             protocol: TempoHardfork::CURRENT.to_string(),
+            activation_timestamp: match self
+                .provider
+                .chain_spec()
+                .tempo_fork_activation(TempoHardfork::CURRENT)
+            {
+                ForkCondition::Timestamp(timestamp) => Some(timestamp),
+                _ => None,
+            },
         })
     }
 

@@ -45,6 +45,23 @@ async fn shutdown() {
     let _ = tokio::signal::ctrl_c().await;
 }
 
+async fn stop_child(child: &mut Child) {
+    #[cfg(unix)]
+    if let Some(id) = child.id() {
+        let _ = nix::sys::signal::kill(
+            nix::unistd::Pid::from_raw(id as i32),
+            nix::sys::signal::Signal::SIGTERM,
+        );
+        if tokio::time::timeout(Duration::from_secs(10), child.wait())
+            .await
+            .is_ok()
+        {
+            return;
+        }
+    }
+    let _ = child.kill().await;
+}
+
 #[tokio::main]
 async fn main() -> eyre::Result<()> {
     let _ = rustls::crypto::ring::default_provider().install_default();
@@ -52,14 +69,24 @@ async fn main() -> eyre::Result<()> {
     let config: Config = serde_json::from_slice(&std::fs::read(&args.config)?)?;
     config.validate()?;
     let mut v1 = spawn(&config.v1)?;
-    let mut v2 = spawn(&config.v2)?;
+    let mut v2 = match spawn(&config.v2) {
+        Ok(child) => child,
+        Err(error) => {
+            stop_child(&mut v1).await;
+            return Err(error);
+        }
+    };
     let rpc = rpc::Rpc::new(&config)?;
     // Bind only after identity and checkpoint validation. A port accepting traffic means ready.
-    tokio::select! {
-        ready = tokio::time::timeout(Duration::from_secs(120), rpc.wait_ready()) => ready??,
-        result = v1.wait() => eyre::bail!("v1 exited during startup: {result:?}"),
-        result = v2.wait() => eyre::bail!("v2 exited during startup: {result:?}"),
-        _ = shutdown() => return Ok(()),
+    let startup = tokio::select! {
+        ready = tokio::time::timeout(Duration::from_secs(120), rpc.wait_ready()) => ready.map_err(eyre::Report::from).and_then(|ready| ready),
+        result = v1.wait() => Err(eyre::eyre!("v1 exited during startup: {result:?}")),
+        result = v2.wait() => Err(eyre::eyre!("v2 exited during startup: {result:?}")),
+        _ = shutdown() => Err(eyre::eyre!("interrupted during startup")),
+    };
+    if let Err(error) = startup {
+        tokio::join!(stop_child(&mut v1), stop_child(&mut v2));
+        return Err(error);
     }
     let listener = tokio::net::TcpListener::bind(config.listen).await?;
     eprintln!(
@@ -77,7 +104,6 @@ async fn main() -> eyre::Result<()> {
         _ = shutdown() => Ok(()),
     };
     // Dropping either child also kills it if the other fails to start or validation fails.
-    let _ = v1.kill().await;
-    let _ = v2.kill().await;
+    tokio::join!(stop_child(&mut v1), stop_child(&mut v2));
     result
 }

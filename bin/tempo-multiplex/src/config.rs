@@ -33,16 +33,29 @@ impl Config {
         );
         eyre::ensure!(self.v1.rpc != self.v2.rpc, "backends must be distinct");
         let datadir = |backend: &Backend| -> eyre::Result<PathBuf> {
-            let path = backend.args.iter().enumerate().find_map(|(i, arg)| {
-                arg.strip_prefix("--datadir=").map(str::to_owned)
-                    .or_else(|| (arg == "--datadir").then(|| backend.args.get(i + 1).cloned()).flatten())
-            }).ok_or_else(|| eyre::eyre!("each child needs an explicit --datadir"))?;
+            let path = backend
+                .args
+                .iter()
+                .enumerate()
+                .find_map(|(i, arg)| {
+                    arg.strip_prefix("--datadir=")
+                        .map(str::to_owned)
+                        .or_else(|| {
+                            (arg == "--datadir")
+                                .then(|| backend.args.get(i + 1).cloned())
+                                .flatten()
+                        })
+                })
+                .ok_or_else(|| eyre::eyre!("each child needs an explicit --datadir"))?;
             // Checkpoint directories must already exist; resolve symlinks before comparing.
             Ok(std::fs::canonicalize(path)?)
         };
         let v1_dir = datadir(&self.v1)?;
         let v2_dir = datadir(&self.v2)?;
-        eyre::ensure!(!v1_dir.starts_with(&v2_dir) && !v2_dir.starts_with(&v1_dir), "child data directories must be separate and non-nested");
+        eyre::ensure!(
+            !v1_dir.starts_with(&v2_dir) && !v2_dir.starts_with(&v1_dir),
+            "child data directories must be separate and non-nested"
+        );
         for backend in [&self.v1, &self.v2] {
             let url = reqwest::Url::parse(&backend.rpc)?;
             eyre::ensure!(url.scheme() == "http", "child RPC must use HTTP");
