@@ -507,6 +507,21 @@ where
             )],
         )?;
 
+        // Stream pruning updates to the trie before transaction execution so proof work can overlap.
+        // This is block bookkeeping: no transaction gas or storage credits.
+        let ctx = self.evm_mut().ctx_mut();
+        tempo_precompiles::storage::StorageCtx::enter_evm_without_tip1060_accounting(
+            &mut ctx.journaled_state,
+            &ctx.block,
+            &ctx.cfg,
+            &ctx.tx,
+            tempo_precompiles::storage::StorageActions::disabled(),
+            || tempo_precompiles::expiring_nonce::ExpiringNonceManager::new().prune(),
+        )
+        .map_err(BlockExecutionError::other)?;
+        let state = ctx.journaled_state.finalize();
+        self.evm_mut().db_mut().commit(state);
+
         // Deploy 0xEF marker bytecode to precompiles at their activation hardforks.
         let timestamp = self.evm().block().timestamp.to::<u64>();
         if self.inner.spec.is_t2_active_at_timestamp(timestamp) {
@@ -629,19 +644,6 @@ where
         }
 
         self.apply_current_committee_system_call()?;
-        // Pruning is block bookkeeping: no transaction gas or storage credits.
-        let ctx = self.evm_mut().ctx_mut();
-        tempo_precompiles::storage::StorageCtx::enter_evm_without_tip1060_accounting(
-            &mut ctx.journaled_state,
-            &ctx.block,
-            &ctx.cfg,
-            &ctx.tx,
-            tempo_precompiles::storage::StorageActions::disabled(),
-            || tempo_precompiles::expiring_nonce::ExpiringNonceManager::new().prune(),
-        )
-        .map_err(BlockExecutionError::other)?;
-        let state = ctx.journaled_state.finalize();
-        self.evm_mut().db_mut().commit(state);
 
         let amsterdam_eip8037_enabled = self.evm().cfg.enable_amsterdam_eip8037;
 
@@ -1216,7 +1218,7 @@ mod tests {
     }
 
     #[test]
-    fn expiring_nonce_cursor_starts_at_deployment_and_is_not_reset() {
+    fn expiring_nonce_cursor_starts_at_deployment_and_advances_past_empty_buckets() {
         use revm::Database as _;
         use tempo_precompiles::{
             EXPIRING_NONCE_PRECOMPILE_ADDRESS, expiring_nonce::ExpiringNonceManager,
@@ -1239,13 +1241,13 @@ mod tests {
                         ExpiringNonceManager::new().oldest_unpruned_block.slot(),
                     )
                     .unwrap(),
-                U256::from(1_000_000)
+                U256::from(block)
             );
         }
     }
 
     #[test]
-    fn expiring_nonce_pruned_when_empty_block_finishes() {
+    fn expiring_nonce_pruned_before_transactions_and_streamed_to_trie() {
         use revm::Database as _;
         use tempo_precompiles::{
             EXPIRING_NONCE_PRECOMPILE_ADDRESS, expiring_nonce::ExpiringNonceManager,
@@ -1262,6 +1264,8 @@ mod tests {
             EXPIRING_NONCE_PRECOMPILE_ADDRESS,
             AccountInfo {
                 nonce: 1,
+                code_hash: Bytecode::new_legacy([0xef].into()).hash_slow(),
+                code: Some(Bytecode::new_legacy([0xef].into())),
                 ..Default::default()
             },
             [
@@ -1275,11 +1279,33 @@ mod tests {
         );
         let mut executor = TestExecutorBuilder::default()
             .with_block_number(2)
+            .with_parent_beacon_block_root(B256::ZERO)
             .with_spec(TempoHardfork::T1)
             .build(&mut db, &chainspec);
         executor.evm_mut().ctx_mut().block.timestamp = U256::from(100);
-        let (_, result) = executor.finish().unwrap();
-        assert_eq!(result.gas_used, 0);
+        let hook_calls = Arc::new(Mutex::new(Vec::<EvmState>::new()));
+        let calls = hook_calls.clone();
+        executor
+            .evm_mut()
+            .db_mut()
+            .set_state_hook(Some(Box::new(move |state| {
+                calls.lock().unwrap().push(state);
+            })));
+        executor.apply_pre_execution_changes().unwrap();
+        let calls = hook_calls.lock().unwrap();
+        assert!(calls.iter().any(|state| {
+            state
+                .get(&EXPIRING_NONCE_PRECOMPILE_ADDRESS)
+                .is_some_and(|account| {
+                    account
+                        .storage
+                        .get(&seen)
+                        .is_some_and(|slot| slot.present_value == U256::ZERO)
+                })
+        }));
+        drop(calls);
+        // Inspect the committed state before any transaction or finish call.
+        drop(executor);
         assert_eq!(
             db.storage(
                 EXPIRING_NONCE_PRECOMPILE_ADDRESS,

@@ -250,12 +250,13 @@ impl Cache {
                 storage.env.set_block_number(block);
                 storage.env.set_timestamp(U256::from(header.timestamp()));
                 storage.env.set_spec(spec);
-                StorageCtx::enter(&mut storage, || {
+                StorageCtx::enter(&mut storage, || -> Result<(), DatabaseError> {
                     let mut manager = ExpiringNonceManager::new();
                     if !state.deployed {
                         manager.oldest_unpruned_block.write(block).map_err(error)?;
                         state.deployed = true;
                     }
+                    manager.prune().map_err(error)?;
                     for (index, transaction) in transactions.into_iter().enumerate() {
                         let Some(signed) = transaction.as_aa() else {
                             continue;
@@ -283,7 +284,7 @@ impl Cache {
                             .check_and_mark_expiring_nonce(hash, expiry.get())
                             .map_err(error)?;
                     }
-                    manager.prune().map_err(error)
+                    Ok(())
                 })?;
             }
             state.slots = storage.slots;
