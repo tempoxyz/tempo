@@ -4,12 +4,15 @@ use crate::{
 };
 use alloc::{string::String, vec::Vec};
 use ciborium::Value;
+use ciborium_io::Read as _;
+use ciborium_ll::{Decoder, Header};
 use serde::Deserialize;
 
 type Result<T> = core::result::Result<T, crate::Error>;
 
 /// Typed Nitro payload. Serde rejects missing and duplicate recognized fields.
 #[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
 struct AttestationDocument {
     #[serde(deserialize_with = "deser::module_id")]
     module_id: String,
@@ -39,43 +42,34 @@ pub(crate) fn parse_attestation(document: &[u8]) -> Result<ParsedAttestation> {
     if document.len() > MAX_DOCUMENT_SIZE {
         return Err(FormatError::DocumentTooLarge.into());
     }
-    let envelope = match decode(document)? {
-        Value::Tag(18, value) => *value,
-        Value::Tag(..) => return Err(FormatError::InvalidCoseTag.into()),
-        value => value,
+    let mut decoder = Decoder::from(document);
+    let array = match decoder.pull().map_err(cose_error)? {
+        Header::Tag(18) => decoder.pull().map_err(cose_error)?,
+        Header::Tag(_) => return Err(FormatError::InvalidCoseTag.into()),
+        header => header,
     };
-    let Value::Array(envelope) = envelope else {
-        return Err(FormatError::InvalidCoseStructure.into());
-    };
-    let [protected, unprotected, payload, signature]: [Value; 4] = envelope
-        .try_into()
-        .map_err(|_| FormatError::InvalidCoseStructure)?;
-    if !matches!(unprotected, Value::Map(_)) {
+    if array != Header::Array(Some(4)) {
         return Err(FormatError::InvalidCoseStructure.into());
     }
-    let protected = bytes(protected, 1, MAX_DOCUMENT_SIZE, "protected header")?;
+    let protected = read_bytes::<1, MAX_DOCUMENT_SIZE>(&mut decoder)?;
+    if decoder.pull().map_err(cose_error)? != Header::Map(Some(0)) {
+        return Err(FormatError::InvalidCoseStructure.into());
+    }
+    let payload = read_bytes::<1, MAX_PAYLOAD_SIZE>(&mut decoder)?;
+    let signature: [u8; P384_FIXED_SIGNATURE_SIZE] =
+        read_bytes::<P384_FIXED_SIGNATURE_SIZE, P384_FIXED_SIGNATURE_SIZE>(&mut decoder)?
+            .try_into()
+            .map_err(|_| FormatError::InvalidCoseStructure)?;
+    if decoder.offset() != document.len() {
+        return Err(FormatError::InvalidCoseStructure.into());
+    }
+
     let header = decode(&protected).map_err(|_| FormatError::InvalidProtectedHeader)?;
     if header != Value::Map(alloc::vec![(Value::from(1), Value::from(-35))]) {
         return Err(FormatError::InvalidProtectedHeader.into());
     }
-    let payload = bytes(payload, 1, MAX_PAYLOAD_SIZE, "payload")?;
-    let signature = bytes(
-        signature,
-        P384_FIXED_SIGNATURE_SIZE,
-        P384_FIXED_SIGNATURE_SIZE,
-        "signature",
-    )?
-    .try_into()
-    .map_err(|_| FormatError::InvalidField("signature"))?;
-    let Value::Map(mut fields) = decode(&payload)? else {
-        return Err(FormatError::InvalidPayload.into());
-    };
-
-    // Non-text keys are unknown extensions, not Serde's numeric field identifiers.
-    fields.retain(|(key, _)| key.as_text().is_some());
-    let attestation: AttestationDocument = Value::Map(fields)
-        .deserialized()
-        .map_err(|_| FormatError::InvalidPayload)?;
+    let attestation: AttestationDocument =
+        decode_as(&payload).map_err(|_| FormatError::InvalidPayload)?;
     Ok(ParsedAttestation {
         module_id: attestation.module_id,
         timestamp: attestation.timestamp,
@@ -89,6 +83,24 @@ pub(crate) fn parse_attestation(document: &[u8]) -> Result<ParsedAttestation> {
         payload,
         signature,
     })
+}
+
+fn read_bytes<const MIN: usize, const MAX: usize>(decoder: &mut Decoder<&[u8]>) -> Result<Vec<u8>> {
+    let Header::Bytes(Some(len)) = decoder.pull().map_err(cose_error)? else {
+        return Err(FormatError::InvalidCoseStructure.into());
+    };
+    if !(MIN..=MAX).contains(&len) {
+        return Err(FormatError::InvalidCoseStructure.into());
+    }
+    let mut bytes = alloc::vec![0; len];
+    decoder
+        .read_exact(&mut bytes)
+        .map_err(|_| FormatError::InvalidCoseStructure)?;
+    Ok(bytes)
+}
+
+fn cose_error<E>(_: ciborium_ll::Error<E>) -> crate::Error {
+    FormatError::InvalidCoseStructure.into()
 }
 
 /// Encodes the COSE Sig_structure used for signature verification:
@@ -106,9 +118,8 @@ pub(crate) fn encode_sig_structure(protected: &[u8], payload: &[u8]) -> Result<V
     Ok(encoded)
 }
 
-/// Ciborium owns all CBOR decoding, including indefinite strings and nesting limits.
-/// Keep maps as entry lists: collecting them into a map would silently erase duplicate keys.
-fn decode(mut input: &[u8]) -> Result<Value> {
+/// Ciborium owns all CBOR decoding, including nesting limits.
+fn decode_as<T: serde::de::DeserializeOwned>(mut input: &[u8]) -> Result<T> {
     let value = ciborium::de::from_reader_with_recursion_limit(&mut input, MAX_CBOR_DEPTH)
         .map_err(|error| match error {
             ciborium::de::Error::RecursionLimitExceeded => FormatError::NestingTooDeep,
@@ -120,13 +131,8 @@ fn decode(mut input: &[u8]) -> Result<Value> {
     Ok(value)
 }
 
-/// Extracts an untagged CBOR byte string whose length is within `min..=max`.
-/// Wrong types and out-of-range lengths are reported as an invalid named field.
-fn bytes(value: Value, min: usize, max: usize, name: &'static str) -> Result<Vec<u8>> {
-    match value {
-        Value::Bytes(value) if (min..=max).contains(&value.len()) => Ok(value),
-        _ => Err(FormatError::InvalidField(name).into()),
-    }
+fn decode(input: &[u8]) -> Result<Value> {
+    decode_as(input)
 }
 
 mod deser {
@@ -244,8 +250,8 @@ mod deser {
         optional_bytes::<D, 0, 512>(d)
     }
 
-    // Ciborium's typed deserializer transparently unwraps tags. Known Nitro fields
-    // must instead have their specified types; unknown fields remain unrestricted.
+    // Ciborium's typed deserializer transparently unwraps tags. Nitro fields must instead have
+    // their specified untagged types.
     fn strict<'de, D: Deserializer<'de>, T: DeserializeOwned>(
         d: D,
     ) -> core::result::Result<T, D::Error> {
@@ -500,20 +506,21 @@ mod tests {
 
     fn payload_with_exact_len(target: usize) -> Vec<u8> {
         let mut fields = default_fields();
-        fields.push(TestField {
-            name: "padding",
-            value: bytes_value(&[]),
-        });
         let base_len = encode_payload(&fields).len();
-        let mut padding_len = target.checked_sub(base_len).expect("target fits payload");
+        let mut module_len =
+            target.checked_sub(base_len).expect("target fits payload") + "module".len();
 
         for _ in 0..4 {
-            set_field(&mut fields, "padding", bytes_value(&vec![0; padding_len]));
+            set_field(
+                &mut fields,
+                "module_id",
+                text_value(&"x".repeat(module_len)),
+            );
             let payload = encode_payload(&fields);
             match payload.len().cmp(&target) {
                 core::cmp::Ordering::Equal => return payload,
-                core::cmp::Ordering::Less => padding_len += target - payload.len(),
-                core::cmp::Ordering::Greater => padding_len -= payload.len() - target,
+                core::cmp::Ordering::Less => module_len += target - payload.len(),
+                core::cmp::Ordering::Greater => module_len -= payload.len() - target,
             }
         }
         panic!("failed to construct an exact-length payload")
@@ -573,10 +580,11 @@ mod tests {
     }
 
     #[test]
-    fn parses_indefinite_collections() {
-        let parsed = parse_attestation(&document(true, true, false)).unwrap();
-        assert_eq!(parsed.pcrs.len(), 2);
-        assert_eq!(parsed.cabundle, vec![vec![0x30]]);
+    fn rejects_indefinite_cose_envelopes() {
+        assert_eq!(
+            parse_attestation(&document(true, true, false)).unwrap_err(),
+            crate::Error::InvalidFormat(FormatError::InvalidCoseStructure)
+        );
     }
 
     #[test]
@@ -666,16 +674,14 @@ mod tests {
     fn non_text_keys_cannot_supply_required_fields() {
         let mut fields = default_fields();
         fields.retain(|field| field.name != "module_id");
-        for key in [unsigned_value(0), bytes_value(b"module_id")] {
-            let mut payload = encode_payload(&fields);
-            payload[0] = 0xa6;
-            payload.extend(key);
-            payload.extend(text_value("module"));
-            assert_eq!(
-                parse_attestation(&wrap_payload(false, false, &payload)).unwrap_err(),
-                crate::Error::InvalidFormat(FormatError::InvalidPayload)
-            );
-        }
+        let mut payload = encode_payload(&fields);
+        payload[0] = 0xa6;
+        payload.extend(unsigned_value(0));
+        payload.extend(text_value("module"));
+        assert_eq!(
+            parse_attestation(&wrap_payload(false, false, &payload)).unwrap_err(),
+            crate::Error::InvalidFormat(FormatError::InvalidPayload)
+        );
     }
 
     #[test]
@@ -710,24 +716,24 @@ mod tests {
             }),
         );
         let payload = encode_payload(&fields);
-        let parsed = parse_attestation(&wrap_payload(true, true, &payload)).unwrap();
+        let parsed = parse_attestation(&wrap_payload(true, false, &payload)).unwrap();
         assert_eq!(parsed.module_id, "module");
         assert_eq!(parsed.certificate, [0x30, 1]);
         assert_eq!(parsed.payload, payload);
     }
 
     #[test]
-    fn uses_ciboriums_data_model_for_unknown_values() {
-        for (value, accepted) in [
-            (vec![0xf0], false),      // unassigned simple value
-            (vec![0xc2, 0xf6], true), // non-byte tag content remains opaque
+    fn rejects_unknown_values_without_decoding_them() {
+        for value in [
+            vec![0xf0],       // unassigned simple value
+            vec![0xc2, 0xf6], // tagged value
         ] {
             let mut fields = default_fields();
             fields.push(TestField {
                 name: "future_field",
                 value,
             });
-            assert_eq!(parse_fields(&fields).is_ok(), accepted);
+            assert_field_error(&fields, FormatError::InvalidPayload);
         }
     }
 
@@ -1067,7 +1073,7 @@ mod tests {
     }
 
     #[test]
-    fn accepts_unknown_payload_fields() {
+    fn rejects_unknown_payload_fields() {
         let mut fields = default_fields();
         fields.push(TestField {
             name: "future_field",
@@ -1087,12 +1093,11 @@ mod tests {
                     .unwrap();
             }),
         });
-        let parsed = parse_fields(&fields).unwrap();
-        assert_eq!(parsed.module_id, "module");
+        assert_field_error(&fields, FormatError::InvalidPayload);
     }
 
     #[test]
-    fn accepts_unknown_non_text_payload_keys() {
+    fn rejects_unknown_non_text_payload_keys() {
         let mut payload = encode_payload(&default_fields());
         assert_eq!(payload[0], 0xa6, "fixture must start with a six-entry map");
         payload[0] = 0xa7;
@@ -1108,8 +1113,10 @@ mod tests {
             .unwrap();
         payload.extend_from_slice(&unknown.into_writer());
 
-        let parsed = parse_attestation(&wrap_payload(false, false, &payload)).unwrap();
-        assert_eq!(parsed.module_id, "module");
+        assert_eq!(
+            parse_attestation(&wrap_payload(false, false, &payload)).unwrap_err(),
+            crate::Error::InvalidFormat(FormatError::InvalidPayload)
+        );
     }
 
     #[test]
@@ -1121,12 +1128,15 @@ mod tests {
         let oversized_payload = vec![0; MAX_PAYLOAD_SIZE + 1];
         assert_eq!(
             parse_attestation(&wrap_payload(false, false, &oversized_payload)).unwrap_err(),
-            crate::Error::InvalidFormat(FormatError::InvalidField("payload"))
+            crate::Error::InvalidFormat(FormatError::InvalidCoseStructure)
         );
 
         let document = document_with_exact_len(MAX_DOCUMENT_SIZE);
         assert_eq!(document.len(), MAX_DOCUMENT_SIZE);
-        assert!(parse_attestation(&document).is_ok());
+        assert_eq!(
+            parse_attestation(&document).unwrap_err(),
+            crate::Error::InvalidFormat(FormatError::InvalidCoseStructure)
+        );
 
         let mut oversized_document = document;
         oversized_document.push(0);
@@ -1175,7 +1185,7 @@ mod tests {
     }
 
     #[test]
-    fn bounds_nested_unknown_values_at_sixteen_containers() {
+    fn rejects_nested_unknown_values() {
         let nested = |arrays: usize| {
             let mut e = Encoder::new(Vec::new());
             for _ in 0..arrays {
@@ -1188,10 +1198,8 @@ mod tests {
         let mut fields = default_fields();
         fields.push(TestField {
             name: "future_field",
-            value: nested(MAX_CBOR_DEPTH - 1),
+            value: nested(1),
         });
-        assert!(parse_fields(&fields).is_ok());
-        set_field(&mut fields, "future_field", nested(MAX_CBOR_DEPTH));
-        assert_field_error(&fields, FormatError::NestingTooDeep);
+        assert_field_error(&fields, FormatError::InvalidPayload);
     }
 }
