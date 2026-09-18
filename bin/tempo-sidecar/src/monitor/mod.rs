@@ -53,7 +53,7 @@ impl FilterExt for Filter {
     /// Restricts the filter to events where both, topic 2 and topic 3, are among the input tokens.
     ///
     /// WARNING: Caller must ensure that the filter targets fee AMM mint events:
-    /// - `Mint(address indexed sender, address indexed userToken, address indexed validatorToken, ..)`
+    /// - `Mint(address sender, address indexed to, address indexed userToken, address indexed validatorToken, ..)`
     fn with_minted_tokens<'a>(mut self, tokens: impl Iterator<Item = &'a Address>) -> Self {
         for addr in tokens {
             let b256 = addr.into_word();
@@ -205,7 +205,7 @@ impl Monitor {
 
         let mut new_pools = 0;
         for log in logs {
-            let (user_token, validator_token) = parse_mint_tokens(&log);
+            let (user_token, validator_token) = parse_mint_tokens(&log)?;
             if self.known_pairs.insert((user_token, validator_token)) {
                 new_pools += 1;
             }
@@ -316,12 +316,67 @@ pub async fn prometheus_metrics(handle: poem::web::Data<&PrometheusHandle>) -> R
         .body(metrics)
 }
 
-/// Parses user and validator token addresses from a `FeeAMM::Mint` event log.
-///
-/// WARNING: Caller is responsible for ensuring the input is a `FeeAMM::Mint` event.
-fn parse_mint_tokens(log: &Log) -> (Address, Address) {
-    (
-        Address::from_word(log.topics()[2]),
-        Address::from_word(log.topics()[3]),
-    )
+/// Decodes user and validator token addresses from a `FeeAMM::Mint` event log.
+fn parse_mint_tokens(log: &Log) -> Result<(Address, Address)> {
+    let mint = log.log_decode_validate::<Mint>().map_err(|err| {
+        eyre!(
+            "failed to decode FeeAMM::Mint event at block {:?}, transaction {:?}, log {:?}: {}",
+            log.block_number,
+            log.transaction_hash,
+            log.log_index,
+            err
+        )
+    })?;
+    Ok((mint.inner.data.userToken, mint.inner.data.validatorToken))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use alloy::primitives::{B256, U256};
+
+    fn mint_log() -> Log {
+        let mint = Mint {
+            sender: Address::repeat_byte(1),
+            to: Address::repeat_byte(2),
+            userToken: Address::repeat_byte(3),
+            validatorToken: Address::repeat_byte(4),
+            amountValidatorToken: U256::from(100),
+            liquidity: U256::from(50),
+        };
+        Log {
+            inner: alloy::primitives::Log {
+                address: TIP_FEE_MANAGER_ADDRESS,
+                data: mint.encode_log_data(),
+            },
+            block_number: Some(42),
+            log_index: Some(7),
+            ..Default::default()
+        }
+    }
+
+    #[test]
+    fn parses_mint_token_addresses() {
+        assert_eq!(
+            parse_mint_tokens(&mint_log()).unwrap(),
+            (Address::repeat_byte(3), Address::repeat_byte(4))
+        );
+    }
+
+    #[test]
+    fn rejects_malformed_mint_logs() {
+        let mut missing_topic = mint_log();
+        missing_topic.inner.data.topics_mut_unchecked().pop();
+        let mut wrong_event = mint_log();
+        wrong_event.topics_mut()[0] = B256::ZERO;
+        let mut missing_data = mint_log();
+        missing_data.inner.data.data = Default::default();
+
+        for log in [missing_topic, wrong_event, missing_data] {
+            let error = parse_mint_tokens(&log).unwrap_err().to_string();
+            assert!(error.contains("FeeAMM::Mint"));
+            assert!(error.contains("block Some(42)"));
+            assert!(error.contains("log Some(7)"));
+        }
+    }
 }
