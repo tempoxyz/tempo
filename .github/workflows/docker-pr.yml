@@ -173,6 +173,7 @@ jobs:
     needs: dispatch
     if: needs.dispatch.outputs.run-id != ''
     permissions:
+      id-token: write
       contents: read
       actions: read
       pull-requests: write
