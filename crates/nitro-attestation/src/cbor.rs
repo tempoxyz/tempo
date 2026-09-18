@@ -1,289 +1,176 @@
 use crate::{
-    FormatError, MAX_CA_BUNDLE, MAX_CBOR_DEPTH, MAX_DOCUMENT_SIZE, MAX_PAYLOAD_SIZE, MAX_PCRS,
+    FormatError, MAX_CA_BUNDLE, MAX_DOCUMENT_SIZE, MAX_PAYLOAD_SIZE, MAX_PCRS,
     P384_FIXED_SIGNATURE_SIZE, ParsedAttestation, Pcr,
 };
-use alloc::{string::String, vec::Vec};
-use ciborium::Value;
+use alloc::{collections::BTreeMap, vec::Vec};
+use arrayvec::ArrayVec;
+use core::num::NonZeroU64;
+use minicbor::{
+    Decoder, Encoder,
+    data::{Tag, Type},
+};
 use serde::Deserialize;
 
 type Result<T> = core::result::Result<T, crate::Error>;
 
-/// Typed Nitro payload. Serde rejects missing and duplicate recognized fields.
-#[derive(Deserialize)]
-struct AttestationDocument {
-    #[serde(deserialize_with = "deser::module_id")]
-    module_id: String,
-    #[serde(rename = "digest", deserialize_with = "deser::digest")]
-    _digest: String,
-    #[serde(deserialize_with = "deser::timestamp")]
-    timestamp: u64,
-    #[serde(deserialize_with = "deser::pcrs")]
-    pcrs: Vec<Pcr>,
-    #[serde(deserialize_with = "deser::certificate")]
-    certificate: Vec<u8>,
-    #[serde(deserialize_with = "deser::cabundle")]
-    cabundle: Vec<Vec<u8>>,
-    #[serde(default, deserialize_with = "deser::public_key")]
-    public_key: Vec<u8>,
-    #[serde(default, deserialize_with = "deser::user_data")]
-    user_data: Vec<u8>,
-    #[serde(default, deserialize_with = "deser::nonce")]
-    nonce: Vec<u8>,
+/// The COSE_Sign1 array: protected headers, unprotected headers, payload, signature.
+#[derive(Debug, Deserialize)]
+struct CoseSign1<'a>(
+    #[serde(borrow)] &'a [u8],
+    EmptyHeaders,
+    #[serde(borrow)] &'a [u8],
+    #[serde(borrow)] &'a [u8],
+);
+
+/// Reject any unprotected entry before decoding its value.
+#[derive(Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct EmptyHeaders {}
+
+#[derive(Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct AttestationDocument<'a> {
+    module_id: &'a str,
+    digest: &'a str,
+    timestamp: NonZeroU64,
+    #[serde(borrow, with = "serde_with::rust::maps_duplicate_key_is_error")]
+    pcrs: BTreeMap<u8, &'a [u8]>,
+    #[serde(borrow)]
+    certificate: &'a [u8],
+    #[serde(borrow)]
+    cabundle: ArrayVec<&'a [u8], MAX_CA_BUNDLE>,
+    #[serde(borrow, default)]
+    public_key: Option<&'a [u8]>,
+    #[serde(borrow, default)]
+    user_data: Option<&'a [u8]>,
+    #[serde(borrow, default)]
+    nonce: Option<&'a [u8]>,
 }
 
-/// Parses a tagged or untagged COSE_Sign1 Nitro attestation and validates its structure,
-/// size limits, protected algorithm header, and payload fields. Preserves the exact
-/// protected header and payload bytes for signature verification; does not verify
-/// the signature or certificate chain.
+/// Decode into borrowed fields before allocating the public, owned representation.
+///
+/// This profile rejects unknown payload fields, payload tags, and chunked byte/text strings.
+/// The envelope and protected header must be definite-length; the empty unprotected map and
+/// payload collections may be indefinite-length. These are acceptance-rule changes from the
+/// previous Ciborium parser.
+/// Collection work is bounded by the fixed-capacity CA bundle and duplicate-free `u8` PCR
+/// keys (at most 256 entries during decoding; validation requires indices below 32). Only the
+/// bounded PCR map allocates while decoding; no generic CBOR value tree is built.
 pub(crate) fn parse_attestation(document: &[u8]) -> Result<ParsedAttestation> {
     if document.len() > MAX_DOCUMENT_SIZE {
         return Err(FormatError::DocumentTooLarge.into());
     }
-    let envelope = match decode(document)? {
-        Value::Tag(18, value) => *value,
-        Value::Tag(..) => return Err(FormatError::InvalidCoseTag.into()),
-        value => value,
-    };
-    let Value::Array(envelope) = envelope else {
-        return Err(FormatError::InvalidCoseStructure.into());
-    };
-    let [protected, unprotected, payload, signature]: [Value; 4] = envelope
-        .try_into()
-        .map_err(|_| FormatError::InvalidCoseStructure)?;
-    if !matches!(unprotected, Value::Map(_)) {
-        return Err(FormatError::InvalidCoseStructure.into());
+    let mut decoder = Decoder::new(document);
+    if decoder.datatype().map_err(cose_error)? == Type::Tag
+        && decoder.tag().map_err(cose_error)? != Tag::new(18)
+    {
+        return Err(FormatError::InvalidCoseTag.into());
     }
-    let protected = bytes(protected, 1, MAX_DOCUMENT_SIZE, "protected header")?;
-    let header = decode(&protected).map_err(|_| FormatError::InvalidProtectedHeader)?;
-    if header != Value::Map(alloc::vec![(Value::from(1), Value::from(-35))]) {
-        return Err(FormatError::InvalidProtectedHeader.into());
-    }
-    let payload = bytes(payload, 1, MAX_PAYLOAD_SIZE, "payload")?;
-    let signature = bytes(
-        signature,
-        P384_FIXED_SIGNATURE_SIZE,
-        P384_FIXED_SIGNATURE_SIZE,
-        "signature",
-    )?
-    .try_into()
-    .map_err(|_| FormatError::InvalidField("signature"))?;
-    let Value::Map(mut fields) = decode(&payload)? else {
-        return Err(FormatError::InvalidPayload.into());
-    };
+    decode_exact::<CoseSign1<'_>>(decoder, FormatError::InvalidCoseStructure)?.try_into()
+}
 
-    // Non-text keys are unknown extensions, not Serde's numeric field identifiers.
-    fields.retain(|(key, _)| key.as_text().is_some());
-    let attestation: AttestationDocument = Value::Map(fields)
-        .deserialized()
-        .map_err(|_| FormatError::InvalidPayload)?;
-    Ok(ParsedAttestation {
-        module_id: attestation.module_id,
-        timestamp: attestation.timestamp,
-        pcrs: attestation.pcrs,
-        certificate: attestation.certificate,
-        cabundle: attestation.cabundle,
-        public_key: attestation.public_key,
-        user_data: attestation.user_data,
-        nonce: attestation.nonce,
-        protected,
-        payload,
-        signature,
-    })
+impl TryFrom<CoseSign1<'_>> for ParsedAttestation {
+    type Error = crate::Error;
+
+    fn try_from(CoseSign1(protected, _, payload, signature): CoseSign1<'_>) -> Result<Self> {
+        validate_protected(protected).map_err(|_| FormatError::InvalidProtectedHeader)?;
+        if payload.is_empty() || payload.len() > MAX_PAYLOAD_SIZE {
+            return Err(FormatError::InvalidField("payload").into());
+        }
+        let signature: [u8; P384_FIXED_SIGNATURE_SIZE] = signature
+            .try_into()
+            .map_err(|_| FormatError::InvalidField("signature"))?;
+        let AttestationDocument {
+            module_id,
+            digest,
+            timestamp,
+            pcrs,
+            certificate,
+            cabundle,
+            public_key,
+            user_data,
+            nonce,
+        } = decode_exact(Decoder::new(payload), FormatError::InvalidPayload)?;
+        if module_id.is_empty()
+            || digest != "SHA384"
+            || pcrs.is_empty()
+            || pcrs.keys().any(|index| usize::from(*index) >= MAX_PCRS)
+            || pcrs
+                .values()
+                .any(|value| !matches!(value.len(), 32 | 48 | 64))
+            || !(1..=1024).contains(&certificate.len())
+            || cabundle.is_empty()
+            || cabundle
+                .iter()
+                .any(|value| !(1..=1024).contains(&value.len()))
+            || public_key.is_some_and(|value| !(1..=1024).contains(&value.len()))
+            || user_data.is_some_and(|value| value.len() > 512)
+            || nonce.is_some_and(|value| value.len() > 512)
+        {
+            return Err(FormatError::InvalidPayload.into());
+        }
+        Ok(Self {
+            module_id: module_id.into(),
+            timestamp: timestamp.get(),
+            pcrs: pcrs
+                .into_iter()
+                .map(|(index, value)| Pcr {
+                    index,
+                    value: value.to_vec(),
+                })
+                .collect(),
+            certificate: certificate.to_vec(),
+            cabundle: cabundle.into_iter().map(|value| value.to_vec()).collect(),
+            public_key: public_key.map_or_else(Vec::new, |value| value.to_vec()),
+            user_data: user_data.map_or_else(Vec::new, |value| value.to_vec()),
+            nonce: nonce.map_or_else(Vec::new, |value| value.to_vec()),
+            protected: protected.to_vec(),
+            payload: payload.to_vec(),
+            signature,
+        })
+    }
 }
 
 /// Encodes the COSE Sig_structure used for signature verification:
 /// `["Signature1", protected, external_aad, payload]`, with empty external AAD.
 /// The protected header and payload are embedded as their original byte strings.
 pub(crate) fn encode_sig_structure(protected: &[u8], payload: &[u8]) -> Result<Vec<u8>> {
-    let mut encoded = Vec::new();
-    let structure = (
-        "Signature1",
-        serde_bytes::Bytes::new(protected),
-        serde_bytes::Bytes::new(&[]),
-        serde_bytes::Bytes::new(payload),
-    );
-    ciborium::into_writer(&structure, &mut encoded).map_err(|_| FormatError::InvalidCbor)?;
-    Ok(encoded)
+    let mut encoder = Encoder::new(Vec::new());
+    encoder
+        .array(4)
+        .and_then(|e| e.str("Signature1"))
+        .and_then(|e| e.bytes(protected))
+        .and_then(|e| e.bytes(&[]))
+        .and_then(|e| e.bytes(payload))
+        .map_err(|_| FormatError::InvalidCbor)?;
+    Ok(encoder.into_writer())
 }
 
-/// Ciborium owns all CBOR decoding, including indefinite strings and nesting limits.
-/// Keep maps as entry lists: collecting them into a map would silently erase duplicate keys.
-fn decode(mut input: &[u8]) -> Result<Value> {
-    let value = ciborium::de::from_reader_with_recursion_limit(&mut input, MAX_CBOR_DEPTH)
-        .map_err(|error| match error {
-            ciborium::de::Error::RecursionLimitExceeded => FormatError::NestingTooDeep,
-            _ => FormatError::InvalidCbor,
-        })?;
-    if !input.is_empty() {
-        return Err(FormatError::InvalidCbor.into());
+/// Decode one borrowed value and require that it consumes the remaining input.
+fn decode_exact<'de, T: Deserialize<'de>>(decoder: Decoder<'de>, error: FormatError) -> Result<T> {
+    let mut deserializer = minicbor_serde::Deserializer::from(decoder);
+    let value = T::deserialize(&mut deserializer).map_err(|_| error)?;
+    if deserializer.decoder().position() != deserializer.decoder().input().len() {
+        return Err(error.into());
     }
     Ok(value)
 }
 
-/// Extracts an untagged CBOR byte string whose length is within `min..=max`.
-/// Wrong types and out-of-range lengths are reported as an invalid named field.
-fn bytes(value: Value, min: usize, max: usize, name: &'static str) -> Result<Vec<u8>> {
-    match value {
-        Value::Bytes(value) if (min..=max).contains(&value.len()) => Ok(value),
-        _ => Err(FormatError::InvalidField(name).into()),
-    }
+fn cose_error(_: minicbor::decode::Error) -> crate::Error {
+    FormatError::InvalidCoseStructure.into()
 }
 
-mod deser {
-    use super::*;
-    use serde::{
-        Deserializer,
-        de::{DeserializeOwned, Error as _},
-    };
-    use serde_bytes::ByteBuf;
-
-    pub(super) fn module_id<'de, D: Deserializer<'de>>(
-        d: D,
-    ) -> core::result::Result<String, D::Error> {
-        let value: String = strict(d)?;
-        if value.is_empty() {
-            return Err(D::Error::custom("empty module ID"));
-        }
-        Ok(value)
+/// The header has a fixed schema: reject extra entries before traversing their contents.
+fn validate_protected(input: &[u8]) -> core::result::Result<(), minicbor::decode::Error> {
+    let mut decoder = Decoder::new(input);
+    if decoder.map()? != Some(1)
+        || decoder.u8()? != 1
+        || decoder.i8()? != -35
+        || decoder.position() != input.len()
+    {
+        return Err(minicbor::decode::Error::message("expected {1: -35}"));
     }
-
-    pub(super) fn digest<'de, D: Deserializer<'de>>(
-        d: D,
-    ) -> core::result::Result<String, D::Error> {
-        let value: String = strict(d)?;
-        if value != "SHA384" {
-            return Err(D::Error::custom("expected SHA384 digest"));
-        }
-        Ok(value)
-    }
-
-    pub(super) fn timestamp<'de, D: Deserializer<'de>>(
-        d: D,
-    ) -> core::result::Result<u64, D::Error> {
-        let value: u64 = strict(d)?;
-        if value == 0 {
-            return Err(D::Error::custom("zero timestamp"));
-        }
-        Ok(value)
-    }
-
-    // Preserve entries until validation: a BTreeMap would discard duplicate indices.
-    pub(super) fn pcrs<'de, D: Deserializer<'de>>(
-        d: D,
-    ) -> core::result::Result<Vec<Pcr>, D::Error> {
-        let Value::Map(entries) = Value::deserialize(d)? else {
-            return Err(D::Error::custom("expected PCR map"));
-        };
-        if entries.is_empty() || entries.len() > MAX_PCRS {
-            return Err(D::Error::custom("invalid PCR count"));
-        }
-        let mut seen = [false; MAX_PCRS];
-        let mut pcrs = Vec::with_capacity(entries.len());
-        for (index, value) in entries {
-            let (Value::Integer(index), Value::Bytes(value)) = (index, value) else {
-                return Err(D::Error::custom("invalid PCR entry"));
-            };
-            let index = u64::try_from(index).map_err(D::Error::custom)?;
-            if index >= MAX_PCRS as u64 {
-                return Err(D::Error::custom("invalid PCR index"));
-            }
-            if core::mem::replace(&mut seen[index as usize], true) {
-                return Err(D::Error::custom("duplicate PCR index"));
-            }
-            if !matches!(value.len(), 32 | 48 | 64) {
-                return Err(D::Error::custom("invalid PCR value length"));
-            }
-            pcrs.push(Pcr {
-                index: index as u8,
-                value,
-            });
-        }
-        pcrs.sort_unstable_by_key(|pcr| pcr.index);
-        Ok(pcrs)
-    }
-
-    pub(super) fn certificate<'de, D: Deserializer<'de>>(
-        d: D,
-    ) -> core::result::Result<Vec<u8>, D::Error> {
-        bounded_bytes::<D, 1, 1024>(d)
-    }
-
-    pub(super) fn cabundle<'de, D: Deserializer<'de>>(
-        d: D,
-    ) -> core::result::Result<Vec<Vec<u8>>, D::Error> {
-        let values: Vec<ByteBuf> = strict(d)?;
-        if values.is_empty() || values.len() > MAX_CA_BUNDLE {
-            return Err(D::Error::custom("invalid CA bundle count"));
-        }
-        values
-            .into_iter()
-            .map(|value| {
-                if !(1..=1024).contains(&value.len()) {
-                    return Err(D::Error::custom("invalid CA certificate length"));
-                }
-                Ok(value.into_vec())
-            })
-            .collect()
-    }
-
-    pub(super) fn public_key<'de, D: Deserializer<'de>>(
-        d: D,
-    ) -> core::result::Result<Vec<u8>, D::Error> {
-        optional_bytes::<D, 1, 1024>(d)
-    }
-
-    pub(super) fn user_data<'de, D: Deserializer<'de>>(
-        d: D,
-    ) -> core::result::Result<Vec<u8>, D::Error> {
-        optional_bytes::<D, 0, 512>(d)
-    }
-
-    pub(super) fn nonce<'de, D: Deserializer<'de>>(
-        d: D,
-    ) -> core::result::Result<Vec<u8>, D::Error> {
-        optional_bytes::<D, 0, 512>(d)
-    }
-
-    // Ciborium's typed deserializer transparently unwraps tags. Known Nitro fields
-    // must instead have their specified types; unknown fields remain unrestricted.
-    fn strict<'de, D: Deserializer<'de>, T: DeserializeOwned>(
-        d: D,
-    ) -> core::result::Result<T, D::Error> {
-        let value = Value::deserialize(d)?;
-        fn untagged(value: &Value) -> bool {
-            match value {
-                Value::Tag(..) => false,
-                Value::Array(values) => values.iter().all(untagged),
-                Value::Map(entries) => entries.iter().all(|(k, v)| untagged(k) && untagged(v)),
-                _ => true,
-            }
-        }
-        if !untagged(&value) {
-            return Err(D::Error::custom("tagged Nitro field"));
-        }
-        value.deserialized().map_err(D::Error::custom)
-    }
-
-    fn bounded_bytes<'de, D: Deserializer<'de>, const MIN: usize, const MAX: usize>(
-        d: D,
-    ) -> core::result::Result<Vec<u8>, D::Error> {
-        let value: ByteBuf = strict(d)?;
-        if !(MIN..=MAX).contains(&value.len()) {
-            return Err(D::Error::custom("invalid byte string length"));
-        }
-        Ok(value.into_vec())
-    }
-
-    fn optional_bytes<'de, D: Deserializer<'de>, const MIN: usize, const MAX: usize>(
-        d: D,
-    ) -> core::result::Result<Vec<u8>, D::Error> {
-        let value: Option<ByteBuf> = strict(d)?;
-        match value {
-            Some(value) if (MIN..=MAX).contains(&value.len()) => Ok(value.into_vec()),
-            Some(_) => Err(D::Error::custom("invalid optional byte string length")),
-            None => Ok(Vec::new()),
-        }
-    }
+    Ok(())
 }
 
 #[cfg(test)]
@@ -500,20 +387,21 @@ mod tests {
 
     fn payload_with_exact_len(target: usize) -> Vec<u8> {
         let mut fields = default_fields();
-        fields.push(TestField {
-            name: "padding",
-            value: bytes_value(&[]),
-        });
         let base_len = encode_payload(&fields).len();
-        let mut padding_len = target.checked_sub(base_len).expect("target fits payload");
+        let mut module_len =
+            target.checked_sub(base_len).expect("target fits payload") + "module".len();
 
         for _ in 0..4 {
-            set_field(&mut fields, "padding", bytes_value(&vec![0; padding_len]));
+            set_field(
+                &mut fields,
+                "module_id",
+                text_value(&"x".repeat(module_len)),
+            );
             let payload = encode_payload(&fields);
             match payload.len().cmp(&target) {
                 core::cmp::Ordering::Equal => return payload,
-                core::cmp::Ordering::Less => padding_len += target - payload.len(),
-                core::cmp::Ordering::Greater => padding_len -= payload.len() - target,
+                core::cmp::Ordering::Less => module_len += target - payload.len(),
+                core::cmp::Ordering::Greater => module_len -= payload.len() - target,
             }
         }
         panic!("failed to construct an exact-length payload")
@@ -573,10 +461,12 @@ mod tests {
     }
 
     #[test]
-    fn parses_indefinite_collections() {
-        let parsed = parse_attestation(&document(true, true, false)).unwrap();
+    fn accepts_indefinite_payload_collections_but_rejects_indefinite_envelope() {
+        let parsed =
+            parse_attestation(&wrap_payload(true, false, &payload(true, false, false))).unwrap();
         assert_eq!(parsed.pcrs.len(), 2);
         assert_eq!(parsed.cabundle, vec![vec![0x30]]);
+        assert!(parse_attestation(&document(true, true, false)).is_err());
     }
 
     #[test]
@@ -679,74 +569,65 @@ mod tests {
     }
 
     #[test]
-    fn preserves_chunked_strings_and_exact_signed_payload() {
-        let mut fields = default_fields();
-        set_field(
-            &mut fields,
-            "module_id",
-            encoded_value(|e| {
-                e.begin_str()
-                    .unwrap()
-                    .str("mod")
-                    .unwrap()
-                    .str("ule")
-                    .unwrap()
-                    .end()
-                    .unwrap();
-            }),
-        );
-        set_field(
-            &mut fields,
-            "certificate",
-            encoded_value(|e| {
-                e.begin_bytes()
-                    .unwrap()
-                    .bytes(&[0x30])
-                    .unwrap()
-                    .bytes(&[1])
-                    .unwrap()
-                    .end()
-                    .unwrap();
-            }),
-        );
-        let payload = encode_payload(&fields);
-        let parsed = parse_attestation(&wrap_payload(true, true, &payload)).unwrap();
-        assert_eq!(parsed.module_id, "module");
-        assert_eq!(parsed.certificate, [0x30, 1]);
+    fn rejects_chunked_byte_and_text_fields() {
+        for (name, value) in [
+            (
+                "module_id",
+                encoded_value(|e| {
+                    e.begin_str()
+                        .unwrap()
+                        .str("mod")
+                        .unwrap()
+                        .str("ule")
+                        .unwrap()
+                        .end()
+                        .unwrap();
+                }),
+            ),
+            (
+                "certificate",
+                encoded_value(|e| {
+                    e.begin_bytes()
+                        .unwrap()
+                        .bytes(&[0x30])
+                        .unwrap()
+                        .end()
+                        .unwrap();
+                }),
+            ),
+        ] {
+            let mut fields = default_fields();
+            set_field(&mut fields, name, value);
+            assert_field_error(&fields, FormatError::InvalidPayload);
+        }
+        let payload = encode_payload(&default_fields());
+        let parsed = parse_attestation(&wrap_payload(true, false, &payload)).unwrap();
         assert_eq!(parsed.payload, payload);
     }
 
     #[test]
-    fn uses_ciboriums_data_model_for_unknown_values() {
-        for (value, accepted) in [
-            (vec![0xf0], false),      // unassigned simple value
-            (vec![0xc2, 0xf6], true), // non-byte tag content remains opaque
-        ] {
-            let mut fields = default_fields();
-            fields.push(TestField {
-                name: "future_field",
-                value,
-            });
-            assert_eq!(parse_fields(&fields).is_ok(), accepted);
-        }
+    fn rejects_unknown_fields_before_reading_the_value() {
+        let mut payload = encode_payload(&default_fields());
+        payload[0] += 1;
+        payload.extend(text_value("future_field")); // Deliberately omit its value.
+        let mut decoder = minicbor_serde::Deserializer::new(&payload);
+        let error = AttestationDocument::deserialize(&mut decoder).unwrap_err();
+        assert!(alloc::format!("{error}").contains("unknown field"));
     }
 
     #[test]
-    fn accepts_ciborium_null_and_integer_normalization() {
-        let mut fields = default_fields();
-        // Ciborium maps undefined to null and tag-2 bignums to integers when they fit.
+    fn rejects_undefined_optionals_and_tagged_integers() {
         for name in ["public_key", "user_data", "nonce"] {
+            let mut fields = default_fields();
             fields.push(TestField {
                 name,
                 value: vec![0xf7],
             });
+            assert_field_error(&fields, FormatError::InvalidPayload);
         }
+        let mut fields = default_fields();
         set_field(&mut fields, "timestamp", vec![0xc2, 0x41, 1]);
-        let parsed = parse_fields(&fields).unwrap();
-        assert_eq!(parsed.timestamp, 1);
-        assert!(
-            parsed.public_key.is_empty() && parsed.user_data.is_empty() && parsed.nonce.is_empty()
-        );
+        assert_field_error(&fields, FormatError::InvalidPayload);
     }
 
     #[test]
@@ -1067,7 +948,7 @@ mod tests {
     }
 
     #[test]
-    fn accepts_unknown_payload_fields() {
+    fn rejects_unknown_payload_fields() {
         let mut fields = default_fields();
         fields.push(TestField {
             name: "future_field",
@@ -1087,12 +968,11 @@ mod tests {
                     .unwrap();
             }),
         });
-        let parsed = parse_fields(&fields).unwrap();
-        assert_eq!(parsed.module_id, "module");
+        assert_field_error(&fields, FormatError::InvalidPayload);
     }
 
     #[test]
-    fn accepts_unknown_non_text_payload_keys() {
+    fn rejects_unknown_non_text_payload_keys() {
         let mut payload = encode_payload(&default_fields());
         assert_eq!(payload[0], 0xa6, "fixture must start with a six-entry map");
         payload[0] = 0xa7;
@@ -1108,8 +988,7 @@ mod tests {
             .unwrap();
         payload.extend_from_slice(&unknown.into_writer());
 
-        let parsed = parse_attestation(&wrap_payload(false, false, &payload)).unwrap();
-        assert_eq!(parsed.module_id, "module");
+        assert!(parse_attestation(&wrap_payload(false, false, &payload)).is_err());
     }
 
     #[test]
@@ -1126,7 +1005,10 @@ mod tests {
 
         let document = document_with_exact_len(MAX_DOCUMENT_SIZE);
         assert_eq!(document.len(), MAX_DOCUMENT_SIZE);
-        assert!(parse_attestation(&document).is_ok());
+        assert_eq!(
+            parse_attestation(&document).unwrap_err(),
+            crate::Error::InvalidFormat(FormatError::InvalidCoseStructure)
+        );
 
         let mut oversized_document = document;
         oversized_document.push(0);
@@ -1175,23 +1057,138 @@ mod tests {
     }
 
     #[test]
-    fn bounds_nested_unknown_values_at_sixteen_containers() {
-        let nested = |arrays: usize| {
-            let mut e = Encoder::new(Vec::new());
-            for _ in 0..arrays {
-                e.array(1).unwrap();
-            }
-            e.null().unwrap();
-            e.into_writer()
-        };
-
-        let mut fields = default_fields();
-        fields.push(TestField {
-            name: "future_field",
-            value: nested(MAX_CBOR_DEPTH - 1),
+    fn rejects_nested_values_without_traversing_them() {
+        for name in [
+            "module_id",
+            "digest",
+            "timestamp",
+            "pcrs",
+            "certificate",
+            "cabundle",
+        ] {
+            let mut payload = encoded_value(|e| {
+                e.map(1).unwrap().str(name).unwrap();
+            });
+            let value_start = payload.len();
+            payload.extend_from_slice(&[0x81; 8_000]); // Wrong-type nested arrays, no terminal value.
+            let mut decoder = minicbor_serde::Deserializer::new(&payload);
+            assert!(AttestationDocument::deserialize(&mut decoder).is_err());
+            assert!(
+                decoder.decoder().position() <= value_start + 2,
+                "{name} traversed the value"
+            );
+        }
+        let mut protected = encoded_value(|e| {
+            e.map(7_400).unwrap();
         });
-        assert!(parse_fields(&fields).is_ok());
-        set_field(&mut fields, "future_field", nested(MAX_CBOR_DEPTH));
-        assert_field_error(&fields, FormatError::NestingTooDeep);
+        protected.extend_from_slice(&[0x81; 8_000]);
+        assert!(validate_protected(&protected).is_err());
+    }
+
+    #[test]
+    fn unprotected_headers_accept_only_empty_maps() {
+        let payload = payload(false, false, false);
+        for headers in [vec![0xa0], vec![0xbf, 0xff]] {
+            let mut e = Encoder::new(Vec::new());
+            e.array(4).unwrap().bytes(&[0xa1, 1, 0x38, 0x22]).unwrap();
+            let mut input = e.into_writer();
+            input.extend_from_slice(&headers);
+            let mut e = Encoder::new(input);
+            e.bytes(&payload).unwrap().bytes(&[0; 96]).unwrap();
+            assert!(parse_attestation(&e.into_writer()).is_ok());
+        }
+        for input in [vec![0x80], vec![0xf6], vec![0x00], vec![0xd2, 0xa0]] {
+            let mut decoder = minicbor_serde::Deserializer::new(&input);
+            assert!(EmptyHeaders::deserialize(&mut decoder).is_err());
+        }
+        for indefinite in [false, true] {
+            let mut e = Encoder::new(Vec::new());
+            if indefinite {
+                e.begin_map().unwrap();
+            } else {
+                e.map(1).unwrap();
+            }
+            e.str("ignored").unwrap();
+            let mut input = e.into_writer();
+            let value_start = input.len();
+            input.extend_from_slice(&[0x81; 8_000]);
+            let mut decoder = minicbor_serde::Deserializer::new(&input);
+            assert!(EmptyHeaders::deserialize(&mut decoder).is_err());
+            assert_eq!(decoder.decoder().position(), value_start);
+        }
+    }
+
+    #[test]
+    fn rejects_declared_wrong_envelope_lengths_and_nested_tags() {
+        for header in [
+            vec![0x85],
+            vec![0x9b, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff],
+            vec![0xd2, 0xd8, 100, 0x84],
+        ] {
+            let mut input = header;
+            input.extend_from_slice(&document(false, false, false)[1..]);
+            assert!(parse_attestation(&input).is_err());
+        }
+        let mut input = vec![0x84, 0x44, 0xa1, 1, 0x38, 0x22, 0xa1];
+        input.extend_from_slice(&[0x81; 8_000]); // Nonempty unprotected map, without even a key.
+        assert!(parse_attestation(&input).is_err());
+    }
+
+    #[test]
+    fn rejects_tagged_payload_and_field_names() {
+        let payload = encode_payload(&default_fields());
+        let mut tagged = vec![0xd8, 100];
+        tagged.extend_from_slice(&payload);
+        assert!(parse_attestation(&wrap_payload(false, false, &tagged)).is_err());
+        let mut payload = payload;
+        payload.splice(1..1, [0xd8, 100]);
+        assert!(parse_attestation(&wrap_payload(false, false, &payload)).is_err());
+    }
+
+    #[test]
+    fn collection_limits_stop_before_the_remaining_entries() {
+        let mut bytes = encoded_value(|e| {
+            e.map(1)
+                .unwrap()
+                .str("cabundle")
+                .unwrap()
+                .array(7_400)
+                .unwrap();
+            for _ in 0..=MAX_CA_BUNDLE {
+                e.bytes(&[0x30]).unwrap();
+            }
+        });
+        let end = bytes.len();
+        bytes.extend_from_slice(&[0x81; 8_000]);
+        let mut decoder = minicbor_serde::Deserializer::new(&bytes);
+        assert!(AttestationDocument::deserialize(&mut decoder).is_err());
+        assert_eq!(decoder.decoder().position(), end);
+
+        let mut bytes = encoded_value(|e| {
+            e.map(1).unwrap().str("pcrs").unwrap().map(250).unwrap();
+            for _ in 0..2 {
+                e.u8(0).unwrap().bytes(&[0; 48]).unwrap();
+            }
+        });
+        let end = bytes.len();
+        bytes.extend_from_slice(&[0x81; 8_000]);
+        let mut decoder = minicbor_serde::Deserializer::new(&bytes);
+        assert!(AttestationDocument::deserialize(&mut decoder).is_err());
+        assert_eq!(decoder.decoder().position(), end);
+    }
+
+    #[test]
+    fn payload_byte_fields_borrow_the_input() {
+        let bytes = encode_payload(&default_fields());
+        let parsed: AttestationDocument<'_> =
+            decode_exact(Decoder::new(&bytes), FormatError::InvalidPayload).unwrap();
+        let input = bytes.as_ptr_range();
+        for value in core::iter::once(parsed.certificate)
+            .chain(parsed.cabundle.iter().copied())
+            .chain(parsed.pcrs.values().copied())
+        {
+            assert!(input.contains(&value.as_ptr()));
+            assert!(value.as_ptr_range().end <= input.end);
+        }
     }
 }

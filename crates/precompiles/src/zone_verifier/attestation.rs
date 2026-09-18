@@ -14,7 +14,7 @@ use tempo_nitro_attestation::{
 use crate::storage::StorageCtx;
 
 pub(super) const BASE_GAS: u64 = 40_000;
-pub(super) const SIGNATURE_GAS: u64 = 35_000;
+pub(super) const SIGNATURE_GAS: u64 = 150_000;
 
 /// AWS Nitro Enclaves commercial-partition root certificate (G1), in DER form.
 ///

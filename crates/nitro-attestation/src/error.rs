@@ -5,7 +5,6 @@ use core::fmt;
 pub enum FormatError {
     DocumentTooLarge,
     InvalidCbor,
-    NestingTooDeep,
     InvalidCoseTag,
     InvalidCoseStructure,
     InvalidProtectedHeader,

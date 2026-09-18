@@ -24,8 +24,6 @@ pub const MAX_PAYLOAD_SIZE: usize = 16_384;
 pub const MAX_PCRS: usize = 32;
 /// Maximum number of certificates in `cabundle`, including the root.
 pub const MAX_CA_BUNDLE: usize = 32;
-/// Maximum CBOR nesting depth.
-pub const MAX_CBOR_DEPTH: usize = 16;
 /// Size of an uncompressed SEC1 P-384 public key.
 pub const P384_PUBLIC_KEY_SIZE: usize = 97;
 /// Size of a fixed-width ES384 signature (`r || s`).
