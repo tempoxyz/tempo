@@ -139,7 +139,11 @@ try {
       ['eth_call', [canonical, block]],
       ['eth_getBlockReceipts', [block]],
       ['debug_traceCall', [canonical, block, { tracer: 'callTracer' }]],
-    ]) assert.deepEqual(await response(muxRpc, method, params), await response(backend, method, params));
+    ]) {
+      const expected = await response(backend, method, params);
+      assert.ok(!expected.error, `${method} at ${block}: ${JSON.stringify(expected.error)}`);
+      assert.deepEqual(await response(muxRpc, method, params), expected);
+    }
     assert.equal(await rpc(muxRpc, 'eth_call', [canonical, block]), await rpc(reference, 'eth_call', [canonical, block]));
   }
   const padded = { ...canonical, data: `${canonical.data}${'00'.repeat(32)}` };
