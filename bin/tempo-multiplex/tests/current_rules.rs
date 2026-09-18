@@ -17,6 +17,8 @@ fn test_only(attributes: &[Attribute]) -> bool {
 
 fn execution_selector(name: &str) -> bool {
     name == "tempo_hardfork_at"
+        || name == "is_amsterdam_eip8037_enabled"
+        || name == "amsterdam_eip8037_enabled"
         || name
             .strip_prefix("is_t")
             .is_some_and(|rest| rest.starts_with(|c: char| c.is_ascii_digit()))

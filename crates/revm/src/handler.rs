@@ -1025,17 +1025,6 @@ where
                 }
                 .into());
             }
-
-            // Validate that regular gas does not exceed the cap.
-            if cfg.is_amsterdam_eip8037_enabled()
-                && init_gas.initial_regular_gas().max(init_gas.floor_gas) > cfg.tx_gas_limit_cap()
-            {
-                return Err(InvalidTransaction::GasFloorMoreThanGasLimit {
-                    gas_floor: init_gas.initial_regular_gas(),
-                    gas_limit: cfg.tx_gas_limit_cap(),
-                }
-                .into());
-            }
         }
 
         if is_expiring_nonce {
@@ -1455,7 +1444,6 @@ where
         {
             let keychain_checkpoint = { Some(journal.checkpoint()) };
 
-            let amsterdam_eip8037_enabled = cfg.enable_amsterdam_eip8037;
             let internals = EvmInternals::new(journal, block, cfg, tx);
 
             // T1/T1A: Apply gas metering for the keychain precompile call.
@@ -1484,13 +1472,7 @@ where
 
             // It's ok to set reservoir to 0 because pre-T1B it doesn't matter and post-T1B we have unlimited gas anyway.
             let mut provider = EvmPrecompileStorageProvider::new(
-                internals,
-                gas_limit,
-                0,
-                cfg.spec,
-                amsterdam_eip8037_enabled,
-                false,
-                gas_params,
+                internals, gas_limit, 0, cfg.spec, false, gas_params,
             )
             .with_actions(actions.clone());
             provider.set_tip1060_storage_credits(false);
@@ -2039,18 +2021,6 @@ where
             return Err(InvalidTransaction::GasFloorMoreThanGasLimit {
                 gas_limit,
                 gas_floor: init_gas.floor_gas,
-            }
-            .into());
-        }
-
-        // Validate that regular gas does not exceed the cap.
-        if evm.ctx.cfg.is_amsterdam_eip8037_enabled()
-            && init_gas.initial_regular_gas().max(init_gas.floor_gas)
-                > evm.ctx.cfg.tx_gas_limit_cap()
-        {
-            return Err(InvalidTransaction::GasFloorMoreThanGasLimit {
-                gas_floor: init_gas.initial_regular_gas(),
-                gas_limit: evm.ctx.cfg.tx_gas_limit_cap(),
             }
             .into());
         }

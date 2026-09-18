@@ -2626,7 +2626,7 @@ mod tests {
 
     #[test]
     fn test_nonexistent_policy_behavior() -> eyre::Result<()> {
-        let mut storage = HashMapStorageProvider::new_with_spec(1, TempoHardfork::T1);
+        let storage = HashMapStorageProvider::new_with_spec(1, TempoHardfork::T1);
         let user = Address::random();
         let nonexistent_id = 999;
 

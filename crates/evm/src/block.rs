@@ -470,11 +470,7 @@ where
 
         // TIP-1016 enabled: use block_regular_gas_used (excludes state gas) for section
         // validation, matching block gas limit semantics. TIP-1016 disabled: use tx_gas_used.
-        let block_gas_used = if self.evm().cfg.enable_amsterdam_eip8037 {
-            inner.result.result.gas().block_regular_gas_used()
-        } else {
-            inner.result.result.tx_gas_used()
-        };
+        let block_gas_used = { inner.result.result.tx_gas_used() };
 
         let next_section = if let Some(next_section) = next_section {
             // If pre-execution validation returned a section to use, just use it.
@@ -541,22 +537,7 @@ where
 
         self.apply_current_committee_system_call()?;
 
-        let amsterdam_eip8037_enabled = self.evm().cfg.enable_amsterdam_eip8037;
-
-        let regular_gas_used = self.inner.block_regular_gas_used;
-        let (evm, mut result) = self.inner.finish()?;
-
-        // TIP-1016 enabled: block header `gas_used` = block_regular_gas_used.
-        // State gas is charged to users (in receipts) but exempted from block
-        // capacity. block_regular_gas_used is accumulated per-tx as
-        // max(total_spent - state_spent, floor) and is independent of refunds.
-        //
-        // TIP-1016 disabled: use the standard gas_used from the inner executor which equals
-        // cumulative_tx_gas_used (total_spent - refunded), matching the original
-        // block header semantics.
-        if amsterdam_eip8037_enabled {
-            result.gas_used = regular_gas_used;
-        }
+        let (evm, result) = self.inner.finish()?;
 
         Ok((evm, result))
     }
@@ -1315,108 +1296,6 @@ mod tests {
         assert_eq!(executor.non_shared_gas_left, initial_non_shared - 50_000);
     }
 
-    /// T4: payment lane gas accounting must exclude state gas and use
-    /// block_regular_gas_used semantics (no refunds, no state gas).
-    #[test]
-    fn test_t4_non_shared_gas_excludes_state_gas() {
-        let chainspec = Arc::new(TempoChainSpec::from_genesis(DEV.genesis().clone()));
-        let mut db = State::builder().with_bundle_update().build();
-        let mut executor = TestExecutorBuilder::default()
-            .with_general_gas_limit(30_000_000)
-            .with_parent_beacon_block_root(B256::ZERO)
-            .with_amsterdam_eip8037_enabled(true)
-            .build(&mut db, &chainspec);
-
-        executor.apply_pre_execution_changes().unwrap();
-
-        let initial_non_shared = executor.non_shared_gas_left;
-        let initial_non_payment = executor.non_payment_gas_left;
-
-        // tx with total_gas_spent=300k, state_gas=100k
-        // block_regular_gas_used = max(300k - 100k, 0) = 200k
-        // tx_gas_used = max(300k - 0_refund, 0) = 300k
-        let tx = create_legacy_tx();
-        let output = TempoTxResult {
-            execution_context: ExecutionContext::Transaction {
-                tx_hash: B256::ZERO,
-            },
-            inner: EthTxResult {
-                result: ResultAndState {
-                    result: revm::context::result::ExecutionResult::Success {
-                        reason: revm::context::result::SuccessReason::Return,
-                        gas: ResultGas::new_with_state_gas(300_000, 0, 0, 100_000),
-                        logs: vec![],
-                        output: revm::context::result::Output::Call(Bytes::new()),
-                    },
-                    state: Default::default(),
-                },
-                blob_gas_used: 0,
-                tx_type: tx.tx_type(),
-            },
-            next_section: BlockSection::NonShared,
-            is_payment: false,
-            block_gas_used: 200_000,
-            validator_fee: U256::ZERO,
-        };
-        executor.commit_transaction(output);
-
-        // non_shared_gas_left should decrease by regular gas (200k), not total (300k)
-        assert_eq!(
-            executor.non_shared_gas_left,
-            initial_non_shared - 200_000,
-            "T4: non_shared_gas_left should exclude state gas"
-        );
-        assert_eq!(
-            executor.non_payment_gas_left,
-            initial_non_payment - 200_000,
-            "T4: non_payment_gas_left should exclude state gas"
-        );
-    }
-
-    /// T4: incentive gas accounting must also exclude state gas.
-    #[test]
-    fn test_t4_incentive_gas_excludes_state_gas() {
-        let chainspec = Arc::new(TempoChainSpec::from_genesis(DEV.genesis().clone()));
-        let mut db = State::builder().with_bundle_update().build();
-        let mut executor = TestExecutorBuilder::default()
-            .with_general_gas_limit(30_000_000)
-            .with_parent_beacon_block_root(B256::ZERO)
-            .with_amsterdam_eip8037_enabled(true)
-            .build(&mut db, &chainspec);
-
-        executor.apply_pre_execution_changes().unwrap();
-
-        let tx = create_legacy_tx();
-        let output = TempoTxResult {
-            execution_context: ExecutionContext::Transaction {
-                tx_hash: B256::ZERO,
-            },
-            inner: EthTxResult {
-                result: ResultAndState {
-                    result: revm::context::result::ExecutionResult::Success {
-                        reason: revm::context::result::SuccessReason::Return,
-                        gas: ResultGas::new_with_state_gas(300_000, 0, 0, 100_000),
-                        logs: vec![],
-                        output: revm::context::result::Output::Call(Bytes::new()),
-                    },
-                    state: Default::default(),
-                },
-                blob_gas_used: 0,
-                tx_type: tx.tx_type(),
-            },
-            next_section: BlockSection::GasIncentive,
-            is_payment: false,
-            block_gas_used: 200_000,
-            validator_fee: U256::ZERO,
-        };
-        executor.commit_transaction(output);
-
-        assert_eq!(
-            executor.incentive_gas_used, 200_000,
-            "T4: incentive_gas_used should exclude state gas"
-        );
-    }
-
     #[test]
     fn test_apply_pre_execution_deploys_validator_v2_code() {
         // Dev chainspec has t2Time: 0, so T2 is active at any timestamp.
@@ -1687,54 +1566,5 @@ mod tests {
                 "shared runtime must be installed in the runtime state hook"
             );
         }
-    }
-
-    /// TIP-1016 (T4+): block header `gas_used` = `block_regular_gas_used`.
-    /// Receipts track `tx_gas_used` (what the user pays, including state gas).
-    /// The difference between receipts total and header gas_used is the state gas
-    /// exempted from block capacity.
-    #[test]
-    fn test_t4_finish_exempts_state_gas_from_header() {
-        // DEV chainspec has T4 active at timestamp 0.
-        let chainspec = Arc::new(TempoChainSpec::from_genesis(DEV.genesis().clone()));
-        let mut db = State::builder().with_bundle_update().build();
-        let mut executor = TestExecutorBuilder::default()
-            .with_parent_beacon_block_root(B256::ZERO)
-            .with_amsterdam_eip8037_enabled(true)
-            .build(&mut db, &chainspec);
-
-        executor.apply_pre_execution_changes().unwrap();
-
-        // Simulate: tx with total=300k, refund=30k, state=40k
-        // tx_gas_used = max(300k - 30k, floor) = 270k  (receipt gas)
-        // block_regular_gas_used = max(300k - 40k, floor) = 260k  (capacity gas)
-        // block_state_gas_used = 40k
-        let tx_gas_used = 270_000u64;
-        let regular_gas = 260_000u64;
-        let state_gas = 40_000u64;
-
-        executor.inner.cumulative_tx_gas_used = tx_gas_used;
-        executor.inner.block_regular_gas_used = regular_gas;
-        executor.inner.block_state_gas_used = state_gas;
-
-        executor.inner.receipts.push(TempoReceipt {
-            tx_type: TempoTxType::Legacy,
-            success: true,
-            cumulative_gas_used: tx_gas_used,
-            logs: vec![],
-        });
-
-        let (_evm, result) = executor.finish().expect("finish should succeed");
-
-        // T4: Block header gas_used must equal block_regular_gas_used
-        assert_eq!(
-            result.gas_used, regular_gas,
-            "T4 header gas_used ({}) must equal block_regular_gas_used ({})",
-            result.gas_used, regular_gas
-        );
-
-        // Receipt tracks total gas (what user pays, including state gas)
-        let last_cumulative = result.receipts.last().unwrap().cumulative_gas_used;
-        assert_eq!(last_cumulative, tx_gas_used);
     }
 }

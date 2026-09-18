@@ -79,9 +79,6 @@ pub struct TempoEvm<DB: Database, I = NoOpInspector> {
 impl<DB: Database> TempoEvm<DB> {
     /// Create a new [`TempoEvm`] instance.
     pub fn new(db: DB, input: EvmEnv<TempoHardfork, TempoBlockEnv>) -> Self {
-        // TIP-1016 (EIP-8037 state gas split) is gated by `cfg_env.enable_amsterdam_eip8037`
-        // and is independent of the T4 hardfork. The caller is responsible for setting the
-        // flag on the input `EvmEnv`; here we pass it through unchanged.
         let ctx = Context::mainnet()
             .with_db(db)
             .with_block(input.block_env)
@@ -391,7 +388,7 @@ mod tests {
         zone_factory::{ZONE_CREATION_GAS, ZoneFactory, portal_address},
     };
     use tempo_primitives::{TempoAddressExt, transaction::Call};
-    use tempo_revm::{TempoBatchCallEnv, gas_params::tempo_gas_params_with_amsterdam};
+    use tempo_revm::{TempoBatchCallEnv, gas_params::tempo_gas_params};
 
     use super::*;
 
@@ -550,7 +547,7 @@ mod tests {
 
         let result = result.unwrap();
         assert!(result.result.is_success());
-        assert_eq!(result.result.tx_gas_used(), 21000);
+        assert_eq!(result.result.tx_gas_used(), 46_000);
     }
 
     #[test]
@@ -1734,10 +1731,7 @@ mod tests {
         spec: tempo_chainspec::hardfork::TempoHardfork,
     ) -> EvmEnv<tempo_chainspec::hardfork::TempoHardfork, TempoBlockEnv> {
         EvmEnv::<tempo_chainspec::hardfork::TempoHardfork, TempoBlockEnv>::new(
-            CfgEnv::new_with_spec_and_gas_params(
-                spec,
-                tempo_gas_params_with_amsterdam(spec, false),
-            ),
+            CfgEnv::new_with_spec_and_gas_params(spec, tempo_gas_params(spec)),
             TempoBlockEnv::default(),
         )
     }

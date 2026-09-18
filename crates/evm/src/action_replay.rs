@@ -67,13 +67,8 @@ where
                 self.replay_state.reset_tx_changes();
             })?;
 
-        let cfg = self.inner.evm.cfg_env().clone();
         let gas = result.gas();
-        let block_gas_used = if cfg.enable_amsterdam_eip8037 {
-            gas.block_regular_gas_used()
-        } else {
-            gas.tx_gas_used()
-        };
+        let block_gas_used = { gas.tx_gas_used() };
         let next_section = self
             .validate_tx(recovered.tx(), block_gas_used)
             .map_err(BlockExecutionError::from)?;

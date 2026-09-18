@@ -649,15 +649,15 @@ mod tests {
     }
 
     #[test]
-    fn create_zone_emits_constructor_events_in_order_with_duplicate_roles() -> eyre::Result<()> {
+    fn create_zone_emits_constructor_events_in_order() -> eyre::Result<()> {
         let mut storage = HashMapStorageProvider::new_with_spec(1, TempoHardfork::T10);
         storage.set_block_number(CREATION_BLOCK);
         let portal = StorageCtx::enter(&mut storage, || -> eyre::Result<Address> {
             TIP20Setup::path_usd(ADMIN).apply()?;
             let mut factory = factory_with_owner(OWNER)?;
             let mut params = create_params(PATH_USD_ADDRESS);
-            params.zoneGateways = vec![ZONE_GATEWAY, ZONE_GATEWAY];
-            params.allowedAccounts = vec![ALLOWED_ACCOUNT, ALLOWED_ACCOUNT];
+            params.zoneGateways = vec![ZONE_GATEWAY];
+            params.allowedAccounts = vec![ALLOWED_ACCOUNT];
 
             Ok(factory
                 .create_zone(OWNER, IZoneFactory::createZoneCall { params })?
@@ -665,9 +665,9 @@ mod tests {
         })?;
 
         let events = storage.get_events(portal);
-        assert!(events.len() >= 7);
+        assert!(events.len() >= 5);
         assert_eq!(
-            &events[..7],
+            &events[..5],
             &[
                 ZonePortalEvent::enforcement_modes_updated(true, true).into_log_data(),
                 ZonePortalEvent::sequencer_set_updated(0, 2, vec![SEQUENCER_A, SEQUENCER_B],)
@@ -681,20 +681,8 @@ mod tests {
                 )
                 .into_log_data(),
                 ZonePortalEvent::role_updated(
-                    ZONE_GATEWAY,
-                    ZonePortalRole::CallbackGateway,
-                    ZonePortalRole::CallbackGateway,
-                )
-                .into_log_data(),
-                ZonePortalEvent::role_updated(
                     ALLOWED_ACCOUNT,
                     ZonePortalRole::None,
-                    ZonePortalRole::Account,
-                )
-                .into_log_data(),
-                ZonePortalEvent::role_updated(
-                    ALLOWED_ACCOUNT,
-                    ZonePortalRole::Account,
                     ZonePortalRole::Account,
                 )
                 .into_log_data(),
@@ -777,6 +765,13 @@ mod tests {
                 );
                 assert_eq!(factory.next_zone_id()?, 1);
             }
+            let mut params = create_params(PATH_USD_ADDRESS);
+            params.sequencers = vec![SEQUENCER_A, SEQUENCER_A];
+            let err = factory
+                .create_zone(OWNER, IZoneFactory::createZoneCall { params })
+                .unwrap_err();
+            assert_eq!(err, ZoneFactoryError::invalid_closed_loop_config().into());
+            assert_eq!(factory.next_zone_id()?, 1);
             Ok(())
         })
     }
@@ -791,7 +786,6 @@ mod tests {
             for (sequencers, threshold) in [
                 (vec![], 1),
                 (vec![Address::ZERO], 1),
-                (vec![SEQUENCER_A, SEQUENCER_A], 1),
                 (vec![SEQUENCER_A], 0),
                 (vec![SEQUENCER_A], 2),
                 ((1u8..=9).map(Address::with_last_byte).collect(), 1),

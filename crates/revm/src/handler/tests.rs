@@ -980,29 +980,6 @@ fn test_key_authorization_gas_with_limits() {
 }
 
 #[test]
-fn test_t4_key_authorization_matches_tip1016_sstore_regular_cost() {
-    use tempo_primitives::transaction::{KeyAuthorization, SignatureType};
-
-    let key_auth = KeyAuthorization::unrestricted(1, SignatureType::Secp256k1, Address::random())
-        .into_signed(PrimitiveSignature::Secp256k1(
-            alloy_primitives::Signature::test_signature(),
-        ));
-
-    // TIP-1016 is opt-in via amsterdam_eip8037; manually enable for this test.
-    let gas_params = crate::gas_params::tempo_gas_params_with_amsterdam(TempoHardfork::T4, true);
-
-    let sig_gas = ECRECOVER_GAS + primitive_signature_verification_gas(&key_auth.signature);
-    let sload = gas_params.warm_storage_read_cost() + gas_params.cold_storage_additional_cost();
-    let scope_extra_gas = call_scope_extra_gas(&key_auth.authorization);
-    let (regular_gas, state_gas) =
-        calculate_key_authorization_gas(&key_auth, &gas_params, TempoHardfork::T4);
-    let helper_sstore_regular = regular_gas - sig_gas - sload - 2_000 - scope_extra_gas;
-
-    assert_eq!(helper_sstore_regular, 20_000);
-    assert_eq!(state_gas, 230_000);
-}
-
-#[test]
 fn test_t7_key_authorization_intrinsic_includes_storage_credit_value() {
     use tempo_chainspec::constants::gas::SSTORE_CREATE_COST;
     use tempo_primitives::transaction::{KeyAuthorization, SignatureType};
@@ -2507,14 +2484,24 @@ mod keychain {
             &bad_signer,
             KeyAuthorization::unrestricted(1, SignatureType::Secp256k1, key),
         );
-        let (mut evm, h) = make_evm(user, key, Some(signed), TempoHardfork::T2, None, true);
-
-        assert!(matches!(
-            h.validate_against_state_and_deduct_caller(&mut evm, &mut Default::default()),
-            Err(EVMError::Transaction(
-                TempoInvalidTransaction::KeyAuthorizationNotSignedByRoot { .. }
-            ))
-        ));
+        let (mut evm, h) = make_evm(
+            user,
+            key,
+            Some(signed),
+            TempoHardfork::CURRENT,
+            Some(TempoSignature::Primitive(test_sig())),
+            false,
+        );
+        let result = h.validate_against_state_and_deduct_caller(&mut evm, &mut Default::default());
+        assert!(
+            matches!(
+                result,
+                Err(EVMError::Transaction(
+                    TempoInvalidTransaction::KeychainValidationFailed { .. }
+                ))
+            ),
+            "{result:?}"
+        );
     }
 
     #[test]
@@ -3295,44 +3282,6 @@ mod keychain {
     }
 }
 
-/// TIP-1016: Standard CREATE tx should populate initial_state_gas with
-/// create_state_gas when state gas is enabled (T4+).
-///
-/// revm 42 defers the state-gas intrinsics to the EIP-2780 runtime gas phase,
-/// which Tempo keeps disabled, so they are charged in `validate_initial_tx_gas`
-/// instead of upstream's `initial_tx_gas` — hence this goes through the handler.
-///
-/// Note: new_account_state_gas for the caller (nonce==0 with 2D nonce) is added
-/// later in validate_against_state_and_deduct_caller.
-#[test]
-fn test_state_gas_standard_create_tx_populates_initial_state_gas() {
-    let mut tx_env = TempoTxEnv::default();
-    tx_env.inner.kind = TxKind::Create;
-    tx_env.inner.data = Bytes::from(vec![0x60, 0x80]);
-    tx_env.inner.gas_limit = 10_000_000;
-    // Avoid the T1+ nonce==0 new-account surcharge.
-    tx_env.inner.nonce = 1;
-
-    // TIP-1016 is opt-in via amsterdam_eip8037; manually enable for this test.
-    let mut test = TestHandlerEvm::with_cfg(TempoHardfork::T4, tx_env, |cfg| {
-        cfg.gas_params =
-            crate::gas_params::tempo_gas_params_with_amsterdam(TempoHardfork::T4, true);
-        cfg.enable_amsterdam_eip8037 = true;
-    });
-
-    let init_gas = test.validate_initial_tx_gas();
-    let expected_state_gas = test.gas_params().create_state_gas();
-
-    assert!(
-        expected_state_gas > 0,
-        "State gas constants should be non-zero"
-    );
-    assert_eq!(
-        init_gas.initial_state_gas, expected_state_gas,
-        "CREATE tx should have initial_state_gas = create_state_gas ({expected_state_gas})",
-    );
-}
-
 /// TIP-1016: Standard CALL tx should have zero initial_state_gas.
 #[test]
 fn test_state_gas_standard_call_tx_zero_initial_state_gas() {
@@ -3444,39 +3393,6 @@ fn test_state_gas_validate_initial_tx_gas_create_t4() {
     assert_eq!(
         init_gas.initial_state_gas, expected_state_gas,
         "T4 CREATE tx with nonce==0 should have create_state_gas + new_account_state_gas"
-    );
-}
-
-/// TIP-1016: When enable_amsterdam_eip8037 is true, tx gas limit can exceed the cap
-/// (upstream revm validation skips the cap check).
-#[test]
-fn test_state_gas_tx_gas_limit_above_cap_allowed() {
-    let calldata = Bytes::from(vec![1, 2, 3]);
-
-    let tx_env = TempoTxEnv {
-        inner: revm::context::TxEnv {
-            gas_limit: 60_000_000,
-            kind: TxKind::Call(Address::random()),
-            data: calldata,
-            ..Default::default()
-        },
-        ..Default::default()
-    };
-
-    // TIP-1016 is opt-in via amsterdam_eip8037; manually enable for this test.
-    let mut test = TestHandlerEvm::with_cfg(TempoHardfork::T4, tx_env, |cfg| {
-        cfg.tx_gas_limit_cap = Some(30_000_000);
-        cfg.enable_amsterdam_eip8037 = true;
-        cfg.gas_params =
-            crate::gas_params::tempo_gas_params_with_amsterdam(TempoHardfork::T4, true);
-    });
-
-    // validate_env should pass even though gas_limit > cap
-    let result = test.validate_env();
-    assert!(
-        result.is_ok(),
-        "With enable_amsterdam_eip8037=true, tx gas limit above cap should be allowed, got: {:?}",
-        result.err()
     );
 }
 
@@ -3692,53 +3608,6 @@ fn test_state_gas_multi_call_corrected_gas_success_preserves_state_gas() {
         corrected_gas.reservoir(),
         0,
         "Flattened gas must have zero reservoir"
-    );
-}
-
-/// TIP-1016: AA auth list entries with nonce==0 should track state gas.
-#[test]
-fn test_state_gas_aa_auth_list_nonce_zero() {
-    // TIP-1016 is opt-in via amsterdam_eip8037; manually enable for this test.
-    let gas_params = crate::gas_params::tempo_gas_params_with_amsterdam(TempoHardfork::T4, true);
-
-    let aa_env = TempoBatchCallEnv {
-        signature: TempoSignature::Primitive(PrimitiveSignature::Secp256k1(
-            alloy_primitives::Signature::test_signature(),
-        )),
-        aa_calls: vec![Call {
-            to: TxKind::Call(Address::random()),
-            value: U256::ZERO,
-            input: Bytes::from(vec![1, 2, 3]),
-        }],
-        tempo_authorization_list: vec![RecoveredTempoAuthorization::new(
-            TempoSignedAuthorization::new_unchecked(
-                alloy_eips::eip7702::Authorization {
-                    chain_id: U256::ONE,
-                    address: Address::random(),
-                    nonce: 0,
-                },
-                TempoSignature::Primitive(PrimitiveSignature::Secp256k1(
-                    alloy_primitives::Signature::test_signature(),
-                )),
-            ),
-        )],
-        ..Default::default()
-    };
-
-    let gas = calculate_aa_batch_intrinsic_gas(
-        &aa_env,
-        &gas_params,
-        None::<std::iter::Empty<&AccessListItem>>,
-        TempoHardfork::T4,
-    )
-    .unwrap();
-
-    // State gas = per-auth state gas (225k) + nonce==0 account creation state gas (225k)
-    // Use hard-coded expected values to catch missing gas_params overrides.
-    assert_eq!(
-        gas.initial_state_gas,
-        225_000 + 225_000,
-        "Auth list entry should track per-auth state gas (225k) + nonce==0 account creation state gas (225k)"
     );
 }
 

@@ -56,8 +56,7 @@ pub(crate) struct TestExecutorBuilder {
     pub(crate) general_gas_limit: u64,
     pub(crate) shared_gas_limit: u64,
     pub(crate) parent_beacon_block_root: Option<B256>,
-    /// Sets `cfg_env.enable_amsterdam_eip8037` to gate TIP-1016 behavior in tests.
-    pub(crate) amsterdam_eip8037_enabled: bool,
+
     pub(crate) spec: TempoHardfork,
     pub(crate) extra_data: Bytes,
     // Test state to seed into the executor after creation
@@ -73,7 +72,7 @@ impl Default for TestExecutorBuilder {
             general_gas_limit: 10_000_000,
             shared_gas_limit: 10_000_000,
             parent_beacon_block_root: None,
-            amsterdam_eip8037_enabled: false,
+
             spec: TempoHardfork::default(),
             extra_data: Bytes::new(),
             initial_section: None,
@@ -112,13 +111,6 @@ impl TestExecutorBuilder {
         self
     }
 
-    /// Toggles `cfg_env.enable_amsterdam_eip8037`, which gates TIP-1016 (state gas split)
-    /// behavior independently of the T4 hardfork.
-    pub(crate) fn with_amsterdam_eip8037_enabled(mut self, enabled: bool) -> Self {
-        self.amsterdam_eip8037_enabled = enabled;
-        self
-    }
-
     /// Set the initial block section for the executor (for testing section transitions).
     pub(crate) fn with_section(mut self, section: BlockSection) -> Self {
         self.initial_section = Some(section);
@@ -131,7 +123,7 @@ impl TestExecutorBuilder {
         chainspec: &'a Arc<TempoChainSpec>,
     ) -> TempoBlockExecutor<'a, DB, NoOpInspector> {
         let mut cfg_env = revm::context::CfgEnv::default();
-        cfg_env.enable_amsterdam_eip8037 = self.amsterdam_eip8037_enabled;
+        cfg_env.enable_amsterdam_eip8037 = false;
         cfg_env.spec = self.spec;
 
         let evm = TempoEvm::new(

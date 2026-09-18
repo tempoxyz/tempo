@@ -25,7 +25,8 @@ T11 execution protocol: obtain the historical node from the release, not this tr
 The multiplexer checks v2's `tempo_executionRules` response before accepting traffic.
 
 Historical and future execution branches are removed from the EVM, precompiles,
-gas accounting and transaction pool. There is no feature flag restoring them.
+gas accounting and transaction pool, including the deferred EIP-8037 gas split.
+There is no feature flag restoring them.
 Historical fork identifiers and activation timestamps remain as chain identity and
 RPC metadata, not selectors for execution behavior.
 The v2 EVM refuses execution environments before the chain's T11 activation.

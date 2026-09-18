@@ -1759,7 +1759,6 @@ mod tests {
 
     use super::*;
     use crate::STABLECOIN_DEX_ADDRESS;
-    use proptest::prelude::*;
 
     fn setup_test_tokens(
         admin: Address,
@@ -3196,15 +3195,10 @@ mod tests {
                 .swap_exact_amount_in(bob, base_token, quote_token, amount, 0)
                 .expect("Swap should succeed");
 
-            // Assert that the order has filled (remaining should be 0)
-            let filled_order = exchange.orders[flip_order_id].read()?;
-            assert_eq!(filled_order.remaining(), 0);
-
-            // The flipped order should be created with id = flip_order_id + 1
-            let new_order_id = exchange.next_order_id()? - 1;
-            assert_eq!(new_order_id, flip_order_id + 1);
-
-            let new_order = exchange.orders[new_order_id].read()?;
+            // TIP-1056 rewrites the filled bid into an ask under the same ID.
+            assert_eq!(exchange.next_order_id()?, flip_order_id + 1);
+            let new_order = exchange.orders[flip_order_id].read()?;
+            assert_eq!(new_order.order_id(), flip_order_id);
             assert_eq!(new_order.maker(), alice);
             assert_eq!(new_order.tick(), flip_tick);
             assert_eq!(new_order.flip_tick(), tick);
@@ -6286,75 +6280,5 @@ mod tests {
             })?;
         }
         Ok(())
-    }
-
-    // ----------------------------------------------------------------------
-    // Per-order quote vs swap parity (T12+)
-    // ----------------------------------------------------------------------
-
-    fn fund_and_approve(
-        mut setup: TIP20Setup,
-        actors: impl IntoIterator<Item = Address>,
-        spender: Address,
-        amount: U256,
-    ) -> TIP20Setup {
-        for actor in actors {
-            setup = setup
-                .with_mint(actor, amount)
-                .with_approval(actor, spender, U256::MAX);
-        }
-        setup
-    }
-
-    /// Runs `body` against a freshly initialized exchange at `spec`, seeded with a
-    /// fragmented book of one resting order per `(size, tick)` in `book` on the
-    /// given side (each order from a fresh maker, all funded with both tokens).
-    /// `body` receives `(exchange, base, quote, taker)`.
-    fn with_fragmented_book<R>(
-        spec: TempoHardfork,
-        book: &[(u128, i16)],
-        maker_is_bid: bool,
-        body: impl FnOnce(&mut StablecoinDEX, Address, Address, Address) -> eyre::Result<R>,
-    ) -> eyre::Result<R> {
-        let mut storage = HashMapStorageProvider::new_with_spec(1, spec);
-        StorageCtx::enter(&mut storage, || {
-            let mut exchange = StablecoinDEX::new();
-            exchange.initialize()?;
-            let admin = Address::random();
-            let taker = Address::random();
-            let makers: Vec<(Address, u128, i16)> = book
-                .iter()
-                .map(|(size, tick)| (Address::random(), *size, *tick))
-                .collect();
-
-            let fund = U256::from(1_000_000_000_000_000_000u128);
-            let actors = makers.iter().map(|(maker, _, _)| *maker).chain([taker]);
-
-            // Base token (uses pathUSD as its quote token).
-            let base_setup = fund_and_approve(
-                TIP20Setup::create("BASE", "BASE", admin).with_issuer(admin),
-                actors.clone(),
-                exchange.address,
-                fund,
-            );
-            let base = base_setup.apply()?;
-            let base_token = base.address();
-            let quote_token = base.quote_token()?;
-
-            fund_and_approve(
-                TIP20Setup::path_usd(admin).with_issuer(admin),
-                actors,
-                exchange.address,
-                fund,
-            )
-            .apply()?;
-
-            exchange.create_pair(base_token)?;
-            for (m, size, tick) in &makers {
-                exchange.place(*m, base_token, *size, maker_is_bid, *tick)?;
-            }
-
-            body(&mut exchange, base_token, quote_token, taker)
-        })
     }
 }

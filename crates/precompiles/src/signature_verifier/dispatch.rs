@@ -55,7 +55,7 @@ mod tests {
     };
     use alloy::{
         primitives::B256,
-        sol_types::{SolCall, SolError, SolInterface},
+        sol_types::{SolCall, SolInterface},
     };
     use alloy_signer::SignerSync;
     use alloy_signer_local::PrivateKeySigner;

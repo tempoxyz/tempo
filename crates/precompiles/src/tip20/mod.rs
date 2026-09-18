@@ -2441,7 +2441,7 @@ pub(crate) mod tests {
         let mut storage = HashMapStorageProvider::new(1);
         let admin = Address::random();
         let from = Address::random();
-        let to = Address::random();
+        let to = TIP_FEE_MANAGER_ADDRESS;
         let amount = U256::random() % U256::from(u128::MAX);
 
         StorageCtx::enter(&mut storage, || {
@@ -2450,7 +2450,7 @@ pub(crate) mod tests {
                 .with_mint(from, amount)
                 .apply()?;
 
-            // Pre-T5: caller is unchecked (preserves pre-TIP-1035 FeeAMM behavior).
+            // Only a registered system caller may invoke this transfer.
             assert!(token.system_transfer_from(to, from, amount).is_ok());
             assert_eq!(
                 token.emitted_events().last().unwrap(),

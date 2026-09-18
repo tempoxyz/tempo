@@ -115,7 +115,7 @@ mod tests {
     };
     use alloy::{
         primitives::{Bytes, U256, address},
-        sol_types::{SolCall, SolError, SolInterface, SolValue},
+        sol_types::{SolCall, SolInterface, SolValue},
     };
     use tempo_chainspec::hardfork::TempoHardfork;
     use tempo_contracts::precompiles::{IRolesAuth, RolesAuthError, TIP20Error};

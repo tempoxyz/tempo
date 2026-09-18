@@ -39,7 +39,7 @@ mod tests {
         storage::{StorageCtx, hashmap::HashMapStorageProvider},
         test_util::{assert_full_coverage, check_selector_coverage},
     };
-    use alloy::sol_types::{SolCall, SolInterface};
+    use alloy::sol_types::SolCall;
     use tempo_chainspec::hardfork::TempoHardfork;
     use tempo_contracts::precompiles::{IStorageCredits, IStorageCredits::IStorageCreditsCalls};
 

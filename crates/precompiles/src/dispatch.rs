@@ -150,32 +150,11 @@ pub fn charge_input_cost(storage: &mut StorageCtx, calldata: &[u8]) -> Option<Pr
     None
 }
 
-/// Fills state gas accounting on a [`PrecompileOutput`] from the storage context.
-///
-/// State gas / reservoir tracking is only set when TIP-1016 (EIP-8037) is enabled.
-/// When disabled, `state_gas_used` must remain 0 to avoid leaking into revm's reservoir
-/// accounting and corrupting `tx_gas_used()` via `handle_reservoir_remaining_gas`.
-///
-/// SSTORE refund propagation is activated unconditionally at T4 so the
-/// `TempoPrecompileProvider` wrapper can apply refunds with `record_refund`. Pre-T4
-/// blocks were executed without refund propagation, so we cannot change their gas
-/// accounting.
+/// Propagates SSTORE refunds for successful calls without deferred state-gas accounting.
 #[inline]
 fn fill_state_gas(output: &mut PrecompileOutput, storage: &StorageCtx) {
     if output.is_success() {
         output.gas_refunded = storage.gas_refunded();
-    }
-
-    if storage.amsterdam_eip8037_enabled() {
-        // Report the raw tracker values on success and failure alike. The parent
-        // settles them in `handle_reservoir_remaining_gas` exactly like a regular
-        // child frame: on success it adopts the reservoir and merges state gas and
-        // its spilled portion; on revert or halt `rollback_state_gas` credits the
-        // spilled portion back to regular gas and restores the reservoir to the
-        // value this call inherited.
-        output.reservoir = storage.reservoir();
-        output.state_gas_used = storage.state_gas_used() as i64;
-        output.state_gas_spilled = storage.state_gas_spilled();
     }
 }
 

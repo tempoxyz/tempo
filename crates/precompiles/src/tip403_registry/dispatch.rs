@@ -72,7 +72,7 @@ mod tests {
         test_util::{assert_full_coverage, check_selector_coverage},
         tip403_registry::ITIP403Registry,
     };
-    use alloy::sol_types::{SolCall, SolError, SolValue};
+    use alloy::sol_types::{SolCall, SolValue};
     use tempo_chainspec::hardfork::TempoHardfork;
     use tempo_contracts::precompiles::ITIP403Registry::ITIP403RegistryCalls;
 
