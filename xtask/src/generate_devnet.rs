@@ -47,6 +47,7 @@ impl GenerateDevnet {
         } = self;
 
         let seed = genesis_args.seed;
+        let fee_recipients = genesis_args.validator_onchain_addresses()?;
         let (genesis, consensus_config) = genesis_args
             .generate_genesis()
             .await
@@ -95,7 +96,7 @@ impl GenerateDevnet {
         let devmode = consensus_config.validators.len() == 1;
 
         let mut all_configs = vec![];
-        for validator in consensus_config.validators {
+        for (idx, validator) in consensus_config.validators.into_iter().enumerate() {
             let (execution_p2p_signing_key, execution_p2p_identity) = {
                 let (sk, pk) = SECP256K1.generate_keypair(&mut rng);
                 (sk, pk2id(&pk))
@@ -121,8 +122,7 @@ impl GenerateDevnet {
                     consensus_on_disk_signing_key: signing_key_to_hex(&validator.signing_key),
                     consensus_on_disk_signing_share: validator.signing_share.to_string(),
 
-                    // FIXME(janis): this should not be zero
-                    consensus_fee_recipient: Address::ZERO,
+                    consensus_fee_recipient: fee_recipients[idx],
 
                     consensus_p2p_port,
                     consensus_metrics_port,
