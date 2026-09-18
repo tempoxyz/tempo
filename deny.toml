@@ -69,6 +69,7 @@ allow = [
 # aren't accepted for every possible crate as with the normal allow list
 exceptions = [
   { allow = ["BlueOak-1.0.0"], name = "minicbor" },
+  { allow = ["BlueOak-1.0.0"], name = "minicbor-serde" },
   { allow = ["MPL-2.0"], name = "bitmaps" },
   { allow = ["MPL-2.0"], name = "imbl" },
   { allow = ["MPL-2.0"], name = "imbl-sized-chunks" },

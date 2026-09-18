@@ -7089,9 +7089,19 @@ dependencies = [
 
 [[package]]
 name = "minicbor"
-version = "2.2.2"
+version = "2.3.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "1b7a5041e12946f8b7d3f5a9d96383a19d694b9335457c522be7815b9abafb02"
+checksum = "c12b4033ffaa92fbf9df03df38d19324f52bad130dd223f811734a8006dd2d69"
+
+[[package]]
+name = "minicbor-serde"
+version = "0.7.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "b7abdec9761edcb452764c68564ae4b77ec62f6c1a361aa68f5de15fd788c679"
+dependencies = [
+ "minicbor",
+ "serde",
+]
 
 [[package]]
 name = "minimal-lexical"
@@ -12805,16 +12815,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "serde_bytes"
-version = "0.11.19"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "a5d440709e79d88e51ac01c4b72fc6cb7314017bb7da9eeff678aa94c10e3ea8"
-dependencies = [
- "serde",
- "serde_core",
-]
-
-[[package]]
 name = "serde_core"
 version = "1.0.228"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -13892,10 +13892,11 @@ dependencies = [
 name = "tempo-nitro-attestation"
 version = "1.14.0"
 dependencies = [
- "ciborium",
+ "arrayvec",
  "minicbor",
+ "minicbor-serde",
  "serde",
- "serde_bytes",
+ "serde_with",
  "sha2 0.10.9",
  "x509-cert",
 ]
