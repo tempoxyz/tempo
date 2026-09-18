@@ -37,7 +37,9 @@ T11 activated at `1789048800` on mainnet and `1788962400` on Moderato.
 Use v1 to sync through T11 with archive state retained. Stop it cleanly, then take
 two consistent checkpoint copies with the same genesis and the same block at
 `cutover_block - 1`. Both copies must contain the first T11 block; v2 continues
-from that checkpoint. Keep v1 isolated from block production and network sync.
+from that checkpoint. Keep v1 isolated from block production. It may continue as
+a certified follower while its release supports the active mainnet protocol;
+stop its synchronization before a future upgrade unsupported by that release.
 v2 cannot replay a pre-T11 chain from genesis. A post-T11 pruned snapshot alone
 does not supply the historical state needed by v1's calls/traces.
 
@@ -116,3 +118,19 @@ git show v1.14.0:crates/chainspec/src/genesis/dev.json > /tmp/multiplex-v1-genes
 MULTIPLEX_GENESIS=/tmp/multiplex-v1-genesis.json node contrib/multiplex/smoke.mjs \
   /opt/tempo/v1.14.0/tempo target/release/tempo-v2 target/release/tempo-multiplex
 ```
+
+For a mainnet demonstration, download an archive into a new root's `v1` directory,
+then run the mainnet harness (requires enough disk for two copies):
+
+```sh
+/opt/tempo/v1.14.0/tempo download --chain mainnet --archive --datadir /data/multiplex/v1
+node contrib/multiplex/mainnet.mjs /opt/tempo/v1.14.0/tempo \
+  target/release/tempo-v2 target/release/tempo-multiplex /data/multiplex
+```
+
+This verifies mainnet chain ID/genesis against the public RPC, discovers the exact
+T11 boundary from archived headers, cleanly checkpoints v1, copies its state, and
+starts both binaries as certified followers without validator keys. It checks
+historical calls/traces/receipts, boundary ABI behavior, and live head agreement.
+The validated HTTP endpoint stays on `127.0.0.1:28545`; expose it separately using
+your intended access controls. The prototype RPC limitations above still apply.
