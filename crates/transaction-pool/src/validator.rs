@@ -34,7 +34,7 @@ use std::sync::{
 };
 use tempo_chainspec::{
     hardfork::{TempoHardfork, TempoHardforks},
-    spec::{TEMPO_T0_BASE_FEE, TEMPO_T1_BASE_FEE, TEMPO_T7_BASE_FEE_FLOOR},
+    spec::TEMPO_T7_BASE_FEE_FLOOR,
 };
 use tempo_evm::{TempoEvmConfig, TempoPoolValidationEvm};
 use tempo_precompiles::{
@@ -413,16 +413,9 @@ where
             );
         }
 
-        // Fees below the hardfork's floor can never become executable. Fees below the
-        // current dynamic base fee can, so leave those queued until block selection.
-        let min_base_fee = if spec.is_t7() {
-            TEMPO_T7_BASE_FEE_FLOOR
-        } else if spec.is_t1() {
-            TEMPO_T1_BASE_FEE
-        } else {
-            TEMPO_T0_BASE_FEE
-        };
-        if transaction.max_fee_per_gas() < u128::from(min_base_fee) {
+        // T7 is active on all supported networks. Fees below its floor can never become
+        // executable; fees below the current dynamic base fee can wait for block selection.
+        if transaction.max_fee_per_gas() < u128::from(TEMPO_T7_BASE_FEE_FLOOR) {
             return TransactionValidationOutcome::Invalid(
                 transaction,
                 InvalidPoolTransactionError::other(TempoPoolTransactionError::Evm(
@@ -880,7 +873,7 @@ mod tests {
     };
     use tempo_chainspec::{
         TempoChainSpec,
-        spec::{MODERATO, TEMPO_T0_BASE_FEE, TEMPO_T1_BASE_FEE, TEMPO_T1_TX_GAS_LIMIT_CAP},
+        spec::{MODERATO, TEMPO_T0_BASE_FEE, TEMPO_T1_TX_GAS_LIMIT_CAP},
     };
     use tempo_precompiles::{
         PATH_USD_ADDRESS,
@@ -2137,43 +2130,38 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn test_fee_cap_below_hardfork_floor_rejected() {
-        for (spec, floor) in [
-            (TempoHardfork::T0, TEMPO_T0_BASE_FEE),
-            (TempoHardfork::T1, TEMPO_T1_BASE_FEE),
-            (TempoHardfork::T7, TEMPO_T7_BASE_FEE_FLOOR),
+    async fn test_fee_cap_below_floor_rejected() {
+        let current_time = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_secs();
+        for transaction in [
+            TxBuilder::aa(Address::random())
+                .max_fee(u128::from(TEMPO_T7_BASE_FEE_FLOOR - 1))
+                .max_priority_fee(0)
+                .build(),
+            TxBuilder::eip1559(Address::random())
+                .max_fee(u128::from(TEMPO_T7_BASE_FEE_FLOOR - 1))
+                .max_priority_fee(0)
+                .build_eip1559(),
         ] {
-            for transaction in [
-                TxBuilder::aa(Address::random())
-                    .max_fee(u128::from(floor - 1))
-                    .max_priority_fee(0)
-                    .build(),
-                TxBuilder::eip1559(Address::random())
-                    .max_fee(u128::from(floor - 1))
-                    .max_priority_fee(0)
-                    .build_eip1559(),
-            ] {
-                let validator = setup_validator(&transaction, 0);
-                validator
-                    .active_hardfork
-                    .store(spec.variant_index(), Ordering::Relaxed);
-                let outcome = validator
-                    .validate_transaction(TransactionOrigin::External, transaction)
-                    .await;
-                assert!(
-                    matches!(
-                        outcome,
-                        TransactionValidationOutcome::Invalid(_, ref err)
-                            if matches!(err.downcast_other_ref::<TempoPoolTransactionError>(),
-                                Some(TempoPoolTransactionError::Evm(
-                                    TempoInvalidTransaction::EthInvalidTransaction(
-                                        InvalidTransaction::GasPriceLessThanBasefee
-                                    )
-                                )))
-                    ),
-                    "{spec:?}: expected floor rejection, got {outcome:?}"
-                );
-            }
+            let validator = setup_validator(&transaction, current_time);
+            let outcome = validator
+                .validate_transaction(TransactionOrigin::External, transaction)
+                .await;
+            assert!(
+                matches!(
+                    outcome,
+                    TransactionValidationOutcome::Invalid(_, ref err)
+                        if matches!(err.downcast_other_ref::<TempoPoolTransactionError>(),
+                            Some(TempoPoolTransactionError::Evm(
+                                TempoInvalidTransaction::EthInvalidTransaction(
+                                    InvalidTransaction::GasPriceLessThanBasefee
+                                )
+                            )))
+                ),
+                "expected floor rejection, got {outcome:?}"
+            );
         }
     }
 
