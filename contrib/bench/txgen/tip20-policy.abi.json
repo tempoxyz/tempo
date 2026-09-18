@@ -1,0 +1,9 @@
+[
+  {
+    "type": "function",
+    "name": "changeTransferPolicyId",
+    "inputs": [{ "name": "newPolicyId", "type": "uint64", "internalType": "uint64" }],
+    "outputs": [],
+    "stateMutability": "nonpayable"
+  }
+]

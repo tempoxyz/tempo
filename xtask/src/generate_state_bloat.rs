@@ -68,6 +68,18 @@ pub(crate) struct GenerateStateBloat {
     #[arg(long, default_value = "10000")]
     signable_count: usize,
 
+    /// Derive EVERY address from a keccak-derived secp256k1 key
+    /// (`sk_i = keccak256(keccak256(mnemonic) || be64(i) || "sk")`), making
+    /// all bloat accounts signable. Matches txgen's `fast_signable` pools.
+    /// `--signable-count` is ignored in this mode.
+    #[arg(long, default_value_t = false)]
+    keccak_signable: bool,
+
+    /// Make every address signable while reusing the same address range for
+    /// every token. This preserves the legacy account cardinality while
+    /// allowing txgen to draw senders from the full funded pool.
+    #[arg(long, default_value_t = false, conflicts_with = "keccak_signable")]
+    keccak_signable_shared: bool,
     /// Number of entries to process per chunk. Controls peak memory usage.
     #[arg(long, default_value_t = DEFAULT_CHUNK_SIZE)]
     chunk_size: usize,
@@ -82,6 +94,8 @@ impl GenerateStateBloat {
             out,
             balance,
             signable_count,
+            keccak_signable,
+            keccak_signable_shared,
             chunk_size,
         } = self;
 
@@ -151,6 +165,20 @@ impl GenerateStateBloat {
         let file = File::create(&out).wrap_err("failed to create output file")?;
         let mut writer = BufWriter::with_capacity(64 * 1024 * 1024, file); // 64MB buffer
 
+        let any_keccak_signable = keccak_signable || keccak_signable_shared;
+        if any_keccak_signable {
+            println!(
+                "\nKeccak-signable mode ({} ranges); first addresses: {} {} {}",
+                if keccak_signable_shared {
+                    "shared"
+                } else {
+                    "distinct per token"
+                },
+                derive_address_keccak_signable(&seed, 0),
+                derive_address_keccak_signable(&seed, 1),
+                derive_address_keccak_signable(&seed, 2),
+            );
+        }
         println!("\nGenerating and writing in {num_chunks} chunks...");
 
         let pb = ProgressBar::new(total_accounts as u64);
@@ -170,18 +198,20 @@ impl GenerateStateBloat {
 
             // Derive addresses and compute slot bytes for this chunk only
             let slot_bytes: Vec<[u8; 32]> = chunk_indices
-                .into_par_iter()
+                .par_iter()
                 .map(|i| {
-                    let addr = if i < actual_signable {
+                    let addr = if any_keccak_signable {
+                        derive_address_keccak_signable(&seed, *i as u64)
+                    } else if *i < actual_signable {
                         let child = parent_key
-                            .derive_child(i as u32)
+                            .derive_child(*i as u32)
                             .expect("child derivation should not fail");
                         let key: &coins_bip32::prelude::SigningKey = child.as_ref();
                         let credential =
                             k256::ecdsa::SigningKey::from_bytes(&key.to_bytes()).unwrap();
                         secret_key_to_address(&credential)
                     } else {
-                        derive_address_fast(&seed, i as u64)
+                        derive_address_fast(&seed, *i as u64)
                     };
                     compute_mapping_slot(addr, tip20_slots::BALANCES).to_be_bytes::<32>()
                 })
@@ -191,6 +221,28 @@ impl GenerateStateBloat {
             for (token_idx, token_addr) in token_addresses.iter().enumerate() {
                 let pair_count = chunk_len as u64 + if is_first_chunk { 1 } else { 0 };
 
+                // Keccak-signable mode: each token funds a DISTINCT global
+                // index range (token_idx * accounts_per_token + i), so N
+                // tokens hold N * accounts_per_token distinct signable
+                // accounts instead of the same list repeated.
+                let token_slot_bytes: Vec<[u8; 32]> = if keccak_signable {
+                    let offset = token_idx as u64 * accounts_per_token;
+                    chunk_indices
+                        .clone()
+                        .into_par_iter()
+                        .map(|i| {
+                            let addr = derive_address_keccak_signable(&seed, offset + i as u64);
+                            compute_mapping_slot(addr, tip20_slots::BALANCES).to_be_bytes::<32>()
+                        })
+                        .collect()
+                } else {
+                    Vec::new()
+                };
+                let slot_bytes: &[[u8; 32]] = if keccak_signable {
+                    &token_slot_bytes
+                } else {
+                    &slot_bytes
+                };
                 write_header(&mut writer, *token_addr, pair_count)?;
 
                 // Only write total_supply in the first chunk for each token
@@ -201,7 +253,7 @@ impl GenerateStateBloat {
 
                 // Write balance entries in chunks
                 chunk_buf.clear();
-                for slot in &slot_bytes {
+                for slot in slot_bytes {
                     chunk_buf.extend_from_slice(slot);
                     chunk_buf.extend_from_slice(&balance_bytes);
                 }
@@ -237,6 +289,24 @@ fn token_address(token_id: u64) -> Address {
     bytes[..12].copy_from_slice(&TIP20_PAYMENT_PREFIX);
     bytes[12..].copy_from_slice(&token_id.to_be_bytes());
     Address::from(bytes)
+}
+
+/// Address of the keccak-derived signable key for `index`:
+/// `sk = keccak256(seed || be64(index) || "sk")`, rehashing in the
+/// (cryptographically negligible) case the scalar is invalid. Must stay
+/// byte-identical to txgen's `derive_fast_signable_signer`.
+fn derive_address_keccak_signable(seed: &[u8; 32], index: u64) -> Address {
+    let mut buf = [0u8; 42];
+    buf[..32].copy_from_slice(seed);
+    buf[32..40].copy_from_slice(&index.to_be_bytes());
+    buf[40..].copy_from_slice(b"sk");
+    let mut hash = keccak256(buf);
+    loop {
+        if let Ok(key) = k256::ecdsa::SigningKey::from_bytes((&hash.0).into()) {
+            return secret_key_to_address(&key);
+        }
+        hash = keccak256(hash);
+    }
 }
 
 /// Fast address derivation using keccak256(seed || index).
@@ -307,6 +377,24 @@ mod tests {
                 .parse::<Address>()
                 .unwrap()
         );
+    }
+
+    #[test]
+    fn test_keccak_signable_addresses_match_txgen() {
+        let seed =
+            keccak256("test test test test test test test test test test test junk".as_bytes());
+        let expected = [
+            "0x15080067756Ccd1EFd4115E70B6c47709E8C4FD7",
+            "0x02738A984d839EC408Db40b8a37Ec2d6c7bCBF09",
+            "0xbA0310493D7270495F8A2F2d3B6f411633E1260D",
+        ];
+
+        for (index, expected) in expected.into_iter().enumerate() {
+            assert_eq!(
+                derive_address_keccak_signable(&seed, index as u64),
+                expected.parse::<Address>().unwrap()
+            );
+        }
     }
 
     #[test]
