@@ -13,7 +13,8 @@ use tracing::info;
 
 use super::common::{wait_for_outcome, wait_for_validators_to_reach_epoch};
 use crate::{
-    Setup, connect_execution_peers, connect_execution_to_peers, metrics::MetricsExt,
+    Setup, connect_execution_peers, connect_execution_to_peers,
+    metrics::{MetricsExt, wait_for_height},
     setup_validators,
 };
 
