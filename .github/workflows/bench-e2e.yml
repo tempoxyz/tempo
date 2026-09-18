@@ -349,6 +349,8 @@ on:
         required: false
 
 env:
+  # Allow Aegis to finish its 90-second Socket lookup before Cargo times out.
+  CARGO_HTTP_TIMEOUT: "180"
   CARGO_TERM_COLOR: always
   RUSTC_WRAPPER: "sccache"
 
@@ -358,6 +360,9 @@ permissions:
 
 jobs:
   bench-e2e:
+    permissions:
+      contents: read
+      id-token: write
     name: bench-e2e
     runs-on: [self-hosted, Linux, X64, bare-metal-dual-schelk]
     timeout-minutes: 300
@@ -415,6 +420,9 @@ jobs:
       SLACK_BENCH_BOT_TOKEN: ${{ secrets.SLACK_BENCH_BOT_TOKEN }}
       SLACK_BENCH_CHANNEL: ${{ secrets.SLACK_BENCH_CHANNEL }}
     steps:
+      - name: Secure runner
+        uses: tempoxyz/gh-actions/actions/secure-runner@ca2b15de1d1f6edd2276736187d7e4c2d898972c
+
       - name: Reset workspace directory
         run: |
           sudo rm -rf "$GITHUB_WORKSPACE"

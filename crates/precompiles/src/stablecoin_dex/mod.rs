@@ -1509,7 +1509,7 @@ impl StablecoinDEX {
         book_key: B256,
         amount: u128,
         is_bid: bool,
-        step: impl Fn(u128, u128, i16, bool) -> Option<OrderStep>,
+        step: impl Fn(u128, &Order, bool) -> Option<OrderStep>,
     ) -> Result<u128> {
         let level = self.get_best_price_level(book_key, is_bid)?;
         let order = self.orders[level.links.head].read_in_book(book_key)?;
@@ -4402,6 +4402,66 @@ mod tests {
 
             Ok(())
         })
+    }
+
+    /// Regression test for Moderato block 35,497,031, where the route's `is_bid`
+    /// differed from `order.is_bid()` in a historically corrupted DEX book.
+    #[test]
+    fn test_exact_in_moderato_corrupted_book_uses_order_is_bid() -> eyre::Result<()> {
+        let mut storage = HashMapStorageProvider::new_with_spec(1, TempoHardfork::T11);
+        StorageCtx::enter(&mut storage, || {
+            let mut exchange = StablecoinDEX::new();
+            exchange.initialize()?;
+
+            let maker = Address::random();
+            let taker = Address::random();
+            let admin = Address::random();
+            let (base, quote) =
+                setup_test_tokens(admin, maker, exchange.address, 1_000_000_000u128)?;
+            exchange.create_pair(base)?;
+
+            let tick = 480;
+            let order_id = exchange.place(maker, base, MIN_ORDER_AMOUNT, true, tick)?;
+            let book_key = compute_book_key(base, quote);
+
+            // Reproduce the corrupted book: a bid level references an order marked as an ask.
+            let mut order = exchange.orders[order_id].read_in_book(book_key)?;
+            order.is_bid = false;
+            let book_id = exchange.books[book_key].read()?.id();
+            exchange.orders[order_id].write_in_book(order, book_id)?;
+
+            let amount_in = 50_000_000;
+            exchange.set_balance(taker, base, amount_in)?;
+            let route_side_payout =
+                base_to_quote(amount_in, tick, RoundingDirection::Down).unwrap();
+            assert_ne!(
+                amount_in, route_side_payout,
+                "fixture must distinguish the two sides"
+            );
+
+            let amount_out = exchange.swap_exact_amount_in(taker, base, quote, amount_in, 0)?;
+            // Payout follows `order.is_bid()` (ask), not the route's `is_bid` (bid).
+            assert_eq!(amount_out, amount_in);
+            Ok(())
+        })
+    }
+
+    /// Regression test for Moderato's historically corrupted DEX books, where a full
+    /// exact-out fill can carry output across orders whose `is_bid` differs from the route.
+    #[test]
+    fn test_exact_out_moderato_corrupted_book_uses_order_is_bid() {
+        let remaining = 100_000_000;
+        let tick = 480;
+        let order = Order::new_ask(1, Address::ZERO, B256::ZERO, remaining, tick);
+        let amount_out = 150_000_000;
+
+        // Reproduce a bid route resolving to an order marked as an ask.
+        let step = step_exact_out(amount_out, &order, true).unwrap();
+        assert_eq!(step.fill_amount, remaining);
+        assert_eq!(step.next_amount, amount_out - remaining);
+
+        let route_side_payout = taker_output(remaining, tick, true).unwrap();
+        assert_ne!(step.next_amount, amount_out - route_side_payout);
     }
 
     #[test]

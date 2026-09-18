@@ -103,9 +103,10 @@ use commonware_storage::{
 };
 use reth_node_core::primitives::SealedBlock;
 use reth_provider::{
-    BlockReader, BlockSource, ProviderError, ProviderResult,
+    BlockReader, BlockSource, HeaderProvider, ProviderError, ProviderResult,
     providers::{BlockchainProvider, ProviderNodeTypes},
 };
+use tempo_primitives::TempoHeader;
 use tracing::{info, instrument};
 
 use crate::consensus::{Digest, block::Block};
@@ -114,7 +115,7 @@ use crate::consensus::{Digest, block::Block};
 pub(in crate::storage) mod test;
 
 /// Narrow view of reth that [`Hybrid`] needs: a finalized watermark and
-/// canonical-by-height / canonical-by-hash block reads.
+/// block and header reads by height or hash.
 ///
 /// Exists to make unit testing easier. [`BlockchainProvider`] is used in
 /// production.
@@ -139,6 +140,13 @@ pub(crate) trait FinalizedBlocksProvider: Send + Sync {
     /// only — pending/in-flight blocks must never be returned, otherwise
     /// the marshal could be handed a non-finalized block.
     fn block_by_hash(&self, hash: B256) -> ProviderResult<Option<Block>>;
+
+    /// Look up a header at or below the finalized watermark. Genesis is
+    /// implicitly finalized even when the watermark is unset.
+    fn header_by_height(&self, height: u64) -> ProviderResult<Option<TempoHeader>>;
+
+    /// Look up a header by its exact hash, without consulting the finalized watermark.
+    fn header_by_hash(&self, hash: B256) -> ProviderResult<Option<TempoHeader>>;
 }
 
 /// Production impl over reth's [`BlockchainProvider`] — the only type
@@ -150,7 +158,7 @@ pub(crate) trait FinalizedBlocksProvider: Send + Sync {
 impl<N> FinalizedBlocksProvider for BlockchainProvider<N>
 where
     N: ProviderNodeTypes,
-    Self: BlockReader<Block = tempo_primitives::Block>,
+    Self: BlockReader<Block = tempo_primitives::Block> + HeaderProvider<Header = TempoHeader>,
 {
     fn finalized_height(&self) -> Option<u64> {
         // Direct read of `canonical_in_memory_state` — equivalent to
@@ -205,6 +213,19 @@ where
             }
             Err(bad_error) => Err(bad_error),
         }
+    }
+
+    #[instrument(skip_all, fields(height), err)]
+    fn header_by_height(&self, height: u64) -> ProviderResult<Option<TempoHeader>> {
+        if height > self.finalized_height().unwrap_or_default() {
+            return Ok(None);
+        }
+        self.header_by_number(height)
+    }
+
+    #[instrument(skip_all, fields(hash), err)]
+    fn header_by_hash(&self, hash: B256) -> ProviderResult<Option<TempoHeader>> {
+        self.header(hash)
     }
 }
 
@@ -282,6 +303,35 @@ where
             prunable,
             execution_block_provider: provider,
             retention_blocks,
+        }
+    }
+
+    /// Reads a header from the prunable archive, falling back to execution
+    /// headers without requiring a block body. Execution reads by height are
+    /// limited to the finalized watermark; reads by hash are not.
+    pub(crate) async fn get_header(
+        &self,
+        id: Identifier<'_, Digest>,
+    ) -> Result<Option<TempoHeader>, Error> {
+        let cached = match id {
+            Identifier::Index(height) => {
+                archive::Archive::get(&self.prunable, Identifier::Index(height)).await?
+            }
+            Identifier::Key(digest) => {
+                archive::Archive::get(&self.prunable, Identifier::Key(digest)).await?
+            }
+        };
+        if let Some(block) = cached {
+            return Ok(Some(block.block().header().clone()));
+        }
+
+        match id {
+            Identifier::Index(height) => {
+                Ok(self.execution_block_provider.header_by_height(height)?)
+            }
+            Identifier::Key(digest) => {
+                Ok(self.execution_block_provider.header_by_hash(digest.0)?)
+            }
         }
     }
 
