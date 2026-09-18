@@ -39,9 +39,6 @@ pub const IMPLICIT_APPROVAL_LIST: &[Address] = &[
 ///
 /// Before `TempoHardfork::T5` (TIP-1035 activation), returns `false` for all addresses.
 pub fn is_implicitly_approved(addr: Address, hardfork: TempoHardfork) -> bool {
-    if !hardfork.is_t5() {
-        return false;
-    }
     IMPLICIT_APPROVAL_LIST.contains(&addr)
 }
 
@@ -154,9 +151,6 @@ impl AddressRegistry {
     pub fn resolve_recipient(&self, to: Address) -> Result<Address> {
         // Explicit check because it isn't exclusively a view function.
         // It is also used by `tip20::Recipient`.
-        if !self.storage.spec().is_t3() {
-            return Ok(to);
-        }
 
         match to.decode_virtual() {
             None => Ok(to),

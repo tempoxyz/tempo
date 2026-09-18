@@ -38,8 +38,7 @@ pub const REJECT_ALL_POLICY_ID: u64 = 0;
 pub const ALLOW_ALL_POLICY_ID: u64 = 1;
 
 /// System addresses that cannot be policed.
-pub const ALWAYS_AUTHORIZED: &[(TempoHardfork, &[Address])] =
-    &[(TempoHardfork::T6, &[RECEIVE_POLICY_GUARD_ADDRESS])];
+pub const ALWAYS_AUTHORIZED: &[Address] = &[RECEIVE_POLICY_GUARD_ADDRESS];
 
 /// Registry for [TIP-403] transfer policies. TIP20 tokens reference an ID from this registry
 /// to police transfers between sender and receiver addresses.
@@ -156,15 +155,11 @@ pub struct PolicyData {
 impl PolicyData {
     /// Decodes the raw `policy_type` u8 to a `PolicyType` enum.
     fn policy_type(&self) -> Result<PolicyType> {
-        let is_t2 = StorageCtx.spec().is_t2();
+        let is_t2 = true;
 
         match self.policy_type.try_into() {
-            Ok(ty) if is_t2 || ty != PolicyType::COMPOUND => Ok(ty),
-            _ => Err(if is_t2 {
-                TIP403RegistryError::invalid_policy_type().into()
-            } else {
-                TempoPrecompileError::under_overflow()
-            }),
+            Ok(ty) if true => Ok(ty),
+            _ => Err({ TIP403RegistryError::invalid_policy_type().into() }),
         }
     }
 
@@ -320,7 +315,7 @@ impl TIP403Registry {
         &self,
         call: ITIP403Registry::policyDataCall,
     ) -> Result<ITIP403Registry::policyDataReturn> {
-        if self.storage.spec().is_t2() {
+        {
             // Built-in policies are virtual (not stored), and match the `PolicyType`:
             //  - 0: REJECT_ALL_POLICY_ID → WHITELIST
             //  - 1: ALLOW_ALL_POLICY_ID  → BLACKLIST
@@ -331,13 +326,6 @@ impl TIP403Registry {
                         .map_err(|_| TIP403RegistryError::invalid_policy_type())?,
                     admin: Address::ZERO,
                 });
-            }
-        } else {
-            // Check if policy exists before reading the data (spec: pre-T2)
-            if !self.policy_exists(ITIP403Registry::policyExistsCall {
-                policyId: call.policyId,
-            })? {
-                return Err(TIP403RegistryError::policy_not_found().into());
             }
         }
 
@@ -555,7 +543,7 @@ impl TIP403Registry {
         let policy_type = call.policyType.ensure_is_simple()?;
 
         // TIP-1022: reject virtual addresses in initial account set (spec T3+)
-        if self.storage.spec().is_t3() {
+        {
             for account in call.accounts.iter() {
                 if account.is_virtual() {
                     return Err(TIP403RegistryError::virtual_address_not_allowed().into());
@@ -665,7 +653,7 @@ impl TIP403Registry {
         call: ITIP403Registry::modifyPolicyWhitelistCall,
     ) -> Result<()> {
         // TIP-1022: virtual addresses are forwarding aliases, not valid policy members (spec: T3+)
-        if self.storage.spec().is_t3() && call.account.is_virtual() {
+        if call.account.is_virtual() {
             return Err(TIP403RegistryError::virtual_address_not_allowed().into());
         }
 
@@ -704,7 +692,7 @@ impl TIP403Registry {
         call: ITIP403Registry::modifyPolicyBlacklistCall,
     ) -> Result<()> {
         // TIP-1022: virtual addresses are forwarding aliases, not valid policy members (spec: T3+)
-        if self.storage.spec().is_t3() && call.account.is_virtual() {
+        if call.account.is_virtual() {
             return Err(TIP403RegistryError::virtual_address_not_allowed().into());
         }
 
@@ -795,13 +783,8 @@ impl TIP403Registry {
     /// - `InvalidPolicyType` — stored type cannot be decoded
     /// - `IncompatiblePolicyType` — a compound policy was passed where a simple one is required
     pub fn is_authorized_as(&self, policy_id: u64, user: Address, role: AuthRole) -> Result<bool> {
-        let hardfork = self.storage.spec();
-
         // (spec: +T6) some protocol addresses can't be policed and are always authorized.
-        if ALWAYS_AUTHORIZED
-            .iter()
-            .any(|(fork, addrs)| hardfork >= *fork && addrs.contains(&user))
-        {
+        if ALWAYS_AUTHORIZED.contains(&user) {
             return Ok(true);
         }
 
@@ -827,7 +810,7 @@ impl TIP403Registry {
                     // (spec: +T2) short-circuit and skip recipient check if sender fails
                     let sender_auth =
                         self.is_authorized_simple(compound.sender_policy_id, user, None)?;
-                    if hardfork.is_t2() && !sender_auth {
+                    if !sender_auth {
                         return Ok(false);
                     }
                     let recipient_auth =
@@ -915,7 +898,7 @@ impl TIP403Registry {
     /// Returns the policy type so that the caller can use it.
     fn validate_receive_policy_id(&self, policy_id: u64) -> Result<u8> {
         if self.builtin_authorization(policy_id).is_some() {
-            return Ok(policy_id as u8); // safe downcast as it's either 0 or 1.
+            return Ok(policy_id as u8);
         }
         if policy_id >= self.policy_id_counter()? {
             return Err(TIP403RegistryError::policy_not_found().into());
@@ -936,10 +919,7 @@ impl TIP403Registry {
 
         // Verify that the policy id exists (spec: +T2).
         // Skip the counter read (extra SLOAD) when policy data is non-default.
-        if self.storage.spec().is_t2()
-            && data.is_default()
-            && policy_id >= self.policy_id_counter()?
-        {
+        if data.is_default() && policy_id >= self.policy_id_counter()? {
             return Err(TIP403RegistryError::policy_not_found().into());
         }
 
@@ -962,11 +942,7 @@ impl TIP403Registry {
 impl AuthRole {
     #[inline]
     fn transfer_or(t2_variant: Self) -> Self {
-        if StorageCtx.spec().is_t2() {
-            t2_variant
-        } else {
-            Self::Transfer
-        }
+        { t2_variant }
     }
 
     /// Hardfork-aware: always returns `Transfer`.
@@ -993,13 +969,10 @@ impl AuthRole {
 /// Returns `true` if the error indicates a failed policy lookup — the policy type is invalid
 /// or the policy doesn't exist.
 pub fn is_policy_lookup_error(e: &TempoPrecompileError) -> bool {
-    if StorageCtx.spec().is_t2() {
+    {
         // T2+: typed TIP403 errors
         *e == TIP403RegistryError::invalid_policy_type().into()
             || *e == TIP403RegistryError::policy_not_found().into()
-    } else {
-        // Pre-T2: legacy Panic(UnderOverflow) sentinel
-        *e == TempoPrecompileError::under_overflow()
     }
 }
 
@@ -1018,11 +991,7 @@ impl PolicyTypeExt for PolicyType {
         match self {
             Self::WHITELIST | Self::BLACKLIST => Ok(*self as u8),
             Self::COMPOUND | Self::__Invalid => {
-                if StorageCtx.spec().is_t2() {
-                    Err(TIP403RegistryError::incompatible_policy_type().into())
-                } else {
-                    Ok(Self::__Invalid as u8)
-                }
+                Err(TIP403RegistryError::incompatible_policy_type().into())
             }
         }
     }

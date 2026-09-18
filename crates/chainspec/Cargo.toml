@@ -40,7 +40,6 @@ commonware-cryptography = { workspace = true, optional = true }
 [dev-dependencies]
 
 [features]
-fixed-t11 = ["tempo-hardfork/fixed-t11"]
 default = ["std", "serde", "reth", "cli"]
 std = [
     "tempo-hardfork/std",

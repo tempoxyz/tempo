@@ -121,10 +121,7 @@ impl TempoAddressExt for Address {
     }
 
     fn is_precompile(&self, spec: TempoHardfork) -> bool {
-        self.is_tip20()
-            || SYSTEM_PRECOMPILES
-                .iter()
-                .any(|&(a, activated)| &a == self && spec >= activated)
+        self.is_tip20() || SYSTEM_PRECOMPILES.iter().any(|&(a, _)| &a == self)
     }
 }
 

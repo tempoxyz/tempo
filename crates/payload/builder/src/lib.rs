@@ -365,7 +365,7 @@ where
             .gas_limit_with_target(parent_header.gas_limit(), attributes.target_gas_limit);
         let general_gas_limit =
             chain_spec.general_gas_limit_at(attributes.timestamp, block_gas_limit, 0);
-        let hardfork = chain_spec.tempo_hardfork_at(attributes.timestamp);
+        let hardfork = TempoHardfork::CURRENT;
 
         let mut cumulative_gas_used = 0;
         let mut cumulative_state_gas_used = 0u64;
@@ -585,11 +585,7 @@ where
                 continue;
             }
 
-            let is_payment = if hardfork.is_t5() {
-                tx.transaction.is_payment()
-            } else {
-                tx.transaction.inner().is_payment_v1()
-            };
+            let is_payment = { tx.transaction.is_payment() };
 
             // If the tx is not a payment and will exceed the general gas limit
             // mark the tx as invalid and continue
@@ -1210,9 +1206,6 @@ fn maybe_override_fee_recipient<DB: Database>(
         return;
     };
     let ctx = executor.evm_mut().ctx_mut();
-    if !ctx.cfg.spec.is_t2() {
-        return;
-    }
 
     // We are using the database as a read-only storage context to avoid modifying the journal state.
     // Reading slots here might be dangerous because they would end up being warmed and might affect gas accounting.

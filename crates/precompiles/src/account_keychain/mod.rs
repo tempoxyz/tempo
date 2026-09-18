@@ -262,7 +262,7 @@ impl AccountKeychain {
     ) -> Result<()> {
         let config = &config;
         self.ensure_admin_caller(msg_sender)?;
-        let is_t3 = self.storage.spec().is_t3();
+        let is_t3 = true;
 
         // Validate inputs
         if key_id == Address::ZERO {
@@ -274,7 +274,7 @@ impl AccountKeychain {
         }
 
         // T0+: Expiry must be in the future (also catches expiry == 0 which means "key doesn't exist")
-        if self.storage.spec().is_t0() {
+        {
             let current_timestamp = self.storage.timestamp().saturating_to::<u64>();
             if config.expiry <= current_timestamp {
                 return Err(AccountKeychainError::expiry_in_past().into());
@@ -295,7 +295,7 @@ impl AccountKeychain {
         let signature_type = StoredSignatureType::try_from(signature_type)?;
 
         // TIP-1011 fields are hardfork-gated at T3, so reject them before mutating state.
-        let allowed_call_configs = if is_t3 {
+        let allowed_call_configs = {
             if config.enforceLimits {
                 let mut seen_tokens = HashSet::with_capacity(config.limits.len());
                 for limit in &config.limits {
@@ -307,7 +307,7 @@ impl AccountKeychain {
 
             if config.allowAnyCalls {
                 // T5+: prevent footguns where callers accidentally pass scopes with allow-all.
-                if self.storage.spec().is_t5() && !config.allowedCalls.is_empty() {
+                if !config.allowedCalls.is_empty() {
                     return Err(AccountKeychainError::invalid_call_scope().into());
                 }
 
@@ -315,16 +315,6 @@ impl AccountKeychain {
             } else {
                 Some(config.allowedCalls.as_slice())
             }
-        } else {
-            if config.limits.iter().any(|limit| limit.period != 0) {
-                return Err(AccountKeychainError::invalid_spending_limit().into());
-            }
-
-            if !config.allowAnyCalls || !config.allowedCalls.is_empty() {
-                return Err(AccountKeychainError::invalid_call_scope().into());
-            }
-
-            None
         };
 
         if let Some(witness) = witness {
@@ -478,17 +468,13 @@ impl AccountKeychain {
 
         // Update the spending limit
         let limit_key = Self::spending_limit_key(msg_sender, call.keyId);
-        if self.storage.spec().is_t3() {
+        {
             // T3: newLimit updates both the configured cap and current remaining amount,
             // while preserving period + period_end.
             let mut limit_state = self.spending_limits[limit_key][call.token].read()?;
             limit_state.remaining = call.newLimit;
             limit_state.max = Self::t3_spending_limit_cap(call.newLimit)?;
             self.spending_limits[limit_key][call.token].write(limit_state)?;
-        } else {
-            self.spending_limits[limit_key][call.token]
-                .remaining
-                .write(call.newLimit)?;
         }
 
         // Emit event
@@ -529,11 +515,6 @@ impl AccountKeychain {
     /// T2+ returns zero for missing, revoked, or expired keys. Pre-T2 preserves the historical
     /// behavior of reading the raw stored remaining amount so old blocks reexecute identically.
     pub fn get_remaining_limit(&self, call: getRemainingLimitCall) -> Result<U256> {
-        if !self.storage.spec().is_t2() {
-            let limit_key = Self::spending_limit_key(call.account, call.keyId);
-            return self.spending_limits[limit_key][call.token].remaining.read();
-        }
-
         self.get_remaining_limit_with_period(getRemainingLimitWithPeriodCall {
             account: call.account,
             keyId: call.keyId,
@@ -568,10 +549,6 @@ impl AccountKeychain {
         msg_sender: Address,
         call: setAllowedCallsCall,
     ) -> Result<()> {
-        if !self.storage.spec().is_t3() {
-            return Err(AccountKeychainError::invalid_call_scope().into());
-        }
-
         self.ensure_admin_caller(msg_sender)?;
 
         let current_timestamp = self.storage.timestamp().saturating_to::<u64>();
@@ -750,12 +727,12 @@ impl AccountKeychain {
     ) -> Result<()> {
         let limit_key = Self::spending_limit_key(account, key_id);
 
-        let is_t3 = self.storage.spec().is_t3();
+        let is_t3 = true;
         debug_assert!(is_t3 || allowed_calls.is_none());
 
         let now = self.storage.timestamp().saturating_to::<u64>();
         for limit in limits {
-            if is_t3 {
+            {
                 let period_end = if limit.period == 0 {
                     0
                 } else {
@@ -768,15 +745,7 @@ impl AccountKeychain {
                     period: limit.period,
                     period_end,
                 })?;
-            } else {
-                self.spending_limits[limit_key][limit.token]
-                    .remaining
-                    .write(limit.amount)?;
             }
-        }
-
-        if !is_t3 {
-            return Ok(());
         }
 
         self.replace_allowed_calls(limit_key, allowed_calls)
@@ -797,7 +766,7 @@ impl AccountKeychain {
         to: &TxKind,
         input: &[u8],
     ) -> Result<()> {
-        if key_id == Address::ZERO || !self.storage.spec().is_t3() {
+        if key_id == Address::ZERO {
             return Ok(());
         }
 
@@ -951,9 +920,6 @@ impl AccountKeychain {
         let target = scope.target;
 
         // Pre-T4: validate call scopes inline
-        if !self.storage.spec().is_t4() {
-            self.validate_call_scope(scope)?;
-        }
 
         self.key_scopes[account_key].targets.insert(target)?;
         self.clear_target_selectors(account_key, target)?;
@@ -971,16 +937,7 @@ impl AccountKeychain {
                 .selectors
                 .insert(selector)?;
 
-            if rule.recipients.is_empty() {
-                if !self.storage.spec().is_t4() {
-                    // Keep the pre-T4 empty-set delete to preserve the original storage-touch
-                    // pattern. Removing it earlier changes same-tx call-scope warmness without
-                    // changing persisted state.
-                    self.key_scopes[account_key].target_scopes[target].selector_scopes[selector]
-                        .recipients
-                        .delete()?;
-                }
-            } else {
+            if !(rule.recipients.is_empty()) {
                 // `validate_selector_rules` already rejected duplicates.
                 self.key_scopes[account_key].target_scopes[target].selector_scopes[selector]
                     .recipients
@@ -993,8 +950,8 @@ impl AccountKeychain {
 
     /// Validates a list of [`CallScope`]s.
     fn validate_call_scopes(&mut self, scopes: &[CallScope]) -> Result<()> {
-        // Preserve the incremental pre-T11 validation order for historical reexecution.
-        if self.storage.spec().is_t11() {
+        // Validate all targets before writing any scope storage.
+        {
             if has_duplicates_metered(&mut self.storage, scopes.iter().map(|scope| scope.target))? {
                 return Err(AccountKeychainError::invalid_call_scope().into());
             }
@@ -1004,19 +961,6 @@ impl AccountKeychain {
             }
             return Ok(());
         }
-
-        let mut seen_targets = HashSet::new();
-        for scope in scopes {
-            if !seen_targets.insert(scope.target) {
-                return Err(AccountKeychainError::invalid_call_scope().into());
-            }
-
-            // Post-T4: validate call scopes before inserting
-            if self.storage.spec().is_t4() {
-                self.validate_call_scope(scope)?;
-            }
-        }
-        Ok(())
     }
 
     /// Validates a single [`CallScope`].
@@ -1040,18 +984,12 @@ impl AccountKeychain {
     /// selector entirely, omit it from `selectorRules` or remove the target scope instead of
     /// leaving behind an empty child set via incremental mutation.
     fn validate_selector_rules(&mut self, target: Address, rules: &[SelectorRule]) -> Result<()> {
-        let spec = self.storage.spec();
-        let sort_selectors = spec.is_t11();
-
         let mut cached_is_tip20: Option<bool> = None;
         let mut is_tip20 = || -> Result<bool> {
             match cached_is_tip20 {
                 Some(v) => Ok(v),
                 None => Ok(*cached_is_tip20.insert({
-                    if !spec.is_t4() {
-                        // Pre-T4: validate that TIP-20 is initialized
-                        TIP20Factory::new().is_tip20(target)?
-                    } else {
+                    {
                         // Post-T4: only validate the address
                         target.is_tip20()
                     }
@@ -1059,18 +997,11 @@ impl AccountKeychain {
             }
         };
 
-        if sort_selectors
-            && has_duplicates_metered(&mut self.storage, rules.iter().map(|rule| rule.selector))?
-        {
+        if has_duplicates_metered(&mut self.storage, rules.iter().map(|rule| rule.selector))? {
             return Err(AccountKeychainError::invalid_call_scope().into());
         }
 
-        let mut selectors = HashSet::new();
         for rule in rules {
-            if !sort_selectors && !selectors.insert(rule.selector) {
-                return Err(AccountKeychainError::invalid_call_scope().into());
-            }
-
             if rule.recipients.is_empty() {
                 continue;
             }
@@ -1108,13 +1039,11 @@ impl AccountKeychain {
     /// If origin is not seeded (zero), admin ops are rejected.
     fn ensure_admin_caller(&self, msg_sender: Address) -> Result<()> {
         let transaction_key = self.transaction_key.t_read()?;
-        if !transaction_key.is_zero()
-            && (!self.storage.spec().is_t6() || !self.is_admin_key(msg_sender, transaction_key)?)
-        {
+        if !transaction_key.is_zero() && (!self.is_admin_key(msg_sender, transaction_key)?) {
             return Err(AccountKeychainError::unauthorized_caller().into());
         }
 
-        if self.storage.spec().is_t2() {
+        {
             let tx_origin = self.tx_origin.t_read()?;
             if tx_origin.is_zero() || tx_origin != msg_sender {
                 return Err(AccountKeychainError::unauthorized_caller().into());
@@ -1266,7 +1195,7 @@ impl AccountKeychain {
         current_timestamp: u64,
         key: &AuthorizedKey,
     ) -> Result<U256> {
-        if key_id.is_zero() && self.storage.spec().is_t3() {
+        if key_id.is_zero() {
             return Ok(U256::ZERO);
         }
 
@@ -1283,7 +1212,7 @@ impl AccountKeychain {
         token: Address,
         current_timestamp: u64,
     ) -> Result<(U256, u64)> {
-        if key_id.is_zero() && self.storage.spec().is_t3() {
+        if key_id.is_zero() {
             return Ok((U256::ZERO, 0));
         }
 
@@ -1306,28 +1235,23 @@ impl AccountKeychain {
         }
 
         // T3+: return zero if key has expired
-        if current_timestamp >= key.expiry && self.storage.spec().is_t3() {
+        if current_timestamp >= key.expiry {
             return Ok((U256::ZERO, 0));
         }
 
         let limit_key = Self::spending_limit_key(account, key_id);
         let remaining = self.spending_limits[limit_key][token].remaining.read()?;
 
-        if !self.storage.spec().is_t3() {
-            return Ok((remaining, 0));
-        }
-
         let period = self.spending_limits[limit_key][token].period.read()?;
         if period == 0 {
             return Ok((remaining, 0));
         }
 
-        let remaining =
-            if self.storage.spec().is_t7() && remaining == ZERO_PERIODIC_REMAINING_SENTINEL {
-                U256::ZERO
-            } else {
-                remaining
-            };
+        let remaining = if remaining == ZERO_PERIODIC_REMAINING_SENTINEL {
+            U256::ZERO
+        } else {
+            remaining
+        };
 
         let period_end = self.spending_limits[limit_key][token].period_end.read()?;
         if current_timestamp < period_end {
@@ -1373,25 +1297,13 @@ impl AccountKeychain {
 
         // Check and update spending limit
         let limit_key = Self::spending_limit_key(account, key_id);
-        if !self.storage.spec().is_t3() {
-            let remaining = self.spending_limits[limit_key][token].remaining.read()?;
-            if amount > remaining {
-                return Err(AccountKeychainError::spending_limit_exceeded().into());
-            }
-
-            let new_remaining = remaining - amount;
-            self.spending_limits[limit_key][token]
-                .remaining
-                .write(new_remaining)?;
-            return Ok(());
-        }
 
         let mut limit_state = self.spending_limits[limit_key][token].read()?;
         let mut remaining = limit_state.remaining;
         let is_periodic = limit_state.period != 0;
 
         if is_periodic {
-            if self.storage.spec().is_t7() && remaining == ZERO_PERIODIC_REMAINING_SENTINEL {
+            if remaining == ZERO_PERIODIC_REMAINING_SENTINEL {
                 remaining = U256::ZERO;
             }
 
@@ -1411,7 +1323,7 @@ impl AccountKeychain {
         // Update remaining limit
         let new_remaining = remaining - amount;
         if is_periodic {
-            if self.storage.spec().is_t7() && new_remaining.is_zero() {
+            if new_remaining.is_zero() {
                 limit_state.remaining = ZERO_PERIODIC_REMAINING_SENTINEL;
             } else {
                 limit_state.remaining = new_remaining;
@@ -1471,18 +1383,10 @@ impl AccountKeychain {
         }
 
         let limit_key = Self::spending_limit_key(account, transaction_key);
-        if !self.storage.spec().is_t3() {
-            let remaining = self.spending_limits[limit_key][token].remaining.read()?;
-            let refunded = remaining.saturating_add(amount);
-            return self.spending_limits[limit_key][token]
-                .remaining
-                .write(refunded);
-        }
 
         let mut limit_state = self.spending_limits[limit_key][token].read()?;
         // (T7+) decode the periodic zero sentinel before adding the refund.
-        let refunded = if self.storage.spec().is_t7()
-            && limit_state.period != 0
+        let refunded = if limit_state.period != 0
             && limit_state.remaining == ZERO_PERIODIC_REMAINING_SENTINEL
         {
             amount
@@ -4968,7 +4872,7 @@ mod tests {
                 let keychain = AccountKeychain::new();
 
                 let sload_before = StorageCtx.counter_sload();
-                if hardfork.is_t3() {
+                {
                     // T3: expired keys are zeroed out
                     let remaining = keychain.get_remaining_limit_with_period(
                         getRemainingLimitWithPeriodCall {
@@ -4982,18 +4886,6 @@ mod tests {
 
                     // T3+: expired key returns zero directly
                     assert_eq!(StorageCtx.counter_sload() - sload_before, 1);
-                } else {
-                    // pre-T3: expired keys are NOT zeroed; the raw stored limit is returned
-                    let remaining = keychain.get_remaining_limit(getRemainingLimitCall {
-                        account,
-                        keyId: key_id,
-                        token,
-                    })?;
-                    assert_eq!(remaining, U256::from(100u64));
-
-                    // pre-T2: direct storage read without reading the key
-                    let expected_delta = if hardfork.is_t2() { 2 } else { 1 };
-                    assert_eq!(StorageCtx.counter_sload() - sload_before, expected_delta);
                 }
 
                 Ok::<_, eyre::Report>(())
@@ -5041,7 +4933,7 @@ mod tests {
                 keychain.revoke_key(account, revokeKeyCall { keyId: key_id })?;
 
                 let sload_before = StorageCtx.counter_sload();
-                if hardfork.is_t2() {
+                {
                     // T2+: revoked keys are zeroed out
                     let remaining = keychain.get_remaining_limit_with_period(
                         getRemainingLimitWithPeriodCall {
@@ -5054,17 +4946,6 @@ mod tests {
                     assert_eq!(remaining.periodEnd, 0);
 
                     // T2+: revoked key returns zero directly
-                    assert_eq!(StorageCtx.counter_sload() - sload_before, 1);
-                } else {
-                    // pre-T2: revoked keys are NOT zeroed; the raw stored limit is returned
-                    let remaining = keychain.get_remaining_limit(getRemainingLimitCall {
-                        account,
-                        keyId: key_id,
-                        token,
-                    })?;
-                    assert_eq!(remaining, U256::from(100u64));
-
-                    // pre-T2: direct storage read without reading the key
                     assert_eq!(StorageCtx.counter_sload() - sload_before, 1);
                 }
 

@@ -214,7 +214,7 @@ fn store_bytes_like<S: StorageOps>(
     let mut data_slot: Option<U256> = None;
 
     // (T5+) Cleanup stale tail if necessary.
-    if !ctx.skip_tail_cleanup() && StorageCtx.spec().is_t5() {
+    if !ctx.skip_tail_cleanup() {
         let prev = storage.load(base_slot)?;
         // Only applicable to long strings, as short ones always get overridden.
         if is_long_string(prev) {

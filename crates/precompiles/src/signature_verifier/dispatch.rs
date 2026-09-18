@@ -31,11 +31,9 @@ impl Precompile for SignatureVerifier {
                     verify(call) => view(call, |c| {
                         self.recover(c.hash, c.signature).map(|sig| sig == c.signer)
                     }),
-                    #[schedule(since = T6)]
                     verifyKeychain(call) => view(call, |c| {
                         self.verify_keychain(c.account, c.hash, c.signature)
                     }),
-                    #[schedule(since = T6)]
                     verifyKeychainAdmin(call) => view(call, |c| {
                         self.verify_keychain_admin(c.account, c.hash, c.signature)
                     }),

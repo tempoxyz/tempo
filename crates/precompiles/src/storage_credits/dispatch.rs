@@ -136,13 +136,8 @@ mod tests {
             StorageCtx::enter(&mut storage, || -> eyre::Result<()> {
                 let output = StorageCredits::new().call(&calldata, caller)?;
                 assert!(output.is_revert());
-                if spec.is_t11() {
+                {
                     assert!(output.bytes.is_empty());
-                } else {
-                    assert_eq!(
-                        &output.bytes[..4],
-                        StorageCreditsError::invalid_mode().selector().as_slice()
-                    );
                 }
                 Ok(())
             })?;

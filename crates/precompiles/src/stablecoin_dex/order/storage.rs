@@ -299,10 +299,6 @@ impl OrderHandler {
 
     /// Returns the physical storage version and the loaded base slot, when read.
     pub(crate) fn version_and_slot(&self) -> StorageResult<(OrderVersion, Option<U256>)> {
-        if !StorageCtx.spec().is_t8() {
-            return Ok((OrderVersion::Legacy, None));
-        }
-
         let slot0 = self.load(self.base_slot)?;
         Ok((OrderVersion::try_from(slot0)?, Some(slot0)))
     }
@@ -342,10 +338,6 @@ impl OrderHandler {
     /// Writes this order, skipping V2 index resolution when a book ID is provided.
     fn write_with_book_id(&mut self, value: Order, known_id: Option<BookId>) -> StorageResult<()> {
         debug_assert_eq!(value.order_id, self.order_id);
-
-        if !StorageCtx.spec().is_t8() {
-            return value.store(self, self.base_slot, LayoutCtx::FULL);
-        }
 
         let (old_version, slot0) = self.version_and_slot()?;
         let old_slots = match old_version {

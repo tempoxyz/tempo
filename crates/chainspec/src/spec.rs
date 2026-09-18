@@ -407,7 +407,7 @@ impl EthChainSpec for TempoChainSpec {
     fn next_block_base_fee(&self, parent: &TempoHeader, target_timestamp: u64) -> Option<u64> {
         let target_fork = self.tempo_hardfork_at(target_timestamp);
 
-        if target_fork.is_t7() {
+        {
             let parent_base_fee = parent
                 .inner
                 .base_fee_per_gas
@@ -416,10 +416,6 @@ impl EthChainSpec for TempoChainSpec {
                 parent_base_fee,
                 parent.inner.gas_used,
             ))
-        } else if target_fork.is_t1() {
-            Some(TEMPO_T1_BASE_FEE)
-        } else {
-            Some(TEMPO_T0_BASE_FEE)
         }
     }
 }
@@ -446,9 +442,6 @@ macro_rules! tempo_hardforks_trait {
 
             /// Retrieves the Tempo hardfork active at a given timestamp.
             fn tempo_hardfork_at(&self, timestamp: u64) -> TempoHardfork {
-                if TempoHardfork::FIXED_EXECUTION {
-                    return TempoHardfork::CURRENT;
-                }
                 for &fork in TempoHardfork::VARIANTS.iter().rev() {
                     if self
                         .tempo_fork_activation(fork)
@@ -464,9 +457,6 @@ macro_rules! tempo_hardforks_trait {
                 $(
                     #[doc = concat!("Returns true if ", stringify!($variant), " is active at the given timestamp.")]
                     fn [<is_ $variant:lower _active_at_timestamp>](&self, timestamp: u64) -> bool {
-                        if TempoHardfork::FIXED_EXECUTION {
-                            return TempoHardfork::CURRENT >= TempoHardfork::$variant;
-                        }
                         self.tempo_fork_activation(TempoHardfork::$variant)
                             .active_at_timestamp(timestamp)
                     }

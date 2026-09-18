@@ -13,9 +13,6 @@ impl Precompile for ValidatorConfigV2 {
         }
 
         // Pre-T2: behave like an empty contract (call succeeds, no execution)
-        if !self.storage.spec().is_t2() {
-            return Ok(self.storage.success_output(Default::default()));
-        }
 
         dispatch!(
             calldata,

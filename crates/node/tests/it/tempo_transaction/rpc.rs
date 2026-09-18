@@ -135,7 +135,7 @@ impl super::types::TestEnv for RpcEnv {
     }
 
     fn supports_scoped_key_auth_rpc(&self) -> bool {
-        self.hardfork.is_t3()
+        true
     }
 
     async fn fund_account(&mut self, addr: Address) -> eyre::Result<U256> {

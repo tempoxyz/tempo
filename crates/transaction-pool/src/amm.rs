@@ -83,7 +83,7 @@ impl AmmLiquidityCache {
 
             let calc_swap = |input| compute_amount_out(input).map_err(ProviderError::other);
             let out1 = calc_swap(fee)?;
-            let out2 = hardfork.is_t5().then(|| calc_swap(out1)).transpose()?;
+            let out2 = true.then(|| calc_swap(out1)).transpose()?;
 
             for &validator_token in &inner.unique_tokens {
                 let direct = inner
@@ -306,7 +306,7 @@ impl AmmLiquidityCache {
         }
 
         // Refresh the cached active hardfork from the latest seen header.
-        self.inner.write().hardfork = client.chain_spec().tempo_hardfork_at(latest_timestamp);
+        self.inner.write().hardfork = TempoHardfork::CURRENT;
 
         Ok(())
     }

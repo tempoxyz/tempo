@@ -16,19 +16,18 @@ separate databases. Never point them at the same data directory.
 
 ```sh
 cargo build --release -p tempo-multiplex
-cargo build --release -p tempo --bin tempo-v2 --features fixed-t11
+cargo build --release -p tempo --bin tempo-v2
 ```
 
 Obtain v1.14.0 from the [release](https://github.com/tempoxyz/tempo/releases/tag/v1.14.0)
-and verify the published archive checksum. Do not build the legacy binary with
-`fixed-t11`: Cargo features are additive within a build. The multiplexer checks
-v2's `tempo_executionRules` response before accepting traffic.
+and verify the published archive checksum. This source tree builds only the current
+T11 execution protocol: obtain the historical node from the release, not this tree.
+The multiplexer checks v2's `tempo_executionRules` response before accepting traffic.
 
-`fixed-t11` removes runtime Tempo hardfork selection from v2. All `is_t*` execution
-predicates are compile-time constants, including disabled T12/T13 predicates.
-The source retains historical identifiers, activation metadata, and the ordinary
-v1 library build for SDK/chain-identity compatibility; this is **not** deletion of
-all historical source code. Optimized builds eliminate the unused execution paths.
+Historical and future execution branches are removed from the EVM, precompiles,
+gas accounting and transaction pool. There is no feature flag restoring them.
+Historical fork identifiers and activation timestamps remain as chain identity and
+RPC metadata, not selectors for execution behavior.
 The v2 EVM refuses execution environments before the chain's T11 activation.
 T11 activated at `1789048800` on mainnet and `1788962400` on Moderato.
 
@@ -106,7 +105,7 @@ status) omit it.
 
 ```sh
 cargo test -p tempo-multiplex
-cargo test -p tempo-hardfork --features fixed-t11
+cargo test -p tempo-hardfork
 cargo +nightly clippy -p tempo-multiplex --all-targets -- -D warnings
 ```
 

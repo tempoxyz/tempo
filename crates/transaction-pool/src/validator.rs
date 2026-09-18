@@ -28,10 +28,7 @@ use revm::{
     DatabaseRef,
     context::result::{EVMError, InvalidTransaction},
 };
-use std::sync::{
-    Arc,
-    atomic::{AtomicU8, Ordering},
-};
+use std::sync::Arc;
 use tempo_chainspec::{
     hardfork::{TempoHardfork, TempoHardforks},
     spec::TEMPO_T7_BASE_FEE_FLOOR,
@@ -108,12 +105,6 @@ pub struct TempoTransactionValidator<Client, EvmConfig = TempoEvmConfig> {
     /// Tip hash and cache of state reads shared across validation calls, replaced on each
     /// `on_new_head_block`.
     cached_state: RwLock<(B256, Arc<StateCache>)>,
-    /// The Tempo hardfork active at the current tip, stored as an index into
-    /// [`TempoHardfork::VARIANTS`] and updated on each `on_new_head_block`.
-    ///
-    /// Cached here so hot paths can resolve the active hardfork with a single atomic load
-    /// instead of walking the chain spec's fork schedule.
-    active_hardfork: AtomicU8,
 }
 
 impl<Client, EvmConfig> TempoTransactionValidator<Client, EvmConfig>
@@ -140,7 +131,6 @@ where
             .evm_config()
             .evm_env(latest_header.header())
             .expect("failed constructing EvmEnv from latest header");
-        let active_hardfork = AtomicU8::new(evm_env.cfg_env.spec.variant_index());
         Self {
             inner,
             aa_valid_after_max_secs,
@@ -150,7 +140,6 @@ where
             address_filter: AddressFilter::default(),
             cached_evm_env: parking_lot::RwLock::new(evm_env),
             cached_state: RwLock::new((latest_header.hash(), Arc::new(StateCache::default()))),
-            active_hardfork,
         }
     }
 
@@ -166,12 +155,9 @@ where
         self
     }
 
-    /// Returns the Tempo hardfork active at the current tip.
-    ///
-    /// Updated on each `on_new_head_block`.
+    /// Returns the only execution protocol supported by this node.
     pub fn active_hardfork(&self) -> TempoHardfork {
-        TempoHardfork::from_variant_index(self.active_hardfork.load(Ordering::Relaxed))
-            .expect("stored hardfork index is valid")
+        TempoHardfork::CURRENT
     }
 
     /// Obtains a clone of the shared [`AmmLiquidityCache`].
@@ -620,7 +606,7 @@ where
                     }
 
                     // Expiring nonces are only recognized once T1 is active at the tip.
-                    if spec.is_t1() && nonce_key == TEMPO_EXPIRING_NONCE_KEY {
+                    if nonce_key == TEMPO_EXPIRING_NONCE_KEY {
                         // Expiring nonce transactions are validated by the EVM
                     } else {
                         // This is a 2D nonce transaction - validate against 2D nonce
@@ -763,8 +749,6 @@ where
             .evm_config()
             .evm_env(new_tip_block.header())
             .expect("invalid block in on_new_head_block");
-        self.active_hardfork
-            .store(evm_env.cfg_env.spec.variant_index(), Ordering::Relaxed);
         *self.cached_evm_env.write() = evm_env;
 
         // State changed, drop all cached reads and anchor the new cache to this tip.

@@ -187,30 +187,6 @@ where
         // so eviction matches events emitted with sub-policy IDs.
         let mut policy_cache: AddressMap<Vec<u64>> = AddressMap::default();
 
-        // Pre-T8 fee collection checked TIP_FEE_MANAGER_ADDRESS as the fee-token recipient.
-        // TIP-1042 exempts that recipient side, so T8+ invalidation only tracks fee-payer sender
-        // authorization.
-        let is_t8 = spec.is_t8();
-        // NOTE: We can remove this logic after T8 activation
-        let (fee_manager_blacklisted, fee_manager_unwhitelisted): (Vec<u64>, Vec<u64>) = if !is_t8 {
-            (
-                updates
-                    .blacklist_additions
-                    .iter()
-                    .filter(|(_, account)| *account == TIP_FEE_MANAGER_ADDRESS)
-                    .map(|(policy_id, _)| *policy_id)
-                    .collect(),
-                updates
-                    .whitelist_removals
-                    .iter()
-                    .filter(|(_, account)| *account == TIP_FEE_MANAGER_ADDRESS)
-                    .map(|(policy_id, _)| *policy_id)
-                    .collect(),
-            )
-        } else {
-            (Vec::new(), Vec::new())
-        };
-
         // Re-check liquidity for all pooled txs when an active validator changes token.
         // Leverages the per-tx `has_enough_liquidity` check, which passes if ANY validator pair has
         // enough liquidity, matching admission and preventing mass-eviction of valid txs.
@@ -433,15 +409,7 @@ where
                     }
                 }
 
-                // Check if the fee manager (recipient) was blacklisted on this token's
-                // recipient policy — the tx would fail at execution since the fee
-                // transfer to TIP_FEE_MANAGER_ADDRESS would be rejected.
-                let recipient_evicted = !sender_evicted
-                    && !fee_manager_blacklisted.is_empty()
-                    && get_recipient_policy_ids(provider, fee_token, spec)
-                        .is_some_and(|ids| fee_manager_blacklisted.iter().any(|p| ids.contains(p)));
-
-                if sender_evicted || recipient_evicted {
+                if sender_evicted {
                     to_remove.push(*tx.hash());
                     blacklisted_count += 1;
                 }
@@ -477,15 +445,7 @@ where
                     }
                 }
 
-                // Check if the fee manager (recipient) was un-whitelisted on this
-                // token's recipient policy.
-                let recipient_evicted = !sender_evicted
-                    && !fee_manager_unwhitelisted.is_empty()
-                    && get_recipient_policy_ids(provider, fee_token, spec).is_some_and(|ids| {
-                        fee_manager_unwhitelisted.iter().any(|p| ids.contains(p))
-                    });
-
-                if sender_evicted || recipient_evicted {
+                if sender_evicted {
                     to_remove.push(*tx.hash());
                     unwhitelisted_count += 1;
                 }
@@ -1397,29 +1357,9 @@ fn get_recipient_policy_ids(
     fee_token: Address,
     spec: TempoHardfork,
 ) -> Option<Vec<u64>> {
-    if spec.is_t8() {
+    {
         return None;
     }
-
-    provider.with_read_only_storage_ctx(spec, StorageActions::disabled(), || {
-        let policy_id = TIP20Token::from_address(fee_token)
-            .and_then(|t| t.transfer_policy_id())
-            .ok()
-            .filter(|&id| id != REJECT_ALL_POLICY_ID)?;
-
-        let mut ids = vec![policy_id];
-
-        let registry = TIP403Registry::new();
-        if let Ok(data) = registry.policy_records[policy_id].base.read()
-            && data.is_compound()
-            && let Ok(compound) = registry.policy_records[policy_id].compound.read()
-            && compound.recipient_policy_id != REJECT_ALL_POLICY_ID
-        {
-            ids.push(compound.recipient_policy_id);
-        }
-
-        Some(ids)
-    })
 }
 
 #[cfg(test)]

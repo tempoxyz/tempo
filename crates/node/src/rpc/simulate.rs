@@ -193,7 +193,7 @@ impl<N: FullNodeTypes<Types = TempoNode>> TempoSimulate<N> {
             .eth_api
             .spawn_blocking_io_fut(async move |this| {
                 let state = this.state_at_block_id(block).await?;
-                let spec = this.provider().chain_spec().tempo_hardfork_at(timestamp);
+                let spec = tempo_chainspec::hardfork::TempoHardfork::CURRENT;
                 let mut db = StateProviderDatabase::new(state);
 
                 let metadata =

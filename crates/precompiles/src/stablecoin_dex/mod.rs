@@ -95,7 +95,7 @@ impl StablecoinDEX {
 
     /// Adds reusable-order storage credits for `user`.
     fn credit_dex_storage_slots(&mut self, user: Address, slots: u64) -> Result<()> {
-        if slots == 0 || !self.storage.spec().is_t7() {
+        if slots == 0 {
             return Ok(());
         }
 
@@ -289,20 +289,11 @@ impl StablecoinDEX {
 
     /// Transfer tokens from user, accounting for pathUSD
     fn transfer_from(&mut self, token: Address, sender: Address, amount: u128) -> Result<()> {
-        if self.storage.spec().is_t5() {
+        {
             TIP20Token::from_address(token)?.system_transfer_from(
                 self.address,
                 sender,
                 U256::from(amount),
-            )?;
-        } else {
-            TIP20Token::from_address(token)?.transfer_from(
-                self.address,
-                ITIP20::transferFromCall {
-                    from: sender,
-                    to: self.address,
-                    amount: U256::from(amount),
-                },
             )?;
         }
         Ok(())
@@ -329,7 +320,7 @@ impl StablecoinDEX {
         if user_balance >= amount {
             // When fully covered by internal balance, TIP-20 transferFrom won't run,
             // so we must check the pause state ourselves (spec: T4+).
-            if check_pause && self.storage.spec().is_t4() {
+            if check_pause {
                 tip20.check_not_paused()?;
             }
             self.sub_balance(sender, token, amount)
@@ -506,20 +497,6 @@ impl StablecoinDEX {
             self.books[book_key].asks[tick].read()?
         };
 
-        if self.storage.spec().is_t12() {
-            // Sum the remaining amount of every order reachable from the tick's head.
-            let mut order_id = level.links.head;
-            level.total_liquidity = 0;
-            while order_id != 0 {
-                let order = self.orders[order_id].read_in_book(book_key)?;
-                level.total_liquidity = level
-                    .total_liquidity
-                    .checked_add(order.remaining())
-                    .ok_or(TempoPrecompileError::under_overflow())?;
-                order_id = order.next();
-            }
-        }
-
         Ok(level)
     }
 
@@ -570,7 +547,7 @@ impl StablecoinDEX {
     /// # Errors
     /// - `InvalidTick` — tick is not aligned to [`TICK_SPACING`] (T2+ only)
     pub fn tick_to_price(&self, tick: i16) -> Result<u32> {
-        if self.storage.spec().is_t2() {
+        {
             orderbook::validate_tick_spacing(tick)?;
         }
 
@@ -585,7 +562,7 @@ impl StablecoinDEX {
     pub fn price_to_tick(&self, price: u32) -> Result<i16> {
         let tick = orderbook::price_to_tick(price)?;
 
-        if self.storage.spec().is_t2() {
+        {
             orderbook::validate_tick_spacing(tick)?;
         }
 
@@ -616,11 +593,7 @@ impl StablecoinDEX {
             return Err(StablecoinDEXError::pair_already_exists().into());
         }
 
-        let book = if self.storage.spec().is_t8() {
-            Orderbook::new_with_index(base, quote, self.book_keys.len()? as u32)
-        } else {
-            Orderbook::new(base, quote)
-        };
+        let book = { Orderbook::new_with_index(base, quote, self.book_keys.len()? as u32) };
         self.books[book_key].write(book)?;
         self.book_keys.push(book_key)?;
 
@@ -694,7 +667,7 @@ impl StablecoinDEX {
         // On T4+, reject if the non-escrow token is paused. When this order fills, the
         // non-escrow token may be moved via internal-balance updates that bypass TIP-20's
         // pause check, so we enforce it at placement.
-        if self.storage.spec().is_t4() {
+        {
             non_escrow_tip20.check_not_paused()?;
         }
 
@@ -750,12 +723,8 @@ impl StablecoinDEX {
             }
         } else {
             // Update previous tail's next pointer.
-            if self.storage.spec().is_t8() {
+            {
                 self.orders[prev_tail].next()?.write(order.order_id())?;
-            } else {
-                let mut prev_order = self.orders[prev_tail].read_in_book(order.book_key())?;
-                prev_order.next = order.order_id();
-                self.orders[prev_tail].write_in_book(prev_order, book_id)?;
             }
 
             // Set current order's prev pointer
@@ -763,7 +732,7 @@ impl StablecoinDEX {
             level.links.tail = order.order_id();
         }
 
-        if !self.storage.spec().is_t12() {
+        {
             level.total_liquidity = level
                 .total_liquidity
                 .checked_add(order.remaining())
@@ -774,18 +743,11 @@ impl StablecoinDEX {
             .tick_level_handler_mut(order.tick(), order.is_bid())
             .write(level)?;
 
-        match (charge_credits, self.storage.spec()) {
-            // User placements: T7+ can spend maker credits for new reusable order storage.
-            (true, spec) if spec.is_t7() => {
-                self.write_order_spending_dex_storage_credits(order, book_id)
-            }
-            // T8+ flip rewrites credit deleted order slots without spending maker credits.
-            (false, spec) if spec.is_t8() => {
-                let (maker, credits) = (order.maker(), self.rewrite_order(order, book_id)?);
-                self.credit_dex_storage_slots(maker, credits)
-            }
-            // Pre-T7 has no DEX credits; T7 non-charged writes never change credits behavior.
-            _ => self.orders[order.order_id()].write_in_book(order, book_id),
+        if charge_credits {
+            self.write_order_spending_dex_storage_credits(order, book_id)
+        } else {
+            let (maker, credits) = (order.maker(), self.rewrite_order(order, book_id)?);
+            self.credit_dex_storage_slots(maker, credits)
         }
     }
 
@@ -851,10 +813,7 @@ impl StablecoinDEX {
         // NOTE: `Order::new_flip` performs the same check defensively below; the early
         // check here is preserved to keep error semantics backwards-compatible
         // (invalid flip_tick fails with `invalid_flip_tick` before any escrow logic).
-        if (flip_tick == tick && !self.storage.spec().is_t5())
-            || (is_bid && flip_tick < tick)
-            || (!is_bid && flip_tick > tick)
-        {
+        if (is_bid && flip_tick < tick) || (!is_bid && flip_tick > tick) {
             return Err(StablecoinDEXError::invalid_flip_tick().into());
         }
 
@@ -882,7 +841,7 @@ impl StablecoinDEX {
         // On T4+, reject if the non-escrow token is paused. When this order fills, the
         // non-escrow token may be moved via internal-balance updates that bypass TIP-20's
         // pause check, so we enforce it at placement.
-        if self.storage.spec().is_t4() {
+        {
             non_escrow_tip20.check_not_paused()?;
         }
 
@@ -893,7 +852,7 @@ impl StablecoinDEX {
             tip20.ensure_transfer_authorized(sender, self.address)?;
             // Internal-balance-only path bypasses TIP-20 transferFrom,
             // so we must check the pause state ourselves (spec: T4+).
-            if self.storage.spec().is_t4() {
+            {
                 tip20.check_not_paused()?;
             }
             let user_balance = self.balance_of(sender, escrow_token)?;
@@ -920,11 +879,9 @@ impl StablecoinDEX {
         .map_err(|_| StablecoinDEXError::invalid_flip_tick())?;
 
         // Commit the flip order
-        if self.storage.spec().is_t1c() {
+        {
             // PERF: skip 1 redundant SLOAD
             self.next_order_id.write(order_id + 1)?;
-        } else {
-            self.increment_next_order_id()?;
         }
         self.commit_order_to_book(order, true)?;
 
@@ -1034,7 +991,7 @@ impl StablecoinDEX {
         }
 
         // Update price level total liquidity
-        if !self.storage.spec().is_t12() {
+        {
             level.total_liquidity = level
                 .total_liquidity
                 .checked_sub(fill_amount)
@@ -1087,30 +1044,19 @@ impl StablecoinDEX {
             // Bid becomes Ask, Ask becomes Bid.
             // The current tick becomes the new flip_tick, and flip_tick becomes the new tick.
             // Uses internal balance only, does not transfer from wallet.
-            let res = if self.storage.spec().is_t5() {
+            let res = {
                 // Post T5: flip the order in place, without creating a new one.
                 self.flip_in_place(order, orderbook.base, orderbook.quote)
-            } else {
-                self.place_flip(
-                    order.maker(),
-                    orderbook.base,
-                    order.amount(),
-                    !order.is_bid(),
-                    order.flip_tick(),
-                    order.tick(),
-                    true,
-                )
-                .map(|_| ())
             };
 
             // Business logic errors are ignored so that flip failure does not block the swap.
             // System errors (OOG, DB errors, panics) propagate because state may be inconsistent.
             if let Err(err) = &res {
-                if err.is_system_error() && self.storage.spec().is_t1a() {
+                if err.is_system_error() {
                     return Err(res.unwrap_err());
                 }
 
-                if self.storage.spec().is_t5() {
+                {
                     self.emit_event(StablecoinDEXEvents::flip_failed(
                         order.order_id(),
                         order.maker(),
@@ -1123,7 +1069,7 @@ impl StablecoinDEX {
             // record under the same `orderId` (TIP-1056). In every other case
             // (pre-T5, or T5 with a swallowed flip failure) the filled order
             // record must be deleted to avoid leaving an orphan in storage.
-            let keep_record = self.storage.spec().is_t5() && res.is_ok();
+            let keep_record = res.is_ok();
             if !keep_record {
                 self.delete_order_and_track_deltas(storage_credits, order)?;
             }
@@ -1169,7 +1115,7 @@ impl StablecoinDEX {
                 self.orders[order.next()].prev()?.delete()
             })?;
 
-            if !self.storage.spec().is_t12() {
+            {
                 level.total_liquidity = level
                     .total_liquidity
                     .checked_sub(fill_amount)
@@ -1354,10 +1300,7 @@ impl StablecoinDEX {
             level.links.tail = order.prev();
         }
 
-        let has_level_changed = if self.storage.spec().is_t12() {
-            // +T12: Only cancelling the head or tail changes tick-level storage.
-            order.prev() == 0 || order.next() == 0
-        } else {
+        let has_level_changed = {
             // pre-T12: Every cancellation changes the maintained liquidity aggregate.
             level.total_liquidity = level
                 .total_liquidity
@@ -1463,11 +1406,7 @@ impl StablecoinDEX {
             return Ok(false);
         }
 
-        if self.storage.spec().is_t4() {
-            is_authorized_for_token(token_out, order.maker(), AuthRole::recipient())
-        } else {
-            Ok(true)
-        }
+        { is_authorized_for_token(token_out, order.maker(), AuthRole::recipient()) }
     }
 
     /// Withdraws `amount` from the caller's DEX balance, transferring
@@ -1494,11 +1433,7 @@ impl StablecoinDEX {
     /// under-estimate the input across fragmented levels; it is kept for pre-T12
     /// historical determinism.
     fn quote_exact_out(&self, book_key: B256, amount_out: u128, is_bid: bool) -> Result<u128> {
-        if self.storage.spec().is_t12() {
-            self.quote_per_order(book_key, amount_out, is_bid, step_exact_out)
-        } else {
-            self.quote_exact_out_per_tick(book_key, amount_out, is_bid)
-        }
+        { self.quote_exact_out_per_tick(book_key, amount_out, is_bid) }
     }
 
     /// Per-order quote that walks the book like swap execution but without
@@ -1704,7 +1639,7 @@ impl StablecoinDEX {
 
                 // Ensure that the token is not paused (spec: T3+)
                 // Necessary because TIP20 transfer checks don't cover internal DEX balance updates
-                if self.storage.spec().is_t3() {
+                {
                     token_in_tip20.check_not_paused()?;
                 }
 
@@ -1756,11 +1691,7 @@ impl StablecoinDEX {
     /// per-order floors is `<=` the floor of the sum; it is kept for pre-T12
     /// historical determinism.
     fn quote_exact_in(&self, book_key: B256, amount_in: u128, is_bid: bool) -> Result<u128> {
-        if self.storage.spec().is_t12() {
-            self.quote_per_order(book_key, amount_in, is_bid, step_exact_in)
-        } else {
-            self.quote_exact_in_per_tick(book_key, amount_in, is_bid)
-        }
+        { self.quote_exact_in_per_tick(book_key, amount_in, is_bid) }
     }
 
     /// Legacy pre-T12 exact-input quote. It walks by tick-level aggregate
@@ -2854,15 +2785,13 @@ mod tests {
                     false,
                 );
 
-                if spec.is_t5() {
+                {
                     let order_id = result.expect("same-tick flip should succeed on T5+");
                     let stored = exchange.orders[order_id].read()?;
                     assert_eq!(stored.tick(), tick);
                     assert_eq!(stored.flip_tick(), tick);
                     assert!(stored.is_bid());
                     assert!(stored.is_flip());
-                } else {
-                    assert_eq!(result, Err(StablecoinDEXError::invalid_flip_tick().into()));
                 }
 
                 Ok::<_, eyre::Report>(())
@@ -5997,7 +5926,7 @@ mod tests {
 
                 let result = exchange.swap_exact_amount_in(bob, base_token, quote_token, amount, 0);
 
-                if spec.is_t1a() {
+                {
                     // T1A+: system errors propagate — swap must revert
                     assert!(
                         result.is_err(),
@@ -6011,12 +5940,6 @@ mod tests {
                     // Maker balance must be unchanged — no funds lost
                     let alice_quote_after = exchange.balance_of(alice, quote_token)?;
                     assert_eq!(alice_quote_before, alice_quote_after);
-                } else {
-                    // Pre-T1A: all flip errors are ignored — swap succeeds
-                    assert!(
-                        result.is_ok(),
-                        "[{spec:?}] Swap should succeed when system error is pre-T1A"
-                    );
                 }
 
                 Ok::<_, eyre::Report>(())
@@ -6301,14 +6224,10 @@ mod tests {
                 let alice_base = exchange.balance_of(alice, base_token)?;
                 let next_id_after = exchange.next_order_id()?;
 
-                if spec.is_t1c() {
+                {
                     // Checkpoint reverts both sub_balance and order_id
                     assert_eq!(alice_base, amount);
                     assert_eq!(next_id_after, next_id_before);
-                } else {
-                    // No checkpoint — partial state leaks
-                    assert_eq!(alice_base, 0);
-                    assert_eq!(next_id_after, next_id_before + 1);
                 }
 
                 // verify that `OrderPlaced` event was never emitted due to poisoned tick's revert
@@ -6361,12 +6280,9 @@ mod tests {
                     u128::MAX,
                 );
 
-                if spec.is_t3() {
+                {
                     assert_eq!(res_in, res_out);
                     assert_eq!(res_in.unwrap_err(), TIP20Error::contract_paused().into());
-                } else {
-                    assert!(res_in.is_ok());
-                    assert!(res_out.is_ok());
                 }
 
                 Ok::<_, eyre::Report>(())
@@ -6422,18 +6338,9 @@ mod tests {
                 //   balance >= amount)
                 // - non-escrow paused: escrow itself is unpaused, so any debit path works
                 // T4: rejected regardless.
-                let should_succeed =
-                    !spec.is_t4() && (!pause_escrow_side || internal_balance_amount >= amount);
+                let should_succeed = false;
 
-                if should_succeed {
-                    let order_id = res?;
-                    assert_eq!(order_id, next_order_id_before);
-                    assert_eq!(exchange.next_order_id()?, next_order_id_before + 1);
-                    assert_eq!(
-                        exchange.balance_of(alice, escrow_token)?,
-                        escrow_balance_before.saturating_sub(amount)
-                    );
-                } else {
+                {
                     assert_eq!(res.unwrap_err(), TIP20Error::contract_paused().into());
                     assert_eq!(exchange.next_order_id()?, next_order_id_before);
                     assert_eq!(
@@ -6613,12 +6520,9 @@ mod tests {
                     u128::MAX,
                 );
 
-                if spec.is_t3() {
+                {
                     assert_eq!(res_in, res_out);
                     assert_eq!(res_in.unwrap_err(), TIP20Error::contract_paused().into());
-                } else {
-                    assert!(res_in.is_ok());
-                    assert!(res_out.is_ok());
                 }
 
                 Ok::<_, eyre::Report>(())

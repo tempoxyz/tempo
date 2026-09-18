@@ -223,7 +223,7 @@ impl TipFeeManager {
             .checked_sub(amount_out)
             .ok_or(TIPFeeAMMError::invalid_amount())?;
 
-        if self.storage.spec().is_t1c() {
+        {
             let reserved = self.pending_fee_swap_reservation[pool_id].t_read()?;
             if pool.reserve_validator_token < reserved {
                 return Err(TIPFeeAMMError::insufficient_liquidity().into());
@@ -299,7 +299,7 @@ impl TipFeeManager {
 
         let user_token = TIP20Token::from_address(user_token)?;
         let mut validator_token = TIP20Token::from_address(validator_token)?;
-        if self.storage.spec().is_t8() {
+        {
             user_token.ensure_authorized_as(&[
                 (msg_sender, AuthRole::sender()),
                 (self.address, AuthRole::recipient()),
@@ -439,7 +439,7 @@ impl TipFeeManager {
 
         let mut user_token = TIP20Token::from_address(user_token)?;
         let mut validator_token = TIP20Token::from_address(validator_token)?;
-        if self.storage.spec().is_t8() {
+        {
             user_token.ensure_authorized_as(&[(msg_sender, AuthRole::sender())])?;
             validator_token.ensure_authorized_as(&[(msg_sender, AuthRole::sender())])?;
         }
@@ -465,7 +465,7 @@ impl TipFeeManager {
             .reserve_validator_token
             .checked_sub(validator_amount)
             .ok_or(TIPFeeAMMError::insufficient_reserves())?;
-        if self.storage.spec().is_t1c() {
+        {
             let reserved = self.pending_fee_swap_reservation[pool_id].t_read()?;
             if available_after_burn < reserved {
                 return Err(TIPFeeAMMError::insufficient_liquidity().into());
@@ -609,9 +609,6 @@ impl TipFeeManager {
             }
 
             // T5+: two-hop fallback through `userToken.quoteToken()`.
-            if !self.storage.spec().is_t5() {
-                return Ok((None, None, data));
-            }
 
             // TIP-20 token graph forbids self-quoting, so `intermediate == user_token` is unreachable.
             let mid_token =

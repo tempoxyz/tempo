@@ -245,7 +245,6 @@ pub fn tempo_main_with(mut overrides: TempoOverrides) -> eyre::Result<()> {
 
     apply_tempo_cli_overrides(&mut cli)?;
 
-    #[cfg(feature = "fixed-t11")]
     if let Some(chain) = cli.command.chain_spec() {
         use tempo_chainspec::hardfork::{TempoHardfork, TempoHardforks};
         eyre::ensure!(

@@ -36,42 +36,9 @@ impl TIP20Token {
         msg_sender: Address,
         call: ITIP20::distributeRewardCall,
     ) -> Result<()> {
-        if self.storage.spec().is_t7() {
+        {
             return Ok(());
         }
-
-        self.check_not_paused()?;
-        let token_address = self.address;
-
-        if call.amount == U256::ZERO {
-            return Err(TIP20Error::invalid_amount().into());
-        }
-
-        self.ensure_transfer_authorized(msg_sender, token_address)?;
-        self.check_and_update_spending_limit(msg_sender, call.amount)?;
-
-        self._transfer(msg_sender, &Recipient::direct(token_address), call.amount)?;
-
-        let opted_in_supply = U256::from(self.get_opted_in_supply()?);
-        if opted_in_supply.is_zero() {
-            return Err(TIP20Error::no_opted_in_supply().into());
-        }
-
-        let delta_rpt = call
-            .amount
-            .checked_mul(ACC_PRECISION)
-            .and_then(|v| v.checked_div(opted_in_supply))
-            .ok_or(TempoPrecompileError::under_overflow())?;
-        let current_rpt = self.get_global_reward_per_token()?;
-        let new_rpt = current_rpt
-            .checked_add(delta_rpt)
-            .ok_or(TempoPrecompileError::under_overflow())?;
-        self.set_global_reward_per_token(new_rpt)?;
-
-        // Emit distributed reward event (recipients claim accrued rewards separately)
-        self.emit_event(TIP20Event::reward_distributed(msg_sender, call.amount))?;
-
-        Ok(())
     }
 
     /// Updates and accumulates accrued rewards for a specific token holder.
@@ -83,47 +50,9 @@ impl TIP20Token {
     /// T8+: no-op, as rewards are disabled.
     pub fn update_rewards(&mut self, holder: Address) -> Result<Address> {
         // T8+: no-op, as rewards are disabled.
-        if self.storage.spec().is_t8() {
+        {
             return Ok(Address::ZERO);
         }
-
-        let mut info = self.user_reward_info[holder].read()?;
-
-        let cached_delegate = info.reward_recipient;
-
-        let global_reward_per_token = self.get_global_reward_per_token()?;
-        let reward_per_token_delta = global_reward_per_token
-            .checked_sub(info.reward_per_token)
-            .ok_or(TempoPrecompileError::under_overflow())?;
-
-        if reward_per_token_delta != U256::ZERO {
-            if cached_delegate != Address::ZERO {
-                let holder_balance = self.get_balance(holder)?;
-                let reward = holder_balance
-                    .checked_mul(reward_per_token_delta)
-                    .and_then(|v| v.checked_div(ACC_PRECISION))
-                    .ok_or(TempoPrecompileError::under_overflow())?;
-
-                // Add reward to delegate's balance (or holder's own balance if self-delegated)
-                if cached_delegate == holder {
-                    info.reward_balance = info
-                        .reward_balance
-                        .checked_add(reward)
-                        .ok_or(TempoPrecompileError::under_overflow())?;
-                } else {
-                    let mut delegate_info = self.user_reward_info[cached_delegate].read()?;
-                    delegate_info.reward_balance = delegate_info
-                        .reward_balance
-                        .checked_add(reward)
-                        .ok_or(TempoPrecompileError::under_overflow())?;
-                    self.user_reward_info[cached_delegate].write(delegate_info)?;
-                }
-            }
-            info.reward_per_token = global_reward_per_token;
-            self.user_reward_info[holder].write(info)?;
-        }
-
-        Ok(cached_delegate)
     }
 
     /// Sets or changes the reward recipient for a token holder.
@@ -140,55 +69,9 @@ impl TIP20Token {
         msg_sender: Address,
         call: ITIP20::setRewardRecipientCall,
     ) -> Result<()> {
-        if self.storage.spec().is_t7() {
+        {
             return Ok(());
         }
-
-        self.check_not_paused()?;
-
-        // TIP-1022: reject virtual addresses as reward recipients
-        if self.storage.spec().is_t3() && call.recipient.is_virtual() {
-            return Err(TIP20Error::invalid_recipient().into());
-        }
-
-        if call.recipient != Address::ZERO {
-            self.ensure_transfer_authorized(msg_sender, call.recipient)?;
-        }
-
-        let from_delegate = self.update_rewards(msg_sender)?;
-
-        let holder_balance = self.get_balance(msg_sender)?;
-
-        if from_delegate != Address::ZERO {
-            if call.recipient == Address::ZERO {
-                let opted_in_supply = U256::from(self.get_opted_in_supply()?)
-                    .checked_sub(holder_balance)
-                    .ok_or(TempoPrecompileError::under_overflow())?;
-                self.set_opted_in_supply(
-                    opted_in_supply
-                        .try_into()
-                        .map_err(|_| TempoPrecompileError::under_overflow())?,
-                )?;
-            }
-        } else if call.recipient != Address::ZERO {
-            let opted_in_supply = U256::from(self.get_opted_in_supply()?)
-                .checked_add(holder_balance)
-                .ok_or(TempoPrecompileError::under_overflow())?;
-            self.set_opted_in_supply(
-                opted_in_supply
-                    .try_into()
-                    .map_err(|_| TempoPrecompileError::under_overflow())?,
-            )?;
-        }
-
-        let mut info = self.user_reward_info[msg_sender].read()?;
-        info.reward_recipient = call.recipient;
-        self.user_reward_info[msg_sender].write(info)?;
-
-        // Emit reward recipient set event
-        self.emit_event(TIP20Event::reward_recipient_set(msg_sender, call.recipient))?;
-
-        Ok(())
     }
 
     /// Claims accumulated rewards for a recipient.
@@ -343,36 +226,11 @@ impl TIP20Token {
         let mut pending = info.reward_balance;
 
         // At T8 and later, reward hooks are disabled; only settled rewards are claimable.
-        if self.storage.spec().is_t8() {
+        {
             return pending
                 .try_into()
                 .map_err(|_| TempoPrecompileError::under_overflow());
         }
-
-        // For the account's own accrued rewards (if self-delegated):
-        if info.reward_recipient == account {
-            let holder_balance = self.get_balance(account)?;
-            if holder_balance > U256::ZERO {
-                let global_reward_per_token = self.get_global_reward_per_token()?;
-                let reward_per_token_delta = global_reward_per_token
-                    .checked_sub(info.reward_per_token)
-                    .ok_or(TempoPrecompileError::under_overflow())?;
-
-                if reward_per_token_delta > U256::ZERO {
-                    let accrued = holder_balance
-                        .checked_mul(reward_per_token_delta)
-                        .and_then(|v| v.checked_div(ACC_PRECISION))
-                        .ok_or(TempoPrecompileError::under_overflow())?;
-                    pending = pending
-                        .checked_add(accrued)
-                        .ok_or(TempoPrecompileError::under_overflow())?;
-                }
-            }
-        }
-
-        pending
-            .try_into()
-            .map_err(|_| TempoPrecompileError::under_overflow())
     }
 }
 
@@ -924,14 +782,11 @@ mod tests {
                     },
                 );
 
-                if hardfork.is_t3() {
+                {
                     assert!(matches!(
                         result.unwrap_err(),
                         TempoPrecompileError::TIP20(TIP20Error::InvalidRecipient(_))
                     ));
-                } else {
-                    // Pre-T3: virtual addresses are accepted
-                    assert!(result.is_ok());
                 }
 
                 Ok::<_, TempoPrecompileError>(())

@@ -236,11 +236,7 @@ impl StorageCtx {
 
     /// Returns the currently active hardfork.
     pub fn spec(&self) -> TempoHardfork {
-        if TempoHardfork::FIXED_EXECUTION {
-            TempoHardfork::CURRENT
-        } else {
-            Self::with_storage(|s| s.spec())
-        }
+        TempoHardfork::CURRENT
     }
 
     /// Returns the shared storage-actions recorder for the current storage context.
@@ -280,13 +276,7 @@ impl StorageCtx {
     /// Panics if no storage context is set.
     pub fn checkpoint(&mut self) -> CheckpointGuard {
         // spec: only available +T1C. Prior to that checkpoints are a no-op.
-        let checkpoint = Self::with_storage(|s| {
-            if s.spec().is_t1c() {
-                Some(s.checkpoint())
-            } else {
-                None
-            }
-        });
+        let checkpoint = Self::with_storage(|s| Some(s.checkpoint()));
 
         CheckpointGuard { checkpoint }
     }

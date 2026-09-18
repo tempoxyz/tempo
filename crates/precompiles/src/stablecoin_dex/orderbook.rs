@@ -333,34 +333,19 @@ impl TickLevelHandler {
     /// Reads only the live linked-list slot at T12 while preserving the legacy layout below T12.
     #[inline]
     pub(crate) fn read(&self) -> Result<TickLevel> {
-        if StorageCtx.spec().is_t12() {
-            Ok(TickLevel {
-                links: self.links.read()?,
-                total_liquidity: 0,
-            })
-        } else {
-            <Self as Handler<TickLevel>>::read(self)
-        }
+        { <Self as Handler<TickLevel>>::read(self) }
     }
 
     /// Writes only the live linked-list slot at T12 while preserving the legacy layout below T12.
     #[inline]
     pub(crate) fn write(&mut self, level: TickLevel) -> Result<()> {
-        if StorageCtx.spec().is_t12() {
-            self.links.write(level.links)
-        } else {
-            <Self as Handler<TickLevel>>::write(self, level)
-        }
+        { <Self as Handler<TickLevel>>::write(self, level) }
     }
 
     /// Deletes only the live linked-list slot at T12 while preserving the stale aggregate.
     #[inline]
     pub(crate) fn delete(&mut self) -> Result<()> {
-        if StorageCtx.spec().is_t12() {
-            self.links.delete()
-        } else {
-            <Self as Handler<TickLevel>>::delete(self)
-        }
+        { <Self as Handler<TickLevel>>::delete(self) }
     }
 }
 
@@ -788,7 +773,7 @@ mod tests {
             TempoHardfork::T11,
             TempoHardfork::T12,
         ] {
-            let is_t12 = spec.is_t12();
+            let is_t12 = false;
             let mut storage = HashMapStorageProvider::new_with_spec(1, spec);
             StorageCtx::enter(&mut storage, || {
                 Handler::<TickLevel>::write(&mut TickLevelHandler::new(slot, address), legacy)

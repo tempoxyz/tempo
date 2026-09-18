@@ -97,11 +97,7 @@ pub const ECRECOVER_GAS: u64 = 3_000;
 /// boundaries, or out-of-gas if the cost cannot be represented as a `u64`.
 #[inline]
 pub fn input_cost(spec: TempoHardfork, calldata_len: usize) -> Result<u64> {
-    let per_word_cost = if spec.is_t11() {
-        POST_T11_INPUT_PER_WORD_COST
-    } else {
-        PRE_T11_INPUT_PER_WORD_COST
-    };
+    let per_word_cost = { POST_T11_INPUT_PER_WORD_COST };
 
     let calldata_len =
         u64::try_from(calldata_len).map_err(|_| error::TempoPrecompileError::OutOfGas)?;
@@ -115,10 +111,6 @@ pub fn input_cost(spec: TempoHardfork, calldata_len: usize) -> Result<u64> {
 /// Returns the additional gas cost for duplicate validation at `spec`.
 #[inline]
 pub fn dedup_cost(spec: TempoHardfork, item_count: usize) -> Result<u64> {
-    if !spec.is_t11() {
-        return Ok(0);
-    }
-
     u64::try_from(item_count)
         .map_err(|_| error::TempoPrecompileError::OutOfGas)?
         .checked_mul(T11_DEDUP_PER_ITEM_COST)
@@ -194,11 +186,7 @@ pub fn tempo_precompiles(
     actions: StorageActions,
     non_creditable_slots: Rc<RefCell<NonCreditableSlots>>,
 ) -> PrecompilesMap {
-    let spec = if cfg.spec.is_t1c() {
-        cfg.spec.into()
-    } else {
-        SpecId::PRAGUE
-    };
+    let spec = { cfg.spec.into() };
     let mut precompiles = PrecompilesMap::from_static(EthPrecompiles::new(spec).precompiles);
     extend_tempo_precompiles(&mut precompiles, cfg, actions, non_creditable_slots);
     precompiles
@@ -225,9 +213,9 @@ pub fn extend_tempo_precompiles(
             Some(TIP20Token::create_precompile(*address, &env))
         } else if *address == TIP20_FACTORY_ADDRESS {
             Some(TIP20Factory::create_precompile(&env))
-        } else if *address == TIP20_CHANNEL_RESERVE_ADDRESS && env.cfg.spec.is_t5() {
+        } else if *address == TIP20_CHANNEL_RESERVE_ADDRESS {
             Some(TIP20ChannelReserve::create_precompile(&env))
-        } else if *address == ADDRESS_REGISTRY_ADDRESS && env.cfg.spec.is_t3() {
+        } else if *address == ADDRESS_REGISTRY_ADDRESS {
             Some(AddressRegistry::create_precompile(&env))
         } else if *address == TIP403_REGISTRY_ADDRESS {
             Some(TIP403Registry::create_precompile(&env))
@@ -243,15 +231,15 @@ pub fn extend_tempo_precompiles(
             Some(AccountKeychain::create_precompile(&env))
         } else if *address == VALIDATOR_CONFIG_V2_ADDRESS {
             Some(ValidatorConfigV2::create_precompile(&env))
-        } else if *address == SIGNATURE_VERIFIER_ADDRESS && env.cfg.spec.is_t3() {
+        } else if *address == SIGNATURE_VERIFIER_ADDRESS {
             Some(SignatureVerifier::create_precompile(&env))
-        } else if *address == RECEIVE_POLICY_GUARD_ADDRESS && env.cfg.spec.is_t6() {
+        } else if *address == RECEIVE_POLICY_GUARD_ADDRESS {
             Some(ReceivePolicyGuard::create_precompile(&env))
-        } else if *address == STORAGE_CREDITS_ADDRESS && env.cfg.spec.is_t7() {
+        } else if *address == STORAGE_CREDITS_ADDRESS {
             Some(StorageCredits::create_precompile(&env))
-        } else if *address == CURRENT_COMMITTEE_ADDRESS && env.cfg.spec.is_t8() {
+        } else if *address == CURRENT_COMMITTEE_ADDRESS {
             Some(CurrentCommittee::create_precompile(&env))
-        } else if *address == ZONE_FACTORY_ADDRESS && env.cfg.spec.is_t10() {
+        } else if *address == ZONE_FACTORY_ADDRESS {
             Some(ZoneFactory::create_precompile(&env))
         } else {
             None
@@ -956,7 +944,7 @@ mod tests {
     }
 
     #[test]
-    fn test_dispatch_macro_applies_hardfork_selector_gates() -> eyre::Result<()> {
+    fn test_dispatch_is_independent_of_historical_metadata() -> eyre::Result<()> {
         alloy::sol! {
             interface ISelectorGatedTest {
                 function stable() external;
@@ -973,10 +961,8 @@ mod tests {
                     |call| match call {
                         ISelectorGatedTest::ISelectorGatedTestCalls {
                             stable(_) => Ok(PrecompileOutput::new(0, Bytes::from_static(b"stable"), 0)),
-                            #[schedule(since = T2)]
                             t2Added(_) => Ok(PrecompileOutput::new(0, Bytes::from_static(b"added"), 0)),
-                            #[schedule(until = T3)]
-                            t3Removed(_) => Ok(PrecompileOutput::new(0, Bytes::from_static(b"removed"), 0)),
+                            t3Removed(_) => crate::dispatch::unknown_selector_result(calldata),
                         }
                     }
                 )
@@ -986,45 +972,23 @@ mod tests {
         let t2_added_calldata = ISelectorGatedTest::t2AddedCall { value: U256::ZERO }.abi_encode();
         let t3_removed_calldata = ISelectorGatedTest::t3RemovedCall {}.abi_encode();
 
-        // pre-T2: selectors introduced at T2 must still look unknown.
-        let pre_t2_added = call_with_spec(TempoHardfork::T1, &t2_added_calldata)?;
-        assert!(pre_t2_added.is_revert());
-        let decoded = UnknownFunctionSelector::abi_decode(&pre_t2_added.bytes)?;
-        assert_eq!(
-            decoded.selector.as_slice(),
-            &ISelectorGatedTest::t2AddedCall::SELECTOR
-        );
+        for &metadata in TempoHardfork::VARIANTS {
+            let added = call_with_spec(metadata, &t2_added_calldata)?;
+            assert!(!added.is_revert());
+            assert_eq!(added.bytes.as_ref(), b"added");
 
-        // T2+: that selector becomes available and dispatches normally.
-        let post_t2_added = call_with_spec(TempoHardfork::T2, &t2_added_calldata)?;
-        assert!(!post_t2_added.is_revert());
-        assert_eq!(post_t2_added.bytes.as_ref(), b"added");
+            let removed = call_with_spec(metadata, &t3_removed_calldata)?;
+            assert!(removed.is_revert());
+            let decoded = UnknownFunctionSelector::abi_decode(&removed.bytes)?;
+            assert_eq!(
+                decoded.selector.as_slice(),
+                &ISelectorGatedTest::t3RemovedCall::SELECTOR
+            );
 
-        // pre-T3: selectors removed at T3 still dispatch normally.
-        let pre_t3_removed = call_with_spec(TempoHardfork::T2, &t3_removed_calldata)?;
-        assert!(!pre_t3_removed.is_revert());
-        assert_eq!(pre_t3_removed.bytes.as_ref(), b"removed");
-
-        // T3+: the removed selector must now revert as unknown.
-        let post_t3_removed = call_with_spec(TempoHardfork::T3, &t3_removed_calldata)?;
-        assert!(post_t3_removed.is_revert());
-        let decoded = UnknownFunctionSelector::abi_decode(&post_t3_removed.bytes)?;
-        assert_eq!(
-            decoded.selector.as_slice(),
-            &ISelectorGatedTest::t3RemovedCall::SELECTOR
-        );
-
-        // preT2: gated selectors must return `UnknownFunctionSelector` even for selector-only calldata.
-        let malformed_added = call_with_spec(
-            TempoHardfork::T1,
-            &ISelectorGatedTest::t2AddedCall::SELECTOR,
-        )?;
-        assert!(malformed_added.is_revert());
-        let decoded = UnknownFunctionSelector::abi_decode(&malformed_added.bytes)?;
-        assert_eq!(
-            decoded.selector.as_slice(),
-            &ISelectorGatedTest::t2AddedCall::SELECTOR
-        );
+            let malformed = call_with_spec(metadata, &ISelectorGatedTest::t2AddedCall::SELECTOR)?;
+            assert!(malformed.is_revert());
+            assert!(malformed.bytes.is_empty());
+        }
 
         Ok(())
     }

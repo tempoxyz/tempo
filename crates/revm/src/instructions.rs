@@ -36,7 +36,7 @@ pub(crate) fn tempo_instructions<DB: Database>(
     let evm_spec = spec.into();
 
     // +T7: Enable TIP-1060 sstore hook
-    let mut instructions = if spec.is_t7() {
+    let mut instructions = {
         EthInstructions::new(
             {
                 let mut table = instruction_table::<EthInterpreter, TempoContext<DB>>();
@@ -46,16 +46,7 @@ pub(crate) fn tempo_instructions<DB: Database>(
             gas_table_spec(evm_spec),
             evm_spec,
         )
-    } else {
-        EthInstructions::new_mainnet_with_spec(spec.into())
     };
 
-    if !spec.is_t1c() {
-        instructions.insert_instruction(
-            MILLIS_TIMESTAMP,
-            Instruction::new(millis_timestamp),
-            MILLIS_TIMESTAMP_GAS_COST,
-        );
-    }
     instructions
 }

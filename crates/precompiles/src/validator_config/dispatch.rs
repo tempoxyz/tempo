@@ -33,7 +33,6 @@ impl Precompile for ValidatorConfig {
                     addValidator(call) => mutate_void(call, msg_sender, |s, c| self.add_validator(s, c)),
                     updateValidator(call) => mutate_void(call, msg_sender, |s, c| self.update_validator(s, c)),
                     changeValidatorStatus(call) => mutate_void(call, msg_sender, |s, c| self.change_validator_status(s, c)),
-                    #[schedule(since = T1)]
                     changeValidatorStatusByIndex(call) => mutate_void(call, msg_sender, |s, c| {
                         self.change_validator_status_by_index(s, c)
                     }),

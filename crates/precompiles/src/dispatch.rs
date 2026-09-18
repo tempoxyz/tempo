@@ -27,8 +27,8 @@ pub const fn abi_decoder_config_for_spec(
 ) -> alloy::sol_types::abi::AbiDecoderConfig {
     alloy::sol_types::abi::AbiDecoderConfig::new()
         .memory_limit(ABI_DECODER_MEMORY_LIMIT)
-        .strict(spec.is_t11())
-        .validate_allow_trailing_bytes(spec.is_t12())
+        .strict(true)
+        .validate_allow_trailing_bytes(false)
 }
 
 pub mod typed {
@@ -129,7 +129,7 @@ pub fn mutate_void<T: SolCall>(
 /// Sets TIP-1060 storage creation mode to Preserve for the given storage-credit owner.
 #[inline]
 pub fn preserve_storage_credits(credit_owner: Address) -> Result<()> {
-    if StorageCtx.spec().is_t7() {
+    {
         StorageCredits::new().set_mode(
             credit_owner,
             tempo_contracts::precompiles::IStorageCredits::Mode::Preserve,
@@ -162,7 +162,7 @@ pub fn charge_input_cost(storage: &mut StorageCtx, calldata: &[u8]) -> Option<Pr
 /// accounting.
 #[inline]
 fn fill_state_gas(output: &mut PrecompileOutput, storage: &StorageCtx) {
-    if storage.spec().is_t4() && output.is_success() {
+    if output.is_success() {
         output.gas_refunded = storage.gas_refunded();
     }
 
@@ -237,7 +237,6 @@ macro_rules! dispatch {
     ($calldata:expr, |$call:ident| match $match_call:ident {
         $($iface:ident::$calls:ident {
             $(
-                $(#[schedule($($gate:ident = $hf:ident),+ $(,)?)])*
                 $variant:ident($binding:pat) => $body:expr
             ),* $(,)?
         })+
@@ -254,13 +253,6 @@ macro_rules! dispatch {
             }
 
             if let Some(selector) = $crate::dispatch::selector_from_calldata($calldata) {
-                $($($($(
-                    if selector == <$iface::[<$variant Call>] as alloy::sol_types::SolCall>::SELECTOR
-                        && !$crate::dispatch::$gate(tempo_chainspec::hardfork::TempoHardfork::$hf)
-                    {
-                        return $crate::dispatch::unknown_selector_result($calldata);
-                    }
-                )+)*)*)+
                 $(
                     if <$iface::$calls as alloy::sol_types::SolInterface>::valid_selector(selector) {
                         type Calls = $iface::$calls;
@@ -296,23 +288,7 @@ pub fn selector_from_calldata(calldata: &[u8]) -> Option<[u8; 4]> {
 pub fn missing_selector_result() -> PrecompileResult {
     let storage = StorageCtx::default();
 
-    if storage.spec().is_t1() {
-        Ok(storage.revert_output(Bytes::new()))
-    } else {
-        Ok(storage.halt_output(PrecompileHalt::Other(
-            "Invalid input: missing function selector".into(),
-        )))
-    }
-}
-
-#[inline]
-pub fn since(hardfork: tempo_chainspec::hardfork::TempoHardfork) -> bool {
-    StorageCtx.spec() >= hardfork
-}
-
-#[inline]
-pub fn until(hardfork: tempo_chainspec::hardfork::TempoHardfork) -> bool {
-    StorageCtx.spec() < hardfork
+    { Ok(storage.revert_output(Bytes::new())) }
 }
 
 pub fn unknown_selector_result(calldata: &[u8]) -> PrecompileResult {
@@ -403,7 +379,7 @@ mod tests {
                         }
                     )
                 })?;
-                let expected_success = suffix_len == 0 || !spec.is_t11() || spec.is_t12();
+                let expected_success = suffix_len == 0;
                 assert_eq!(
                     output.is_success(),
                     expected_success,

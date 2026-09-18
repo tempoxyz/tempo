@@ -292,10 +292,6 @@ where
     }
 
     fn apply_current_committee_system_call(&mut self) -> Result<(), BlockExecutionError> {
-        if !self.evm().cfg.spec.is_t8() {
-            return Ok(());
-        }
-
         let epoch_length = self.evm().block().epoch_length.get();
         let block_number = self.evm().block().number.saturating_to::<u64>();
         if !block_number.saturating_add(1).is_multiple_of(epoch_length) {
@@ -360,44 +356,12 @@ where
                 ));
             }
 
-            if self.evm().cfg.spec.is_t4() {
+            {
                 return Err(BlockValidationError::msg("subblocks are disabled in T4+"));
             }
-
-            let Some((metadata_input, input_block_number)) = tx.input().split_last_chunk::<32>()
-            else {
-                return Err(BlockValidationError::msg(
-                    "invalid subblocks metadata system transaction",
-                ));
-            };
-
-            if input_block_number != &block_number {
-                return Err(BlockValidationError::msg(
-                    "invalid subblocks metadata system transaction",
-                ));
-            }
-
-            let mut buf = metadata_input;
-            let Ok(_) = Vec::<SubBlockMetadata>::decode(&mut buf) else {
-                return Err(BlockValidationError::msg(
-                    "invalid subblocks metadata system transaction",
-                ));
-            };
-
-            if !buf.is_empty() {
-                return Err(BlockValidationError::msg(
-                    "invalid subblocks metadata system transaction",
-                ));
-            }
-
-            seen_subblocks_signatures = true;
         } else {
             return Err(BlockValidationError::msg("invalid system transaction"));
         }
-
-        Ok(BlockSection::System {
-            seen_subblocks_signatures,
-        })
     }
 
     /// Pre-validate a transaction before execution.
@@ -427,11 +391,7 @@ where
     /// [`is_payment_v1`]: TempoTxEnvelope::is_payment_v1
     /// [`is_payment_v2`]: TempoTxEnvelope::is_payment_v2
     pub(crate) fn is_payment(&self, tx: &TempoTxEnvelope) -> bool {
-        if self.evm().cfg.spec.is_t5() {
-            tx.is_payment_v2()
-        } else {
-            tx.is_payment_v1()
-        }
+        { tx.is_payment_v2() }
     }
 
     pub(crate) fn validate_tx(
@@ -496,30 +456,27 @@ where
 
         // Deploy 0xEF marker bytecode to precompiles at their activation hardforks.
         let timestamp = self.evm().block().timestamp.to::<u64>();
-        if self.inner.spec.is_t2_active_at_timestamp(timestamp) {
+        {
             self.deploy_precompile_at_boundary(VALIDATOR_CONFIG_V2_ADDRESS, &[])?;
         }
-        if self.inner.spec.is_t3_active_at_timestamp(timestamp) {
+        {
             self.deploy_precompile_at_boundary(SIGNATURE_VERIFIER_ADDRESS, &[])?;
             self.deploy_precompile_at_boundary(ADDRESS_REGISTRY_ADDRESS, &[])?;
         }
-        if self.inner.spec.is_t5_active_at_timestamp(timestamp) {
+        {
             self.deploy_precompile_at_boundary(TIP20_CHANNEL_RESERVE_ADDRESS, &[])?;
         }
-        if self.inner.spec.is_t6_active_at_timestamp(timestamp) {
+        {
             self.deploy_precompile_at_boundary(RECEIVE_POLICY_GUARD_ADDRESS, &[])?;
         }
-        if self.inner.spec.is_t7_active_at_timestamp(timestamp) {
+        {
             self.deploy_precompile_at_boundary(STORAGE_CREDITS_ADDRESS, &[])?;
         }
-        if self.inner.spec.is_t8_active_at_timestamp(timestamp) {
+        {
             self.deploy_precompile_at_boundary(CURRENT_COMMITTEE_ADDRESS, &[])?;
         }
-        if self.inner.spec.is_t10_active_at_timestamp(timestamp) {
+        {
             self.deploy_zone_factory_at_boundary()?;
-        }
-        if self.inner.spec.is_t13_active_at_timestamp(timestamp) {
-            self.upgrade_zone_runtimes_at_boundary()?;
         }
 
         Ok(())
@@ -615,7 +572,7 @@ where
     ) -> Result<(Self::Evm, BlockExecutionResult<Self::Receipt>), BlockExecutionError> {
         // T4 sets the shared gas limit to zero, so any gas spilled into the
         // incentive section exceeds the available block capacity.
-        if self.evm().cfg.spec.is_t4() && self.incentive_gas_used > 0 {
+        if self.incentive_gas_used > 0 {
             return Err(BlockValidationError::msg("incentive gas limit exceeded").into());
         }
 

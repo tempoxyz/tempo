@@ -51,7 +51,7 @@ pub fn tempo_gas_params_with_amsterdam(
     amsterdam_eip8037_enabled: bool,
 ) -> GasParams {
     debug_assert!(
-        !(spec.is_t7() && amsterdam_eip8037_enabled),
+        !amsterdam_eip8037_enabled,
         "TODO(TIP-1016): generate combined TIP-1060 + EIP-8037 gas params before enabling both"
     );
 
@@ -62,17 +62,10 @@ pub fn tempo_gas_params_with_amsterdam(
 
     // TIP-1060 (T7+): the SSTORE creation cost drops to the 5k residual; the
     // 245k creditable portion is handled by the storage-credit hook.
-    if spec.is_t7() {
+    {
         static TABLE: OnceLock<GasParams> = OnceLock::new();
         return TABLE.get_or_init(t7_gas_params).clone();
     }
-
-    if spec.is_t1() {
-        static TABLE: OnceLock<GasParams> = OnceLock::new();
-        return TABLE.get_or_init(t1_gas_params).clone();
-    }
-
-    GasParams::new_spec(spec.into())
 }
 
 /// Builds the T7 gas table: TIP-1000 creation costs, but the SSTORE creation

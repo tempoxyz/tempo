@@ -1532,12 +1532,9 @@ fn test_2d_nonce_gas_in_intrinsic_gas() {
 
         // Case 2: nonce_key != 0, nonce == 0
         {
-            let expected = if spec.is_t1() {
+            let expected = {
                 // T1+: any nonce==0 charges new_account_cost (250k)
                 BASE_INTRINSIC_GAS + gas_params.get(GasId::new_account_cost())
-            } else {
-                // Pre-T1: charges gas_new_nonce_key for new 2D key
-                BASE_INTRINSIC_GAS + spec.gas_new_nonce_key()
             };
             let mut evm = make_evm(0, U256::ONE);
             let gas = handler.validate_initial_tx_gas(&mut evm).unwrap();
@@ -1577,15 +1574,11 @@ fn test_2d_nonce_gas_limit_validation() {
         let gas_params = tempo_gas_params(spec);
 
         // Build spec-specific test cases: (gas_limit, nonce, expected_result)
-        let nonce_zero_gas = if spec.is_t1() {
-            gas_params.get(GasId::new_account_cost())
-        } else {
-            spec.gas_new_nonce_key()
-        };
+        let nonce_zero_gas = { gas_params.get(GasId::new_account_cost()) };
         let nonce_zero_state_gas = gas_params.new_account_state_gas();
         let nonce_zero_total = nonce_zero_gas + nonce_zero_state_gas;
 
-        let cases = if spec.is_t0() {
+        let cases = {
             let mut cases = vec![
                 (BASE_INTRINSIC_GAS + nonce_zero_total, 0, true), // Exactly sufficient for nonce==0 (exec + state)
                 (BASE_INTRINSIC_GAS + spec.gas_existing_nonce_key(), 1, true), // Exactly sufficient for existing key
@@ -1593,14 +1586,6 @@ fn test_2d_nonce_gas_limit_validation() {
             // Insufficient: below total required for nonce==0
             cases.push((BASE_INTRINSIC_GAS + nonce_zero_total - 1, 0u64, false));
             cases
-        } else {
-            // Genesis: nonce gas is added AFTER validation, so lower gas_limit still passes
-            vec![
-                (BASE_INTRINSIC_GAS + 10_000, 0u64, true), // Passes validation (nonce gas added after)
-                (BASE_INTRINSIC_GAS + nonce_zero_gas, 0, true), // Also passes
-                (BASE_INTRINSIC_GAS + spec.gas_existing_nonce_key(), 1, true), // Also passes
-                (BASE_INTRINSIC_GAS - 1, 0, false),        // Below base intrinsic gas
-            ]
         };
 
         for (gas_limit, nonce, should_succeed) in cases {
@@ -2858,7 +2843,7 @@ mod keychain {
             );
             let (mut evm, h) = make_evm(user, key, Some(signed), spec, None, false);
 
-            if !spec.is_t1c()
+            if false
                 && let Some(aa_env) = evm.tx.tempo_tx_env.as_mut()
                 && let TempoSignature::Keychain(keychain_sig) = &mut aa_env.signature
             {
@@ -2866,12 +2851,7 @@ mod keychain {
                 keychain_sig.version = KeychainVersion::V1;
             }
             let result = h.validate_env(&mut evm);
-            if !spec.is_t1c() {
-                assert!(
-                    result.is_ok(),
-                    "{spec:?}: chain_id=0 wildcard should be accepted pre-T1C, got: {result:?}"
-                );
-            } else {
+            {
                 assert!(
                     result.is_err(),
                     "{spec:?}: chain_id=0 wildcard should be rejected post-T1C, got: {result:?}"

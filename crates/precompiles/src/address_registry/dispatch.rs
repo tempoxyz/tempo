@@ -37,7 +37,6 @@ impl Precompile for AddressRegistry {
                         };
                         Ok((is_virtual, master_id, user_tag).into())
                     }),
-                    #[schedule(since = T5)]
                     isImplicitlyApproved(call) => view(call, |c| {
                         Ok(self.is_implicitly_approved(c.addr))
                     })

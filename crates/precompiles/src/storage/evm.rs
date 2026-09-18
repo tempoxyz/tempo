@@ -54,7 +54,7 @@ impl<'a> EvmPrecompileStorageProvider<'a> {
             amsterdam_eip8037_enabled,
             is_static,
             gas_params,
-            tip1060_storage_credits_enabled: spec.is_t7(),
+            tip1060_storage_credits_enabled: true,
             tip1060_storage_credit_minting_enabled: true,
             non_creditable_slots: Rc::new(RefCell::new(NonCreditableSlots::empty())),
             #[cfg(debug_assertions)]
@@ -163,21 +163,15 @@ impl<'a> EvmPrecompileStorageProvider<'a> {
         let additional_cost = self.gas_params.cold_storage_additional_cost();
 
         // T4+: pre-charge static gas to avoid cheap useless work.
-        let skip_cold_load = if self.spec.is_t4() {
+        let skip_cold_load = {
             self.deduct_gas(self.gas_params.warm_storage_read_cost())?;
             self.gas_tracker.remaining() < additional_cost
-        } else {
-            false
         };
 
         let result = self.sload_journal(address, key, skip_cold_load)?;
         if record {
             self.actions
                 .record(StorageAction::Sload(address, key, result.data));
-        }
-
-        if !self.spec.is_t4() {
-            self.deduct_gas(self.gas_params.warm_storage_read_cost())?;
         }
 
         // dynamic gas
@@ -198,19 +192,13 @@ impl<'a> EvmPrecompileStorageProvider<'a> {
         action: impl FnOnce(&SStoreResult) -> StorageAction,
     ) -> Result<(), TempoPrecompileError> {
         // T4+: pre-charge static gas before loading storage to avoid cheap useless work.
-        let skip_cold_load = if self.spec.is_t4() {
+        let skip_cold_load = {
             self.deduct_gas(self.gas_params.sstore_static_gas())?;
             self.gas_tracker.remaining() < self.gas_params.cold_storage_additional_cost()
-        } else {
-            false
         };
 
         let result = self.sstore_journal(address, key, value, skip_cold_load)?;
         self.actions.record(action(&result.data));
-
-        if !self.spec.is_t4() {
-            self.deduct_gas(self.gas_params.sstore_static_gas())?;
-        }
 
         // TIP-1060 (T7+): run the storage credits policy so precompile-driven storage
         // writes honor the same accounting as the opcode-level SSTORE hook.
@@ -242,23 +230,14 @@ impl<'a> EvmPrecompileStorageProvider<'a> {
         let additional_cost = self.gas_params.cold_account_additional_cost();
 
         // T4+: pre-charge static gas to avoid cheap useless work.
-        let insufficient_gas_for_cold_load = if self.spec.is_t4() {
+        let insufficient_gas_for_cold_load = {
             self.deduct_gas(self.gas_params.warm_storage_read_cost())?;
             self.gas_tracker.remaining() < additional_cost
-        } else {
-            false
         };
 
         let mut account = self
             .internals
             .load_account_mut_skip_cold_load(address, insufficient_gas_for_cold_load)?;
-
-        if !self.spec.is_t4() {
-            deduct_gas(
-                &mut self.gas_tracker,
-                self.gas_params.warm_storage_read_cost(),
-            )?;
-        }
 
         // Dynamic gas.
         if account.is_cold {
@@ -581,7 +560,7 @@ impl<'a> PrecompileStorageProvider for EvmPrecompileStorageProvider<'a> {
 
     #[inline]
     fn set_tip1060_storage_credits(&mut self, enabled: bool) {
-        self.tip1060_storage_credits_enabled = enabled && self.spec.is_t7();
+        self.tip1060_storage_credits_enabled = enabled;
     }
 
     #[inline]

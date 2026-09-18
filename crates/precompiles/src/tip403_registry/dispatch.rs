@@ -21,29 +21,22 @@ impl Precompile for TIP403Registry {
                 ITIP403Registry::ITIP403RegistryCalls {
                     policyIdCounter(call) => view(call, |_| self.policy_id_counter()),
                     policyExists(call) => view(call, |c| self.policy_exists(c)),
-                    #[schedule(since = T9)]
                     tokenTransferPolicyId(call) => view(call, |c| self.token_transfer_policy_id(c)),
                     policyData(call) => view(call, |c| self.policy_data(c)),
                     isAuthorized(call) => view(call, |c| {
                         self.is_authorized_as(c.policyId, c.user, AuthRole::Transfer)
                     }),
-                    #[schedule(since = T2)]
                     isAuthorizedSender(call) => view(call, |c| {
                         self.is_authorized_as(c.policyId, c.user, AuthRole::Sender)
                     }),
-                    #[schedule(since = T2)]
                     isAuthorizedRecipient(call) => view(call, |c| {
                         self.is_authorized_as(c.policyId, c.user, AuthRole::Recipient)
                     }),
-                    #[schedule(since = T2)]
                     isAuthorizedMintRecipient(call) => view(call, |c| {
                         self.is_authorized_as(c.policyId, c.user, AuthRole::MintRecipient)
                     }),
-                    #[schedule(since = T2)]
                     compoundPolicyData(call) => view(call, |c| self.compound_policy_data(c)),
-                    #[schedule(since = T6)]
                     receivePolicy(call) => view(call, |c| self.receive_policy(c.account)),
-                    #[schedule(since = T6)]
                     validateReceivePolicy(call) => view(call, |c| {
                         let blocked_reason = self
                             .validate_receive_policy(c.token, c.sender, c.receiver)?
@@ -53,9 +46,7 @@ impl Precompile for TIP403Registry {
                             blockedReason: blocked_reason,
                         })
                     }),
-                    #[schedule(since = T6)]
                     setReceivePolicy(call) => mutate_void(call, msg_sender, |s, c| self.set_receive_policy(s, c)),
-                    #[schedule(since = T9)]
                     migrateTransferPolicyIds(call) => mutate(call, msg_sender, |_, c| {
                         self.migrate_transfer_policy_ids(c)
                     }),
@@ -66,7 +57,6 @@ impl Precompile for TIP403Registry {
                     setPolicyAdmin(call) => mutate_void(call, msg_sender, |s, c| self.set_policy_admin(s, c)),
                     modifyPolicyWhitelist(call) => mutate_void(call, msg_sender, |s, c| self.modify_policy_whitelist(s, c)),
                     modifyPolicyBlacklist(call) => mutate_void(call, msg_sender, |s, c| self.modify_policy_blacklist(s, c)),
-                    #[schedule(since = T2)]
                     createCompoundPolicy(call) => mutate(call, msg_sender, |s, c| self.create_compound_policy(s, c))
                 }
             }

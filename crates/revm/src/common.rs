@@ -24,7 +24,7 @@ pub(crate) fn is_tip20_fee_inference_call(spec: TempoHardfork, input: &[u8]) -> 
         matches!(
             s,
             ITIP20::transferCall::SELECTOR | ITIP20::transferWithMemoCall::SELECTOR
-        ) || (!spec.is_t7() && s == ITIP20::distributeRewardCall::SELECTOR)
+        )
     })
 }
 

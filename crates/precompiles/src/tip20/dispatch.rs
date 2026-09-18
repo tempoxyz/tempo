@@ -19,7 +19,7 @@ impl Precompile for TIP20Token {
         // Ensure that the token is initialized (has bytecode)
         let initialized = match self.is_initialized() {
             Ok(v) => v,
-            Err(_) if !self.storage.spec().is_t4() => false,
+            Err(_) if false => false,
             Err(e) => return self.storage.error_result(e),
         };
         if !initialized {
@@ -39,7 +39,6 @@ impl Precompile for TIP20Token {
                     supplyCap(_) => metadata::<ITIP20::supplyCapCall>(|| self.supply_cap()),
                     transferPolicyId(_) => metadata::<ITIP20::transferPolicyIdCall>(|| self.transfer_policy_id()),
                     paused(_) => metadata::<ITIP20::pausedCall>(|| self.paused()),
-                    #[schedule(since = T5)]
                     logoURI(_) => metadata::<ITIP20::logoURICall>(|| self.logo_uri()),
 
                     // View functions
@@ -60,7 +59,6 @@ impl Precompile for TIP20Token {
                         self.change_transfer_policy_id(s, c)
                     }),
                     setSupplyCap(call) => mutate_void(call, msg_sender, |s, c| self.set_supply_cap(s, c)),
-                    #[schedule(since = T5)]
                     setLogoURI(call) => mutate_void(call, msg_sender, |s, c| self.set_logo_uri(s, c)),
                     pause(call) => mutate_void(call, msg_sender, |s, c| self.pause(s, c)),
                     unpause(call) => mutate_void(call, msg_sender, |s, c| self.unpause(s, c)),
@@ -87,11 +85,8 @@ impl Precompile for TIP20Token {
                     userRewardInfo(call) => view(call, |c| self.get_user_reward_info(c.account).map(|info| info.into())),
                     getPendingRewards(call) => view(call, |c| self.get_pending_rewards(c.account)),
 
-                    #[schedule(since = T2)]
                     permit(call) => mutate_void(call, msg_sender, |_s, c| self.permit(c)),
-                    #[schedule(since = T2)]
                     nonces(call) => view(call, |c| self.nonces(c)),
-                    #[schedule(since = T2)]
                     DOMAIN_SEPARATOR(call) => view(call, |_| self.domain_separator())
                 }
 

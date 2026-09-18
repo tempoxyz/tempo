@@ -226,15 +226,7 @@ where
             .into());
         }
 
-        let expected_system_tx_count = if self
-            .inner
-            .chain_spec()
-            .is_t4_active_at_timestamp(block.header().timestamp())
-        {
-            0
-        } else {
-            SYSTEM_TX_COUNT
-        };
+        let expected_system_tx_count = { 0 };
 
         // Get the last END_OF_BLOCK_SYSTEM_TX_COUNT transactions and validate they are end-of-block system txs
         let end_of_block_system_txs = transactions

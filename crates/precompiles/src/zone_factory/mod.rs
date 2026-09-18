@@ -295,7 +295,7 @@ fn validate_closed_loop_config(
         return Err(ZoneFactoryError::invalid_closed_loop_config().into());
     }
 
-    if storage.spec().is_t11() {
+    {
         if has_duplicates_metered(
             storage,
             allowed_accounts
@@ -308,19 +308,6 @@ fn validate_closed_loop_config(
         }
         return Ok(());
     }
-
-    let mut seen =
-        HashSet::with_capacity(allowed_accounts.len().saturating_add(zone_gateways.len()));
-    seen.extend(allowed_accounts.iter().copied());
-    if zone_gateways.iter().any(|gateway| seen.contains(gateway)) {
-        return Err(ZoneFactoryError::invalid_closed_loop_config().into());
-    }
-    seen.extend(zone_gateways.iter().copied());
-
-    if sequencers.iter().any(|sequencer| seen.contains(sequencer)) {
-        return Err(ZoneFactoryError::invalid_closed_loop_config().into());
-    }
-    Ok(())
 }
 
 fn validate_sequencer_set(sequencers: &[Address], threshold: u8) -> Result<()> {

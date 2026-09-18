@@ -88,11 +88,10 @@ impl TempoEvmConfig {
     /// Refuse to execute historical state with v2 rules. Genesis/headers may still be read
     /// from a checkpoint; replay and historical calls must go through tempo-multiplex.
     fn validate_execution_timestamp(&self, timestamp: u64) -> Result<(), TempoEvmError> {
-        if TempoHardfork::FIXED_EXECUTION
-            && !self
-                .chain_spec()
-                .tempo_fork_activation(TempoHardfork::CURRENT)
-                .active_at_timestamp(timestamp)
+        if !self
+            .chain_spec()
+            .tempo_fork_activation(TempoHardfork::CURRENT)
+            .active_at_timestamp(timestamp)
         {
             return Err(TempoEvmError::InvalidEvmConfig(
                 "tempo-v2 cannot execute pre-T11 blocks; use tempo-multiplex and a T11 checkpoint"
@@ -189,7 +188,7 @@ impl ConfigureEvm for TempoEvmConfig {
                 .blob_params_at_timestamp(header.timestamp()),
         );
 
-        let spec = self.chain_spec().tempo_hardfork_at(header.timestamp());
+        let spec = TempoHardfork::CURRENT;
 
         // Apply TIP-1000 gas params for T1 hardfork.
         //
@@ -248,7 +247,7 @@ impl ConfigureEvm for TempoEvmConfig {
                 .blob_params_at_timestamp(attributes.timestamp),
         );
 
-        let spec = self.chain_spec().tempo_hardfork_at(attributes.timestamp);
+        let spec = TempoHardfork::CURRENT;
 
         // Apply TIP-1000 gas params for T1 hardfork. TIP-1016 is gated by
         // `cfg_env.enable_amsterdam_eip8037`, independent of the T4 hardfork

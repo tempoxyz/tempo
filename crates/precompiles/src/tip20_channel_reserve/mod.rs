@@ -180,17 +180,7 @@ impl TIP20ChannelReserve {
             return Err(TIP20ChannelReserveError::channel_already_exists().into());
         }
 
-        if self.storage.spec().is_t12() {
-            let payee = Recipient::resolve(call.payee)?.target;
-            token.ensure_transfer_authorized(msg_sender, payee)?;
-            token.ensure_receive_policy_authorized(msg_sender, payee)?;
-            token.channel_reserve_transfer(
-                msg_sender,
-                Recipient::direct(self.address),
-                U256::from(call.deposit),
-                msg_sender,
-            )?;
-        } else {
+        {
             token.ensure_authorized_as(&[(
                 Recipient::resolve(call.payee)?.target,
                 AuthRole::Recipient,
@@ -205,7 +195,7 @@ impl TIP20ChannelReserve {
                 settled: U96::ZERO,
                 deposit,
                 close_requested_at: 0,
-                uses_logical_receive_policy_sender: self.storage.spec().is_t12(),
+                uses_logical_receive_policy_sender: false,
             },
         )?;
         self.opened_this_tx[channel_id].t_write(true)?;
@@ -262,19 +252,7 @@ impl TIP20ChannelReserve {
 
         let mut token = TIP20Token::from_address(call.descriptor.token)?;
 
-        if self.storage.spec().is_t12() {
-            let payee = Recipient::resolve(call.descriptor.payee)?;
-            token.ensure_transfer_authorized(call.descriptor.payer, payee.target)?;
-            token.channel_reserve_transfer(
-                self.address,
-                payee,
-                U256::from(delta),
-                state.receive_policy_sender(call.descriptor.payer),
-            )?;
-
-            state.settled = cumulative;
-            self.channel_states[channel_id].write(state)?;
-        } else {
+        {
             token.ensure_authorized_as(&[(call.descriptor.payer, AuthRole::Sender)])?;
 
             // Preserve the pre-T12 fallible-operation order. Although a later transfer failure
@@ -335,20 +313,7 @@ impl TIP20ChannelReserve {
 
             state.deposit = next_deposit;
             let mut token = TIP20Token::from_address(call.descriptor.token)?;
-            if self.storage.spec().is_t12() {
-                let payee = Recipient::resolve(call.descriptor.payee)?.target;
-                token.ensure_transfer_authorized(msg_sender, payee)?;
-                token.ensure_receive_policy_authorized(
-                    state.receive_policy_sender(msg_sender),
-                    payee,
-                )?;
-                token.channel_reserve_transfer(
-                    msg_sender,
-                    Recipient::direct(self.address),
-                    U256::from(call.additionalDeposit),
-                    msg_sender,
-                )?;
-            } else {
+            {
                 token.ensure_authorized_as(&[(
                     Recipient::resolve(call.descriptor.payee)?.target,
                     AuthRole::Recipient,
@@ -464,31 +429,7 @@ impl TIP20ChannelReserve {
             .checked_sub(capture)
             .expect("capture amount already checked against deposit");
 
-        if self.storage.spec().is_t12() {
-            let mut token = TIP20Token::from_address(call.descriptor.token)?;
-            if !delta.is_zero() {
-                let payee = Recipient::resolve(call.descriptor.payee)?;
-                token.ensure_transfer_authorized(call.descriptor.payer, payee.target)?;
-                token.channel_reserve_transfer(
-                    self.address,
-                    payee,
-                    U256::from(delta),
-                    state.receive_policy_sender(call.descriptor.payer),
-                )?;
-            }
-            if !refund.is_zero() {
-                token.channel_reserve_transfer(
-                    self.address,
-                    Recipient::resolve(call.descriptor.payer)?,
-                    U256::from(refund),
-                    self.address,
-                )?;
-            }
-
-            // Commit terminal channel state only after both deliveries succeed. TIP-1028
-            // rejections therefore leave the channel available for retry.
-            self.delete_channel_state_and_credit_payer(channel_id, call.descriptor.payer)?;
-        } else {
+        {
             // Preserve the pre-T12 fallible-operation order and gas behavior.
             self.delete_channel_state_and_credit_payer(channel_id, call.descriptor.payer)?;
             let mut token = TIP20Token::from_address(call.descriptor.token)?;
@@ -552,20 +493,7 @@ impl TIP20ChannelReserve {
             .checked_sub(state.settled)
             .expect("settled is always <= deposit");
 
-        if self.storage.spec().is_t12() {
-            if !refund.is_zero() {
-                let mut token = TIP20Token::from_address(call.descriptor.token)?;
-                token.channel_reserve_transfer(
-                    self.address,
-                    Recipient::resolve(call.descriptor.payer)?,
-                    U256::from(refund),
-                    self.address,
-                )?;
-            }
-            // Commit terminal state only after a nonzero refund succeeds. A zero-refund
-            // withdrawal has no fallible token delivery to wait for.
-            self.delete_channel_state_and_credit_payer(channel_id, call.descriptor.payer)?;
-        } else {
+        {
             // Preserve the pre-T12 fallible-operation order and gas behavior.
             self.delete_channel_state_and_credit_payer(channel_id, call.descriptor.payer)?;
             if !refund.is_zero() {
@@ -706,10 +634,6 @@ impl TIP20ChannelReserve {
         channel_id: B256,
         state: PackedChannelState,
     ) -> Result<()> {
-        if !self.storage.spec().is_t7() {
-            return self.channel_states[channel_id].write(state);
-        }
-
         let current = self.channel_storage_credits[payer].read()?;
         if current == 0 {
             return self.channel_states[channel_id].write(state);
