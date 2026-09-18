@@ -1,0 +1,8 @@
+# Omit the workload fee_token so transfers infer it from the called TIP-20.
+# Keep liquidity setup for conversion from each token to validator pathUSD fees.
+include:
+  - tip20/base.yml
+  - tip20/recipient-existing.yml
+  - tip20/fee-amm-liquidity.yml
+  - tip20/auth-direct.yml
+  - tip20/nonce-expiring.yml
