@@ -18,7 +18,16 @@ def fallback-send [txgen: string, bench: string, spec: string, rpc: string, coun
     let send = (txgen-shell-join [$bench send --rpc-url $rpc --tps 1000 --max-concurrent 20 --retries 0 --drain-timeout 0])
     let result = (bash -lc $"set -euo pipefail; ($generate) | ($send)" | complete)
     if $result.exit_code != 0 {
+        print $result.stdout
         print $result.stderr
+        let last = (fallback-rpc $rpc eth_blockNumber [] | into int)
+        for height in ([0 ($last - 3)] | math max)..$last {
+            let block = ($height | format number | get lowerhex)
+            let failed = (fallback-rpc $rpc eth_getBlockReceipts [$block] | where status == "0x0")
+            for receipt in ($failed | first 2) {
+                print $"FAILED_FIXTURE_RECEIPT ($receipt | select transactionHash status gasUsed feeToken | to json -r)"
+            }
+        }
         error make {msg: "Fallback benchmark fixture/probe failed"}
     }
     txgen-wait-for-txpool-drain $rpc
@@ -75,7 +84,7 @@ def txgen-prepare-fallback [spec_path: string, txgen: string, bench: string, rpc
         let balance = (fallback-read $rpc $pathusd "70a08231" $entry.item)
         let amount = if $use_alpha { $balance } else { "0" }
         {id: $"drain_pathusd_($entry.index)", tx: {
-            type: tempo, from: {pool: users, select: {index: $entry.index}}, gas_limit: 300000,
+            type: tempo, from: {pool: users, select: {index: $entry.index}}, gas_limit: 1000000,
             max_fee_per_gas: 100000000000, max_priority_fee_per_gas: 100000000000,
             fee_token: $alpha, call: {to: $pathusd, abi: ERC20, function: transfer,
                 args: ["0x000000000000000000000000000000000000dead" $amount]}
