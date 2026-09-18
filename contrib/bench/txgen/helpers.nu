@@ -814,12 +814,11 @@ def txgen-run-preset-pipeline [
         "--rpc" $generate_rpc_url
     ]
     let metrics_url_args = ($metrics_url | each { |url| ["--metrics-url" $url] } | flatten)
-    # Diagnostic comparison only: change the sample spool encoding while keeping
-    # the node, generator, workload, caches, and sampling cadence identical.
-    let baseline_run = ($benchmark_run starts-with "baseline")
-    let bench_bin = if $baseline_run { $env.TXGEN_BASELINE_BENCH_BIN } else { $txgen_bench_bin }
-    let bench_ref = if $baseline_run { $env.TXGEN_BASELINE_BENCH_REV } else { $env.TXGEN_FEATURE_BENCH_REV }
-    let sample_encoding = if $baseline_run { "uncompressed" } else { "gzip-fast" }
+    # Cache-limit retest: use the same compressed recorder on both sides so
+    # only the node CLI cache settings differ; preserve the original cadence.
+    let bench_bin = $txgen_bench_bin
+    let bench_ref = $env.TXGEN_FEATURE_BENCH_REV
+    let sample_encoding = "gzip-fast"
     let scrape_interval_ms = $TXGEN_HELPER_SCRAPE_INTERVAL_MS
     print $"  Metrics scrape interval: ($scrape_interval_ms)ms"
     print $"  Metric sample spool: ($sample_encoding), bench revision: ($bench_ref)"
