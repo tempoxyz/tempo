@@ -15,7 +15,9 @@ use crate::{
 fn no_duplicate_metrics() {
     let _ = tempo_eyre::install();
 
-    let setup = Setup::new().how_many_signers(1).epoch_length(10);
+    let setup = Setup::new(crate::VERIFICATION_MODE)
+        .how_many_signers(1)
+        .epoch_length(10);
 
     let cfg = Config::default().with_seed(setup.seed);
     let executor = Runner::from(cfg);
