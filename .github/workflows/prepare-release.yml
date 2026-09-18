@@ -21,6 +21,10 @@ concurrency:
   group: prepare-release-v${{ inputs.version }}
   cancel-in-progress: false
 
+env:
+  # Allow Aegis to finish its 90-second Socket lookup before Cargo times out.
+  CARGO_HTTP_TIMEOUT: "180"
+
 jobs:
   prepare:
     name: Prepare pre-release/v${{ inputs.version }}
@@ -32,6 +36,9 @@ jobs:
       id-token: write
 
     steps:
+      - name: Secure runner
+        uses: tempoxyz/gh-actions/actions/secure-runner@ca2b15de1d1f6edd2276736187d7e4c2d898972c
+
       - name: Validate inputs
         id: release
         shell: bash

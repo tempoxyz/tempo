@@ -31,9 +31,13 @@ jobs:
     name: Promote image to canary
     runs-on: ubuntu-latest
     permissions:
+      id-token: write
       actions: read
       packages: write
     steps:
+      - name: Secure runner
+        uses: tempoxyz/gh-actions/actions/secure-runner@ca2b15de1d1f6edd2276736187d7e4c2d898972c
+
       - name: Log in to GitHub Container Registry
         uses: tempoxyz/gh-actions/vendor/docker/login-action@3626124474a987bc74b41fc7ae65b2e23f8e4e4e
         with:
