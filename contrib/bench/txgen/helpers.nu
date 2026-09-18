@@ -25,6 +25,17 @@ const TXGEN_HELPER_FEE_AMM_LIQUIDITY_AMOUNT = 10000000000
 const TXGEN_HELPER_FEE_AMM_2D_LIQUIDITY_AMOUNT = 10000000000000
 const TXGEN_HELPER_DEFAULT_RENDERED_SPECS_DIR = ".bench-tmp/txgen-specs"
 const TXGEN_HELPER_CLICKHOUSE_METRICS_FILE = "contrib/bench/clickhouse-metrics.txt"
+# Warm-up before the measured window (see `bench send --help` for the
+# derivation of every default). The send rate is capped during warm-up so a
+# cold node never sees the full target; `bench send` ramps to the target once
+# every proposer produced full blocks and throughput plateaued, then measures
+# for exactly the configured duration.
+const TXGEN_HELPER_WARMUP_TPS = 2000
+const TXGEN_HELPER_WARMUP_MAX_SECS = 90
+const TXGEN_HELPER_WARMUP_RAMP_SECS = 10
+# Presets that generate a fixed transaction set with setup dependencies; they
+# keep the legacy measure-from-the-first-transaction behaviour.
+const TXGEN_HELPER_NO_WARMUP_PRESETS = ["zones" "vault-deposit" "vault-withdraw"]
 
 def txgen-tip20-base-scenario [] {
     {
@@ -742,7 +753,16 @@ def txgen-run-preset-pipeline [
     txgen-configure-existing-recipients-env $spec_path $bloat_mib $bloat_token_count
     txgen-configure-fee-amm-env $spec_path
     let preset_name = ($spec_path | path basename | str replace --regex '\.yml$' '')
-    let tx_count = [($tps * $duration) 1] | math max
+    let warmup_enabled = $preset_name not-in $TXGEN_HELPER_NO_WARMUP_PRESETS
+    # Generate for the measured window plus the longest possible warm-up
+    # (maximum plus the hand-off ramp). The generator streams into bench send,
+    # so over-provisioning only costs generation time; `bench send --duration`
+    # ends the measured window on time.
+    let warmup_budget_secs = if $warmup_enabled {
+        $TXGEN_HELPER_WARMUP_MAX_SECS + $TXGEN_HELPER_WARMUP_RAMP_SECS
+    } else { 0 }
+    let generate_secs = $duration + $warmup_budget_secs
+    let tx_count = [($tps * $generate_secs) 1] | math max
     mut zone_metadata = []
     if $preset_name == "zones" {
         if $chain_id != 1337 or $accounts < 1 or $accounts > 100000 {
@@ -795,7 +815,7 @@ def txgen-run-preset-pipeline [
         txgen-fund-accounts $txgen_tempo_bin $spec_path $generate_rpc_url
     }
 
-    let txgen_duration = $"($duration)s"
+    let txgen_duration = $"($generate_secs)s"
     let txgen_cmd = [
         $txgen_tempo_bin
         "generate"
@@ -823,9 +843,19 @@ def txgen-run-preset-pipeline [
         "--retries" 0
         "--scrape-interval-ms" $TXGEN_HELPER_SCRAPE_INTERVAL_MS
     ]
+    let warmup_args = if $warmup_enabled {
+        [
+            "--warmup" "auto"
+            "--warmup-tps" $TXGEN_HELPER_WARMUP_TPS
+            "--warmup-max" $"($TXGEN_HELPER_WARMUP_MAX_SECS)s"
+            "--warmup-ramp" $"($TXGEN_HELPER_WARMUP_RAMP_SECS)s"
+            "--duration" $"($duration)s"
+        ]
+    } else { ["--warmup" "off"] }
     let bench_base_cmd = [
         ...$bench_send_base_cmd
         ...$metrics_url_args
+        ...$warmup_args
     ]
         | append (if $victoriametrics_url != "" and $benchmark_start > 0 { ["--metrics-align" $"($benchmark_start)"] } else { [] })
     let report_args = ["--report" $"json:($report_path)"]
@@ -877,7 +907,7 @@ def txgen-run-preset-pipeline [
 
     if $use_two_phase_setup {
         let txgen_setup_cmd_str = (txgen-shell-join ($txgen_setup_cmd | append $txgen_extra_args))
-        let bench_setup_cmd_str = (txgen-shell-join ($bench_send_base_cmd | append ["--drain-timeout" 0]))
+        let bench_setup_cmd_str = (txgen-shell-join ($bench_send_base_cmd | append ["--warmup" "off" "--drain-timeout" 0]))
         let setup_pipeline = $"set -euo pipefail; ($bench_env_export)ulimit -Sn unlimited && ($txgen_setup_cmd_str) | ($bench_setup_cmd_str)"
 
         if $is_vault {
@@ -901,7 +931,7 @@ def txgen-run-preset-pipeline [
     if $is_vault or $preset_name == "zones" {
         print $"  Streaming ($tx_count) ($preset_name) transactions at target ($tps) TPS into bench send..."
     } else {
-        print $"  Streaming up to ($tx_count) txgen transaction\(s\) over ($txgen_duration) into bench send..."
+        print $"  Streaming up to ($tx_count) txgen transaction\(s\) over ($txgen_duration) into bench send \(warm-up at ($TXGEN_HELPER_WARMUP_TPS) tx/s for up to ($warmup_budget_secs)s, then ($duration)s measured at ($tps) tx/s\)..."
     }
     let vault_start_block = if $is_vault {
         (txgen-rpc-call $generate_rpc_url '{"jsonrpc":"2.0","id":1,"method":"eth_blockNumber","params":[]}').result | into int
