@@ -13897,7 +13897,6 @@ dependencies = [
  "minicbor-serde",
  "serde",
  "serde_with",
- "sha2 0.10.9",
  "x509-cert",
 ]
 

@@ -13,7 +13,6 @@ use tempo_nitro_attestation::{
 
 use crate::storage::StorageCtx;
 
-pub(super) const MAX_DOCUMENT_LEN: usize = MAX_DOCUMENT_SIZE;
 pub(super) const BASE_GAS: u64 = 40_000;
 pub(super) const SIGNATURE_GAS: u64 = 150_000;
 
@@ -24,35 +23,30 @@ pub(super) const AWS_NITRO_ROOT_DER: &[u8; 533] = &alloy::primitives::hex!(
     "3082021130820196a003020102021100f93175681b90afe11d46ccb4e4e7f856300a06082a8648ce3d0403033049310b3009060355040613025553310f300d060355040a0c06416d617a6f6e310c300a060355040b0c03415753311b301906035504030c126177732e6e6974726f2d656e636c61766573301e170d3139313032383133323830355a170d3439313032383134323830355a3049310b3009060355040613025553310f300d060355040a0c06416d617a6f6e310c300a060355040b0c03415753311b301906035504030c126177732e6e6974726f2d656e636c617665733076301006072a8648ce3d020106052b8104002203620004fc0254eba608c1f36870e29ada90be46383292736e894bfff672d989444b5051e534a4b1f6dbe3c0bc581a32b7b176070ede12d69a3fea211b66e752cf7dd1dd095f6f1370f4170843d9dc100121e4cf63012809664487c9796284304dc53ff4a3423040300f0603551d130101ff040530030101ff301d0603551d0e041604149025b50dd90547e796c396fa729dcf99a9df4b96300e0603551d0f0101ff040403020186300a06082a8648ce3d0403030369003066023100a37f2f91a1c9bd5ee7b8627c1698d255038e1f0343f95b63a9628c3d39809545a11ebcbf2e3b55d8aeee71b4c3d6adf3023100a2f39b1605b27028a5dd4ba069b5016e65b4fbde8fe0061d6a53197f9cdaf5d943bc61fc2beb03cb6fee8d2302f3dff6"
 );
 
-#[derive(Debug, PartialEq, Eq)]
-pub(super) enum AttestationError {
-    Validation,
-    OutOfGas,
-}
-
+/// Parses and verifies a Nitro attestation against `root_der` at the given block timestamp.
+/// Base gas is charged before parsing, and signature gas before cryptographic verification.
+///
+/// Returns `Ok(Some(_))` for a valid attestation, `Ok(None)` for validation failure.
 pub(super) fn verify_attestation_with_root(
-    storage: &mut StorageCtx,
     document: &[u8],
     block_timestamp: u64,
     root_der: &[u8],
-) -> Result<NitroAttestation, AttestationError> {
+) -> crate::error::Result<Option<NitroAttestation>> {
     if document.len() > MAX_DOCUMENT_SIZE {
-        return Err(AttestationError::Validation);
+        return Ok(None);
     }
-    storage
-        .deduct_gas(BASE_GAS)
-        .map_err(|_| AttestationError::OutOfGas)?;
 
-    let parsed = parse_attestation(document).map_err(|_| AttestationError::Validation)?;
+    StorageCtx.deduct_gas(BASE_GAS)?;
+    let Ok(parsed) = parse_attestation(document) else {
+        return Ok(None);
+    };
+
     let verification_gas = u64::try_from(parsed.signature_count())
         .unwrap_or(u64::MAX)
         .saturating_mul(SIGNATURE_GAS);
-    storage
-        .deduct_gas(verification_gas)
-        .map_err(|_| AttestationError::OutOfGas)?;
+    StorageCtx.deduct_gas(verification_gas)?;
 
-    verify_parsed(parsed, block_timestamp, root_der, &AwsLcP384)
-        .map_err(|_| AttestationError::Validation)
+    Ok(verify_parsed(parsed, block_timestamp, root_der, &AwsLcP384).ok())
 }
 
 struct AwsLcP384;
@@ -143,18 +137,10 @@ pub(super) mod tests {
             .expect("valid fixture base64")
     }
 
-    fn verify_production_document_at(
-        document: &[u8],
-        timestamp: u64,
-    ) -> Result<NitroAttestation, AttestationError> {
+    fn verify_production_document_at(document: &[u8], timestamp: u64) -> Option<NitroAttestation> {
         let mut storage = HashMapStorageProvider::new_with_spec(1, TempoHardfork::T13);
         StorageCtx::enter(&mut storage, || {
-            verify_attestation_with_root(
-                &mut StorageCtx::default(),
-                document,
-                timestamp,
-                AWS_NITRO_ROOT_DER,
-            )
+            verify_attestation_with_root(document, timestamp, AWS_NITRO_ROOT_DER).unwrap()
         })
     }
 
@@ -304,26 +290,26 @@ pub(super) mod tests {
         let document = production_fixture();
         let parsed = parse_attestation(&document).expect("production fixture parses");
         assert!(parsed.signature[48..] > P384_HALF_ORDER[..]);
+        assert_eq!(
+            aws_lc_rs::digest::digest(&aws_lc_rs::digest::SHA256, &parsed.certificate).as_ref(),
+            alloy::primitives::hex!(
+                "37dbbf810aba51d3423c84f6999b6bd0fcf008d9af094ae419134647bd41aa07"
+            )
+        );
 
         let mut storage = HashMapStorageProvider::new_with_spec(1, TempoHardfork::T13);
         StorageCtx::enter(&mut storage, || {
             let verified = verify_attestation_with_root(
-                &mut StorageCtx::default(),
                 &document,
                 PRODUCTION_FIXTURE_TIME,
                 AWS_NITRO_ROOT_DER,
             )
+            .unwrap()
             .unwrap();
             assert_eq!(verified.timestamp, 1_767_472_867_402);
             assert_eq!(verified.pcrs.len(), 16);
             assert!(verified.public_key.is_empty());
             assert!(verified.nonce.is_empty());
-            assert_eq!(
-                verified.leaf_cert_hash,
-                alloy::primitives::hex!(
-                    "37dbbf810aba51d3423c84f6999b6bd0fcf008d9af094ae419134647bd41aa07"
-                )
-            );
         });
     }
 
@@ -356,13 +342,10 @@ pub(super) mod tests {
             .as_secs();
 
         for timestamp in [not_before, not_after] {
-            verify_production_document_at(&document, timestamp).unwrap();
+            assert!(verify_production_document_at(&document, timestamp).is_some());
         }
         for timestamp in [not_before - 1, not_after + 1] {
-            assert_eq!(
-                verify_production_document_at(&document, timestamp).unwrap_err(),
-                AttestationError::Validation
-            );
+            assert!(verify_production_document_at(&document, timestamp).is_none());
         }
     }
 
@@ -384,10 +367,7 @@ pub(super) mod tests {
             mutate_leaf_certificate(&mut document, |leaf| {
                 replace_unique(leaf, needle, replacement);
             });
-            assert_eq!(
-                verify_production_document_at(&document, PRODUCTION_FIXTURE_TIME).unwrap_err(),
-                AttestationError::Validation
-            );
+            assert!(verify_production_document_at(&document, PRODUCTION_FIXTURE_TIME).is_none());
         }
     }
 
@@ -412,10 +392,7 @@ pub(super) mod tests {
             };
             replace_unique(leaf, &issuer, &changed);
         });
-        assert_eq!(
-            verify_production_document_at(&broken_issuer, PRODUCTION_FIXTURE_TIME).unwrap_err(),
-            AttestationError::Validation
-        );
+        assert!(verify_production_document_at(&broken_issuer, PRODUCTION_FIXTURE_TIME).is_none());
 
         let mut unknown_critical = production_fixture();
         mutate_leaf_certificate(&mut unknown_critical, |leaf| {
@@ -425,9 +402,8 @@ pub(super) mod tests {
                 &CRITICAL_UNKNOWN_EXTENSION,
             );
         });
-        assert_eq!(
-            verify_production_document_at(&unknown_critical, PRODUCTION_FIXTURE_TIME).unwrap_err(),
-            AttestationError::Validation
+        assert!(
+            verify_production_document_at(&unknown_critical, PRODUCTION_FIXTURE_TIME).is_none()
         );
     }
 
@@ -438,25 +414,18 @@ pub(super) mod tests {
         let mut replacement = root.clone();
         *replacement.last_mut().unwrap() ^= 1;
         replace_unique(&mut wrong_root, &root, &replacement);
-        assert_eq!(
-            verify_production_document_at(&wrong_root, PRODUCTION_FIXTURE_TIME).unwrap_err(),
-            AttestationError::Validation
-        );
+        assert!(verify_production_document_at(&wrong_root, PRODUCTION_FIXTURE_TIME).is_none());
 
         let mut corrupt_document = production_fixture();
         *corrupt_document.last_mut().unwrap() ^= 1;
-        assert_eq!(
-            verify_production_document_at(&corrupt_document, PRODUCTION_FIXTURE_TIME).unwrap_err(),
-            AttestationError::Validation
+        assert!(
+            verify_production_document_at(&corrupt_document, PRODUCTION_FIXTURE_TIME).is_none()
         );
 
         let mut corrupt_leaf = production_fixture();
         mutate_leaf_certificate(&mut corrupt_leaf, |leaf| {
             *leaf.last_mut().unwrap() ^= 1;
         });
-        assert_eq!(
-            verify_production_document_at(&corrupt_leaf, PRODUCTION_FIXTURE_TIME).unwrap_err(),
-            AttestationError::Validation
-        );
+        assert!(verify_production_document_at(&corrupt_leaf, PRODUCTION_FIXTURE_TIME).is_none());
     }
 }

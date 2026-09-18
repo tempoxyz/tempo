@@ -21,5 +21,4 @@ minicbor = { version = "=2.3.0", default-features = false, features = ["alloc"] 
 minicbor-serde = { version = "=0.7.1", default-features = false, features = ["alloc"] }
 serde = { workspace = true, features = ["alloc"] }
 serde_with = { version = "=3.20.0", default-features = false, features = ["alloc"] }
-sha2.workspace = true
 x509-cert = { version = "=0.2.5", default-features = false }

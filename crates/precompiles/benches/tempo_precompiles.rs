@@ -36,6 +36,7 @@ fn signature_verification(c: &mut Criterion) {
     p256_signature.extend_from_slice(encoded.x().expect("P256 x coordinate"));
     p256_signature.extend_from_slice(encoded.y().expect("P256 y coordinate"));
     p256_signature.push(0);
+    let p256_signature: Bytes = p256_signature.into();
 
     c.bench_function("p256_verify", |b| {
         let mut storage = HashMapStorageProvider::new_with_spec(1, TempoHardfork::T13);
@@ -44,7 +45,7 @@ fn signature_verification(c: &mut Criterion) {
             b.iter(|| {
                 black_box(
                     verifier
-                        .recover(black_box(hash), black_box(p256_signature.clone().into()))
+                        .recover(black_box(hash), black_box(p256_signature.clone()))
                         .expect("P256 fixture verifies"),
                 );
             });
