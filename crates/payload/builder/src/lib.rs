@@ -69,9 +69,7 @@ use tempo_evm::{
     StorageActionReplayError, TempoEvmConfig, TempoNextBlockEnvAttributes, TempoStateAccess,
     TempoTxResult, evm::TempoEvm,
 };
-use tempo_payload_types::{
-    TempoBuiltPayload, TempoPayloadAttributes, ValidationLatencyWorkload, marshal_persist_estimate,
-};
+use tempo_payload_types::{TempoBuiltPayload, TempoPayloadAttributes, ValidationLatencyWorkload};
 use tempo_precompiles::{storage::StorageActions, validator_config_v2::ValidatorConfigV2};
 use tempo_primitives::{TempoHeader, TempoReceipt, TempoTxEnvelope};
 use tempo_transaction_pool::{
@@ -505,7 +503,6 @@ where
         // work would consume that window.
         let payload_build_budget = attributes.payload_build_budget();
         let build_time_multiplier = self.build_time_multiplier();
-        let marshal_persist = marshal_persist_estimate();
         let validation_latency = attributes.validation_latency_estimate();
         let block_build_stop_reason = loop {
             check_cancel!();
@@ -520,8 +517,6 @@ where
                     elapsed,
                     normal_transaction_fill_idle_elapsed,
                     build_time_multiplier,
-                    marshal_persist,
-                    estimated_rlp_block_size,
                     validation_latency,
                     current_workload,
                 );
@@ -534,7 +529,6 @@ where
                         predicted_builder_work = ?budget_decision.predicted_builder_work,
                         predicted_validator_work = ?budget_decision.predicted_validator_work,
                         total_reserved = ?budget_decision.total_reserved,
-                        marshal_persist = ?budget_decision.marshal_persist,
                         ?current_workload,
                         gas_used = cumulative_gas_used,
                         transactions = pool_transactions_included,
