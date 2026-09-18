@@ -18,6 +18,10 @@ concurrency:
   group: add-hardfork-${{ inputs.hardfork }}
   cancel-in-progress: false
 
+env:
+  # Allow Aegis to finish its 90-second Socket lookup before Cargo times out.
+  CARGO_HTTP_TIMEOUT: "180"
+
 jobs:
   add-hardfork:
     name: Add ${{ inputs.hardfork }} hardfork
@@ -27,6 +31,9 @@ jobs:
     permissions:
       id-token: write
     steps:
+      - name: Secure runner
+        uses: tempoxyz/gh-actions/actions/secure-runner@ca2b15de1d1f6edd2276736187d7e4c2d898972c
+
       - name: Fetch Tempo GitHub token via STS
         id: tempo-token
         uses: tempoxyz/gh-actions/actions/github-sts@c0292122e255def866c64c55e5844d1e7d5fe7ad

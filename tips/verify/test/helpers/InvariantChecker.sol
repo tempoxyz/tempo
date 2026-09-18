@@ -233,7 +233,7 @@ abstract contract InvariantChecker is HandlerBase {
     // ============ Replay Protection Invariants (N12-N15) ============
 
     /// @notice Verify replay protection invariants are not violated
-    /// @dev These counters should always be 0 - any non-zero value indicates a protocol bug
+    /// @dev Violation counters must be zero under the active fork's rules.
     function _checkReplayProtectionInvariants() internal view {
         // N12: Protocol nonce replay must be rejected
         assertEq(ghost_replayProtocolAllowed, 0, "N12: Protocol nonce replay unexpectedly allowed");
@@ -293,7 +293,12 @@ abstract contract InvariantChecker is HandlerBase {
 
     // ============ Expiring Nonce Invariants (E1-E5) ============
 
-    /// @notice Verify expiring nonce constraints are enforced (TIP-1009)
+    function _allowsExpiringNonceDiscriminators() internal pure returns (bool) {
+        bytes32 hardfork = keccak256(bytes(vm.getEvmVersion()));
+        return hardfork == keccak256("t12") || hardfork == keccak256("t13");
+    }
+
+    /// @notice Verify expiring nonce constraints are enforced (TIP-1009, TIP-1106)
     /// @dev These counters should always be 0 - any non-zero value indicates a protocol bug
     function _checkExpiringNonceInvariants() internal view {
         // E1: No replay within validity window
@@ -315,12 +320,14 @@ abstract contract InvariantChecker is HandlerBase {
             "E3: validBefore exceeds max window unexpectedly allowed"
         );
 
-        // E4: Nonce must be zero
-        assertEq(
-            ghost_expiringNonceNonZeroAllowed,
-            0,
-            "E4: Non-zero nonce for expiring nonce tx unexpectedly allowed"
-        );
+        // E4: Before T12 the nonce must be zero; TIP-1106 permits arbitrary discriminators.
+        if (!_allowsExpiringNonceDiscriminators()) {
+            assertEq(
+                ghost_expiringNonceNonZeroAllowed,
+                0,
+                "E4: Non-zero nonce for expiring nonce tx unexpectedly allowed before T12"
+            );
+        }
 
         // E5: validBefore required
         assertEq(

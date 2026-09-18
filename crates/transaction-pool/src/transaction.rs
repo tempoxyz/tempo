@@ -850,6 +850,12 @@ impl PoolTransaction for TempoPooledTransaction {
             })
             .unwrap_or(true)
     }
+
+    fn requires_nonce_bound_check(&self) -> bool {
+        // Expiring nonces are discriminators, not incrementing counters. Fork-specific
+        // restrictions on their values are enforced by Tempo's EVM validation.
+        !self.is_expiring_nonce()
+    }
 }
 
 impl alloy_consensus::Transaction for TempoPooledTransaction {

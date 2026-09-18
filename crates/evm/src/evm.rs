@@ -206,6 +206,9 @@ where
         self.inner.skip_valid_after_check = true;
         self.inner.skip_liquidity_check = true;
         self.ctx_mut().cfg.disable_nonce_check = true;
+        // Pool admission enforces the T7 fee floor. The dynamic block base fee
+        // is checked during block selection/execution, once queued transactions can pay it.
+        self.ctx_mut().cfg.disable_base_fee = true;
     }
 
     fn validate_pool_transaction(

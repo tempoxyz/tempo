@@ -21,7 +21,7 @@ use reth_ethereum::network::{NetworkSyncUpdater, SyncState};
 use reth_node_api::BuiltPayload;
 use reth_primitives_traits::transaction::TxHashRef;
 use reth_transaction_pool::TransactionPool;
-use tempo_alloy::TempoNetwork;
+use tempo_alloy::{TempoNetwork, provider::TempoProviderBuilderExt};
 use tempo_chainspec::{hardfork::TempoHardfork, spec::TEMPO_T1_BASE_FEE};
 use tempo_contracts::precompiles::{
     DEFAULT_FEE_TOKEN,
@@ -30,6 +30,7 @@ use tempo_contracts::precompiles::{
         revokeKeyCall,
     },
 };
+use tempo_node::rpc::TempoTransactionRequest;
 use tempo_precompiles::{
     ACCOUNT_KEYCHAIN_ADDRESS,
     tip20::ITIP20::{self},
@@ -1936,6 +1937,67 @@ async fn test_aa_keychain_revocation_toctou_dos() -> eyre::Result<()> {
 // ============================================================================
 // Expiring Nonce Tests
 // ============================================================================
+
+#[test_case::test_case(TempoHardfork::T11, [true, false, false] ; "t11")]
+#[test_case::test_case(TempoHardfork::T12, [true, true, true] ; "t12")]
+#[tokio::test(flavor = "multi_thread")]
+async fn test_expiring_nonce_discriminators_across_t12(
+    hardfork: TempoHardfork,
+    expected_admission: [bool; 3],
+) -> eyre::Result<()> {
+    let mut localnet = Localnet::with_schedule(ForkSchedule::DevnetAt(hardfork)).await?;
+    let valid_before = super::types::TestEnv::current_block_timestamp(&mut localnet).await?
+        + localnet.setup.hardfork.expiring_nonce_max_expiry_secs();
+    let Localnet {
+        mut setup,
+        provider,
+        chain_id,
+        funder_signer,
+        funder_addr,
+    } = localnet;
+    let recipient = Address::random();
+    let protocol_nonce = provider.get_transaction_count(funder_addr).await?;
+    let tempo_provider = ProviderBuilder::new_with_network::<TempoNetwork>()
+        .with_expiring_nonces()
+        .wallet(funder_signer)
+        .connect_http(setup.node.rpc_url());
+    let mut accepted_hashes = Vec::new();
+
+    for (discriminator, should_accept) in [0, 1, u64::MAX].into_iter().zip(expected_admission) {
+        let mut tx = create_expiring_nonce_tx(chain_id, valid_before, recipient);
+        tx.nonce = discriminator;
+        let mut request = TempoTransactionRequest::from(tx);
+        request.inner.from = Some(funder_addr);
+        estimate_gas(&provider, &request).await?;
+
+        let submission = tempo_provider.send_transaction(request).await;
+        if should_accept {
+            accepted_hashes.push(*submission?.tx_hash());
+        } else {
+            assert!(
+                submission.is_err(),
+                "{hardfork:?} admitted discriminator {discriminator}"
+            );
+        }
+    }
+
+    assert!(
+        accepted_hashes
+            .iter()
+            .all(|hash| setup.node.inner.pool.contains(hash)),
+        "{hardfork:?} accepted discriminators must coexist in the pool"
+    );
+    setup.node.advance_block().await?;
+    for hash in accepted_hashes {
+        assert_receipt_status(&provider, hash, true).await?;
+    }
+    assert_eq!(
+        provider.get_transaction_count(funder_addr).await?,
+        protocol_nonce,
+        "expiring nonce discriminators must not change the protocol nonce"
+    );
+    Ok(())
+}
 
 /// Test expiring nonce replay protection - same tx hash should be rejected
 #[tokio::test(flavor = "multi_thread")]

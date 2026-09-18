@@ -7,7 +7,7 @@
 use alloy_consensus::BlockHeader as _;
 use alloy_eips::eip2718::Typed2718;
 use alloy_primitives::Bytes;
-use alloy_rlp::Encodable;
+use alloy_rlp::{Buf, Encodable};
 use reth_primitives_traits::{RecoveredBlock, SealedBlock};
 use std::sync::Arc;
 use tempo_payload_types::EncodedBlock;
@@ -19,6 +19,8 @@ use tracing::warn;
 /// The roots task already encodes every transaction in EIP-2718 form for the transaction trie. This
 /// stores those bytes in the form required by the block body transaction list, so the later full
 /// block encoder can copy the transaction-list RLP instead of encoding every transaction again.
+/// The cache must come from the same ordered transactions as the block: the count check below is
+/// only a fallback for mismatched lengths, not a validation of transaction contents or ordering.
 #[derive(Clone, Debug)]
 pub(crate) struct EncodedBlockTransactionList {
     transaction_count: usize,
@@ -74,11 +76,45 @@ impl EncodedBlockTransactionList {
     }
 }
 
+/// One prefix byte plus enough big-endian length bytes for any addressable payload (nine bytes on
+/// 64-bit targets). Deriving this from RLP's length calculation keeps the reserved space sufficient
+/// for every possible `Vec` length on the target.
+const MAX_LIST_HEADER_LEN: usize = alloy_rlp::length_of_length(usize::MAX);
+
 /// Incrementally builds the RLP transaction-list bytes used inside the execution block body.
-#[derive(Debug, Default)]
+///
+/// The buffer reserves room for the list header in front of the payload so [`Self::finish`] can
+/// write the header in place instead of copying the whole payload into a new buffer.
+///
+/// Before finishing, `buffer[..MAX_LIST_HEADER_LEN]` is initialized header space and the remaining
+/// bytes are the concatenated block-body transaction elements. For a payload of `n` bytes, RLP uses
+/// `0xc0 + n` when `n < 56`, otherwise `0xf7 + len(n)` followed by the minimal big-endian encoding
+/// of `n`. Neither the reserved space nor the list header itself contributes to `n`.
+///
+/// Finishing right-aligns that header against the payload and excludes the unused prefix:
+///
+/// ```text
+/// [ unused prefix | list header | transaction elements ... ]
+///                 ^ returned Bytes starts here
+///                               ^ MAX_LIST_HEADER_LEN
+/// ```
+///
+/// The returned bytes retain the buffer's allocation, including any spare capacity, without moving
+/// the payload. Finishing writes only the header; the later full block encoding still copies this
+/// list into the block's output buffer.
+#[derive(Debug)]
 pub(crate) struct EncodedBlockTransactionsBuilder {
     transaction_count: usize,
-    payload: Vec<u8>,
+    buffer: Vec<u8>,
+}
+
+impl Default for EncodedBlockTransactionsBuilder {
+    fn default() -> Self {
+        Self {
+            transaction_count: 0,
+            buffer: vec![0; MAX_LIST_HEADER_LEN],
+        }
+    }
 }
 
 impl EncodedBlockTransactionsBuilder {
@@ -86,29 +122,43 @@ impl EncodedBlockTransactionsBuilder {
     ///
     /// Legacy transaction bytes are already RLP list elements. Typed EIP-2718 transaction bytes are
     /// wrapped as an RLP string so the final transaction list matches regular block encoding.
+    /// `encoded_2718` must be the complete EIP-2718 encoding of `transaction`, including its type
+    /// byte for typed transactions. The caller reuses the same bytes for the transaction trie.
     pub(crate) fn push(&mut self, transaction: &TempoTxEnvelope, encoded_2718: &[u8]) {
         self.transaction_count += 1;
         if !transaction.is_legacy() {
-            alloy_rlp::Header {
+            let header = alloy_rlp::Header {
                 list: false,
                 payload_length: encoded_2718.len(),
-            }
-            .encode(&mut self.payload);
+            };
+            // Reserve the whole element so writing its header cannot cause an extra reallocation.
+            self.buffer.reserve(header.length_with_payload());
+            header.encode(&mut self.buffer);
         }
-        self.payload.extend_from_slice(encoded_2718);
+        self.buffer.extend_from_slice(encoded_2718);
     }
 
-    pub(crate) fn finish(self) -> EncodedBlockTransactionList {
+    /// Writes the list header and transfers ownership of the buffer without copying the payload.
+    pub(crate) fn finish(mut self) -> EncodedBlockTransactionList {
         let header = alloy_rlp::Header {
             list: true,
-            payload_length: self.payload.len(),
+            payload_length: self.buffer.len() - MAX_LIST_HEADER_LEN,
         };
-        let mut rlp = Vec::with_capacity(header.length_with_payload());
-        header.encode(&mut rlp);
-        rlp.extend_from_slice(&self.payload);
+        let header_len = header.length();
+        let start = MAX_LIST_HEADER_LEN - header_len;
+
+        // Write the header into the reserved prefix, right-aligned against the payload.
+        let mut header_slot = &mut self.buffer[start..MAX_LIST_HEADER_LEN];
+        header.encode(&mut header_slot);
+        debug_assert!(header_slot.is_empty());
+
+        let mut rlp = Bytes::from(self.buffer);
+        // Consume the prefix instead of cloning the Bytes handle with `slice`.
+        rlp.advance(start);
+
         EncodedBlockTransactionList {
             transaction_count: self.transaction_count,
-            rlp: rlp.into(),
+            rlp,
         }
     }
 }
@@ -166,7 +216,7 @@ impl Drop for ExecutionBlockEncoder {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use alloy_consensus::{BlockBody, Signed, TxEip1559, TxLegacy};
+    use alloy_consensus::{BlockBody, Signed, TxEip1559, TxEip2930, TxEip7702, TxLegacy};
     use alloy_eips::{
         eip2718::Encodable2718,
         eip4895::{Withdrawal, Withdrawals},
@@ -176,7 +226,10 @@ mod tests {
     use proptest::prelude::*;
     use reth_primitives_traits::{RecoveredBlock, SealedBlock};
     use std::sync::Arc;
-    use tempo_primitives::{Block, Header, TempoHeader};
+    use tempo_primitives::{
+        Block, Header, TempoHeader, TempoTransaction,
+        transaction::{AASigned, Call},
+    };
 
     fn arb_address() -> impl Strategy<Value = Address> {
         any::<[u8; 20]>().prop_map(Address::from)
@@ -263,7 +316,13 @@ mod tests {
     }
 
     fn arb_tx() -> impl Strategy<Value = TempoTxEnvelope> {
-        prop_oneof![arb_legacy_tx(), arb_eip1559_tx()]
+        prop_oneof![
+            arb_legacy_tx(),
+            arb_eip1559_tx(),
+            arb_bytes(128).prop_map(eip2930_tx),
+            arb_bytes(128).prop_map(eip7702_tx),
+            arb_bytes(128).prop_map(aa_tx),
+        ]
     }
 
     fn arb_header() -> impl Strategy<Value = TempoHeader> {
@@ -366,7 +425,7 @@ mod tests {
                 nonce: 0,
                 gas_price: 1,
                 gas_limit: 21_000,
-                to: Address::random().into(),
+                to: Address::ZERO.into(),
                 value: U256::ZERO,
                 input,
             },
@@ -382,13 +441,57 @@ mod tests {
                 gas_limit: 21_000,
                 max_fee_per_gas: 2,
                 max_priority_fee_per_gas: 1,
-                to: Address::random().into(),
+                to: Address::ZERO.into(),
                 value: U256::ZERO,
                 access_list: Default::default(),
                 input,
             },
             Signature::test_signature(),
         ))
+    }
+
+    fn eip2930_tx(input: Bytes) -> TempoTxEnvelope {
+        TempoTxEnvelope::Eip2930(Signed::new_unhashed(
+            TxEip2930 {
+                input,
+                ..Default::default()
+            },
+            Signature::test_signature(),
+        ))
+    }
+
+    fn eip7702_tx(input: Bytes) -> TempoTxEnvelope {
+        TempoTxEnvelope::Eip7702(Signed::new_unhashed(
+            TxEip7702 {
+                input,
+                ..Default::default()
+            },
+            Signature::test_signature(),
+        ))
+    }
+
+    fn aa_tx(input: Bytes) -> TempoTxEnvelope {
+        TempoTxEnvelope::AA(AASigned::new_unhashed(
+            TempoTransaction {
+                calls: vec![Call {
+                    to: Address::ZERO.into(),
+                    value: U256::ZERO,
+                    input,
+                }],
+                ..Default::default()
+            },
+            Signature::test_signature().into(),
+        ))
+    }
+
+    fn all_transaction_types(input: Bytes) -> Vec<TempoTxEnvelope> {
+        vec![
+            legacy_tx(input.clone()),
+            eip2930_tx(input.clone()),
+            eip1559_tx(input.clone()),
+            eip7702_tx(input.clone()),
+            aa_tx(input),
+        ]
     }
 
     fn encoded_block_transactions(transactions: &[TempoTxEnvelope]) -> EncodedBlockTransactionList {
@@ -410,24 +513,99 @@ mod tests {
 
     #[test]
     fn encoded_block_transaction_list_matches_alloy_encoding() {
-        let transactions = vec![
-            legacy_tx(Bytes::from_static(b"legacy")),
-            eip1559_tx(Bytes::from_static(b"typed")),
+        for input_len in [0, 1, 55, 56, 255, 256, 65_535, 65_536] {
+            let transactions = all_transaction_types(vec![0xa5; input_len].into());
+            let encoded_transactions = encoded_block_transactions(&transactions);
+            let expected = alloy_rlp::encode(&transactions);
+
+            assert_eq!(encoded_transactions.transaction_count, transactions.len());
+            assert_eq!(encoded_transactions.rlp.as_ref(), expected.as_slice());
+            assert_eq!(
+                alloy_rlp::decode_exact::<Vec<TempoTxEnvelope>>(&encoded_transactions.rlp).unwrap(),
+                transactions,
+            );
+        }
+    }
+
+    #[test]
+    fn finish_encodes_header_boundaries_without_moving_payload() {
+        // Exercise exact list-payload lengths independently of transaction encoding. Empty RLP
+        // strings (0x80) are valid list elements, but are deliberately not full transactions here.
+        let cases: &[(usize, &[u8])] = &[
+            (0, &[0xc0]),
+            (1, &[0xc1]),
+            (54, &[0xf6]),
+            (55, &[0xf7]),
+            (56, &[0xf8, 0x38]),
+            (57, &[0xf8, 0x39]),
+            (255, &[0xf8, 0xff]),
+            (256, &[0xf9, 0x01, 0x00]),
+            (257, &[0xf9, 0x01, 0x01]),
+            (65_535, &[0xf9, 0xff, 0xff]),
+            (65_536, &[0xfa, 0x01, 0x00, 0x00]),
+            (65_537, &[0xfa, 0x01, 0x00, 0x01]),
+            (16_777_215, &[0xfa, 0xff, 0xff, 0xff]),
+            (16_777_216, &[0xfb, 0x01, 0x00, 0x00, 0x00]),
+            (16_777_217, &[0xfb, 0x01, 0x00, 0x00, 0x01]),
         ];
+        for &(payload_len, expected_header) in cases {
+            // Vec -> Bytes uses different ownership representations with and without spare capacity.
+            for spare_capacity in [0, 32] {
+                let mut builder = EncodedBlockTransactionsBuilder::default();
+                builder
+                    .buffer
+                    .resize(MAX_LIST_HEADER_LEN + payload_len, 0x80);
+                builder.buffer = builder.buffer.into_boxed_slice().into_vec();
+                builder.buffer.reserve_exact(spare_capacity);
+                let payload_ptr = builder.buffer[MAX_LIST_HEADER_LEN..].as_ptr();
 
+                let encoded = builder.finish();
+                assert_eq!(encoded.transaction_count, 0);
+                assert_eq!(&encoded.rlp[..expected_header.len()], expected_header);
+                let payload = &encoded.rlp[expected_header.len()..];
+                assert_eq!(payload.len(), payload_len);
+                assert!(payload.iter().all(|&byte| byte == 0x80));
+                assert_eq!(payload.as_ptr(), payload_ptr, "finish moved the payload");
+
+                // The finished view owns the allocation after the builder and other handles drop.
+                let cloned = encoded.clone();
+                drop(encoded);
+                assert_eq!(cloned.rlp.len(), expected_header.len() + payload_len);
+                assert_eq!(&cloned.rlp[..expected_header.len()], expected_header);
+            }
+        }
+    }
+
+    #[test]
+    fn cached_transaction_list_matches_large_block_encoding() {
+        // Thousands of mixed transactions grow the buffer repeatedly and produce a multi-MiB list.
+        let transactions: Vec<_> = all_transaction_types(vec![0xa5; 1024].into())
+            .into_iter()
+            .cycle()
+            .take(4096)
+            .collect();
         let encoded_transactions = encoded_block_transactions(&transactions);
-        let expected = alloy_rlp::encode(&transactions);
+        assert!(encoded_transactions.rlp.len() > 4 * 1024 * 1024);
+        let block = SealedBlock::seal_slow(Block {
+            header: TempoHeader::default(),
+            body: BlockBody {
+                transactions,
+                ..Default::default()
+            },
+        });
 
-        assert_eq!(encoded_transactions.transaction_count, transactions.len());
-        assert_eq!(encoded_transactions.rlp.as_ref(), expected.as_slice());
+        // Encoding appends to an existing buffer, just like Encodable::encode.
+        let mut encoded = vec![0xde, 0xad];
+        assert!(encoded_transactions.encode_block_with_transactions(&block, &mut encoded));
+        assert_eq!(&encoded[..2], &[0xde, 0xad]);
+        assert_eq!(encoded[2..], full_block_encoding(&block));
+        let decoded = alloy_rlp::decode_exact::<Block>(&encoded[2..]).unwrap();
+        assert_eq!(decoded.body, *block.body());
     }
 
     #[test]
     fn cached_transaction_list_block_encoding_matches_full_block_encoding() {
-        let transactions = vec![
-            legacy_tx(Bytes::from_static(b"legacy")),
-            eip1559_tx(Bytes::from_static(b"typed")),
-        ];
+        let transactions = all_transaction_types(Bytes::from_static(b"input"));
         let encoded_transactions = encoded_block_transactions(&transactions);
         let block = SealedBlock::seal_slow(Block {
             header: TempoHeader::default(),

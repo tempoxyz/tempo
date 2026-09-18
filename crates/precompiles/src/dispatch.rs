@@ -20,6 +20,7 @@ sol! {
 pub const ABI_DECODER_MEMORY_LIMIT: usize = 16 * 1024 * 1024;
 
 /// Returns the hardfork-aware ABI decoder configuration used to dispatch precompile calls.
+/// Strict decoding starts at T11; T12 additionally permits trailing bytes.
 #[inline]
 pub const fn abi_decoder_config_for_spec(
     spec: TempoHardfork,
@@ -27,6 +28,7 @@ pub const fn abi_decoder_config_for_spec(
     alloy::sol_types::abi::AbiDecoderConfig::new()
         .memory_limit(ABI_DECODER_MEMORY_LIMIT)
         .strict(spec.is_t11())
+        .validate_allow_trailing_bytes(spec.is_t12())
 }
 
 pub mod typed {
@@ -365,6 +367,69 @@ mod tests {
                 Self::Tempo(error) => error.into_precompile_result(gas, reservoir),
             }
         }
+    }
+
+    #[test]
+    fn trailing_bytes_are_allowed_from_t12() -> eyre::Result<()> {
+        let canonical = ITestMemoryDispatch::setValuesCall {
+            values: vec![U256::from(1), U256::from(2)],
+        }
+        .abi_encode();
+
+        for spec in [
+            TempoHardfork::Genesis,
+            TempoHardfork::T10,
+            TempoHardfork::T11,
+            TempoHardfork::T12,
+            TempoHardfork::T13,
+        ] {
+            let config = abi_decoder_config_for_spec(spec);
+            assert_eq!(config.get_strict(), spec.is_t11());
+            assert_eq!(config.get_validate(), spec.is_t11());
+            assert_eq!(config.get_validate_allow_trailing_bytes(), spec.is_t12());
+            assert_eq!(config.get_memory_limit(), ABI_DECODER_MEMORY_LIMIT);
+
+            let mut storage = HashMapStorageProvider::new_with_spec(1, spec);
+            for suffix_len in [0, 1, 32, 33] {
+                let mut calldata = canonical.clone();
+                calldata.extend(vec![0xff; suffix_len]);
+                let output = StorageCtx::enter(&mut storage, || {
+                    dispatch!(
+                        &calldata,
+                        |call| match call {
+                            ITestMemoryDispatch::ITestMemoryDispatchCalls {
+                                setValues(_) => Ok(PrecompileOutput::new(0, Bytes::new(), 0)),
+                            }
+                        }
+                    )
+                })?;
+                let expected_success = suffix_len == 0 || !spec.is_t11() || spec.is_t12();
+                assert_eq!(
+                    output.is_success(),
+                    expected_success,
+                    "{spec:?}, {suffix_len}"
+                );
+            }
+
+            // Allowing a suffix must not permit gaps inside the encoding.
+            let mut gapped = canonical.clone();
+            gapped[4..36].copy_from_slice(&U256::from(64).to_be_bytes::<32>());
+            gapped.splice(36..36, [0u8; 32]);
+            assert_eq!(
+                ITestMemoryDispatch::setValuesCall::abi_decode_with_config(&gapped, config).is_ok(),
+                !spec.is_t11(),
+                "{spec:?}"
+            );
+            assert!(
+                ITestMemoryDispatch::setValuesCall::abi_decode_with_config(
+                    &canonical[..canonical.len() - 1],
+                    config,
+                )
+                .is_err(),
+                "{spec:?}"
+            );
+        }
+        Ok(())
     }
 
     #[test]

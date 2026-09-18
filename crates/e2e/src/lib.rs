@@ -13,7 +13,6 @@
 use std::{iter::repeat_with, net::SocketAddr, time::Duration};
 
 use alloy_primitives::Address;
-use commonware_consensus::types::Epoch;
 use commonware_cryptography::{
     Signer as _,
     bls12381::{
@@ -75,7 +74,7 @@ fn generate_consensus_node_config(
     .unwrap();
 
     let onchain_dkg_outcome = OnchainDkgOutcome {
-        epoch: Epoch::zero(),
+        epoch: 0,
         output: initial_dkg_outcome,
         next_players: shares.keys().clone(),
         is_next_full_dkg: false,
@@ -158,7 +157,7 @@ impl Setup {
             linkage: Link {
                 latency: Duration::from_millis(10),
                 jitter: Duration::from_millis(1),
-                success_rate: 1.0,
+                success_rate: commonware_utils::probability!(1.0),
             },
             epoch_length: 20,
             proposal_return_budget: Duration::from_millis(300),
@@ -250,7 +249,13 @@ pub async fn setup_validators(
         simulated::Config {
             max_size: MAX_MESSAGE_SIZE,
             disconnect_on_block: true,
-            tracked_peer_sets: commonware_utils::NZUsize!(3),
+            // Mirror production (`PEERSETS_TO_TRACK`): peers that leave the
+            // registered set are disconnected at the boundary.
+            tracked_peer_sets: commonware_utils::NZUsize!(1),
+            max_peers_per_set: std::num::NonZeroUsize::new(
+                (how_many_signers + how_many_verifiers).max(1) as usize,
+            )
+            .expect("maximum peers per set is non-zero"),
         },
     );
     network.start();
@@ -261,6 +266,11 @@ pub async fn setup_validators(
         how_many_verifiers,
         fee_recipient,
     );
+
+    let network_identity = tempo_chainspec::NetworkIdentity {
+        from_epoch: onchain_dkg_outcome.epoch,
+        identity: *onchain_dkg_outcome.network_identity(),
+    };
 
     let execution_runtime = ExecutionRuntime::builder()
         .with_epoch_length(epoch_length)
@@ -300,6 +310,7 @@ pub async fn setup_validators(
             private_key,
             oracle.clone(),
             share,
+            network_identity.clone(),
             feed_state,
             proposal_return_budget,
             execution_runtime.handle(),
