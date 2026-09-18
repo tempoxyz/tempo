@@ -136,48 +136,6 @@ mod tests {
     }
 
     #[test]
-    fn test_verify_keychain_selector_rejected_before_t6() -> eyre::Result<()> {
-        let mut storage = HashMapStorageProvider::new_with_spec(1, TempoHardfork::T5);
-        StorageCtx::enter(&mut storage, || {
-            let calldata = ISignatureVerifier::verifyKeychainCall {
-                account: Address::random(),
-                hash: B256::ZERO,
-                signature: vec![0u8; 65].into(),
-            }
-            .abi_encode();
-
-            let result = SignatureVerifier::new().call(&calldata, Address::ZERO)?;
-            assert!(result.is_revert());
-            assert!(
-                UnknownFunctionSelector::abi_decode(&result.bytes).is_ok(),
-                "verifyKeychain should be selector-gated before T6"
-            );
-            Ok(())
-        })
-    }
-
-    #[test]
-    fn test_verify_keychain_admin_selector_rejected_before_t6() -> eyre::Result<()> {
-        let mut storage = HashMapStorageProvider::new_with_spec(1, TempoHardfork::T5);
-        StorageCtx::enter(&mut storage, || {
-            let calldata = ISignatureVerifier::verifyKeychainAdminCall {
-                account: Address::random(),
-                hash: B256::ZERO,
-                signature: vec![0u8; 65].into(),
-            }
-            .abi_encode();
-
-            let result = SignatureVerifier::new().call(&calldata, Address::ZERO)?;
-            assert!(result.is_revert());
-            assert!(
-                UnknownFunctionSelector::abi_decode(&result.bytes).is_ok(),
-                "verifyKeychainAdmin should be selector-gated before T6"
-            );
-            Ok(())
-        })
-    }
-
-    #[test]
     fn test_verify_returns_true_for_correct_signer() -> eyre::Result<()> {
         let mut storage = HashMapStorageProvider::new_with_spec(1, TempoHardfork::T3);
         StorageCtx::enter(&mut storage, || {

@@ -183,11 +183,11 @@ mod tests {
     use tempo_chainspec::hardfork::TempoHardfork;
 
     #[test]
-    fn test_expiring_nonce_parameters_activate_at_t11() {
-        assert_eq!(TempoHardfork::T9.expiring_nonce_max_expiry_secs(), 30);
-        assert_eq!(TempoHardfork::T9.expiring_nonce_set_capacity(), 300_000);
-        assert_eq!(TempoHardfork::T10.expiring_nonce_max_expiry_secs(), 30);
-        assert_eq!(TempoHardfork::T10.expiring_nonce_set_capacity(), 300_000);
+    fn test_expiring_nonce_parameters_are_current_only() {
+        assert_eq!(TempoHardfork::T9.expiring_nonce_max_expiry_secs(), 300);
+        assert_eq!(TempoHardfork::T9.expiring_nonce_set_capacity(), 3_000_000);
+        assert_eq!(TempoHardfork::T10.expiring_nonce_max_expiry_secs(), 300);
+        assert_eq!(TempoHardfork::T10.expiring_nonce_set_capacity(), 3_000_000);
         assert_eq!(TempoHardfork::T11.expiring_nonce_max_expiry_secs(), 300);
         assert_eq!(TempoHardfork::T11.expiring_nonce_set_capacity(), 3_000_000);
     }
@@ -344,15 +344,15 @@ mod tests {
                 TempoPrecompileError::NonceError(NonceError::invalid_expiring_nonce_expiry())
             );
 
-            // valid_before too far in future should fail before T11.
-            let result = mgr.check_and_mark_expiring_nonce(tx_hash, now + 31);
+            // The current protocol permits at most 300 seconds.
+            let result = mgr.check_and_mark_expiring_nonce(tx_hash, now + 301);
             assert_eq!(
                 result.unwrap_err(),
                 TempoPrecompileError::NonceError(NonceError::invalid_expiring_nonce_expiry())
             );
 
-            // valid_before at exactly the pre-T11 maximum should succeed
-            mgr.check_and_mark_expiring_nonce(tx_hash, now + 30)?;
+            // The maximum is inclusive.
+            mgr.check_and_mark_expiring_nonce(tx_hash, now + 300)?;
 
             Ok(())
         })

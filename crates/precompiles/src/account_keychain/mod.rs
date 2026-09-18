@@ -2216,6 +2216,8 @@ mod tests {
                     allowedCalls: vec![],
                 },
             };
+            // Current execution requires a seeded transaction origin.
+            keychain.set_tx_origin(msg_sender)?;
             authorize_key(&mut keychain, msg_sender, setup_call)?;
 
             // Now set transaction key to non-zero (simulating access key usage)
@@ -2412,63 +2414,6 @@ mod tests {
 
             let key_info = keychain.get_key(getKeyCall {
                 account: contract_sender,
-                keyId: key_id,
-            })?;
-            assert!(key_info.isRevoked);
-
-            Ok(())
-        })
-    }
-
-    #[test]
-    fn test_admin_operations_allow_origin_mismatch_pre_t2() -> eyre::Result<()> {
-        let mut storage = HashMapStorageProvider::new_with_spec(1, TempoHardfork::T0);
-        let msg_sender = Address::random();
-        let other_origin = Address::random();
-        let key_id = Address::random();
-        let token = Address::random();
-
-        StorageCtx::enter(&mut storage, || {
-            let mut keychain = AccountKeychain::new();
-            keychain.initialize()?;
-
-            // Pre-T2, admin operations do not enforce msg.sender == tx.origin.
-            keychain.set_transaction_key(Address::ZERO)?;
-            keychain.set_tx_origin(other_origin)?;
-
-            authorize_key(
-                &mut keychain,
-                msg_sender,
-                authorizeKeyCall {
-                    keyId: key_id,
-                    signatureType: SignatureType::Secp256k1,
-                    config: KeyRestrictions {
-                        expiry: u64::MAX,
-                        enforceLimits: true,
-                        limits: vec![TokenLimit {
-                            token,
-                            amount: U256::from(100),
-                            period: 0,
-                        }],
-                        allowAnyCalls: true,
-                        allowedCalls: vec![],
-                    },
-                },
-            )?;
-
-            keychain.update_spending_limit(
-                msg_sender,
-                updateSpendingLimitCall {
-                    keyId: key_id,
-                    token,
-                    newLimit: U256::from(200),
-                },
-            )?;
-
-            keychain.revoke_key(msg_sender, revokeKeyCall { keyId: key_id })?;
-
-            let key_info = keychain.get_key(getKeyCall {
-                account: msg_sender,
                 keyId: key_id,
             })?;
             assert!(key_info.isRevoked);
@@ -2735,6 +2680,8 @@ mod tests {
                     allowedCalls: vec![],
                 },
             };
+            // Current execution requires a seeded transaction origin.
+            keychain.set_tx_origin(account)?;
             let result = authorize_key(&mut keychain, account, auth_call);
             assert!(
                 result.is_err(),
@@ -2780,65 +2727,6 @@ mod tests {
     }
 
     #[test]
-    fn test_pre_t3_authorize_key_rejects_tip_1011_fields_without_writing_key() -> eyre::Result<()> {
-        let mut storage = HashMapStorageProvider::new_with_spec(1, TempoHardfork::T1C);
-        let account = Address::random();
-        let key_id = Address::random();
-        let token = Address::random();
-
-        StorageCtx::enter(&mut storage, || {
-            let mut keychain = AccountKeychain::new();
-            keychain.initialize()?;
-            keychain.set_transaction_key(Address::ZERO)?;
-
-            let result = authorize_key(
-                &mut keychain,
-                account,
-                authorizeKeyCall {
-                    keyId: key_id,
-                    signatureType: SignatureType::Secp256k1,
-                    config: KeyRestrictions {
-                        expiry: u64::MAX,
-                        enforceLimits: true,
-                        limits: vec![TokenLimit {
-                            token,
-                            amount: U256::from(100u64),
-                            period: 60,
-                        }],
-                        allowAnyCalls: true,
-                        allowedCalls: vec![],
-                    },
-                },
-            );
-
-            assert!(
-                matches!(
-                    result,
-                    Err(TempoPrecompileError::AccountKeychainError(
-                        AccountKeychainError::InvalidSpendingLimit(_)
-                    ))
-                ),
-                "expected InvalidSpendingLimit, got {result:?}"
-            );
-
-            assert_eq!(
-                keychain.keys[account][key_id].read()?,
-                AuthorizedKey::default(),
-                "pre-T3 invalid TIP-1011 fields must not leave behind a key"
-            );
-
-            let limit_key = AccountKeychain::spending_limit_key(account, key_id);
-            assert_eq!(
-                keychain.spending_limits[limit_key][token].read()?,
-                SpendingLimitState::default(),
-                "pre-T3 invalid TIP-1011 fields must not initialize limits"
-            );
-
-            Ok(())
-        })
-    }
-
-    #[test]
     fn test_different_key_id_can_be_authorized_after_revocation() -> eyre::Result<()> {
         let mut storage = HashMapStorageProvider::new(1);
         let account = Address::random();
@@ -2863,6 +2751,8 @@ mod tests {
                     allowedCalls: vec![],
                 },
             };
+            // Current execution requires a seeded transaction origin.
+            keychain.set_tx_origin(account)?;
             authorize_key(&mut keychain, account, auth_call_1)?;
 
             // Revoke key 1
@@ -3147,6 +3037,8 @@ mod tests {
                     allowedCalls: vec![],
                 },
             };
+            // Current execution requires a seeded transaction origin.
+            keychain.set_tx_origin(account)?;
             authorize_key(&mut keychain, account, auth_call.clone())?;
 
             // Verify key exists with expiry = 1
@@ -3237,6 +3129,8 @@ mod tests {
                 },
             };
             // This would fail if initialize didn't set up storage properly
+            // Current execution requires a seeded transaction origin.
+            keychain.set_tx_origin(account)?;
             authorize_key(&mut keychain, account, auth_call)?;
 
             // Verify key was stored
@@ -3272,6 +3166,8 @@ mod tests {
                     allowedCalls: vec![],
                 },
             };
+            // Current execution requires a seeded transaction origin.
+            keychain.set_tx_origin(account)?;
             authorize_key(&mut keychain, account, auth_call)?;
 
             // Verify key was stored with WebAuthn type (value = 2)
@@ -3327,6 +3223,8 @@ mod tests {
                     allowedCalls: vec![],
                 },
             };
+            // Current execution requires a seeded transaction origin.
+            keychain.set_tx_origin(account)?;
             authorize_key(&mut keychain, account, auth_call)?;
 
             // Update should work when key is not expired
@@ -3376,6 +3274,8 @@ mod tests {
                     allowedCalls: vec![],
                 },
             };
+            // Current execution requires a seeded transaction origin.
+            keychain.set_tx_origin(account)?;
             authorize_key(&mut keychain, account, auth_call)?;
 
             // Verify key has enforce_limits = false
@@ -3442,6 +3342,8 @@ mod tests {
                     allowedCalls: vec![],
                 },
             };
+            // Current execution requires a seeded transaction origin.
+            keychain.set_tx_origin(account)?;
             authorize_key(&mut keychain, account, auth_call)?;
             keychain.revoke_key(
                 account,
@@ -3527,6 +3429,8 @@ mod tests {
             keychain.set_transaction_key(Address::ZERO)?;
 
             // Create keys with each signature type
+            // Current execution requires a seeded transaction origin.
+            keychain.set_tx_origin(account)?;
             authorize_key(
                 &mut keychain,
                 account,
@@ -3639,6 +3543,8 @@ mod tests {
                     allowedCalls: vec![],
                 },
             };
+            // Current execution requires a seeded transaction origin.
+            keychain.set_tx_origin(account)?;
             authorize_key(&mut keychain, account, auth_call)?;
 
             // Test 1: Validation should succeed with matching signature type (P256 = 1)
@@ -3712,6 +3618,8 @@ mod tests {
                     allowedCalls: vec![],
                 },
             };
+            // Current execution requires a seeded transaction origin.
+            keychain.set_tx_origin(eoa)?;
             authorize_key(&mut keychain, eoa, auth_call)?;
 
             keychain.set_transaction_key(access_key)?;
@@ -3787,6 +3695,8 @@ mod tests {
                     allowedCalls: vec![],
                 },
             };
+            // Current execution requires a seeded transaction origin.
+            keychain.set_tx_origin(eoa)?;
             authorize_key(&mut keychain, eoa, auth_call)?;
 
             keychain.set_transaction_key(access_key)?;
@@ -3853,6 +3763,8 @@ mod tests {
                     allowedCalls: vec![],
                 },
             };
+            // Current execution requires a seeded transaction origin.
+            keychain.set_tx_origin(eoa)?;
             authorize_key(&mut keychain, eoa, auth_call)?;
 
             keychain.set_transaction_key(access_key)?;
@@ -3914,6 +3826,8 @@ mod tests {
                     allowedCalls: vec![],
                 },
             };
+            // Current execution requires a seeded transaction origin.
+            keychain.set_tx_origin(eoa)?;
             authorize_key(&mut keychain, eoa, auth_call)?;
 
             keychain.set_transaction_key(access_key)?;
@@ -3969,6 +3883,8 @@ mod tests {
                     allowedCalls: vec![],
                 },
             };
+            // Current execution requires a seeded transaction origin.
+            keychain.set_tx_origin(eoa)?;
             authorize_key(&mut keychain, eoa, auth_call)?;
 
             keychain.set_transaction_key(access_key)?;
@@ -4311,52 +4227,6 @@ mod tests {
     }
 
     #[test]
-    fn test_pre_t5_authorize_key_ignores_scopes_when_allowing_any_call() -> eyre::Result<()> {
-        let mut storage = HashMapStorageProvider::new_with_spec(1, TempoHardfork::T4);
-        let account = Address::random();
-        let key_id = Address::random();
-        let target = Address::random();
-
-        StorageCtx::enter(&mut storage, || {
-            let mut keychain = AccountKeychain::new();
-            keychain.initialize()?;
-            keychain.set_transaction_key(Address::ZERO)?;
-            keychain.set_tx_origin(account)?;
-
-            authorize_key(
-                &mut keychain,
-                account,
-                authorizeKeyCall {
-                    keyId: key_id,
-                    signatureType: SignatureType::Secp256k1,
-                    config: KeyRestrictions {
-                        expiry: u64::MAX,
-                        enforceLimits: false,
-                        limits: vec![],
-                        allowAnyCalls: true,
-                        allowedCalls: vec![CallScope {
-                            target,
-                            selectorRules: vec![],
-                        }],
-                    },
-                },
-            )?;
-
-            let stored_key = keychain.keys[account][key_id].read()?;
-            assert_eq!(stored_key.expiry, u64::MAX);
-
-            let scopes = keychain.get_allowed_calls(getAllowedCallsCall {
-                account,
-                keyId: key_id,
-            })?;
-            assert!(!scopes.isScoped);
-            assert!(scopes.scopes.is_empty());
-
-            Ok(())
-        })
-    }
-
-    #[test]
     fn test_t5_authorize_key_rejects_scopes_when_allowing_any_call() -> eyre::Result<()> {
         let mut storage = HashMapStorageProvider::new_with_spec(1, TempoHardfork::T5);
         let account = Address::random();
@@ -4426,66 +4296,6 @@ mod tests {
                 StorageCtx.sload(ACCOUNT_KEYCHAIN_ADDRESS, handler.as_slot().slot())?,
                 remaining
             );
-
-            Ok(())
-        })
-    }
-
-    #[test]
-    fn test_t3_rejects_recipient_constrained_scope_for_undeployed_tip20() -> eyre::Result<()> {
-        let mut storage = HashMapStorageProvider::new_with_spec(1, TempoHardfork::T3);
-        let account = Address::random();
-        let key_id = Address::random();
-        let recipient = Address::repeat_byte(0x44);
-        let mut target_bytes = [0u8; 20];
-        target_bytes[0] = 0x20;
-        target_bytes[1] = 0xc0;
-        target_bytes[19] = 0x42;
-        let undeployed_tip20 = Address::from(target_bytes);
-
-        StorageCtx::enter(&mut storage, || {
-            let mut keychain = AccountKeychain::new();
-            keychain.initialize()?;
-            keychain.set_transaction_key(Address::ZERO)?;
-            keychain.set_tx_origin(account)?;
-
-            authorize_key(
-                &mut keychain,
-                account,
-                authorizeKeyCall {
-                    keyId: key_id,
-                    signatureType: SignatureType::Secp256k1,
-                    config: KeyRestrictions {
-                        expiry: u64::MAX,
-                        enforceLimits: false,
-                        limits: vec![],
-                        allowAnyCalls: true,
-                        allowedCalls: vec![],
-                    },
-                },
-            )?;
-
-            let err = keychain
-                .apply_key_authorization_restrictions(
-                    account,
-                    key_id,
-                    &[],
-                    Some(&[CallScope {
-                        target: undeployed_tip20,
-                        selectorRules: vec![SelectorRule {
-                            selector: TIP20_TRANSFER_SELECTOR.into(),
-                            recipients: vec![recipient],
-                        }],
-                    }]),
-                )
-                .expect_err("unexpected success for undeployed TIP-20 target");
-
-            match err {
-                TempoPrecompileError::AccountKeychainError(
-                    AccountKeychainError::InvalidCallScope(_),
-                ) => {}
-                other => panic!("expected InvalidCallScope, got {other:?}"),
-            }
 
             Ok(())
         })

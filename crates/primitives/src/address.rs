@@ -49,7 +49,7 @@ pub trait TempoAddressExt {
 
     /// Returns `true` if the address is a precompile. This is the case if it is either:
     /// - A TIP-20 token address.
-    /// - A system precompile active at the specified `spec` hardfork.
+    /// - A system precompile in the current protocol. `spec` is retained for API compatibility.
     fn is_precompile(&self, spec: TempoHardfork) -> bool;
 
     /// Returns `true` if the address matches the [TIP-1022] virtual-address format
@@ -219,20 +219,10 @@ mod tests {
 
     #[test]
     fn test_is_precompile_address() {
-        let latest = *TempoHardfork::VARIANTS
-            .last()
-            .expect("hardfork variants should not be empty");
-
-        for &(address, activated) in SYSTEM_PRECOMPILES {
-            assert!(address.is_precompile(activated));
-            assert!(address.is_precompile(latest));
-
-            if let Some(index) = TempoHardfork::VARIANTS
-                .iter()
-                .position(|hardfork| *hardfork == activated)
-                && index > 0
-            {
-                assert!(!address.is_precompile(TempoHardfork::VARIANTS[index - 1]));
+        let latest = TempoHardfork::CURRENT;
+        for &(address, _) in SYSTEM_PRECOMPILES {
+            for &metadata in TempoHardfork::VARIANTS {
+                assert!(address.is_precompile(metadata));
             }
         }
 

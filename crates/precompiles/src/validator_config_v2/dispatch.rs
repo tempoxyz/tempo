@@ -66,53 +66,6 @@ mod tests {
     };
 
     #[test]
-    fn test_pre_t2_returns_empty_success() -> eyre::Result<()> {
-        let owner = Address::random();
-
-        // Pre-T2 (T1): calling the precompile should succeed with empty output
-        let mut storage = HashMapStorageProvider::new_with_spec(1, TempoHardfork::T1);
-        StorageCtx::enter(&mut storage, || -> eyre::Result<()> {
-            let mut vc = ValidatorConfigV2::new();
-            vc.initialize(owner)?;
-
-            // Any call should succeed with empty bytes
-            let owner_call = IValidatorConfigV2::ownerCall {};
-            let calldata = owner_call.abi_encode();
-            let result = vc.call(&calldata, owner)?;
-
-            assert!(!result.is_revert(), "Pre-T2 call should not revert");
-            assert!(
-                result.bytes.is_empty(),
-                "Pre-T2 call should return empty bytes"
-            );
-
-            Ok(())
-        })?;
-
-        // Pre-T2 (T0): same behavior
-        let mut storage = HashMapStorageProvider::new_with_spec(1, TempoHardfork::T0);
-        StorageCtx::enter(&mut storage, || -> eyre::Result<()> {
-            let mut vc = ValidatorConfigV2::new();
-            vc.initialize(owner)?;
-
-            let calldata = IValidatorConfigV2::ownerCall {}.abi_encode();
-            let result = vc.call(&calldata, owner)?;
-
-            assert!(!result.is_revert());
-            assert!(result.bytes.is_empty());
-
-            // Even empty calldata should succeed
-            let result = vc.call(&[], owner)?;
-            assert!(!result.is_revert());
-            assert!(result.bytes.is_empty());
-
-            Ok(())
-        })?;
-
-        Ok(())
-    }
-
-    #[test]
     fn test_t2_dispatch_works() -> eyre::Result<()> {
         let owner = Address::random();
 

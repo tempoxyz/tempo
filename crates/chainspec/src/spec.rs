@@ -754,13 +754,13 @@ mod tests {
     }
 
     #[test]
-    fn next_block_base_fee_fixed_before_t7() {
+    fn next_block_base_fee_ignores_historical_fork_metadata() {
         let chainspec = chainspec_with_t7_at(10);
         let parent = header(8, TEMPO_T1_BASE_FEE / 2, 0);
 
         assert_eq!(
             chainspec.next_block_base_fee(&parent, 9),
-            Some(TEMPO_T1_BASE_FEE)
+            Some(TEMPO_T1_BASE_FEE / 2 * 7 / 8)
         );
     }
 

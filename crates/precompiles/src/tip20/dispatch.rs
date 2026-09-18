@@ -141,14 +141,14 @@ mod tests {
             Ok(())
         })?;
 
-        // Pre-T1 (T0): insufficient calldata returns halt
+        // Historical metadata still uses current calldata validation
         let mut storage = HashMapStorageProvider::new_with_spec(1, TempoHardfork::T0);
         StorageCtx::enter(&mut storage, || {
             let mut token = TIP20Setup::create("Test", "TST", sender).apply()?;
 
             let result = token.call(&Bytes::from([0x12, 0x34]), sender);
-            let output = result.expect("expected Ok(halt) for short calldata");
-            assert!(output.is_halt());
+            let output = result.expect("expected revert for short calldata");
+            assert!(output.is_revert());
 
             Ok(())
         })
@@ -664,34 +664,6 @@ mod tests {
     }
 
     #[test]
-    fn test_logo_uri_selectors_gated_behind_t5() -> eyre::Result<()> {
-        // Pre-T5: logoURI/setLogoURI should return unknown selector.
-        let mut storage = HashMapStorageProvider::new_with_spec(1, TempoHardfork::T4);
-        let admin = Address::random();
-
-        StorageCtx::enter(&mut storage, || {
-            let mut token = TIP20Setup::create("Test", "TST", admin).apply()?;
-
-            // logoURI selector is gated
-            let logo_uri_calldata = ITIP20::logoURICall {}.abi_encode();
-            let result = token.call(&logo_uri_calldata, admin)?;
-            assert!(result.is_revert());
-            assert!(UnknownFunctionSelector::abi_decode(&result.bytes).is_ok());
-
-            // setLogoURI selector is gated
-            let set_logo_uri_calldata = ITIP20::setLogoURICall {
-                newLogoURI: "https://example.com/icon.svg".to_string(),
-            }
-            .abi_encode();
-            let result = token.call(&set_logo_uri_calldata, admin)?;
-            assert!(result.is_revert());
-            assert!(UnknownFunctionSelector::abi_decode(&result.bytes).is_ok());
-
-            Ok(())
-        })
-    }
-
-    #[test]
     fn test_logo_uri_pre_t5_deploy_post_t5_read_returns_empty() -> eyre::Result<()> {
         let mut storage = HashMapStorageProvider::new_with_spec(1, TempoHardfork::T4);
         let admin = Address::random();
@@ -715,49 +687,6 @@ mod tests {
             assert!(!result.is_revert(), "logoURI() must succeed post-T5");
             let decoded = ITIP20::logoURICall::abi_decode_returns(&result.bytes)?;
             assert_eq!(decoded, "");
-
-            Ok(())
-        })
-    }
-
-    #[test]
-    fn test_permit_selectors_gated_behind_t2() -> eyre::Result<()> {
-        // Pre-T2: permit/nonces/DOMAIN_SEPARATOR should return unknown selector
-        let mut storage = HashMapStorageProvider::new_with_spec(1, TempoHardfork::T1);
-        let admin = Address::random();
-
-        StorageCtx::enter(&mut storage, || {
-            let mut token = TIP20Setup::create("Test", "TST", admin).apply()?;
-
-            // Test permit selector is gated
-            let permit_calldata = ITIP20::permitCall {
-                owner: Address::random(),
-                spender: Address::random(),
-                value: U256::ZERO,
-                deadline: U256::MAX,
-                v: 27,
-                r: alloy::primitives::B256::ZERO,
-                s: alloy::primitives::B256::ZERO,
-            }
-            .abi_encode();
-            let result = token.call(&permit_calldata, admin)?;
-            assert!(result.is_revert());
-            assert!(UnknownFunctionSelector::abi_decode(&result.bytes).is_ok());
-
-            // Test nonces selector is gated
-            let nonces_calldata = ITIP20::noncesCall {
-                owner: Address::random(),
-            }
-            .abi_encode();
-            let result = token.call(&nonces_calldata, admin)?;
-            assert!(result.is_revert());
-            assert!(UnknownFunctionSelector::abi_decode(&result.bytes).is_ok());
-
-            // Test DOMAIN_SEPARATOR selector is gated
-            let ds_calldata = ITIP20::DOMAIN_SEPARATORCall {}.abi_encode();
-            let result = token.call(&ds_calldata, admin)?;
-            assert!(result.is_revert());
-            assert!(UnknownFunctionSelector::abi_decode(&result.bytes).is_ok());
 
             Ok(())
         })

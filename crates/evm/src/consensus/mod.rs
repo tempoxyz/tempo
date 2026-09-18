@@ -1042,34 +1042,6 @@ mod tests {
     }
 
     #[test]
-    fn test_validate_block_pre_execution_pre_t4_missing_system_tx() {
-        let consensus = TempoConsensus::new(MODERATO.clone());
-        let chain_id = MODERATO.chain().id();
-
-        let user_tx = create_tx(chain_id);
-
-        use tempo_chainspec::constants::moderato::MODERATO_T4_TIMESTAMP;
-
-        let header = TestHeaderBuilder::default()
-            .gas_limit(30_000_000)
-            .timestamp(MODERATO_T4_TIMESTAMP - 1)
-            .build();
-        let block = create_valid_block(header, vec![user_tx]);
-        let sealed = SealedBlock::seal_slow(block);
-
-        let result = consensus.validate_block_pre_execution(&sealed);
-        let err = result.unwrap_err();
-        assert!(
-            err.downcast_other_ref::<TempoConsensusError>()
-                .is_some_and(|e| matches!(
-                    e,
-                    TempoConsensusError::MissingEndOfBlockSystemTxs { .. }
-                )),
-            "Expected MissingEndOfBlockSystemTxs, got: {err:?}"
-        );
-    }
-
-    #[test]
     fn test_validate_block_pre_execution_t4_allows_missing_system_tx() {
         let consensus = TempoConsensus::new(DEV.clone());
         let chain_id = DEV.chain().id();
@@ -1215,34 +1187,5 @@ mod tests {
         };
 
         assert!(!Consensus::<Block>::is_transient_error(&consensus, &err));
-    }
-
-    #[test]
-    fn test_validate_block_pre_execution_system_tx_out_of_order() {
-        let consensus = TempoConsensus::new(MODERATO.clone());
-        let chain_id = MODERATO.chain().id();
-
-        let wrong_addr = Address::repeat_byte(0xFF);
-        let system_tx = create_system_tx(chain_id, wrong_addr);
-
-        use tempo_chainspec::constants::moderato::MODERATO_T4_TIMESTAMP;
-
-        let header = TestHeaderBuilder::default()
-            .gas_limit(30_000_000)
-            .timestamp(MODERATO_T4_TIMESTAMP - 1)
-            .build();
-        let block = create_valid_block(header, vec![system_tx]);
-        let sealed = SealedBlock::seal_slow(block);
-
-        let result = consensus.validate_block_pre_execution(&sealed);
-        let err = result.unwrap_err();
-        assert!(
-            err.downcast_other_ref::<TempoConsensusError>()
-                .is_some_and(|e| matches!(
-                    e,
-                    TempoConsensusError::InvalidEndOfBlockSystemTxOrder { .. }
-                )),
-            "Expected InvalidEndOfBlockSystemTxOrder, got: {err:?}"
-        );
     }
 }

@@ -104,45 +104,6 @@ mod tests {
     }
 
     #[test]
-    fn test_legacy_authorize_key_selector_supported_pre_t3() -> eyre::Result<()> {
-        let mut storage = HashMapStorageProvider::new_with_spec(1, TempoHardfork::T1C);
-        let account = Address::random();
-        let key_id = Address::random();
-        let token = Address::random();
-
-        StorageCtx::enter(&mut storage, || {
-            let mut keychain = AccountKeychain::new();
-            keychain.initialize()?;
-
-            let calldata = legacyAuthorizeKeyCall {
-                keyId: key_id,
-                signatureType:
-                    tempo_contracts::precompiles::IAccountKeychain::SignatureType::Secp256k1,
-                expiry: u64::MAX,
-                enforceLimits: true,
-                limits: vec![
-                    tempo_contracts::precompiles::IAccountKeychain::LegacyTokenLimit {
-                        token,
-                        amount: U256::from(100),
-                    },
-                ],
-            }
-            .abi_encode();
-
-            let _ = keychain.call(&calldata, account)?;
-
-            let key = keychain.keys[account][key_id].read()?;
-            assert_eq!(key.expiry, u64::MAX);
-
-            let limit_key = AccountKeychain::spending_limit_key(account, key_id);
-            let remaining = keychain.spending_limits[limit_key][token].read()?.remaining;
-            assert_eq!(remaining, U256::from(100));
-
-            Ok(())
-        })
-    }
-
-    #[test]
     fn test_new_authorize_key_selector_rejected_pre_t3() -> eyre::Result<()> {
         let mut storage = HashMapStorageProvider::new_with_spec(1, TempoHardfork::T1C);
         let account = Address::random();
@@ -267,75 +228,6 @@ mod tests {
     }
 
     #[test]
-    fn test_get_remaining_limit_uses_legacy_return_shape_pre_t3() -> eyre::Result<()> {
-        let mut storage = HashMapStorageProvider::new_with_spec(1, TempoHardfork::T1C);
-        let account = Address::random();
-        let key_id = Address::random();
-        let token = Address::random();
-
-        StorageCtx::enter(&mut storage, || {
-            let mut keychain = AccountKeychain::new();
-            keychain.initialize()?;
-
-            let authorize_calldata = legacyAuthorizeKeyCall {
-                keyId: key_id,
-                signatureType: IAccountKeychain::SignatureType::Secp256k1,
-                expiry: u64::MAX,
-                enforceLimits: true,
-                limits: vec![IAccountKeychain::LegacyTokenLimit {
-                    token,
-                    amount: U256::from(123),
-                }],
-            }
-            .abi_encode();
-            let _ = keychain.call(&authorize_calldata, account)?;
-
-            let get_limit_calldata = getRemainingLimitCall {
-                account,
-                keyId: key_id,
-                token,
-            }
-            .abi_encode();
-
-            let output = keychain.call(&get_limit_calldata, account)?;
-            assert!(!output.is_revert());
-            assert_eq!(
-                output.bytes.len(),
-                32,
-                "pre-T3 should return legacy uint256"
-            );
-
-            let remaining = getRemainingLimitCall::abi_decode_returns(&output.bytes)?;
-            assert_eq!(remaining, U256::from(123));
-
-            Ok(())
-        })
-    }
-
-    #[test]
-    fn test_get_remaining_limit_with_period_rejected_pre_t3() -> eyre::Result<()> {
-        let mut storage = HashMapStorageProvider::new_with_spec(1, TempoHardfork::T1C);
-        let account = Address::random();
-
-        StorageCtx::enter(&mut storage, || {
-            let mut keychain = AccountKeychain::new();
-            keychain.initialize()?;
-
-            let calldata = getRemainingLimitWithPeriodCall {
-                account,
-                keyId: Address::random(),
-                token: Address::random(),
-            }
-            .abi_encode();
-
-            let result = keychain.call(&calldata, account)?;
-            assert!(result.is_revert());
-
-            Ok(())
-        })
-    }
-
-    #[test]
     fn test_get_remaining_limit_returns_unknown_selector_post_t3() -> eyre::Result<()> {
         let account = Address::random();
         let key_id = Address::random();
@@ -364,73 +256,6 @@ mod tests {
                 decoded.selector.as_slice(),
                 &getRemainingLimitCall::SELECTOR,
             );
-
-            Ok(())
-        })
-    }
-
-    #[test]
-    fn test_t5_witness_selectors_rejected_pre_t5() -> eyre::Result<()> {
-        let account = Address::random();
-        let witness = B256::repeat_byte(0x53);
-
-        let mut storage = HashMapStorageProvider::new_with_spec(1, TempoHardfork::T4);
-        StorageCtx::enter(&mut storage, || {
-            let mut keychain = AccountKeychain::new();
-            keychain.initialize()?;
-
-            for (selector, calldata) in [
-                (
-                    IAccountKeychain::authorizeKey_2Call::SELECTOR,
-                    IAccountKeychain::authorizeKey_2Call {
-                        keyId: Address::random(),
-                        signatureType: IAccountKeychain::SignatureType::Secp256k1,
-                        config: KeyRestrictions {
-                            expiry: u64::MAX,
-                            enforceLimits: false,
-                            limits: vec![],
-                            allowAnyCalls: true,
-                            allowedCalls: vec![],
-                        },
-                        witness,
-                    }
-                    .abi_encode(),
-                ),
-                (
-                    IAccountKeychain::burnKeyAuthorizationWitnessCall::SELECTOR,
-                    IAccountKeychain::burnKeyAuthorizationWitnessCall { witness }.abi_encode(),
-                ),
-                (
-                    IAccountKeychain::isKeyAuthorizationWitnessBurnedCall::SELECTOR,
-                    IAccountKeychain::isKeyAuthorizationWitnessBurnedCall { account, witness }
-                        .abi_encode(),
-                ),
-            ] {
-                let result = keychain.call(&calldata, account)?;
-                assert!(result.is_revert(), "expected T5 selector to revert pre-T5");
-
-                let decoded = UnknownFunctionSelector::abi_decode(&result.bytes)?;
-                assert_eq!(decoded.selector.as_slice(), &selector);
-            }
-
-            Ok(())
-        })
-    }
-
-    #[test]
-    fn test_t3_selector_with_malformed_data_returns_unknown_selector_error() -> eyre::Result<()> {
-        let selector = getRemainingLimitWithPeriodCall::SELECTOR;
-        let calldata = selector.to_vec();
-
-        let mut storage = HashMapStorageProvider::new_with_spec(1, TempoHardfork::T2);
-        StorageCtx::enter(&mut storage, || {
-            let mut keychain = AccountKeychain::new();
-
-            let result = keychain.call(&calldata, Address::ZERO)?;
-            assert!(result.is_revert(), "expected revert");
-
-            let decoded = UnknownFunctionSelector::abi_decode(&result.bytes)?;
-            assert_eq!(decoded.selector.as_slice(), &selector);
 
             Ok(())
         })

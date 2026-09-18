@@ -59,32 +59,4 @@ mod tests {
             assert_full_coverage([unsupported]);
         })
     }
-
-    #[test]
-    fn test_create_token_with_logo_gated_behind_t5() -> eyre::Result<()> {
-        // Pre-T5: createTokenWithLogo should return unknown selector.
-        let mut storage = HashMapStorageProvider::new_with_spec(1, TempoHardfork::T4);
-        let sender = Address::random();
-
-        StorageCtx::enter(&mut storage, || {
-            let mut factory = TIP20Factory::new();
-
-            let calldata = createTokenWithLogoCall {
-                name: "Logo".to_string(),
-                symbol: "LOGO".to_string(),
-                currency: "USD".to_string(),
-                quoteToken: Address::ZERO,
-                admin: sender,
-                salt: B256::ZERO,
-                logoURI: String::new(),
-            }
-            .abi_encode();
-
-            let result = factory.call(&calldata, sender)?;
-            assert!(result.is_revert());
-            assert!(UnknownFunctionSelector::abi_decode(&result.bytes).is_ok());
-
-            Ok(())
-        })
-    }
 }

@@ -682,12 +682,12 @@ mod tests {
         // input length).
         assert!(unknown.gas_used >= empty.gas_used);
 
-        // Pre-T1 (T0): invalid calldata should return a halted output
+        // Historical metadata cannot restore the old halt behavior.
         let result = call_with_spec(Bytes::new(), TempoHardfork::T0);
         let output = result.expect("T0: expected Ok(halt) for invalid calldata");
         assert!(
-            output.is_halt(),
-            "T0: expected halted output for invalid calldata"
+            output.is_revert(),
+            "metadata must not change invalid calldata behavior"
         );
     }
 
@@ -1087,8 +1087,8 @@ mod tests {
         // Channel reserve should be registered at T5
         let channel_reserve_precompile = precompiles.get(&TIP20_CHANNEL_RESERVE_ADDRESS);
         assert!(
-            channel_reserve_precompile.is_none(),
-            "TIP20 channel reserve should not be registered before T5"
+            channel_reserve_precompile.is_some(),
+            "TIP20 channel reserve is part of the current protocol"
         );
 
         // TIP20 tokens with prefix should be registered

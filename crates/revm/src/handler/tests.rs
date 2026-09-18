@@ -437,38 +437,6 @@ fn test_self_sponsored_fee_payer_rejected_post_t2() {
 }
 
 #[test]
-fn test_self_sponsored_fee_payer_not_rejected_pre_t4() {
-    let caller = Address::random();
-    let invalid_token = Address::random();
-
-    let handler: TempoEvmHandler<CacheDB<EmptyDB>, ()> = TempoEvmHandler::default();
-    let mut cfg = CfgEnv::<TempoHardfork>::default();
-    cfg.spec = TempoHardfork::T1C;
-
-    let tx_env = TempoTxEnv {
-        inner: revm::context::TxEnv {
-            caller,
-            ..Default::default()
-        },
-        fee_token: Some(invalid_token),
-        fee_payer: Some(Some(caller)),
-        ..Default::default()
-    };
-
-    let mut evm: TempoEvm<CacheDB<EmptyDB>, ()> = TempoEvm::new(
-        Context::mainnet()
-            .with_db(CacheDB::new(EmptyDB::default()))
-            .with_block(TempoBlockEnv::default())
-            .with_cfg(cfg)
-            .with_tx(tx_env),
-        (),
-    );
-
-    let result = handler.validate_env(&mut evm);
-    assert!(result.is_ok());
-}
-
-#[test]
 fn test_get_token_balance() -> eyre::Result<()> {
     let mut journal = create_test_journal();
     // Use PATH_USD_ADDRESS which has the TIP20 prefix
@@ -2650,28 +2618,6 @@ mod keychain {
     }
 
     #[test]
-    fn test_key_authorization_witness_rejected_before_t5() {
-        let (signer, user) = generate_keypair();
-        let key = Address::random();
-        let signed = sign_key_auth(
-            &signer,
-            KeyAuthorization::unrestricted(1, SignatureType::Secp256k1, key)
-                .with_witness(B256::repeat_byte(0x53)),
-        );
-        let (mut evm, h) = make_evm(user, key, Some(signed), TempoHardfork::T4, None, false);
-
-        let result = h.validate_env(&mut evm);
-        assert!(
-            matches!(
-                &result,
-                Err(EVMError::Transaction(TempoInvalidTransaction::KeychainValidationFailed { reason }))
-                    if reason.contains("before T5")
-            ),
-            "witness-bearing key authorization should be rejected before T5, got: {result:?}"
-        );
-    }
-
-    #[test]
     fn test_t5_key_authorization_witness_is_not_burned_in_state() {
         use tempo_precompiles::account_keychain::isKeyAuthorizationWitnessBurnedCall;
 
@@ -2702,27 +2648,6 @@ mod keychain {
                 "T5 key authorization must not burn its witness"
             );
         });
-    }
-
-    #[test]
-    fn test_t6_admin_key_authorization_fields_rejected_before_t6() {
-        let (signer, user) = generate_keypair();
-        let key = Address::random();
-        let signed = sign_key_auth(
-            &signer,
-            KeyAuthorization::unrestricted(1, SignatureType::Secp256k1, key).into_admin(user),
-        );
-        let (mut evm, h) = make_evm(user, key, Some(signed), TempoHardfork::T5, None, false);
-
-        let result = h.validate_env(&mut evm);
-        assert!(
-            matches!(
-                &result,
-                Err(EVMError::Transaction(TempoInvalidTransaction::KeychainValidationFailed { reason }))
-                    if reason.contains("not active before T6")
-            ),
-            "admin key authorization fields should be rejected before T6, got: {result:?}"
-        );
     }
 
     #[test]
@@ -3210,50 +3135,6 @@ mod keychain {
             ),
             "Valid authorized key should pass, got: {result:?}"
         );
-    }
-
-    #[test]
-    fn test_v1_keychain_cross_account_replay_pre_t1c() {
-        let (access_key_signer, access_key) = generate_keypair();
-        let signature_hash = B256::ZERO;
-        let inner_signature = PrimitiveSignature::Secp256k1(
-            access_key_signer
-                .sign_hash_sync(&signature_hash)
-                .expect("access key signs transaction hash"),
-        );
-
-        for user in [Address::repeat_byte(0x11), Address::repeat_byte(0x22)] {
-            let signature =
-                TempoSignature::Keychain(KeychainSignature::new_v1(user, inner_signature.clone()));
-            let (mut evm, h) = make_evm(
-                user,
-                access_key,
-                None,
-                TempoHardfork::T1B,
-                Some(signature),
-                true,
-            );
-
-            // Exercise actual V1 key recovery instead of the estimation-only override.
-            evm.tx
-                .tempo_tx_env
-                .as_mut()
-                .expect("keychain transaction environment")
-                .override_key_id = None;
-
-            let env_result = h.validate_env(&mut evm);
-            assert!(
-                env_result.is_ok(),
-                "V1 replay should pass pre-T1C stateless validation for {user}: {env_result:?}"
-            );
-
-            let state_result =
-                h.validate_against_state_and_deduct_caller(&mut evm, &mut Default::default());
-            assert!(
-                state_result.is_ok(),
-                "V1 replay should use the shared authorized key for {user}: {state_result:?}"
-            );
-        }
     }
 
     #[test]

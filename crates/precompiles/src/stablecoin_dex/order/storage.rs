@@ -602,17 +602,16 @@ mod tests {
                 .apply()?;
             self.quote = base.quote_token()?;
 
-            // Ensure orderbook is created with/out its ID depending on the version
-            let prev_spec = StorageCtx.spec();
-            let pair_creation_hardfork = match version {
-                OrderVersion::Legacy | OrderVersion::V1 => TempoHardfork::T7,
-                OrderVersion::V2 => TempoHardfork::T8,
-            };
-            StorageCtx.set_spec(pair_creation_hardfork);
-            exchange.create_pair(base.address())?;
-            StorageCtx.set_spec(prev_spec);
-
             let book_key = stablecoin_dex::orderbook::compute_book_key(base.address(), self.quote);
+            // Legacy checkpoint books have no ID; seed their layout without executing old rules.
+            match version {
+                OrderVersion::Legacy | OrderVersion::V1 => {
+                    exchange.books[book_key].write(Orderbook::new(base.address(), self.quote))?;
+                }
+                OrderVersion::V2 => {
+                    exchange.create_pair(base.address())?;
+                }
+            }
             self.pairs[Self::pair_index(version)] = (base.address(), book_key);
 
             Ok(())
@@ -734,7 +733,7 @@ mod tests {
                 order.set_prev(id - 1);
                 order.set_next(id + 1);
 
-                exchange.orders[id].write(order)?;
+                store_versioned_order(&mut exchange, version, order)?;
 
                 let base_slot = exchange.orders[id].base_slot;
                 assert_eq!(exchange.orders[id].version()?, version);
@@ -805,7 +804,7 @@ mod tests {
                         flip_tick,
                         StorageCtx.spec(),
                     )?;
-                    exchange.orders[id].write(order)?;
+                    store_versioned_order(&mut exchange, version, order)?;
                     assert_eq!(exchange.orders[id].version()?, version);
                     assert_eq!(exchange.orders[id].read()?, order);
                 }

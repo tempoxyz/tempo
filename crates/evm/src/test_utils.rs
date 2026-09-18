@@ -14,7 +14,13 @@ use alloy_evm::eth::EthBlockExecutionCtx;
 use alloy_primitives::U256;
 
 pub(crate) fn test_chainspec() -> Arc<TempoChainSpec> {
-    Arc::new(TempoChainSpec::from_genesis(MODERATO.genesis().clone()))
+    let mut genesis = MODERATO.genesis().clone();
+    genesis
+        .config
+        .extra_fields
+        .insert_value("t11Time".to_owned(), 0u64)
+        .unwrap();
+    Arc::new(TempoChainSpec::from_genesis(genesis))
 }
 
 pub(crate) fn test_evm<DB: Database>(db: DB) -> TempoEvm<DB, NoOpInspector> {
@@ -62,7 +68,7 @@ impl Default for TestExecutorBuilder {
     fn default() -> Self {
         Self {
             block_number: 1,
-            epoch_length: NonZeroU64::MIN,
+            epoch_length: NonZeroU64::new(100).unwrap(),
             parent_hash: B256::ZERO,
             general_gas_limit: 10_000_000,
             shared_gas_limit: 10_000_000,

@@ -809,7 +809,7 @@ mod tests {
         assert!(result.is_err());
         assert_eq!(
             result.unwrap_err().to_string(),
-            "invalid subblocks metadata system transaction"
+            "subblocks are disabled in T4+"
         );
     }
 
@@ -878,7 +878,7 @@ mod tests {
         let chainspec = test_chainspec();
         let mut db = State::builder().with_bundle_update().build();
         let pre_t5_executor = TestExecutorBuilder::default().build(&mut db, &chainspec);
-        assert!(pre_t5_executor.is_payment(&tx));
+        assert!(!pre_t5_executor.is_payment(&tx));
 
         let chainspec = DEV.clone();
         let mut db = State::builder().with_bundle_update().build();
@@ -1469,26 +1469,6 @@ mod tests {
     }
 
     #[test]
-    fn test_pre_t3_does_not_deploy_signature_verifier_code() {
-        // Moderato does not have T4 active (no t3Time set), so the code should NOT be deployed.
-        let chainspec = test_chainspec();
-        let mut db = State::builder().with_bundle_update().build();
-        let mut executor = TestExecutorBuilder::default()
-            .with_parent_beacon_block_root(B256::ZERO)
-            .build(&mut db, &chainspec);
-
-        executor.apply_pre_execution_changes().unwrap();
-        drop(executor);
-
-        let acc = db.load_cache_account(SIGNATURE_VERIFIER_ADDRESS).unwrap();
-        let info = acc.account_info();
-        assert!(
-            info.is_none() || info.unwrap().is_empty_code_hash(),
-            "SignatureVerifier code should not be deployed before T3"
-        );
-    }
-
-    #[test]
     fn test_deploy_precompile_at_boundary_dispatches_state_hook() {
         let chainspec = test_chainspec();
         let mut db = State::builder().with_bundle_update().build();
@@ -1756,48 +1736,5 @@ mod tests {
         // Receipt tracks total gas (what user pays, including state gas)
         let last_cumulative = result.receipts.last().unwrap().cumulative_gas_used;
         assert_eq!(last_cumulative, tx_gas_used);
-    }
-
-    /// Pre-T4: block header `gas_used` must use cumulative_tx_gas_used (post-refund),
-    /// not block_regular_gas_used (pre-refund). This is a regression test for a bug
-    /// where `finish()` unconditionally used block_regular_gas_used, causing re-execution
-    /// of historical blocks to produce a gas mismatch when transactions had SSTORE refunds.
-    #[test]
-    fn test_pre_t4_finish_uses_cumulative_gas_with_refunds() {
-        let chainspec = test_chainspec(); // MODERATO, T4 not active at timestamp 0
-
-        let mut db = State::builder().with_bundle_update().build();
-        let mut executor = TestExecutorBuilder::default()
-            .with_parent_beacon_block_root(B256::ZERO)
-            .build(&mut db, &chainspec);
-
-        executor.apply_pre_execution_changes().unwrap();
-
-        // Simulate: tx with total_spent=276078, refund=2800, state_gas=0 (pre-T4)
-        // tx_gas_used = 276078 - 2800 = 273278 (post-refund, what goes in receipts)
-        // block_regular_gas_used = 276078 (pre-refund, no state gas to subtract)
-        let cumulative = 273_278u64; // post-refund
-        let regular = 276_078u64; // pre-refund (no state gas subtraction pre-T4)
-
-        executor.inner.cumulative_tx_gas_used = cumulative;
-        executor.inner.block_regular_gas_used = regular;
-
-        executor.inner.receipts.push(TempoReceipt {
-            tx_type: TempoTxType::Legacy,
-            success: true,
-            cumulative_gas_used: cumulative,
-            logs: vec![],
-        });
-
-        let (_evm, result) = executor.finish().expect("finish should succeed");
-
-        // Pre-T4: header gas_used must equal cumulative_tx_gas_used (post-refund),
-        // NOT block_regular_gas_used (pre-refund).
-        assert_eq!(
-            result.gas_used, cumulative,
-            "pre-T4 header gas_used ({}) must equal cumulative_tx_gas_used ({}), \
-             not block_regular_gas_used ({})",
-            result.gas_used, cumulative, regular
-        );
     }
 }

@@ -1895,64 +1895,6 @@ pub(crate) mod tests {
         }
 
         #[test]
-        fn test_pre_t6_receive_policy_does_not_guard() -> eyre::Result<()> {
-            let mut storage = HashMapStorageProvider::new_with_spec(1, TempoHardfork::T5);
-            storage.set_timestamp(U256::from(BLOCKED_AT));
-            let admin = Address::random();
-            let sender = Address::random();
-            let receiver = Address::random();
-            let amount = U256::from(25u64);
-
-            StorageCtx::enter(&mut storage, || {
-                let mut token = TIP20Setup::create("Test", "TST", admin)
-                    .with_issuer(admin)
-                    .with_mint(sender, amount)
-                    .clear_events()
-                    .apply()?;
-                set_receive_policy(
-                    receiver,
-                    REJECT_ALL_POLICY_ID,
-                    ALLOW_ALL_POLICY_ID,
-                    Address::ZERO,
-                )?;
-
-                token.transfer(
-                    sender,
-                    ITIP20::transferCall {
-                        to: receiver,
-                        amount,
-                    },
-                )?;
-
-                assert_eq!(token.get_balance(sender)?, U256::ZERO);
-                assert_eq!(token.get_balance(receiver)?, amount);
-                assert_eq!(token.get_balance(RECEIVE_POLICY_GUARD_ADDRESS)?, U256::ZERO);
-                token.assert_emitted_events(vec![TIP20Event::Transfer(ITIP20::Transfer {
-                    from: sender,
-                    to: receiver,
-                    amount,
-                })]);
-                let receipt = IReceivePolicyGuard::ClaimReceiptV1::new(
-                    token.address,
-                    sender,
-                    sender,
-                    receiver,
-                    BLOCKED_AT,
-                    1,
-                    ITIP403Registry::BlockedReason::RECEIVE_POLICY as u8,
-                    InboundKind::TRANSFER,
-                    B256::ZERO,
-                );
-                assert_eq!(
-                    ReceivePolicyGuard::new().balance_of(receipt.abi_encode().into())?,
-                    U256::ZERO
-                );
-
-                Ok(())
-            })
-        }
-
-        #[test]
         fn test_transfer_from_blocked_consumes_allowance() -> eyre::Result<()> {
             let mut storage = HashMapStorageProvider::new_with_spec(1, TempoHardfork::T6);
             storage.set_timestamp(U256::from(BLOCKED_AT));
@@ -2476,73 +2418,6 @@ pub(crate) mod tests {
                 spending_limit - max_fee + refund_amount,
                 "spending limit should be restored by refund amount"
             );
-
-            Ok(())
-        })
-    }
-
-    #[test]
-    fn test_transfer_fee_post_tx_pre_t1c() -> eyre::Result<()> {
-        let mut storage = HashMapStorageProvider::new_with_spec(1, TempoHardfork::T1B);
-        let admin = Address::random();
-        let user = Address::random();
-        let access_key = Address::random();
-        let max_fee = U256::from(1000);
-        let refund_amount = U256::from(300);
-        let gas_used = U256::from(100);
-
-        StorageCtx::enter(&mut storage, || {
-            let mut token = TIP20Setup::create("Test", "TST", admin)
-                .with_issuer(admin)
-                .with_mint(TIP_FEE_MANAGER_ADDRESS, max_fee)
-                .apply()?;
-
-            let token_address = token.address;
-            let spending_limit = U256::from(2000);
-
-            let mut keychain = AccountKeychain::new();
-            keychain.initialize()?;
-            keychain.set_transaction_key(Address::ZERO)?;
-
-            keychain.authorize_key(
-                user,
-                access_key,
-                SignatureType::Secp256k1,
-                KeyRestrictions {
-                    expiry: u64::MAX,
-                    enforceLimits: true,
-                    limits: vec![TokenLimit {
-                        token: token_address,
-                        amount: spending_limit,
-                        period: 0,
-                    }],
-                    allowAnyCalls: true,
-                    allowedCalls: vec![],
-                },
-                None,
-            )?;
-
-            keychain.set_transaction_key(access_key)?;
-            keychain.set_tx_origin(user)?;
-            keychain.authorize_transfer(user, token_address, max_fee)?;
-
-            let remaining_after_deduction =
-                keychain.get_remaining_limit(getRemainingLimitCall {
-                    account: user,
-                    keyId: access_key,
-                    token: token_address,
-                })?;
-            assert_eq!(remaining_after_deduction, spending_limit - max_fee);
-
-            token.transfer_fee_post_tx(user, refund_amount, gas_used)?;
-
-            // spending limit unchanged pre-t1c
-            let remaining_after_refund = keychain.get_remaining_limit(getRemainingLimitCall {
-                account: user,
-                keyId: access_key,
-                token: token_address,
-            })?;
-            assert_eq!(remaining_after_refund, spending_limit - max_fee);
 
             Ok(())
         })

@@ -78,25 +78,6 @@ mod tests {
     }
 
     #[test]
-    fn test_is_implicitly_approved_selector_gated_pre_t5() -> eyre::Result<()> {
-        // Pre-T5: the isImplicitlyApproved selector must be treated as unknown.
-        let mut storage = HashMapStorageProvider::new_with_spec(1, TempoHardfork::T4);
-        StorageCtx::enter(&mut storage, || {
-            let mut registry = AddressRegistry::new();
-            let call = IAddressRegistry::isImplicitlyApprovedCall {
-                addr: Address::ZERO,
-            };
-            let result = registry.call(&call.abi_encode(), Address::ZERO)?;
-            assert!(result.is_revert());
-            assert!(
-                tempo_contracts::precompiles::UnknownFunctionSelector::abi_decode(&result.bytes)
-                    .is_ok()
-            );
-            Ok(())
-        })
-    }
-
-    #[test]
     fn test_is_implicitly_approved_precompile_t5() -> eyre::Result<()> {
         let mut storage = HashMapStorageProvider::new_with_spec(1, TempoHardfork::T5);
         StorageCtx::enter(&mut storage, || {

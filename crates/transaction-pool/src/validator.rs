@@ -1047,11 +1047,13 @@ mod tests {
             ]),
         );
 
-        let inner =
-            EthTransactionValidatorBuilder::new(provider.clone(), TempoEvmConfig::moderato())
-                .with_custom_tx_type(TempoTxType::AA as u8)
-                .disable_balance_check()
-                .build(InMemoryBlobStore::default());
+        let inner = EthTransactionValidatorBuilder::new(
+            provider.clone(),
+            crate::test_utils::current_evm(MODERATO.clone()),
+        )
+        .with_custom_tx_type(TempoTxType::AA as u8)
+        .disable_balance_check()
+        .build(InMemoryBlobStore::default());
         let amm_cache =
             AmmLiquidityCache::new(provider).expect("failed to setup AmmLiquidityCache");
         let validator = TempoTransactionValidator::new(

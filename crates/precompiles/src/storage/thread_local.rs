@@ -673,24 +673,4 @@ mod tests {
             outer.commit();
         });
     }
-
-    #[test]
-    fn test_checkpoint_noop_pre_t1c() {
-        let mut storage = HashMapStorageProvider::new(1); // default = T0
-        let addr = Address::ZERO;
-        let key = U256::from(1);
-
-        StorageCtx::enter(&mut storage, || {
-            let mut ctx = StorageCtx;
-
-            ctx.sstore(addr, key, U256::from(42)).unwrap();
-            {
-                let _guard = ctx.checkpoint(); // no-op pre-T1C
-                ctx.sstore(addr, key, U256::from(99)).unwrap();
-                // drop does nothing — no checkpoint was created
-            }
-            // state is NOT reverted because checkpoints are disabled pre-T1C
-            assert_eq!(ctx.sload(addr, key).unwrap(), U256::from(99));
-        });
-    }
 }

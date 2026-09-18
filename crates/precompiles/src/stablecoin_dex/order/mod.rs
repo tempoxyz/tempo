@@ -431,38 +431,6 @@ mod tests {
     }
 
     #[test]
-    fn test_new_flip_order_bid_same_tick_rejected() {
-        // Pre-T5: same-tick bid flip is rejected
-        let result = Order::new_flip(
-            1,
-            TEST_MAKER,
-            TEST_BOOK_KEY,
-            1000,
-            5,
-            true,
-            5,
-            TempoHardfork::T4,
-        );
-        assert!(matches!(result, Err(OrderError::InvalidBidFlipTick { .. })));
-    }
-
-    #[test]
-    fn test_new_flip_order_ask_same_tick_rejected() {
-        // Pre-T5: same-tick ask flip is rejected
-        let result = Order::new_flip(
-            1,
-            TEST_MAKER,
-            TEST_BOOK_KEY,
-            1000,
-            5,
-            false,
-            5,
-            TempoHardfork::T4,
-        );
-        assert!(matches!(result, Err(OrderError::InvalidAskFlipTick { .. })));
-    }
-
-    #[test]
     fn test_new_flip_order_bid_same_tick_accepted() {
         // TIP-1030 (T5+): same-tick bid flip is accepted
         let order = Order::new_flip(

@@ -843,42 +843,6 @@ mod tests {
     }
 
     #[test]
-    fn create_zone_requires_initial_token_policy_binding() -> eyre::Result<()> {
-        let mut storage = HashMapStorageProvider::new_with_spec(1, TempoHardfork::T8);
-        StorageCtx::enter(&mut storage, || -> eyre::Result<()> {
-            TIP20Setup::path_usd(ADMIN).apply()?;
-            let mut factory = factory_with_owner(OWNER)?;
-            StorageCtx.set_spec(TempoHardfork::T10);
-
-            let err = factory
-                .create_zone(
-                    OWNER,
-                    IZoneFactory::createZoneCall {
-                        params: create_params(PATH_USD_ADDRESS),
-                    },
-                )
-                .unwrap_err();
-            assert_eq!(
-                err,
-                TempoPrecompileError::from(ZoneFactoryError::token_transfer_policy_not_set())
-            );
-            assert_eq!(factory.next_zone_id()?, 1);
-            assert!(!factory.is_zone_portal(portal_address(1))?);
-
-            TIP403Registry::new().set_token_transfer_policy(PATH_USD_ADDRESS, 1)?;
-            factory.create_zone(
-                OWNER,
-                IZoneFactory::createZoneCall {
-                    params: create_params(PATH_USD_ADDRESS),
-                },
-            )?;
-            assert_eq!(factory.next_zone_id()?, 2);
-
-            Ok(())
-        })
-    }
-
-    #[test]
     fn owner_and_input_validation_revert_before_mutation() -> eyre::Result<()> {
         let mut storage = HashMapStorageProvider::new_with_spec(1, TempoHardfork::T10);
         StorageCtx::enter(&mut storage, || -> eyre::Result<()> {

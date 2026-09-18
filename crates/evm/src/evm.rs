@@ -1394,9 +1394,7 @@ mod tests {
 
     #[test]
     fn test_tip20_full_evm_storage_actions() {
-        for hardfork in TempoHardfork::VARIANTS {
-            // skip pre-T5 hardforks to avoid clutter
-
+        for hardfork in &[TempoHardfork::CURRENT] {
             let sender = Address::repeat_byte(0x01);
             let recipient = Address::repeat_byte(0x02);
             let beneficiary = Address::repeat_byte(0x03);
