@@ -421,7 +421,7 @@ jobs:
       SLACK_BENCH_CHANNEL: ${{ secrets.SLACK_BENCH_CHANNEL }}
     steps:
       - name: Secure runner
-        uses: tempoxyz/gh-actions/actions/secure-runner@ca2b15de1d1f6edd2276736187d7e4c2d898972c
+        uses: tempoxyz/gh-actions/actions/secure-runner@872cd08bf336579d0ffb06350590fd99d67098ca
 
       - name: Reset workspace directory
         run: |
