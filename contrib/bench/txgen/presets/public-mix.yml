@@ -2,6 +2,7 @@
 # Transaction shares: plain transfer 80%, mint 5%, MPP 15%.
 # These are benchmark assumptions, not a replay of mainnet activity.
 # Uses the native MPP open-only preset with txgen main.
+# All public-mix transactions use sequential protocol nonces.
 # Transfers and mints target prepopulated state-bloat accounts; requires nonzero bloat.
 include: mpp.yml
 
@@ -22,8 +23,6 @@ templates:
     from: {pool: users, select: random}
     gas_limit: 300000
     fee_token: "0x20c0000000000000000000000000000000000000"
-    expiring_nonce: true
-    valid_for_secs: 25
     call:
       to:
         choice: ${TXGEN_TIP20_TOKENS}
@@ -38,8 +37,6 @@ templates:
     from: {pool: users, select: {index: 0}}
     gas_limit: 300000
     fee_token: "0x20c0000000000000000000000000000000000000"
-    expiring_nonce: true
-    valid_for_secs: 25
     call:
       to: "0x20c0000000000000000000000000000000000000"
       abi: ERC20
@@ -47,6 +44,30 @@ templates:
       args:
         - {address_pool: {pool: existing_recipients, select: random}}
         - 1
+
+  # Use a separate template because YAML merge cannot remove the inherited expiry.
+  mpp_open_protocol:
+    type: tempo
+    from: { var: payer.ref }
+    gas_limit: 1000000
+    fee_token: "0x20c0000000000000000000000000000000000000"
+    call:
+      to: "0x4d50500000000000000000000000000000000000"
+      abi: TIP20ChannelReserve
+      function: open
+      args:
+        - { var: payee.address }
+        - "0x0000000000000000000000000000000000000000"
+        - "0x20c0000000000000000000000000000000000001"
+        - 1
+        - random_bytes: 32
+        - "0x0000000000000000000000000000000000000000"
+
+sequences:
+  mpp_open_only:
+    steps:
+      - name: open
+        template: mpp_open_protocol
 
 # Each selection emits one transaction, including MPP.
 mix:
