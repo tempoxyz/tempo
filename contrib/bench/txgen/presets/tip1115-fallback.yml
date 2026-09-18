@@ -6,6 +6,10 @@ include:
   - tip20/auth-direct.yml
   - tip20/nonce-expiring.yml
 merge:
+  accounts:
+    users:
+      # Public test mnemonic distinct from genesis, which installs fee preferences.
+      mnemonic: "abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon about"
   templates:
     tip20_transfer:
       call:
