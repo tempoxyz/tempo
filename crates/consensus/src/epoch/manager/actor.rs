@@ -39,11 +39,12 @@
 use std::{collections::BTreeMap, num::NonZeroUsize};
 
 use commonware_consensus::{
-    marshal::standard::Inline,
+    CertifiableAutomaton, Relay,
+    marshal::standard::{Deferred, Inline},
     simplex::{self, config::Floor, elector, scheme::bls12381_threshold::vrf::Scheme},
     types::{Epoch, EpochDelta, Epocher as _},
 };
-use commonware_cryptography::ed25519::PublicKey;
+use commonware_cryptography::{bls12381::primitives::variant::MinSig, ed25519::PublicKey};
 use commonware_macros::select;
 use commonware_p2p::{
     Blocker, Receiver, Sender,
@@ -62,6 +63,7 @@ use reth_ethereum::chainspec::EthChainSpec;
 use tracing::{Level, Span, debug, error, error_span, info, instrument, warn, warn_span};
 
 use crate::{
+    VerificationMode,
     consensus::Digest,
     epoch::manager::ingress::{EpochTransition, Exit},
 };
@@ -325,64 +327,43 @@ where
         };
 
         let engine_ctx = self.context.child("simplex").with_attribute("epoch", epoch);
-        let application = Inline::new(
-            engine_ctx.child("application"),
-            self.config.application.clone(),
-            self.config.marshal.clone(),
-            self.config.epoch_strategy.clone(),
-        );
-        let engine = simplex::Engine::new(
-            engine_ctx,
-            simplex::Config {
-                epoch,
-                floor,
-                scheme,
-                #[expect(
-                    deprecated,
-                    reason = "switching random leader election from V0 to V1 requires a hardfork"
-                )]
-                elector: elector::Random::<commonware_cryptography::Sha256>::new(
-                    elector::RandomVersion::V0,
-                ),
-                strategy: Sequential,
-
-                reporter: self.config.marshal.clone(),
-                partition: format!(
-                    "{partition_prefix}_consensus_epoch_{epoch}",
-                    partition_prefix = self.config.partition_prefix
-                ),
-
-                replay_buffer: REPLAY_BUFFER,
-                write_buffer: WRITE_BUFFER,
-
-                blocker: self.config.blocker.clone(),
-                automaton: application.clone(),
-                relay: application,
-                page_cache: self.config.page_cache.clone(),
-                leader_timeout: self.config.time_to_propose,
-                certification_timeout: self.config.time_to_collect_notarizations,
-                timeout_retry: self.config.time_to_retry_nullify_broadcast,
-                fetch_timeout: self.config.time_for_peer_response,
-                view_retention: self.config.views_to_track,
-                skip: simplex::config::SkipPolicy::Enabled {
-                    timeout: self.config.inactive_time_before_leader_skip,
-                    budget: simplex::config::SkipBudget::Participants,
-                },
-
-                mailbox_size: self.config.mailbox_size,
-                forward: commonware_consensus::simplex::config::ForwardPolicy::Disabled,
-                track_historical_votes: true,
-            },
-        );
-
         let vote = vote_mux.register(epoch.get()).await.unwrap();
         let certificate = certificates_mux.register(epoch.get()).await.unwrap();
         let resolver = resolver_mux.register(epoch.get()).await.unwrap();
 
+        info!(mode = %self.config.verification_mode, "starting simplex engine");
+
+        let engine = match self.config.verification_mode {
+            VerificationMode::Immediate => {
+                let application = Inline::new(
+                    engine_ctx.child("application"),
+                    self.config.application.clone(),
+                    self.config.marshal.clone(),
+                    self.config.epoch_strategy.clone(),
+                );
+                simplex::Engine::new(
+                    engine_ctx,
+                    self.engine_config(epoch, floor, scheme, application),
+                )
+                .start(vote, certificate, resolver)
+            }
+            VerificationMode::Deferred => {
+                let application = Deferred::new(
+                    engine_ctx.child("application"),
+                    self.config.application.clone(),
+                    self.config.marshal.clone(),
+                    self.config.epoch_strategy.clone(),
+                );
+                simplex::Engine::new(
+                    engine_ctx,
+                    self.engine_config(epoch, floor, scheme, application),
+                )
+                .start(vote, certificate, resolver)
+            }
+        };
+
         assert!(
-            self.active_epochs
-                .insert(epoch, engine.start(vote, certificate, resolver))
-                .is_none(),
+            self.active_epochs.insert(epoch, engine).is_none(),
             "there must be no other active engine running: this was ensured at \
             the beginning of this method",
         );
@@ -406,6 +387,70 @@ where
             .inc_by(u64::from(!is_signer));
 
         Ok(())
+    }
+
+    fn engine_config<TApplication>(
+        &self,
+        epoch: Epoch,
+        floor: Floor<Scheme<PublicKey, MinSig>, Digest>,
+        scheme: Scheme<PublicKey, MinSig>,
+        application: TApplication,
+    ) -> simplex::Config<
+        Scheme<PublicKey, MinSig>,
+        elector::Random<commonware_cryptography::Sha256>,
+        TBlocker,
+        Digest,
+        TApplication,
+        TApplication,
+        crate::alias::marshal::Mailbox,
+        Sequential,
+    >
+    where
+        TApplication: CertifiableAutomaton<
+                Context = simplex::types::Context<Digest, PublicKey>,
+                Digest = Digest,
+            > + Relay<Digest = Digest, PublicKey = PublicKey, Plan = simplex::Plan<PublicKey>>,
+    {
+        simplex::Config {
+            epoch,
+            floor,
+            scheme,
+            #[expect(
+                deprecated,
+                reason = "switching random leader election from V0 to V1 requires a hardfork"
+            )]
+            elector: elector::Random::<commonware_cryptography::Sha256>::new(
+                elector::RandomVersion::V0,
+            ),
+            strategy: Sequential,
+
+            reporter: self.config.marshal.clone(),
+            partition: format!(
+                "{partition_prefix}_consensus_epoch_{epoch}",
+                partition_prefix = self.config.partition_prefix
+            ),
+
+            replay_buffer: REPLAY_BUFFER,
+            write_buffer: WRITE_BUFFER,
+
+            blocker: self.config.blocker.clone(),
+            automaton: application.clone(),
+            relay: application,
+            page_cache: self.config.page_cache.clone(),
+            leader_timeout: self.config.time_to_propose,
+            certification_timeout: self.config.time_to_collect_notarizations,
+            timeout_retry: self.config.time_to_retry_nullify_broadcast,
+            fetch_timeout: self.config.time_for_peer_response,
+            view_retention: self.config.views_to_track,
+            skip: simplex::config::SkipPolicy::Enabled {
+                timeout: self.config.inactive_time_before_leader_skip,
+                budget: simplex::config::SkipBudget::Participants,
+            },
+
+            mailbox_size: self.config.mailbox_size,
+            forward: commonware_consensus::simplex::config::ForwardPolicy::Disabled,
+            track_historical_votes: true,
+        }
     }
 
     #[instrument(parent = &cause, skip_all, fields(epoch))]
