@@ -17,14 +17,13 @@ use tempo_precompiles::{
 use tempo_primitives::{TempoAddressExt, TempoTxEnvelope};
 
 /// Returns true if the calldata is for a TIP-20 function that should trigger fee token inference.
-/// `transfer` and `transferWithMemo` always qualify. `distributeReward` qualifies only before T7,
-/// when the call still moves tokens.
-pub(crate) fn is_tip20_fee_inference_call(spec: TempoHardfork, input: &[u8]) -> bool {
+/// Only `transfer` and `transferWithMemo` qualify; retired rewards selectors do not move tokens.
+pub(crate) fn is_tip20_fee_inference_call(_spec: TempoHardfork, input: &[u8]) -> bool {
     input.first_chunk::<4>().is_some_and(|&s| {
         matches!(
             s,
             ITIP20::transferCall::SELECTOR | ITIP20::transferWithMemoCall::SELECTOR
-        ) || (!spec.is_t7() && s == ITIP20::distributeRewardCall::SELECTOR)
+        )
     })
 }
 
@@ -311,12 +310,6 @@ where
         self.actions
             .clone()
             .unwrap_or_else(StorageActions::disabled)
-    }
-
-    fn amsterdam_eip8037_enabled(&self) -> bool {
-        // Read-only context never executes TIP-1016 state gas paths (set_code, fill_state_gas);
-        // the flag is not propagated through `with_read_only_storage_ctx`, so default to `false`.
-        false
     }
 
     fn gas_limit(&self) -> u64 {
@@ -684,7 +677,7 @@ mod tests {
             // Only allowed pre-T7
             assert_eq!(
                 is_tip20_fee_inference_call(spec, &distributeRewardCall::SELECTOR),
-                !spec.is_t7()
+                false
             );
 
             // Disallowed selectors

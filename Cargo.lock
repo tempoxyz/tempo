@@ -13776,7 +13776,6 @@ dependencies = [
  "tempo-revm",
  "thiserror 2.0.18",
  "tikv-jemallocator",
- "tracing",
 ]
 
 [[package]]
@@ -13829,6 +13828,24 @@ dependencies = [
  "paste",
  "serde",
  "serde_json",
+]
+
+[[package]]
+name = "tempo-multiplex"
+version = "1.14.0"
+dependencies = [
+ "axum",
+ "clap",
+ "eyre",
+ "futures",
+ "nix 0.30.1",
+ "reqwest 0.13.3",
+ "rustls",
+ "serde",
+ "serde_json",
+ "syn 2.0.119",
+ "tempfile",
+ "tokio",
 ]
 
 [[package]]

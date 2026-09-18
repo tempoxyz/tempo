@@ -26,7 +26,7 @@ pub struct HashMapStorageProvider {
     chain_id: u64,
     block_env: TempoBlockEnv,
     spec: TempoHardfork,
-    amsterdam_eip8037_enabled: bool,
+
     is_static: bool,
     gas_params: GasParams,
     gas_tracker: GasTracker,
@@ -79,11 +79,11 @@ impl HashMapStorageProvider {
                 ..Default::default()
             },
             spec,
-            amsterdam_eip8037_enabled: false,
+
             is_static: false,
             gas_params: GasParams::new_spec(spec.into()),
             gas_tracker: GasTracker::new(u64::MAX, u64::MAX, 0),
-            tip1060_storage_credits_enabled: spec.is_t7(),
+            tip1060_storage_credits_enabled: true,
             counter_sload: 0,
             counter_sstore: 0,
             non_creditable_slots: NonCreditableSlots::empty(),
@@ -94,14 +94,7 @@ impl HashMapStorageProvider {
     pub fn with_spec(mut self, spec: TempoHardfork) -> Self {
         self.spec = spec;
         self.gas_params = GasParams::new_spec(self.spec.into());
-        self.tip1060_storage_credits_enabled = spec.is_t7();
-        self
-    }
-
-    /// Returns self with `amsterdam_eip8037_enabled` overridden (builder pattern).
-    pub fn with_amsterdam_eip8037_enabled(mut self, enabled: bool) -> Self {
-        self.amsterdam_eip8037_enabled = enabled;
-        self.gas_params = GasParams::new_spec(self.spec.into());
+        self.tip1060_storage_credits_enabled = true;
         self
     }
 }
@@ -240,10 +233,6 @@ impl PrecompileStorageProvider for HashMapStorageProvider {
         self.spec
     }
 
-    fn amsterdam_eip8037_enabled(&self) -> bool {
-        self.amsterdam_eip8037_enabled
-    }
-
     fn is_static(&self) -> bool {
         self.is_static
     }
@@ -285,7 +274,7 @@ impl PrecompileStorageProvider for HashMapStorageProvider {
     }
 
     fn set_tip1060_storage_credits(&mut self, enabled: bool) {
-        self.tip1060_storage_credits_enabled = self.spec.is_t7() && enabled;
+        self.tip1060_storage_credits_enabled = enabled;
     }
 }
 
@@ -397,7 +386,7 @@ impl HashMapStorageProvider {
     pub fn set_spec(&mut self, spec: TempoHardfork) {
         self.spec = spec;
         self.gas_params = GasParams::new_spec(self.spec.into());
-        self.tip1060_storage_credits_enabled = spec.is_t7();
+        self.tip1060_storage_credits_enabled = true;
     }
 
     /// Clears all transient storage (simulates a new block).

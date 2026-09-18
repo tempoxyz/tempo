@@ -25,7 +25,6 @@ impl TempoTransactionRequest {
     pub fn try_into_tempo_tx_env(
         self,
         mut tx_env: TempoTxEnv,
-        is_t1c: bool,
     ) -> Result<TempoTxEnv, ValueError<Self>> {
         let caller_addr = self.inner.from.unwrap_or_default();
         let is_aa = self.has_aa_fields();
@@ -70,7 +69,7 @@ impl TempoTransactionRequest {
         tx_env.tempo_tx_env = if is_aa {
             let key_type = key_type.unwrap_or(SignatureType::Secp256k1);
             let mock_signature =
-                create_mock_tempo_sig(&key_type, key_data.as_ref(), key_id, caller_addr, is_t1c);
+                create_mock_tempo_sig(&key_type, key_data.as_ref(), key_id, caller_addr);
 
             let mut calls = calls;
             if let Some(to) = &inner.to {
@@ -111,18 +110,13 @@ pub(super) fn create_mock_tempo_sig(
     key_data: Option<&Bytes>,
     key_id: Option<Address>,
     caller_addr: Address,
-    is_t1c: bool,
 ) -> TempoSignature {
     use tempo_primitives::transaction::tt_signature::{KeychainSignature, TempoSignature};
 
     let inner_sig = create_mock_primitive_signature(key_type, key_data.cloned());
 
     if key_id.is_some() {
-        let keychain_sig = if is_t1c {
-            KeychainSignature::new(caller_addr, inner_sig)
-        } else {
-            KeychainSignature::new_v1(caller_addr, inner_sig)
-        };
+        let keychain_sig = { KeychainSignature::new(caller_addr, inner_sig) };
         TempoSignature::Keychain(keychain_sig)
     } else {
         TempoSignature::Primitive(inner_sig)
@@ -217,7 +211,7 @@ mod tests {
         };
 
         let env = request
-            .try_into_tempo_tx_env(TempoTxEnv::default(), true)
+            .try_into_tempo_tx_env(TempoTxEnv::default())
             .expect("valid simulation request");
         let aa = env.tempo_tx_env.as_ref().expect("AA simulation env");
 

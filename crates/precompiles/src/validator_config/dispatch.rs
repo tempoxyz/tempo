@@ -33,7 +33,6 @@ impl Precompile for ValidatorConfig {
                     addValidator(call) => mutate_void(call, msg_sender, |s, c| self.add_validator(s, c)),
                     updateValidator(call) => mutate_void(call, msg_sender, |s, c| self.update_validator(s, c)),
                     changeValidatorStatus(call) => mutate_void(call, msg_sender, |s, c| self.change_validator_status(s, c)),
-                    #[schedule(since = T1)]
                     changeValidatorStatusByIndex(call) => mutate_void(call, msg_sender, |s, c| {
                         self.change_validator_status_by_index(s, c)
                     }),
@@ -86,15 +85,15 @@ mod tests {
             Ok(())
         })?;
 
-        // Pre-T1 (T0): insufficient calldata returns halted output
+        // Historical metadata still uses current calldata validationed output
         let mut storage = HashMapStorageProvider::new_with_spec(1, TempoHardfork::T0);
         StorageCtx::enter(&mut storage, || {
             let mut validator_config = ValidatorConfig::new();
             validator_config.initialize(owner)?;
 
             let result = validator_config.call(&[0x12, 0x34], sender);
-            let output = result.expect("expected Ok(halt) for short calldata");
-            assert!(output.is_halt());
+            let output = result.expect("expected revert for short calldata");
+            assert!(output.is_revert());
 
             Ok(())
         })
@@ -211,90 +210,6 @@ mod tests {
             );
 
             assert_full_coverage([unsupported]);
-
-            Ok(())
-        })
-    }
-
-    #[test]
-    fn test_change_validator_status_by_index_t1_gating() -> eyre::Result<()> {
-        use alloy::sol_types::SolError;
-        use tempo_contracts::precompiles::UnknownFunctionSelector;
-
-        let owner = Address::random();
-        let validator = Address::random();
-        let public_key = FixedBytes::<32>::from([0x42; 32]);
-
-        // T0: changeValidatorStatusByIndex returns UnknownFunctionSelector
-        let mut storage = HashMapStorageProvider::new_with_spec(1, TempoHardfork::T0);
-        StorageCtx::enter(&mut storage, || -> eyre::Result<()> {
-            let mut validator_config = ValidatorConfig::new();
-            validator_config.initialize(owner)?;
-
-            // Add a validator first
-            validator_config.add_validator(
-                owner,
-                IValidatorConfig::addValidatorCall {
-                    newValidatorAddress: validator,
-                    publicKey: public_key,
-                    active: true,
-                    inboundAddress: "192.168.1.1:8000".to_string(),
-                    outboundAddress: "192.168.1.1:9000".to_string(),
-                },
-            )?;
-
-            // Try to call changeValidatorStatusByIndex in T0 - should return UnknownFunctionSelector
-            let call = IValidatorConfig::changeValidatorStatusByIndexCall {
-                index: 0,
-                active: false,
-            };
-            let calldata = call.abi_encode();
-            let result = validator_config.call(&calldata, owner)?;
-
-            assert!(result.is_revert());
-            let decoded = UnknownFunctionSelector::abi_decode(&result.bytes)?;
-            assert_eq!(
-                decoded.selector.0,
-                IValidatorConfig::changeValidatorStatusByIndexCall::SELECTOR
-            );
-
-            Ok(())
-        })?;
-
-        // T1: changeValidatorStatusByIndex works
-        let mut storage = HashMapStorageProvider::new_with_spec(1, TempoHardfork::T1);
-        StorageCtx::enter(&mut storage, || -> eyre::Result<()> {
-            let mut validator_config = ValidatorConfig::new();
-            validator_config.initialize(owner)?;
-
-            // Add a validator first
-            validator_config.add_validator(
-                owner,
-                IValidatorConfig::addValidatorCall {
-                    newValidatorAddress: validator,
-                    publicKey: public_key,
-                    active: true,
-                    inboundAddress: "192.168.1.1:8000".to_string(),
-                    outboundAddress: "192.168.1.1:9000".to_string(),
-                },
-            )?;
-
-            // changeValidatorStatusByIndex should work in T1
-            let call = IValidatorConfig::changeValidatorStatusByIndexCall {
-                index: 0,
-                active: false,
-            };
-            let calldata = call.abi_encode();
-            let result = validator_config.call(&calldata, owner)?;
-
-            assert!(
-                !result.is_revert(),
-                "changeValidatorStatusByIndex should succeed in T1"
-            );
-
-            // Verify the status was changed
-            let validators = validator_config.get_validators()?;
-            assert!(!validators[0].active, "Validator should be inactive");
 
             Ok(())
         })

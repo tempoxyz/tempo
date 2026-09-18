@@ -131,7 +131,7 @@ impl TipFeeManager {
 
         // T3+: skip write and event if the token is already set to the requested value.
         // Prevents permissionless callers from forcing redundant pool invalidation scans.
-        if self.storage.spec().is_t3() {
+        {
             let current = self.user_tokens[sender].read()?;
             if current == call.token {
                 return Ok(());
@@ -169,10 +169,8 @@ impl TipFeeManager {
         let mut tip20_token = TIP20Token::from_address(user_token)?;
 
         // TIP-1042: T8 fee collection exempts FeeManager recipient authorization.
-        if self.storage.spec().is_t8() {
+        {
             tip20_token.ensure_authorized_as(&[(fee_payer, AuthRole::sender())])?;
-        } else {
-            tip20_token.ensure_transfer_authorized(fee_payer, self.address)?;
         }
         tip20_token.transfer_fee_pre_tx(fee_payer, max_amount)?;
 
@@ -196,7 +194,7 @@ impl TipFeeManager {
     ) -> Result<()> {
         match route {
             FeeRoute::SameToken => {}
-            FeeRoute::Direct if self.storage.spec().is_t1c() => {
+            FeeRoute::Direct if true => {
                 let amount_out: u128 = compute_amount_out(max_amount)?
                     .try_into()
                     .map_err(|_| TempoPrecompileError::under_overflow())?;
@@ -356,30 +354,6 @@ mod tests {
 
             let call = IFeeManager::userTokensCall { user };
             assert_eq!(fee_manager.user_tokens(call)?, token.address());
-
-            Ok(())
-        })
-    }
-
-    #[test]
-    fn test_set_user_token_noop_when_unchanged_pre_t3() -> eyre::Result<()> {
-        let mut storage = HashMapStorageProvider::new_with_spec(1, TempoHardfork::T2);
-        let user = Address::random();
-        StorageCtx::enter(&mut storage, || {
-            let token = TIP20Setup::create("Test", "TST", user).apply()?;
-            let mut fee_manager = TipFeeManager::new();
-
-            let call = IFeeManager::setUserTokenCall {
-                token: token.address(),
-            };
-
-            fee_manager.set_user_token(user, call.clone())?;
-            fee_manager.set_user_token(user, call)?;
-            let event_count = StorageCtx.get_events(TIP_FEE_MANAGER_ADDRESS).len();
-            assert_eq!(
-                event_count, 2,
-                "pre-T3: event emitted even when token unchanged"
-            );
 
             Ok(())
         })
@@ -565,58 +539,6 @@ mod tests {
             let result =
                 fee_manager.collect_fee_pre_tx(user, token.address(), max_amount, validator, false);
             assert_eq!(result?, token.address());
-
-            Ok(())
-        })
-    }
-
-    #[test]
-    fn test_collect_fee_pre_tx_pre_t8_requires_fee_manager_recipient_policy() -> eyre::Result<()> {
-        let mut storage = HashMapStorageProvider::new_with_spec(1, TempoHardfork::T7);
-        let user = Address::random();
-        let validator = Address::random();
-        let beneficiary = Address::random();
-
-        StorageCtx::enter(&mut storage, || {
-            let max_amount = U256::from(10000);
-            let mut token = TIP20Setup::create("Test", "TST", user)
-                .with_issuer(user)
-                .with_mint(user, U256::from(u64::MAX))
-                .with_approval(user, TIP_FEE_MANAGER_ADDRESS, U256::MAX)
-                .apply()?;
-
-            let mut registry = TIP403Registry::new();
-            registry.initialize()?;
-            let policy_id = registry.create_policy_with_accounts(
-                user,
-                ITIP403Registry::createPolicyWithAccountsCall {
-                    admin: user,
-                    policyType: ITIP403Registry::PolicyType::WHITELIST,
-                    accounts: vec![user],
-                },
-            )?;
-            token.change_transfer_policy_id(
-                user,
-                ITIP20::changeTransferPolicyIdCall {
-                    newPolicyId: policy_id,
-                },
-            )?;
-
-            let mut fee_manager = TipFeeManager::new();
-            fee_manager.set_validator_token(
-                validator,
-                IFeeManager::setValidatorTokenCall {
-                    token: token.address(),
-                },
-                beneficiary,
-            )?;
-
-            let result =
-                fee_manager.collect_fee_pre_tx(user, token.address(), max_amount, validator, false);
-            assert!(matches!(
-                result,
-                Err(TempoPrecompileError::TIP20(TIP20Error::PolicyForbids(_)))
-            ));
 
             Ok(())
         })
@@ -1185,22 +1107,6 @@ mod tests {
             write_pool(fm, t.hop, t.validator, 100_000)?;
             Ok(())
         };
-
-        // Pre-T5: fallback disabled — must revert.
-        with_two_hop_env(
-            TempoHardfork::T4,
-            false,
-            |fm, t, user, validator, _admin| {
-                setup_pools(fm, t)?;
-                let res = fm.collect_fee_pre_tx(user, t.user, U256::from(1_000), validator, false);
-                assert_eq!(
-                    res.unwrap_err(),
-                    TIPFeeAMMError::insufficient_liquidity().into(),
-                    "T4: expected InsufficientLiquidity",
-                );
-                Ok(())
-            },
-        )?;
 
         // T5: same setup — fallback engages successfully.
         with_two_hop_env(

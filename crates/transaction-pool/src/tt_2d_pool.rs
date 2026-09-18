@@ -226,7 +226,7 @@ impl AA2dPool {
         &mut self,
         transaction: Arc<ValidPoolTransaction<TempoPooledTransaction>>,
         on_chain_nonce: u64,
-        hardfork: tempo_chainspec::hardfork::TempoHardfork,
+        _hardfork: tempo_chainspec::hardfork::TempoHardfork,
     ) -> PoolResult<AddedTransaction<TempoPooledTransaction>> {
         debug_assert!(
             transaction.transaction.is_aa(),
@@ -237,7 +237,7 @@ impl AA2dPool {
         //
         // No `by_hash` duplicate check needed here: a duplicate transaction maps to the same
         // expiring nonce hash, which `add_expiring_nonce_transaction` rejects.
-        if hardfork.is_t1() && transaction.transaction.is_expiring_nonce() {
+        if transaction.transaction.is_expiring_nonce() {
             return self.add_expiring_nonce_transaction(transaction);
         }
 

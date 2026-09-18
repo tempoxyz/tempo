@@ -340,18 +340,14 @@ fn test_struct_overwrite_cleans_dyn_field_tails() -> error::Result<()> {
             // T5: stale tail chunks of both String fields are zeroed.
             for i in 0..4 {
                 let tail = Slot::<U256>::new(dyn_tail_slot(inbound_slot, i), address).read()?;
-                if hardfork.is_t5() {
+                {
                     assert_eq!(tail, U256::ZERO, "T5: inbound chunk {i} must clear");
-                } else {
-                    assert_ne!(tail, U256::ZERO, "T4: inbound chunk {i} shouldn't clear");
                 }
             }
             for i in 0..3 {
                 let tail = Slot::<U256>::new(dyn_tail_slot(outbound_slot, i), address).read()?;
-                if hardfork.is_t5() {
+                {
                     assert_eq!(tail, U256::ZERO, "T5: outbound chunk {i} must clear");
-                } else {
-                    assert_ne!(tail, U256::ZERO, "T4: outbound chunk {i} shouldn't clear");
                 }
             }
             error::Result::Ok(())

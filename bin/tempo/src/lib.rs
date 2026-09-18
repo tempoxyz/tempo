@@ -245,6 +245,27 @@ pub fn tempo_main_with(mut overrides: TempoOverrides) -> eyre::Result<()> {
 
     apply_tempo_cli_overrides(&mut cli)?;
 
+    if let Some(chain) = cli.command.chain_spec() {
+        use tempo_chainspec::hardfork::{TempoHardfork, TempoHardforks};
+        eyre::ensure!(
+            matches!(
+                chain.tempo_fork_activation(TempoHardfork::CURRENT),
+                reth_chainspec::ForkCondition::Timestamp(_)
+            ),
+            "tempo-v2 requires a T11 activation timestamp"
+        );
+        for &fork in TempoHardfork::VARIANTS {
+            eyre::ensure!(
+                fork <= TempoHardfork::CURRENT
+                    || matches!(
+                        chain.tempo_fork_activation(fork),
+                        reth_chainspec::ForkCondition::Never
+                    ),
+                "tempo-v2 only executes T11; remove the unsupported {fork} schedule or use a newer backend"
+            );
+        }
+    }
+
     if let Commands::Node(node_cmd) = &cli.command
         && node_cmd.engine.share_sparse_trie_with_payload_builder
         && node_cmd.builder.max_payload_tasks != 1

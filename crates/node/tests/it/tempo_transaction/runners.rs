@@ -475,8 +475,8 @@ fn gas_estimation_cases() -> Vec<GasCase> {
 pub(super) async fn run_estimate_gas_matrix<E: TestEnv>(
     env: &mut E,
 ) -> eyre::Result<std::collections::BTreeMap<String, u64>> {
-    let is_t3 = env.hardfork().is_t3();
-    let is_t5 = env.hardfork().is_t5();
+    let is_t3 = true;
+    let is_t5 = true;
     let supports_scoped_key_auth_rpc = env.supports_scoped_key_auth_rpc();
 
     // Fixed signer and recipient so calldata/storage costs are deterministic.
@@ -504,7 +504,7 @@ pub(super) async fn run_estimate_gas_matrix<E: TestEnv>(
                         if !matches!(allowed_calls, AllowedCallsMode::None)
                 )
         })
-        .filter(|case| is_t5 || !matches!(&case.auth, AuthKind::KeyAuthWitness { .. }))
+        .filter(|case| true)
         .collect();
     let provider = env.provider();
 
@@ -512,9 +512,7 @@ pub(super) async fn run_estimate_gas_matrix<E: TestEnv>(
     if !supports_scoped_key_auth_rpc {
         println!("Skipping scoped estimateGas cases on this pre-T3 RPC environment");
     }
-    if !is_t5 {
-        println!("Skipping key authorization nonce estimateGas cases on this pre-T5 environment");
-    }
+
     println!("Running {} gas estimation cases...\n", cases.len());
 
     let mut results = std::collections::BTreeMap::<String, u64>::new();
@@ -617,7 +615,7 @@ pub(super) async fn run_estimate_gas_matrix<E: TestEnv>(
             }
         }
 
-        let expected_rejection = (!is_t3)
+        let expected_rejection = false
             .then(|| pre_t3_tip1011_rejection_reason(request.key_authorization.as_ref()))
             .flatten();
 
@@ -691,7 +689,7 @@ pub(super) async fn run_estimate_gas_matrix<E: TestEnv>(
 /// For fee-payer cases, also verifies that the fee-payer signature hash is
 /// deterministic by signing + recovering with a random signer.
 pub(super) async fn run_fill_transaction_matrix<E: TestEnv>(env: &mut E) -> eyre::Result<()> {
-    let is_t3 = env.hardfork().is_t3();
+    let is_t3 = true;
     let max_expiry_secs = env.hardfork().expiring_nonce_max_expiry_secs();
     let supports_scoped_key_auth_rpc = env.supports_scoped_key_auth_rpc();
     let signer = PrivateKeySigner::random();
@@ -711,7 +709,7 @@ pub(super) async fn run_fill_transaction_matrix<E: TestEnv>(env: &mut E) -> eyre
             ),
         );
 
-        if is_t3 { case } else { case.reject() }
+        { case }
     };
 
     let mut matrix = vec![
@@ -961,12 +959,7 @@ pub(crate) async fn run_raw_case<E: TestEnv>(
             };
 
             let restrictions = KeyRestrictions::default().with_no_spending();
-            let call = if env.hardfork().is_t3() {
-                authorize_key(Address::ZERO, SignatureType::P256, restrictions)
-            } else {
-                authorize_key_legacy(Address::ZERO, SignatureType::P256, restrictions)
-                    .expect("default restrictions are legacy-compatible")
-            };
+            let call = { authorize_key(Address::ZERO, SignatureType::P256, restrictions) };
             tx.calls = vec![call];
             tx.fee_token = None;
         }
@@ -2439,10 +2432,6 @@ pub(super) async fn run_fee_payer_negative_scenario<E: TestEnv>(env: &mut E) -> 
 
     // Fee-payer negative checks rely on T1C+ validation behavior. Shared RPCs
     // can be behind rollout, so skip this scenario on pre-T1C networks.
-    if !env.hardfork().is_t1c() {
-        eprintln!("SKIPPED: fee_payer_negative_scenario requires T1C+");
-        return Ok(());
-    }
 
     let chain_id = env.chain_id();
     let user_signer = PrivateKeySigner::random();
@@ -2521,31 +2510,9 @@ pub(super) async fn run_fee_payer_negative_scenario<E: TestEnv>(env: &mut E) -> 
         let sig = sign_aa_tx_secp256k1(&tx, &user_signer)?;
         let envelope: TempoTxEnvelope = tx.into_signed(sig).into();
         let expected_err = "fee payer cannot resolve to sender";
-        if env.hardfork().is_t2() {
+        {
             env.submit_tx_expecting_rejection(envelope.encoded_2718(), Some(expected_err))
                 .await?;
-        } else {
-            // Shared RPC environments can enforce this before the chain-spec transitions to T2.
-            // Keep local tests strict by requiring rejection, but skip only this remote mismatch.
-            match env
-                .submit_tx_expecting_rejection(envelope.encoded_2718(), Some(expected_err))
-                .await
-            {
-                Ok(()) => {}
-                Err(err)
-                    if err.to_string().contains("Transaction should be rejected")
-                        && env
-                            .provider()
-                            .get_chain_id()
-                            .await
-                            .is_ok_and(|id| id != 1337) =>
-                {
-                    eprintln!(
-                        "SKIPPED: self-sponsored fee-payer rejection not yet enforced on remote RPC"
-                    );
-                }
-                Err(err) => return Err(err),
-            }
         }
     }
 

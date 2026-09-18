@@ -741,13 +741,11 @@ impl TempoSignature {
     ///
     /// - Post-T1C: legacy V1 keychain signatures are rejected.
     /// - Pre-T1C: V2 keychain signatures are rejected to prevent chain splits.
-    pub fn validate_version(&self, is_t1c: bool) -> Result<(), KeychainVersionError> {
-        if is_t1c && self.is_legacy_keychain() {
+    pub fn validate_version(&self) -> Result<(), KeychainVersionError> {
+        if self.is_legacy_keychain() {
             return Err(KeychainVersionError::LegacyPostT1C);
         }
-        if !is_t1c && self.is_v2_keychain() {
-            return Err(KeychainVersionError::V2BeforeActivation);
-        }
+
         Ok(())
     }
 

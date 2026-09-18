@@ -187,7 +187,7 @@ impl ValidatorConfig {
         // Validate addresses.
         // T2+: use stable Display formatting for errors.
         // Pre-T2: preserve legacy Debug formatting for consensus compatibility.
-        if self.storage.spec().is_t2() {
+        {
             ensure_address_is_ip_port(&call.inboundAddress).map_err(|err| {
                 ValidatorConfigError::not_host_port(
                     "inboundAddress".to_string(),
@@ -200,21 +200,6 @@ impl ValidatorConfig {
                     "outboundAddress".to_string(),
                     call.outboundAddress.clone(),
                     err.to_string(),
-                )
-            })?;
-        } else {
-            ensure_address_is_ip_port(&call.inboundAddress).map_err(|err| {
-                ValidatorConfigError::not_host_port(
-                    "inboundAddress".to_string(),
-                    call.inboundAddress.clone(),
-                    format!("{err:?}"),
-                )
-            })?;
-            ensure_address_is_ip_port(&call.outboundAddress).map_err(|err| {
-                ValidatorConfigError::not_ip_port(
-                    "outboundAddress".to_string(),
-                    call.outboundAddress.clone(),
-                    format!("{err:?}"),
                 )
             })?;
         }
@@ -287,7 +272,7 @@ impl ValidatorConfig {
             self.validators[sender].delete()?;
         }
 
-        if self.storage.spec().is_t2() {
+        {
             ensure_address_is_ip_port(&call.inboundAddress).map_err(|err| {
                 ValidatorConfigError::not_host_port(
                     "inboundAddress".to_string(),
@@ -300,21 +285,6 @@ impl ValidatorConfig {
                     "outboundAddress".to_string(),
                     call.outboundAddress.clone(),
                     err.to_string(),
-                )
-            })?;
-        } else {
-            ensure_address_is_ip_port(&call.inboundAddress).map_err(|err| {
-                ValidatorConfigError::not_host_port(
-                    "inboundAddress".to_string(),
-                    call.inboundAddress.clone(),
-                    format!("{err:?}"),
-                )
-            })?;
-            ensure_address_is_ip_port(&call.outboundAddress).map_err(|err| {
-                ValidatorConfigError::not_ip_port(
-                    "outboundAddress".to_string(),
-                    call.outboundAddress.clone(),
-                    format!("{err:?}"),
                 )
             })?;
         }

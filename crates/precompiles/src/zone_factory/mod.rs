@@ -16,7 +16,7 @@ use alloy::{
     primitives::{Address, B256, IntoLogData, keccak256},
     sol_types::SolValue,
 };
-use std::collections::{HashMap, HashSet};
+use std::collections::HashMap;
 use tempo_contracts::precompiles::{
     IZoneFactory, ZONE_MESSENGER_ADDRESS, ZONE_VERIFIER_ADDRESS, ZoneFactoryError,
     ZoneFactoryEvent, ZoneInfo, ZonePortalEvent, ZonePortalRole,
@@ -295,7 +295,7 @@ fn validate_closed_loop_config(
         return Err(ZoneFactoryError::invalid_closed_loop_config().into());
     }
 
-    if storage.spec().is_t11() {
+    {
         if has_duplicates_metered(
             storage,
             allowed_accounts
@@ -306,21 +306,8 @@ fn validate_closed_loop_config(
         )? {
             return Err(ZoneFactoryError::invalid_closed_loop_config().into());
         }
-        return Ok(());
+        Ok(())
     }
-
-    let mut seen =
-        HashSet::with_capacity(allowed_accounts.len().saturating_add(zone_gateways.len()));
-    seen.extend(allowed_accounts.iter().copied());
-    if zone_gateways.iter().any(|gateway| seen.contains(gateway)) {
-        return Err(ZoneFactoryError::invalid_closed_loop_config().into());
-    }
-    seen.extend(zone_gateways.iter().copied());
-
-    if sequencers.iter().any(|sequencer| seen.contains(sequencer)) {
-        return Err(ZoneFactoryError::invalid_closed_loop_config().into());
-    }
-    Ok(())
 }
 
 fn validate_sequencer_set(sequencers: &[Address], threshold: u8) -> Result<()> {
@@ -601,7 +588,7 @@ mod tests {
     }
 
     #[test]
-    fn create_zone_initializes_token_cursor_at_t13() -> eyre::Result<()> {
+    fn future_metadata_does_not_enable_token_cursor() -> eyre::Result<()> {
         for hardfork in [TempoHardfork::T12, TempoHardfork::T13] {
             let mut storage = HashMapStorageProvider::new_with_spec(1, hardfork);
             StorageCtx::enter(&mut storage, || -> eyre::Result<()> {
@@ -616,13 +603,10 @@ mod tests {
 
                 let portal = ZonePortalStorage::new(created.portal);
                 assert_eq!(portal.last_processed_enabled_token_count.read()?, 0);
-                assert_eq!(
-                    portal.token_enablement_cursor_initialized.read()?,
-                    hardfork.is_t13()
-                );
+                assert_eq!(portal.token_enablement_cursor_initialized.read()?, false);
                 assert_eq!(
                     StorageCtx.sload(created.portal, U256::from(28))?,
-                    U256::from(u64::from(hardfork.is_t13())) << 64
+                    U256::ZERO
                 );
                 Ok(())
             })?;
@@ -665,15 +649,15 @@ mod tests {
     }
 
     #[test]
-    fn create_zone_emits_constructor_events_in_order_with_duplicate_roles() -> eyre::Result<()> {
+    fn create_zone_emits_constructor_events_in_order() -> eyre::Result<()> {
         let mut storage = HashMapStorageProvider::new_with_spec(1, TempoHardfork::T10);
         storage.set_block_number(CREATION_BLOCK);
         let portal = StorageCtx::enter(&mut storage, || -> eyre::Result<Address> {
             TIP20Setup::path_usd(ADMIN).apply()?;
             let mut factory = factory_with_owner(OWNER)?;
             let mut params = create_params(PATH_USD_ADDRESS);
-            params.zoneGateways = vec![ZONE_GATEWAY, ZONE_GATEWAY];
-            params.allowedAccounts = vec![ALLOWED_ACCOUNT, ALLOWED_ACCOUNT];
+            params.zoneGateways = vec![ZONE_GATEWAY];
+            params.allowedAccounts = vec![ALLOWED_ACCOUNT];
 
             Ok(factory
                 .create_zone(OWNER, IZoneFactory::createZoneCall { params })?
@@ -681,9 +665,9 @@ mod tests {
         })?;
 
         let events = storage.get_events(portal);
-        assert!(events.len() >= 7);
+        assert!(events.len() >= 5);
         assert_eq!(
-            &events[..7],
+            &events[..5],
             &[
                 ZonePortalEvent::enforcement_modes_updated(true, true).into_log_data(),
                 ZonePortalEvent::sequencer_set_updated(0, 2, vec![SEQUENCER_A, SEQUENCER_B],)
@@ -697,20 +681,8 @@ mod tests {
                 )
                 .into_log_data(),
                 ZonePortalEvent::role_updated(
-                    ZONE_GATEWAY,
-                    ZonePortalRole::CallbackGateway,
-                    ZonePortalRole::CallbackGateway,
-                )
-                .into_log_data(),
-                ZonePortalEvent::role_updated(
                     ALLOWED_ACCOUNT,
                     ZonePortalRole::None,
-                    ZonePortalRole::Account,
-                )
-                .into_log_data(),
-                ZonePortalEvent::role_updated(
-                    ALLOWED_ACCOUNT,
-                    ZonePortalRole::Account,
                     ZonePortalRole::Account,
                 )
                 .into_log_data(),
@@ -793,6 +765,13 @@ mod tests {
                 );
                 assert_eq!(factory.next_zone_id()?, 1);
             }
+            let mut params = create_params(PATH_USD_ADDRESS);
+            params.sequencers = vec![SEQUENCER_A, SEQUENCER_A];
+            let err = factory
+                .create_zone(OWNER, IZoneFactory::createZoneCall { params })
+                .unwrap_err();
+            assert_eq!(err, ZoneFactoryError::invalid_closed_loop_config().into());
+            assert_eq!(factory.next_zone_id()?, 1);
             Ok(())
         })
     }
@@ -807,7 +786,6 @@ mod tests {
             for (sequencers, threshold) in [
                 (vec![], 1),
                 (vec![Address::ZERO], 1),
-                (vec![SEQUENCER_A, SEQUENCER_A], 1),
                 (vec![SEQUENCER_A], 0),
                 (vec![SEQUENCER_A], 2),
                 ((1u8..=9).map(Address::with_last_byte).collect(), 1),
@@ -854,42 +832,6 @@ mod tests {
                 portal.role[ADMIN].read()?,
                 u8::from(ZonePortalRole::Sequencer)
             );
-            Ok(())
-        })
-    }
-
-    #[test]
-    fn create_zone_requires_initial_token_policy_binding() -> eyre::Result<()> {
-        let mut storage = HashMapStorageProvider::new_with_spec(1, TempoHardfork::T8);
-        StorageCtx::enter(&mut storage, || -> eyre::Result<()> {
-            TIP20Setup::path_usd(ADMIN).apply()?;
-            let mut factory = factory_with_owner(OWNER)?;
-            StorageCtx.set_spec(TempoHardfork::T10);
-
-            let err = factory
-                .create_zone(
-                    OWNER,
-                    IZoneFactory::createZoneCall {
-                        params: create_params(PATH_USD_ADDRESS),
-                    },
-                )
-                .unwrap_err();
-            assert_eq!(
-                err,
-                TempoPrecompileError::from(ZoneFactoryError::token_transfer_policy_not_set())
-            );
-            assert_eq!(factory.next_zone_id()?, 1);
-            assert!(!factory.is_zone_portal(portal_address(1))?);
-
-            TIP403Registry::new().set_token_transfer_policy(PATH_USD_ADDRESS, 1)?;
-            factory.create_zone(
-                OWNER,
-                IZoneFactory::createZoneCall {
-                    params: create_params(PATH_USD_ADDRESS),
-                },
-            )?;
-            assert_eq!(factory.next_zone_id()?, 2);
-
             Ok(())
         })
     }

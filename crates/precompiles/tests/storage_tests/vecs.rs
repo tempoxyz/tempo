@@ -24,13 +24,11 @@ fn test_vec_overwrite_unpacked_cleans_tail() -> error::Result<()> {
             handler.write(vec![U256::from(11), U256::from(22)])?;
             assert_eq!(handler.read()?, vec![U256::from(11), U256::from(22)]);
 
-            for (i, old) in [33u64, 44, 55].iter().enumerate() {
+            for (i, _old) in [33u64, 44, 55].iter().enumerate() {
                 let idx = (i + 2) as u64;
                 let raw = Slot::<U256>::new(dyn_tail_slot(len_slot, idx), address).read()?;
-                if hardfork.is_t5() {
+                {
                     assert_eq!(raw, U256::ZERO, "T5: stale element {idx} must clear");
-                } else {
-                    assert_eq!(raw, U256::from(*old), "T4: stale elem {idx} must persist",);
                 }
             }
             error::Result::Ok(())
@@ -59,10 +57,8 @@ fn test_vec_overwrite_packed_cleans_tail() -> error::Result<()> {
             // Slots 1 and 2 (which previously held elements [4..9]) fell off the tail.
             for slot_idx in 1..3 {
                 let raw = Slot::<U256>::new(dyn_tail_slot(len_slot, slot_idx), address).read()?;
-                if hardfork.is_t5() {
+                {
                     assert_eq!(raw, U256::ZERO, "T5: stale slot {slot_idx} must clear");
-                } else {
-                    assert_ne!(raw, U256::ZERO, "T4: stale slot {slot_idx} must persist",);
                 }
             }
             error::Result::Ok(())

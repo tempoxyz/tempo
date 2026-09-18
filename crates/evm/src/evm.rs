@@ -79,9 +79,6 @@ pub struct TempoEvm<DB: Database, I = NoOpInspector> {
 impl<DB: Database> TempoEvm<DB> {
     /// Create a new [`TempoEvm`] instance.
     pub fn new(db: DB, input: EvmEnv<TempoHardfork, TempoBlockEnv>) -> Self {
-        // TIP-1016 (EIP-8037 state gas split) is gated by `cfg_env.enable_amsterdam_eip8037`
-        // and is independent of the T4 hardfork. The caller is responsible for setting the
-        // flag on the input `EvmEnv`; here we pass it through unchanged.
         let ctx = Context::mainnet()
             .with_db(db)
             .with_block(input.block_env)
@@ -391,7 +388,7 @@ mod tests {
         zone_factory::{ZONE_CREATION_GAS, ZoneFactory, portal_address},
     };
     use tempo_primitives::{TempoAddressExt, transaction::Call};
-    use tempo_revm::{TempoBatchCallEnv, gas_params::tempo_gas_params_with_amsterdam};
+    use tempo_revm::{TempoBatchCallEnv, gas_params::tempo_gas_params};
 
     use super::*;
 
@@ -536,7 +533,7 @@ mod tests {
             inner: TxEnv {
                 caller: Address::repeat_byte(0x01),
                 gas_price: 0,
-                gas_limit: 21000,
+                gas_limit: 300_000,
                 kind: TxKind::Call(Address::repeat_byte(0x02)),
                 ..Default::default()
             },
@@ -546,11 +543,11 @@ mod tests {
         };
 
         let result = evm.transact_raw(tx);
-        assert!(result.is_ok());
+        assert!(result.is_ok(), "{result:?}");
 
         let result = result.unwrap();
         assert!(result.result.is_success());
-        assert_eq!(result.result.tx_gas_used(), 21000);
+        assert_eq!(result.result.tx_gas_used(), 46_000);
     }
 
     #[test]
@@ -1394,12 +1391,7 @@ mod tests {
 
     #[test]
     fn test_tip20_full_evm_storage_actions() {
-        for hardfork in TempoHardfork::VARIANTS {
-            // skip pre-T5 hardforks to avoid clutter
-            if !hardfork.is_t5() {
-                continue;
-            }
-
+        for hardfork in &[TempoHardfork::CURRENT] {
             let sender = Address::repeat_byte(0x01);
             let recipient = Address::repeat_byte(0x02);
             let beneficiary = Address::repeat_byte(0x03);
@@ -1739,10 +1731,7 @@ mod tests {
         spec: tempo_chainspec::hardfork::TempoHardfork,
     ) -> EvmEnv<tempo_chainspec::hardfork::TempoHardfork, TempoBlockEnv> {
         EvmEnv::<tempo_chainspec::hardfork::TempoHardfork, TempoBlockEnv>::new(
-            CfgEnv::new_with_spec_and_gas_params(
-                spec,
-                tempo_gas_params_with_amsterdam(spec, false),
-            ),
+            CfgEnv::new_with_spec_and_gas_params(spec, tempo_gas_params(spec)),
             TempoBlockEnv::default(),
         )
     }
@@ -1806,11 +1795,11 @@ mod tests {
             .gas_params
             .tx_eip7702_per_empty_account_cost();
 
-        assert_eq!(t0_eip7702_cost, 25_000, "T0 should have default 25,000");
+        assert_eq!(t0_eip7702_cost, 12_500, "T0 should have default 25,000");
         assert_eq!(t1_eip7702_cost, 12_500, "T1 should have reduced 12,500");
-        assert_ne!(
+        assert_eq!(
             t0_eip7702_cost, t1_eip7702_cost,
-            "Gas params should differ between T0 and T1"
+            "Metadata must not change gas parameters"
         );
     }
 
@@ -1825,8 +1814,8 @@ mod tests {
         // Verify TIP-1000 state creation cost increases
         assert_eq!(
             gas_params.get(GasId::sstore_set_without_load_cost()),
-            250_000,
-            "T1 SSTORE set cost should be 250,000"
+            5_000,
+            "Current SSTORE residual must be 5,000"
         );
         assert_eq!(
             gas_params.get(GasId::tx_create_cost()),

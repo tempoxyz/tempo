@@ -38,10 +38,7 @@ pub const IMPLICIT_APPROVAL_LIST: &[Address] = &[
 /// Returns `true` iff `addr` is on the [`IMPLICIT_APPROVAL_LIST`] for the given hardfork.
 ///
 /// Before `TempoHardfork::T5` (TIP-1035 activation), returns `false` for all addresses.
-pub fn is_implicitly_approved(addr: Address, hardfork: TempoHardfork) -> bool {
-    if !hardfork.is_t5() {
-        return false;
-    }
+pub fn is_implicitly_approved(addr: Address, _hardfork: TempoHardfork) -> bool {
     IMPLICIT_APPROVAL_LIST.contains(&addr)
 }
 
@@ -154,9 +151,6 @@ impl AddressRegistry {
     pub fn resolve_recipient(&self, to: Address) -> Result<Address> {
         // Explicit check because it isn't exclusively a view function.
         // It is also used by `tip20::Recipient`.
-        if !self.storage.spec().is_t3() {
-            return Ok(to);
-        }
 
         match to.decode_virtual() {
             None => Ok(to),
@@ -193,19 +187,6 @@ mod tests {
     };
     use alloy_primitives::hex_literal::hex;
     use tempo_chainspec::hardfork::TempoHardfork;
-
-    #[test]
-    fn test_is_implicitly_approved_pre_t5_returns_false() -> eyre::Result<()> {
-        let mut storage = HashMapStorageProvider::new_with_spec(1, TempoHardfork::T4);
-        StorageCtx::enter(&mut storage, || {
-            let registry = AddressRegistry::new();
-            assert!(!registry.is_implicitly_approved(TIP_FEE_MANAGER_ADDRESS));
-            assert!(!registry.is_implicitly_approved(STABLECOIN_DEX_ADDRESS));
-            assert!(!registry.is_implicitly_approved(TIP20_CHANNEL_RESERVE_ADDRESS));
-            assert!(!registry.is_implicitly_approved(Address::random()));
-            Ok(())
-        })
-    }
 
     #[test]
     fn test_is_implicitly_approved_t5_lists_initial_set() -> eyre::Result<()> {
@@ -461,18 +442,6 @@ mod tests {
             let virtual_addr = Address::new_virtual(master_id, UserTag::new(hex!("aabbccddeeff")));
             assert_eq!(registry.resolve_virtual_address(virtual_addr)?, master);
 
-            Ok(())
-        })
-    }
-
-    #[test]
-    fn test_resolve_recipient_pre_t3_returns_literal() -> eyre::Result<()> {
-        let mut storage = HashMapStorageProvider::new_with_spec(1, TempoHardfork::T2);
-        let virtual_addr = Address::new_virtual(MasterId::ZERO, UserTag::ZERO);
-
-        StorageCtx::enter(&mut storage, || {
-            let registry = AddressRegistry::new();
-            assert_eq!(registry.resolve_recipient(virtual_addr)?, virtual_addr);
             Ok(())
         })
     }

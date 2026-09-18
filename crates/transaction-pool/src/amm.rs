@@ -83,7 +83,7 @@ impl AmmLiquidityCache {
 
             let calc_swap = |input| compute_amount_out(input).map_err(ProviderError::other);
             let out1 = calc_swap(fee)?;
-            let out2 = hardfork.is_t5().then(|| calc_swap(out1)).transpose()?;
+            let out2 = true.then(|| calc_swap(out1)).transpose()?;
 
             for &validator_token in &inner.unique_tokens {
                 let direct = inner
@@ -231,7 +231,7 @@ impl AmmLiquidityCache {
         P: StateProviderFactory + ChainSpecProvider<ChainSpec: TempoHardforks>,
     {
         let headers = headers.into_iter().collect::<Vec<_>>();
-        let (latest_hash, latest_timestamp) = if let Some(header) = headers.last() {
+        let (latest_hash, _latest_timestamp) = if let Some(header) = headers.last() {
             (header.hash(), header.timestamp())
         } else {
             return Ok(());
@@ -306,7 +306,7 @@ impl AmmLiquidityCache {
         }
 
         // Refresh the cached active hardfork from the latest seen header.
-        self.inner.write().hardfork = client.chain_spec().tempo_hardfork_at(latest_timestamp);
+        self.inner.write().hardfork = TempoHardfork::CURRENT;
 
         Ok(())
     }
@@ -498,7 +498,7 @@ mod tests {
 
     #[test]
     fn test_has_enough_liquidity_cached_pool_insufficient() {
-        let user_token = address!("2222222222222222222222222222222222222222");
+        let user_token = tempo_contracts::precompiles::PATH_USD_ADDRESS;
         let validator_token = address!("3333333333333333333333333333333333333333");
 
         let cache = AmmLiquidityCache {
@@ -583,7 +583,7 @@ mod tests {
 
     #[test]
     fn test_has_enough_liquidity_cache_miss_insufficient() {
-        let user_token = address!("2222222222222222222222222222222222222222");
+        let user_token = tempo_contracts::precompiles::PATH_USD_ADDRESS;
         let validator_token = address!("3333333333333333333333333333333333333333");
 
         let cache = AmmLiquidityCache {

@@ -52,7 +52,6 @@ impl Precompile for TIP20ChannelReserve {
                     computeChannelId(call) => view(call, |c| self.compute_channel_id(c)),
                     getVoucherDigest(call) => view(call, |c| self.get_voucher_digest(c)),
                     domainSeparator(call) => view(call, |_| self.domain_separator()),
-                    #[schedule(since = T7)]
                     storageCredits(call) => view(call, |c| self.storage_credits(c.payer))
                 }
             }

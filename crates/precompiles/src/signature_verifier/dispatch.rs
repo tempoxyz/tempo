@@ -31,11 +31,9 @@ impl Precompile for SignatureVerifier {
                     verify(call) => view(call, |c| {
                         self.recover(c.hash, c.signature).map(|sig| sig == c.signer)
                     }),
-                    #[schedule(since = T6)]
                     verifyKeychain(call) => view(call, |c| {
                         self.verify_keychain(c.account, c.hash, c.signature)
                     }),
-                    #[schedule(since = T6)]
                     verifyKeychainAdmin(call) => view(call, |c| {
                         self.verify_keychain_admin(c.account, c.hash, c.signature)
                     }),
@@ -57,14 +55,13 @@ mod tests {
     };
     use alloy::{
         primitives::B256,
-        sol_types::{SolCall, SolError, SolInterface},
+        sol_types::{SolCall, SolInterface},
     };
     use alloy_signer::SignerSync;
     use alloy_signer_local::PrivateKeySigner;
     use tempo_chainspec::hardfork::TempoHardfork;
     use tempo_contracts::precompiles::{
         ISignatureVerifier, ISignatureVerifier::ISignatureVerifierCalls as ISVCalls,
-        UnknownFunctionSelector,
     };
     use tempo_primitives::transaction::tt_signature::{
         KeychainSignature, PrimitiveSignature, TempoSignature,
@@ -133,48 +130,6 @@ mod tests {
             );
 
             assert_full_coverage([unsupported]);
-            Ok(())
-        })
-    }
-
-    #[test]
-    fn test_verify_keychain_selector_rejected_before_t6() -> eyre::Result<()> {
-        let mut storage = HashMapStorageProvider::new_with_spec(1, TempoHardfork::T5);
-        StorageCtx::enter(&mut storage, || {
-            let calldata = ISignatureVerifier::verifyKeychainCall {
-                account: Address::random(),
-                hash: B256::ZERO,
-                signature: vec![0u8; 65].into(),
-            }
-            .abi_encode();
-
-            let result = SignatureVerifier::new().call(&calldata, Address::ZERO)?;
-            assert!(result.is_revert());
-            assert!(
-                UnknownFunctionSelector::abi_decode(&result.bytes).is_ok(),
-                "verifyKeychain should be selector-gated before T6"
-            );
-            Ok(())
-        })
-    }
-
-    #[test]
-    fn test_verify_keychain_admin_selector_rejected_before_t6() -> eyre::Result<()> {
-        let mut storage = HashMapStorageProvider::new_with_spec(1, TempoHardfork::T5);
-        StorageCtx::enter(&mut storage, || {
-            let calldata = ISignatureVerifier::verifyKeychainAdminCall {
-                account: Address::random(),
-                hash: B256::ZERO,
-                signature: vec![0u8; 65].into(),
-            }
-            .abi_encode();
-
-            let result = SignatureVerifier::new().call(&calldata, Address::ZERO)?;
-            assert!(result.is_revert());
-            assert!(
-                UnknownFunctionSelector::abi_decode(&result.bytes).is_ok(),
-                "verifyKeychainAdmin should be selector-gated before T6"
-            );
             Ok(())
         })
     }

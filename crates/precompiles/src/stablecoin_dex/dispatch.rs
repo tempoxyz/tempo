@@ -81,17 +81,13 @@ impl Precompile for StablecoinDEX {
                     tickToPrice(call) => view(call, |c| self.tick_to_price(c.tick)),
                     priceToTick(call) => view(call, |c| self.price_to_tick(c.price)),
 
-                    #[schedule(since = T7)]
                     storageCredits(call) => view(call, |c| self.storage_credits(c.user)),
 
-                    #[schedule(since = T8)]
                     bookIndexForKey(call) => view(call, |c| {
                         let index = self.book_key_index(c.bookKey)?;
                         Ok((index.is_some(), index.unwrap_or(*BookId::UNSET)).into())
                     }),
-                    #[schedule(since = T8)]
                     bookKeyForIndex(call) => view(call, |c| self.book_key_for_index(c.index)),
-                    #[schedule(since = T8)]
                     setBookIndex(call) => mutate_void(call, msg_sender, |_, c| {
                         preserve_storage_credits(self.address)?;
                         self.set_book_index(c.index)

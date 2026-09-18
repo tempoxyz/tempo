@@ -1,0 +1,29 @@
+[package]
+name = "tempo-multiplex"
+description = "Supervise legacy and current Tempo nodes behind one historical JSON-RPC endpoint"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+publish = false
+
+[lints]
+workspace = true
+
+[dependencies]
+axum.workspace = true
+clap.workspace = true
+eyre.workspace = true
+futures.workspace = true
+reqwest = { workspace = true, features = ["json", "stream"] }
+rustls.workspace = true
+serde = { workspace = true, features = ["derive"] }
+serde_json = { workspace = true, features = ["std"] }
+tokio.workspace = true
+
+[target.'cfg(unix)'.dependencies]
+nix = { version = "0.30.1", features = ["signal"] }
+
+[dev-dependencies]
+tempfile.workspace = true
+syn = { version = "2", features = ["full", "visit"] }

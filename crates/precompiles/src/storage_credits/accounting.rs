@@ -261,6 +261,8 @@ mod tests {
         let fee_payer = Address::repeat_byte(0x55);
         let no_credit_slot = TIP20Token::from_address_unchecked(owner).balances[fee_payer].slot();
         let mut storage = HashMapStorageProvider::new_with_spec(1, TempoHardfork::T6);
+        // Seed checkpoint storage without charging execution credits for the fixture itself.
+        storage.set_tip1060_storage_credits(false);
         storage.sstore(owner, no_credit_slot, U256::ONE)?;
         storage.sstore(
             STORAGE_CREDITS_ADDRESS,
@@ -268,6 +270,7 @@ mod tests {
             U256::ONE,
         )?;
         storage.set_spec(TempoHardfork::T7);
+        storage.set_tip1060_storage_credits(true);
 
         let mut non_creditable_slots = NonCreditableSlots::empty();
         non_creditable_slots.initialize(fee_payer, owner, None);

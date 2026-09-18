@@ -1,40 +1,19 @@
-//! Tempo-specific hardfork definitions, activation schedules, and protocol constants.
+//! Tempo chain identity, activation metadata, and current protocol constants.
 //!
-//! This crate is the lightweight source of truth for Tempo hardfork identifiers. It intentionally
-//! does not depend on `tempo-chainspec` or Reth, so SDK crates can use [`TempoHardfork`] without
-//! pulling in chain-spec/node integration.
+//! Historical identifiers and timestamps are retained to preserve genesis hashes,
+//! networking fork IDs, and RPC schedule responses. They do not select execution
+//! rules. This source tree executes only [TempoHardfork::CURRENT]; the released
+//! v1 binary serves older blocks through tempo-multiplex.
 //!
-//! ## Adding a New Hardfork
-//!
-//! When a new hardfork is needed (e.g., `Vivace`):
-//!
-//! ### In `tempo-hardfork`
-//! 1. Append a `Vivace` variant to `tempo_hardfork!` — automatically:
-//!    * defines the enum variant via [`hardfork!`]
-//!    * adds the variant to [`TempoHardfork::VARIANTS`]
-//!    * generates the `is_vivace()` inherent helper
-//!    * exports the variant through [`tempo_post_genesis_hardforks!`] for downstream generated APIs
-//!    * adds tests for the generated hardfork helpers
-//! 2. Update activation schedule methods/constants for the new fork.
-//! 3. Update `From<TempoHardfork> for SpecId` if the hardfork requires a different Ethereum
-//!    `SpecId`.
-//!
-//! ### In `tempo-chainspec`
-//! 4. Add `vivace_time: Option<u64>` field to `TempoGenesisInfo` if the fork is configurable in
-//!    genesis. `fork_time()` is generated through [`tempo_post_genesis_hardforks!`], so missing
-//!    fields for new hardfork variants fail at compile time.
-//!
-//! ### In genesis files and generator
-//! 5. Add `"vivaceTime": 0` to `genesis/dev.json`.
-//! 6. Add `vivace_time: Option<u64>` arg to `xtask/src/genesis_args.rs`.
-//! 7. Add insertion of `"vivaceTime"` to `chain_config.extra_fields`.
+//! A protocol upgrade requires another versioned execution binary, not another
+//! timestamp-dependent branch in the EVM or precompiles. The metadata enum can
+//! describe a scheduled upgrade without enabling its execution in this binary.
 
 #![cfg_attr(not(feature = "std"), no_std)]
 
 pub mod constants;
 
 use crate::constants::gas;
-use alloy_eips::eip7825::MAX_TX_GAS_LIMIT_OSAKA;
 #[cfg(feature = "evm")]
 use alloy_evm::revm::primitives::hardfork::SpecId;
 use alloy_hardforks::hardfork;
@@ -144,7 +123,8 @@ macro_rules! tempo_hardfork {
                             .expect(concat!(stringify!($variant), " missing from VARIANTS"));
                         for (i, fork) in TempoHardfork::VARIANTS.iter().enumerate() {
                             let active = TempoHardfork::[<is_ $variant:lower>](fork);
-                            if i >= idx {
+                            let active_index = i;
+                            if active_index >= idx {
                                 assert!(active, "{fork:?} should satisfy is_{}", stringify!([<$variant:lower>]));
                             } else {
                                 assert!(!active, "{fork:?} should not satisfy is_{}", stringify!([<$variant:lower>]));
@@ -167,7 +147,6 @@ tempo_hardfork!(
     TempoHardfork {
         /// Genesis hardfork.
         Genesis,
-        #[default]
         /// T0 hardfork.
         T0,
         /// T1 hardfork.
@@ -217,6 +196,7 @@ tempo_hardfork!(
         /// T11 hardfork.
         ///
         /// See <https://docs.tempo.xyz/docs/protocol/upgrades/t11>.
+        #[default]
         T11,
         /// T12 hardfork.
         ///
@@ -230,6 +210,12 @@ tempo_hardfork!(
 );
 
 impl TempoHardfork {
+    /// The only protocol executed by the v2 binary.
+    pub const CURRENT: Self = Self::T11;
+
+    /// Whether this build excludes historical execution rules.
+    pub const FIXED_EXECUTION: bool = true;
+
     /// Returns the position of this hardfork in [`Self::VARIANTS`].
     ///
     /// Useful for storing the hardfork in an atomic, see [`Self::from_variant_index`].
@@ -254,77 +240,41 @@ impl TempoHardfork {
         }
     }
 
-    /// Returns the fixed general gas limit for T1+, or None for pre-T1.
-    /// - Pre-T1: None
-    /// - T1+: 30M gas (fixed)
+    /// Current execution rules use a fixed 30M general gas limit.
     pub const fn general_gas_limit(&self) -> Option<u64> {
-        if self.is_t1() {
-            return Some(gas::TEMPO_T1_GENERAL_GAS_LIMIT);
-        }
-        None
+        Some(gas::TEMPO_T1_GENERAL_GAS_LIMIT)
     }
 
-    /// Returns the shared gas limit for the given block gas limit.
-    /// - T4+: 0 gas
-    /// - Pre-T4: block_gas_limit / 10
-    pub const fn shared_gas_limit(&self, block_gas_limit: u64) -> u64 {
-        if self.is_t4() {
-            0
-        } else {
-            block_gas_limit / 10
-        }
+    /// Current execution rules have no shared gas lane.
+    pub const fn shared_gas_limit(&self, _block_gas_limit: u64) -> u64 {
+        0
     }
 
-    /// Returns the per-transaction gas limit cap.
-    /// - Pre-T1A: EIP-7825 Osaka limit (16,777,216 gas)
-    /// - T1A+: 30M gas (allows maximum-sized contract deployments under [TIP-1000] state creation)
+    /// Returns the 30M per-transaction gas limit cap for [TIP-1000] state creation.
     ///
     /// [TIP-1000]: <https://docs.tempo.xyz/protocol/tips/tip-1000>
     pub const fn tx_gas_limit_cap(&self) -> Option<u64> {
-        if self.is_t1a() {
-            return Some(gas::TEMPO_T1_TX_GAS_LIMIT_CAP);
-        }
-        Some(MAX_TX_GAS_LIMIT_OSAKA)
+        Some(gas::TEMPO_T1_TX_GAS_LIMIT_CAP)
     }
 
     /// Gas cost for using an existing 2D nonce key
     pub const fn gas_existing_nonce_key(&self) -> u64 {
-        if self.is_t2() {
-            return gas::TEMPO_T2_EXISTING_NONCE_KEY_GAS;
-        }
-        gas::TEMPO_T1_EXISTING_NONCE_KEY_GAS
+        gas::TEMPO_T2_EXISTING_NONCE_KEY_GAS
     }
 
     /// Gas cost for using a new 2D nonce key
     pub const fn gas_new_nonce_key(&self) -> u64 {
-        if self.is_t2() {
-            return gas::TEMPO_T2_NEW_NONCE_KEY_GAS;
-        }
-        gas::TEMPO_T1_NEW_NONCE_KEY_GAS
+        gas::TEMPO_T2_NEW_NONCE_KEY_GAS
     }
 
     /// Returns the expiring nonce replay-protection capacity.
     pub const fn expiring_nonce_set_capacity(&self) -> u32 {
-        const PRE_T11_CAPACITY: u32 = 300_000;
-        const POST_T11_CAPACITY: u32 = 3_000_000;
-
-        if self.is_t11() {
-            POST_T11_CAPACITY
-        } else {
-            PRE_T11_CAPACITY
-        }
+        3_000_000
     }
 
     /// Returns the maximum expiring nonce validity window in seconds.
     pub const fn expiring_nonce_max_expiry_secs(&self) -> u64 {
-        const PRE_T11_MAX_EXPIRY_SECS: u64 = 30;
-        const POST_T11_MAX_EXPIRY_SECS: u64 = 300;
-
-        if self.is_t11() {
-            POST_T11_MAX_EXPIRY_SECS
-        } else {
-            PRE_T11_MAX_EXPIRY_SECS
-        }
+        300
     }
 
     /// Returns the active hardfork at the given timestamp for the specified chain.
@@ -448,6 +398,31 @@ impl TempoHardfork {
             Self::T11 => Some(MODERATO_T11_TIMESTAMP),
             Self::T12 => None,
             Self::T13 => None,
+        }
+    }
+}
+
+#[cfg(test)]
+mod fixed_execution_tests {
+    use super::TempoHardfork;
+
+    #[test]
+    fn protocol_constants_cannot_select_historical_or_future_execution() {
+        assert_eq!(TempoHardfork::default(), TempoHardfork::CURRENT);
+        for metadata in TempoHardfork::VARIANTS {
+            assert_eq!(metadata.general_gas_limit(), Some(30_000_000));
+            assert_eq!(metadata.shared_gas_limit(500_000_000), 0);
+            assert_eq!(metadata.tx_gas_limit_cap(), Some(30_000_000));
+            assert_eq!(metadata.expiring_nonce_set_capacity(), 3_000_000);
+            assert_eq!(metadata.expiring_nonce_max_expiry_secs(), 300);
+            assert_eq!(
+                metadata.gas_existing_nonce_key(),
+                TempoHardfork::CURRENT.gas_existing_nonce_key()
+            );
+            assert_eq!(
+                metadata.gas_new_nonce_key(),
+                TempoHardfork::CURRENT.gas_new_nonce_key()
+            );
         }
     }
 }

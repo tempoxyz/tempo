@@ -23,12 +23,12 @@ pub const ABI_DECODER_MEMORY_LIMIT: usize = 16 * 1024 * 1024;
 /// Strict decoding starts at T11; T12 additionally permits trailing bytes.
 #[inline]
 pub const fn abi_decoder_config_for_spec(
-    spec: TempoHardfork,
+    _spec: TempoHardfork,
 ) -> alloy::sol_types::abi::AbiDecoderConfig {
     alloy::sol_types::abi::AbiDecoderConfig::new()
         .memory_limit(ABI_DECODER_MEMORY_LIMIT)
-        .strict(spec.is_t11())
-        .validate_allow_trailing_bytes(spec.is_t12())
+        .strict(true)
+        .validate_allow_trailing_bytes(false)
 }
 
 pub mod typed {
@@ -129,7 +129,7 @@ pub fn mutate_void<T: SolCall>(
 /// Sets TIP-1060 storage creation mode to Preserve for the given storage-credit owner.
 #[inline]
 pub fn preserve_storage_credits(credit_owner: Address) -> Result<()> {
-    if StorageCtx.spec().is_t7() {
+    {
         StorageCredits::new().set_mode(
             credit_owner,
             tempo_contracts::precompiles::IStorageCredits::Mode::Preserve,
@@ -150,32 +150,11 @@ pub fn charge_input_cost(storage: &mut StorageCtx, calldata: &[u8]) -> Option<Pr
     None
 }
 
-/// Fills state gas accounting on a [`PrecompileOutput`] from the storage context.
-///
-/// State gas / reservoir tracking is only set when TIP-1016 (EIP-8037) is enabled.
-/// When disabled, `state_gas_used` must remain 0 to avoid leaking into revm's reservoir
-/// accounting and corrupting `tx_gas_used()` via `handle_reservoir_remaining_gas`.
-///
-/// SSTORE refund propagation is activated unconditionally at T4 so the
-/// `TempoPrecompileProvider` wrapper can apply refunds with `record_refund`. Pre-T4
-/// blocks were executed without refund propagation, so we cannot change their gas
-/// accounting.
+/// Propagates SSTORE refunds for successful calls without deferred state-gas accounting.
 #[inline]
 fn fill_state_gas(output: &mut PrecompileOutput, storage: &StorageCtx) {
-    if storage.spec().is_t4() && output.is_success() {
+    if output.is_success() {
         output.gas_refunded = storage.gas_refunded();
-    }
-
-    if storage.amsterdam_eip8037_enabled() {
-        // Report the raw tracker values on success and failure alike. The parent
-        // settles them in `handle_reservoir_remaining_gas` exactly like a regular
-        // child frame: on success it adopts the reservoir and merges state gas and
-        // its spilled portion; on revert or halt `rollback_state_gas` credits the
-        // spilled portion back to regular gas and restores the reservoir to the
-        // value this call inherited.
-        output.reservoir = storage.reservoir();
-        output.state_gas_used = storage.state_gas_used() as i64;
-        output.state_gas_spilled = storage.state_gas_spilled();
     }
 }
 
@@ -237,7 +216,6 @@ macro_rules! dispatch {
     ($calldata:expr, |$call:ident| match $match_call:ident {
         $($iface:ident::$calls:ident {
             $(
-                $(#[schedule($($gate:ident = $hf:ident),+ $(,)?)])*
                 $variant:ident($binding:pat) => $body:expr
             ),* $(,)?
         })+
@@ -254,13 +232,6 @@ macro_rules! dispatch {
             }
 
             if let Some(selector) = $crate::dispatch::selector_from_calldata($calldata) {
-                $($($($(
-                    if selector == <$iface::[<$variant Call>] as alloy::sol_types::SolCall>::SELECTOR
-                        && !$crate::dispatch::$gate(tempo_chainspec::hardfork::TempoHardfork::$hf)
-                    {
-                        return $crate::dispatch::unknown_selector_result($calldata);
-                    }
-                )+)*)*)+
                 $(
                     if <$iface::$calls as alloy::sol_types::SolInterface>::valid_selector(selector) {
                         type Calls = $iface::$calls;
@@ -296,23 +267,7 @@ pub fn selector_from_calldata(calldata: &[u8]) -> Option<[u8; 4]> {
 pub fn missing_selector_result() -> PrecompileResult {
     let storage = StorageCtx::default();
 
-    if storage.spec().is_t1() {
-        Ok(storage.revert_output(Bytes::new()))
-    } else {
-        Ok(storage.halt_output(PrecompileHalt::Other(
-            "Invalid input: missing function selector".into(),
-        )))
-    }
-}
-
-#[inline]
-pub fn since(hardfork: tempo_chainspec::hardfork::TempoHardfork) -> bool {
-    StorageCtx.spec() >= hardfork
-}
-
-#[inline]
-pub fn until(hardfork: tempo_chainspec::hardfork::TempoHardfork) -> bool {
-    StorageCtx.spec() < hardfork
+    Ok(storage.revert_output(Bytes::new()))
 }
 
 pub fn unknown_selector_result(calldata: &[u8]) -> PrecompileResult {
@@ -370,7 +325,7 @@ mod tests {
     }
 
     #[test]
-    fn trailing_bytes_are_allowed_from_t12() -> eyre::Result<()> {
+    fn abi_rules_ignore_historical_and_future_metadata() -> eyre::Result<()> {
         let canonical = ITestMemoryDispatch::setValuesCall {
             values: vec![U256::from(1), U256::from(2)],
         }
@@ -384,9 +339,9 @@ mod tests {
             TempoHardfork::T13,
         ] {
             let config = abi_decoder_config_for_spec(spec);
-            assert_eq!(config.get_strict(), spec.is_t11());
-            assert_eq!(config.get_validate(), spec.is_t11());
-            assert_eq!(config.get_validate_allow_trailing_bytes(), spec.is_t12());
+            assert!(config.get_strict());
+            assert!(config.get_validate());
+            assert!(!config.get_validate_allow_trailing_bytes());
             assert_eq!(config.get_memory_limit(), ABI_DECODER_MEMORY_LIMIT);
 
             let mut storage = HashMapStorageProvider::new_with_spec(1, spec);
@@ -403,7 +358,7 @@ mod tests {
                         }
                     )
                 })?;
-                let expected_success = suffix_len == 0 || !spec.is_t11() || spec.is_t12();
+                let expected_success = suffix_len == 0;
                 assert_eq!(
                     output.is_success(),
                     expected_success,
@@ -417,7 +372,7 @@ mod tests {
             gapped.splice(36..36, [0u8; 32]);
             assert_eq!(
                 ITestMemoryDispatch::setValuesCall::abi_decode_with_config(&gapped, config).is_ok(),
-                !spec.is_t11(),
+                false,
                 "{spec:?}"
             );
             assert!(

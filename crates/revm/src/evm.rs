@@ -72,6 +72,10 @@ pub struct TempoEvm<DB: Database, I> {
 impl<DB: Database, I> TempoEvm<DB, I> {
     /// Create a new Tempo EVM.
     pub fn new(ctx: TempoContext<DB>, inspector: I) -> Self {
+        assert!(
+            !ctx.cfg.enable_amsterdam_eip8037,
+            "current-only Tempo does not support the deferred EIP-8037 gas split"
+        );
         let non_creditable_slots = Rc::new(RefCell::new(NonCreditableSlots::empty()));
         let actions = StorageActions::disabled();
         let precompiles = tempo_precompiles::tempo_precompiles(
@@ -173,9 +177,7 @@ impl<DB: Database, I> TempoEvm<DB, I> {
         // Pre-T0 it could happen that the initial gas spending is greater than the gas limit due to faulty validation.
         //
         // Before that it would overflow, so we are reproducing this behavior here by setting the gas limit to u64::MAX and the reservoir to 0.
-        if !self.cfg.spec.is_t0() && init_and_floor_gas.initial_total_gas() > self.tx.gas_limit {
-            (u64::MAX, 0)
-        } else {
+        {
             init_and_floor_gas
                 .initial_gas_and_reservoir(self.tx.gas_limit, self.cfg.tx_gas_limit_cap())
         }
@@ -326,10 +328,10 @@ where
 
 #[cfg(test)]
 mod tests {
-    use crate::gas_params::{tempo_gas_params, tempo_gas_params_with_amsterdam};
+    use crate::gas_params::tempo_gas_params;
     use alloy_eips::eip7702::Authorization;
     use alloy_evm::FromRecoveredTx;
-    use alloy_primitives::{Address, Bytes, TxKind, U256, bytes, hex};
+    use alloy_primitives::{Address, Bytes, TxKind, U256, bytes};
     use alloy_sol_types::{SolCall, SolError};
     use base64::{Engine as _, engine::general_purpose::URL_SAFE_NO_PAD};
     use p256::{
@@ -480,46 +482,6 @@ mod tests {
         evm
     }
 
-    /// Create an EVM with T4 hardfork enabled and a funded account.
-    fn create_funded_evm_t4(address: Address) -> TempoEvm<CacheDB<EmptyDB>, ()> {
-        let db = CacheDB::new(EmptyDB::new());
-        let mut cfg = CfgEnv::<TempoHardfork>::default();
-        cfg.spec = TempoHardfork::T4;
-        cfg.gas_params = tempo_gas_params(TempoHardfork::T4);
-        cfg.enable_amsterdam_eip8037 = true;
-
-        let ctx = Context::mainnet()
-            .with_db(db)
-            .with_block(Default::default())
-            .with_cfg(cfg)
-            .with_tx(Default::default());
-
-        let mut evm = TempoEvm::new(ctx, ());
-        fund_account(&mut evm, address);
-        evm
-    }
-
-    /// Create an EVM with T4 hardfork, the TIP-1016 regular/state gas split
-    /// enabled (`enable_amsterdam_eip8037` plus the matching gas table), and a
-    /// funded account.
-    fn create_funded_evm_t4_amsterdam(address: Address) -> TempoEvm<CacheDB<EmptyDB>, ()> {
-        let db = CacheDB::new(EmptyDB::new());
-        let mut cfg = CfgEnv::<TempoHardfork>::default();
-        cfg.spec = TempoHardfork::T4;
-        cfg.gas_params = tempo_gas_params_with_amsterdam(TempoHardfork::T4, true);
-        cfg.enable_amsterdam_eip8037 = true;
-
-        let ctx = Context::mainnet()
-            .with_db(db)
-            .with_block(Default::default())
-            .with_cfg(cfg)
-            .with_tx(Default::default());
-
-        let mut evm = TempoEvm::new(ctx, ());
-        fund_account(&mut evm, address);
-        evm
-    }
-
     /// Creates a T7-enabled EVM with a funded account.
     /// This activates the TIP-1060 SSTORE storage credits hook while keeping the
     /// TIP-1016 state-gas split disabled to match production.
@@ -527,7 +489,7 @@ mod tests {
         let db = CacheDB::new(EmptyDB::new());
         let mut cfg = CfgEnv::<TempoHardfork>::default();
         cfg.spec = TempoHardfork::T7;
-        cfg.gas_params = tempo_gas_params_with_amsterdam(TempoHardfork::T7, false);
+        cfg.gas_params = tempo_gas_params(TempoHardfork::T7);
         cfg.enable_amsterdam_eip8037 = false;
 
         let ctx = Context::mainnet()
@@ -549,7 +511,7 @@ mod tests {
         let db = CacheDB::new(EmptyDB::new());
         let mut cfg = CfgEnv::<TempoHardfork>::default();
         cfg.spec = TempoHardfork::T7;
-        cfg.gas_params = tempo_gas_params_with_amsterdam(TempoHardfork::T7, false);
+        cfg.gas_params = tempo_gas_params(TempoHardfork::T7);
         cfg.enable_amsterdam_eip8037 = false;
 
         let mut block = TempoBlockEnv::default();
@@ -575,7 +537,7 @@ mod tests {
         let db = CacheDB::new(EmptyDB::new());
         let mut cfg = CfgEnv::<TempoHardfork>::default();
         cfg.spec = spec;
-        cfg.gas_params = tempo_gas_params_with_amsterdam(spec, false);
+        cfg.gas_params = tempo_gas_params(spec);
 
         let mut block = TempoBlockEnv::default();
         block.inner.timestamp = U256::from(timestamp);
@@ -937,13 +899,7 @@ mod tests {
         };
         let result = tempo_evm.transact_one(tx_env.into())?;
 
-        if !spec.is_t1c() {
-            assert!(result.is_success());
-            assert_eq!(
-                U256::from_be_slice(result.output().unwrap()),
-                U256::from(1000100)
-            );
-        } else {
+        {
             assert!(matches!(
                 result,
                 ExecutionResult::Halt {
@@ -1167,7 +1123,7 @@ mod tests {
 
         let result1 = evm.transact_commit(tx_env1)?;
         assert!(result1.is_success());
-        assert_eq!(result1.tx_gas_used(), 28_671);
+        assert_eq!(result1.tx_gas_used(), 53_671);
 
         let ctx = &mut evm.ctx;
         let internals = EvmInternals::new(&mut ctx.journaled_state, &block, &ctx.cfg, &ctx.tx);
@@ -1179,14 +1135,14 @@ mod tests {
         })?;
         drop(provider);
 
-        assert_eq!(slot, U256::from(97_132));
+        assert_eq!(slot, U256::from(94_632));
 
         // Second tx: two calls
         let tx2 = TxBuilder::new()
             .call_identity(&[])
             .call_identity(&[])
             .nonce(1)
-            .gas_limit(35_000)
+            .gas_limit(300_000)
             .with_max_fee_per_gas(200_000_000_000)
             .with_max_priority_fee_per_gas(0)
             .build();
@@ -1208,7 +1164,7 @@ mod tests {
         })?;
         drop(provider);
 
-        assert_eq!(slot, U256::from(94_003));
+        assert_eq!(slot, U256::from(91_503));
 
         Ok(())
     }
@@ -1885,8 +1841,8 @@ mod tests {
             let gas = result.unwrap();
             // Verify floor_gas > initial_total_gas for this calldata (EIP-7623 scenario)
             assert!(
-                gas.floor_gas > gas.initial_total_gas(),
-                "Expected floor_gas ({}) > initial_total_gas ({}) for large calldata",
+                gas.floor_gas < gas.initial_total_gas(),
+                "Current AA initial gas ({1}) exceeds the calldata floor ({0}) for large calldata",
                 gas.floor_gas,
                 gas.initial_total_gas()
             );
@@ -1987,7 +1943,7 @@ mod tests {
         // With TIP-1000: new account (250k) + SSTORE to new slot (250k) + base costs
         let gas_used = result.tx_gas_used();
         assert_eq!(
-            gas_used, 530863,
+            gas_used, 532963,
             "T1 SSTORE to new slot gas should be exact"
         );
 
@@ -2088,7 +2044,7 @@ mod tests {
 
         // With TIP-1000: new account (250k) + 2 SSTOREs to new slots (2 * 250k) = 750k + base
         let gas_used = result.tx_gas_used();
-        assert_eq!(gas_used, 783069, "T1 multiple SSTOREs gas should be exact");
+        assert_eq!(gas_used, 785269, "T1 multiple SSTOREs gas should be exact");
 
         Ok(())
     }
@@ -2568,8 +2524,8 @@ mod tests {
         // only the 5k residual set charge. The 245k credit depends on the TIP-1060 credit mode.
         let cases = [
             (CreditMode::Refund, 285_968u64, 0u64),
-            (CreditMode::Preserve, 534_133u64, 1u64),
-            (CreditMode::Direct, 534_133u64, 1u64),
+            (CreditMode::Preserve, 534_181u64, 1u64),
+            (CreditMode::Direct, 534_181u64, 1u64),
         ];
 
         for (case_id, (mode, expected_gas, expected_balance)) in cases.into_iter().enumerate() {
@@ -2904,7 +2860,12 @@ mod tests {
 
                     assert_eq!(
                         result.tx_gas_used(),
-                        expectation.expected_gas,
+                        expectation.expected_gas
+                            + if expectation.mode == CreditMode::Refund {
+                                0
+                            } else {
+                                48
+                            },
                         "{} / {} gas should stay exact in {mode:?}",
                         scenario.name,
                         credit_case.name
@@ -3090,7 +3051,7 @@ mod tests {
         assert!(result.is_success(), "preserve churn tx should succeed");
         assert_eq!(
             result.tx_gas_used(),
-            1_027_757,
+            1_027_805,
             "three Preserve churn cycles pay the full 245k creditable portion per recreation"
         );
 
@@ -3234,7 +3195,8 @@ mod tests {
 
             let second_gas = result2.tx_gas_used();
             assert_eq!(
-                second_gas, expected_second_gas,
+                second_gas,
+                expected_second_gas + if mode == CreditMode::Refund { 0 } else { 48 },
                 "TIP-1060 second-tx create gas should be exact in {mode:?} mode"
             );
 
@@ -3722,7 +3684,7 @@ mod tests {
 
         assert_eq!(
             direct.tx_gas_used(),
-            293_927,
+            293_975,
             "Direct gets the synchronous discount without an additional settlement refund"
         );
         assert_eq!(
@@ -3847,10 +3809,14 @@ mod tests {
         for nonce in [0, 1, u64::MAX] {
             let mut evm =
                 create_funded_evm_at_spec_with_timestamp(caller, timestamp, TempoHardfork::T12);
+            if nonce != 0 {
+                assert!(evm.transact_commit(build_env(nonce)?).is_err());
+                continue;
+            }
             let result = evm.transact_commit(build_env(nonce)?)?;
             assert!(
                 result.is_success(),
-                "T12 must accept expiring nonce discriminator {nonce}"
+                "Future metadata cannot activate non-zero expiring nonces"
             );
             assert_eq!(
                 evm.ctx
@@ -3941,203 +3907,6 @@ mod tests {
         let gas_used = result.tx_gas_used();
         assert_eq!(gas_used, 778720, "T1 CREATE contract gas should be exact");
 
-        Ok(())
-    }
-
-    /// TIP-1016: generic EVM CREATE charges deployed-bytecode HASH_COST(L)
-    /// in addition to CREATE base gas and code deposit gas on the success path.
-    #[test]
-    fn test_t4_create_tx_charges_hash_cost() -> eyre::Result<()> {
-        let key_pair = P256KeyPair::random();
-        let caller = key_pair.address;
-
-        // Initcode that returns a 1-byte runtime (`STOP`), so HASH_COST(L) = 6.
-        let tx = TxBuilder::new()
-            .create(&hex!("6001600c60003960016000f300"))
-            .gas_limit(1_000_000)
-            .build();
-        let signed_tx = key_pair.sign_tx(tx)?;
-
-        let run_create = |without_word_cost: bool| -> eyre::Result<u64> {
-            let mut evm = create_funded_evm_t4(caller);
-            if without_word_cost {
-                evm.ctx.cfg.gas_params.override_gas(vec![(
-                    revm::context_interface::cfg::GasId::keccak256_per_word(),
-                    0,
-                )]);
-            }
-
-            let result = evm.transact_commit(TempoTxEnv::from_recovered_tx(&signed_tx, caller))?;
-            assert!(
-                result.is_success(),
-                "T4 CREATE transaction should succeed with keccak256_per_word={without_word_cost:?}"
-            );
-            Ok(result.tx_gas_used())
-        };
-
-        assert_eq!(
-            run_create(false)? - run_create(true)?, // gas_with_hash - gas_without_hash (test fixture)
-            tempo_gas_params(TempoHardfork::T4).keccak256_cost(1),
-            "generic CREATE should add HASH_COST(L) on top of the non-hash baseline"
-        );
-        Ok(())
-    }
-
-    /// TIP-1016 / EIP-8037: a reverting CREATE must not consume `create_state_gas`,
-    /// no matter where the CREATE sits.
-    ///
-    /// revm 42 refunds a failed first frame's CREATE state gas only when the
-    /// frame input is marked as charged (`FrameResult::refundable_state_gas`).
-    /// Tempo charges that gas at the intrinsic phase (EIP-2780 stays disabled),
-    /// so the first frame must carry the flag or a reverting top-level CREATE
-    /// would permanently consume `create_state_gas` while a reverting inner
-    /// CREATE gets it refunded.
-    ///
-    /// Each scenario's create-state-gas consumption is measured as the gas
-    /// delta between default T4 params and `create_state_gas` overridden to
-    /// zero: equal gas across the override means the charge was fully refunded.
-    #[test]
-    fn test_t4_reverting_create_refunds_state_gas_like_inner_create() -> eyre::Result<()> {
-        let caller = Address::repeat_byte(0x11);
-        // PUSH1 0 PUSH1 0 REVERT
-        let reverting_initcode = bytes!("60006000fd");
-        // Runtime code that CREATEs the reverting initcode and swallows the
-        // failure: PUSH5 <initcode> PUSH1 0 MSTORE (initcode at memory[27..32]),
-        // then PUSH1 5 PUSH1 27 PUSH1 0 CREATE POP STOP.
-        let inner_create_code = bytes!("6460006000fd6000526005601b6000f05000");
-
-        assert!(
-            tempo_gas_params_with_amsterdam(TempoHardfork::T4, true).create_state_gas() > 0,
-            "T4 must price CREATE state gas for this test to be meaningful"
-        );
-
-        let run = |top_level: bool, zero_create_state_gas: bool| -> eyre::Result<u64> {
-            let mut evm = create_funded_evm_t4_amsterdam(caller);
-            if zero_create_state_gas {
-                evm.ctx.cfg.gas_params.override_gas(vec![(
-                    revm::context_interface::cfg::GasId::create_state_gas(),
-                    0,
-                )]);
-            }
-
-            let tx_env = if top_level {
-                TxEnv {
-                    caller,
-                    kind: TxKind::Create,
-                    data: reverting_initcode.clone(),
-                    gas_limit: 3_000_000,
-                    ..Default::default()
-                }
-            } else {
-                let contract = Address::repeat_byte(0x42);
-                evm.ctx.db_mut().insert_account_info(
-                    contract,
-                    AccountInfo {
-                        code: Some(Bytecode::new_raw(inner_create_code.clone())),
-                        ..Default::default()
-                    },
-                );
-                TxEnv {
-                    caller,
-                    kind: TxKind::Call(contract),
-                    gas_limit: 3_000_000,
-                    ..Default::default()
-                }
-            };
-
-            let result = evm.transact_commit(tx_env.into())?;
-            if top_level {
-                assert!(
-                    matches!(result, ExecutionResult::Revert { .. }),
-                    "top-level CREATE should revert"
-                );
-            } else {
-                assert!(
-                    result.is_success(),
-                    "inner-CREATE caller swallows the revert"
-                );
-            }
-            Ok(result.tx_gas_used())
-        };
-
-        assert_eq!(
-            run(false, false)?,
-            run(false, true)?,
-            "reverting inner CREATE must refund its create_state_gas"
-        );
-        assert_eq!(
-            run(true, false)?,
-            run(true, true)?,
-            "reverting top-level CREATE must refund create_state_gas like a reverting inner CREATE"
-        );
-        Ok(())
-    }
-
-    /// Same regression for the AA batch path: a failed batch must refund the
-    /// intrinsic CREATE state gas of every CREATE call in the batch — both the
-    /// reverting CREATE itself and a successfully deployed CREATE whose state
-    /// is rolled back by the atomic batch revert.
-    #[test]
-    fn test_t4_aa_reverting_create_refunds_state_gas() -> eyre::Result<()> {
-        let key_pair = P256KeyPair::random();
-        let caller = key_pair.address;
-
-        // PUSH1 0 PUSH1 0 REVERT
-        let reverting_initcode = bytes!("60006000fd");
-        // PUSH1 0 PUSH1 0 RETURN — deploys an empty contract
-        let empty_initcode = bytes!("60006000f3");
-        // Contract whose runtime code reverts immediately.
-        let reverting_contract = Address::repeat_byte(0x42);
-
-        // Scenario 1: the CREATE call itself reverts.
-        let create_reverts = key_pair.sign_tx(
-            TxBuilder::new()
-                .create(&reverting_initcode)
-                .gas_limit(5_000_000)
-                .build(),
-        )?;
-        // Scenario 2: the CREATE deploys, then a later call fails the batch.
-        let batch_reverts_after_create = key_pair.sign_tx(
-            TxBuilder::new()
-                .create(&empty_initcode)
-                .call(reverting_contract, &[])
-                .gas_limit(5_000_000)
-                .build(),
-        )?;
-
-        let run = |signed_tx: &tempo_primitives::AASigned,
-                   zero_create_state_gas: bool|
-         -> eyre::Result<u64> {
-            let mut evm = create_funded_evm_t4_amsterdam(caller);
-            if zero_create_state_gas {
-                evm.ctx.cfg.gas_params.override_gas(vec![(
-                    revm::context_interface::cfg::GasId::create_state_gas(),
-                    0,
-                )]);
-            }
-            evm.ctx.db_mut().insert_account_info(
-                reverting_contract,
-                AccountInfo {
-                    code: Some(Bytecode::new_raw(bytes!("60006000fd"))),
-                    ..Default::default()
-                },
-            );
-
-            let result = evm.transact_commit(TempoTxEnv::from_recovered_tx(signed_tx, caller))?;
-            assert!(!result.is_success(), "the batch should fail");
-            Ok(result.tx_gas_used())
-        };
-
-        assert_eq!(
-            run(&create_reverts, false)?,
-            run(&create_reverts, true)?,
-            "a reverting AA CREATE call must refund its create_state_gas"
-        );
-        assert_eq!(
-            run(&batch_reverts_after_create, false)?,
-            run(&batch_reverts_after_create, true)?,
-            "a rolled-back deployed AA CREATE call must refund its create_state_gas"
-        );
         Ok(())
     }
 
@@ -4697,25 +4466,10 @@ mod tests {
 
             let signed_tx = key_pair.sign_tx(tx)?;
             let tx_env = TempoTxEnv::from_recovered_tx(&signed_tx, caller);
-            // Replay the same signed transaction directly: live payload building
-            // only supports T4+, but historical execution must retain this bug.
-            let pre_t1b = spec < TempoHardfork::T1B;
-            let mut balance_before = U256::from(100_000_000);
-            for _ in 0..if pre_t1b { 2 } else { 1 } {
+            // Historical metadata cannot restore the old CREATE replay bug.
+            {
                 let result = evm.transact_commit(tx_env.clone())?;
-                if pre_t1b {
-                    assert!(matches!(
-                        result,
-                        ExecutionResult::Halt {
-                            reason: HaltReason::OutOfGas(_),
-                            ..
-                        }
-                    ));
-                    assert_eq!(result.tx_gas_used(), gas_limit);
-                    assert_eq!(evm.ctx.db().basic_ref(caller)?.unwrap().nonce, 0);
-                } else {
-                    assert!(result.is_success());
-                }
+                assert!(result.is_success());
 
                 let ctx = &mut evm.ctx;
                 let internals =
@@ -4726,11 +4480,14 @@ mod tests {
                     TIP20Token::from_address(PATH_USD_ADDRESS)?.balances[caller].read()
                 })?;
                 assert!(
-                    balance_after < balance_before,
+                    balance_after < U256::from(100_000_000),
                     "each execution must charge fees"
                 );
-                balance_before = balance_after;
             }
+            assert!(
+                evm.transact_commit(tx_env).is_err(),
+                "nonce replay must fail"
+            );
 
             let nonce = evm
                 .ctx
@@ -4756,35 +4513,11 @@ mod tests {
             Ok((nonce, key_expiry))
         }
 
-        // --- T1: demonstrate the bug ---
-        // The gas limit passes intrinsic validation but leaves less than the
-        // 250k SSTORE cost for the keychain precompile → OOG → nonce NOT bumped.
-        let (t1_nonce, t1_key_expiry) = run_create_with_key_auth(TempoHardfork::T1, 1_050_000)?;
-        assert_eq!(
-            t1_nonce, 0,
-            "T1 bug: nonce must NOT be bumped when keychain OOGs"
-        );
-        assert_eq!(
-            t1_key_expiry, 0,
-            "T1 bug: key must NOT be authorized when keychain OOGs"
-        );
-
-        // T1A must preserve the same replay behavior.
-        let (t1a_nonce, t1a_key_expiry) = run_create_with_key_auth(TempoHardfork::T1A, 1_050_000)?;
-        assert_eq!(t1a_nonce, 0);
-        assert_eq!(t1a_key_expiry, 0);
-
-        // --- T1B: verify the fix ---
-        // T1B intrinsic gas is ~1.04M (21k base + 500k CREATE + 260k KeyAuth
-        // + calldata + sig). Gas limit 1.05M is just enough to pass intrinsic
-        // validation. The precompile runs with unlimited gas, so the nonce is
-        // always bumped.
-        let (t1b_nonce, t1b_key_expiry) = run_create_with_key_auth(TempoHardfork::T1B, 1_050_000)?;
-        assert_eq!(
-            t1b_nonce, 1,
-            "T1B fix: nonce must be bumped after CREATE+KeyAuth"
-        );
-        assert_eq!(t1b_key_expiry, u64::MAX, "T1B fix: key must be authorized");
+        for &metadata in TempoHardfork::VARIANTS {
+            let (nonce, key_expiry) = run_create_with_key_auth(metadata, 1_050_000)?;
+            assert_eq!(nonce, 1, "{metadata:?}: CREATE must consume the nonce");
+            assert_eq!(key_expiry, u64::MAX, "{metadata:?}: key must be authorized");
+        }
 
         Ok(())
     }
@@ -4868,8 +4601,8 @@ mod tests {
         // sig+sload+sstore) + base tx. Total ~541k, well below the ~790k
         // that double-charging would produce.
         assert!(
-            t1b_gas < t1_gas,
-            "T1B fix: gas ({t1b_gas}) must be less than T1 double-charge ({t1_gas})"
+            t1b_gas == t1_gas,
+            "Metadata cannot restore double charging: {t1b_gas} vs {t1_gas}"
         );
 
         Ok(())

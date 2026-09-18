@@ -404,23 +404,15 @@ impl EthChainSpec for TempoChainSpec {
         self.inner.get_final_paris_total_difficulty()
     }
 
-    fn next_block_base_fee(&self, parent: &TempoHeader, target_timestamp: u64) -> Option<u64> {
-        let target_fork = self.tempo_hardfork_at(target_timestamp);
-
-        if target_fork.is_t7() {
-            let parent_base_fee = parent
-                .inner
-                .base_fee_per_gas
-                .expect("tempo blocks are expected to have a base fee");
-            Some(tempo_t7_next_block_base_fee(
-                parent_base_fee,
-                parent.inner.gas_used,
-            ))
-        } else if target_fork.is_t1() {
-            Some(TEMPO_T1_BASE_FEE)
-        } else {
-            Some(TEMPO_T0_BASE_FEE)
-        }
+    fn next_block_base_fee(&self, parent: &TempoHeader, _target_timestamp: u64) -> Option<u64> {
+        let parent_base_fee = parent
+            .inner
+            .base_fee_per_gas
+            .expect("tempo blocks are expected to have a base fee");
+        Some(tempo_t7_next_block_base_fee(
+            parent_base_fee,
+            parent.inner.gas_used,
+        ))
     }
 }
 
@@ -481,7 +473,7 @@ impl TempoHardforks for TempoChainSpec {
 
 /// Chain-spec policy for Tempo consensus header gas limits.
 ///
-/// The hardfork schedule determines the default Tempo L1 policy, while chains that reuse the
+/// The current protocol determines the default Tempo L1 policy, while chains that reuse the
 /// Tempo block format may define their own gas partitioning.
 pub trait TempoConsensusSpec: EthChainSpec<Header = TempoHeader> + TempoHardforks {
     /// Returns the shared gas limit for the given timestamp and block gas limit.
@@ -492,16 +484,19 @@ pub trait TempoConsensusSpec: EthChainSpec<Header = TempoHeader> + TempoHardfork
 }
 
 impl TempoConsensusSpec for TempoChainSpec {
-    fn shared_gas_limit_at(&self, timestamp: u64, gas_limit: u64) -> u64 {
-        self.tempo_hardfork_at(timestamp)
-            .shared_gas_limit(gas_limit)
+    fn shared_gas_limit_at(&self, _timestamp: u64, gas_limit: u64) -> u64 {
+        TempoHardfork::CURRENT.shared_gas_limit(gas_limit)
     }
 
-    fn general_gas_limit_at(&self, timestamp: u64, gas_limit: u64, shared_gas_limit: u64) -> u64 {
+    fn general_gas_limit_at(
+        &self,
+        _timestamp: u64,
+        _gas_limit: u64,
+        _shared_gas_limit: u64,
+    ) -> u64 {
         self.info
             .general_gas_limit()
-            .or_else(|| self.tempo_hardfork_at(timestamp).general_gas_limit())
-            .unwrap_or_else(|| (gas_limit - shared_gas_limit) / 2)
+            .unwrap_or(TEMPO_T1_GENERAL_GAS_LIMIT)
     }
 }
 
@@ -759,13 +754,13 @@ mod tests {
     }
 
     #[test]
-    fn next_block_base_fee_fixed_before_t7() {
+    fn next_block_base_fee_ignores_historical_fork_metadata() {
         let chainspec = chainspec_with_t7_at(10);
         let parent = header(8, TEMPO_T1_BASE_FEE / 2, 0);
 
         assert_eq!(
             chainspec.next_block_base_fee(&parent, 9),
-            Some(TEMPO_T1_BASE_FEE)
+            Some(TEMPO_T1_BASE_FEE / 2 * 7 / 8)
         );
     }
 

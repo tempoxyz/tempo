@@ -37,7 +37,6 @@ impl Precompile for AddressRegistry {
                         };
                         Ok((is_virtual, master_id, user_tag).into())
                     }),
-                    #[schedule(since = T5)]
                     isImplicitlyApproved(call) => view(call, |c| {
                         Ok(self.is_implicitly_approved(c.addr))
                     })
@@ -74,25 +73,6 @@ mod tests {
 
             assert_full_coverage([unsupported]);
 
-            Ok(())
-        })
-    }
-
-    #[test]
-    fn test_is_implicitly_approved_selector_gated_pre_t5() -> eyre::Result<()> {
-        // Pre-T5: the isImplicitlyApproved selector must be treated as unknown.
-        let mut storage = HashMapStorageProvider::new_with_spec(1, TempoHardfork::T4);
-        StorageCtx::enter(&mut storage, || {
-            let mut registry = AddressRegistry::new();
-            let call = IAddressRegistry::isImplicitlyApprovedCall {
-                addr: Address::ZERO,
-            };
-            let result = registry.call(&call.abi_encode(), Address::ZERO)?;
-            assert!(result.is_revert());
-            assert!(
-                tempo_contracts::precompiles::UnknownFunctionSelector::abi_decode(&result.bytes)
-                    .is_ok()
-            );
             Ok(())
         })
     }

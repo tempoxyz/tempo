@@ -1,6 +1,6 @@
 //! ABI dispatch for the [`AccountKeychain`] precompile.
 
-use super::{AccountKeychain, KeyRestrictions, TokenLimit, authorizeKeyCall};
+use super::{AccountKeychain, authorizeKeyCall};
 use crate::{Precompile, charge_input_cost, dispatch, mutate_void, view};
 use alloy::{primitives::Address, sol_types::SolCall};
 use revm::precompile::PrecompileResult;
@@ -16,52 +16,22 @@ impl Precompile for AccountKeychain {
             calldata,
             |call| match call {
                 IAccountKeychain::IAccountKeychainCalls {
-                    authorizeKey_0(call) => {
-                        if self.storage.spec().is_t3() {
-                            return self.storage.error_result(
+                    authorizeKey_0(_) => {
+                        self.storage.error_result(
                                 AccountKeychainError::legacy_authorize_key_selector_changed(
                                     authorizeKeyCall::SELECTOR.into(),
                                 ),
-                            );
-                        }
-
-                        let call = authorizeKeyCall {
-                            keyId: call.keyId,
-                            signatureType: call.signatureType,
-                            config: KeyRestrictions {
-                                expiry: call.expiry,
-                                enforceLimits: call.enforceLimits,
-                                limits: call
-                                    .limits
-                                    .into_iter()
-                                    .map(|limit| TokenLimit {
-                                        token: limit.token,
-                                        amount: limit.amount,
-                                        period: 0,
-                                    })
-                                    .collect(),
-                                allowAnyCalls: true,
-                                allowedCalls: vec![],
-                            },
-                        };
-
-                        mutate_void(call, msg_sender, |sender, c| {
-                            self.authorize_key(sender, c.keyId, c.signatureType, c.config, None)
-                        })
+                            )
                     },
-                    #[schedule(since = T3)]
                     authorizeKey_1(call) => mutate_void(call, msg_sender, |sender, c| {
                         self.authorize_key(sender, c.keyId, c.signatureType, c.config, None)
                     }),
-                    #[schedule(since = T5)]
                     authorizeKey_2(call) => mutate_void(call, msg_sender, |sender, c| {
                         self.authorize_key(sender, c.keyId, c.signatureType, c.config, Some(c.witness))
                     }),
-                    #[schedule(since = T6)]
                     authorizeAdminKey(call) => mutate_void(call, msg_sender, |sender, c| {
                         self.authorize_admin_key(sender, c.keyId, c.signatureType, Some(c.witness))
                     }),
-                    #[schedule(since = T5)]
                     burnKeyAuthorizationWitness(call) => mutate_void(call, msg_sender, |sender, c| {
                         self.burn_key_authorization_witness(sender, c)
                     }),
@@ -69,24 +39,17 @@ impl Precompile for AccountKeychain {
                     updateSpendingLimit(call) => mutate_void(call, msg_sender, |sender, c| {
                         self.update_spending_limit(sender, c)
                     }),
-                    #[schedule(since = T3)]
                     setAllowedCalls(call) => mutate_void(call, msg_sender, |sender, c| {
                         self.set_allowed_calls(sender, c)
                     }),
-                    #[schedule(since = T3)]
                     removeAllowedCalls(call) => mutate_void(call, msg_sender, |sender, c| {
                         self.remove_allowed_calls(sender, c)
                     }),
                     getKey(call) => view(call, |c| self.get_key(c)),
-                    #[schedule(until = T3)]
-                    getRemainingLimit(call) => view(call, |c| self.get_remaining_limit(c)),
-                    #[schedule(since = T3)]
+                    getRemainingLimit(_) => crate::dispatch::unknown_selector_result(calldata),
                     getRemainingLimitWithPeriod(call) => view(call, |c| self.get_remaining_limit_with_period(c)),
-                    #[schedule(since = T3)]
                     getAllowedCalls(call) => view(call, |c| self.get_allowed_calls(c)),
-                    #[schedule(since = T5)]
                     isKeyAuthorizationWitnessBurned(call) => view(call, |c| self.is_key_authorization_witness_burned(c)),
-                    #[schedule(since = T6)]
                     isAdminKey(call) => view(call, |c| self.is_admin_key(c.account, c.keyId)),
                     getTransactionKey(call) => view(call, |c| self.get_transaction_key(c, msg_sender))
                 }
@@ -97,15 +60,18 @@ impl Precompile for AccountKeychain {
 
 #[cfg(test)]
 mod tests {
-    use super::*;
+    use super::{
+        super::{KeyRestrictions, TokenLimit},
+        *,
+    };
     use crate::{
         Precompile,
-        account_keychain::{getRemainingLimitCall, getRemainingLimitWithPeriodCall},
-        storage::{Handler, StorageCtx, hashmap::HashMapStorageProvider},
+        account_keychain::getRemainingLimitCall,
+        storage::{StorageCtx, hashmap::HashMapStorageProvider},
         test_util::{assert_full_coverage, check_selector_coverage},
     };
     use alloy::{
-        primitives::{B256, U256},
+        primitives::U256,
         sol_types::{SolCall, SolError},
     };
     use tempo_chainspec::hardfork::TempoHardfork;
@@ -132,45 +98,6 @@ mod tests {
             );
 
             assert_full_coverage([unsupported]);
-
-            Ok(())
-        })
-    }
-
-    #[test]
-    fn test_legacy_authorize_key_selector_supported_pre_t3() -> eyre::Result<()> {
-        let mut storage = HashMapStorageProvider::new_with_spec(1, TempoHardfork::T1C);
-        let account = Address::random();
-        let key_id = Address::random();
-        let token = Address::random();
-
-        StorageCtx::enter(&mut storage, || {
-            let mut keychain = AccountKeychain::new();
-            keychain.initialize()?;
-
-            let calldata = legacyAuthorizeKeyCall {
-                keyId: key_id,
-                signatureType:
-                    tempo_contracts::precompiles::IAccountKeychain::SignatureType::Secp256k1,
-                expiry: u64::MAX,
-                enforceLimits: true,
-                limits: vec![
-                    tempo_contracts::precompiles::IAccountKeychain::LegacyTokenLimit {
-                        token,
-                        amount: U256::from(100),
-                    },
-                ],
-            }
-            .abi_encode();
-
-            let _ = keychain.call(&calldata, account)?;
-
-            let key = keychain.keys[account][key_id].read()?;
-            assert_eq!(key.expiry, u64::MAX);
-
-            let limit_key = AccountKeychain::spending_limit_key(account, key_id);
-            let remaining = keychain.spending_limits[limit_key][token].read()?.remaining;
-            assert_eq!(remaining, U256::from(100));
 
             Ok(())
         })
@@ -301,75 +228,6 @@ mod tests {
     }
 
     #[test]
-    fn test_get_remaining_limit_uses_legacy_return_shape_pre_t3() -> eyre::Result<()> {
-        let mut storage = HashMapStorageProvider::new_with_spec(1, TempoHardfork::T1C);
-        let account = Address::random();
-        let key_id = Address::random();
-        let token = Address::random();
-
-        StorageCtx::enter(&mut storage, || {
-            let mut keychain = AccountKeychain::new();
-            keychain.initialize()?;
-
-            let authorize_calldata = legacyAuthorizeKeyCall {
-                keyId: key_id,
-                signatureType: IAccountKeychain::SignatureType::Secp256k1,
-                expiry: u64::MAX,
-                enforceLimits: true,
-                limits: vec![IAccountKeychain::LegacyTokenLimit {
-                    token,
-                    amount: U256::from(123),
-                }],
-            }
-            .abi_encode();
-            let _ = keychain.call(&authorize_calldata, account)?;
-
-            let get_limit_calldata = getRemainingLimitCall {
-                account,
-                keyId: key_id,
-                token,
-            }
-            .abi_encode();
-
-            let output = keychain.call(&get_limit_calldata, account)?;
-            assert!(!output.is_revert());
-            assert_eq!(
-                output.bytes.len(),
-                32,
-                "pre-T3 should return legacy uint256"
-            );
-
-            let remaining = getRemainingLimitCall::abi_decode_returns(&output.bytes)?;
-            assert_eq!(remaining, U256::from(123));
-
-            Ok(())
-        })
-    }
-
-    #[test]
-    fn test_get_remaining_limit_with_period_rejected_pre_t3() -> eyre::Result<()> {
-        let mut storage = HashMapStorageProvider::new_with_spec(1, TempoHardfork::T1C);
-        let account = Address::random();
-
-        StorageCtx::enter(&mut storage, || {
-            let mut keychain = AccountKeychain::new();
-            keychain.initialize()?;
-
-            let calldata = getRemainingLimitWithPeriodCall {
-                account,
-                keyId: Address::random(),
-                token: Address::random(),
-            }
-            .abi_encode();
-
-            let result = keychain.call(&calldata, account)?;
-            assert!(result.is_revert());
-
-            Ok(())
-        })
-    }
-
-    #[test]
     fn test_get_remaining_limit_returns_unknown_selector_post_t3() -> eyre::Result<()> {
         let account = Address::random();
         let key_id = Address::random();
@@ -398,73 +256,6 @@ mod tests {
                 decoded.selector.as_slice(),
                 &getRemainingLimitCall::SELECTOR,
             );
-
-            Ok(())
-        })
-    }
-
-    #[test]
-    fn test_t5_witness_selectors_rejected_pre_t5() -> eyre::Result<()> {
-        let account = Address::random();
-        let witness = B256::repeat_byte(0x53);
-
-        let mut storage = HashMapStorageProvider::new_with_spec(1, TempoHardfork::T4);
-        StorageCtx::enter(&mut storage, || {
-            let mut keychain = AccountKeychain::new();
-            keychain.initialize()?;
-
-            for (selector, calldata) in [
-                (
-                    IAccountKeychain::authorizeKey_2Call::SELECTOR,
-                    IAccountKeychain::authorizeKey_2Call {
-                        keyId: Address::random(),
-                        signatureType: IAccountKeychain::SignatureType::Secp256k1,
-                        config: KeyRestrictions {
-                            expiry: u64::MAX,
-                            enforceLimits: false,
-                            limits: vec![],
-                            allowAnyCalls: true,
-                            allowedCalls: vec![],
-                        },
-                        witness,
-                    }
-                    .abi_encode(),
-                ),
-                (
-                    IAccountKeychain::burnKeyAuthorizationWitnessCall::SELECTOR,
-                    IAccountKeychain::burnKeyAuthorizationWitnessCall { witness }.abi_encode(),
-                ),
-                (
-                    IAccountKeychain::isKeyAuthorizationWitnessBurnedCall::SELECTOR,
-                    IAccountKeychain::isKeyAuthorizationWitnessBurnedCall { account, witness }
-                        .abi_encode(),
-                ),
-            ] {
-                let result = keychain.call(&calldata, account)?;
-                assert!(result.is_revert(), "expected T5 selector to revert pre-T5");
-
-                let decoded = UnknownFunctionSelector::abi_decode(&result.bytes)?;
-                assert_eq!(decoded.selector.as_slice(), &selector);
-            }
-
-            Ok(())
-        })
-    }
-
-    #[test]
-    fn test_t3_selector_with_malformed_data_returns_unknown_selector_error() -> eyre::Result<()> {
-        let selector = getRemainingLimitWithPeriodCall::SELECTOR;
-        let calldata = selector.to_vec();
-
-        let mut storage = HashMapStorageProvider::new_with_spec(1, TempoHardfork::T2);
-        StorageCtx::enter(&mut storage, || {
-            let mut keychain = AccountKeychain::new();
-
-            let result = keychain.call(&calldata, Address::ZERO)?;
-            assert!(result.is_revert(), "expected revert");
-
-            let decoded = UnknownFunctionSelector::abi_decode(&result.bytes)?;
-            assert_eq!(decoded.selector.as_slice(), &selector);
 
             Ok(())
         })

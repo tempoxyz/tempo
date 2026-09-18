@@ -48,7 +48,7 @@ use tempo_chainspec::{
     hardfork::{TempoHardfork, TempoHardforks},
 };
 use tempo_precompiles::{error::Result as TempoResult, storage::StorageActions};
-use tempo_revm::{TempoTxEnv, evm::TempoContext, gas_params::tempo_gas_params_with_amsterdam};
+use tempo_revm::{TempoTxEnv, evm::TempoContext, gas_params::tempo_gas_params};
 
 pub use tempo_revm::{
     FeeTokenResolver, ProtocolFeeContext, ProtocolFeeManager, TempoBlockEnv, TempoFeeManager,
@@ -85,6 +85,22 @@ impl FeeTokenResolver for TempoEvmConfig {
 }
 
 impl TempoEvmConfig {
+    /// Refuse to execute historical state with v2 rules. Genesis/headers may still be read
+    /// from a checkpoint; replay and historical calls must go through tempo-multiplex.
+    fn validate_execution_timestamp(&self, timestamp: u64) -> Result<(), TempoEvmError> {
+        if !self
+            .chain_spec()
+            .tempo_fork_activation(TempoHardfork::CURRENT)
+            .active_at_timestamp(timestamp)
+        {
+            return Err(TempoEvmError::InvalidEvmConfig(
+                "tempo-v2 cannot execute pre-T11 blocks; use tempo-multiplex and a T11 checkpoint"
+                    .into(),
+            ));
+        }
+        Ok(())
+    }
+
     /// Create a new [`TempoEvmConfig`] with the given chain spec and EVM factory.
     pub fn new(chain_spec: Arc<TempoChainSpec>) -> Self {
         let inner =
@@ -163,6 +179,7 @@ impl ConfigureEvm for TempoEvmConfig {
     }
 
     fn evm_env(&self, header: &TempoHeader) -> Result<EvmEnvFor<Self>, Self::Error> {
+        self.validate_execution_timestamp(header.timestamp())?;
         let EvmEnv { cfg_env, block_env } = EvmEnv::for_eth_block(
             header,
             self.chain_spec(),
@@ -171,24 +188,11 @@ impl ConfigureEvm for TempoEvmConfig {
                 .blob_params_at_timestamp(header.timestamp()),
         );
 
-        let spec = self.chain_spec().tempo_hardfork_at(header.timestamp());
+        let spec = TempoHardfork::CURRENT;
 
-        // Apply TIP-1000 gas params for T1 hardfork.
-        //
-        // TIP-1016 (EIP-8037 state gas split) is gated by `cfg_env.enable_amsterdam_eip8037`
-        // and is independent of the T4 hardfork. The flag is currently left at its default
-        // (`false`) so TIP-1016 is disabled even on T4; flipping it on enables the regular/
-        // state gas split everywhere it is checked downstream.
-        //
-        // TODO(TIP-1016): this is the place where we previously did
-        // `cfg_env.enable_amsterdam_eip8037 = spec.is_t4();`. When TIP-1016 is ready to
-        // ship, re-enable it here (or wire it through chain spec / cfg defaults) so the
-        // state gas split activates on the appropriate hardfork.
-        let amsterdam_eip8037_enabled = cfg_env.enable_amsterdam_eip8037;
-        let mut cfg_env = cfg_env.with_spec_and_gas_params(
-            spec,
-            tempo_gas_params_with_amsterdam(spec, amsterdam_eip8037_enabled),
-        );
+        // Execute only the current protocol, independent of schedule metadata.
+
+        let mut cfg_env = cfg_env.with_spec_and_gas_params(spec, tempo_gas_params(spec));
         cfg_env.tx_gas_limit_cap = spec.tx_gas_limit_cap();
 
         Ok(EvmEnv {
@@ -211,6 +215,7 @@ impl ConfigureEvm for TempoEvmConfig {
         parent: &TempoHeader,
         attributes: &Self::NextBlockEnvCtx,
     ) -> Result<EvmEnvFor<Self>, Self::Error> {
+        self.validate_execution_timestamp(attributes.timestamp)?;
         let EvmEnv { cfg_env, block_env } = EvmEnv::for_eth_next_block(
             parent,
             NextEvmEnvAttributes {
@@ -229,21 +234,11 @@ impl ConfigureEvm for TempoEvmConfig {
                 .blob_params_at_timestamp(attributes.timestamp),
         );
 
-        let spec = self.chain_spec().tempo_hardfork_at(attributes.timestamp);
+        let spec = TempoHardfork::CURRENT;
 
-        // Apply TIP-1000 gas params for T1 hardfork. TIP-1016 is gated by
-        // `cfg_env.enable_amsterdam_eip8037`, independent of the T4 hardfork
-        // (see `evm_env_for_block` for details).
-        //
-        // TODO(TIP-1016): this is the place where we previously did
-        // `cfg_env.enable_amsterdam_eip8037 = spec.is_t4();`. When TIP-1016 is ready to
-        // ship, re-enable it here (or wire it through chain spec / cfg defaults) so the
-        // state gas split activates on the appropriate hardfork.
-        let amsterdam_eip8037_enabled = cfg_env.enable_amsterdam_eip8037;
-        let mut cfg_env = cfg_env.with_spec_and_gas_params(
-            spec,
-            tempo_gas_params_with_amsterdam(spec, amsterdam_eip8037_enabled),
-        );
+        // Execute only the current protocol, independent of schedule metadata.
+
+        let mut cfg_env = cfg_env.with_spec_and_gas_params(spec, tempo_gas_params(spec));
         cfg_env.tx_gas_limit_cap = spec.tx_gas_limit_cap();
 
         Ok(EvmEnv {

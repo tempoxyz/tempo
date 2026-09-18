@@ -236,18 +236,12 @@ impl StorageCtx {
 
     /// Returns the currently active hardfork.
     pub fn spec(&self) -> TempoHardfork {
-        Self::with_storage(|s| s.spec())
+        TempoHardfork::CURRENT
     }
 
     /// Returns the shared storage-actions recorder for the current storage context.
     pub fn actions(&self) -> StorageActions {
         Self::with_storage(|s| s.storage_actions())
-    }
-
-    /// Mirrors `CfgEnv::enable_amsterdam_eip8037`. Used by precompiles to gate the TIP-1016
-    /// regular/state gas split independently of the active hardfork.
-    pub fn amsterdam_eip8037_enabled(&self) -> bool {
-        Self::with_storage(|s| s.amsterdam_eip8037_enabled())
     }
 
     /// Returns whether the current call context is static.
@@ -276,13 +270,7 @@ impl StorageCtx {
     /// Panics if no storage context is set.
     pub fn checkpoint(&mut self) -> CheckpointGuard {
         // spec: only available +T1C. Prior to that checkpoints are a no-op.
-        let checkpoint = Self::with_storage(|s| {
-            if s.spec().is_t1c() {
-                Some(s.checkpoint())
-            } else {
-                None
-            }
-        });
+        let checkpoint = Self::with_storage(|s| Some(s.checkpoint()));
 
         CheckpointGuard { checkpoint }
     }
@@ -677,26 +665,6 @@ mod tests {
 
             // Wrong order: committing outer while inner is still active
             outer.commit();
-        });
-    }
-
-    #[test]
-    fn test_checkpoint_noop_pre_t1c() {
-        let mut storage = HashMapStorageProvider::new(1); // default = T0
-        let addr = Address::ZERO;
-        let key = U256::from(1);
-
-        StorageCtx::enter(&mut storage, || {
-            let mut ctx = StorageCtx;
-
-            ctx.sstore(addr, key, U256::from(42)).unwrap();
-            {
-                let _guard = ctx.checkpoint(); // no-op pre-T1C
-                ctx.sstore(addr, key, U256::from(99)).unwrap();
-                // drop does nothing — no checkpoint was created
-            }
-            // state is NOT reverted because checkpoints are disabled pre-T1C
-            assert_eq!(ctx.sload(addr, key).unwrap(), U256::from(99));
         });
     }
 }

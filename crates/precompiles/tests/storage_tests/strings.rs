@@ -101,10 +101,8 @@ fn test_string_overwrite_long_to_short_cleans_tail() -> error::Result<()> {
 
             for i in 0..4 {
                 let chunk = Slot::<U256>::new(dyn_tail_slot(base_slot, i), address).read()?;
-                if hardfork.is_t5() {
+                {
                     assert_eq!(chunk, U256::ZERO, "T5: tail chunk {i} must clear");
-                } else {
-                    assert_ne!(chunk, U256::ZERO, "pre-T5: stale chunk {i} must persist");
                 }
             }
             error::Result::Ok(())
@@ -136,10 +134,8 @@ fn test_string_overwrite_long_to_shorter_long_cleans_only_excess() -> error::Res
             // Chunks 2..7 fell off the tail.
             for i in 2..7 {
                 let chunk = Slot::<U256>::new(dyn_tail_slot(base_slot, i), address).read()?;
-                if hardfork.is_t5() {
+                {
                     assert_eq!(chunk, U256::ZERO, "T5: stale chunk {i} must clear");
-                } else {
-                    assert_ne!(chunk, U256::ZERO, "pre-T5: stale chunk {i} must persist");
                 }
             }
             error::Result::Ok(())

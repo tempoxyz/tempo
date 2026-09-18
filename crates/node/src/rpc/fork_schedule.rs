@@ -35,9 +35,22 @@ pub struct ForkInfo {
 
 #[rpc(server, namespace = "tempo")]
 pub trait TempoForkScheduleApi {
+    /// Reports whether this node can execute historical protocol versions.
+    #[method(name = "executionRules")]
+    async fn execution_rules(&self) -> RpcResult<ExecutionRules>;
+
     /// Returns the Tempo fork schedule and the currently active fork.
     #[method(name = "forkSchedule")]
     async fn fork_schedule(&self) -> RpcResult<ForkSchedule>;
+}
+
+/// Execution capability handshake used by tempo-multiplex.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ExecutionRules {
+    pub fixed: bool,
+    pub protocol: String,
+    pub activation_timestamp: Option<u64>,
 }
 
 /// Implementation of `tempo_forkSchedule`.
@@ -67,6 +80,22 @@ where
         + Sync
         + 'static,
 {
+    async fn execution_rules(&self) -> RpcResult<ExecutionRules> {
+        use tempo_chainspec::hardfork::TempoHardfork;
+        Ok(ExecutionRules {
+            fixed: TempoHardfork::FIXED_EXECUTION,
+            protocol: TempoHardfork::CURRENT.to_string(),
+            activation_timestamp: match self
+                .provider
+                .chain_spec()
+                .tempo_fork_activation(TempoHardfork::CURRENT)
+            {
+                ForkCondition::Timestamp(timestamp) => Some(timestamp),
+                _ => None,
+            },
+        })
+    }
+
     async fn fork_schedule(&self) -> RpcResult<ForkSchedule> {
         let chain_spec = self.provider.chain_spec();
 

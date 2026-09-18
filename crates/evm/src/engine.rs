@@ -270,7 +270,7 @@ mod tests {
 
     #[test]
     fn test_evm_env_for_payload() {
-        let chainspec = Arc::new(TempoChainSpec::from_genesis(MODERATO.genesis().clone()));
+        let chainspec = crate::test_utils::test_chainspec();
         let evm_config = TempoEvmConfig::new(chainspec.clone());
 
         let system_tx = create_subblock_metadata_tx(chainspec.chain().id(), 1);

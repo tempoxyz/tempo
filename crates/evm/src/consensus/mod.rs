@@ -14,10 +14,7 @@ use reth_consensus_common::validation::{
 use reth_ethereum_consensus::EthBeaconConsensus;
 use reth_primitives_traits::{RecoveredBlock, SealedBlock, SealedHeader};
 use std::sync::Arc;
-use tempo_chainspec::{
-    TempoChainSpec, TempoConsensusSpec,
-    spec::{SYSTEM_TX_ADDRESSES, SYSTEM_TX_COUNT},
-};
+use tempo_chainspec::{TempoChainSpec, TempoConsensusSpec, spec::SYSTEM_TX_ADDRESSES};
 use tempo_primitives::{
     Block, BlockBody, TempoHeader, TempoPrimitives, TempoReceipt, TempoTxEnvelope,
 };
@@ -226,15 +223,7 @@ where
             .into());
         }
 
-        let expected_system_tx_count = if self
-            .inner
-            .chain_spec()
-            .is_t4_active_at_timestamp(block.header().timestamp())
-        {
-            0
-        } else {
-            SYSTEM_TX_COUNT
-        };
+        let expected_system_tx_count = { 0 };
 
         // Get the last END_OF_BLOCK_SYSTEM_TX_COUNT transactions and validate they are end-of-block system txs
         let end_of_block_system_txs = transactions
@@ -499,7 +488,7 @@ mod tests {
         // Pre-T1 chainspec uses the divisor-based calculation
         let consensus = TempoConsensus::new(create_pre_t1_chainspec());
         let gas_limit = 500_000_000u64;
-        let shared_gas_limit = gas_limit / 10;
+        let shared_gas_limit = 0;
         // Pre-T1: expected = (gas_limit - shared_gas_limit) / 2
         let header = TestHeaderBuilder::default()
             .gas_limit(gas_limit)
@@ -518,7 +507,7 @@ mod tests {
         );
 
         // Now verify the correct pre-T1 value works
-        let expected_general_gas_limit = (gas_limit - shared_gas_limit) / 2;
+        let expected_general_gas_limit = 30_000_000;
         let header = TestHeaderBuilder::default()
             .gas_limit(gas_limit)
             .timestamp_millis(current_timestamp_millis())
@@ -662,7 +651,7 @@ mod tests {
             .gas_limit(gas_limit)
             .timestamp_millis(current_timestamp_millis())
             .general_gas_limit(999)
-            .shared_gas_limit(50_000_000)
+            .shared_gas_limit(0)
             .build();
         let sealed = SealedHeader::seal_slow(header);
 
@@ -679,7 +668,7 @@ mod tests {
             .gas_limit(gas_limit)
             .timestamp_millis(current_timestamp_millis())
             .general_gas_limit(TempoHardfork::T1.general_gas_limit().unwrap())
-            .shared_gas_limit(50_000_000)
+            .shared_gas_limit(0)
             .build();
         let sealed = SealedHeader::seal_slow(header);
         consensus.validate_header(&sealed).expect("should be valid");
@@ -751,7 +740,7 @@ mod tests {
             .timestamp(parent_ts + 1)
             .timestamp_millis_part(600)
             .number(2)
-            .base_fee(TEMPO_T1_BASE_FEE)
+            .base_fee(tempo_chainspec::spec::TEMPO_T7_BASE_FEE_CAP)
             .parent_hash(parent_sealed.hash())
             .build();
         let child_sealed = SealedHeader::seal_slow(child);
@@ -779,7 +768,7 @@ mod tests {
             .timestamp(parent_ts)
             .timestamp_millis_part(500)
             .number(2)
-            .base_fee(TEMPO_T1_BASE_FEE)
+            .base_fee(tempo_chainspec::spec::TEMPO_T7_BASE_FEE_CAP)
             .parent_hash(parent_sealed.hash())
             .build();
         let child_sealed = SealedHeader::seal_slow(child);
@@ -817,7 +806,7 @@ mod tests {
             .timestamp(parent_ts)
             .timestamp_millis_part(400)
             .number(1)
-            .base_fee(TEMPO_T1_BASE_FEE)
+            .base_fee(tempo_chainspec::spec::TEMPO_T7_BASE_FEE_CAP)
             .parent_hash(parent_sealed.hash())
             .build();
         let child_sealed = SealedHeader::seal_slow(child);
@@ -854,7 +843,7 @@ mod tests {
             .number(2)
             .parent_hash(parent_sealed.hash())
             .general_gas_limit(TempoHardfork::T1.general_gas_limit().unwrap())
-            .base_fee(TEMPO_T1_BASE_FEE)
+            .base_fee(tempo_chainspec::spec::TEMPO_T7_BASE_FEE_CAP)
             .build();
         let child_sealed = SealedHeader::seal_slow(child);
 
@@ -1053,34 +1042,6 @@ mod tests {
     }
 
     #[test]
-    fn test_validate_block_pre_execution_pre_t4_missing_system_tx() {
-        let consensus = TempoConsensus::new(MODERATO.clone());
-        let chain_id = MODERATO.chain().id();
-
-        let user_tx = create_tx(chain_id);
-
-        use tempo_chainspec::constants::moderato::MODERATO_T4_TIMESTAMP;
-
-        let header = TestHeaderBuilder::default()
-            .gas_limit(30_000_000)
-            .timestamp(MODERATO_T4_TIMESTAMP - 1)
-            .build();
-        let block = create_valid_block(header, vec![user_tx]);
-        let sealed = SealedBlock::seal_slow(block);
-
-        let result = consensus.validate_block_pre_execution(&sealed);
-        let err = result.unwrap_err();
-        assert!(
-            err.downcast_other_ref::<TempoConsensusError>()
-                .is_some_and(|e| matches!(
-                    e,
-                    TempoConsensusError::MissingEndOfBlockSystemTxs { .. }
-                )),
-            "Expected MissingEndOfBlockSystemTxs, got: {err:?}"
-        );
-    }
-
-    #[test]
     fn test_validate_block_pre_execution_t4_allows_missing_system_tx() {
         let consensus = TempoConsensus::new(DEV.clone());
         let chain_id = DEV.chain().id();
@@ -1226,34 +1187,5 @@ mod tests {
         };
 
         assert!(!Consensus::<Block>::is_transient_error(&consensus, &err));
-    }
-
-    #[test]
-    fn test_validate_block_pre_execution_system_tx_out_of_order() {
-        let consensus = TempoConsensus::new(MODERATO.clone());
-        let chain_id = MODERATO.chain().id();
-
-        let wrong_addr = Address::repeat_byte(0xFF);
-        let system_tx = create_system_tx(chain_id, wrong_addr);
-
-        use tempo_chainspec::constants::moderato::MODERATO_T4_TIMESTAMP;
-
-        let header = TestHeaderBuilder::default()
-            .gas_limit(30_000_000)
-            .timestamp(MODERATO_T4_TIMESTAMP - 1)
-            .build();
-        let block = create_valid_block(header, vec![system_tx]);
-        let sealed = SealedBlock::seal_slow(block);
-
-        let result = consensus.validate_block_pre_execution(&sealed);
-        let err = result.unwrap_err();
-        assert!(
-            err.downcast_other_ref::<TempoConsensusError>()
-                .is_some_and(|e| matches!(
-                    e,
-                    TempoConsensusError::InvalidEndOfBlockSystemTxOrder { .. }
-                )),
-            "Expected InvalidEndOfBlockSystemTxOrder, got: {err:?}"
-        );
     }
 }

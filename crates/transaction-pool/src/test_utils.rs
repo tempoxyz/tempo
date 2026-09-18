@@ -14,6 +14,18 @@ use reth_transaction_pool::{TransactionOrigin, ValidPoolTransaction};
 use std::time::Instant;
 use tempo_chainspec::{TempoChainSpec, hardfork::TempoHardfork, spec::DEV};
 use tempo_precompiles::storage::{StorageCtx, hashmap::HashMapStorageProvider};
+
+/// Test chains execute current rules from genesis; production chains still require a checkpoint.
+pub(crate) fn current_evm(chain: std::sync::Arc<TempoChainSpec>) -> tempo_evm::TempoEvmConfig {
+    use reth_chainspec::EthChainSpec;
+    let mut genesis = chain.genesis().clone();
+    genesis
+        .config
+        .extra_fields
+        .insert_value("t11Time".to_owned(), 0u64)
+        .unwrap();
+    tempo_evm::TempoEvmConfig::new(std::sync::Arc::new(TempoChainSpec::from_genesis(genesis)))
+}
 use tempo_primitives::{
     TempoPrimitives, TempoTxEnvelope,
     transaction::{

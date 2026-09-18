@@ -147,10 +147,6 @@ pub trait PrecompileStorageProvider {
         StorageActions::disabled()
     }
 
-    /// Mirrors `CfgEnv::enable_amsterdam_eip8037`. Used by precompiles to gate the TIP-1016
-    /// regular/state gas split independently of the active hardfork.
-    fn amsterdam_eip8037_enabled(&self) -> bool;
-
     /// Returns whether the current call context is static.
     fn is_static(&self) -> bool;
 

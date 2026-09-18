@@ -41,15 +41,14 @@ rayon = { workspace = true, optional = true }
 alloy-consensus.workspace = true
 alloy-evm = { workspace = true, features = ["std"] }
 alloy-primitives.workspace = true
-alloy-rlp.workspace = true
 alloy-sol-types.workspace = true
 alloy-rpc-types-eth = { workspace = true, optional = true }
 
 derive_more.workspace = true
 thiserror.workspace = true
-tracing.workspace = true
 
 [dev-dependencies]
+alloy-rlp.workspace = true
 alloy-eips.workspace = true
 alloy-genesis = { workspace = true, features = ["std"] }
 alloy-primitives = { workspace = true, features = ["asm-keccak", "keccak-cache-global"] }

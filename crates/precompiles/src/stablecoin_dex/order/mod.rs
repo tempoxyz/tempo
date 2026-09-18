@@ -153,14 +153,14 @@ impl Order {
         tick: i16,
         is_bid: bool,
         flip_tick: i16,
-        hardfork: TempoHardfork,
+        _hardfork: TempoHardfork,
     ) -> Result<Self, OrderError> {
         // TIP-1030 (T5+) relaxes the constraint to allow `flip_tick == tick`.
-        let t5_active = hardfork.is_t5();
+        let _t5_active = true;
         let invalid = if is_bid {
-            flip_tick < tick || (!t5_active && flip_tick == tick)
+            flip_tick < tick
         } else {
-            flip_tick > tick || (!t5_active && flip_tick == tick)
+            flip_tick > tick
         };
 
         if invalid {
@@ -427,38 +427,6 @@ mod tests {
             TempoHardfork::T4,
         );
 
-        assert!(matches!(result, Err(OrderError::InvalidAskFlipTick { .. })));
-    }
-
-    #[test]
-    fn test_new_flip_order_bid_same_tick_rejected() {
-        // Pre-T5: same-tick bid flip is rejected
-        let result = Order::new_flip(
-            1,
-            TEST_MAKER,
-            TEST_BOOK_KEY,
-            1000,
-            5,
-            true,
-            5,
-            TempoHardfork::T4,
-        );
-        assert!(matches!(result, Err(OrderError::InvalidBidFlipTick { .. })));
-    }
-
-    #[test]
-    fn test_new_flip_order_ask_same_tick_rejected() {
-        // Pre-T5: same-tick ask flip is rejected
-        let result = Order::new_flip(
-            1,
-            TEST_MAKER,
-            TEST_BOOK_KEY,
-            1000,
-            5,
-            false,
-            5,
-            TempoHardfork::T4,
-        );
         assert!(matches!(result, Err(OrderError::InvalidAskFlipTick { .. })));
     }
 

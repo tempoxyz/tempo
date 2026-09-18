@@ -21,29 +21,22 @@ impl Precompile for TIP403Registry {
                 ITIP403Registry::ITIP403RegistryCalls {
                     policyIdCounter(call) => view(call, |_| self.policy_id_counter()),
                     policyExists(call) => view(call, |c| self.policy_exists(c)),
-                    #[schedule(since = T9)]
                     tokenTransferPolicyId(call) => view(call, |c| self.token_transfer_policy_id(c)),
                     policyData(call) => view(call, |c| self.policy_data(c)),
                     isAuthorized(call) => view(call, |c| {
                         self.is_authorized_as(c.policyId, c.user, AuthRole::Transfer)
                     }),
-                    #[schedule(since = T2)]
                     isAuthorizedSender(call) => view(call, |c| {
                         self.is_authorized_as(c.policyId, c.user, AuthRole::Sender)
                     }),
-                    #[schedule(since = T2)]
                     isAuthorizedRecipient(call) => view(call, |c| {
                         self.is_authorized_as(c.policyId, c.user, AuthRole::Recipient)
                     }),
-                    #[schedule(since = T2)]
                     isAuthorizedMintRecipient(call) => view(call, |c| {
                         self.is_authorized_as(c.policyId, c.user, AuthRole::MintRecipient)
                     }),
-                    #[schedule(since = T2)]
                     compoundPolicyData(call) => view(call, |c| self.compound_policy_data(c)),
-                    #[schedule(since = T6)]
                     receivePolicy(call) => view(call, |c| self.receive_policy(c.account)),
-                    #[schedule(since = T6)]
                     validateReceivePolicy(call) => view(call, |c| {
                         let blocked_reason = self
                             .validate_receive_policy(c.token, c.sender, c.receiver)?
@@ -53,9 +46,7 @@ impl Precompile for TIP403Registry {
                             blockedReason: blocked_reason,
                         })
                     }),
-                    #[schedule(since = T6)]
                     setReceivePolicy(call) => mutate_void(call, msg_sender, |s, c| self.set_receive_policy(s, c)),
-                    #[schedule(since = T9)]
                     migrateTransferPolicyIds(call) => mutate(call, msg_sender, |_, c| {
                         self.migrate_transfer_policy_ids(c)
                     }),
@@ -66,7 +57,6 @@ impl Precompile for TIP403Registry {
                     setPolicyAdmin(call) => mutate_void(call, msg_sender, |s, c| self.set_policy_admin(s, c)),
                     modifyPolicyWhitelist(call) => mutate_void(call, msg_sender, |s, c| self.modify_policy_whitelist(s, c)),
                     modifyPolicyBlacklist(call) => mutate_void(call, msg_sender, |s, c| self.modify_policy_blacklist(s, c)),
-                    #[schedule(since = T2)]
                     createCompoundPolicy(call) => mutate(call, msg_sender, |s, c| self.create_compound_policy(s, c))
                 }
             }
@@ -78,18 +68,13 @@ impl Precompile for TIP403Registry {
 mod tests {
     use super::*;
     use crate::{
-        storage::{ContractStorage, StorageCtx, hashmap::HashMapStorageProvider},
-        test_util::{TIP20Setup, assert_full_coverage, check_selector_coverage},
-        tip403_registry::{ALLOW_ALL_POLICY_ID, ITIP403Registry},
+        storage::{StorageCtx, hashmap::HashMapStorageProvider},
+        test_util::{assert_full_coverage, check_selector_coverage},
+        tip403_registry::ITIP403Registry,
     };
-    use alloy::{
-        primitives::U256,
-        sol_types::{SolCall, SolError, SolValue},
-    };
+    use alloy::sol_types::{SolCall, SolValue};
     use tempo_chainspec::hardfork::TempoHardfork;
-    use tempo_contracts::precompiles::{
-        ITIP403Registry::ITIP403RegistryCalls, UnknownFunctionSelector,
-    };
+    use tempo_contracts::precompiles::ITIP403Registry::ITIP403RegistryCalls;
 
     #[test]
     fn test_is_authorized_precompile() -> eyre::Result<()> {
@@ -483,8 +468,8 @@ mod tests {
 
             let short_data = vec![0x12, 0x34];
             let result = registry.call(&short_data, sender);
-            let output = result.expect("expected Ok(halt) for short calldata");
-            assert!(output.is_halt());
+            let output = result.expect("expected revert for short calldata");
+            assert!(output.is_revert());
 
             Ok(())
         })
@@ -547,108 +532,6 @@ mod tests {
 
             assert_full_coverage([unsupported]);
 
-            Ok(())
-        })
-    }
-
-    #[test]
-    fn test_receive_policy_selectors_are_t6_gated() -> eyre::Result<()> {
-        let account = Address::random();
-        let receive_policy = ITIP403Registry::receivePolicyCall { account }.abi_encode();
-        let validate_receive_policy = ITIP403Registry::validateReceivePolicyCall {
-            token: Address::random(),
-            sender: Address::random(),
-            receiver: account,
-        }
-        .abi_encode();
-        let set_receive_policy = ITIP403Registry::setReceivePolicyCall {
-            senderPolicyId: 1,
-            tokenFilterId: 1,
-            recoveryAuthority: Address::ZERO,
-        }
-        .abi_encode();
-
-        for calldata in [
-            receive_policy.as_slice(),
-            validate_receive_policy.as_slice(),
-            set_receive_policy.as_slice(),
-        ] {
-            let mut storage = HashMapStorageProvider::new_with_spec(1, TempoHardfork::T5);
-            StorageCtx::enter(&mut storage, || -> eyre::Result<()> {
-                let mut registry = TIP403Registry::new();
-                let result = registry
-                    .call(calldata, account)
-                    .map_err(|err| eyre::eyre!("{err:?}"))?;
-                assert!(result.is_revert());
-                assert!(UnknownFunctionSelector::abi_decode(&result.bytes).is_ok());
-                Ok(())
-            })?;
-        }
-
-        let mut storage = HashMapStorageProvider::new_with_spec(1, TempoHardfork::T6);
-        StorageCtx::enter(&mut storage, || -> eyre::Result<()> {
-            let mut registry = TIP403Registry::new();
-            for calldata in [
-                receive_policy.as_slice(),
-                validate_receive_policy.as_slice(),
-                set_receive_policy.as_slice(),
-            ] {
-                let result = registry
-                    .call(calldata, account)
-                    .map_err(|err| eyre::eyre!("{err:?}"))?;
-                assert!(!result.is_revert());
-            }
-            Ok(())
-        })
-    }
-
-    #[test]
-    fn test_token_transfer_policy_selectors_are_t9_gated() -> eyre::Result<()> {
-        let token = Address::random();
-        let calls = [
-            ITIP403Registry::tokenTransferPolicyIdCall { token }.abi_encode(),
-            ITIP403Registry::migrateTransferPolicyIdsCall {
-                tokens: vec![token],
-            }
-            .abi_encode(),
-        ];
-
-        let mut storage = HashMapStorageProvider::new_with_spec(1, TempoHardfork::T8);
-        StorageCtx::enter(&mut storage, || -> eyre::Result<()> {
-            let mut registry = TIP403Registry::new();
-            for calldata in &calls {
-                let result = registry.call(calldata, Address::ZERO)?;
-                assert!(result.is_revert());
-                assert!(UnknownFunctionSelector::abi_decode(&result.bytes).is_ok());
-            }
-            Ok(())
-        })?;
-
-        let mut storage = HashMapStorageProvider::new_with_spec(1, TempoHardfork::T9);
-        StorageCtx::enter(&mut storage, || -> eyre::Result<()> {
-            let mut registry = TIP403Registry::new();
-            // The lookup selector is active, but an undeployed token is rejected.
-            let result = registry.call(&calls[0], Address::ZERO)?;
-            assert!(result.is_revert());
-            assert!(UnknownFunctionSelector::abi_decode(&result.bytes).is_err());
-
-            // A registered token returns the binding state and policy ID together.
-            let token = TIP20Setup::create("Token", "TKN", Address::random()).apply()?;
-            let lookup = ITIP403Registry::tokenTransferPolicyIdCall {
-                token: token.address(),
-            }
-            .abi_encode();
-            let result = registry.call(&lookup, Address::ZERO)?;
-            assert!(result.status.is_success());
-            let lookup =
-                ITIP403Registry::tokenTransferPolicyIdCall::abi_decode_returns(&result.bytes)?;
-            assert!(lookup.isSet);
-            assert_eq!(lookup.policyId, ALLOW_ALL_POLICY_ID);
-
-            // Batch migration recognizes the selector and skips the invalid token.
-            let result = registry.call(&calls[1], Address::random())?;
-            assert!(result.status.is_success());
-            assert_eq!(U256::abi_decode(&result.bytes)?, U256::ZERO);
             Ok(())
         })
     }
