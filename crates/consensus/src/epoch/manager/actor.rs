@@ -39,6 +39,7 @@
 use std::{collections::BTreeMap, num::NonZeroUsize};
 
 use commonware_consensus::{
+    marshal::standard::Inline,
     simplex::{self, config::Floor, elector, scheme::bls12381_threshold::vrf::Scheme},
     types::{Epoch, EpochDelta, Epocher as _},
 };
@@ -324,6 +325,12 @@ where
         };
 
         let engine_ctx = self.context.child("simplex").with_attribute("epoch", epoch);
+        let application = Inline::new(
+            engine_ctx.child("application"),
+            self.config.application.clone(),
+            self.config.marshal.clone(),
+            self.config.epoch_strategy.clone(),
+        );
         let engine = simplex::Engine::new(
             engine_ctx,
             simplex::Config {
@@ -349,8 +356,8 @@ where
                 write_buffer: WRITE_BUFFER,
 
                 blocker: self.config.blocker.clone(),
-                automaton: self.config.application.clone(),
-                relay: self.config.application.clone(),
+                automaton: application.clone(),
+                relay: application,
                 page_cache: self.config.page_cache.clone(),
                 leader_timeout: self.config.time_to_propose,
                 certification_timeout: self.config.time_to_collect_notarizations,

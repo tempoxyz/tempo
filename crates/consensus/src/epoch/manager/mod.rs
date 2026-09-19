@@ -18,7 +18,7 @@ use tempo_node::TempoFullNode;
 use crate::epoch::scheme_provider::SchemeProvider;
 
 pub(crate) struct Config<TBlocker> {
-    pub(crate) application: crate::consensus::application::Mailbox,
+    pub(crate) application: crate::consensus::application::Application,
     pub(crate) execution_node: Arc<TempoFullNode>,
     pub(crate) blocker: TBlocker,
     pub(crate) page_cache: CacheRef,
