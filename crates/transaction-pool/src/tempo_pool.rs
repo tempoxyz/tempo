@@ -45,6 +45,16 @@ use tempo_precompiles::{
 use tempo_primitives::{Block, TempoHeader};
 use tempo_revm::TempoStateAccess;
 
+/// Transaction pool operations for Tempo nonce lanes.
+pub trait TempoTransactionPoolExt: TransactionPool {
+    /// Returns pending transactions in the address's sequential 2D nonce lane.
+    fn get_pending_transactions_by_address_and_nonce_key(
+        &self,
+        address: Address,
+        nonce_key: U256,
+    ) -> Vec<Arc<ValidPoolTransaction<Self::Transaction>>>;
+}
+
 /// Tempo transaction pool that routes based on nonce_key
 pub struct TempoTransactionPool<Client, EvmConfig = TempoEvmConfig> {
     /// Vanilla pool for all standard transactions and AA transactions with regular nonce.
@@ -1269,6 +1279,25 @@ where
     }
 }
 
+impl<Client, EvmConfig> TempoTransactionPoolExt for TempoTransactionPool<Client, EvmConfig>
+where
+    EvmConfig: ConfigureTempoPoolEvm,
+    Client: StateProviderFactory
+        + ChainSpecProvider<ChainSpec: EthChainSpec<Header = TempoHeader> + TempoHardforks>
+        + 'static,
+{
+    fn get_pending_transactions_by_address_and_nonce_key(
+        &self,
+        address: Address,
+        nonce_key: U256,
+    ) -> Vec<Arc<ValidPoolTransaction<Self::Transaction>>> {
+        self.aa_2d_pool
+            .read()
+            .get_pending_transactions_by_address_and_nonce_key(address, nonce_key)
+            .collect()
+    }
+}
+
 impl<Client, EvmConfig> TransactionPoolExt for TempoTransactionPool<Client, EvmConfig>
 where
     EvmConfig: ConfigureTempoPoolEvm,
@@ -1643,6 +1672,51 @@ mod tests {
             },
         );
         provider
+    }
+
+    #[test]
+    fn pending_transactions_by_address_and_nonce_key() {
+        use crate::test_utils::{TxBuilder, wrap_valid_tx};
+
+        let pool = create_test_pool(create_provider_with_tip());
+        let sender = Address::random();
+        let nonce_key = U256::from(7);
+        let txs = [
+            TxBuilder::aa(sender).nonce_key(nonce_key).build(),
+            TxBuilder::aa(sender).nonce_key(nonce_key).nonce(1).build(),
+            TxBuilder::aa(sender).nonce_key(nonce_key).nonce(3).build(),
+            TxBuilder::aa(sender).nonce_key(U256::from(8)).build(),
+            TxBuilder::aa(Address::random())
+                .nonce_key(nonce_key)
+                .build(),
+            TxBuilder::aa(sender).nonce_key(U256::MAX).build(),
+        ];
+        let expected: Vec<_> = txs[..2].iter().map(|tx| *tx.hash()).collect();
+        for tx in txs {
+            pool.aa_2d_pool
+                .write()
+                .add_transaction(
+                    Arc::new(wrap_valid_tx(tx, TransactionOrigin::Local)),
+                    0,
+                    TempoHardfork::T1,
+                )
+                .unwrap();
+        }
+
+        assert_eq!(
+            tx_hashes(&pool.get_pending_transactions_by_address_and_nonce_key(sender, nonce_key)),
+            expected
+        );
+        for (address, key) in [
+            (Address::ZERO, nonce_key),
+            (sender, U256::from(9)),
+            (sender, U256::MAX),
+        ] {
+            assert!(
+                pool.get_pending_transactions_by_address_and_nonce_key(address, key)
+                    .is_empty()
+            );
+        }
     }
 
     #[test]
