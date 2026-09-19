@@ -8,7 +8,7 @@ pub mod simulate;
 pub mod token;
 
 pub use admin::{TempoAdminApi, TempoAdminApiServer};
-use alloy_primitives::B256;
+use alloy_primitives::{B256, Bytes};
 use alloy_rpc_types_eth::{Log, ReceiptWithBloom};
 pub use consensus::{TempoConsensusApiServer, TempoConsensusRpc};
 pub use eth_ext::{TempoEthExt, TempoEthExtApiServer};
@@ -456,6 +456,13 @@ where
 
     fn send_raw_transaction_sync_timeout(&self) -> std::time::Duration {
         self.inner.send_raw_transaction_sync_timeout()
+    }
+
+    fn send_raw_transaction(
+        &self,
+        bytes: Bytes,
+    ) -> impl Future<Output = Result<B256, Self::Error>> + Send {
+        self.inner.send_raw_transaction(bytes).map_err(Into::into)
     }
 
     fn send_pool_transaction(

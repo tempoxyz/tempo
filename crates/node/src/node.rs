@@ -205,6 +205,7 @@ where
         self,
         ctx: &BuilderContext<Node>,
         pool: Pool,
+        batcher: reth_transaction_pool::BatchTxHandle<Pool::Transaction>,
     ) -> eyre::Result<Self::Network> {
         let mut network = ctx.network_builder().await?;
         if let Some(gossip) = self.gossip {
@@ -212,7 +213,7 @@ where
             network.network_mut().add_rlpx_sub_protocol(gossip);
         }
 
-        let handle = ctx.start_network(network, pool);
+        let handle = ctx.start_network(network, pool, batcher);
         reth_tracing::tracing::info!(
             target: "reth::cli",
             enode = %handle.local_node_record(),
