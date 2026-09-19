@@ -42,7 +42,7 @@ use reth_transaction_pool::{
     blobstore::InMemoryBlobStore, error::InvalidPoolTransactionError,
 };
 use std::sync::Arc;
-use tempo_chainspec::{TempoConsensusSpec, spec::TempoChainSpec};
+use tempo_chainspec::{TempoConsensusSpec, hardfork::TempoHardfork, spec::TempoChainSpec};
 use tempo_evm::{TempoEvmConfig, consensus::TempoConsensus};
 use tempo_payload_builder::{
     DEFAULT_BUILD_TIME_MULTIPLIER, TempoPayloadBuilder, TempoPayloadBuilderConfig,
@@ -122,6 +122,11 @@ pub struct TempoNodeArgs {
         default_value_t = DEFAULT_BUILD_TIME_MULTIPLIER
     )]
     pub builder_build_time_multiplier: f64,
+
+    /// Candidate hardfork to evaluate against received canonical blocks without persisting state
+    /// changes.
+    #[arg(long = "shadow-replay.hardfork", value_name = "HARDFORK")]
+    pub shadow_replay_hardfork: Option<TempoHardfork>,
 }
 
 impl Default for TempoNodeArgs {
@@ -137,6 +142,7 @@ impl Default for TempoNodeArgs {
             builder_parallel: false,
             engine_disable_execution_cache_sharing_with_builder: false,
             builder_build_time_multiplier: DEFAULT_BUILD_TIME_MULTIPLIER,
+            shadow_replay_hardfork: None,
         }
     }
 }

@@ -32,6 +32,7 @@ pub mod init_state;
 mod overrides;
 pub mod p2p_proxy;
 pub mod regenesis;
+pub mod shadow_replay;
 mod snapshot_download;
 mod snapshot_manifest;
 pub mod tempo_cmd;
@@ -76,7 +77,7 @@ pub use tempo_node::{
     TempoPooledTransaction, TransactionOrigin,
 };
 use tempo_node::{
-    TempoFullNode,
+    ShadowReplayer, TempoFullNode,
     rpc::consensus::{TempoConsensusApiServer, TempoConsensusRpc},
     telemetry::{
         HardwareMetricsConfig, PrometheusMetricsConfig, install_hardware_metrics,
@@ -585,6 +586,10 @@ pub fn tempo_main_with(mut overrides: TempoOverrides) -> eyre::Result<()> {
             .await
             .wrap_err("failed launching execution node")?;
 
+        if let Some(hardfork) = args.node_args.shadow_replay_hardfork {
+            ShadowReplayer::new(node.provider.clone(), hardfork).spawn(node.tasks().clone());
+        }
+
         // Fetch bootnodes from the endpoint in a background task and inject
         // them into the already-running discovery services.
         if let Some(endpoint) = bootnodes_endpoint {
@@ -698,6 +703,38 @@ mod tests {
     fn init_defaults_once() {
         static INIT: Once = Once::new();
         INIT.call_once(defaults::init_defaults);
+    }
+
+    #[test]
+    fn shadow_replay_is_opt_in_and_parses_candidate_hardfork() {
+        let args = parse_node_args(&["tempo", "node", "--dev"]);
+        assert!(args.node_args.shadow_replay_hardfork.is_none());
+
+        let args = parse_node_args(&["tempo", "node", "--dev", "--shadow-replay.hardfork", "T13"]);
+        assert_eq!(
+            args.node_args.shadow_replay_hardfork,
+            Some(tempo_chainspec::hardfork::TempoHardfork::T13)
+        );
+    }
+
+    #[test]
+    fn historical_shadow_replay_subcommand_parses() {
+        let cli = TempoCli::try_parse_from([
+            "tempo",
+            "shadow-replay",
+            "--from",
+            "100",
+            "--to",
+            "200",
+            "--hardfork",
+            "T13",
+            "--fail-on-findings",
+        ])
+        .unwrap();
+        assert!(matches!(
+            cli.command,
+            Commands::Ext(crate::tempo_cmd::TempoSubcommand::ShadowReplay(_))
+        ));
     }
 
     #[test]
