@@ -1,9 +1,9 @@
-use alloy_consensus::ReceiptWithBloom;
+use alloy_consensus::{EthereumReceipt, ReceiptWithBloom};
 use alloy_network::ReceiptResponse;
 use alloy_primitives::{Address, B256, BlockHash, TxHash};
 use alloy_rpc_types_eth::{Log, TransactionReceipt};
 use serde::{Deserialize, Serialize};
-use tempo_primitives::TempoReceipt;
+use tempo_primitives::TempoTxType;
 
 /// Tempo RPC receipt type.
 #[derive(Debug, Clone, Serialize, Deserialize, derive_more::Deref, derive_more::DerefMut)]
@@ -13,7 +13,7 @@ pub struct TempoTransactionReceipt {
     #[serde(flatten)]
     #[deref]
     #[deref_mut]
-    pub inner: TransactionReceipt<ReceiptWithBloom<TempoReceipt<Log>>>,
+    pub inner: TransactionReceipt<ReceiptWithBloom<EthereumReceipt<TempoTxType, Log>>>,
 
     /// Token that was used to pay fees for the transaction.
     ///
