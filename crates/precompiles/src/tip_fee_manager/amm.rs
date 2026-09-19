@@ -722,13 +722,15 @@ mod tests {
 
     use super::*;
     use crate::{
-        TIP_FEE_MANAGER_ADDRESS,
+        RECEIVE_POLICY_GUARD_ADDRESS, TIP_FEE_MANAGER_ADDRESS,
         error::TempoPrecompileError,
         storage::{ContractStorage, StorageCtx, hashmap::HashMapStorageProvider},
         test_util::TIP20Setup,
         tip_fee_manager::TIPFeeAMMError,
         tip20::TIP20Error,
-        tip403_registry::{ITIP403Registry, TIP403Registry},
+        tip403_registry::{
+            ALLOW_ALL_POLICY_ID, ITIP403Registry, REJECT_ALL_POLICY_ID, TIP403Registry,
+        },
     };
 
     /// Integer square root using the Babylonian method
@@ -1705,6 +1707,94 @@ mod tests {
                 U256::from(pool_after.reserve_validator_token),
                 U256::from(pool_before.reserve_validator_token) - amount_validator
             );
+
+            Ok(())
+        })
+    }
+
+    /// A burn paid out to a receiver whose policy blocks the fee AMM under originator recovery
+    /// would be guarded with the AMM as originator, which can never claim. From T13 the burn
+    /// reverts and the pool, LP balance and reserves are untouched.
+    #[test]
+    fn test_burn_blocked_by_receive_policy_with_originator_recovery_reverts_at_t13()
+    -> eyre::Result<()> {
+        let mut storage = HashMapStorageProvider::new_with_spec(1, TempoHardfork::T13);
+        let admin = Address::random();
+        let recipient = Address::random();
+
+        StorageCtx::enter(&mut storage, || {
+            let mint_amount = uint!(100000000_U256);
+            let user_token = TIP20Setup::create("UserToken", "UTK", admin)
+                .with_issuer(admin)
+                .with_mint(admin, mint_amount)
+                .apply()?;
+            let validator_token = TIP20Setup::create("ValidatorToken", "VTK", admin)
+                .with_issuer(admin)
+                .with_mint(admin, mint_amount)
+                .apply()?;
+
+            let mut amm = TipFeeManager::new();
+            let liquidity = amm.mint(
+                admin,
+                user_token.address(),
+                validator_token.address(),
+                uint!(100000_U256),
+                admin,
+            )?;
+            let pool_id = amm.pool_id(user_token.address(), validator_token.address());
+            let pool_before = amm.pools[pool_id].read()?;
+            let total_supply_before = amm.get_total_supply(pool_id)?;
+            let amm_user_before = user_token.balance_of(ITIP20::balanceOfCall {
+                account: amm.address,
+            })?;
+
+            TIP403Registry::new().set_receive_policy(
+                recipient,
+                ITIP403Registry::setReceivePolicyCall {
+                    senderPolicyId: REJECT_ALL_POLICY_ID,
+                    tokenFilterId: ALLOW_ALL_POLICY_ID,
+                    recoveryAuthority: Address::ZERO,
+                },
+            )?;
+
+            // A failed precompile call reverts its frame; the checkpoint models that here.
+            let result = {
+                let _frame = StorageCtx.checkpoint();
+                amm.burn(
+                    admin,
+                    user_token.address(),
+                    validator_token.address(),
+                    liquidity,
+                    recipient,
+                )
+            };
+            assert_eq!(result, Err(TIP20Error::policy_forbids().into()));
+
+            let pool_after = amm.pools[pool_id].read()?;
+            assert_eq!(
+                pool_after.reserve_user_token,
+                pool_before.reserve_user_token
+            );
+            assert_eq!(
+                pool_after.reserve_validator_token,
+                pool_before.reserve_validator_token
+            );
+            assert_eq!(amm.get_total_supply(pool_id)?, total_supply_before);
+            assert_eq!(amm.get_liquidity_balances(pool_id, admin)?, liquidity);
+            assert_eq!(
+                user_token.balance_of(ITIP20::balanceOfCall {
+                    account: amm.address
+                })?,
+                amm_user_before
+            );
+            for token in [&user_token, &validator_token] {
+                assert_eq!(
+                    token.balance_of(ITIP20::balanceOfCall {
+                        account: RECEIVE_POLICY_GUARD_ADDRESS
+                    })?,
+                    U256::ZERO
+                );
+            }
 
             Ok(())
         })
