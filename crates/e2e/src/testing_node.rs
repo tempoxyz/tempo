@@ -35,7 +35,8 @@ use std::{
 use tempo_consensus::{
     BROADCASTER_CHANNEL_IDENT, BROADCASTER_LIMIT, CERTIFICATES_CHANNEL_IDENT, CERTIFICATES_LIMIT,
     DKG_CHANNEL_IDENT, DKG_LIMIT, MARSHAL_CHANNEL_IDENT, MARSHAL_LIMIT, RESOLVER_CHANNEL_IDENT,
-    RESOLVER_LIMIT, VOTES_CHANNEL_IDENT, VOTES_LIMIT, consensus, feed::FeedStateHandle,
+    RESOLVER_LIMIT, VOTES_CHANNEL_IDENT, VOTES_LIMIT, VerificationMode, consensus,
+    feed::FeedStateHandle,
 };
 use tempo_evm::TempoEvmConfig;
 use tempo_node::node::TempoNode;
@@ -91,6 +92,8 @@ where
     pub feed_state: FeedStateHandle,
     /// Local proposal work budget used whenever the consensus engine starts.
     pub proposal_return_budget: Duration,
+    /// Verification mode used whenever the consensus engine starts.
+    pub verification_mode: VerificationMode,
     n_starts: u32,
 }
 
@@ -131,6 +134,7 @@ where
             network_identity,
             feed_state,
             proposal_return_budget,
+            verification_mode: VerificationMode::default(),
             consensus_handle: None,
             execution_node: None,
             execution_node_datadir,
@@ -183,6 +187,7 @@ where
         self.network_identity = identity_source.network_identity;
         self.feed_state = identity_source.feed_state;
         self.proposal_return_budget = identity_source.proposal_return_budget;
+        self.verification_mode = identity_source.verification_mode;
         self.network_address = identity_source.network_address;
         self.chain_address = identity_source.chain_address;
     }
@@ -323,6 +328,7 @@ where
             mailbox_size: commonware_utils::NZUsize!(1024),
             deque_size: 10,
             max_message_size: crate::MAX_MESSAGE_SIZE,
+            verification_mode: self.verification_mode,
             time_to_propose: Duration::from_secs(2),
             time_to_collect_notarizations: Duration::from_secs(3),
             time_to_retry_nullify_broadcast: Duration::from_secs(10),
