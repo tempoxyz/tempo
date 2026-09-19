@@ -103,7 +103,7 @@ fn run_payload_builder_test(
 
     let nullification_count =
         Runner::from(Config::default().with_seed(0)).start(|mut context| async move {
-            let setup = Setup::new()
+            let setup = Setup::new(crate::VERIFICATION_MODE)
                 .how_many_signers(share_sparse_trie_with_payload_builder.len() as u32)
                 .epoch_length(100);
             let (mut nodes, _execution_runtime) = setup_validators(&mut context, setup).await;

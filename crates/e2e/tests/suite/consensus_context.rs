@@ -7,23 +7,19 @@ use commonware_runtime::{
 };
 use futures::future::join_all;
 use reth_ethereum::provider::BlockReader as _;
-use tempo_consensus::VerificationMode;
 
 use crate::{Setup, metrics::wait_for_height, setup_validators};
 
 #[test_traced]
-fn deferred_verification_across_epochs() {
+fn verification_across_epochs() {
     let _ = tempo_eyre::install();
-    let setup = Setup::new().epoch_length(10);
+    let setup = Setup::new(crate::VERIFICATION_MODE).epoch_length(10);
     let cfg = deterministic::Config::default()
         .with_seed(setup.seed)
         .with_timeout(Some(Duration::from_secs(60)));
 
     Runner::from(cfg).start(|mut context| async move {
         let (mut nodes, _execution_runtime) = setup_validators(&mut context, setup).await;
-        for node in &mut nodes {
-            node.verification_mode = VerificationMode::Deferred;
-        }
         join_all(nodes.iter_mut().map(|node| node.start(&context))).await;
 
         join_all(nodes.iter().map(|node| wait_for_height(&context, node, 15))).await;
@@ -42,7 +38,10 @@ fn deferred_verification_across_epochs() {
 fn blocks_have_consensus_context() {
     let _ = tempo_eyre::install();
 
-    let setup = Setup::new().how_many_signers(4).epoch_length(100).seed(0);
+    let setup = Setup::new(crate::VERIFICATION_MODE)
+        .how_many_signers(4)
+        .epoch_length(100)
+        .seed(0);
 
     let cfg = deterministic::Config::default().with_seed(setup.seed);
     let executor = Runner::from(cfg);

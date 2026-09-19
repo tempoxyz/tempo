@@ -91,7 +91,7 @@ impl AssertStaticTransitions {
         } = self;
         let _ = tempo_eyre::install();
 
-        let setup = Setup::new()
+        let setup = Setup::new(crate::VERIFICATION_MODE)
             .how_many_signers(how_many)
             .epoch_length(epoch_length);
 

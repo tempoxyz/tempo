@@ -68,7 +68,7 @@ impl SimpleRestart {
         } = self;
         let _ = tempo_eyre::install();
 
-        let setup = Setup::new()
+        let setup = Setup::new(crate::VERIFICATION_MODE)
             .how_many_signers(committee_size)
             .seed(0)
             .epoch_length(epoch_length);
@@ -248,7 +248,7 @@ impl RestartSetup {
         } = self;
         let _ = tempo_eyre::install();
 
-        let setup = Setup::new().epoch_length(epoch_length);
+        let setup = Setup::new(crate::VERIFICATION_MODE).epoch_length(epoch_length);
 
         let cfg = deterministic::Config::default().with_seed(setup.seed);
         let executor = Runner::from(cfg);
@@ -387,7 +387,7 @@ impl AssertNodeRecoversAfterFinalizingBlock {
             shutdown_after_finalizing,
         } = self;
 
-        let setup = Setup::new()
+        let setup = Setup::new(crate::VERIFICATION_MODE)
             .how_many_signers(n_validators)
             .epoch_length(epoch_length);
 
@@ -468,7 +468,9 @@ impl AssertNodeRecoversAfterFinalizingBlock {
 fn backfill_on_start_after_crash() {
     let _ = tempo_eyre::install();
 
-    let setup = Setup::new().how_many_signers(1).epoch_length(100);
+    let setup = Setup::new(crate::VERIFICATION_MODE)
+        .how_many_signers(1)
+        .epoch_length(100);
 
     let cfg = deterministic::Config::default().with_seed(setup.seed);
     Runner::from(cfg).start(|mut context| async move {
@@ -523,7 +525,9 @@ fn backfill_on_start_large_gap_does_not_trigger_pipeline_sync() {
     let _ = tempo_eyre::install();
     let metrics_recorder = install_prometheus_recorder();
 
-    let setup = Setup::new().how_many_signers(4).epoch_length(100);
+    let setup = Setup::new(crate::VERIFICATION_MODE)
+        .how_many_signers(4)
+        .epoch_length(100);
 
     let cfg = deterministic::Config::default().with_seed(setup.seed);
     Runner::from(cfg).start(|mut context| async move {

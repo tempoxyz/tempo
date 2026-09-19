@@ -50,7 +50,7 @@ impl AssertJoinsLate {
         let _ = tempo_eyre::install();
         let metrics_recorder = install_prometheus_recorder();
 
-        let setup = Setup::new().epoch_length(100);
+        let setup = Setup::new(crate::VERIFICATION_MODE).epoch_length(100);
 
         Runner::from(Config::default().with_seed(setup.seed)).start(|mut context| async move {
             let (mut nodes, _execution_runtime) =

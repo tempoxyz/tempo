@@ -19,7 +19,7 @@ fn current_committee_matches_boundary_dkg_outcome() {
 
     let how_many_signers = 1;
     let epoch_length = 10;
-    let setup = Setup::new()
+    let setup = Setup::new(crate::VERIFICATION_MODE)
         .how_many_signers(how_many_signers)
         .epoch_length(epoch_length);
 

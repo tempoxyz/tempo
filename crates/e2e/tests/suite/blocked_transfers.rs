@@ -156,7 +156,7 @@ where
     let _ = tempo_eyre::install();
 
     Runner::from(Config::default().with_seed(seed)).start(|mut context| async move {
-        let setup = Setup::new()
+        let setup = Setup::new(crate::VERIFICATION_MODE)
             .how_many_signers(1)
             .epoch_length(100)
             .seed(seed);
