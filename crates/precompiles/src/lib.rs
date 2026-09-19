@@ -20,6 +20,7 @@ pub mod receive_policy_guard;
 pub mod signature_verifier;
 pub mod stablecoin_dex;
 pub mod storage_credits;
+mod tip1102;
 pub mod tip20;
 pub mod tip20_channel_reserve;
 pub mod tip20_factory;
@@ -202,6 +203,9 @@ pub fn tempo_precompiles(
         SpecId::PRAGUE
     };
     let mut precompiles = PrecompilesMap::from_static(EthPrecompiles::new(spec).precompiles);
+    if cfg.spec.is_t13() {
+        tip1102::apply(&mut precompiles);
+    }
     extend_tempo_precompiles(&mut precompiles, cfg, actions, non_creditable_slots);
     precompiles
 }
@@ -1357,5 +1361,18 @@ mod tests {
                 "P256VERIFY should be available at {spec:?} (T1C+)"
             );
         }
+    }
+
+    #[test]
+    fn test_point_evaluation_removed_at_t13() {
+        let address = revm::precompile::kzg_point_evaluation::ADDRESS;
+
+        let mut t12 = CfgEnv::<TempoHardfork>::default();
+        t12.set_spec_and_mainnet_gas_params(TempoHardfork::T12);
+        assert!(test_tempo_precompiles(&t12).get(&address).is_some());
+
+        let mut t13 = CfgEnv::<TempoHardfork>::default();
+        t13.set_spec_and_mainnet_gas_params(TempoHardfork::T13);
+        assert!(test_tempo_precompiles(&t13).get(&address).is_none());
     }
 }

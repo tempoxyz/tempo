@@ -60,6 +60,13 @@ pub fn tempo_gas_params_with_amsterdam(
         return TABLE.get_or_init(amsterdam_gas_params).clone();
     }
 
+    // TIP-1102 (T13+): reprice the dynamic KECCAK256 per-word component.
+    // The opcode's static base cost is configured in `tempo_instructions`.
+    if spec.is_t13() {
+        static TABLE: OnceLock<GasParams> = OnceLock::new();
+        return TABLE.get_or_init(t13_gas_params).clone();
+    }
+
     // TIP-1060 (T7+): the SSTORE creation cost drops to the 5k residual; the
     // 245k creditable portion is handled by the storage-credit hook.
     if spec.is_t7() {
@@ -73,6 +80,13 @@ pub fn tempo_gas_params_with_amsterdam(
     }
 
     GasParams::new_spec(spec.into())
+}
+
+/// Builds the T13 gas table with TIP-1102's KECCAK256 per-word repricing.
+fn t13_gas_params() -> GasParams {
+    let mut gas_params = t7_gas_params();
+    gas_params.override_gas([(GasId::keccak256_per_word(), 41)]);
+    gas_params
 }
 
 /// Builds the T7 gas table: TIP-1000 creation costs, but the SSTORE creation
@@ -191,6 +205,16 @@ mod tests {
             std::ptr::eq(amsterdam_t4.table(), amsterdam_t5.table()),
             "Amsterdam gas params should share the cached table"
         );
+    }
+
+    #[test]
+    fn test_t13_reprices_keccak256_per_word() {
+        let t12 = tempo_gas_params(TempoHardfork::T12);
+        let t13 = tempo_gas_params(TempoHardfork::T13);
+
+        assert_eq!(t12.get(GasId::keccak256_per_word()), 6);
+        assert_eq!(t13.get(GasId::keccak256_per_word()), 41);
+        assert!(!std::ptr::eq(t12.table(), t13.table()));
     }
 
     /// TIP-1060 (T7): SSTORE creation charges only the 5k residual through the
