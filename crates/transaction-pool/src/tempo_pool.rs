@@ -8,6 +8,7 @@ use crate::{
     ordering::TempoTipOrdering,
     transaction::TempoPooledTransaction,
     tt_2d_pool::AA2dPool,
+    validation_task::TempoValidationTaskExecutor,
     validator::{ConfigureTempoPoolEvm, TempoTransactionValidator},
 };
 use alloy_consensus::Transaction;
@@ -24,8 +25,8 @@ use reth_transaction_pool::{
     AddedTransactionOutcome, AllPoolTransactions, BestTransactions, BestTransactionsAttributes,
     BlockInfo, CanonicalStateUpdate, GetPooledTransactionLimit, NewBlobSidecar, Pool, PoolResult,
     PoolSize, PoolTransaction, PropagatedTransactions, TransactionEvents, TransactionOrigin,
-    TransactionPool, TransactionPoolExt, TransactionValidationOutcome,
-    TransactionValidationTaskExecutor, TransactionValidator, ValidPoolTransaction,
+    TransactionPool, TransactionPoolExt, TransactionValidationOutcome, TransactionValidator,
+    ValidPoolTransaction,
     blobstore::InMemoryBlobStore,
     error::{PoolError, PoolErrorKind},
     identifier::TransactionId,
@@ -49,7 +50,7 @@ use tempo_revm::TempoStateAccess;
 pub struct TempoTransactionPool<Client, EvmConfig = TempoEvmConfig> {
     /// Vanilla pool for all standard transactions and AA transactions with regular nonce.
     protocol_pool: Pool<
-        TransactionValidationTaskExecutor<TempoTransactionValidator<Client, EvmConfig>>,
+        TempoValidationTaskExecutor<TempoTransactionValidator<Client, EvmConfig>>,
         TempoTipOrdering<TempoPooledTransaction>,
         InMemoryBlobStore,
     >,
@@ -66,7 +67,7 @@ where
 {
     pub fn new(
         protocol_pool: Pool<
-            TransactionValidationTaskExecutor<TempoTransactionValidator<Client, EvmConfig>>,
+            TempoValidationTaskExecutor<TempoTransactionValidator<Client, EvmConfig>>,
             TempoTipOrdering<TempoPooledTransaction>,
             InMemoryBlobStore,
         >,
@@ -1439,7 +1440,7 @@ mod tests {
     use reth_provider::test_utils::{ExtendedAccount, MockEthProvider};
     use reth_storage_api::StateProviderFactory;
     use reth_transaction_pool::{
-        PoolConfig, TransactionOrigin, TransactionPool, TransactionValidationTaskExecutor,
+        PoolConfig, TransactionOrigin, TransactionPool,
         blobstore::InMemoryBlobStore,
         validate::{EthTransactionValidatorBuilder, ValidTransaction},
     };
@@ -1600,7 +1601,7 @@ mod tests {
             amm_cache,
         );
 
-        let (executor, _task) = TransactionValidationTaskExecutor::new(validator);
+        let (executor, _task) = TempoValidationTaskExecutor::new(validator);
         let protocol_pool = Pool::new(
             executor,
             TempoTipOrdering::default(),
@@ -1884,7 +1885,7 @@ mod tests {
             amm_cache,
         );
 
-        let (executor, _task) = TransactionValidationTaskExecutor::new(validator);
+        let (executor, _task) = TempoValidationTaskExecutor::new(validator);
         let protocol_pool = Pool::new(
             executor,
             TempoTipOrdering::default(),
@@ -2043,7 +2044,7 @@ mod tests {
             amm_cache,
         );
 
-        let (executor, _task) = TransactionValidationTaskExecutor::new(validator);
+        let (executor, _task) = TempoValidationTaskExecutor::new(validator);
         let protocol_pool = Pool::new(
             executor,
             TempoTipOrdering::default(),
@@ -2124,7 +2125,7 @@ mod tests {
             amm_cache,
         );
 
-        let (executor, _task) = TransactionValidationTaskExecutor::new(validator);
+        let (executor, _task) = TempoValidationTaskExecutor::new(validator);
         let protocol_pool = Pool::new(
             executor,
             TempoTipOrdering::default(),
@@ -2215,7 +2216,7 @@ mod tests {
             amm_cache,
         );
 
-        let (executor, _task) = TransactionValidationTaskExecutor::new(validator);
+        let (executor, _task) = TempoValidationTaskExecutor::new(validator);
         let protocol_pool = Pool::new(
             executor,
             TempoTipOrdering::default(),
@@ -2302,7 +2303,7 @@ mod tests {
             amm_cache,
         );
 
-        let (executor, _task) = TransactionValidationTaskExecutor::new(validator);
+        let (executor, _task) = TempoValidationTaskExecutor::new(validator);
         let protocol_pool = Pool::new(
             executor,
             TempoTipOrdering::default(),

@@ -102,3 +102,31 @@ pub struct TempoPoolMaintenanceMetrics {
     /// Number of transactions re-validated due to quote token updates.
     pub quote_token_revalidated: Counter,
 }
+
+/// Metrics for the transaction validation service.
+///
+/// Shares the `transaction_pool` scope with reth's pool metrics so `inflight_validation_jobs`
+/// keeps the name reth's validation task executor reports it under.
+#[derive(Metrics, Clone)]
+#[metrics(scope = "transaction_pool")]
+pub struct TempoValidationTaskMetrics {
+    /// Number of validation job submissions waiting for queue capacity.
+    pub inflight_validation_jobs: Gauge,
+
+    /// Number of jobs still queued when a validation worker picked up work.
+    pub validation_queued_jobs: Histogram,
+
+    /// Number of transactions validated per validation worker batch.
+    pub validation_batch_size: Histogram,
+}
+
+/// Metrics about the state providers used by the transaction validator.
+#[derive(Metrics, Clone)]
+#[metrics(scope = "transaction_pool.validator")]
+pub struct TempoValidatorMetrics {
+    /// Number of state providers built for validation.
+    pub state_providers_created: Counter,
+
+    /// Number of validations served by a pooled state provider.
+    pub state_providers_reused: Counter,
+}

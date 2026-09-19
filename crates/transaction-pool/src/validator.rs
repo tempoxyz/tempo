@@ -1,6 +1,7 @@
 use crate::{
     AddressFilter,
     amm::AmmLiquidityCache,
+    metrics::TempoValidatorMetrics,
     state_cache::{StateCache, StateCacheDb},
     transaction::{TempoPoolTransactionError, TempoPooledTransaction},
 };
@@ -8,7 +9,7 @@ use crate::{
 use alloy_consensus::{Transaction, constants::KECCAK_EMPTY};
 use alloy_evm::{Database, EvmEnv};
 use alloy_primitives::{Address, B256};
-use parking_lot::RwLock;
+use parking_lot::{Mutex, RwLock};
 use reth_chainspec::{ChainSpecProvider, EthChainSpec};
 use reth_evm::{ConfigureEvm, EvmEnvFor, EvmFactory, EvmFor, block::BlockExecutorFactory};
 use reth_primitives_traits::{
@@ -28,9 +29,13 @@ use revm::{
     DatabaseRef,
     context::result::{EVMError, InvalidTransaction},
 };
-use std::sync::{
-    Arc,
-    atomic::{AtomicU8, Ordering},
+use std::{
+    fmt,
+    sync::{
+        Arc,
+        atomic::{AtomicU8, Ordering},
+    },
+    time::{Duration, Instant},
 };
 use tempo_chainspec::{
     hardfork::{TempoHardfork, TempoHardforks},
@@ -105,9 +110,11 @@ pub struct TempoTransactionValidator<Client, EvmConfig = TempoEvmConfig> {
     address_filter: AddressFilter,
     /// Cached EVM environment from the latest tip block, updated on each `on_new_head_block`.
     cached_evm_env: RwLock<EvmEnv<TempoHardfork, TempoBlockEnv>>,
-    /// Tip hash and cache of state reads shared across validation calls, replaced on each
-    /// `on_new_head_block`.
-    cached_state: RwLock<(B256, Arc<StateCache>)>,
+    /// Read cache and idle state providers anchored to the canonical tip, shared across
+    /// validation calls and re-anchored whenever a new tip is observed.
+    tip_state: Mutex<TipState>,
+    /// Metrics about state provider reuse.
+    metrics: TempoValidatorMetrics,
     /// The Tempo hardfork active at the current tip, stored as an index into
     /// [`TempoHardfork::VARIANTS`] and updated on each `on_new_head_block`.
     ///
@@ -149,7 +156,8 @@ where
             disable_fee_amm_check: false,
             address_filter: AddressFilter::default(),
             cached_evm_env: parking_lot::RwLock::new(evm_env),
-            cached_state: RwLock::new((latest_header.hash(), Arc::new(StateCache::default()))),
+            tip_state: Mutex::new(TipState::new(latest_header.hash())),
+            metrics: TempoValidatorMetrics::default(),
             active_hardfork,
         }
     }
@@ -344,16 +352,13 @@ where
     /// after each transaction while loaded state stays warm) and the validator's tip-scoped
     /// [`StateCache`], so repeated state reads are served from memory across transactions
     /// and across concurrent validation calls.
-    fn validate_batch<P: StateProvider>(
+    fn validate_batch(
         &self,
-        state_provider: P,
+        state_provider: &dyn StateProvider,
         cached_state: Arc<StateCache>,
         transactions: impl IntoIterator<Item = (TransactionOrigin, TempoPooledTransaction)>,
     ) -> Vec<TransactionValidationOutcome<TempoPooledTransaction>> {
-        let db = StateCacheDb::new(
-            &cached_state,
-            StateProviderDatabase::new(&state_provider as &dyn StateProvider),
-        );
+        let db = StateCacheDb::new(&cached_state, StateProviderDatabase::new(state_provider));
         let evm_env = self.cached_evm_env.read().clone();
 
         // Create one throwaway EVM through the configured factory for the whole batch. The
@@ -367,26 +372,56 @@ where
             .collect()
     }
 
-    /// Returns the latest state provider and a state cache valid for the provider's tip.
+    /// Returns a state provider for the canonical tip together with the state cache anchored to
+    /// that tip.
+    ///
+    /// Providers are pooled per tip: a validation borrows an idle provider built for the current
+    /// tip and returns it when done, so only the first validation after a tip change (per
+    /// concurrent validation) pays for building one. Observing a tip that differs from the
+    /// anchored one re-anchors the cache and drops the pooled providers of the previous tip.
     fn latest_state_provider_and_cache(
         &self,
-    ) -> ProviderResult<(StateProviderBox, Arc<StateCache>)> {
-        let state_provider = self.inner.client().latest()?;
-        let latest_hash = self.inner.client().chain_info()?.best_hash;
-        Ok((state_provider, self.state_cache_for_tip(latest_hash)))
-    }
+    ) -> ProviderResult<(TipStateProvider<'_>, Arc<StateCache>)> {
+        // Read the tip before building a provider so a pooled provider never reflects state
+        // older than the tip it is filed under.
+        let tip = self.inner.client().chain_info()?.best_hash;
+        let now = Instant::now();
 
-    /// Returns the shared cache if it matches `tip_hash`, otherwise an empty ephemeral cache.
-    ///
-    /// A mismatch can happen when `.latest()` observes state for a newer canonical tip before
-    /// `on_new_head_block` has refreshed the validator's cached state for that tip.
-    fn state_cache_for_tip(&self, tip_hash: B256) -> Arc<StateCache> {
-        let (cached_tip_hash, cached_state) = self.cached_state.read().clone();
-        if cached_tip_hash == tip_hash {
-            cached_state
-        } else {
-            Arc::new(StateCache::default())
-        }
+        let (pooled, cache, stale) = {
+            let mut state = self.tip_state.lock();
+            let stale = if state.tip == tip {
+                Vec::new()
+            } else {
+                state.advance(tip)
+            };
+            (state.take_provider(now), state.cache.clone(), stale)
+        };
+        // Providers of the previous tip release their database read transactions outside the
+        // lock.
+        drop(stale);
+
+        let provider = match pooled {
+            Some(provider) => {
+                self.metrics.state_providers_reused.increment(1);
+                provider
+            }
+            None => {
+                self.metrics.state_providers_created.increment(1);
+                PooledStateProvider {
+                    created_at: now,
+                    provider: self.inner.client().latest()?,
+                }
+            }
+        };
+
+        Ok((
+            TipStateProvider {
+                tip,
+                provider: Some(provider),
+                pool: &self.tip_state,
+            },
+            cache,
+        ))
     }
 
     /// Validates one transaction with the given throwaway EVM.
@@ -702,7 +737,7 @@ where
         };
 
         self.validate_batch(
-            state_provider,
+            state_provider.provider(),
             cached_state,
             core::iter::once((origin, transaction)),
         )
@@ -727,7 +762,7 @@ where
             }
         };
 
-        self.validate_batch(state_provider, cached_state, transactions)
+        self.validate_batch(state_provider.provider(), cached_state, transactions)
     }
 
     async fn validate_transactions_with_origin(
@@ -748,7 +783,7 @@ where
         };
 
         self.validate_batch(
-            state_provider,
+            state_provider.provider(),
             cached_state,
             transactions.into_iter().map(|tx| (origin, tx)),
         )
@@ -767,8 +802,144 @@ where
             .store(evm_env.cfg_env.spec.variant_index(), Ordering::Relaxed);
         *self.cached_evm_env.write() = evm_env;
 
-        // State changed, drop all cached reads and anchor the new cache to this tip.
-        *self.cached_state.write() = (new_tip_block.hash(), Arc::new(StateCache::default()));
+        // State changed: anchor the read cache and provider pool to the new tip. A validation
+        // that already observed this tip through `chain_info` has re-anchored them itself, in
+        // which case the warm cache is kept.
+        let stale = {
+            let mut state = self.tip_state.lock();
+            if state.tip == new_tip_block.hash() {
+                Vec::new()
+            } else {
+                state.advance(new_tip_block.hash())
+            }
+        };
+        drop(stale);
+    }
+}
+
+/// Maximum number of idle state providers kept per tip.
+///
+/// Concurrent validations each borrow their own provider, so this only has to cover the number
+/// of validation workers.
+const MAX_POOLED_STATE_PROVIDERS: usize = 16;
+
+/// Maximum age of a pooled state provider.
+///
+/// Pooled providers are dropped on every tip change anyway. This additionally bounds the
+/// lifetime of a provider's database read transaction while no blocks arrive, so it never holds
+/// back MDBX page reclamation for long or trips reth's long-lived read transaction handling.
+const MAX_POOLED_STATE_PROVIDER_AGE: Duration = Duration::from_secs(10);
+
+/// An idle state provider anchored at the pool's tip.
+struct PooledStateProvider {
+    /// When the provider was built; its database read transaction is as old as this.
+    created_at: Instant,
+    provider: StateProviderBox,
+}
+
+impl PooledStateProvider {
+    fn is_expired(&self, now: Instant) -> bool {
+        now.saturating_duration_since(self.created_at) >= MAX_POOLED_STATE_PROVIDER_AGE
+    }
+}
+
+/// Validation state anchored to one canonical tip: the read cache shared by validations against
+/// that tip and the idle state providers built for it.
+struct TipState {
+    /// Canonical tip hash the cache and providers are anchored to.
+    tip: B256,
+    /// Cache of state reads shared across validations against `tip`.
+    cache: Arc<StateCache>,
+    /// Idle state providers anchored at `tip`, ready to be borrowed.
+    providers: Vec<PooledStateProvider>,
+}
+
+impl TipState {
+    fn new(tip: B256) -> Self {
+        Self {
+            tip,
+            cache: Arc::new(StateCache::default()),
+            providers: Vec::new(),
+        }
+    }
+
+    /// Re-anchors to `tip` with an empty cache and returns the providers of the previous tip so
+    /// the caller can drop them outside the lock.
+    fn advance(&mut self, tip: B256) -> Vec<PooledStateProvider> {
+        self.tip = tip;
+        self.cache = Arc::new(StateCache::default());
+        std::mem::take(&mut self.providers)
+    }
+
+    /// Takes an idle provider, discarding any that exceeded the maximum age.
+    fn take_provider(&mut self, now: Instant) -> Option<PooledStateProvider> {
+        self.providers.retain(|provider| !provider.is_expired(now));
+        self.providers.pop()
+    }
+
+    /// Returns a borrowed provider to the pool, or hands it back to the caller if it no longer
+    /// matches the anchored tip, has expired, or the pool is full.
+    fn return_provider(
+        &mut self,
+        tip: B256,
+        provider: PooledStateProvider,
+        now: Instant,
+    ) -> Option<PooledStateProvider> {
+        if self.tip == tip
+            && self.providers.len() < MAX_POOLED_STATE_PROVIDERS
+            && !provider.is_expired(now)
+        {
+            self.providers.push(provider);
+            None
+        } else {
+            Some(provider)
+        }
+    }
+}
+
+impl fmt::Debug for TipState {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_struct("TipState")
+            .field("tip", &self.tip)
+            .field("pooled_providers", &self.providers.len())
+            .finish_non_exhaustive()
+    }
+}
+
+/// A state provider borrowed from the validator's per-tip pool.
+///
+/// Dropping the guard returns the provider to the pool if the pool is still anchored at the tip
+/// the provider was built for; otherwise the provider is dropped, releasing its database read
+/// transaction.
+struct TipStateProvider<'a> {
+    /// Tip the provider was built for.
+    tip: B256,
+    /// The borrowed provider; only `None` while being returned in `drop`.
+    provider: Option<PooledStateProvider>,
+    pool: &'a Mutex<TipState>,
+}
+
+impl TipStateProvider<'_> {
+    /// Returns the borrowed state provider.
+    fn provider(&self) -> &dyn StateProvider {
+        &*self
+            .provider
+            .as_ref()
+            .expect("provider is present until drop")
+            .provider
+    }
+}
+
+impl Drop for TipStateProvider<'_> {
+    fn drop(&mut self) {
+        if let Some(provider) = self.provider.take() {
+            let rejected = self
+                .pool
+                .lock()
+                .return_provider(self.tip, provider, Instant::now());
+            // A rejected provider releases its database read transaction outside the lock.
+            drop(rejected);
+        }
     }
 }
 
@@ -1123,22 +1294,94 @@ mod tests {
         }
     }
 
+    /// Identity of the boxed provider behind a borrowed tip state provider.
+    fn provider_ptr(provider: &TipStateProvider<'_>) -> *const () {
+        provider.provider() as *const dyn StateProvider as *const ()
+    }
+
     #[test]
-    fn state_cache_for_tip_reuses_only_matching_tip_cache() {
+    fn state_provider_is_pooled_and_reused_for_the_same_tip() {
         let tx = TxBuilder::eip1559(Address::random()).build_eip1559();
         let validator = setup_validator(&tx, 1);
-        let (shared_tip_hash, shared_cache) = validator.cached_state.read().clone();
+        let latest_hash = validator.client().chain_info().unwrap().best_hash;
 
-        let matching_cache = validator.state_cache_for_tip(shared_tip_hash);
-        assert!(Arc::ptr_eq(&matching_cache, &shared_cache));
+        let (first, first_cache) = validator.latest_state_provider_and_cache().unwrap();
+        let first_ptr = provider_ptr(&first);
+        {
+            let state = validator.tip_state.lock();
+            assert_eq!(state.tip, latest_hash);
+            assert!(
+                state.providers.is_empty(),
+                "a borrowed provider must not be in the pool"
+            );
+        }
 
-        let mismatched_tip_hash = if shared_tip_hash == B256::repeat_byte(0x42) {
-            B256::repeat_byte(0x43)
-        } else {
-            B256::repeat_byte(0x42)
-        };
-        let ephemeral_cache = validator.state_cache_for_tip(mismatched_tip_hash);
-        assert!(!Arc::ptr_eq(&ephemeral_cache, &shared_cache));
+        // A concurrent validation gets its own provider while the first one is borrowed.
+        let (second, second_cache) = validator.latest_state_provider_and_cache().unwrap();
+        let second_ptr = provider_ptr(&second);
+        assert_ne!(second_ptr, first_ptr);
+        assert!(Arc::ptr_eq(&first_cache, &second_cache));
+
+        drop(first);
+        drop(second);
+        assert_eq!(validator.tip_state.lock().providers.len(), 2);
+
+        // Returned providers are handed out again instead of being rebuilt.
+        let (reused, reused_cache) = validator.latest_state_provider_and_cache().unwrap();
+        assert!(Arc::ptr_eq(&first_cache, &reused_cache));
+        assert!([first_ptr, second_ptr].contains(&provider_ptr(&reused)));
+        assert_eq!(validator.tip_state.lock().providers.len(), 1);
+    }
+
+    #[test]
+    fn new_head_block_drops_pooled_state_providers() {
+        let tx = TxBuilder::eip1559(Address::random()).build_eip1559();
+        let validator = setup_validator(&tx, 1);
+        let (provider, cache) = validator.latest_state_provider_and_cache().unwrap();
+        drop(provider);
+        assert_eq!(validator.tip_state.lock().providers.len(), 1);
+
+        let new_tip = create_mock_block(2);
+        validator.on_new_head_block(&new_tip);
+        {
+            let state = validator.tip_state.lock();
+            assert_eq!(state.tip, new_tip.hash());
+            assert!(state.providers.is_empty());
+            assert!(!Arc::ptr_eq(&state.cache, &cache));
+        }
+
+        // A provider borrowed across a tip change is dropped instead of returned to the pool.
+        let (borrowed, _) = validator.latest_state_provider_and_cache().unwrap();
+        validator.on_new_head_block(&create_mock_block(3));
+        drop(borrowed);
+        assert!(validator.tip_state.lock().providers.is_empty());
+    }
+
+    #[test]
+    fn expired_pooled_state_providers_are_not_reused() {
+        let tx = TxBuilder::eip1559(Address::random()).build_eip1559();
+        let validator = setup_validator(&tx, 1);
+        let expired_at = Instant::now()
+            .checked_sub(MAX_POOLED_STATE_PROVIDER_AGE + Duration::from_secs(1))
+            .expect("clock is far enough from its origin");
+
+        // An expired provider is not returned to the pool.
+        let (mut borrowed, _) = validator.latest_state_provider_and_cache().unwrap();
+        borrowed.provider.as_mut().unwrap().created_at = expired_at;
+        drop(borrowed);
+        assert!(validator.tip_state.lock().providers.is_empty());
+
+        // An idle provider that expired in the pool is discarded when the next one is taken.
+        let (provider, _) = validator.latest_state_provider_and_cache().unwrap();
+        drop(provider);
+        validator.tip_state.lock().providers[0].created_at = expired_at;
+        let (fresh, _) = validator.latest_state_provider_and_cache().unwrap();
+        assert!(
+            fresh.provider.as_ref().unwrap().created_at.elapsed() < MAX_POOLED_STATE_PROVIDER_AGE
+        );
+        assert!(validator.tip_state.lock().providers.is_empty());
+        drop(fresh);
+        assert_eq!(validator.tip_state.lock().providers.len(), 1);
     }
 
     #[tokio::test]
@@ -1178,21 +1421,41 @@ mod tests {
     }
 
     #[test]
-    fn latest_state_provider_uses_ephemeral_cache_when_tip_hash_mismatches_latest() {
+    fn observing_a_newer_tip_reanchors_cache_and_drops_pooled_providers() {
         let tx = TxBuilder::eip1559(Address::random()).build_eip1559();
         let validator = setup_validator(&tx, 1);
         let latest_hash = validator.client().chain_info().unwrap().best_hash;
+        let (provider, _) = validator.latest_state_provider_and_cache().unwrap();
+        drop(provider);
+
+        // Pretend the pool is still anchored to an older tip with an idle provider, as happens
+        // when `chain_info` observes a new canonical tip before `on_new_head_block` runs.
         let mismatched_tip_hash = if latest_hash == B256::repeat_byte(0x42) {
             B256::repeat_byte(0x43)
         } else {
             B256::repeat_byte(0x42)
         };
         let shared_cache = Arc::new(StateCache::default());
-        *validator.cached_state.write() = (mismatched_tip_hash, shared_cache.clone());
+        {
+            let mut state = validator.tip_state.lock();
+            state.tip = mismatched_tip_hash;
+            state.cache = shared_cache.clone();
+            assert_eq!(state.providers.len(), 1);
+        }
 
-        let (_, validation_cache) = validator.latest_state_provider_and_cache().unwrap();
-
+        let (provider, validation_cache) = validator.latest_state_provider_and_cache().unwrap();
         assert!(!Arc::ptr_eq(&validation_cache, &shared_cache));
+        {
+            let state = validator.tip_state.lock();
+            assert_eq!(state.tip, latest_hash);
+            assert!(Arc::ptr_eq(&state.cache, &validation_cache));
+            assert!(
+                state.providers.is_empty(),
+                "stale providers must be dropped"
+            );
+        }
+        drop(provider);
+        assert_eq!(validator.tip_state.lock().providers.len(), 1);
     }
 
     #[tokio::test]

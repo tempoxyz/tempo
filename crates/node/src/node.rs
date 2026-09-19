@@ -38,8 +38,8 @@ use reth_storage_api::{AccountInfoReader, EmptyBodyStorage};
 use reth_tracing::tracing::{debug, info, warn};
 use reth_transaction_pool::{
     Pool, PoolPooledTx, PoolTransaction, StatefulValidationFn, StatelessValidationFn,
-    TransactionOrigin, TransactionPool, TransactionValidationTaskExecutor,
-    blobstore::InMemoryBlobStore, error::InvalidPoolTransactionError,
+    TransactionOrigin, TransactionPool, blobstore::InMemoryBlobStore,
+    error::InvalidPoolTransactionError, validate::EthTransactionValidatorBuilder,
 };
 use std::sync::Arc;
 use tempo_chainspec::{TempoConsensusSpec, spec::TempoChainSpec};
@@ -50,7 +50,7 @@ use tempo_payload_builder::{
 use tempo_payload_types::TempoPayloadAttributes;
 use tempo_primitives::{TempoHeader, TempoPrimitives, TempoTxEnvelope, TempoTxType};
 use tempo_transaction_pool::{
-    AA2dPool, AA2dPoolConfig, AddressFilter, TempoTransactionPool,
+    AA2dPool, AA2dPoolConfig, AddressFilter, TempoTransactionPool, TempoValidationTaskExecutor,
     amm::AmmLiquidityCache,
     ordering::TempoTipOrdering,
     transaction::TempoPooledTransaction,
@@ -761,8 +761,8 @@ where
 
         // this store is effectively a noop
         let blob_store = InMemoryBlobStore::default();
-        let validator =
-            TransactionValidationTaskExecutor::eth_builder(ctx.provider().clone(), evm_config)
+        let mut inner_validator =
+            EthTransactionValidatorBuilder::new(ctx.provider().clone(), evm_config)
                 .with_max_tx_input_bytes(ctx.config().txpool.max_tx_input_bytes)
                 .with_local_transactions_config(pool_config.local_transactions_config.clone())
                 .set_tx_fee_cap(ctx.config().rpc.rpc_tx_fee_cap)
@@ -770,10 +770,9 @@ where
                 .set_block_gas_limit(ctx.chain_spec().inner.genesis().gas_limit)
                 .disable_balance_check()
                 .with_minimum_priority_fee(ctx.config().txpool.minimum_priority_fee)
-                .with_additional_tasks(ctx.config().txpool.additional_validation_tasks)
                 .with_custom_tx_type(TempoTxType::AA as u8)
                 .no_eip4844()
-                .build_with_tasks(ctx.task_executor().clone(), blob_store.clone());
+                .build(blob_store.clone());
 
         let aa_2d_config = AA2dPoolConfig {
             price_bump_config: pool_config.price_bumps,
@@ -794,18 +793,23 @@ where
             additional_stateless_validation,
             additional_stateful_validation,
         } = self;
-        let validator = validator.map(move |mut v| {
-            v.set_additional_stateless_validation_fn_opt(additional_stateless_validation.clone());
-            v.set_additional_stateful_validation_fn_opt(additional_stateful_validation.clone());
-            TempoTransactionValidator::new(
-                v,
-                aa_valid_after_max_secs,
-                max_tempo_authorizations,
-                amm_liquidity_cache.clone(),
-            )
-            .with_disable_fee_amm_check(disable_fee_amm_check)
-            .with_address_filter(address_filter.clone())
-        });
+        inner_validator.set_additional_stateless_validation_fn_opt(additional_stateless_validation);
+        inner_validator.set_additional_stateful_validation_fn_opt(additional_stateful_validation);
+        let validator = TempoTransactionValidator::new(
+            inner_validator,
+            aa_valid_after_max_secs,
+            max_tempo_authorizations,
+            amm_liquidity_cache,
+        )
+        .with_disable_fee_amm_check(disable_fee_amm_check)
+        .with_address_filter(address_filter);
+        // Validation runs on dedicated workers that coalesce concurrently submitted transactions
+        // into batches sharing one state provider and pool EVM.
+        let validator = TempoValidationTaskExecutor::spawn(
+            validator,
+            ctx.task_executor(),
+            ctx.config().txpool.additional_validation_tasks,
+        );
         let protocol_pool = Pool::new(
             validator,
             TempoTipOrdering::default(),

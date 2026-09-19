@@ -24,12 +24,14 @@ pub mod metrics;
 pub mod ordering;
 pub(crate) mod state_cache;
 pub mod tt_2d_pool;
+pub mod validation_task;
 
 pub use best::{StateAwareBestTransactions, StateAwarePoolTransaction};
 pub use maintain::TempoPoolUpdates;
 
-pub use metrics::{AA2dPoolMetrics, TempoPoolMaintenanceMetrics};
+pub use metrics::{AA2dPoolMetrics, TempoPoolMaintenanceMetrics, TempoValidationTaskMetrics};
 pub use tt_2d_pool::{AA2dPool, AA2dPoolConfig, AASequenceId, DEFAULT_MAX_TXS_PER_SENDER};
+pub use validation_task::{TempoValidationTask, TempoValidationTaskExecutor};
 
 #[cfg(test)]
 pub(crate) mod test_utils;
