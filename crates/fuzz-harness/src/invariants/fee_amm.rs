@@ -1,14 +1,21 @@
-use alloy_primitives::{Address, address};
-use tempo_contracts::precompiles::{ITIPFeeAMM, TIP_FEE_MANAGER_ADDRESS};
+use std::collections::BTreeSet;
 
-use super::{HarnessEvm, view_call};
+use alloy_primitives::{Address, U256, address};
+use tempo_contracts::precompiles::{ITIPFeeAMM, PATH_USD_ADDRESS, TIP_FEE_MANAGER_ADDRESS};
+use tempo_fuzz_types::StateInput;
+
+use super::{HarnessEvm, fmt_addr, is_tip20_like, state_accounts, view_call};
 
 const EXPECTED_M: u64 = 9_970;
 const EXPECTED_N: u64 = 9_985;
 const EXPECTED_SCALE: u64 = 10_000;
 const EXPECTED_MIN_LIQUIDITY: u64 = 1_000;
 
-pub(super) fn validate(evm: &mut HarnessEvm<'_>, side: &'static str) -> Result<(), String> {
+pub(super) fn validate(
+    evm: &mut HarnessEvm<'_>,
+    side: &'static str,
+    state: &StateInput,
+) -> Result<(), String> {
     let target = TIP_FEE_MANAGER_ADDRESS;
     let m = required(evm, target, ITIPFeeAMM::MCall {}, "M")?;
     let n = required(evm, target, ITIPFeeAMM::NCall {}, "N")?;
@@ -60,6 +67,74 @@ pub(super) fn validate(evm: &mut HarnessEvm<'_>, side: &'static str) -> Result<(
         return Err(format!(
             "TEMPO-AMM27 side={side} directional pool ids collide"
         ));
+    }
+
+    validate_pool_shapes(evm, side, state, minimum)?;
+    Ok(())
+}
+
+/// Foundry TEMPO-AMM15/28/30 over every pool addressable by tokens present in the
+/// materialized state. A pool is either entirely empty or has the permanently locked supply.
+fn validate_pool_shapes(
+    evm: &mut HarnessEvm<'_>,
+    side: &'static str,
+    state: &StateInput,
+    minimum: u64,
+) -> Result<(), String> {
+    let mut tokens: BTreeSet<_> = state_accounts(state)
+        .filter(|address| is_tip20_like(*address))
+        .collect();
+    tokens.insert(PATH_USD_ADDRESS);
+
+    for user_token in &tokens {
+        for validator_token in &tokens {
+            if user_token == validator_token {
+                continue;
+            }
+            let pool_id = view_call::<ITIPFeeAMM::getPoolIdCall>(
+                evm,
+                TIP_FEE_MANAGER_ADDRESS,
+                ITIPFeeAMM::getPoolIdCall {
+                    userToken: *user_token,
+                    validatorToken: *validator_token,
+                },
+            )?
+            .ok_or_else(|| "TEMPO-AMM30 getPoolId returned no value".to_string())?;
+            let pool = view_call::<ITIPFeeAMM::getPoolCall>(
+                evm,
+                TIP_FEE_MANAGER_ADDRESS,
+                ITIPFeeAMM::getPoolCall {
+                    userToken: *user_token,
+                    validatorToken: *validator_token,
+                },
+            )?
+            .ok_or_else(|| "TEMPO-AMM30 getPool returned no value".to_string())?;
+            let total_supply = view_call::<ITIPFeeAMM::totalSupplyCall>(
+                evm,
+                TIP_FEE_MANAGER_ADDRESS,
+                ITIPFeeAMM::totalSupplyCall { poolId: pool_id },
+            )?
+            .unwrap_or(U256::ZERO);
+            let has_reserves = pool.reserveUserToken != 0 || pool.reserveValidatorToken != 0;
+
+            if total_supply.is_zero() && has_reserves {
+                return Err(format!(
+                    "TEMPO-AMM30 side={side} user_token={} validator_token={} reserves={}/{} total_supply=0",
+                    fmt_addr(*user_token),
+                    fmt_addr(*validator_token),
+                    pool.reserveUserToken,
+                    pool.reserveValidatorToken
+                ));
+            }
+            if !total_supply.is_zero() && total_supply < U256::from(minimum) {
+                return Err(format!(
+                    "TEMPO-AMM15 side={side} user_token={} validator_token={} total_supply={} minimum={minimum}",
+                    fmt_addr(*user_token),
+                    fmt_addr(*validator_token),
+                    total_supply
+                ));
+            }
+        }
     }
     Ok(())
 }

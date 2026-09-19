@@ -16,7 +16,7 @@ pub(crate) fn validate_state_invariants(
     side: &'static str,
     state: &StateInput,
 ) -> Result<(), String> {
-    fee_amm::validate(evm, side)?;
+    fee_amm::validate(evm, side, state)?;
     stablecoin_dex::validate(evm, side)?;
     tip20::validate(evm, side, state)?;
     Ok(())
