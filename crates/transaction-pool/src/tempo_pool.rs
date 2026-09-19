@@ -1112,7 +1112,15 @@ where
         &self,
         sender: Address,
     ) -> Vec<Arc<ValidPoolTransaction<Self::Transaction>>> {
-        self.protocol_pool.get_queued_transactions_by_sender(sender)
+        let mut txs = self.protocol_pool.get_queued_transactions_by_sender(sender);
+        txs.extend(
+            self.aa_2d_pool
+                .read()
+                .queued_transactions()
+                .filter(|tx| tx.sender() == sender),
+        );
+
+        txs
     }
 
     fn get_highest_transaction_by_sender(
@@ -1661,6 +1669,76 @@ mod tests {
         assert_eq!(size.queued, 0);
         assert_eq!(size.queued_size, 0);
         assert_eq!(size.total, 1);
+    }
+
+    #[test]
+    fn by_sender_accessors_include_aa_2d_queued_transactions() {
+        let pool = create_test_pool(create_provider_with_tip());
+        let sender = Address::random();
+        let other = Address::random();
+
+        // Protocol lane (nonce_key = 0): nonce 0 is pending, nonce 2 is gapped and queued.
+        let protocol_pending = crate::test_utils::TxBuilder::aa(sender).nonce(0).build();
+        let protocol_queued = crate::test_utils::TxBuilder::aa(sender).nonce(2).build();
+        // 2D lane (nonce_key = 1): same shape, lives only in the AA 2D pool.
+        let aa_2d_pending = crate::test_utils::TxBuilder::aa(sender)
+            .nonce_key(U256::from(1))
+            .nonce(0)
+            .build();
+        let aa_2d_queued = crate::test_utils::TxBuilder::aa(sender)
+            .nonce_key(U256::from(1))
+            .nonce(2)
+            .build();
+        // Another sender's queued 2D transaction must not leak into `sender`'s results.
+        let other_aa_2d_queued = crate::test_utils::TxBuilder::aa(other)
+            .nonce_key(U256::from(1))
+            .nonce(2)
+            .build();
+
+        let protocol_pending_hash = *protocol_pending.hash();
+        let protocol_queued_hash = *protocol_queued.hash();
+        let aa_2d_pending_hash = *aa_2d_pending.hash();
+        let aa_2d_queued_hash = *aa_2d_queued.hash();
+        let other_aa_2d_queued_hash = *other_aa_2d_queued.hash();
+
+        for pooled in [
+            protocol_pending,
+            protocol_queued,
+            aa_2d_pending,
+            aa_2d_queued,
+            other_aa_2d_queued,
+        ] {
+            let validated = TransactionValidationOutcome::Valid {
+                balance: *pooled.cost(),
+                state_nonce: 0,
+                bytecode_hash: None,
+                transaction: ValidTransaction::new(pooled, None),
+                propagate: true,
+                authorities: None,
+            };
+            pool.add_validated_transaction(TransactionOrigin::External, validated)
+                .expect("transaction should be admitted");
+        }
+
+        assert_eq!(pool.pending_and_queued_txn_count(), (2, 3));
+
+        let mut queued = tx_hashes(&pool.get_queued_transactions_by_sender(sender));
+        queued.sort();
+        let mut expected_queued = vec![protocol_queued_hash, aa_2d_queued_hash];
+        expected_queued.sort();
+        assert_eq!(queued, expected_queued);
+
+        let mut pending = tx_hashes(&pool.get_pending_transactions_by_sender(sender));
+        pending.sort();
+        let mut expected_pending = vec![protocol_pending_hash, aa_2d_pending_hash];
+        expected_pending.sort();
+        assert_eq!(pending, expected_pending);
+
+        assert_eq!(
+            tx_hashes(&pool.get_queued_transactions_by_sender(other)),
+            vec![other_aa_2d_queued_hash]
+        );
+        assert!(pool.get_pending_transactions_by_sender(other).is_empty());
     }
 
     fn sponsored_keychain_transaction(
