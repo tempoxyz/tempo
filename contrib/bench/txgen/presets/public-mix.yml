@@ -1,9 +1,20 @@
 # Forward-looking public workload, weighted by submitted transactions (not gas).
-# Transaction shares: plain transfer 80%, mint 5%, MPP 15%.
+# Transaction shares: plain transfer 25%, memo transfer 40%, mint 1%, MPP 15%,
+# zone deposit 5%, zone withdrawal 4%, vault deposit 6%, vault withdrawal 4%.
 # These are benchmark assumptions, not a replay of mainnet activity.
-# Uses the native MPP open-only preset with txgen main.
+# Uses native MPP and explicit setup dependencies (tempoxyz/txgen#214).
 # Transfers and mints target prepopulated state-bloat accounts; requires nonzero bloat.
-include: mpp.yml
+# The helper combines fixture setup and expands per-user/portal templates.
+include:
+  - mpp.yml
+  - vault/base.yml
+  - zones.yml
+
+accounts:
+  # Vault deployments pin nonces 0..11 on deployers[0] (index 100001).
+  # A separate zone deployer avoids sharing that explicit-nonce lane.
+  deployer:
+    index: 100002
 
 address_pools:
   existing_recipients:
@@ -32,6 +43,22 @@ templates:
       args:
         - {address_pool: {pool: existing_recipients, select: random}}
         - 1
+  public_transfer_memo:
+    type: tempo
+    from: {pool: users, select: random}
+    gas_limit: 300000
+    fee_token: "0x20c0000000000000000000000000000000000000"
+    expiring_nonce: true
+    valid_for_secs: 25
+    call:
+      to:
+        choice: ${TXGEN_TIP20_TOKENS}
+      abi: ERC20
+      function: transferWithMemo
+      args:
+        - {address_pool: {pool: existing_recipients, select: random}}
+        - 1
+        - {random_bytes: 32}
   public_mint:
     type: tempo
     # Dev genesis grants the pathUSD issuer role to users[0].
@@ -49,10 +76,21 @@ templates:
         - 1
 
 # Each selection emits one transaction, including MPP.
+# Zone operations include synthetic settlement through the existing dummy verifier.
 mix:
   - template: public_transfer
-    weight: 80
+    weight: 25
+  - template: public_transfer_memo
+    weight: 40
   - template: public_mint
-    weight: 5
+    weight: 1
   - sequence: mpp_open_only
     weight: 15
+  - template: zone_deposit
+    weight: 5
+  - template: zone_withdraw
+    weight: 4
+  - template: vault_deposit
+    weight: 6
+  - template: vault_withdraw
+    weight: 4
