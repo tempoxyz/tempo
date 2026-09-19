@@ -171,6 +171,9 @@ struct Metrics {
     /// the head; holds its last value while the pending head's height is
     /// unknown (its body has not arrived yet).
     convergence_depth: commonware_runtime::telemetry::metrics::Registered<Gauge>,
+    /// Number of blocks the execution layer accepted that are not on its
+    /// canonical chain.
+    uncanonicalized_blocks: commonware_runtime::telemetry::metrics::Registered<Gauge>,
 }
 
 impl Metrics {
@@ -200,11 +203,17 @@ impl Metrics {
             (negative after a re-anchor below the head)",
             Gauge::default(),
         );
+        let uncanonicalized_blocks = context.register(
+            "uncanonicalized_blocks",
+            "number of blocks the execution layer accepted that are not on its canonical chain",
+            Gauge::default(),
+        );
         Self {
             finalized_blocks_proposed_by_self,
             notarized_tree_blocks,
             finalization_lag,
             convergence_depth,
+            uncanonicalized_blocks,
         }
     }
 
@@ -216,6 +225,8 @@ impl Metrics {
         if let Some(depth) = depths.convergence_depth {
             self.convergence_depth.set(depth);
         }
+        self.uncanonicalized_blocks
+            .set(depths.uncanonicalized_blocks as i64);
     }
 }
 
