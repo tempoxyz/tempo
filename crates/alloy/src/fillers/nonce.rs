@@ -280,6 +280,22 @@ impl<N: Network<TransactionRequest = TempoTransactionRequest>> TxFiller<N> for N
             return Ok(0);
         }
 
+        let fetch_nonce = async {
+            if nonce_key.is_zero() {
+                provider.get_transaction_count(from).pending().await
+            } else {
+                let contract = INonce::new(NONCE_PRECOMPILE_ADDRESS, provider);
+                contract
+                    .getNonce(from, nonce_key)
+                    .call()
+                    .await
+                    .map_err(|e| TransportErrorKind::custom_str(&e.to_string()))
+            }
+        };
+        if !self.cache_enabled {
+            return fetch_nonce.await;
+        }
+
         let key = (from, nonce_key);
         let mutex = self
             .nonces
@@ -289,17 +305,8 @@ impl<N: Network<TransactionRequest = TempoTransactionRequest>> TxFiller<N> for N
 
         let mut nonce = mutex.lock().await;
 
-        if *nonce == NONCE_NOT_FETCHED || !self.cache_enabled {
-            *nonce = if nonce_key.is_zero() {
-                provider.get_transaction_count(from).pending().await?
-            } else {
-                let contract = INonce::new(NONCE_PRECOMPILE_ADDRESS, provider);
-                contract
-                    .getNonce(from, nonce_key)
-                    .call()
-                    .await
-                    .map_err(|e| TransportErrorKind::custom_str(&e.to_string()))?
-            };
+        if *nonce == NONCE_NOT_FETCHED {
+            *nonce = fetch_nonce.await?;
         } else {
             *nonce += 1;
         }
@@ -462,6 +469,7 @@ mod tests {
 
         assert_eq!(first, 10);
         assert_eq!(second, 42);
+        assert!(filler.nonces.is_empty());
 
         Ok(())
     }
