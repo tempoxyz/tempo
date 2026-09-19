@@ -1095,16 +1095,16 @@ where
         &self,
         sender: Address,
     ) -> Vec<Arc<ValidPoolTransaction<Self::Transaction>>> {
-        let mut txs = self
-            .protocol_pool
-            .get_pending_transactions_by_sender(sender);
+        let protocol_pool = self.protocol_pool.inner();
+        let Some(sender_id) = protocol_pool.sender_id(&sender) else {
+            return Vec::new();
+        };
+        let mut txs = protocol_pool.get_pending_transactions_by_sender_id(sender_id);
         txs.extend(
             self.aa_2d_pool
                 .read()
-                .pending_transactions()
-                .filter(|tx| tx.sender() == sender),
+                .get_pending_transactions_by_sender_iter(sender),
         );
-
         txs
     }
 
@@ -1652,8 +1652,18 @@ mod tests {
             .nonce_key(U256::from(1))
             .build();
         let tx_size = reth_primitives_traits::InMemorySize::size(&tx);
+        let sender = tx.sender();
+        let hash = *tx.hash();
 
         add_validated(&pool, tx);
+        assert_eq!(
+            tx_hashes(&pool.get_pending_transactions_by_sender(sender)),
+            vec![hash]
+        );
+        assert!(
+            pool.get_pending_transactions_by_sender(Address::ZERO)
+                .is_empty()
+        );
 
         let size = pool.pool_size();
         assert_eq!(size.pending, 1);

@@ -5,7 +5,7 @@ use crate::{
 use alloy_consensus::Transaction;
 use alloy_primitives::{
     Address, B256, TxHash, U256,
-    map::{AddressMap, B256Map, HashMap, HashSet, U256Map, hash_map},
+    map::{AddressMap, B256Map, B256Set, HashMap, HashSet, U256Map, hash_map},
 };
 use reth_primitives_traits::{InMemorySize, transaction::error::InvalidTransactionError};
 use reth_tracing::tracing::trace;
@@ -79,6 +79,8 @@ pub struct AA2dPool {
     /// Expiring nonce transactions, keyed by expiring nonce hash (always pending/independent).
     /// These use expiring nonce replay protection instead of sequential nonces.
     expiring_nonce_txs: B256Map<AA2dStoredTransaction>,
+    /// Expiring nonce hashes indexed by sender.
+    expiring_nonce_hashes_by_sender: AddressMap<B256Set>,
     /// Expiring nonce transactions in eviction order.
     ///
     /// Regular 2D transactions use the pending and queued eviction maps.
@@ -149,6 +151,7 @@ impl AA2dPool {
             by_id: Default::default(),
             by_hash: Default::default(),
             expiring_nonce_txs: Default::default(),
+            expiring_nonce_hashes_by_sender: Default::default(),
             expiring_nonce_eviction_order: Default::default(),
             slot_to_expiring_nonce_hash: Default::default(),
             state_update_nonce_changes: Default::default(),
@@ -526,6 +529,10 @@ impl AA2dPool {
 
         // Insert into expiring nonce map and by_hash
         expiring_nonce_entry.insert(pending_tx);
+        self.expiring_nonce_hashes_by_sender
+            .entry(sender)
+            .or_default()
+            .insert(expiring_nonce_hash);
         self.expiring_nonce_eviction_order.insert(eviction_key);
         if let Some(slot) = transaction.transaction.expiring_nonce_slot() {
             self.slot_to_expiring_nonce_hash
@@ -651,6 +658,27 @@ impl AA2dPool {
             .values()
             .filter(move |tx| tx.transaction.sender() == sender)
             .map(|tx| tx.transaction.clone());
+        regular.chain(expiring)
+    }
+
+    /// Returns pending transactions for one sender without scanning unrelated lanes.
+    pub(crate) fn get_pending_transactions_by_sender_iter(
+        &self,
+        sender: Address,
+    ) -> impl Iterator<Item = Arc<ValidPoolTransaction<TempoPooledTransaction>>> + '_ {
+        let start = AA2dTransactionId::new(AASequenceId::new(sender, U256::ZERO), 0);
+        let end = AA2dTransactionId::new(AASequenceId::new(sender, U256::MAX), u64::MAX);
+        let regular = self
+            .by_id
+            .range(start..=end)
+            .filter(|(_, tx)| tx.is_pending())
+            .map(|(_, tx)| tx.inner.transaction.clone());
+        let expiring = self
+            .expiring_nonce_hashes_by_sender
+            .get(&sender)
+            .into_iter()
+            .flatten()
+            .map(|hash| self.expiring_nonce_txs[hash].transaction.clone());
         regular.chain(expiring)
     }
 
@@ -1392,7 +1420,21 @@ impl AA2dPool {
         if let Some(slot) = pending_tx.transaction.transaction.expiring_nonce_slot() {
             self.slot_to_expiring_nonce_hash.remove(&slot);
         }
-        self.decrement_sender_count(pending_tx.transaction.sender());
+        let sender = pending_tx.transaction.sender();
+        if let hash_map::Entry::Occupied(mut entry) =
+            self.expiring_nonce_hashes_by_sender.entry(sender)
+        {
+            entry.get_mut().remove(
+                &pending_tx
+                    .transaction
+                    .transaction
+                    .precomputed_expiring_nonce_hash(),
+            );
+            if entry.get().is_empty() {
+                entry.remove();
+            }
+        }
+        self.decrement_sender_count(sender);
         self.remove_from_subpool(true, pending_tx.size());
         pending_tx.transaction
     }
@@ -1513,6 +1555,15 @@ impl AA2dPool {
     /// Asserts that all assumptions are valid.
     #[cfg(test)]
     pub(crate) fn assert_invariants(&self) {
+        let mut expiring_by_sender: AddressMap<B256Set> = AddressMap::default();
+        for (hash, tx) in &self.expiring_nonce_txs {
+            expiring_by_sender
+                .entry(tx.transaction.sender())
+                .or_default()
+                .insert(*hash);
+        }
+        assert_eq!(self.expiring_nonce_hashes_by_sender, expiring_by_sender);
+
         let mut lane_counts = HashMap::default();
         for id in self.by_id.keys() {
             *lane_counts.entry(id.seq_id).or_insert(0usize) += 1;
@@ -4256,12 +4307,19 @@ mod tests {
         let queued_tx = TxBuilder::aa(sender).nonce(2).build();
         let expiring_tx = TxBuilder::aa(sender).nonce_key(U256::MAX).build();
         let other_tx = TxBuilder::aa(other_sender).build();
+        let other_expiring_tx = TxBuilder::aa(other_sender).nonce_key(U256::MAX).build();
 
         let pending_hash = *pending_tx.hash();
         let queued_hash = *queued_tx.hash();
         let expiring_hash = *expiring_tx.hash();
 
-        for tx in [pending_tx, queued_tx, expiring_tx, other_tx] {
+        for tx in [
+            pending_tx,
+            queued_tx,
+            expiring_tx,
+            other_tx,
+            other_expiring_tx,
+        ] {
             pool.add_transaction(
                 Arc::new(wrap_valid_tx(tx, TransactionOrigin::Local)),
                 0,
@@ -4278,6 +4336,26 @@ mod tests {
 
         assert_eq!(pending_hashes, HashSet::from([pending_hash, expiring_hash]));
         assert_eq!(queued_hashes, HashSet::from([queued_hash]));
+
+        let indexed: HashSet<_> = pool
+            .get_pending_transactions_by_sender_iter(sender)
+            .map(|tx| *tx.hash())
+            .collect();
+        assert_eq!(indexed, pending_hashes);
+        assert_eq!(
+            pool.get_pending_transactions_by_sender_iter(Address::ZERO)
+                .count(),
+            0
+        );
+
+        pool.remove_transactions([&expiring_hash].into_iter());
+        assert_eq!(
+            pool.get_pending_transactions_by_sender_iter(sender)
+                .map(|tx| *tx.hash())
+                .collect::<Vec<_>>(),
+            vec![pending_hash]
+        );
+        pool.assert_invariants();
     }
 
     #[test]
