@@ -431,6 +431,8 @@ jobs:
         env:
           AEGIS_DIAGNOSTICS: ${{ runner.temp }}/aegis-install-${{ github.run_id }}-${{ github.run_attempt }}
         run: |
+          # Read privileged diagnostics into runner-owned files for artifact upload.
+          # shellcheck disable=SC2024
           mkdir -p "$AEGIS_DIAGNOSTICS"
           sudo -n ss -ltnp 'sport = :443' > "$AEGIS_DIAGNOSTICS/listeners.txt" 2>&1 || true
           sudo -n systemctl show aegis --property=ActiveState,SubState,MainPID,ExecMainStartTimestamp > "$AEGIS_DIAGNOSTICS/service-state.txt" 2>&1 || true
