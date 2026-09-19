@@ -27,15 +27,43 @@ fn check_supply(
             continue;
         };
 
-        if let Some(supply_cap) = supply_cap(evm, token)? {
-            if !supply_cap.is_zero() && total_supply > supply_cap {
-                return Err(format!(
-                    "TEMPO-TIP20-SUPPLY-CAP side={side} token={} total_supply={} supply_cap={}",
-                    fmt_addr(token),
-                    total_supply,
-                    supply_cap
-                ));
-            }
+        let decimals = view_call::<ITIP20::decimalsCall>(evm, token, ITIP20::decimalsCall {})?
+            .ok_or_else(|| {
+                format!(
+                    "TEMPO-TIP21 side={side} token={} empty decimals",
+                    fmt_addr(token)
+                )
+            })?;
+        if decimals != 6 {
+            return Err(format!(
+                "TEMPO-TIP21 side={side} token={} decimals={decimals} expected=6",
+                fmt_addr(token)
+            ));
+        }
+
+        if let Some(opted_in_supply) =
+            view_call::<ITIP20::optedInSupplyCall>(evm, token, ITIP20::optedInSupplyCall {})?
+            && U256::from(opted_in_supply) > total_supply
+        {
+            return Err(format!(
+                "TEMPO-TIP19 side={side} token={} opted_in_supply={} total_supply={total_supply}",
+                fmt_addr(token),
+                opted_in_supply
+            ));
+        }
+
+        check_quote_token_chain(evm, side, token)?;
+
+        if let Some(supply_cap) = supply_cap(evm, token)?
+            && !supply_cap.is_zero()
+            && total_supply > supply_cap
+        {
+            return Err(format!(
+                "TEMPO-TIP20-SUPPLY-CAP side={side} token={} total_supply={} supply_cap={}",
+                fmt_addr(token),
+                total_supply,
+                supply_cap
+            ));
         }
 
         let mut known_balance_sum = U256::ZERO;
@@ -62,6 +90,38 @@ fn check_supply(
     }
 
     Ok(())
+}
+
+fn check_quote_token_chain(
+    evm: &mut HarnessEvm<'_>,
+    side: &'static str,
+    token: Address,
+) -> Result<(), String> {
+    let mut current = token;
+    let mut seen = BTreeSet::from([token]);
+    for depth in 0..20 {
+        let Some(next) =
+            view_call::<ITIP20::quoteTokenCall>(evm, current, ITIP20::quoteTokenCall {})?
+        else {
+            return Ok(());
+        };
+        if next.is_zero() {
+            return Ok(());
+        }
+        if !seen.insert(next) {
+            return Err(format!(
+                "TEMPO-TIP20-QUOTE-CYCLE side={side} token={} repeated={} depth={}",
+                fmt_addr(token),
+                fmt_addr(next),
+                depth + 1
+            ));
+        }
+        current = next;
+    }
+    Err(format!(
+        "TEMPO-TIP20-QUOTE-DEPTH side={side} token={} max_depth=20",
+        fmt_addr(token)
+    ))
 }
 
 fn known_tip20_tokens(state: &StateInput) -> BTreeSet<Address> {

@@ -1,3 +1,5 @@
+mod fee_amm;
+mod stablecoin_dex;
 mod tip20;
 
 use alloy_primitives::{Address, Bytes};
@@ -5,6 +7,7 @@ use alloy_sol_types::SolCall;
 use evm2::evm::SystemTx;
 use tempo_evm::evm::TempoEvm;
 use tempo_fuzz_types::StateInput;
+use tempo_primitives::TempoTxEnvelope;
 
 pub(crate) type HarnessEvm<'a> = TempoEvm<'a>;
 
@@ -13,7 +16,56 @@ pub(crate) fn validate_state_invariants(
     side: &'static str,
     state: &StateInput,
 ) -> Result<(), String> {
+    fee_amm::validate(evm, side, state)?;
+    stablecoin_dex::validate(evm, side)?;
     tip20::validate(evm, side, state)?;
+    Ok(())
+}
+
+/// Assertions from the Foundry gas/block invariant suites that can be evaluated for every
+/// successfully executed transaction without their test-only ghost state.
+pub(crate) fn validate_transaction_invariants(
+    tx: &TempoTxEnvelope,
+    gas_used: u64,
+    block_timestamp: u64,
+) -> Result<(), String> {
+    use alloy_consensus::transaction::Transaction;
+
+    const TRANSACTION_GAS_CAP: u64 = 30_000_000;
+    if tx.gas_limit() > TRANSACTION_GAS_CAP {
+        return Err(format!(
+            "TEMPO-BLOCK3 transaction over 30M gas cap was accepted gas_limit={}",
+            tx.gas_limit()
+        ));
+    }
+    if gas_used == 0 {
+        return Err("TEMPO-G1 accepted transaction consumed zero gas".to_string());
+    }
+    if gas_used > tx.gas_limit() {
+        return Err(format!(
+            "TEMPO-GAS-LIMIT gas_used={gas_used} gas_limit={}",
+            tx.gas_limit()
+        ));
+    }
+    if let Some(aa) = tx.as_aa() {
+        let aa = aa.tx();
+        if let Some(valid_after) = aa.valid_after
+            && block_timestamp < valid_after.get()
+        {
+            return Err(format!(
+                "TEMPO-TX-TIME-WINDOW transaction succeeded before valid_after={} block_timestamp={block_timestamp}",
+                valid_after.get()
+            ));
+        }
+        if let Some(valid_before) = aa.valid_before
+            && block_timestamp >= valid_before.get()
+        {
+            return Err(format!(
+                "TEMPO-TX-TIME-WINDOW transaction succeeded at/after valid_before={} block_timestamp={block_timestamp}",
+                valid_before.get()
+            ));
+        }
+    }
     Ok(())
 }
 

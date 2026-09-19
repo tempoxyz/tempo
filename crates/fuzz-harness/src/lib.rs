@@ -14,12 +14,14 @@ use evm2::{
     evm::{AccountInfo, CacheDB, InMemoryDB},
 };
 use reth_chainspec::ForkCondition;
-use reth_consensus::Consensus as _;
+use reth_consensus::{Consensus as _, HeaderValidator as _};
 use reth_evm::{
     BlockExecutionError, BlockExecutionOutput, BlockExecutor, BlockExecutorFactory,
     ConfigureEngineEvm, ConfigureEvm, ConvertTx, ExecutableTxTuple,
 };
-use reth_primitives_traits::{RecoveredBlock, transaction::signed::SignedTransaction};
+use reth_primitives_traits::{
+    RecoveredBlock, SealedHeader, transaction::signed::SignedTransaction,
+};
 use serde::{Deserialize, Serialize};
 use std::{
     collections::{BTreeMap, BTreeSet},
@@ -384,6 +386,7 @@ fn execute_blocks(
     let evm_config = TempoEvmConfig::new(Arc::clone(&chainspec));
     let consensus = TempoConsensus::new(chainspec);
     let mut executed_blocks = Vec::new();
+    let mut previous_header: Option<SealedHeader<TempoHeader>> = None;
 
     for (block_idx, block) in blocks.iter().enumerate() {
         let hardfork = match hardfork_from_u8(block.context.hardfork) {
@@ -401,18 +404,35 @@ fn execute_blocks(
 
         let pre_block_state = encode_state(&db);
         let context = context_for_hardfork(&block.context, block.context.hardfork, chain_spec);
-        let recovered =
-            match recovered_block_from_context(&context, hardfork, &block.txs, &block.senders) {
-                Ok(recovered) => recovered,
-                Err(_) => {
-                    return finish_execution_result_from_state(
-                        false,
-                        ErrorClass::Rejected,
-                        pre_block_state,
-                        executed_blocks,
-                    );
-                }
-            };
+        let recovered = match recovered_block_from_context(
+            &context,
+            hardfork,
+            &block.txs,
+            &block.senders,
+            previous_header.as_ref().map(SealedHeader::hash),
+        ) {
+            Ok(recovered) => recovered,
+            Err(_) => {
+                return finish_execution_result_from_state(
+                    false,
+                    ErrorClass::Rejected,
+                    pre_block_state,
+                    executed_blocks,
+                );
+            }
+        };
+        if let Some(parent) = &previous_header
+            && consensus
+                .validate_header_against_parent(recovered.sealed_block().sealed_header(), parent)
+                .is_err()
+        {
+            return finish_execution_result_from_state(
+                false,
+                ErrorClass::Rejected,
+                pre_block_state,
+                executed_blocks,
+            );
+        }
         if consensus
             .validate_block_pre_execution(recovered.sealed_block())
             .is_err()
@@ -427,6 +447,7 @@ fn execute_blocks(
 
         // Enter through Tempo's production Engine Tree adapter. Because this is a recovered block,
         // `tx_iterator_for_payload` reuses the ingress-verified signer pool.
+        let current_header = recovered.sealed_block().clone_sealed_header();
         let payload = TempoExecutionData {
             block: recovered.into(),
             block_access_list: None,
@@ -500,6 +521,15 @@ fn execute_blocks(
                     .ok_or(HarnessBlockExecutionError::Conversion)?;
                 output.gas_used = gas_output.tx_gas_used();
                 output.effective_gas_price = original.effective_gas_price(Some(context.basefee));
+                invariants::validate_transaction_invariants(
+                    original,
+                    output.gas_used,
+                    context.timestamp,
+                )
+                .map_err(|detail| HarnessBlockExecutionError::Invariant {
+                    state: post_tx_state,
+                    detail,
+                })?;
                 outputs.push(output);
             }
             if outputs.len() != block.txs.len() {
@@ -527,6 +557,7 @@ fn execute_blocks(
                     &tx_outputs,
                 ));
                 db.commit_source(&block_result.state);
+                previous_header = Some(current_header);
             }
             Err(HarnessBlockExecutionError::Invariant { state, detail }) => {
                 return ExecutionResult {
@@ -741,6 +772,7 @@ fn recovered_block_from_context(
     hardfork: TempoHardfork,
     txs: &[TempoTxEnvelope],
     verified_senders: &[[u8; 20]],
+    parent_hash: Option<B256>,
 ) -> Result<RecoveredBlock<Block<TempoTxEnvelope, TempoHeader>>, String> {
     let transactions = txs.to_vec();
     let senders = if verified_senders.is_empty() {
@@ -765,6 +797,7 @@ fn recovered_block_from_context(
         shared_gas_limit: shared_gas_limit_for_hardfork(hardfork, context.gas_limit),
         timestamp_millis_part: context.timestamp_millis_part,
         inner: Header {
+            parent_hash: parent_hash.unwrap_or_default(),
             number: context.block_number,
             timestamp: context.timestamp,
             gas_limit: context.gas_limit,
@@ -1084,12 +1117,16 @@ mod tests {
     use tempo_chainspec::hardfork::TempoHardforks;
 
     fn legacy_tx(nonce: u64, gas_price: u128) -> TempoTxEnvelope {
+        legacy_tx_with_gas_limit(nonce, gas_price, 500_000)
+    }
+
+    fn legacy_tx_with_gas_limit(nonce: u64, gas_price: u128, gas_limit: u64) -> TempoTxEnvelope {
         let signed = Signed::new_unhashed(
             TxLegacy {
                 chain_id: Some(PINNED_CHAIN_ID),
                 nonce,
                 gas_price,
-                gas_limit: 500_000,
+                gas_limit,
                 to: TxKind::Call(Address::repeat_byte(0x11)),
                 value: U256::ZERO,
                 input: Bytes::new(),
@@ -1313,6 +1350,51 @@ mod tests {
         assert_eq!(receipts.len(), 1);
         assert!(receipts[0].success);
         assert!(result.output.storage_changes.is_empty());
+    }
+
+    #[test]
+    fn fsm_gas_cap_boundary_respects_block3() {
+        // An FSM mutator walks the semantic boundary instead of regenerating arbitrary bytes:
+        // below-cap -> at-cap -> over-cap.
+        for (gas_limit, expected_accepted) in
+            [(29_999_999, true), (30_000_000, true), (30_000_001, false)]
+        {
+            let tx = legacy_tx_with_gas_limit(0, 0, gas_limit);
+            let result = execute_block_input(&block_input_with_txs(&[tx]));
+            assert_eq!(result.accepted, expected_accepted, "gas_limit={gas_limit}");
+            assert_ne!(result.error, ErrorClass::Invariant);
+        }
+    }
+
+    #[test]
+    fn fsm_rejects_decreasing_block_timestamps() {
+        let chain_spec = ChainSpecInput {
+            hardforks: vec![tempo_fuzz_types::HardforkActivationInput {
+                hardfork: 13,
+                timestamp: 1,
+            }],
+            ..Default::default()
+        };
+        let block = |block_number, timestamp| BlockPayload {
+            context: BlockContextInput {
+                block_number,
+                timestamp,
+                hardfork: 13,
+                ..Default::default()
+            },
+            txs: Vec::new(),
+            senders: Vec::new(),
+        };
+        let request = BlockInput {
+            chain_spec,
+            pre_state: StateInput::default(),
+            blocks: vec![block(1, 100), block(2, 99)],
+        };
+
+        let result = execute_block_input(&request);
+
+        assert!(!result.accepted);
+        assert_eq!(result.error, ErrorClass::Rejected);
     }
 
     #[test]
