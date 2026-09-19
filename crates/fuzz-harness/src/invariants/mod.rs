@@ -27,6 +27,7 @@ pub(crate) fn validate_state_invariants(
 pub(crate) fn validate_transaction_invariants(
     tx: &TempoTxEnvelope,
     gas_used: u64,
+    block_timestamp: u64,
 ) -> Result<(), String> {
     use alloy_consensus::transaction::Transaction;
 
@@ -45,6 +46,25 @@ pub(crate) fn validate_transaction_invariants(
             "TEMPO-GAS-LIMIT gas_used={gas_used} gas_limit={}",
             tx.gas_limit()
         ));
+    }
+    if let Some(aa) = tx.as_aa() {
+        let aa = aa.tx();
+        if let Some(valid_after) = aa.valid_after
+            && block_timestamp < valid_after.get()
+        {
+            return Err(format!(
+                "TEMPO-TX-TIME-WINDOW transaction succeeded before valid_after={} block_timestamp={block_timestamp}",
+                valid_after.get()
+            ));
+        }
+        if let Some(valid_before) = aa.valid_before
+            && block_timestamp >= valid_before.get()
+        {
+            return Err(format!(
+                "TEMPO-TX-TIME-WINDOW transaction succeeded at/after valid_before={} block_timestamp={block_timestamp}",
+                valid_before.get()
+            ));
+        }
     }
     Ok(())
 }

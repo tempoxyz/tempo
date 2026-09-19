@@ -521,12 +521,15 @@ fn execute_blocks(
                     .ok_or(HarnessBlockExecutionError::Conversion)?;
                 output.gas_used = gas_output.tx_gas_used();
                 output.effective_gas_price = original.effective_gas_price(Some(context.basefee));
-                invariants::validate_transaction_invariants(original, output.gas_used).map_err(
-                    |detail| HarnessBlockExecutionError::Invariant {
-                        state: post_tx_state,
-                        detail,
-                    },
-                )?;
+                invariants::validate_transaction_invariants(
+                    original,
+                    output.gas_used,
+                    context.timestamp,
+                )
+                .map_err(|detail| HarnessBlockExecutionError::Invariant {
+                    state: post_tx_state,
+                    detail,
+                })?;
                 outputs.push(output);
             }
             if outputs.len() != block.txs.len() {
