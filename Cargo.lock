@@ -13481,6 +13481,7 @@ dependencies = [
  "pyroscope",
  "pyroscope_pprofrs",
  "rand 0.10.2",
+ "rayon",
  "reqwest 0.13.3",
  "reth-chainspec",
  "reth-cli",
