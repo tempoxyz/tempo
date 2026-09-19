@@ -3,7 +3,7 @@ use alloy_network::Network;
 use alloy_primitives::{Address, U256};
 use alloy_provider::{
     Identity, Provider, ProviderBuilder, ProviderLayer, RootProvider,
-    fillers::{JoinFill, TxFiller},
+    fillers::{JoinFill, NonceFiller, TxFiller},
 };
 use alloy_rpc_client::{BuiltInConnectionString, ConnectionConfig};
 use alloy_transport::{
@@ -304,29 +304,45 @@ pub trait TempoProviderBuilderExt<L, F>: Sized {
 
     /// Returns a provider builder with the recommended Tempo fillers and the random 2D nonce filler.
     ///
+    /// Call this before adding a wallet or custom fillers. Existing provider layers and
+    /// gas and chain ID fillers are preserved.
+    ///
     /// See [`Random2DNonceFiller`] for more information on random 2D nonces.
+    ///
+    /// Configured custom fillers cannot be silently discarded:
+    ///
+    /// ```compile_fail
+    /// use alloy_provider::{Identity, ProviderBuilder};
+    /// use tempo_alloy::{TempoNetwork, provider::TempoProviderBuilderExt};
+    ///
+    /// ProviderBuilder::new_with_network::<TempoNetwork>()
+    ///     .filler(Identity)
+    ///     .with_random_2d_nonces();
+    /// ```
     fn with_random_2d_nonces(
         self,
-    ) -> ProviderBuilder<
-        Identity,
-        JoinFill<Identity, TempoFillers<Random2DNonceFiller>>,
-        TempoNetwork,
-    >;
+    ) -> ProviderBuilder<L, JoinFill<Identity, TempoFillers<Random2DNonceFiller>>, TempoNetwork>
+    where
+        F: Into<JoinFill<Identity, TempoFillers<NonceFiller>>>;
 
     /// Returns a provider builder with the recommended Tempo fillers and the expiring nonce filler.
+    ///
+    /// Call this before adding a wallet or custom fillers. Existing provider layers and
+    /// gas and chain ID fillers are preserved.
     ///
     /// See [`ExpiringNonceFiller`] for more information on expiring nonces ([TIP-1009]).
     ///
     /// [TIP-1009]: <https://docs.tempo.xyz/protocol/tips/tip-1009>
     fn with_expiring_nonces(
         self,
-    ) -> ProviderBuilder<
-        Identity,
-        JoinFill<Identity, TempoFillers<ExpiringNonceFiller>>,
-        TempoNetwork,
-    >;
+    ) -> ProviderBuilder<L, JoinFill<Identity, TempoFillers<ExpiringNonceFiller>>, TempoNetwork>
+    where
+        F: Into<JoinFill<Identity, TempoFillers<NonceFiller>>>;
 
     /// Returns a provider builder with the recommended Tempo fillers and the nonce key filler.
+    ///
+    /// Call this before adding a wallet or custom fillers. Existing provider layers and
+    /// gas and chain ID fillers are preserved.
     ///
     /// The nonce key filler requires `nonce_key` to be set on the transaction request and
     /// fills the correct next nonce by querying the chain, with caching for batched sends.
@@ -334,7 +350,9 @@ pub trait TempoProviderBuilderExt<L, F>: Sized {
     /// See [`NonceKeyFiller`] for more information.
     fn with_nonce_key_filler(
         self,
-    ) -> ProviderBuilder<Identity, JoinFill<Identity, TempoFillers<NonceKeyFiller>>, TempoNetwork>;
+    ) -> ProviderBuilder<L, JoinFill<Identity, TempoFillers<NonceKeyFiller>>, TempoNetwork>
+    where
+        F: Into<JoinFill<Identity, TempoFillers<NonceFiller>>>;
 }
 
 impl<L, F> TempoProviderBuilderExt<L, F> for ProviderBuilder<L, F, TempoNetwork>
@@ -362,29 +380,41 @@ where
 
     fn with_random_2d_nonces(
         self,
-    ) -> ProviderBuilder<
-        Identity,
-        JoinFill<Identity, TempoFillers<Random2DNonceFiller>>,
-        TempoNetwork,
-    > {
-        ProviderBuilder::default().filler(TempoFillers::default())
+    ) -> ProviderBuilder<L, JoinFill<Identity, TempoFillers<Random2DNonceFiller>>, TempoNetwork>
+    where
+        F: Into<JoinFill<Identity, TempoFillers<NonceFiller>>>,
+    {
+        self.map_filler(|fillers| {
+            fillers
+                .into()
+                .map_right(|fillers| fillers.map_left(|_| Default::default()))
+        })
     }
 
     fn with_expiring_nonces(
         self,
-    ) -> ProviderBuilder<
-        Identity,
-        JoinFill<Identity, TempoFillers<ExpiringNonceFiller>>,
-        TempoNetwork,
-    > {
-        ProviderBuilder::default().filler(TempoFillers::default())
+    ) -> ProviderBuilder<L, JoinFill<Identity, TempoFillers<ExpiringNonceFiller>>, TempoNetwork>
+    where
+        F: Into<JoinFill<Identity, TempoFillers<NonceFiller>>>,
+    {
+        self.map_filler(|fillers| {
+            fillers
+                .into()
+                .map_right(|fillers| fillers.map_left(|_| Default::default()))
+        })
     }
 
     fn with_nonce_key_filler(
         self,
-    ) -> ProviderBuilder<Identity, JoinFill<Identity, TempoFillers<NonceKeyFiller>>, TempoNetwork>
+    ) -> ProviderBuilder<L, JoinFill<Identity, TempoFillers<NonceKeyFiller>>, TempoNetwork>
+    where
+        F: Into<JoinFill<Identity, TempoFillers<NonceFiller>>>,
     {
-        ProviderBuilder::default().filler(TempoFillers::default())
+        self.map_filler(|fillers| {
+            fillers
+                .into()
+                .map_right(|fillers| fillers.map_left(|_| Default::default()))
+        })
     }
 }
 
@@ -392,7 +422,11 @@ where
 mod tests {
     use alloy::sol_types::SolCall;
     use alloy_primitives::{Address, Bytes, U64, U256};
-    use alloy_provider::{Identity, ProviderBuilder, fillers::JoinFill, mock::Asserter};
+    use alloy_provider::{
+        Identity, ProviderBuilder, Stack,
+        fillers::{ChainIdFiller, JoinFill},
+        mock::Asserter,
+    };
     use tempo_contracts::precompiles::{
         IAccountKeychain::{
             CallScope as AbiCallScope, KeyInfo, SelectorRule as AbiSelectorRule, SignatureType,
@@ -426,20 +460,46 @@ mod tests {
 
     #[test]
     fn test_with_random_nonces() {
-        let _: ProviderBuilder<_, JoinFill<Identity, TempoFillers<Random2DNonceFiller>>, _> =
-            ProviderBuilder::new_with_network::<TempoNetwork>().with_random_2d_nonces();
+        let _: ProviderBuilder<
+            Stack<Identity, Identity>,
+            JoinFill<Identity, TempoFillers<Random2DNonceFiller>>,
+            _,
+        > = ProviderBuilder::new_with_network::<TempoNetwork>()
+            .layer(Identity)
+            .map_filler(|mut fillers| {
+                *fillers.right_mut().right_mut().right_mut() = ChainIdFiller::new(Some(42431));
+                fillers
+            })
+            .with_random_2d_nonces()
+            .map_filler(|fillers| {
+                assert_eq!(
+                    fillers.right().right().right(),
+                    &ChainIdFiller::new(Some(42431))
+                );
+                fillers
+            });
     }
 
     #[test]
     fn test_with_expiring_nonces() {
-        let _: ProviderBuilder<_, JoinFill<Identity, TempoFillers<ExpiringNonceFiller>>, _> =
-            ProviderBuilder::new_with_network::<TempoNetwork>().with_expiring_nonces();
+        let _: ProviderBuilder<
+            Stack<Identity, Identity>,
+            JoinFill<Identity, TempoFillers<ExpiringNonceFiller>>,
+            _,
+        > = ProviderBuilder::new_with_network::<TempoNetwork>()
+            .layer(Identity)
+            .with_expiring_nonces();
     }
 
     #[test]
     fn test_with_nonce_key_filler() {
-        let _: ProviderBuilder<_, JoinFill<Identity, TempoFillers<NonceKeyFiller>>, _> =
-            ProviderBuilder::new_with_network::<TempoNetwork>().with_nonce_key_filler();
+        let _: ProviderBuilder<
+            Stack<Identity, Identity>,
+            JoinFill<Identity, TempoFillers<NonceKeyFiller>>,
+            _,
+        > = ProviderBuilder::new_with_network::<TempoNetwork>()
+            .layer(Identity)
+            .with_nonce_key_filler();
     }
 
     #[tokio::test]
