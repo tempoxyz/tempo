@@ -431,17 +431,19 @@ jobs:
         env:
           AEGIS_DIAGNOSTICS: ${{ runner.temp }}/aegis-install-${{ github.run_id }}-${{ github.run_attempt }}
         run: |
+          mkdir -p "$AEGIS_DIAGNOSTICS"
           # Read privileged diagnostics into runner-owned files for artifact upload.
           # shellcheck disable=SC2024
-          mkdir -p "$AEGIS_DIAGNOSTICS"
-          sudo -n ss -ltnp 'sport = :443' > "$AEGIS_DIAGNOSTICS/listeners.txt" 2>&1 || true
-          sudo -n systemctl show aegis --property=ActiveState,SubState,MainPID,ExecMainStartTimestamp > "$AEGIS_DIAGNOSTICS/service-state.txt" 2>&1 || true
-          sudo -n journalctl -u aegis --since '10 minutes ago' --no-pager -n 2000 > "$AEGIS_DIAGNOSTICS/journal.txt" 2>&1 || true
-          if sudo -n test -f /var/log/aegis/service.jsonl; then
-            sudo -n tail -n 10000 /var/log/aegis/service.jsonl > "$AEGIS_DIAGNOSTICS/service.jsonl"
-          else
-            echo 'Aegis service.jsonl is absent or inaccessible' > "$AEGIS_DIAGNOSTICS/missing-log.txt"
-          fi
+          {
+            sudo -n ss -ltnp 'sport = :443' > "$AEGIS_DIAGNOSTICS/listeners.txt" 2>&1 || true
+            sudo -n systemctl show aegis --property=ActiveState,SubState,MainPID,ExecMainStartTimestamp > "$AEGIS_DIAGNOSTICS/service-state.txt" 2>&1 || true
+            sudo -n journalctl -u aegis --since '10 minutes ago' --no-pager -n 2000 > "$AEGIS_DIAGNOSTICS/journal.txt" 2>&1 || true
+            if sudo -n test -f /var/log/aegis/service.jsonl; then
+              sudo -n tail -n 10000 /var/log/aegis/service.jsonl > "$AEGIS_DIAGNOSTICS/service.jsonl"
+            else
+              echo 'Aegis service.jsonl is absent or inaccessible' > "$AEGIS_DIAGNOSTICS/missing-log.txt"
+            fi
+          }
 
       - name: Upload Aegis installation failure logs
         if: ${{ !cancelled() && steps.secure-runner.outcome == 'failure' }}
