@@ -219,10 +219,14 @@ fn new_payload_transport_error_is_withheld_then_retried() {
 }
 
 #[test_traced]
-fn rejected_notarized_fcu_does_not_advance_the_tracked_state() {
+fn rejected_notarized_fcu_is_fatal() {
     deterministic::Runner::default().start(|context| async move {
         let h = Harness::start_at_genesis(&context);
 
+        // The forkchoice update names a block the execution layer accepted
+        // through its new-payload request. A rejection means the executor's
+        // view of the execution layer has diverged from it: the node shuts
+        // down.
         let b1 = make_block(1, 1, GENESIS);
         let d1 = b1.digest();
         h.execution.script_fcu(
@@ -235,79 +239,44 @@ fn rejected_notarized_fcu_does_not_advance_the_tracked_state() {
         h.report_pending_head(2, 1, d1);
         h.wait_until(|| h.marshal.fulfill_subscription(d1, b1.clone()))
             .await;
-        h.wait_until(|| h.execution.fcus().len() == 2).await;
-        h.run_for(Duration::from_millis(10)).await;
 
+        h.actor
+            .await
+            .expect("actor should shut down cleanly on a rejected forkchoice update");
         assert!(
             h.execution.knows_block(d1),
             "the successful new-payload call must leave the block known to the EL",
         );
+        assert_eq!(h.execution.fcus().len(), 2);
         assert_eq!(
             h.execution.head(),
             GENESIS,
             "the rejected FCU must not move the EL head",
         );
-
-        // Re-anchor consensus on genesis. If the actor had advanced its own
-        // tracked head despite the rejected FCU, it would now issue a repoint.
-        h.report_pending_head(3, 0, GENESIS);
-        let candidate = make_block(3, 1, GENESIS);
-        assert!(
-            h.verify(round(3), candidate)
-                .await
-                .expect("the actor should continue serving validation")
-                .is_some(),
-        );
-        h.run_for(Duration::from_millis(10)).await;
-        assert_eq!(
-            h.execution.fcus().len(),
-            2,
-            "the actor and EL must agree that the head remained at genesis",
-        );
     });
 }
 
 #[test_traced]
-fn rejected_notarized_fcu_is_withheld_then_retried() {
+fn notarized_fcu_transport_error_is_fatal() {
     deterministic::Runner::default().start(|context| async move {
-        // An FCU rejection uses the shared notarized-block retry mechanism:
-        // the block is withheld for the rejection delay, and heartbeats drive
-        // the scheduler until it becomes eligible to be forwarded again.
-        let h = Harness::builder()
-            .harness_options(HarnessOptions {
-                fcu_heartbeat_interval: Duration::from_millis(200),
-                ..Default::default()
-            })
-            .start(&context);
+        let h = Harness::start_at_genesis(&context);
 
         let b1 = make_block(1, 1, GENESIS);
         let d1 = b1.digest();
-        let state = ForkchoiceState::from_finalized_head(GENESIS, d1);
         h.execution.script_fcu(
-            state,
-            Ok(PayloadStatusEnum::Invalid {
-                validation_error: "transient".into(),
-            }),
+            ForkchoiceState::from_finalized_head(GENESIS, d1),
+            Err("connection closed"),
         );
-        h.execution.script_fcu(state, Ok(PayloadStatusEnum::Valid));
 
         h.report_pending_head(2, 1, d1);
         h.wait_until(|| h.marshal.fulfill_subscription(d1, b1.clone()))
             .await;
-        h.wait_until(|| h.execution.new_payloads() == vec![d1])
-            .await;
 
-        h.run_for(Duration::from_secs(5)).await;
-        assert_eq!(
-            h.execution.new_payloads(),
-            vec![d1],
-            "a rejected FCU must not trigger a tight convergence retry",
-        );
+        h.actor
+            .await
+            .expect("actor should shut down cleanly on a forkchoice transport error");
+        assert_eq!(h.execution.new_payloads(), vec![d1]);
         assert_eq!(h.execution.head(), GENESIS);
-
-        h.run_for(Duration::from_secs(4)).await;
-        h.wait_until(|| h.execution.head() == d1).await;
-        assert_eq!(h.execution.new_payloads(), vec![d1, d1]);
     });
 }
 
