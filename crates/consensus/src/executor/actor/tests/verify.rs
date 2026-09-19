@@ -99,9 +99,10 @@ fn older_verification_completion_does_not_restore_its_parent_target() {
         release
             .send(())
             .expect("verification should still be gated");
-        let _ = verify
-            .await
-            .expect_err("the newer build superseded verification");
+        assert!(
+            verify.await.unwrap().is_some(),
+            "the newer build does not displace the in-flight verification"
+        );
         build.await.expect("newer build should complete on genesis");
         assert_eq!(h.execution.head(), GENESIS);
         assert!(
@@ -266,7 +267,9 @@ fn syncing_below_the_finalized_tip_abandons_verification() {
         h.deliver_tip(round(3), 3, d3);
         h.execution
             .script_new_payload(d2, Ok(PayloadStatusEnum::Syncing));
-        assert!(h.verify(round(2), b2.clone()).await.unwrap().is_none());
+        // Requested from a round above finality, so the request is kept and
+        // the walk itself has to notice the conflict.
+        assert!(h.verify(round(4), b2.clone()).await.unwrap().is_none());
         assert_eq!(h.execution.new_payloads(), vec![d1, d2]);
         assert!(h.marshal.subscribe_log().is_empty());
 
@@ -326,17 +329,17 @@ fn new_payload_engine_error_is_fatal() {
 }
 
 #[test_traced]
-fn newer_round_supersedes_a_queued_request() {
+fn queued_verifications_from_different_rounds_both_complete() {
     deterministic::Runner::default().start(|context| async move {
         let mut h = Harness::start_at_genesis(&context);
 
         let b1 = make_block(1, 1, GENESIS);
         let b2a = make_block(2, 2, b1.digest());
         let b2b = make_block(3, 2, b1.digest());
-        let d1 = b1.digest();
+        let (d1, d2a, d2b) = (b1.digest(), b2a.digest(), b2b.digest());
 
-        // Keep the engine slot occupied so both requests arbitrate in the
-        // queued slot before either verification starts.
+        // Keep the engine slot occupied so both requests queue before
+        // either verification starts.
         let release = h
             .execution
             .script_delayed_new_payload(d1, Ok(PayloadStatusEnum::Valid));
@@ -345,37 +348,28 @@ fn newer_round_supersedes_a_queued_request() {
         h.wait_until(|| h.execution.new_payloads() == vec![d1])
             .await;
 
-        let stale = h.verify(round(2), b2a);
-        futures::pin_mut!(stale);
-        let sleep = h.run_for(Duration::from_millis(50));
-        futures::pin_mut!(sleep);
-        let stale = match futures::future::select(stale, sleep).await {
-            Either::Left(_) => panic!("request resolved before being superseded"),
-            Either::Right(((), stale)) => stale,
-        };
-
-        let newer = h.verify(round(3), b2b);
-        futures::pin_mut!(newer);
-        let sleep = h.run_for(Duration::from_millis(50));
-        futures::pin_mut!(sleep);
-        let newer = match futures::future::select(newer, sleep).await {
-            Either::Left(_) => panic!("request resolved before the parent was delivered"),
-            Either::Right(((), newer)) => newer,
-        };
-
-        // The newer round replaced the queued request, dropping its
-        // response channel.
-        let _ = stale.await.expect_err("the superseded request must fail");
+        let mut older = Box::pin(h.verify(round(2), b2a));
+        let mut newer = Box::pin(h.verify(round(3), b2b));
+        assert!(futures::poll!(&mut older).is_pending());
+        assert!(futures::poll!(&mut newer).is_pending());
+        h.run_for(Duration::from_millis(50)).await;
+        assert!(futures::poll!(&mut older).is_pending());
+        assert!(futures::poll!(&mut newer).is_pending());
+        assert_eq!(h.execution.new_payloads(), vec![d1]);
 
         release.send(()).unwrap();
         finalized
             .await
             .expect("finalized block should be acknowledged");
-        let verdict = newer.await.expect("verification should complete");
-        assert!(verdict.is_some(), "the superseding request wins the slot");
+        assert!(newer.await.unwrap().is_some());
+        assert!(older.await.unwrap().is_some());
+        assert_eq!(
+            h.execution.new_payloads(),
+            vec![d1, d2b, d2a],
+            "the newest round probes first, then the older one",
+        );
     });
 }
-
 #[test_traced]
 fn a_later_build_waits_for_canceled_verification_delivery() {
     deterministic::Runner::default().start(|context| async move {
@@ -418,5 +412,37 @@ fn a_later_build_waits_for_canceled_verification_delivery() {
         h.wait_until(|| h.execution.head() == d1).await;
         assert_eq!(h.execution.new_payloads(), vec![d1, d1]);
         assert!(h.marshal.subscribe_log().is_empty());
+    });
+}
+
+#[test_traced]
+fn verifications_at_or_below_the_finalized_round_are_dropped() {
+    deterministic::Runner::default().start(|context| async move {
+        let mut h = Harness::start_at_genesis(&context);
+
+        // Both candidates wait for their missing parents. Finality then
+        // passes the older one's round:
+        // its request is dropped and its fetch released; the newer one keeps
+        // waiting.
+        let parent_a = make_block(1, 1, GENESIS);
+        let candidate_a = make_block(2, 2, parent_a.digest());
+        let parent_b = make_block(3, 1, GENESIS);
+        let candidate_b = make_block(4, 2, parent_b.digest());
+        let (pa, pb) = (parent_a.digest(), parent_b.digest());
+        let mut verify_a = Box::pin(h.verify(round(2), candidate_a));
+        let mut verify_b = Box::pin(h.verify(round(4), candidate_b));
+        assert!(futures::poll!(&mut verify_a).is_pending());
+        assert!(futures::poll!(&mut verify_b).is_pending());
+        h.wait_until(|| h.marshal.open_subscriptions() == vec![(pa, round(1)), (pb, round(3))])
+            .await;
+
+        let finalized = make_block(2, 1, GENESIS);
+        h.deliver_tip(round(2), 1, finalized.digest());
+        let _ = verify_a
+            .await
+            .expect_err("a verification at the finalized round is dropped");
+        h.wait_until(|| h.marshal.open_subscriptions() == vec![(pb, round(3))])
+            .await;
+        assert!(futures::poll!(&mut verify_b).is_pending());
     });
 }
