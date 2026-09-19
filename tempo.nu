@@ -829,7 +829,9 @@ def run-bench-single [
 }
 
 # Upload a samply profile (.json.gz) to Firefox Profiler and return the short URL.
-# Returns null on failure. Uses the same approach as reth-bench.
+# Returns null on failure. Uses the same approach as reth-bench. Profiles above the
+# profiler's upload limit are shrunk first (see contrib/bench/upload-samply-profile.sh);
+# the script's stderr carries the shrink summary and any HTTP error, so it is echoed.
 def upload-samply-profile [profile_path: string] {
     if not ($profile_path | path exists) {
         print $"  Warning: profile not found: ($profile_path)"
@@ -842,8 +844,12 @@ def upload-samply-profile [profile_path: string] {
     let script = $"($BENCH_DIR)/upload-samply-profile.sh"
     let result = (bash $script $profile_path | complete)
 
+    let diagnostics = ($result.stderr | str trim)
+    if $diagnostics != "" {
+        print ($diagnostics | lines | each { |line| $"    ($line)" } | str join "\n")
+    }
     if $result.exit_code != 0 {
-        print $"  Warning: failed to upload profile"
+        print $"  Warning: failed to upload profile \(exit code ($result.exit_code)\)"
         return null
     }
 
