@@ -34,6 +34,87 @@ use tempo_primitives::{
 };
 
 #[tokio::test(flavor = "multi_thread")]
+async fn raw_rpc_uses_shared_ingress_before_recovery() -> eyre::Result<()> {
+    use alloy::providers::{Provider, ProviderBuilder};
+    use alloy_primitives::{B256, Bytes};
+    use reth_node_api::FullNodeComponents;
+    use reth_transaction_pool::{BatchTxConfig, batcher::IngressError};
+    use std::time::Duration;
+
+    let chain_spec = TempoChainSpec::from_genesis(serde_json::from_str(include_str!(
+        "../assets/test-genesis.json"
+    ))?);
+    let config = NodeConfig::new(Arc::new(chain_spec))
+        .with_unused_ports()
+        .dev()
+        .with_rpc(RpcServerArgs::default().with_unused_ports().with_http());
+    let (created, ingress) = tokio::sync::oneshot::channel();
+    let handle = NodeBuilder::new(config)
+        .testing_node(Runtime::test())
+        .node(TempoNode::default())
+        .on_component_initialized(move |components| {
+            let _ = created.send(components.transaction_batcher().unwrap().clone());
+            Ok(())
+        })
+        .launch()
+        .await?;
+    let ingress = ingress.await?;
+    let paused = ingress.pause_handle().pause();
+    let held = (1..BatchTxConfig::default().max_transactions)
+        .map(|_| ingress.reserve_rpc(1).unwrap())
+        .collect::<Vec<_>>();
+    let provider = ProviderBuilder::new().connect_http(
+        handle
+            .node
+            .rpc_server_handle()
+            .http_url()
+            .unwrap()
+            .parse()?,
+    );
+    let rpc = provider.clone();
+    let mut first = tokio::spawn(async move {
+        rpc.raw_request::<_, B256>("eth_sendRawTransaction".into(), [Bytes::new()])
+            .await
+    });
+    tokio::time::timeout(Duration::from_secs(10), async {
+        loop {
+            match ingress.reserve_rpc(1) {
+                Err(IngressError::Full) => break,
+                Ok(permit) => drop(permit),
+                Err(error) => panic!("ingress stopped: {error}"),
+            }
+            tokio::select! {
+                result = &mut first => panic!("RPC completed before admission: {result:?}"),
+                _ = tokio::time::sleep(Duration::from_millis(1)) => {}
+            }
+        }
+    })
+    .await?;
+    // An empty transaction has entered admission but cannot be decoded during the pause.
+    assert!(
+        tokio::time::timeout(Duration::from_millis(20), &mut first)
+            .await
+            .is_err()
+    );
+    let error = provider
+        .raw_request::<_, B256>("eth_sendRawTransaction".into(), [Bytes::new()])
+        .await
+        .unwrap_err();
+    assert!(
+        error
+            .to_string()
+            .contains("transaction ingress capacity exhausted"),
+        "{error}"
+    );
+    drop((held, paused));
+    let error = tokio::time::timeout(Duration::from_secs(10), first)
+        .await??
+        .unwrap_err();
+    assert!(error.to_string().contains("empty"), "{error}");
+    Ok(())
+}
+
+#[tokio::test(flavor = "multi_thread")]
 async fn submit_pending_tx() -> eyre::Result<()> {
     reth_tracing::init_test_tracing();
     let runtime = Runtime::test();

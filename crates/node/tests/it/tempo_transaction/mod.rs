@@ -73,7 +73,10 @@ async fn run_all_matrices(env: &mut impl TestEnv) -> eyre::Result<()> {
 #[tokio::test(flavor = "multi_thread")]
 async fn test_matrices_local(schedule: ForkSchedule) -> eyre::Result<()> {
     run_schedule_cases(schedule, |schedule| async move {
-        run_all_matrices(&mut local::Localnet::with_schedule(schedule).await?).await?;
+        let mut env = local::Localnet::with_schedule(schedule).await?;
+        // The combined in-process RPC matrices contain large generic futures. Keep their
+        // state off the test thread stack while polling the nested access-key cases.
+        Box::pin(run_all_matrices(&mut env)).await?;
 
         Ok(())
     })
