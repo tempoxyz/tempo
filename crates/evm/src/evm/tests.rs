@@ -454,6 +454,17 @@ fn create_funded_evm_t7_with_timestamp(address: Address, timestamp: u64) -> Temp
     evm
 }
 
+/// Create an EVM at a specific Tempo hardfork and timestamp with a funded account.
+fn create_funded_evm_at_spec_with_timestamp(
+    address: Address,
+    timestamp: u64,
+    spec: TempoHardfork,
+) -> TempoEvm<'static> {
+    let mut evm = configured_evm(spec, timestamp, false, InMemoryDB::default());
+    fund_account(&mut evm, address);
+    evm
+}
+
 /// Create an EVM with a specific timestamp and a funded account.
 fn create_funded_evm_with_timestamp(address: Address, timestamp: u64) -> TempoEvm<'static> {
     let mut evm = create_evm_with_timestamp(timestamp);
@@ -4336,6 +4347,58 @@ fn test_expiring_nonce_indexed_path_does_not_settle_storage_credits() -> eyre::R
     Ok(())
 }
 
+/// TIP-1106: expiring nonces become opaque discriminators at T12.
+#[test]
+fn test_expiring_nonce_discriminator_activation() -> eyre::Result<()> {
+    use tempo_primitives::transaction::TEMPO_EXPIRING_NONCE_KEY;
+
+    let key_pair = P256KeyPair::random();
+    let caller = key_pair.address;
+    let timestamp = 1_000u64;
+
+    let build_env = |nonce| -> eyre::Result<_> {
+        let tx = TxBuilder::new()
+            .call_identity(&[])
+            .nonce_key(TEMPO_EXPIRING_NONCE_KEY)
+            .nonce(nonce)
+            .valid_before(Some(timestamp + 30))
+            .gas_limit(500_000)
+            .build();
+        let signed_tx = key_pair.sign_tx(tx)?;
+        Ok(Recovered::new_unchecked(
+            TempoTxEnv::from(TempoTxEnvelope::AA(signed_tx)),
+            caller,
+        ))
+    };
+
+    let mut pre_activation =
+        create_funded_evm_at_spec_with_timestamp(caller, timestamp, TempoHardfork::T11);
+    assert!(
+        pre_activation.transact(&build_env(1)?).is_err(),
+        "T11 must reject a non-zero expiring nonce"
+    );
+
+    for nonce in [0, 1, u64::MAX] {
+        let mut evm =
+            create_funded_evm_at_spec_with_timestamp(caller, timestamp, TempoHardfork::T12);
+        let result = evm.transact(&build_env(nonce)?)?.commit();
+        assert!(
+            result.is_success(),
+            "T12 must accept expiring nonce discriminator {nonce}"
+        );
+        assert_eq!(
+            evm.overlay_db()
+                .account_info(&caller)
+                .map(|account| account.nonce)
+                .unwrap_or_default(),
+            0,
+            "expiring nonce discriminator must not mutate the protocol nonce"
+        );
+    }
+
+    Ok(())
+}
+
 /// 2D nonce writes are charged manually by intrinsic gas and must not use TIP-1060 accounting.
 #[test]
 fn test_2d_nonce_preexecution_does_not_settle_nonce_storage_credits() -> eyre::Result<()> {
@@ -4532,7 +4595,11 @@ fn test_t4_reverting_create_refunds_state_gas_like_inner_create() -> eyre::Resul
 
         let result = evm.transact_commit(tx_env)?;
         if top_level {
-            assert!(!result.is_success(), "top-level CREATE should revert");
+            assert_eq!(
+                result.stop,
+                InstrStop::Revert,
+                "top-level CREATE should revert"
+            );
         } else {
             assert!(
                 result.is_success(),

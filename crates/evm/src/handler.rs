@@ -1173,8 +1173,10 @@ fn apply_nonce(
         // - Pre-T1B: use tx_hash for backwards-compatible behavior.
         // - T1B+: use the sender-scoped tx identifier (keccak256(encode_for_signing || sender))
         //   to prevent replay via different fee payer signatures.
-        // Expiring nonce txs must have nonce == 0
-        if tx.nonce != 0 {
+        // Before TIP-1106 activates, expiring nonce txs must have nonce == 0.
+        // At T12+, the nonce is an opaque discriminator committed to by the
+        // signing and replay-protection hashes.
+        if !spec.is_t12() && tx.nonce != 0 {
             return Err(invalid(TempoInvalidTransaction::ExpiringNonceNonceNotZero));
         }
         let valid_before = tx
@@ -1470,7 +1472,9 @@ fn handle(
         tx.gas_limit,
         request.host.block().gas_limit,
     )?;
-    validate_nonce_not_overflow(tx.nonce)?;
+    if !(spec.is_t12() && tx.nonce_key == TEMPO_EXPIRING_NONCE_KEY) {
+        validate_nonce_not_overflow(tx.nonce)?;
+    }
     for call in &tx.calls {
         validate_create_initcode(request.host.version(), call.to, &call.input)?;
     }
