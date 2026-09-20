@@ -206,9 +206,11 @@ impl AA2dPool {
         }
 
         self.expiring_nonce_eviction_order.clear();
-        for tx in self.expiring_nonce_txs.values() {
+        let base_fee = self.base_fee;
+        for tx in self.expiring_nonce_txs.values_mut() {
+            tx.refresh_eviction_key(base_fee);
             self.expiring_nonce_eviction_order.insert(
-                ExpiringNonceEvictionKey::from_pending_with_base_fee(tx, self.base_fee),
+                ExpiringNonceEvictionKey::from_pending_with_base_fee(tx, base_fee),
             );
         }
     }
@@ -280,7 +282,7 @@ impl AA2dPool {
 
         // assume the transaction is not pending, will get updated later
         let tx = Arc::new(AA2dInternalTransaction {
-            inner: AA2dStoredTransaction::new(self.next_id(), transaction.clone()),
+            inner: AA2dStoredTransaction::new(self.next_id(), transaction.clone(), self.base_fee),
             is_pending: AtomicBool::new(false),
         });
 
@@ -508,14 +510,13 @@ impl AA2dPool {
         }
 
         // Create pending transaction
-        let pending_tx = AA2dStoredTransaction {
-            submission_id: {
-                let id = self.submission_id;
-                self.submission_id = self.submission_id.wrapping_add(1);
-                id
-            },
-            transaction: transaction.clone(),
+        let submission_id = {
+            let id = self.submission_id;
+            self.submission_id = self.submission_id.wrapping_add(1);
+            id
         };
+        let pending_tx =
+            AA2dStoredTransaction::new(submission_id, transaction.clone(), self.base_fee);
         let eviction_key =
             ExpiringNonceEvictionKey::from_pending_with_base_fee(&pending_tx, self.base_fee);
         let pending_tx_update = if self.new_transaction_notifier.receiver_count() > 0 {
@@ -1873,14 +1874,14 @@ struct IndependentTransactions {
 }
 
 impl IndependentTransactions {
-    fn insert(&mut self, tx: AA2dStoredTransaction) {
+    fn insert(&mut self, mut tx: AA2dStoredTransaction) {
         let id = tx
             .transaction
             .transaction
             .aa_transaction_id()
             .expect("is AA transaction");
 
-        let key = tx.eviction_key(self.base_fee);
+        let key = tx.refresh_eviction_key(self.base_fee);
         if let Some(old) = self.transactions.insert(id.seq_id, tx) {
             self.order.remove(&old.eviction_key(self.base_fee));
         }
@@ -1910,11 +1911,10 @@ impl IndependentTransactions {
     fn on_new_base_fee(&mut self, base_fee: u64) {
         self.base_fee = base_fee;
         self.order.clear();
-        for (seq_id, tx) in &self.transactions {
-            self.order.insert(
-                tx.eviction_key(base_fee),
-                AA2dTransactionId::new(*seq_id, tx.transaction.nonce()),
-            );
+        for (seq_id, tx) in &mut self.transactions {
+            let key = tx.refresh_eviction_key(base_fee);
+            self.order
+                .insert(key, AA2dTransactionId::new(*seq_id, tx.transaction.nonce()));
         }
     }
 
@@ -1978,25 +1978,60 @@ impl Default for AA2dPoolConfig {
 struct AA2dStoredTransaction {
     submission_id: u64,
     transaction: Arc<ValidPoolTransaction<TempoPooledTransaction>>,
+    /// Eviction key cached for [`Self::cached_base_fee`].
+    ///
+    /// The priority is a pure function of the transaction and the base fee, so the cached key is
+    /// interchangeable with a freshly computed one as long as the base fee matches. Insertion and
+    /// removal both use the pool base fee, which keeps removals off the priority recompute.
+    cached_eviction_key: EvictionOrderKey,
+    /// Base fee [`Self::cached_eviction_key`] was computed for.
+    cached_base_fee: u64,
 }
 
 impl AA2dStoredTransaction {
     fn new(
         submission_id: u64,
         transaction: Arc<ValidPoolTransaction<TempoPooledTransaction>>,
+        base_fee: u64,
     ) -> Self {
+        let cached_eviction_key = Self::compute_eviction_key(&transaction, submission_id, base_fee);
         Self {
             submission_id,
             transaction,
+            cached_eviction_key,
+            cached_base_fee: base_fee,
         }
+    }
+
+    fn compute_eviction_key(
+        transaction: &ValidPoolTransaction<TempoPooledTransaction>,
+        submission_id: u64,
+        base_fee: u64,
+    ) -> EvictionOrderKey {
+        EvictionOrderKey::new(
+            TempoTipOrdering::default().priority(&transaction.transaction, base_fee),
+            submission_id,
+        )
     }
 
     /// Returns the eviction key for this transaction.
     fn eviction_key(&self, base_fee: u64) -> EvictionOrderKey {
-        EvictionOrderKey::new(
-            TempoTipOrdering::default().priority(&self.transaction.transaction, base_fee),
-            self.submission_id,
-        )
+        if base_fee == self.cached_base_fee {
+            return self.cached_eviction_key.clone();
+        }
+
+        Self::compute_eviction_key(&self.transaction, self.submission_id, base_fee)
+    }
+
+    /// Caches the eviction key for `base_fee` and returns it.
+    fn refresh_eviction_key(&mut self, base_fee: u64) -> EvictionOrderKey {
+        if base_fee != self.cached_base_fee {
+            self.cached_eviction_key =
+                Self::compute_eviction_key(&self.transaction, self.submission_id, base_fee);
+            self.cached_base_fee = base_fee;
+        }
+
+        self.cached_eviction_key.clone()
     }
 
     /// Returns the transaction's reported in-memory size.
@@ -2357,10 +2392,11 @@ impl BestAA2dTransactions {
                     let previous = self.by_id.insert(
                         id,
                         Arc::new(AA2dInternalTransaction {
-                            inner: AA2dStoredTransaction {
-                                submission_id: tx.submission_id,
-                                transaction: tx.transaction,
-                            },
+                            inner: AA2dStoredTransaction::new(
+                                tx.submission_id,
+                                tx.transaction,
+                                self.base_fee,
+                            ),
                             is_pending: AtomicBool::new(true),
                         }),
                     );
