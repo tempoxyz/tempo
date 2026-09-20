@@ -52,7 +52,7 @@ jobs:
       id-token: write
       contents: read
       issues: write
-      pull-requests: read
+      pull-requests: write
     steps:
       - name: Secure runner
         uses: tempoxyz/gh-actions/actions/secure-runner@0a60d757d0f4725a34f22f7b9ebf7b91b4b00bcf
