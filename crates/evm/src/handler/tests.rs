@@ -636,66 +636,36 @@ fn calculate_initial_tx_gas(
     access_list_storage: u64,
     authorization_list: u64,
 ) -> InitialAndFloorGas {
-    let params =
-        tempo_chainspec::gas_params::version(spec, TempoHardfork::Genesis, false).gas_params;
-    let tokens = calldata_tokens(input);
-    let mut initial_gas = u64::from(params[GasId::TxBaseStipend])
-        + tokens * u64::from(params[GasId::TxTokenCost])
-        + access_list_accounts * u64::from(params[GasId::TxAccessListAddressCost])
-        + access_list_storage * u64::from(params[GasId::TxAccessListStorageKeyCost])
-        + authorization_list * u64::from(params[GasId::TxEip7702PerEmptyAccountCost]);
-    let initial_state_gas = 0;
-    if is_create {
-        initial_gas += u64::from(params[GasId::Create]) + params.initcode_cost(input.len());
-    }
-    let floor_gas = if spec.enables(SpecId::PRAGUE) {
-        u64::from(params[GasId::TxFloorCostBase])
-            + tokens * u64::from(params[GasId::TxFloorCostPerToken])
+    let version = tempo_chainspec::gas_params::version(spec, TempoHardfork::Genesis, false);
+    let input = Bytes::copy_from_slice(input);
+    let to = if is_create {
+        TxKind::Create
     } else {
-        0
+        TxKind::Call(Address::ZERO)
     };
+    let initial_gas = evm2::ethereum::intrinsic_gas(
+        &version,
+        SIGNER,
+        to,
+        &input,
+        access_list_accounts,
+        access_list_storage,
+        U256::ZERO,
+    ) + authorization_list
+        * u64::from(version.gas_params.get(GasId::TxEip7702PerEmptyAccountCost));
+    let floor_gas = evm2::ethereum::floor_gas(
+        &version,
+        SIGNER,
+        to,
+        &input,
+        access_list_accounts,
+        access_list_storage,
+        U256::ZERO,
+    );
     InitialAndFloorGas {
         initial_gas,
-        initial_state_gas,
+        initial_state_gas: 0,
         floor_gas,
-    }
-}
-
-trait TestGasParamsExt {
-    fn initial_tx_gas(
-        &self,
-        input: &[u8],
-        is_create: bool,
-        access_list_accounts: u64,
-        access_list_storage: u64,
-        authorization_list: u64,
-    ) -> InitialAndFloorGas;
-}
-
-impl TestGasParamsExt for GasParams {
-    fn initial_tx_gas(
-        &self,
-        input: &[u8],
-        is_create: bool,
-        access_list_accounts: u64,
-        access_list_storage: u64,
-        authorization_list: u64,
-    ) -> InitialAndFloorGas {
-        let tokens = calldata_tokens(input);
-        let mut initial_gas = u64::from(self[GasId::TxBaseStipend])
-            + tokens * u64::from(self[GasId::TxTokenCost])
-            + access_list_accounts * u64::from(self[GasId::TxAccessListAddressCost])
-            + access_list_storage * u64::from(self[GasId::TxAccessListStorageKeyCost])
-            + authorization_list * u64::from(self[GasId::TxEip7702PerEmptyAccountCost]);
-        let initial_state_gas = 0;
-        if is_create {
-            initial_gas += u64::from(self[GasId::Create]) + self.initcode_cost(input.len());
-        }
-        InitialAndFloorGas {
-            initial_gas,
-            initial_state_gas,
-            floor_gas: 0,
-        }
     }
 }
 
@@ -1102,17 +1072,29 @@ fn test_aa_gas_floor_gas_prague() {
 
 #[test]
 fn test_zero_value_transfer() {
-    assert!(
-        intrinsic(
-            TempoHardfork::Genesis,
-            TempoTransaction {
-                calls: vec![call(Bytes::new())],
+    let mut evm = test_evm(TempoHardfork::Genesis);
+    let env: TempoTxEnv = Recovered::new_unchecked(
+        TempoTxEnvelope::Legacy(Signed::new_unhashed(
+            TxLegacy {
+                chain_id: Some(1),
+                gas_limit: 21_000,
+                to: TxKind::Call(Address::random()),
+                value: U256::from(1000),
                 ..Default::default()
             },
-            secp256k1_signature(),
-        )
-        .is_ok()
-    );
+            Signature::test_signature(),
+        )),
+        SIGNER,
+    )
+    .into();
+    let error = evm
+        .transact(&Recovered::new_unchecked(env, SIGNER))
+        .unwrap_err();
+
+    assert!(matches!(
+        error.external_ref::<TempoInvalidTransaction>(),
+        Some(TempoInvalidTransaction::ValueTransferNotAllowed)
+    ));
 }
 
 #[test]
@@ -3366,7 +3348,7 @@ mod keychain {
         let (admin_signer, admin_key) = generate_keypair();
         let user = Address::random();
         let child_key = Address::random();
-        let gas_limit = 100_000;
+        let gas_limit = 2_000_000;
         let fee = U256::from(gas_limit);
         let child_spending_limit = fee - U256::ONE;
 
@@ -3380,14 +3362,32 @@ mod keychain {
                 }])
                 .with_account(user),
         );
-        let (mut evm, env) = make_evm(
+        let (mut evm, _) = make_evm(
             user,
             admin_key,
-            Some(signed),
+            Some(signed.clone()),
             TempoHardfork::T6,
             None,
             false,
         );
+        let env: TempoTxEnv = Recovered::new_unchecked(
+            TempoTxEnvelope::AA(AASigned::new_unhashed(
+                TempoTransaction {
+                    chain_id: 1,
+                    fee_token: Some(tempo_contracts::precompiles::DEFAULT_FEE_TOKEN),
+                    max_priority_fee_per_gas: 1_000_000_000_000,
+                    max_fee_per_gas: 1_000_000_000_000,
+                    gas_limit,
+                    calls: vec![call(Bytes::new())],
+                    key_authorization: Some(signed),
+                    ..Default::default()
+                },
+                TempoSignature::Keychain(KeychainSignature::new(user, test_sig())),
+            )),
+            user,
+        )
+        .into();
+        let env = env.with_simulation_overrides(B256::ZERO, None, Some(admin_key));
 
         let env_result = validate_keychain_env(&env, 1, TempoHardfork::T6);
         assert!(
@@ -3396,16 +3396,22 @@ mod keychain {
         );
 
         StorageCtx::enter_evm_without_tip1060_accounting(&mut evm, || {
+            TIP20Setup::path_usd(user)
+                .with_issuer(user)
+                .with_mint(user, fee * U256::from(2))
+                .apply()
+                .expect("pathUSD setup succeeds");
+
             let mut keychain = AccountKeychain::new();
             keychain
                 .authorize_admin_key(user, admin_key, PrecompileSignatureType::Secp256k1, None)
                 .expect("root authorizes admin key");
         });
 
-        let result = validate_against_state_with_fee(&mut evm, &env, fee);
+        let result = evm.transact(&Recovered::new_unchecked(env, user));
         assert!(
             result.is_ok(),
-            "admin delegation should not precharge fees against child key limits, got: {result:?}"
+            "admin delegation should not charge fees against child key limits, got: {result:?}"
         );
     }
 
@@ -3538,7 +3544,7 @@ mod keychain {
             caller,
             PrimitiveSignature::Secp256k1(Signature::test_signature()),
         ));
-        let (_, env) = make_evm(
+        let (mut evm, env) = make_evm(
             caller,
             Address::ZERO,
             None,
@@ -3546,21 +3552,20 @@ mod keychain {
             Some(v1),
             false,
         );
-        assert!(
-            env.as_aa()
-                .unwrap()
-                .inner()
-                .signature()
-                .validate_version(true)
-                .is_err()
-        );
+        let error = evm
+            .transact(&Recovered::new_unchecked(env, caller))
+            .unwrap_err();
+        assert!(matches!(
+            error.external_ref::<TempoInvalidTransaction>(),
+            Some(TempoInvalidTransaction::LegacyKeychainSignature)
+        ));
 
         // V2 rejected pre-T1C
         let v2 = TempoSignature::Keychain(KeychainSignature::new(
             caller,
             PrimitiveSignature::Secp256k1(Signature::test_signature()),
         ));
-        let (_, env) = make_evm(
+        let (mut evm, env) = make_evm(
             caller,
             Address::ZERO,
             None,
@@ -3568,14 +3573,13 @@ mod keychain {
             Some(v2),
             false,
         );
-        assert!(
-            env.as_aa()
-                .unwrap()
-                .inner()
-                .signature()
-                .validate_version(false)
-                .is_err()
-        );
+        let error = evm
+            .transact(&Recovered::new_unchecked(env, caller))
+            .unwrap_err();
+        assert!(matches!(
+            error.external_ref::<TempoInvalidTransaction>(),
+            Some(TempoInvalidTransaction::V2KeychainBeforeActivation)
+        ));
     }
 
     #[test]
@@ -3714,34 +3718,81 @@ mod keychain {
 
 #[test]
 fn test_state_gas_standard_create_tx_populates_initial_state_gas() {
-    // TIP-1016 is opt-in via amsterdam_eip8037; manually enable for this test.
-    let gas_params = tempo_gas_params(TempoHardfork::T4);
-    let initcode = Bytes::from(vec![0x60, 0x80]);
-
-    let init_gas = gas_params.initial_tx_gas(
-        &initcode, true, // is_create
-        0, 0, 0,
+    let mut version = tempo_chainspec::gas_params::version(SpecId::OSAKA, TempoHardfork::T4, true);
+    version.chain_id = 1;
+    version.features.remove(EvmFeatures::BALANCE_CHECK);
+    version.features.remove(EvmFeatures::BALANCE_TOP_UP);
+    version.features.remove(EvmFeatures::FEE_CHARGE);
+    let config = ExecutionConfig::for_spec_and_version(TempoHardfork::T4, version);
+    let mut evm = Evm::new_with_execution_config_and_ext(
+        config,
+        TempoHardfork::T4,
+        TempoBlockEnv::default(),
+        tempo_tx_registry(SpecId::OSAKA),
+        InMemoryDB::default(),
+        NoPrecompiles::default(),
+        TempoEvmExt::default(),
     );
+    let env: TempoTxEnv = Recovered::new_unchecked(
+        TempoTxEnvelope::Legacy(Signed::new_unhashed(
+            TxLegacy {
+                chain_id: Some(1),
+                gas_limit: 10_000_000,
+                to: TxKind::Create,
+                input: Bytes::from(vec![0x60, 0x00, 0x60, 0x00, 0xf3]),
+                ..Default::default()
+            },
+            Signature::test_signature(),
+        )),
+        SIGNER,
+    )
+    .into();
+    let result = evm
+        .transact(&Recovered::new_unchecked(env, SIGNER))
+        .unwrap()
+        .discard();
+    let expected_state_gas = evm.version().gas_params.create_state_gas()
+        + evm.version().gas_params.new_account_state_gas();
 
     assert_eq!(
-        init_gas.initial_state_gas, 0,
-        "CREATE tx should charge create_state_gas at runtime"
+        result.state_gas_spent, expected_state_gas,
+        "CREATE tx should charge create_state_gas and nonce-zero account state gas"
     );
 }
 
 /// TIP-1016: Standard CALL tx should have zero initial_state_gas.
 #[test]
 fn test_state_gas_standard_call_tx_zero_initial_state_gas() {
-    let gas_params = tempo_gas_params(TempoHardfork::T4);
-    let calldata = Bytes::from(vec![1, 2, 3]);
-
-    let init_gas = gas_params.initial_tx_gas(
-        &calldata, false, // not create
-        0, 0, 0,
-    );
+    let mut evm = test_evm_with_amsterdam(TempoHardfork::T4, true);
+    let env: TempoTxEnv = Recovered::new_unchecked(
+        TempoTxEnvelope::Legacy(Signed::new_unhashed(
+            TxLegacy {
+                chain_id: Some(1),
+                nonce: 1,
+                gas_limit: 10_000_000,
+                to: TxKind::Call(Address::random()),
+                input: Bytes::from(vec![1, 2, 3]),
+                ..Default::default()
+            },
+            Signature::test_signature(),
+        )),
+        SIGNER,
+    )
+    .into();
+    let mut intrinsic = 0;
+    let mut initial_state_gas = 0;
+    let mut floor_gas = 0;
+    <TempoHandlerHooks as TxHandlerHooks<TempoEvmTypes>>::adjust_intrinsic_gas(
+        &mut evm,
+        &env,
+        &mut intrinsic,
+        &mut initial_state_gas,
+        &mut floor_gas,
+    )
+    .unwrap();
 
     assert_eq!(
-        init_gas.initial_state_gas, 0,
+        initial_state_gas, 0,
         "CALL tx should have zero initial_state_gas"
     );
 }
@@ -3822,8 +3873,19 @@ fn test_state_gas_aa_call_tx_zero_initial_state_gas() {
 /// TIP-1016: AA batch CREATE state gas is charged per frame at runtime.
 #[test]
 fn test_state_gas_validate_initial_tx_gas_create_t4() {
-    let evm = test_evm_with_amsterdam(TempoHardfork::T4, true);
-    let initial_state_gas = evm.version().gas_params.new_account_state_gas();
+    let mut evm = test_evm_with_amsterdam(TempoHardfork::T4, true);
+    let env = legacy_env(TxKind::Create, Bytes::from(vec![0x60, 0x80]));
+    let mut intrinsic = 0;
+    let mut initial_state_gas = 0;
+    let mut floor_gas = 0;
+    <TempoHandlerHooks as TxHandlerHooks<TempoEvmTypes>>::adjust_intrinsic_gas(
+        &mut evm,
+        &env,
+        &mut intrinsic,
+        &mut initial_state_gas,
+        &mut floor_gas,
+    )
+    .unwrap();
 
     // CREATE state gas is now charged at runtime. Only new_account_state_gas
     // (from Tempo's nonce==0 check for the caller) is charged upfront.
@@ -4137,8 +4199,19 @@ fn test_state_gas_auth_list_zero_on_t1() {
 /// as zero, giving the transaction its full gas_limit for free.
 #[test]
 fn test_state_gas_standard_tx_nonce_zero_t4() {
-    let evm = test_evm_with_amsterdam(TempoHardfork::T4, true);
-    let initial_state_gas = evm.version().gas_params.new_account_state_gas();
+    let mut evm = test_evm_with_amsterdam(TempoHardfork::T4, true);
+    let env = legacy_env(TxKind::Call(Address::random()), Bytes::from(vec![1, 2, 3]));
+    let mut intrinsic = 0;
+    let mut initial_state_gas = 0;
+    let mut floor_gas = 0;
+    <TempoHandlerHooks as TxHandlerHooks<TempoEvmTypes>>::adjust_intrinsic_gas(
+        &mut evm,
+        &env,
+        &mut intrinsic,
+        &mut initial_state_gas,
+        &mut floor_gas,
+    )
+    .unwrap();
 
     assert_eq!(
         initial_state_gas,
