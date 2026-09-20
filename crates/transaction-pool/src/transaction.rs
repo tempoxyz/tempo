@@ -104,6 +104,7 @@ impl TempoPooledTransaction {
         encoded_length: usize,
     ) -> Self {
         let is_payment = transaction.is_payment_v2();
+        let in_memory_size = transaction.size();
         let value = transaction.value();
         let cost =
             calc_gas_balance_spending(transaction.gas_limit(), transaction.max_fee_per_gas())
@@ -114,7 +115,9 @@ impl TempoPooledTransaction {
                 transaction,
                 cost,
                 encoded_length,
+                in_memory_size,
                 blob_sidecar: EthBlobTransactionSidecar::None,
+                blob_cell_availability: None,
             },
             fee_token_cost,
             is_payment,
@@ -870,6 +873,12 @@ impl PoolTransaction for TempoPooledTransaction {
                 tx.tx().nonce_key.is_zero()
             })
             .unwrap_or(true)
+    }
+
+    fn requires_nonce_bound_check(&self) -> bool {
+        // Expiring nonces are discriminators, not incrementing counters. Fork-specific
+        // restrictions on their values are enforced by Tempo's EVM validation.
+        !self.is_expiring_nonce()
     }
 }
 

@@ -415,7 +415,7 @@ where
         }
         if let Some(handle) = state_root_handle.as_mut() {
             let mut hook = handle.take_state_hook();
-            executor.set_state_hook(move |state| hook.on_hashed_state_update(state));
+            executor.set_state_hook(move |state| hook.on_state(state));
         }
 
         executor.apply_pre_execution_changes().map_err(|err| {
@@ -600,7 +600,7 @@ where
                 .then(|| format!("{:?}", tx.transaction))
                 .unwrap_or_default();
 
-            let result_closure = |result: &TempoTxResult| {
+            let mut result_closure = |result: &TempoTxResult| {
                 cumulative_gas_used += result.block_gas_used();
                 cumulative_state_gas_used += result.state_gas_used();
                 if !is_payment {
@@ -626,11 +626,11 @@ where
             } else {
                 executor.invalidate_expiring_nonce_cache();
                 executor
-                    .execute_transaction_with_result_closure(
-                        tx.transaction.executable(),
-                        result_closure,
-                    )
-                    .map(|_| ())
+                    .execute_transaction_without_commit(tx.transaction.executable())
+                    .and_then(|result| {
+                        result_closure(&result);
+                        executor.commit_transaction(result).map(|_| ())
+                    })
             };
 
             if let Err(err) = execution_result {
@@ -761,7 +761,7 @@ where
         {
             hashed_state
         } else {
-            Arc::new(finish_provider.hashed_post_state(execution_state))
+            Arc::new(finish_provider.hashed_post_state(execution_state)?)
         };
 
         let (state_root_outcome, sparse_trie_state_root_wait_elapsed) =

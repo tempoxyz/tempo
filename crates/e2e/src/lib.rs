@@ -267,6 +267,11 @@ pub async fn setup_validators(
         fee_recipient,
     );
 
+    let network_identity = tempo_chainspec::NetworkIdentity {
+        from_epoch: onchain_dkg_outcome.epoch,
+        identity: *onchain_dkg_outcome.network_identity(),
+    };
+
     let execution_runtime = ExecutionRuntime::builder()
         .with_epoch_length(epoch_length)
         .with_initial_dkg_outcome(onchain_dkg_outcome)
@@ -305,6 +310,7 @@ pub async fn setup_validators(
             private_key,
             oracle.clone(),
             share,
+            network_identity.clone(),
             feed_state,
             proposal_return_budget,
             execution_runtime.handle(),

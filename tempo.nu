@@ -339,6 +339,7 @@ def tempo-hardforks [] {
         | columns
         | where { |key| $key =~ '^t[0-9]+[a-z]?Time$' }
         | each { |key| $key | str replace "Time" "" | str upcase }
+        | sort --natural
     )
     if ($forks | is-empty) {
         print "Error: failed to read Tempo hardforks from crates/node/tests/assets/test-genesis.json"

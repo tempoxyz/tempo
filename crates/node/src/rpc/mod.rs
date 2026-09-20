@@ -15,7 +15,7 @@ pub use eth_ext::{TempoEthExt, TempoEthExtApiServer};
 pub use fork_schedule::{TempoForkScheduleApiServer, TempoForkScheduleRpc};
 use futures::TryFutureExt;
 pub use operator::{TempoOperatorApiServer, TempoOperatorRpc};
-use reth_primitives_traits::{HeaderTy, TransactionMeta, WithEncoded};
+use reth_primitives_traits::{HeaderTy, SealedHeaderFor, TransactionMeta, WithEncoded};
 use reth_rpc_eth_api::{FromEthApiError, IntoEthApiError, RpcConvert, RpcTxReq};
 use reth_transaction_pool::{PoolTransaction, PoolTx, TransactionOrigin, TransactionPool};
 pub use simulate::{TempoSimulate, TempoSimulateApiServer, TempoSimulateV1Response};
@@ -52,8 +52,8 @@ use reth_rpc_eth_api::{
     transaction::{ConvertReceiptInput, ReceiptConverter},
 };
 use reth_rpc_eth_types::{
-    EthApiError, EthStateCache, FeeHistoryCache, GasPriceOracle, PendingBlock, SignError,
-    builder::config::PendingBlockKind, receipt::EthReceiptConverter,
+    EthApiError, EthApiSettings, EthStateCache, FeeHistoryCache, GasPriceOracle, PendingBlock,
+    SignError, builder::config::PendingBlockKind, receipt::EthReceiptConverter,
 };
 use tempo_alloy::{TempoNetwork, rpc::TempoTransactionReceipt};
 use tempo_evm::{FeeTokenResolver, TempoEvmEnv, TempoEvmTypes, TempoStateAccess};
@@ -140,6 +140,10 @@ where
     type Error = TempoEthApiError;
     type NetworkTypes = TempoNetwork;
     type RpcConvert = DynRpcConverter<N::Evm, TempoNetwork>;
+
+    fn eth_api_settings(&self) -> &EthApiSettings {
+        self.inner.eth_api_settings()
+    }
 
     fn converter(&self) -> &Self::RpcConvert {
         self.inner.converter()
@@ -497,7 +501,17 @@ where
     ChainSpec: EthChainSpec + 'static,
 {
     type RpcReceipt = TempoTransactionReceipt;
+    type RpcLog = Log;
     type Error = EthApiError;
+
+    fn convert_log(
+        &self,
+        log: Log,
+        _receipt: &TempoReceipt,
+        _header: &SealedHeaderFor<TempoPrimitives>,
+    ) -> Result<Self::RpcLog, Self::Error> {
+        Ok(log)
+    }
 
     fn convert_receipts(
         &self,

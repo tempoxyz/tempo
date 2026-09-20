@@ -18,7 +18,7 @@ use reth_evm::{
     BlockValidationError, ExecutorTx, GasOutput, ReceiptBuilder, ReceiptBuilderCtx, RecoveredTx,
 };
 use reth_evm_ethereum::{EthBlockExecutor, EthTransactionResultWithState};
-use reth_execution_types::HashedPostState;
+use reth_execution_types::EvmState;
 use std::sync::Arc;
 use tempo_chainspec::TempoChainSpec;
 use tempo_contracts::precompiles::{
@@ -687,9 +687,16 @@ impl<'a> BlockExecutor for TempoBlockExecutor<'a> {
         self.inner.evm()
     }
 
-    fn set_state_hook(&mut self, hook: impl FnMut(HashedPostState) + Send + 'static) -> bool {
+    fn set_state_hook(&mut self, hook: impl FnMut(EvmState) + Send + 'static) -> bool {
         self.inner.set_state_hook(hook);
         true
+    }
+
+    fn validate_transaction_gas_limit(
+        &mut self,
+        gas_limit: u64,
+    ) -> Result<(), BlockExecutionError> {
+        self.inner.validate_transaction_gas_limit(gas_limit)
     }
 
     fn convert_block_access_list(
@@ -1691,7 +1698,7 @@ mod tests {
             .with_parent_beacon_block_root(B256::ZERO)
             .build(&mut db, &chainspec);
 
-        let hook_calls: Arc<Mutex<Vec<HashedPostState>>> = Arc::new(Mutex::new(Vec::new()));
+        let hook_calls: Arc<Mutex<Vec<EvmState>>> = Arc::new(Mutex::new(Vec::new()));
         let hook_calls_clone = hook_calls.clone();
         executor.set_state_hook(move |state| hook_calls_clone.lock().unwrap().push(state));
 
@@ -1711,9 +1718,7 @@ mod tests {
         let calls = hook_calls.lock().unwrap();
         assert_eq!(calls.len(), 1, "state hook should be called exactly once");
         assert!(
-            calls[0]
-                .accounts
-                .contains_key(&alloy_primitives::keccak256(addr)),
+            calls[0].accounts().any(|(address, _)| address == addr),
             "state hook should contain the deployed address"
         );
     }
@@ -1736,7 +1741,7 @@ mod tests {
             .with_parent_beacon_block_root(B256::ZERO)
             .build(&mut db, &chainspec);
 
-        let hook_calls: Arc<Mutex<Vec<HashedPostState>>> = Arc::new(Mutex::new(Vec::new()));
+        let hook_calls: Arc<Mutex<Vec<EvmState>>> = Arc::new(Mutex::new(Vec::new()));
         let hook_calls_clone = hook_calls.clone();
         executor.set_state_hook(move |state| hook_calls_clone.lock().unwrap().push(state));
 
@@ -1745,9 +1750,7 @@ mod tests {
         let calls = hook_calls.lock().unwrap();
         assert_eq!(calls.len(), 1, "state hook should be called exactly once");
         assert!(
-            calls[0]
-                .accounts
-                .contains_key(&alloy_primitives::keccak256(addr)),
+            calls[0].accounts().any(|(address, _)| address == addr),
             "state hook should contain the deployed address"
         );
         let (_, tracked) = executor
@@ -1824,7 +1827,7 @@ mod tests {
             .with_parent_beacon_block_root(B256::ZERO)
             .build(&mut db, &chainspec);
 
-        let hook_calls: Arc<Mutex<Vec<HashedPostState>>> = Arc::new(Mutex::new(Vec::new()));
+        let hook_calls: Arc<Mutex<Vec<EvmState>>> = Arc::new(Mutex::new(Vec::new()));
         let hook_calls_clone = hook_calls.clone();
         executor.set_state_hook(move |state| hook_calls_clone.lock().unwrap().push(state));
 
@@ -1877,8 +1880,8 @@ mod tests {
         );
         assert!(
             calls[0]
-                .accounts
-                .contains_key(&alloy_primitives::keccak256(ZONE_FACTORY_ADDRESS))
+                .accounts()
+                .any(|(address, _)| address == ZONE_FACTORY_ADDRESS)
         );
         for address in [
             ZONE_PORTAL_IMPL_ADDRESS,
@@ -1887,14 +1890,14 @@ mod tests {
         ] {
             assert!(
                 calls[1]
-                    .accounts
-                    .contains_key(&alloy_primitives::keccak256(address)),
+                    .accounts()
+                    .any(|(changed_address, _)| changed_address == address),
                 "shared runtime must be installed in the runtime state hook"
             );
             assert!(
                 calls[2]
-                    .accounts
-                    .contains_key(&alloy_primitives::keccak256(address)),
+                    .accounts()
+                    .any(|(changed_address, _)| changed_address == address),
                 "T13 runtime must be installed in the runtime state hook"
             );
         }

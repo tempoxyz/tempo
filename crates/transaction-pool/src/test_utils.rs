@@ -322,6 +322,7 @@ impl TxBuilder {
     pub(crate) fn build_eip1559(self) -> TempoPooledTransaction {
         let tx = TxEip1559 {
             chain_id: self.chain_id,
+            nonce: self.nonce,
             to: self.kind,
             gas_limit: self.gas_limit,
             value: self.value,

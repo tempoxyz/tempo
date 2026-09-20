@@ -48,7 +48,7 @@ use std::{borrow::Cow, sync::Arc};
 use alloy_consensus::BlockHeader as _;
 use alloy_eips::eip7840::BlobParams;
 use alloy_primitives::{Address, U256};
-use evm2::{EvmFeatures, ExecutionConfig, env::BlockEnv, evm::DynDatabase, version::GasId};
+use evm2::{EvmFeatures, ExecutionConfig, env::BlockEnv, evm::DynDatabase};
 use reth_chainspec::EthChainSpec;
 use reth_evm::{
     BlockExecutorFactory, ConfigureEvm, EvmEnv, EvmEnvFor, EvmTransactionValidationGasRules,
@@ -136,55 +136,8 @@ impl EvmEnv for TempoEvmEnv {
     }
 
     fn transaction_validation_gas_rules(&self) -> EvmTransactionValidationGasRules {
-        let params = &self.version.gas_params;
-        let floor_gas_enabled = self.version.feature(EvmFeatures::EIP7623);
         EvmTransactionValidationGasRules {
-            tx_base_gas: 21_000,
-            tx_create_gas: if self.version.feature(EvmFeatures::EIP2) {
-                u64::from(params.get(GasId::TxCreateCost))
-            } else {
-                Default::default()
-            },
-            tx_data_zero_gas: 4,
-            tx_data_non_zero_gas: if self.version.feature(EvmFeatures::EIP2028) {
-                16
-            } else {
-                68
-            },
-            tx_access_list_address_gas: u64::from(params.get(GasId::TxAccessListAddressCost)),
-            tx_access_list_storage_key_gas: u64::from(
-                params.get(GasId::TxAccessListStorageKeyCost),
-            ),
-            tx_access_list_floor_byte_multiplier: if floor_gas_enabled {
-                u64::from(params.get(GasId::TxAccessListFloorByteMultiplier))
-            } else {
-                Default::default()
-            },
-            tx_initcode_word_gas: if self.version.feature(EvmFeatures::EIP3860) {
-                u64::from(params.get(GasId::TxInitcodeCost))
-            } else {
-                Default::default()
-            },
-            tx_floor_gas_base: if floor_gas_enabled {
-                u64::from(params.get(GasId::TxFloorCostBase))
-            } else {
-                Default::default()
-            },
-            tx_floor_gas_per_token: if floor_gas_enabled {
-                u64::from(params.get(GasId::TxFloorCostPerToken))
-            } else {
-                Default::default()
-            },
-            tx_floor_gas_non_zero_token_multiplier: if floor_gas_enabled {
-                u64::from(params.get(GasId::TxTokenNonZeroByteMultiplier))
-            } else {
-                Default::default()
-            },
-            tx_eip7702_per_empty_account_cost: if self.version.feature(EvmFeatures::EIP7702) {
-                u64::from(params.get(GasId::TxEip7702PerEmptyAccountCost))
-            } else {
-                Default::default()
-            },
+            version: self.version,
         }
     }
 

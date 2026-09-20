@@ -28,6 +28,7 @@ pub mod tip_fee_manager;
 pub mod validator_config;
 pub mod validator_config_v2;
 pub mod zone_factory;
+pub mod zone_verifier;
 
 #[cfg(any(test, feature = "test-utils"))]
 pub mod test_util;
@@ -50,6 +51,7 @@ use crate::{
     validator_config::ValidatorConfig,
     validator_config_v2::ValidatorConfigV2,
     zone_factory::ZoneFactory,
+    zone_verifier::ZoneVerifier,
 };
 use std::{cell::RefCell, rc::Rc};
 use tempo_chainspec::hardfork::TempoHardfork;
@@ -62,7 +64,7 @@ use evm2::{
     Evm, EvmTypes, EvmTypesHost, Precompiles as BasePrecompiles, SpecId,
     evm::precompile::PrecompileProvider,
     interpreter::{GasTracker, Message, MessageKind},
-    precompiles::{PrecompileError, PrecompileResult},
+    precompiles::{MovePrecompileError, PrecompileError, PrecompileResult},
 };
 
 pub use tempo_contracts::precompiles::{
@@ -225,6 +227,8 @@ impl<T: EvmTypesHost> TempoPrecompiles<T> {
             CurrentCommittee::new().call(calldata, caller)
         } else if address == ZONE_FACTORY_ADDRESS {
             ZoneFactory::new().call(calldata, caller)
+        } else if address == ZONE_VERIFIER_ADDRESS {
+            ZoneVerifier::new().call(calldata, caller)
         } else {
             unreachable!("Tempo precompile address checked before dispatch")
         }
@@ -239,6 +243,13 @@ impl<T> PrecompileProvider<T> for TempoPrecompiles<T>
 where
     T: EvmTypes<BlockEnvExt = TempoBlockExt>,
 {
+    fn move_precompiles(
+        &mut self,
+        moves: &[(Address, Address)],
+    ) -> std::result::Result<(), MovePrecompileError> {
+        self.base.move_precompiles(moves)
+    }
+
     fn addresses(&self) -> Vec<Address> {
         self.base.addresses()
     }
@@ -297,7 +308,7 @@ mod tests {
     use super::*;
     use crate::storage::{StorageCtx, hashmap::HashMapStorageProvider};
     use alloy::{
-        primitives::{Bytes, U256, bytes},
+        primitives::{B256, Bytes, U256, bytes},
         sol_types::SolCall,
     };
     use evm2::{
@@ -309,7 +320,7 @@ mod tests {
         },
         registry::TxRegistry,
     };
-    use tempo_contracts::precompiles::{ITIP20, UnknownFunctionSelector};
+    use tempo_contracts::precompiles::{ITIP20, IZoneVerifier, UnknownFunctionSelector};
     use tempo_primitives::{TempoBlockEnv, TempoBlockExt};
 
     struct TestTypes;
@@ -962,6 +973,87 @@ mod tests {
             !precompiles.contains(&zone_factory::portal_address(1)),
             "ZonePortal storage handles must not be registered as precompiles"
         );
+    }
+
+    #[test]
+    fn test_zone_verifier_registered_at_t13_only() {
+        let activation = SYSTEM_PRECOMPILES
+            .iter()
+            .find_map(|(address, fork)| (*address == ZONE_VERIFIER_ADDRESS).then_some(*fork))
+            .expect("ZoneVerifier must be listed in SYSTEM_PRECOMPILES");
+        assert_eq!(activation, TempoHardfork::T13);
+
+        for (spec, active) in [
+            (TempoHardfork::T10, false),
+            (TempoHardfork::T11, false),
+            (TempoHardfork::T12, false),
+            (TempoHardfork::T13, true),
+        ] {
+            assert_eq!(
+                test_tempo_precompiles(spec).contains(&ZONE_VERIFIER_ADDRESS),
+                active,
+                "unexpected native ZoneVerifier activation at {spec:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn test_zone_verifier_runtime_is_shadowed_at_t13() {
+        let calldata = IZoneVerifier::verifyCall {
+            zoneId: 1,
+            tempoBlockNumber: 1,
+            anchorBlockNumber: 1,
+            anchorBlockHash: B256::ZERO,
+            expectedWithdrawalBatchIndex: 0,
+            nextZoneHeight: U256::ZERO,
+            blockTransition: IZoneVerifier::BlockTransition {
+                prevBlockHash: B256::ZERO,
+                nextBlockHash: B256::ZERO,
+            },
+            depositQueueTransition: IZoneVerifier::DepositQueueTransition {
+                prevProcessedHash: B256::ZERO,
+                nextProcessedHash: B256::ZERO,
+                prevDepositNumber: 0,
+                nextDepositNumber: 0,
+            },
+            tokenEnablementTransition: IZoneVerifier::TokenEnablementTransition {
+                prevProcessedTokenCount: 0,
+                nextProcessedTokenCount: 0,
+            },
+            withdrawalQueueHash: B256::ZERO,
+            verifierConfig: Bytes::new(),
+            proof: Bytes::new(),
+        }
+        .abi_encode();
+
+        for spec in [TempoHardfork::T10, TempoHardfork::T11, TempoHardfork::T12] {
+            let mut evm = test_evm(spec, false);
+            let mut precompiles = test_tempo_precompiles(spec);
+            let message = Message::<TestTypes> {
+                kind: MessageKind::Call,
+                gas_limit: 1_000_000,
+                destination: ZONE_VERIFIER_ADDRESS,
+                code_address: ZONE_VERIFIER_ADDRESS,
+                input: calldata.clone().into(),
+                caller: Address::repeat_byte(0x77),
+                ..Default::default()
+            };
+            let mut gas = GasTracker::new(message.gas_limit);
+            assert!(
+                precompiles.execute(&mut evm, &message, &mut gas).is_none(),
+                "runtime must remain visible before T13"
+            );
+        }
+
+        let (result, _) = call_tempo(
+            TempoHardfork::T13,
+            calldata.into(),
+            MessageKind::Call,
+            ZONE_VERIFIER_ADDRESS,
+            ZONE_VERIFIER_ADDRESS,
+            false,
+        );
+        assert!(!IZoneVerifier::verifyCall::abi_decode_returns(result.unwrap().bytes()).unwrap());
     }
 
     #[test]
