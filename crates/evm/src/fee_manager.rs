@@ -219,16 +219,17 @@ impl FeeTokenResolver for TempoFeeManager {
         // Check if the fee can be inferred from the TIP20 token being called
         if let Some(to) = tx.calls().next().and_then(|(kind, _)| kind.to().copied()) {
             let can_infer_tip20 =
-                // AA txs only when fee_payer == tx.origin.
-                if tx.is_aa() && fee_payer != tx.caller() {
-                    false
-                }
-                // Otherwise, restricted to TIP-20 calls that move the called token.
-                else {
-                    tx.calls().all(|(kind, input)| {
-                        kind.to() == Some(&to) && is_tip20_fee_inference_call(spec, input)
-                    })
-                };
+                        // AA txs only when fee_payer == tx.origin.
+                        if tx.is_aa() && fee_payer != tx.caller() {
+                            false
+                        }
+                        // Otherwise, restricted to TIP-20 calls that move the called token.
+                        else {
+                            tx.calls().all(|(kind, input)| {
+                                kind.to() == Some(&to) && is_tip20_fee_inference_call(spec, input)
+                            })
+                        }
+                    ;
 
             if can_infer_tip20 && state.is_valid_fee_token(spec, to, actions.clone())? {
                 return Ok(to);
