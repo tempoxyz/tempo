@@ -339,6 +339,7 @@ def tempo-hardforks [] {
         | columns
         | where { |key| $key =~ '^t[0-9]+[a-z]?Time$' }
         | each { |key| $key | str replace "Time" "" | str upcase }
+        | sort --natural
     )
     if ($forks | is-empty) {
         print "Error: failed to read Tempo hardforks from crates/node/tests/assets/test-genesis.json"
@@ -1988,6 +1989,7 @@ def build-base-args [genesis_path: string, datadir: string, log_dir: string, bin
         "--ws.addr" $bind_ip
         "--ws.port" $"($http_port)"
         "--ws.api" "all"
+        "--rpc-cache.max-cached-tx-hashes" "3000000"
         "--metrics" $"($bind_ip):($reth_metrics_port)"
         "--ipcpath" $ipc_path
         "--log.file.directory" $log_dir

@@ -1,6 +1,7 @@
 use commonware_consensus::{
     Heightable as _,
     simplex::{scheme::bls12381_threshold::vrf::Scheme, types::Finalization},
+    types::FixedEpocher,
 };
 use commonware_cryptography::{bls12381::primitives::variant::MinSig, ed25519::PublicKey};
 use commonware_runtime::{BufferPooler, Clock, Metrics, Spawner, Storage, buffer::paged::CacheRef};
@@ -61,6 +62,7 @@ pub async fn prepare<TContext, P>(
     storage_partition_prefix: &str,
     execution_provider: P,
     archive_entries: tokio::sync::mpsc::Sender<ArchiveEntry>,
+    epoch_strategy: &FixedEpocher,
 ) -> eyre::Result<State>
 where
     TContext: Clock + Metrics + Spawner + Storage + BufferPooler + Send + 'static,
@@ -74,10 +76,14 @@ where
     let execution_finalized_height = execution_finalized.number;
     let execution_finalized_digest = Digest(execution_finalized.hash);
 
-    let finalizations =
-        init_finalizations_archive(context, storage_partition_prefix, page_cache.clone())
-            .await
-            .wrap_err("failed to open finalizations-by-height archive")?;
+    let finalizations = init_finalizations_archive(
+        context,
+        storage_partition_prefix,
+        page_cache.clone(),
+        epoch_strategy,
+    )
+    .await
+    .wrap_err("failed to open finalizations-by-height archive")?;
     let prunable =
         init_prunable_finalized_blocks_archive(context, storage_partition_prefix, page_cache)
             .await
@@ -134,15 +140,20 @@ pub async fn write_archive<TContext>(
     context: &TContext,
     storage_partition_prefix: &str,
     mut entries: tokio::sync::mpsc::Receiver<ArchiveEntry>,
+    epoch_strategy: &FixedEpocher,
 ) -> eyre::Result<()>
 where
     TContext: Clock + Metrics + Spawner + Storage + BufferPooler + Send + 'static,
 {
     let page_cache = CacheRef::from_pooler(context, BUFFER_POOL_PAGE_SIZE, BUFFER_POOL_CAPACITY);
-    let mut finalizations =
-        init_finalizations_archive(context, storage_partition_prefix, page_cache.clone())
-            .await
-            .wrap_err("failed to open snapshot finalizations-by-height archive")?;
+    let mut finalizations = init_finalizations_archive(
+        context,
+        storage_partition_prefix,
+        page_cache.clone(),
+        epoch_strategy,
+    )
+    .await
+    .wrap_err("failed to open snapshot finalizations-by-height archive")?;
     let mut blocks =
         init_prunable_finalized_blocks_archive(context, storage_partition_prefix, page_cache)
             .await
@@ -156,7 +167,7 @@ where
                     finalization,
                 } = *cert;
                 let key = finalization.proposal.payload;
-                finalizations
+                finalizations = finalizations
                     .put(height, key, finalization)
                     .await
                     .wrap_err_with(|| {
@@ -168,7 +179,7 @@ where
             ArchiveEntryKind::Block(block) => {
                 let height = block.height().get();
                 let key = block.digest();
-                blocks.put(height, key, *block).await.wrap_err_with(|| {
+                blocks = blocks.put(height, key, *block).await.wrap_err_with(|| {
                     format!("failed writing snapshot finalized block at height `{height}`")
                 })?;
             }
@@ -182,6 +193,7 @@ where
     blocks
         .sync()
         .await
+        .map(|_| ())
         .wrap_err("failed syncing snapshot prunable finalized blocks archive")
 }
 
@@ -452,10 +464,14 @@ mod tests {
         FinalizationsArchive<deterministic::Context>,
         Prunable<deterministic::Context>,
     ) {
-        let finalizations =
-            init_finalizations_archive(context, "test-snapshot", fresh_page_cache(context))
-                .await
-                .expect("init finalizations archive");
+        let finalizations = init_finalizations_archive(
+            context,
+            "test-snapshot",
+            fresh_page_cache(context),
+            &FixedEpocher::new(commonware_utils::NZU64!(10)),
+        )
+        .await
+        .expect("init finalizations archive");
         let prunable = fresh_prunable_with_section_size(context, PRUNABLE_ITEMS_PER_SECTION).await;
         (finalizations, prunable)
     }
@@ -482,33 +498,37 @@ mod tests {
     }
 
     async fn put_cert(
-        finalizations: &mut FinalizationsArchive<deterministic::Context>,
+        finalizations: FinalizationsArchive<deterministic::Context>,
         height: u64,
         digest: Digest,
-    ) {
+    ) -> FinalizationsArchive<deterministic::Context> {
         finalizations
             .put(height, digest, make_finalization(height, digest))
             .await
-            .expect("put finalization certificate");
+            .expect("put finalization certificate")
     }
 
     /// Seed a certificate for every block in `blocks`, keyed by the block's
     /// digest — mirroring production where a certificate's payload is the
     /// finalized block's hash.
     async fn put_certs_for(
-        finalizations: &mut FinalizationsArchive<deterministic::Context>,
+        mut finalizations: FinalizationsArchive<deterministic::Context>,
         blocks: &[Block],
-    ) {
+    ) -> FinalizationsArchive<deterministic::Context> {
         for block in blocks {
-            put_cert(finalizations, block.height().get(), block.digest()).await;
+            finalizations = put_cert(finalizations, block.height().get(), block.digest()).await;
         }
+        finalizations
     }
 
-    async fn put_block(prunable: &mut Prunable<deterministic::Context>, block: &Block) {
+    async fn put_block(
+        prunable: Prunable<deterministic::Context>,
+        block: &Block,
+    ) -> Prunable<deterministic::Context> {
         prunable
             .put(block.height().get(), block.digest(), block.clone())
             .await
-            .expect("put prunable finalized block");
+            .expect("put prunable finalized block")
     }
 
     /// A digest for heights that have a certificate but no backing test block.
@@ -539,7 +559,7 @@ mod tests {
         executor.start(|context| async move {
             let (mut finalizations, prunable) = fresh_archives(&context).await;
             for height in 1..=5 {
-                put_cert(&mut finalizations, height, synthetic_digest(height)).await;
+                finalizations = put_cert(finalizations, height, synthetic_digest(height)).await;
             }
 
             // Execution finalized is ahead of the certificate tip; the tip is
@@ -561,11 +581,11 @@ mod tests {
         executor.start(|context| async move {
             let (mut finalizations, mut prunable) = fresh_archives(&context).await;
             let chain = make_chain(1, 10);
-            put_certs_for(&mut finalizations, &chain).await;
+            finalizations = put_certs_for(finalizations, &chain).await;
             // Blocks 4..=10 are present: a contiguous path from execution
             // finalized (3) up to the tip.
             for block in &chain[3..] {
-                put_block(&mut prunable, block).await;
+                prunable = put_block(prunable, block).await;
             }
 
             let selected = find_anchor_and_tip_finalizations(&finalizations, &prunable, 3)
@@ -584,14 +604,14 @@ mod tests {
         executor.start(|context| async move {
             let (mut finalizations, mut prunable) = fresh_archives(&context).await;
             let chain = make_chain(1, 10);
-            put_certs_for(&mut finalizations, &chain).await;
+            finalizations = put_certs_for(finalizations, &chain).await;
             // Only blocks at or below execution finalized (3) are present.
             // The hole search never probes at or below the floor, so these
             // blocks are irrelevant: selection must behave exactly as with an
             // empty prunable archive and fall back to the certificate at the
             // floor.
             for block in &chain[..3] {
-                put_block(&mut prunable, block).await;
+                prunable = put_block(prunable, block).await;
             }
 
             let selected = find_anchor_and_tip_finalizations(&finalizations, &prunable, 3)
@@ -614,7 +634,7 @@ mod tests {
             // Blocks 1..=5 straddle execution finalized (3): only 4 and 5 may
             // end up in the snapshot archive.
             for block in &chain[..5] {
-                put_block(&mut prunable, block).await;
+                prunable = put_block(prunable, block).await;
             }
 
             let (entries_tx, mut entries_rx) = tokio::sync::mpsc::channel(16);
@@ -640,7 +660,7 @@ mod tests {
         executor.start(|context| async move {
             let (mut finalizations, prunable) = fresh_archives(&context).await;
             let chain = make_chain(1, 10);
-            put_certs_for(&mut finalizations, &chain).await;
+            finalizations = put_certs_for(finalizations, &chain).await;
 
             // No blocks at all: the descent must walk certificate by
             // certificate down to the execution finalized floor.
@@ -663,9 +683,9 @@ mod tests {
             // Certificates at 2 and 5..=10; nothing at 3 and 4, so with
             // execution finalized at 4 the descent must skip past the gap
             // and anchor at 2.
-            put_cert(&mut finalizations, 2, synthetic_digest(2)).await;
+            finalizations = put_cert(finalizations, 2, synthetic_digest(2)).await;
             for height in 5..=10 {
-                put_cert(&mut finalizations, height, synthetic_digest(height)).await;
+                finalizations = put_cert(finalizations, height, synthetic_digest(height)).await;
             }
 
             let selected = find_anchor_and_tip_finalizations(&finalizations, &prunable, 4)
@@ -684,15 +704,15 @@ mod tests {
         executor.start(|context| async move {
             let (mut finalizations, mut prunable) = fresh_archives(&context).await;
             let chain = make_chain(1, 10);
-            put_certs_for(&mut finalizations, &chain).await;
+            finalizations = put_certs_for(finalizations, &chain).await;
             // Blocks 4..=6 and 8..=10 are present; 7 is a hole. The path from
             // the tip breaks at 7, so the anchor must drop to the certificate
             // at 6, from which the path down to the floor (3) is contiguous.
             for block in &chain[3..6] {
-                put_block(&mut prunable, block).await;
+                prunable = put_block(prunable, block).await;
             }
             for block in &chain[7..] {
-                put_block(&mut prunable, block).await;
+                prunable = put_block(prunable, block).await;
             }
 
             let selected = find_anchor_and_tip_finalizations(&finalizations, &prunable, 3)
@@ -714,7 +734,7 @@ mod tests {
             // Certificates only above the floor, and no blocks to build a
             // path with: no anchor can be selected.
             for height in 5..=10 {
-                put_cert(&mut finalizations, height, synthetic_digest(height)).await;
+                finalizations = put_cert(finalizations, height, synthetic_digest(height)).await;
             }
 
             let err = find_anchor_and_tip_finalizations(&finalizations, &prunable, 3)

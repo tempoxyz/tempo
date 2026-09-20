@@ -334,7 +334,7 @@ where
     let roles = IRolesAuth::new(*token.address(), provider);
 
     roles
-        .grantRole(*ISSUER_ROLE, caller)
+        .grantRole(ISSUER_ROLE, caller)
         .from(caller)
         .gas(1_000_000)
         .send()
