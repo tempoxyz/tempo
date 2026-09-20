@@ -1096,7 +1096,7 @@ fn maybe_override_fee_recipient<DB: Database>(
     let Some(public_key) = attributes.proposer_public_key() else {
         return;
     };
-    if !evm_env.tempo_spec.is_t2() {
+    if !evm_env.spec.is_t2() {
         return;
     }
 
@@ -1104,7 +1104,7 @@ fn maybe_override_fee_recipient<DB: Database>(
     // Reading slots here might be dangerous because they would end up being warmed and might affect gas accounting.
     let parent_number = evm_env.block.number.saturating_to::<u64>() - 1;
     match db.with_read_only_storage_ctx(
-        evm_env.tempo_spec,
+        evm_env.spec,
         StorageActions::disabled(),
         || -> Result<Option<Address>, PayloadBuilderError> {
             let config = ValidatorConfigV2::default();

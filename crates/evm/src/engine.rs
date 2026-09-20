@@ -3,7 +3,7 @@ use alloy_consensus::{crypto::RecoveryError, transaction::Recovered};
 use alloy_primitives::Address;
 use reth_evm::{
     ConfigureEngineEvm, ConfigureEvm, EvmEnvFor, ExecutableTxIterator, ExecutableTxParts,
-    ExecutionCtxFor, RecoveredTx,
+    ExecutionCtxFor, RecoveredTx, SenderRecoveryCache,
 };
 use reth_primitives_traits::{SealedOrRecoveredBlock, SignedTransaction};
 use tempo_payload_types::TempoExecutionData;
@@ -33,6 +33,7 @@ impl ConfigureEngineEvm<TempoExecutionData> for TempoEvmConfig {
         payload: &TempoExecutionData,
     ) -> Result<impl ExecutableTxIterator<Self>, Self::Error> {
         let block = payload.block.clone();
+        let sender_recovery_cache = self.sender_recovery_cache.clone();
         let mut transactions = Vec::with_capacity(block.body().transactions.len());
         let mut expiring_nonce_idx = 0;
 
@@ -46,7 +47,12 @@ impl ConfigureEngineEvm<TempoExecutionData> for TempoEvmConfig {
         }
 
         Ok((transactions, move |(index, expiring_nonce_idx)| {
-            RecoveredInBlock::new(block.clone(), index, expiring_nonce_idx)
+            RecoveredInBlock::new(
+                block.clone(),
+                index,
+                expiring_nonce_idx,
+                sender_recovery_cache.as_ref(),
+            )
         }))
     }
 }
@@ -67,12 +73,21 @@ impl RecoveredInBlock {
         block: SealedOrRecoveredBlock<Block>,
         index: usize,
         expiring_nonce_idx: Option<usize>,
+        sender_recovery_cache: Option<&SenderRecoveryCache>,
     ) -> Result<Self, RecoveryError> {
-        let sender = block
+        let recovered_sender = block
             .recovered_block()
-            .and_then(|block| block.senders().get(index).copied())
-            .map(Ok)
-            .unwrap_or_else(|| block.body().transactions[index].try_recover())?;
+            .and_then(|block| block.senders().get(index).copied());
+        let tx = &block.body().transactions[index];
+        let sender = if let Some(sender) = recovered_sender {
+            sender
+        } else if tx.is_system_tx() {
+            tx.try_recover()?
+        } else if let Some(cache) = sender_recovery_cache {
+            cache.recover(tx)?
+        } else {
+            tx.try_recover()?
+        };
         Ok(Self {
             block,
             index,
@@ -107,7 +122,7 @@ impl ExecutableTxParts<Recovered<TempoTxEnv>, TempoTxEnvelope> for RecoveredInBl
 #[cfg(test)]
 mod tests {
     use super::*;
-    use alloy_consensus::{BlockHeader, Signed, TxLegacy};
+    use alloy_consensus::{BlockHeader, Signed, TxLegacy, transaction::TxHashRef};
     use alloy_primitives::{B256, Bytes, Signature, TxKind, U256};
     use alloy_rlp::{Encodable, bytes::BytesMut};
     use rayon::iter::{IntoParallelIterator, ParallelIterator};
@@ -181,11 +196,15 @@ mod tests {
     #[test]
     fn test_tx_iterator_for_payload() {
         let chainspec = Arc::new(TempoChainSpec::from_genesis(MODERATO.genesis().clone()));
-        let evm_config = TempoEvmConfig::new(chainspec.clone());
+        let sender_recovery_cache = SenderRecoveryCache::new(4);
+        let evm_config = TempoEvmConfig::new(chainspec.clone())
+            .with_sender_recovery_cache(sender_recovery_cache.clone());
 
         let tx1 = create_legacy_tx();
         let tx2 = create_legacy_tx();
         let system_tx = create_subblock_metadata_tx(chainspec.chain().id(), 1);
+        let tx_hash = *tx1.tx_hash();
+        let system_tx_hash = *system_tx.tx_hash();
 
         let block = create_test_block(vec![tx1, tx2, system_tx]);
 
@@ -214,6 +233,9 @@ mod tests {
                 crate::ExecutionContext::Transaction { .. }
             ));
         }
+
+        assert!(sender_recovery_cache.get(&tx_hash).is_some());
+        assert_eq!(sender_recovery_cache.get(&system_tx_hash), None);
     }
 
     #[test]

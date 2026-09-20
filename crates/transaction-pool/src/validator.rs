@@ -141,7 +141,7 @@ where
             .evm_config()
             .evm_env(latest_header.header())
             .expect("failed constructing EvmEnv from latest header");
-        let active_hardfork = AtomicU8::new(evm_env.tempo_spec.variant_index());
+        let active_hardfork = AtomicU8::new(evm_env.spec.variant_index());
         Self {
             inner,
             aa_valid_after_max_secs,
@@ -752,7 +752,7 @@ where
             .evm_env(new_tip_block.header())
             .expect("invalid block in on_new_head_block");
         self.active_hardfork
-            .store(evm_env.tempo_spec.variant_index(), Ordering::Relaxed);
+            .store(evm_env.spec.variant_index(), Ordering::Relaxed);
         *self.cached_evm_env.write() = evm_env;
 
         // State changed, drop all cached reads and anchor the new cache to this tip.

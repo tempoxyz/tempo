@@ -81,7 +81,7 @@ pub(crate) fn bench_env(hardfork: TempoHardfork, block_timestamp: u64) -> TempoE
     let mut version = *tempo_execution_config(hardfork, CHAIN_ID).version();
     version.tx_gas_limit_cap = hardfork.tx_gas_limit_cap().unwrap_or(u64::MAX);
     TempoEvmEnv {
-        tempo_spec: hardfork,
+        spec: hardfork,
         version,
         block: TempoBlockEnv {
             number: U256::from(1),

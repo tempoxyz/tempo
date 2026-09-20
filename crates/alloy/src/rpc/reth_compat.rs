@@ -124,7 +124,7 @@ impl TryIntoTxEnv<Recovered<TempoTxEnv>, TempoEvmEnv> for TempoTransactionReques
             key_data.as_ref(),
             key_id,
             caller_addr,
-            evm_env.tempo_spec.is_t1c(),
+            evm_env.spec.is_t1c(),
         );
 
         let env = TempoTxEnv::from(Recovered::new_unchecked(

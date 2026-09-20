@@ -370,12 +370,12 @@ where
                 &mut db,
                 tx_env.inner(),
                 fee_payer,
-                evm_env.tempo_spec,
+                evm_env.spec,
                 actions.clone(),
             )
             .map_err(ProviderError::other)?;
         let fee_token_balance = db
-            .get_token_balance(fee_token, fee_payer, evm_env.tempo_spec, actions)
+            .get_token_balance(fee_token, fee_payer, evm_env.spec, actions)
             .map_err(ProviderError::other)?;
         let gas_price = tx_env
             .evm_tx()

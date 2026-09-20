@@ -6,7 +6,7 @@ use reth_evm::{
     BlockExecutionError, EvmEnv,
     execute::{BlockAssembler, BlockAssemblerInput},
 };
-use reth_evm_ethereum::{EthBlockAssembler, EthBlockExecutorFactory, EthEvmEnv};
+use reth_evm_ethereum::{EthBlockAssembler, EthBlockExecutorFactory};
 use reth_primitives_traits::SealedHeader;
 use std::sync::Arc;
 use tempo_chainspec::TempoChainSpec;
@@ -64,7 +64,7 @@ impl TempoBlockAssembler {
                     TempoEvmFactory,
                 >,
             >::new(
-                EthEvmEnv::new_with_version(evm_env.tempo_spec, evm_env.block, evm_env.version),
+                evm_env,
                 inner,
                 &parent,
                 transactions,

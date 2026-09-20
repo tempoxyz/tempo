@@ -105,7 +105,7 @@ impl TestExecutorBuilder {
         let evm = TempoEvmConfig::new(chainspec.clone()).evm_with_env(
             database,
             TempoEvmEnv {
-                tempo_spec: self.spec,
+                spec: self.spec,
                 version,
                 block: TempoBlockEnv {
                     number: U256::from(self.block_number),

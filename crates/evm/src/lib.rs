@@ -48,13 +48,10 @@ use std::{borrow::Cow, sync::Arc};
 use alloy_consensus::BlockHeader as _;
 use alloy_eips::eip7840::BlobParams;
 use alloy_primitives::{Address, U256};
-use evm2::{EvmFeatures, ExecutionConfig, env::BlockEnv, evm::DynDatabase};
+use evm2::{ExecutionConfig, env::BlockEnv, evm::DynDatabase};
 use reth_chainspec::EthChainSpec;
-use reth_evm::{
-    BlockExecutorFactory, ConfigureEvm, EvmEnv, EvmEnvFor, EvmTransactionValidationGasRules,
-    EvmTransactionValidationLimits,
-};
-use reth_evm_ethereum::EthBlockExecutionCtx;
+use reth_evm::{BlockExecutorFactory, ConfigureEvm, EvmEnvFor, SenderRecoveryCache};
+use reth_evm_ethereum::{EthBlockExecutionCtx, EthEvmEnv};
 use reth_primitives_traits::{SealedBlock, SealedHeader};
 use tempo_chainspec::{
     TempoChainSpec,
@@ -67,104 +64,14 @@ use tempo_primitives::{Block, TempoHeader, TempoPrimitives, TempoReceipt, TempoT
 use rayon as _;
 
 /// Fully resolved Tempo execution environment.
-#[derive(Clone, Debug)]
-pub struct TempoEvmEnv {
-    /// Active Tempo protocol revision.
-    pub tempo_spec: tempo_chainspec::hardfork::TempoHardfork,
-    /// Runtime gas and validation parameters.
-    pub version: evm2::Version,
-    /// Block fields visible to EVM execution.
-    pub block: TempoBlockEnv,
-}
-
-impl Default for TempoEvmEnv {
-    fn default() -> Self {
-        let tempo_spec = tempo_chainspec::hardfork::TempoHardfork::default();
-        let version = *tempo_execution_config(tempo_spec, 0).version();
-        Self {
-            tempo_spec,
-            version,
-            block: TempoBlockEnv::default(),
-        }
-    }
-}
-
-impl EvmEnv for TempoEvmEnv {
-    type EvmTypes = TempoEvmTypes;
-
-    fn spec_id(&self) -> tempo_chainspec::hardfork::TempoHardfork {
-        self.tempo_spec
-    }
-
-    fn chain_id(&self) -> u64 {
-        self.version.chain_id
-    }
-
-    fn block_env(&self) -> &BlockEnv<TempoEvmTypes> {
-        &self.block
-    }
-
-    fn block_env_mut(&mut self) -> &mut BlockEnv<TempoEvmTypes> {
-        &mut self.block
-    }
-
-    fn version(&self) -> &evm2::Version {
-        &self.version
-    }
-
-    fn version_mut(&mut self) -> &mut evm2::Version {
-        &mut self.version
-    }
-
-    fn block_base_fee(&self) -> u64 {
-        self.block.basefee.to()
-    }
-
-    fn block_blob_base_fee(&self) -> u64 {
-        self.block.blob_basefee.to()
-    }
-
-    fn transaction_validation_limits(&self) -> EvmTransactionValidationLimits {
-        EvmTransactionValidationLimits {
-            max_initcode_size: self.version.max_initcode_size,
-            tx_gas_limit_cap: if self.version.feature(EvmFeatures::EIP8037) {
-                0
-            } else {
-                self.version.tx_gas_limit_cap
-            },
-        }
-    }
-
-    fn transaction_validation_gas_rules(&self) -> EvmTransactionValidationGasRules {
-        EvmTransactionValidationGasRules {
-            version: self.version,
-        }
-    }
-
-    fn uses_separate_block_gas(&self) -> bool {
-        self.version.feature(EvmFeatures::EIP8037)
-    }
-
-    fn regular_gas_limit_cap(&self) -> u64 {
-        self.version.tx_gas_limit_cap
-    }
-
-    fn with_nonce_check_disabled(mut self) -> Self {
-        self.version.features.remove(EvmFeatures::NONCE_CHECK);
-        self
-    }
-
-    fn with_balance_check_disabled(mut self) -> Self {
-        self.version.features.remove(EvmFeatures::BALANCE_CHECK);
-        self
-    }
-}
+pub type TempoEvmEnv = EthEvmEnv<TempoEvmTypes>;
 
 /// Tempo-related EVM configuration.
 #[derive(Debug, Clone)]
 pub struct TempoEvmConfig {
     chain_spec: Arc<TempoChainSpec>,
     evm_factory: TempoEvmFactory,
+    sender_recovery_cache: Option<SenderRecoveryCache>,
     /// Block assembler used by payload construction.
     pub block_assembler: TempoBlockAssembler,
 }
@@ -190,9 +97,16 @@ impl TempoEvmConfig {
     pub fn new(chain_spec: Arc<TempoChainSpec>) -> Self {
         Self {
             evm_factory: TempoEvmFactory::default(),
+            sender_recovery_cache: None,
             block_assembler: TempoBlockAssembler::new(chain_spec.clone()),
             chain_spec,
         }
+    }
+
+    /// Uses the provided sender recovery cache.
+    pub fn with_sender_recovery_cache(mut self, cache: SenderRecoveryCache) -> Self {
+        self.sender_recovery_cache = Some(cache);
+        self
     }
 
     /// Returns the chain spec
@@ -226,11 +140,7 @@ impl TempoEvmConfig {
                 .try_into()
                 .expect("blob base fee update fraction exceeds u64");
         }
-        TempoEvmEnv {
-            tempo_spec,
-            version,
-            block,
-        }
+        TempoEvmEnv::new_with_version(tempo_spec, block, version)
     }
 }
 
@@ -265,15 +175,15 @@ impl BlockExecutorFactory for TempoEvmConfig {
     {
         let ext = self.evm_factory.evm_ext(TempoEvmExt::default());
         let precompiles = TempoPrecompiles::new(
-            env.tempo_spec,
+            env.spec,
             ext.actions.clone(),
             ext.non_creditable_slots.clone(),
         );
         evm2::Evm::new_with_execution_config_and_ext(
-            ExecutionConfig::for_spec_and_version(env.tempo_spec, env.version),
-            env.tempo_spec,
+            ExecutionConfig::for_spec_and_version(env.spec, env.version),
+            env.spec,
             env.block,
-            tempo_tx_registry(env.tempo_spec.into()),
+            tempo_tx_registry(env.spec.into()),
             db,
             precompiles,
             ext,
