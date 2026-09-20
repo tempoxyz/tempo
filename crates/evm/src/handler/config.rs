@@ -2,7 +2,7 @@
 
 use crate::{
     FeePaymentError, ProtocolFeeContext, ProtocolFeeManager, TempoEvmTx, TempoFeeManager,
-    TempoInvalidTransaction, TempoTxEnv,
+    TempoInvalidTransaction, TempoStateAccess, TempoTxEnv,
 };
 use alloy_consensus::{Transaction, TxEip1559, TxEip2930, TxLegacy};
 use alloy_primitives::{Address, TxKind, U256};
@@ -355,10 +355,16 @@ impl TempoHandlerHooks {
         let base_fee = u64::try_from(host.block().basefee)
             .map_err(|_| HandlerError::External("block base fee does not fit u64".into()))?;
         let gas_price = envelope.evm_tx().effective_gas_price(Some(base_fee));
-        let collected = if host.feature(EvmFeatures::FEE_CHARGE) {
-            calc_gas_balance_spending(envelope.evm_tx().gas_limit(), gas_price)
+        let (collected, max_fee) = if host.feature(EvmFeatures::FEE_CHARGE) {
+            (
+                calc_gas_balance_spending(envelope.evm_tx().gas_limit(), gas_price),
+                calc_gas_balance_spending(
+                    envelope.evm_tx().gas_limit(),
+                    envelope.max_fee_per_gas(),
+                ),
+            )
         } else {
-            U256::ZERO
+            (U256::ZERO, U256::ZERO)
         };
         let spec = host.config_spec_id();
 
@@ -380,8 +386,20 @@ impl TempoHandlerHooks {
                 address: fee_token,
             }));
         }
-        if !collected.is_zero() {
+        if !max_fee.is_zero() {
             fee_manager.validate_fee_token(host, fee_token, spec)?;
+            let balance = map_protocol_result(host.get_token_balance(
+                fee_token,
+                fee_payer,
+                spec,
+                StorageActions::disabled(),
+            ))?;
+            if balance < max_fee {
+                return Err(invalid(FeePaymentError::InsufficientFeeTokenBalance {
+                    fee: max_fee,
+                    balance,
+                }));
+            }
         }
 
         Ok(TempoFeeContext {

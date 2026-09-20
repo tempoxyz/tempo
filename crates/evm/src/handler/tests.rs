@@ -323,6 +323,60 @@ fn test_paused_fee_token_rejected() {
 }
 
 #[test]
+fn test_collect_fee_pre_tx_requires_max_fee_balance() {
+    let fee_payer = Address::random();
+    let gas_limit = 100_000;
+    let base_fee = 1_000_000_000_u64;
+    let max_priority_fee_per_gas = 1_000_000_000_u128;
+    let max_fee_per_gas = 1_000_000_000_000_u128;
+    let collected =
+        calc_gas_balance_spending(gas_limit, u128::from(base_fee) + max_priority_fee_per_gas);
+    let max_fee = calc_gas_balance_spending(gas_limit, max_fee_per_gas);
+    assert!(collected < max_fee);
+    let mut test = storage_evm(TempoHardfork::default());
+    let mut block = *test.block();
+    block.basefee = U256::from(base_fee);
+    test.set_block(block);
+
+    StorageCtx::enter_evm_without_tip1060_accounting(&mut test, || {
+        TIP20Setup::path_usd(fee_payer)
+            .with_issuer(fee_payer)
+            .with_mint(fee_payer, collected)
+            .apply()
+    })
+    .expect("pathUSD setup succeeds");
+
+    let tx = aa_env_for(
+        fee_payer,
+        TempoTransaction {
+            chain_id: 1,
+            fee_token: Some(PATH_USD_ADDRESS),
+            max_priority_fee_per_gas,
+            max_fee_per_gas,
+            gas_limit,
+            calls: Vec::new(),
+            ..Default::default()
+        },
+    );
+
+    let result = collect_fee_pre_tx(&mut test, &tx);
+
+    assert!(
+        matches!(
+            result,
+            Err(ref error)
+                if matches!(
+                    error.external_ref::<TempoInvalidTransaction>(),
+                    Some(TempoInvalidTransaction::CollectFeePreTx(
+                        FeePaymentError::InsufficientFeeTokenBalance { fee, balance },
+                    )) if *fee == max_fee && *balance == collected
+                )
+        ),
+        "fee payer must afford max_fee_per_gas, got: {result:?}"
+    );
+}
+
+#[test]
 fn test_collect_fee_pre_tx_insufficient_liquidity_reports_pair_from_handler() -> eyre::Result<()> {
     use tempo_contracts::precompiles::IFeeManager;
 
