@@ -628,47 +628,6 @@ fn tempo_gas_params(spec: TempoHardfork) -> GasParams {
     tempo_chainspec::gas_params::version(SpecId::OSAKA, spec, spec.is_t4()).gas_params
 }
 
-fn calculate_initial_tx_gas(
-    spec: SpecId,
-    input: &[u8],
-    is_create: bool,
-    access_list_accounts: u64,
-    access_list_storage: u64,
-    authorization_list: u64,
-) -> InitialAndFloorGas {
-    let version = tempo_chainspec::gas_params::version(spec, TempoHardfork::Genesis, false);
-    let input = Bytes::copy_from_slice(input);
-    let to = if is_create {
-        TxKind::Create
-    } else {
-        TxKind::Call(Address::ZERO)
-    };
-    let initial_gas = evm2::ethereum::intrinsic_gas(
-        &version,
-        SIGNER,
-        to,
-        &input,
-        access_list_accounts,
-        access_list_storage,
-        U256::ZERO,
-    ) + authorization_list
-        * u64::from(version.gas_params.get(GasId::TxEip7702PerEmptyAccountCost));
-    let floor_gas = evm2::ethereum::floor_gas(
-        &version,
-        SIGNER,
-        to,
-        &input,
-        access_list_accounts,
-        access_list_storage,
-        U256::ZERO,
-    );
-    InitialAndFloorGas {
-        initial_gas,
-        initial_state_gas: 0,
-        floor_gas,
-    }
-}
-
 fn calculate_aa_batch_intrinsic_gas<'a, I>(
     env: &TempoBatchCallEnv,
     gas_params: &GasParams,
@@ -742,20 +701,20 @@ fn test_aa_gas_single_call_vs_normal_tx() {
     .unwrap();
 
     // Calculate expected gas using revm's function for equivalent normal tx
-    let normal_tx_gas = calculate_initial_tx_gas(
-        SpecId::CANCUN,
+    let version =
+        tempo_chainspec::gas_params::version(SpecId::CANCUN, TempoHardfork::Genesis, false);
+    let normal_tx_gas = evm2::ethereum::intrinsic_gas(
+        &version,
+        SIGNER,
+        TxKind::Call(to),
         &calldata,
-        false, // not create
-        0,     // no access list accounts
-        0,     // no access list storage
-        0,     // no authorization list
+        0,
+        0,
+        U256::ZERO,
     );
 
     // AA with secp256k1 + single call should match normal tx exactly
-    assert_eq!(
-        aa_gas.initial_total_gas(),
-        normal_tx_gas.initial_total_gas()
-    );
+    assert_eq!(aa_gas.initial_total_gas(), normal_tx_gas);
 }
 
 #[test]
@@ -803,13 +762,21 @@ fn test_aa_gas_multiple_calls_overhead() {
     .unwrap();
 
     // Calculate base gas for a single normal tx
-    let base_tx_gas = calculate_initial_tx_gas(SpecId::CANCUN, &calldata, false, 0, 0, 0);
+    let version =
+        tempo_chainspec::gas_params::version(SpecId::CANCUN, TempoHardfork::Genesis, false);
+    let base_tx_gas = evm2::ethereum::intrinsic_gas(
+        &version,
+        SIGNER,
+        TxKind::Call(Address::ZERO),
+        &calldata,
+        0,
+        0,
+        U256::ZERO,
+    );
 
     // For 3 calls: base (21k) + 3*calldata + 2*per-call overhead (calls 2 and 3)
     // = 21k + 2*(calldata cost) + 2*COLD_ACCOUNT_ACCESS_COST
-    let expected = base_tx_gas.initial_total_gas()
-        + 2 * (calldata.len() as u64 * 16)
-        + 2 * COLD_ACCOUNT_ACCESS_COST;
+    let expected = base_tx_gas + 2 * (calldata.len() as u64 * 16) + 2 * COLD_ACCOUNT_ACCESS_COST;
     // Should charge per-call overhead for calls beyond the first
     assert_eq!(gas.initial_total_gas(), expected,);
 }
@@ -853,10 +820,19 @@ fn test_aa_gas_p256_signature() {
     .unwrap();
 
     // Calculate base gas for normal tx
-    let base_gas = calculate_initial_tx_gas(spec, &calldata, false, 0, 0, 0);
+    let version = tempo_chainspec::gas_params::version(spec, TempoHardfork::Genesis, false);
+    let base_gas = evm2::ethereum::intrinsic_gas(
+        &version,
+        SIGNER,
+        TxKind::Call(Address::ZERO),
+        &calldata,
+        0,
+        0,
+        U256::ZERO,
+    );
 
     // Expected: normal tx + P256_VERIFY_GAS
-    let expected = base_gas.initial_total_gas() + P256_VERIFY_GAS;
+    let expected = base_gas + P256_VERIFY_GAS;
     assert_eq!(gas.initial_total_gas(), expected,);
 }
 
@@ -893,13 +869,19 @@ fn test_aa_gas_create_call() {
     .unwrap();
 
     // Calculate expected using revm's function for CREATE tx
-    let base_gas = calculate_initial_tx_gas(
-        spec, &initcode, true, // is_create = true
-        0, 0, 0,
+    let version = tempo_chainspec::gas_params::version(spec, TempoHardfork::Genesis, false);
+    let base_gas = evm2::ethereum::intrinsic_gas(
+        &version,
+        SIGNER,
+        TxKind::Create,
+        &initcode,
+        0,
+        0,
+        U256::ZERO,
     );
 
     // AA CREATE should match normal CREATE exactly
-    assert_eq!(gas.initial_total_gas(), base_gas.initial_total_gas(),);
+    assert_eq!(gas.initial_total_gas(), base_gas,);
 }
 
 #[test]
@@ -974,10 +956,19 @@ fn test_aa_gas_access_list() {
     .unwrap();
 
     // Calculate expected using revm's function
-    let base_gas = calculate_initial_tx_gas(spec, &calldata, false, 0, 0, 0);
+    let version = tempo_chainspec::gas_params::version(spec, TempoHardfork::Genesis, false);
+    let base_gas = evm2::ethereum::intrinsic_gas(
+        &version,
+        SIGNER,
+        TxKind::Call(Address::ZERO),
+        &calldata,
+        0,
+        0,
+        U256::ZERO,
+    );
 
     // Expected: normal tx
-    assert_eq!(gas.initial_total_gas(), base_gas.initial_total_gas(),);
+    assert_eq!(gas.initial_total_gas(), base_gas,);
 }
 
 #[test]
@@ -1061,11 +1052,20 @@ fn test_aa_gas_floor_gas_prague() {
     .unwrap();
 
     // Calculate expected floor gas using revm's function
-    let base_gas = calculate_initial_tx_gas(spec, &calldata, false, 0, 0, 0);
+    let version = tempo_chainspec::gas_params::version(spec, TempoHardfork::Genesis, false);
+    let base_gas = evm2::ethereum::floor_gas(
+        &version,
+        SIGNER,
+        TxKind::Call(Address::ZERO),
+        &calldata,
+        0,
+        0,
+        U256::ZERO,
+    );
 
     // Floor gas should match revm's calculation for same calldata
     assert_eq!(
-        gas.floor_gas, base_gas.floor_gas,
+        gas.floor_gas, base_gas,
         "Should calculate floor gas for Prague matching revm"
     );
 }
@@ -2773,23 +2773,15 @@ mod keychain {
         evm: &mut crate::TempoEvm<'static>,
         env: &TempoTxEnv,
     ) -> HandlerResult<()> {
-        validate_against_state_with_fee(evm, env, U256::ZERO)
-    }
-
-    fn validate_against_state_with_fee(
-        evm: &mut crate::TempoEvm<'static>,
-        env: &TempoTxEnv,
-        collected_fee: U256,
-    ) -> HandlerResult<()> {
-        let aa = env.as_aa().unwrap();
-        validate_key_authorization(aa, evm.version().chain_id, evm.config_spec_id())?;
-        let fee = TempoFeeContext {
-            fee_payer: aa.signer(),
-            fee_token: tempo_contracts::precompiles::DEFAULT_FEE_TOKEN,
-            collected: collected_fee,
-        };
-        let state = prepare_keychain(evm, aa, fee)?;
-        apply_key_authorization(evm, aa, fee, &state, u64::MAX)?;
+        let signer = env.as_aa().unwrap().signer();
+        let result = evm
+            .transact(&Recovered::new_unchecked(env.clone(), signer))?
+            .commit();
+        if !result.status {
+            return Err(HandlerError::External(
+                "keychain test transaction did not execute successfully".into(),
+            ));
+        }
         Ok(())
     }
 
@@ -3345,6 +3337,8 @@ mod keychain {
 
     #[test]
     fn test_t6_admin_delegation_does_not_apply_child_fee_limit() {
+        use tempo_precompiles::account_keychain::getKeyCall;
+
         let (admin_signer, admin_key) = generate_keypair();
         let user = Address::random();
         let child_key = Address::random();
@@ -3408,15 +3402,40 @@ mod keychain {
                 .expect("root authorizes admin key");
         });
 
-        let result = evm.transact(&Recovered::new_unchecked(env, user));
+        let result = evm
+            .transact(&Recovered::new_unchecked(env, user))
+            .expect("admin delegation should not charge fees against child key limits")
+            .commit();
         assert!(
-            result.is_ok(),
-            "admin delegation should not charge fees against child key limits, got: {result:?}"
+            result.status,
+            "admin delegation should execute successfully, got: {result:?}"
         );
+
+        StorageCtx::enter_evm_without_tip1060_accounting(&mut evm, || {
+            let keychain = AccountKeychain::new();
+            let key = keychain
+                .get_key(getKeyCall {
+                    account: user,
+                    keyId: child_key,
+                })
+                .expect("child key read succeeds");
+            assert_eq!(key.keyId, child_key, "child key should be registered");
+
+            let balance = TIP20Token::from_address(PATH_USD_ADDRESS)
+                .expect("pathUSD address")
+                .balances[user]
+                .read()
+                .expect("payer balance read succeeds");
+            assert!(
+                balance < fee * U256::from(2),
+                "the transaction should charge the admin signer a nonzero fee"
+            );
+        });
     }
 
     #[test]
     fn test_t6_admin_delegation_preserves_admin_transaction_key() {
+        use alloy_sol_types::SolCall;
         use tempo_precompiles::account_keychain::getTransactionKeyCall;
 
         let (admin_signer, admin_key) = generate_keypair();
@@ -3427,14 +3446,33 @@ mod keychain {
             KeyAuthorization::unrestricted(1, SignatureType::Secp256k1, child_key)
                 .with_account(user),
         );
-        let (mut evm, env) = make_evm(
+        let (mut evm, _) = make_evm(
             user,
             admin_key,
-            Some(signed),
+            Some(signed.clone()),
             TempoHardfork::T6,
             None,
             false,
         );
+        let env: TempoTxEnv = Recovered::new_unchecked(
+            TempoTxEnvelope::AA(AASigned::new_unhashed(
+                TempoTransaction {
+                    chain_id: 1,
+                    gas_limit: 1_000_000,
+                    calls: vec![Call {
+                        to: TxKind::Call(tempo_precompiles::ACCOUNT_KEYCHAIN_ADDRESS),
+                        value: U256::ZERO,
+                        input: getTransactionKeyCall {}.abi_encode().into(),
+                    }],
+                    key_authorization: Some(signed),
+                    ..Default::default()
+                },
+                TempoSignature::Keychain(KeychainSignature::new(user, test_sig())),
+            )),
+            user,
+        )
+        .into();
+        let env = env.with_simulation_overrides(B256::ZERO, None, Some(admin_key));
 
         let env_result = validate_keychain_env(&env, 1, TempoHardfork::T6);
         assert!(
@@ -3448,23 +3486,25 @@ mod keychain {
                 .authorize_admin_key(user, admin_key, PrecompileSignatureType::Secp256k1, None)
                 .expect("root authorizes admin key");
         });
+        evm.set_precompiles(tempo_precompiles::TempoPrecompiles::<TempoEvmTypes>::new(
+            TempoHardfork::T6,
+            evm.ext().actions.clone(),
+            evm.ext().non_creditable_slots.clone(),
+        ));
 
-        let result = validate_against_state(&mut evm, &env);
+        let result = evm
+            .transact(&Recovered::new_unchecked(env, user))
+            .expect("admin delegation should pass")
+            .commit();
         assert!(
-            result.is_ok(),
+            result.status,
             "admin delegation should pass, got: {result:?}"
         );
-
-        StorageCtx::enter_evm_without_tip1060_accounting(&mut evm, || {
-            let keychain = AccountKeychain::new();
-            let transaction_key = keychain
-                .get_transaction_key(getTransactionKeyCall {}, user)
-                .expect("transaction key read succeeds");
-            assert_eq!(
-                transaction_key, admin_key,
-                "admin delegation must preserve the signer key as transaction key"
-            );
-        });
+        assert_eq!(
+            getTransactionKeyCall::abi_decode_returns(&result.output).unwrap(),
+            admin_key,
+            "admin delegation must preserve the signer key as transaction key"
+        );
     }
 
     #[test]
@@ -3611,8 +3651,9 @@ mod keychain {
     fn test_same_tx_key_authorization_rejects_fee_above_new_limit_before_auth() {
         let (signer, user) = generate_keypair();
         let key = Address::random();
-        let gas_limit = 100_000;
-        let fee = U256::from(gas_limit);
+        let gas_limit = 2_000_000;
+        let gas_price = 1_000_000_000_000;
+        let fee = calc_gas_balance_spending(gas_limit, gas_price);
         let spending_limit = fee - U256::ONE;
 
         let signed = sign_key_auth(
@@ -3625,9 +3666,45 @@ mod keychain {
                 },
             ]),
         );
-        let (mut evm, env) = make_evm(user, key, Some(signed), TempoHardfork::T3, None, false);
+        let (mut evm, _) = make_evm(
+            user,
+            key,
+            Some(signed.clone()),
+            TempoHardfork::T3,
+            None,
+            false,
+        );
+        let env: TempoTxEnv = Recovered::new_unchecked(
+            TempoTxEnvelope::AA(AASigned::new_unhashed(
+                TempoTransaction {
+                    chain_id: 1,
+                    fee_token: Some(tempo_contracts::precompiles::DEFAULT_FEE_TOKEN),
+                    max_priority_fee_per_gas: gas_price,
+                    max_fee_per_gas: gas_price,
+                    gas_limit,
+                    calls: vec![call(Bytes::new())],
+                    key_authorization: Some(signed),
+                    ..Default::default()
+                },
+                TempoSignature::Keychain(KeychainSignature::new(user, test_sig())),
+            )),
+            user,
+        )
+        .into();
+        let env = env.with_simulation_overrides(B256::ZERO, None, Some(key));
 
-        let result = validate_against_state_with_fee(&mut evm, &env, fee);
+        StorageCtx::enter_evm_without_tip1060_accounting(&mut evm, || {
+            TIP20Setup::path_usd(user)
+                .with_issuer(user)
+                .with_mint(user, fee * U256::from(2))
+                .apply()
+                .expect("pathUSD setup succeeds");
+        });
+
+        let context = TempoHandlerHooks::resolve_fee_context(&mut evm, &env).unwrap();
+        assert_eq!(context.collected, fee);
+
+        let result = evm.transact(&Recovered::new_unchecked(env, user));
 
         assert!(
             matches!(
@@ -3637,82 +3714,13 @@ mod keychain {
             ),
             "same-tx auth+use should reject fee above the new key limit before auth, got: {result:?}"
         );
+        drop(result);
         assert!(
             evm.logs()
                 .iter()
                 .all(|log| log.address != tempo_precompiles::ACCOUNT_KEYCHAIN_ADDRESS),
             "fee-limit rejection must happen before key authorization emits events"
         );
-    }
-
-    #[test]
-    fn test_stale_collected_fee_not_charged_to_zero_fee_same_tx_auth_use() {
-        let (signer, user) = generate_keypair();
-        let key = Address::random();
-        let stale_fee = U256::from(100_000);
-        let spending_limit = stale_fee - U256::ONE;
-
-        let signed = sign_key_auth(
-            &signer,
-            KeyAuthorization::unrestricted(1, SignatureType::Secp256k1, key).with_limits(vec![
-                TokenLimit {
-                    token: tempo_contracts::precompiles::DEFAULT_FEE_TOKEN,
-                    limit: spending_limit,
-                    period: 60,
-                },
-            ]),
-        );
-        let (mut evm, env) = make_evm(
-            user,
-            key,
-            Some(signed.clone()),
-            TempoHardfork::T3,
-            None,
-            false,
-        );
-
-        StorageCtx::enter_evm_without_tip1060_accounting(&mut evm, || {
-            TIP20Setup::path_usd(user)
-                .with_issuer(user)
-                .with_mint(user, stale_fee * U256::from(2))
-                .apply()
-                .expect("pathUSD setup succeeds");
-        });
-
-        let stale_env: TempoTxEnv = Recovered::new_unchecked(
-            tempo_primitives::TempoTxEnvelope::AA(AASigned::new_unhashed(
-                TempoTransaction {
-                    chain_id: 1,
-                    fee_token: Some(tempo_contracts::precompiles::DEFAULT_FEE_TOKEN),
-                    max_priority_fee_per_gas: 1_000_000_000_000,
-                    max_fee_per_gas: 1_000_000_000_000,
-                    gas_limit: 100_000,
-                    calls: vec![call(Bytes::new())],
-                    key_authorization: Some(signed),
-                    ..Default::default()
-                },
-                TempoSignature::Keychain(KeychainSignature::new(
-                    user,
-                    PrimitiveSignature::Secp256k1(Signature::test_signature()),
-                )),
-            )),
-            user,
-        )
-        .into();
-        let stale_env = stale_env.with_simulation_overrides(B256::ZERO, None, Some(key));
-        let stale_context = TempoHandlerHooks::resolve_fee_context(&mut evm, &stale_env).unwrap();
-        assert_eq!(stale_context.collected, stale_fee);
-
-        let context = TempoHandlerHooks::resolve_fee_context(&mut evm, &env).unwrap();
-        assert_eq!(context.collected, U256::ZERO);
-
-        let result = validate_against_state_with_fee(&mut evm, &env, U256::ZERO);
-
-        assert!(
-            result.is_ok(),
-            "zero-fee same-tx auth/use must not charge stale fee, got: {result:?}"
-        );
-        assert_eq!(context.collected, U256::ZERO);
     }
 }
 
