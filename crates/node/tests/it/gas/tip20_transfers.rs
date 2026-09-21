@@ -645,7 +645,6 @@ async fn test_tip20_transfer_with_memo_t0_gas_snapshot() -> eyre::Result<()> {
 
     let setup = TestNodeBuilder::new()
         .with_genesis(make_genesis_at(TempoHardfork::T0))
-        .with_instant_mining()
         .build_http_only()
         .await?;
     let mut sender = TempoTxSender::connect(setup.http_url, test_signer(0)?).await?;
