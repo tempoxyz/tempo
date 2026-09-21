@@ -108,6 +108,9 @@ impl Inner {
         parent: &Block,
         propose_start: Instant,
     ) -> eyre::Result<Block> {
+        self.executor
+            .report_pending_head(context.round, context.parent)?;
+
         let Context {
             round,
             leader,
@@ -403,6 +406,17 @@ where
         (_runtime, context): (TContext, Self::Context),
         mut ancestry: impl Ancestry<Block>,
     ) -> bool {
+        // The consensus parent remains a convergence target even if this
+        // proposal's header is invalid or its verification cannot complete
+        // with our current local state.
+        if let Err(error) = self
+            .executor
+            .report_pending_head(context.round, context.parent)
+        {
+            warn!(%error, "executor could not record the consensus parent; abstaining");
+            return std::future::pending().await;
+        }
+
         let Some(block) = ancestry.next().await else {
             warn!("ancestry ended before yielding the block to verify; abstaining");
             return std::future::pending().await;
