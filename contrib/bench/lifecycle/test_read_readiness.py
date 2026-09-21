@@ -8,6 +8,24 @@ def event(stage, ts=100, block='a', ident=1, **fields):
     return {'type':'event','ts':ts,'id':ident,'node':'Validator A','block':block,'fields':{'stage':stage,**fields}}
 
 class ReadinessTests(unittest.TestCase):
+    def test_queue_and_backing_latency_numeric_fields_and_cutoff(self):
+        events = [event('execution_cache_readiness', ts=90,
+                        storage_backing_inflight_count=2, storage_backing_inflight_ns=300,
+                        prewarm_queue_delay_ns=400, prewarm_start_ahead_gt_64=5,
+                        storage_backing_failed_ns='private', key='private'),
+                  event('proof_state_at_updates_finished', ts=95,
+                        in_flight=7, storage_queue_depth=3, result_queue_depth=1,
+                        pending_storage_targets=5, account_queue_depth=True, address='private'),
+                  event('proof_state_at_updates_finished', ts=100, in_flight=999)]
+        result = build(events, [{'read_readiness':'v1'}], {'a':1}, 0, cutoff=100)
+        self.assertEqual(len(result['events']), 2)
+        self.assertEqual(result['events'][0]['fields'], {
+            'storage_backing_inflight_count':2, 'storage_backing_inflight_ns':300,
+            'prewarm_queue_delay_ns':400, 'prewarm_start_ahead_gt_64':5})
+        self.assertEqual(result['events'][1]['fields'], {
+            'in_flight':7, 'storage_queue_depth':3, 'result_queue_depth':1,
+            'pending_storage_targets':5})
+
     def test_actual_emit_schema_is_numeric_and_associated(self):
         result = build([event('read_totals',read_role=4,read_class=7,read_calls=3,read_ns=9,read_max_ns=4,read_lt_10us=1,secret=9),event('read_sample',read_role=4,read_class=7,read_begin_ns=10,read_end_ns=20,read_thread=2,ts=20,filename='drop'),event('execution_cache_readiness',cache_checkout_reason=2,cache_diag_keys_tracked=3,account_miss_prewarm_unknown_contention=1),event('proof_dispatch_totals',dispatches=2,targets=3,reason_force=1,split_when_queue_nonempty=1),event('read_totals',ts=110,block=None,read_role=4,read_class=7,read_calls=0)], [{'read_readiness':'v1'}], {'a':7}, 0)
         self.assertTrue(result['mode_valid']); self.assertEqual(result['events'][0]['block'],7); self.assertNotIn('secret',result['events'][0]['fields']); self.assertEqual(result['unattributed'][0]['fields'],{'read_role':4,'read_class':7,'read_calls':0})

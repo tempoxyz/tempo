@@ -12,7 +12,7 @@ import read_readiness
 from collections import defaultdict
 
 BLOCK_FIELDS = ('block_hash', 'hash', 'digest', 'proposal', 'payload')
-STAGES = ('proposal_start', 'payload_built', 'proposal_ready', 'digest_released',
+STAGES = ('builder_execution_done', 'state_root_result_ready', 'proposal_start', 'payload_built', 'proposal_ready', 'digest_released',
           'verify_start', 'body_ready', 'replay_start', 'replay_done', 'verify_done',
           'notarize_vote_sent', 'notarized', 'finalize_vote_sent', 'finalized', 'finalization_received', 'cancelled', 'proposal_failed')
 
@@ -312,7 +312,11 @@ def build(paths, warmup=5, window=None, expected_detail=None, expected_prewarm_c
     readiness = read_readiness.build(events, quality, aliases, first, cutoff)
     blocks = []
     for key in keys:
-        markers = [dict(stage=e['fields'].get('stage'), ts=(e['ts']-first)/1e6, node=e['node'])
+        markers = [dict(stage=e['fields'].get('stage'), ts=(e['ts']-first)/1e6, node=e['node'],
+                        **({'success': e['fields']['success']} if
+                           e['fields'].get('stage') == 'state_root_result_ready' and
+                           type(e['fields'].get('success')) is int and
+                           e['fields']['success'] in (0, 1) else {}))
                    for e in by_block[key] if e['fields'].get('stage') in STAGES]
         starts = [e['ts'] for e in markers if e['stage'] == 'proposal_start']
         ends = [e['ts'] for e in markers if e['stage'] == 'finalized']

@@ -26,6 +26,17 @@ def fixture(path, lost=0, close=True):
 
 
 class ReportTests(unittest.TestCase):
+    def test_root_result_success_preserved(self):
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory)/'a.jsonl'; fixture(path)
+            records = [json.loads(line) for line in path.read_text().splitlines()]
+            records[-1:-1] = [dict(type='event', id=1, ts=1_000_000_200,
+                                  fields=dict(stage='state_root_result_ready', success=0))]
+            path.write_text('\n'.join(map(json.dumps, records)))
+            result = build([path], warmup=0)
+            ready = [m for m in result['blocks'][0]['markers'] if m['stage']=='state_root_result_ready']
+            self.assertEqual(ready[0]['success'], 0)
+
     def test_worker_slice_cpu_uses_exact_node_span_kind_and_retained_completion(self):
         from perfetto import trace_events
         with tempfile.TemporaryDirectory() as directory:

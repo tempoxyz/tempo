@@ -806,6 +806,7 @@ where
         drop(roots_tx);
 
         let (evm, execution_result) = executor.finish()?;
+        tracing::info!(target: "lifecycle", stage = "builder_execution_done");
         let evm_env = evm.into_env();
 
         // Drop the state hook to signal that execution is complete and the sparse trie task can
