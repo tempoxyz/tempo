@@ -61,8 +61,10 @@ use tempo_primitives::{
 
 use crate::{
     ProtocolFeeContext, TempoBatchCallEnv, TempoEvm, TempoInvalidTransaction,
-    error::FeePaymentError, evm::TempoContext, gas_credits,
-    signature_gas::tempo_signature_verification_gas,
+    error::FeePaymentError,
+    evm::TempoContext,
+    gas_credits,
+    signature_gas::{account_signature_verification_gas, tempo_signature_verification_gas},
 };
 
 /// Base gas for KeyAuthorization (22k storage + 5k buffer), signature gas added at runtime
@@ -298,7 +300,7 @@ fn calculate_key_authorization_gas(
     // All signature types pay ECRECOVER_GAS (3k) as the baseline since
     // primitive_signature_verification_gas assumes ecrecover is already in base 21k.
     // For KeyAuthorization, we're doing an additional signature verification.
-    let sig_gas = ECRECOVER_GAS + tempo_signature_verification_gas(&key_auth.signature);
+    let sig_gas = ECRECOVER_GAS + account_signature_verification_gas(&key_auth.signature);
 
     let num_limits = key_auth
         .authorization
@@ -1371,7 +1373,7 @@ where
             if auth_signer != tx.caller {
                 let key_auth_sig_type: u8 = key_auth
                     .signature
-                    .signature_type()
+                    .primitive_signature_type()
                     .ok_or_else(|| TempoInvalidTransaction::KeychainValidationFailed {
                         reason: "multisig signatures are not supported".into(),
                     })?
@@ -1836,10 +1838,7 @@ where
                     .any(|auth| native(auth.signature()))
                 || aa_env.key_authorization.as_ref().is_some_and(|auth| {
                     auth.key_type == SignatureType::Multisig
-                        || !matches!(
-                            auth.signature,
-                            tempo_primitives::transaction::TempoSignature::Primitive(_)
-                        )
+                        || auth.signature.as_multisig().is_some()
                 })
             {
                 return Err(TempoInvalidTransaction::KeychainValidationFailed {
@@ -2051,8 +2050,8 @@ where
                             .into());
                         }
 
-                        if key_auth.signature.signature_type()
-                            != keychain_sig.signature.signature_type()
+                        if key_auth.signature.primitive_signature_type()
+                            != keychain_sig.signature.primitive_signature_type()
                         {
                             return Err(TempoInvalidTransaction::KeychainValidationFailed {
                                 reason:

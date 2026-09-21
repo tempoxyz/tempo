@@ -1,5 +1,5 @@
 use super::SignatureType;
-use crate::transaction::TempoSignature;
+use crate::transaction::AccountSignature;
 use alloc::vec::Vec;
 use alloy_consensus::crypto::RecoveryError;
 use alloy_primitives::{Address, B256, U256, keccak256};
@@ -356,7 +356,7 @@ impl KeyAuthorization {
     }
 
     /// Convert the key authorization into a [`SignedKeyAuthorization`] with a signature.
-    pub fn into_signed(self, signature: impl Into<TempoSignature>) -> SignedKeyAuthorization {
+    pub fn into_signed(self, signature: impl Into<AccountSignature>) -> SignedKeyAuthorization {
         SignedKeyAuthorization::new(self, signature)
     }
 
@@ -409,7 +409,7 @@ pub struct KeyAuthorizationChainIdError {
 }
 
 /// Signed key authorization that can be attached to a transaction.
-#[derive(Clone, Debug, alloy_rlp::RlpEncodable, derive_more::Deref)]
+#[derive(Clone, Debug, alloy_rlp::RlpEncodable, alloy_rlp::RlpDecodable, derive_more::Deref)]
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 #[cfg_attr(feature = "serde", serde(rename_all = "camelCase"))]
 #[cfg_attr(any(test, feature = "arbitrary"), derive(arbitrary::Arbitrary))]
@@ -421,12 +421,7 @@ pub struct SignedKeyAuthorization {
     pub authorization: KeyAuthorization,
 
     /// Direct primitive or multisig signature authorizing this key.
-    #[cfg_attr(
-        feature = "serde",
-        serde(deserialize_with = "deserialize_authorization_signature")
-    )]
-    #[cfg_attr(any(test, feature = "arbitrary"), arbitrary(with = arbitrary_authorization_signature))]
-    pub signature: TempoSignature,
+    pub signature: AccountSignature,
 
     /// Cached signer recovered from `signature`.
     ///
@@ -439,7 +434,7 @@ pub struct SignedKeyAuthorization {
 
 impl SignedKeyAuthorization {
     /// Create a signed key authorization with an empty signer cache.
-    pub fn new(authorization: KeyAuthorization, signature: impl Into<TempoSignature>) -> Self {
+    pub fn new(authorization: KeyAuthorization, signature: impl Into<AccountSignature>) -> Self {
         Self {
             authorization,
             signature: signature.into(),
@@ -447,9 +442,9 @@ impl SignedKeyAuthorization {
         }
     }
 
-    /// Recover the signer of the [`KeyAuthorization`].
+    /// Cryptographically verifies a primitive signature; multisig requires stateful validation.
     pub fn recover_signer(&self) -> Result<Address, RecoveryError> {
-        let TempoSignature::Primitive(signature) = &self.signature else {
+        let AccountSignature::Primitive(signature) = &self.signature else {
             return Err(RecoveryError::new());
         };
         if let Some(signer) = self.signer.get() {
@@ -468,9 +463,8 @@ impl SignedKeyAuthorization {
     /// quorum against state. Primitive results still require grant-authority checks.
     pub fn recover_account(&self) -> Result<Address, RecoveryError> {
         match &self.signature {
-            TempoSignature::Primitive(_) => self.recover_signer(),
-            TempoSignature::Multisig(signature) => Ok(signature.account()),
-            TempoSignature::Keychain(_) => Err(RecoveryError::new()),
+            AccountSignature::Primitive(_) => self.recover_signer(),
+            AccountSignature::Multisig(signature) => Ok(signature.account()),
         }
     }
 
@@ -490,33 +484,6 @@ impl SignedKeyAuthorization {
     }
 }
 
-impl alloy_rlp::Decodable for SignedKeyAuthorization {
-    fn decode(buf: &mut &[u8]) -> alloy_rlp::Result<Self> {
-        let header = alloy_rlp::Header::decode(buf)?;
-        if !header.list {
-            return Err(alloy_rlp::Error::UnexpectedString);
-        }
-        if buf.len() < header.payload_length {
-            return Err(alloy_rlp::Error::InputTooShort);
-        }
-        let (mut fields, rest) = buf.split_at(header.payload_length);
-        let authorization = KeyAuthorization::decode(&mut fields)?;
-        let signature = TempoSignature::decode(&mut fields)?;
-        if signature.is_keychain() {
-            return Err(alloy_rlp::Error::Custom(
-                "keychain signatures cannot authorize access keys",
-            ));
-        }
-        if !fields.is_empty() {
-            return Err(alloy_rlp::Error::Custom(
-                "trailing key authorization fields",
-            ));
-        }
-        *buf = rest;
-        Ok(Self::new(authorization, signature))
-    }
-}
-
 impl PartialEq for SignedKeyAuthorization {
     fn eq(&self, other: &Self) -> bool {
         self.authorization == other.authorization && self.signature == other.signature
@@ -530,32 +497,6 @@ impl Hash for SignedKeyAuthorization {
         self.authorization.hash(state);
         self.signature.hash(state);
     }
-}
-
-#[cfg(any(test, feature = "arbitrary"))]
-fn arbitrary_authorization_signature(
-    u: &mut arbitrary::Unstructured<'_>,
-) -> arbitrary::Result<TempoSignature> {
-    Ok(if u.arbitrary()? {
-        TempoSignature::Primitive(u.arbitrary()?)
-    } else {
-        TempoSignature::Multisig(u.arbitrary()?)
-    })
-}
-
-#[cfg(feature = "serde")]
-fn deserialize_authorization_signature<'de, D>(deserializer: D) -> Result<TempoSignature, D::Error>
-where
-    D: serde::Deserializer<'de>,
-{
-    use serde::{Deserialize, de::Error};
-    let signature = TempoSignature::deserialize(deserializer)?;
-    if signature.is_keychain() {
-        return Err(D::Error::custom(
-            "keychain signatures cannot authorize access keys",
-        ));
-    }
-    Ok(signature)
 }
 
 #[cfg(any(test, feature = "arbitrary"))]
@@ -1035,16 +976,21 @@ mod tests {
         let primitive = PrimitiveSignature::Secp256k1(Signature::test_signature());
         let signed = auth.clone().into_signed(primitive.clone());
         #[derive(alloy_rlp::RlpEncodable)]
-        struct Legacy {
+        #[cfg_attr(feature = "serde", derive(serde::Serialize))]
+        struct WireAuthorization<S> {
+            #[cfg_attr(feature = "serde", serde(flatten))]
             authorization: KeyAuthorization,
-            signature: PrimitiveSignature,
+            signature: S,
         }
+        let legacy = WireAuthorization {
+            authorization: auth.clone(),
+            signature: primitive.clone(),
+        };
+        assert_eq!(alloy_rlp::encode(&signed), alloy_rlp::encode(&legacy));
+        #[cfg(feature = "serde")]
         assert_eq!(
-            alloy_rlp::encode(&signed),
-            alloy_rlp::encode(Legacy {
-                authorization: auth.clone(),
-                signature: primitive.clone()
-            })
+            serde_json::to_value(&signed).unwrap(),
+            serde_json::to_value(&legacy).unwrap()
         );
         let account = Address::repeat_byte(0x11);
         let config = MultisigConfig {
@@ -1058,13 +1004,23 @@ mod tests {
         };
         let multisig =
             MultisigSignature::try_new(account, config, vec![primitive.clone()]).unwrap();
-        let signed = auth.clone().into_signed(TempoSignature::Multisig(multisig));
+        let previous = WireAuthorization {
+            authorization: auth.clone(),
+            signature: TempoSignature::Multisig(multisig.clone()),
+        };
+        let signed = auth.clone().into_signed(multisig);
         assert_eq!(signed.recover_account().unwrap(), account);
         assert!(signed.recover_signer().is_err());
         let encoded = alloy_rlp::encode(&signed);
+        assert_eq!(encoded, alloy_rlp::encode(&previous));
         assert_eq!(
             SignedKeyAuthorization::decode(&mut encoded.as_slice()).unwrap(),
             signed
+        );
+        #[cfg(feature = "serde")]
+        assert_eq!(
+            serde_json::to_value(&signed).unwrap(),
+            serde_json::to_value(&previous).unwrap()
         );
         #[cfg(feature = "serde")]
         assert_eq!(
@@ -1075,19 +1031,27 @@ mod tests {
             signed
         );
 
-        let invalid = auth.into_signed(TempoSignature::Keychain(KeychainSignature::new(
-            account, primitive,
-        )));
-        assert!(invalid.recover_account().is_err());
-        let encoded = alloy_rlp::encode(&invalid);
-        assert!(SignedKeyAuthorization::decode(&mut encoded.as_slice()).is_err());
-        #[cfg(feature = "serde")]
-        assert!(
-            serde_json::from_value::<SignedKeyAuthorization>(
-                serde_json::to_value(invalid).unwrap()
-            )
-            .is_err()
-        );
+        for keychain in [
+            KeychainSignature::new_v1(account, primitive.clone()),
+            KeychainSignature::new(account, primitive),
+        ] {
+            let signature = TempoSignature::Keychain(keychain);
+            assert!(AccountSignature::try_from(signature.clone()).is_err());
+            // The typed grant cannot hold a keychain; exercise rejection at the wire boundary.
+            let invalid = WireAuthorization {
+                authorization: auth.clone(),
+                signature,
+            };
+            let encoded = alloy_rlp::encode(&invalid);
+            assert!(SignedKeyAuthorization::decode(&mut encoded.as_slice()).is_err());
+            #[cfg(feature = "serde")]
+            assert!(
+                serde_json::from_value::<SignedKeyAuthorization>(
+                    serde_json::to_value(invalid).unwrap()
+                )
+                .is_err()
+            );
+        }
     }
 
     #[test]
