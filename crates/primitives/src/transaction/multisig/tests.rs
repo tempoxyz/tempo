@@ -2,7 +2,7 @@ use super::*;
 #[cfg(feature = "serde")]
 use crate::transaction::KeychainVersion;
 use crate::transaction::{
-    AccessKeySignature, KeychainSignature, PrimitiveSignature, TempoSignature, derive_p256_address,
+    AccountSignature, KeychainSignature, PrimitiveSignature, TempoSignature, derive_p256_address,
     tt_authorization::tests::generate_secp256k1_keypair,
     tt_signature::{
         P256SignatureWithPreHash, SIGNATURE_TYPE_KEYCHAIN, WebAuthnSignature, normalize_p256_s,
@@ -321,7 +321,7 @@ fn bounded_access_key_envelope_roundtrips_and_rejects_v1() {
     let mut legacy = encoded.to_vec();
     legacy[0] = SIGNATURE_TYPE_KEYCHAIN;
     assert!(TempoSignature::from_bytes(&legacy).is_err());
-    assert!(AccessKeySignature::from_bytes(&encoded).is_err());
+    assert!(AccountSignature::from_bytes(&encoded).is_err());
     #[cfg(feature = "serde")]
     {
         let mut json = serde_json::to_value(&envelope).unwrap();

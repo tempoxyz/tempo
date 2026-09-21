@@ -31,8 +31,8 @@ use tempo_contracts::precompiles::ITIP20;
 use tempo_primitives::{
     SignatureType, TempoAddressExt, TempoTxEnvelope,
     transaction::{
-        Call, CallScope, KeyAuthorization, KeychainSignature, PrimitiveSignature, SelectorRule,
-        SignedKeyAuthorization, TempoSignature, TempoTypedTransaction, TokenLimit,
+        AccountSignature, Call, CallScope, KeyAuthorization, KeychainSignature, PrimitiveSignature,
+        SelectorRule, SignedKeyAuthorization, TempoSignature, TempoTypedTransaction, TokenLimit,
         tt_signature::{P256SignatureWithPreHash, WebAuthnSignature},
     },
 };
@@ -2490,9 +2490,9 @@ fn writable_b256(value: B256) -> String {
 }
 
 fn writable_signature(
-    signature: &TempoSignature,
+    signature: &AccountSignature,
 ) -> Result<WritablePrimitiveSignature, TempoAccountsError> {
-    let TempoSignature::Primitive(signature) = signature else {
+    let AccountSignature::Primitive(signature) = signature else {
         return Err(TempoAccountsError::InvalidAuthorization(
             "the Accounts store does not support nonprimitive authorization signatures",
         ));
@@ -3640,7 +3640,7 @@ mod tests {
                 .as_slice()
             )
         );
-        let TempoSignature::Primitive(PrimitiveSignature::WebAuthn(signature)) =
+        let AccountSignature::Primitive(PrimitiveSignature::WebAuthn(signature)) =
             &authorization.signature
         else {
             panic!("expected WebAuthn root signature")

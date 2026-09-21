@@ -27,7 +27,7 @@ use tempo_precompiles::{
     tip_fee_manager::TipFeeManager,
 };
 use tempo_primitives::transaction::{
-    Call, PrimitiveSignature, RecoveredTempoAuthorization, TempoSignature,
+    AccountSignature, Call, PrimitiveSignature, RecoveredTempoAuthorization, TempoSignature,
     TempoSignedAuthorization,
     tt_signature::{P256SignatureWithPreHash, WebAuthnSignature},
 };
@@ -51,7 +51,6 @@ fn unsupported_multisig_roles_fail_closed() {
         GrantRecipient,
         AuthorizationList,
         DelegatedAuthorizationList,
-        KeychainGrant,
     }
     let account = Address::repeat_byte(0x22);
     let native = TempoSignature::Multisig(
@@ -83,7 +82,6 @@ fn unsupported_multisig_roles_fail_closed() {
             Role::GrantRecipient,
             Role::AuthorizationList,
             Role::DelegatedAuthorizationList,
-            Role::KeychainGrant,
         ] {
             let mut aa = TempoBatchCallEnv {
                 aa_calls: vec![Call {
@@ -97,7 +95,7 @@ fn unsupported_multisig_roles_fail_closed() {
             match role {
                 Role::Direct => aa.signature = native.clone(),
                 Role::Delegate => aa.signature = delegated.clone(),
-                Role::Grant | Role::GrantRecipient | Role::KeychainGrant => {
+                Role::Grant | Role::GrantRecipient => {
                     aa.key_authorization = Some(
                         KeyAuthorization::unrestricted(
                             1,
@@ -109,11 +107,9 @@ fn unsupported_multisig_roles_fail_closed() {
                             account,
                         )
                         .into_signed(if role == Role::Grant {
-                            native.clone()
-                        } else if role == Role::KeychainGrant {
-                            delegated.clone()
+                            AccountSignature::Multisig(native.as_multisig().unwrap().clone())
                         } else {
-                            TempoSignature::default()
+                            PrimitiveSignature::default().into()
                         }),
                     );
                 }
@@ -1429,7 +1425,7 @@ fn test_t4_key_authorization_matches_tip1016_sstore_regular_cost() {
     // TIP-1016 is opt-in via amsterdam_eip8037; manually enable for this test.
     let gas_params = crate::gas_params::tempo_gas_params_with_amsterdam(TempoHardfork::T4, true);
 
-    let sig_gas = ECRECOVER_GAS + tempo_signature_verification_gas(&key_auth.signature);
+    let sig_gas = ECRECOVER_GAS + account_signature_verification_gas(&key_auth.signature);
     let sload = gas_params.warm_storage_read_cost() + gas_params.cold_storage_additional_cost();
     let scope_extra_gas = call_scope_extra_gas(&key_auth.authorization);
     let (regular_gas, state_gas) =
@@ -1451,7 +1447,7 @@ fn test_t7_key_authorization_intrinsic_includes_storage_credit_value() {
         ));
 
     let gas_params = crate::gas_params::tempo_gas_params(TempoHardfork::T7);
-    let sig_gas = ECRECOVER_GAS + tempo_signature_verification_gas(&key_auth.signature);
+    let sig_gas = ECRECOVER_GAS + account_signature_verification_gas(&key_auth.signature);
     let sload = gas_params.warm_storage_read_cost() + gas_params.cold_storage_additional_cost();
     let scope_extra_gas = call_scope_extra_gas(&key_auth.authorization);
     let (regular_gas, state_gas) =

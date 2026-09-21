@@ -5,7 +5,7 @@ use alloy::primitives::{Address, B256, Bytes};
 use tempo_contracts::precompiles::SignatureVerifierError;
 use tempo_precompiles_macros::contract;
 use tempo_primitives::transaction::tt_signature::{
-    AccessKeySignature, KeychainSignature, PrimitiveSignature, TempoSignature,
+    AccountSignature, KeychainSignature, PrimitiveSignature, TempoSignature,
 };
 
 /// Gas cost for secp256k1 signature verification.
@@ -81,7 +81,7 @@ impl SignatureVerifier {
         if keychain_sig.is_legacy() {
             return Err(SignatureVerifierError::invalid_format().into());
         }
-        let AccessKeySignature::Primitive(signature) = &keychain_sig.signature else {
+        let AccountSignature::Primitive(signature) = &keychain_sig.signature else {
             return Err(SignatureVerifierError::invalid_format().into());
         };
 
