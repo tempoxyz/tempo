@@ -9,3 +9,4 @@ mod revealed_share_recovery;
 mod share_loss;
 mod stale_state_recovery;
 mod static_transitions;
+mod t12;

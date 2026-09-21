@@ -73,6 +73,7 @@ pub const TEST_MNEMONIC: &str = "test test test test test test test test test te
 
 #[derive(Default, Debug)]
 pub struct Builder {
+    t12_time: Option<u64>,
     epoch_length: Option<u64>,
     initial_dkg_outcome: Option<OnchainDkgOutcome>,
     validators: Option<ordered::Map<PublicKey, ConsensusNodeConfig>>,
@@ -81,10 +82,15 @@ pub struct Builder {
 impl Builder {
     pub fn new() -> Self {
         Self {
+            t12_time: None,
             epoch_length: None,
             initial_dkg_outcome: None,
             validators: None,
         }
+    }
+
+    pub fn with_t12_time(self, t12_time: Option<u64>) -> Self {
+        Self { t12_time, ..self }
     }
 
     pub fn with_epoch_length(self, epoch_length: u64) -> Self {
@@ -110,6 +116,7 @@ impl Builder {
 
     pub fn launch(self) -> eyre::Result<ExecutionRuntime> {
         let Self {
+            t12_time,
             epoch_length,
             initial_dkg_outcome,
             validators,
@@ -134,6 +141,13 @@ impl Builder {
             .config
             .extra_fields
             .insert_value("epochLength".to_string(), epoch_length)
+            .unwrap();
+
+        // Override the fixture even when unset: its T12 default is active at genesis.
+        genesis
+            .config
+            .extra_fields
+            .insert_value("t12Time".to_string(), t12_time)
             .unwrap();
 
         genesis.extra_data = initial_dkg_outcome.encode().to_vec().into();
