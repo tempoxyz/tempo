@@ -33,7 +33,7 @@ jobs:
       coverage: ${{ steps.check.outputs.coverage }}
     steps:
       - name: Secure runner
-        uses: tempoxyz/gh-actions/actions/secure-runner@0a60d757d0f4725a34f22f7b9ebf7b91b4b00bcf
+        uses: tempoxyz/gh-actions/actions/secure-runner@68851d67c611dc0050e9f3fcd5bd47f3f899a00e
 
       - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
         with:
@@ -66,14 +66,14 @@ jobs:
       contents: read
     steps:
       - name: Secure runner
-        uses: tempoxyz/gh-actions/actions/secure-runner@0a60d757d0f4725a34f22f7b9ebf7b91b4b00bcf
+        uses: tempoxyz/gh-actions/actions/secure-runner@68851d67c611dc0050e9f3fcd5bd47f3f899a00e
 
       - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
         with:
           persist-credentials: false
-      - uses: tempoxyz/gh-actions/vendor/dtolnay/rust-toolchain@0a60d757d0f4725a34f22f7b9ebf7b91b4b00bcf
-      - uses: tempoxyz/gh-actions/actions/setup-mold@0a60d757d0f4725a34f22f7b9ebf7b91b4b00bcf
-      - uses: tempoxyz/gh-actions/vendor/mozilla-actions/sccache-action@0a60d757d0f4725a34f22f7b9ebf7b91b4b00bcf
+      - uses: tempoxyz/gh-actions/vendor/dtolnay/rust-toolchain@68851d67c611dc0050e9f3fcd5bd47f3f899a00e
+      - uses: tempoxyz/gh-actions/actions/setup-mold@68851d67c611dc0050e9f3fcd5bd47f3f899a00e
+      - uses: tempoxyz/gh-actions/vendor/mozilla-actions/sccache-action@68851d67c611dc0050e9f3fcd5bd47f3f899a00e
         with:
           version: v0.15.0
       - name: Generate genesis
@@ -108,19 +108,19 @@ jobs:
         partition: [1, 2]
     steps:
       - name: Secure runner
-        uses: tempoxyz/gh-actions/actions/secure-runner@0a60d757d0f4725a34f22f7b9ebf7b91b4b00bcf
+        uses: tempoxyz/gh-actions/actions/secure-runner@68851d67c611dc0050e9f3fcd5bd47f3f899a00e
 
       - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
         with:
           persist-credentials: false
-      - uses: tempoxyz/gh-actions/vendor/dtolnay/rust-toolchain@0a60d757d0f4725a34f22f7b9ebf7b91b4b00bcf
+      - uses: tempoxyz/gh-actions/vendor/dtolnay/rust-toolchain@68851d67c611dc0050e9f3fcd5bd47f3f899a00e
         with:
           components: ${{ needs.check-precompiles.outputs.coverage == 'true' && 'llvm-tools-preview' || '' }}
-      - uses: tempoxyz/gh-actions/actions/setup-mold@0a60d757d0f4725a34f22f7b9ebf7b91b4b00bcf
-      - uses: tempoxyz/gh-actions/vendor/mozilla-actions/sccache-action@0a60d757d0f4725a34f22f7b9ebf7b91b4b00bcf
+      - uses: tempoxyz/gh-actions/actions/setup-mold@68851d67c611dc0050e9f3fcd5bd47f3f899a00e
+      - uses: tempoxyz/gh-actions/vendor/mozilla-actions/sccache-action@68851d67c611dc0050e9f3fcd5bd47f3f899a00e
         with:
           version: v0.15.0
-      - uses: tempoxyz/gh-actions/vendor/taiki-e/install-action@0a60d757d0f4725a34f22f7b9ebf7b91b4b00bcf
+      - uses: tempoxyz/gh-actions/vendor/taiki-e/install-action@68851d67c611dc0050e9f3fcd5bd47f3f899a00e
         with:
           tool: nextest@0.9.127
       # Build and run tests WITH coverage (only when precompiles changed)
@@ -179,17 +179,17 @@ jobs:
       RUST_MIN_STACK: 8388608
     steps:
       - name: Secure runner
-        uses: tempoxyz/gh-actions/actions/secure-runner@0a60d757d0f4725a34f22f7b9ebf7b91b4b00bcf
+        uses: tempoxyz/gh-actions/actions/secure-runner@68851d67c611dc0050e9f3fcd5bd47f3f899a00e
 
       - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
         with:
           persist-credentials: false
-      - uses: tempoxyz/gh-actions/vendor/dtolnay/rust-toolchain@0a60d757d0f4725a34f22f7b9ebf7b91b4b00bcf
-      - uses: tempoxyz/gh-actions/actions/setup-mold@0a60d757d0f4725a34f22f7b9ebf7b91b4b00bcf
-      - uses: tempoxyz/gh-actions/vendor/mozilla-actions/sccache-action@0a60d757d0f4725a34f22f7b9ebf7b91b4b00bcf
+      - uses: tempoxyz/gh-actions/vendor/dtolnay/rust-toolchain@68851d67c611dc0050e9f3fcd5bd47f3f899a00e
+      - uses: tempoxyz/gh-actions/actions/setup-mold@68851d67c611dc0050e9f3fcd5bd47f3f899a00e
+      - uses: tempoxyz/gh-actions/vendor/mozilla-actions/sccache-action@68851d67c611dc0050e9f3fcd5bd47f3f899a00e
         with:
           version: v0.15.0
-      - uses: tempoxyz/gh-actions/vendor/taiki-e/install-action@0a60d757d0f4725a34f22f7b9ebf7b91b4b00bcf
+      - uses: tempoxyz/gh-actions/vendor/taiki-e/install-action@68851d67c611dc0050e9f3fcd5bd47f3f899a00e
         with:
           tool: nextest@0.9.127
       - name: Build e2e tests
@@ -217,17 +217,17 @@ jobs:
       RUST_MIN_STACK: 8388608
     steps:
       - name: Secure runner
-        uses: tempoxyz/gh-actions/actions/secure-runner@0a60d757d0f4725a34f22f7b9ebf7b91b4b00bcf
+        uses: tempoxyz/gh-actions/actions/secure-runner@68851d67c611dc0050e9f3fcd5bd47f3f899a00e
 
       - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
         with:
           persist-credentials: false
-      - uses: tempoxyz/gh-actions/vendor/dtolnay/rust-toolchain@0a60d757d0f4725a34f22f7b9ebf7b91b4b00bcf
-      - uses: tempoxyz/gh-actions/actions/setup-mold@0a60d757d0f4725a34f22f7b9ebf7b91b4b00bcf
-      - uses: tempoxyz/gh-actions/vendor/mozilla-actions/sccache-action@0a60d757d0f4725a34f22f7b9ebf7b91b4b00bcf
+      - uses: tempoxyz/gh-actions/vendor/dtolnay/rust-toolchain@68851d67c611dc0050e9f3fcd5bd47f3f899a00e
+      - uses: tempoxyz/gh-actions/actions/setup-mold@68851d67c611dc0050e9f3fcd5bd47f3f899a00e
+      - uses: tempoxyz/gh-actions/vendor/mozilla-actions/sccache-action@68851d67c611dc0050e9f3fcd5bd47f3f899a00e
         with:
           version: v0.15.0
-      - uses: tempoxyz/gh-actions/vendor/taiki-e/install-action@0a60d757d0f4725a34f22f7b9ebf7b91b4b00bcf
+      - uses: tempoxyz/gh-actions/vendor/taiki-e/install-action@68851d67c611dc0050e9f3fcd5bd47f3f899a00e
         with:
           tool: nextest@0.9.127
       - name: Build flaky e2e tests
@@ -244,14 +244,14 @@ jobs:
       contents: read
     steps:
       - name: Secure runner
-        uses: tempoxyz/gh-actions/actions/secure-runner@0a60d757d0f4725a34f22f7b9ebf7b91b4b00bcf
+        uses: tempoxyz/gh-actions/actions/secure-runner@68851d67c611dc0050e9f3fcd5bd47f3f899a00e
 
       - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
         with:
           persist-credentials: false
-      - uses: tempoxyz/gh-actions/vendor/dtolnay/rust-toolchain@0a60d757d0f4725a34f22f7b9ebf7b91b4b00bcf
-      - uses: tempoxyz/gh-actions/actions/setup-mold@0a60d757d0f4725a34f22f7b9ebf7b91b4b00bcf
-      - uses: tempoxyz/gh-actions/vendor/mozilla-actions/sccache-action@0a60d757d0f4725a34f22f7b9ebf7b91b4b00bcf
+      - uses: tempoxyz/gh-actions/vendor/dtolnay/rust-toolchain@68851d67c611dc0050e9f3fcd5bd47f3f899a00e
+      - uses: tempoxyz/gh-actions/actions/setup-mold@68851d67c611dc0050e9f3fcd5bd47f3f899a00e
+      - uses: tempoxyz/gh-actions/vendor/mozilla-actions/sccache-action@68851d67c611dc0050e9f3fcd5bd47f3f899a00e
         with:
           version: v0.15.0
       - name: Build tempo
@@ -268,7 +268,7 @@ jobs:
       contents: read
     steps:
       - name: Secure runner
-        uses: tempoxyz/gh-actions/actions/secure-runner@0a60d757d0f4725a34f22f7b9ebf7b91b4b00bcf
+        uses: tempoxyz/gh-actions/actions/secure-runner@68851d67c611dc0050e9f3fcd5bd47f3f899a00e
 
       - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
         with:
@@ -294,16 +294,16 @@ jobs:
       contents: read
     steps:
       - name: Secure runner
-        uses: tempoxyz/gh-actions/actions/secure-runner@0a60d757d0f4725a34f22f7b9ebf7b91b4b00bcf
+        uses: tempoxyz/gh-actions/actions/secure-runner@68851d67c611dc0050e9f3fcd5bd47f3f899a00e
 
       - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
         with:
           persist-credentials: false
-      - uses: tempoxyz/gh-actions/vendor/dtolnay/rust-toolchain@0a60d757d0f4725a34f22f7b9ebf7b91b4b00bcf
+      - uses: tempoxyz/gh-actions/vendor/dtolnay/rust-toolchain@68851d67c611dc0050e9f3fcd5bd47f3f899a00e
         with:
           toolchain: "1.96" # MSRV
-      - uses: tempoxyz/gh-actions/actions/setup-mold@0a60d757d0f4725a34f22f7b9ebf7b91b4b00bcf
-      - uses: tempoxyz/gh-actions/vendor/mozilla-actions/sccache-action@0a60d757d0f4725a34f22f7b9ebf7b91b4b00bcf
+      - uses: tempoxyz/gh-actions/actions/setup-mold@68851d67c611dc0050e9f3fcd5bd47f3f899a00e
+      - uses: tempoxyz/gh-actions/vendor/mozilla-actions/sccache-action@68851d67c611dc0050e9f3fcd5bd47f3f899a00e
         with:
           version: v0.15.0
       - name: Build with MSRV
@@ -327,9 +327,9 @@ jobs:
     timeout-minutes: 30
     steps:
       - name: Secure runner
-        uses: tempoxyz/gh-actions/actions/secure-runner@0a60d757d0f4725a34f22f7b9ebf7b91b4b00bcf
+        uses: tempoxyz/gh-actions/actions/secure-runner@68851d67c611dc0050e9f3fcd5bd47f3f899a00e
 
       - name: Decide whether the needed jobs succeeded or failed
-        uses: tempoxyz/gh-actions/actions/check-needs@0a60d757d0f4725a34f22f7b9ebf7b91b4b00bcf
+        uses: tempoxyz/gh-actions/actions/check-needs@68851d67c611dc0050e9f3fcd5bd47f3f899a00e
         with:
           jobs: ${{ toJSON(needs) }}

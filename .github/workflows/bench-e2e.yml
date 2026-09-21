@@ -421,7 +421,7 @@ jobs:
       SLACK_BENCH_CHANNEL: ${{ secrets.SLACK_BENCH_CHANNEL }}
     steps:
       - name: Secure runner
-        uses: tempoxyz/gh-actions/actions/secure-runner@0a60d757d0f4725a34f22f7b9ebf7b91b4b00bcf
+        uses: tempoxyz/gh-actions/actions/secure-runner@68851d67c611dc0050e9f3fcd5bd47f3f899a00e
 
       - name: Reset workspace directory
         run: |
@@ -468,14 +468,14 @@ jobs:
 
       - name: Fetch GitHub token via STS
         id: github-sts
-        uses: tempoxyz/gh-actions/actions/github-sts@0a60d757d0f4725a34f22f7b9ebf7b91b4b00bcf
+        uses: tempoxyz/gh-actions/actions/github-sts@68851d67c611dc0050e9f3fcd5bd47f3f899a00e
         with:
           policy: bench-e2e
 
       - name: Fetch ValScope token via STS
         id: valscope-sts
         if: env.BENCH_VALSCOPE == 'true'
-        uses: tempoxyz/gh-actions/actions/github-sts@0a60d757d0f4725a34f22f7b9ebf7b91b4b00bcf
+        uses: tempoxyz/gh-actions/actions/github-sts@68851d67c611dc0050e9f3fcd5bd47f3f899a00e
         with:
           scope: tempoxyz/valscope
           policy: tempo-bench-e2e
@@ -612,8 +612,8 @@ jobs:
               body: buildBody('Resolving refs...'),
             });
 
-      - uses: tempoxyz/gh-actions/vendor/dtolnay/rust-toolchain@0a60d757d0f4725a34f22f7b9ebf7b91b4b00bcf
-      - uses: tempoxyz/gh-actions/vendor/mozilla-actions/sccache-action@0a60d757d0f4725a34f22f7b9ebf7b91b4b00bcf
+      - uses: tempoxyz/gh-actions/vendor/dtolnay/rust-toolchain@68851d67c611dc0050e9f3fcd5bd47f3f899a00e
+      - uses: tempoxyz/gh-actions/vendor/mozilla-actions/sccache-action@68851d67c611dc0050e9f3fcd5bd47f3f899a00e
         continue-on-error: true
 
       - name: Install Node.js
@@ -1066,7 +1066,7 @@ jobs:
         id: github-sts-reporting
         if: always() && steps.github-sts.outcome == 'success'
         timeout-minutes: 2
-        uses: tempoxyz/gh-actions/actions/github-sts@0a60d757d0f4725a34f22f7b9ebf7b91b4b00bcf
+        uses: tempoxyz/gh-actions/actions/github-sts@68851d67c611dc0050e9f3fcd5bd47f3f899a00e
         with:
           policy: bench-e2e
 

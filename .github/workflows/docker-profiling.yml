@@ -39,7 +39,7 @@ jobs:
       id-token: write
     steps:
       - name: Secure runner
-        uses: tempoxyz/gh-actions/actions/secure-runner@0a60d757d0f4725a34f22f7b9ebf7b91b4b00bcf
+        uses: tempoxyz/gh-actions/actions/secure-runner@68851d67c611dc0050e9f3fcd5bd47f3f899a00e
 
       - name: Resolve build source
         id: source
@@ -93,11 +93,11 @@ jobs:
           ref: ${{ steps.source.outputs.sha }}
           persist-credentials: false
 
-      - uses: tempoxyz/gh-actions/vendor/depot/setup-action@0a60d757d0f4725a34f22f7b9ebf7b91b4b00bcf
+      - uses: tempoxyz/gh-actions/vendor/depot/setup-action@68851d67c611dc0050e9f3fcd5bd47f3f899a00e
 
       - name: Docker metadata for tempo-profiling
         id: meta-tempo
-        uses: tempoxyz/gh-actions/vendor/docker/metadata-action@0a60d757d0f4725a34f22f7b9ebf7b91b4b00bcf
+        uses: tempoxyz/gh-actions/vendor/docker/metadata-action@68851d67c611dc0050e9f3fcd5bd47f3f899a00e
         with:
           images: ${{ env.REGISTRY }}/tempo
           bake-target: tempo
@@ -109,7 +109,7 @@ jobs:
             type=raw,value=profiling-pr-${{ inputs.pr_number }},enable=${{ inputs.pr_number != '' }}
 
       - name: Log in to Container Registry
-        uses: tempoxyz/gh-actions/vendor/docker/login-action@0a60d757d0f4725a34f22f7b9ebf7b91b4b00bcf
+        uses: tempoxyz/gh-actions/vendor/docker/login-action@68851d67c611dc0050e9f3fcd5bd47f3f899a00e
         with:
           registry: ${{ env.REGISTRY }}
           username: ${{ github.actor }}
@@ -117,7 +117,7 @@ jobs:
 
       - name: Build and push Docker images
         id: build-and-push
-        uses: tempoxyz/gh-actions/vendor/depot/bake-action@0a60d757d0f4725a34f22f7b9ebf7b91b4b00bcf
+        uses: tempoxyz/gh-actions/vendor/depot/bake-action@68851d67c611dc0050e9f3fcd5bd47f3f899a00e
         with:
           files: |
             docker-bake.hcl

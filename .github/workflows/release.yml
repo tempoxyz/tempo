@@ -43,7 +43,7 @@ jobs:
       version: ${{ steps.get_version.outputs.version }}
     steps:
       - name: Secure runner
-        uses: tempoxyz/gh-actions/actions/secure-runner@0a60d757d0f4725a34f22f7b9ebf7b91b4b00bcf
+        uses: tempoxyz/gh-actions/actions/secure-runner@68851d67c611dc0050e9f3fcd5bd47f3f899a00e
 
       - name: Get version from tag or branch
         id: get_version
@@ -69,12 +69,12 @@ jobs:
       contents: read
     steps:
       - name: Secure runner
-        uses: tempoxyz/gh-actions/actions/secure-runner@0a60d757d0f4725a34f22f7b9ebf7b91b4b00bcf
+        uses: tempoxyz/gh-actions/actions/secure-runner@68851d67c611dc0050e9f3fcd5bd47f3f899a00e
 
       - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
         with:
           persist-credentials: false
-      - uses: tempoxyz/gh-actions/vendor/dtolnay/rust-toolchain@0a60d757d0f4725a34f22f7b9ebf7b91b4b00bcf
+      - uses: tempoxyz/gh-actions/vendor/dtolnay/rust-toolchain@68851d67c611dc0050e9f3fcd5bd47f3f899a00e
       - name: Verify crate version matches tag
         # Check that the Cargo version starts with the tag,
         # so that Cargo version 1.4.8 can be matched against both v1.4.8 and v1.4.8-rc.1
@@ -116,7 +116,7 @@ jobs:
 
     steps:
       - name: Secure runner
-        uses: tempoxyz/gh-actions/actions/secure-runner@0a60d757d0f4725a34f22f7b9ebf7b91b4b00bcf
+        uses: tempoxyz/gh-actions/actions/secure-runner@68851d67c611dc0050e9f3fcd5bd47f3f899a00e
 
       - name: Checkout repository
         uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
@@ -124,12 +124,12 @@ jobs:
           persist-credentials: false
 
       - name: Install Rust toolchain
-        uses: tempoxyz/gh-actions/vendor/dtolnay/rust-toolchain@0a60d757d0f4725a34f22f7b9ebf7b91b4b00bcf
+        uses: tempoxyz/gh-actions/vendor/dtolnay/rust-toolchain@68851d67c611dc0050e9f3fcd5bd47f3f899a00e
         with:
           targets: ${{ matrix.platform.target }}
 
       - name: Setup mold linker
-        uses: tempoxyz/gh-actions/actions/setup-mold@0a60d757d0f4725a34f22f7b9ebf7b91b4b00bcf
+        uses: tempoxyz/gh-actions/actions/setup-mold@68851d67c611dc0050e9f3fcd5bd47f3f899a00e
 
       - name: Get build profile
         id: profile
@@ -208,7 +208,7 @@ jobs:
           printf '%s' "$GPG_PASSPHRASE" | gpg --passphrase-fd 0 --pinentry-mode loopback --batch -ab "$ARCHIVE_PATH"
 
       - name: Generate SBOM (SPDX-JSON) for archive
-        uses: tempoxyz/gh-actions/vendor/anchore/sbom-action@0a60d757d0f4725a34f22f7b9ebf7b91b4b00bcf
+        uses: tempoxyz/gh-actions/vendor/anchore/sbom-action@68851d67c611dc0050e9f3fcd5bd47f3f899a00e
         with:
           file: ${{ steps.prepare.outputs.archive_path }}
           format: spdx-json
@@ -265,7 +265,7 @@ jobs:
       # This is necessary for generating the changelog.
       # It has to come before "Download Artifacts" or else it deletes the artifacts.
       - name: Secure runner
-        uses: tempoxyz/gh-actions/actions/secure-runner@0a60d757d0f4725a34f22f7b9ebf7b91b4b00bcf
+        uses: tempoxyz/gh-actions/actions/secure-runner@68851d67c611dc0050e9f3fcd5bd47f3f899a00e
 
       - name: Checkout repository
         uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
@@ -308,11 +308,11 @@ jobs:
       id-token: write
     steps:
       - name: Secure runner
-        uses: tempoxyz/gh-actions/actions/secure-runner@0a60d757d0f4725a34f22f7b9ebf7b91b4b00bcf
+        uses: tempoxyz/gh-actions/actions/secure-runner@68851d67c611dc0050e9f3fcd5bd47f3f899a00e
 
       - name: Fetch GitHub token via STS
         id: app-token
-        uses: tempoxyz/gh-actions/actions/github-sts@0a60d757d0f4725a34f22f7b9ebf7b91b4b00bcf
+        uses: tempoxyz/gh-actions/actions/github-sts@68851d67c611dc0050e9f3fcd5bd47f3f899a00e
         with:
           policy: release-pr
 
@@ -324,7 +324,7 @@ jobs:
           token: ${{ steps.app-token.outputs.token }}
           persist-credentials: true
 
-      - uses: tempoxyz/gh-actions/vendor/dtolnay/rust-toolchain@0a60d757d0f4725a34f22f7b9ebf7b91b4b00bcf
+      - uses: tempoxyz/gh-actions/vendor/dtolnay/rust-toolchain@68851d67c611dc0050e9f3fcd5bd47f3f899a00e
 
       - name: Open Cargo version bump PR
         env:
@@ -411,7 +411,7 @@ jobs:
       actions: read
     steps:
       - name: Secure runner
-        uses: tempoxyz/gh-actions/actions/secure-runner@0a60d757d0f4725a34f22f7b9ebf7b91b4b00bcf
+        uses: tempoxyz/gh-actions/actions/secure-runner@68851d67c611dc0050e9f3fcd5bd47f3f899a00e
 
       - name: Checkout repository
         uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
@@ -444,7 +444,7 @@ jobs:
             echo "dir=binaries/${VERSION}" >> "$GITHUB_OUTPUT"
           fi
 
-      - uses: tempoxyz/gh-actions/vendor/shallwefootball/upload-s3-action@0a60d757d0f4725a34f22f7b9ebf7b91b4b00bcf
+      - uses: tempoxyz/gh-actions/vendor/shallwefootball/upload-s3-action@68851d67c611dc0050e9f3fcd5bd47f3f899a00e
         with:
           aws_key_id: ${{ secrets.R2_BINARIES_KEY_ID }}
           aws_secret_access_key: ${{ secrets.R2_BINARIES_SECRET_KEY }}

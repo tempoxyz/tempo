@@ -320,11 +320,11 @@ jobs:
 
     steps:
       - name: Secure runner
-        uses: tempoxyz/gh-actions/actions/secure-runner@0a60d757d0f4725a34f22f7b9ebf7b91b4b00bcf
+        uses: tempoxyz/gh-actions/actions/secure-runner@68851d67c611dc0050e9f3fcd5bd47f3f899a00e
 
       - name: Fetch GitHub token via STS
         id: github-sts
-        uses: tempoxyz/gh-actions/actions/github-sts@0a60d757d0f4725a34f22f7b9ebf7b91b4b00bcf
+        uses: tempoxyz/gh-actions/actions/github-sts@68851d67c611dc0050e9f3fcd5bd47f3f899a00e
         with:
           scope: tempoxyz/tempo-multi-region-benchmark
           policy: bench-e2e-multi-region
@@ -478,18 +478,18 @@ jobs:
           } >> "$GITHUB_STEP_SUMMARY"
 
       - name: Setup Terraform
-        uses: tempoxyz/gh-actions/actions/setup-terraform@0a60d757d0f4725a34f22f7b9ebf7b91b4b00bcf # main
+        uses: tempoxyz/gh-actions/actions/setup-terraform@68851d67c611dc0050e9f3fcd5bd47f3f899a00e # main
         with:
           version: 1.14.7
 
       - name: Setup Rust
-        uses: tempoxyz/gh-actions/vendor/dtolnay/rust-toolchain@0a60d757d0f4725a34f22f7b9ebf7b91b4b00bcf
+        uses: tempoxyz/gh-actions/vendor/dtolnay/rust-toolchain@68851d67c611dc0050e9f3fcd5bd47f3f899a00e
         with:
           toolchain: stable
 
       - name: Configure AWS credentials
         if: env.BENCH_INPUT_CLOUD == 'aws'
-        uses: tempoxyz/gh-actions/vendor/aws-actions/configure-aws-credentials@0a60d757d0f4725a34f22f7b9ebf7b91b4b00bcf
+        uses: tempoxyz/gh-actions/vendor/aws-actions/configure-aws-credentials@68851d67c611dc0050e9f3fcd5bd47f3f899a00e
         with:
           role-to-assume: arn:aws:iam::934822761402:role/benchmark-runner
           aws-region: us-east-1
@@ -517,14 +517,14 @@ jobs:
 
       - name: Authenticate to Google Cloud
         if: env.BENCH_INPUT_CLOUD == 'gcp'
-        uses: tempoxyz/gh-actions/vendor/google-github-actions/auth@0a60d757d0f4725a34f22f7b9ebf7b91b4b00bcf
+        uses: tempoxyz/gh-actions/vendor/google-github-actions/auth@68851d67c611dc0050e9f3fcd5bd47f3f899a00e
         with:
           workload_identity_provider: ${{ env.BENCH_GCP_WIF_PROVIDER }}
           service_account: ${{ env.BENCH_GCP_SERVICE_ACCOUNT }}
 
       - name: Setup Google Cloud CLI
         if: env.BENCH_INPUT_CLOUD == 'gcp'
-        uses: tempoxyz/gh-actions/vendor/google-github-actions/setup-gcloud@0a60d757d0f4725a34f22f7b9ebf7b91b4b00bcf
+        uses: tempoxyz/gh-actions/vendor/google-github-actions/setup-gcloud@68851d67c611dc0050e9f3fcd5bd47f3f899a00e
         with:
           project_id: ${{ env.BENCH_GCP_PROJECT_ID }}
 
@@ -785,6 +785,17 @@ jobs:
               summary = 'Benchmark completed but failed to read summary.';
             }
 
+            let dashboardSection = '';
+            try {
+              const clickhouseRunId = fs.readFileSync(`${resultsDir}/clickhouse-run-id.txt`, 'utf8').trim();
+              if (clickhouseRunId) {
+                const dashboardUrl = `http://go/dev/tempo-internal-perf/benchmark/${encodeURIComponent(clickhouseRunId)}`;
+                dashboardSection = `\n\n### Internal dashboard\n\n[Internal dashboard](${dashboardUrl})\n`;
+              }
+            } catch (e) {
+              core.info(`Unable to read ClickHouse run ID for internal dashboard: ${e.message}`);
+            }
+
             const lifecycleOutcomes = [
               process.env.BENCH_FETCH_BINARIES_OUTCOME,
               process.env.BENCH_GENERATE_OUTCOME,
@@ -817,7 +828,7 @@ jobs:
               core.info(`Unable to resolve job URL: ${e.message}`);
             }
 
-            const body = `cc @${process.env.BENCH_ACTOR}\n\n${resultHeadline} [View job](${jobUrl})\n\n${summary}`;
+            const body = `cc @${process.env.BENCH_ACTOR}\n\n${resultHeadline} [View job](${jobUrl})\n\n${summary}${dashboardSection}`;
             await core.summary.addRaw(body).write();
 
       - name: Wait for infrastructure teardown
