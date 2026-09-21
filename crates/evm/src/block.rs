@@ -167,6 +167,7 @@ impl TxResult for TempoTxResult {
 /// logic on top: section-based transaction ordering (`BlockSection`), subblock
 /// validation, shared/non-shared gas accounting, and gas incentive tracking.
 pub struct TempoBlockExecutor<'a, DB: Database, I> {
+    pub(crate) t13_zone_runtimes: Option<&'a crate::T13ZoneRuntimes>,
     pub(crate) inner:
         EthBlockExecutor<'a, TempoEvm<DB, I>, &'a TempoChainSpec, TempoReceiptBuilder>,
 
@@ -195,6 +196,7 @@ where
         chain_spec: &'a TempoChainSpec,
     ) -> Self {
         Self {
+            t13_zone_runtimes: None,
             incentive_gas_used: 0,
             validator_set: ctx.validator_set,
             non_payment_gas_left: ctx.general_gas_limit,
@@ -272,7 +274,13 @@ where
 
     /// Exercises the shared runtime upgrade path at T13.
     fn upgrade_zone_runtimes_at_boundary(&mut self) -> Result<(), BlockExecutionError> {
-        let [_, portal, verifier, messenger] = t13_zone_factory_state(INITIAL_FACTORY_OWNER);
+        let [_, mut portal, mut verifier, mut messenger] =
+            t13_zone_factory_state(INITIAL_FACTORY_OWNER);
+        if let Some(runtimes) = self.t13_zone_runtimes {
+            portal.code = runtimes.portal.clone();
+            verifier.code = runtimes.verifier.clone();
+            messenger.code = runtimes.messenger.clone();
+        }
         self.install_zone_runtimes_at_boundary([portal, verifier, messenger])
     }
 
@@ -2104,6 +2112,95 @@ mod tests {
             original_info,
             "state hook account should preserve existing original_info"
         );
+    }
+
+    #[test]
+    fn zone_runtime_overrides_only_apply_from_t13() {
+        use crate::{T13ZoneRuntimes, TempoEvmConfig};
+        use alloy_evm::{block::BlockExecutorFactory, eth::EthBlockExecutionCtx};
+
+        let mut genesis = DEV.genesis().clone();
+        genesis
+            .config
+            .extra_fields
+            .insert_value("t13Time".into(), 10)
+            .unwrap();
+        let chainspec = Arc::new(TempoChainSpec::from_genesis(genesis));
+        let runtimes = T13ZoneRuntimes {
+            portal: Bytes::from_static(&[0x00, 0x01]),
+            verifier: Bytes::from_static(&[0x00, 0x02]),
+            messenger: Bytes::from_static(&[0x00, 0x03]),
+        };
+        let config = TempoEvmConfig::new(chainspec).with_t13_zone_runtimes(runtimes.clone());
+        let config = config.clone();
+        let mut db = State::builder().with_bundle_update().build();
+
+        // Exercise the same factory used for payload building and block validation, both
+        // at the boundary and on a later block (T13 installation runs on every block).
+        for timestamp in [9, 10, 11] {
+            let mut evm = test_evm(&mut db);
+            evm.ctx_mut().block.timestamp = U256::from(timestamp);
+            evm.ctx_mut().cfg.spec = if timestamp < 10 {
+                TempoHardfork::T12
+            } else {
+                TempoHardfork::T13
+            };
+            let mut executor = config.create_executor(
+                evm,
+                TempoBlockExecutionCtx {
+                    inner: EthBlockExecutionCtx {
+                        parent_hash: B256::ZERO,
+                        parent_beacon_block_root: Some(B256::ZERO),
+                        ommers: &[],
+                        withdrawals: None,
+                        extra_data: Bytes::new(),
+                        tx_count_hint: None,
+                        slot_number: None,
+                    },
+                    general_gas_limit: 10_000_000,
+                    shared_gas_limit: 10_000_000,
+                    validator_set: None,
+                    consensus_context: None,
+                    subblock_fee_recipients: HashMap::new(),
+                },
+            );
+            executor.apply_pre_execution_changes().unwrap();
+            drop(executor);
+
+            let expected = if timestamp < 10 {
+                [
+                    ZONE_PORTAL_RUNTIME,
+                    ZONE_VERIFIER_RUNTIME,
+                    ZONE_MESSENGER_RUNTIME,
+                ]
+            } else {
+                [
+                    runtimes.portal.clone(),
+                    runtimes.verifier.clone(),
+                    runtimes.messenger.clone(),
+                ]
+            };
+            for (address, code) in [
+                ZONE_PORTAL_IMPL_ADDRESS,
+                ZONE_VERIFIER_ADDRESS,
+                ZONE_MESSENGER_ADDRESS,
+            ]
+            .into_iter()
+            .zip(expected)
+            {
+                let info = db
+                    .load_cache_account(address)
+                    .unwrap()
+                    .account_info()
+                    .unwrap();
+                assert_eq!(info.code_hash, alloy_primitives::keccak256(&code));
+                assert_eq!(info.code.unwrap().original_bytes(), code);
+            }
+            assert_eq!(
+                db.storage(ZONE_FACTORY_ADDRESS, U256::ZERO).unwrap(),
+                tempo_contracts::precompiles::initial_zone_factory_config(INITIAL_FACTORY_OWNER)
+            );
+        }
     }
 
     #[test]

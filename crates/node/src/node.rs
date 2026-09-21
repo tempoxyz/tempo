@@ -513,9 +513,21 @@ impl PayloadAttributesBuilder<TempoPayloadAttributes, TempoHeader>
 }
 
 /// A regular ethereum evm and executor builder.
-#[derive(Debug, Default, Clone, Copy)]
+#[derive(Debug, Default, Clone)]
 #[non_exhaustive]
-pub struct TempoExecutorBuilder;
+pub struct TempoExecutorBuilder {
+    t13_zone_runtimes: Option<tempo_evm::T13ZoneRuntimes>,
+}
+
+impl TempoExecutorBuilder {
+    /// Overrides T13 Zone runtimes for local contract integration tests only.
+    ///
+    /// This changes consensus execution and must not be used on public networks.
+    pub fn with_t13_zone_runtimes(mut self, runtimes: tempo_evm::T13ZoneRuntimes) -> Self {
+        self.t13_zone_runtimes = Some(runtimes);
+        self
+    }
+}
 
 impl<Node> ExecutorBuilder<Node> for TempoExecutorBuilder
 where
@@ -525,6 +537,9 @@ where
 
     async fn build_evm(self, ctx: &BuilderContext<Node>) -> eyre::Result<Self::EVM> {
         let mut evm_config = TempoEvmConfig::new(ctx.chain_spec());
+        if let Some(runtimes) = self.t13_zone_runtimes {
+            evm_config = evm_config.with_t13_zone_runtimes(runtimes);
+        }
         if let Some(cache) = ctx.sender_recovery_cache() {
             evm_config = evm_config.with_sender_recovery_cache(cache.clone());
         }
