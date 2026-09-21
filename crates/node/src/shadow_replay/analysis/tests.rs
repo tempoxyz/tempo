@@ -129,31 +129,21 @@ fn nearby_incorrect_amount_stays_unexplained() {
 }
 
 #[test]
-fn gas_acceptance_does_not_hide_unrelated_state_at_same_boundary() {
-    let real = evidence(&[21_000, 21_000]);
-    let mut shadow = evidence(&[21_200, 21_000]);
-    write_slot(&mut shadow.txs[0], 800, false);
-    let report = Report::analyze(&real, &shadow, &[&GAS]);
-    assert_eq!(report.expected["test.gas"], 1);
-    assert_eq!(report.unexplained, 1);
-    assert_eq!(report.boundaries_not_evaluated, 2);
-    assert_eq!(report.outcome(&shadow), ReplayOutcome::Findings);
-}
-
-#[test]
-fn accepted_cutoff_still_checks_the_rest_of_its_boundary() {
-    let real = evidence(&[21_000, 21_000]);
-    let mut shadow = evidence(&[21_200, 21_000]);
-    write_slot(&mut shadow.txs[0], 800, false);
+fn accepted_gas_does_not_hide_unrelated_state_at_same_boundary() {
     let stop = Expectation {
         id: "test.stop-gas",
         check: |ctx, diff| (GAS.check)(ctx, diff).map(|_| true),
     };
-    let report = Report::analyze(&real, &shadow, &[&stop]);
-    assert_eq!(report.expected["test.stop-gas"], 1);
-    assert_eq!(report.unexplained, 1);
-    assert_eq!(report.boundaries_not_evaluated, 2);
-    assert_eq!(report.outcome(&shadow), ReplayOutcome::Findings);
+    for rule in [&GAS, &stop] {
+        let real = evidence(&[21_000, 21_000]);
+        let mut shadow = evidence(&[21_200, 21_000]);
+        write_slot(&mut shadow.txs[0], 800, false);
+        let report = Report::analyze(&real, &shadow, &[rule]);
+        assert_eq!(report.expected[rule.id], 1);
+        assert_eq!(report.unexplained, 1);
+        assert_eq!(report.boundaries_not_evaluated, 2);
+        assert_eq!(report.outcome(&shadow), ReplayOutcome::Findings);
+    }
 }
 
 #[test]
@@ -216,30 +206,21 @@ fn first_accepting_rule_owns_attribution_and_continuation() {
         id: "test.stop-gas",
         check: |_, field| (field.name == "gas").then_some(true),
     };
+    let unreachable = Expectation {
+        id: "must-not-run",
+        check: |_, _| panic!("already accepted"),
+    };
     let real = evidence(&[21_000, 21_000]);
     let shadow = evidence(&[21_200, 21_000]);
     for (rules, cutoff) in [
-        ([&GAS, &stop], None),
-        ([&stop, &GAS], Some(Boundary::Transaction(0))),
+        ([&GAS, &stop, &unreachable], None),
+        ([&stop, &GAS, &unreachable], Some(Boundary::Transaction(0))),
     ] {
         let report = Report::analyze(&real, &shadow, &rules);
         assert_eq!(report.unexplained, 0);
         assert_eq!(report.expected, [(rules[0].id, 1)].into());
         assert_eq!(report.cutoff, cutoff);
     }
-}
-
-#[test]
-fn rules_after_first_acceptance_are_not_evaluated() {
-    let unreachable = Expectation {
-        id: "must-not-run",
-        check: |_, _| panic!("already accepted"),
-    };
-    let real = evidence(&[21_000]);
-    let shadow = evidence(&[21_200]);
-    let report = Report::analyze(&real, &shadow, &[&FEE, &GAS, &unreachable]);
-    assert_eq!(report.outcome(&shadow), ReplayOutcome::Expected);
-    assert_eq!(report.expected, [(GAS.id, 1)].into());
 }
 
 #[test]
@@ -256,35 +237,38 @@ fn equal_receipt_gas_does_not_hide_block_gas_divergence() {
 }
 
 #[test]
-fn failure_after_expected_cutoff_is_inconclusive_not_a_new_finding() {
-    let real = evidence(&[21_000, 21_000]);
-    let mut shadow = evidence(&[21_200]);
-    shadow.post_block = None;
-    shadow.failure = Some(Failure {
-        boundary: Boundary::Transaction(1),
-        error: "dependent rejection".into(),
-    });
+fn rejection_outcome_depends_on_a_prior_cutoff() {
     let rule = Expectation {
         id: "test.gas-cutoff",
         check: |ctx, diff| (GAS.check)(ctx, diff).map(|_| true),
     };
-    let report = Report::analyze(&real, &shadow, &[&rule]);
-    assert_eq!(report.outcome(&shadow), ReplayOutcome::Inconclusive);
-    assert_eq!(report.boundaries_not_evaluated, 2);
-}
-
-#[test]
-fn rejection_without_prior_cutoff_is_an_unexplained_finding() {
     let real = evidence(&[21_000, 21_000]);
-    let mut shadow = evidence(&[]);
-    shadow.post_block = None;
-    shadow.failure = Some(Failure {
-        boundary: Boundary::Transaction(0),
-        error: "rejected".into(),
-    });
-    let report = Report::analyze(&real, &shadow, &[]);
-    assert_eq!(report.outcome(&shadow), ReplayOutcome::Findings);
-    assert_eq!(report.boundaries_not_evaluated, 3);
+    for (gas, boundary, rules, outcome, missing) in [
+        (
+            &[21_200][..],
+            Boundary::Transaction(1),
+            &[&rule][..],
+            ReplayOutcome::Inconclusive,
+            2,
+        ),
+        (
+            &[][..],
+            Boundary::Transaction(0),
+            &[][..],
+            ReplayOutcome::Findings,
+            3,
+        ),
+    ] {
+        let mut shadow = evidence(gas);
+        shadow.post_block = None;
+        shadow.failure = Some(Failure {
+            boundary,
+            error: "rejected".into(),
+        });
+        let report = Report::analyze(&real, &shadow, rules);
+        assert_eq!(report.outcome(&shadow), outcome);
+        assert_eq!(report.boundaries_not_evaluated, missing);
+    }
 }
 
 #[test]
@@ -369,24 +353,20 @@ fn equal_and_unsampled_values_are_not_formatted() {
 }
 
 #[test]
-fn accepted_application_logs_do_not_hide_fee_logs() {
+fn compares_fee_logs_and_original_log_order_separately() {
     let real = evidence(&[21_000]);
-    let mut shadow = evidence(&[21_000]);
-    shadow.txs[0].logs_hash = B256::repeat_byte(1);
-    shadow.txs[0].fee_logs_hash = B256::repeat_byte(2);
     let rule = Expectation {
         id: "test.application-logs",
         check: |_, field| (field.name == "logs").then_some(false),
     };
-    let report = Report::analyze(&real, &shadow, &[&rule]);
-    assert_eq!(report.expected["test.application-logs"], 1);
-    assert_eq!(report.unexplained, 1);
-    assert_eq!(report.samples[0].1.field.name, "fee_logs");
-}
 
-#[test]
-fn receipt_log_order_is_compared_even_when_both_subsequences_match() {
-    let real = evidence(&[21_000]);
+    let mut shadow = evidence(&[21_000]);
+    shadow.txs[0].logs_hash = B256::repeat_byte(1);
+    shadow.txs[0].fee_logs_hash = B256::repeat_byte(2);
+    let report = Report::analyze(&real, &shadow, &[&rule]);
+    assert_eq!(report.expected[rule.id], 1);
+    assert_eq!(report.samples[0].1.field.name, "fee_logs");
+
     let mut shadow = evidence(&[21_000]);
     shadow.txs[0].receipt.logs_hash = B256::repeat_byte(1);
     let report = Report::analyze(&real, &shadow, &[]);

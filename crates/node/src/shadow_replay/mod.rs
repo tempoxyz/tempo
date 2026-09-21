@@ -345,8 +345,7 @@ impl ObservedTx {
     fn from_result(result: &TempoTxResult, writes: FeeWrites) -> Self {
         let execution = &result.result().result;
         let logs = execution.logs();
-        let mut app = Vec::new();
-        let mut fee = Vec::new();
+        let (mut app, mut fee) = (Vec::new(), Vec::new());
         for (index, log) in logs.iter().enumerate() {
             if writes.log_ranges.iter().any(|range| range.contains(&index)) {
                 fee.push(log);
