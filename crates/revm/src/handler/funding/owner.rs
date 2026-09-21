@@ -80,7 +80,7 @@ impl<DB: alloy_evm::Database, I> TempoEvmHandler<DB, I> {
             .iter()
             .map(|entry| {
                 Ok(FundingRequirement {
-                    asset: entry.asset,
+                    token: entry.token,
                     amount: entry.amount,
                     slippage_bps: u16::try_from(entry.slippage_bps.unwrap_or_default())
                         .map_err(|_| TempoInvalidTransaction::InvalidFundingSlippage)?,
