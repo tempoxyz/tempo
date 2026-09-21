@@ -65,3 +65,16 @@ The historical `split_when_queue_nonempty` field refers to the account proof
 queue. `split_when_storage_queue_nonempty` covers storage backlog separately.
 Each queue has joint force/account-idle/storage-idle reason counters, so aggregate
 reason counts do not need to be guessed to explain a split under backlog.
+
+Builder cache/prewarm summaries emit after both building and its prewarm workers
+finish. The diagnostic reporter retains counters and a span, not the execution
+cache, so it cannot delay cache handoff. Summary stage ordering is not a completion
+marker. Failed or canceled attempts without a produced block remain unattributed;
+worker summaries crossing the capture boundary remain censored.
+
+A valid load-finished capture may contain one unfinished terminal proposal. The
+report exposes `shutdown_tail_open_spans` only when exact payload/parent identity
+links prove the known resource forest descends from the latest finalized block,
+all open work is unbound, and recorder integrity is intact. It preserves open
+counts and the incomplete attempt, without inventing completion times or block
+ownership. Other unexplained open spans still invalidate the capture.
