@@ -224,7 +224,7 @@ fn pending_head_walk_uses_execution_layer_bodies_without_marshal() {
 }
 
 #[test_traced]
-fn a_long_syncing_walk_waits_for_a_valid_target_before_forkchoice() {
+fn a_long_syncing_walk_waits_for_a_valid_target_before_updating_head() {
     deterministic::Runner::default().start(|context| async move {
         let h = Harness::start_at_genesis(&context);
 
@@ -247,8 +247,8 @@ fn a_long_syncing_walk_waits_for_a_valid_target_before_forkchoice() {
             .await;
         }
 
-        // SYNCING does not prove that any head is ready. Even after eight
-        // deliveries the actor must wait for a VALID response before FCU.
+        // After eight deliveries, the forced FCU reaffirms genesis. The head
+        // only moves to the target once the target itself returns VALID.
         h.wait_until(|| h.execution.head() == digests[9]).await;
         assert_eq!(h.execution.head(), digests[9]);
         let mut deliveries = digests.iter().rev().copied().collect::<Vec<_>>();
@@ -256,7 +256,11 @@ fn a_long_syncing_walk_waits_for_a_valid_target_before_forkchoice() {
         assert_eq!(h.execution.new_payloads(), deliveries);
         assert_eq!(
             h.execution.fcus(),
-            vec![STARTUP_FCU, (digests[9], GENESIS, false),],
+            vec![
+                STARTUP_FCU,
+                (GENESIS, GENESIS, false),
+                (digests[9], GENESIS, false),
+            ],
         );
     });
 }
