@@ -1679,7 +1679,7 @@ async fn look_up_block(
             warn!(%error, "execution-layer block lookup failed; falling back to marshal");
         }
     }
-    marshal.get_block_by_digest(digest).await.map(Arc::new)
+    marshal.get_block(&digest).await.map(Arc::new)
 }
 
 /// Logs the error that shuts the executor down.

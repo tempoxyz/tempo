@@ -27,7 +27,7 @@ use alloy_rpc_types_engine::{
 };
 use commonware_consensus::{
     CertifiableBlock as _, Heightable as _, Reporter as _,
-    marshal::Update,
+    marshal::{Identifier, Update},
     simplex::types::Context,
     types::{Epoch, Height, Round, View},
 };
@@ -1006,20 +1006,30 @@ impl FakeMarshal {
 }
 
 impl Marshal for FakeMarshal {
-    fn get_block(&self, height: Height) -> impl Future<Output = Option<Block>> + Send {
-        self.inner.get_block_log.lock().push(height.get());
-        let block = self.inner.blocks.lock().get(&height.get()).cloned();
-        async move { block }
-    }
-
-    fn get_block_by_digest(&self, digest: Digest) -> impl Future<Output = Option<Block>> + Send {
-        let block = self
-            .inner
-            .blocks
-            .lock()
-            .values()
-            .find(|block| block.digest() == digest)
-            .cloned();
+    fn get_block(
+        &self,
+        identifier: impl Into<Identifier<Digest>>,
+    ) -> impl Future<Output = Option<Block>> + Send {
+        let block = match identifier.into() {
+            Identifier::Height(height) => {
+                self.inner.get_block_log.lock().push(height.get());
+                self.inner.blocks.lock().get(&height.get()).cloned()
+            }
+            Identifier::Digest(digest) => self
+                .inner
+                .blocks
+                .lock()
+                .values()
+                .find(|block| block.digest() == digest)
+                .cloned(),
+            Identifier::Latest => self
+                .inner
+                .blocks
+                .lock()
+                .values()
+                .max_by_key(|block| block.height())
+                .cloned(),
+        };
         async move { block }
     }
 
