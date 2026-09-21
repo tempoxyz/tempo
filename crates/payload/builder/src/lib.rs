@@ -80,7 +80,7 @@ use tempo_transaction_pool::{
     transaction::TempoPoolTransactionError,
 };
 use tokio::sync::oneshot;
-use tracing::{Level, debug, debug_span, info, instrument, trace, warn};
+use tracing::{Level, Span, debug, debug_span, info, instrument, trace, warn};
 
 /// Conservative estimate for non-transaction execution block RLP bytes.
 ///
@@ -310,6 +310,9 @@ where
             best_payload,
             ..
         } = args;
+        let readiness_reporter = execution_cache
+            .as_ref()
+            .and_then(|cache| cache.readiness_reporter(Span::current()));
         let PayloadConfig {
             parent_header,
             attributes,
@@ -479,6 +482,7 @@ where
             self.provider.clone(),
             self.executor.clone(),
             execution_cache,
+            readiness_reporter.clone(),
             parent_header.hash(),
             executor.evm().evm_env(),
             self.config.enable_parallel,
@@ -1099,6 +1103,7 @@ where
 
         drop(db);
         self.executor.spawn_drop(state_provider);
+        drop(readiness_reporter);
         Ok(BuildOutcome::Freeze(payload))
     }
 

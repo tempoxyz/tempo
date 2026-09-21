@@ -9,7 +9,7 @@ use std::{
 };
 
 use alloy_primitives::B256;
-use reth_engine_tree::tree::{CachedStateProvider, SavedCache};
+use reth_engine_tree::tree::{CachedStateProvider, ReadinessReporter, SavedCache};
 use reth_evm::{Evm, EvmEnvFor};
 use reth_revm::database::StateProviderDatabase;
 use reth_storage_api::{StateProviderBox, StateProviderFactory};
@@ -17,6 +17,7 @@ use reth_tasks::{
     TaskExecutor, WorkerPool,
     prewarm_cpu::{Context as CpuContext, Job as CpuJob, Outcome as CpuOutcome},
 };
+use reth_tracing::readiness::{ReadTotals, Role as ReadinessRole, Scope as ReadinessScope};
 use reth_transaction_pool::{
     BestTransactions, PoolTransaction, error::InvalidPoolTransactionError,
 };
@@ -213,6 +214,10 @@ impl BestTransactionsPrewarming {
     where
         Provider: StateProviderFactory + Clone + 'static,
     {
+        let _readiness = prewarm
+            .prewarm_read_totals
+            .as_ref()
+            .map(|totals| ReadinessScope::enter_shared(ReadinessRole::Prewarm, Arc::clone(totals)));
         let mut cpu = cpu_job.start();
         if prewarm.parallel && !is_parallel_candidate(&tx) {
             cpu.outcome(CpuOutcome::ParallelIneligible);
@@ -385,6 +390,10 @@ pub(crate) struct PrewarmingExecutionContext<Provider> {
     executor: TaskExecutor,
     parent_hash: B256,
     cache: Option<SavedCache>,
+    /// Keeps the summary alive until both builder execution and all prewarm workers finish,
+    /// without retaining another execution-cache handle.
+    _readiness_reporter: Option<Arc<ReadinessReporter>>,
+    prewarm_read_totals: Option<Arc<ReadTotals>>,
     evm_env: EvmEnvFor<TempoEvmConfig>,
     stop: Arc<AtomicBool>,
     parallel: bool,
@@ -398,15 +407,19 @@ where
         provider: Provider,
         executor: TaskExecutor,
         cache: Option<SavedCache>,
+        readiness_reporter: Option<Arc<ReadinessReporter>>,
         parent_hash: B256,
         evm_env: EvmEnvFor<TempoEvmConfig>,
         parallel: bool,
     ) -> Self {
+        let prewarm_read_totals = cache.as_ref().and_then(SavedCache::prewarm_read_totals);
         Self {
             provider,
             executor,
             parent_hash,
             cache,
+            _readiness_reporter: readiness_reporter,
+            prewarm_read_totals,
             evm_env,
             stop: Arc::new(AtomicBool::new(false)),
             parallel,
@@ -765,6 +778,8 @@ mod tests {
             executor,
             parent_hash: parent_header.hash(),
             cache: None,
+            _readiness_reporter: None,
+            prewarm_read_totals: None,
             evm_env,
             stop: Arc::default(),
             parallel,
