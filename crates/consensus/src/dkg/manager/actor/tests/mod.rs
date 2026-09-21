@@ -390,46 +390,58 @@ fn startup_discards_stale_state_on_startup() {
 }
 
 #[test]
-fn startup_recovers_a_share_from_revealed_dealings() {
-    for activation in [None, Some(0), Some(100)] {
-        Runner::default().start(|mut context| async move {
-            let ceremony_epoch = Epoch::new(1);
-            let fixture =
-                revealed_recovery_fixture(&mut context, ceremony_epoch, activation == Some(0));
+fn startup_recovers_v0_share_without_t12() {
+    assert_startup_recovers_revealed_share(None);
+}
 
-            // Since the finalized floor is the boundary of epoch 1, it will try look through this epoch
-            // to see if the share was revealed onchain.
-            let mut harness =
-                Harness::builder(context.child("test"), "startup_recovers_revealed_share")
-                    .epoch_length(10)
-                    .identity(fixture.identity.clone())
-                    .finalized_floor(Height::new(19))
-                    .build()
-                    .await;
+#[test]
+fn startup_recovers_v1_share_after_t12() {
+    assert_startup_recovers_revealed_share(Some(0));
+}
 
-            fixture.populate_execution(&harness.execution, &harness.epoch_strategy);
+#[test]
+fn startup_recovers_historical_v0_share_after_t12() {
+    assert_startup_recovers_revealed_share(Some(100));
+}
 
-            harness.execution.t12_activation = activation;
-            // Recovery must use epoch 1's starting boundary (timestamp 0), even when
-            // T12 is active at the boundary that starts the current epoch.
-            let mut current_boundary = outcome_header(Height::new(19), &fixture.recovered_state);
-            current_boundary.inner.timestamp = 100;
-            harness.execution.add_header(current_boundary);
-            harness.start().await;
+fn assert_startup_recovers_revealed_share(activation: Option<u64>) {
+    Runner::default().start(|mut context| async move {
+        let ceremony_epoch = Epoch::new(1);
+        let fixture =
+            revealed_recovery_fixture(&mut context, ceremony_epoch, activation == Some(0));
 
-            // A mailbox round-trip ensures startup recovery and epoch entry have completed.
-            assert!(!harness.has_dealer_log(ceremony_epoch.next()).await);
-            assert_eq!(
-                harness.epoch_manager.events(),
-                vec![EpochEvent::Enter {
-                    epoch: ceremony_epoch.next(),
-                    public: fixture.expected_output.public().clone(),
-                    share: Some(fixture.recovered_share),
-                    participants: fixture.expected_output.players().clone(),
-                }]
-            );
-        });
-    }
+        // Since the finalized floor is the boundary of epoch 1, it will try look through this epoch
+        // to see if the share was revealed onchain.
+        let mut harness =
+            Harness::builder(context.child("test"), "startup_recovers_revealed_share")
+                .epoch_length(10)
+                .identity(fixture.identity.clone())
+                .finalized_floor(Height::new(19))
+                .build()
+                .await;
+
+        fixture.populate_execution(&harness.execution, &harness.epoch_strategy);
+
+        harness.execution.t12_activation = activation;
+        // Recovery must use epoch 1's starting boundary (timestamp 0), even when
+        // T12 is active at the boundary that starts the current epoch.
+        let mut current_boundary = outcome_header(Height::new(19), &fixture.recovered_state);
+        current_boundary.inner.timestamp = 100;
+        harness.execution.add_header(current_boundary);
+        harness.start().await;
+
+        // A mailbox round-trip ensures startup recovery and epoch entry have completed.
+        assert!(!harness.has_dealer_log(ceremony_epoch.next()).await);
+        assert_eq!(
+            harness.epoch_manager.events(),
+            vec![EpochEvent::Enter {
+                epoch: ceremony_epoch.next(),
+                public: fixture.expected_output.public().clone(),
+                share: Some(fixture.recovered_share),
+                participants: fixture.expected_output.players().clone(),
+            }]
+        );
+    });
 }
 
 #[test]
@@ -804,168 +816,177 @@ fn epoch_shares_only_distributed_in_the_first_half() {
 }
 
 #[test]
-fn finalized_blocks_select_revealed_share_calculation_at_t12() {
-    // Includes a ceremony crossing activation: its starting boundary still selects V0.
-    for (activation, boundary_timestamp, use_v1) in [
-        (None, 100, false),
-        (Some(100), 99, false),
-        (Some(100), 100, true),
-        (Some(100), 101, true),
-    ] {
-        Runner::default().start(|mut context| async move {
-            let (mut state, keys, shares) = dkg_state(&mut context, Epoch::new(1), 4, false);
-            let mut dealers = keys.into_iter().zip(shares).collect::<Vec<_>>();
-            dealers.sort_by_key(|(key, _)| key.public_key());
-            let players = (0..7).map(PrivateKey::from_seed).collect::<Vec<_>>();
-            state.players =
-                ordered::Set::try_from_iter(players.iter().map(|k| k.public_key())).unwrap();
-            let revealed_player = players[6].public_key();
-            // Two of the three selected dealers withhold the revealed player's ACK.
-            let dealer_inputs = dealers
-                .iter()
-                .map(|(key, share)| (key.clone(), Some(share.clone())))
-                .collect::<Vec<_>>();
-            let withholding_dealers = dealers
-                .iter()
-                .take(2)
-                .map(|(key, _)| key.public_key())
-                .collect::<Vec<_>>();
+fn ceremony_without_t12_uses_v0() {
+    assert_ceremony_reveal_version(None, 100, false);
+}
 
-            // Resharing from 4 to 7 players selects 3 dealer commitments. V0 needs
-            // f_new + 1 = 3 reveals; V1 needs quorum_old - f_old = 3 - 1 = 2.
-            // Construct both reference rounds independently of Round::from_state,
-            // so changing the actor's version cannot also change the expectation.
-            let mut reference = |reveal| {
-                let info = dkg::Info::new::<N3f1>(
-                    crate::config::NAMESPACE,
-                    state.epoch.get(),
-                    Some(state.output.clone()),
-                    Mode::NonZeroCounter,
-                    reveal,
-                    state.dealers().clone(),
-                    state.players().clone(),
-                )
-                .unwrap();
-                // Reuse each dealer's polynomial randomness across both rounds:
-                // V1 binds ACK signatures to a different transcript, so the logs
-                // must be regenerated per mode from the same dealings.
-                let signed = signed_dealer_logs(
-                    &info,
-                    &dealer_inputs,
-                    &players,
-                    |index| StdRng::seed_from_u64(index as u64),
-                    |dealer, player| {
-                        withholding_dealers.contains(dealer) && *player == revealed_player
-                    },
-                );
-                for (index, signed) in signed.iter().enumerate() {
-                    let (_, log) = signed.clone().check(&info).unwrap();
-                    let dkg::DealerLogSummary::Ok { acks, reveals } = log.summary() else {
-                        panic!("fixture must contain usable dealer logs");
-                    };
-                    let expected_reveals = if index < 2 {
-                        ordered::Set::try_from_iter([revealed_player.clone()]).unwrap()
-                    } else {
-                        ordered::Set::default()
-                    };
-                    assert_eq!(reveals, expected_reveals);
-                    assert_eq!(acks.len() + reveals.len(), players.len());
-                }
-                let mut logs = Logs::<MinSig, PublicKey, N3f1>::new(info.clone());
-                for signed in &signed {
-                    let (dealer, log) = signed.clone().check(&info).unwrap();
-                    logs.record(dealer, log);
-                }
-                let output = observe::<_, _, N3f1, Batch>(&mut context, logs, &Sequential).unwrap();
-                let outcome = OnchainDkgOutcome {
-                    epoch: state.epoch.next().get(),
-                    output,
-                    next_players: state.players().clone(),
-                    is_next_full_dkg: false,
+#[test]
+fn ceremony_crossing_t12_keeps_v0() {
+    assert_ceremony_reveal_version(Some(100), 99, false);
+}
+
+#[test]
+fn ceremony_at_t12_uses_v1() {
+    assert_ceremony_reveal_version(Some(100), 100, true);
+}
+
+#[test]
+fn ceremony_after_t12_uses_v1() {
+    assert_ceremony_reveal_version(Some(100), 101, true);
+}
+
+fn assert_ceremony_reveal_version(activation: Option<u64>, boundary_timestamp: u64, use_v1: bool) {
+    Runner::default().start(|mut context| async move {
+        let (mut state, keys, shares) = dkg_state(&mut context, Epoch::new(1), 4, false);
+        let mut dealers = keys.into_iter().zip(shares).collect::<Vec<_>>();
+        dealers.sort_by_key(|(key, _)| key.public_key());
+        let players = (0..7).map(PrivateKey::from_seed).collect::<Vec<_>>();
+        state.players =
+            ordered::Set::try_from_iter(players.iter().map(|k| k.public_key())).unwrap();
+        let revealed_player = players[6].public_key();
+        // Two of the three selected dealers withhold the revealed player's ACK.
+        let dealer_inputs = dealers
+            .iter()
+            .map(|(key, share)| (key.clone(), Some(share.clone())))
+            .collect::<Vec<_>>();
+        let withholding_dealers = dealers
+            .iter()
+            .take(2)
+            .map(|(key, _)| key.public_key())
+            .collect::<Vec<_>>();
+
+        // Resharing from 4 to 7 players selects 3 dealer commitments. V0 needs
+        // f_new + 1 = 3 reveals; V1 needs quorum_old - f_old = 3 - 1 = 2.
+        // Construct both reference rounds independently of Round::from_state,
+        // so changing the actor's version cannot also change the expectation.
+        let mut reference = |reveal| {
+            let info = dkg::Info::new::<N3f1>(
+                crate::config::NAMESPACE,
+                state.epoch.get(),
+                Some(state.output.clone()),
+                Mode::NonZeroCounter,
+                reveal,
+                state.dealers().clone(),
+                state.players().clone(),
+            )
+            .unwrap();
+            // Reuse each dealer's polynomial randomness across both rounds:
+            // V1 binds ACK signatures to a different transcript, so the logs
+            // must be regenerated per mode from the same dealings.
+            let signed = signed_dealer_logs(
+                &info,
+                &dealer_inputs,
+                &players,
+                |index| StdRng::seed_from_u64(index as u64),
+                |dealer, player| withholding_dealers.contains(dealer) && *player == revealed_player,
+            );
+            for (index, signed) in signed.iter().enumerate() {
+                let (_, log) = signed.clone().check(&info).unwrap();
+                let dkg::DealerLogSummary::Ok { acks, reveals } = log.summary() else {
+                    panic!("fixture must contain usable dealer logs");
                 };
-                (signed, outcome)
-            };
-            let (new_logs, new_outcome) = reference(dkg::Reveal::V1);
-            #[expect(deprecated, reason = "pin the pre-upgrade revealed-share calculation")]
-            let (legacy_logs, legacy_outcome) = reference(dkg::Reveal::V0);
-
-            assert!(legacy_outcome.output.revealed().is_empty());
-            assert_eq!(
-                new_outcome.output.revealed(),
-                &ordered::Set::try_from_iter([revealed_player]).unwrap()
-            );
-            assert_eq!(legacy_outcome.output.public(), new_outcome.output.public());
-            assert_eq!(
-                legacy_outcome.output.players(),
-                new_outcome.output.players()
-            );
-            assert_eq!(
-                legacy_outcome.output.dealers(),
-                new_outcome.output.dealers()
-            );
-            assert_eq!(
-                legacy_outcome.output.dealers(),
-                &ordered::Set::try_from_iter(dealers.iter().take(3).map(|(k, _)| k.public_key()))
-                    .unwrap()
-            );
-
-            // Run the real actor as an observer, using only finalized block input.
-            let mut harness = Harness::builder(context.child("test"), "t12_reveals")
-                .initial_state(state.clone())
-                .identity(PrivateKey::from_seed(100))
-                .build()
-                .await;
-            harness.execution.t12_activation = activation;
-            harness.execution.set_next_players(state.players().clone());
-            let mut previous = outcome_header(Height::new(9), &state);
-            previous.inner.timestamp = boundary_timestamp;
-            harness.execution.add_header(previous.clone());
-            harness.start().await;
-
-            // A contiguous epoch prefix with signed dealer logs (including their
-            // ACKs and reveals) in all four post-midpoint, non-boundary blocks.
-            let mut selected_logs = if use_v1 { new_logs } else { legacy_logs }.into_iter();
-            for height in 10..=18 {
-                let mut next = header(Height::new(height));
-                next.inner.parent_hash = previous.hash_slow();
-                next.inner.timestamp = boundary_timestamp + height;
-                if height >= 15 {
-                    next.inner.extra_data = selected_logs.next().unwrap().encode().into();
-                }
-                harness.marshal.add_block(block(next.clone()));
-                harness.report_finalized_header(next.clone()).await;
-                previous = next;
+                let expected_reveals = if index < 2 {
+                    ordered::Set::try_from_iter([revealed_player.clone()]).unwrap()
+                } else {
+                    ordered::Set::default()
+                };
+                assert_eq!(reveals, expected_reveals);
+                assert_eq!(acks.len() + reveals.len(), players.len());
             }
-            assert!(selected_logs.next().is_none());
-            let actual = harness
-                .mailbox()
-                .get_dkg_outcome(Digest(previous.hash_slow()), Height::new(18))
-                .await
-                .unwrap();
-
-            // Full equality pins the transcript as well as the revealed set.
-            let (expected, other) = if use_v1 {
-                (&new_outcome, &legacy_outcome)
-            } else {
-                (&legacy_outcome, &new_outcome)
+            let mut logs = Logs::<MinSig, PublicKey, N3f1>::new(info.clone());
+            for signed in &signed {
+                let (dealer, log) = signed.clone().check(&info).unwrap();
+                logs.record(dealer, log);
+            }
+            let output = observe::<_, _, N3f1, Batch>(&mut context, logs, &Sequential).unwrap();
+            let outcome = OnchainDkgOutcome {
+                epoch: state.epoch.next().get(),
+                output,
+                next_players: state.players().clone(),
+                is_next_full_dkg: false,
             };
-            assert_eq!(&actual, expected);
-            assert_ne!(actual.output.revealed(), other.output.revealed());
-            assert_ne!(actual.encode(), other.encode());
-            assert!(harness.marshal.ancestry_reads().is_empty());
-            harness.stop().await;
-            assert_eq!(harness.storage().logs_for_epoch(state.epoch).count(), 4);
-            // Reconstruct the round from persisted state and replay the same logs.
-            harness.start().await;
-            let restarted = harness
-                .mailbox()
-                .get_dkg_outcome(Digest(previous.hash_slow()), Height::new(18))
-                .await
-                .unwrap();
-            assert_eq!(restarted, actual);
-            harness.stop().await;
-        });
-    }
+            (signed, outcome)
+        };
+        let (new_logs, new_outcome) = reference(dkg::Reveal::V1);
+        #[expect(deprecated, reason = "pin the pre-upgrade revealed-share calculation")]
+        let (legacy_logs, legacy_outcome) = reference(dkg::Reveal::V0);
+
+        assert!(legacy_outcome.output.revealed().is_empty());
+        assert_eq!(
+            new_outcome.output.revealed(),
+            &ordered::Set::try_from_iter([revealed_player]).unwrap()
+        );
+        assert_eq!(legacy_outcome.output.public(), new_outcome.output.public());
+        assert_eq!(
+            legacy_outcome.output.players(),
+            new_outcome.output.players()
+        );
+        assert_eq!(
+            legacy_outcome.output.dealers(),
+            new_outcome.output.dealers()
+        );
+        assert_eq!(
+            legacy_outcome.output.dealers(),
+            &ordered::Set::try_from_iter(dealers.iter().take(3).map(|(k, _)| k.public_key()))
+                .unwrap()
+        );
+
+        // Run the real actor as an observer, using only finalized block input.
+        let mut harness = Harness::builder(context.child("test"), "t12_reveals")
+            .initial_state(state.clone())
+            .identity(PrivateKey::from_seed(100))
+            .build()
+            .await;
+        harness.execution.t12_activation = activation;
+        harness.execution.set_next_players(state.players().clone());
+        let mut previous = outcome_header(Height::new(9), &state);
+        previous.inner.timestamp = boundary_timestamp;
+        harness.execution.add_header(previous.clone());
+        harness.start().await;
+
+        // A contiguous epoch prefix with signed dealer logs (including their
+        // ACKs and reveals) in all four post-midpoint, non-boundary blocks.
+        let mut selected_logs = if use_v1 { new_logs } else { legacy_logs }.into_iter();
+        for height in 10..=18 {
+            let mut next = header(Height::new(height));
+            next.inner.parent_hash = previous.hash_slow();
+            next.inner.timestamp = boundary_timestamp + height;
+            if height >= 15 {
+                next.inner.extra_data = selected_logs.next().unwrap().encode().into();
+            }
+            harness.marshal.add_block(block(next.clone()));
+            harness.report_finalized_header(next.clone()).await;
+            previous = next;
+        }
+        assert!(selected_logs.next().is_none());
+        let actual = harness
+            .mailbox()
+            .get_dkg_outcome(Digest(previous.hash_slow()), Height::new(18))
+            .await
+            .unwrap();
+
+        // Full equality pins the transcript as well as the revealed set.
+        let (expected, other) = if use_v1 {
+            (&new_outcome, &legacy_outcome)
+        } else {
+            (&legacy_outcome, &new_outcome)
+        };
+        assert_eq!(&actual, expected);
+        assert_ne!(actual.output.revealed(), other.output.revealed());
+        assert_ne!(actual.encode(), other.encode());
+        assert!(harness.marshal.ancestry_reads().is_empty());
+        harness.stop().await;
+        assert_eq!(harness.storage().logs_for_epoch(state.epoch).count(), 4);
+        // Reconstruct the round from persisted state and replay the same logs.
+        harness.start().await;
+        let restarted = harness
+            .mailbox()
+            .get_dkg_outcome(Digest(previous.hash_slow()), Height::new(18))
+            .await
+            .unwrap();
+        assert_eq!(restarted, actual);
+        harness.stop().await;
+    });
 }
 
 #[test]
