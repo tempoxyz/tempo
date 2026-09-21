@@ -497,7 +497,7 @@ fn create_key_authorization_inner(
 ) -> eyre::Result<SignedKeyAuthorization> {
     // Infer key_type from the access key signature
     let key_type = access_key_signature
-        .signature_type()
+        .primitive_signature_type()
         .expect("primitive access-key fixture");
 
     let mut key_auth = KeyAuthorization::unrestricted(chain_id, key_type, access_key_addr);
