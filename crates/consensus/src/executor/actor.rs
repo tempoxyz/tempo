@@ -140,7 +140,7 @@ pub(crate) struct Actor<TContext, TExecutionLayer, TMarshal> {
     pending_acknowledgements: VecDeque<FinalizedBlockRequest>,
 
     /// New-payload requests the execution layer may have executed since the
-    /// last forkchoice update, see [`DELIVERIES_PER_FORKCHOICE_UPDATE`].
+    /// last successful forkchoice update, see [`DELIVERIES_PER_FORKCHOICE_UPDATE`].
     deliveries_since_forkchoice: usize,
 
     /// The newest round observed through build and verify contexts or
@@ -524,10 +524,9 @@ where
                 self.restart_walks_covered_by_finality();
             }
             ExecutionTaskOutcome::Build {
-                delivery_attempted,
                 finalized_round,
-                result,
-            } => self.handle_build(delivery_attempted, finalized_round, result)?,
+                outcome,
+            } => self.handle_build(finalized_round, outcome)?,
             ExecutionTaskOutcome::Forkchoice(ForkchoiceOutcome {
                 target,
                 build,
@@ -538,29 +537,25 @@ where
     }
 
     #[instrument(skip_all, err)]
-    fn handle_build(
-        &mut self,
-        delivery_attempted: bool,
-        finalized_round: Round,
-        result: eyre::Result<ForkchoiceOutcome>,
-    ) -> eyre::Result<()> {
-        if delivery_attempted {
-            self.deliveries_since_forkchoice += 1;
-        }
-        match result {
-            Ok(forkchoice) => {
-                self.deliveries_since_forkchoice = 0;
-                // A successful build delivered its exact parent with VALID.
-                self.record_executed_convergence_target(forkchoice.target.head, finalized_round);
-                self.handle_forkchoice_response(
-                    forkchoice.target,
-                    forkchoice.build,
-                    forkchoice.response,
-                )?;
+    fn handle_build(&mut self, finalized_round: Round, outcome: BuildOutcome) -> eyre::Result<()> {
+        match outcome {
+            BuildOutcome::Aborted { delivery_attempted } => {
+                if delivery_attempted {
+                    self.deliveries_since_forkchoice += 1;
+                }
+                Ok(())
             }
-            Err(error) => warn!(%error, "build attempt failed"),
+            BuildOutcome::ParentDeliveryFailed(error) => {
+                self.deliveries_since_forkchoice += 1;
+                Err(error)
+            }
+            BuildOutcome::Forkchoice(outcome) => {
+                self.deliveries_since_forkchoice += 1;
+                // The build delivered its exact parent with VALID before the FCU.
+                self.record_executed_convergence_target(outcome.target.head, finalized_round);
+                self.handle_forkchoice_response(outcome.target, outcome.build, outcome.response)
+            }
         }
-        Ok(())
     }
 
     /// Applies an engine answer to the verification that expects it. Answers
@@ -753,6 +748,7 @@ where
             return Err(Report::msg(response.payload_status)).wrap_err_with(diverged);
         }
 
+        self.deliveries_since_forkchoice = 0;
         self.local_state = target;
         self.acknowledge_finalized();
 
@@ -1336,8 +1332,11 @@ where
                         target,
                         build,
                         self.built_blocks.get(&parent).cloned(),
-                        self.network_finalized_tip.0,
-                    );
+                    )
+                    .map(move |outcome| ExecutionTaskOutcome::Build {
+                        finalized_round,
+                        outcome,
+                    });
                     self.set_execution_task(ExecutionTask::new(ExecutionTaskType::Build, fut));
                     return;
                 } else {
@@ -1383,7 +1382,6 @@ where
         let Some(target) = self.next_forkchoice_target() else {
             return false;
         };
-        self.deliveries_since_forkchoice = 0;
         let fut = execute_forkchoice(self.execution_node.clone(), Span::current(), target, None)
             .map(ExecutionTaskOutcome::Forkchoice);
         self.set_execution_task(ExecutionTask::new(ExecutionTaskType::Forkchoice, fut));
@@ -1850,11 +1848,13 @@ struct ExecutionTaskFinished {
 impl ExecutionTaskFinished {
     fn target(&self) -> Option<LocalState> {
         match &self.outcome {
-            ExecutionTaskOutcome::Forkchoice(forkchoice) => Some(forkchoice.target),
-            ExecutionTaskOutcome::Build { result, .. } => {
-                result.as_ref().ok().map(|forkchoice| forkchoice.target)
-            }
-            ExecutionTaskOutcome::Delivered { .. }
+            ExecutionTaskOutcome::Forkchoice(forkchoice)
+            | ExecutionTaskOutcome::Build {
+                outcome: BuildOutcome::Forkchoice(forkchoice),
+                ..
+            } => Some(forkchoice.target),
+            ExecutionTaskOutcome::Build { .. }
+            | ExecutionTaskOutcome::Delivered { .. }
             | ExecutionTaskOutcome::FinalizedDelivered { .. } => None,
         }
     }
@@ -1900,12 +1900,21 @@ enum ExecutionTaskOutcome {
         request: FinalizedBlockRequest,
         status: eyre::Result<PayloadStatusEnum>,
     },
-    /// Whether parent delivery was attempted, and the build FCU if it was VALID.
     Build {
-        delivery_attempted: bool,
         finalized_round: Round,
-        result: eyre::Result<ForkchoiceOutcome>,
+        outcome: BuildOutcome,
     },
+    Forkchoice(ForkchoiceOutcome),
+}
+
+/// Where a build ended: before its FCU, on a failed parent delivery, or after
+/// executing the FCU. The FCU response is interpreted by the actor.
+enum BuildOutcome {
+    /// Cancellation, a missing parent, or a non-VALID parent ends only the build.
+    Aborted { delivery_attempted: bool },
+    /// The parent newPayload call failed; the actor must shut down.
+    ParentDeliveryFailed(Report),
+    /// The parent was VALID. The FCU may have succeeded, failed, or been skipped.
     Forkchoice(ForkchoiceOutcome),
 }
 
@@ -1998,36 +2007,53 @@ async fn execute_build(
     mut target: LocalState,
     mut build: Box<Build>,
     retained_parent: Option<Arc<Block>>,
-    finalized_round: Round,
-) -> ExecutionTaskOutcome {
-    let mut delivery_attempted = false;
+) -> BuildOutcome {
     let parent_digest = build.context.parent.1;
     let parent_round = Round::new(build.context.round.epoch(), build.context.parent.0);
-    let result = async {
-        let block = select! {
-            biased;
+    let block = select! {
+        biased;
 
-            () = build.response.cancellation() => Err(eyre!("build subscriber went away")),
-            block = async {
-                match retained_parent {
-                    Some(block) => Ok(block),
-                    None => fetch_block(execution_node.clone(), marshal.clone(), parent_digest, parent_round)
-                        .await.ok_or_eyre("marshal dropped the build parent subscription"),
-                }
-            } => block,
-        }?;
-        target.head = (block.height(), parent_digest);
-        delivery_attempted = true;
-        let status = deliver_block(&execution_node, block).await?;
-        ensure!(status == PayloadStatusEnum::Valid, "build parent was not VALID: {status}");
-        ensure!(!build.response.is_canceled(), "build subscriber went away");
-        Ok(execute_forkchoice(execution_node, cause.clone(), target, Some((cause, build))).await)
-    }.await;
-    ExecutionTaskOutcome::Build {
-        delivery_attempted,
-        finalized_round,
-        result,
+        () = build.response.cancellation() => {
+            info!("build subscriber went away");
+            return BuildOutcome::Aborted { delivery_attempted: false };
+        },
+        block = async {
+            match retained_parent {
+                Some(block) => Some(block),
+                None => fetch_block(execution_node.clone(), marshal.clone(), parent_digest, parent_round)
+                    .await,
+            }
+        } => block,
+    };
+    let Some(block) = block else {
+        warn!("marshal dropped the build parent subscription");
+        return BuildOutcome::Aborted {
+            delivery_attempted: false,
+        };
+    };
+    target.head = (block.height(), parent_digest);
+    let status = match deliver_block(&execution_node, block)
+        .await
+        .wrap_err("failed delivering build parent")
+    {
+        Ok(status) => status,
+        Err(error) => return BuildOutcome::ParentDeliveryFailed(error),
+    };
+    if status != PayloadStatusEnum::Valid {
+        warn!(%status, "build parent was not VALID");
+        return BuildOutcome::Aborted {
+            delivery_attempted: true,
+        };
     }
+    if build.response.is_canceled() {
+        info!("build subscriber went away");
+        return BuildOutcome::Aborted {
+            delivery_attempted: true,
+        };
+    }
+    BuildOutcome::Forkchoice(
+        execute_forkchoice(execution_node, cause.clone(), target, Some((cause, build))).await,
+    )
 }
 
 /// Delivers a finalized block through a bare new-payload request.

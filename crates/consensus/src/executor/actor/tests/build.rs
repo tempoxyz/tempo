@@ -294,7 +294,6 @@ fn non_valid_parent_delivery_fails_the_build_without_walking_ancestors() {
         Ok(PayloadStatusEnum::Invalid {
             validation_error: "rejected parent".into(),
         }),
-        Err("connection closed"),
     ] {
         deterministic::Runner::default().start(|context| async move {
             let h = Harness::start_at_genesis(&context);
@@ -322,6 +321,28 @@ fn non_valid_parent_delivery_fails_the_build_without_walking_ancestors() {
             assert!(h.execution.pending_payload_jobs().is_empty());
         });
     }
+}
+
+#[test_traced]
+fn build_parent_transport_error_is_fatal() {
+    deterministic::Runner::default().start(|context| async move {
+        let h = Harness::start_at_genesis(&context);
+        let parent = make_block(1, 1, GENESIS);
+        let digest = parent.digest();
+        h.execution.add_body(parent);
+        h.execution
+            .script_new_payload(digest, Err("connection closed"));
+
+        h.build(round(2), digest)
+            .await
+            .expect_err("a failed parent delivery must fail the build");
+        h.actor
+            .await
+            .expect("actor should shut down cleanly on a build parent transport error");
+        assert_eq!(h.execution.new_payloads(), vec![digest]);
+        assert_eq!(h.execution.fcus(), vec![STARTUP_FCU]);
+        assert!(h.execution.pending_payload_jobs().is_empty());
+    });
 }
 
 #[test_traced]
