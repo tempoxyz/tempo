@@ -213,10 +213,28 @@ async fn test_pre_t1a_tx_above_osaka_limit() -> eyre::Result<()> {
     let chain_id = provider.get_chain_id().await?;
 
     let raw_tx = build_tx(&signer, chain_id, 0, MAX_TX_GAS_LIMIT_OSAKA + 1);
-    let result = provider.send_raw_transaction(&raw_tx).await;
+    let err = provider
+        .send_raw_transaction(&raw_tx)
+        .await
+        .expect_err("pre-T1A should reject tx above Osaka limit (16M)");
+    assert_eq!(
+        err.as_error_resp().expect("expected RPC rejection").message,
+        format!(
+            "transaction gas limit ({}) is greater than the cap ({MAX_TX_GAS_LIMIT_OSAKA})",
+            MAX_TX_GAS_LIMIT_OSAKA + 1
+        )
+    );
+
+    // Wait for the engine to finish before Tokio tears down the test runtime
+    // and RocksDB cleanup can race with the engine's OS thread.
+    setup.node.inner.rpc_server_handle().clone().stop()?;
+    let runtime = setup.node.inner.task_executor.clone();
     assert!(
-        result.is_err(),
-        "pre-T1A should reject tx above Osaka limit (16M)"
+        tokio::task::spawn_blocking(move || {
+            runtime.graceful_shutdown_with_timeout(std::time::Duration::from_secs(10))
+        })
+        .await?,
+        "timed out shutting down gas-limit test node"
     );
 
     Ok(())
