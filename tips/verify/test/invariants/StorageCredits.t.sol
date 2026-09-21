@@ -122,16 +122,17 @@ contract StorageCreditsHarness {
         values[slot] = 0;
     }
 
-    /// @dev Asserts every externally reachable Storage Credits revert/halt path. `OnlyDirectCall`
-    ///      exists in the current SDK ABI but is not emitted by the implementation; the shared
-    ///      precompile wrapper emits `DelegateCallNotAllowed` before dispatch instead.
+    /// @dev Asserts every externally reachable Storage Credits revert/halt path. `InvalidMode`
+    ///      is unreachable after strict ABI decoding starts at T11. `OnlyDirectCall` exists in
+    ///      the current SDK ABI but is not emitted by the implementation; the shared precompile
+    ///      wrapper emits `DelegateCallNotAllowed` before dispatch instead.
     function assertKnownReverts() external {
         bytes memory result;
         bool success;
 
         (success, result) = address(CREDITS)
             .call(abi.encodeWithSelector(IStorageCredits.setMode.selector, uint256(3)));
-        _assertRevert(success, result, abi.encodeWithSelector(IStorageCredits.InvalidMode.selector));
+        _assertRevert(success, result, bytes(""));
 
         (success, result) = address(CREDITS)
             .delegatecall(abi.encodeCall(IStorageCredits.balanceOf, (address(this))));

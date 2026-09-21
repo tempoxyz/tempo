@@ -1,4 +1,5 @@
 name: Docker Build
+run-name: "${{ inputs.pr_number && format('Docker PR #{0}{1}{2}', inputs.pr_number, inputs.nightly && ' nightly' || '', inputs.request_id && format(' (request {0})', inputs.request_id) || '') || '' }}"
 
 permissions: {}
 
@@ -12,14 +13,28 @@ on:
   merge_group:
   workflow_dispatch:
     inputs:
+      request_id:
+        description: "Source command comment ID for updating its receipt (optional)"
+        type: string
+        default: ""
       nightly:
         description: "Tag nightly"
         type: boolean
         default: false
+      pr_number:
+        description: "Build this open PR number and tag pr-<number> (blank builds the selected ref)"
+        type: string
+        default: ""
   workflow_call:
   # We're building nightly only once a day to let the rollout cook for 24h without interruptions
   schedule:
     - cron: "5 9 * * *"
+
+# A new PR build replaces the previous one, including requests to tag nightly.
+# Non-PR builds have unique groups and do not cancel each other.
+concurrency:
+  group: docker-build-${{ inputs.pr_number && format('pr-{0}', inputs.pr_number) || format('run-{0}', github.run_id) }}
+  cancel-in-progress: ${{ github.event_name == 'workflow_dispatch' && inputs.pr_number != '' }}
 
 env:
   REGISTRY: ghcr.io/tempoxyz
@@ -32,15 +47,66 @@ jobs:
     permissions:
       actions: read
       contents: read
+      pull-requests: read
       packages: write
       id-token: write
     steps:
+      - name: Secure runner
+        uses: tempoxyz/gh-actions/actions/secure-runner@baf48ebcfcb26812085b8351125493b2ef8009ab # 2026-09-21T19-33-30Z-baf48ebc
+
+      - name: Resolve build source
+        id: source
+        uses: actions/github-script@3a2844b7e9c422d3c10d287c895573f7108da1b3 # v9.0.0
+        env:
+          PR_NUMBER: ${{ inputs.pr_number }}
+          BRANCH_NAME: ${{ github.head_ref || github.ref_name }}
+        with:
+          script: |
+            const number = process.env.PR_NUMBER || '';
+            let sha = context.sha;
+            let branch = process.env.BRANCH_NAME;
+            if (number) {
+              if (!/^[1-9][0-9]*$/.test(number) || !Number.isSafeInteger(Number(number))) {
+                throw new Error('pr_number must be a positive integer');
+              }
+              const { data: pr } = await github.rest.pulls.get({
+                ...context.repo,
+                pull_number: Number(number),
+              });
+              if (pr.state !== 'open') {
+                throw new Error('Select an open PR');
+              }
+              // Publishing runs with registry credentials; only accept branches in this repository.
+              if (pr.head.repo?.full_name !== `${context.repo.owner}/${context.repo.repo}`) {
+                throw new Error('PR image publishing only supports branches in this repository, not forks');
+              }
+              sha = pr.head.sha;
+              branch = pr.head.ref;
+              if (!/^[0-9a-f]{40}$/.test(sha)) {
+                throw new Error('PR head did not resolve to a commit SHA');
+              }
+            }
+            core.setOutput('sha', sha);
+            core.setOutput('short_sha', sha.slice(0, 7));
+            core.setOutput('branch', branch);
+            core.setOutput('revision_label', number ? `org.opencontainers.image.revision=${sha}` : '');
+            await core.summary
+              .addHeading('Docker build source')
+              .addTable([
+                [{ data: 'Field', header: true }, { data: 'Value', header: true }],
+                ['PR', number || 'Not specified'],
+                ['Branch / ref', branch],
+                ['Commit', sha],
+              ])
+              .write();
+
       - name: Checkout repository
         uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
         with:
+          ref: ${{ steps.source.outputs.sha }}
           persist-credentials: false
 
-      - uses: tempoxyz/gh-actions/vendor/depot/setup-action@3626124474a987bc74b41fc7ae65b2e23f8e4e4e
+      - uses: tempoxyz/gh-actions/vendor/depot/setup-action@baf48ebcfcb26812085b8351125493b2ef8009ab # 2026-09-21T19-33-30Z-baf48ebc
 
       - name: Determine Docker labels
         id: docker-labels
@@ -63,107 +129,120 @@ jobs:
 
       - name: Docker metadata for tempo
         id: meta-tempo
-        uses: tempoxyz/gh-actions/vendor/docker/metadata-action@3626124474a987bc74b41fc7ae65b2e23f8e4e4e
+        uses: tempoxyz/gh-actions/vendor/docker/metadata-action@baf48ebcfcb26812085b8351125493b2ef8009ab # 2026-09-21T19-33-30Z-baf48ebc
         with:
           images: |
             ${{ env.REGISTRY }}/tempo
             docker.io/tempoxyz/tempo
           bake-target: tempo
-          labels: ${{ steps.docker-labels.outputs.value }}
+          labels: |
+            ${{ steps.docker-labels.outputs.value }}
+            ${{ steps.source.outputs.revision_label }}
           tags: |
-            type=schedule,pattern=nightly
+            type=schedule,pattern=nightly,enable=${{ inputs.pr_number == '' }}
             type=raw,value=nightly,enable=${{ github.event.inputs.nightly == 'true' }}
-            type=semver,pattern={{version}}
-            type=semver,pattern={{major}}.{{minor}}
-            type=semver,pattern={{major}}
-            type=raw,value=stable,enable=${{ github.ref_type == 'tag' }}
-            type=raw,value=latest,enable={{is_default_branch}}
-            type=edge,branch=main
-            type=sha,prefix=sha-
-            type=ref,event=pr
+            type=semver,pattern={{version}},enable=${{ inputs.pr_number == '' }}
+            type=semver,pattern={{major}}.{{minor}},enable=${{ inputs.pr_number == '' }}
+            type=semver,pattern={{major}},enable=${{ inputs.pr_number == '' }}
+            type=raw,value=stable,enable=${{ inputs.pr_number == '' && github.ref_type == 'tag' }}
+            type=raw,value=latest,enable=${{ inputs.pr_number == '' && '{{is_default_branch}}' || 'false' }}
+            type=edge,branch=main,enable=${{ inputs.pr_number == '' }}
+            type=sha,prefix=sha-,enable=${{ inputs.pr_number == '' }}
+            type=raw,value=sha-${{ steps.source.outputs.short_sha }},priority=100,enable=${{ inputs.pr_number != '' }}
+            type=ref,event=pr,enable=${{ inputs.pr_number == '' }}
+            type=raw,value=pr-${{ inputs.pr_number }},enable=${{ inputs.pr_number != '' }}
 
       - name: Docker metadata for tempo-localnet
         id: meta-tempo-localnet
-        uses: tempoxyz/gh-actions/vendor/docker/metadata-action@3626124474a987bc74b41fc7ae65b2e23f8e4e4e
+        uses: tempoxyz/gh-actions/vendor/docker/metadata-action@baf48ebcfcb26812085b8351125493b2ef8009ab # 2026-09-21T19-33-30Z-baf48ebc
         with:
           images: |
             ${{ env.REGISTRY }}/tempo-localnet
             docker.io/tempoxyz/tempo-localnet
           bake-target: tempo-localnet
-          labels: ${{ steps.docker-labels.outputs.value }}
+          labels: |
+            ${{ steps.docker-labels.outputs.value }}
+            ${{ steps.source.outputs.revision_label }}
           tags: |
-            type=schedule,pattern=nightly
+            type=schedule,pattern=nightly,enable=${{ inputs.pr_number == '' }}
             type=raw,value=nightly,enable=${{ github.event.inputs.nightly == 'true' }}
-            type=semver,pattern={{version}}
-            type=semver,pattern={{major}}.{{minor}}
-            type=semver,pattern={{major}}
-            type=raw,value=stable,enable=${{ github.ref_type == 'tag' }}
-            type=raw,value=latest,enable={{is_default_branch}}
-            type=edge,branch=main
-            type=sha,prefix=sha-
-            type=ref,event=pr
+            type=semver,pattern={{version}},enable=${{ inputs.pr_number == '' }}
+            type=semver,pattern={{major}}.{{minor}},enable=${{ inputs.pr_number == '' }}
+            type=semver,pattern={{major}},enable=${{ inputs.pr_number == '' }}
+            type=raw,value=stable,enable=${{ inputs.pr_number == '' && github.ref_type == 'tag' }}
+            type=raw,value=latest,enable=${{ inputs.pr_number == '' && '{{is_default_branch}}' || 'false' }}
+            type=edge,branch=main,enable=${{ inputs.pr_number == '' }}
+            type=sha,prefix=sha-,enable=${{ inputs.pr_number == '' }}
+            type=raw,value=sha-${{ steps.source.outputs.short_sha }},priority=100,enable=${{ inputs.pr_number != '' }}
+            type=ref,event=pr,enable=${{ inputs.pr_number == '' }}
+            type=raw,value=pr-${{ inputs.pr_number }},enable=${{ inputs.pr_number != '' }}
 
       - name: Docker metadata for tempo-sidecar
         id: meta-tempo-sidecar
-        uses: tempoxyz/gh-actions/vendor/docker/metadata-action@3626124474a987bc74b41fc7ae65b2e23f8e4e4e
+        uses: tempoxyz/gh-actions/vendor/docker/metadata-action@baf48ebcfcb26812085b8351125493b2ef8009ab # 2026-09-21T19-33-30Z-baf48ebc
         with:
           images: |
             ${{ env.REGISTRY }}/tempo-sidecar
             docker.io/tempoxyz/tempo-sidecar
           bake-target: tempo-sidecar
-          labels: ${{ steps.docker-labels.outputs.value }}
+          labels: |
+            ${{ steps.docker-labels.outputs.value }}
+            ${{ steps.source.outputs.revision_label }}
           tags: |
-            type=schedule,pattern=nightly
+            type=schedule,pattern=nightly,enable=${{ inputs.pr_number == '' }}
             type=raw,value=nightly,enable=${{ github.event.inputs.nightly == 'true' }}
-            type=semver,pattern={{version}}
-            type=semver,pattern={{major}}.{{minor}}
-            type=semver,pattern={{major}}
-            type=raw,value=stable,enable=${{ github.ref_type == 'tag' }}
-            type=raw,value=latest,enable={{is_default_branch}}
-            type=edge,branch=main
-            type=sha,prefix=sha-
-            type=ref,event=pr
+            type=semver,pattern={{version}},enable=${{ inputs.pr_number == '' }}
+            type=semver,pattern={{major}}.{{minor}},enable=${{ inputs.pr_number == '' }}
+            type=semver,pattern={{major}},enable=${{ inputs.pr_number == '' }}
+            type=raw,value=stable,enable=${{ inputs.pr_number == '' && github.ref_type == 'tag' }}
+            type=raw,value=latest,enable=${{ inputs.pr_number == '' && '{{is_default_branch}}' || 'false' }}
+            type=edge,branch=main,enable=${{ inputs.pr_number == '' }}
+            type=sha,prefix=sha-,enable=${{ inputs.pr_number == '' }}
+            type=raw,value=sha-${{ steps.source.outputs.short_sha }},priority=100,enable=${{ inputs.pr_number != '' }}
+            type=ref,event=pr,enable=${{ inputs.pr_number == '' }}
+            type=raw,value=pr-${{ inputs.pr_number }},enable=${{ inputs.pr_number != '' }}
 
       - name: Docker metadata for tempo-xtask
         id: meta-tempo-xtask
-        uses: tempoxyz/gh-actions/vendor/docker/metadata-action@3626124474a987bc74b41fc7ae65b2e23f8e4e4e
+        uses: tempoxyz/gh-actions/vendor/docker/metadata-action@baf48ebcfcb26812085b8351125493b2ef8009ab # 2026-09-21T19-33-30Z-baf48ebc
         with:
           images: |
             ${{ env.REGISTRY }}/tempo-xtask
             docker.io/tempoxyz/tempo-xtask
           bake-target: tempo-xtask
-          labels: ${{ steps.docker-labels.outputs.value }}
+          labels: |
+            ${{ steps.docker-labels.outputs.value }}
+            ${{ steps.source.outputs.revision_label }}
           tags: |
-            type=schedule,pattern=nightly
+            type=schedule,pattern=nightly,enable=${{ inputs.pr_number == '' }}
             type=raw,value=nightly,enable=${{ github.event.inputs.nightly == 'true' }}
-            type=semver,pattern={{version}}
-            type=semver,pattern={{major}}.{{minor}}
-            type=semver,pattern={{major}}
-            type=raw,value=stable,enable=${{ github.ref_type == 'tag' }}
-            type=raw,value=latest,enable={{is_default_branch}}
-            type=edge,branch=main
-            type=sha,prefix=sha-
-            type=ref,event=pr
+            type=semver,pattern={{version}},enable=${{ inputs.pr_number == '' }}
+            type=semver,pattern={{major}}.{{minor}},enable=${{ inputs.pr_number == '' }}
+            type=semver,pattern={{major}},enable=${{ inputs.pr_number == '' }}
+            type=raw,value=stable,enable=${{ inputs.pr_number == '' && github.ref_type == 'tag' }}
+            type=raw,value=latest,enable=${{ inputs.pr_number == '' && '{{is_default_branch}}' || 'false' }}
+            type=edge,branch=main,enable=${{ inputs.pr_number == '' }}
+            type=sha,prefix=sha-,enable=${{ inputs.pr_number == '' }}
+            type=raw,value=sha-${{ steps.source.outputs.short_sha }},priority=100,enable=${{ inputs.pr_number != '' }}
+            type=ref,event=pr,enable=${{ inputs.pr_number == '' }}
+            type=raw,value=pr-${{ inputs.pr_number }},enable=${{ inputs.pr_number != '' }}
 
       - name: Log in to Container Registry
-        uses: tempoxyz/gh-actions/vendor/docker/login-action@3626124474a987bc74b41fc7ae65b2e23f8e4e4e
+        uses: tempoxyz/gh-actions/vendor/docker/login-action@baf48ebcfcb26812085b8351125493b2ef8009ab # 2026-09-21T19-33-30Z-baf48ebc
         with:
           registry: ${{ env.REGISTRY }}
           username: ${{ github.actor }}
           password: ${{ secrets.GITHUB_TOKEN }}
 
       - name: Log in to Docker Hub
-        uses: tempoxyz/gh-actions/vendor/docker/login-action@3626124474a987bc74b41fc7ae65b2e23f8e4e4e
+        uses: tempoxyz/gh-actions/vendor/docker/login-action@baf48ebcfcb26812085b8351125493b2ef8009ab # 2026-09-21T19-33-30Z-baf48ebc
         with:
           username: ${{ vars.DOCKER_HUB_USER }}
           password: ${{ secrets.DOCKER_HUB_TOKEN }}
 
-      - id: shortsha
-        run: echo "shortsha=$(echo ${{ github.sha }} | cut -c1-7)" >> "$GITHUB_OUTPUT"
-
       - name: Build and push Docker images
         id: build-and-push
-        uses: tempoxyz/gh-actions/vendor/depot/bake-action@3626124474a987bc74b41fc7ae65b2e23f8e4e4e
+        uses: tempoxyz/gh-actions/vendor/depot/bake-action@baf48ebcfcb26812085b8351125493b2ef8009ab # 2026-09-21T19-33-30Z-baf48ebc
         with:
           files: |
             docker-bake.hcl
@@ -171,17 +250,52 @@ jobs:
             ${{ steps.meta-tempo-localnet.outputs.bake-file }}
             ${{ steps.meta-tempo-sidecar.outputs.bake-file }}
             ${{ steps.meta-tempo-xtask.outputs.bake-file }}
-          targets: ${{ (github.event_name == 'schedule' || github.event.inputs.nightly == 'true') && 'nightly' || 'default' }}
+          targets: ${{ ((inputs.pr_number == '' && github.event_name == 'schedule') || github.event.inputs.nightly == 'true') && 'nightly' || 'default' }}
           project: 0c6tg19qsp
           push: true
-          no-cache: ${{ startsWith(github.ref, 'refs/tags/v') }}
+          no-cache: ${{ inputs.pr_number == '' && startsWith(github.ref, 'refs/tags/v') }}
           pull: ${{ github.event_name != 'merge_group' }}
         env:
-          VERGEN_GIT_SHA: ${{ github.sha }}
-          VERGEN_GIT_SHA_SHORT: ${{ steps.shortsha.outputs.shortsha }}
+          VERGEN_GIT_SHA: ${{ steps.source.outputs.sha }}
+          VERGEN_GIT_SHA_SHORT: ${{ steps.source.outputs.short_sha }}
+
+      - name: Record published PR images
+        id: image-report
+        if: inputs.pr_number != ''
+        continue-on-error: true
+        uses: actions/github-script@3a2844b7e9c422d3c10d287c895573f7108da1b3 # v9.0.0
+        env:
+          SOURCE_SHA: ${{ steps.source.outputs.sha }}
+          BUILD_METADATA: ${{ steps.build-and-push.outputs.metadata }}
+          TEMPO_TAGS: ${{ steps.meta-tempo.outputs.tags }}
+          TEMPO_LOCALNET_TAGS: ${{ steps.meta-tempo-localnet.outputs.tags }}
+          TEMPO_SIDECAR_TAGS: ${{ steps.meta-tempo-sidecar.outputs.tags }}
+          TEMPO_XTASK_TAGS: ${{ steps.meta-tempo-xtask.outputs.tags }}
+        with:
+          script: |
+            const fs = require('node:fs');
+            const path = require('node:path');
+            const metadata = JSON.parse(process.env.BUILD_METADATA || '{}');
+            const images = ['tempo', 'tempo-localnet', 'tempo-sidecar', 'tempo-xtask'].map(name => ({
+              name,
+              tags: (process.env[`${name.toUpperCase().replaceAll('-', '_')}_TAGS`] || '').split('\n').filter(Boolean),
+              digest: metadata[name]?.['containerimage.digest'] || '',
+            }));
+            fs.writeFileSync(path.join(process.env.RUNNER_TEMP, 'docker-pr-images.json'),
+              JSON.stringify({ sha: process.env.SOURCE_SHA, images }));
+
+      - name: Upload published PR image details
+        if: inputs.pr_number != '' && steps.image-report.outcome == 'success'
+        continue-on-error: true
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: docker-pr-images-${{ github.run_attempt }}
+          path: ${{ runner.temp }}/docker-pr-images.json
+          if-no-files-found: error
+          retention-days: 7
 
       - name: Install cosign
-        uses: tempoxyz/gh-actions/vendor/sigstore/cosign-installer@3626124474a987bc74b41fc7ae65b2e23f8e4e4e
+        uses: tempoxyz/gh-actions/vendor/sigstore/cosign-installer@baf48ebcfcb26812085b8351125493b2ef8009ab # 2026-09-21T19-33-30Z-baf48ebc
 
       - name: Sign Docker images
         id: sign-images
@@ -243,9 +357,9 @@ jobs:
           EVENTS_CERT: ${{ secrets.EVENTS_CERT }}
           RUNNER_TEMP: ${{ runner.temp }}
           GH_REPO: ${{ github.repository }}
-          SHORT_SHA: ${{ steps.shortsha.outputs.shortsha }}
-          COMMIT_SHA: ${{ github.sha }}
-          BRANCH_NAME: ${{ github.head_ref || github.ref_name }}
+          SHORT_SHA: ${{ steps.source.outputs.short_sha }}
+          COMMIT_SHA: ${{ steps.source.outputs.sha }}
+          BRANCH_NAME: ${{ steps.source.outputs.branch }}
         run: |
           set -euo pipefail
 
@@ -269,15 +383,15 @@ jobs:
 
       - name: Publish event (nightly tag)
         id: publish-nightly-event
-        if: ${{ github.repository == 'tempoxyz/tempo' && (github.event_name == 'schedule' || github.event.inputs.nightly == 'true') }}
+        if: ${{ github.repository == 'tempoxyz/tempo' && ((inputs.pr_number == '' && github.event_name == 'schedule') || github.event.inputs.nightly == 'true') }}
         shell: bash
         env:
           EVENTS_KEY: ${{ secrets.EVENTS_KEY }}
           EVENTS_CERT: ${{ secrets.EVENTS_CERT }}
           RUNNER_TEMP: ${{ runner.temp }}
           GH_REPO: ${{ github.repository }}
-          COMMIT_SHA: ${{ github.sha }}
-          BRANCH_NAME: ${{ github.head_ref || github.ref_name }}
+          COMMIT_SHA: ${{ steps.source.outputs.sha }}
+          BRANCH_NAME: ${{ steps.source.outputs.branch }}
         run: |
           set -euo pipefail
 
@@ -315,7 +429,9 @@ jobs:
           TEMPO_LOCALNET_TAGS: ${{ steps.meta-tempo-localnet.outputs.tags }}
           TEMPO_SIDECAR_TAGS: ${{ steps.meta-tempo-sidecar.outputs.tags }}
           TEMPO_XTASK_TAGS: ${{ steps.meta-tempo-xtask.outputs.tags }}
-          SHORT_SHA: ${{ steps.shortsha.outputs.shortsha }}
+          SHORT_SHA: ${{ steps.source.outputs.short_sha }}
+          COMMIT_SHA: ${{ steps.source.outputs.sha }}
+          BRANCH_NAME: ${{ steps.source.outputs.branch }}
           BUILD_OUTCOME: ${{ steps.build-and-push.outcome }}
           SIGN_OUTCOME: ${{ steps.sign-images.outcome }}
           SHA_EVENT_OUTCOME: ${{ steps.publish-sha-event.outcome }}
@@ -342,8 +458,8 @@ jobs:
             echo
             echo "| Field | Value |"
             echo "| --- | --- |"
-            echo "| Commit | [\`${{ github.sha }}\`](${{ github.server_url }}/${{ github.repository }}/commit/${{ github.sha }}) |"
-            echo "| Ref | \`${{ github.ref_name }}\` |"
+            echo "| Commit | [\`${COMMIT_SHA}\`](${{ github.server_url }}/${{ github.repository }}/commit/${COMMIT_SHA}) |"
+            echo "| Ref | \`${BRANCH_NAME}\` |"
             echo "| Workflow run | [run #${{ github.run_number }}](${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}) |"
             echo "| Workflow run ID | [\`${{ github.run_id }}\`](${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}) |"
             echo "| Job summary | [Build and Push Docker Images](${job_url}) |"

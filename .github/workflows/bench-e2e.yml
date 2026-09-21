@@ -349,6 +349,8 @@ on:
         required: false
 
 env:
+  # Allow Aegis to finish its 90-second Socket lookup before Cargo times out.
+  CARGO_HTTP_TIMEOUT: "180"
   CARGO_TERM_COLOR: always
   RUSTC_WRAPPER: "sccache"
 
@@ -358,6 +360,9 @@ permissions:
 
 jobs:
   bench-e2e:
+    permissions:
+      contents: read
+      id-token: write
     name: bench-e2e
     runs-on: [self-hosted, Linux, X64, bare-metal-dual-schelk]
     timeout-minutes: 300
@@ -415,6 +420,9 @@ jobs:
       SLACK_BENCH_BOT_TOKEN: ${{ secrets.SLACK_BENCH_BOT_TOKEN }}
       SLACK_BENCH_CHANNEL: ${{ secrets.SLACK_BENCH_CHANNEL }}
     steps:
+      - name: Secure runner
+        uses: tempoxyz/gh-actions/actions/secure-runner@baf48ebcfcb26812085b8351125493b2ef8009ab # 2026-09-21T19-33-30Z-baf48ebc
+
       - name: Reset workspace directory
         run: |
           sudo rm -rf "$GITHUB_WORKSPACE"
@@ -460,14 +468,14 @@ jobs:
 
       - name: Fetch GitHub token via STS
         id: github-sts
-        uses: tempoxyz/gh-actions/actions/github-sts@c0292122e255def866c64c55e5844d1e7d5fe7ad
+        uses: tempoxyz/gh-actions/actions/github-sts@baf48ebcfcb26812085b8351125493b2ef8009ab # 2026-09-21T19-33-30Z-baf48ebc
         with:
           policy: bench-e2e
 
       - name: Fetch ValScope token via STS
         id: valscope-sts
         if: env.BENCH_VALSCOPE == 'true'
-        uses: tempoxyz/gh-actions/actions/github-sts@c0292122e255def866c64c55e5844d1e7d5fe7ad
+        uses: tempoxyz/gh-actions/actions/github-sts@baf48ebcfcb26812085b8351125493b2ef8009ab # 2026-09-21T19-33-30Z-baf48ebc
         with:
           scope: tempoxyz/valscope
           policy: tempo-bench-e2e
@@ -604,8 +612,8 @@ jobs:
               body: buildBody('Resolving refs...'),
             });
 
-      - uses: tempoxyz/gh-actions/vendor/dtolnay/rust-toolchain@3626124474a987bc74b41fc7ae65b2e23f8e4e4e
-      - uses: tempoxyz/gh-actions/vendor/mozilla-actions/sccache-action@3626124474a987bc74b41fc7ae65b2e23f8e4e4e
+      - uses: tempoxyz/gh-actions/vendor/dtolnay/rust-toolchain@baf48ebcfcb26812085b8351125493b2ef8009ab # 2026-09-21T19-33-30Z-baf48ebc
+      - uses: tempoxyz/gh-actions/vendor/mozilla-actions/sccache-action@baf48ebcfcb26812085b8351125493b2ef8009ab # 2026-09-21T19-33-30Z-baf48ebc
         continue-on-error: true
 
       - name: Install Node.js
@@ -1052,6 +1060,16 @@ jobs:
           name: tempo-bench-results
           path: bench-results/
 
+      # Benchmark runs can outlive GitHub App tokens' one-hour lifetime.
+      # Refresh even on failure/cancellation before making reporting API calls.
+      - name: Refresh GitHub token via STS
+        id: github-sts-reporting
+        if: always() && steps.github-sts.outcome == 'success'
+        timeout-minutes: 2
+        uses: tempoxyz/gh-actions/actions/github-sts@baf48ebcfcb26812085b8351125493b2ef8009ab # 2026-09-21T19-33-30Z-baf48ebc
+        with:
+          policy: bench-e2e
+
       - name: Post results to PR
         if: success()
         uses: actions/github-script@3a2844b7e9c422d3c10d287c895573f7108da1b3 # v9.0.0
@@ -1059,7 +1077,7 @@ jobs:
           BENCH_RESULTS_DIR: ${{ steps.results-dir.outputs.path }}
           BENCH_VALSCOPE_PUBLISHED_URL: ${{ steps.publish-valscope-static.outputs.url }}
         with:
-          github-token: ${{ steps.github-sts.outputs.token }}
+          github-token: ${{ steps.github-sts-reporting.outputs.token }}
           script: |
             const fs = require('fs');
             const resultsDir = process.env.BENCH_RESULTS_DIR;
@@ -1142,7 +1160,7 @@ jobs:
                 const tracesUrl = `https://tempoxyz.grafana.net/explore?schemaVersion=1&panes=${encodeURIComponent(tracesPane)}&orgId=1`;
                 const internalPerfLine = internalPerfUrl ? `- [Internal dashboard](${internalPerfUrl})\n` : '';
                 const grafanaLine = process.env.BENCH_METRICS === 'true' ? `- [Grafana](${grafanaUrl})\n` : '';
-                grafanaSection = `\n\n### Observability\n\n${internalPerfLine}${grafanaLine}- [Logs](${logsUrl})\n- [Traces](${tracesUrl})\n${valscopeLine}`;
+                grafanaSection = `\n${internalPerfLine}${grafanaLine}- [Logs](${logsUrl})\n- [Traces](${tracesUrl})\n${valscopeLine}`;
               }
             } catch (e) {}
 
@@ -1201,7 +1219,13 @@ jobs:
             }
 
             const jobUrl = process.env.BENCH_JOB_URL || `${context.serverUrl}/${context.repo.owner}/${context.repo.repo}/actions/runs/${context.runId}`;
-            const body = `cc @${process.env.BENCH_ACTOR}\n\n${resultHeadline} [View job](${jobUrl})\n\n${summary}${grafanaSection}${samplySection}${tracySection}`;
+            const observabilityHeading = '\n## Observability\n';
+            if (summary.includes(observabilityHeading)) {
+              summary = summary.replace(observabilityHeading, () => observabilityHeading + grafanaSection);
+            } else if (grafanaSection) {
+              summary += observabilityHeading + grafanaSection;
+            }
+            const body = `cc @${process.env.BENCH_ACTOR}\n\n${resultHeadline} [View job](${jobUrl})\n\n${summary}${samplySection}${tracySection}`;
             const ackCommentId = process.env.BENCH_COMMENT_ID;
 
             if (ackCommentId) {
@@ -1236,10 +1260,10 @@ jobs:
             await notify.e2e.failure({ core, context, failedStep: 'running benchmark' });
 
       - name: Update status (failed)
-        if: failure() && env.BENCH_COMMENT_ID
+        if: failure() && env.BENCH_COMMENT_ID && steps.github-sts-reporting.outcome == 'success'
         uses: actions/github-script@3a2844b7e9c422d3c10d287c895573f7108da1b3 # v9.0.0
         with:
-          github-token: ${{ steps.github-sts.outputs.token }}
+          github-token: ${{ steps.github-sts-reporting.outputs.token }}
           script: |
             const jobUrl = process.env.BENCH_JOB_URL || `${context.serverUrl}/${context.repo.owner}/${context.repo.repo}/actions/runs/${context.runId}`;
             await github.rest.issues.updateComment({
@@ -1250,10 +1274,10 @@ jobs:
             });
 
       - name: Update status (cancelled)
-        if: cancelled() && env.BENCH_COMMENT_ID
+        if: cancelled() && env.BENCH_COMMENT_ID && steps.github-sts-reporting.outcome == 'success'
         uses: actions/github-script@3a2844b7e9c422d3c10d287c895573f7108da1b3 # v9.0.0
         with:
-          github-token: ${{ steps.github-sts.outputs.token }}
+          github-token: ${{ steps.github-sts-reporting.outputs.token }}
           script: |
             const jobUrl = process.env.BENCH_JOB_URL || `${context.serverUrl}/${context.repo.owner}/${context.repo.repo}/actions/runs/${context.runId}`;
             await github.rest.issues.updateComment({

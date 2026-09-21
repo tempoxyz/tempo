@@ -9,11 +9,15 @@ permissions: {}
 jobs:
   publish:
     permissions:
+      id-token: write
       pull-requests: read
     runs-on: ubuntu-latest
     if: >-
       github.event.issue.pull_request && github.event.comment.author_association == 'MEMBER' && startsWith(github.event.comment.body, '/build-devnet')
     steps:
+    - name: Secure runner
+      uses: tempoxyz/gh-actions/actions/secure-runner@baf48ebcfcb26812085b8351125493b2ef8009ab # 2026-09-21T19-33-30Z-baf48ebc
+
     - name: Get PR details
       id: pr
 

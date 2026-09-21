@@ -103,7 +103,7 @@ where
 
     // Grant issuer role
     let roles = IRolesAuth::new(token_addr, provider.clone());
-    let grant_tx = roles.grantRole(*ISSUER_ROLE, sender_address);
+    let grant_tx = roles.grantRole(ISSUER_ROLE, sender_address);
     let grant_bytes = sign_and_encode(grant_tx.into_transaction_request(), nonce_start + 1).await?;
     node.rpc.inject_tx(grant_bytes).await?;
     node.advance_block().await?;

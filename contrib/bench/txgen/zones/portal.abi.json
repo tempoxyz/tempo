@@ -1,0 +1,133 @@
+[
+  {
+    "inputs": [
+      {
+        "internalType": "address",
+        "name": "token",
+        "type": "address"
+      },
+      {
+        "internalType": "uint128",
+        "name": "amount",
+        "type": "uint128"
+      },
+      {
+        "internalType": "uint256",
+        "name": "keyIndex",
+        "type": "uint256"
+      },
+      {
+        "components": [
+          {
+            "internalType": "bytes32",
+            "name": "ephemeralPubkeyX",
+            "type": "bytes32"
+          },
+          {
+            "internalType": "uint8",
+            "name": "ephemeralPubkeyYParity",
+            "type": "uint8"
+          },
+          {
+            "internalType": "bytes",
+            "name": "ciphertext",
+            "type": "bytes"
+          },
+          {
+            "internalType": "bytes12",
+            "name": "nonce",
+            "type": "bytes12"
+          },
+          {
+            "internalType": "bytes16",
+            "name": "tag",
+            "type": "bytes16"
+          }
+        ],
+        "internalType": "struct IPortal.DepositPayload",
+        "name": "encrypted",
+        "type": "tuple"
+      },
+      {
+        "internalType": "address",
+        "name": "tempoRefundRecipient",
+        "type": "address"
+      }
+    ],
+    "name": "deposit",
+    "outputs": [
+      {
+        "internalType": "bytes32",
+        "name": "",
+        "type": "bytes32"
+      }
+    ],
+    "stateMutability": "nonpayable",
+    "type": "function"
+  },
+  {
+    "inputs": [
+      {
+        "components": [
+          {
+            "internalType": "address",
+            "name": "token",
+            "type": "address"
+          },
+          {
+            "internalType": "bytes32",
+            "name": "senderTag",
+            "type": "bytes32"
+          },
+          {
+            "internalType": "address",
+            "name": "to",
+            "type": "address"
+          },
+          {
+            "internalType": "uint128",
+            "name": "amount",
+            "type": "uint128"
+          },
+          {
+            "internalType": "bytes32",
+            "name": "memo",
+            "type": "bytes32"
+          },
+          {
+            "internalType": "uint64",
+            "name": "gasLimit",
+            "type": "uint64"
+          },
+          {
+            "internalType": "uint64",
+            "name": "fallbackNonce",
+            "type": "uint64"
+          },
+          {
+            "internalType": "bytes",
+            "name": "callbackData",
+            "type": "bytes"
+          },
+          {
+            "internalType": "bytes",
+            "name": "encryptedSender",
+            "type": "bytes"
+          }
+        ],
+        "internalType": "struct IPortal.Withdrawal[]",
+        "name": "withdrawals",
+        "type": "tuple[]"
+      },
+      {
+        "internalType": "bytes32",
+        "name": "remainingQueue",
+        "type": "bytes32"
+      }
+    ],
+    "name": "processWithdrawals",
+    "outputs": [],
+    "stateMutability": "nonpayable",
+    "type": "function"
+  }
+]
