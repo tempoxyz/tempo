@@ -138,20 +138,16 @@ fn fast_sync_after_full_dkg(update_network_identity: bool) {
             .execution_provider()
             .last_block_number()
             .unwrap();
-        let block_later = loop {
+        loop {
             let block_later = late_validator
                 .execution_provider()
                 .last_block_number()
                 .unwrap();
             if block_later > block_after_sync {
-                break block_later;
+                break;
             }
             context.sleep(Duration::from_secs(1)).await;
-        };
-        info!(
-            block_after_sync,
-            block_later, "late validator progressed after sync"
-        );
+        }
         context.to_metrics().assert_no_dkg_failures();
     })
 }
