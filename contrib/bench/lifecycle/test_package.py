@@ -55,6 +55,9 @@ class PackageTests(unittest.TestCase):
     def test_compact_summary_focus_population_links_and_cutoff(self):
         with tempfile.TemporaryDirectory() as directory:
             data = self.capture(directory, cutoff=20_500_000_000)
+            data['read_readiness'] = {'events': [{'fields': {'global_payload': 'must stay in lifecycle.json'}}] * 100}
+            for index, block in enumerate(data['blocks'], 1):
+                block['read_readiness'] = [{'stage': 'read_totals', 'fields': {'read_role': index, 'read_calls': index}}]
             out = Path(directory)/'report'
             out.mkdir()
             (out/'lifecycle.json').write_text(json.dumps(data))
@@ -76,7 +79,12 @@ class PackageTests(unittest.TestCase):
                                     for b in focused['population_blocks']))
                 self.assertEqual(focused['blocks'],
                                  [b for b in data['blocks'] if b['id'] == p['block']])
+                self.assertNotIn('read_readiness', focused)
+                selected = focused['blocks'][0]['read_readiness']
+                expected = next(b['read_readiness'] for b in data['blocks'] if b['id'] == p['block'])
+                self.assertEqual(selected, expected)
                 self.assertEqual(focused['eligible'], data['eligible'])
+            self.assertIn('global_payload', (out/'lifecycle.json').read_text())
             for page in out.glob('*.html'):
                 for href in re.findall(r'href="([^"]+)"', page.read_text()):
                     self.assertTrue((out/href).exists(), (page.name, href))
