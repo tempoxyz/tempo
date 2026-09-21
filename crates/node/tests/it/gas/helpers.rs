@@ -285,28 +285,24 @@ impl TempoCalls {
         let signature = sender.signer.sign_hash_sync(&tx.signature_hash())?;
         let envelope: TempoTxEnvelope = tx.into_signed(signature.into()).into();
         let tx_hash = *envelope.tx_hash();
-        let _ = sender
-            .provider
-            .send_raw_transaction(&envelope.encoded_2718())
-            .await?;
-
-        for _ in 0..120 {
-            let receipt: Option<serde_json::Value> = sender
-                .provider
-                .raw_request("eth_getTransactionReceipt".into(), [tx_hash])
-                .await?;
-            if let Some(receipt) = receipt {
-                let status = receipt["status"]
-                    .as_str()
-                    .ok_or_else(|| eyre::eyre!("tempo calls receipt missing status field"))?;
-                eyre::ensure!(status == "0x1", "tempo calls reverted: {receipt}");
-                let gas_used = hex_u64_field(&receipt, "gasUsed")?;
-                sender.nonce += 1;
-                return Ok(Receipt { tx_hash, gas_used });
-            }
-            tokio::time::sleep(std::time::Duration::from_millis(100)).await;
-        }
-        eyre::bail!("timed out waiting for tempo calls receipt {tx_hash}");
+        // Wait on the node's canonical-state notification instead of adding a polling
+        // interval to every setup and measured transaction in the gas matrices.
+        let receipt: serde_json::Value = tokio::time::timeout(
+            std::time::Duration::from_secs(12),
+            sender.provider.raw_request(
+                "eth_sendRawTransactionSync".into(),
+                [Bytes::from(envelope.encoded_2718())],
+            ),
+        )
+        .await
+        .map_err(|_| eyre::eyre!("timed out waiting for tempo calls receipt {tx_hash}"))??;
+        let status = receipt["status"]
+            .as_str()
+            .ok_or_else(|| eyre::eyre!("tempo calls receipt missing status field"))?;
+        eyre::ensure!(status == "0x1", "tempo calls reverted: {receipt}");
+        let gas_used = hex_u64_field(&receipt, "gasUsed")?;
+        sender.nonce += 1;
+        Ok(Receipt { tx_hash, gas_used })
     }
 }
 

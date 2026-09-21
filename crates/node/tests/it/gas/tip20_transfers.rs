@@ -170,9 +170,7 @@ async fn create_whitelist_policy<P: Provider + Clone>(
         .nonce(*admin_nonce)
         .gas(GAS_LIMIT)
         .gas_price(TEMPO_T1_BASE_FEE as u128)
-        .send()
-        .await?
-        .get_receipt()
+        .send_sync()
         .await?;
     *admin_nonce += 1;
     Ok(receipt
@@ -193,9 +191,7 @@ async fn register_virtual_master<P: Provider + Clone>(
         .nonce(*admin_nonce)
         .gas(GAS_LIMIT)
         .gas_price(TEMPO_T1_BASE_FEE as u128)
-        .send()
-        .await?
-        .get_receipt()
+        .send_sync()
         .await?;
     *admin_nonce += 1;
     let master = receipt
@@ -577,6 +573,7 @@ async fn test_tip20_transfer_gas_snapshots(hardfork: TempoHardfork) -> eyre::Res
 
     let setup = TestNodeBuilder::new()
         .with_genesis(make_genesis_at(hardfork))
+        .with_instant_mining()
         .build_http_only()
         .await?;
     let mut admin = TempoTxSender::connect(setup.http_url.clone(), test_signer(0)?).await?;
@@ -648,6 +645,7 @@ async fn test_tip20_transfer_with_memo_t0_gas_snapshot() -> eyre::Result<()> {
 
     let setup = TestNodeBuilder::new()
         .with_genesis(make_genesis_at(TempoHardfork::T0))
+        .with_instant_mining()
         .build_http_only()
         .await?;
     let mut sender = TempoTxSender::connect(setup.http_url, test_signer(0)?).await?;
