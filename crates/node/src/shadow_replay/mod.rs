@@ -23,7 +23,6 @@
 //! establishes comparability. Expected differences and incomplete coverage are reported separately.
 
 mod analysis;
-mod expectations;
 mod fees;
 
 use alloy::consensus::BlockHeader as _;
@@ -214,7 +213,7 @@ impl<P: StateProviderFactory + Sync> ShadowReplayer<P> {
             .real_config
             .chain_spec()
             .tempo_hardfork_at(block.timestamp());
-        let rules = expectations::between(canonical, self.shadow_hardfork);
+        let rules = analysis::between(canonical, self.shadow_hardfork);
         let report = Report::analyze(&real, &shadow, &rules);
         let outcome = report.outcome(&shadow);
         metrics::counter!("tempo_shadow_replay_boundaries_total", "result" => "compared")

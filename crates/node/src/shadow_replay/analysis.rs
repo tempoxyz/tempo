@@ -1,16 +1,17 @@
 //! Classify field differences before formatting bounded samples. Expectedness and continuation
 //! are independent: even an accepted fee balance change may invalidate the remaining comparisons.
 
-use super::{
-    Boundary, Evidence, ReplayOutcome,
-    expectations::{Context, Expectation},
-};
+use self::expectations::{Context, Expectation};
+use super::{Boundary, Evidence, ReplayOutcome};
 use alloy_primitives::{Address, U256};
 use reth_revm::db::{TransitionAccount, TransitionState};
 use std::{
     collections::{BTreeMap, HashSet},
     fmt::Debug,
 };
+
+mod expectations;
+pub(super) use expectations::between;
 
 #[cfg(test)]
 mod tests;

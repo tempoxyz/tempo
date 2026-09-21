@@ -3,16 +3,17 @@
 //! Checks receive one difference, not a transaction. `None` means unexplained;
 //! `Some(invalidates_suffix)` accepts it and optionally stops comparison.
 
-use super::{Boundary, Evidence, analysis::Field};
+use super::Field;
+use crate::shadow_replay::{Boundary, Evidence};
 use tempo_chainspec::hardfork::TempoHardfork;
 
 #[derive(Debug)]
-pub(super) struct Expectation {
+pub(crate) struct Expectation {
     pub id: &'static str,
     pub check: fn(&Context<'_>, &Field) -> Option<bool>,
 }
 
-pub(super) struct Context<'a> {
+pub(crate) struct Context<'a> {
     pub boundary: Boundary,
     pub real: &'a Evidence,
     pub shadow: &'a Evidence,
@@ -21,7 +22,7 @@ pub(super) struct Context<'a> {
 /// Forks are ordered oldest-first; canonical features are excluded.
 const REGISTRY: &[(TempoHardfork, &[Expectation])] = &[];
 
-pub(super) fn between(
+pub(crate) fn between(
     canonical: TempoHardfork,
     candidate: TempoHardfork,
 ) -> Vec<&'static Expectation> {
