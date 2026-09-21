@@ -24,7 +24,7 @@ use std::{
     fmt::Debug,
     sync::{Arc, OnceLock},
 };
-use tempo_contracts::precompiles::PaymentCall;
+use tempo_contracts::precompiles::PaymentSlots;
 use tempo_precompiles::{
     DEFAULT_FEE_TOKEN,
     nonce::NonceManager,
@@ -492,7 +492,6 @@ impl TempoPooledTransaction {
             self.inner().calls().map(|(_kind, input)| input.as_ref()),
             sender,
             self.fee_payer().unwrap_or(sender),
-            !self.fee_token_cost.is_zero(),
             |_slot| {},
         );
     }
@@ -502,14 +501,11 @@ impl TempoPooledTransaction {
 /// transaction's `calls` will touch during execution.
 ///
 /// Per TIP-20 payment call this warms `balances[to]` (plus `balances[from]` for the
-/// `transferFrom` variants), `user_reward_info[..]` for the sender, `from` and `to`
-/// (`Address::ZERO` for burns), `receive_policies[to]` in the TIP-403 registry together with
+/// `transferFrom` variants), `receive_policies[to]` in the TIP-403 registry together with
 /// its second-level hash, and `allowances[from][sender]` for the `transferFrom` variants.
-/// Slots the fee path has already warmed are skipped: `balances[fee_payer]` always, and
-/// `user_reward_info[fee_payer]` when `fee_collection_warms_fee_payer_rewards` is set
-/// (i.e. the transaction pays a non-zero fee).
+/// `balances[fee_payer]`, which the fee path has already warmed, is skipped.
 ///
-/// Calls are classified by selector and exact ABI-encoded length via [`PaymentCall`], so
+/// Calls are classified by selector and exact ABI-encoded length via [`PaymentSlots`], so
 /// non-payment calldata is skipped without decoding. All nine payment calls have fully
 /// static parameters, so their addresses are read straight from the ABI head.
 ///
@@ -519,7 +515,6 @@ fn warm_payment_keccak_slots<'a>(
     calls: impl Iterator<Item = &'a [u8]>,
     sender: Address,
     fee_payer: Address,
-    fee_collection_warms_fee_payer_rewards: bool,
     mut warmed: impl FnMut(U256),
 ) {
     // For payment transactions, warm sender + recipient balance and allowance slots.
@@ -527,29 +522,23 @@ fn warm_payment_keccak_slots<'a>(
         warmed(sender.mapping_slot(tip20_slots::BALANCES));
     }
     for input in calls {
-        let Some(call) = PaymentCall::classify(input) else {
+        let Some(payment) = PaymentSlots::classify(input) else {
             continue;
         };
 
-        for addr in call.balance_addresses().into_iter().flatten() {
+        for &addr in payment.addresses() {
             if addr != fee_payer {
                 warmed(addr.mapping_slot(tip20_slots::BALANCES));
             }
         }
-        for addr in call.reward_addresses(sender).into_iter().flatten() {
-            if fee_collection_warms_fee_payer_rewards && addr == fee_payer {
-                continue;
-            }
-            warmed(addr.mapping_slot(tip20_slots::USER_REWARD_INFO));
-        }
-        if let Some(addr) = call.to() {
+        if let Some(addr) = payment.to() {
             let slot = addr.mapping_slot(tip403_registry_slots::RECEIVE_POLICIES);
             warmed(slot);
             warmed(U256::from_be_bytes(keccak256(slot.to_be_bytes::<32>()).0));
         }
 
         // Allowance slots for transferFrom variants: allowances[from][sender]
-        if let Some(from) = call.from() {
+        if let Some(from) = payment.from() {
             let owner_slot = from.mapping_slot(tip20_slots::ALLOWANCES);
             warmed(owner_slot);
             warmed(sender.mapping_slot(owner_slot));
@@ -1500,7 +1489,6 @@ mod tests {
         calls: impl Iterator<Item = &'a [u8]>,
         sender: Address,
         fee_payer: Address,
-        fee_collection_warms_fee_payer_rewards: bool,
     ) -> Vec<U256> {
         use alloy_sol_types::SolInterface;
 
@@ -1514,12 +1502,6 @@ mod tests {
                     if addr != fee_payer {
                         slots.push(addr.mapping_slot(tip20_slots::BALANCES));
                     }
-                }
-                for addr in call.reward_addresses(sender).into_iter().flatten() {
-                    if fee_collection_warms_fee_payer_rewards && addr == fee_payer {
-                        continue;
-                    }
-                    slots.push(addr.mapping_slot(tip20_slots::USER_REWARD_INFO));
                 }
                 if let Some(slot) = call
                     .to()
@@ -1550,16 +1532,9 @@ mod tests {
         calls: impl Iterator<Item = &'a [u8]>,
         sender: Address,
         fee_payer: Address,
-        fee_collection_warms_fee_payer_rewards: bool,
     ) -> Vec<U256> {
         let mut slots = Vec::new();
-        warm_payment_keccak_slots(
-            calls,
-            sender,
-            fee_payer,
-            fee_collection_warms_fee_payer_rewards,
-            |slot| slots.push(slot),
-        );
+        warm_payment_keccak_slots(calls, sender, fee_payer, |slot| slots.push(slot));
         slots
     }
 
@@ -1622,26 +1597,18 @@ mod tests {
             (Address::ZERO, bob),
         ];
 
-        // (sender, fee_payer, fee_collection_warms_fee_payer_rewards)
-        let contexts = [
-            (alice, alice, false),
-            (alice, alice, true),
-            (alice, bob, false),
-            (alice, bob, true),
-            (bob, carol, true),
-            (carol, carol, false),
-        ];
+        let contexts = [(alice, alice), (alice, bob), (bob, carol), (carol, carol)];
 
         for (from, to) in address_pairs {
             let calldatas = payment_calldatas(from, to);
 
-            for (sender, fee_payer, warms_rewards) in contexts {
+            for (sender, fee_payer) in contexts {
                 // each call on its own
                 for calldata in &calldatas {
                     let once = || core::iter::once(calldata.as_ref());
                     assert_eq!(
-                        warmed_keccak_slots(once(), sender, fee_payer, warms_rewards),
-                        decode_based_keccak_slots(once(), sender, fee_payer, warms_rewards),
+                        warmed_keccak_slots(once(), sender, fee_payer),
+                        decode_based_keccak_slots(once(), sender, fee_payer),
                         "mismatch for {calldata} with sender {sender}, fee payer {fee_payer}"
                     );
                 }
@@ -1649,8 +1616,8 @@ mod tests {
                 // and all of them batched into a single AA transaction
                 let batch = || calldatas.iter().map(|calldata| calldata.as_ref());
                 assert_eq!(
-                    warmed_keccak_slots(batch(), sender, fee_payer, warms_rewards),
-                    decode_based_keccak_slots(batch(), sender, fee_payer, warms_rewards),
+                    warmed_keccak_slots(batch(), sender, fee_payer),
+                    decode_based_keccak_slots(batch(), sender, fee_payer),
                     "batch mismatch with sender {sender}, fee payer {fee_payer}"
                 );
             }
@@ -1690,17 +1657,17 @@ mod tests {
             let once = || core::iter::once(input.as_ref());
 
             // same sender and fee payer: nothing at all is warmed
-            assert!(warmed_keccak_slots(once(), sender, sender, true).is_empty());
+            assert!(warmed_keccak_slots(once(), sender, sender).is_empty());
 
             // separate fee payer: only the unconditional `balances[sender]` slot
             assert_eq!(
-                warmed_keccak_slots(once(), sender, fee_payer, true),
+                warmed_keccak_slots(once(), sender, fee_payer),
                 vec![sender.mapping_slot(tip20_slots::BALANCES)],
             );
 
             assert_eq!(
-                warmed_keccak_slots(once(), sender, fee_payer, true),
-                decode_based_keccak_slots(once(), sender, fee_payer, true),
+                warmed_keccak_slots(once(), sender, fee_payer),
+                decode_based_keccak_slots(once(), sender, fee_payer),
             );
         }
     }
@@ -1724,12 +1691,11 @@ mod tests {
         tx.precalculate_keccak_slots();
 
         let fee_payer = tx.fee_payer().unwrap_or(sender);
-        let warms_rewards = !tx.fee_token_cost().is_zero();
         let calls = || tx.inner().calls().map(|(_kind, input)| input.as_ref());
 
         assert_eq!(
-            warmed_keccak_slots(calls(), sender, fee_payer, warms_rewards),
-            decode_based_keccak_slots(calls(), sender, fee_payer, warms_rewards),
+            warmed_keccak_slots(calls(), sender, fee_payer),
+            decode_based_keccak_slots(calls(), sender, fee_payer),
         );
     }
 }
