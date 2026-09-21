@@ -240,6 +240,9 @@ impl ITIP20::ITIP20Calls {
     }
 }
 
+const WORD: usize = 32;
+const ADDRESS_PADDING: usize = WORD - Address::len_bytes();
+
 fn is_call<C: SolCall>(input: &[u8]) -> bool {
     input.first_chunk::<4>() == Some(&C::SELECTOR)
         && <C::Parameters<'_> as SolType>::ENCODED_SIZE.is_some_and(|size| input.len() == 4 + size)
@@ -298,7 +301,7 @@ impl PaymentSlots {
     /// Classifies payment calldata by exact selector and length, reading only its addresses.
     pub fn classify(input: &[u8]) -> Option<Self> {
         fn address(input: &[u8], index: usize) -> Address {
-            let start = 4 + 32 * index + 12;
+            let start = 4 + WORD * index + ADDRESS_PADDING;
             Address::from_slice(&input[start..start + Address::len_bytes()])
         }
 
@@ -405,12 +408,12 @@ mod test {
     fn test_classify_matches_decoded_call() {
         for calldata in payment_calldatas() {
             let decoded = ITIP20::ITIP20Calls::abi_decode(&calldata).expect("decodes");
-            let payment = PaymentSlots::classify(&calldata).expect("classifies");
+            let classified = PaymentSlots::classify(&calldata).expect("classifies");
 
-            assert_eq!(payment.to(), decoded.to());
-            assert_eq!(payment.from(), decoded_from(&decoded));
+            assert_eq!(classified.to(), decoded.to());
+            assert_eq!(classified.from(), decoded_from(&decoded));
             assert_eq!(
-                payment.addresses(),
+                classified.addresses(),
                 decoded
                     .balance_addresses()
                     .into_iter()
