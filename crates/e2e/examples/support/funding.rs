@@ -123,7 +123,7 @@ pub(super) async fn run_demo(
         );
     }
     let requirement = FundingRequirement {
-        asset: PATH_USD_ADDRESS,
+        token: PATH_USD_ADDRESS,
         amount: U256::from(50 * UNIT),
         slippage_bps: Some(100),
         sources: vec![
