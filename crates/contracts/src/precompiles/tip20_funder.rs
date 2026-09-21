@@ -14,6 +14,7 @@ crate::sol! {
 
         error InvalidFundingContext();
         error InvalidAsset(address asset);
+        error TokenNotAllowed(address token);
         error FundingNotAuthorized(address source);
         error InvalidSourceOrder();
         error InvalidFundingPlan(address source);
