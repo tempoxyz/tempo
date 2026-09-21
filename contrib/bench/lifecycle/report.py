@@ -237,6 +237,50 @@ def valid_load_window(window):
     return (type(start) is int and type(end) is int and 0 <= start < end)
 
 
+def shutdown_tail_open_spans(spans, events, quality, window):
+    """Count a structurally proven, unbound terminal payload forest before window end."""
+    if (not valid_load_window(window) or not quality['header'] or not quality['footer'] or
+            quality['dropped'] or quality['io_error'] or quality['invalid_lines']):
+        return 0
+    opened = [span for span in spans if span['end'] is None]
+    if not opened or any(span.get('block') for span in opened):
+        return 0
+    proposals = [span for span in opened if span['name'] == 'handle_propose']
+    builds = [span for span in opened if span['name'] == 'build_payload']
+    resources = [span for span in opened if span['name'] == 'payload_resources']
+    if len(proposals) != 1 or len(builds) != 1 or len(resources) != 1:
+        return 0
+    proposal, build, resource = proposals[0], builds[0], resources[0]
+    if any(span.get('parent') is not None for span in (proposal, build, resource)):
+        return 0
+    all_proposals = [span for span in spans if span['name'] == 'handle_propose']
+    if proposal is not max(all_proposals, key=lambda span: (span['ts'], span['id'])):
+        return 0
+    proposal_starts = [event for event in events if event['id'] == proposal['id'] and
+                       event['fields'].get('stage') == 'proposal_start']
+    if len(proposal_starts) != 1:
+        return 0
+    finalized = [event for event in events if event['fields'].get('stage') == 'finalized' and
+                 block_key(event['fields'])]
+    if not finalized:
+        return 0
+    latest_finalized = block_key(max(finalized, key=lambda event: event['ts'])['fields'])
+    parent = proposal['fields'].get('parent_digest')
+    payload = build['fields'].get('payload_id')
+    if (not parent or parent != build['fields'].get('parent_hash') or
+            parent != latest_finalized or not payload or
+            payload != resource['fields'].get('payload_id')):
+        return 0
+    descendants = [span for span in opened if span not in (proposal, build, resource)]
+    if (not any(span['name'] == 'sparse_trie_task' for span in descendants) or
+            any(span['name'] not in ('account_worker', 'storage_worker', 'sparse_trie_task') or
+                span.get('parent') != resource['id'] for span in descendants)):
+        return 0
+    if any(span['ts'] < proposal['ts'] for span in opened):
+        return 0
+    return sum(span['ts'] < window['end_ns'] for span in opened)
+
+
 def build(paths, warmup=5, window=None, expected_detail=None, expected_prewarm_cpu=None):
     spans, events, quality = [], [], []
     boundary = first_boundary(paths)
@@ -255,6 +299,7 @@ def build(paths, warmup=5, window=None, expected_detail=None, expected_prewarm_c
                       not qq['io_error'] and not qq['invalid_lines'])
         qq['post_window_open_spans'] = (sum(s['end'] is None and s['ts'] >= window['end_ns'] for s in ss)
                                        if window_ok and capture_ok else 0)
+        qq['shutdown_tail_open_spans'] = shutdown_tail_open_spans(ss, es, qq, window)
         quality.append(qq)
     first = min((x['ts'] for x in spans + events), default=0)
     by_block = {}
@@ -325,7 +370,8 @@ def build(paths, warmup=5, window=None, expected_detail=None, expected_prewarm_c
         block['prewarm_calls'] = prewarm.summarize(leaves_by_block[block['id']])
     bad_capture = (not prewarm_valid or not detail_valid or not readiness['mode_valid'] or
                    any(not q['header'] or not q['footer'] or q['dropped'] or q['io_error'] or q['invalid_lines'] or
-                       q['open_spans'] > q['post_window_open_spans'] for q in quality))
+                       q['open_spans'] > q['post_window_open_spans'] + q['shutdown_tail_open_spans']
+                       for q in quality))
     # Unexplained gaps invalidate completeness even when some blocks survived.
     representatives = {str(p): nearest_rank(eligible, p) if not bad_capture else None for p in (50,90,99)}
     attempts = sorted((s for s in spans if s['name'] == 'handle_propose'),

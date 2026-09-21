@@ -340,6 +340,67 @@ class ReportTests(unittest.TestCase):
             ]:
                 self.assertTrue(build([path],warmup=0,window=invalid)['bad_capture'])
 
+    def test_exact_unbound_shutdown_payload_forest_is_reported_as_censored(self):
+        latest = f'{100:024x}'
+        window = {'start_ns':1_000_000_000, 'end_ns':103_000_000_000,
+                  'stop_reason':'load_finished'}
+
+        def terminal(path, mutation=None, footer=True):
+            fixture(path)
+            records = [json.loads(line) for line in path.read_text().splitlines()][:-1]
+            tail = [
+                dict(type='start', id=102, ts=102_000_000_000, thread=1,
+                     name='handle_propose', category='consensus', parent=None,
+                     fields={'parent_digest':latest}),
+                dict(type='event', id=102, ts=102_000_000_001,
+                     fields={'stage':'proposal_start'}),
+                dict(type='start', id=103, ts=102_000_000_010, thread=2,
+                     name='payload_resources', category='builder', parent=None,
+                     fields={'payload_id':'a'*24}),
+                dict(type='start', id=104, ts=102_000_000_020, thread=3,
+                     name='build_payload', category='builder', parent=None,
+                     fields={'payload_id':'a'*24, 'parent_hash':latest}),
+                dict(type='start', id=105, ts=102_000_000_030, thread=4,
+                     name='storage_worker', category='trie', parent=103, fields={}),
+                dict(type='start', id=106, ts=102_000_000_040, thread=5,
+                     name='account_worker', category='trie', parent=103, fields={}),
+                dict(type='start', id=107, ts=102_000_000_050, thread=6,
+                     name='sparse_trie_task', category='trie', parent=103, fields={}),
+            ]
+            if mutation:
+                mutation(tail)
+            records.extend(tail)
+            if footer:
+                records.append({'type':'footer','dropped':0,'io_error':False})
+            path.write_text('\n'.join(map(json.dumps, records)))
+
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory)/'a.jsonl'
+            terminal(path)
+            result = build([path], warmup=0, window=window)
+            self.assertEqual(result['quality'][0]['open_spans'], 6)
+            self.assertEqual(result['quality'][0]['post_window_open_spans'], 0)
+            self.assertEqual(result['quality'][0]['shutdown_tail_open_spans'], 6)
+            self.assertFalse(result['bad_capture'])
+            self.assertEqual(result['attempt_details'][-1]['status'], 'shutdown_incomplete')
+
+            mutations = {
+                'wrong payload': lambda rows: rows[3]['fields'].__setitem__('payload_id', 'b'*24),
+                'wrong parent': lambda rows: rows[3]['fields'].__setitem__('parent_hash', 'b'*24),
+                'bound worker': lambda rows: rows[4]['fields'].__setitem__('block_hash', latest),
+                'unknown span': lambda rows: rows[4].__setitem__('name', 'unknown_worker'),
+            }
+            for name, mutation in mutations.items():
+                with self.subTest(name=name):
+                    terminal(path, mutation)
+                    rejected = build([path], warmup=0, window=window)
+                    self.assertEqual(rejected['quality'][0]['shutdown_tail_open_spans'], 0)
+                    self.assertTrue(rejected['bad_capture'])
+            terminal(path, footer=False)
+            rejected = build([path], warmup=0, window=window)
+            self.assertEqual(rejected['quality'][0]['shutdown_tail_open_spans'], 0)
+            self.assertTrue(rejected['bad_capture'])
+
     def test_unexplained_attempt_fails_cli_after_publishing_diagnostics(self):
         import subprocess
         import sys
