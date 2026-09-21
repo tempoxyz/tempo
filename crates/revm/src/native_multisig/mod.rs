@@ -110,7 +110,7 @@ pub fn authorizations(tx: &TempoTxEnv) -> [Option<NativeAuthorization<'_>>; 2] {
 pub(crate) fn has_account_access(tx: &TempoTxEnv) -> bool {
     tx.tempo_tx_env.as_ref().is_some_and(|aa| {
         // A direct or keychain-wrapped native quorum has no primitive signature type.
-        aa.signature.signature_type().is_none()
+        aa.signature.primitive_signature_type().is_none()
             || aa.key_authorization.as_ref().is_some_and(|auth| {
                 auth.signature.as_multisig().is_some() || auth.key_type == SignatureType::Multisig
             })
@@ -319,8 +319,7 @@ pub fn verify(tx: &TempoTxEnv) -> Result<(), TempoInvalidTransaction> {
             }
         } else if auth.account.is_none()
             || key_id != Some(signer)
-            || keychain
-                .is_none_or(|key| key.signature.signature_type() != auth.signature.signature_type())
+            || keychain.is_none_or(|key| key.signature.key_type() != auth.signature.key_type())
         {
             return Err(reject(
                 "admin-signed key authorization must match transaction key and parent account",
