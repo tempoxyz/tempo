@@ -1768,7 +1768,7 @@ mod tests {
                         info
                     );
                     assert_eq!(
-                        db.storage(*address, U256::from(9)).unwrap(),
+                        revm::Database::storage(&mut db, *address, U256::from(9)).unwrap(),
                         U256::from(123)
                     );
                 }
