@@ -202,12 +202,11 @@ impl ITIP20::ITIP20Calls {
     /// # NOTES
     /// - Only validates calldata; the caller must check the TIP-20 address prefix on `to`.
     /// - Only selector and exact ABI-encoded length match, no decoding (better performance).
-    /// - Shares its selector table with [`PaymentCallKind::from_calldata`]; use
-    ///   [`PaymentCall::classify`] when the call's addresses are needed as well.
+    /// - Use [`PaymentSlots::classify`] when the call's addresses are needed as well.
     ///
     /// [TIP-20 payment]: <https://docs.tempo.xyz/protocol/tip20/overview#get-predictable-payment-fees>
     pub fn is_payment(input: &[u8]) -> bool {
-        PaymentCallKind::from_calldata(input).is_some()
+        PaymentSlots::classify(input).is_some()
     }
 
     /// Returns addresses whose balance slots are accessed by this call.
@@ -241,192 +240,73 @@ impl ITIP20::ITIP20Calls {
     }
 }
 
-/// Size of an ABI head word.
-const WORD: usize = 32;
-
-/// Left padding of an `address` inside its 32-byte ABI head word.
-const ADDRESS_PADDING: usize = WORD - Address::len_bytes();
-
-/// One of the nine [TIP-20 payment] calls recognized by [`ITIP20Calls::is_payment`].
-///
-/// All nine take fully static parameters, so their calldata is the 4-byte selector followed
-/// by one 32-byte head word per argument.
-///
-/// [TIP-20 payment]: <https://docs.tempo.xyz/protocol/tip20/overview#get-predictable-payment-fees>
-/// [`ITIP20Calls::is_payment`]: ITIP20::ITIP20Calls::is_payment
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
-pub enum PaymentCallKind {
-    /// `transfer(address to, uint256 amount)`
-    Transfer,
-    /// `transferWithMemo(address to, uint256 amount, bytes32 memo)`
-    TransferWithMemo,
-    /// `transferFrom(address from, address to, uint256 amount)`
-    TransferFrom,
-    /// `transferFromWithMemo(address from, address to, uint256 amount, bytes32 memo)`
-    TransferFromWithMemo,
-    /// `approve(address spender, uint256 amount)`
-    Approve,
-    /// `mint(address to, uint256 amount)`
-    Mint,
-    /// `mintWithMemo(address to, uint256 amount, bytes32 memo)`
-    MintWithMemo,
-    /// `burn(uint256 amount)`
-    Burn,
-    /// `burnWithMemo(uint256 amount, bytes32 memo)`
-    BurnWithMemo,
+/// The slot-relevant shape of a TIP-20 payment call.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum PaymentSlots {
+    Empty,
+    Direct { to: Address },
+    Delegated { from: Address, to: Address },
 }
 
-impl PaymentCallKind {
-    /// Classifies raw `input` by its 4-byte selector and exact ABI-encoded length.
-    ///
-    /// Returns `None` for any other calldata, including truncated, over-long, or empty input.
-    ///
-    /// # NOTE
-    /// Only validates calldata; the caller must check the TIP-20 address prefix on `to`.
-    pub fn from_calldata(input: &[u8]) -> Option<Self> {
-        /// Returns `true` if `input` is `C`'s selector followed by exactly `C`'s statically
-        /// sized parameter encoding.
-        fn is_call<C: SolCall>(input: &[u8]) -> bool {
-            let Some(encoded_size) = <C::Parameters<'_> as SolType>::ENCODED_SIZE else {
-                return false;
-            };
-
-            input.first_chunk::<4>() == Some(&C::SELECTOR) && input.len() == 4 + encoded_size
-        }
-
-        if is_call::<ITIP20::transferCall>(input) {
-            Some(Self::Transfer)
-        } else if is_call::<ITIP20::transferWithMemoCall>(input) {
-            Some(Self::TransferWithMemo)
-        } else if is_call::<ITIP20::transferFromCall>(input) {
-            Some(Self::TransferFrom)
-        } else if is_call::<ITIP20::transferFromWithMemoCall>(input) {
-            Some(Self::TransferFromWithMemo)
-        } else if is_call::<ITIP20::approveCall>(input) {
-            Some(Self::Approve)
-        } else if is_call::<ITIP20::mintCall>(input) {
-            Some(Self::Mint)
-        } else if is_call::<ITIP20::mintWithMemoCall>(input) {
-            Some(Self::MintWithMemo)
-        } else if is_call::<ITIP20::burnCall>(input) {
-            Some(Self::Burn)
-        } else if is_call::<ITIP20::burnWithMemoCall>(input) {
-            Some(Self::BurnWithMemo)
-        } else {
-            None
-        }
-    }
-}
-
-/// A [TIP-20 payment] call classified straight from calldata, without ABI decoding.
-///
-/// Carries only the addresses needed to derive the storage slots a payment touches, read
-/// in place from the static ABI head. Amounts and memos are never materialized, which is
-/// why this is cheaper than decoding into [`ITIP20Calls`] just to read one or two addresses.
-///
-/// [TIP-20 payment]: <https://docs.tempo.xyz/protocol/tip20/overview#get-predictable-payment-fees>
-/// [`ITIP20Calls`]: ITIP20::ITIP20Calls
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
-pub struct PaymentCall {
-    /// Which of the nine payment calls this is.
-    kind: PaymentCallKind,
-    /// The `to` argument of the transfer and mint variants.
-    to: Option<Address>,
-    /// The `from` argument of the `transferFrom` variants.
-    from: Option<Address>,
-}
-
-impl PaymentCall {
-    /// Classifies raw `input` as one of the nine TIP-20 payment calls and reads its address
-    /// arguments, or returns `None` if `input` is not a payment call.
-    ///
-    /// # NOTES
-    /// - Selector and exact ABI-encoded length match only, no decoding (better performance).
-    /// - Only validates calldata; the caller must check the TIP-20 address prefix on `to`.
-    /// - Addresses are read from the low 20 bytes of their head word. Like the non-validating
-    ///   [`SolCall::abi_decode`], the upper 12 padding bytes are not checked.
+impl PaymentSlots {
+    /// Classifies payment calldata and reads only its address arguments.
     pub fn classify(input: &[u8]) -> Option<Self> {
-        /// Reads the address in ABI head word `index`, counting the selector as word `-1`.
-        fn head_address(input: &[u8], index: usize) -> Option<Address> {
-            let start = 4 + WORD * index + ADDRESS_PADDING;
-            input
-                .get(start..start + Address::len_bytes())
-                .map(Address::from_slice)
+        fn is<C: SolCall>(input: &[u8]) -> bool {
+            input.first_chunk::<4>() == Some(&C::SELECTOR)
+                && <C::Parameters<'_> as SolType>::ENCODED_SIZE
+                    .is_some_and(|size| input.len() == 4 + size)
         }
 
-        let kind = PaymentCallKind::from_calldata(input)?;
-        let (from, to) = match kind {
-            // `to` is the first argument.
-            PaymentCallKind::Transfer
-            | PaymentCallKind::TransferWithMemo
-            | PaymentCallKind::Mint
-            | PaymentCallKind::MintWithMemo => (None, Some(head_address(input, 0)?)),
-            // `from` is the first argument, `to` the second.
-            PaymentCallKind::TransferFrom | PaymentCallKind::TransferFromWithMemo => {
-                (Some(head_address(input, 0)?), Some(head_address(input, 1)?))
-            }
-            // `approve`'s spender and the burn amounts are not used for slot derivation.
-            PaymentCallKind::Approve | PaymentCallKind::Burn | PaymentCallKind::BurnWithMemo => {
-                (None, None)
-            }
-        };
+        fn address(input: &[u8], index: usize) -> Address {
+            let start = 4 + 32 * index + 12;
+            Address::from_slice(&input[start..start + Address::len_bytes()])
+        }
 
-        Some(Self { kind, to, from })
+        Some(
+            if is::<ITIP20::transferCall>(input) || is::<ITIP20::transferWithMemoCall>(input) {
+                Self::Direct {
+                    to: address(input, 0),
+                }
+            } else if is::<ITIP20::transferFromCall>(input)
+                || is::<ITIP20::transferFromWithMemoCall>(input)
+            {
+                Self::Delegated {
+                    from: address(input, 0),
+                    to: address(input, 1),
+                }
+            } else if is::<ITIP20::approveCall>(input) {
+                Self::Empty
+            } else if is::<ITIP20::mintCall>(input) || is::<ITIP20::mintWithMemoCall>(input) {
+                Self::Direct {
+                    to: address(input, 0),
+                }
+            } else if is::<ITIP20::burnCall>(input) || is::<ITIP20::burnWithMemoCall>(input) {
+                Self::Empty
+            } else {
+                return None;
+            },
+        )
     }
 
-    /// Returns which of the nine payment calls this is.
-    pub const fn kind(&self) -> PaymentCallKind {
-        self.kind
-    }
-
-    /// Returns the recipient address for the TIP-20 call, if one exists.
-    ///
-    /// Equivalent to [`ITIP20Calls::to`](ITIP20::ITIP20Calls::to).
-    pub const fn to(&self) -> Option<Address> {
-        self.to
-    }
-
-    /// Returns the token owner debited by the `transferFrom` variants, if any.
-    ///
-    /// This is the address whose `allowances[from][spender]` slot the call reads.
-    pub const fn from(&self) -> Option<Address> {
-        self.from
-    }
-
-    /// Returns addresses whose balance slots are accessed by this call.
-    ///
-    /// Equivalent to [`ITIP20Calls::balance_addresses`](ITIP20::ITIP20Calls::balance_addresses).
-    pub const fn balance_addresses(&self) -> [Option<Address>; 2] {
-        match self.kind {
-            PaymentCallKind::TransferFrom | PaymentCallKind::TransferFromWithMemo => {
-                [self.from, self.to]
-            }
-            PaymentCallKind::Transfer
-            | PaymentCallKind::TransferWithMemo
-            | PaymentCallKind::Mint
-            | PaymentCallKind::MintWithMemo => [self.to, None],
-            PaymentCallKind::Approve | PaymentCallKind::Burn | PaymentCallKind::BurnWithMemo => {
-                [None, None]
-            }
+    pub const fn to(self) -> Option<Address> {
+        match self {
+            Self::Direct { to } | Self::Delegated { to, .. } => Some(to),
+            Self::Empty => None,
         }
     }
 
-    /// Returns addresses whose rewards slots are accessed by this call.
-    ///
-    /// Equivalent to [`ITIP20Calls::reward_addresses`](ITIP20::ITIP20Calls::reward_addresses).
-    pub const fn reward_addresses(&self, sender: Address) -> [Option<Address>; 2] {
-        match self.kind {
-            PaymentCallKind::Transfer | PaymentCallKind::TransferWithMemo => {
-                [Some(sender), self.to]
-            }
-            PaymentCallKind::TransferFrom | PaymentCallKind::TransferFromWithMemo => {
-                [self.from, self.to]
-            }
-            PaymentCallKind::Mint | PaymentCallKind::MintWithMemo => [self.to, None],
-            PaymentCallKind::Burn | PaymentCallKind::BurnWithMemo => {
-                [Some(sender), Some(Address::ZERO)]
-            }
-            PaymentCallKind::Approve => [None, None],
+    pub const fn from(self) -> Option<Address> {
+        match self {
+            Self::Delegated { from: owner, .. } => Some(owner),
+            _ => None,
+        }
+    }
+
+    pub const fn addresses(self) -> [Option<Address>; 2] {
+        match self {
+            Self::Empty => [None, None],
+            Self::Direct { to } => [Some(to), None],
+            Self::Delegated { from: owner, to } => [Some(owner), Some(to)],
         }
     }
 }
@@ -495,38 +375,27 @@ mod test {
 
     #[test]
     fn test_classify_matches_decoded_call() {
-        // distinct senders, including the zero address used by the burn reward slots
-        let senders = [Address::random(), Address::random(), Address::ZERO];
-
         for calldata in payment_calldatas() {
             let decoded = ITIP20::ITIP20Calls::abi_decode(&calldata).expect("decodes");
-            let classified = PaymentCall::classify(&calldata).expect("classifies");
+            let payment = PaymentSlots::classify(&calldata).expect("classifies");
 
-            assert_eq!(classified.to(), decoded.to());
-            assert_eq!(classified.from(), decoded_from(&decoded));
-            assert_eq!(classified.balance_addresses(), decoded.balance_addresses());
-
-            for sender in senders {
-                assert_eq!(
-                    classified.reward_addresses(sender),
-                    decoded.reward_addresses(sender),
-                );
-            }
+            assert_eq!(payment.to(), decoded.to());
+            assert_eq!(payment.from(), decoded_from(&decoded));
+            assert_eq!(payment.addresses(), decoded.balance_addresses());
         }
     }
 
     #[test]
     fn test_classify_rejects_non_payment_and_malformed_calldata() {
         for calldata in non_payment_calldatas() {
-            assert!(PaymentCallKind::from_calldata(&calldata).is_none());
-            assert!(PaymentCall::classify(&calldata).is_none());
+            assert!(PaymentSlots::classify(&calldata).is_none());
         }
 
         for calldata in payment_calldatas() {
             // every truncation of valid payment calldata is rejected, and none panics
             for len in 0..calldata.len() {
                 assert!(
-                    PaymentCall::classify(&calldata[..len]).is_none(),
+                    PaymentSlots::classify(&calldata[..len]).is_none(),
                     "truncated to {len} bytes must not classify"
                 );
             }
@@ -534,7 +403,7 @@ mod test {
             // trailing bytes break the exact length match, unlike a non-validating decode
             let mut trailing = calldata.clone();
             trailing.push(0);
-            assert!(PaymentCall::classify(&trailing).is_none());
+            assert!(PaymentSlots::classify(&trailing).is_none());
         }
     }
 }
