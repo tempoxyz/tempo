@@ -741,3 +741,5 @@ fn fatal_application_errors_also_revert_funding() {
     );
     assert!(evm.inner.ctx.journaled_state.logs.is_empty());
 }
+
+mod dex;
