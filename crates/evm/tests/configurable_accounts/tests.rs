@@ -37,7 +37,7 @@ use tempo_primitives::{
     Block as TempoBlock, SignatureType, TempoTxEnvelope,
     account::encode_config_commitment,
     transaction::{
-        AccessKeySignature, CallScope, KeyAuthorization, KeychainSignature, SignedKeyAuthorization,
+        AccountSignature, CallScope, KeyAuthorization, KeychainSignature, SignedKeyAuthorization,
         TokenLimit, calc_gas_balance_spending,
     },
 };
@@ -418,13 +418,14 @@ fn native_replay_rejects_account_authorization() {
     let mut tx = ordinary_tx;
     tx.key_authorization = Some(SignedKeyAuthorization::new(
         KeyAuthorization::unrestricted(1, SignatureType::Secp256k1, Address::repeat_byte(2)),
-        signed.signature().clone(),
+        signed.signature().as_multisig().unwrap().clone(),
     ));
     assert!(!supports_storage_action_replay(
         &tx.clone().into_signed(primitive.clone()).into()
     ));
     // Even a primitive-signed primitive grant reads parent metadata at T12.
-    tx.key_authorization.as_mut().unwrap().signature = primitive.clone();
+    tx.key_authorization.as_mut().unwrap().signature =
+        AccountSignature::try_from(primitive.clone()).unwrap();
     assert!(!supports_storage_action_replay(
         &tx.into_signed(primitive).into()
     ));
@@ -622,7 +623,7 @@ fn native_signed_parent_delegate_case(outcome: GrantOutcome, gas_price: u128) {
                     .collect(),
             );
             let grant_signature = if parent_native {
-                TempoSignature::Multisig(
+                AccountSignature::Multisig(
                     MultisigSignature::try_new(
                         f.account,
                         f.config.clone(),
@@ -639,7 +640,7 @@ fn native_signed_parent_delegate_case(outcome: GrantOutcome, gas_price: u128) {
                     .unwrap(),
                 )
             } else {
-                TempoSignature::Primitive(PrimitiveSignature::Secp256k1(
+                AccountSignature::Primitive(PrimitiveSignature::Secp256k1(
                     f.owner
                         .sign_hash_sync(&authorization.signature_hash())
                         .unwrap(),
@@ -675,7 +676,7 @@ fn native_signed_parent_delegate_case(outcome: GrantOutcome, gas_price: u128) {
             let sign = |tx: &TempoTransaction| {
                 let digest = KeychainSignature::signing_hash(tx.signature_hash(), parent);
                 let signature = if delegate_native {
-                    AccessKeySignature::Multisig(
+                    AccountSignature::Multisig(
                         MultisigSignature::try_new(
                             delegate,
                             config.clone(),
@@ -688,7 +689,7 @@ fn native_signed_parent_delegate_case(outcome: GrantOutcome, gas_price: u128) {
                         .unwrap(),
                     )
                 } else {
-                    AccessKeySignature::Primitive(PrimitiveSignature::Secp256k1(
+                    AccountSignature::Primitive(PrimitiveSignature::Secp256k1(
                         signer.sign_hash_sync(&digest).unwrap(),
                     ))
                 };
