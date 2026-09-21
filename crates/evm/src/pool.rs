@@ -42,7 +42,14 @@ impl TempoPoolValidationEvm for Evm<'_, TempoEvmTypes> {
         &mut self,
         tx: &Recovered<TempoTxEnv>,
     ) -> Result<(Address, Option<u64>), TempoPoolValidationError> {
-        if let Err(err) = self.transact(tx).map(|executed| executed.discard()) {
+        let result = crate::handler::validate_transaction(self, tx);
+        let error_code = self.error_code();
+        self.state_mut().clear_transaction_state();
+        if let Some(code) = error_code {
+            return Err(TempoPoolValidationError::Fatal(self.error(code)));
+        }
+
+        if let Err(err) = result {
             return match err {
                 HandlerError::Fatal(code) => Err(TempoPoolValidationError::Fatal(self.error(code))),
                 err => Err(TempoPoolValidationError::Invalid(err)),
