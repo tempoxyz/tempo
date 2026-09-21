@@ -25,7 +25,7 @@ pub struct FundingSource {
 #[cfg_attr(any(test, feature = "arbitrary"), derive(arbitrary::Arbitrary))]
 pub struct FundingRequirement {
     /// Requested TIP-20 token.
-    pub asset: Address,
+    pub token: Address,
     /// Target balance in token base units.
     pub amount: U256,
     /// Sources attempted in signed order.
@@ -56,7 +56,7 @@ impl FundingRequirement {
 impl Encodable for FundingRequirement {
     fn encode(&self, out: &mut dyn alloy_rlp::BufMut) {
         let tolerance = self.slippage_bps.as_slice();
-        let payload_length = self.asset.length()
+        let payload_length = self.token.length()
             + self.amount.length()
             + self.sources.length()
             + alloy_rlp::list_length::<u64, u64>(tolerance);
@@ -65,14 +65,14 @@ impl Encodable for FundingRequirement {
             payload_length,
         }
         .encode(out);
-        self.asset.encode(out);
+        self.token.encode(out);
         self.amount.encode(out);
         self.sources.encode(out);
         alloy_rlp::encode_list::<u64, u64>(tolerance, out);
     }
 
     fn length(&self) -> usize {
-        let payload_length = self.asset.length()
+        let payload_length = self.token.length()
             + self.amount.length()
             + self.sources.length()
             + alloy_rlp::list_length::<u64, u64>(self.slippage_bps.as_slice());
@@ -94,7 +94,7 @@ impl Decodable for FundingRequirement {
             return Err(alloy_rlp::Error::InputTooShort);
         }
         let mut payload = &buf[..header.payload_length];
-        let asset = Address::decode(&mut payload)?;
+        let token = Address::decode(&mut payload)?;
         let amount = U256::decode(&mut payload)?;
         let sources = Vec::<FundingSource>::decode(&mut payload)?;
         // A zero-or-one-element list preserves the distinction between omission and explicit zero.
@@ -110,7 +110,7 @@ impl Decodable for FundingRequirement {
         }
         buf.advance(header.payload_length);
         Ok(Self {
-            asset,
+            token,
             amount,
             sources,
             slippage_bps,
@@ -128,7 +128,7 @@ mod tests {
 
     fn requirement() -> FundingRequirement {
         FundingRequirement {
-            asset: Address::repeat_byte(1),
+            token: Address::repeat_byte(1),
             amount: U256::from(50),
             sources: vec![FundingSource {
                 address: Address::repeat_byte(2),
@@ -136,6 +136,20 @@ mod tests {
             }],
             slippage_bps: Some(100),
         }
+    }
+
+    #[test]
+    #[cfg(feature = "serde")]
+    fn requirement_json_uses_token_without_changing_signed_bytes() {
+        let value = requirement();
+        let mut json = serde_json::to_value(&value).unwrap();
+        assert_eq!(json["token"], serde_json::to_value(value.token).unwrap());
+        assert!(json.get("asset").is_none());
+        let decoded: FundingRequirement = serde_json::from_value(json.clone()).unwrap();
+        assert_eq!(alloy_rlp::encode(&decoded), alloy_rlp::encode(&value));
+        let token = json.as_object_mut().unwrap().remove("token").unwrap();
+        json["asset"] = token;
+        assert!(serde_json::from_value::<FundingRequirement>(json).is_err());
     }
 
     fn transaction() -> TempoTransaction {
@@ -294,12 +308,12 @@ mod tests {
                 data: Bytes::new(),
             });
         tx.require_funds.as_mut().unwrap().push(FundingRequirement {
-            asset: Address::repeat_byte(4),
+            token: Address::repeat_byte(4),
             ..requirement()
         });
         let signed = AASigned::new_unhashed(tx.clone(), signature());
         let mutations: &[fn(&mut Vec<FundingRequirement>)] = &[
-            |v| v[0].asset = Address::ZERO,
+            |v| v[0].token = Address::ZERO,
             |v| v[0].amount += U256::from(1),
             |v| v[0].sources[0].address = Address::ZERO,
             |v| v[0].sources[0].data = Bytes::from_static(&[0xcd]),
