@@ -1,5 +1,10 @@
 # Validated execution-stall capture and runner-election failure
 
+Follow-up: [causal reanalysis](CAUSAL-REANALYSIS-2026-09-21.md) resolves the
+root-proof and journal dependencies, measures builder sleep and decode time,
+and reproduces a possible false-empty iterator cause. Its conclusions
+supersede the unresolved mechanisms below; this first pass remains as evidence.
+
 Capture: [35578876523](https://github.com/tempoxyz/tempo/actions/runs/35578876523).
 One fully instrumented portable x86-64-v3 capture, 77 eligible blocks,
 490,532 transactions over 39.106 seconds of eligible load. Strict
