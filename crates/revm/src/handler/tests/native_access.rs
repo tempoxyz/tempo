@@ -12,8 +12,9 @@ use tempo_precompiles::native_multisig::keccak_cost;
 use tempo_primitives::{
     account::encode_config_commitment,
     transaction::{
-        KeyAuthorization, KeychainSignature, MultisigConfig, MultisigOwner, MultisigSignature,
-        SignatureType, SignedKeyAuthorization, TempoTransaction, multisig_digest,
+        AccountSignature, KeyAuthorization, KeychainSignature, MultisigConfig, MultisigOwner,
+        MultisigSignature, SignatureType, SignedKeyAuthorization, TempoTransaction,
+        multisig_digest,
     },
 };
 
@@ -76,7 +77,12 @@ impl NativeAccessFixture {
         let parent_config = native_parent.then_some(&self.parent_config);
         let grant = KeyAuthorization::unrestricted(1, SignatureType::Multisig, self.delegate());
         let grant_signature = Self::sign(&self.parent_key, parent_config, grant.signature_hash());
-        self.evm_with_authorization(case, warmth, gas_limit, grant.into_signed(grant_signature))
+        self.evm_with_authorization(
+            case,
+            warmth,
+            gas_limit,
+            grant.into_signed(AccountSignature::try_from(grant_signature).unwrap()),
+        )
     }
 
     fn evm_with_authorization(
@@ -282,7 +288,7 @@ fn native_handler_binds_grant_roles(case: GrantBindingCase) {
         &fixture.parent_key
     };
     let signature = NativeAccessFixture::sign(signer, None, grant.signature_hash());
-    let authorization = grant.into_signed(signature);
+    let authorization = grant.into_signed(AccountSignature::try_from(signature).unwrap());
     assert_eq!(authorization.recover_account().unwrap(), signer.address());
     let mut test = fixture.evm_with_authorization(
         GrantCase::PrimitiveGrantAndUse,
