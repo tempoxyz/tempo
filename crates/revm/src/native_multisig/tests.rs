@@ -13,7 +13,7 @@ use tempo_chainspec::hardfork::TempoHardfork;
 use tempo_primitives::{
     account::encode_config_commitment,
     transaction::{
-        AccessKeySignature, KeyAuthorization, MAX_MULTISIG_OWNERS, MULTISIG_SIGNATURE_DOMAIN,
+        AccountSignature, KeyAuthorization, MAX_MULTISIG_OWNERS, MULTISIG_SIGNATURE_DOMAIN,
         MultisigConfig, MultisigOwner, PrimitiveSignature, multisig_digest,
     },
 };
@@ -129,7 +129,7 @@ fn native_authorization_roles_preserve_order_and_duplicate_accounts() {
     let outer_digest = aa.signature_hash;
     let grant = KeyAuthorization::unrestricted(1, SignatureType::Multisig, caller);
     let grant_digest = grant.signature_hash();
-    aa.key_authorization = Some(grant.into_signed(TempoSignature::Multisig(native.clone())));
+    aa.key_authorization = Some(grant.into_signed(native.clone()));
     let roles = authorizations(&tx);
     let outer = roles[0].as_ref().unwrap();
     let grant = roles[1].as_ref().unwrap();
@@ -140,7 +140,7 @@ fn native_authorization_roles_preserve_order_and_duplicate_accounts() {
 
     tx.tempo_tx_env.as_mut().unwrap().signature = TempoSignature::Keychain(KeychainSignature::new(
         tx.caller,
-        AccessKeySignature::Multisig(native),
+        AccountSignature::Multisig(native),
     ));
     assert_eq!(
         authorizations(&tx)[0].as_ref().unwrap().inner_digest,
