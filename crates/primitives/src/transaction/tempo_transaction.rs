@@ -1,3 +1,4 @@
+use super::FundingRequirement;
 #[cfg(feature = "serde")]
 use crate::transaction::key_authorization::serde_nonzero_quantity_opt;
 use crate::{
@@ -269,6 +270,14 @@ pub struct TempoTransaction {
     /// Authorization list (EIP-7702 style with Tempo signatures)
     #[cfg_attr(feature = "serde", serde(rename = "aaAuthorizationList"))]
     pub tempo_authorization_list: Vec<TempoSignedAuthorization>,
+
+    /// Signed funding requirements. Empty arrays have the same wire encoding as omission.
+    /// Appended as an option to preserve existing Compact field positions and bytes.
+    #[cfg_attr(
+        feature = "serde",
+        serde(default, skip_serializing_if = "Option::is_none")
+    )]
+    pub require_funds: Option<Vec<FundingRequirement>>,
 }
 
 /// Validates the calls list structure for Tempo transactions.
@@ -367,6 +376,16 @@ impl TempoTransaction {
         // Validate calls list structure using the shared function
         validate_calls(&self.calls, !self.tempo_authorization_list.is_empty())?;
 
+        if self
+            .require_funds
+            .as_deref()
+            .unwrap_or_default()
+            .iter()
+            .any(|entry| entry.slippage_bps.is_some_and(|bps| bps > 10_000))
+        {
+            return Err("funding slippage exceeds 10000 basis points");
+        }
+
         // validBefore must be greater than validAfter if both are set
         if let Some(valid_after) = self.valid_after
             && let Some(valid_before) = self.valid_before
@@ -383,6 +402,13 @@ impl TempoTransaction {
     pub fn size(&self) -> usize {
         size_of::<Self>()
             + self.calls.iter().map(|call| call.size()).sum::<usize>()
+            + self
+                .require_funds
+                .as_deref()
+                .unwrap_or_default()
+                .iter()
+                .map(FundingRequirement::size)
+                .sum::<usize>()
             + self.access_list.size()
             + self.key_authorization.as_ref().map_or(0, |k| k.size())
             + self
@@ -462,6 +488,10 @@ impl TempoTransaction {
         signature_length: impl FnOnce(&Option<Signature>) -> usize,
         skip_fee_token: bool,
     ) -> usize {
+        let require_funds = self
+            .require_funds
+            .as_ref()
+            .filter(|entries| !entries.is_empty());
         self.chain_id.length() +
             self.max_priority_fee_per_gas.length() +
             self.max_fee_per_gas.length() +
@@ -482,12 +512,12 @@ impl TempoTransaction {
             signature_length(&self.fee_payer_signature) +
             // authorization_list
             self.tempo_authorization_list.length() +
-            // key_authorization (only included if present)
+            // Funding requires a key-authorization position even when authorization is absent.
             if let Some(key_auth) = &self.key_authorization {
                 key_auth.length()
             } else {
-                0 // No bytes when None
-            }
+                usize::from(require_funds.is_some())
+            } + require_funds.map_or(0, Encodable::length)
     }
 
     pub(crate) fn rlp_encode_fields(
@@ -532,7 +562,16 @@ impl TempoTransaction {
         if let Some(key_auth) = &self.key_authorization {
             key_auth.encode(out);
         }
-        // No bytes at all when None - maintains backwards compatibility
+        if let Some(requirements) = self
+            .require_funds
+            .as_ref()
+            .filter(|entries| !entries.is_empty())
+        {
+            if self.key_authorization.is_none() {
+                out.put_u8(EMPTY_STRING_CODE);
+            }
+            requirements.encode(out);
+        }
     }
 
     /// Public version for normal RLP encoding
@@ -645,7 +684,30 @@ impl TempoTransaction {
             None
         };
 
+        let placeholder = buf.first() == Some(&EMPTY_STRING_CODE);
+        if placeholder {
+            buf.advance(1);
+        }
+        let require_funds = if buf.first().is_some_and(|first| *first >= 0xc0) {
+            let requirements = Vec::<FundingRequirement>::decode(buf)?;
+            if requirements.is_empty() {
+                return Err(alloy_rlp::Error::Custom("empty funding extension"));
+            }
+            Some(requirements)
+        } else {
+            if placeholder {
+                return Err(alloy_rlp::Error::Custom("missing funding extension"));
+            }
+            None
+        };
+        if placeholder && key_authorization.is_some() {
+            return Err(alloy_rlp::Error::Custom(
+                "unexpected key authorization placeholder",
+            ));
+        }
+
         let tx = Self {
+            require_funds,
             chain_id,
             fee_token,
             max_priority_fee_per_gas,
@@ -912,6 +974,17 @@ impl<'a> arbitrary::Arbitrary<'a> for TempoTransaction {
             None => u.arbitrary()?,
         };
 
+        let require_funds: Option<Vec<FundingRequirement>> = u.arbitrary()?;
+        let require_funds =
+            require_funds
+                .filter(|entries| !entries.is_empty())
+                .map(|mut entries| {
+                    for entry in &mut entries {
+                        entry.slippage_bps = entry.slippage_bps.map(|bps| bps % 10_001);
+                    }
+                    entries
+                });
+
         Ok(Self {
             chain_id,
             fee_token,
@@ -925,6 +998,7 @@ impl<'a> arbitrary::Arbitrary<'a> for TempoTransaction {
             fee_payer_signature,
             valid_before,
             valid_after,
+            require_funds,
             key_authorization: u.arbitrary()?,
             tempo_authorization_list: vec![],
         })
@@ -1211,6 +1285,7 @@ mod tests {
         };
 
         let tx = TempoTransaction {
+            require_funds: None,
             chain_id: 1,
             fee_token: Some(address!("0000000000000000000000000000000000000001")),
             max_priority_fee_per_gas: 1000000000,
@@ -1263,6 +1338,7 @@ mod tests {
         };
 
         let tx = TempoTransaction {
+            require_funds: None,
             chain_id: 1,
             fee_token: None,
             max_priority_fee_per_gas: 1000000000,
@@ -1306,6 +1382,7 @@ mod tests {
         };
 
         let tx = TempoTransaction {
+            require_funds: None,
             chain_id: 1,
             fee_token: None,
             max_priority_fee_per_gas: 1000000000,
@@ -1602,6 +1679,7 @@ mod tests {
 
         // Transaction WITHOUT fee_payer, fee_token = None
         let tx_no_payer_no_token = TempoTransaction {
+            require_funds: None,
             chain_id: 1,
             fee_token: None,
             max_priority_fee_per_gas: 1000000000,
@@ -1664,6 +1742,7 @@ mod tests {
 
         // Transaction with fee_token
         let tx_with_token = TempoTransaction {
+            require_funds: None,
             chain_id: 1,
             fee_token: Some(token),
             max_priority_fee_per_gas: 1000000000,
@@ -1728,6 +1807,7 @@ mod tests {
 
         // Scenario 1: No fee payer, no token
         let tx_no_payer_no_token = TempoTransaction {
+            require_funds: None,
             chain_id: 1,
             fee_token: None,
             max_priority_fee_per_gas: 1000000000,
@@ -1799,6 +1879,7 @@ mod tests {
 
         // Create transaction WITHOUT key_authorization (old format)
         let tx_without = TempoTransaction {
+            require_funds: None,
             chain_id: 1,
             fee_token: Some(address!("0000000000000000000000000000000000000001")),
             max_priority_fee_per_gas: 1000000000,
@@ -1888,6 +1969,7 @@ mod tests {
         };
 
         let tx = TempoTransaction {
+            require_funds: None,
             chain_id: 0,
             fee_token: None,
             max_priority_fee_per_gas: 0,
@@ -1928,6 +2010,7 @@ mod tests {
         };
 
         let tx = TempoTransaction {
+            require_funds: None,
             chain_id: 0,
             fee_token: None,
             max_priority_fee_per_gas: 0,
@@ -2005,6 +2088,7 @@ mod tests {
         };
 
         let tx = TempoTransaction {
+            require_funds: None,
             chain_id: 1,
             fee_token: Some(Address::random()),
             max_priority_fee_per_gas: 1000000000,
@@ -2044,6 +2128,7 @@ mod tests {
     #[test]
     fn test_fee_payer_signature_decode_rejects_inner_trailing_bytes() {
         let tx = TempoTransaction {
+            require_funds: None,
             chain_id: 1,
             fee_token: Some(Address::random()),
             max_priority_fee_per_gas: 1000000000,
@@ -2336,6 +2421,7 @@ mod compact_tests {
     #[test]
     fn tempo_transaction_compact_roundtrip() {
         let tx = TempoTransaction {
+            require_funds: None,
             chain_id: 42170,
             fee_token: Some(address!("0x0000000000000000000000000000000000000abc")),
             max_priority_fee_per_gas: 1_000_000_000,

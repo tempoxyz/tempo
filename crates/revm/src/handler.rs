@@ -1855,6 +1855,16 @@ where
         evm.validator_fee = U256::ZERO;
         evm.non_creditable_slots.borrow_mut().clear();
 
+        if evm
+            .ctx
+            .tx
+            .tempo_tx_env
+            .as_ref()
+            .is_some_and(|tx| !tx.require_funds.is_empty())
+        {
+            return Err(TempoInvalidTransaction::FundingNotActivated.into());
+        }
+
         // Validate the fee payer signature
         let fee_payer = evm.ctx.tx.fee_payer()?;
 
