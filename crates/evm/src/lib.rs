@@ -35,7 +35,7 @@ use alloy_evm::{
     eth::{EthBlockExecutionCtx, NextEvmEnvAttributes},
     revm::Inspector,
 };
-use alloy_primitives::{Address, Bytes};
+use alloy_primitives::Address;
 pub use evm::TempoEvmFactory;
 use reth_chainspec::EthChainSpec;
 use reth_evm::{self, ConfigureEvm, EvmEnvFor, SenderRecoveryCache, block::StateDB};
@@ -70,22 +70,6 @@ pub struct TempoEvmConfig {
 
     /// Block assembler
     pub block_assembler: TempoBlockAssembler,
-
-    /// Explicit runtime overrides for local contract integration tests.
-    pub(crate) t13_zone_runtimes: Option<T13ZoneRuntimes>,
-}
-
-/// Shared T13 Zone runtimes for local contract integration tests.
-///
-/// These override consensus bytecode and must not be used on public networks.
-#[derive(Debug, Clone)]
-pub struct T13ZoneRuntimes {
-    /// Shared ZonePortal implementation runtime (not creation bytecode).
-    pub portal: Bytes,
-    /// Zone verifier runtime.
-    pub verifier: Bytes,
-    /// Shared ZoneMessenger runtime.
-    pub messenger: Bytes,
 }
 
 impl FeeTokenResolver for TempoEvmConfig {
@@ -112,18 +96,7 @@ impl TempoEvmConfig {
         Self {
             inner,
             block_assembler: TempoBlockAssembler::new(chain_spec),
-            t13_zone_runtimes: None,
         }
-    }
-
-    /// Overrides the runtimes installed by T13 for local contract integration tests.
-    ///
-    /// This changes consensus execution. All executors for the test chain must use the
-    /// same overrides; normal nodes should leave the pinned protocol runtimes in place.
-    /// Pre-T13 runtime installation is unaffected.
-    pub fn with_t13_zone_runtimes(mut self, runtimes: T13ZoneRuntimes) -> Self {
-        self.t13_zone_runtimes = Some(runtimes);
-        self
     }
 
     /// Uses the provided sender recovery cache.
@@ -174,9 +147,7 @@ impl BlockExecutorFactory for TempoEvmConfig {
         DB: StateDB,
         I: Inspector<TempoContext<DB>>,
     {
-        let mut executor = TempoBlockExecutor::new(evm, ctx, self.chain_spec());
-        executor.t13_zone_runtimes = self.t13_zone_runtimes.as_ref();
-        executor
+        TempoBlockExecutor::new(evm, ctx, self.chain_spec())
     }
 }
 
