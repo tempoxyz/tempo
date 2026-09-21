@@ -8,6 +8,7 @@ from report_package import write_package
 from network_lineage import build_lineage
 from backpressure import first_boundary, prepare_captures
 import prewarm
+import read_readiness
 from collections import defaultdict
 
 BLOCK_FIELDS = ('block_hash', 'hash', 'digest', 'proposal', 'payload')
@@ -194,6 +195,7 @@ def read_node(path, role, cutoff=None):
     for event in events:
         event['block'] = block_key(event['fields']) or inherited(spans.get(event['id']))
     quality = {'node': role, 'header': bool(header and header.get('schema') == 1),
+               'read_readiness': (header or {}).get('read_readiness', 'disabled'),
                'detail': (header or {}).get('detail', 'full'),
                'prewarm_cpu': (header or {}).get('prewarm_cpu'),
                'prewarm_coverage_failures': (footer or {}).get('prewarm_coverage_failures'),
@@ -244,6 +246,7 @@ def build(paths, warmup=5, window=None, expected_detail=None, expected_prewarm_c
             by_block.setdefault(event['block'],[]).append(event)
     keys = sorted(by_block,key=lambda key: min(e['ts'] for e in by_block[key]))
     aliases = {key: i + 1 for i, key in enumerate(keys)}
+    readiness = read_readiness.build(events, quality, aliases, first, cutoff)
     blocks = []
     for key in keys:
         markers = [dict(stage=e['fields'].get('stage'), ts=(e['ts']-first)/1e6, node=e['node'])
@@ -278,6 +281,8 @@ def build(paths, warmup=5, window=None, expected_detail=None, expected_prewarm_c
                          ('proof_storage_worker_totals','proof_account_worker_totals')]
         blocks.append({'proof_worker_totals': worker_totals, 'execution_totals': totals, 'id': aliases[key], 'start': start, 'end': finish,
                        'duration': finish-start, 'complete': complete, 'markers': markers})
+    for block in blocks:
+        block['read_readiness'] = readiness['by_block'].get(block['id'], [])
     completed = sorted((b for b in blocks if b['complete']), key=lambda b: b['start'])
     for b in completed[:warmup]:
         b['warmup'] = True
@@ -301,7 +306,8 @@ def build(paths, warmup=5, window=None, expected_detail=None, expected_prewarm_c
         leaves_by_block[leaf['block']].append(leaf)
     for block in blocks:
         block['prewarm_calls'] = prewarm.summarize(leaves_by_block[block['id']])
-    bad_capture = not prewarm_valid or not detail_valid or any(not q['header'] or not q['footer'] or q['dropped'] or q['io_error'] or q['invalid_lines'] or q['open_spans'] for q in quality)
+    bad_capture = (not prewarm_valid or not detail_valid or not readiness['mode_valid'] or
+                   any(not q['header'] or not q['footer'] or q['dropped'] or q['io_error'] or q['invalid_lines'] or q['open_spans'] for q in quality))
     # Unexplained gaps invalidate completeness even when some blocks survived.
     representatives = {str(p): nearest_rank(eligible, p) if not bad_capture else None for p in (50,90,99)}
     attempts = sorted((s for s in spans if s['name'] == 'handle_propose'),
@@ -364,6 +370,7 @@ def build(paths, warmup=5, window=None, expected_detail=None, expected_prewarm_c
             'representatives':representatives, 'eligible':len(eligible), 'warmup':warmup,
             'unexplained_attempts':sum(a['status'] == 'unexplained_unassociated' for a in attempt_details),
             'attempt_details':attempt_details, 'attempts':len(attempts), 'unbound_attempts':sum(not s.get('block') for s in attempts),
+            'read_readiness': readiness,
             'coverage':sorted({s['name'] for s in rows}), 'stages':list(STAGES), 'bad_capture':bad_capture,
             'definition':('Milestone-only capture: detailed proof, storage, network and poll spans are intentionally disabled. This report measures coarse lifecycle intervals and does not provide complete operation coverage. ' if detail == 'milestones' else '') +
                 'Proposal handling start on proposer → first accepted finalization certificate on a validator. Nearest-rank percentiles select actual complete blocks; initial complete blocks are excluded as warmup. When load boundaries are available, both endpoints must fall inside the load window. All views exclude data at or after the first engine persistence backpressure event on either validator; crossing spans are right-censored and crossing aggregates omitted.'}
