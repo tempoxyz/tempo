@@ -17,6 +17,13 @@ pub struct ExpiringNonceManager {
     oldest_unpruned_block: u64,
 }
 
+/// Progress through a prune operation against a fixed parent state.
+#[derive(Debug, Default)]
+pub struct PruneCursor {
+    block: Option<u64>,
+    index: u64,
+}
+
 impl ExpiringNonceManager {
     /// Checks replay protection and appends the hash to this block's bucket.
     pub fn check_and_mark_expiring_nonce(&mut self, hash: B256, valid_before: u64) -> Result<()> {
@@ -49,34 +56,56 @@ impl ExpiringNonceManager {
 
     /// Prunes whole buckets in block order, stopping at the first potentially live bucket.
     pub fn prune(&mut self) -> Result<()> {
+        self.prune_chunk(&mut PruneCursor::default(), u64::MAX)
+            .map(|_| ())
+    }
+
+    /// Deletes at most `limit` entries, returning whether pruning is complete.
+    ///
+    /// The caller must finish every chunk before publishing the block. The storage cursor
+    /// advances only in the final chunk; intermediate progress lives in `cursor`.
+    pub fn prune_chunk(&mut self, cursor: &mut PruneCursor, mut limit: u64) -> Result<bool> {
+        assert!(limit > 0);
         let current_block = self.storage.block_number();
         let now = self.storage.timestamp().saturating_to::<u64>();
-        let oldest = self.oldest_unpruned_block.read()?;
-        let mut block = oldest;
-        while block < current_block {
-            let mut max_expiry = self.bucket_max_expiry.at_owned(&block);
+        if cursor.block.is_none() {
+            cursor.block = Some(self.oldest_unpruned_block.read()?);
+        }
+        let block = cursor.block.as_mut().expect("initialized above");
+        while *block < current_block {
+            let mut max_expiry = self.bucket_max_expiry.at_owned(block);
             if max_expiry.read()? > now {
                 break;
             }
-            let mut bucket_count = self.bucket_count.at_owned(&block);
+            let mut bucket_count = self.bucket_count.at_owned(block);
             let count = bucket_count.read()?;
-            let bucket = self.bucket.at_owned(&block);
-            for i in 0..count {
+            let bucket = self.bucket.at_owned(block);
+            let end = count.min(cursor.index.saturating_add(limit));
+            for i in cursor.index..end {
                 let mut entry = bucket.at_owned(&i);
                 let hash = entry.read()?;
                 self.seen.at_owned(&hash).write(0)?;
                 entry.write(B256::ZERO)?;
             }
+            limit -= end - cursor.index;
+            cursor.index = end;
+            if end < count {
+                return Ok(false);
+            }
             if count != 0 {
                 bucket_count.write(0)?;
                 max_expiry.write(0)?;
             }
-            block += 1;
+            *block += 1;
+            cursor.index = 0;
+            if limit == 0 {
+                return Ok(false);
+            }
         }
-        if block != oldest {
-            self.oldest_unpruned_block.write(block)?;
+        if *block != self.oldest_unpruned_block.read()? {
+            self.oldest_unpruned_block.write(*block)?;
         }
-        Ok(())
+        Ok(true)
     }
 }
 
@@ -226,7 +255,14 @@ mod tests {
             // The current block's bucket must remain untouched.
             let current = B256::repeat_byte(5);
             mgr.check_and_mark_expiring_nonce(current, 1301)?;
-            mgr.prune()?;
+            let mut cursor = PruneCursor::default();
+            assert!(!mgr.prune_chunk(&mut cursor, 2)?);
+            assert_eq!(mgr.oldest_unpruned_block.read()?, 7);
+            assert_eq!(mgr.bucket_count[7].read()?, 3);
+            assert_eq!(mgr.seen[first].read()?, 0);
+            assert_eq!(mgr.seen[second].read()?, 0);
+            assert_eq!(mgr.seen[third].read()?, 1200);
+            while !mgr.prune_chunk(&mut cursor, 2)? {}
             assert_eq!(mgr.oldest_unpruned_block.read()?, 11);
             for hash in [first, second, third, later] {
                 assert_eq!(mgr.seen[hash].read()?, 0);

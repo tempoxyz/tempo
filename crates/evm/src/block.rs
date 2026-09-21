@@ -201,47 +201,54 @@ where
         }
     }
 
-    /// Commit completed pruning between transactions, or wait for it at block end.
+    /// Commit one ready prune chunk between transactions, or drain all chunks at block end.
     pub(crate) fn apply_nonce_pruning(&mut self, wait: bool) -> Result<(), BlockExecutionError> {
         use std::sync::mpsc::TryRecvError;
         let Some(receiver) = self.nonce_prune.take() else {
             return Ok(());
         };
-        let result = if wait {
-            receiver.recv().map_err(BlockExecutionError::other)?
-        } else {
-            match receiver.try_recv() {
-                Ok(result) => result,
-                Err(TryRecvError::Empty) => {
-                    self.nonce_prune = Some(receiver);
-                    return Ok(());
+        loop {
+            let result = if wait {
+                receiver.recv().map_err(BlockExecutionError::other)?
+            } else {
+                match receiver.try_recv() {
+                    Ok(result) => result,
+                    Err(TryRecvError::Empty) => {
+                        self.nonce_prune = Some(receiver);
+                        return Ok(());
+                    }
+                    Err(err) => return Err(BlockExecutionError::other(err)),
                 }
-                Err(err) => return Err(BlockExecutionError::other(err)),
+            };
+            let Some(mut state) = result? else {
+                return Ok(());
+            };
+            if state.is_empty() {
+                continue;
             }
-        };
-        let mut state = result?;
-        if state.is_empty() {
-            return Ok(());
+            let start = std::time::Instant::now();
+            let slots: usize = state.values().map(|account| account.storage.len()).sum();
+            // Only storage slots commute. Preserve current account metadata (e.g. a
+            // balance changed by a transaction), rather than restoring the parent copy.
+            for (address, account) in &mut state {
+                let info = self
+                    .evm_mut()
+                    .db_mut()
+                    .basic(*address)
+                    .map_err(BlockExecutionError::other)?
+                    .unwrap_or_default();
+                let storage = std::mem::take(&mut account.storage);
+                *account = Account::from(info);
+                account.storage = storage;
+                account.mark_touch();
+            }
+            self.evm_mut().db_mut().commit(state);
+            tracing::debug!(target: "tempo::nonce_prune", slots, elapsed = ?start.elapsed(), "Committed background nonce pruning");
+            if !wait {
+                self.nonce_prune = Some(receiver);
+                return Ok(());
+            }
         }
-        let start = std::time::Instant::now();
-        let slots: usize = state.values().map(|account| account.storage.len()).sum();
-        // Only storage slots commute. Preserve current account metadata (e.g. a
-        // balance changed by a transaction), rather than restoring the parent copy.
-        for (address, account) in &mut state {
-            let info = self
-                .evm_mut()
-                .db_mut()
-                .basic(*address)
-                .map_err(BlockExecutionError::other)?
-                .unwrap_or_default();
-            let storage = std::mem::take(&mut account.storage);
-            *account = Account::from(info);
-            account.storage = storage;
-            account.mark_touch();
-        }
-        self.evm_mut().db_mut().commit(state);
-        tracing::debug!(target: "tempo::nonce_prune", slots, elapsed = ?start.elapsed(), "Committed background nonce pruning");
-        Ok(())
     }
 
     /// Deploys `0xEF` marker bytecode and initializes storage at a precompile address.
@@ -1286,7 +1293,8 @@ mod tests {
             Database as _, DatabaseCommit as _, database::states::bundle_state::BundleRetention,
         };
         use tempo_precompiles::{
-            EXPIRING_NONCE_PRECOMPILE_ADDRESS as ADDRESS, expiring_nonce::ExpiringNonceManager,
+            EXPIRING_NONCE_PRECOMPILE_ADDRESS as ADDRESS,
+            expiring_nonce::{ExpiringNonceManager, PruneCursor},
         };
         let chainspec = test_chainspec();
         let manager = ExpiringNonceManager::new();
@@ -1306,7 +1314,11 @@ mod tests {
                 [
                     (manager.seen[expired].slot(), U256::from(100)),
                     (manager.bucket[1][0].slot(), U256::from_be_bytes(expired.0)),
-                    (manager.bucket_count[1].slot(), U256::ONE),
+                    (manager.seen[B256::repeat_byte(3)].slot(), U256::from(100)),
+                    (manager.bucket[1][1].slot(), U256::from_be_bytes([3; 32])),
+                    (manager.seen[B256::repeat_byte(4)].slot(), U256::from(100)),
+                    (manager.bucket[1][2].slot(), U256::from_be_bytes([4; 32])),
+                    (manager.bucket_count[1].slot(), U256::from(3)),
                     (manager.bucket_max_expiry[1].slot(), U256::from(100)),
                 ]
                 .into_iter()
@@ -1326,7 +1338,17 @@ mod tests {
                 .build(&mut db, &chainspec);
             executor.evm_mut().ctx_mut().block.timestamp = U256::from(100);
             let mut parent = TempoEvm::new(make_db(), executor.evm().evm_env());
-            let delta = crate::nonce_prune::prune(&mut parent).unwrap();
+            let mut cursor = PruneCursor::default();
+            let mut chunks = Vec::new();
+            loop {
+                let (chunk, done) =
+                    crate::nonce_prune::prune_chunk(&mut parent, &mut cursor, 1).unwrap();
+                chunks.push(chunk);
+                if done {
+                    break;
+                }
+            }
+            assert!(chunks.len() > 1);
             let (sender, receiver) = std::sync::mpsc::channel();
             if mode != 0 {
                 executor.nonce_prune = Some(receiver);
@@ -1365,10 +1387,13 @@ mod tests {
                 .db_mut()
                 .commit(EvmState::from_iter([(ADDRESS, account)]));
             if mode != 0 {
-                sender.send(Ok(delta)).unwrap();
-                if mode == 1 {
-                    executor.apply_nonce_pruning(false).unwrap();
+                for chunk in chunks {
+                    sender.send(Ok(Some(chunk))).unwrap();
+                    if mode == 1 {
+                        executor.apply_nonce_pruning(false).unwrap();
+                    }
                 }
+                sender.send(Ok(None)).unwrap();
             }
             executor.finish().unwrap();
             assert_eq!(db.basic(ADDRESS).unwrap().unwrap().balance, U256::from(42));
@@ -1405,6 +1430,9 @@ mod tests {
             let mut executor = TestExecutorBuilder::default().build(&mut db, &chainspec);
             let (sender, receiver) = std::sync::mpsc::channel();
             executor.nonce_prune = Some(receiver);
+            // Even after receiving a chunk, an error or disconnect must not be
+            // mistaken for successful completion of the stream.
+            sender.send(Ok(Some(EvmState::default()))).unwrap();
             if !disconnect {
                 sender
                     .send(Err(BlockExecutionError::other(std::io::Error::other(
