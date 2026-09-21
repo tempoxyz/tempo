@@ -1202,10 +1202,6 @@ where
     /// Starts the forkchoice update onto the next target, if any; returns
     /// whether it did.
     fn start_forkchoice_update(&mut self) -> eyre::Result<bool> {
-        // The counter is only cleared once an update is on its way: with no
-        // target, the delivered blocks stay uncanonicalized and the debt
-        // stands until the ancestry becomes walkable. Whatever the update
-        // then does not cover cannot be canonicalized by any update.
         let Some(target) = self.next_forkchoice_target()? else {
             return Ok(false);
         };
@@ -1215,8 +1211,8 @@ where
         Ok(true)
     }
 
-    /// The next forkchoice state, if it differs from the tracked one: the
-    /// delivered finalized block, and the highest delivered block on the
+    /// The next forkchoice state when changed or the delivery limit is reached:
+    /// the delivered finalized block, and the highest delivered block on the
     /// pending head's ancestry. A head the tree cannot place is checked
     /// against the canonical chain and moved onto the finalized block if it
     /// does not descend from it.
@@ -1244,7 +1240,9 @@ where
             }
         }
 
-        Ok((target != local).then_some(target))
+        Ok((target != local
+            || self.deliveries_since_forkchoice >= DELIVERIES_PER_FORKCHOICE_UPDATE)
+            .then_some(target))
     }
 }
 

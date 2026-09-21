@@ -17,6 +17,7 @@ mod backfill;
 mod build;
 mod convergence;
 mod finalization;
+mod forkchoice;
 mod metrics;
 mod scheduling;
 mod verify;
