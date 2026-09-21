@@ -74,11 +74,7 @@ impl<DB: alloy_evm::Database, I> TempoEvmHandler<DB, I> {
         else {
             return Ok(None);
         };
-        let funder = evm
-            .owner_funding
-            .as_ref()
-            .ok_or(TempoInvalidTransaction::FundingNotActivated)?
-            .funder;
+        let funder = tempo_contracts::precompiles::TIP20_FUNDER_ADDRESS;
         let requirements = tx
             .require_funds
             .iter()

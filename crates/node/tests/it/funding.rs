@@ -2,7 +2,7 @@
 use crate::utils::{TEST_MNEMONIC, TestNodeBuilder};
 use alloy::{
     network::ReceiptResponse,
-    primitives::{Address, B256, U256, address},
+    primitives::{Address, B256, U256},
     providers::{Provider, ProviderBuilder},
     signers::{
         SignerSync,
@@ -25,8 +25,8 @@ use tempo_primitives::{
     },
 };
 
-const FUNDER: Address = address!("ffffffffffffffffffffffffffffffffffff1120");
-const SOURCE: Address = address!("0000000000000000000000000000000000001121");
+const FUNDER: Address = tempo_contracts::precompiles::TIP20_FUNDER_ADDRESS;
+const SOURCE: Address = tempo_contracts::precompiles::NATIVE_DEX_FUNDING_SOURCE_ADDRESS;
 const UNIT: u64 = 1_000_000;
 
 fn signed(tx: TempoTransaction, owner: &PrivateKeySigner, sponsor: &PrivateKeySigner) -> Vec<u8> {
@@ -61,15 +61,9 @@ async fn funding_rpc_native_dex_payment_and_rollback() -> eyre::Result<()> {
             })
             .unwrap()
     });
-    let mut genesis: serde_json::Value =
-        serde_json::from_str(include_str!("../assets/test-genesis.json"))?;
-    genesis["config"]["ownerFunding"] = serde_json::json!({"funder": FUNDER, "nativeDexSource": SOURCE, "parityAssets": [assets[0], assets[1], PATH_USD_ADDRESS]});
     let mut first_execution = None;
     for _ in 0..2 {
-        let setup = TestNodeBuilder::new()
-            .with_genesis(genesis.to_string())
-            .build_http_only()
-            .await?;
+        let setup = TestNodeBuilder::new().build_http_only().await?;
         let provider = ProviderBuilder::new()
             .wallet(maker.clone())
             .connect_http(setup.http_url.clone());
@@ -376,23 +370,13 @@ async fn funding_rpc_native_dex_payment_and_rollback() -> eyre::Result<()> {
 }
 
 #[tokio::test(flavor = "multi_thread")]
-async fn funding_rpc_rejects_disabled_and_pre_t12_transactions() -> eyre::Result<()> {
+async fn funding_rpc_rejects_pre_t13_transactions() -> eyre::Result<()> {
     use crate::utils::ForkSchedule;
     use tempo_chainspec::hardfork::TempoHardfork;
     let owner = MnemonicBuilder::from_phrase(TEST_MNEMONIC).build()?;
-    for enabled in [false, true] {
-        let mut genesis: serde_json::Value =
-            serde_json::from_str(include_str!("../assets/test-genesis.json"))?;
-        if enabled {
-            genesis["config"]["ownerFunding"] = serde_json::json!({"funder": FUNDER, "nativeDexSource": SOURCE, "parityAssets": [PATH_USD_ADDRESS]});
-        }
+    for fork in [TempoHardfork::T11, TempoHardfork::T12] {
         let setup = TestNodeBuilder::new()
-            .with_genesis(genesis.to_string())
-            .with_schedule(if enabled {
-                ForkSchedule::DevnetAt(TempoHardfork::T11)
-            } else {
-                ForkSchedule::Devnet
-            })
+            .with_schedule(ForkSchedule::DevnetAt(fork))
             .build_http_only()
             .await?;
         let rpc = ProviderBuilder::new_with_network::<TempoNetwork>()

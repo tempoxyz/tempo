@@ -586,7 +586,7 @@ where
     /// - The outer checkpoint (created here) captures state before any calls execute
     /// - Reverting the outer checkpoint undoes all nested changes
     ///
-    /// This checkpoint only covers user-call execution. Inline key authorization attached to the
+    /// This checkpoint covers funding and application calls. Inline key authorization attached to the
     /// transaction is applied earlier during validation/pre-execution and intentionally remains
     /// persisted if scope prevalidation fails here or if a later user call reverts the batch.
     fn execute_multi_call_with<F, R>(
@@ -1867,7 +1867,7 @@ where
         if let Some(tx) = evm.ctx.tx.tempo_tx_env.as_ref()
             && !tx.require_funds.is_empty()
         {
-            if evm.owner_funding.is_none() || !evm.ctx.cfg.spec.is_t12() {
+            if !evm.ctx.cfg.spec.is_t13() {
                 return Err(TempoInvalidTransaction::FundingNotActivated.into());
             }
             if tx.signature.is_keychain() || tx.override_key_id.is_some() {

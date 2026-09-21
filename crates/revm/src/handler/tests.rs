@@ -4494,21 +4494,17 @@ fn funding_intrinsic_prices_signed_extension_bytes() {
 }
 
 #[test]
-fn funding_genesis_config_respects_activation_and_simulated_access_keys() {
-    use tempo_primitives::transaction::{FundingRequirement, funding::OwnerFundingConfig};
-    let config = Arc::new(OwnerFundingConfig {
-        funder: Address::repeat_byte(0xf1),
-        native_dex_source: Address::repeat_byte(0xf2),
-        parity_assets: vec![PATH_USD_ADDRESS],
-    });
+fn funding_activation_and_simulated_access_keys() {
+    use tempo_contracts::precompiles::NATIVE_DEX_FUNDING_SOURCE_ADDRESS;
+    use tempo_primitives::transaction::FundingRequirement;
     for (spec, key, expected) in [
         (
-            TempoHardfork::T11,
+            TempoHardfork::T12,
             None,
             TempoInvalidTransaction::FundingNotActivated,
         ),
         (
-            TempoHardfork::T12,
+            TempoHardfork::T13,
             Some(Address::repeat_byte(1)),
             TempoInvalidTransaction::DelegatedFundingNotActivated,
         ),
@@ -4522,14 +4518,13 @@ fn funding_genesis_config_respects_activation_and_simulated_access_keys() {
             },
             |_| {},
         );
-        test.evm = test.evm.with_owner_funding(Some(config.clone()));
         assert_eq!(
             test.evm
                 .inner
                 .precompiles
-                .addresses()
-                .any(|address| *address == config.native_dex_source),
-            spec.is_t12()
+                .get(&NATIVE_DEX_FUNDING_SOURCE_ADDRESS)
+                .is_some(),
+            spec.is_t13()
         );
         assert!(
             matches!(test.validate_env(), Err(EVMError::Transaction(error)) if error == expected)
@@ -4538,46 +4533,16 @@ fn funding_genesis_config_respects_activation_and_simulated_access_keys() {
 }
 
 #[test]
-fn funding_configuration_survives_inspector_and_storage_action_changes() {
-    use tempo_primitives::transaction::funding::OwnerFundingConfig;
-    let config = Arc::new(OwnerFundingConfig {
-        funder: Address::repeat_byte(0xf1),
-        native_dex_source: Address::repeat_byte(0xf2),
-        parity_assets: vec![PATH_USD_ADDRESS],
-    });
-    let test = TestHandlerEvm::tx(TempoHardfork::T12, |_| {});
+fn funding_source_survives_inspector_and_storage_action_changes() {
+    let test = TestHandlerEvm::tx(TempoHardfork::T13, |_| {});
     let evm = test
         .evm
-        .with_owner_funding(Some(config.clone()))
         .with_inspector(())
         .with_actions(StorageActions::disabled());
-    assert_eq!(evm.owner_funding.as_deref(), Some(config.as_ref()));
     assert!(
         evm.inner
             .precompiles
-            .addresses()
-            .any(|address| *address == config.native_dex_source)
+            .get(&tempo_contracts::precompiles::NATIVE_DEX_FUNDING_SOURCE_ADDRESS)
+            .is_some()
     );
-}
-
-#[test]
-fn funding_configuration_rejects_reserved_addresses() {
-    use tempo_primitives::transaction::funding::OwnerFundingConfig;
-    for address in [
-        Address::ZERO,
-        Address::with_last_byte(1),
-        PATH_USD_ADDRESS,
-        tempo_contracts::precompiles::STABLECOIN_DEX_ADDRESS,
-    ] {
-        let result = std::panic::catch_unwind(|| {
-            let test = TestHandlerEvm::tx(TempoHardfork::T12, |_| {});
-            test.evm
-                .with_owner_funding(Some(Arc::new(OwnerFundingConfig {
-                    funder: Address::repeat_byte(0xf1),
-                    native_dex_source: address,
-                    parity_assets: vec![PATH_USD_ADDRESS],
-                })));
-        });
-        assert!(result.is_err(), "accepted reserved address {address}");
-    }
 }
