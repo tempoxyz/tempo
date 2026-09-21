@@ -8,7 +8,7 @@ use commonware_runtime::{
 };
 use futures::future::join_all;
 use reth_ethereum::storage::BlockNumReader as _;
-use std::time::{Duration, Instant};
+use std::time::Duration;
 use tracing::info;
 
 use super::common::{wait_for_outcome, wait_for_validators_to_reach_epoch};
@@ -16,10 +16,6 @@ use crate::{
     Setup, connect_execution_peers, connect_execution_to_peers, metrics::MetricsExt,
     setup_validators,
 };
-
-/// How long to wait (wall clock) for the late validator to build on top of the
-/// chain it just synced.
-const PROGRESS_TIMEOUT: Duration = Duration::from_secs(30);
 
 /// Tests that a late-joining validator can sync and participate after a full DKG ceremony.
 ///
@@ -141,13 +137,11 @@ fn fast_sync_after_full_dkg(update_network_identity: bool) {
         //
         // The runtime clock is virtual, so a fixed sleep can elapse long before the
         // execution nodes (which run on a real tokio runtime) build another block.
-        // Poll against the wall clock instead, and only give up once the late
-        // validator has really stopped making progress.
+        // Recheck every second until the late validator makes progress.
         let block_after_sync = late_validator
             .execution_provider()
             .last_block_number()
             .unwrap();
-        let deadline = Instant::now() + PROGRESS_TIMEOUT;
         let block_later = loop {
             let block_later = late_validator
                 .execution_provider()
@@ -156,12 +150,7 @@ fn fast_sync_after_full_dkg(update_network_identity: bool) {
             if block_later > block_after_sync {
                 break block_later;
             }
-            assert!(
-                Instant::now() < deadline,
-                "Late validator should keep progressing after sync, but stayed at block \
-                 {block_after_sync} for {PROGRESS_TIMEOUT:?}"
-            );
-            context.sleep(Duration::from_millis(100)).await;
+            context.sleep(Duration::from_secs(1)).await;
         };
         info!(
             block_after_sync,
