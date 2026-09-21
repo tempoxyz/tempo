@@ -13,6 +13,7 @@ pub mod error;
 pub mod evm;
 pub mod exec;
 mod fee_manager;
+pub mod frame;
 pub mod gas_credits;
 pub mod gas_params;
 pub mod handler;

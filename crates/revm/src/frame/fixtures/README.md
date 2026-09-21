@@ -1,0 +1,13 @@
+# Funding callback fixture
+
+`FundingSource.sol` tests native callback transport through compiled Solidity. It records callback arguments and provides failure modes for static writes, malformed plans, reverts, out-of-gas, nested rollback, and reentrant calls.
+
+Regenerate `FundingSource.hex` with Solidity 0.8.30, optimization enabled, and Cancun bytecode:
+
+```sh
+solc --optimize --evm-version cancun --bin-runtime FundingSource.sol
+```
+
+Save the runtime hex printed after `Binary of the runtime part:` in `FundingSource.hex`. Rust tests load this artifact directly and do not require a Solidity compiler.
+
+The test-only funder address is `0xffffffffffffffffffffffffffffffffffff1120`. This fixture does not implement input authorization or output delivery checks. Production builds do not register a funding entry point.
