@@ -62,15 +62,7 @@ impl Report {
             }
             let ctx = context(Boundary::Transaction(index));
             let (real, shadow) = (&ctx.real.txs[index], &ctx.shadow.txs[index]);
-            let mut diff = Comparison {
-                report: &mut report,
-                ctx: &ctx,
-                rules,
-                address: None,
-                slot: None,
-                real,
-                shadow,
-            };
+            let mut diff = Comparison::new(&mut report, &ctx, rules, None, real, shadow);
             diff.record("success", |tx| tx.receipt.success);
             diff.record("output", |tx| tx.output_hash);
             diff.record("logs", |tx| tx.logs_hash);
@@ -166,15 +158,7 @@ impl Report {
         for address in addresses {
             let real = AccountDelta(real.transitions.get(&address));
             let shadow = AccountDelta(shadow.transitions.get(&address));
-            let mut diff = Comparison {
-                report: self,
-                ctx,
-                rules,
-                address: Some(address),
-                slot: None,
-                real: &real,
-                shadow: &shadow,
-            };
+            let mut diff = Comparison::new(self, ctx, rules, Some(address), &real, &shadow);
             diff.record("existence", |a| a.existence());
             diff.record("balance", |a| a.info(|info| info.balance));
             diff.record("nonce", |a| a.info(|info| info.nonce));
@@ -219,7 +203,26 @@ struct Comparison<'a, T> {
     shadow: &'a T,
 }
 
-impl<T> Comparison<'_, T> {
+impl<'a, T> Comparison<'a, T> {
+    fn new(
+        report: &'a mut Report,
+        ctx: &'a Context<'a>,
+        rules: &'a [&'a Expectation],
+        address: Option<Address>,
+        real: &'a T,
+        shadow: &'a T,
+    ) -> Self {
+        Self {
+            report,
+            ctx,
+            rules,
+            address,
+            slot: None,
+            real,
+            shadow,
+        }
+    }
+
     fn record<V: Debug + Eq>(&mut self, name: &'static str, get: impl Fn(&T) -> V) {
         self.report.record(
             self.ctx,

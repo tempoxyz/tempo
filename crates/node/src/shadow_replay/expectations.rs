@@ -24,10 +24,6 @@ pub(super) struct Context<'a> {
 }
 
 /// Register only forks with expectations, in ascending fork order.
-///
-/// No production exceptions are established yet. In particular, TIP-1016 needs independently
-/// checked gas/fee accounting before its differences can be accepted. Empty means unexplained,
-/// not equal, safe, or ignored. Add each feature's checks and fixtures together.
 const REGISTRY: &[(TempoHardfork, &[Expectation])] = &[];
 
 /// Select once per block, including every newly active fork and excluding canonical features.
