@@ -82,22 +82,50 @@ function validateCapacity(report) {
   }
 }
 
+async function prebuilt(github, context, env, execute, timeout = 10000) {
+  const allowance = () => typeof timeout === 'function' ? timeout() : timeout;
+  const mode = env.BENCH_BINARY_MODE ?? 'build_v1';
+  requireValue(['build_v1', 'prebuilt_v1'].includes(mode));
+  if (mode === 'build_v1') {
+    requireValue(!env.BENCH_PREBUILT_PLAN_SHA256);
+    return null;
+  }
+  requireValue(env.BENCH_CAPACITY_POLICY === SETUP_FAILURE_POLICY && env.BENCH_CAPACITY_SLOTS === '5');
+  requireValue(/^[0-9a-f]{64}$/.test(env.BENCH_PREBUILT_PLAN_SHA256 || ''));
+  const plan = await source(github, context, 'contrib/bench/lifecycle/prebuilt-plan.json', allowance());
+  requireValue(createHash('sha256').update(plan).digest('hex') === env.BENCH_PREBUILT_PLAN_SHA256);
+  const script = await source(github, context, 'contrib/bench/lifecycle/prebuilt.py', allowance());
+  const proof = JSON.parse(python(script, [], plan, env, execute, [0], allowance()));
+  requireValue(Object.keys(proof).sort().join() === 'mode,plan_sha256,required_bytes');
+  requireValue(proof.mode === 'prebuilt_capture_v1' && proof.plan_sha256 === env.BENCH_PREBUILT_PLAN_SHA256);
+  requireValue(uint(proof.required_bytes) && proof.required_bytes > 49152 * 1048576);
+  return { plan, script, proof };
+}
+
+function withPrebuilt(script, config) {
+  if (!config) return script;
+  // Exact authenticated source, not imports from a writable runner checkout.
+  const encoded = Buffer.from(config.script).toString('base64');
+  return `import base64,types,sys\nm=types.ModuleType('prebuilt')\nexec(base64.b64decode('${encoded}'),m.__dict__)\nsys.modules['prebuilt']=m\n` + script;
+}
+
 async function probe({ github, context, core, env = process.env, execute = spawnSync }) {
   try {
     const bound = binding(context, env);
+    const portable = await prebuilt(github, context, env, execute);
     const script = await source(github, context, 'contrib/bench/lifecycle/capacity_preflight.py');
     const capacity = JSON.parse(python(script, [], '', env, execute));
     validateCapacity(capacity);
     // Expected slot count is trusted workflow configuration, not receipt data.
     const { slots, policy, ...receiptBinding } = bound;
-    const receipt = { schema: 1, ...receiptBinding, capacity };
+    const receipt = { schema: 1, ...receiptBinding, capacity, ...(portable ? { prebuilt: portable.proof } : {}) };
     const encoded = JSON.stringify(receipt);
     requireValue(Buffer.byteLength(encoded) <= 16384);
     const workspace = env.GITHUB_WORKSPACE;
     requireValue(workspace && fs.realpathSync(workspace) === path.resolve(workspace));
     const owned = fs.mkdtempSync(path.join(workspace, '.capacity-reservation-'));
-    fs.writeFileSync(path.join(owned, 'receipt.json'), encoded, { flag: 'wx', mode: 0o600 });
     core.setOutput('artifact-path', path.relative(workspace, path.join(owned, 'receipt.json')));
+    fs.writeFileSync(path.join(owned, 'receipt.json'), encoded, { flag: 'wx', mode: 0o600 });
     core.setOutput('artifact-name', artifactName(bound, bound.slot));
     core.info('Numeric capacity receipt prepared');
   } catch (_) {
@@ -160,22 +188,23 @@ function setupFailures(data, bound) {
   return { complete: seen.size === bound.slots, failed: failed.sort((a, b) => a - b) };
 }
 
-function admissionReceipt(bound, failed, receipts, election) {
+function admissionReceipt(bound, failed, receipts, election, portable = null) {
   return { schema: 2, policy: SETUP_FAILURE_POLICY, workflow_sha: bound.workflow_sha,
     run_id: bound.run_id, run_attempt: bound.run_attempt, slots: bound.slots,
     selected_slot: election.selected_slot, setup_failed_slots: failed,
+    ...(portable ? { prebuilt: portable.proof } : {}),
     capacity_receipts: receipts.map(value => ({ slot: JSON.parse(value).slot,
       sha256: createHash('sha256').update(value).digest('hex') })).sort((a, b) => a.slot - b.slot), election };
 }
 
-function publishAdmission(bound, failed, receipts, election, env, core) {
+function publishAdmission(bound, failed, receipts, election, env, core, portable = null) {
   const workspace = env.GITHUB_WORKSPACE;
   requireValue(workspace && fs.realpathSync(workspace) === path.resolve(workspace));
-  const encoded = JSON.stringify(admissionReceipt(bound, failed, receipts, election));
+  const encoded = JSON.stringify(admissionReceipt(bound, failed, receipts, election, portable));
   requireValue(Buffer.byteLength(encoded) <= 16384);
   const owned = fs.mkdtempSync(path.join(workspace, '.capacity-admission-'));
-  fs.writeFileSync(path.join(owned, 'admission.json'), encoded, { flag: 'wx', mode: 0o600 });
   core.setOutput('admission-path', path.relative(workspace, path.join(owned, 'admission.json')));
+  fs.writeFileSync(path.join(owned, 'admission.json'), encoded, { flag: 'wx', mode: 0o600 });
   core.setOutput('admission-name', `bench-capacity-admission-${bound.run_id}-${bound.run_attempt}`);
 }
 
@@ -190,7 +219,8 @@ async function elect({ github, context, core, env = process.env, execute = spawn
       requireValue(remaining > 0);
       return Math.min(maximum, remaining);
     };
-    const script = await source(github, context, 'contrib/bench/lifecycle/capacity_election.py', budget(10000));
+    const portable = await prebuilt(github, context, env, execute, () => budget(10000));
+    const script = withPrebuilt(await source(github, context, 'contrib/bench/lifecycle/capacity_election.py', budget(10000)), portable);
     budget(10000);
     const names = Array.from({ length: bound.slots }, (_, i) => artifactName(bound, i + 1));
     const accounted = bound.policy === SETUP_FAILURE_POLICY;
@@ -249,7 +279,8 @@ async function elect({ github, context, core, env = process.env, execute = spawn
       '--run-attempt', String(bound.run_attempt), '--slots', String(bound.slots),
     ];
     if (accounted) electionArgs.push('--policy', SETUP_FAILURE_POLICY);
-    const input = accounted ? `{"schema":2,"receipts":[${receipts.join(',')}],"setup_failed_slots":${JSON.stringify(failed)}}` : `[${receipts.join(',')}]`;
+    if (portable) electionArgs.push('--binary-mode', 'prebuilt_v1');
+    const input = portable ? `{"schema":2,"receipts":[${receipts.join(',')}],"setup_failed_slots":${JSON.stringify(failed)},"prebuilt_plan":${JSON.stringify(portable.plan)}}` : accounted ? `{"schema":2,"receipts":[${receipts.join(',')}],"setup_failed_slots":${JSON.stringify(failed)}}` : `[${receipts.join(',')}]`;
     const elected = JSON.parse(python(script, electionArgs, input, env, execute, [0, 2, 3], budget(60000)));
     budget(10000);
     const fields = ['schema', 'status', 'selected_slot', 'root_free_mib', 'workspace_free_mib', 'minimum_free_mib'];
@@ -261,7 +292,7 @@ async function elect({ github, context, core, env = process.env, execute = spawn
       core.info(JSON.stringify(elected));
       requireValue(false);
     }
-    requireValue(uint(elected.selected_slot) && elected.selected_slot <= bound.slots && elected.minimum_free_mib >= 65536);
+    requireValue(uint(elected.selected_slot) && elected.selected_slot <= bound.slots && elected.minimum_free_mib >= (portable ? Math.floor(portable.proof.required_bytes / 1048576) : 65536));
     requireValue(!failed.includes(elected.selected_slot) && receipts.some(value => JSON.parse(value).slot === elected.selected_slot));
     if (accounted) {
       const final = await jobs(); const latest = await inventory();
@@ -270,7 +301,7 @@ async function elect({ github, context, core, env = process.env, execute = spawn
       requireValue(JSON.stringify(identities(latest)) === JSON.stringify(identities(artifacts)));
       if (elected.selected_slot === bound.slot) {
         requireValue(receipts.some(value => JSON.parse(value).slot === bound.slot));
-        publishAdmission(bound, failed, receipts, elected, env, core);
+        publishAdmission(bound, failed, receipts, elected, env, core, portable);
       }
       budget(10000);
     }
@@ -281,4 +312,4 @@ async function elect({ github, context, core, env = process.env, execute = spawn
   }
 }
 
-module.exports = { probe, elect, binding, artifactName, EXTRACT_RECEIPT, validateCapacity, setupFailures, admissionReceipt, SETUP_FAILURE_POLICY };
+module.exports = { probe, elect, binding, artifactName, EXTRACT_RECEIPT, validateCapacity, setupFailures, admissionReceipt, SETUP_FAILURE_POLICY, prebuilt, withPrebuilt };

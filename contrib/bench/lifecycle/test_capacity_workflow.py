@@ -3,10 +3,24 @@ from pathlib import Path
 import re
 import hashlib
 import unittest
+from test_prebuilt_workflow import without_prebuilt, without_workspace_guard
 
 
 def without_fault_scheduler(workflow):
-    """Reverse only the explicit new mode, preserving historical capacity hashes."""
+    """Reverse only explicit opt-ins, preserving historical capacity hashes."""
+    workflow=without_prebuilt(workflow)
+    # Reverse only the separately reviewed cleanup follow-up; retain original capacity hashes.
+    for name in ('Prepare runner cleanup', 'Prepare owned benchmark scratch'):
+        workflow,count=re.subn(r'      - name: '+name+r'\n.*?(?=      - (?:name:|uses:))','',workflow,flags=re.DOTALL)
+        assert count==1
+    marker='\n      # Run after artifact upload/reporting even when the benchmark failed or was cancelled.\n'
+    assert workflow.count(marker)==1
+    workflow=workflow.split(marker,1)[0]
+    assert workflow.count('        id: workspace-reset\n')==1
+    workflow=workflow.replace('        id: workspace-reset\n','')
+    workflow = without_workspace_guard(workflow)
+    workflow,count=re.subn(r"          python3 - <<'PYOWNER'\n.*?          PYOWNER\n",'',workflow,flags=re.DOTALL)
+    assert count==1
     workflow=workflow.replace('          - lifecycle-kernel-faults\n','')
     workflow=workflow.replace(" || inputs.profiling == 'lifecycle-kernel-faults'",'')
     workflow=workflow.replace("inputs.profiling != 'lifecycle-kernel-faults' && ",'')
@@ -64,7 +78,15 @@ class CapacityWorkflowTests(unittest.TestCase):
         workflow = (Path(__file__).resolve().parents[3] /
                     '.github/workflows/bench-e2e.yml').read_text()
         steps = re.split(r'^      - ', workflow, flags=re.MULTILINE)[1:]
-        self.assertGreater(len(steps), 3)
+        self.assertGreater(len(steps), 5)
+        self.assertTrue(steps[0].startswith('name: Secure runner\n'))
+        self.assertNotRegex(steps[0], re.compile(r'^        if:', re.MULTILINE))
+        steps = steps[1:]
+        self.assertTrue(steps[0].startswith('name: Prepare runner cleanup\n'))
+        self.assertNotRegex(steps[0], re.compile(r'^        if:', re.MULTILINE), 'cleanup preparation runs on every slot')
+        self.assertTrue(steps[-1].startswith('name: Remove runner benchmark artifacts\n'))
+        self.assertIn("if: ${{ always() && steps.runner-cleanup.outputs.directory != '' }}", steps[-1])
+        steps = steps[1:-1]
         self.assertIn('id: capacity-probe', steps[0])
         self.assertIn('actions/upload-artifact@', steps[1])
         self.assertIn('id: capacity-election', steps[2])
@@ -85,7 +107,8 @@ class CapacityWorkflowTests(unittest.TestCase):
         workflow = (Path(__file__).resolve().parents[3] /
                     '.github/workflows/bench-e2e.yml').read_text()
         steps = re.split(r'^      - ', workflow, flags=re.MULTILINE)[1:]
-        for step in (steps[0], steps[2]):
+        for step in [next(s for s in steps if "id: " + identity + "\n" in s)
+                     for identity in ("runner-cleanup", "capacity-probe", "capacity-election")]:
             self.assertIn('ref: context.sha', step)
             self.assertIn('debug: false', step)
             self.assertIn('retries: 0', step)

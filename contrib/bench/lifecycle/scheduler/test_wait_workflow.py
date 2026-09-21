@@ -47,9 +47,9 @@ class WorkflowTests(unittest.TestCase):
         self.assertIn("env.BENCH_LIFECYCLE_SCHEDULER == 'true'",step)
         chunk=textwrap.dedent(step.split('        run: |\n')[1])
         script='sudo() { printf "%s\\0" "$@"; return 0; }; export -f sudo\n'+chunk.replace('>/dev/null 2>&1','')
-        result=subprocess.run(['bash','-c',script],env=dict(os.environ,RUNNER_TEMP='/owned scratch'),capture_output=True)
+        result=subprocess.run(['bash','-c',script],env=dict(os.environ,RUNNER_TEMP='/unrelated runner scratch',TMPDIR='/owned scratch'),capture_output=True)
         self.assertEqual(result.returncode,0)
-        for x in ('TEMPO_SCHEDULER_FAULT_SCRATCH=/owned scratch','test_fault_reasons.py','TEMPO_SCHEDULER_LIVE_TEST=1'):
+        for x in ('TMPDIR=/owned scratch','TEMPO_SCHEDULER_FAULT_SCRATCH=/owned scratch','test_fault_reasons.py','TEMPO_SCHEDULER_LIVE_TEST=1'):
             self.assertIn(x,result.stdout.decode().split('\0'))
 
     def test_nu_full_capture_is_required(self):

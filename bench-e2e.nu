@@ -4,6 +4,7 @@
 # Shared build/cache/report helpers are sourced from tempo.nu; the replacement
 # e2e topology stays isolated here.
 source tempo.nu
+source contrib/bench/lifecycle/prebuilt.nu
 source contrib/bench/lifecycle/run-plan.nu
 source contrib/bench/lifecycle/owned-worktrees.nu
 
@@ -166,6 +167,39 @@ def validate-schelk-state [a_state_path: string, b_state_path: string] {
         if $a_mount == $b_mount {
             print $"Error: schelk a/b state files use the same mount_point: ($a_mount)"
             exit 1
+        }
+    }
+}
+
+# Mount only existing, validated scratch volumes before checking their metadata.
+# Never recover, copy, initialize, or promote a snapshot in this preflight.
+def prebuilt-mount-existing-snapshots [force: bool, init_only: bool] {
+    prebuilt-require-snapshot true true $force $init_only
+    if not (has-schelk) { return }
+    mut pending = []
+    for pair in [
+        {state: $E2E_A_STATE_PATH, mount: $E2E_A_MOUNT}
+        {state: $E2E_B_STATE_PATH, mount: $E2E_B_MOUNT}
+    ] {
+        let state = (try { schelk-state $pair.state } catch {
+            error make {msg: "Prebuilt snapshot state admission failed"}
+        })
+        let mounted = ($state | get --optional is_mounted)
+        if ($mounted | describe) != "bool" or ($state | get --optional mount_point) != $pair.mount {
+            error make {msg: "Prebuilt snapshot state admission failed"}
+        }
+        let actual = (^mountpoint -q $pair.mount | complete)
+        if $actual.exit_code not-in [0 32] or $mounted != ($actual.exit_code == 0) {
+            error make {msg: "Prebuilt snapshot mount state disagrees"}
+        }
+        if not $mounted { $pending = ($pending | append $pair.state) }
+    }
+    # Validate both sides before any mutation, and cover partial mount failures.
+    if not ($pending | is-empty) { touch .bench-snapshot-dirty }
+    for state_path in $pending {
+        let result = (sudo schelk --state-path $state_path mount | complete)
+        if $result.exit_code != 0 {
+            error make {msg: "Prebuilt existing snapshot mount failed"}
         }
     }
 }
@@ -574,6 +608,9 @@ def systemd-scope-command [unit: string, cpus: string, memory: string, script: s
 
     let memory_args = if $memory != "" { ["-p" $"MemoryMax=($memory)"] } else { [] }
     mut telemetry_env_names = []
+    if ($env.BENCH_RUN_CLEANUP? | default "") == "true" {
+        $telemetry_env_names = ($telemetry_env_names | append "TMPDIR")
+    }
     if ($env.TEMPO_TELEMETRY_URL? | default "" | str length) > 0 {
         $telemetry_env_names = ($telemetry_env_names | append "TEMPO_TELEMETRY_URL")
     }
@@ -583,7 +620,13 @@ def systemd-scope-command [unit: string, cpus: string, memory: string, script: s
     let preserve_env_args = if ($telemetry_env_names | length) > 0 {
         [$"--preserve-env=($telemetry_env_names | str join ',')"]
     } else { [] }
-    let telemetry_env = ($telemetry_env_names | each { |name| $"--setenv=($name)" })
+    let telemetry_env = ($telemetry_env_names | each { |name|
+        if $name == "TMPDIR" {
+            $"--setenv=TMPDIR=($env.TMPDIR)"
+        } else {
+            $"--setenv=($name)"
+        }
+    })
     [
         "sudo"
         ...$preserve_env_args
@@ -1005,6 +1048,13 @@ def build-valscope-static-reports [
 
 def run-local-e2e-phase [run: record, ctx: record] {
     let phase = $run.phase
+    if ($ctx.prebuilt_directory? | default "") != "" {
+        let features = if $run.side == "baseline" { $ctx.baseline_build_features } else { $ctx.feature_build_features }
+        let selected = (prebuilt-select $ctx.prebuilt_directory $run.side $run.ref $features $ctx.profile $ctx.a.cpus $ctx.b.cpus)
+        if $selected.tempo != $run.tempo or $selected.txgen_tempo != $ctx.txgen.txgen_tempo_bin or $selected.bench != $ctx.txgen.txgen_bench_bin {
+            error make {msg: "Prebuilt phase binary identity changed"}
+        }
+    }
     print $"=== Starting local e2e phase: ($phase) ==="
     let run_type = $run.side
     let genesis = ($run | get -o genesis | default $ctx.genesis)
@@ -1279,6 +1329,9 @@ def run-local-e2e-phase [run: record, ctx: record] {
             if (find-tempo-pids | length) != 0 {
                 error make {msg: "Cannot retain lifecycle phase while validators remain active"}
             }
+            if ($ctx.prebuilt_directory? | default "") != "" {
+                cp $"($ctx.prebuilt_directory)/admission.json" $"($lifecycle_report_dir)/prebuilt-admission.json"
+            }
             let archive = (^python3 contrib/bench/lifecycle/phase_archive.py pack $lifecycle_report_dir --remove-source | complete)
             print $archive.stdout
             if $archive.stderr != "" { print $archive.stderr }
@@ -1509,11 +1562,19 @@ def "main e2e" [
     --feature-hardfork: string = ""                      # Latest active hardfork for feature phases
     --tune                                              # Apply system tuning
     --loud                                              # Show node debug logs
+    --prebuilt-directory: string = ""                     # Verified job-owned portable bundle; no compilation
     --no-cache                                           # Skip binary cache
     --valscope-static-report                             # Generate static ValScope reports under the results directory
     --valscope-dir: string = "../valscope"               # Path to the ValScope checkout
     --skip-summary                                       # Leave summary generation to a later workflow step
 ] {
+    let prebuilt = $prebuilt_directory != ""
+    if $prebuilt != (($env.BENCH_BINARY_MODE? | default "build_v1") == "prebuilt_v1") {
+        error make {msg: "Prebuilt workflow and binary route must agree"}
+    }
+    if $prebuilt and (not $lifecycle or $profile != "profiling" or not $no_default_features or $force_bloat or $init_only or $no_cache or $samply or $tracy != "off" or $valscope_static_report or $baseline_env != "" or $feature_env != "" or $bench_env != "" or $baseline_features != "" or $feature_features != "") {
+        error make {msg: "Unsupported prebuilt execution inputs"}
+    }
     if $lifecycle_scheduler and (not $lifecycle or $lifecycle_detail != "full" or $lifecycle_prewarm_cpu != "disabled" or $samply or $tracy != "off") {
         error make {msg: "Kernel fault diagnostic requires full lifecycle and no other observer"}
     }
@@ -1645,12 +1706,23 @@ def "main e2e" [
     }
 
     validate-schelk-state $E2E_A_STATE_PATH $E2E_B_STATE_PATH
+    # Reject missing snapshot metadata before process cleanup or restoration.
+    # Recheck after restoration below; neither check may fall back to generation.
+    if $prebuilt {
+        prebuilt-mount-existing-snapshots $force_bloat $init_only
+        prebuilt-require-snapshot true (e2e-snapshots-ready $a_db $b_db) $force_bloat $init_only
+    }
+    if ($env.BENCH_RUN_CLEANUP? | default "") == "true" {
+        if not (has-schelk) { error make {msg: "Runner cleanup requires schelk snapshots"} }
+        touch .bench-snapshot-dirty
+    }
     cleanup-local-e2e-processes
 
     bench-restore-at $E2E_A_STATE_PATH $E2E_A_MOUNT $a_db
     bench-restore-at $E2E_B_STATE_PATH $E2E_B_MOUNT $b_db
 
     let snapshots_ready = (e2e-snapshots-ready $a_db $b_db)
+    prebuilt-require-snapshot $prebuilt $snapshots_ready $force_bloat $init_only
     let should_init_snapshots = $force_bloat or (not $snapshots_ready)
     if (not $snapshots_ready) and (not $force_bloat) {
         print $"Local e2e snapshot ($bloat) is missing required files; initializing it once."
@@ -1808,19 +1880,21 @@ def "main e2e" [
         $builds = ($builds | append { wt: $feature_wt, ref_name: $feature, sha: $feature, label: "feature", features: $feature_tbc.features, extra_rustflags: $feature_tbc.extra_rustflags, bench_features: $feature_build_features })
     }
     let build_binary = { |b|
-        if $effective_no_cache {
+        if $prebuilt {
+            prebuilt-select $prebuilt_directory $b.label $b.sha $b.features $profile $E2E_A_CPUS $E2E_B_CPUS | ignore
+        } else if $effective_no_cache {
             build-in-worktree --lifecycle-build=$lifecycle --no-cache --no-default-features=$no_default_features --extra-rustflags $b.extra_rustflags --bench-features $b.bench_features $b.wt $b.ref_name $profile $b.features $b.sha
         } else {
             build-in-worktree --lifecycle-build=$lifecycle --no-default-features=$no_default_features $b.wt $b.ref_name $profile $b.features $b.sha
         }
     }
-    let reuse_baseline_binary = (lifecycle-reuse-build $lifecycle $effective_no_cache $builds)
+    let reuse_baseline_binary = (not $prebuilt) and (lifecycle-reuse-build $lifecycle $effective_no_cache $builds)
     let selected_builds = if $reuse_baseline_binary { $builds | take 1 } else { $builds }
     if $lifecycle {
         try {
             for build in $selected_builds {
                 do $build_binary $build
-                lifecycle-trim-worktree $build.wt $profile
+                if not $prebuilt { lifecycle-trim-worktree $build.wt $profile }
             }
         } catch { |build_error|
             e2e-cleanup-owned-worktrees $owned_build_worktrees
@@ -1829,8 +1903,8 @@ def "main e2e" [
     } else {
         $builds | par-each { |build| do $build_binary $build } | ignore
     }
-    let baseline_tempo = if $needs_baseline { worktree-bin $baseline_wt $profile "tempo" } else { "" }
-    let feature_tempo = if $reuse_baseline_binary { $baseline_tempo } else if $needs_feature { worktree-bin $feature_wt $profile "tempo" } else { "" }
+    let baseline_tempo = if $needs_baseline { if $prebuilt { (prebuilt-select $prebuilt_directory "baseline" $baseline $baseline_tbc.features $profile $E2E_A_CPUS $E2E_B_CPUS).tempo } else { worktree-bin $baseline_wt $profile "tempo" } } else { "" }
+    let feature_tempo = if $reuse_baseline_binary { $baseline_tempo } else if $needs_feature { if $prebuilt { (prebuilt-select $prebuilt_directory "feature" $feature $feature_tbc.features $profile $E2E_A_CPUS $E2E_B_CPUS).tempo } else { worktree-bin $feature_wt $profile "tempo" } } else { "" }
     let regenesis_tempo = if $regenesis_needed {
         if $needs_feature { $feature_tempo } else { $baseline_tempo }
     } else { "" }
@@ -1882,6 +1956,9 @@ def "main e2e" [
         txgen: $txgen
         results_dir: $results_dir
         profile: $profile
+        prebuilt_directory: $prebuilt_directory
+        baseline_build_features: $baseline_tbc.features
+        feature_build_features: $feature_tbc.features
         samply: $samply
         samply_args: $samply_args_list
         lifecycle: $lifecycle
