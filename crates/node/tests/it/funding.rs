@@ -130,7 +130,7 @@ async fn funding_rpc_native_dex_payment_and_rollback() -> eyre::Result<()> {
             );
         }
         let requirement = FundingRequirement {
-            asset: PATH_USD_ADDRESS,
+            token: PATH_USD_ADDRESS,
             amount: U256::from(50 * UNIT),
             slippage_bps: Some(100),
             sources: vec![
@@ -306,7 +306,7 @@ async fn funding_rpc_native_dex_payment_and_rollback() -> eyre::Result<()> {
         let mut denied = tx.clone();
         denied.nonce = 3;
         denied.require_funds = Some(vec![FundingRequirement {
-            asset: PATH_USD_ADDRESS,
+            token: PATH_USD_ADDRESS,
             amount: U256::ZERO,
             sources: vec![],
             slippage_bps: None,
@@ -334,7 +334,7 @@ async fn funding_rpc_native_dex_payment_and_rollback() -> eyre::Result<()> {
         invalidated.nonce = 3;
         invalidated.require_funds = Some(vec![
             FundingRequirement {
-                asset: assets[0],
+                token: assets[0],
                 amount: U256::from(145 * UNIT),
                 sources: vec![],
                 slippage_bps: None,
@@ -387,7 +387,7 @@ async fn funding_rpc_rejects_pre_t13_transactions() -> eyre::Result<()> {
             max_fee_per_gas: 20_000_000_000,
             fee_token: Some(PATH_USD_ADDRESS),
             require_funds: Some(vec![FundingRequirement {
-                asset: PATH_USD_ADDRESS,
+                token: PATH_USD_ADDRESS,
                 amount: U256::ZERO,
                 sources: vec![],
                 slippage_bps: None,

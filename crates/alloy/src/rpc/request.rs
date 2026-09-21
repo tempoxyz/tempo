@@ -608,7 +608,7 @@ mod tests {
             "to": "0x0000000000000000000000000000000000000001",
             "nonce": "0x0", "gas": "0x186a0", "maxFeePerGas": "0x1", "maxPriorityFeePerGas": "0x0",
             "requireFunds": [{
-                "asset": "0x0000000000000000000000000000000000000002",
+                "token": "0x0000000000000000000000000000000000000002",
                 "amount": "0x32", "slippageBps": "0x0",
                 "sources": [{"address": "0x0000000000000000000000000000000000000003", "data": "0xabcd"}]
             }]

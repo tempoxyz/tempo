@@ -13,7 +13,7 @@ use tempo_precompiles::{
 
 /// Internal execution input. Signed transaction encoding is defined separately.
 pub(in crate::handler) struct FundingRequirement {
-    pub asset: Address,
+    pub token: Address,
     pub amount: U256,
     pub slippage_bps: u16,
     pub sources: Vec<ITIP20Funder::Source>,
@@ -80,7 +80,7 @@ impl<DB: alloy_evm::Database, I> TempoEvmHandler<DB, I> {
             .iter()
             .map(|entry| {
                 Ok(FundingRequirement {
-                    asset: entry.asset,
+                    token: entry.token,
                     amount: entry.amount,
                     slippage_bps: u16::try_from(entry.slippage_bps.unwrap_or_default())
                         .map_err(|_| TempoInvalidTransaction::InvalidFundingSlippage)?,
@@ -175,7 +175,7 @@ impl<DB: alloy_evm::Database, I> TempoEvmHandler<DB, I> {
                     {
                         return Err(invalid_context());
                     }
-                    funding_balance(requirement.asset, account)
+                    funding_balance(requirement.token, account)
                 })?;
                 let initial_balance = balance;
                 let mut remaining_cost = self.funding_storage(evm, gas, || {
@@ -198,7 +198,7 @@ impl<DB: alloy_evm::Database, I> TempoEvmHandler<DB, I> {
                             is_static: true,
                             permission: None,
                             data: IFundingSource::prepareCall {
-                                assetOut: requirement.asset,
+                                assetOut: requirement.token,
                                 maxCost: remaining_cost,
                                 data: request.data.clone(),
                                 policyData: Bytes::new(),
@@ -244,7 +244,7 @@ impl<DB: alloy_evm::Database, I> TempoEvmHandler<DB, I> {
                             permission: Some(&permission),
                             data: IFundingSource::fundCall {
                                 account,
-                                assetOut: requirement.asset,
+                                assetOut: requirement.token,
                                 amountOut: maximum,
                                 data: plan.data,
                             }
@@ -258,7 +258,7 @@ impl<DB: alloy_evm::Database, I> TempoEvmHandler<DB, I> {
                     }
                     let (new_balance, cost) = self.funding_storage(evm, gas, || {
                         let usage = permission.usage()?;
-                        let new_balance = funding_balance(requirement.asset, account)?;
+                        let new_balance = funding_balance(requirement.token, account)?;
                         let received = new_balance.checked_sub(balance);
                         if received.is_none_or(|amount| {
                             amount > maximum || (amount.is_zero() && !usage.amount_in.is_zero())
@@ -278,7 +278,7 @@ impl<DB: alloy_evm::Database, I> TempoEvmHandler<DB, I> {
                                 funder,
                                 ITIP20Funder::SourceFunded {
                                     account,
-                                    assetOut: requirement.asset,
+                                    assetOut: requirement.token,
                                     source: request.target,
                                     requestHash: keccak256(&request.data),
                                     assetIn: plan.assetIn,
@@ -310,7 +310,7 @@ impl<DB: alloy_evm::Database, I> TempoEvmHandler<DB, I> {
                         ITIP20Funder::FundsRequired {
                             account,
                             key: Address::ZERO,
-                            asset: requirement.asset,
+                            asset: requirement.token,
                             requiredAmount: requirement.amount,
                             fundedAmount: balance - initial_balance,
                         }
@@ -321,7 +321,7 @@ impl<DB: alloy_evm::Database, I> TempoEvmHandler<DB, I> {
             // A later requirement may consume an earlier requirement's output.
             for requirement in requirements {
                 self.funding_storage(evm, gas, || {
-                    let balance = funding_balance(requirement.asset, account)?;
+                    let balance = funding_balance(requirement.token, account)?;
                     if balance < requirement.amount {
                         return Err(TIP20FunderError::InsufficientFunding(
                             ITIP20Funder::InsufficientFunding {
