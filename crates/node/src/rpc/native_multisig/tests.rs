@@ -105,11 +105,7 @@ fn real_grant_checks_state_before_cryptography() {
                 from: Some(parent),
                 ..Default::default()
             },
-            key_authorization: Some(
-                authorization
-                    .clone()
-                    .into_signed(TempoSignature::Multisig(signature)),
-            ),
+            key_authorization: Some(authorization.clone().into_signed(signature)),
             ..Default::default()
         };
         let result =
@@ -202,8 +198,11 @@ fn prepares_independent_delegate_and_parent_roles(version: u64) {
         .account = Some(wrong);
     let mut wrong_signer = request.clone();
     wrong_signer.key_authorization_simulation = None;
-    wrong_signer.key_authorization.as_mut().unwrap().signature =
-        TempoSignature::Multisig(request.multisig_simulation_signature.clone().unwrap());
+    wrong_signer.key_authorization.as_mut().unwrap().signature = request
+        .multisig_simulation_signature
+        .clone()
+        .unwrap()
+        .into();
     let mut wrong_delegate = request.clone();
     wrong_delegate.key_id = Some(parent);
     let mut missing_witness = request.clone();
