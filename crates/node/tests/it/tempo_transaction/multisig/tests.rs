@@ -229,7 +229,7 @@ async fn native_rpc_fill_and_access_list_preserve_authority() -> eyre::Result<()
     )
     .with_account(account.address);
     let signature = account.quorum(grant.signature_hash(), false)?;
-    let grant = grant.into_signed(TempoSignature::Multisig(signature));
+    let grant = grant.into_signed(signature);
     request["keyAuthorization"] = serde_json::to_value(&grant)?;
     let filled: serde_json::Value = env
         .provider()
@@ -281,7 +281,7 @@ async fn native_rpc_delegate_rotation_preserves_grant_and_spending() -> eyre::Re
                 limit,
                 period: 0,
             }]);
-    let grant_signature = TempoSignature::Multisig(parent.quorum(grant.signature_hash(), false)?);
+    let grant_signature = parent.quorum(grant.signature_hash(), false)?;
     let mut tx = parent.transaction(
         &env,
         vec![create_transfer_call(
@@ -374,11 +374,13 @@ async fn native_rpc_maximum_mixed_quorums_and_validation_cost_order() -> eyre::R
     let grant =
         KeyAuthorization::unrestricted(env.chain_id(), SignatureType::Multisig, delegate.address)
             .with_account(parent.address);
-    let grant_signature = TempoSignature::Multisig(parent.quorum(grant.signature_hash(), false)?);
+    let grant_signature = parent.quorum(grant.signature_hash(), false)?;
     let mut tx = parent.transaction(&env, vec![noop()]);
-    tx.key_authorization = Some(grant.clone().into_signed(TempoSignature::Multisig(
-        parent.quorum(grant.signature_hash(), true)?,
-    )));
+    tx.key_authorization = Some(
+        grant
+            .clone()
+            .into_signed(parent.quorum(grant.signature_hash(), true)?),
+    );
 
     // The outer delegate quorum is verified first, then the grant's quorum. Only the last
     // approval of the grant signs the wrong digest, so the funded rejection reaches check 16.
