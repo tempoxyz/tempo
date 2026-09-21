@@ -151,6 +151,7 @@ crate::sol! {
         error IngressAlreadyExists(string ingress);
         error EmptyV1ValidatorSet();
         error InvalidMigrationIndex();
+        error V1ValidatorSetTooLarge();
         error InvalidOwner();
         error InvalidPublicKey();
         error InvalidSignature();
@@ -172,5 +173,10 @@ impl ValidatorConfigV2Error {
     /// Backwards-compatible alias for the Alloy-generated `empty_v_1_validator_set` constructor.
     pub fn empty_v1_validator_set() -> Self {
         Self::empty_v_1_validator_set()
+    }
+
+    /// Alias for the Alloy-generated `v_1_validator_set_too_large` constructor.
+    pub fn v1_validator_set_too_large() -> Self {
+        Self::v_1_validator_set_too_large()
     }
 }

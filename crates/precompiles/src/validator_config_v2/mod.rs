@@ -863,6 +863,8 @@ impl ValidatorConfigV2 {
     ///
     /// # Errors
     /// - `AlreadyInitialized` — V2 is already initialized
+    /// - `EmptyV1ValidatorSet` — V1 has no validators to migrate
+    /// - `V1ValidatorSetTooLarge` — V1 holds more than `u8::MAX` validators
     /// - `Unauthorized` — `caller` is not the owner (after copying from V1 if needed)
     fn require_migration_owner(&mut self, caller: Address) -> Result<Config> {
         let mut config = self.config.read()?.require_not_init()?;
@@ -874,7 +876,10 @@ impl ValidatorConfigV2 {
             if v1_count == 0 {
                 Err(ValidatorConfigV2Error::empty_v_1_validator_set())?
             }
-            config.v1_validator_count = v1_count as u8;
+            // The snapshot is a `u8`; refuse to start a migration that could not index every
+            // V1 entry instead of silently truncating the count.
+            config.v1_validator_count = u8::try_from(v1_count)
+                .map_err(|_| ValidatorConfigV2Error::v1_validator_set_too_large())?;
             self.config.write(Config {
                 owner: config.owner,
                 is_init: false,
@@ -2049,6 +2054,49 @@ mod tests {
                 result,
                 Err(ValidatorConfigV2Error::invalid_migration_index().into())
             );
+
+            Ok(())
+        })
+    }
+
+    #[test]
+    fn test_migration_rejects_v1_set_larger_than_snapshot() -> eyre::Result<()> {
+        let mut storage = HashMapStorageProvider::new(1);
+        let owner = Address::random();
+
+        StorageCtx::enter(&mut storage, || {
+            let mut v1 = v1();
+            v1.initialize(owner)?;
+            for i in 0..=u64::from(u8::MAX) {
+                let mut public_key = [0u8; 32];
+                public_key[..8].copy_from_slice(&(i + 1).to_be_bytes());
+                v1.add_validator(
+                    owner,
+                    tempo_contracts::precompiles::IValidatorConfig::addValidatorCall {
+                        newValidatorAddress: Address::random(),
+                        publicKey: FixedBytes::<32>::from(public_key),
+                        active: true,
+                        inboundAddress: format!("10.{}.{}.1:8000", i / 256, i % 256),
+                        outboundAddress: format!("10.{}.{}.1:9000", i / 256, i % 256),
+                    },
+                )?;
+            }
+            assert_eq!(v1.validator_count()?, u64::from(u8::MAX) + 1);
+
+            let mut v2 = ValidatorConfigV2::new();
+            v2.storage.set_block_number(100);
+            let result = v2.migrate_validator(
+                owner,
+                IValidatorConfigV2::migrateValidatorCall {
+                    idx: u64::from(u8::MAX),
+                },
+            );
+            assert_eq!(
+                result,
+                Err(ValidatorConfigV2Error::v1_validator_set_too_large().into())
+            );
+            // Nothing was snapshotted, so a later, smaller V1 set can still migrate.
+            assert!(v2.config.read()?.owner.is_zero());
 
             Ok(())
         })
