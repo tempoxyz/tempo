@@ -35,10 +35,10 @@ impl TempoTransactionRequest {
                 || (self.multisig_simulation.is_some()
                     && self.multisig_simulation_signature.is_none())
                 || (self.key_authorization_simulation.is_some()
-                    && !self
+                    && self
                         .key_authorization
                         .as_ref()
-                        .is_some_and(|grant| grant.signature.is_multisig())))
+                        .is_none_or(|grant| grant.signature.as_multisig().is_none())))
         {
             return Err(ValueError::new(
                 self,
