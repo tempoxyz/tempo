@@ -3,7 +3,7 @@ pub use ITIP20Funder::{
 };
 
 crate::sol! {
-    /// TIP-1120 synchronous funding of required TIP-20 balances.
+    /// TIP-1120 transaction funding events and errors; no callable funding entry point.
     #[derive(Debug, PartialEq, Eq)]
     #[sol(abi)]
     interface ITIP20Funder {
@@ -20,7 +20,6 @@ crate::sol! {
         error InputLimitExceeded(address source, uint256 limit, uint256 attempted);
         error UnexpectedFundingAmount(address source, uint256 maximum, uint256 received);
         error InsufficientFunding(uint256 required, uint256 available);
-        error FundingReentrancy();
 
         /// Records a verified positive contribution and its actual input consumption.
         /// @param requestHash Hash of the original source call data signed by the sender.
@@ -41,57 +40,14 @@ crate::sol! {
             uint256 requiredAmount,
             uint256 fundedAmount
         );
-
-        /// Makes the authenticated account's balance at least amount.
-        /// @return fundedAmount Newly delivered units, excluding the existing balance.
-        function requireFunds(address asset, uint256 amount, Source[] calldata sources)
-            external returns (uint256 fundedAmount);
     }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
-    use alloc::vec;
-    use alloy_primitives::{Address, B256, U256, address, b256, bytes, hex};
-    use alloy_sol_types::{SolCall, SolError, SolEvent};
-
-    #[test]
-    fn funding_call_abi_vector() {
-        let call = ITIP20Funder::requireFundsCall {
-            asset: address!("0000000000000000000000000000000000000001"),
-            amount: U256::from(50),
-            sources: vec![ITIP20Funder::Source {
-                target: address!("0000000000000000000000000000000000000002"),
-                data: bytes!("1234"),
-            }],
-        };
-        let encoded = hex!(
-            "1e35b1a8"
-            "0000000000000000000000000000000000000000000000000000000000000001"
-            "0000000000000000000000000000000000000000000000000000000000000032"
-            "0000000000000000000000000000000000000000000000000000000000000060"
-            "0000000000000000000000000000000000000000000000000000000000000001"
-            "0000000000000000000000000000000000000000000000000000000000000020"
-            "0000000000000000000000000000000000000000000000000000000000000002"
-            "0000000000000000000000000000000000000000000000000000000000000040"
-            "0000000000000000000000000000000000000000000000000000000000000002"
-            "1234000000000000000000000000000000000000000000000000000000000000"
-        );
-        assert_eq!(call.abi_encode(), encoded);
-        assert_eq!(
-            ITIP20Funder::requireFundsCall::abi_decode_validate(&encoded).unwrap(),
-            call
-        );
-        assert!(ITIP20Funder::requireFundsCall::abi_decode_validate(&encoded[..100]).is_err());
-        assert_eq!(
-            ITIP20Funder::requireFundsCall::abi_decode_returns_validate(&hex!(
-                "000000000000000000000000000000000000000000000000000000000000001e"
-            ))
-            .unwrap(),
-            U256::from(30)
-        );
-    }
+    use alloy_primitives::{Address, B256, U256, address, b256, hex};
+    use alloy_sol_types::{SolError, SolEvent};
 
     #[test]
     fn funding_error_abi_vector() {

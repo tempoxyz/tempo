@@ -1,17 +1,12 @@
-use super::{
-    funding::{FundingContinuation, Stage},
-    *,
-};
-use crate::{TempoEvm, gas_params::tempo_gas_params, handler::TempoEvmHandler};
-use alloy_primitives::{Address, Bytes, U256, address, hex};
+use super::*;
+use crate::{gas_params::tempo_gas_params, handler::TempoEvmHandler};
+use alloy_primitives::{address, hex};
 use alloy_sol_types::{SolCall, SolError, SolValue};
 use revm::{
-    Context, Inspector, MainContext,
+    Context, MainContext,
     context::{CfgEnv, ContextSetters, TxEnv},
     database::{CacheDB, EmptyDB},
-    handler::{Handler, SystemCallTx},
-    inspector::InspectorHandler,
-    interpreter::{CallInputs, CallOutcome, CallScheme, FrameInput, InstructionResult},
+    handler::SystemCallTx,
     state::{AccountInfo, Bytecode},
 };
 use tempo_chainspec::hardfork::TempoHardfork;
@@ -21,63 +16,6 @@ const FUNDER: Address = address!("ffffffffffffffffffffffffffffffffffff1120");
 const SOURCE: Address = address!("0000000000000000000000000000000000001000");
 const ACCOUNT: Address = address!("0000000000000000000000000000000000002000");
 const ASSET: Address = address!("0000000000000000000000000000000000003000");
-
-// This admission hook is absent from node builds. It supplies one transport-only funding invocation.
-pub(super) fn admit<DB: Database>(
-    ctx: &mut TempoContext<DB>,
-    init: &FrameInit,
-) -> Option<FundingContinuation> {
-    if let FrameInput::Call(inputs) = &init.frame_input {
-        if inputs.bytecode_address == FUNDER {
-            let data = inputs.input.bytes(ctx);
-            let request = ITIP20Funder::requireFundsCall::abi_decode_validate(&data);
-            let stage = if init.depth > 0 {
-                Stage::Finished(
-                    InstructionResult::Revert,
-                    ITIP20Funder::FundingReentrancy {}.abi_encode().into(),
-                )
-            } else if inputs.is_static
-                || inputs.scheme != CallScheme::Call
-                || !inputs.value.get().is_zero()
-            {
-                Stage::Finished(
-                    InstructionResult::Revert,
-                    ITIP20Funder::InvalidFundingContext {}.abi_encode().into(),
-                )
-            } else if let Ok(request) = &request {
-                if request.sources.len() == 1 {
-                    Stage::Prepare(
-                        IFundingSource::prepareCall {
-                            assetOut: request.asset,
-                            maxCost: request.amount,
-                            data: request.sources[0].data.clone(),
-                            policyData: Bytes::new(),
-                            ownerAuthorized: true,
-                        }
-                        .abi_encode()
-                        .into(),
-                    )
-                } else {
-                    Stage::Finished(InstructionResult::Revert, Bytes::new())
-                }
-            } else {
-                Stage::Finished(InstructionResult::Revert, Bytes::new())
-            };
-            return Some(FundingContinuation {
-                source: request
-                    .as_ref()
-                    .ok()
-                    .and_then(|r| r.sources.first())
-                    .map_or(Address::ZERO, |s| s.target),
-                account: inputs.caller,
-                asset_out: request.as_ref().map_or(Address::ZERO, |r| r.asset),
-                amount_out: request.as_ref().map_or(U256::ZERO, |r| r.amount),
-                stage,
-            });
-        }
-    }
-    None
-}
 
 #[derive(Debug, Default)]
 struct Trace {
@@ -153,25 +91,114 @@ fn run(
     gas: u64,
     inspect: bool,
 ) -> revm::context::result::ExecutionResult {
-    let data = ITIP20Funder::requireFundsCall {
-        asset: ASSET,
-        amount: U256::from(50),
-        sources: vec![ITIP20Funder::Source {
-            target: SOURCE,
-            data: U256::from(mode).abi_encode().into(),
-        }],
-    }
-    .abi_encode()
-    .into();
-    let mut tx = TxEnv::new_system_tx_with_caller(ACCOUNT, FUNDER, data);
-    tx.gas_limit = gas;
+    run_batch(evm, mode, gas, inspect, false)
+}
+
+// Test-only orchestration until transaction admission, policy checks, and input metering are implemented.
+fn run_batch(
+    evm: &mut TempoEvm<CacheDB<EmptyDB>, Trace>,
+    mode: u64,
+    limit: u64,
+    inspect: bool,
+    fail_application: bool,
+) -> revm::context::result::ExecutionResult {
+    let mut tx = TxEnv::new_system_tx_with_caller(ACCOUNT, ASSET, Bytes::new());
+    tx.gas_limit = limit;
     evm.inner.ctx.set_tx(tx.into());
+    let original_tx = evm.inner.ctx.tx.clone();
+    let checkpoint = evm.ctx_mut().journal_mut().checkpoint();
     let mut handler = TempoEvmHandler::new();
-    if inspect {
-        handler.inspect_run_system_call(evm).unwrap()
+    let mut gas = GasTracker::new(limit, limit, 0);
+    let run_loop = if inspect {
+        TempoEvmHandler::inspect_run_exec_loop
     } else {
-        handler.run_system_call(evm).unwrap()
+        TempoEvmHandler::run_exec_loop
+    };
+    let mut result = handler
+        .execute_funding_call_with(
+            evm,
+            &mut gas,
+            FundingCall {
+                caller: FUNDER,
+                source: SOURCE,
+                is_static: true,
+                data: IFundingSource::prepareCall {
+                    assetOut: ASSET,
+                    maxCost: U256::from(50),
+                    data: U256::from(mode).abi_encode().into(),
+                    policyData: Bytes::new(),
+                    ownerAuthorized: true,
+                }
+                .abi_encode()
+                .into(),
+            },
+            run_loop,
+        )
+        .unwrap();
+    if result.instruction_result().is_ok() {
+        match IFundingSource::prepareCall::abi_decode_returns_validate(result.output().data()) {
+            Ok(plan) => {
+                result = handler
+                    .execute_funding_call_with(
+                        evm,
+                        &mut gas,
+                        FundingCall {
+                            caller: FUNDER,
+                            source: SOURCE,
+                            is_static: false,
+                            data: IFundingSource::fundCall {
+                                account: ACCOUNT,
+                                assetOut: ASSET,
+                                amountOut: U256::from(50),
+                                data: plan.data,
+                            }
+                            .abi_encode()
+                            .into(),
+                        },
+                        run_loop,
+                    )
+                    .unwrap();
+            }
+            Err(_) => {
+                result = FrameResult::Call(CallOutcome::new(
+                    InterpreterResult {
+                        result: InstructionResult::Revert,
+                        gas: *result.gas(),
+                        output: ITIP20Funder::InvalidFundingPlan { source: SOURCE }
+                            .abi_encode()
+                            .into(),
+                    },
+                    0..0,
+                ));
+            }
+        }
     }
+    if result.instruction_result().is_ok() && fail_application {
+        alloy_sol_types::sol! { function application(); }
+        evm.inner.ctx.tx.inner.kind = revm::primitives::TxKind::Call(SOURCE);
+        evm.inner.ctx.tx.inner.data = applicationCall {}.abi_encode().into();
+        result = if inspect {
+            handler.inspect_execute_single_call(evm, &mut gas).unwrap()
+        } else {
+            handler.execute_single_call(evm, &mut gas).unwrap()
+        };
+        evm.inner.ctx.tx.inner = original_tx.inner.clone();
+    }
+    if result.instruction_result().is_ok() {
+        evm.ctx_mut().journal_mut().checkpoint_commit();
+    } else {
+        evm.ctx_mut().journal_mut().checkpoint_revert(checkpoint);
+        // The shared tracker includes state gas from earlier successful callbacks.
+        super::super::normalize_failed_batch_result_gas(&mut result, limit, 0, 0);
+    }
+    assert_eq!(evm.inner.ctx.tx.inner, original_tx.inner);
+    assert!(evm.inner.frame_stack.index().is_none());
+    let result_gas = post_execution::build_result_gas(
+        result.instruction_result().is_halt(),
+        result.gas(),
+        InitialAndFloorGas::default(),
+    );
+    handler.execution_result(evm, result, result_gas).unwrap()
 }
 
 fn slot(evm: &TempoEvm<CacheDB<EmptyDB>, Trace>, index: u64) -> U256 {
@@ -196,13 +223,12 @@ fn prepares_and_funds_with_native_caller() {
     assert_eq!(
         evm.inner.inspector.calls,
         vec![
-            (ACCOUNT, FUNDER, CallScheme::Call, false),
             (FUNDER, SOURCE, CallScheme::StaticCall, true),
             (FUNDER, SOURCE, CallScheme::Call, false),
         ]
     );
-    assert_eq!(evm.inner.inspector.ends.len(), 3);
-    assert_eq!(evm.inner.inspector.ends.last().unwrap().0, FUNDER);
+    assert_eq!(evm.inner.inspector.ends.len(), 2);
+    assert_eq!(evm.inner.inspector.ends.last().unwrap().0, SOURCE);
     assert!(evm.inner.inspector.steps > 0);
     assert_eq!(result.logs().len(), 1);
 }
@@ -215,7 +241,7 @@ fn rejects_static_writes_and_malformed_plans() {
         assert!(!result.is_success(), "mode {mode}");
         assert_eq!(slot(&evm, 0), U256::ZERO);
         assert!(result.logs().is_empty());
-        assert_eq!(evm.inner.inspector.calls.len(), 2);
+        assert_eq!(evm.inner.inspector.calls.len(), 1);
         match mode {
             1 => assert_eq!(
                 evm.inner.inspector.ends[0].1,
@@ -268,14 +294,14 @@ fn failure_reverts_source_storage_and_logs() {
 }
 
 #[test]
-fn nested_revert_and_reentrancy_do_not_corrupt_parent() {
+fn nested_revert_does_not_corrupt_parent() {
     for mode in [6, 7] {
         let mut evm = evm(TempoHardfork::T3);
         let result = run(&mut evm, mode, 2_000_000, true);
         assert!(result.is_success(), "mode {mode}: {result:?}");
         assert_eq!(slot(&evm, 0), U256::ONE);
-        assert_eq!(evm.inner.inspector.calls.len(), 4);
-        assert_eq!(evm.inner.inspector.ends.len(), 4);
+        assert_eq!(evm.inner.inspector.calls.len(), 3);
+        assert_eq!(evm.inner.inspector.ends.len(), 3);
     }
 }
 
@@ -295,7 +321,7 @@ fn inspected_and_plain_execution_match() {
 }
 
 #[test]
-fn reused_frame_stack_clears_failed_continuations() {
+fn reuses_standard_frame_stack_after_failure() {
     let mut evm = evm(TempoHardfork::T3);
     assert!(!run(&mut evm, 4, 2_000_000, true).is_success());
     assert!(run(&mut evm, 0, 2_000_000, true).is_success());
@@ -349,60 +375,67 @@ fn callbacks_charge_the_instruction_base_cost() {
 }
 
 #[test]
-fn native_initialization_rejects_invalid_call_context_without_journaling() {
-    use revm::interpreter::{CallInput, CallValue, SharedMemory};
-    for case in 0..5 {
-        let mut evm = evm(TempoHardfork::T3);
-        let mut inputs = CallInputs {
-            input: CallInput::Bytes(Bytes::new()),
-            return_memory_offset: 2..5,
-            gas_limit: 1000,
-            reservoir: 300,
-            bytecode_address: FUNDER,
-            known_bytecode: Default::default(),
-            target_address: FUNDER,
-            caller: ACCOUNT,
-            value: CallValue::Transfer(U256::ZERO),
-            scheme: CallScheme::Call,
-            is_static: false,
-            charged_new_account_state_gas: false,
-        };
-        let mut depth = 0;
-        match case {
-            0 => inputs.is_static = true,
-            1 => inputs.scheme = CallScheme::DelegateCall,
-            2 => inputs.value = CallValue::Transfer(U256::ONE),
-            3 => inputs.target_address = SOURCE,
-            _ => depth = 1025,
-        }
-        let init = FrameInit {
-            frame_input: FrameInput::Call(Box::new(inputs)),
-            depth,
-            memory: SharedMemory::new(),
-        };
-        let funding = FundingContinuation {
-            source: SOURCE,
-            account: ACCOUNT,
-            asset_out: ASSET,
-            amount_out: U256::ZERO,
-            stage: Stage::Finished(InstructionResult::Return, Bytes::new()),
-        };
-        let ItemOrResult::Result(FrameResult::Call(result)) =
-            native::NativeFrame::new(&mut evm.inner.ctx, init, funding)
-        else {
-            panic!("invalid context admitted")
-        };
-        assert_eq!(
-            *result.instruction_result(),
-            if case == 4 {
-                InstructionResult::CallTooDeep
-            } else {
-                InstructionResult::Revert
+fn application_failure_reverts_funding() {
+    for spec in [TempoHardfork::T3, TempoHardfork::T4] {
+        for inspect in [false, true] {
+            let mut evm = evm(spec);
+            let result = run_batch(&mut evm, 0, 2_000_000, inspect, true);
+            assert!(!result.is_success());
+            alloy_sol_types::sol! { error SourceFailure(uint256 mode); }
+            assert_eq!(
+                result.output().unwrap().as_ref(),
+                SourceFailure {
+                    mode: U256::from(9)
+                }
+                .abi_encode()
+            );
+            assert!(result.logs().is_empty());
+            assert_eq!(result.gas().state_gas_spent_final(), 0);
+            for index in 0..5 {
+                assert_eq!(slot(&evm, index), U256::ZERO);
             }
-        );
-        assert_eq!(result.gas().remaining(), 1000);
-        assert_eq!(result.gas().reservoir(), 300);
-        assert_eq!(result.memory_offset, 2..5);
-        assert!(evm.inner.ctx.journaled_state.state.is_empty());
+        }
+    }
+}
+
+#[test]
+fn solidity_calls_cannot_start_funding() {
+    let mut evm = evm(TempoHardfork::T3);
+    let mut tx = TxEnv::new_system_tx_with_caller(ACCOUNT, FUNDER, hex!("1e35b1a8").into());
+    tx.gas_limit = 2_000_000;
+    evm.inner.ctx.set_tx(tx.into());
+    let result = TempoEvmHandler::new()
+        .inspect_run_system_call(&mut evm)
+        .unwrap();
+    assert!(result.is_success()); // An unregistered address has ordinary empty-account behavior.
+    assert_eq!(evm.inner.inspector.calls.len(), 1);
+    assert_eq!(slot(&evm, 0), U256::ZERO);
+}
+
+#[test]
+fn user_calls_cannot_impersonate_protocol_callbacks() {
+    for inspect in [false, true] {
+        let mut evm = evm(TempoHardfork::T3);
+        let data = IFundingSource::prepareCall {
+            assetOut: ASSET,
+            maxCost: U256::from(50),
+            data: U256::ZERO.abi_encode().into(),
+            policyData: Bytes::new(),
+            ownerAuthorized: true,
+        }
+        .abi_encode()
+        .into();
+        let mut tx = TxEnv::new_system_tx_with_caller(ACCOUNT, SOURCE, data);
+        tx.gas_limit = 2_000_000;
+        evm.inner.ctx.set_tx(tx.into());
+        let mut handler = TempoEvmHandler::new();
+        let result = if inspect {
+            handler.inspect_run_system_call(&mut evm)
+        } else {
+            handler.run_system_call(&mut evm)
+        }
+        .unwrap();
+        assert!(!result.is_success());
+        assert_eq!(slot(&evm, 0), U256::ZERO);
     }
 }

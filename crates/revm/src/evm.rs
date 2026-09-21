@@ -1,11 +1,12 @@
-use super::frame::TempoFrame;
 use crate::{ProtocolFeeManager, TempoBlockEnv, TempoFeeManager, TempoTxEnv, instructions};
 use alloy_evm::{Database, precompiles::PrecompilesMap};
 use alloy_primitives::{Address, U256};
 use revm::{
     Context, Inspector,
     context::{Cfg, CfgEnv, ContextError, Evm, FrameStack},
-    handler::{EvmTr, FrameInitOrResult, FrameTr, ItemOrResult, instructions::EthInstructions},
+    handler::{
+        EthFrame, EvmTr, FrameInitOrResult, FrameTr, ItemOrResult, instructions::EthInstructions,
+    },
     inspector::InspectorEvmTr,
     interpreter::{InitialAndFloorGas, interpreter::EthInterpreter},
 };
@@ -28,7 +29,7 @@ pub struct TempoEvm<DB: Database, I> {
         I,
         EthInstructions<EthInterpreter, TempoContext<DB>>,
         PrecompilesMap,
-        TempoFrame,
+        EthFrame<EthInterpreter>,
     >,
     /// The fee collected in `collectFeePreTx` call.
     pub(crate) collected_fee: U256,
@@ -143,7 +144,7 @@ impl<DB: Database, I> TempoEvm<DB, I> {
             I,
             EthInstructions<EthInterpreter, TempoContext<DB>>,
             PrecompilesMap,
-            TempoFrame,
+            EthFrame<EthInterpreter>,
         >,
         actions: StorageActions,
         non_creditable_slots: Rc<RefCell<NonCreditableSlots>>,
@@ -241,7 +242,7 @@ where
     type Context = TempoContext<DB>;
     type Instructions = EthInstructions<EthInterpreter, TempoContext<DB>>;
     type Precompiles = PrecompilesMap;
-    type Frame = TempoFrame;
+    type Frame = EthFrame<EthInterpreter>;
 
     fn all(
         &self,
@@ -251,12 +252,7 @@ where
         &Self::Precompiles,
         &FrameStack<Self::Frame>,
     ) {
-        (
-            &self.inner.ctx,
-            &self.inner.instruction,
-            &self.inner.precompiles,
-            &self.inner.frame_stack,
-        )
+        self.inner.all()
     }
 
     fn all_mut(
@@ -267,12 +263,7 @@ where
         &mut Self::Precompiles,
         &mut FrameStack<Self::Frame>,
     ) {
-        (
-            &mut self.inner.ctx,
-            &mut self.inner.instruction,
-            &mut self.inner.precompiles,
-            &mut self.inner.frame_stack,
-        )
+        self.inner.all_mut()
     }
 
     fn frame_stack(&mut self) -> &mut FrameStack<Self::Frame> {
@@ -286,66 +277,18 @@ where
         ItemOrResult<&mut Self::Frame, <Self::Frame as FrameTr>::FrameResult>,
         ContextError<DB::Error>,
     > {
-        let first = self.inner.frame_stack.index().is_none();
-        let mut slot = if first {
-            self.inner.frame_stack.start_init()
-        } else {
-            self.inner.frame_stack.get_next()
-        };
-        let frame = slot.get(TempoFrame::default);
-        let result = TempoFrame::init(
-            frame,
-            &mut self.inner.ctx,
-            &mut self.inner.precompiles,
-            frame_input,
-        );
-        let token = slot.consume();
-        // Register the initialized slot even when initialization returns an immediate result or error.
-        if first {
-            unsafe { self.inner.frame_stack.end_init(token) };
-        } else {
-            unsafe { self.inner.frame_stack.push(token) };
-        }
-        match result {
-            Ok(ItemOrResult::Item(())) => Ok(ItemOrResult::Item(self.inner.frame_stack.get())),
-            other => {
-                self.inner.frame_stack.pop();
-                other.map(|result| result.map_item(|_| unreachable!()))
-            }
-        }
+        self.inner.frame_init(frame_input)
     }
 
     fn frame_run(&mut self) -> Result<FrameInitOrResult<Self::Frame>, ContextError<DB::Error>> {
-        let frame = self.inner.frame_stack.get();
-        let instructions = &self.inner.instruction;
-        frame.run(
-            &mut self.inner.ctx,
-            instructions.gas_table(),
-            |frame, ctx| {
-                frame.interpreter.run_plain(
-                    instructions.instruction_table(),
-                    instructions.gas_table(),
-                    ctx,
-                )
-            },
-        )
+        self.inner.frame_run()
     }
 
     fn frame_return_result(
         &mut self,
         result: <Self::Frame as FrameTr>::FrameResult,
     ) -> Result<Option<<Self::Frame as FrameTr>::FrameResult>, ContextError<DB::Error>> {
-        if self.inner.frame_stack.get().is_finished() {
-            self.inner.frame_stack.pop();
-        }
-        if self.inner.frame_stack.index().is_none() {
-            return Ok(Some(result));
-        }
-        self.inner
-            .frame_stack
-            .get()
-            .return_result(&mut self.inner.ctx, result)?;
-        Ok(None)
+        self.inner.frame_return_result(result)
     }
 }
 
@@ -356,36 +299,6 @@ where
 {
     type Inspector = I;
 
-    fn inspect_frame_run(
-        &mut self,
-    ) -> Result<FrameInitOrResult<Self::Frame>, ContextError<DB::Error>> {
-        let frame = self.inner.frame_stack.get();
-        let instructions = &self.inner.instruction;
-        let inspector = &mut self.inner.inspector;
-        let mut result = frame.run(
-            &mut self.inner.ctx,
-            instructions.gas_table(),
-            |frame, ctx| {
-                revm::inspector::inspect_instructions(
-                    ctx,
-                    &mut frame.interpreter,
-                    &mut *inspector,
-                    instructions.instruction_table(),
-                    instructions.gas_table(),
-                )
-            },
-        )?;
-        if let ItemOrResult::Result(output) = &mut result {
-            revm::inspector::handler::frame_end(
-                &mut self.inner.ctx,
-                inspector,
-                frame.input(),
-                output,
-            );
-        }
-        Ok(result)
-    }
-
     fn all_inspector(
         &self,
     ) -> (
@@ -395,13 +308,7 @@ where
         &FrameStack<Self::Frame>,
         &Self::Inspector,
     ) {
-        (
-            &self.inner.ctx,
-            &self.inner.instruction,
-            &self.inner.precompiles,
-            &self.inner.frame_stack,
-            &self.inner.inspector,
-        )
+        self.inner.all_inspector()
     }
 
     fn all_mut_inspector(
@@ -413,13 +320,7 @@ where
         &mut FrameStack<Self::Frame>,
         &mut Self::Inspector,
     ) {
-        (
-            &mut self.inner.ctx,
-            &mut self.inner.instruction,
-            &mut self.inner.precompiles,
-            &mut self.inner.frame_stack,
-            &mut self.inner.inspector,
-        )
+        self.inner.all_mut_inspector()
     }
 }
 

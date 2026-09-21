@@ -4,6 +4,7 @@ pragma solidity 0.8.30;
 contract FundingSource {
     struct Plan { address assetIn; uint256 rate; uint256 maxAmountIn; bytes data; }
     address constant FUNDER = address(type(uint160).max - 0xeedf);
+    address constant ACCOUNT = address(0x2000);
     uint256 public calls;
     address public account;
     address public asset;
@@ -16,7 +17,7 @@ contract FundingSource {
     function prepare(address assetOut, uint256 maxCost, bytes calldata data, bytes calldata policyData, bool ownerAuthorized)
         external returns (Plan memory)
     {
-        require(msg.sender == FUNDER);
+        require(msg.sender == FUNDER && tx.origin == ACCOUNT);
         require(ownerAuthorized && policyData.length == 0);
         uint256 mode = abi.decode(data, (uint256));
         if (mode == 1) calls++;
@@ -26,7 +27,7 @@ contract FundingSource {
     }
 
     function fund(address account_, address assetOut, uint256 amountOut, bytes calldata data) external {
-        require(msg.sender == FUNDER);
+        require(msg.sender == FUNDER && tx.origin == ACCOUNT);
         (uint256 mode, bytes32 marker) = abi.decode(data, (uint256, bytes32));
         require(marker == bytes32("prepared"));
         calls++;
@@ -44,8 +45,15 @@ contract FundingSource {
         }
         if (mode == 7) {
             (bool ok, bytes memory reason) = FUNDER.call("");
-            require(!ok && bytes4(reason) == bytes4(keccak256("FundingReentrancy()")));
+            require(ok && reason.length == 0);
+            require(calls == 1);
         }
+    }
+
+    function application() external {
+        require(msg.sender == ACCOUNT && tx.origin == ACCOUNT);
+        require(calls == 1 && account == ACCOUNT && amount == 50);
+        revert SourceFailure(9);
     }
 
     function nestedFailure() external { calls = 999; revert SourceFailure(6); }
