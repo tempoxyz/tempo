@@ -3,6 +3,7 @@
 //! A check accepts one difference, not a transaction. Returning `Continue` also asserts that
 //! this difference preserves comparability of the remaining execution. Missing evidence must
 //! return `None`; fee provenance or an affected opcode alone is not an explanation.
+//! The first accepting check owns attribution AND continuation; later checks are not run.
 
 use super::{Boundary, Evidence, analysis::Difference};
 use tempo_chainspec::hardfork::TempoHardfork;
@@ -56,31 +57,24 @@ const REGISTRY: &[(TempoHardfork, &[Expectation])] = &[
 // TempoHardfork is non_exhaustive across crates, so a match cannot enforce this.
 const _: () = assert!(REGISTRY.len() == TempoHardfork::VARIANTS.len());
 
-pub(super) fn expectations(fork: TempoHardfork) -> &'static [Expectation] {
-    REGISTRY
-        .iter()
-        .find_map(|&(registered, rules)| (registered == fork).then_some(rules))
-        .unwrap_or(&[])
-}
-
 /// Select once per block, including every newly active fork and excluding canonical features.
+/// Forks run in registry order (oldest first), then checks in slice order.
 pub(super) fn between(
     canonical: TempoHardfork,
     candidate: TempoHardfork,
 ) -> Vec<&'static Expectation> {
     newly_active(canonical, candidate)
-        .flat_map(expectations)
+        .flat_map(|(_, rules)| *rules)
         .collect()
 }
 
 fn newly_active(
     canonical: TempoHardfork,
     candidate: TempoHardfork,
-) -> impl Iterator<Item = TempoHardfork> {
-    TempoHardfork::VARIANTS
+) -> impl Iterator<Item = &'static (TempoHardfork, &'static [Expectation])> {
+    REGISTRY
         .iter()
-        .copied()
-        .filter(move |&fork| fork > canonical && fork <= candidate)
+        .filter(move |(fork, _)| *fork > canonical && *fork <= candidate)
 }
 
 #[cfg(test)]
@@ -90,8 +84,13 @@ mod tests {
     #[test]
     fn selects_only_newly_active_forks() {
         use TempoHardfork::*;
-        assert_eq!(newly_active(T10, T13).collect::<Vec<_>>(), [T11, T12, T13]);
-        assert_eq!(newly_active(T12, T13).collect::<Vec<_>>(), [T13]);
+        let forks = |a, b| {
+            newly_active(a, b)
+                .map(|(fork, _)| *fork)
+                .collect::<Vec<_>>()
+        };
+        assert_eq!(forks(T10, T13), [T11, T12, T13]);
+        assert_eq!(forks(T12, T13), [T13]);
         assert_eq!(newly_active(T13, T13).count(), 0);
         assert_eq!(newly_active(T13, T12).count(), 0);
     }
@@ -99,15 +98,9 @@ mod tests {
     #[test]
     fn rule_ids_are_unique_across_forks() {
         let mut ids = std::collections::HashSet::new();
-        for fork in TempoHardfork::VARIANTS {
-            assert_eq!(
-                REGISTRY
-                    .iter()
-                    .filter(|(registered, _)| registered == fork)
-                    .count(),
-                1
-            );
-            for rule in expectations(*fork) {
+        for ((fork, rules), expected) in REGISTRY.iter().zip(TempoHardfork::VARIANTS) {
+            assert_eq!(fork, expected);
+            for rule in *rules {
                 assert!(!rule.id.is_empty());
                 assert!(ids.insert(rule.id), "duplicate expectation {}", rule.id);
             }

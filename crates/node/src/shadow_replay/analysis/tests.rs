@@ -71,7 +71,8 @@ fn write_slot(tx: &mut ObservedTx, value: u64, fee: bool) {
                 slot,
                 StorageSlot::new_changed(U256::from(1_000), U256::from(value)),
             )]
-            .into(),
+            .into_iter()
+            .collect(),
             ..Default::default()
         },
     );
@@ -193,7 +194,7 @@ fn fee_provenance_alone_does_not_accept_a_change() {
 }
 
 #[test]
-fn overlapping_rules_are_ambiguous_in_either_order() {
+fn first_accepting_rule_owns_attribution_and_continuation() {
     let stop = Expectation {
         id: "test.stop-gas",
         check: |_, diff| {
@@ -202,13 +203,28 @@ fn overlapping_rules_are_ambiguous_in_either_order() {
     };
     let real = evidence(&[21_000, 21_000]);
     let shadow = evidence(&[21_200, 21_000]);
-    for rules in [[&GAS, &stop], [&stop, &GAS]] {
+    for (rules, cutoff) in [
+        ([&GAS, &stop], None),
+        ([&stop, &GAS], Some(Boundary::Transaction(0))),
+    ] {
         let report = Report::analyze(&real, &shadow, &rules);
-        assert_eq!(report.ambiguous, 1);
-        assert_eq!(report.unexplained, 1);
-        assert!(report.expected.is_empty());
-        assert_eq!(report.cutoff, Some(Boundary::Transaction(0)));
+        assert_eq!(report.unexplained, 0);
+        assert_eq!(report.expected, [(rules[0].id, 1)].into());
+        assert_eq!(report.cutoff, cutoff);
     }
+}
+
+#[test]
+fn rules_after_first_acceptance_are_not_evaluated() {
+    let unreachable = Expectation {
+        id: "must-not-run",
+        check: |_, _| panic!("already accepted"),
+    };
+    let real = evidence(&[21_000]);
+    let shadow = evidence(&[21_200]);
+    let report = Report::analyze(&real, &shadow, &[&FEE, &GAS, &unreachable]);
+    assert_eq!(report.outcome(&shadow), ReplayOutcome::Expected);
+    assert_eq!(report.expected, [(GAS.id, 1)].into());
 }
 
 #[test]

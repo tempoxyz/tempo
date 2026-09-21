@@ -225,8 +225,6 @@ impl<P: StateProviderFactory + Sync> ShadowReplayer<P> {
         }
         metrics::counter!("tempo_shadow_replay_unexplained_differences_total")
             .increment(report.unexplained as u64);
-        metrics::counter!("tempo_shadow_replay_ambiguous_differences_total")
-            .increment(report.ambiguous as u64);
         if matches!(outcome, ReplayOutcome::Match | ReplayOutcome::Expected) {
             debug!(target: "shadow_replay", ?outcome, ?report, "Shadow replay compared all boundaries");
             return Ok(outcome);

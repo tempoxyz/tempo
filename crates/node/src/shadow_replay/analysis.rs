@@ -17,12 +17,11 @@ const MAX_SAMPLES: usize = 8;
 #[derive(Debug, Default)]
 pub(super) struct Report {
     pub unexplained: usize,
-    pub ambiguous: usize,
     pub expected: BTreeMap<&'static str, usize>,
     pub boundaries_evaluated: usize,
     pub boundaries_not_evaluated: usize,
     pub cutoff: Option<Boundary>,
-    /// Rule ID is present only for a uniquely accepted difference.
+    /// ID of the first accepting rule, or `None` for an unexplained difference.
     pub samples: Vec<(Boundary, Difference, Option<&'static str>)>,
 }
 
@@ -60,7 +59,17 @@ impl Report {
             }
             let ctx = context(Boundary::Transaction(index));
             let (real, shadow) = (&ctx.real.txs[index], &ctx.shadow.txs[index]);
-            report.record_tx_diffs(&ctx, real, shadow, rules);
+            for difference in [
+                Difference::Success(real.receipt.success, shadow.receipt.success),
+                Difference::Output(real.output_hash, shadow.output_hash),
+                Difference::Logs(real.logs_hash, shadow.logs_hash),
+                Difference::FeeLogs(real.fee_logs_hash, shadow.fee_logs_hash),
+                Difference::ReceiptLogs(real.receipt.logs_hash, shadow.receipt.logs_hash),
+                Difference::Gas(real.receipt.gas_used, shadow.receipt.gas_used),
+                Difference::BlockGas(real.block_gas_used, shadow.block_gas_used),
+            ] {
+                report.record(&ctx, difference, rules);
+            }
             // Finish ALL comparisons at this boundary, even if one already caused a cutoff.
             report.record_state_diffs(
                 &ctx,
@@ -89,58 +98,27 @@ impl Report {
         if difference.is_equal() {
             return;
         }
-        let mut accepted = None;
-        let mut matches = 0;
-        let mut continuation = Continuation::Continue;
-        for rule in rules {
-            if let Some(result) = (rule.check)(ctx, &difference) {
-                matches += 1;
-                accepted = Some(rule.id);
-                if result == Continuation::InconclusiveSuffix {
-                    continuation = result;
-                }
+        let accepted = rules
+            .iter()
+            .find_map(|rule| (rule.check)(ctx, &difference).map(|result| (rule.id, result)));
+        let (rule_id, cutoff) = match accepted {
+            Some((id, continuation)) => {
+                *self.expected.entry(id).or_default() += 1;
+                (Some(id), continuation == Continuation::InconclusiveSuffix)
             }
-        }
-        let rule_id = if matches == 1 {
-            let id = accepted.expect("one accepting rule");
-            *self.expected.entry(id).or_default() += 1;
-            Some(id)
-        } else {
-            self.unexplained += 1;
-            self.ambiguous += usize::from(matches > 1);
-            if difference.affects_continuation() {
-                continuation = Continuation::InconclusiveSuffix;
+            None => {
+                self.unexplained += 1;
+                (None, difference.affects_continuation())
             }
-            None
         };
-        if continuation == Continuation::InconclusiveSuffix && self.cutoff.is_none() {
-            self.cutoff = Some(ctx.boundary);
+        if cutoff {
+            self.cutoff.get_or_insert(ctx.boundary);
         }
         self.samples.push((ctx.boundary, difference, rule_id));
         // Prioritize unexplained samples; stable ordering is independent of HashSet iteration.
         self.samples
             .sort_by(|a, b| (a.2.is_some(), a.0, &a.1).cmp(&(b.2.is_some(), b.0, &b.1)));
         self.samples.truncate(MAX_SAMPLES);
-    }
-
-    fn record_tx_diffs(
-        &mut self,
-        ctx: &Context<'_>,
-        real: &ObservedTx,
-        shadow: &ObservedTx,
-        rules: &[&Expectation],
-    ) {
-        for difference in [
-            Difference::Success(real.receipt.success, shadow.receipt.success),
-            Difference::Output(real.output_hash, shadow.output_hash),
-            Difference::Logs(real.logs_hash, shadow.logs_hash),
-            Difference::FeeLogs(real.fee_logs_hash, shadow.fee_logs_hash),
-            Difference::ReceiptLogs(real.receipt.logs_hash, shadow.receipt.logs_hash),
-            Difference::Gas(real.receipt.gas_used, shadow.receipt.gas_used),
-            Difference::BlockGas(real.block_gas_used, shadow.block_gas_used),
-        ] {
-            self.record(ctx, difference, rules);
-        }
     }
 
     fn record_state_diffs(
@@ -260,14 +238,13 @@ pub(super) enum Difference {
 impl Difference {
     fn is_equal(&self) -> bool {
         match self {
-            Self::StorageReset { real, shadow, .. } => real == shadow,
+            Self::StorageReset { real, shadow, .. } | Self::Success(real, shadow) => real == shadow,
             Self::Existence { real, shadow, .. } => real == shadow,
             Self::Balance { real, shadow, .. } | Self::Storage { real, shadow, .. } => {
                 real == shadow
             }
             Self::Nonce { real, shadow, .. } => real == shadow,
             Self::Code { real, shadow, .. } => real == shadow,
-            Self::Success(real, shadow) => real == shadow,
             Self::Output(real, shadow)
             | Self::Logs(real, shadow)
             | Self::FeeLogs(real, shadow)
