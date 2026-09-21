@@ -45,7 +45,7 @@ fn build_converges_onto_its_verified_parent() {
 }
 
 #[test_traced]
-fn a_new_finalized_tip_during_delivery_requires_a_fresh_valid_response() {
+fn an_in_flight_valid_target_can_prove_ancestry_to_the_new_finalized_tip() {
     deterministic::Runner::default().start(|context| async move {
         let mut h = Harness::start_at_genesis(&context);
         let finalized = make_block(1, 1, GENESIS);
@@ -59,32 +59,204 @@ fn a_new_finalized_tip_during_delivery_requires_a_fresh_valid_response() {
         let release_old = h
             .execution
             .script_delayed_new_payload(t, Ok(PayloadStatusEnum::Valid));
-        let release_fresh = h
-            .execution
-            .script_delayed_new_payload(t, Ok(PayloadStatusEnum::Valid));
         drop(h.build(round(3), t));
         h.wait_until(|| h.execution.new_payloads() == vec![f, t])
             .await;
 
-        // The target remains selected, but its in-flight delivery predates
-        // this finalized-tip update and cannot establish HEAD eligibility.
+        // The target's parent becomes finalized while delivery is in flight.
+        // Its VALID response proves ancestry to the current tip directly.
         h.deliver_tip(round(1), 1, f);
         h.run_for(Duration::from_millis(10)).await;
         release_old.send(()).unwrap();
-        h.wait_until(|| h.execution.new_payloads() == vec![f, t, t])
-            .await;
-        assert_eq!(h.execution.fcus(), vec![STARTUP_FCU]);
-        assert_eq!(h.execution.head(), GENESIS);
-
-        release_fresh.send(()).unwrap();
         h.wait_until(|| h.execution.head() == t).await;
+        assert_eq!(h.execution.new_payloads(), vec![f, t]);
         assert_eq!(h.execution.fcus(), vec![STARTUP_FCU, (t, GENESIS, false)]);
 
-        // Delivery of the already-announced finality preserves the fresh
-        // proof. Only the FCU's finalized field needs to advance.
+        // Delivery of the already-announced finality preserves the proof.
+        // Only the FCU's finalized field needs to advance.
         h.deliver_finalized(finalized).await.unwrap();
         assert_eq!(h.execution.fcus().last(), Some(&(t, f, false)));
     });
+}
+
+#[test_traced]
+fn an_in_flight_valid_ancestor_can_become_the_finalized_tip() {
+    deterministic::Runner::default().start(|context| async move {
+        let mut h = Harness::start_at_genesis(&context);
+        let ancestor = make_block(1, 1, GENESIS);
+        let target = make_block(2, 2, ancestor.digest());
+        let (a, t) = (ancestor.digest(), target.digest());
+        h.marshal.add_block(ancestor);
+        h.marshal.add_block(target);
+        let release = h
+            .execution
+            .script_delayed_new_payload(a, Ok(PayloadStatusEnum::Valid));
+
+        drop(h.build(round(3), t));
+        h.wait_until(|| h.execution.new_payloads() == vec![t, a])
+            .await;
+        // The cursor itself becomes finalized while its delivery is in flight.
+        h.deliver_tip(round(1), 1, a);
+        h.run_for(Duration::from_millis(10)).await;
+        assert_eq!(h.execution.fcus(), vec![STARTUP_FCU]);
+
+        release.send(()).unwrap();
+        h.wait_until(|| h.execution.head() == t).await;
+        assert_eq!(h.execution.new_payloads(), vec![t, a, t]);
+        assert_eq!(h.execution.fcus(), vec![STARTUP_FCU, (t, GENESIS, false)]);
+    });
+}
+
+#[test_traced]
+fn finality_overtaking_an_in_flight_valid_ancestor_reprobes_the_target() {
+    deterministic::Runner::default().start(|context| async move {
+        let mut h = Harness::start_at_genesis(&context);
+        let b1 = make_block(1, 1, GENESIS);
+        let b2 = make_block(2, 2, b1.digest());
+        let b3 = make_block(3, 3, b2.digest());
+        let target = make_block(4, 4, b3.digest());
+        let (d1, d2, d3, t) = (b1.digest(), b2.digest(), b3.digest(), target.digest());
+        for block in [b1, b2, b3, target] {
+            h.marshal.add_block(block);
+        }
+        let release = h
+            .execution
+            .script_delayed_new_payload(d1, Ok(PayloadStatusEnum::Valid));
+
+        drop(h.build(round(5), t));
+        h.wait_until(|| h.execution.new_payloads() == vec![t, d3, d2, d1])
+            .await;
+        // Finality advances above the cursor while its VALID response is
+        // pending. The target still descends from the new finalized tip.
+        h.deliver_tip(round(3), 3, d3);
+        h.run_for(Duration::from_millis(10)).await;
+        assert_eq!(h.execution.fcus(), vec![STARTUP_FCU]);
+
+        release.send(()).unwrap();
+        h.wait_until(|| h.execution.head() == t).await;
+        assert_eq!(h.execution.new_payloads(), vec![t, d3, d2, d1, t]);
+        assert_eq!(h.execution.fcus(), vec![STARTUP_FCU, (t, GENESIS, false)]);
+        assert!(h.marshal.subscribe_log().is_empty());
+    });
+}
+
+#[test_traced]
+fn valid_blocks_do_not_end_convergence_before_reaching_finality() {
+    deterministic::Runner::default().start(|context| async move {
+        let h = Harness::start_at_genesis(&context);
+        let b1 = make_block(1, 1, GENESIS);
+        let b2 = make_block(2, 2, b1.digest());
+        let head = make_block(3, 3, b2.digest());
+        let (d1, d2, target) = (b1.digest(), b2.digest(), head.digest());
+        for block in [b1, b2, head] {
+            h.marshal.add_block(block);
+        }
+        for digest in [target, d2, target] {
+            h.execution
+                .script_new_payload(digest, Ok(PayloadStatusEnum::Valid));
+        }
+        let release = h
+            .execution
+            .script_delayed_new_payload(d1, Ok(PayloadStatusEnum::Valid));
+
+        drop(h.build(round(4), target));
+        h.wait_until(|| h.execution.new_payloads() == vec![target, d2, d1])
+            .await;
+        assert_eq!(h.execution.fcus(), vec![STARTUP_FCU]);
+
+        release.send(()).unwrap();
+        h.wait_until(|| h.execution.head() == target).await;
+        assert_eq!(h.execution.new_payloads(), vec![target, d2, d1, target]);
+        assert_eq!(
+            h.execution.fcus(),
+            vec![STARTUP_FCU, (target, GENESIS, false)]
+        );
+    });
+}
+
+#[test_traced]
+fn a_valid_pending_head_on_another_finalized_branch_is_ineligible() {
+    deterministic::Runner::default().start(|context| async move {
+        let mut h = Harness::start_at_genesis(&context);
+        let other = make_block(1, 1, GENESIS);
+        let finalized = make_block(3, 1, GENESIS);
+        let ancestor = make_block(5, 2, other.digest());
+        let head = make_block(6, 3, ancestor.digest());
+        let (f, a, target) = (finalized.digest(), ancestor.digest(), head.digest());
+        h.deliver_tip(round(3), 1, f);
+        h.deliver_finalized(finalized).await.unwrap();
+        for block in [ancestor, head] {
+            h.marshal.add_block(block);
+        }
+        for digest in [target, a] {
+            h.execution
+                .script_new_payload(digest, Ok(PayloadStatusEnum::Valid));
+        }
+
+        drop(h.build(round(7), target));
+        h.wait_until(|| h.execution.new_payloads() == vec![f, target, a])
+            .await;
+        h.run_for(Duration::from_millis(10)).await;
+        assert_eq!(h.execution.fcus(), vec![STARTUP_FCU, (f, f, false)]);
+        assert_eq!(h.execution.head(), f);
+        assert!(h.marshal.open_subscriptions().is_empty());
+    });
+}
+
+#[test_traced]
+fn a_new_finalized_tip_invalidates_an_in_flight_targets_ancestry_proof() {
+    for conflicting in [false, true] {
+        deterministic::Runner::default().start(|context| async move {
+            let mut h = Harness::start_at_genesis(&context);
+            let b1 = make_block(1, 1, GENESIS);
+            let b2 = make_block(2, 2, b1.digest());
+            let b3 = make_block(4, 3, b2.digest());
+            let head = make_block(5, 4, b3.digest());
+            let (d1, d2, d3, target) = (b1.digest(), b2.digest(), b3.digest(), head.digest());
+            let tip = if conflicting {
+                make_block(3, 2, d1)
+            } else {
+                b2.clone()
+            };
+            for block in [b1, b2, b3, head] {
+                h.marshal.add_block(block);
+            }
+            h.execution
+                .script_new_payload(target, Ok(PayloadStatusEnum::Valid));
+            let release = h
+                .execution
+                .script_delayed_new_payload(target, Ok(PayloadStatusEnum::Valid));
+            if !conflicting {
+                h.execution
+                    .script_new_payload(target, Ok(PayloadStatusEnum::Valid));
+            }
+
+            drop(h.build(round(6), target));
+            h.wait_until(|| h.execution.new_payloads() == vec![target, d3, d2, d1, target])
+                .await;
+            assert_eq!(h.execution.fcus(), vec![STARTUP_FCU]);
+            h.deliver_tip(round(if conflicting { 3 } else { 2 }), 2, tip.digest());
+            h.run_for(Duration::from_millis(10)).await;
+            release.send(()).unwrap();
+
+            if conflicting {
+                h.wait_until(|| h.execution.new_payloads() == vec![target, d3, d2, d1, target, d3])
+                    .await;
+                h.run_for(Duration::from_millis(10)).await;
+                assert_eq!(h.execution.fcus(), vec![STARTUP_FCU]);
+            } else {
+                h.wait_until(|| h.execution.head() == target).await;
+                assert_eq!(
+                    h.execution.new_payloads(),
+                    vec![target, d3, d2, d1, target, d3, target]
+                );
+                assert_eq!(
+                    h.execution.fcus(),
+                    vec![STARTUP_FCU, (target, GENESIS, false)]
+                );
+            }
+        });
+    }
 }
 
 #[test_traced]
@@ -96,6 +268,10 @@ fn a_late_fcu_response_does_not_restore_invalidated_head_eligibility() {
         let (f, t) = (finalized.digest(), target.digest());
         h.verify(round(1), finalized).await.unwrap().unwrap();
         h.execution.add_body(target);
+        h.execution
+            .script_new_payload(t, Ok(PayloadStatusEnum::Valid));
+        // The first VALID target still has to walk through f to genesis,
+        // then return to the target before its initial FCU.
         h.execution
             .script_new_payload(t, Ok(PayloadStatusEnum::Valid));
         let release_fresh = h
@@ -113,7 +289,7 @@ fn a_late_fcu_response_does_not_restore_invalidated_head_eligibility() {
         h.deliver_tip(round(1), 1, f);
         h.run_for(Duration::from_millis(10)).await;
         release_fcu.send(()).unwrap();
-        h.wait_until(|| h.execution.new_payloads() == vec![f, t, t])
+        h.wait_until(|| h.execution.new_payloads() == vec![f, t, f, t, t])
             .await;
         assert_eq!(h.execution.head(), GENESIS);
         assert_eq!(

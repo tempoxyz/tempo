@@ -629,6 +629,8 @@ fn syncing_walks_backward_one_response_at_a_time_then_reprobes_the_candidate() {
             .script_delayed_new_payload(d2, Ok(PayloadStatusEnum::Syncing));
         h.execution
             .script_new_payload(d2, Ok(PayloadStatusEnum::Valid));
+        h.execution
+            .script_new_payload(d2, Ok(PayloadStatusEnum::Valid));
 
         let mut verify = Box::pin(h.verify(round(3), b3));
         assert!(futures::poll!(&mut verify).is_pending());
@@ -657,10 +659,10 @@ fn syncing_walks_backward_one_response_at_a_time_then_reprobes_the_candidate() {
             .await;
         assert!(h.marshal.fulfill_subscription(d1, b1));
         assert!(verify.await.unwrap().is_some());
-        // Convergence received b2 through the shared fetch and probed it
-        // once the verification's walk parked; its VALID made b2 HEAD.
+        // Convergence also visits b1 to prove ancestry to genesis, then
+        // probes b2 again before making it HEAD.
         h.wait_until(|| h.execution.head() == d2).await;
-        assert_eq!(h.execution.new_payloads(), vec![d3, d2, d2, d1, d3]);
+        assert_eq!(h.execution.new_payloads(), vec![d3, d2, d2, d1, d3, d1, d2]);
         assert_eq!(
             h.marshal.subscribe_log(),
             vec![(d2, round(2)), (d1, round(1))]
@@ -670,12 +672,12 @@ fn syncing_walks_backward_one_response_at_a_time_then_reprobes_the_candidate() {
 }
 
 #[test_traced]
-fn valid_ancestor_stops_the_walk_above_the_finalized_tip() {
+fn valid_ancestor_stops_verification_but_convergence_walks_to_finality() {
     deterministic::Runner::default().start(|context| async move {
         let b1 = make_block(1, 1, GENESIS);
         let b2 = make_block(2, 2, b1.digest());
         let b3 = make_block(3, 3, b2.digest());
-        let (d2, d3) = (b2.digest(), b3.digest());
+        let (d1, d2, d3) = (b1.digest(), b2.digest(), b3.digest());
         let execution = FakeExecution::new();
         execution.seed_canonical_block(&b1);
         let h = Harness::builder().execution(execution).start(&context);
@@ -686,11 +688,11 @@ fn valid_ancestor_stops_the_walk_above_the_finalized_tip() {
             .await;
         assert!(verify.await.unwrap().is_some());
         h.wait_until(|| h.execution.head() == d2).await;
-        assert_eq!(h.execution.new_payloads(), vec![d3, d2, d3, d2]);
+        assert_eq!(h.execution.new_payloads(), vec![d3, d2, d3, d2, d1, d2]);
         assert_eq!(
             h.marshal.subscribe_log(),
             vec![(d2, round(2))],
-            "VALID b2 makes fetching b1 unnecessary"
+            "convergence finds b1 locally while proving ancestry to genesis"
         );
     });
 }

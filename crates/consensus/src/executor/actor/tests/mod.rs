@@ -4,6 +4,7 @@ use commonware_consensus::{
     types::{Height, View},
 };
 use commonware_runtime::{Runner as _, deterministic};
+use commonware_utils::Acknowledgement as _;
 use futures::{StreamExt as _, executor::block_on};
 
 use commonware_consensus::Heightable as _;
@@ -35,7 +36,6 @@ fn execution_task_finishes_with_an_outcome() {
         futures::future::ready(ExecutionTaskOutcome::Delivered {
             owner: WalkOwner::Verification(round(1)),
             digest: make_block(1, 1, GENESIS).digest(),
-            finalized_round: round(0),
             status: Err(eyre::eyre!("delivery failed")),
         }),
     );
@@ -47,6 +47,52 @@ fn execution_task_finishes_with_an_outcome() {
         finished.outcome,
         ExecutionTaskOutcome::Delivered { .. }
     ));
+}
+
+#[test]
+fn delivered_finalized_tip_tracks_its_own_round() {
+    deterministic::Runner::default().start(|context| async move {
+        let first = make_block(5, 1, GENESIS);
+        let second = make_block(7, 2, first.digest());
+        let tip = make_block(9, 3, second.digest());
+        let execution = FakeExecution::new();
+        execution.seed_canonical_block(&first);
+        execution.set_finalized(1, first.digest());
+        let network_finalized_tip = (round(9), Height::new(3), tip.digest());
+        let (mut actor, _mailbox) = crate::executor::init(
+            context,
+            crate::executor::Config {
+                execution_node: execution,
+                marshal: FakeMarshal::new(),
+                finalized_floor: Height::new(1),
+                finalized_tip: network_finalized_tip,
+                fcu_heartbeat_interval: std::time::Duration::from_secs(3600),
+                public_key: None,
+            },
+        )
+        .unwrap();
+
+        // Startup must recover the local block's round, not use the newer
+        // round announced by the network or confuse its height with its round.
+        assert_eq!(
+            actor.delivered_finalized_tip,
+            (round(5), Height::new(1), first.digest())
+        );
+        let delivered_tip = (round(7), Height::new(2), second.digest());
+        let (acknowledgment, _waiter) = commonware_utils::acknowledgement::Exact::handle();
+        actor
+            .handle_finalized_delivered(
+                super::FinalizedBlockRequest {
+                    cause: tracing::Span::none(),
+                    block: second.into(),
+                    acknowledgment,
+                },
+                Ok(alloy_rpc_types_engine::PayloadStatusEnum::Valid),
+            )
+            .unwrap();
+        assert_eq!(actor.delivered_finalized_tip, delivered_tip);
+        assert_eq!(actor.network_finalized_tip, network_finalized_tip);
+    });
 }
 
 #[test]
@@ -70,7 +116,7 @@ fn delivery_count_resets_only_after_a_successful_forkchoice_response() {
         .unwrap();
 
         // Scheduling an FCU does not settle the preceding deliveries.
-        actor.delivered_finalized = (Height::new(1), digest);
+        actor.delivered_finalized_tip = (round(1), Height::new(1), digest);
         actor.deliveries_since_forkchoice = 7;
         assert!(actor.start_forkchoice_update());
         assert_eq!(actor.deliveries_since_forkchoice, 7);

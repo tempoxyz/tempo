@@ -15,8 +15,9 @@
 //! blocks, finalized blocks, and validation probes are all deliveries.
 //! Outside builds, `forkchoiceUpdated` commits the latest delivered finalization
 //! and selects the convergence target as HEAD only after its own `newPayload`
-//! returned `VALID` without an intervening finalized-tip update. Otherwise HEAD
-//! is the delivered finalized block. The update runs on a later iteration.
+//! returned `VALID` and its ancestry was walked to the current network finalized
+//! tip. Otherwise HEAD is the delivered finalized block. The update runs on a
+//! later iteration.
 //! Finalized blocks are acknowledged to the marshal actor once the update
 //! finalizing them is accepted. Finality work is scheduled ahead of builds,
 //! verification, and notarized convergence.
@@ -227,9 +228,13 @@ pub(crate) struct Actor<TContext, TExecutionLayer, TMarshal> {
     /// asked to verify its own proposal, so no validation request delivers it.
     payload_jobs: FuturesUnordered<BoxFuture<'static, Option<Arc<Block>>>>,
 
-    /// The last accepted forkchoice and the two distinct finality watermarks.
+    /// The last accepted forkchoice.
     local_state: LocalState,
-    delivered_finalized: (Height, Digest),
+    /// The highest finalized block accepted by the execution layer, with its
+    /// consensus round. Initialized from the local finalized state.
+    delivered_finalized_tip: (Round, Height, Digest),
+    /// The latest finalized tip announced by consensus, which may still
+    /// need to be delivered to the execution layer.
     network_finalized_tip: (Round, Height, Digest),
 
     /// The parent selected by the latest consensus context, independently of
@@ -369,6 +374,18 @@ where
             head: finalized,
             finalized,
         };
+        let finalized_round = if finalized.1 == finalized_tip.2 {
+            finalized_tip.0
+        } else if finalized.0 == Height::zero() {
+            Round::zero()
+        } else {
+            execution_node
+                .block_by_digest(finalized.1)
+                .wrap_err("failed reading the local finalized block's consensus round")?
+                .ok_or_eyre("local finalized block is missing from the execution layer")?
+                .context()
+                .round
+        };
 
         Ok(Self {
             context: ContextCell::new(context),
@@ -394,7 +411,7 @@ where
             payload_jobs: FuturesUnordered::new(),
 
             local_state,
-            delivered_finalized: local_state.finalized,
+            delivered_finalized_tip: (finalized_round, finalized.0, finalized.1),
             network_finalized_tip: finalized_tip,
             pending_head: PendingHead::finalized(finalized_tip),
             built_blocks: HashMap::new(),
@@ -487,8 +504,7 @@ where
                         None => std::future::pending().await,
                     }
                 } => {
-                    let finalized_round = self.network_finalized_tip.0;
-                    if let Err(error) = self.apply_convergence_outcome(outcome, finalized_round) {
+                    if let Err(error) = self.apply_convergence_outcome(outcome) {
                         log_fatal(&error);
                         break;
                     }
@@ -562,7 +578,6 @@ where
             ExecutionTaskOutcome::Delivered {
                 owner,
                 digest,
-                finalized_round,
                 status,
             } => {
                 // SYNCING blocks may execute later as their missing ancestors
@@ -577,19 +592,14 @@ where
                     WalkOwner::Verification(round) => {
                         self.handle_verification_delivered(round, digest, status, duration)
                     }
-                    WalkOwner::Convergence => {
-                        self.handle_convergence_delivered(digest, finalized_round, status)
-                    }
+                    WalkOwner::Convergence => self.handle_convergence_delivered(digest, status),
                 };
             }
             ExecutionTaskOutcome::FinalizedDelivered { request, status } => {
                 self.handle_finalized_delivered(request, status)?;
                 self.restart_walks_covered_by_finality();
             }
-            ExecutionTaskOutcome::Build {
-                finalized_round,
-                outcome,
-            } => self.handle_build(finalized_round, outcome)?,
+            ExecutionTaskOutcome::Build(outcome) => self.handle_build(outcome)?,
             ExecutionTaskOutcome::Forkchoice(ForkchoiceOutcome {
                 target,
                 build,
@@ -600,7 +610,7 @@ where
     }
 
     #[instrument(skip_all, err)]
-    fn handle_build(&mut self, finalized_round: Round, outcome: BuildOutcome) -> eyre::Result<()> {
+    fn handle_build(&mut self, outcome: BuildOutcome) -> eyre::Result<()> {
         match outcome {
             BuildOutcome::Aborted { delivery_attempted } => {
                 if delivery_attempted {
@@ -614,9 +624,15 @@ where
             }
             BuildOutcome::Forkchoice(outcome) => {
                 self.deliveries_since_forkchoice += 1;
-                // The build delivered its exact parent with VALID before the FCU.
-                self.record_executed_convergence_target(outcome.target.head, finalized_round);
-                self.handle_forkchoice_response(outcome.target, outcome.build, outcome.response)
+                let submitted = outcome.response.is_some();
+                let target = outcome.target;
+                self.handle_forkchoice_response(target, outcome.build, outcome.response)?;
+                // A successful FCU proves that its head descends from the
+                // finalized digest it named. A skipped FCU proves nothing.
+                if submitted {
+                    self.record_executed_convergence_target(target.head, target.finalized.1);
+                }
+                Ok(())
             }
         }
     }
@@ -639,10 +655,10 @@ where
             return Ok(());
         }
         active.duration += duration;
-        let outcome = active.walk.on_status(
+        let outcome = active.walk.on_verification_status(
             status,
             self.network_finalized_tip,
-            self.delivered_finalized.0,
+            self.delivered_finalized_tip,
         );
         self.apply_verification_outcome(round, outcome)
     }
@@ -696,15 +712,14 @@ where
     }
 
     /// Applies an engine answer to the convergence walk, if it still waits on
-    /// the block. A VALID target under the current network finalized tip makes
-    /// the pending head eligible for HEAD and ends the walk. Anything else
+    /// the block. A VALID target whose ancestry reaches the current network
+    /// finalized tip becomes eligible for HEAD and ends the walk. Anything else
     /// that stops the walk leaves it stopped; a newer consensus context that
     /// selects the same head, or a finalized delivery, restarts it.
     #[instrument(skip_all, fields(%digest), err(level = Level::WARN))]
     fn handle_convergence_delivered(
         &mut self,
         digest: Digest,
-        finalized_round: Round,
         status: PayloadStatusEnum,
     ) -> eyre::Result<()> {
         let Some(walk) = &mut self.convergence else {
@@ -716,23 +731,18 @@ where
         if status == PayloadStatusEnum::Syncing && digest == self.pending_head.digest {
             self.pending_head.executed = None;
         }
-        let outcome = walk.on_status(
+        let outcome = walk.on_convergence_status(
             status,
             self.network_finalized_tip,
-            self.delivered_finalized.0,
+            self.delivered_finalized_tip,
         );
-        self.apply_convergence_outcome(outcome, finalized_round)
+        self.apply_convergence_outcome(outcome)
     }
 
     /// Acts on what the convergence walk reported, after an engine answer or
-    /// a local parent lookup. `finalized_round` is the network finalized
-    /// round the reporting work was scheduled under; a VALID target that
-    /// overlapped a newer one is not recorded.
-    fn apply_convergence_outcome(
-        &mut self,
-        outcome: WalkOutcome,
-        finalized_round: Round,
-    ) -> eyre::Result<()> {
+    /// a local parent lookup. A VALID target is eligible only after the walk
+    /// proved its ancestry reaches the current network finalized tip.
+    fn apply_convergence_outcome(&mut self, outcome: WalkOutcome) -> eyre::Result<()> {
         let Some(walk) = &mut self.convergence else {
             return Ok(());
         };
@@ -748,8 +758,11 @@ where
             ),
             WalkOutcome::TargetValid => {
                 let target = (walk.cursor.height(), walk.cursor.digest());
+                let finalized_digest = walk
+                    .finalized_ancestor
+                    .expect("convergence requires a proven finalized ancestor");
                 self.convergence = None;
-                self.record_executed_convergence_target(target, finalized_round);
+                self.record_executed_convergence_target(target, finalized_digest);
             }
             WalkOutcome::Invalid
             | WalkOutcome::SyncingAtDeliveredFinality
@@ -766,30 +779,31 @@ where
     /// fetch one of them restarts at its target, and so does a stopped
     /// convergence walk.
     fn restart_walks_covered_by_finality(&mut self) {
-        let delivered = self.delivered_finalized.0;
+        let delivered_height = self.delivered_finalized_tip.1;
         for verification in self.verifications_mut() {
-            verification.walk.on_finalized_delivered(delivered);
+            verification.walk.on_finalized_delivered(delivered_height);
         }
         if let Some(walk) = &mut self.convergence {
-            walk.on_finalized_delivered(delivered);
+            walk.on_finalized_delivered(delivered_height);
         }
     }
 
-    /// Retains only an exact-target VALID response whose delivery did not
-    /// overlap a newer network finalized tip.
+    /// Retains an executed target whose ancestry was proved against the
+    /// current network finalized digest.
     fn record_executed_convergence_target(
         &mut self,
         block: (Height, Digest),
-        finalized_round: Round,
+        finalized_digest: Digest,
     ) {
-        if block.1 == self.pending_head.digest && finalized_round == self.network_finalized_tip.0 {
+        if block.1 == self.pending_head.digest && finalized_digest == self.network_finalized_tip.2 {
             self.pending_head.height = Some(block.0);
             self.pending_head.executed = Some(block);
         }
     }
 
     /// Finalized bodies arrive through the finalization pipeline. Other targets
-    /// need their own VALID delivery before becoming HEAD.
+    /// need a VALID delivery and proven ancestry to network finality before
+    /// becoming HEAD.
     fn needs_head_delivery(&self) -> bool {
         self.pending_head.digest != self.network_finalized_tip.2
             && self.pending_head.executed.is_none()
@@ -922,7 +936,7 @@ where
     ) -> eyre::Result<()> {
         let block = request.block.as_ref();
         debug_assert!(
-            block.height() >= self.delivered_finalized.0,
+            block.height() >= self.delivered_finalized_tip.1,
             "finalized blocks are delivered in height order",
         );
         match status {
@@ -944,8 +958,8 @@ where
             }
         }
 
-        if block.height() > self.delivered_finalized.0 {
-            self.delivered_finalized = (block.height(), block.digest());
+        if block.height() > self.delivered_finalized_tip.1 {
+            self.delivered_finalized_tip = (block.context().round, block.height(), block.digest());
         }
         self.deliveries_since_forkchoice += 1;
         if block.height() <= self.local_state.finalized.0 {
@@ -1171,8 +1185,10 @@ where
                 Update::Tip(round, height, digest) => {
                     self.record_convergence_target(round, (round.view(), digest));
                     if round > self.network_finalized_tip.0 {
+                        if digest != self.network_finalized_tip.2 {
+                            self.pending_head.executed = None;
+                        }
                         self.network_finalized_tip = (round, height, digest);
-                        self.pending_head.executed = None;
                     }
                 }
                 Update::Block(block, acknowledgement) => {
@@ -1349,10 +1365,8 @@ where
             // forkchoice update can select it as HEAD. The body is retained
             // here, which saves the marshal fetch.
             //
-            // The walk normally ends at its first probe. The build delivered
-            // the parent and received VALID for it, so the probe of the
-            // built block answers VALID at once and no ancestor is fetched.
-            // Any other answer follows the usual walk.
+            // Even a VALID built block needs its ancestry walked to the
+            // current network finalized tip before it can become HEAD.
             self.start_convergence(block.clone());
         }
         if self.convergence.is_some() {
@@ -1510,9 +1524,10 @@ where
             // A certified parent must be the finalized tip or come from
             // a later round. Decide eligibility before starting its fetch.
             if parent == finalized_digest || parent_round > finalized_round {
-                let target = self
-                    .local_state
-                    .update_finalized(self.delivered_finalized.0, self.delivered_finalized.1);
+                let target = self.local_state.update_finalized(
+                    self.delivered_finalized_tip.1,
+                    self.delivered_finalized_tip.2,
+                );
                 let fut = execute_build(
                     self.execution_node.clone(),
                     self.marshal.clone(),
@@ -1521,10 +1536,7 @@ where
                     build,
                     self.built_blocks.get(&parent).cloned(),
                 )
-                .map(move |outcome| ExecutionTaskOutcome::Build {
-                    finalized_round,
-                    outcome,
-                });
+                .map(ExecutionTaskOutcome::Build);
                 self.set_execution_task(ExecutionTask::new(ExecutionTaskType::Build, fut));
                 return;
             } else {
@@ -1549,7 +1561,6 @@ where
                 WalkOwner::Verification(active.round),
                 active.walk.cause.clone(),
                 block,
-                self.network_finalized_tip.0,
             );
             self.set_execution_task(ExecutionTask::new(ExecutionTaskType::Verify, fut));
             return;
@@ -1564,7 +1575,6 @@ where
                 WalkOwner::Convergence,
                 walk.cause.clone(),
                 block,
-                self.network_finalized_tip.0,
             );
             self.set_execution_task(ExecutionTask::new(ExecutionTaskType::Deliver, fut));
         }
@@ -1591,11 +1601,13 @@ where
     }
 
     /// Uses the latest delivered finalized block for both fields unless the
-    /// convergence target has a VALID delivery under the current network tip.
+    /// convergence target has a VALID delivery and proven ancestry to the
+    /// current network finalized tip.
     fn next_forkchoice_target(&self) -> Option<LocalState> {
+        let (_, height, digest) = self.delivered_finalized_tip;
         let mut target = LocalState {
-            head: self.delivered_finalized,
-            finalized: self.delivered_finalized,
+            head: (height, digest),
+            finalized: (height, digest),
         };
         if let Some((height, digest)) = self.pending_head.executed {
             target = target.update_head(height, digest);
@@ -1809,6 +1821,11 @@ enum VerificationEvent {
 /// walk stops at the finalized tip and lets the finalization pipeline
 /// deliver finalized history.
 ///
+/// Convergence also walks past VALID blocks until a VALID cursor or its parent
+/// is the network finalized tip. That digest proves the target's ancestry;
+/// the target must then return VALID before it can become HEAD. A changed
+/// finalized digest requires a new ancestry proof.
+///
 /// Answers for the target, and answers that stop the walk, are reported to
 /// the owner as a [`WalkOutcome`]. The owner then ends, restarts, or pauses
 /// the walk. Ancestor answers and gaps above the finalized tip are handled
@@ -1824,6 +1841,9 @@ struct AncestryWalk {
     /// The step owns the local lookup or the abort handle for a pooled
     /// parent subscription. Changing steps cancels any outstanding fetch.
     step: WalkStep,
+    /// The finalized digest reached by a convergence walk. Verification
+    /// does not require this proof and leaves it unset.
+    finalized_ancestor: Option<Digest>,
 }
 
 enum WalkStep {
@@ -1831,9 +1851,9 @@ enum WalkStep {
     Probe,
     /// The cursor is the current execution task.
     InFlight,
-    /// The cursor returned SYNCING and its parent is above the finalized
-    /// tip. The parent is being looked up locally; `None` if neither the
-    /// execution layer nor marshal storage has it.
+    /// The parent above the finalized tip is being looked up to continue
+    /// execution or prove ancestry; `None` if neither the execution layer
+    /// nor marshal storage has it.
     LookUpParent(BoxFuture<'static, Option<Arc<Block>>>),
     /// The parent is not held locally and is subscribed for with the marshal
     /// actor, which may have to fetch it from peers. The receiver closes if
@@ -1866,14 +1886,14 @@ impl WalkStep {
 enum WalkOutcome {
     /// The walk moved on by itself.
     Continue,
-    /// The cursor's parent is missing above the finalized tip; the owner
-    /// looks it up locally.
+    /// The walk needs the cursor's parent above the finalized tip; the
+    /// owner looks it up locally.
     NeedsParent,
     /// Neither the execution layer nor marshal storage has the parent; the
     /// owner subscribes for it with the marshal actor.
     NeedsFetch,
-    /// The target itself returned VALID: it is executed and connected to the
-    /// canonical chain.
+    /// The target itself returned VALID. For convergence, its ancestry also
+    /// reaches the current network finalized tip.
     TargetValid,
     /// The cursor was rejected. This is the target's verdict whether the
     /// cursor is the target or an ancestor: the execution layer answers
@@ -1916,6 +1936,7 @@ impl AncestryWalk {
             cursor: target.clone(),
             target,
             step: WalkStep::Probe,
+            finalized_ancestor: None,
         }
     }
 
@@ -1981,16 +2002,15 @@ impl AncestryWalk {
         poll_fn(|cx| self.poll_lookup(cx)).await
     }
 
-    /// Interprets the engine's answer for the cursor. `finalized` is the
-    /// network's finalized tip and `delivered` the highest finalized height
-    /// the execution layer has accepted.
-    fn on_status(
+    /// Interprets the engine's answer for a verification walk. The network
+    /// finalized tip is announced by consensus; the delivered finalized tip
+    /// is the highest finalized block the execution layer has accepted.
+    fn on_verification_status(
         &mut self,
         status: PayloadStatusEnum,
-        finalized: (Round, Height, Digest),
-        delivered: Height,
+        network_finalized_tip: (Round, Height, Digest),
+        delivered_finalized_tip: (Round, Height, Digest),
     ) -> WalkOutcome {
-        let (finalized_round, finalized_height, finalized_digest) = finalized;
         match status {
             PayloadStatusEnum::Valid if self.at_target() => WalkOutcome::TargetValid,
             PayloadStatusEnum::Valid => {
@@ -2006,41 +2026,144 @@ impl AncestryWalk {
                 WalkOutcome::Invalid
             }
             PayloadStatusEnum::Syncing => {
-                let parent_height = self.parent_height();
-                let (parent_round, parent_digest) = self.parent();
-                // A missing parent must be above both finality boundaries;
-                // marshal cannot fetch notarizations at or below its round floor.
-                if parent_height > finalized_height && parent_round > finalized_round {
-                    WalkOutcome::NeedsParent
-                } else if parent_digest == finalized_digest {
-                    if delivered >= finalized_height {
-                        WalkOutcome::SyncingAtDeliveredFinality
-                    } else {
-                        // Only the target is needed to restart later.
-                        self.cursor = self.target.clone();
-                        self.step = WalkStep::WaitForFinalized {
-                            height: finalized_height,
-                        };
-                        WalkOutcome::Continue
-                    }
-                } else {
-                    info!(
-                        %parent_digest,
-                        %parent_height,
-                        %parent_round,
-                        %finalized_digest,
-                        %finalized_height,
-                        %finalized_round,
-                        "ancestry does not reach the finalized tip",
-                    );
-                    WalkOutcome::ConflictsWithFinality
-                }
+                self.descend_after_syncing(network_finalized_tip, delivered_finalized_tip)
             }
             PayloadStatusEnum::Accepted => WalkOutcome::Accepted,
         }
     }
 
-    /// Looks up the cursor's parent locally, the block SYNCING asked for.
+    /// Requires proof of ancestry to the current finalized digest in addition
+    /// to execution. A VALID block alone may belong to another branch.
+    fn on_convergence_status(
+        &mut self,
+        status: PayloadStatusEnum,
+        network_finalized_tip: (Round, Height, Digest),
+        delivered_finalized_tip: (Round, Height, Digest),
+    ) -> WalkOutcome {
+        let finalized_digest = network_finalized_tip.2;
+        match status {
+            PayloadStatusEnum::Valid => {
+                if self.cursor.parent_digest() == finalized_digest
+                    || self.cursor.digest() == finalized_digest
+                {
+                    // The path from the target has reached current finality.
+                    // Retain this proof when we return to the target.
+                    self.finalized_ancestor = Some(finalized_digest);
+                }
+                if self.finalized_ancestor != Some(finalized_digest) {
+                    // VALID proves execution, but we still need to establish
+                    // the target's ancestry to the current finalized tip.
+                    self.descend_to_network_finalized_tip(network_finalized_tip)
+                } else if self.at_target() {
+                    // The target itself is VALID and the retained ancestry
+                    // proof still matches current finality: it can become HEAD.
+                    WalkOutcome::TargetValid
+                } else {
+                    // An ancestor established the path to finality. Probe the
+                    // target again to confirm it executed; its earlier delivery
+                    // may have returned SYNCING or been evicted from EL's buffer.
+                    self.reprobe();
+                    WalkOutcome::Continue
+                }
+            }
+            PayloadStatusEnum::Invalid { validation_error } => {
+                info!(
+                    digest = %self.cursor.digest(),
+                    validation_error,
+                    "execution layer rejected the block",
+                );
+                WalkOutcome::Invalid
+            }
+            PayloadStatusEnum::Syncing => {
+                // Repair missing execution ancestry just as verification does,
+                // even if the target's path to finality is already proved.
+                self.descend_after_syncing(network_finalized_tip, delivered_finalized_tip)
+            }
+            PayloadStatusEnum::Accepted => WalkOutcome::Accepted,
+        }
+    }
+
+    /// Descends after SYNCING to find missing execution state. Both verification
+    /// and convergence leave finalized history to the finalization pipeline.
+    fn descend_after_syncing(
+        &mut self,
+        network_finalized_tip: (Round, Height, Digest),
+        delivered_finalized_tip: (Round, Height, Digest),
+    ) -> WalkOutcome {
+        let (finalized_round, finalized_height, finalized_digest) = network_finalized_tip;
+        let (_, delivered_height, _) = delivered_finalized_tip;
+        let parent_height = self.parent_height();
+        let (parent_round, parent_digest) = self.parent();
+        // A missing parent must be above both finality boundaries;
+        // marshal cannot fetch notarizations at or below its round floor.
+        if parent_height > finalized_height && parent_round > finalized_round {
+            WalkOutcome::NeedsParent
+        } else if parent_digest == finalized_digest {
+            if delivered_height >= finalized_height {
+                WalkOutcome::SyncingAtDeliveredFinality
+            } else {
+                // Only the target is needed to restart later.
+                self.cursor = self.target.clone();
+                self.step = WalkStep::WaitForFinalized {
+                    height: finalized_height,
+                };
+                WalkOutcome::Continue
+            }
+        } else {
+            info!(
+                %parent_digest,
+                %parent_height,
+                %parent_round,
+                %finalized_digest,
+                %finalized_height,
+                %finalized_round,
+                "ancestry does not reach the finalized tip",
+            );
+            WalkOutcome::ConflictsWithFinality
+        }
+    }
+
+    /// Descends past a VALID block to prove the target's ancestry to network
+    /// finality. Execution has succeeded, so delivery progress is irrelevant.
+    fn descend_to_network_finalized_tip(
+        &mut self,
+        network_finalized_tip: (Round, Height, Digest),
+    ) -> WalkOutcome {
+        let (finalized_round, finalized_height, finalized_digest) = network_finalized_tip;
+        if !self.at_target()
+            && (self.cursor.height() <= finalized_height
+                || self.cursor.context().round <= finalized_round)
+        {
+            // Finality overtook this in-flight ancestor. Restart at the target
+            // to find the new boundary; descending from here would mistake
+            // old history for a conflict.
+            self.reprobe();
+            return WalkOutcome::Continue;
+        }
+
+        let parent_height = self.parent_height();
+        let (parent_round, parent_digest) = self.parent();
+        if parent_height > finalized_height && parent_round > finalized_round {
+            // Returning to the target before reaching the boundary would
+            // repeat the same walk without proving FCU eligibility.
+            WalkOutcome::NeedsParent
+        } else {
+            // A VALID cursor or parent matching the finalized digest would
+            // already have established the proof in on_convergence_status.
+            info!(
+                %parent_digest,
+                %parent_height,
+                %parent_round,
+                %finalized_digest,
+                %finalized_height,
+                %finalized_round,
+                "ancestry does not reach the finalized tip",
+            );
+            WalkOutcome::ConflictsWithFinality
+        }
+    }
+
+    /// Looks up the cursor's parent locally to continue the walk.
     fn look_up_parent(&mut self, execution_node: impl ExecutionLayer, marshal: impl Marshal) {
         let (_, digest) = self.parent();
         self.step = WalkStep::LookUpParent(look_up_block(execution_node, marshal, digest).boxed());
@@ -2089,13 +2212,13 @@ impl AncestryWalk {
 
     /// Restarts at the target once finalization delivered the block the walk
     /// was about to deliver or fetch itself. A stopped walk restarts as well.
-    fn on_finalized_delivered(&mut self, delivered: Height) {
+    fn on_finalized_delivered(&mut self, delivered_height: Height) {
         let restart = match &self.step {
-            WalkStep::Probe => !self.at_target() && self.cursor.height() <= delivered,
+            WalkStep::Probe => !self.at_target() && self.cursor.height() <= delivered_height,
             WalkStep::LookUpParent(_) | WalkStep::FetchParent { .. } => {
-                self.parent_height() <= delivered
+                self.parent_height() <= delivered_height
             }
-            WalkStep::WaitForFinalized { height } => *height <= delivered,
+            WalkStep::WaitForFinalized { height } => *height <= delivered_height,
             WalkStep::Stopped => true,
             WalkStep::InFlight => false,
         };
@@ -2160,11 +2283,10 @@ impl ExecutionTaskFinished {
     fn target(&self) -> Option<LocalState> {
         match &self.outcome {
             ExecutionTaskOutcome::Forkchoice(forkchoice)
-            | ExecutionTaskOutcome::Build {
-                outcome: BuildOutcome::Forkchoice(forkchoice),
-                ..
-            } => Some(forkchoice.target),
-            ExecutionTaskOutcome::Build { .. }
+            | ExecutionTaskOutcome::Build(BuildOutcome::Forkchoice(forkchoice)) => {
+                Some(forkchoice.target)
+            }
+            ExecutionTaskOutcome::Build(_)
             | ExecutionTaskOutcome::Delivered { .. }
             | ExecutionTaskOutcome::FinalizedDelivered { .. } => None,
         }
@@ -2193,17 +2315,12 @@ impl Future for ExecutionTask {
 }
 
 /// The result of an execution task, interpreted by [`Actor::handle_execution_task_finished`].
-///
-/// `finalized_round` snapshots the network finalized round when the task is
-/// scheduled. It travels with the result so a late `VALID` cannot restore
-/// HEAD eligibility after a newer network finalized tip cleared it.
 enum ExecutionTaskOutcome {
     /// A walk's cursor was delivered. The status carries the time the engine
     /// call took.
     Delivered {
         owner: WalkOwner,
         digest: Digest,
-        finalized_round: Round,
         status: eyre::Result<(PayloadStatusEnum, Duration)>,
     },
     /// The request travels back for its acknowledgement.
@@ -2211,10 +2328,7 @@ enum ExecutionTaskOutcome {
         request: FinalizedBlockRequest,
         status: eyre::Result<PayloadStatusEnum>,
     },
-    Build {
-        finalized_round: Round,
-        outcome: BuildOutcome,
-    },
+    Build(BuildOutcome),
     Forkchoice(ForkchoiceOutcome),
 }
 
@@ -2241,7 +2355,7 @@ impl ExecutionTaskOutcome {
         match self {
             Self::Delivered { .. } => "delivered",
             Self::FinalizedDelivered { .. } => "finalized-delivered",
-            Self::Build { .. } => "build",
+            Self::Build(_) => "build",
             Self::Forkchoice(_) => "forkchoice",
         }
     }
@@ -2400,7 +2514,6 @@ async fn execute_delivery(
     owner: WalkOwner,
     cause: Span,
     block: Arc<Block>,
-    finalized_round: Round,
 ) -> ExecutionTaskOutcome {
     let digest = block.digest();
     let started = Instant::now();
@@ -2410,7 +2523,6 @@ async fn execute_delivery(
     ExecutionTaskOutcome::Delivered {
         owner,
         digest,
-        finalized_round,
         status,
     }
 }
@@ -2660,8 +2772,8 @@ struct PendingHead {
     round: Round,
     digest: Digest,
     height: Option<Height>,
-    /// This exact target returned VALID without a newer network finalized tip.
-    /// Cleared when either the selected target or network finalized tip changes.
+    /// This exact target executed and its ancestry reaches network finality.
+    /// Cleared when the selected target or network finalized digest changes.
     executed: Option<(Height, Digest)>,
 }
 
