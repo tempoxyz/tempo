@@ -494,7 +494,8 @@ impl<'a> arbitrary::Arbitrary<'a> for KeyAuthorization {
             chain_id: u.arbitrary()?,
             key_type: u.arbitrary()?,
             key_id: u.arbitrary()?,
-            expiry: u.arbitrary()?,
+            // Zero (including exhausted input) represents an absent expiry.
+            expiry: u.arbitrary::<Option<u64>>()?.and_then(NonZeroU64::new),
             limits: u.arbitrary()?,
             allowed_calls: u.arbitrary()?,
             witness: u.arbitrary::<Option<[u8; 32]>>()?.map(B256::from),
@@ -778,6 +779,27 @@ mod tests {
 
     fn nonzero(value: u64) -> NonZeroU64 {
         NonZeroU64::new(value).expect("test expiry must be non-zero")
+    }
+
+    #[test]
+    fn arbitrary_expiry_boundaries() {
+        use arbitrary::{Arbitrary, Unstructured};
+
+        for value in [None, Some(0u64), Some(1), Some(u64::MAX)] {
+            // Default chain ID, key type and key ID, followed by Some's tag.
+            let mut input = vec![0; 32];
+            input.push(1);
+            if let Some(value) = value {
+                input.extend_from_slice(&value.to_le_bytes());
+            }
+            let auth = KeyAuthorization::arbitrary(&mut Unstructured::new(&input)).unwrap();
+            assert_eq!(auth.expiry, value.and_then(NonZeroU64::new));
+
+            let encoded = alloy_rlp::encode(&auth);
+            let mut remaining = encoded.as_slice();
+            assert_eq!(KeyAuthorization::decode(&mut remaining).unwrap(), auth);
+            assert!(remaining.is_empty());
+        }
     }
 
     fn make_auth(expiry: Option<u64>, limits: Option<Vec<TokenLimit>>) -> KeyAuthorization {
