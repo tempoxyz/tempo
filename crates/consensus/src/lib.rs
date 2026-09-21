@@ -95,9 +95,8 @@ pub async fn run_consensus_stack(
     let marshal = network.register(MARSHAL_CHANNEL_IDENT, backfill_quota);
     let dkg = network.register(DKG_CHANNEL_IDENT, DKG_LIMIT);
     let target_block_time = config.target_block_time.into_duration();
-    // Consensus owns the end-to-end local proposal window. The network budget
-    // is reserved for propagation, and the remaining time is passed down to
-    // proposal handling and local payload building.
+    // Reserve time for propagation. The remaining application budget starts
+    // after commonware fetches the parent; that fetch time is not deducted.
     let proposal_return_budget =
         target_block_time.saturating_sub(config.network_budget.into_duration());
 

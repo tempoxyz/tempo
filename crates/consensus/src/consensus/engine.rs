@@ -79,8 +79,8 @@ pub struct Builder<TBlocker, TPeerManager> {
     pub inactive_time_before_leader_skip: Duration,
     /// Local proposal return budget after reserving network propagation time.
     ///
-    /// The leader uses this window for payload building, local marshal
-    /// persistence, and any final wait before returning the proposal.
+    /// The leader uses this window for proposal preparation, payload building,
+    /// and pacing after commonware has fetched the parent.
     pub proposal_return_budget: Duration,
     pub fcu_heartbeat_interval: Duration,
 
@@ -267,7 +267,7 @@ where
         .await
         .wrap_err("failed initializing dkg manager")?;
 
-        let application = application::Application::new(application::Config {
+        let application = application::Inner::new(application::Config {
             context: context.child("application"),
             public_key: self.signer.public_key(),
             executor: executor_mailbox.clone(),
@@ -276,28 +276,32 @@ where
             proposal_return_budget: self.proposal_return_budget,
             epoch_strategy: epoch_strategy.clone(),
         });
-
-        let (epoch_manager, epoch_manager_mailbox) = epoch::manager::init(
-            context.child("epoch_manager"),
-            epoch::manager::Config {
-                application,
-                verification_mode: self.verification_mode,
-                execution_node: execution_node.clone(),
-                blocker: self.blocker.clone(),
-                page_cache: page_cache_ref,
-                epoch_strategy: epoch_strategy.clone(),
-                time_for_peer_response: self.time_for_peer_response,
-                time_to_propose: self.time_to_propose,
-                mailbox_size: self.mailbox_size,
-                marshal: marshal_mailbox,
-                scheme_provider,
-                time_to_collect_notarizations: self.time_to_collect_notarizations,
-                time_to_retry_nullify_broadcast: self.time_to_retry_nullify_broadcast,
-                partition_prefix: format!("{}_epoch_manager", self.partition_prefix),
-                views_to_track: ViewDelta::new(self.views_to_track),
-                inactive_time_before_leader_skip: self.inactive_time_before_leader_skip,
-            },
+        let application = application::Marshaled::new(
+            context.child("application"),
+            application,
+            marshal_mailbox.clone(),
+            epoch_strategy.clone(),
+            self.verification_mode,
         );
+
+        let epoch_manager_config = epoch::manager::Config {
+            application,
+            verification_mode: self.verification_mode,
+            execution_node: execution_node.clone(),
+            blocker: self.blocker.clone(),
+            page_cache: page_cache_ref,
+            epoch_strategy,
+            time_for_peer_response: self.time_for_peer_response,
+            time_to_propose: self.time_to_propose,
+            mailbox_size: self.mailbox_size,
+            marshal: marshal_mailbox,
+            scheme_provider,
+            time_to_collect_notarizations: self.time_to_collect_notarizations,
+            time_to_retry_nullify_broadcast: self.time_to_retry_nullify_broadcast,
+            partition_prefix: format!("{}_epoch_manager", self.partition_prefix),
+            views_to_track: ViewDelta::new(self.views_to_track),
+            inactive_time_before_leader_skip: self.inactive_time_before_leader_skip,
+        };
 
         Ok(Engine {
             context: ContextCell::new(context),
@@ -315,8 +319,7 @@ where
             resolver_config,
             marshal,
 
-            epoch_manager,
-            epoch_manager_mailbox,
+            epoch_manager_config,
 
             peer_manager,
             peer_manager_mailbox,
@@ -367,8 +370,7 @@ where
     /// local node.
     marshal: crate::alias::marshal::Actor<TContext>,
 
-    epoch_manager: epoch::manager::Actor<TContext, TBlocker>,
-    epoch_manager_mailbox: epoch::manager::Mailbox,
+    epoch_manager_config: epoch::manager::Config<TContext, TBlocker>,
 
     peer_manager: peer_manager::Actor<TContext, TPeerManager, TempoFullNode>,
     peer_manager_mailbox: peer_manager::Mailbox,
@@ -515,34 +517,36 @@ where
 
         let executor = self.executor.start();
 
-        let marshal = self.marshal.start(
+        let reporters = Reporters::from((
+            self.executor_mailbox,
             Reporters::from((
-                self.executor_mailbox,
+                self.dkg_manager_mailbox,
                 Reporters::from((
-                    self.dkg_manager_mailbox,
-                    Reporters::from((
-                        self.peer_manager_mailbox,
-                        Reporters::<_, crate::feed::Mailbox, crate::gossip::Mailbox>::from((
-                            self.feed_mailbox,
-                            self.gossip_mailbox,
-                        )),
+                    self.peer_manager_mailbox,
+                    Reporters::<_, crate::feed::Mailbox, crate::gossip::Mailbox>::from((
+                        self.feed_mailbox,
+                        self.gossip_mailbox,
                     )),
                 )),
             )),
+        ));
+
+        let marshal = self.marshal.start(
+            Reporters::from((self.epoch_manager_config.application.clone(), reporters)),
             self.broadcast_mailbox,
             resolver,
         );
-
+        let (epoch_manager, epoch_manager_mailbox) = epoch::manager::init(
+            self.context.child("epoch_manager"),
+            self.epoch_manager_config,
+        );
         let epoch_manager =
-            self.epoch_manager
-                .start(votes_channel, certificates_channel, resolver_channel);
+            epoch_manager.start(votes_channel, certificates_channel, resolver_channel);
 
         let feed = self.feed.start();
         let gossip_task = self.gossip_actor.map(crate::gossip::Actor::start);
 
-        let dkg_manager = self
-            .dkg_manager
-            .start(self.epoch_manager_mailbox, dkg_channel);
+        let dkg_manager = self.dkg_manager.start(epoch_manager_mailbox, dkg_channel);
 
         let mut tasks = vec![
             broadcast,

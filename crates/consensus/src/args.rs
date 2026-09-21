@@ -159,7 +159,8 @@ pub struct Args {
     /// Target wall-clock time between blocks in healthy network conditions.
     ///
     /// Local proposal work is paced against this value minus
-    /// `--consensus.network-budget`.
+    /// `--consensus.network-budget`. Time spent fetching the parent in
+    /// commonware is not deducted from this budget.
     #[arg(long = "consensus.target-block-time", default_value = "550ms")]
     pub target_block_time: PositiveDuration,
 

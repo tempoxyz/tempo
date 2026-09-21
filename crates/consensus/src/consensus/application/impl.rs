@@ -1,15 +1,4 @@
-//! The interface between the consensus layer and the execution layer.
-//!
-//! [`Application`] implements [`commonware_consensus::Application`]. The
-//! epoch manager wraps it in marshal's inline application for every epoch's
-//! simplex engine. The wrapper
-//! owns everything between consensus and the block: it fetches the parent,
-//! re-proposes epoch boundary blocks, checks epoch membership and parent
-//! linkage, persists verified blocks, broadcasts proposals, and gates the
-//! finalize vote on durability. What is left here is tempo's own view of a
-//! block: how one is built through the executor, and which checks a
-//! proposal must pass before this node votes for it.
-//!
+//! Tempo's block building and verification.
 
 use std::{
     sync::{Arc, Mutex},
@@ -18,19 +7,20 @@ use std::{
 
 use alloy_consensus::BlockHeader;
 use alloy_primitives::Bytes;
+use commonware_actor::Feedback;
 use commonware_codec::{Encode as _, ReadExt as _};
 use commonware_consensus::{
-    Heightable as _,
-    marshal::ancestry::Ancestry,
+    Heightable as _, Reporter,
+    marshal::{Update, ancestry::Ancestry},
     simplex::{scheme::bls12381_threshold::vrf::Scheme, types::Context},
     types::{Epocher as _, FixedEpocher, HeightDelta},
 };
 use commonware_cryptography::{bls12381::primitives::variant::MinSig, ed25519::PublicKey};
 use commonware_runtime::{
-    Clock, Metrics as RuntimeMetrics, Spawner,
+    Clock, Spawner,
     telemetry::metrics::{Counter, MetricsExt as _},
 };
-use commonware_utils::SystemTimeExt as _;
+use commonware_utils::{Acknowledgement as _, SystemTimeExt as _};
 use eyre::{OptionExt as _, WrapErr as _, ensure, eyre};
 use futures::StreamExt as _;
 use rand_core::Rng;
@@ -48,35 +38,36 @@ use tracing::{Level, debug, info, instrument, warn};
 
 use crate::consensus::{Digest, block::Block};
 
-pub(super) struct Config<TContext> {
+pub(in crate::consensus) struct Config<TContext> {
     /// Registers the application's metrics; spawns its work.
-    pub(super) context: TContext,
+    pub(in crate::consensus) context: TContext,
 
     /// This node's ed25519 public key, used to look up the fee recipient from
     /// the validator config v2 contract.
-    pub(super) public_key: PublicKey,
+    pub(in crate::consensus) public_key: PublicKey,
 
-    pub(super) executor: crate::executor::Mailbox,
+    pub(in crate::consensus) executor: crate::executor::Mailbox,
 
-    pub(super) dkg_manager: crate::dkg::manager::Mailbox,
+    pub(in crate::consensus) dkg_manager: crate::dkg::manager::Mailbox,
 
     /// A handle to the execution node, for its chain spec.
-    pub(super) execution_node: Arc<TempoFullNode>,
+    pub(in crate::consensus) execution_node: Arc<TempoFullNode>,
 
     /// Local proposal return budget, excluding the network propagation allowance.
     ///
-    /// Starts at `target_block_time - network_budget`; `propose` subtracts the
-    /// time already spent building before handing the remaining budget to the
-    /// payload builder.
-    pub(super) proposal_return_budget: Duration,
+    /// Starts at `target_block_time - network_budget` when the application is
+    /// called. Commonware's parent fetch happens beforehand and is not charged
+    /// against this budget. Proposal preparation time is deducted before handing
+    /// the remaining budget to the payload builder.
+    pub(in crate::consensus) proposal_return_budget: Duration,
 
     /// The epoch strategy used by tempo, to map block heights to epochs.
-    pub(super) epoch_strategy: FixedEpocher,
+    pub(in crate::consensus) epoch_strategy: FixedEpocher,
 }
 
 /// Tempo's block builder and verifier, see the module documentation.
 #[derive(Clone)]
-pub(crate) struct Application {
+pub(crate) struct Inner {
     public_key: PublicKey,
     epoch_strategy: FixedEpocher,
     /// Local proposal window after reserving network propagation time.
@@ -92,8 +83,10 @@ pub(crate) struct Application {
     metrics: Metrics,
 }
 
-impl Application {
-    pub(super) fn new<TContext: RuntimeMetrics>(config: Config<TContext>) -> Self {
+impl Inner {
+    pub(in crate::consensus) fn new<TContext: commonware_runtime::Metrics>(
+        config: Config<TContext>,
+    ) -> Self {
         Self {
             public_key: config.public_key,
             epoch_strategy: config.epoch_strategy,
@@ -124,8 +117,8 @@ impl Application {
         runtime: &TContext,
         context: Context<Digest, PublicKey>,
         parent: &Block,
+        propose_start: Instant,
     ) -> eyre::Result<Block> {
-        let propose_start = Instant::now();
         let Context {
             round,
             leader,
@@ -139,9 +132,7 @@ impl Application {
 
         // Query DKG manager for ceremony data before building payload
         // This data will be passed to the payload builder via attributes
-        let extra_data = if parent_epoch_info.last() == parent.height().next()
-            && parent_epoch_info.epoch() == round.epoch()
-        {
+        let extra_data = if parent_epoch_info.last() == parent.height().next() {
             // At epoch boundary: include public ceremony outcome
             let outcome = self
                 .dkg_manager
@@ -381,9 +372,9 @@ impl Application {
     }
 }
 
-impl<TContext> commonware_consensus::Application<TContext> for Application
+impl<TContext> commonware_consensus::Application<TContext> for Inner
 where
-    TContext: Rng + Spawner + RuntimeMetrics + Clock,
+    TContext: Rng + Spawner + commonware_runtime::Metrics + Clock,
 {
     type SigningScheme = Scheme<PublicKey, MinSig>;
     type Context = Context<Digest, PublicKey>;
@@ -398,8 +389,9 @@ where
         mut ancestry: impl Ancestry<Block>,
         (): (),
     ) -> Option<Block> {
+        let propose_start = Instant::now();
         let parent = ancestry.next().await?;
-        match self.build(&runtime, context, &parent).await {
+        match self.build(&runtime, context, &parent, propose_start).await {
             Ok(block) => {
                 info!(proposal.digest = %block.digest(), "constructed proposal");
                 Some(block)
@@ -462,16 +454,27 @@ where
     }
 }
 
+impl Reporter for Inner {
+    type Activity = Update<Block>;
+
+    fn report(&mut self, update: Self::Activity) -> Feedback {
+        if let Update::Block(_, ack) = update {
+            ack.acknowledge();
+        }
+        Feedback::Ok
+    }
+}
+
 #[derive(Clone)]
 struct Metrics {
     parent_ahead_of_local_time: Counter,
 }
 
 impl Metrics {
-    fn init<TContext: RuntimeMetrics>(context: &TContext) -> Self {
+    fn init<TContext: commonware_runtime::Metrics>(context: &TContext) -> Self {
         let parent_ahead_of_local_time = context.counter(
             "parent_ahead_of_local_time",
-            "number of times the parent block timestamp was ahead of local time",
+            "number of times the parent block timestamp was ahead of local time when proposing",
         );
 
         Self {

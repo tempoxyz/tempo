@@ -39,7 +39,6 @@
 use std::{collections::BTreeMap, num::NonZeroUsize};
 
 use commonware_consensus::{
-    marshal::standard::{Deferred, Inline},
     simplex::{self, config::Floor, elector, scheme::bls12381_threshold::vrf::Scheme},
     types::{Epoch, EpochDelta, Epocher as _},
 };
@@ -62,7 +61,6 @@ use reth_ethereum::chainspec::EthChainSpec;
 use tracing::{Level, Span, debug, error, error_span, info, instrument, warn, warn_span};
 
 use crate::{
-    VerificationMode,
     consensus::Digest,
     epoch::manager::ingress::{EpochTransition, Exit},
 };
@@ -72,9 +70,12 @@ use super::ingress::{Content, Message};
 const REPLAY_BUFFER: NonZeroUsize = NZUsize!(8 * 1024 * 1024); // 8MB
 const WRITE_BUFFER: NonZeroUsize = NZUsize!(1024 * 1024); // 1MB
 
-pub(crate) struct Actor<TContext, TBlocker> {
+pub(crate) struct Actor<TContext, TBlocker>
+where
+    TContext: Rng + Spawner + commonware_runtime::Metrics + Clock,
+{
     active_epochs: BTreeMap<Epoch, Handle<()>>,
-    config: super::Config<TBlocker>,
+    config: super::Config<TContext, TBlocker>,
     context: ContextCell<TContext>,
     mailbox: mpsc::UnboundedReceiver<Message>,
     metrics: Metrics,
@@ -95,7 +96,7 @@ where
         + Network,
 {
     pub(super) fn new(
-        config: super::Config<TBlocker>,
+        config: super::Config<TContext, TBlocker>,
         context: TContext,
         mailbox: mpsc::UnboundedReceiver<Message>,
     ) -> Self {
@@ -330,68 +331,52 @@ where
         let certificate = certificates_mux.register(epoch.get()).await.unwrap();
         let resolver = resolver_mux.register(epoch.get()).await.unwrap();
 
-        // Exists to avoid naming the very complex simplex::Config<A>i.
-        macro_rules! start_engine {
-            ($wrapper:ident) => {{
-                info!(mode = %self.config.verification_mode, "starting simplex engine");
+        info!(mode = %self.config.verification_mode, "starting simplex engine");
 
-                let application = $wrapper::new(
-                    engine_ctx.child("application"),
-                    self.config.application.clone(),
-                    self.config.marshal.clone(),
-                    self.config.epoch_strategy.clone(),
-                );
-                simplex::Engine::new(
-                    engine_ctx,
-                    simplex::Config {
-                        epoch,
-                        floor,
-                        scheme,
-                        #[expect(
-                            deprecated,
-                            reason = "switching random leader election from V0 to V1 requires a hardfork"
-                        )]
-                        elector: elector::Random::<commonware_cryptography::Sha256>::new(
-                            elector::RandomVersion::V0,
-                        ),
-                        strategy: Sequential,
+        let engine = simplex::Engine::new(
+            engine_ctx,
+            simplex::Config {
+                epoch,
+                floor,
+                scheme,
+                #[expect(
+                    deprecated,
+                    reason = "switching random leader election from V0 to V1 requires a hardfork"
+                )]
+                elector: elector::Random::<commonware_cryptography::Sha256>::new(
+                    elector::RandomVersion::V0,
+                ),
+                strategy: Sequential,
 
-                        reporter: self.config.marshal.clone(),
-                        partition: format!(
-                            "{partition_prefix}_consensus_epoch_{epoch}",
-                            partition_prefix = self.config.partition_prefix
-                        ),
+                reporter: self.config.marshal.clone(),
+                partition: format!(
+                    "{partition_prefix}_consensus_epoch_{epoch}",
+                    partition_prefix = self.config.partition_prefix
+                ),
 
-                        replay_buffer: REPLAY_BUFFER,
-                        write_buffer: WRITE_BUFFER,
+                replay_buffer: REPLAY_BUFFER,
+                write_buffer: WRITE_BUFFER,
 
-                        blocker: self.config.blocker.clone(),
-                        automaton: application.clone(),
-                        relay: application,
-                        page_cache: self.config.page_cache.clone(),
-                        leader_timeout: self.config.time_to_propose,
-                        certification_timeout: self.config.time_to_collect_notarizations,
-                        timeout_retry: self.config.time_to_retry_nullify_broadcast,
-                        fetch_timeout: self.config.time_for_peer_response,
-                        view_retention: self.config.views_to_track,
-                        skip: simplex::config::SkipPolicy::Enabled {
-                            timeout: self.config.inactive_time_before_leader_skip,
-                            budget: simplex::config::SkipBudget::Participants,
-                        },
+                blocker: self.config.blocker.clone(),
+                automaton: self.config.application.clone(),
+                relay: self.config.application.clone(),
+                page_cache: self.config.page_cache.clone(),
+                leader_timeout: self.config.time_to_propose,
+                certification_timeout: self.config.time_to_collect_notarizations,
+                timeout_retry: self.config.time_to_retry_nullify_broadcast,
+                fetch_timeout: self.config.time_for_peer_response,
+                view_retention: self.config.views_to_track,
+                skip: simplex::config::SkipPolicy::Enabled {
+                    timeout: self.config.inactive_time_before_leader_skip,
+                    budget: simplex::config::SkipBudget::Participants,
+                },
 
-                        mailbox_size: self.config.mailbox_size,
-                        forward: commonware_consensus::simplex::config::ForwardPolicy::Disabled,
-                        track_historical_votes: true,
-                    },
-                )
-                .start(vote, certificate, resolver)
-            }};
-        }
-
-        let engine = match self.config.verification_mode {
-            VerificationMode::Immediate => start_engine!(Inline),
-            VerificationMode::Deferred => start_engine!(Deferred),
-        };
+                mailbox_size: self.config.mailbox_size,
+                forward: commonware_consensus::simplex::config::ForwardPolicy::Disabled,
+                track_historical_votes: true,
+            },
+        )
+        .start(vote, certificate, resolver);
 
         assert!(
             self.active_epochs.insert(epoch, engine).is_none(),
