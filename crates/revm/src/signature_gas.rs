@@ -4,7 +4,7 @@ use revm::interpreter::gas::{
 };
 use tempo_precompiles::native_multisig::keccak_cost;
 use tempo_primitives::transaction::{
-    AccessKeySignature, MultisigSignature, PrimitiveSignature, TempoSignature,
+    AccountSignature, MultisigSignature, PrimitiveSignature, TempoSignature,
     multisig::MULTISIG_SIGNATURE_DOMAIN,
 };
 
@@ -35,6 +35,17 @@ pub(crate) fn primitive_signature_verification_gas(signature: &PrimitiveSignatur
     }
 }
 
+/// Verification cost beyond the baseline signature charge, without keychain processing.
+#[inline]
+pub(crate) fn account_signature_verification_gas(signature: &AccountSignature) -> u64 {
+    match signature {
+        AccountSignature::Primitive(signature) => primitive_signature_verification_gas(signature),
+        AccountSignature::Multisig(signature) => {
+            multisig_verification_gas(signature).saturating_sub(3_000)
+        }
+    }
+}
+
 /// Calculates the gas cost for verifying an AA signature.
 ///
 /// For keychain signatures, adds key validation overhead to the inner signature cost. Returns the
@@ -44,14 +55,7 @@ pub(crate) fn tempo_signature_verification_gas(signature: &TempoSignature) -> u6
     match signature {
         TempoSignature::Primitive(prim_sig) => primitive_signature_verification_gas(prim_sig),
         TempoSignature::Keychain(keychain_sig) => {
-            (match &keychain_sig.signature {
-                AccessKeySignature::Primitive(signature) => {
-                    primitive_signature_verification_gas(signature)
-                }
-                AccessKeySignature::Multisig(signature) => {
-                    multisig_verification_gas(signature).saturating_sub(3_000)
-                }
-            }) + KEYCHAIN_VALIDATION_GAS
+            account_signature_verification_gas(&keychain_sig.signature) + KEYCHAIN_VALIDATION_GAS
         }
         TempoSignature::Multisig(signature) => {
             multisig_verification_gas(signature).saturating_sub(3_000)
