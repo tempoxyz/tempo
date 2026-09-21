@@ -647,7 +647,7 @@ impl AccountSignature {
         }
     }
 
-    /// Returns the stored access-key type, including multisig.
+    /// Returns the signature's access-key type, including multisig.
     pub fn key_type(&self) -> SignatureType {
         match self {
             Self::Primitive(signature) => signature.signature_type(),
