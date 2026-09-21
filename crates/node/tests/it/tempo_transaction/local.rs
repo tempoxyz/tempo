@@ -1351,10 +1351,8 @@ async fn test_propagate_2d_transactions() -> eyre::Result<()> {
             .expect("timed out waiting for tx on node1")
             .expect("tx listener1 channel closed");
     assert_eq!(pending_hash1, *envelope.tx_hash());
-    let _rpc_tx = provider1
-        .get_transaction_by_hash(pending_hash1)
-        .await
-        .unwrap();
+    let rpc_tx = provider1.get_transaction_by_hash(pending_hash1).await?;
+    assert!(rpc_tx.is_some(), "transaction missing from node1 RPC");
 
     // ensure we see it as pending on the second peer as well (should be broadcasted from first to second)
     let pending_hash2 =
@@ -1367,10 +1365,24 @@ async fn test_propagate_2d_transactions() -> eyre::Result<()> {
     // check we can fetch it from the second peer now
     let provider2 =
         ProviderBuilder::new_with_network::<TempoNetwork>().connect_http(node2.rpc_url());
-    let _rpc_tx = provider2
-        .get_transaction_by_hash(pending_hash2)
-        .await
-        .unwrap();
+    let rpc_tx = provider2.get_transaction_by_hash(pending_hash2).await?;
+    assert!(
+        rpc_tx.is_some(),
+        "propagated transaction missing from node2 RPC"
+    );
+
+    // Both nodes share a runtime. Let the engines finish before Tokio tears down
+    // the test runtime, otherwise their OS threads can outlive RocksDB cleanup.
+    node1.inner.rpc_server_handle().clone().stop()?;
+    node2.inner.rpc_server_handle().clone().stop()?;
+    let runtime = node1.inner.task_executor.clone();
+    assert!(
+        tokio::task::spawn_blocking(move || {
+            runtime.graceful_shutdown_with_timeout(std::time::Duration::from_secs(10))
+        })
+        .await?,
+        "timed out shutting down propagation test nodes"
+    );
 
     Ok(())
 }
