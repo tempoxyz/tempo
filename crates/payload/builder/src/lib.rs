@@ -297,6 +297,10 @@ where
     where
         Txs: BestTransactions<Item = BestTransaction> + Send + 'static,
     {
+        // The block identity is recorded on this span after the payload is built;
+        // read diagnostics retain that exact parent through early returns too.
+        let _readiness =
+            reth_tracing::readiness::Scope::enter(reth_tracing::readiness::Role::PayloadBuilder);
         let BuildArguments {
             cached_reads,
             execution_cache,

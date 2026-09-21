@@ -4,7 +4,7 @@ READINESS_STAGES = {'read_totals', 'read_samples', 'read_sample', 'read_coverage
 U64 = (1 << 64) - 1
 READ_FIELDS = {'read_role','read_class','read_calls','read_ns','read_max_ns','read_lt_10us','read_lt_100us','read_lt_1ms','read_lt_10ms','read_ge_10ms','read_samples_retained','read_samples_omitted','read_sample_cap','read_begin_ns','read_end_ns','read_thread','read_execution_mode'}
 CACHE_FIELDS = {'cache_checkout_reason','cache_diag_keys_tracked','cache_diag_key_capacity','cache_diag_cap_reached','cache_diag_lock_contention','account_miss_prewarm_inflight','account_miss_prewarm_completed','account_miss_prewarm_never_observed','account_miss_prewarm_unknown_due_cap','account_miss_prewarm_unknown_contention','account_miss_prewarm_failed','storage_miss_prewarm_inflight','storage_miss_prewarm_completed','storage_miss_prewarm_never_observed','storage_miss_prewarm_unknown_due_cap','storage_miss_prewarm_unknown_contention','storage_miss_prewarm_failed','code_miss_prewarm_inflight','code_miss_prewarm_completed','code_miss_prewarm_never_observed','code_miss_prewarm_unknown_due_cap','code_miss_prewarm_unknown_contention','code_miss_prewarm_failed'}
-PROOF_FIELDS = {'dispatches','targets','chunks','reason_unsplit','reason_force','reason_account_idle','reason_storage_idle','queue_samples','account_queue_high_water','storage_queue_high_water','account_queue_depth_0','account_queue_depth_1_8','account_queue_depth_9_32','account_queue_depth_33_plus','storage_queue_depth_0','storage_queue_depth_1_8','storage_queue_depth_9_32','storage_queue_depth_33_plus','split_when_queue_nonempty','outstanding_max'}
+PROOF_FIELDS = {'dispatches','targets','chunks','reason_unsplit','reason_force','reason_account_idle','reason_storage_idle','queue_samples','account_queue_high_water','storage_queue_high_water','account_queue_depth_0','account_queue_depth_1_8','account_queue_depth_9_32','account_queue_depth_33_plus','storage_queue_depth_0','storage_queue_depth_1_8','storage_queue_depth_9_32','storage_queue_depth_33_plus','split_when_queue_nonempty','split_when_storage_queue_nonempty','split_force_account_queue_nonempty','split_account_idle_account_queue_nonempty','split_storage_idle_account_queue_nonempty','split_force_storage_queue_nonempty','split_account_idle_storage_queue_nonempty','split_storage_idle_storage_queue_nonempty','outstanding_max'}
 
 def _u64(value):
     return type(value) is int and 0 <= value <= U64
@@ -26,7 +26,7 @@ def build(events, headers, aliases, first, cutoff=None):
         clean = _fields(stage, fields)
         if stage == 'read_samples':
             result['read_samples_omitted'] += clean.get('read_samples_omitted', 0)
-        if ('read_role' in clean and not 1 <= clean['read_role'] <= 4) or ('read_class' in clean and not 0 <= clean['read_class'] <= 9):
+        if ('read_role' in clean and not 1 <= clean['read_role'] <= 5) or ('read_class' in clean and not 0 <= clean['read_class'] <= 9):
             continue
         if 'read_execution_mode' in clean and clean['read_execution_mode'] not in (1, 2):
             continue

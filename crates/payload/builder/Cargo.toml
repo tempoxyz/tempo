@@ -47,6 +47,7 @@ alloy-primitives.workspace = true
 alloy-rlp.workspace = true
 
 metrics.workspace = true
+reth-tracing.workspace = true
 tracing.workspace = true
 crossbeam-channel.workspace = true
 tokio.workspace = true

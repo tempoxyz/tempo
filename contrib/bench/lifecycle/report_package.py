@@ -32,7 +32,7 @@ def write_package(data, out, chunk_intervals=CHUNK_INTERVALS, full=False):
     for old in out.iterdir():
         if re.fullmatch(r'(?:context-\d+\.(?:html|json)|(?:block|attempt)-\d+\.html|perfetto(?:-(?:block|attempt)-\d+|-p(?:50|90|99))?\.json)', old.name):
             old.unlink()
-    base = {k: v for k, v in data.items() if k not in ('spans', 'transfers', 'blocks', 'prewarm', 'network_events', 'network_messages')}
+    base = {k: v for k, v in data.items() if k not in ('spans', 'transfers', 'blocks', 'prewarm', 'read_readiness', 'network_events', 'network_messages')}
     # Every standalone page needs the histogram, not every block's worker rows.
     # Full block details remain in lifecycle.json and each focused block page.
     base['population_blocks'] = [
