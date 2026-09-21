@@ -206,7 +206,7 @@ impl ITIP20::ITIP20Calls {
     ///
     /// [TIP-20 payment]: <https://docs.tempo.xyz/protocol/tip20/overview#get-predictable-payment-fees>
     pub fn is_payment(input: &[u8]) -> bool {
-        payment_slots_kind(input).is_some()
+        PaymentSlotsKind::from_calldata(input).is_some()
     }
 
     /// Returns addresses whose balance slots are accessed by this call.
@@ -256,24 +256,26 @@ enum PaymentSlotsKind {
     Delegated,
 }
 
-fn payment_slots_kind(input: &[u8]) -> Option<PaymentSlotsKind> {
-    if is_call::<ITIP20::transferCall>(input)
-        || is_call::<ITIP20::transferWithMemoCall>(input)
-        || is_call::<ITIP20::mintCall>(input)
-        || is_call::<ITIP20::mintWithMemoCall>(input)
-    {
-        Some(PaymentSlotsKind::Direct)
-    } else if is_call::<ITIP20::transferFromCall>(input)
-        || is_call::<ITIP20::transferFromWithMemoCall>(input)
-    {
-        Some(PaymentSlotsKind::Delegated)
-    } else if is_call::<ITIP20::approveCall>(input)
-        || is_call::<ITIP20::burnCall>(input)
-        || is_call::<ITIP20::burnWithMemoCall>(input)
-    {
-        Some(PaymentSlotsKind::Empty)
-    } else {
-        None
+impl PaymentSlotsKind {
+    fn from_calldata(input: &[u8]) -> Option<Self> {
+        if is_call::<ITIP20::transferCall>(input)
+            || is_call::<ITIP20::transferWithMemoCall>(input)
+            || is_call::<ITIP20::mintCall>(input)
+            || is_call::<ITIP20::mintWithMemoCall>(input)
+        {
+            Some(Self::Direct)
+        } else if is_call::<ITIP20::transferFromCall>(input)
+            || is_call::<ITIP20::transferFromWithMemoCall>(input)
+        {
+            Some(Self::Delegated)
+        } else if is_call::<ITIP20::approveCall>(input)
+            || is_call::<ITIP20::burnCall>(input)
+            || is_call::<ITIP20::burnWithMemoCall>(input)
+        {
+            Some(Self::Empty)
+        } else {
+            None
+        }
     }
 }
 
@@ -300,7 +302,7 @@ impl PaymentSlots {
             Address::from_slice(&input[start..start + Address::len_bytes()])
         }
 
-        let kind = payment_slots_kind(input)?;
+        let kind = PaymentSlotsKind::from_calldata(input)?;
         let addresses = match kind {
             PaymentSlotsKind::Empty => [Address::ZERO; 2],
             PaymentSlotsKind::Direct => [address(input, 0), Address::ZERO],
