@@ -6,8 +6,8 @@ The protocol defines two fixed addresses in `tempo-contracts`:
 
 | Constant | Address | Purpose |
 | --- | --- | --- |
-| `TIP20_FUNDER_ADDRESS` | `0xffffffffffffffffffffffffffffffffffff1120` | Protocol funding caller and accounting identity. Solidity cannot initiate funding. |
-| `NATIVE_DEX_FUNDING_SOURCE_ADDRESS` | `0x0000000000000000000000000000000000001121` | Native DEX source implementing `prepare` and `fund`. |
+| `TIP20_FUNDER_ADDRESS` | `0x1120000000000000000000000000000000000000` | Protocol funding caller and accounting identity. Solidity cannot initiate funding. |
+| `NATIVE_DEX_FUNDING_SOURCE_ADDRESS` | `0x1120000000000000000000000000000000000001` | Native DEX source implementing `prepare` and `fund`. |
 
 The native source requires initialized, unpaused TIP-20 tokens with matching currency metadata across the input, output, and every intermediate route token. The DEX currently supports USD pairs only. Newly created USD tokens need no funding allowlist entry, but must have a supported route and available liquidity.
 
@@ -26,3 +26,5 @@ cargo test -p tempo-node --test it funding::
 ```
 
 The tests cover a two-input DEX payment, sponsorship, simulation, estimation, tracing, repeated requirements, failure rollback, consecutive transactions, access key rejection, and rejection before T13. Two independent nodes execute identical signed funding bytes and compare gas and balances. Production activation and delegated funding are separate work.
+
+See [owner funding qualification](owner-funding-qualification.md) for the four-validator demo, gas measurements, security coverage, and remaining release gates.
