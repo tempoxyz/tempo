@@ -1097,7 +1097,7 @@ mod tests {
             let tx = TempoTransaction {
                 key_authorization: grant.map(|account| {
                     KeyAuthorization::unrestricted(1, SignatureType::Secp256k1, delegate)
-                        .into_signed(TempoSignature::Multisig(signature(account)))
+                        .into_signed(signature(account))
                 }),
                 ..Default::default()
             };
