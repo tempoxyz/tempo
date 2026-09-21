@@ -1815,16 +1815,20 @@ enum VerificationEvent {
 ///
 /// The walk probes its target with a bare `newPayload`. SYNCING means the
 /// execution layer lacks the parent, so the walk fetches the parent and
-/// probes it next, one block at a time down the chain. A VALID or INVALID
-/// answer for an ancestor restarts the walk at the target: the execution
-/// layer connects buffered descendants itself once the gap is closed. The
-/// walk stops at the finalized tip and lets the finalization pipeline
-/// deliver finalized history.
+/// probes it next, one block at a time down the chain. The walk stops at the
+/// finalized tip and lets the finalization pipeline deliver finalized history.
 ///
-/// Convergence also walks past VALID blocks until a VALID cursor or its parent
+/// For verification, a VALID ancestor restarts the walk at the target: the
+/// execution layer connects buffered descendants itself once the gap is closed.
+/// The target must itself return VALID before verification succeeds.
+///
+/// Convergence walks past VALID blocks until a VALID cursor or its parent
 /// is the network finalized tip. That digest proves the target's ancestry;
 /// the target must then return VALID before it can become HEAD. A changed
 /// finalized digest requires a new ancestry proof.
+///
+/// For either walk, an INVALID target or ancestor reports [`WalkOutcome::Invalid`]
+/// to the owner without re-probing the target.
 ///
 /// Answers for the target, and answers that stop the walk, are reported to
 /// the owner as a [`WalkOutcome`]. The owner then ends, restarts, or pauses
