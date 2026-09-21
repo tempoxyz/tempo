@@ -349,6 +349,8 @@ on:
         required: false
 
 env:
+  # Allow Aegis to finish its 90-second Socket lookup before Cargo times out.
+  CARGO_HTTP_TIMEOUT: "180"
   CARGO_TERM_COLOR: always
   RUSTC_WRAPPER: "sccache"
 
@@ -358,6 +360,9 @@ permissions:
 
 jobs:
   bench-e2e:
+    permissions:
+      contents: read
+      id-token: write
     name: bench-e2e
     runs-on: [self-hosted, Linux, X64, bare-metal-dual-schelk]
     timeout-minutes: 300
@@ -415,6 +420,9 @@ jobs:
       SLACK_BENCH_BOT_TOKEN: ${{ secrets.SLACK_BENCH_BOT_TOKEN }}
       SLACK_BENCH_CHANNEL: ${{ secrets.SLACK_BENCH_CHANNEL }}
     steps:
+      - name: Secure runner
+        uses: tempoxyz/gh-actions/actions/secure-runner@0a60d757d0f4725a34f22f7b9ebf7b91b4b00bcf
+
       - name: Reset workspace directory
         run: |
           sudo rm -rf "$GITHUB_WORKSPACE"
@@ -460,14 +468,14 @@ jobs:
 
       - name: Fetch GitHub token via STS
         id: github-sts
-        uses: tempoxyz/gh-actions/actions/github-sts@c0292122e255def866c64c55e5844d1e7d5fe7ad
+        uses: tempoxyz/gh-actions/actions/github-sts@0a60d757d0f4725a34f22f7b9ebf7b91b4b00bcf
         with:
           policy: bench-e2e
 
       - name: Fetch ValScope token via STS
         id: valscope-sts
         if: env.BENCH_VALSCOPE == 'true'
-        uses: tempoxyz/gh-actions/actions/github-sts@c0292122e255def866c64c55e5844d1e7d5fe7ad
+        uses: tempoxyz/gh-actions/actions/github-sts@0a60d757d0f4725a34f22f7b9ebf7b91b4b00bcf
         with:
           scope: tempoxyz/valscope
           policy: tempo-bench-e2e
@@ -604,8 +612,8 @@ jobs:
               body: buildBody('Resolving refs...'),
             });
 
-      - uses: tempoxyz/gh-actions/vendor/dtolnay/rust-toolchain@3626124474a987bc74b41fc7ae65b2e23f8e4e4e
-      - uses: tempoxyz/gh-actions/vendor/mozilla-actions/sccache-action@3626124474a987bc74b41fc7ae65b2e23f8e4e4e
+      - uses: tempoxyz/gh-actions/vendor/dtolnay/rust-toolchain@0a60d757d0f4725a34f22f7b9ebf7b91b4b00bcf
+      - uses: tempoxyz/gh-actions/vendor/mozilla-actions/sccache-action@0a60d757d0f4725a34f22f7b9ebf7b91b4b00bcf
         continue-on-error: true
 
       - name: Install Node.js
@@ -1058,7 +1066,7 @@ jobs:
         id: github-sts-reporting
         if: always() && steps.github-sts.outcome == 'success'
         timeout-minutes: 2
-        uses: tempoxyz/gh-actions/actions/github-sts@c0292122e255def866c64c55e5844d1e7d5fe7ad
+        uses: tempoxyz/gh-actions/actions/github-sts@0a60d757d0f4725a34f22f7b9ebf7b91b4b00bcf
         with:
           policy: bench-e2e
 

@@ -21,6 +21,10 @@ concurrency:
   group: prepare-release-v${{ inputs.version }}
   cancel-in-progress: false
 
+env:
+  # Allow Aegis to finish its 90-second Socket lookup before Cargo times out.
+  CARGO_HTTP_TIMEOUT: "180"
+
 jobs:
   prepare:
     name: Prepare pre-release/v${{ inputs.version }}
@@ -32,6 +36,9 @@ jobs:
       id-token: write
 
     steps:
+      - name: Secure runner
+        uses: tempoxyz/gh-actions/actions/secure-runner@0a60d757d0f4725a34f22f7b9ebf7b91b4b00bcf
+
       - name: Validate inputs
         id: release
         shell: bash
@@ -179,7 +186,7 @@ jobs:
           echo "existing_commit=${existing_commit}" >> "$GITHUB_OUTPUT"
 
       - name: Install Rust toolchain
-        uses: tempoxyz/gh-actions/vendor/dtolnay/rust-toolchain@3626124474a987bc74b41fc7ae65b2e23f8e4e4e
+        uses: tempoxyz/gh-actions/vendor/dtolnay/rust-toolchain@0a60d757d0f4725a34f22f7b9ebf7b91b4b00bcf
 
       - name: Update workspace version
         shell: bash
@@ -315,7 +322,7 @@ jobs:
 
       - name: Fetch GitHub token via STS
         id: app-token
-        uses: tempoxyz/gh-actions/actions/github-sts@c0292122e255def866c64c55e5844d1e7d5fe7ad
+        uses: tempoxyz/gh-actions/actions/github-sts@0a60d757d0f4725a34f22f7b9ebf7b91b4b00bcf
         with:
           policy: release-pr
 

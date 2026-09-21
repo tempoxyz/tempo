@@ -42,6 +42,7 @@ jobs:
     if: ${{ github.event_name != 'schedule' || github.repository == 'tempoxyz/tempo' }}
     runs-on: ubuntu-latest
     permissions:
+      id-token: write
       actions: read
       contents: read
     outputs:
@@ -50,6 +51,9 @@ jobs:
       has-benchmarks: ${{ steps.refs.outputs.has-benchmarks }}
       has-nightly-benchmarks: ${{ steps.refs.outputs.has-nightly-benchmarks }}
     steps:
+      - name: Secure runner
+        uses: tempoxyz/gh-actions/actions/secure-runner@0a60d757d0f4725a34f22f7b9ebf7b91b4b00bcf
+
       - uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6.0.3
         with:
           persist-credentials: false
@@ -196,11 +200,15 @@ jobs:
       needs.bench-e2e.result == 'success'
     name: save-state (${{ matrix.state_key }})
     runs-on: ubuntu-latest
-    permissions: {}
+    permissions:
+      id-token: write
     strategy:
       fail-fast: false
       matrix: ${{ fromJSON(needs.resolve-refs.outputs.save-matrix) }}
     steps:
+      - name: Secure runner
+        uses: tempoxyz/gh-actions/actions/secure-runner@0a60d757d0f4725a34f22f7b9ebf7b91b4b00bcf
+
       - name: Prepare benchmark state
         env:
           FEATURE_REF: ${{ matrix.feature_ref }}

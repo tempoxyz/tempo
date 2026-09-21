@@ -79,6 +79,9 @@ jobs:
       pr-head-sha: ${{ steps.args.outputs.pr-head-sha }}
       pr-head-ref: ${{ steps.args.outputs.pr-head-ref }}
     steps:
+      - name: Secure runner
+        uses: tempoxyz/gh-actions/actions/secure-runner@0a60d757d0f4725a34f22f7b9ebf7b91b4b00bcf
+
       - name: Detect bench command
         id: command
         uses: actions/github-script@3a2844b7e9c422d3c10d287c895573f7108da1b3 # v9.0.0
@@ -93,7 +96,7 @@ jobs:
       - name: Fetch GitHub token via STS
         id: github-sts
         if: steps.command.outputs.is-bench-command == 'true' || steps.command.outputs.is-clear-command == 'true'
-        uses: tempoxyz/gh-actions/actions/github-sts@c0292122e255def866c64c55e5844d1e7d5fe7ad
+        uses: tempoxyz/gh-actions/actions/github-sts@0a60d757d0f4725a34f22f7b9ebf7b91b4b00bcf
         with:
           policy: bench-ack
 

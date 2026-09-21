@@ -26,6 +26,8 @@ on:
   pull_request:
 
 env:
+  # Allow Aegis to finish its 90-second Socket lookup before Cargo times out.
+  CARGO_HTTP_TIMEOUT: "180"
   CARGO_TERM_COLOR: always
   RUSTC_WRAPPER: "sccache"
 
@@ -34,17 +36,21 @@ jobs:
     name: Check specs changes
     runs-on: ubuntu-latest
     permissions:
+      id-token: write
       contents: read
       pull-requests: read
     outputs:
       should_run: ${{ contains(fromJSON(steps.filter.outputs.changes), 'specs') }}
       foundry_smoke: ${{ contains(fromJSON(steps.filter.outputs.changes), 'foundry_smoke') }}
     steps:
+      - name: Secure runner
+        uses: tempoxyz/gh-actions/actions/secure-runner@0a60d757d0f4725a34f22f7b9ebf7b91b4b00bcf
+
       - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
         with:
           fetch-depth: 0
           persist-credentials: false
-      - uses: tempoxyz/gh-actions/actions/changed-paths@ab45d76f6e7420a094281a22aee1973ecc0754f8
+      - uses: tempoxyz/gh-actions/actions/changed-paths@0a60d757d0f4725a34f22f7b9ebf7b91b4b00bcf
         id: filter
         with:
           filters: |
@@ -77,8 +83,12 @@ jobs:
     needs: check-specs-changes
     runs-on: ubuntu-latest
     permissions:
+      id-token: write
       contents: read
     steps:
+      - name: Secure runner
+        uses: tempoxyz/gh-actions/actions/secure-runner@0a60d757d0f4725a34f22f7b9ebf7b91b4b00bcf
+
       - name: Skip Foundry resolver smoke
         if: needs.check-specs-changes.outputs.foundry_smoke != 'true'
         run: |
@@ -103,7 +113,7 @@ jobs:
 
       - name: Setup Rust
         if: needs.check-specs-changes.outputs.foundry_smoke == 'true'
-        uses: tempoxyz/gh-actions/vendor/dtolnay/rust-toolchain@3626124474a987bc74b41fc7ae65b2e23f8e4e4e
+        uses: tempoxyz/gh-actions/vendor/dtolnay/rust-toolchain@0a60d757d0f4725a34f22f7b9ebf7b91b4b00bcf
 
       - name: Patch foundry to use checked-out tempo crates
         if: needs.check-specs-changes.outputs.foundry_smoke == 'true'
@@ -117,10 +127,14 @@ jobs:
     if: needs.check-specs-changes.outputs.should_run == 'true'
     runs-on: ubuntu-latest
     permissions:
+      id-token: write
       contents: read
     outputs:
       coverage: ${{ steps.check.outputs.coverage }}
     steps:
+      - name: Secure runner
+        uses: tempoxyz/gh-actions/actions/secure-runner@0a60d757d0f4725a34f22f7b9ebf7b91b4b00bcf
+
       - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
         with:
           fetch-depth: 0
@@ -156,15 +170,19 @@ jobs:
     if: needs.check-specs-changes.outputs.should_run == 'true'
     runs-on: ubuntu-latest
     permissions:
+      id-token: write
       contents: read
     steps:
+      - name: Secure runner
+        uses: tempoxyz/gh-actions/actions/secure-runner@0a60d757d0f4725a34f22f7b9ebf7b91b4b00bcf
+
       - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
         with:
           submodules: recursive
           persist-credentials: false
 
       - name: Install Foundry
-        uses: tempoxyz/gh-actions/actions/setup-foundry@16356ec5155405ba5e33f5558e80b5bf77eb70ab
+        uses: tempoxyz/gh-actions/actions/setup-foundry@0a60d757d0f4725a34f22f7b9ebf7b91b4b00bcf
         with:
           version: nightly
 
@@ -178,21 +196,25 @@ jobs:
     if: needs.check-specs-changes.outputs.should_run == 'true'
     runs-on: ubuntu-latest
     permissions:
+      id-token: write
       contents: read
     steps:
+      - name: Secure runner
+        uses: tempoxyz/gh-actions/actions/secure-runner@0a60d757d0f4725a34f22f7b9ebf7b91b4b00bcf
+
       - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
         with:
           submodules: recursive
           persist-credentials: false
 
       - name: Setup Rust
-        uses: tempoxyz/gh-actions/vendor/dtolnay/rust-toolchain@3626124474a987bc74b41fc7ae65b2e23f8e4e4e
+        uses: tempoxyz/gh-actions/vendor/dtolnay/rust-toolchain@0a60d757d0f4725a34f22f7b9ebf7b91b4b00bcf
 
-      - uses: tempoxyz/gh-actions/vendor/mozilla-actions/sccache-action@3626124474a987bc74b41fc7ae65b2e23f8e4e4e
-      - uses: tempoxyz/gh-actions/vendor/Swatinem/rust-cache@3626124474a987bc74b41fc7ae65b2e23f8e4e4e
+      - uses: tempoxyz/gh-actions/vendor/mozilla-actions/sccache-action@0a60d757d0f4725a34f22f7b9ebf7b91b4b00bcf
+      - uses: tempoxyz/gh-actions/vendor/Swatinem/rust-cache@0a60d757d0f4725a34f22f7b9ebf7b91b4b00bcf
 
       - name: Install Foundry
-        uses: tempoxyz/gh-actions/actions/setup-foundry@16356ec5155405ba5e33f5558e80b5bf77eb70ab
+        uses: tempoxyz/gh-actions/actions/setup-foundry@0a60d757d0f4725a34f22f7b9ebf7b91b4b00bcf
         with:
           version: nightly
 
@@ -209,15 +231,19 @@ jobs:
     if: needs.check-specs-changes.outputs.should_run == 'true'
     runs-on: ubuntu-latest
     permissions:
+      id-token: write
       contents: read
     steps:
+      - name: Secure runner
+        uses: tempoxyz/gh-actions/actions/secure-runner@0a60d757d0f4725a34f22f7b9ebf7b91b4b00bcf
+
       - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
         with:
           submodules: recursive
           persist-credentials: false
 
       - name: Install Foundry
-        uses: tempoxyz/gh-actions/actions/setup-foundry@16356ec5155405ba5e33f5558e80b5bf77eb70ab
+        uses: tempoxyz/gh-actions/actions/setup-foundry@0a60d757d0f4725a34f22f7b9ebf7b91b4b00bcf
         with:
           version: nightly
 
@@ -232,8 +258,12 @@ jobs:
     runs-on: depot-ubuntu-latest-8
     timeout-minutes: 60
     permissions:
+      id-token: write
       contents: read
     steps:
+      - name: Secure runner
+        uses: tempoxyz/gh-actions/actions/secure-runner@0a60d757d0f4725a34f22f7b9ebf7b91b4b00bcf
+
       - name: Checkout tempo
         uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
         with:
@@ -251,11 +281,14 @@ jobs:
           persist-credentials: false
 
       - name: Setup Rust
-        uses: tempoxyz/gh-actions/vendor/dtolnay/rust-toolchain@3626124474a987bc74b41fc7ae65b2e23f8e4e4e
+        uses: tempoxyz/gh-actions/vendor/dtolnay/rust-toolchain@0a60d757d0f4725a34f22f7b9ebf7b91b4b00bcf
 
-      - uses: tempoxyz/gh-actions/actions/setup-mold@a65420ff2c90fcc46fe778c044aa7998ae9f246c
-      - uses: tempoxyz/gh-actions/vendor/mozilla-actions/sccache-action@3626124474a987bc74b41fc7ae65b2e23f8e4e4e
-      - uses: tempoxyz/gh-actions/vendor/Swatinem/rust-cache@3626124474a987bc74b41fc7ae65b2e23f8e4e4e
+      - name: Install system dependencies
+        run: sudo apt-get update && sudo apt-get install -y libudev-dev
+
+      - uses: tempoxyz/gh-actions/actions/setup-mold@0a60d757d0f4725a34f22f7b9ebf7b91b4b00bcf
+      - uses: tempoxyz/gh-actions/vendor/mozilla-actions/sccache-action@0a60d757d0f4725a34f22f7b9ebf7b91b4b00bcf
+      - uses: tempoxyz/gh-actions/vendor/Swatinem/rust-cache@0a60d757d0f4725a34f22f7b9ebf7b91b4b00bcf
         with:
           workspaces: foundry
 
@@ -296,8 +329,12 @@ jobs:
     runs-on: depot-ubuntu-latest-8
     timeout-minutes: 60
     permissions:
+      id-token: write
       contents: read
     steps:
+      - name: Secure runner
+        uses: tempoxyz/gh-actions/actions/secure-runner@0a60d757d0f4725a34f22f7b9ebf7b91b4b00bcf
+
       - name: Checkout tempo
         uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
         with:
@@ -307,7 +344,7 @@ jobs:
 
       - name: Setup Rust
         if: needs.check-precompiles.outputs.coverage == 'true' && matrix.profile == 'default'
-        uses: tempoxyz/gh-actions/vendor/dtolnay/rust-toolchain@3626124474a987bc74b41fc7ae65b2e23f8e4e4e
+        uses: tempoxyz/gh-actions/vendor/dtolnay/rust-toolchain@0a60d757d0f4725a34f22f7b9ebf7b91b4b00bcf
         with:
           components: llvm-tools-preview
 
@@ -348,7 +385,8 @@ jobs:
     name: specs success
     runs-on: ubuntu-latest
     if: always()
-    permissions: {}
+    permissions:
+      id-token: write
     needs:
       - check-specs-changes
       - foundry-resolver-smoke
@@ -360,8 +398,11 @@ jobs:
       - foundry-test
     timeout-minutes: 5
     steps:
+      - name: Secure runner
+        uses: tempoxyz/gh-actions/actions/secure-runner@0a60d757d0f4725a34f22f7b9ebf7b91b4b00bcf
+
       - name: Decide whether the needed jobs succeeded or failed
-        uses: tempoxyz/gh-actions/actions/check-needs@ab45d76f6e7420a094281a22aee1973ecc0754f8
+        uses: tempoxyz/gh-actions/actions/check-needs@0a60d757d0f4725a34f22f7b9ebf7b91b4b00bcf
         with:
           allowed-skips: check-precompiles,build,abi-alignment-check,lint,foundry-build,foundry-test
           jobs: ${{ toJSON(needs) }}
@@ -375,6 +416,7 @@ jobs:
       commit_sha: ${{ github.event.pull_request.head.sha || github.sha }}
       pr_number: ${{ github.event.pull_request.number || 0 }}
     permissions:
+      id-token: write
       contents: read
       pull-requests: write
       actions: read
