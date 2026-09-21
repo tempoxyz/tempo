@@ -429,7 +429,7 @@ pub struct KeychainSignature {
     /// Root account address that this transaction is being executed for
     pub user_address: Address,
     /// Direct primitive approval or multisig owner quorum from the access key.
-    pub signature: AccessKeySignature,
+    pub signature: AccountSignature,
     /// Keychain signature version (V1 = legacy, V2 = includes user_address in sig hash)
     #[cfg_attr(feature = "serde", serde(default))]
     pub version: KeychainVersion,
@@ -452,7 +452,7 @@ impl KeychainSignature {
     /// Create a new V2 KeychainSignature (recommended).
     ///
     /// V2 signatures include the user_address in the signature hash.
-    pub fn new(user_address: Address, signature: impl Into<AccessKeySignature>) -> Self {
+    pub fn new(user_address: Address, signature: impl Into<AccountSignature>) -> Self {
         Self {
             user_address,
             signature: signature.into(),
@@ -538,7 +538,7 @@ impl<'de> serde::Deserialize<'de> for KeychainSignature {
         #[serde(rename_all = "camelCase")]
         struct Fields {
             user_address: Address,
-            signature: AccessKeySignature,
+            signature: AccountSignature,
             #[serde(default)]
             version: KeychainVersion,
         }
@@ -585,7 +585,7 @@ impl<'a> arbitrary::Arbitrary<'a> for KeychainSignature {
         Ok(Self {
             user_address: u.arbitrary()?,
             signature: if version == KeychainVersion::V1 {
-                AccessKeySignature::Primitive(u.arbitrary()?)
+                AccountSignature::Primitive(u.arbitrary()?)
             } else {
                 u.arbitrary()?
             },
@@ -595,21 +595,19 @@ impl<'a> arbitrary::Arbitrary<'a> for KeychainSignature {
     }
 }
 
-/// Bounded direct approval used inside a V2 access-key envelope.
-///
-/// Multisig owner approvals are primitive, and neither variant can contain a keychain.
+/// Primitive or multisig approval; excludes keychain envelopes.
 #[derive(Clone, Debug, PartialEq, Eq, Hash)]
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 #[cfg_attr(feature = "serde", serde(untagged))]
 #[cfg_attr(any(test, feature = "arbitrary"), derive(arbitrary::Arbitrary))]
-pub enum AccessKeySignature {
+pub enum AccountSignature {
     /// An existing primitive approval.
     Primitive(PrimitiveSignature),
-    /// A configurable delegate's direct owner quorum.
+    /// An account's primitive-owner quorum.
     Multisig(MultisigSignature),
 }
 
-impl AccessKeySignature {
+impl AccountSignature {
     /// Decodes a direct approval, rejecting recursive keychain envelopes.
     pub fn from_bytes(data: &[u8]) -> Result<Self, &'static str> {
         if data.len() != SECP256K1_SIGNATURE_LENGTH
@@ -618,13 +616,9 @@ impl AccessKeySignature {
                 Some(&SIGNATURE_TYPE_KEYCHAIN | &SIGNATURE_TYPE_KEYCHAIN_V2)
             )
         {
-            return Err("recursive keychain signature");
+            return Err("keychain signatures are not account signatures");
         }
-        match TempoSignature::from_bytes(data)? {
-            TempoSignature::Primitive(signature) => Ok(Self::Primitive(signature)),
-            TempoSignature::Multisig(signature) => Ok(Self::Multisig(signature)),
-            TempoSignature::Keychain(_) => Err("recursive keychain signature"),
-        }
+        Self::try_from(TempoSignature::from_bytes(data)?)
     }
 
     /// Returns the direct approval's existing wire encoding.
@@ -662,7 +656,7 @@ impl AccessKeySignature {
     }
 
     /// Returns the primitive algorithm, when applicable.
-    pub fn signature_type(&self) -> Option<SignatureType> {
+    pub fn primitive_signature_type(&self) -> Option<SignatureType> {
         match self {
             Self::Primitive(signature) => Some(signature.signature_type()),
             Self::Multisig(_) => None,
@@ -677,7 +671,7 @@ impl AccessKeySignature {
         }
     }
 
-    /// Returns the configurable delegate witness, when applicable.
+    /// Returns the multisig witness, when applicable.
     pub fn as_multisig(&self) -> Option<&MultisigSignature> {
         match self {
             Self::Multisig(signature) => Some(signature),
@@ -717,15 +711,59 @@ impl AccessKeySignature {
     }
 }
 
-impl From<PrimitiveSignature> for AccessKeySignature {
+impl From<Signature> for AccountSignature {
+    fn from(signature: Signature) -> Self {
+        Self::Primitive(PrimitiveSignature::Secp256k1(signature))
+    }
+}
+
+impl From<PrimitiveSignature> for AccountSignature {
     fn from(signature: PrimitiveSignature) -> Self {
         Self::Primitive(signature)
     }
 }
 
-impl From<MultisigSignature> for AccessKeySignature {
+impl From<MultisigSignature> for AccountSignature {
     fn from(signature: MultisigSignature) -> Self {
         Self::Multisig(signature)
+    }
+}
+
+impl TryFrom<TempoSignature> for AccountSignature {
+    type Error = &'static str;
+
+    fn try_from(signature: TempoSignature) -> Result<Self, Self::Error> {
+        match signature {
+            TempoSignature::Primitive(signature) => Ok(Self::Primitive(signature)),
+            TempoSignature::Multisig(signature) => Ok(Self::Multisig(signature)),
+            TempoSignature::Keychain(_) => Err("keychain signatures are not account signatures"),
+        }
+    }
+}
+
+impl alloy_rlp::Encodable for AccountSignature {
+    fn encode(&self, out: &mut dyn alloy_rlp::BufMut) {
+        alloy_rlp::Header {
+            list: false,
+            payload_length: self.encoded_length(),
+        }
+        .encode(out);
+        self.encode_bytes_into(out);
+    }
+
+    fn length(&self) -> usize {
+        alloy_rlp::Header {
+            list: false,
+            payload_length: self.encoded_length(),
+        }
+        .length_with_payload()
+    }
+}
+
+impl alloy_rlp::Decodable for AccountSignature {
+    fn decode(buf: &mut &[u8]) -> alloy_rlp::Result<Self> {
+        let bytes = alloy_rlp::Header::decode_bytes(buf, false)?;
+        Self::from_bytes(bytes).map_err(alloy_rlp::Error::Custom)
     }
 }
 
@@ -795,7 +833,7 @@ impl TempoSignature {
             let inner_sig_bytes = &sig_data[20..];
 
             // A bounded direct approval cannot contain another keychain.
-            let inner_signature = AccessKeySignature::from_bytes(inner_sig_bytes)?;
+            let inner_signature = AccountSignature::from_bytes(inner_sig_bytes)?;
             if version == KeychainVersion::V1 && inner_signature.as_multisig().is_some() {
                 return Err("multisig access keys require keychain V2");
             }
@@ -864,11 +902,11 @@ impl TempoSignature {
         }
     }
 
-    /// Get the primitive signature type, if the outer signature has one.
-    pub fn signature_type(&self) -> Option<SignatureType> {
+    /// Returns the primitive algorithm, including inside a keychain envelope, if applicable.
+    pub fn primitive_signature_type(&self) -> Option<SignatureType> {
         match self {
             Self::Primitive(primitive_sig) => Some(primitive_sig.signature_type()),
-            Self::Keychain(keychain_sig) => keychain_sig.signature.signature_type(),
+            Self::Keychain(keychain_sig) => keychain_sig.signature.primitive_signature_type(),
             Self::Multisig(_) => None,
         }
     }
@@ -2289,7 +2327,7 @@ mod tests {
     }
 
     #[test]
-    fn test_access_key_signature_types() {
+    fn test_account_signature_types() {
         let config = MultisigConfig {
             salt: B256::ZERO,
             version: 1,
@@ -2308,13 +2346,13 @@ mod tests {
             .unwrap(),
         );
 
-        assert_eq!(signature.signature_type(), None);
+        assert_eq!(signature.primitive_signature_type(), None);
         let TempoSignature::Multisig(multisig) = signature else {
             unreachable!()
         };
         for (signature, key_type, primitive_type) in [
             (
-                AccessKeySignature::Primitive(PrimitiveSignature::default()),
+                AccountSignature::Primitive(PrimitiveSignature::default()),
                 SignatureType::Secp256k1,
                 Some(SignatureType::Secp256k1),
             ),
@@ -2345,7 +2383,7 @@ mod tests {
             (multisig.into(), SignatureType::Multisig, None),
         ] {
             assert_eq!(signature.key_type(), key_type);
-            assert_eq!(signature.signature_type(), primitive_type);
+            assert_eq!(signature.primitive_signature_type(), primitive_type);
         }
     }
 
