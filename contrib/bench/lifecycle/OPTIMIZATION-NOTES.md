@@ -1,8 +1,31 @@
 # Optimization decisions and experiment history
 
-Updated 2026-09-17. Keep benchmark, instrumentation, privacy, cutoff, and
+Updated 2026-09-21. Keep benchmark, instrumentation, privacy, cutoff, and
 correctness fixes in their PRs even when an optimization is not adopted.
 An unsuccessful optimization does not invalidate a useful measurement fix.
+
+## Snapshot inventory correction, 2026-09-21
+
+The earlier all-runner missing-dataset conclusion was unsupported: the inventory
+checked `tempo_e2e_102400mb`, but the actual harness converts bloat=100 to
+`tempo_e2e_100000mb`. This applies to both our pinned harness and the successful
+current-main harness. Historical failed benchmark admissions remain real; the
+wrong-path inventory cannot establish their cause or justify rebuilding data.
+
+The corrected [read-only inventory35576312288](https://github.com/tempoxyz/tempo/actions/runs/35576312288)
+covered five distinct runners. Four have all nine required files readable to
+both runner and root on both mounted sides; the fifth has one mounted ready
+side and one unmounted, unverified side. All five jobs removed their two owned
+inventory files and temporary directory. No snapshot was mounted or modified.
+The diagnostic fix adds a regression that executes the harness's actual Nu
+conversion instead of repeating the probe's assumed size.
+
+The blanket snapshot blocker below is historical and superseded. Use a ready
+runner, refresh the frozen kernel/root analysis bindings for the current gate,
+and perform a fresh diagnostic capture before paired archive/journal trials.
+Actual run admission, strict pre-backpressure pruning, and cleanup still apply.
+The five prebuilt bundles were checked today and remain available until
+2026-09-24; no rebuild is presently needed for artifact availability.
 
 ## Deferred to other work
 
