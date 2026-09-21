@@ -7,17 +7,12 @@ control. Each check receives the existing execution evidence and one typed diffe
 ```rust,ignore
 struct Expectation {
     id: &'static str,
-    check: fn(&Context<'_>, &Difference) -> Option<Continuation>,
-}
-
-enum Continuation {
-    Continue,
-    InconclusiveSuffix,
+    check: fn(&Context<'_>, &Difference) -> Option<bool>,
 }
 ```
 
-`None` means the check cannot explain this difference. `Some` accepts only that difference;
-`Continue` additionally asserts that it preserves comparability for later execution.
+`None` means the check cannot explain this difference. `Some(invalidates_suffix)` accepts only
+that difference: `true` cuts off later comparisons; `false` asserts they remain comparable.
 The first accepting check owns attribution and continuation; later checks are not evaluated.
 Checks run in fork order (oldest first), then registration order within each fork. The engine finishes every
 comparison at the current boundary before applying a cutoff. An unexplained state, gas, or
@@ -35,9 +30,9 @@ without an earlier cutoff remains unexplained. Checks do not currently classify 
    and a uniqueness test require one registry entry per fork.
 2. Check applicability and exact effects from typed evidence. Return `None` when evidence
    is insufficient. A changed gas amount or a fee-touched slot alone is insufficient.
-3. Use `InconclusiveSuffix` for accepted persistent state/context changes unless the check
+3. Return `Some(true)` for accepted persistent state/context changes unless the check
    establishes comparability. Inspect coupled effects as needed, but accept each difference
-   separately. Order overlapping checks deliberately: an earlier `Continue` takes precedence
+   separately. Order overlapping checks deliberately: an earlier `Some(false)` takes precedence
    over a later cutoff, so it must establish comparability on its own.
 4. Add fixtures for accepted effects, nearby incorrect effects, unrelated differences at the
    same boundary, and continuation. The classifier's synthetic test rules are not production

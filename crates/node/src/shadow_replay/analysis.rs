@@ -3,7 +3,7 @@
 
 use super::{
     Boundary, Evidence, ObservedTx, ReplayOutcome,
-    expectations::{Context, Continuation, Expectation},
+    expectations::{Context, Expectation},
 };
 use alloy_primitives::{Address, B256, U256};
 use reth_revm::db::{TransitionAccount, TransitionState};
@@ -101,22 +101,17 @@ impl Report {
         let accepted = rules
             .iter()
             .find_map(|rule| (rule.check)(ctx, &difference).map(|result| (rule.id, result)));
-        let mut continuation = Continuation::Continue;
-        let rule_id = match accepted {
-            Some((id, result)) => {
+        let (rule_id, invalidates_suffix) = match accepted {
+            Some((id, invalidates_suffix)) => {
                 *self.expected.entry(id).or_default() += 1;
-                continuation = result;
-                Some(id)
+                (Some(id), invalidates_suffix)
             }
             None => {
                 self.unexplained += 1;
-                if difference.affects_continuation() {
-                    continuation = Continuation::InconclusiveSuffix;
-                }
-                None
+                (None, difference.affects_continuation())
             }
         };
-        if continuation == Continuation::InconclusiveSuffix {
+        if invalidates_suffix {
             self.cutoff.get_or_insert(ctx.boundary);
         }
         self.samples.push((ctx.boundary, difference, rule_id));

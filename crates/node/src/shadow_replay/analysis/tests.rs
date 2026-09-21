@@ -11,7 +11,7 @@ const GAS: Expectation = Expectation {
                 return None;
             };
             (ctx.real.txs[index].receipt.success == ctx.shadow.txs[index].receipt.success)
-                .then_some(Continuation::Continue)
+                .then_some(false)
         }
         _ => None,
     },
@@ -29,7 +29,7 @@ const FEE: Expectation = Expectation {
             && before == other_before
             && after.checked_sub(U256::from(200)) == Some(*other_after) =>
         {
-            Some(Continuation::InconclusiveSuffix)
+            Some(true)
         }
         _ => None,
     },
@@ -135,7 +135,7 @@ fn accepted_cutoff_still_checks_the_rest_of_its_boundary() {
     write_slot(&mut shadow.txs[0], 800, false);
     let stop = Expectation {
         id: "test.stop-gas",
-        check: |ctx, diff| (GAS.check)(ctx, diff).map(|_| Continuation::InconclusiveSuffix),
+        check: |ctx, diff| (GAS.check)(ctx, diff).map(|_| true),
     };
     let report = Report::analyze(&real, &shadow, &[&stop]);
     assert_eq!(report.expected["test.stop-gas"], 1);
@@ -197,9 +197,7 @@ fn fee_provenance_alone_does_not_accept_a_change() {
 fn first_accepting_rule_owns_attribution_and_continuation() {
     let stop = Expectation {
         id: "test.stop-gas",
-        check: |_, diff| {
-            matches!(diff, Difference::Gas(..)).then_some(Continuation::InconclusiveSuffix)
-        },
+        check: |_, diff| matches!(diff, Difference::Gas(..)).then_some(true),
     };
     let real = evidence(&[21_000, 21_000]);
     let shadow = evidence(&[21_200, 21_000]);
@@ -252,7 +250,7 @@ fn failure_after_expected_cutoff_is_inconclusive_not_a_new_finding() {
     });
     let rule = Expectation {
         id: "test.gas-cutoff",
-        check: |ctx, diff| (GAS.check)(ctx, diff).map(|_| Continuation::InconclusiveSuffix),
+        check: |ctx, diff| (GAS.check)(ctx, diff).map(|_| true),
     };
     let report = Report::analyze(&real, &shadow, &[&rule]);
     assert_eq!(report.outcome(&shadow), ReplayOutcome::Inconclusive);
@@ -320,7 +318,7 @@ fn accepted_application_logs_do_not_hide_fee_logs() {
     shadow.txs[0].fee_logs_hash = B256::repeat_byte(2);
     let rule = Expectation {
         id: "test.application-logs",
-        check: |_, diff| matches!(diff, Difference::Logs(..)).then_some(Continuation::Continue),
+        check: |_, diff| matches!(diff, Difference::Logs(..)).then_some(false),
     };
     let report = Report::analyze(&real, &shadow, &[&rule]);
     assert_eq!(report.expected["test.application-logs"], 1);
@@ -379,7 +377,7 @@ fn accepted_post_block_change_has_no_suffix_to_invalidate() {
         id: "test.post-block",
         check: |ctx, diff| {
             (ctx.boundary == Boundary::PostBlock && matches!(diff, Difference::Balance { .. }))
-                .then_some(Continuation::InconclusiveSuffix)
+                .then_some(true)
         },
     };
     let report = Report::analyze(&real, &shadow, &[&rule]);
