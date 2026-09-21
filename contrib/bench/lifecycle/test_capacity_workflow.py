@@ -79,6 +79,9 @@ class CapacityWorkflowTests(unittest.TestCase):
                     '.github/workflows/bench-e2e.yml').read_text()
         steps = re.split(r'^      - ', workflow, flags=re.MULTILINE)[1:]
         self.assertGreater(len(steps), 5)
+        self.assertTrue(steps[0].startswith('name: Secure runner\n'))
+        self.assertNotRegex(steps[0], re.compile(r'^        if:', re.MULTILINE))
+        steps = steps[1:]
         self.assertTrue(steps[0].startswith('name: Prepare runner cleanup\n'))
         self.assertNotRegex(steps[0], re.compile(r'^        if:', re.MULTILINE), 'cleanup preparation runs on every slot')
         self.assertTrue(steps[-1].startswith('name: Remove runner benchmark artifacts\n'))

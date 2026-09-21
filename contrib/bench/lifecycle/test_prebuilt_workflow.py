@@ -14,7 +14,29 @@ from prebuilt_workflow import inputs
 ROOT=Path(__file__).resolve().parents[3]
 
 
+def without_main_runner_updates(workflow):
+    # Reverse only the reviewed main d84e56a00b runner updates for frozen history.
+    blocks = [
+        '  # Allow Aegis to finish its 90-second Socket lookup before Cargo times out.\n  CARGO_HTTP_TIMEOUT: "180"\n',
+        '    permissions:\n      actions: read\n      contents: read\n      id-token: write\n',
+        '      - name: Secure runner\n        uses: tempoxyz/gh-actions/actions/secure-runner@68851d67c611dc0050e9f3fcd5bd47f3f899a00e\n\n',
+    ]
+    for block in blocks:
+        assert workflow.count(block) == 1
+        workflow = workflow.replace(block, '')
+    for action, previous, count in [
+        ('actions/github-sts', 'c0292122e255def866c64c55e5844d1e7d5fe7ad', 3),
+        ('vendor/dtolnay/rust-toolchain', '3626124474a987bc74b41fc7ae65b2e23f8e4e4e', 1),
+        ('vendor/mozilla-actions/sccache-action', '3626124474a987bc74b41fc7ae65b2e23f8e4e4e', 1),
+    ]:
+        current = 'tempoxyz/gh-actions/' + action + '@68851d67c611dc0050e9f3fcd5bd47f3f899a00e'
+        assert workflow.count(current) == count
+        workflow = workflow.replace(current, 'tempoxyz/gh-actions/' + action + '@' + previous)
+    return workflow
+
+
 def without_workspace_guard(workflow):
+    workflow = without_main_runner_updates(workflow)
     guarded_reset = '''        env:
           CLEANUP_DIRECTORY: ${{ steps.runner-cleanup.outputs.directory }}
         run: |
