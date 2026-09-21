@@ -1,82 +1,155 @@
-//! Direct comparison and classification of net effects at completed replay boundaries.
-//!
-//! Only unexpected findings are formatted into the diagnostic representation retained by a report.
-//! A missing state change means “no net effect at this boundary”.
+//! Classify typed differences before formatting bounded samples. Expectedness and continuation
+//! are independent: even an accepted fee balance change may invalidate the remaining comparisons.
 
-use super::{Boundary, Evidence, ObservedTx};
-use alloy_primitives::{Address, U256};
+use super::{
+    Boundary, Evidence, ObservedTx, ReplayOutcome,
+    expectations::{Context, Continuation, Expectation},
+};
+use alloy_primitives::{Address, B256, U256};
 use reth_revm::db::{TransitionAccount, TransitionState};
-use std::{cmp::Ordering, collections::HashSet, fmt::Debug};
+use std::collections::{BTreeMap, HashSet};
 
-/// Maximum retained diagnostic samples; finding counters remain exact.
+#[cfg(test)]
+mod tests;
+
 const MAX_SAMPLES: usize = 8;
 
-/// Exact finding counters plus a bounded, deterministic sample set.
 #[derive(Debug, Default)]
 pub(super) struct Report {
-    pub fee_associated: usize,
-    pub observation: usize,
-    pub gas_divergent_txs: usize,
-    pub stopping: usize,
+    pub unexplained: usize,
+    pub ambiguous: usize,
+    pub expected: BTreeMap<&'static str, usize>,
+    pub boundaries_evaluated: usize,
     pub boundaries_not_evaluated: usize,
     pub cutoff: Option<Boundary>,
-    pub samples: Vec<(Boundary, Difference)>,
+    /// Rule ID is present only for a uniquely accepted difference.
+    pub samples: Vec<(Boundary, Difference, Option<&'static str>)>,
 }
 
 impl Report {
-    pub(super) fn findings(&self) -> usize {
-        self.fee_associated + self.observation + self.gas_divergent_txs + self.stopping
+    pub(super) fn outcome(&self, shadow: &Evidence) -> ReplayOutcome {
+        let unexplained_failure = shadow
+            .failure
+            .as_ref()
+            .is_some_and(|failure| self.cutoff.is_none_or(|cutoff| failure.boundary <= cutoff));
+        if self.unexplained > 0 || unexplained_failure {
+            ReplayOutcome::Findings
+        } else if self.boundaries_not_evaluated > 0 {
+            ReplayOutcome::Inconclusive
+        } else if !self.expected.is_empty() {
+            ReplayOutcome::Expected
+        } else {
+            ReplayOutcome::Match
+        }
     }
 
-    /// Compares common completed boundaries in order and stops after finishing the first boundary
-    /// containing a stopping difference.
-    pub(super) fn analyze(real: &Evidence, shadow: &Evidence) -> Self {
+    pub(super) fn analyze(real: &Evidence, shadow: &Evidence, rules: &[&Expectation]) -> Self {
         let mut report = Self::default();
-        let common_txs = real.txs.len().min(shadow.txs.len());
-
+        let context = |boundary| Context {
+            boundary,
+            real,
+            shadow,
+        };
         if let Some((real, shadow)) = real.pre_block.as_ref().zip(shadow.pre_block.as_ref()) {
-            report.record_state_diffs(Boundary::PreBlock, real, shadow, None);
+            report.record_state_diffs(&context(Boundary::PreBlock), real, shadow, None, rules);
+            report.boundaries_evaluated += 1;
         }
-        for index in 0..common_txs {
+        for index in 0..real.txs.len().min(shadow.txs.len()) {
             if report.cutoff.is_some() {
-                report.boundaries_not_evaluated += common_txs - index;
                 break;
             }
-            report.record_tx_diffs(&real.txs[index], &shadow.txs[index], index);
+            let ctx = context(Boundary::Transaction(index));
+            let (real, shadow) = (&ctx.real.txs[index], &ctx.shadow.txs[index]);
+            report.record_tx_diffs(&ctx, real, shadow, rules);
+            // Finish ALL comparisons at this boundary, even if one already caused a cutoff.
+            report.record_state_diffs(
+                &ctx,
+                &real.state,
+                &shadow.state,
+                Some((real, shadow)),
+                rules,
+            );
+            report.boundaries_evaluated += 1;
         }
-        if let Some((real, shadow)) = real.post_block.as_ref().zip(shadow.post_block.as_ref()) {
-            if report.cutoff.is_some() {
-                report.boundaries_not_evaluated += 1;
-            } else {
-                report.record_state_diffs(Boundary::PostBlock, real, shadow, None);
-            }
+        if report.cutoff.is_none()
+            && let Some((real, shadow)) = real.post_block.as_ref().zip(shadow.post_block.as_ref())
+        {
+            report.record_state_diffs(&context(Boundary::PostBlock), real, shadow, None, rules);
+            report.boundaries_evaluated += 1;
         }
+        // Include a rejected transaction and its unexecuted suffix in missing coverage.
+        let total = usize::from(real.pre_block.is_some())
+            + real.txs.len()
+            + usize::from(real.post_block.is_some());
+        report.boundaries_not_evaluated = total - report.boundaries_evaluated;
         report
     }
 
-    fn record(&mut self, boundary: Boundary, difference: Difference) {
-        *match difference.kind {
-            Kind::Stop => &mut self.stopping,
-            Kind::Observation => &mut self.observation,
-            Kind::Gas => &mut self.gas_divergent_txs,
-            Kind::Fee => &mut self.fee_associated,
-        } += 1;
-
-        if difference.kind == Kind::Gas && self.gas_divergent_txs > 1 {
+    fn record(&mut self, ctx: &Context<'_>, difference: Difference, rules: &[&Expectation]) {
+        if difference.is_equal() {
             return;
         }
-
-        self.samples.push((boundary, difference));
-        self.samples.sort_by(sample_cmp);
+        let mut accepted = None;
+        let mut matches = 0;
+        let mut continuation = Continuation::Continue;
+        for rule in rules {
+            if let Some(result) = (rule.check)(ctx, &difference) {
+                matches += 1;
+                accepted = Some(rule.id);
+                if result == Continuation::InconclusiveSuffix {
+                    continuation = result;
+                }
+            }
+        }
+        let rule_id = if matches == 1 {
+            let id = accepted.expect("one accepting rule");
+            *self.expected.entry(id).or_default() += 1;
+            Some(id)
+        } else {
+            self.unexplained += 1;
+            self.ambiguous += usize::from(matches > 1);
+            if difference.affects_continuation() {
+                continuation = Continuation::InconclusiveSuffix;
+            }
+            None
+        };
+        if continuation == Continuation::InconclusiveSuffix && self.cutoff.is_none() {
+            self.cutoff = Some(ctx.boundary);
+        }
+        self.samples.push((ctx.boundary, difference, rule_id));
+        // Prioritize unexplained samples; stable ordering is independent of HashSet iteration.
+        self.samples
+            .sort_by(|a, b| (a.2.is_some(), a.0, &a.1).cmp(&(b.2.is_some(), b.0, &b.1)));
         self.samples.truncate(MAX_SAMPLES);
+    }
+
+    fn record_tx_diffs(
+        &mut self,
+        ctx: &Context<'_>,
+        real: &ObservedTx,
+        shadow: &ObservedTx,
+        rules: &[&Expectation],
+    ) {
+        for difference in [
+            Difference::Success(real.receipt.success, shadow.receipt.success),
+            Difference::Output(real.output_hash, shadow.output_hash),
+            Difference::Logs(real.logs_hash, shadow.logs_hash),
+            Difference::FeeLogs(real.fee_logs_hash, shadow.fee_logs_hash),
+            Difference::ReceiptLogs(real.receipt.logs_hash, shadow.receipt.logs_hash),
+            Difference::Gas(real.receipt.gas_used, shadow.receipt.gas_used),
+            Difference::BlockGas(real.block_gas_used, shadow.block_gas_used),
+        ] {
+            self.record(ctx, difference, rules);
+        }
     }
 
     fn record_state_diffs(
         &mut self,
-        boundary: Boundary,
+        ctx: &Context<'_>,
         real: &TransitionState,
         shadow: &TransitionState,
         tx: Option<(&ObservedTx, &ObservedTx)>,
+        rules: &[&Expectation],
     ) {
         let addresses: HashSet<_> = real
             .transitions
@@ -84,136 +157,134 @@ impl Report {
             .chain(shadow.transitions.keys())
             .copied()
             .collect();
-
         for address in addresses {
             let real = AccountDelta(real.transitions.get(&address));
             let shadow = AccountDelta(shadow.transitions.get(&address));
-            let mut diff =
-                Comparison::new(self, boundary, Location::Account(address), &real, &shadow);
-            diff.record("existence", |account| account.existence(), Kind::Stop);
-            diff.record("balance", |acc| acc.info(|info| info.balance), Kind::Stop);
-            diff.record("nonce", |acc| acc.info(|info| info.nonce), Kind::Stop);
-
+            for difference in [
+                Difference::Existence {
+                    address,
+                    real: real.existence(),
+                    shadow: shadow.existence(),
+                },
+                Difference::Balance {
+                    address,
+                    real: real.info(|a| a.balance),
+                    shadow: shadow.info(|a| a.balance),
+                },
+                Difference::Nonce {
+                    address,
+                    real: real.info(|a| a.nonce),
+                    shadow: shadow.info(|a| a.nonce),
+                },
+                Difference::Code {
+                    address,
+                    real: real.info(|a| a.code_hash),
+                    shadow: shadow.info(|a| a.code_hash),
+                },
+                Difference::StorageReset {
+                    address,
+                    real: real.0.is_some_and(|a| a.storage_was_destroyed),
+                    shadow: shadow.0.is_some_and(|a| a.storage_was_destroyed),
+                },
+            ] {
+                self.record(ctx, difference, rules);
+            }
             let slots: HashSet<_> = real.slots().chain(shadow.slots()).copied().collect();
             for slot in slots {
-                let kind = if tx.is_some_and(|(real, shadow)| {
+                let fee_associated = tx.is_some_and(|(real, shadow)| {
                     real.fee_slots.contains(&(address, slot))
                         || shadow.fee_slots.contains(&(address, slot))
-                }) {
-                    Kind::Fee
-                } else {
-                    Kind::Stop
-                };
-                Comparison::new(
-                    self,
-                    boundary,
-                    Location::Storage(address, slot),
-                    &real,
-                    &shadow,
-                )
-                .record("storage", |account| account.storage(slot), kind);
+                });
+                self.record(
+                    ctx,
+                    Difference::Storage {
+                        address,
+                        slot,
+                        fee_associated,
+                        real: real.storage(slot),
+                        shadow: shadow.storage(slot),
+                    },
+                    rules,
+                );
             }
         }
-
-        if self.stopping > 0 && self.cutoff.is_none() {
-            self.cutoff = Some(boundary);
-        }
-    }
-
-    fn record_tx_diffs(&mut self, real: &ObservedTx, shadow: &ObservedTx, index: usize) {
-        let boundary = Boundary::Transaction(index);
-        let mut diff = Comparison::new(self, boundary, Location::Observation, real, shadow);
-        diff.record("success", |tx| tx.receipt.success, Kind::Observation);
-        diff.record("output", |tx| tx.output_hash, Kind::Observation);
-        if real.logs_hash != shadow.logs_hash {
-            diff.record("logs", |tx| tx.logs_hash, Kind::Observation);
-        } else {
-            diff.record("fee_logs", |tx| tx.receipt.logs_hash, Kind::Fee);
-        }
-        diff.record("gas", |tx| tx.receipt.gas_used, Kind::Gas);
-        self.record_state_diffs(boundary, &real.state, &shadow.state, Some((real, shadow)));
     }
 }
 
-/// Diagnostic data for one unexpected field difference.
-#[derive(Clone, Debug, PartialEq, Eq)]
-pub(super) struct Difference {
-    kind: Kind,
-    field: &'static str,
-    address: Option<Address>,
-    slot: Option<U256>,
-    real: String,
-    shadow: String,
+/// Values remain typed for semantic checks. Account/storage values describe net transitions;
+/// `None` means no net effect at this boundary, not a missing execution.
+#[derive(Clone, Debug, PartialEq, Eq, PartialOrd, Ord)]
+pub(super) enum Difference {
+    StorageReset {
+        address: Address,
+        real: bool,
+        shadow: bool,
+    },
+    Existence {
+        address: Address,
+        real: Option<(bool, bool)>,
+        shadow: Option<(bool, bool)>,
+    },
+    Balance {
+        address: Address,
+        real: Option<(U256, U256)>,
+        shadow: Option<(U256, U256)>,
+    },
+    Nonce {
+        address: Address,
+        real: Option<(u64, u64)>,
+        shadow: Option<(u64, u64)>,
+    },
+    Code {
+        address: Address,
+        real: Option<(B256, B256)>,
+        shadow: Option<(B256, B256)>,
+    },
+    Storage {
+        address: Address,
+        slot: U256,
+        fee_associated: bool,
+        real: Option<(U256, U256)>,
+        shadow: Option<(U256, U256)>,
+    },
+    Success(bool, bool),
+    Output(B256, B256),
+    Logs(B256, B256),
+    FeeLogs(B256, B256),
+    /// Full ordered receipt logs also preserve ordering between fee and application logs.
+    ReceiptLogs(B256, B256),
+    Gas(u64, u64),
+    BlockGas(u64, u64),
 }
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord)]
-enum Kind {
-    Stop,
-    Observation,
-    Gas,
-    Fee,
-}
-
-#[derive(Clone, Copy)]
-enum Location {
-    Observation,
-    Account(Address),
-    Storage(Address, U256),
-}
-
-impl Location {
-    fn parts(self) -> (Option<Address>, Option<U256>) {
+impl Difference {
+    fn is_equal(&self) -> bool {
         match self {
-            Self::Observation => (None, None),
-            Self::Account(address) => (Some(address), None),
-            Self::Storage(address, slot) => (Some(address), Some(slot)),
-        }
-    }
-}
-
-struct Comparison<'a, T> {
-    report: &'a mut Report,
-    boundary: Boundary,
-    loc: Location,
-    real: &'a T,
-    shadow: &'a T,
-}
-
-impl<'a, T> Comparison<'a, T> {
-    fn new(
-        report: &'a mut Report,
-        boundary: Boundary,
-        location: Location,
-        real: &'a T,
-        shadow: &'a T,
-    ) -> Self {
-        Self {
-            report,
-            boundary,
-            loc: location,
-            real,
-            shadow,
+            Self::StorageReset { real, shadow, .. } => real == shadow,
+            Self::Existence { real, shadow, .. } => real == shadow,
+            Self::Balance { real, shadow, .. } | Self::Storage { real, shadow, .. } => {
+                real == shadow
+            }
+            Self::Nonce { real, shadow, .. } => real == shadow,
+            Self::Code { real, shadow, .. } => real == shadow,
+            Self::Success(real, shadow) => real == shadow,
+            Self::Output(real, shadow)
+            | Self::Logs(real, shadow)
+            | Self::FeeLogs(real, shadow)
+            | Self::ReceiptLogs(real, shadow) => real == shadow,
+            Self::Gas(real, shadow) | Self::BlockGas(real, shadow) => real == shadow,
         }
     }
 
-    fn record<V: Debug + Eq>(&mut self, field: &'static str, get: impl Fn(&T) -> V, kind: Kind) {
-        let (real, shadow) = (get(self.real), get(self.shadow));
-        if real == shadow {
-            return;
-        }
-
-        let (address, slot) = self.loc.parts();
-        self.report.record(
-            self.boundary,
-            Difference {
-                kind,
-                field,
-                address,
-                slot,
-                real: format!("{real:?}"),
-                shadow: format!("{shadow:?}"),
-            },
-        );
+    fn affects_continuation(&self) -> bool {
+        !matches!(
+            self,
+            Self::Success(..)
+                | Self::Output(..)
+                | Self::Logs(..)
+                | Self::FeeLogs(..)
+                | Self::ReceiptLogs(..)
+        )
     }
 }
 
@@ -223,9 +294,11 @@ struct AccountDelta<'a>(Option<&'a TransitionAccount>);
 impl<'a> AccountDelta<'a> {
     fn info<T: Eq>(self, get: impl Fn(&reth_revm::state::AccountInfo) -> T) -> Option<(T, T)> {
         let account = self.0?;
+        // Also compare initial values on creation and final values on destruction.
+        let default = reth_revm::state::AccountInfo::default();
         Self::changed(
-            get(account.previous_info.as_ref()?),
-            get(account.info.as_ref()?),
+            get(account.previous_info.as_ref().unwrap_or(&default)),
+            get(account.info.as_ref().unwrap_or(&default)),
         )
     }
 
@@ -248,13 +321,4 @@ impl<'a> AccountDelta<'a> {
     fn changed<T: Eq>(before: T, after: T) -> Option<(T, T)> {
         (before != after).then_some((before, after))
     }
-}
-
-fn sample_cmp(a: &(Boundary, Difference), b: &(Boundary, Difference)) -> Ordering {
-    a.1.kind
-        .cmp(&b.1.kind)
-        .then_with(|| a.0.cmp(&b.0))
-        .then_with(|| a.1.address.cmp(&b.1.address))
-        .then_with(|| a.1.slot.cmp(&b.1.slot))
-        .then_with(|| a.1.field.cmp(b.1.field))
 }

@@ -35,7 +35,7 @@ pub struct ShadowReplay {
     #[arg(long)]
     hardfork: TempoHardfork,
 
-    /// Exit unsuccessfully when one or more candidate findings are reported.
+    /// Exit unsuccessfully on unexplained findings or inconclusive comparisons.
     #[arg(long)]
     fail_on_findings: bool,
 }
@@ -63,7 +63,8 @@ impl ShadowReplay {
 
         let provider = BlockchainProvider::new(environment.provider_factory)?;
         let replayer = ShadowReplayer::new(provider.clone(), self.hardfork);
-        let (mut matched, mut findings, mut skipped) = (0u64, 0u64, 0u64);
+        let (mut matched, mut expected, mut inconclusive, mut findings, mut skipped) =
+            (0u64, 0u64, 0u64, 0u64, 0u64);
         let started_at = Instant::now();
         let mut last_progress = started_at;
 
@@ -97,6 +98,8 @@ impl ShadowReplay {
                     .map_err(|err| eyre!("shadow replay failed at block {number}: {err}"))?
                 {
                     ReplayOutcome::Match => matched += 1,
+                    ReplayOutcome::Expected => expected += 1,
+                    ReplayOutcome::Inconclusive => inconclusive += 1,
                     ReplayOutcome::Findings => findings += 1,
                 }
             }
@@ -104,7 +107,7 @@ impl ShadowReplay {
             if last_progress.elapsed() >= Duration::from_secs(10) {
                 info!(
                     latest_block = number,
-                    matched, findings, skipped, "Shadow replay progress"
+                    matched, expected, inconclusive, findings, skipped, "Shadow replay progress"
                 );
                 last_progress = Instant::now();
             }
@@ -115,6 +118,8 @@ impl ShadowReplay {
             to,
             hardfork = %self.hardfork,
             matched,
+            expected,
+            inconclusive,
             findings,
             skipped,
             elapsed = ?started_at.elapsed(),
@@ -126,8 +131,10 @@ impl ShadowReplay {
                 "Skipped blocks where the candidate hardfork was already canonical"
             );
         }
-        if self.fail_on_findings && findings > 0 {
-            eyre::bail!("historical shadow replay found divergences in {findings} blocks");
+        if self.fail_on_findings && (findings > 0 || inconclusive > 0) {
+            eyre::bail!(
+                "historical shadow replay needs review: {findings} blocks with unexplained differences, {inconclusive} inconclusive blocks"
+            );
         }
         Ok(())
     }
