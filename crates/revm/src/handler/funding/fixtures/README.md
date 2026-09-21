@@ -10,4 +10,4 @@ solc --optimize --evm-version cancun --bin-runtime FundingSource.sol
 
 Save the runtime hex printed after `Binary of the runtime part:` in `FundingSource.hex`. Rust tests load this artifact directly and do not require a Solidity compiler.
 
-The test-only protocol caller address is `0xffffffffffffffffffffffffffffffffffff1120`. This fixture does not implement input authorization or output delivery checks. Production builds do not register a funding entry point.
+The test-only protocol caller address is `0xffffffffffffffffffffffffffffffffffff1120`. Input-debit modes exercise native bounded permissions, nested rollback, and refunds. Output delivery checks remain outside this fixture. Production builds do not register a funding entry point.

@@ -1,6 +1,11 @@
 // SPDX-License-Identifier: MIT
 pragma solidity 0.8.30;
 
+interface Token {
+    function transferFrom(address from, address to, uint256 amount) external returns (bool);
+    function transfer(address to, uint256 amount) external returns (bool);
+}
+
 contract FundingSource {
     struct Plan { address assetIn; uint256 rate; uint256 maxAmountIn; bytes data; }
     address constant FUNDER = address(type(uint160).max - 0xeedf);
@@ -36,6 +41,15 @@ contract FundingSource {
         amount = amountOut;
         payloadHash = keccak256(data);
         emit Funded(msg.sender, account_, amountOut);
+        if (mode >= 10) {
+            require(Token(assetOut).transferFrom(account_, address(this), 20));
+            if (mode == 12) {
+                (bool ok,) = address(this).call(abi.encodeCall(this.nestedInput, (account_, assetOut)));
+                require(!ok);
+            }
+            if (mode == 13) require(Token(assetOut).transfer(account_, 20));
+            require(Token(assetOut).transferFrom(account_, address(this), mode == 11 || mode == 13 ? 11 : 10));
+        }
         if (mode == 8) amount = 0;
         if (mode == 4) revert SourceFailure(mode);
         if (mode == 5) { while (true) {} }
@@ -48,6 +62,11 @@ contract FundingSource {
             require(ok && reason.length == 0);
             require(calls == 1);
         }
+    }
+
+    function nestedInput(address owner, address token) external {
+        require(Token(token).transferFrom(owner, address(this), 5));
+        revert SourceFailure(12);
     }
 
     function application() external {

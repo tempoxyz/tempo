@@ -25,8 +25,8 @@ use tempo_contracts::{
         AccountKeychainError, AddrRegistryError, CurrentCommitteeError, FeeManagerError,
         NonceError, ReceivePolicyGuardError, RolesAuthError, SignatureVerifierError,
         StablecoinDEXError, StorageCreditsError, TIP20ChannelReserveError, TIP20FactoryError,
-        TIP403RegistryError, TIPFeeAMMError, UnknownFunctionSelector, ValidatorConfigError,
-        ValidatorConfigV2Error, ZoneFactoryError,
+        TIP20FunderError, TIP403RegistryError, TIPFeeAMMError, UnknownFunctionSelector,
+        ValidatorConfigError, ValidatorConfigV2Error, ZoneFactoryError,
     },
 };
 
@@ -42,6 +42,9 @@ pub enum TempoPrecompileError {
     /// Error from TIP20 token
     #[error("TIP20 token error: {0:?}")]
     TIP20(TIP20Error),
+
+    #[error("TIP20 funding error: {0:?}")]
+    TIP20Funder(TIP20FunderError),
 
     /// Error from TIP20 factory
     #[error("TIP20 factory error: {0:?}")]
@@ -167,6 +170,7 @@ impl TempoPrecompileError {
             Self::TIP20ChannelReserveError(e) => e.selector(),
             Self::NonceError(e) => e.selector(),
             Self::TIP20Factory(e) => e.selector(),
+            Self::TIP20Funder(e) => e.selector(),
             Self::RolesAuthError(e) => e.selector(),
             Self::AddrRegistryError(e) => e.selector(),
             Self::TIPFeeAMMError(e) => e.selector(),
@@ -199,6 +203,7 @@ impl TempoPrecompileError {
             | Self::TIP20ChannelReserveError(_)
             | Self::NonceError(_)
             | Self::TIP20Factory(_)
+            | Self::TIP20Funder(_)
             | Self::RolesAuthError(_)
             | Self::AddrRegistryError(_)
             | Self::TIPFeeAMMError(_)
@@ -246,6 +251,7 @@ impl TempoPrecompileError {
             Self::StablecoinDEX(e) => e.abi_encode().into(),
             Self::TIP20(e) => e.abi_encode().into(),
             Self::TIP20Factory(e) => e.abi_encode().into(),
+            Self::TIP20Funder(e) => e.abi_encode().into(),
             Self::TIP20ChannelReserveError(e) => e.abi_encode().into(),
             Self::RolesAuthError(e) => e.abi_encode().into(),
             Self::AddrRegistryError(e) => e.abi_encode().into(),
@@ -335,6 +341,7 @@ pub fn error_decoder_registry() -> TempoPrecompileErrorRegistry {
     add_errors_to_registry(&mut registry, TempoPrecompileError::StablecoinDEX);
     add_errors_to_registry(&mut registry, TempoPrecompileError::TIP20);
     add_errors_to_registry(&mut registry, TempoPrecompileError::TIP20Factory);
+    add_errors_to_registry(&mut registry, TempoPrecompileError::TIP20Funder);
     add_errors_to_registry(
         &mut registry,
         TempoPrecompileError::TIP20ChannelReserveError,
