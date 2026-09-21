@@ -27,6 +27,30 @@ Actual run admission, strict pre-backpressure pruning, and cleanup still apply.
 The five prebuilt bundles were checked today and remain available until
 2026-09-24; no rebuild is presently needed for artifact availability.
 
+## Snapshot preservation audit, 2026-09-21
+
+[Read-only baseline inventory35577695848](https://github.com/tempoxyz/tempo/actions/runs/35577695848)
+verified all nine required dataset paths in all ten saved virgin baselines
+across five distinct runners, including the baseline for the unmounted working
+side. This checks filesystem metadata, not full database integrity. No dataset
+contents were exported; no volume was mounted, recovered, promoted, or written.
+All five jobs confirmed deletion of their two temporary files and directory.
+
+The prebuilt benchmark path restores working volumes from the saved baselines;
+its recovery and full-recovery operations copy virgin to scratch. It cannot
+enter the native dataset rebuild/promotion path. Resetting a working volume
+removes run mutations and any data never saved into its baseline; it does not
+clear the saved baseline. The producer cleanup deletes only owned build roots.
+
+[PR #7713](https://github.com/tempoxyz/tempo/pull/7713) now rejects workspace
+cleanup paths overlapping snapshot/state roots, symlinked ancestors, and mounted
+or nested-mounted directories before deletion, with `--one-file-system` on the
+startup reset. The same follow-up is on the root and archive consumer branches.
+Validation: 182 lifecycle tests passed with one skipped; 17 cleanup tests passed
+on each consumer variant; 14 read-only inventory tests passed. Disposable ext4
+fixture bytes were unchanged by probing. These safeguards assume no unrelated
+privileged process changes paths between validation and deletion.
+
 ## Deferred to other work
 
 **Proposer decoded-block reuse before first forwarding is out of scope for
