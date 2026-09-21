@@ -530,17 +530,13 @@ async fn test_stablecoin_dex_revert_gas_snapshots(hardfork: TempoHardfork) -> ey
     .await?;
     let first = u128::MAX / 2;
     let second = u128::MAX - first;
-    let mut pending = vec![
-        ask_base
-            .mint(signers[1].address(), U256::from(first))
-            .send()
-            .await?,
-        ask_base
-            .mint(signers[2].address(), U256::from(second))
-            .send()
-            .await?,
-    ];
-    await_receipts(&mut pending).await?;
+    for (index, amount) in [(1, first), (2, second)] {
+        let receipt = ask_base
+            .mint(signers[index].address(), U256::from(amount))
+            .send_sync()
+            .await?;
+        assert!(receipt.status(), "overflow ask mint failed");
+    }
     approve(
         providers[1].clone(),
         *ask_base.address(),
