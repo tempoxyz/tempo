@@ -198,6 +198,7 @@ fn init_txpool_defaults() {
 
 fn init_engine_defaults() {
     DefaultEngineValues::default()
+        // Selected by sweeping persistence thresholds with the public-mix txgen preset over 600s.
         .with_persistence_threshold(25)
         .with_num_state_masking_blocks(10)
         // In Commonware consensus, it might happen that a head is notarized (causing it to become a canonical tip for reth),
