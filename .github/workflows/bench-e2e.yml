@@ -18,7 +18,7 @@ jobs:
         slot: [1, 2, 3, 4, 5]
     env:
       INVENTORY_SLOT: ${{ matrix.slot }}
-      INVENTORY_SOURCE_SHA256: c8bb0972453b5273a217957a51435cf3511c0a1a0d741c88e0d836d8504d7d28
+      INVENTORY_SOURCE_SHA256: 3d0e85b1774ec7aa2493d062533abcf896ed098d3e3273853948a1c28569c8ec
     steps:
       # No checkout, existing workspace deletion, snapshot command, or dataset read.
       - name: Read bounded snapshot metadata
@@ -41,13 +41,22 @@ jobs:
               for (const value of Object.values(v.executable_candidates)) need(typeof value === 'boolean');
               need(Array.isArray(v.sides) && v.sides.length === 2);
               for (const side of v.sides) {
-                need(keys(side, ['state','actual_mounted','state_observation_unchanged','mount_observation_unchanged','required']));
+                need(keys(side, ['state','actual_mounted','state_observation_unchanged','mount_observation_unchanged','required','virgin']));
                 need(keys(side.state, ['status','mounted','mount_matches','dm_name_valid']));
                 need(Number.isInteger(side.state.status) && side.state.status >= 0 && side.state.status <= 4);
                 need([0,1,2].includes(side.state.mounted) && [0,1,2].includes(side.actual_mounted));
                 for (const value of [side.state.mount_matches,side.state.dm_name_valid,side.state_observation_unchanged,side.mount_observation_unchanged]) need(typeof value === 'boolean');
                 need(keys(side.required, ['present','readable','missing','denied','unsafe','other_error']));
                 for (const value of Object.values(side.required)) need(Number.isInteger(value) && value >= 0 && value <= 511);
+                const virgin = side.virgin;
+                need(keys(virgin,['status','ext4','devices_distinct','lock_acquired','state_unchanged','required']));
+                need(Number.isInteger(virgin.status) && virgin.status >= 0 && virgin.status <= 7);
+                for (const value of [virgin.ext4,virgin.devices_distinct,virgin.lock_acquired,virgin.state_unchanged]) need(typeof value === 'boolean');
+                need(keys(virgin.required,['present','missing','unsafe','unavailable']));
+                for (const value of Object.values(virgin.required)) need(Number.isInteger(value) && value >= 0 && value <= 511);
+                need(Object.values(virgin.required).reduce((mask,value)=>mask|value,0) === 511);
+                need(Object.values(virgin.required).reduce((sum,value)=>sum+value,0) === 511);
+                if (virgin.status === 0) need(privileged && virgin.ext4 && virgin.devices_distinct && virgin.lock_acquired && virgin.state_unchanged && virgin.required.unavailable === 0);
               }
               return v;
             }
