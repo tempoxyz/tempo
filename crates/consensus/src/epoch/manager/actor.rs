@@ -38,6 +38,7 @@
 //! for its boundary. This repeats until the node catches up to the network.
 use std::{collections::BTreeMap, num::NonZeroUsize};
 
+use alloy_consensus::BlockHeader as _;
 use commonware_consensus::{
     simplex::{self, config::Floor, elector, scheme::bls12381_threshold::vrf::Scheme},
     types::{Epoch, EpochDelta, Epocher as _},
@@ -58,6 +59,7 @@ use eyre::{ensure, eyre};
 use futures::{StreamExt as _, channel::mpsc};
 use rand_core::{CryptoRng, Rng};
 use reth_ethereum::chainspec::EthChainSpec;
+use tempo_chainspec::TempoHardforks as _;
 use tracing::{Level, Span, debug, error, error_span, info, instrument, warn, warn_span};
 
 use crate::{
@@ -294,17 +296,17 @@ where
 
         self.config.scheme_provider.register(epoch, scheme.clone());
 
-        let floor = match epoch.previous().map(|prev| {
+        let (floor, boundary_timestamp) = match epoch.previous().map(|prev| {
             self.config
                 .epoch_strategy
                 .last(prev)
                 .expect("epoch strategy valid for all epochs and heights")
         }) {
             Some(boundary_height) => {
-                let (_, digest) = self
+                let block = self
                     .config
                     .marshal
-                    .get_info(boundary_height)
+                    .get_block(boundary_height)
                     .await
                     .ok_or_else(|| {
                         eyre!(
@@ -315,12 +317,29 @@ where
                         )
                     })?;
 
-                Floor::Genesis(digest)
+                (Floor::Genesis(block.digest()), block.header().timestamp())
             }
             None => {
-                let genesis_hash = self.config.execution_node.chain_spec().genesis_hash();
-                Floor::Genesis(Digest(genesis_hash))
+                let chain_spec = self.config.execution_node.chain_spec();
+                (
+                    Floor::Genesis(Digest(chain_spec.genesis_hash())),
+                    chain_spec.genesis_header().timestamp(),
+                )
             }
+        };
+
+        // Each epoch constructs one elector. Use its preceding finalized boundary so nodes
+        // choose the same version even when entering or restarting at different times.
+        #[expect(deprecated, reason = "retain the pre-T12 leader schedule")]
+        let elector_version = if self
+            .config
+            .execution_node
+            .chain_spec()
+            .is_t12_active_at_timestamp(boundary_timestamp)
+        {
+            elector::RandomVersion::V1
+        } else {
+            elector::RandomVersion::V0
         };
 
         let engine_ctx = self.context.child("simplex").with_attribute("epoch", epoch);
@@ -330,13 +349,7 @@ where
                 epoch,
                 floor,
                 scheme,
-                #[expect(
-                    deprecated,
-                    reason = "switching random leader election from V0 to V1 requires a hardfork"
-                )]
-                elector: elector::Random::<commonware_cryptography::Sha256>::new(
-                    elector::RandomVersion::V0,
-                ),
+                elector: elector::Random::<commonware_cryptography::Sha256>::new(elector_version),
                 strategy: Sequential,
 
                 reporter: self.config.marshal.clone(),
