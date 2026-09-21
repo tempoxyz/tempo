@@ -4,6 +4,20 @@ Updated 2026-09-21. Keep benchmark, instrumentation, privacy, cutoff, and
 correctness fixes in their PRs even when an optimization is not adopted.
 An unsuccessful optimization does not invalidate a useful measurement fix.
 
+## Validated capture and election failure, 2026-09-21
+
+[Detailed findings](EXECUTION-FINDINGS-2026-09-21.md): run35578876523 passed all
+capture audits (77 eligible blocks). Exact receiver execution joins identify
+file-backed fault I/O-path blocking (p50 16.772 ms, p90 61.451 ms) and runnable
+delay (p50 12.160 ms). Block11 has a 170.459 ms final state-root wait. These are
+diagnostic observations, not benchmark-proven optimizations.
+
+The follow-up root run35592243235 failed before workload execution because the
+five-slot reservation barrier timed out while jobs queued on three distinct
+runners. Replaying all five capacity receipts succeeds; this is not a missing
+snapshot or disk-space shortage. Keep further runs paused until orchestration
+is corrected. Background state-persistence backpressure remains out of scope.
+
 ## Snapshot inventory correction, 2026-09-21
 
 The earlier all-runner missing-dataset conclusion was unsupported: the inventory
