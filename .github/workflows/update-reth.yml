@@ -695,7 +695,7 @@ jobs:
             IFS=$'\t' read -r PR_NUMBER PR_URL <<< "$PR_INFO"
           fi
 
-          MENTION="<!subteam^S09KMRP46D7|reth>"
+          MENTION="<!subteam^S0C0784UDQF|oncall-reth>"
           EMOJI="❌"
           STATUS="failed"
           COLOR="#e01e5a"

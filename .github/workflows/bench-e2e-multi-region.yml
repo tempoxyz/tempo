@@ -785,6 +785,17 @@ jobs:
               summary = 'Benchmark completed but failed to read summary.';
             }
 
+            let dashboardSection = '';
+            try {
+              const clickhouseRunId = fs.readFileSync(`${resultsDir}/clickhouse-run-id.txt`, 'utf8').trim();
+              if (clickhouseRunId) {
+                const dashboardUrl = `http://go/dev/tempo-internal-perf/benchmark/${encodeURIComponent(clickhouseRunId)}`;
+                dashboardSection = `\n\n### Internal dashboard\n\n[Internal dashboard](${dashboardUrl})\n`;
+              }
+            } catch (e) {
+              core.info(`Unable to read ClickHouse run ID for internal dashboard: ${e.message}`);
+            }
+
             const lifecycleOutcomes = [
               process.env.BENCH_FETCH_BINARIES_OUTCOME,
               process.env.BENCH_GENERATE_OUTCOME,
@@ -817,7 +828,7 @@ jobs:
               core.info(`Unable to resolve job URL: ${e.message}`);
             }
 
-            const body = `cc @${process.env.BENCH_ACTOR}\n\n${resultHeadline} [View job](${jobUrl})\n\n${summary}`;
+            const body = `cc @${process.env.BENCH_ACTOR}\n\n${resultHeadline} [View job](${jobUrl})\n\n${summary}${dashboardSection}`;
             await core.summary.addRaw(body).write();
 
       - name: Wait for infrastructure teardown
