@@ -1,6 +1,6 @@
 use super::*;
 use crate::shadow_replay::{Failure, ReceiptObservation};
-use reth_revm::{db::StorageSlot, state::AccountInfo};
+use reth_revm::{db::states::StorageSlot, state::AccountInfo};
 
 // Synthetic checks exercise the classifier contract; these are NOT TIP-1016 validators.
 const GAS: Expectation = Expectation {
