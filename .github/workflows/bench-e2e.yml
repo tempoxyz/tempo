@@ -534,8 +534,12 @@ jobs:
       - name: Reset workspace directory
         id: workspace-reset
         if: steps.capacity-election.outputs.selected == 'true'
+        env:
+          CLEANUP_DIRECTORY: ${{ steps.runner-cleanup.outputs.directory }}
         run: |
-          sudo rm -rf "$GITHUB_WORKSPACE"
+          set -euo pipefail
+          sudo -n /usr/bin/python3 -I "$CLEANUP_DIRECTORY/cleanup.py" --check-workspace "$GITHUB_WORKSPACE"
+          sudo rm -rf --one-file-system -- "$GITHUB_WORKSPACE"
           sudo -u actions-runner mkdir -p "$GITHUB_WORKSPACE"
           python3 - <<'PYOWNER'
           import json, os

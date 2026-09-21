@@ -23,6 +23,36 @@ def config(path):
 
 
 class CleanupTests(unittest.TestCase):
+    def test_check_only_never_deletes_and_has_distinct_receipt(self):
+        with tempfile.TemporaryDirectory() as d:
+            root = Path(d); (root/'keep').write_text('baseline')
+            result = subprocess.run([sys.executable, '-I', str(Path(c.__file__)),
+                                     '--check-workspace', str(root)], capture_output=True)
+            self.assertEqual(result.returncode, 0, result.stderr)
+            self.assertEqual(json.loads(result.stdout), dict(schema=1, status=0, workspace_checked=1))
+            self.assertEqual((root/'keep').read_text(), 'baseline')
+
+    def test_snapshot_paths_and_ancestors_reject_before_open_or_delete(self):
+        for value in ('/', '/mnt', '/mnt/virgin', '/mnt/virgin/reth-data',
+                      '/reth-bench-a', '/reth-bench-b/tempo_e2e_100000mb',
+                      '/var/lib', '/var/lib/schelk', '//reth-bench-a'):
+            with self.subTest(path=value), patch.object(c, 'open_dir') as opened:
+                with self.assertRaises(c.Rejected): c.check_workspace(Path(value))
+                opened.assert_not_called()
+
+    def test_workspace_and_nested_bind_mounts_reject_before_cleanup(self):
+        with tempfile.TemporaryDirectory() as d:
+            root = Path(d); (root/'snapshot').write_text('keep')
+            for mount in (root, root/'nested-snapshot'):
+                # A bind mount can use the same device; --one-file-system alone
+                # is insufficient. Inspect the mount table before any deletion.
+                mounts = f'123 1 8:1 / {mount} rw - ext4 /dev/fixture rw\n'
+                with self.subTest(mount=mount), patch.object(Path, 'read_text', return_value=mounts):
+                    with patch.object(c, 'stop_processes') as stopped:
+                        with self.assertRaises(c.Rejected): c.cleanup(config(root), report())
+                        stopped.assert_not_called()
+            self.assertEqual((root/'snapshot').read_text(), 'keep')
+
     def test_selected_clears_owned_children_preserves_root_and_symlink_target(self):
         with tempfile.TemporaryDirectory() as d:
             base=Path(d);root=base/'workspace';root.mkdir();external=base/'external';external.mkdir()
