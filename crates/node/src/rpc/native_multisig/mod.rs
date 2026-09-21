@@ -72,14 +72,10 @@ pub(super) fn prepare_native_multisig_simulation(
         let signature = create_mock_native_multisig_signature(parent, spec)
             .map_err(EthApiError::InvalidParams)?;
         validate_witness(&signature, factory, hardfork, db)?;
-        request.key_authorization = Some(
-            authorization
-                .authorization
-                .clone()
-                .into_signed(TempoSignature::Multisig(signature)),
-        );
+        request.key_authorization =
+            Some(authorization.authorization.clone().into_signed(signature));
     } else if let Some(authorization) = &request.key_authorization
-        && let TempoSignature::Multisig(signature) = &authorization.signature
+        && let Some(signature) = authorization.signature.as_multisig()
     {
         if let Some(actual) = authorization.account
             && actual != parent

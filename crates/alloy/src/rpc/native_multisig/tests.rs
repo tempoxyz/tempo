@@ -204,7 +204,7 @@ fn native_roles_keep_transaction_context_with_empty_encoding(role: u8) {
                     SignatureType::Secp256k1,
                     Address::repeat_byte(8),
                 )
-                .into_signed(TempoSignature::Multisig(multisig)),
+                .into_signed(multisig),
             );
             TempoSignature::default()
         }
@@ -255,7 +255,7 @@ async fn signing_preserves_real_configurable_grant_without_simulation_hints() {
         )],
     )
     .unwrap();
-    let authorization = authorization.into_signed(TempoSignature::Multisig(signature));
+    let authorization = authorization.into_signed(signature);
     let request = TempoTransactionRequest {
         inner: TransactionRequest {
             from: Some(parent),
