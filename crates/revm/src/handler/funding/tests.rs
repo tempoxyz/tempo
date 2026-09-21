@@ -12,14 +12,14 @@ use revm::{
 use tempo_chainspec::hardfork::TempoHardfork;
 use tempo_contracts::precompiles::{IFundingSource, ITIP20Funder};
 
-const FUNDER: Address = address!("ffffffffffffffffffffffffffffffffffff1120");
-const SOURCE: Address = address!("0000000000000000000000000000000000001000");
-const ACCOUNT: Address = address!("0000000000000000000000000000000000002000");
+pub(super) const FUNDER: Address = address!("ffffffffffffffffffffffffffffffffffff1120");
+pub(super) const SOURCE: Address = address!("0000000000000000000000000000000000001000");
+pub(super) const ACCOUNT: Address = address!("0000000000000000000000000000000000002000");
 const ASSET: Address = address!("0000000000000000000000000000000000003000");
 
 #[derive(Debug, Default)]
-struct Trace {
-    calls: Vec<(Address, Address, CallScheme, bool)>,
+pub(super) struct Trace {
+    pub(super) calls: Vec<(Address, Address, CallScheme, bool)>,
     ends: Vec<(Address, InstructionResult)>,
     steps: usize,
 }
@@ -55,7 +55,7 @@ impl Inspector<TempoContext<CacheDB<EmptyDB>>> for Trace {
     }
 }
 
-fn evm(spec: TempoHardfork) -> TempoEvm<CacheDB<EmptyDB>, Trace> {
+pub(super) fn evm(spec: TempoHardfork) -> TempoEvm<CacheDB<EmptyDB>, Trace> {
     let mut db = CacheDB::new(EmptyDB::new());
     let code = Bytecode::new_raw(
         hex::decode(include_str!("fixtures/FundingSource.hex").trim())
@@ -501,7 +501,7 @@ fn funded_callbacks_meter_real_tip20_debits_and_clear_authority() {
                         source: SOURCE,
                         data: data.clone(),
                         is_static: false,
-                        permission: Some(make_permission()),
+                        permission: Some(&make_permission()),
                     },
                     run_loop,
                 )
@@ -605,7 +605,7 @@ fn input_permission_rejects_static_or_mismatched_callbacks() {
                 source: if case == 2 { ASSET } else { SOURCE },
                 is_static: case == 0,
                 data: Bytes::new(),
-                permission: Some(permission),
+                permission: Some(&permission),
             },
             TempoEvmHandler::inspect_run_exec_loop,
         );
