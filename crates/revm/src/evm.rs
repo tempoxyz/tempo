@@ -67,6 +67,8 @@ pub struct TempoEvm<DB: Database, I> {
     pub(crate) non_creditable_slots: Rc<RefCell<NonCreditableSlots>>,
     /// Internal protocol fee hooks.
     pub(crate) fee_manager: Arc<dyn ProtocolFeeManager<DB>>,
+    pub(crate) owner_funding:
+        Option<Arc<tempo_primitives::transaction::funding::OwnerFundingConfig>>,
 }
 
 impl<DB: Database, I> TempoEvm<DB, I> {
@@ -117,6 +119,7 @@ impl<DB: Database, I> TempoEvm<DB, I> {
             intrinsic_gas_exceeds_limit,
             actions,
             non_creditable_slots,
+            owner_funding,
             ..
         } = self;
 
@@ -132,6 +135,7 @@ impl<DB: Database, I> TempoEvm<DB, I> {
             actions,
             non_creditable_slots,
             fee_manager,
+            owner_funding,
         }
     }
 
@@ -162,6 +166,7 @@ impl<DB: Database, I> TempoEvm<DB, I> {
             actions,
             non_creditable_slots,
             fee_manager,
+            owner_funding: None,
         }
     }
 
@@ -190,6 +195,7 @@ impl<DB: Database, I> TempoEvm<DB, I> {
             actions,
             non_creditable_slots,
             fee_manager,
+            owner_funding,
             ..
         } = self;
         TempoEvm::new_inner(
@@ -198,6 +204,7 @@ impl<DB: Database, I> TempoEvm<DB, I> {
             non_creditable_slots,
             fee_manager,
         )
+        .with_owner_funding(owner_funding)
     }
 
     /// Consumes self and returns a new Evm type with given storage actions.
@@ -208,6 +215,52 @@ impl<DB: Database, I> TempoEvm<DB, I> {
             self.non_creditable_slots.clone(),
         );
         self.actions = actions;
+        let config = self.owner_funding.clone();
+        self.with_owner_funding(config)
+    }
+
+    /// Installs the genesis-selected native source only after T12.
+    pub fn with_owner_funding(
+        mut self,
+        config: Option<Arc<tempo_primitives::transaction::funding::OwnerFundingConfig>>,
+    ) -> Self {
+        use tempo_primitives::TempoAddressExt;
+        if let Some(config) = &config {
+            let latest = tempo_chainspec::hardfork::TempoHardfork::latest();
+            assert!(
+                !config.funder.is_zero()
+                    && !config.native_dex_source.is_zero()
+                    && config.funder != config.native_dex_source
+                    && !config.funder.is_precompile(latest)
+                    && !config.native_dex_source.is_precompile(latest)
+                    && !revm::precompile::Precompiles::latest().contains(&config.funder)
+                    && !revm::precompile::Precompiles::latest().contains(&config.native_dex_source),
+                "funding addresses collide with reserved addresses"
+            );
+            assert!(
+                !config.parity_assets.is_empty()
+                    && config.parity_assets.iter().all(TempoAddressExt::is_tip20),
+                "funding requires explicit TIP-20 parity assets"
+            );
+            if self.inner.ctx.cfg.spec.is_t12() {
+                let env = tempo_precompiles::PrecompileEnv::new(
+                    &self.inner.ctx.cfg,
+                    self.actions.clone(),
+                    self.non_creditable_slots.clone(),
+                );
+                let source =
+                    tempo_precompiles::tip20_funder::native_dex::NativeDexFundingSource::new(
+                        config.native_dex_source,
+                        config.funder,
+                        config.parity_assets.clone(),
+                    );
+                self.inner.precompiles.extend_precompiles([(
+                    config.native_dex_source,
+                    source.create_precompile(&env),
+                )]);
+            }
+        }
+        self.owner_funding = config;
         self
     }
 

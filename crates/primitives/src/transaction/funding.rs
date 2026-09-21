@@ -4,6 +4,19 @@ use alloc::vec::Vec;
 use alloy_primitives::{Address, Bytes, U256};
 use alloy_rlp::{Buf, Decodable, Encodable};
 
+/// Experimental owner funding configuration supplied by a devnet genesis.
+#[derive(Clone, Debug, PartialEq, Eq)]
+#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
+#[cfg_attr(
+    feature = "serde",
+    serde(rename_all = "camelCase", deny_unknown_fields)
+)]
+pub struct OwnerFundingConfig {
+    pub funder: Address,
+    pub native_dex_source: Address,
+    pub parity_assets: Vec<Address>,
+}
+
 #[derive(
     Clone, Debug, Default, PartialEq, Eq, Hash, alloy_rlp::RlpEncodable, alloy_rlp::RlpDecodable,
 )]

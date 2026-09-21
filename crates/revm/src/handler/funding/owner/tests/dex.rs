@@ -462,3 +462,59 @@ fn native_source_gas_matches_inspected_execution_and_exhaustion_reverts() {
     }
     assert_eq!(runs[0], runs[1]);
 }
+
+#[test]
+fn signed_requirements_use_the_normal_and_inspected_batch_paths() {
+    use tempo_primitives::transaction::{
+        FundingRequirement as SignedRequirement, FundingSource, funding::OwnerFundingConfig,
+    };
+    for inspect in [false, true] {
+        let (mut evm, a, b) = setup_dex();
+        evm = evm.with_owner_funding(Some(Arc::new(OwnerFundingConfig {
+            funder: FUNDER,
+            native_dex_source: SOURCE,
+            parity_assets: vec![a, b, PATH_USD_ADDRESS],
+        })));
+        let calls = vec![Call {
+            to: PATH_USD_ADDRESS.into(),
+            value: U256::ZERO,
+            input: ITIP20::transferCall {
+                to: RECIPIENT,
+                amount: U256::from(50 * UNIT),
+            }
+            .abi_encode()
+            .into(),
+        }];
+        evm.inner.ctx.tx.tempo_tx_env = Some(Box::new(crate::TempoBatchCallEnv {
+            aa_calls: calls.clone(),
+            require_funds: vec![SignedRequirement {
+                asset: PATH_USD_ADDRESS,
+                amount: U256::from(50 * UNIT),
+                slippage_bps: Some(100),
+                sources: [request(a, U256::from(30 * UNIT)), request(b, U256::MAX)]
+                    .into_iter()
+                    .map(|source| FundingSource {
+                        address: source.target,
+                        data: source.data,
+                    })
+                    .collect(),
+            }],
+            ..Default::default()
+        }));
+        let gas = GasTracker::new(LIMIT, LIMIT, 0);
+        let mut handler = TempoEvmHandler::new();
+        let result = if inspect {
+            handler.inspect_execute_multi_call(&mut evm, &gas, calls)
+        } else {
+            handler.execute_multi_call(&mut evm, &gas, calls)
+        }
+        .unwrap();
+        assert!(result.instruction_result().is_ok(), "{result:?}");
+        assert_eq!(
+            balance(&mut evm, PATH_USD_ADDRESS, RECIPIENT),
+            U256::from(50 * UNIT)
+        );
+        assert_eq!(balance(&mut evm, a, ACCOUNT), U256::from(170 * UNIT));
+        assert_eq!(balance(&mut evm, b, ACCOUNT), U256::from(180 * UNIT));
+    }
+}

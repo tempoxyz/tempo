@@ -32,6 +32,9 @@ pub const SYSTEM_TX_ADDRESSES: [Address; SYSTEM_TX_COUNT] = [Address::ZERO];
 #[derive(Debug, Clone, Default, PartialEq, Eq, serde::Deserialize, serde::Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct TempoGenesisInfo {
+    /// Experimental devnet funding; omitted on existing networks.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub owner_funding: Option<tempo_primitives::transaction::funding::OwnerFundingConfig>,
     /// The epoch length used by consensus.
     #[serde(skip_serializing_if = "Option::is_none")]
     epoch_length: Option<NonZeroU64>,
@@ -244,7 +247,13 @@ impl TempoChainSpec {
     /// Converts the given [`Genesis`] into a [`TempoChainSpec`].
     pub fn from_genesis(genesis: Genesis) -> Self {
         // Extract Tempo genesis info from extra_fields
-        let info = TempoGenesisInfo::extract_from(&genesis);
+        let mut info = TempoGenesisInfo::extract_from(&genesis);
+        if let Some(value) = genesis.config.extra_fields.get("ownerFunding") {
+            info.owner_funding = Some(
+                serde_json::from_value(value.clone())
+                    .expect("invalid ownerFunding genesis configuration"),
+            );
+        }
 
         // Create base chainspec from genesis (already has ordered Ethereum hardforks)
         let mut base_spec = ChainSpec::from_genesis(genesis);
@@ -507,6 +516,7 @@ impl TempoConsensusSpec for TempoChainSpec {
 
 #[cfg(test)]
 mod tests {
+    use super::TempoChainSpec;
     use crate::{
         TempoHardfork,
         spec::{TEMPO_T1_BASE_FEE, TEMPO_T7_BASE_FEE_CAP, TEMPO_T7_BASE_FEE_FLOOR, TempoHardforks},
@@ -519,6 +529,34 @@ mod tests {
     #[cfg(feature = "cli")]
     use reth_cli::chainspec::ChainSpecParser as _;
     use tempo_primitives::Header;
+
+    #[test]
+    fn owner_funding_is_explicit_genesis_configuration() {
+        let mut genesis: serde_json::Value =
+            serde_json::from_str(include_str!("genesis/dev.json")).unwrap();
+        assert!(
+            TempoChainSpec::from_genesis(serde_json::from_value(genesis.clone()).unwrap())
+                .info
+                .owner_funding
+                .is_none()
+        );
+        genesis["config"]["ownerFunding"] = serde_json::json!({
+            "funder": "0xffffffffffffffffffffffffffffffffffff1120",
+            "nativeDexSource": "0x0000000000000000000000000000000000001121",
+            "parityAssets": ["0x20c0000000000000000000000000000000000000"]
+        });
+        let spec = TempoChainSpec::from_genesis(serde_json::from_value(genesis).unwrap());
+        assert_eq!(spec.info.owner_funding.unwrap().parity_assets.len(), 1);
+    }
+
+    #[test]
+    #[should_panic(expected = "invalid ownerFunding genesis configuration")]
+    fn malformed_owner_funding_is_not_silently_disabled() {
+        let mut genesis: serde_json::Value =
+            serde_json::from_str(include_str!("genesis/dev.json")).unwrap();
+        genesis["config"]["ownerFunding"] = serde_json::json!({"funder": "invalid"});
+        TempoChainSpec::from_genesis(serde_json::from_value(genesis).unwrap());
+    }
 
     #[test]
     #[cfg(feature = "cli")]

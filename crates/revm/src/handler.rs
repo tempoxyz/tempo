@@ -30,6 +30,7 @@ use revm::{
         CallOutcome, CreateOutcome, FrameInput, Gas, InitialAndFloorGas,
         gas::{COLD_SLOAD_COST, WARM_SSTORE_RESET, get_tokens_in_calldata_istanbul},
         interpreter::EthInterpreter,
+        interpreter_action::FrameInit,
     },
     precompile::PrecompileError,
 };
@@ -588,12 +589,13 @@ where
     /// This checkpoint only covers user-call execution. Inline key authorization attached to the
     /// transaction is applied earlier during validation/pre-execution and intentionally remains
     /// persisted if scope prevalidation fails here or if a later user call reverts the batch.
-    fn execute_multi_call_with<F>(
+    fn execute_multi_call_with<F, R>(
         &mut self,
         evm: &mut TempoEvm<DB, I>,
         remaining_gas: u64,
         reservoir: u64,
         calls: Vec<tempo_primitives::transaction::Call>,
+        mut run_loop: R,
         execute_single: F,
     ) -> Result<FrameResult, EVMError<DB::Error, TempoInvalidTransaction>>
     where
@@ -602,13 +604,18 @@ where
             &mut TempoEvm<DB, I>,
             &mut GasTracker,
         ) -> Result<FrameResult, EVMError<DB::Error, TempoInvalidTransaction>>,
+        R: FnMut(
+            &mut Self,
+            &mut TempoEvm<DB, I>,
+            FrameInit,
+        ) -> Result<FrameResult, EVMError<DB::Error, TempoInvalidTransaction>>,
     {
         self.execute_multi_call_with_prelude(
             evm,
             remaining_gas,
             reservoir,
             calls,
-            |_, _, _| Ok(None),
+            |handler, evm, gas| handler.require_transaction_funds_with(evm, gas, &mut run_loop),
             execute_single,
         )
     }
@@ -836,6 +843,7 @@ where
             gas.remaining(),
             gas.reservoir(),
             calls,
+            Self::run_exec_loop,
             Self::execute_single_call,
         )
     }
@@ -873,6 +881,7 @@ where
             gas.remaining(),
             gas.reservoir(),
             calls,
+            Self::inspect_run_exec_loop,
             Self::inspect_execute_single_call,
         )
     }
@@ -1855,14 +1864,22 @@ where
         evm.validator_fee = U256::ZERO;
         evm.non_creditable_slots.borrow_mut().clear();
 
-        if evm
-            .ctx
-            .tx
-            .tempo_tx_env
-            .as_ref()
-            .is_some_and(|tx| !tx.require_funds.is_empty())
+        if let Some(tx) = evm.ctx.tx.tempo_tx_env.as_ref()
+            && !tx.require_funds.is_empty()
         {
-            return Err(TempoInvalidTransaction::FundingNotActivated.into());
+            if evm.owner_funding.is_none() || !evm.ctx.cfg.spec.is_t12() {
+                return Err(TempoInvalidTransaction::FundingNotActivated.into());
+            }
+            if tx.signature.is_keychain() || tx.override_key_id.is_some() {
+                return Err(TempoInvalidTransaction::DelegatedFundingNotActivated.into());
+            }
+            if tx
+                .require_funds
+                .iter()
+                .any(|entry| entry.slippage_bps.is_some_and(|bps| bps > 10_000))
+            {
+                return Err(TempoInvalidTransaction::InvalidFundingSlippage.into());
+            }
         }
 
         // Validate the fee payer signature
@@ -2419,6 +2436,13 @@ pub fn calculate_aa_batch_intrinsic_gas<'a>(
         }
     }
 
+    if !aa_env.require_funds.is_empty() {
+        let encoded = alloy_rlp::encode(&aa_env.require_funds);
+        total_tokens += get_tokens_in_calldata_istanbul(&encoded);
+        if aa_env.key_authorization.is_none() {
+            total_tokens += get_tokens_in_calldata_istanbul(&[alloy_rlp::EMPTY_STRING_CODE]);
+        }
+    }
     gas.initial_regular_gas += total_tokens * gas_params.tx_token_cost();
 
     // 5. Access list costs using revm constants

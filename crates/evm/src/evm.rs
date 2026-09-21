@@ -33,9 +33,12 @@ use tempo_revm::{
 use crate::{TempoBlockEnv, TempoPoolValidationEvm, TempoPoolValidationResult};
 
 /// Factory for creating Tempo EVM instances.
-#[derive(Debug, Default, Clone, Copy)]
+#[derive(Debug, Default, Clone)]
 #[non_exhaustive]
-pub struct TempoEvmFactory;
+pub struct TempoEvmFactory {
+    pub owner_funding:
+        Option<std::sync::Arc<tempo_primitives::transaction::funding::OwnerFundingConfig>>,
+}
 
 impl EvmFactory for TempoEvmFactory {
     type Evm<DB: Database, I: Inspector<Self::Context<DB>>> = TempoEvm<DB, I>;
@@ -52,7 +55,9 @@ impl EvmFactory for TempoEvmFactory {
         db: DB,
         input: EvmEnv<Self::Spec, Self::BlockEnv>,
     ) -> Self::Evm<DB, NoOpInspector> {
-        TempoEvm::new(db, input)
+        let mut evm = TempoEvm::new(db, input);
+        evm.inner = evm.inner.with_owner_funding(self.owner_funding.clone());
+        evm
     }
 
     fn create_evm_with_inspector<DB: Database, I: Inspector<Self::Context<DB>>>(
@@ -61,7 +66,7 @@ impl EvmFactory for TempoEvmFactory {
         input: EvmEnv<Self::Spec, Self::BlockEnv>,
         inspector: I,
     ) -> Self::Evm<DB, I> {
-        TempoEvm::new(db, input).with_inspector(inspector)
+        self.create_evm(db, input).with_inspector(inspector)
     }
 }
 

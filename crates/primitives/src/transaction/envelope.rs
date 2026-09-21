@@ -246,7 +246,11 @@ impl TempoTxEnvelope {
             Self::Eip2930(tx) => is_tip20_call(tx.tx().to.to()),
             Self::Eip1559(tx) => is_tip20_call(tx.tx().to.to()),
             Self::Eip7702(tx) => is_tip20_call(Some(&tx.tx().to)),
-            Self::AA(tx) => tx.tx().calls.iter().all(|call| is_tip20_call(call.to.to())),
+            Self::AA(tx) => {
+                let tx = tx.tx();
+                tx.require_funds.as_ref().is_none_or(Vec::is_empty)
+                    && tx.calls.iter().all(|call| is_tip20_call(call.to.to()))
+            }
         }
     }
 
@@ -285,6 +289,7 @@ impl TempoTxEnvelope {
             Self::AA(tx) => {
                 let tx = tx.tx();
                 !tx.calls.is_empty()
+                    && tx.require_funds.as_ref().is_none_or(Vec::is_empty)
                     && tx.access_list.is_empty()
                     && tx.tempo_authorization_list.is_empty()
                     && tx
@@ -814,6 +819,39 @@ mod tests {
         };
         let envelope = create_aa_envelope(call);
         assert!(envelope.is_payment_v1());
+    }
+
+    #[test]
+    fn funding_excludes_transactions_from_payment_classification() {
+        use crate::transaction::FundingRequirement;
+        use alloy_sol_types::SolCall;
+        let call = Call {
+            to: PAYMENT_TKN.into(),
+            value: U256::ZERO,
+            input: ITIP20::transferCall {
+                to: Address::ZERO,
+                amount: U256::from(50),
+            }
+            .abi_encode()
+            .into(),
+        };
+        let legacy = create_aa_envelope(call);
+        assert!(legacy.is_payment_v1());
+        assert!(legacy.is_payment_v2());
+        for requirements in [
+            None,
+            Some(vec![]),
+            Some(vec![FundingRequirement::default()]),
+        ] {
+            let expected_payment = requirements.as_ref().is_none_or(Vec::is_empty);
+            let mut tx = legacy.as_aa().unwrap().tx().clone();
+            tx.require_funds = requirements;
+            let envelope: TempoTxEnvelope = tx
+                .into_signed(legacy.as_aa().unwrap().signature().clone())
+                .into();
+            assert_eq!(envelope.is_payment_v1(), expected_payment);
+            assert_eq!(envelope.is_payment_v2(), expected_payment);
+        }
     }
 
     #[test]
