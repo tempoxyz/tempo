@@ -559,6 +559,7 @@ impl CheckedSender for RecordingCheckedSender {
 
 #[derive(Clone, Default)]
 pub(super) struct StubExecutionProvider {
+    pub(super) t12_activation: Option<u64>,
     headers: Arc<Mutex<BTreeMap<Height, TempoHeader>>>,
     reads: Arc<Mutex<Vec<Height>>>,
     next_players: Arc<Mutex<ordered::Set<PublicKey>>>,
@@ -592,6 +593,10 @@ impl StubExecutionProvider {
 }
 
 impl ExecutionLayer for StubExecutionProvider {
+    fn t12_activation_timestamp(&self) -> Option<u64> {
+        self.t12_activation
+    }
+
     fn finalized_header(&self, height: Height) -> eyre::Result<Option<TempoHeader>> {
         self.reads.lock().unwrap().push(height);
         Ok(self.headers.lock().unwrap().get(&height).cloned())
@@ -791,7 +796,7 @@ pub(super) struct RevealedRecoveryFixture {
     pub(super) identity: PrivateKey,
     pub(super) recovered_share: Share,
     signed_logs: Vec<SignedDealerLog<MinSig, PrivateKey>>,
-    recovered_state: State,
+    pub(super) recovered_state: State,
 }
 
 /// Run a dealer round offline and return each dealer's signed log, checked
@@ -847,9 +852,10 @@ pub(super) fn signed_dealer_logs<R: CryptoRng>(
 pub(super) fn revealed_recovery_fixture(
     rng: &mut impl CryptoRng,
     ceremony_epoch: Epoch,
+    t12_active: bool,
 ) -> RevealedRecoveryFixture {
     let (ceremony_state, keys, _) = dkg_state(rng, ceremony_epoch, 4, true);
-    let round = Round::from_state(&ceremony_state, crate::config::NAMESPACE);
+    let round = Round::from_state(&ceremony_state, crate::config::NAMESPACE, t12_active);
     let identity = keys[0].clone();
     // The recovering player sends no ACK, so each dealer log reveals its dealing for it.
     let dealers = keys

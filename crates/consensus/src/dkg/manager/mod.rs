@@ -107,6 +107,9 @@ pub(crate) struct Config<TExecutionLayer, TMarshal, TEpochManager> {
 /// public polynomial. During normal operation, they provide the validator
 /// configuration used at the end of each epoch.
 pub(crate) trait ExecutionLayer: Clone + Send + Sync + 'static {
+    /// Scheduled T12 activation, used to select the ceremony transcript version.
+    fn t12_activation_timestamp(&self) -> Option<u64>;
+
     /// Returns a finalized header at `height`, or `None` when execution has not finalized it.
     fn finalized_header(&self, height: Height) -> eyre::Result<Option<TempoHeader>>;
 
@@ -173,6 +176,12 @@ pub(crate) trait EpochManager: Send + Sync + 'static {
 }
 
 impl ExecutionLayer for Arc<TempoFullNode> {
+    fn t12_activation_timestamp(&self) -> Option<u64> {
+        self.chain_spec()
+            .info
+            .fork_time(tempo_chainspec::TempoHardfork::T12)
+    }
+
     fn finalized_header(&self, height: Height) -> eyre::Result<Option<TempoHeader>> {
         use reth_provider::HeaderProvider as _;
 

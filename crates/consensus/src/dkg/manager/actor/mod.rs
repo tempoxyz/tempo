@@ -246,6 +246,29 @@ where
         });
     }
 
+    async fn is_state_v1_activated(&self, state: &State) -> eyre::Result<bool> {
+        let Some(activation) = self.config.execution_node.t12_activation_timestamp() else {
+            return Ok(false);
+        };
+
+        // Reveal versions bind ACKs and dealer logs to different round transcripts, so the
+        // version must stay fixed throughout the ceremony. The entire epoch must be activated,
+        // hence checking the last boundary.
+        let boundary = state.epoch.previous().map_or(Height::zero(), |epoch| {
+            self.config
+                .epoch_strategy
+                .last(epoch)
+                .expect("epoch strategy covers all epochs")
+        });
+
+        let boundary_timestamp =
+            get_header(&self.config.execution_node, &self.config.marshal, boundary)
+                .await?
+                .timestamp();
+
+        Ok(boundary_timestamp >= activation)
+    }
+
     async fn run_dkg_loop<TStorageContext, TSender, TReceiver>(
         &mut self,
         storage: &mut state::Storage<TStorageContext>,
@@ -276,7 +299,11 @@ where
             .wrap_err("could not instruct epoch manager to enter a new epoch")?;
 
         // TODO: emit an event with round info
-        let round = Round::from_state(&state, &self.config.namespace);
+        let round = Round::from_state(
+            &state,
+            &self.config.namespace,
+            self.is_state_v1_activated(&state).await?,
+        );
 
         let mut dealer_state = storage
             .create_dealer_for_round(
@@ -529,12 +556,11 @@ where
                 .epoch_strategy
                 .containing(self.config.last_finalized_height.next())
                 .expect("epoch strategy is covering all heights");
-            let round = Round::from_state(state, &self.config.namespace);
-            if round.epoch() < epoch_info.epoch() {
+            if state.epoch < epoch_info.epoch() {
                 warn!(
                     "latest DKG state is for `{}`, but the next block will be \
                     for epoch `{}`. Resetting DKG initial state",
-                    round.epoch(),
+                    state.epoch,
                     epoch_info.epoch(),
                 );
                 share_candidate = state.share.clone();
@@ -560,7 +586,6 @@ where
         TStorageContext: BufferPooler + commonware_runtime::Metrics + Clock + Storage,
     {
         let state = storage.current();
-        let round = Round::from_state(&state, &self.config.namespace);
         let target_height = self.config.last_finalized_height;
         let epoch_info = self
             .config
@@ -570,9 +595,15 @@ where
 
         // The DKG actor may have persisted the new epoch before the finalized floor caught up
         // during shutdown. Do not replay prior-epoch headers against the newer DKG round.
-        if round.epoch() > epoch_info.epoch() {
+        if state.epoch > epoch_info.epoch() {
             return Ok(());
         }
+
+        let round = Round::from_state(
+            &state,
+            &self.config.namespace,
+            self.is_state_v1_activated(&state).await?,
+        );
 
         let mut height = storage
             .get_latest_finalized_block_for_epoch(&round.epoch())
@@ -1393,7 +1424,11 @@ where
             is_full_dkg: ceremony_outcome.is_next_full_dkg,
         };
 
-        let round = Round::from_state(&ceremony_state, &self.config.namespace);
+        let round = Round::from_state(
+            &ceremony_state,
+            &self.config.namespace,
+            self.is_state_v1_activated(&ceremony_state).await?,
+        );
         ensure!(
             round.players().position(&public_key).is_some(),
             "our identity is in the current output but was not a player in ceremony epoch \
