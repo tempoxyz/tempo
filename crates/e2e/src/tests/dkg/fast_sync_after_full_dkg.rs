@@ -134,10 +134,6 @@ fn fast_sync_after_full_dkg(update_network_identity: bool) {
             context.sleep(Duration::from_millis(100)).await;
         }
         // verify continued progress
-        //
-        // The runtime clock is virtual, so a fixed sleep can elapse long before the
-        // execution nodes (which run on a real tokio runtime) build another block.
-        // Recheck every second until the late validator makes progress.
         let block_after_sync = late_validator
             .execution_provider()
             .last_block_number()
