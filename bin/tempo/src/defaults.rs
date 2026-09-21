@@ -198,6 +198,8 @@ fn init_txpool_defaults() {
 
 fn init_engine_defaults() {
     DefaultEngineValues::default()
+        .with_persistence_threshold(25)
+        .with_num_state_masking_blocks(10)
         // In Commonware consensus, it might happen that a head is notarized (causing it to become a canonical tip for reth),
         // and immediately nullified (allowing to build a payload on top of its parent). In that case reth might be asked to
         // build a payload on top an ancestor of canonical tip, which is not possible without this flag.
