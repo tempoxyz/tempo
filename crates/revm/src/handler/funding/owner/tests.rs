@@ -113,7 +113,7 @@ fn requirement(
     sources: Vec<ITIP20Funder::Source>,
 ) -> FundingRequirement {
     FundingRequirement {
-        asset,
+        token: asset,
         amount: U256::from(amount),
         slippage_bps: 0,
         sources,
@@ -510,8 +510,8 @@ fn rejects_invalid_context_and_arguments_before_balance_shortcut() {
                 AccountKeychain::new().set_transaction_key(SOURCE).unwrap()
             }),
             1 => request.slippage_bps = 10_001,
-            2 => request.asset = RECIPIENT,
-            3 => request.asset = address!("20c0000000000000000000000000000000000007"),
+            2 => request.token = RECIPIENT,
+            3 => request.token = address!("20c0000000000000000000000000000000000007"),
             4 => request.sources.push(source(Address::ZERO, 0, 0, 0, 0)),
             _ => unreachable!(),
         }
