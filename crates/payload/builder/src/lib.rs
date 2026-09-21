@@ -7,6 +7,7 @@ mod budget;
 mod encode;
 mod metrics;
 mod prewarming;
+mod wait;
 
 pub use budget::DEFAULT_BUILD_TIME_MULTIPLIER;
 use crossbeam_channel::Sender;
@@ -20,6 +21,7 @@ use crate::{
     encode::{EncodedBlockTransactionList, EncodedBlockTransactionsBuilder, ExecutionBlockEncoder},
     metrics::{BlockBuildStopReason, InstrumentedFinishProvider, TempoPayloadBuilderMetrics},
     prewarming::{BestTransactionsPrewarming, PrewarmedTransaction, PrewarmingExecutionContext},
+    wait::TransactionWaiter,
 };
 use alloy_consensus::{BlockHeader as _, TxReceipt};
 use alloy_eip7928::bal::Bal;
@@ -53,8 +55,8 @@ use reth_revm::{
 use reth_storage_api::{HashedPostStateProvider, StateProviderFactory, StateRootProvider};
 use reth_tasks::TaskExecutor;
 use reth_transaction_pool::{
-    BestTransactions, BestTransactionsAttributes, PoolTransaction, TransactionPool,
-    error::InvalidPoolTransactionError,
+    BestTransactions, BestTransactionsAttributes, PoolTransaction, TransactionListenerKind,
+    TransactionPool, error::InvalidPoolTransactionError,
 };
 use std::{
     sync::{
@@ -461,6 +463,15 @@ where
         }
 
         let pool_fetch_start = Instant::now();
+        let payload_build_budget = attributes.payload_build_budget();
+        // Subscribe before taking the iterator snapshot so arrivals cannot be missed in between.
+        let transaction_waiter = payload_build_budget.map(|_| {
+            TransactionWaiter::new(
+                &self.executor,
+                self.pool
+                    .pending_transactions_listener_for(TransactionListenerKind::All),
+            )
+        });
         let raw_best_txs = best_txs(BestTransactionsAttributes::new(
             executor.evm().block().basefee,
             executor
@@ -482,10 +493,15 @@ where
                 PayloadTransactions::Parallel(BestTransactionsPrewarming::new(
                     prewarm_ctx,
                     raw_best_txs,
+                    transaction_waiter.as_ref().map(TransactionWaiter::notifier),
                 ))
             } else {
                 PayloadTransactions::Prewarming(StateAwareBestTransactions::new(
-                    BestTransactionsPrewarming::new(prewarm_ctx, raw_best_txs),
+                    BestTransactionsPrewarming::new(
+                        prewarm_ctx,
+                        raw_best_txs,
+                        transaction_waiter.as_ref().map(TransactionWaiter::notifier),
+                    ),
                 ))
             }
         } else {
@@ -503,12 +519,12 @@ where
         // Consensus builds carry a remaining proposal budget. When present, the
         // builder stops pool tx execution before projected proposer and validator
         // work would consume that window.
-        let payload_build_budget = attributes.payload_build_budget();
         let build_time_multiplier = self.build_time_multiplier();
         let marshal_persist = marshal_persist_estimate();
         let validation_latency = attributes.validation_latency_estimate();
         let block_build_stop_reason = loop {
             check_cancel!();
+            let mut remaining_budget = Duration::ZERO;
 
             if let Some(build_budget) = payload_build_budget {
                 let elapsed = start.elapsed();
@@ -545,14 +561,18 @@ where
                     );
                     break BlockBuildStopReason::BuildBudget;
                 }
+                remaining_budget = build_budget - budget_decision.total_reserved;
             }
 
+            let poll_start = Instant::now();
             let Some(mut pool_tx) = best_txs.next() else {
-                if payload_build_budget.is_some() && cumulative_gas_used < block_gas_limit {
-                    // Let pool and prewarming producers run without delaying newly available
-                    // transactions or the next cancellation/budget check by a fixed interval.
+                if let Some(waiter) = &transaction_waiter
+                    && cumulative_gas_used < block_gas_limit
+                {
+                    // Pool arrivals and completed prewarms wake this wait immediately. Its timeout
+                    // only bounds cancellation checks and is capped by the remaining build budget.
                     let idle_start = Instant::now();
-                    std::thread::yield_now();
+                    waiter.wait(remaining_budget.saturating_sub(poll_start.elapsed()));
                     normal_transaction_fill_idle_elapsed += idle_start.elapsed();
                     continue;
                 }
@@ -735,6 +755,7 @@ where
 
         // cancel pre-warming, if any, by dropping the iter
         drop(best_txs);
+        drop(transaction_waiter);
 
         let elapsed_at_tx_cutoff = start.elapsed();
         let validation_work_at_tx_cutoff =

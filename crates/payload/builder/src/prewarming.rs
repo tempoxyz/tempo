@@ -34,6 +34,7 @@ impl BestTransactionsPrewarming {
     pub(crate) fn new<Txs, Provider>(
         prewarm: PrewarmingExecutionContext<Provider>,
         best_txs: Txs,
+        wake_builder: Option<crossbeam_channel::Sender<()>>,
     ) -> Self
     where
         Txs: BestTransactions<Item = BestTransaction> + Send + 'static,
@@ -60,6 +61,7 @@ impl BestTransactionsPrewarming {
                         commands_tx,
                         prewarm,
                         next_expiring_nonce_offset: 0,
+                        wake_builder,
                     },
                 );
             });
@@ -102,17 +104,24 @@ impl BestTransactionsPrewarming {
                 let prewarm = ctx.prewarm.clone();
                 let commands_tx = ctx.commands_tx.clone();
                 let transactions_tx = ctx.transactions_tx.clone();
+                let wake_builder = ctx.wake_builder.clone();
 
                 if !parallel {
                     let _ = ctx
                         .transactions_tx
                         .send(Some(PrewarmedTransaction::without_replay(tx.clone())));
+                    if let Some(wake_builder) = &wake_builder {
+                        let _ = wake_builder.try_send(());
+                    }
                 }
 
                 scope.spawn(move |_| {
                     let tx = Self::prewarm_transaction(prewarm, tx, expiring_nonce_offset);
                     if parallel {
                         let _ = transactions_tx.send(Some(tx));
+                        if let Some(wake_builder) = &wake_builder {
+                            let _ = wake_builder.try_send(());
+                        }
                     }
                     let _ = commands_tx.send(BestTransactionsCommand::Advance);
                 });
@@ -313,6 +322,7 @@ struct BestTransactionsPrewarmingContext<Txs, Provider> {
     commands_rx: Receiver<BestTransactionsCommand>,
     prewarm: PrewarmingExecutionContext<Provider>,
     next_expiring_nonce_offset: usize,
+    wake_builder: Option<crossbeam_channel::Sender<()>>,
 }
 
 /// Prewarmed transaction returned from [`BestTransactionsPrewarming`] iterator.
@@ -667,7 +677,7 @@ mod tests {
     ) -> TestPrewarming {
         let context = prewarming_context(executor.clone(), false);
         let prewarming =
-            BestTransactionsPrewarming::new(context, TestBestTransactions::new(txs, log));
+            BestTransactionsPrewarming::new(context, TestBestTransactions::new(txs, log), None);
         TestPrewarming {
             prewarming: Some(prewarming),
             executor,
@@ -748,6 +758,45 @@ mod tests {
             .collect::<Vec<_>>();
 
         assert_eq!(actual, expected);
+    }
+
+    #[test]
+    fn ready_transactions_wake_builder_in_both_prewarming_modes() {
+        for parallel in [false, true] {
+            let executor = TaskExecutor::test();
+            let (wake_builder, notifications) = crossbeam_channel::bounded(1);
+            let tx = test_tx(Address::random(), 0);
+            let mut prewarming = TestPrewarming {
+                prewarming: Some(BestTransactionsPrewarming::new(
+                    prewarming_context(executor.clone(), parallel),
+                    TestBestTransactions::new(vec![tx.clone()], Arc::default()),
+                    Some(wake_builder),
+                )),
+                executor,
+            };
+            notifications
+                .recv_timeout(Duration::from_secs(5))
+                .expect("ready transaction must wake the builder");
+            assert_eq!(prewarming.next().unwrap().tx.hash(), tx.hash());
+        }
+    }
+
+    #[test]
+    fn empty_prewarming_replies_do_not_wake_builder() {
+        let executor = TaskExecutor::test();
+        let eager_advances = executor.prewarming_pool().current_num_threads() * 2;
+        let (wake_builder, notifications) = crossbeam_channel::bounded(1);
+        let log = Arc::new(Mutex::new(TestLog::default()));
+        let _prewarming = TestPrewarming {
+            prewarming: Some(BestTransactionsPrewarming::new(
+                prewarming_context(executor.clone(), false),
+                TestBestTransactions::new(Vec::new(), log.clone()),
+                Some(wake_builder),
+            )),
+            executor,
+        };
+        wait_until(|| log.lock().unwrap().empty_polls == eager_advances);
+        assert!(notifications.is_empty());
     }
 
     #[test]
