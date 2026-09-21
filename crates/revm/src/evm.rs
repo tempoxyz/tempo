@@ -293,7 +293,6 @@ where
             self.inner.frame_stack.get_next()
         };
         let frame = slot.get(TempoFrame::default);
-        frame.funding = None;
         let result = TempoFrame::init(
             frame,
             &mut self.inner.ctx,
@@ -318,49 +317,34 @@ where
 
     fn frame_run(&mut self) -> Result<FrameInitOrResult<Self::Frame>, ContextError<DB::Error>> {
         let frame = self.inner.frame_stack.get();
-        if frame.funding.is_some() {
-            return frame.run_funding(&mut self.inner.ctx);
-        }
-        let action = frame.eth.interpreter.run_plain(
-            self.inner.instruction.instruction_table(),
-            self.inner.instruction.gas_table(),
+        let instructions = &self.inner.instruction;
+        frame.run(
             &mut self.inner.ctx,
-        );
-        frame
-            .eth
-            .process_next_action(&mut self.inner.ctx, action)
-            .inspect(|result| {
-                if result.is_result() {
-                    frame.eth.set_finished(true);
-                }
-            })
+            instructions.gas_table(),
+            |frame, ctx| {
+                frame.interpreter.run_plain(
+                    instructions.instruction_table(),
+                    instructions.gas_table(),
+                    ctx,
+                )
+            },
+        )
     }
 
     fn frame_return_result(
         &mut self,
         result: <Self::Frame as FrameTr>::FrameResult,
     ) -> Result<Option<<Self::Frame as FrameTr>::FrameResult>, ContextError<DB::Error>> {
-        if self.inner.frame_stack.get().eth.is_finished() {
+        if self.inner.frame_stack.get().is_finished() {
             self.inner.frame_stack.pop();
         }
         if self.inner.frame_stack.index().is_none() {
             return Ok(Some(result));
         }
-        let frame = self.inner.frame_stack.get();
-        if let Some(funding) = &mut frame.funding {
-            funding.resume(&result);
-        }
-        frame
-            .eth
-            .return_result::<_, ContextError<DB::Error>>(&mut self.inner.ctx, result)?;
-        if frame.funding.is_some() {
-            frame
-                .eth
-                .interpreter
-                .stack
-                .pop()
-                .expect("native callback status");
-        }
+        self.inner
+            .frame_stack
+            .get()
+            .return_result(&mut self.inner.ctx, result)?;
         Ok(None)
     }
 }
@@ -375,38 +359,29 @@ where
     fn inspect_frame_run(
         &mut self,
     ) -> Result<FrameInitOrResult<Self::Frame>, ContextError<DB::Error>> {
-        if self.inner.frame_stack.get().funding.is_some() {
-            let mut result = self.frame_run()?;
-            if let ItemOrResult::Result(output) = &mut result {
-                let frame = self.inner.frame_stack.get();
-                revm::inspector::handler::frame_end(
-                    &mut self.inner.ctx,
-                    &mut self.inner.inspector,
-                    &frame.eth.input,
-                    output,
-                );
-            }
-            return Ok(result);
-        }
         let frame = self.inner.frame_stack.get();
-        let action = revm::inspector::inspect_instructions(
+        let instructions = &self.inner.instruction;
+        let inspector = &mut self.inner.inspector;
+        let mut result = frame.run(
             &mut self.inner.ctx,
-            &mut frame.eth.interpreter,
-            &mut self.inner.inspector,
-            self.inner.instruction.instruction_table(),
-            self.inner.instruction.gas_table(),
-        );
-        let mut result = frame
-            .eth
-            .process_next_action::<_, ContextError<DB::Error>>(&mut self.inner.ctx, action)?;
+            instructions.gas_table(),
+            |frame, ctx| {
+                revm::inspector::inspect_instructions(
+                    ctx,
+                    &mut frame.interpreter,
+                    &mut *inspector,
+                    instructions.instruction_table(),
+                    instructions.gas_table(),
+                )
+            },
+        )?;
         if let ItemOrResult::Result(output) = &mut result {
             revm::inspector::handler::frame_end(
                 &mut self.inner.ctx,
-                &mut self.inner.inspector,
-                &frame.eth.input,
+                inspector,
+                frame.input(),
                 output,
             );
-            frame.eth.set_finished(true);
         }
         Ok(result)
     }

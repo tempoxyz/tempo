@@ -1,17 +1,21 @@
-use super::*;
+use super::{
+    funding::{FundingContinuation, Stage},
+    *,
+};
 use crate::{TempoEvm, gas_params::tempo_gas_params, handler::TempoEvmHandler};
-use alloy_primitives::{address, hex};
-use alloy_sol_types::{SolError, SolValue};
+use alloy_primitives::{Address, Bytes, U256, address, hex};
+use alloy_sol_types::{SolCall, SolError, SolValue};
 use revm::{
     Context, Inspector, MainContext,
     context::{CfgEnv, ContextSetters, TxEnv},
     database::{CacheDB, EmptyDB},
     handler::{Handler, SystemCallTx},
     inspector::InspectorHandler,
-    interpreter::{CallOutcome, FrameInput},
+    interpreter::{CallInputs, CallOutcome, CallScheme, FrameInput, InstructionResult},
     state::{AccountInfo, Bytecode},
 };
 use tempo_chainspec::hardfork::TempoHardfork;
+use tempo_contracts::precompiles::{IFundingSource, ITIP20Funder};
 
 const FUNDER: Address = address!("ffffffffffffffffffffffffffffffffffff1120");
 const SOURCE: Address = address!("0000000000000000000000000000000000001000");
@@ -20,11 +24,10 @@ const ASSET: Address = address!("0000000000000000000000000000000000003000");
 
 // This admission hook is absent from node builds. It supplies one transport-only funding invocation.
 pub(super) fn admit<DB: Database>(
-    frame: &mut TempoFrame,
     ctx: &mut TempoContext<DB>,
-    mut init: FrameInit,
-) -> FrameInit {
-    if let FrameInput::Call(inputs) = &mut init.frame_input {
+    init: &FrameInit,
+) -> Option<FundingContinuation> {
+    if let FrameInput::Call(inputs) = &init.frame_input {
         if inputs.bytecode_address == FUNDER {
             let data = inputs.input.bytes(ctx);
             let request = ITIP20Funder::requireFundsCall::abi_decode_validate(&data);
@@ -60,8 +63,7 @@ pub(super) fn admit<DB: Database>(
             } else {
                 Stage::Finished(InstructionResult::Revert, Bytes::new())
             };
-            frame.funding = Some(FundingContinuation {
-                funder: FUNDER,
+            return Some(FundingContinuation {
                 source: request
                     .as_ref()
                     .ok()
@@ -72,13 +74,9 @@ pub(super) fn admit<DB: Database>(
                 amount_out: request.as_ref().map_or(U256::ZERO, |r| r.amount),
                 stage,
             });
-            inputs.known_bytecode = (
-                Default::default(),
-                Bytecode::new_raw(Bytes::from_static(&[0])),
-            );
         }
     }
-    init
+    None
 }
 
 #[derive(Debug, Default)]
@@ -328,5 +326,83 @@ fn state_gas_and_refunds_match_with_inspection() {
             plain.inner.ctx.journaled_state.state,
             inspected.inner.ctx.journaled_state.state
         );
+    }
+}
+
+#[test]
+fn callbacks_charge_the_instruction_base_cost() {
+    use revm::bytecode::opcode::{CALL, STATICCALL};
+    for inspect in [false, true] {
+        let mut baseline = evm(TempoHardfork::T3);
+        let mut changed = evm(TempoHardfork::T3);
+        changed.inner.instruction.gas_table_mut()[CALL as usize] += 17;
+        changed.inner.instruction.gas_table_mut()[STATICCALL as usize] += 31;
+        let a = run(&mut baseline, 0, 2_000_000, inspect);
+        let b = run(&mut changed, 0, 2_000_000, inspect);
+        assert!(a.is_success() && b.is_success());
+        assert_eq!(b.tx_gas_used() - a.tx_gas_used(), 48);
+        assert_eq!(
+            baseline.inner.ctx.journaled_state.state,
+            changed.inner.ctx.journaled_state.state
+        );
+    }
+}
+
+#[test]
+fn native_initialization_rejects_invalid_call_context_without_journaling() {
+    use revm::interpreter::{CallInput, CallValue, SharedMemory};
+    for case in 0..5 {
+        let mut evm = evm(TempoHardfork::T3);
+        let mut inputs = CallInputs {
+            input: CallInput::Bytes(Bytes::new()),
+            return_memory_offset: 2..5,
+            gas_limit: 1000,
+            reservoir: 300,
+            bytecode_address: FUNDER,
+            known_bytecode: Default::default(),
+            target_address: FUNDER,
+            caller: ACCOUNT,
+            value: CallValue::Transfer(U256::ZERO),
+            scheme: CallScheme::Call,
+            is_static: false,
+            charged_new_account_state_gas: false,
+        };
+        let mut depth = 0;
+        match case {
+            0 => inputs.is_static = true,
+            1 => inputs.scheme = CallScheme::DelegateCall,
+            2 => inputs.value = CallValue::Transfer(U256::ONE),
+            3 => inputs.target_address = SOURCE,
+            _ => depth = 1025,
+        }
+        let init = FrameInit {
+            frame_input: FrameInput::Call(Box::new(inputs)),
+            depth,
+            memory: SharedMemory::new(),
+        };
+        let funding = FundingContinuation {
+            source: SOURCE,
+            account: ACCOUNT,
+            asset_out: ASSET,
+            amount_out: U256::ZERO,
+            stage: Stage::Finished(InstructionResult::Return, Bytes::new()),
+        };
+        let ItemOrResult::Result(FrameResult::Call(result)) =
+            native::NativeFrame::new(&mut evm.inner.ctx, init, funding)
+        else {
+            panic!("invalid context admitted")
+        };
+        assert_eq!(
+            *result.instruction_result(),
+            if case == 4 {
+                InstructionResult::CallTooDeep
+            } else {
+                InstructionResult::Revert
+            }
+        );
+        assert_eq!(result.gas().remaining(), 1000);
+        assert_eq!(result.gas().reservoir(), 300);
+        assert_eq!(result.memory_offset, 2..5);
+        assert!(evm.inner.ctx.journaled_state.state.is_empty());
     }
 }
